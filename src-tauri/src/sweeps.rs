@@ -12,10 +12,7 @@ use velocity_core::duty::DutyRole;
 use velocity_github::{IssueClient, ScoutServer};
 use velocity_interview::Interviews;
 use velocity_store::duty::ScoutRoster;
-use velocity_threads::{
-    REVIEW_SWARM_SWITCH, ReviewSwarmServer, SCOUT_SERVER_SWITCH, ScoutChange, ScoutSweeps,
-    SweepHost,
-};
+use velocity_threads::{SCOUT_SERVER_SWITCH, ScoutChange, ScoutSweeps, SweepHost};
 
 use crate::duty::DutyEventPublished;
 use crate::layout::MainLayout;
@@ -26,18 +23,6 @@ use crate::threads::{lock, report};
 /// stdin/stdout and exit. `false` when Velocity was started normally.
 pub fn serve_scout_server() -> anyhow::Result<bool> {
     let arguments: Vec<String> = std::env::args().skip(1).collect();
-    if arguments.first().map(String::as_str) == Some(REVIEW_SWARM_SWITCH) {
-        let [_, launch] = arguments.as_slice() else {
-            anyhow::bail!("Usage: {REVIEW_SWARM_SWITCH} <launch-file>");
-        };
-        let mut server =
-            ReviewSwarmServer::open(std::path::Path::new(launch)).map_err(anyhow::Error::msg)?;
-        server.serve(
-            BufReader::new(std::io::stdin().lock()),
-            std::io::stdout().lock(),
-        )?;
-        return Ok(true);
-    }
     if arguments.first().map(String::as_str) != Some(SCOUT_SERVER_SWITCH) {
         return Ok(false);
     }

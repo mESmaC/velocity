@@ -322,67 +322,6 @@ pub struct DutyRoleEntry {
     pub scout_rules: ScoutRuleSettings,
     pub agents: Vec<DutyAgentCard>,
     pub feed: Vec<DutyFeedEvent>,
-    /// Only after-land Scouts use this mode. The existing duty IPC remains the same;
-    /// coverage is rendered as the duty's title, rules and cadence line.
-    pub review_swarm: Option<ReviewSwarmCoverage>,
-}
-
-#[derive(Clone, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
-pub struct ReviewSwarmCoverage {
-    pub unreviewed: usize,
-    pub oldest_seconds: u64,
-}
-
-impl ReviewSwarmCoverage {
-    pub fn new(unreviewed: usize, oldest_seconds: u64) -> Self {
-        Self {
-            unreviewed,
-            oldest_seconds,
-        }
-    }
-}
-
-impl DutyRoleEntry {
-    pub fn new(identifier: usize, role: DutyRole) -> Self {
-        Self {
-            identifier,
-            role,
-            paused: false,
-            issues_filed: 0,
-            pr_rules: PrDutyRuleSettings::default(),
-            scout_rules: ScoutRuleSettings::default(),
-            agents: Vec::new(),
-            feed: Vec::new(),
-            review_swarm: None,
-        }
-    }
-
-    pub fn title(&self) -> &'static str {
-        if self.review_swarm.is_some() {
-            "Review swarm"
-        } else {
-            self.role.title()
-        }
-    }
-
-    pub fn coverage_label(&self) -> Option<String> {
-        let coverage = self.review_swarm.as_ref()?;
-        let window = review_window_seconds(self.scout_rules.cadence) / 60;
-        Some(format!(
-            "{} unreviewed · oldest {}m · window {window}m",
-            coverage.unreviewed,
-            coverage.oldest_seconds / 60
-        ))
-    }
-}
-
-/// Cadence is the existing duty setting: after every merge requests a one-minute
-/// response, periodic sweeps a thirty-minute response. Once still drains all reviews.
-pub fn review_window_seconds(cadence: ScoutCadence) -> u64 {
-    match cadence {
-        ScoutCadence::AfterEveryMerge => 60,
-        ScoutCadence::Once | ScoutCadence::EveryThirtyMinutes => 30 * 60,
-    }
 }
 
 pub fn clamp_duty_agent_count(count: usize) -> usize {
@@ -507,9 +446,6 @@ pub fn duty_sidebar_summary(entry: &DutyRoleEntry, merged_today: usize) -> Strin
     if entry.paused {
         return "paused".into();
     }
-    if let Some(coverage) = entry.coverage_label() {
-        return coverage;
-    }
     match entry.role {
         DutyRole::PrDuty => {
             let busy = entry.agents.iter().filter(|agent| agent.busy).count();
@@ -554,6 +490,18 @@ pub fn project_duty_view(
     } else {
         format!("{count} agents")
     };
+    let rules = match entry.role {
+        DutyRole::PrDuty => build_pr_duty_rule_chips(&entry.pr_rules),
+        DutyRole::Scouts => build_scout_rule_chips(&entry.scout_rules),
+        DutyRole::MainWatcher => build_main_watcher_rule_chips(),
+    };
+    let placeholder = match entry.role {
+        DutyRole::PrDuty => "Instruct every PR agent, e.g. “hold merges until #41 lands”".into(),
+        DutyRole::Scouts => "Point the scouts somewhere, e.g. “dig into the IPC layer”".into(),
+        DutyRole::MainWatcher => {
+            "Instruct the watcher, e.g. “run the stress suite on master again”".into()
+        }
+    };
     let model_pill = entry.agents.first().map_or_else(
         || default_pill.clone(),
         |agent| ModelPillView {
@@ -568,57 +516,19 @@ pub fn project_duty_view(
     DutyViewSnapshot {
         identifier: entry.identifier,
         role: entry.role,
-        title: entry.title().into(),
+        title: entry.role.title().into(),
         paused: entry.paused,
         agent_count: count,
         agent_count_label,
         open_pull_request_count,
         merged_today,
         issues_filed: entry.issues_filed,
-        cadence_label: entry
-            .coverage_label()
-            .unwrap_or_else(|| entry.scout_rules.cadence.header_label().into()),
-        rules: duty_rules(entry),
+        cadence_label: entry.scout_rules.cadence.header_label().into(),
+        rules,
         agents: entry.agents.clone(),
         feed: entry.feed.clone(),
-        composer_placeholder: duty_placeholder(entry).into(),
+        composer_placeholder: placeholder,
         model_pill,
-    }
-}
-
-fn duty_rules(entry: &DutyRoleEntry) -> Vec<DutyRuleChip> {
-    if entry.review_swarm.is_some() {
-        return [
-            "Lands never wait for review",
-            "Sensitive changes first",
-            "Evidence attached · no duplicates",
-            "Proof-list features verified in Lean",
-            "Agent roster caps concurrency",
-        ]
-        .into_iter()
-        .map(|text| DutyRuleChip {
-            text: text.into(),
-            hard: true,
-        })
-        .collect();
-    }
-    match entry.role {
-        DutyRole::PrDuty => build_pr_duty_rule_chips(&entry.pr_rules),
-        DutyRole::Scouts => build_scout_rule_chips(&entry.scout_rules),
-        DutyRole::MainWatcher => build_main_watcher_rule_chips(),
-    }
-}
-
-fn duty_placeholder(entry: &DutyRoleEntry) -> &'static str {
-    if entry.review_swarm.is_some() {
-        return "Point the review swarm at a feature, issue or proof gap";
-    }
-    match entry.role {
-        DutyRole::PrDuty => "Instruct every PR agent, e.g. “hold merges until #41 lands”",
-        DutyRole::Scouts => "Point the scouts somewhere, e.g. “dig into the IPC layer”",
-        DutyRole::MainWatcher => {
-            "Instruct the watcher, e.g. “run the stress suite on master again”"
-        }
     }
 }
 
@@ -704,7 +614,6 @@ pub fn start_duty_entry(identifier: usize, spec: DutyStartSpec) -> (DutyRoleEntr
         scout_rules: spec.scout_rules,
         agents,
         feed: vec![event.clone()],
-        review_swarm: None,
     };
     (entry, event)
 }

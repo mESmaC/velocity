@@ -40,7 +40,7 @@ These hold for every feature. A feature that breaks one of them is wrong, whatev
 | **Thread** | One agent working on one piece of work, in its own worktree. |
 | **Spec interview** | The first thread of a new project. It interviews you and produces SPEC.md plus the first Task List. |
 | **Task List** | The project-level list of work, shown in the top-right panel. It is never a per-thread plan. |
-| **Duty agent** | A long-running agent with a standing role: **PR duty**, **Scout**, or the **Review swarm** on after-land Rosen projects (F7). Names are *(proposed)*. |
+| **Duty agent** | A long-running agent with a standing role: **PR duty** or **Scout**. Names are *(proposed)*. |
 | **Swarm** | One agent per open item (tasks, issues, or both), all started at once. |
 | **Goal swarm** | N agents given one identical prompt (e.g. "Read AGENTS.md and start dev.") with a model mix you set. Nobody assigns work: each agent claims its own piece in AIRC. |
 | **Worktree** | A `git worktree` checkout made for one thread or one agent's job. |
@@ -673,15 +673,6 @@ Long-running roles. They appear under **On duty**, with an agent count (×N) and
   - Flaky tests are filed through the scouts' `scout_issues` and `scout_file` tools (never duplicates, failing evidence attached), signed with the watcher's nick.
   - A message from the Main watcher composer goes to the running watch as its next message; with none running, the next idle watcher watches the tip again with it.
 
-**Review swarm on after-land Rosen projects (#382):**
-- The Scouts duty slot becomes **Review swarm** when the base's `rosen.toml` sets `review = "after-land"`. Start it from the Duty dialog or the Scouts shortcut; existing saved scout rosters join this mode too. It runs alongside build threads, with no PR duty required. Git and before-land projects keep Scouts below.
-- A worker claims the oldest unreviewed landed change through Rosen's channel, with sensitive changes first. It reads the exact landed diff, the author's named snapshots, the referenced issue and the implemented SPEC section, and checks every implementation claim. A channel review claim names the change and landed commit; it holds no source path or landing lock. Workers claim paths and issues before writing proofs or fixes.
-- Findings use `scout_issues` and `scout_file`: open and closed duplicate checks, an executed failing reproduction and attached output. A channel claim serialises publication across workers. A worker may instead write a fix-forward change. It never reverts by hand; R12 owns recovery, and in after-land mode only a broken build is reverted.
-- For each affected F17 proof-list feature, the worker writes or updates `proofs/<Feature>/Design.lean` and the exported fixture table, with the implementation's fixture check. `review_swarm_complete` requires the feature's design and fixtures and runs `lake build`, the placeholder scan, SPEC-section check and axiom audit in the machine's background `verify` queue. Model/code gaps become issues with evidence. Proofs and fixes are ordinary named Rosen changes; they land through the same after-land policy, with no approval or receipt. A failed proof never delays another land.
-- Completion is durable. Velocity marks the target `reviewed` or `issues filed` only after a completion report and after any named proof or fix-forward work lands. An ended or failed session alone never marks coverage. Interrupted workspaces and pending acknowledgements resume after restart; unfinished edits are kept. A reverted and relanded target is a new review incarnation.
-- **Coverage, not gates:** the duty header and sidebar show the number of unreviewed landed changes, the oldest age and the configured review window. The roster caps concurrent provider sessions; adding or dismissing agents changes that cap. Velocity starts more of those workers as the backlog grows or approaches its window. The Duty dialog's review-window choices reuse saved cadence settings: **1m** (after every merge), **30m** (periodic), or **30m · scout once** (once). Reviews drain continuously in every mode; cadence controls idle scouting. When no review remains, a worker scouts adversarially in its own Rosen workspace. Instructions reach running workers at their next message, and later work follows the latest instruction. Pause finishes in-flight work and starts no new work; Stop or Dismiss stops the corresponding sessions and releases their review claims.
-- This runner is independent of the landing checker. Reading coverage, launching workers, filing findings and checking Lean never become land prerequisites. The release gate remains responsible for full tests and proofs.
-
 **Scouts:**
 - **Assume every part of the application is broken and will fail, then prove it.** Scouts write the project's tests and stress scripts (F17). Building agents don't.
 - Sweep the repo: run the stress scripts against the code and against the Lean reference models, run lint, read SPEC.md and the proofs, and file issues.
@@ -1171,8 +1162,6 @@ Velocity's own proof list:
 | Stall detection and claim release | §2.2 | a live agent's claims are released, or a dead agent's never are |
 
 **Implementation first.** Proofs never block building. The agent builds and runs the feature, then writes its proofs in the same PR. Implementation stays the larger part of every PR: proofs, tests and docs together are smaller than the code, and PR duty requests changes when they aren't.
-
-On after-land Rosen projects, proof-list verification follows the implementation's land in the Review swarm (F7, #382). Its proof changes land independently, and its completion report is tied to the checked source tree. Lean and review coverage never gate another land; full tests, `lake build` and the axiom audit gate the release.
 
 **Design proof** (`proofs/<Feature>/Design.lean`, after the code, in the same PR, for every feature on the proof list):
 - **Exactly three theorems:** `correct`, `cost_bound` and `optimal`, below. Lemmas are allowed only as steps toward them.

@@ -177,33 +177,14 @@
   }
 
   // A Rosen project that reviews after the land has no approval for PR duty to give (F7).
-  const reviewRole: (typeof roles)[number] = [
-    'scouts',
-    'scout',
-    'Review swarm',
-    'Reviews landed changes, scouts for defects and verifies proof-list features in Lean. Findings carry executed evidence. Lands keep moving.',
-    'The roster caps concurrent workers. Velocity starts more as the backlog grows; add agents to raise the cap.',
-  ];
   const offeredRoles = $derived(
     defaults?.lands_without_review
-      ? roles
-          .filter(([value]) => value !== 'pr_duty')
-          .map((card) => (card[0] === 'scouts' ? reviewRole : card))
+      ? roles.filter(([value]) => value !== 'pr_duty')
       : roles,
   );
 
-  const reviewSwarm = $derived(
-    defaults?.lands_without_review && role === 'scouts',
-  );
-  const reviewWindows: [ScoutCadence, string][] = [
-    ['once', '30m · scout once'],
-    ['every_thirty_minutes', '30m'],
-    ['after_every_merge', '1m'],
-  ];
-  const offeredCadences = $derived(reviewSwarm ? reviewWindows : cadences);
-
   const selectedRole = $derived(
-    offeredRoles.find(([value]) => value === role) ?? roles[0],
+    roles.find(([value]) => value === role) ?? roles[0],
   );
 
   const chosenModel = $derived(
@@ -490,9 +471,9 @@
             </label>
           </div>
           <div class="row2 spread sub-row">
-            <span class="label">{reviewSwarm ? 'Review window' : 'Sweep'}</span>
+            <span class="label">Sweep</span>
             <div class="seg sm" role="group" aria-label="Sweep">
-              {#each offeredCadences as [value, label] (value)}
+              {#each cadences as [value, label] (value)}
                 <button
                   type="button"
                   class:on={scoutRules.cadence === value}

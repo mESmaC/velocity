@@ -17,7 +17,6 @@ mod issue;
 pub mod policy;
 pub mod post_land;
 mod process;
-pub mod review_swarm;
 mod server;
 mod stack;
 mod workspace;

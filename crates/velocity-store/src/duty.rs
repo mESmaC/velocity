@@ -57,52 +57,49 @@ pub struct DutyRoleItem {
     pub scout_rules: ScoutRuleSettings,
     pub agents: Vec<DutyAgentItem>,
     pub feed: Vec<DutyFeedItem>,
-    #[serde(default)]
-    #[specta(skip)]
-    pub review_swarm: Option<duty::ReviewSwarmCoverage>,
 }
 
 impl DutyRoleItem {
     pub fn to_core(&self) -> DutyRoleEntry {
-        let mut entry = DutyRoleEntry::new(self.id as usize, self.role);
-        entry.review_swarm = self.review_swarm.clone();
-        entry.paused = self.paused;
-        entry.issues_filed = self.issues_filed as usize;
-        entry.pr_rules = self.pr_rules.clone();
-        entry.scout_rules = self.scout_rules.clone();
-        entry.agents = self
-            .agents
-            .iter()
-            .map(|agent| DutyAgentCard {
-                nickname: agent.nickname.clone(),
-                provider: provider_color(agent.provider),
-                model_name: agent.model_name.clone(),
-                busy: agent.busy,
-                doing: agent.doing.clone(),
-                sweep: agent.sweep.clone(),
-                review_worktrees: agent.review_worktrees.clone(),
-                effort: agent.effort.map(Into::into),
-                speed: agent.preferred_speed.map(Into::into),
-            })
-            .collect();
-        entry.feed = self
-            .feed
-            .iter()
-            .map(|event| DutyFeedEvent {
-                timestamp: event.timestamp.clone(),
-                actor: event.actor.clone(),
-                kind: event.kind,
-                message: event.message.clone(),
-            })
-            .collect();
-        entry
+        DutyRoleEntry {
+            identifier: self.id as usize,
+            role: self.role,
+            paused: self.paused,
+            issues_filed: self.issues_filed as usize,
+            pr_rules: self.pr_rules.clone(),
+            scout_rules: self.scout_rules.clone(),
+            agents: self
+                .agents
+                .iter()
+                .map(|agent| DutyAgentCard {
+                    nickname: agent.nickname.clone(),
+                    provider: provider_color(agent.provider),
+                    model_name: agent.model_name.clone(),
+                    busy: agent.busy,
+                    doing: agent.doing.clone(),
+                    sweep: agent.sweep.clone(),
+                    review_worktrees: agent.review_worktrees.clone(),
+                    effort: agent.effort.map(Into::into),
+                    speed: agent.preferred_speed.map(Into::into),
+                })
+                .collect(),
+            feed: self
+                .feed
+                .iter()
+                .map(|event| DutyFeedEvent {
+                    timestamp: event.timestamp.clone(),
+                    actor: event.actor.clone(),
+                    kind: event.kind,
+                    message: event.message.clone(),
+                })
+                .collect(),
+        }
     }
 
     fn from_core(entry: DutyRoleEntry, provider_lookup: ProviderKind) -> Self {
         Self {
             id: u32::try_from(entry.identifier).unwrap_or(u32::MAX),
             role: entry.role,
-            review_swarm: entry.review_swarm,
             paused: entry.paused,
             issues_filed: u32::try_from(entry.issues_filed).unwrap_or(u32::MAX),
             pr_rules: entry.pr_rules,
