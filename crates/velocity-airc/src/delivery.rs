@@ -9,7 +9,7 @@ impl Channel {
             return Ok(saved);
         }
         Ok(self
-            .snapshot()?
+            .read(0)?
             .iter()
             .find(|entry| entry.kind == "join" && entry.member == member)
             .map_or(0, |entry| entry.sequence))
@@ -45,70 +45,37 @@ pub fn deliver_targeted(
     idle: bool,
     mut deliver: impl FnMut(&str, &str) -> Result<bool, String>,
 ) -> Result<u64, Error> {
-    let mut cursor = after;
-    let mut held = false;
-    for (sequence, delivery) in pending(channel, nick, after, idle)? {
-        match delivery {
-            Pending::Held => held = true,
-            Pending::Message(message) => {
-                if !deliver(&format!("airc:{sequence}"), &message).map_err(Error::Invalid)? {
-                    held = true;
-                    continue;
-                }
-                channel.acknowledge(nick, sequence)?;
-            }
-            Pending::Skip => {}
-        }
-        if !held {
-            cursor = sequence;
-        }
-    }
-    Ok(cursor)
-}
-
-enum Pending {
-    Skip,
-    Held,
-    Message(String),
-}
-
-fn pending(
-    channel: &Channel,
-    nick: &str,
-    after: u64,
-    idle: bool,
-) -> Result<Vec<(u64, Pending)>, Error> {
-    let tail = channel.read(after)?;
-    if tail.is_empty() {
-        return Ok(Vec::new());
-    }
-    // Routing needs modes, claims and checkouts from before the cursor. Borrow
-    // the immutable cache; do not retain it across callbacks or acknowledgement
-    // writes, which would force the tail cache to copy the entire history.
-    let history = channel.snapshot()?;
-    let mode = crate::mode_for(&history, nick);
-    let acknowledged = history[history.partition_point(|entry| entry.sequence <= after)..]
+    let entries = channel.read(0)?;
+    let mode = crate::mode_for(&entries, nick);
+    let acknowledged = entries
         .iter()
         .filter(|entry| entry.nick == nick)
         .filter_map(|entry| entry.acknowledged)
         .collect::<std::collections::BTreeSet<_>>();
-    Ok(tail
-        .iter()
-        .map(|entry| {
-            let delivery = if acknowledged.contains(&entry.sequence) {
-                Pending::Skip
-            } else if let Some(message) = routed(entry, nick, &history, mode) {
-                if hold(entry, nick, &history, mode, idle) {
-                    Pending::Held
-                } else {
-                    Pending::Message(message)
+    let mut cursor = after;
+    let mut held = false;
+    for entry in entries.iter().filter(|entry| entry.sequence > after) {
+        if !acknowledged.contains(&entry.sequence) {
+            let message = routed(entry, nick, &entries, mode);
+            if let Some(message) = message {
+                if hold(entry, nick, &entries, mode, idle) {
+                    held = true;
+                    continue;
                 }
-            } else {
-                Pending::Skip
-            };
-            (entry.sequence, delivery)
-        })
-        .collect())
+                if !deliver(&format!("airc:{}", entry.sequence), &message)
+                    .map_err(Error::Invalid)?
+                {
+                    held = true;
+                    continue;
+                }
+                channel.acknowledge(nick, entry.sequence)?;
+            }
+        }
+        if !held {
+            cursor = entry.sequence;
+        }
+    }
+    Ok(cursor)
 }
 
 fn routed(

@@ -25,10 +25,5 @@ fn main() -> anyhow::Result<()> {
     if velocity_app_lib::graph_access::serve_graph_server()? {
         return Ok(());
     }
-    // MCP and warming processes above retain their caller-owned lifetime. Only
-    // the desktop app gets a separate process that survives its allocation abort.
-    if velocity_supervisor::launch_current()? {
-        return Ok(());
-    }
     velocity_app_lib::run()
 }

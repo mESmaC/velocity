@@ -12,7 +12,6 @@ members = [
     "crates/velocity-rosen",
     "crates/velocity-skills",
     "crates/velocity-store",
-    "crates/velocity-supervisor",
     "crates/velocity-threads",
     "crates/velocity-updates",
     "src-tauri",
@@ -51,7 +50,6 @@ velocity-proofs = { path = "crates/velocity-proofs" }
 velocity-rosen = { path = "crates/velocity-rosen" }
 velocity-skills = { path = "crates/velocity-skills" }
 velocity-store = { path = "crates/velocity-store" }
-velocity-supervisor = { path = "crates/velocity-supervisor" }
 velocity-threads = { path = "crates/velocity-threads" }
 velocity-updates = { path = "crates/velocity-updates" }
 

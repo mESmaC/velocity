@@ -59,7 +59,7 @@ impl Channel {
 
     pub(crate) fn acknowledge(&self, nick: &str, sequence: u64) -> Result<(), Error> {
         let storage = Storage::open(&self.directory)?;
-        let entries = storage.snapshot()?;
+        let entries = storage.read()?;
         let mut record = entry(
             &entries,
             "delivery_ack",
