@@ -11,7 +11,7 @@ use velocity_core::proof_card::ProofCard;
 use crate::ProofCheckError;
 use crate::axioms::{audit_script, module_name, parse_audit};
 use crate::card::{CardInput, FixtureTable, LockState, build_card};
-use crate::lean_source::{ProofFile, names_project_spec_section, placeholders, theorem_statements};
+use crate::lean_source::{ProofFile, names_spec_section, placeholders, theorem_statements};
 use crate::levels::{
     FeatureLevels, feature_evidence, feature_levels, fixture_name, touched_features,
 };
@@ -90,7 +90,6 @@ fn check_changed(
             Ok(ProofFile::new(path, &text))
         })
         .collect::<Result<_, std::io::Error>>()?;
-    let spec = design_spec(worktree, &files)?;
     let lake_folder = worktree.join(&folder);
     let build = lake_build(&lake_folder);
     let axioms = match build {
@@ -104,29 +103,12 @@ fn check_changed(
         axioms,
         unnamed_sections: files
             .iter()
-            .filter(|file| {
-                file.path.ends_with("/Design.lean")
-                    && !names_project_spec_section(&file.text, spec.as_ref())
-            })
+            .filter(|file| file.path.ends_with("/Design.lean") && !names_spec_section(&file.text))
             .map(|file| file.path.clone())
             .collect(),
         changed,
         levels,
     })
-}
-
-fn design_spec(
-    worktree: &Path,
-    files: &[ProofFile],
-) -> Result<Option<velocity_spec::ProjectSpec>, ProofCheckError> {
-    if !files.iter().any(|file| file.path.ends_with("/Design.lean")) {
-        return Ok(None);
-    }
-    match velocity_spec::ProjectSpec::read_default(worktree) {
-        Ok(spec) => Ok(Some(spec)),
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(None),
-        Err(error) => Err(error.into()),
-    }
 }
 
 /// The proof levels alone, without building anything: what the proof card shows per

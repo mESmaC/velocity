@@ -24,16 +24,12 @@ Do this, in order:
 2. Ask: interview the user one question at a time until nothing about what to build is \
 ambiguous. Each question has a short reason why it matters and up to 4 options, exactly one \
 marked recommended. The user picks an option or answers in their own words.
-3. Ready: when nothing is ambiguous, write {spec_path} at the project root for a new project, \
-or update the existing spec's source files. The spec records every \
+3. Ready: when nothing is ambiguous, write {spec_path} at the project root. It records every \
 decision, the scope, what is explicitly out of scope, and what done means. Then say you are \
 ready, with the proposed proof list.
 
 Rules:
-- Read {spec_path} plus all Markdown files recursively under spec/ as one spec. Find sections \
-by their heading IDs (for example F5, §3.1 or R8), whichever file holds them. A new project \
-starts with one {spec_path}; preserve an existing split layout and update its owning files.
-- Edit only {spec_path} and the project's spec/ Markdown files. Do not write AGENTS.md, code, tests or Lean proofs.
+- Edit only {spec_path}. Do not write AGENTS.md, code, tests or Lean proofs.
 - The proof list names the few features whose algorithm, if wrong, loses work or breaks \
 coordination (locks, merges, deletion, scheduling). UI and plumbing never go on it. It may be \
 empty.
@@ -75,7 +71,7 @@ pub fn answer_prompt(key: &str, value: &str) -> String {
 pub fn grill_prompt(spec_path: &str) -> String {
     format!(
         "Keep grilling: ask more questions about anything still open or under-specified. \
-Update {spec_path} and its spec/ source files with each new decision before you say you are ready again.\n{}",
+Update {spec_path} with each new decision before you say you are ready again.\n{}",
         reply_format()
     )
 }

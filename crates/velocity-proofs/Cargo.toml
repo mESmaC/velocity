@@ -15,4 +15,3 @@ serde_json.workspace = true
 sha2 = "0.10"
 thiserror.workspace = true
 velocity-core.workspace = true
-velocity-spec.workspace = true

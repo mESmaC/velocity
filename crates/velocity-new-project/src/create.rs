@@ -32,6 +32,9 @@ struct PendingProject {
     spec_locked: bool,
 }
 
+/// The spec every project keeps at its root (`ProjectItem::spec_path`'s default).
+const SPEC_FILE: &str = "SPEC.md";
+
 /// Create & start interview. Refusals come back before anything is created. The
 /// store lock is not held while `git` or `gh` runs; `publish` is called with the
 /// layout still locked so its events stay in order with other layout updates.
@@ -140,14 +143,14 @@ fn run_step(
         SetupStep::SwitchTo => pending.switch_requested = true,
         SetupStep::StartInterview => pending.interview = Some(interview.clone()),
         // Rule 2 holds for opened projects too: a project without a spec gets its
-        // interview. Read every spec file before adopting it, including a split spec.
-        SetupStep::AdoptSpec => match velocity_spec::ProjectSpec::read_default(&resolved.path) {
-            Ok(_) => pending.spec_locked = true,
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+        // interview, and only an existing SPEC.md counts as a locked spec.
+        SetupStep::AdoptSpec => {
+            if resolved.path.join(SPEC_FILE).is_file() {
+                pending.spec_locked = true;
+            } else {
                 pending.interview = Some(interview.clone());
             }
-            Err(error) => return Err(NewProjectError::Spec(error)),
-        },
+        }
     }
     Ok(())
 }

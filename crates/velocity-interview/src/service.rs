@@ -428,10 +428,10 @@ fn turn_ended<H: Host>(
 /// "Ready" means SPEC.md is written (F3: Read SPEC.md, Lock commits it). When the agent
 /// says ready without it, it is asked to write the file first; returns whether it was.
 fn remind_to_write_spec<H: Host>(host: &H, key: InterviewKey) -> bool {
-    let Some((checkout, spec_path)) = spec_location(host, key) else {
+    let Some((file, spec_path)) = spec_location(host, key) else {
         return false;
     };
-    if velocity_spec::ProjectSpec::read(Path::new(&checkout), Path::new(&spec_path)).is_ok() {
+    if file.is_file() {
         return false;
     }
     host.interviews().with(key, |session| {
@@ -451,14 +451,17 @@ fn remind_to_write_spec<H: Host>(host: &H, key: InterviewKey) -> bool {
     })
 }
 
-fn spec_location<H: Host>(host: &H, (project, _): InterviewKey) -> Option<(String, String)> {
+fn spec_location<H: Host>(host: &H, (project, _): InterviewKey) -> Option<(PathBuf, String)> {
     let store = lock(host.store());
     let item = store
         .state()
         .projects
         .iter()
         .find(|item| item.id == project)?;
-    Some((item.repository_path.clone(), item.spec_path.clone()))
+    Some((
+        spec_file_path(&item.repository_path, &item.spec_path),
+        item.spec_path.clone(),
+    ))
 }
 
 /// Publishes the streamed transcript without rebuilding the rest of the window.

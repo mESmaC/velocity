@@ -6459,7 +6459,6 @@ version = "0.1.0"
 dependencies = [
  "serde",
  "specta",
- "velocity-spec",
 ]
 
 [[package]]
@@ -6528,7 +6527,6 @@ dependencies = [
  "velocity-acp",
  "velocity-core",
  "velocity-git",
- "velocity-spec",
  "velocity-store",
 ]
 
@@ -6542,7 +6540,6 @@ dependencies = [
  "velocity-core",
  "velocity-git",
  "velocity-github",
- "velocity-spec",
  "velocity-store",
 ]
 
@@ -6555,7 +6552,6 @@ dependencies = [
  "sha2 0.10.9",
  "thiserror 2.0.21",
  "velocity-core",
- "velocity-spec",
 ]
 
 [[package]]
@@ -6567,7 +6563,6 @@ dependencies = [
  "serde",
  "thiserror 2.0.21",
  "tokio",
- "velocity-spec",
 ]
 
 [[package]]
@@ -6581,12 +6576,7 @@ dependencies = [
  "velocity-acp",
  "velocity-core",
  "velocity-git",
- "velocity-spec",
 ]
-
-[[package]]
-name = "velocity-spec"
-version = "0.1.0"
 
 [[package]]
 name = "velocity-store"
@@ -6621,7 +6611,6 @@ dependencies = [
  "velocity-github",
  "velocity-proofs",
  "velocity-rosen",
- "velocity-spec",
  "velocity-store",
 ]
 

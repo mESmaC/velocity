@@ -18,5 +18,4 @@ tokio = { version = "1.54", features = ["macros", "sync", "rt"] }
 velocity-acp = { path = "../velocity-acp" }
 velocity-core.workspace = true
 velocity-git.workspace = true
-velocity-spec.workspace = true
 velocity-store.workspace = true

@@ -171,25 +171,16 @@ pub fn main_checkout(folder: &Path) -> Result<PathBuf, GitError> {
 /// Commits one file in `folder`, and nothing else that happens to be staged. Returns
 /// `false` when the file already matches `HEAD`, so there is nothing to commit.
 pub fn commit_file(folder: &Path, file: &Path, message: &str) -> Result<bool, GitError> {
-    commit_files(folder, &[file], message)
-}
-
-/// Commits a related set of instruction paths together, including deletions under folders.
-/// Paths outside the set remain staged and never enter this commit.
-pub fn commit_files(folder: &Path, files: &[&Path], message: &str) -> Result<bool, GitError> {
-    if files.is_empty() {
-        return Ok(false);
-    }
     let checkout = CheckoutPath::new(folder).map_err(GitError::Spawn)?;
-    commit_at(checkout.path(), files, message)
+    commit_at(checkout.path(), file, message)
 }
 
-fn commit_at(folder: &Path, files: &[&Path], message: &str) -> Result<bool, GitError> {
+fn commit_at(folder: &Path, file: &Path, message: &str) -> Result<bool, GitError> {
     let added = git()
         .arg("-C")
         .arg(folder)
         .args(["add", "--"])
-        .args(files)
+        .arg(file)
         .output()
         .map_err(GitError::Spawn)?;
     succeeded("add", folder, added)?;
@@ -197,7 +188,7 @@ fn commit_at(folder: &Path, files: &[&Path], message: &str) -> Result<bool, GitE
         .arg("-C")
         .arg(folder)
         .args(["diff", "--cached", "--quiet", "--"])
-        .args(files)
+        .arg(file)
         .status()
         .map_err(GitError::Spawn)?
         .success();
@@ -209,7 +200,7 @@ fn commit_at(folder: &Path, files: &[&Path], message: &str) -> Result<bool, GitE
         .arg("-C")
         .arg(folder)
         .args(["commit", "--quiet", "-m", message, "--"])
-        .args(files)
+        .arg(file)
         .output()
         .map_err(GitError::Spawn)?;
     succeeded("commit", folder, committed)?;

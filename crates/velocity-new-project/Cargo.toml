@@ -16,5 +16,4 @@ thiserror.workspace = true
 velocity-core.workspace = true
 velocity-git.workspace = true
 velocity-github.workspace = true
-velocity-spec.workspace = true
 velocity-store.workspace = true

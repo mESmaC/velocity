@@ -1,5 +1,5 @@
 //! Issue identity on the server-owned change, before its agent starts (#386).
-use rosen_client::protocol::{CommentTarget, ReadAnswer};
+use rosen_client::protocol::CommentTarget;
 
 use crate::{ProjectServer, RosenError, workspace::session};
 
@@ -42,7 +42,7 @@ pub async fn issue_build_coverage(
     Ok(covered)
 }
 
-/// A resolved note on the root spec (or a folder source file) records the
+/// Locked projects have SPEC.md (Rule 2). A resolved note on its first line records the
 /// source issue without naming unfinished work or leaving an open review discussion.
 pub async fn record_issue(
     server: &ProjectServer,
@@ -52,52 +52,14 @@ pub async fn record_issue(
     number: u32,
 ) -> Result<(), RosenError> {
     let session = session(server, agent).await?;
-    let path = issue_spec_path(session.client(), change).await?;
-    let target = CommentTarget::Line { path, line: 1 };
+    let target = CommentTarget::Line {
+        path: "SPEC.md".into(),
+        line: 1,
+    };
     let note = session.comment(change, target, format!(
         "Velocity source issue: {repository}#{number}. The thread retains this association; \
          its named snapshot uses the (#{number}) suffix."
     ), None).await?;
     session.resolve_thread(note.id).await?;
     Ok(())
-}
-
-async fn issue_spec_path(
-    client: &rosen_client::Client,
-    change: &str,
-) -> Result<String, RosenError> {
-    let mut folders = vec![String::new()];
-    let mut paths = Vec::new();
-    while let Some(folder) = folders.pop() {
-        let ReadAnswer::Directory { entries, .. } = client.workspace_read(change, &folder).await?
-        else {
-            continue;
-        };
-        for entry in entries {
-            let path = if folder.is_empty() {
-                entry.name.clone()
-            } else {
-                format!("{folder}/{}", entry.name)
-            };
-            if folder.is_empty() && entry.name == velocity_spec::ROOT_FILE && entry.mode == "100644"
-            {
-                return Ok(path);
-            }
-            if entry.mode == "40000" && (path == velocity_spec::FOLDER || path.starts_with("spec/"))
-            {
-                folders.push(path);
-            } else if path.starts_with("spec/")
-                && entry.mode == "100644"
-                && velocity_spec::is_markdown(std::path::Path::new(&path))
-            {
-                paths.push(path);
-            }
-        }
-    }
-    paths.sort();
-    paths.into_iter().next().ok_or_else(|| {
-        RosenError::Client(rosen_client::Error::InvalidArgument(
-            "The project has no spec file for its source issue".into(),
-        ))
-    })
 }

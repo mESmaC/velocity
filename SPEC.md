@@ -341,8 +341,6 @@ There are two views of the same work, switched from the title bar or with `B`:
 
 ### F2 · New project
 
-**Project spec layout (#400).** Velocity reads the project's root `SPEC.md` plus all Markdown (`.md`, case-insensitive) files recursively under `spec/` as one spec, including section folders' `README.md` files. The root is read first, then folder files in relative-path order; directory symlinks are not followed. A project with only `SPEC.md` behaves as before, and a `spec/` folder can supply a spec when the root file is absent. The saved `spec_path` continues to name the root file (default `SPEC.md`); configured roots still include the project's `spec/` files. Sections are identified by their heading IDs, such as F5, §3.1 and R8, whichever file holds them. All spec consumers use this layout: work inventory and goal swarms, Proofs settings and design-proof references, design-system generation, opening projects, the interview and Rosen's source-issue notes. New projects still start with a single `SPEC.md`.
-
 `Ctrl+Shift+N` opens a dialog with:
 - **Location:**
   - **Local folder:** a path and Browse… (native picker via `tauri-plugin-dialog`). One option: "create the folder and run `git init` if needed".
@@ -359,7 +357,6 @@ There are two views of the same work, switched from the title bar or with `B`:
 - **Open folder…:** the native folder picker. The folder must already be a git repository; it is opened where it is, nothing is cloned or initialised. When its `origin` is on GitHub, the project is shown as a GitHub project.
 - **Open from GitHub…:** the dropdown shows your repositories in place of the project list: those you own and those of organisations you belong to, read through signed-in `gh`, most recently updated first. A search box filters them by name and description; typing an `owner/name` that is not in the list offers it as its own row. A "Clone to" folder (default: your home folder) sets where the clone goes, `<clone to>/<name>`. Choosing a repository clones it there, or opens the clone already in that folder when its `origin` is that repository.
 - **The spec:** a project that already has `SPEC.md` at its root opens with its spec locked, so build work can start at once. A project without one starts its spec interview, as Create does (Rule 2), using Settings' default model, effort and speed and no brief. The interview's scan reads the existing code; it waits for a provider sign-in if none is signed in.
-- The existing spec can also be supplied by `spec/` Markdown files (Project spec layout above); Open reads all sources before adopting it.
 - Opening refuses, before anything is cloned, a folder that is already a project, a folder that is not a git repository, a repository `gh` cannot see, and a clone folder that is occupied by something else. As with Create, a missing AGENTS.md is added from the default template and committed (F11).
 
 **Accept when:**
@@ -378,10 +375,10 @@ There are two views of the same work, switched from the title bar or with `B`:
    - The agent keeps asking until nothing is ambiguous.
 3. **Ready:** a spec card lists every decision.
    - **Proof list:** the card proposes which features get Lean proofs (F17), and you edit it before locking. Most projects list a handful; UI and plumbing never appear on it.
-   - **Lock spec & publish tasks** (`L`): commits the root spec and `spec/` sources together and pushes to the remote default branch before locking, turns the draft tasks into real tasks, and marks the thread done.
+   - **Lock spec & publish tasks** (`L`): commits SPEC.md and pushes to the remote default branch before locking, turns the draft tasks into real tasks, and marks the thread done.
    - **SPEC.md** (`S`): opens the file.
    - **Keep grilling** (`G`): asks more questions.
-4. **How the agent reports structure:** the interview runs on any provider, so the prompt carries the whole protocol. The agent ends each reply with a fenced `velocity-interview` JSON block: the scan summary (first reply), the draft tasks the last answer adds, and either the next question (`key`, `text`, `why`, up to 4 options, one recommended) or `ready` with the proposed proof list. Velocity hides the block from the transcript. A reply without one leaves the question open for a free-text answer. The agent reads the whole spec (F2) and preserves an existing split layout. Lock writes the edited proof list into its owning source file, or adds `## Proof list` to the root (the first source when no root exists), before committing all sources without flattening them. After a restart, an interview resumes on your next message from its saved decisions (§3.2 Resume after a restart).
+4. **How the agent reports structure:** the interview runs on any provider, so the prompt carries the whole protocol. The agent ends each reply with a fenced `velocity-interview` JSON block: the scan summary (first reply), the draft tasks the last answer adds, and either the next question (`key`, `text`, `why`, up to 4 options, one recommended) or `ready` with the proposed proof list. Velocity hides the block from the transcript. A reply without one leaves the question open for a free-text answer. Lock writes the edited proof list into SPEC.md's `## Proof list` section before committing. After a restart, an interview resumes on your next message from its saved decisions (§3.2 Resume after a restart).
 
 **Accept when:**
 - [ ] No build thread, swarm or dispatch can start on a project whose spec is unlocked. Swarm marks draft tasks "lock the spec first".
@@ -1156,8 +1153,6 @@ Agents launched together read the board within seconds of each other, so several
 
 **Work inventory.** `get_work_pool` and the `velocity-threads` `work_pool` example read the same project-scoped inventory. Draft/done tasks, ownerless now tasks, closed issues and `spec-question` issues are omitted; owned work stays visible but does not count as available. Failed/closed owners retain their pieces. Unlocked projects return an empty pool. SPEC.md's Implementation order/Implementation plan checklist supplies unfinished entries when present; otherwise checklist-bearing Markdown sections supply one piece each. Fenced examples are ignored. Spec identities use heading context and entry text rather than line offsets. A thread's defaulted `spec_section` identity retains ownership and records completion when merged, without editing SPEC.md; deleting merged history retains the identity in the project's defaulted `built_spec_sections`. Selection, atomic claims and launch remain separate §7 items.
 
-For a split spec (F2), the implementation-plan preference applies across all source files. Each file is parsed independently, so headings and fenced examples do not leak into the next file. Without a plan, a checklist-bearing section uses its nearest heading ID (F5, §3.1 or R8) as its identity, falling back to heading context for unnumbered sections, and its source path as its reference. Single-file projects retain their existing work identities.
-
 **Sidebar:** one row under Swarms, with a target icon, "Goal · <prompt>", ×<agents> and the segment bar. Its members nest under it like swarm members, and each member is titled by the piece it claimed.
 
 **Goal swarm view:**
@@ -1261,7 +1256,7 @@ A language's strongest level is code where a translator exists (Rust: Aeneas) an
 - No `sorry` or `admit`.
 - `#print axioms` lists only `propext`, `Classical.choice` and `Quot.sound`. This also catches `native_decide`, which adds an axiom of its own, and any `axiom` declaration.
 - **Statement lock.** When PR duty approves, Velocity hashes every theorem statement. If a statement changes afterwards, the approval is withdrawn, the review restarts and a `statement` event is posted. Weakening a statement until its proof goes through is the cheat this catches.
-- The design proof names the spec section it covers. Existing `SPEC.md F5` or `SPEC.md §3.1` references keep working when the section moves. Direct `spec/` file references name an existing source and a heading ID in the project spec, either explicitly or in the source filename (for example `spec/F5-worktrees.md`). Proofs settings reads the proof list from whichever source file holds it.
+- The design proof names the SPEC.md section it covers.
 
 How the checks run *(proposed)*:
 - **Where and when.** Every PR duty review of a new head runs them in the `review-pr-<n>` worktree (the PR merged onto the base branch), before the agent's turn starts. A push is a new head, so the checks run again on every push. The results open the review's prompt; a failure is named there for PR duty to request changes on.

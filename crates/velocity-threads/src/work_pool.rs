@@ -4,15 +4,14 @@ use std::path::{Path, PathBuf};
 use std::sync::{LazyLock, Mutex, PoisonError};
 use std::time::{Duration, Instant};
 use thiserror::Error;
-use velocity_core::work_pool::{WorkKey, WorkPiece, WorkPool, spec_files_pieces};
+use velocity_core::work_pool::{WorkKey, WorkPiece, WorkPool, spec_pieces};
 use velocity_github::{GitHubIssue, IssueClient, IssueState};
-use velocity_spec::ProjectSpec;
 use velocity_store::issues::{ThreadIssue, issue_thread};
-use velocity_store::{ProjectItem, TaskState, ThreadState};
+use velocity_store::{ProjectItem, TaskState, ThreadState, extended_windows_path};
 
 #[derive(Debug, Error)]
 pub enum WorkPoolError {
-    #[error("Could not read the project spec (SPEC.md and spec/): {0}")]
+    #[error("Could not read SPEC.md: {0}")]
     Spec(#[from] std::io::Error),
     #[error(transparent)]
     GitHub(#[from] velocity_github::PullRequestError),
@@ -55,8 +54,9 @@ fn read_pool(project: &ProjectItem, issue_age: Duration) -> Result<WorkPool, Wor
     let checkout = Path::new(&project.repository_path);
     pieces.extend(issue_pieces(project, checkout, issue_age)?);
     pieces.extend(held_rosen_issues(project));
-    let spec = ProjectSpec::read(checkout, Path::new(&project.spec_path))?;
-    pieces.extend(available_spec_pieces(project, &spec));
+    let path = checkout.join(&project.spec_path);
+    let markdown = std::fs::read_to_string(extended_windows_path(&path))?;
+    pieces.extend(available_spec_pieces(project, &markdown));
     for piece in &mut pieces {
         let prior = project.threads.iter().rev().find(|thread| {
             thread.supervision.released
@@ -221,19 +221,8 @@ fn task_pieces(project: &ProjectItem) -> Vec<WorkPiece> {
         .collect()
 }
 
-fn available_spec_pieces(project: &ProjectItem, spec: &ProjectSpec) -> Vec<WorkPiece> {
-    let paths: Vec<_> = spec
-        .files
-        .iter()
-        .map(|file| file.path.to_string_lossy().replace('\\', "/"))
-        .collect();
-    let files: Vec<_> = spec
-        .files
-        .iter()
-        .zip(&paths)
-        .map(|(file, path)| (path.as_str(), file.markdown.as_str()))
-        .collect();
-    spec_files_pieces(&files)
+fn available_spec_pieces(project: &ProjectItem, markdown: &str) -> Vec<WorkPiece> {
+    spec_pieces(markdown)
         .into_iter()
         .filter_map(|mut piece| {
             let WorkKey::Spec { section } = &piece.key else {

@@ -280,16 +280,7 @@ pub fn generate_design_system(
     project_name: &str,
     regenerate: bool,
 ) -> Result<DesignSystemStatus, SkillLibraryError> {
-    let spec = match velocity_spec::ProjectSpec::read_default(checkout) {
-        Ok(spec) => Some(spec.markdown()),
-        Err(error) if error.kind() == io::ErrorKind::NotFound => None,
-        Err(source) => {
-            return Err(SkillLibraryError::Io {
-                path: checkout.join("spec"),
-                source,
-            });
-        }
-    };
+    let spec = fs::read_to_string(checkout.join("SPEC.md")).ok();
     let query = design_system_query(project_name, spec.as_deref());
     run_design_system_search(library, checkout, project_name, &query, regenerate)?;
     velocity_git::commit_file(

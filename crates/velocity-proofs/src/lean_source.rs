@@ -74,38 +74,6 @@ pub fn names_spec_section(text: &str) -> bool {
         })
 }
 
-/// Existing SPEC.md references keep working after a move. A direct spec/ reference must
-/// name a real source file and one of the project's heading IDs, rather than its position.
-pub(crate) fn names_project_spec_section(
-    text: &str,
-    spec: Option<&velocity_spec::ProjectSpec>,
-) -> bool {
-    if names_spec_section(text) {
-        return true;
-    }
-    let Some(spec) = spec else {
-        return false;
-    };
-    text.lines().any(|line| {
-        let line = line.replace('\\', "/");
-        spec.files.iter().any(|file| {
-            let path = file.path.to_string_lossy().replace('\\', "/");
-            if !path.starts_with("spec/") || !line.contains(&path) {
-                return false;
-            }
-            let filename_id = file
-                .path
-                .file_stem()
-                .and_then(|stem| stem.to_str())
-                .and_then(velocity_spec::section_id);
-            line.split_whitespace()
-                .filter_map(velocity_spec::section_id)
-                .chain(filename_id)
-                .any(|identifier| spec.has_section(&identifier))
-        })
-    })
-}
-
 // #150: a valid section reference must not block PR duty's proof gate.
 #[cfg(test)]
 #[test]

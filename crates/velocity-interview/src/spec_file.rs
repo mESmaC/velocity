@@ -28,35 +28,17 @@ ships with no Lean.\n\n",
 /// same or a higher level.
 fn without_section(spec: &str) -> String {
     let mut kept = String::new();
-    let mut skipping: Option<Option<usize>> = None;
-    let mut saw_entry = false;
+    let mut skipping = false;
     for line in spec.split_inclusive('\n') {
         let trimmed = line.trim_end();
-        let heading = velocity_spec::headings(trimmed).next();
-        let plain = trimmed.replace(['*', '`'], "").trim().to_lowercase();
-        let list_heading = heading.is_some_and(|(_, title)| {
-            title
-                .replace(['*', '`'], "")
-                .trim()
-                .to_lowercase()
-                .ends_with("proof list")
-        });
-        let list_paragraph = heading.is_none() && plain.ends_with("proof list:");
-        if list_heading || list_paragraph {
-            skipping = Some(heading.map(|(level, _)| level));
-            saw_entry = false;
+        if trimmed.eq_ignore_ascii_case(HEADING) {
+            skipping = true;
             continue;
         }
-        if let Some(level) = skipping {
-            if heading.is_some_and(|(depth, _)| level.is_none_or(|level| depth <= level))
-                || (level.is_none() && saw_entry && trimmed.is_empty())
-            {
-                skipping = None;
-            } else if trimmed.trim_start().starts_with(['-', '*', '|']) {
-                saw_entry = true;
-            }
+        if skipping && (trimmed.starts_with("## ") || trimmed.starts_with("# ")) {
+            skipping = false;
         }
-        if skipping.is_none() {
+        if !skipping {
             kept.push_str(line);
         }
     }

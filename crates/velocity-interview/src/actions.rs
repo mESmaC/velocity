@@ -181,59 +181,47 @@ fn lock_plan<H: Host>(host: &H, key: InterviewKey) -> Option<LockPlan> {
 }
 
 fn commit_spec(plan: &LockPlan) -> Result<(), InterviewError> {
-    let checkout = Path::new(&plan.checkout);
-    let spec = velocity_spec::ProjectSpec::read(checkout, Path::new(&plan.spec_path)).map_err(
-        |source| InterviewError::NoSpec {
-            path: plan.spec_path.clone(),
-            source,
-        },
-    )?;
-    let destination = spec
-        .files
-        .iter()
-        .find(|file| velocity_core::proofs_settings::proof_list_from_spec(&file.markdown).is_some())
-        .or_else(|| spec.files.first())
-        .ok_or_else(|| InterviewError::Stopped("The spec has no files".into()))?;
-    let file = service::spec_file_path(&plan.checkout, &destination.path.to_string_lossy());
-    let locked = crate::spec_file::with_proof_list(&destination.markdown, &plan.proof_list);
-    std::fs::write(velocity_store::extended_windows_path(&file), locked).map_err(|source| {
-        InterviewError::WriteSpec {
-            path: plan.spec_path.clone(),
-            source,
-        }
+    let file = service::spec_file_path(&plan.checkout, &plan.spec_path);
+    let spec = std::fs::read_to_string(&file).map_err(|source| InterviewError::NoSpec {
+        path: plan.spec_path.clone(),
+        source,
     })?;
-    // Include deletions in the folder and publish the complete spec in one commit.
-    let mut paths: Vec<&Path> = spec.files.iter().map(|file| file.path.as_path()).collect();
-    if checkout.join(velocity_spec::FOLDER).is_dir() {
-        paths.retain(|path| !path.starts_with(velocity_spec::FOLDER));
-        paths.push(Path::new(velocity_spec::FOLDER));
-    }
-    velocity_git::commit_files(checkout, &paths, "Lock spec")?;
+    let locked = crate::spec_file::with_proof_list(&spec, &plan.proof_list);
+    std::fs::write(&file, locked).map_err(|source| InterviewError::WriteSpec {
+        path: plan.spec_path.clone(),
+        source,
+    })?;
+    velocity_git::commit_file(
+        Path::new(&plan.checkout),
+        Path::new(&plan.spec_path),
+        "Lock spec",
+    )?;
     velocity_git::publish_instructions(Path::new(&plan.checkout))?;
     Ok(())
 }
 
 /// SPEC.md (`S`): opens the file in the app Windows associates with it.
 fn open_spec<H: Host>(host: &H, key: InterviewKey) {
-    let Some((checkout, root_file)) = with_project(host, key, |project| {
-        Some((project.repository_path.clone(), project.spec_path.clone()))
+    let Some(file) = with_project(host, key, |project| {
+        Some(service::spec_file_path(
+            &project.repository_path,
+            &project.spec_path,
+        ))
     }) else {
         return;
     };
-    let opened = open_spec_file(&checkout, &root_file).map_err(|error| error.to_string());
+    let opened = if file.is_file() {
+        open_with_default_app(&file).map_err(|error| error.to_string())
+    } else {
+        Err(String::from(
+            "SPEC.md isn't written yet. The agent writes it once nothing is ambiguous.",
+        ))
+    };
     if let Err(message) = opened {
         service::save_step(host, key.0, |project| {
             turns::set_notice(project, key.1, message)
         });
     }
-}
-
-fn open_spec_file(checkout: &str, root_file: &str) -> std::io::Result<()> {
-    let spec = velocity_spec::ProjectSpec::read(Path::new(checkout), Path::new(root_file))?;
-    let source = spec.files.first().ok_or_else(|| {
-        std::io::Error::new(std::io::ErrorKind::NotFound, "The spec isn't written yet")
-    })?;
-    open_with_default_app(&Path::new(checkout).join(&source.path))
 }
 
 fn open_with_default_app(file: &Path) -> std::io::Result<()> {
