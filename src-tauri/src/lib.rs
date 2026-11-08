@@ -23,8 +23,12 @@ fn bindings() -> Builder<tauri::Wry> {
 pub fn export_bindings() -> anyhow::Result<()> {
     let destination = Path::new(env!("CARGO_MANIFEST_DIR")).join("../ui/src/lib/bindings.ts");
     bindings()
-        .export(specta_typescript::Typescript::default(), destination)
-        .context("Could not generate the frontend command and event bindings")
+        .export(specta_typescript::Typescript::default(), &destination)
+        .context("Could not generate the frontend command and event bindings")?;
+    // Keep generated output deterministic without a trailing blank line.
+    let generated = std::fs::read_to_string(&destination)?;
+    std::fs::write(destination, format!("{}\n", generated.trim_end()))
+        .context("Could not normalize the generated bindings")
 }
 
 pub fn run() -> anyhow::Result<()> {

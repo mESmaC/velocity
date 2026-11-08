@@ -17,4 +17,3 @@ export const WINDOW_STATE_EVENT = "window://state" as const;
 export type WindowStateChanged = {
 	maximized: boolean,
 };
-
