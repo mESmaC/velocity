@@ -2,3 +2,7 @@
 /proofs/.lake/
 /proofs/.lake-wsl/
 /proofs/generated-llbc/
+/target/
+/ui/node_modules/
+/ui/dist/
+/src-tauri/gen/

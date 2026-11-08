@@ -1,0 +1,93 @@
+* {
+  box-sizing: border-box;
+  font-style: normal;
+}
+html,
+body,
+#app {
+  width: 100%;
+  height: 100%;
+  margin: 0;
+}
+body {
+  overflow: hidden;
+  background: var(--bg);
+  color: var(--text);
+  font-family: var(--sans);
+  font-size: var(--reference-body-font-size);
+  line-height: var(--reference-body-line-height);
+  letter-spacing: var(--reference-body-letter-spacing);
+  -webkit-font-smoothing: antialiased;
+}
+button {
+  font: inherit;
+  color: inherit;
+  border: 0;
+  padding: 0;
+  background: none;
+  cursor: pointer;
+}
+button:focus-visible {
+  outline: none;
+  box-shadow: var(--focus);
+}
+.app-shell {
+  height: 100%;
+  display: grid;
+  grid-template-rows: var(--titlebar-h) 1fr;
+  background: var(--bg);
+}
+.window-titlebar {
+  display: grid;
+  grid-template-columns: var(--sidebar-w) 1fr var(--rail-w);
+  user-select: none;
+}
+.brand {
+  display: flex;
+  align-items: center;
+  padding-inline-start: var(--reference-brand-padding-start);
+}
+.brand b {
+  font-size: var(--reference-brand-font-size);
+  font-weight: var(--reference-brand-font-weight);
+  letter-spacing: var(--reference-brand-letter-spacing);
+  color: var(--reference-brand-color);
+}
+.titlebar-space {
+  min-width: 0;
+}
+.window-controls {
+  display: flex;
+  justify-content: flex-end;
+}
+.window-controls button {
+  width: var(--reference-window-control-width);
+  height: var(--titlebar-h);
+  display: grid;
+  place-items: center;
+  color: var(--text-2);
+}
+.window-controls button:hover {
+  background: var(--surface-3);
+  color: var(--text);
+}
+.window-controls .close:hover {
+  background: var(--reference-close-hover-background);
+  color: var(--reference-close-hover-color);
+}
+.window-controls svg {
+  width: var(--reference-window-icon-size);
+  height: var(--reference-window-icon-size);
+  fill: none;
+  stroke: currentColor;
+  stroke-width: var(--reference-window-icon-stroke);
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+.window-error {
+  position: fixed;
+  inset-inline: var(--reference-brand-padding-start);
+  top: var(--titlebar-h);
+  color: var(--err);
+  font-size: var(--reference-body-font-size);
+}

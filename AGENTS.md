@@ -59,8 +59,9 @@ SPEC.md §1 overrides everything else. Never build any of these:
 - Every Tauri command and event goes through `ui/src/lib/ipc.ts`. Components never call `invoke` or `listen` directly.
 - The TypeScript types for commands and events are generated from Rust with `tauri-specta`. Never write them by hand.
 - Keep logic out of the UI. State changes happen in Rust; components render state and send commands.
-- The design tokens live in `ui/src/lib/theme/tokens.css`, copied exactly from `:root` in `design/main-window.html`. Components use `var(--token)` only.
-- Take every colour, radius, font and size from the design tokens in `:root` of `design/main-window.html`. Never hard-code a visual value.
+- Copy `:root` from `design/main-window.html` exactly into `ui/src/lib/theme/tokens.css`.
+- Missing values go in `ui/src/lib/theme/reference.css`, copied from the reference's winning CSS declarations. The user authorized this supplement in #12. Keep `tokens.css` and `design/` unchanged when adding supplemental values.
+- Take every colour, radius, font and size from these token files. Components use `var(--token)` only. Never hard-code a visual value or derive a missing value from unrelated tokens.
 - Black is `#000`. Panes are smoked glass on black, as in the reference. No Mica or vibrancy.
 - No italics anywhere.
 - A screen is done when it matches the reference UI's layout, states and keyboard behaviour (SPEC.md §5).

@@ -1,0 +1,7 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "main-capability",
+  "description": "Native title-bar dragging and typed events for the main window.",
+  "windows": ["main"],
+  "permissions": ["core:event:default", "core:window:default", "core:window:allow-start-dragging"]
+}

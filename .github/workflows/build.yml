@@ -1,0 +1,43 @@
+name: Build and lint
+
+on:
+  pull_request:
+    branches: [main, master]
+  push:
+    branches: [main, master]
+
+permissions:
+  contents: read
+
+jobs:
+  windows:
+    name: Windows build and lint
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10.34.9
+      - name: Install pinned Rust toolchain
+        run: rustup show active-toolchain
+      - name: Install UI dependencies
+        run: pnpm -C ui install --frozen-lockfile
+      - name: Check Rust formatting
+        run: cargo fmt --all -- --check
+      - name: Build frontend
+        run: pnpm -C ui build
+      - name: Build Rust workspace
+        run: cargo build --workspace --locked
+      - name: Check generated IPC bindings
+        run: |
+          pnpm -C ui bindings
+          git diff --exit-code -- ui/src/lib/bindings.ts
+      - name: Lint Rust
+        run: cargo clippy --workspace --all-targets --locked -- -D warnings
+      - name: Check frontend
+        run: pnpm -C ui check
+      - name: Lint frontend
+        run: pnpm -C ui lint
