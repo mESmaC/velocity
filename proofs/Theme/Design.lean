@@ -1,3 +1,6 @@
+module
+public section
+
 /-
   Theme · design proof.
 
@@ -40,25 +43,25 @@ inductive Item where
   /-- Any other single character: whitespace, `:root {`, `}`. -/
   | other (character : Char)
 
-def Item.render : Item → List Char
+@[expose] def Item.render : Item → List Char
   | .declaration name padding value =>
       ['-', '-'] ++ name ++ [':'] ++ List.replicate padding ' ' ++ value ++ [';']
   | .comment text => ['/', '*'] ++ text ++ ['*', '/']
   | .other character => [character]
 
 /-- The stylesheet text made of `items`. -/
-def render (items : List Item) : List Char := items.flatMap Item.render
+@[expose] def render (items : List Item) : List Char := items.flatMap Item.render
 
-def Item.declarations : Item → List Token
+@[expose] def Item.declarations : Item → List Token
   | .declaration name _ value => [⟨name, value⟩]
   | .comment _ => []
   | .other _ => []
 
 /-- The tokens a stylesheet declares, in order. -/
-def declarations (items : List Item) : List Token := items.flatMap Item.declarations
+@[expose] def declarations (items : List Item) : List Token := items.flatMap Item.declarations
 
 /-- Whether `text` contains the comment terminator `*/`. -/
-def hasCommentClose : List Char → Bool
+@[expose] def hasCommentClose : List Char → Bool
   | [] => false
   | [_] => false
   | first :: second :: rest =>
@@ -67,16 +70,16 @@ def hasCommentClose : List Char → Bool
 /-- The shapes `tokens.css` is written in: names without `:`, values without `;`
 that start with something other than a space, comments that don't close early,
 and no stray `-` or `/` outside declarations and comments. -/
-def Item.WellFormed : Item → Prop
+@[expose] def Item.WellFormed : Item → Prop
   | .declaration name _ value => ':' ∉ name ∧ ';' ∉ value ∧ value.head? ≠ some ' '
   | .comment text => hasCommentClose text = false
   | .other character => character ≠ '-' ∧ character ≠ '/'
 
-def WellFormed (items : List Item) : Prop := ∀ item ∈ items, item.WellFormed
+@[expose] def WellFormed (items : List Item) : Prop := ∀ item ∈ items, item.WellFormed
 
 /-- SPEC.md §6 and §3: the theme module holds exactly the tokens declared by the
 stylesheet it reads, with the same names and values, in the same order. -/
-def Spec (parser : List Char → List Token) : Prop :=
+@[expose] def Spec (parser : List Char → List Token) : Prop :=
   ∀ items, WellFormed items → parser (render items) = declarations items
 
 /-! ## The design: a character-at-a-time scanner -/
@@ -99,10 +102,10 @@ structure State where
   mode : Mode
   tokens : List Token
 
-def outsideStep (character : Char) : Mode :=
+@[expose] def outsideStep (character : Char) : Mode :=
   if character = '-' then .dash else if character = '/' then .slash else .outside
 
-def step (state : State) (character : Char) : State :=
+@[expose] def step (state : State) (character : Char) : State :=
   match state.mode with
   | .outside => { state with mode := outsideStep character }
   | .dash =>
@@ -131,9 +134,9 @@ def step (state : State) (character : Char) : State :=
         { mode := .outside, tokens := state.tokens ++ [⟨name, accumulated⟩] }
       else { state with mode := .value name (accumulated ++ [character]) }
 
-def start : State := ⟨.outside, []⟩
+@[expose] def start : State := ⟨.outside, []⟩
 
-def parse (input : List Char) : List Token := (input.foldl step start).tokens
+@[expose] def parse (input : List Char) : List Token := (input.foldl step start).tokens
 
 /-! ## Correctness -/
 
@@ -267,7 +270,7 @@ structure OnlineParser where
   finish : State → List Token
 
 /-- The answer and the number of characters read. -/
-def OnlineParser.runFrom (parser : OnlineParser) : parser.State → List Char → List Token × Nat
+@[expose] def OnlineParser.runFrom (parser : OnlineParser) : parser.State → List Char → List Token × Nat
   | state, [] => (parser.finish state, 0)
   | state, character :: rest =>
       match parser.step state character with
@@ -276,15 +279,15 @@ def OnlineParser.runFrom (parser : OnlineParser) : parser.State → List Char �
           let result := parser.runFrom next rest
           (result.1, result.2 + 1)
 
-def OnlineParser.output (parser : OnlineParser) (input : List Char) : List Token :=
+@[expose] def OnlineParser.output (parser : OnlineParser) (input : List Char) : List Token :=
   (parser.runFrom parser.start input).1
 
 /-- Cost model: characters read before the parser answers. -/
-def OnlineParser.cost (parser : OnlineParser) (input : List Char) : Nat :=
+@[expose] def OnlineParser.cost (parser : OnlineParser) (input : List Char) : Nat :=
   (parser.runFrom parser.start input).2
 
 /-- The design, as an online parser. It never stops early. -/
-def design : OnlineParser where
+@[expose] def design : OnlineParser where
   State := State
   start := start
   step := fun state character => .inl (step state character)
@@ -363,5 +366,12 @@ theorem optimal :
       rw [sameOutput, shorter] at longer
       have lengths := congrArg List.length longer
       simp [declarations, extra, Item.declarations] at lengths
+
+#print axioms correct
+#print axioms design_output
+#print axioms design_correct
+#print axioms cost_bound
+#print axioms reads_all_or_fixed
+#print axioms optimal
 
 end Velocity.Theme.Design

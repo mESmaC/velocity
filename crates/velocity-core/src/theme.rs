@@ -7,25 +7,24 @@
 //! keeping a second hand-written list that could drift.
 //!
 //! The scanner is the design proven in `proofs/Theme/Design.lean`: one pass,
-//! one byte at a time, never stopping early. It works on bytes rather than
-//! chars because every byte it reacts to (`-`, `/`, `*`, `:`, ` `, `;`) is ASCII,
-//! and in UTF-8 an ASCII byte never occurs inside a multi-byte character, so
-//! every span it returns starts and ends on a character boundary.
-
-use std::sync::LazyLock;
+//! one byte at a time, never stopping early. Everything here is written in the
+//! subset Charon and Aeneas translate (plain loops, slices, no closures or lazy
+//! statics), so `proofs/Theme/Confidence.lean` covers the code itself. Only
+//! `TOKENS_CSS` and `tokens()` are left out of the translation (see
+//! `[package.metadata.charon]` in `Cargo.toml`): the embedded file is too large
+//! a literal for Lean, and `tokens()` only passes it to `scan_token_spans`.
+//!
+//! It works on bytes rather than chars: every byte it reacts to (`-`, `/`, `*`,
+//! `:`, ` `, `;`) is ASCII, and in UTF-8 an ASCII byte never occurs inside a
+//! multi-byte character, so every name and value span is valid UTF-8 and
+//! `std::str::from_utf8` on it always succeeds.
 
 /// The token stylesheet, embedded when the crate is built.
-pub const TOKENS_CSS: &str = include_str!("../../../ui/src/lib/theme/tokens.css");
+pub const TOKENS_CSS: &[u8] = include_bytes!("../../../ui/src/lib/theme/tokens.css");
 
-/// One design token: `--name: value;` gives `name` without the leading `--`.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct Token {
-    pub name: &'static str,
-    pub value: &'static str,
-}
-
-/// Byte offsets of one declaration's name and value in the scanned text.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+/// Byte offsets of one `--name: value;` declaration: the name without the
+/// leading `--`, and the value without the padding before it.
+#[derive(Clone, Copy)]
 pub struct TokenSpan {
     pub name_start: usize,
     pub name_end: usize,
@@ -35,7 +34,7 @@ pub struct TokenSpan {
 
 /// Where the scanner is. Mirrors `Mode` in `proofs/Theme/Design.lean`, with
 /// byte offsets in place of the accumulated characters.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy)]
 pub enum ScanMode {
     Outside,
     /// Read one `-` outside a declaration.
@@ -80,42 +79,38 @@ fn comment_step(mode: ScanMode, byte: u8) -> ScanMode {
     }
 }
 
-/// Reads one byte at `index`. A finished declaration is pushed onto `spans`.
-pub fn scan_step(mode: ScanMode, byte: u8, index: usize, spans: &mut Vec<TokenSpan>) -> ScanMode {
+fn declaration_step(
+    mode: ScanMode,
+    byte: u8,
+    index: usize,
+    spans: &mut Vec<TokenSpan>,
+) -> ScanMode {
     match mode {
-        ScanMode::Outside => outside_step(byte),
-        ScanMode::Dash if byte == b'-' => ScanMode::Name {
-            name_start: index + 1,
-        },
-        ScanMode::Dash => outside_step(byte),
-        ScanMode::Slash | ScanMode::Comment | ScanMode::CommentStar => comment_step(mode, byte),
         ScanMode::Name { name_start } if byte == b':' => ScanMode::Padding {
             name_start,
             name_end: index,
         },
-        ScanMode::Name { .. } => mode,
         ScanMode::Padding { .. } if byte == b' ' => mode,
         ScanMode::Padding {
             name_start,
             name_end,
-        } => {
-            let value_start = index;
-            if byte == b';' {
-                spans.push(TokenSpan {
-                    name_start,
-                    name_end,
-                    value_start,
-                    value_end: index,
-                });
-                ScanMode::Outside
-            } else {
-                ScanMode::Value {
-                    name_start,
-                    name_end,
-                    value_start,
-                }
-            }
+        } if byte == b';' => {
+            spans.push(TokenSpan {
+                name_start,
+                name_end,
+                value_start: index,
+                value_end: index,
+            });
+            ScanMode::Outside
         }
+        ScanMode::Padding {
+            name_start,
+            name_end,
+        } => ScanMode::Value {
+            name_start,
+            name_end,
+            value_start: index,
+        },
         ScanMode::Value {
             name_start,
             name_end,
@@ -129,7 +124,20 @@ pub fn scan_step(mode: ScanMode, byte: u8, index: usize, spans: &mut Vec<TokenSp
             });
             ScanMode::Outside
         }
-        ScanMode::Value { .. } => mode,
+        _ => mode,
+    }
+}
+
+/// Reads the byte at `index`. A finished declaration is pushed onto `spans`.
+pub fn scan_step(mode: ScanMode, byte: u8, index: usize, spans: &mut Vec<TokenSpan>) -> ScanMode {
+    match mode {
+        ScanMode::Outside => outside_step(byte),
+        ScanMode::Dash if byte == b'-' => ScanMode::Name {
+            name_start: index + 1,
+        },
+        ScanMode::Dash => outside_step(byte),
+        ScanMode::Slash | ScanMode::Comment | ScanMode::CommentStar => comment_step(mode, byte),
+        _ => declaration_step(mode, byte, index, spans),
     }
 }
 
@@ -145,31 +153,9 @@ pub fn scan_token_spans(css: &[u8]) -> Vec<TokenSpan> {
     spans
 }
 
-/// Every declaration in `css`, in order.
-pub fn parse_tokens(css: &'static str) -> Vec<Token> {
-    scan_token_spans(css.as_bytes())
-        .into_iter()
-        .filter_map(|span| {
-            // Spans always fall on character boundaries (see the module
-            // comment), so `get` never returns `None` here.
-            let name = css.get(span.name_start..span.name_end)?;
-            let value = css.get(span.value_start..span.value_end)?;
-            Some(Token { name, value })
-        })
-        .collect()
-}
-
-static TOKENS: LazyLock<Vec<Token>> = LazyLock::new(|| parse_tokens(TOKENS_CSS));
-
-/// Every design token, in the order `tokens.css` declares them.
-pub fn tokens() -> &'static [Token] {
-    &TOKENS
-}
-
-/// The value of the token `--name`, given `name` without the leading `--`.
-pub fn token(name: &str) -> Option<&'static str> {
-    tokens()
-        .iter()
-        .find(|token| token.name == name)
-        .map(|token| token.value)
+/// Every design token, in the order `tokens.css` declares them, as spans of
+/// `TOKENS_CSS`: `&TOKENS_CSS[span.name_start..span.name_end]` is the name
+/// without `--`, and `&TOKENS_CSS[span.value_start..span.value_end]` its value.
+pub fn tokens() -> Vec<TokenSpan> {
+    scan_token_spans(TOKENS_CSS)
 }
