@@ -10,3 +10,4 @@ public import AgentRunner.Design
 public import AgentRunner.Confidence
 public import State.Design
 public import State.Confidence
+public import Layout.Design
