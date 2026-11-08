@@ -5,3 +5,5 @@ public import Shell.Design
 public import Shell.Confidence
 public import Theme.Design
 public import Theme.Confidence
+public import AgentRunner.Design
+public import AgentRunner.Confidence

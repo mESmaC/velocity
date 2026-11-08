@@ -1,5 +1,5 @@
 [workspace]
-members = ["crates/velocity-core", "src-tauri"]
+members = ["crates/velocity-acp", "crates/velocity-core", "src-tauri"]
 resolver = "3"
 
 [workspace.package]
