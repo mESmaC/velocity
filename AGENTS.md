@@ -12,6 +12,8 @@ You are building Velocity: a Rust + Tauri desktop IDE that runs many coding agen
 - Lint: `cargo clippy --workspace --all-targets -- -D warnings`. Zero warnings.
 - Format: `cargo fmt --all`. Run it before every commit.
 - Proofs: `lake build` in `proofs/`. Run it before every push.
+- Proof toolchain setup (Windows + Ubuntu WSL): `powershell -File proofs/scripts/Setup-Toolchain.ps1`.
+- Charon and Aeneas: `powershell -File proofs/scripts/Export-Rust.ps1 -CratePath crates/<crate> -Feature <Feature>`. This runs pinned `charon cargo --preset=aeneas` then `aeneas -backend lean`; complete the confidence proof and run `lake build` afterwards. See `proofs/README.md`.
 - Stress: `cargo run -p stress -- --all`. Scouts and PR duty agents only.
 - UI type check: `pnpm -C ui check` (svelte-check). Zero errors and zero warnings.
 - UI lint: `pnpm -C ui lint`. Zero warnings.
@@ -74,7 +76,7 @@ SPEC.md §1 overrides everything else. Never build any of these:
 - A bug fix needs no design proof. Its confidence proof must cover the input the scout's evidence failed on. Copy the scout's script into `stress/` unchanged; never edit it.
 - Never use `sorry`, `admit`, `axiom` or `native_decide`. `#print axioms` lists only `propext`, `Classical.choice` and `Quot.sound`.
 - Never change a theorem statement after review to make its proof go through.
-- `proofs/` doesn't exist yet. Setting it up (Lake project, pinned `lean-toolchain`, Mathlib, Charon and Aeneas) is its own piece of work: claim it like any other. That PR adds the Charon and Aeneas commands to Commands.
+- `proofs/` is the pinned Lake project. `proofs/toolchain-pins.json` records the compatible Lean, Mathlib, Charon and Aeneas versions. Keep its pins, `lean-toolchain`, `lakefile.lean` and `lake-manifest.json` consistent; follow `proofs/README.md` when updating them.
 
 ## Choosing work
 - Work comes from three places: unchecked items in SPEC.md §7, open GitHub issues, and SPEC.md sections nothing implements yet.
