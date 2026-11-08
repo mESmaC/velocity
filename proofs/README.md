@@ -52,16 +52,22 @@ lake build
    Add its namespace to `roots` and `.submodules` to `globs` in `lakefile.lean`,
    import the proof from `Velocity.lean`, and run `lake build` before writing Rust.
 2. Implement the pure synchronous Rust logic in the appropriate crate.
-3. From the repository root, extract its library (the wrapper passes `--lib`):
+3. From the repository root, extract the feature's module of its library (the
+   wrapper passes `--lib`):
 
    ```powershell
-   powershell -File proofs/scripts/Export-Rust.ps1 -CratePath 'crates/velocity-core' -Feature Projects
+   powershell -File proofs/scripts/Export-Rust.ps1 -CratePath 'crates/velocity-core' -Feature Projects -StartFrom 'crate::projects'
    ```
+
+   `-StartFrom` limits the translation to that module and what it uses. Without
+   it, every feature translates the whole crate, and Lean refuses to import two
+   translations of the same type: Aeneas names some generated instances outside
+   the feature's namespace, e.g. `instDiscriminant<Type>Isize`.
 
    This runs these tools in order, with resolved WSL paths:
 
    ```text
-   charon cargo --preset=aeneas --dest-file <proofs>/generated-llbc/Projects.llbc -- --lib
+   charon cargo --preset=aeneas --dest-file <proofs>/generated-llbc/Projects.llbc --start-from crate::projects -- --lib
    aeneas -backend lean <llbc> -dest <proofs> -subdir Projects/Generated -split-files -namespace Velocity.Projects.Generated -no-progress-bar
    ```
 

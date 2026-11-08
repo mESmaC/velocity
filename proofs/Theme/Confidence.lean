@@ -6,7 +6,9 @@ public section
 /-!
 Theme · confidence proof (SPEC.md §6, §3; F17 level: code, Rust through Aeneas).
 
-`Theme/Generated` is Aeneas' translation of `crates/velocity-core/src/theme.rs`.
+`Theme/Generated` is Aeneas' translation of `crates/velocity-core/src/theme.rs`,
+made from the repository root with
+`powershell -File proofs/scripts/Export-Rust.ps1 -CratePath crates/velocity-core -Feature Theme -StartFrom crate::theme`.
 This file proves that the translated scanner, `theme.scan_token_spans`, refines
 the design scanner `Design.parse`: on every byte slice it returns (it never
 panics or overflows) one span per token `Design.parse` finds, with the same name
