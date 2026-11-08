@@ -1,0 +1,10 @@
+{
+  "lean": "leanprover/lean4:v4.35.0",
+  "mathlib": "56a005855ea17e0b0958f73ec801ae140b0a1679",
+  "aeneas": "c5eb4a28cef65e0aa27743105308243e535a2a2b",
+  "charon": "8cae8fd1905946de61147a65ecdd7122cc6b491b",
+  "rust": "nightly-2026-09-17",
+  "release": "nightly-2026.11.08-c5eb4a2",
+  "archive": "aeneas-linux-x86_64.tar.gz",
+  "sha256": "2fe983cc442f7943b18afd10eb577c87c15724b9ca542ee037937f2dc5abe97b"
+}

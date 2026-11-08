@@ -1,0 +1,4 @@
+/.tools/
+/proofs/.lake/
+/proofs/.lake-wsl/
+/proofs/generated-llbc/

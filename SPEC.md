@@ -1005,6 +1005,9 @@ theorem optimal : ∀ strat ∈ RebaseStrategies,
 
 Each milestone ends with a working app. Check items off as their PRs merge.
 
+**Bootstrap prerequisite** (AGENTS.md Proofs, F17)
+- [x] Pinned Lake project, Lean 4, Mathlib, Charon and Aeneas, with documented setup and extraction commands
+
 **M1 · Shell**
 - [ ] Tauri v2 app, frameless window, title bar, drag regions, window controls (F1)
 - [ ] Design tokens → theme module; bundled fonts
