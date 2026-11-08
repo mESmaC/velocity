@@ -1,3 +1,8 @@
+/* Design tokens, copied exactly from both `:root` rules in
+   design/main-window.html (the main block and the duty-agent colour).
+   Components use var(--token) only. crates/velocity-core/src/theme.rs embeds
+   and reads this file, so the Rust theme module mirrors it. Edit only by
+   copying `:root` from the reference UI again. */
 :root {
   /* OLED graphite: true-black window, smoked-glass panes, specular rims */
   --bg:        #000000;
@@ -43,3 +48,6 @@
   --rail-w: 236px;
   --titlebar-h: 38px;
 }
+
+/* ───────────────────────── duty agents (PR duty, scouts) ───────────────────────── */
+:root { --duty: #b7a3e6; }
