@@ -1,0 +1,18 @@
+/* Supplemental values approved for PR #2. Keep tokens.css as the exact :root
+   copy. These values come from the winning reference rules, including the
+   later title-bar overrides at design/main-window.html:947-973. */
+:root {
+  --reference-body-font-size: 12px;
+  --reference-body-line-height: 1.45;
+  --reference-body-letter-spacing: -0.003em;
+  --reference-brand-font-size: 13.5px;
+  --reference-brand-font-weight: 700;
+  --reference-brand-letter-spacing: -0.02em;
+  --reference-brand-color: #fff;
+  --reference-brand-padding-start: 14px;
+  --reference-window-control-width: 44px;
+  --reference-window-icon-size: 14px;
+  --reference-window-icon-stroke: 1.5;
+  --reference-close-hover-background: #c42b1c;
+  --reference-close-hover-color: #fff;
+}

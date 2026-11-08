@@ -16,3 +16,6 @@ package velocity where
 lean_lib Velocity where
   roots := #[`Velocity, `Toolchain, `Shell]
   globs := #[.one `Velocity, .submodules `Toolchain, .submodules `Shell]
+
+lean_exe shell_appearance_reference where
+  root := `Shell.ReferenceMain

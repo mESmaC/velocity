@@ -33,6 +33,17 @@ Rust IPC contract, run `pnpm -C ui bindings` and commit the generated
 Event payloads and name constants are generated from Rust; `ipc.ts` wraps
 Tauri's typed listeners because the upstream generated event helpers use `any`.
 
+`tokens.css` preserves the reference's root tokens exactly. The user-approved
+`reference.css` supplements missing values from the reference's winning CSS
+declarations. Keep provenance comments when adding a supplemental token; do not
+invent values from unrelated tokens or edit `design/`.
+
+The CSS regression's proved Lean reference is available with
+`lake --dir proofs exe shell_appearance_reference`. It prints the Close-hover
+background, glyph color and control width as JSON for PR duty's comparison
+with the actual CSS. The corrected reviewer-authored reference script is copied
+unchanged to `stress/pr2-titlebar-reference.ps1`.
+
 ```powershell
 cargo fmt --all
 pnpm -C ui format

@@ -2,6 +2,7 @@ module
 
 public import Shell.Design
 public import Shell.Generated.Funs
+public import Shell.Appearance
 
 @[expose] public section
 

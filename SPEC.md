@@ -92,7 +92,7 @@ A thread's state (§2.1) says where it is in its lifecycle. Its **activity** say
 ## 3. Architecture
 
 - **Shell:** Tauri v2, frameless window (`decorations: false`) with a custom title bar. Drag regions use `data-tauri-drag-region`; the window controls are custom.
-- **Frontend:** runs in the webview: Svelte 5 + TypeScript on Vite (no SvelteKit), built with pnpm. Command and event types are generated from Rust with `tauri-specta`. All visual values come from the design tokens in the mockup's `:root`, which the theme module reads.
+- **Frontend:** runs in the webview: Svelte 5 + TypeScript on Vite (no SvelteKit), built with pnpm. Command and event types are generated from Rust with `tauri-specta`. All visual values come from the reference UI: its `:root` is copied exactly, and missing values are copied from its winning CSS declarations into supplemental reference tokens (§6).
 - **Backend (Rust)** owns:
   - agent processes
   - git and worktrees
@@ -998,7 +998,7 @@ theorem optimal : ∀ strat ∈ RebaseStrategies,
   | swarm `#7fd1c7` | swarm |
   | claude `#d97757` · codex `#e9e9e9` · agy `#8ab4f8` · kimi `#f08fb8` | provider marks (Anthropic, Codex, Antigravity, Kimi Code) |
 
-- All tokens live on `:root` in the mockup. The Rust theme module mirrors them.
+- Base tokens are copied exactly from the mockup's `:root` into `ui/src/lib/theme/tokens.css`. Values missing from `:root` are copied from the reference's winning CSS declarations into `ui/src/lib/theme/reference.css` (user-authorized in #12). Components use the token files; the reference is read-only. The Rust theme module mirrors the base tokens.
 - Fonts are bundled locally in the app. The mockup uses a CDN only for convenience.
 
 ---
