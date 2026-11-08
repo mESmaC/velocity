@@ -1,0 +1,25 @@
+[workspace]
+members = ["crates/velocity-core", "src-tauri"]
+resolver = "3"
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.99"
+
+[workspace.dependencies]
+anyhow = "1.0"
+serde = { version = "1.0", features = ["derive"] }
+specta = { version = "=2.0.0-rc.26", features = ["derive", "function"] }
+specta-typescript = "=0.0.13"
+tauri = { version = "2.12.5", features = ["specta"] }
+tauri-specta = { version = "=2.0.0-rc.26", features = ["derive", "typescript"] }
+velocity-core = { path = "crates/velocity-core" }
+
+[workspace.lints.rust]
+unsafe_code = "forbid"
+
+[workspace.lints.clippy]
+unwrap_used = "deny"
+expect_used = "deny"
+

@@ -2,7 +2,7 @@ module
 
 import Std
 
-public section
+@[expose] public section
 
 /-! SPEC.md F1 and §3: custom frameless window controls.
 
