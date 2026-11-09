@@ -11,6 +11,14 @@ export default typescript.config(
   {
     files: ['**/*.svelte'],
     languageOptions: {
+      globals: {
+        document: 'readonly',
+        Element: 'readonly',
+        HTMLElement: 'readonly',
+        KeyboardEvent: 'readonly',
+        HTMLInputElement: 'readonly',
+        HTMLDialogElement: 'readonly',
+      },
       parserOptions: { parser: typescript.parser, svelteConfig },
     },
   },

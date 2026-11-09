@@ -20,8 +20,49 @@ set_option maxRecDepth 2048
 
 namespace Velocity.Layout.Generated
 
+/-- [velocity_core::layout::ThreadGroup]
+    Source: 'crates/velocity-core/src/layout.rs', lines 8:0-19:1
+    Visibility: public -/
+@[discriminant isize]
+inductive layout.ThreadGroup where
+| Draft : layout.ThreadGroup
+| Duty : layout.ThreadGroup
+| Swarm : layout.ThreadGroup
+| Spec : layout.ThreadGroup
+| Working : layout.ThreadGroup
+| Review : layout.ThreadGroup
+| Error : layout.ThreadGroup
+| Closed : layout.ThreadGroup
+| Done : layout.ThreadGroup
+| Merged : layout.ThreadGroup
+
+/-- [velocity_core::layout::LayoutRow]
+    Source: 'crates/velocity-core/src/layout.rs', lines 26:0-41:1
+    Visibility: public -/
+structure layout.LayoutRow where
+  identifier : Std.Usize
+  group : layout.ThreadGroup
+  hidden : Bool
+  matches_search : Bool
+  member_of : Option Std.Usize
+  expanded : Bool
+  agent_count : Std.Usize
+  paused : Bool
+
+/-- [velocity_core::layout::PulseKind]
+    Source: 'crates/velocity-core/src/layout.rs', lines 48:0-55:1
+    Visibility: public -/
+@[discriminant isize]
+inductive layout.PulseKind where
+| Duty : layout.PulseKind
+| Spec : layout.PulseKind
+| Running : layout.PulseKind
+| Watching : layout.PulseKind
+| Failed : layout.PulseKind
+| MergedToday : layout.PulseKind
+
 /-- [velocity_core::navigation::NavigationView]
-    Source: 'crates/velocity-core/src/navigation.rs', lines 5:0-15:1
+    Source: 'crates/velocity-core/src/navigation.rs', lines 9:0-19:1
     Visibility: public -/
 @[discriminant isize]
 inductive navigation.NavigationView where
@@ -36,7 +77,7 @@ inductive navigation.NavigationView where
 | Other : navigation.NavigationView
 
 /-- [velocity_core::navigation::NavigationIntent]
-    Source: 'crates/velocity-core/src/navigation.rs', lines 18:0-44:1
+    Source: 'crates/velocity-core/src/navigation.rs', lines 26:0-60:1
     Visibility: public -/
 @[discriminant isize]
 inductive navigation.NavigationIntent where
@@ -67,7 +108,7 @@ inductive navigation.NavigationIntent where
 | SaveAgents : navigation.NavigationIntent
 
 /-- [velocity_core::navigation::ShortcutKey]
-    Source: 'crates/velocity-core/src/navigation.rs', lines 47:0-69:1
+    Source: 'crates/velocity-core/src/navigation.rs', lines 67:0-93:1
     Visibility: public -/
 @[discriminant isize]
 inductive navigation.ShortcutKey where
@@ -94,7 +135,7 @@ inductive navigation.ShortcutKey where
 | Other : navigation.ShortcutKey
 
 /-- [velocity_core::navigation::KeyStroke]
-    Source: 'crates/velocity-core/src/navigation.rs', lines 72:0-78:1
+    Source: 'crates/velocity-core/src/navigation.rs', lines 100:0-106:1
     Visibility: public -/
 structure navigation.KeyStroke where
   key : navigation.ShortcutKey
@@ -104,7 +145,7 @@ structure navigation.KeyStroke where
   meta_held : Bool
 
 /-- [velocity_core::navigation::ShortcutContext]
-    Source: 'crates/velocity-core/src/navigation.rs', lines 81:0-86:1
+    Source: 'crates/velocity-core/src/navigation.rs', lines 113:0-118:1
     Visibility: public -/
 structure navigation.ShortcutContext where
   view : navigation.NavigationView
@@ -113,7 +154,7 @@ structure navigation.ShortcutContext where
   form_open : Bool
 
 /-- [velocity_core::navigation::NumberHintEvent]
-    Source: 'crates/velocity-core/src/navigation.rs', lines 89:0-94:1
+    Source: 'crates/velocity-core/src/navigation.rs', lines 125:0-130:1
     Visibility: public -/
 @[discriminant isize]
 inductive navigation.NumberHintEvent where

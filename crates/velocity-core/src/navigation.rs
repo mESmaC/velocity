@@ -1,6 +1,10 @@
 //! Pure keyboard dispatch for SPEC.md F1 and §5. Rendering and feature execution
 //! consume intents at the application edge; typing never launches a bare action.
 
+#[cfg_attr(
+    feature = "bindings",
+    derive(serde::Serialize, serde::Deserialize, specta::Type)
+)]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum NavigationView {
     Home,
@@ -14,6 +18,10 @@ pub enum NavigationView {
     Other,
 }
 
+#[cfg_attr(
+    feature = "bindings",
+    derive(serde::Serialize, serde::Deserialize, specta::Type)
+)]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum NavigationIntent {
     Palette,
@@ -21,7 +29,11 @@ pub enum NavigationIntent {
     NewProject,
     Settings,
     ShowNumbers,
-    Jump(usize),
+    Jump(
+        #[cfg_attr(feature = "bindings", serde(with = "crate::ipc_number"))]
+        #[cfg_attr(feature = "bindings", specta(type = String))]
+        usize,
+    ),
     Search,
     Task,
     Swarm,
@@ -34,7 +46,11 @@ pub enum NavigationIntent {
     Fanout,
     PrDuty,
     Scouts,
-    Answer(usize),
+    Answer(
+        #[cfg_attr(feature = "bindings", serde(with = "crate::ipc_number"))]
+        #[cfg_attr(feature = "bindings", specta(type = String))]
+        usize,
+    ),
     Lock,
     SpecFile,
     Grill,
@@ -43,6 +59,10 @@ pub enum NavigationIntent {
     SaveAgents,
 }
 
+#[cfg_attr(
+    feature = "bindings",
+    derive(serde::Serialize, serde::Deserialize, specta::Type)
+)]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ShortcutKey {
     K,
@@ -64,10 +84,18 @@ pub enum ShortcutKey {
     L,
     D,
     E,
-    Digit(usize),
+    Digit(
+        #[cfg_attr(feature = "bindings", serde(with = "crate::ipc_number"))]
+        #[cfg_attr(feature = "bindings", specta(type = String))]
+        usize,
+    ),
     Other,
 }
 
+#[cfg_attr(
+    feature = "bindings",
+    derive(serde::Serialize, serde::Deserialize, specta::Type)
+)]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct KeyStroke {
     pub key: ShortcutKey,
@@ -77,6 +105,10 @@ pub struct KeyStroke {
     pub meta_held: bool,
 }
 
+#[cfg_attr(
+    feature = "bindings",
+    derive(serde::Serialize, serde::Deserialize, specta::Type)
+)]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct ShortcutContext {
     pub view: NavigationView,
@@ -85,6 +117,10 @@ pub struct ShortcutContext {
     pub form_open: bool,
 }
 
+#[cfg_attr(
+    feature = "bindings",
+    derive(serde::Serialize, serde::Deserialize, specta::Type)
+)]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum NumberHintEvent {
     AltDown,

@@ -5,6 +5,13 @@ edition.workspace = true
 rust-version.workspace = true
 publish = false
 
+[features]
+bindings = ["dep:serde", "dep:specta"]
+
+[dependencies]
+serde = { workspace = true, optional = true }
+specta = { workspace = true, optional = true }
+
 [lints]
 workspace = true
 

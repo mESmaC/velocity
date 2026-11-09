@@ -21,15 +21,512 @@ set_option maxRecDepth 2048
 
 namespace Velocity.Layout.Generated
 
+/-- [velocity_core::layout::{impl core::clone::Clone for velocity_core::layout::ThreadGroup}::clone]:
+    Source: 'crates/velocity-core/src/layout.rs', lines 7:9-7:14
+    Visibility: public -/
+def layout.ThreadGroup.Insts.CoreCloneClone.clone
+  (self : layout.ThreadGroup) : Result layout.ThreadGroup := do
+  ok self
+
+/-- Trait implementation: [velocity_core::layout::{impl core::clone::Clone for velocity_core::layout::ThreadGroup}]
+    Source: 'crates/velocity-core/src/layout.rs', lines 7:9-7:14 -/
+@[reducible]
+def layout.ThreadGroup.Insts.CoreCloneClone : core.clone.Clone
+  layout.ThreadGroup := {
+  clone := layout.ThreadGroup.Insts.CoreCloneClone.clone
+}
+
+/-- Trait implementation: [velocity_core::layout::{impl core::marker::Copy for velocity_core::layout::ThreadGroup}]
+    Source: 'crates/velocity-core/src/layout.rs', lines 7:16-7:20 -/
+@[reducible]
+def layout.ThreadGroup.Insts.CoreMarkerCopy : core.marker.Copy
+  layout.ThreadGroup := {
+  cloneInst := layout.ThreadGroup.Insts.CoreCloneClone
+}
+
+/-- [velocity_core::layout::{impl core::fmt::Debug for velocity_core::layout::ThreadGroup}::fmt]:
+    Source: 'crates/velocity-core/src/layout.rs', lines 7:22-7:27
+    Visibility: public -/
+def layout.ThreadGroup.Insts.CoreFmtDebug.fmt
+  (self : layout.ThreadGroup) (f : core.fmt.Formatter) :
+  Result ((core.result.Result Unit core.fmt.Error) × core.fmt.Formatter)
+  := do
+  match self with
+  | layout.ThreadGroup.Draft => core.fmt.Formatter.write_str f (toStr "Draft")
+  | layout.ThreadGroup.Duty => core.fmt.Formatter.write_str f (toStr "Duty")
+  | layout.ThreadGroup.Swarm => core.fmt.Formatter.write_str f (toStr "Swarm")
+  | layout.ThreadGroup.Spec => core.fmt.Formatter.write_str f (toStr "Spec")
+  | layout.ThreadGroup.Working =>
+    core.fmt.Formatter.write_str f (toStr "Working")
+  | layout.ThreadGroup.Review =>
+    core.fmt.Formatter.write_str f (toStr "Review")
+  | layout.ThreadGroup.Error => core.fmt.Formatter.write_str f (toStr "Error")
+  | layout.ThreadGroup.Closed =>
+    core.fmt.Formatter.write_str f (toStr "Closed")
+  | layout.ThreadGroup.Done => core.fmt.Formatter.write_str f (toStr "Done")
+  | layout.ThreadGroup.Merged =>
+    core.fmt.Formatter.write_str f (toStr "Merged")
+
+/-- Trait implementation: [velocity_core::layout::{impl core::fmt::Debug for velocity_core::layout::ThreadGroup}]
+    Source: 'crates/velocity-core/src/layout.rs', lines 7:22-7:27 -/
+@[reducible]
+def layout.ThreadGroup.Insts.CoreFmtDebug : core.fmt.Debug layout.ThreadGroup
+  := {
+  fmt := layout.ThreadGroup.Insts.CoreFmtDebug.fmt
+}
+
+/-- Trait implementation: [velocity_core::layout::{impl core::marker::StructuralPartialEq for velocity_core::layout::ThreadGroup}]
+    Source: 'crates/velocity-core/src/layout.rs', lines 7:29-7:38 -/
+@[reducible]
+def layout.ThreadGroup.Insts.CoreMarkerStructuralPartialEq :
+  core.marker.StructuralPartialEq layout.ThreadGroup := {
+}
+
+/-- [velocity_core::layout::{impl core::cmp::PartialEq<velocity_core::layout::ThreadGroup> for velocity_core::layout::ThreadGroup}::eq]:
+    Source: 'crates/velocity-core/src/layout.rs', lines 7:29-7:38
+    Visibility: public -/
+def layout.ThreadGroup.Insts.CoreCmpPartialEqThreadGroup.eq
+  (self : layout.ThreadGroup) (other : layout.ThreadGroup) : Result Bool := do
+  let self1 := read_discriminant self
+  let other1 := read_discriminant other
+  ok (self1 = other1)
+
+/-- Trait implementation: [velocity_core::layout::{impl core::cmp::PartialEq<velocity_core::layout::ThreadGroup> for velocity_core::layout::ThreadGroup}]
+    Source: 'crates/velocity-core/src/layout.rs', lines 7:29-7:38 -/
+@[reducible]
+def layout.ThreadGroup.Insts.CoreCmpPartialEqThreadGroup : core.cmp.PartialEq
+  layout.ThreadGroup layout.ThreadGroup := {
+  eq := layout.ThreadGroup.Insts.CoreCmpPartialEqThreadGroup.eq
+}
+
+/-- Trait implementation: [velocity_core::layout::{impl core::cmp::Eq for velocity_core::layout::ThreadGroup}]
+    Source: 'crates/velocity-core/src/layout.rs', lines 7:40-7:42 -/
+@[reducible]
+impl_def layout.ThreadGroup.Insts.CoreCmpEq : core.cmp.Eq layout.ThreadGroup
+  := {
+  partialEqInst := layout.ThreadGroup.Insts.CoreCmpPartialEqThreadGroup
+  assert_fields_are_eq := core.cmp.Eq.assert_fields_are_eq.default
+    layout.ThreadGroup.Insts.CoreCmpEq
+}
+
+/-- [velocity_core::layout::{impl core::clone::Clone for velocity_core::layout::LayoutRow}::clone]:
+    Source: 'crates/velocity-core/src/layout.rs', lines 25:9-25:14
+    Visibility: public -/
+def layout.LayoutRow.Insts.CoreCloneClone.clone
+  (self : layout.LayoutRow) : Result layout.LayoutRow := do
+  ok self
+
+/-- Trait implementation: [velocity_core::layout::{impl core::clone::Clone for velocity_core::layout::LayoutRow}]
+    Source: 'crates/velocity-core/src/layout.rs', lines 25:9-25:14 -/
+@[reducible]
+def layout.LayoutRow.Insts.CoreCloneClone : core.clone.Clone layout.LayoutRow
+  := {
+  clone := layout.LayoutRow.Insts.CoreCloneClone.clone
+}
+
+/-- Trait implementation: [velocity_core::layout::{impl core::marker::Copy for velocity_core::layout::LayoutRow}]
+    Source: 'crates/velocity-core/src/layout.rs', lines 25:16-25:20 -/
+@[reducible]
+def layout.LayoutRow.Insts.CoreMarkerCopy : core.marker.Copy layout.LayoutRow
+  := {
+  cloneInst := layout.LayoutRow.Insts.CoreCloneClone
+}
+
+/-- [velocity_core::layout::{impl core::clone::Clone for velocity_core::layout::PulseKind}::clone]:
+    Source: 'crates/velocity-core/src/layout.rs', lines 47:9-47:14
+    Visibility: public -/
+def layout.PulseKind.Insts.CoreCloneClone.clone
+  (self : layout.PulseKind) : Result layout.PulseKind := do
+  ok self
+
+/-- Trait implementation: [velocity_core::layout::{impl core::clone::Clone for velocity_core::layout::PulseKind}]
+    Source: 'crates/velocity-core/src/layout.rs', lines 47:9-47:14 -/
+@[reducible]
+def layout.PulseKind.Insts.CoreCloneClone : core.clone.Clone layout.PulseKind
+  := {
+  clone := layout.PulseKind.Insts.CoreCloneClone.clone
+}
+
+/-- Trait implementation: [velocity_core::layout::{impl core::marker::Copy for velocity_core::layout::PulseKind}]
+    Source: 'crates/velocity-core/src/layout.rs', lines 47:16-47:20 -/
+@[reducible]
+def layout.PulseKind.Insts.CoreMarkerCopy : core.marker.Copy layout.PulseKind
+  := {
+  cloneInst := layout.PulseKind.Insts.CoreCloneClone
+}
+
+/-- [velocity_core::layout::{impl core::fmt::Debug for velocity_core::layout::PulseKind}::fmt]:
+    Source: 'crates/velocity-core/src/layout.rs', lines 47:22-47:27
+    Visibility: public -/
+def layout.PulseKind.Insts.CoreFmtDebug.fmt
+  (self : layout.PulseKind) (f : core.fmt.Formatter) :
+  Result ((core.result.Result Unit core.fmt.Error) × core.fmt.Formatter)
+  := do
+  match self with
+  | layout.PulseKind.Duty => core.fmt.Formatter.write_str f (toStr "Duty")
+  | layout.PulseKind.Spec => core.fmt.Formatter.write_str f (toStr "Spec")
+  | layout.PulseKind.Running =>
+    core.fmt.Formatter.write_str f (toStr "Running")
+  | layout.PulseKind.Watching =>
+    core.fmt.Formatter.write_str f (toStr "Watching")
+  | layout.PulseKind.Failed => core.fmt.Formatter.write_str f (toStr "Failed")
+  | layout.PulseKind.MergedToday =>
+    core.fmt.Formatter.write_str f (toStr "MergedToday")
+
+/-- Trait implementation: [velocity_core::layout::{impl core::fmt::Debug for velocity_core::layout::PulseKind}]
+    Source: 'crates/velocity-core/src/layout.rs', lines 47:22-47:27 -/
+@[reducible]
+def layout.PulseKind.Insts.CoreFmtDebug : core.fmt.Debug layout.PulseKind := {
+  fmt := layout.PulseKind.Insts.CoreFmtDebug.fmt
+}
+
+/-- Trait implementation: [velocity_core::layout::{impl core::marker::StructuralPartialEq for velocity_core::layout::PulseKind}]
+    Source: 'crates/velocity-core/src/layout.rs', lines 47:29-47:38 -/
+@[reducible]
+def layout.PulseKind.Insts.CoreMarkerStructuralPartialEq :
+  core.marker.StructuralPartialEq layout.PulseKind := {
+}
+
+/-- [velocity_core::layout::{impl core::cmp::PartialEq<velocity_core::layout::PulseKind> for velocity_core::layout::PulseKind}::eq]:
+    Source: 'crates/velocity-core/src/layout.rs', lines 47:29-47:38
+    Visibility: public -/
+def layout.PulseKind.Insts.CoreCmpPartialEqPulseKind.eq
+  (self : layout.PulseKind) (other : layout.PulseKind) : Result Bool := do
+  let self1 := read_discriminant self
+  let other1 := read_discriminant other
+  ok (self1 = other1)
+
+/-- Trait implementation: [velocity_core::layout::{impl core::cmp::PartialEq<velocity_core::layout::PulseKind> for velocity_core::layout::PulseKind}]
+    Source: 'crates/velocity-core/src/layout.rs', lines 47:29-47:38 -/
+@[reducible]
+def layout.PulseKind.Insts.CoreCmpPartialEqPulseKind : core.cmp.PartialEq
+  layout.PulseKind layout.PulseKind := {
+  eq := layout.PulseKind.Insts.CoreCmpPartialEqPulseKind.eq
+}
+
+/-- Trait implementation: [velocity_core::layout::{impl core::cmp::Eq for velocity_core::layout::PulseKind}]
+    Source: 'crates/velocity-core/src/layout.rs', lines 47:40-47:42 -/
+@[reducible]
+impl_def layout.PulseKind.Insts.CoreCmpEq : core.cmp.Eq layout.PulseKind := {
+  partialEqInst := layout.PulseKind.Insts.CoreCmpPartialEqPulseKind
+  assert_fields_are_eq := core.cmp.Eq.assert_fields_are_eq.default
+    layout.PulseKind.Insts.CoreCmpEq
+}
+
+/-- [velocity_core::layout::group_index]:
+    Source: 'crates/velocity-core/src/layout.rs', lines 57:0-70:1
+    Visibility: public -/
+def layout.group_index (group : layout.ThreadGroup) : Result Std.Usize := do
+  match group with
+  | layout.ThreadGroup.Draft => ok 0#usize
+  | layout.ThreadGroup.Duty => ok 1#usize
+  | layout.ThreadGroup.Swarm => ok 2#usize
+  | layout.ThreadGroup.Spec => ok 3#usize
+  | layout.ThreadGroup.Working => ok 4#usize
+  | layout.ThreadGroup.Review => ok 5#usize
+  | layout.ThreadGroup.Error => ok 6#usize
+  | layout.ThreadGroup.Closed => ok 7#usize
+  | layout.ThreadGroup.Done => ok 8#usize
+  | layout.ThreadGroup.Merged => ok 9#usize
+
+/-- [velocity_core::layout::is_root_visible]:
+    Source: 'crates/velocity-core/src/layout.rs', lines 72:0-74:1
+    Visibility: public -/
+def layout.is_root_visible
+  (group : layout.ThreadGroup) (row : layout.LayoutRow) : Result Bool := do
+  let b ←
+    layout.ThreadGroup.Insts.CoreCmpPartialEqThreadGroup.eq row.group group
+  if b
+  then
+    if row.hidden
+    then ok false
+    else
+      if row.matches_search
+      then ok (core.option.Option.is_none row.member_of)
+      else ok false
+  else ok false
+
+/-- [velocity_core::layout::is_member_visible]:
+    Source: 'crates/velocity-core/src/layout.rs', lines 76:0-81:1
+    Visibility: public -/
+def layout.is_member_visible
+  (parent : Std.Usize) (row : layout.LayoutRow) : Result Bool := do
+  match row.member_of with
+  | none => ok false
+  | some identifier =>
+    if identifier = parent
+    then ok (¬ row.hidden)
+    else ok false
+
+/-- [velocity_core::layout::expand_members]:
+    Source: 'crates/velocity-core/src/layout.rs', lines 83:0-85:1
+    Visibility: public -/
+def layout.expand_members (row : layout.LayoutRow) : Result Bool := do
+  let b ←
+    match row.group with
+    | layout.ThreadGroup.Draft => ok false
+    | layout.ThreadGroup.Duty => ok false
+    | layout.ThreadGroup.Swarm => ok true
+    | layout.ThreadGroup.Spec => ok false
+    | layout.ThreadGroup.Working => ok false
+    | layout.ThreadGroup.Review => ok false
+    | layout.ThreadGroup.Error => ok false
+    | layout.ThreadGroup.Closed => ok false
+    | layout.ThreadGroup.Done => ok false
+    | layout.ThreadGroup.Merged => ok false
+  if b
+  then ok row.expanded
+  else ok false
+
+/-- [velocity_core::layout::show_group]:
+    Source: 'crates/velocity-core/src/layout.rs', lines 87:0-89:1
+    Visibility: public -/
+def layout.show_group
+  (group : layout.ThreadGroup) (has_rows : Bool) (search_empty : Bool) :
+  Result Bool
+  := do
+  if has_rows
+  then ok true
+  else
+    let b ←
+      match group with
+      | layout.ThreadGroup.Draft => ok false
+      | layout.ThreadGroup.Duty => ok true
+      | layout.ThreadGroup.Swarm => ok false
+      | layout.ThreadGroup.Spec => ok false
+      | layout.ThreadGroup.Working => ok false
+      | layout.ThreadGroup.Review => ok false
+      | layout.ThreadGroup.Error => ok false
+      | layout.ThreadGroup.Closed => ok false
+      | layout.ThreadGroup.Done => ok false
+      | layout.ThreadGroup.Merged => ok false
+    if b
+    then ok search_empty
+    else ok false
+
+/-- [velocity_core::layout::pulse_contribution]:
+    Source: 'crates/velocity-core/src/layout.rs', lines 91:0-106:1
+    Visibility: public -/
+def layout.pulse_contribution
+  (kind : layout.PulseKind) (row : layout.LayoutRow) : Result Std.Usize := do
+  match kind with
+  | layout.PulseKind.Duty =>
+    let b ←
+      match row.group with
+      | layout.ThreadGroup.Draft => ok false
+      | layout.ThreadGroup.Duty => ok true
+      | layout.ThreadGroup.Swarm => ok false
+      | layout.ThreadGroup.Spec => ok false
+      | layout.ThreadGroup.Working => ok false
+      | layout.ThreadGroup.Review => ok false
+      | layout.ThreadGroup.Error => ok false
+      | layout.ThreadGroup.Closed => ok false
+      | layout.ThreadGroup.Done => ok false
+      | layout.ThreadGroup.Merged => ok false
+    if b
+    then if row.paused
+         then ok 0#usize
+         else ok row.agent_count
+    else ok 0#usize
+  | layout.PulseKind.Spec =>
+    let b ←
+      match row.group with
+      | layout.ThreadGroup.Draft => ok false
+      | layout.ThreadGroup.Duty => ok false
+      | layout.ThreadGroup.Swarm => ok false
+      | layout.ThreadGroup.Spec => ok true
+      | layout.ThreadGroup.Working => ok false
+      | layout.ThreadGroup.Review => ok false
+      | layout.ThreadGroup.Error => ok false
+      | layout.ThreadGroup.Closed => ok false
+      | layout.ThreadGroup.Done => ok false
+      | layout.ThreadGroup.Merged => ok false
+    ok (core.convert.num.FromUsizeBool.from b)
+  | layout.PulseKind.Running =>
+    let b ←
+      match row.group with
+      | layout.ThreadGroup.Draft => ok false
+      | layout.ThreadGroup.Duty => ok false
+      | layout.ThreadGroup.Swarm => ok false
+      | layout.ThreadGroup.Spec => ok false
+      | layout.ThreadGroup.Working => ok true
+      | layout.ThreadGroup.Review => ok false
+      | layout.ThreadGroup.Error => ok false
+      | layout.ThreadGroup.Closed => ok false
+      | layout.ThreadGroup.Done => ok false
+      | layout.ThreadGroup.Merged => ok false
+    ok (core.convert.num.FromUsizeBool.from b)
+  | layout.PulseKind.Watching =>
+    let b ←
+      match row.group with
+      | layout.ThreadGroup.Draft => ok false
+      | layout.ThreadGroup.Duty => ok false
+      | layout.ThreadGroup.Swarm => ok false
+      | layout.ThreadGroup.Spec => ok false
+      | layout.ThreadGroup.Working => ok false
+      | layout.ThreadGroup.Review => ok true
+      | layout.ThreadGroup.Error => ok false
+      | layout.ThreadGroup.Closed => ok false
+      | layout.ThreadGroup.Done => ok false
+      | layout.ThreadGroup.Merged => ok false
+    ok (core.convert.num.FromUsizeBool.from b)
+  | layout.PulseKind.Failed =>
+    let b ←
+      match row.group with
+      | layout.ThreadGroup.Draft => ok false
+      | layout.ThreadGroup.Duty => ok false
+      | layout.ThreadGroup.Swarm => ok false
+      | layout.ThreadGroup.Spec => ok false
+      | layout.ThreadGroup.Working => ok false
+      | layout.ThreadGroup.Review => ok false
+      | layout.ThreadGroup.Error => ok true
+      | layout.ThreadGroup.Closed => ok false
+      | layout.ThreadGroup.Done => ok false
+      | layout.ThreadGroup.Merged => ok false
+    ok (core.convert.num.FromUsizeBool.from b)
+  | layout.PulseKind.MergedToday => ok 0#usize
+
+/-- [velocity_core::layout::bounded_selection]:
+    Source: 'crates/velocity-core/src/layout.rs', lines 109:0-117:1
+    Visibility: public -/
+def layout.bounded_selection
+  (count : Std.Usize) (selected : Std.Usize) : Result Std.Usize := do
+  if count = 0#usize
+  then ok 0#usize
+  else if selected < count
+       then ok selected
+       else count - 1#usize
+
+/-- [velocity_core::layout::next_selection]:
+    Source: 'crates/velocity-core/src/layout.rs', lines 119:0-126:1
+    Visibility: public -/
+def layout.next_selection
+  (count : Std.Usize) (selected : Std.Usize) : Result Std.Usize := do
+  let selected1 ← layout.bounded_selection count selected
+  if count = 0#usize
+  then ok 0#usize
+  else
+    let i ← count - 1#usize
+    if selected1 = i
+    then ok 0#usize
+    else selected1 + 1#usize
+
+/-- [velocity_core::layout::previous_selection]:
+    Source: 'crates/velocity-core/src/layout.rs', lines 128:0-137:1
+    Visibility: public -/
+def layout.previous_selection
+  (count : Std.Usize) (selected : Std.Usize) : Result Std.Usize := do
+  let selected1 ← layout.bounded_selection count selected
+  if count = 0#usize
+  then ok 0#usize
+  else if selected1 = 0#usize
+       then count - 1#usize
+       else selected1 - 1#usize
+
+/-- [velocity_core::layout::alt_target]:
+    Source: 'crates/velocity-core/src/layout.rs', lines 139:0-144:1
+    Visibility: public -/
+def layout.alt_target
+  (number : Std.Usize) (visible : Slice Std.Usize) :
+  Result (Option Std.Usize)
+  := do
+  if 1#usize <= number
+  then
+    if number <= 9#usize
+    then
+      let i := Slice.len visible
+      if number <= i
+      then
+        let i1 ← number - 1#usize
+        let i2 ← Slice.index_usize visible i1
+        ok (some i2)
+      else ok none
+    else ok none
+  else ok none
+
+/-- [velocity_core::layout::fuzzy_match]: loop body 0:
+    Source: 'crates/velocity-core/src/layout.rs', lines 150:4-160:1
+    Visibility: public -/
+@[rust_loop_body]
+def layout.fuzzy_match_loop.body
+  (query : Slice Char) (label : Slice Char) (query_index : Std.Usize)
+  (label_index : Std.Usize) :
+  Result (ControlFlow (Std.Usize × Std.Usize) Bool)
+  := do
+  let i := Slice.len label
+  if label_index < i
+  then
+    let i1 := Slice.len query
+    if query_index = i1
+    then ok (done true)
+    else
+      let c ← Slice.index_usize query query_index
+      let c1 ← Slice.index_usize label label_index
+      let query_index1 ←
+        if c = c1
+        then query_index + 1#usize
+        else ok query_index
+      let label_index1 ← label_index + 1#usize
+      ok (cont (query_index1, label_index1))
+  else let i1 := Slice.len query
+       ok (done (query_index = i1))
+
+/-- [velocity_core::layout::fuzzy_match]: loop 0:
+    Source: 'crates/velocity-core/src/layout.rs', lines 150:4-160:1
+    Visibility: public -/
+@[rust_loop]
+def layout.fuzzy_match_loop
+  (query : Slice Char) (label : Slice Char) (query_index : Std.Usize)
+  (label_index : Std.Usize) :
+  Result Bool
+  := do
+  loop
+    (fun (query_index1, label_index1) => layout.fuzzy_match_loop.body query
+      label query_index1 label_index1)
+    (query_index, label_index)
+
+/-- [velocity_core::layout::fuzzy_match]:
+    Source: 'crates/velocity-core/src/layout.rs', lines 147:0-160:1
+    Visibility: public -/
+@[reducible]
+def layout.fuzzy_match
+  (query : Slice Char) (label : Slice Char) : Result Bool := do
+  layout.fuzzy_match_loop query label 0#usize 0#usize
+
+/-- [velocity_core::layout_catalog::GROUPS]
+    Source: 'crates/velocity-core/src/layout_catalog.rs', lines 7:0-18:2
+    Visibility: public -/
+@[global_simps, irreducible]
+def layout_catalog.GROUPS : Array layout.ThreadGroup 10#usize :=
+  Array.make 10#usize [
+    layout.ThreadGroup.Draft, layout.ThreadGroup.Duty,
+    layout.ThreadGroup.Swarm, layout.ThreadGroup.Spec,
+    layout.ThreadGroup.Working, layout.ThreadGroup.Review,
+    layout.ThreadGroup.Error, layout.ThreadGroup.Closed,
+    layout.ThreadGroup.Done, layout.ThreadGroup.Merged
+    ]
+
+/-- [velocity_core::layout_catalog::PULSE]
+    Source: 'crates/velocity-core/src/layout_catalog.rs', lines 20:0-27:2
+    Visibility: public -/
+@[global_simps, irreducible]
+def layout_catalog.PULSE : Array (layout.PulseKind × Str) 6#usize :=
+  Array.make 6#usize [
+    (layout.PulseKind.Duty, toStr "on duty"), (layout.PulseKind.Spec, toStr
+    "in spec"), (layout.PulseKind.Running, toStr "running"),
+    (layout.PulseKind.Watching, toStr "PRs watched"), (layout.PulseKind.Failed,
+    toStr "failed"), (layout.PulseKind.MergedToday, toStr "merged today")
+    ]
+
 /-- [velocity_core::navigation::{impl core::clone::Clone for velocity_core::navigation::NavigationView}::clone]:
-    Source: 'crates/velocity-core/src/navigation.rs', lines 4:9-4:14
+    Source: 'crates/velocity-core/src/navigation.rs', lines 8:9-8:14
     Visibility: public -/
 def navigation.NavigationView.Insts.CoreCloneClone.clone
   (self : navigation.NavigationView) : Result navigation.NavigationView := do
   ok self
 
 /-- Trait implementation: [velocity_core::navigation::{impl core::clone::Clone for velocity_core::navigation::NavigationView}]
-    Source: 'crates/velocity-core/src/navigation.rs', lines 4:9-4:14 -/
+    Source: 'crates/velocity-core/src/navigation.rs', lines 8:9-8:14 -/
 @[reducible]
 def navigation.NavigationView.Insts.CoreCloneClone : core.clone.Clone
   navigation.NavigationView := {
@@ -37,7 +534,7 @@ def navigation.NavigationView.Insts.CoreCloneClone : core.clone.Clone
 }
 
 /-- Trait implementation: [velocity_core::navigation::{impl core::marker::Copy for velocity_core::navigation::NavigationView}]
-    Source: 'crates/velocity-core/src/navigation.rs', lines 4:16-4:20 -/
+    Source: 'crates/velocity-core/src/navigation.rs', lines 8:16-8:20 -/
 @[reducible]
 def navigation.NavigationView.Insts.CoreMarkerCopy : core.marker.Copy
   navigation.NavigationView := {
@@ -45,7 +542,7 @@ def navigation.NavigationView.Insts.CoreMarkerCopy : core.marker.Copy
 }
 
 /-- [velocity_core::navigation::{impl core::fmt::Debug for velocity_core::navigation::NavigationView}::fmt]:
-    Source: 'crates/velocity-core/src/navigation.rs', lines 4:22-4:27
+    Source: 'crates/velocity-core/src/navigation.rs', lines 8:22-8:27
     Visibility: public -/
 def navigation.NavigationView.Insts.CoreFmtDebug.fmt
   (self : navigation.NavigationView) (f : core.fmt.Formatter) :
@@ -72,7 +569,7 @@ def navigation.NavigationView.Insts.CoreFmtDebug.fmt
     core.fmt.Formatter.write_str f (toStr "Other")
 
 /-- Trait implementation: [velocity_core::navigation::{impl core::fmt::Debug for velocity_core::navigation::NavigationView}]
-    Source: 'crates/velocity-core/src/navigation.rs', lines 4:22-4:27 -/
+    Source: 'crates/velocity-core/src/navigation.rs', lines 8:22-8:27 -/
 @[reducible]
 def navigation.NavigationView.Insts.CoreFmtDebug : core.fmt.Debug
   navigation.NavigationView := {
@@ -80,14 +577,14 @@ def navigation.NavigationView.Insts.CoreFmtDebug : core.fmt.Debug
 }
 
 /-- Trait implementation: [velocity_core::navigation::{impl core::marker::StructuralPartialEq for velocity_core::navigation::NavigationView}]
-    Source: 'crates/velocity-core/src/navigation.rs', lines 4:29-4:38 -/
+    Source: 'crates/velocity-core/src/navigation.rs', lines 8:29-8:38 -/
 @[reducible]
 def navigation.NavigationView.Insts.CoreMarkerStructuralPartialEq :
   core.marker.StructuralPartialEq navigation.NavigationView := {
 }
 
 /-- [velocity_core::navigation::{impl core::cmp::PartialEq<velocity_core::navigation::NavigationView> for velocity_core::navigation::NavigationView}::eq]:
-    Source: 'crates/velocity-core/src/navigation.rs', lines 4:29-4:38
+    Source: 'crates/velocity-core/src/navigation.rs', lines 8:29-8:38
     Visibility: public -/
 def navigation.NavigationView.Insts.CoreCmpPartialEqNavigationView.eq
   (self : navigation.NavigationView) (other : navigation.NavigationView) :
@@ -98,7 +595,7 @@ def navigation.NavigationView.Insts.CoreCmpPartialEqNavigationView.eq
   ok (self1 = other1)
 
 /-- Trait implementation: [velocity_core::navigation::{impl core::cmp::PartialEq<velocity_core::navigation::NavigationView> for velocity_core::navigation::NavigationView}]
-    Source: 'crates/velocity-core/src/navigation.rs', lines 4:29-4:38 -/
+    Source: 'crates/velocity-core/src/navigation.rs', lines 8:29-8:38 -/
 @[reducible]
 def navigation.NavigationView.Insts.CoreCmpPartialEqNavigationView :
   core.cmp.PartialEq navigation.NavigationView navigation.NavigationView := {
@@ -106,7 +603,7 @@ def navigation.NavigationView.Insts.CoreCmpPartialEqNavigationView :
 }
 
 /-- Trait implementation: [velocity_core::navigation::{impl core::cmp::Eq for velocity_core::navigation::NavigationView}]
-    Source: 'crates/velocity-core/src/navigation.rs', lines 4:40-4:42 -/
+    Source: 'crates/velocity-core/src/navigation.rs', lines 8:40-8:42 -/
 @[reducible]
 impl_def navigation.NavigationView.Insts.CoreCmpEq : core.cmp.Eq
   navigation.NavigationView := {
@@ -117,7 +614,7 @@ impl_def navigation.NavigationView.Insts.CoreCmpEq : core.cmp.Eq
 }
 
 /-- [velocity_core::navigation::{impl core::clone::Clone for velocity_core::navigation::NavigationIntent}::clone]:
-    Source: 'crates/velocity-core/src/navigation.rs', lines 17:9-17:14
+    Source: 'crates/velocity-core/src/navigation.rs', lines 25:9-25:14
     Visibility: public -/
 def navigation.NavigationIntent.Insts.CoreCloneClone.clone
   (self : navigation.NavigationIntent) :
@@ -126,7 +623,7 @@ def navigation.NavigationIntent.Insts.CoreCloneClone.clone
   ok self
 
 /-- Trait implementation: [velocity_core::navigation::{impl core::clone::Clone for velocity_core::navigation::NavigationIntent}]
-    Source: 'crates/velocity-core/src/navigation.rs', lines 17:9-17:14 -/
+    Source: 'crates/velocity-core/src/navigation.rs', lines 25:9-25:14 -/
 @[reducible]
 def navigation.NavigationIntent.Insts.CoreCloneClone : core.clone.Clone
   navigation.NavigationIntent := {
@@ -134,7 +631,7 @@ def navigation.NavigationIntent.Insts.CoreCloneClone : core.clone.Clone
 }
 
 /-- Trait implementation: [velocity_core::navigation::{impl core::marker::Copy for velocity_core::navigation::NavigationIntent}]
-    Source: 'crates/velocity-core/src/navigation.rs', lines 17:16-17:20 -/
+    Source: 'crates/velocity-core/src/navigation.rs', lines 25:16-25:20 -/
 @[reducible]
 def navigation.NavigationIntent.Insts.CoreMarkerCopy : core.marker.Copy
   navigation.NavigationIntent := {
@@ -142,7 +639,7 @@ def navigation.NavigationIntent.Insts.CoreMarkerCopy : core.marker.Copy
 }
 
 /-- [velocity_core::navigation::{impl core::fmt::Debug for velocity_core::navigation::NavigationIntent}::fmt]:
-    Source: 'crates/velocity-core/src/navigation.rs', lines 17:22-17:27
+    Source: 'crates/velocity-core/src/navigation.rs', lines 25:22-25:27
     Visibility: public -/
 def navigation.NavigationIntent.Insts.CoreFmtDebug.fmt
   (self : navigation.NavigationIntent) (f : core.fmt.Formatter) :
@@ -205,7 +702,7 @@ def navigation.NavigationIntent.Insts.CoreFmtDebug.fmt
     core.fmt.Formatter.write_str f (toStr "SaveAgents")
 
 /-- Trait implementation: [velocity_core::navigation::{impl core::fmt::Debug for velocity_core::navigation::NavigationIntent}]
-    Source: 'crates/velocity-core/src/navigation.rs', lines 17:22-17:27 -/
+    Source: 'crates/velocity-core/src/navigation.rs', lines 25:22-25:27 -/
 @[reducible]
 def navigation.NavigationIntent.Insts.CoreFmtDebug : core.fmt.Debug
   navigation.NavigationIntent := {
@@ -213,14 +710,14 @@ def navigation.NavigationIntent.Insts.CoreFmtDebug : core.fmt.Debug
 }
 
 /-- Trait implementation: [velocity_core::navigation::{impl core::marker::StructuralPartialEq for velocity_core::navigation::NavigationIntent}]
-    Source: 'crates/velocity-core/src/navigation.rs', lines 17:29-17:38 -/
+    Source: 'crates/velocity-core/src/navigation.rs', lines 25:29-25:38 -/
 @[reducible]
 def navigation.NavigationIntent.Insts.CoreMarkerStructuralPartialEq :
   core.marker.StructuralPartialEq navigation.NavigationIntent := {
 }
 
 /-- [velocity_core::navigation::{impl core::cmp::PartialEq<velocity_core::navigation::NavigationIntent> for velocity_core::navigation::NavigationIntent}::eq]:
-    Source: 'crates/velocity-core/src/navigation.rs', lines 17:29-17:38
+    Source: 'crates/velocity-core/src/navigation.rs', lines 25:29-25:38
     Visibility: public -/
 def navigation.NavigationIntent.Insts.CoreCmpPartialEqNavigationIntent.eq
   (self : navigation.NavigationIntent) (other : navigation.NavigationIntent) :
@@ -313,7 +810,7 @@ def navigation.NavigationIntent.Insts.CoreCmpPartialEqNavigationIntent.eq
   else ok false
 
 /-- Trait implementation: [velocity_core::navigation::{impl core::cmp::PartialEq<velocity_core::navigation::NavigationIntent> for velocity_core::navigation::NavigationIntent}]
-    Source: 'crates/velocity-core/src/navigation.rs', lines 17:29-17:38 -/
+    Source: 'crates/velocity-core/src/navigation.rs', lines 25:29-25:38 -/
 @[reducible]
 def navigation.NavigationIntent.Insts.CoreCmpPartialEqNavigationIntent :
   core.cmp.PartialEq navigation.NavigationIntent navigation.NavigationIntent
@@ -322,14 +819,14 @@ def navigation.NavigationIntent.Insts.CoreCmpPartialEqNavigationIntent :
 }
 
 /-- [velocity_core::navigation::{impl core::cmp::Eq for velocity_core::navigation::NavigationIntent}::assert_fields_are_eq]:
-    Source: 'crates/velocity-core/src/navigation.rs', lines 17:40-17:42
+    Source: 'crates/velocity-core/src/navigation.rs', lines 25:40-25:42
     Visibility: public -/
 def navigation.NavigationIntent.Insts.CoreCmpEq.assert_fields_are_eq
   (self : navigation.NavigationIntent) : Result Unit := do
   ok ()
 
 /-- Trait implementation: [velocity_core::navigation::{impl core::cmp::Eq for velocity_core::navigation::NavigationIntent}]
-    Source: 'crates/velocity-core/src/navigation.rs', lines 17:40-17:42 -/
+    Source: 'crates/velocity-core/src/navigation.rs', lines 25:40-25:42 -/
 @[reducible]
 def navigation.NavigationIntent.Insts.CoreCmpEq : core.cmp.Eq
   navigation.NavigationIntent := {
@@ -340,14 +837,14 @@ def navigation.NavigationIntent.Insts.CoreCmpEq : core.cmp.Eq
 }
 
 /-- [velocity_core::navigation::{impl core::clone::Clone for velocity_core::navigation::ShortcutKey}::clone]:
-    Source: 'crates/velocity-core/src/navigation.rs', lines 46:9-46:14
+    Source: 'crates/velocity-core/src/navigation.rs', lines 66:9-66:14
     Visibility: public -/
 def navigation.ShortcutKey.Insts.CoreCloneClone.clone
   (self : navigation.ShortcutKey) : Result navigation.ShortcutKey := do
   ok self
 
 /-- Trait implementation: [velocity_core::navigation::{impl core::clone::Clone for velocity_core::navigation::ShortcutKey}]
-    Source: 'crates/velocity-core/src/navigation.rs', lines 46:9-46:14 -/
+    Source: 'crates/velocity-core/src/navigation.rs', lines 66:9-66:14 -/
 @[reducible]
 def navigation.ShortcutKey.Insts.CoreCloneClone : core.clone.Clone
   navigation.ShortcutKey := {
@@ -355,7 +852,7 @@ def navigation.ShortcutKey.Insts.CoreCloneClone : core.clone.Clone
 }
 
 /-- Trait implementation: [velocity_core::navigation::{impl core::marker::Copy for velocity_core::navigation::ShortcutKey}]
-    Source: 'crates/velocity-core/src/navigation.rs', lines 46:16-46:20 -/
+    Source: 'crates/velocity-core/src/navigation.rs', lines 66:16-66:20 -/
 @[reducible]
 def navigation.ShortcutKey.Insts.CoreMarkerCopy : core.marker.Copy
   navigation.ShortcutKey := {
@@ -363,7 +860,7 @@ def navigation.ShortcutKey.Insts.CoreMarkerCopy : core.marker.Copy
 }
 
 /-- [velocity_core::navigation::{impl core::fmt::Debug for velocity_core::navigation::ShortcutKey}::fmt]:
-    Source: 'crates/velocity-core/src/navigation.rs', lines 46:22-46:27
+    Source: 'crates/velocity-core/src/navigation.rs', lines 66:22-66:27
     Visibility: public -/
 def navigation.ShortcutKey.Insts.CoreFmtDebug.fmt
   (self : navigation.ShortcutKey) (f : core.fmt.Formatter) :
@@ -401,7 +898,7 @@ def navigation.ShortcutKey.Insts.CoreFmtDebug.fmt
     core.fmt.Formatter.write_str f (toStr "Other")
 
 /-- Trait implementation: [velocity_core::navigation::{impl core::fmt::Debug for velocity_core::navigation::ShortcutKey}]
-    Source: 'crates/velocity-core/src/navigation.rs', lines 46:22-46:27 -/
+    Source: 'crates/velocity-core/src/navigation.rs', lines 66:22-66:27 -/
 @[reducible]
 def navigation.ShortcutKey.Insts.CoreFmtDebug : core.fmt.Debug
   navigation.ShortcutKey := {
@@ -409,14 +906,14 @@ def navigation.ShortcutKey.Insts.CoreFmtDebug : core.fmt.Debug
 }
 
 /-- Trait implementation: [velocity_core::navigation::{impl core::marker::StructuralPartialEq for velocity_core::navigation::ShortcutKey}]
-    Source: 'crates/velocity-core/src/navigation.rs', lines 46:29-46:38 -/
+    Source: 'crates/velocity-core/src/navigation.rs', lines 66:29-66:38 -/
 @[reducible]
 def navigation.ShortcutKey.Insts.CoreMarkerStructuralPartialEq :
   core.marker.StructuralPartialEq navigation.ShortcutKey := {
 }
 
 /-- [velocity_core::navigation::{impl core::cmp::PartialEq<velocity_core::navigation::ShortcutKey> for velocity_core::navigation::ShortcutKey}::eq]:
-    Source: 'crates/velocity-core/src/navigation.rs', lines 46:29-46:38
+    Source: 'crates/velocity-core/src/navigation.rs', lines 66:29-66:38
     Visibility: public -/
 def navigation.ShortcutKey.Insts.CoreCmpPartialEqShortcutKey.eq
   (self : navigation.ShortcutKey) (other : navigation.ShortcutKey) :
@@ -474,7 +971,7 @@ def navigation.ShortcutKey.Insts.CoreCmpPartialEqShortcutKey.eq
   else ok false
 
 /-- Trait implementation: [velocity_core::navigation::{impl core::cmp::PartialEq<velocity_core::navigation::ShortcutKey> for velocity_core::navigation::ShortcutKey}]
-    Source: 'crates/velocity-core/src/navigation.rs', lines 46:29-46:38 -/
+    Source: 'crates/velocity-core/src/navigation.rs', lines 66:29-66:38 -/
 @[reducible]
 def navigation.ShortcutKey.Insts.CoreCmpPartialEqShortcutKey :
   core.cmp.PartialEq navigation.ShortcutKey navigation.ShortcutKey := {
@@ -482,14 +979,14 @@ def navigation.ShortcutKey.Insts.CoreCmpPartialEqShortcutKey :
 }
 
 /-- [velocity_core::navigation::{impl core::cmp::Eq for velocity_core::navigation::ShortcutKey}::assert_fields_are_eq]:
-    Source: 'crates/velocity-core/src/navigation.rs', lines 46:40-46:42
+    Source: 'crates/velocity-core/src/navigation.rs', lines 66:40-66:42
     Visibility: public -/
 def navigation.ShortcutKey.Insts.CoreCmpEq.assert_fields_are_eq
   (self : navigation.ShortcutKey) : Result Unit := do
   ok ()
 
 /-- Trait implementation: [velocity_core::navigation::{impl core::cmp::Eq for velocity_core::navigation::ShortcutKey}]
-    Source: 'crates/velocity-core/src/navigation.rs', lines 46:40-46:42 -/
+    Source: 'crates/velocity-core/src/navigation.rs', lines 66:40-66:42 -/
 @[reducible]
 def navigation.ShortcutKey.Insts.CoreCmpEq : core.cmp.Eq navigation.ShortcutKey
   := {
@@ -499,14 +996,14 @@ def navigation.ShortcutKey.Insts.CoreCmpEq : core.cmp.Eq navigation.ShortcutKey
 }
 
 /-- [velocity_core::navigation::{impl core::clone::Clone for velocity_core::navigation::KeyStroke}::clone]:
-    Source: 'crates/velocity-core/src/navigation.rs', lines 71:9-71:14
+    Source: 'crates/velocity-core/src/navigation.rs', lines 99:9-99:14
     Visibility: public -/
 def navigation.KeyStroke.Insts.CoreCloneClone.clone
   (self : navigation.KeyStroke) : Result navigation.KeyStroke := do
   ok self
 
 /-- Trait implementation: [velocity_core::navigation::{impl core::clone::Clone for velocity_core::navigation::KeyStroke}]
-    Source: 'crates/velocity-core/src/navigation.rs', lines 71:9-71:14 -/
+    Source: 'crates/velocity-core/src/navigation.rs', lines 99:9-99:14 -/
 @[reducible]
 def navigation.KeyStroke.Insts.CoreCloneClone : core.clone.Clone
   navigation.KeyStroke := {
@@ -514,7 +1011,7 @@ def navigation.KeyStroke.Insts.CoreCloneClone : core.clone.Clone
 }
 
 /-- Trait implementation: [velocity_core::navigation::{impl core::marker::Copy for velocity_core::navigation::KeyStroke}]
-    Source: 'crates/velocity-core/src/navigation.rs', lines 71:16-71:20 -/
+    Source: 'crates/velocity-core/src/navigation.rs', lines 99:16-99:20 -/
 @[reducible]
 def navigation.KeyStroke.Insts.CoreMarkerCopy : core.marker.Copy
   navigation.KeyStroke := {
@@ -522,7 +1019,7 @@ def navigation.KeyStroke.Insts.CoreMarkerCopy : core.marker.Copy
 }
 
 /-- [velocity_core::navigation::{impl core::fmt::Debug for velocity_core::navigation::KeyStroke}::fmt]:
-    Source: 'crates/velocity-core/src/navigation.rs', lines 71:22-71:27
+    Source: 'crates/velocity-core/src/navigation.rs', lines 99:22-99:27
     Visibility: public -/
 def navigation.KeyStroke.Insts.CoreFmtDebug.fmt
   (self : navigation.KeyStroke) (f : core.fmt.Formatter) :
@@ -538,7 +1035,7 @@ def navigation.KeyStroke.Insts.CoreFmtDebug.fmt
     (toStr "meta_held") dyn4
 
 /-- Trait implementation: [velocity_core::navigation::{impl core::fmt::Debug for velocity_core::navigation::KeyStroke}]
-    Source: 'crates/velocity-core/src/navigation.rs', lines 71:22-71:27 -/
+    Source: 'crates/velocity-core/src/navigation.rs', lines 99:22-99:27 -/
 @[reducible]
 def navigation.KeyStroke.Insts.CoreFmtDebug : core.fmt.Debug
   navigation.KeyStroke := {
@@ -546,14 +1043,14 @@ def navigation.KeyStroke.Insts.CoreFmtDebug : core.fmt.Debug
 }
 
 /-- Trait implementation: [velocity_core::navigation::{impl core::marker::StructuralPartialEq for velocity_core::navigation::KeyStroke}]
-    Source: 'crates/velocity-core/src/navigation.rs', lines 71:29-71:38 -/
+    Source: 'crates/velocity-core/src/navigation.rs', lines 99:29-99:38 -/
 @[reducible]
 def navigation.KeyStroke.Insts.CoreMarkerStructuralPartialEq :
   core.marker.StructuralPartialEq navigation.KeyStroke := {
 }
 
 /-- [velocity_core::navigation::{impl core::cmp::PartialEq<velocity_core::navigation::KeyStroke> for velocity_core::navigation::KeyStroke}::eq]:
-    Source: 'crates/velocity-core/src/navigation.rs', lines 71:29-71:38
+    Source: 'crates/velocity-core/src/navigation.rs', lines 99:29-99:38
     Visibility: public -/
 def navigation.KeyStroke.Insts.CoreCmpPartialEqKeyStroke.eq
   (self : navigation.KeyStroke) (other : navigation.KeyStroke) :
@@ -575,7 +1072,7 @@ def navigation.KeyStroke.Insts.CoreCmpPartialEqKeyStroke.eq
   else ok false
 
 /-- Trait implementation: [velocity_core::navigation::{impl core::cmp::PartialEq<velocity_core::navigation::KeyStroke> for velocity_core::navigation::KeyStroke}]
-    Source: 'crates/velocity-core/src/navigation.rs', lines 71:29-71:38 -/
+    Source: 'crates/velocity-core/src/navigation.rs', lines 99:29-99:38 -/
 @[reducible]
 def navigation.KeyStroke.Insts.CoreCmpPartialEqKeyStroke : core.cmp.PartialEq
   navigation.KeyStroke navigation.KeyStroke := {
@@ -583,14 +1080,14 @@ def navigation.KeyStroke.Insts.CoreCmpPartialEqKeyStroke : core.cmp.PartialEq
 }
 
 /-- [velocity_core::navigation::{impl core::cmp::Eq for velocity_core::navigation::KeyStroke}::assert_fields_are_eq]:
-    Source: 'crates/velocity-core/src/navigation.rs', lines 71:40-71:42
+    Source: 'crates/velocity-core/src/navigation.rs', lines 99:40-99:42
     Visibility: public -/
 def navigation.KeyStroke.Insts.CoreCmpEq.assert_fields_are_eq
   (self : navigation.KeyStroke) : Result Unit := do
   ok ()
 
 /-- Trait implementation: [velocity_core::navigation::{impl core::cmp::Eq for velocity_core::navigation::KeyStroke}]
-    Source: 'crates/velocity-core/src/navigation.rs', lines 71:40-71:42 -/
+    Source: 'crates/velocity-core/src/navigation.rs', lines 99:40-99:42 -/
 @[reducible]
 def navigation.KeyStroke.Insts.CoreCmpEq : core.cmp.Eq navigation.KeyStroke
   := {
@@ -600,14 +1097,14 @@ def navigation.KeyStroke.Insts.CoreCmpEq : core.cmp.Eq navigation.KeyStroke
 }
 
 /-- [velocity_core::navigation::{impl core::clone::Clone for velocity_core::navigation::ShortcutContext}::clone]:
-    Source: 'crates/velocity-core/src/navigation.rs', lines 80:9-80:14
+    Source: 'crates/velocity-core/src/navigation.rs', lines 112:9-112:14
     Visibility: public -/
 def navigation.ShortcutContext.Insts.CoreCloneClone.clone
   (self : navigation.ShortcutContext) : Result navigation.ShortcutContext := do
   ok self
 
 /-- Trait implementation: [velocity_core::navigation::{impl core::clone::Clone for velocity_core::navigation::ShortcutContext}]
-    Source: 'crates/velocity-core/src/navigation.rs', lines 80:9-80:14 -/
+    Source: 'crates/velocity-core/src/navigation.rs', lines 112:9-112:14 -/
 @[reducible]
 def navigation.ShortcutContext.Insts.CoreCloneClone : core.clone.Clone
   navigation.ShortcutContext := {
@@ -615,7 +1112,7 @@ def navigation.ShortcutContext.Insts.CoreCloneClone : core.clone.Clone
 }
 
 /-- Trait implementation: [velocity_core::navigation::{impl core::marker::Copy for velocity_core::navigation::ShortcutContext}]
-    Source: 'crates/velocity-core/src/navigation.rs', lines 80:16-80:20 -/
+    Source: 'crates/velocity-core/src/navigation.rs', lines 112:16-112:20 -/
 @[reducible]
 def navigation.ShortcutContext.Insts.CoreMarkerCopy : core.marker.Copy
   navigation.ShortcutContext := {
@@ -623,7 +1120,7 @@ def navigation.ShortcutContext.Insts.CoreMarkerCopy : core.marker.Copy
 }
 
 /-- [velocity_core::navigation::{impl core::fmt::Debug for velocity_core::navigation::ShortcutContext}::fmt]:
-    Source: 'crates/velocity-core/src/navigation.rs', lines 80:22-80:27
+    Source: 'crates/velocity-core/src/navigation.rs', lines 112:22-112:27
     Visibility: public -/
 def navigation.ShortcutContext.Insts.CoreFmtDebug.fmt
   (self : navigation.ShortcutContext) (f : core.fmt.Formatter) :
@@ -638,7 +1135,7 @@ def navigation.ShortcutContext.Insts.CoreFmtDebug.fmt
     "form_open") dyn3
 
 /-- Trait implementation: [velocity_core::navigation::{impl core::fmt::Debug for velocity_core::navigation::ShortcutContext}]
-    Source: 'crates/velocity-core/src/navigation.rs', lines 80:22-80:27 -/
+    Source: 'crates/velocity-core/src/navigation.rs', lines 112:22-112:27 -/
 @[reducible]
 def navigation.ShortcutContext.Insts.CoreFmtDebug : core.fmt.Debug
   navigation.ShortcutContext := {
@@ -646,14 +1143,14 @@ def navigation.ShortcutContext.Insts.CoreFmtDebug : core.fmt.Debug
 }
 
 /-- Trait implementation: [velocity_core::navigation::{impl core::marker::StructuralPartialEq for velocity_core::navigation::ShortcutContext}]
-    Source: 'crates/velocity-core/src/navigation.rs', lines 80:29-80:38 -/
+    Source: 'crates/velocity-core/src/navigation.rs', lines 112:29-112:38 -/
 @[reducible]
 def navigation.ShortcutContext.Insts.CoreMarkerStructuralPartialEq :
   core.marker.StructuralPartialEq navigation.ShortcutContext := {
 }
 
 /-- [velocity_core::navigation::{impl core::cmp::PartialEq<velocity_core::navigation::ShortcutContext> for velocity_core::navigation::ShortcutContext}::eq]:
-    Source: 'crates/velocity-core/src/navigation.rs', lines 80:29-80:38
+    Source: 'crates/velocity-core/src/navigation.rs', lines 112:29-112:38
     Visibility: public -/
 def navigation.ShortcutContext.Insts.CoreCmpPartialEqShortcutContext.eq
   (self : navigation.ShortcutContext) (other : navigation.ShortcutContext) :
@@ -672,7 +1169,7 @@ def navigation.ShortcutContext.Insts.CoreCmpPartialEqShortcutContext.eq
   else ok false
 
 /-- Trait implementation: [velocity_core::navigation::{impl core::cmp::PartialEq<velocity_core::navigation::ShortcutContext> for velocity_core::navigation::ShortcutContext}]
-    Source: 'crates/velocity-core/src/navigation.rs', lines 80:29-80:38 -/
+    Source: 'crates/velocity-core/src/navigation.rs', lines 112:29-112:38 -/
 @[reducible]
 def navigation.ShortcutContext.Insts.CoreCmpPartialEqShortcutContext :
   core.cmp.PartialEq navigation.ShortcutContext navigation.ShortcutContext := {
@@ -680,14 +1177,14 @@ def navigation.ShortcutContext.Insts.CoreCmpPartialEqShortcutContext :
 }
 
 /-- [velocity_core::navigation::{impl core::cmp::Eq for velocity_core::navigation::ShortcutContext}::assert_fields_are_eq]:
-    Source: 'crates/velocity-core/src/navigation.rs', lines 80:40-80:42
+    Source: 'crates/velocity-core/src/navigation.rs', lines 112:40-112:42
     Visibility: public -/
 def navigation.ShortcutContext.Insts.CoreCmpEq.assert_fields_are_eq
   (self : navigation.ShortcutContext) : Result Unit := do
   ok ()
 
 /-- Trait implementation: [velocity_core::navigation::{impl core::cmp::Eq for velocity_core::navigation::ShortcutContext}]
-    Source: 'crates/velocity-core/src/navigation.rs', lines 80:40-80:42 -/
+    Source: 'crates/velocity-core/src/navigation.rs', lines 112:40-112:42 -/
 @[reducible]
 def navigation.ShortcutContext.Insts.CoreCmpEq : core.cmp.Eq
   navigation.ShortcutContext := {
@@ -698,14 +1195,14 @@ def navigation.ShortcutContext.Insts.CoreCmpEq : core.cmp.Eq
 }
 
 /-- [velocity_core::navigation::{impl core::clone::Clone for velocity_core::navigation::NumberHintEvent}::clone]:
-    Source: 'crates/velocity-core/src/navigation.rs', lines 88:9-88:14
+    Source: 'crates/velocity-core/src/navigation.rs', lines 124:9-124:14
     Visibility: public -/
 def navigation.NumberHintEvent.Insts.CoreCloneClone.clone
   (self : navigation.NumberHintEvent) : Result navigation.NumberHintEvent := do
   ok self
 
 /-- Trait implementation: [velocity_core::navigation::{impl core::clone::Clone for velocity_core::navigation::NumberHintEvent}]
-    Source: 'crates/velocity-core/src/navigation.rs', lines 88:9-88:14 -/
+    Source: 'crates/velocity-core/src/navigation.rs', lines 124:9-124:14 -/
 @[reducible]
 def navigation.NumberHintEvent.Insts.CoreCloneClone : core.clone.Clone
   navigation.NumberHintEvent := {
@@ -713,7 +1210,7 @@ def navigation.NumberHintEvent.Insts.CoreCloneClone : core.clone.Clone
 }
 
 /-- Trait implementation: [velocity_core::navigation::{impl core::marker::Copy for velocity_core::navigation::NumberHintEvent}]
-    Source: 'crates/velocity-core/src/navigation.rs', lines 88:16-88:20 -/
+    Source: 'crates/velocity-core/src/navigation.rs', lines 124:16-124:20 -/
 @[reducible]
 def navigation.NumberHintEvent.Insts.CoreMarkerCopy : core.marker.Copy
   navigation.NumberHintEvent := {
@@ -721,7 +1218,7 @@ def navigation.NumberHintEvent.Insts.CoreMarkerCopy : core.marker.Copy
 }
 
 /-- [velocity_core::navigation::{impl core::fmt::Debug for velocity_core::navigation::NumberHintEvent}::fmt]:
-    Source: 'crates/velocity-core/src/navigation.rs', lines 88:22-88:27
+    Source: 'crates/velocity-core/src/navigation.rs', lines 124:22-124:27
     Visibility: public -/
 def navigation.NumberHintEvent.Insts.CoreFmtDebug.fmt
   (self : navigation.NumberHintEvent) (f : core.fmt.Formatter) :
@@ -738,7 +1235,7 @@ def navigation.NumberHintEvent.Insts.CoreFmtDebug.fmt
     core.fmt.Formatter.write_str f (toStr "Other")
 
 /-- Trait implementation: [velocity_core::navigation::{impl core::fmt::Debug for velocity_core::navigation::NumberHintEvent}]
-    Source: 'crates/velocity-core/src/navigation.rs', lines 88:22-88:27 -/
+    Source: 'crates/velocity-core/src/navigation.rs', lines 124:22-124:27 -/
 @[reducible]
 def navigation.NumberHintEvent.Insts.CoreFmtDebug : core.fmt.Debug
   navigation.NumberHintEvent := {
@@ -746,14 +1243,14 @@ def navigation.NumberHintEvent.Insts.CoreFmtDebug : core.fmt.Debug
 }
 
 /-- Trait implementation: [velocity_core::navigation::{impl core::marker::StructuralPartialEq for velocity_core::navigation::NumberHintEvent}]
-    Source: 'crates/velocity-core/src/navigation.rs', lines 88:29-88:38 -/
+    Source: 'crates/velocity-core/src/navigation.rs', lines 124:29-124:38 -/
 @[reducible]
 def navigation.NumberHintEvent.Insts.CoreMarkerStructuralPartialEq :
   core.marker.StructuralPartialEq navigation.NumberHintEvent := {
 }
 
 /-- [velocity_core::navigation::{impl core::cmp::PartialEq<velocity_core::navigation::NumberHintEvent> for velocity_core::navigation::NumberHintEvent}::eq]:
-    Source: 'crates/velocity-core/src/navigation.rs', lines 88:29-88:38
+    Source: 'crates/velocity-core/src/navigation.rs', lines 124:29-124:38
     Visibility: public -/
 def navigation.NumberHintEvent.Insts.CoreCmpPartialEqNumberHintEvent.eq
   (self : navigation.NumberHintEvent) (other : navigation.NumberHintEvent) :
@@ -764,7 +1261,7 @@ def navigation.NumberHintEvent.Insts.CoreCmpPartialEqNumberHintEvent.eq
   ok (self1 = other1)
 
 /-- Trait implementation: [velocity_core::navigation::{impl core::cmp::PartialEq<velocity_core::navigation::NumberHintEvent> for velocity_core::navigation::NumberHintEvent}]
-    Source: 'crates/velocity-core/src/navigation.rs', lines 88:29-88:38 -/
+    Source: 'crates/velocity-core/src/navigation.rs', lines 124:29-124:38 -/
 @[reducible]
 def navigation.NumberHintEvent.Insts.CoreCmpPartialEqNumberHintEvent :
   core.cmp.PartialEq navigation.NumberHintEvent navigation.NumberHintEvent := {
@@ -772,7 +1269,7 @@ def navigation.NumberHintEvent.Insts.CoreCmpPartialEqNumberHintEvent :
 }
 
 /-- Trait implementation: [velocity_core::navigation::{impl core::cmp::Eq for velocity_core::navigation::NumberHintEvent}]
-    Source: 'crates/velocity-core/src/navigation.rs', lines 88:40-88:42 -/
+    Source: 'crates/velocity-core/src/navigation.rs', lines 124:40-124:42 -/
 @[reducible]
 impl_def navigation.NumberHintEvent.Insts.CoreCmpEq : core.cmp.Eq
   navigation.NumberHintEvent := {
@@ -783,7 +1280,7 @@ impl_def navigation.NumberHintEvent.Insts.CoreCmpEq : core.cmp.Eq
 }
 
 /-- [velocity_core::navigation::update_number_hints]:
-    Source: 'crates/velocity-core/src/navigation.rs', lines 96:0-102:1
+    Source: 'crates/velocity-core/src/navigation.rs', lines 132:0-138:1
     Visibility: public -/
 def navigation.update_number_hints
   (shown : Bool) (event : navigation.NumberHintEvent) : Result Bool := do
@@ -794,7 +1291,7 @@ def navigation.update_number_hints
   | navigation.NumberHintEvent.Other => ok shown
 
 /-- [velocity_core::navigation::bare_key_intent]:
-    Source: 'crates/velocity-core/src/navigation.rs', lines 105:0-131:1
+    Source: 'crates/velocity-core/src/navigation.rs', lines 141:0-167:1
     Visibility: public -/
 def navigation.bare_key_intent
   (view : navigation.NavigationView) (key : navigation.ShortcutKey) :
@@ -864,7 +1361,7 @@ def navigation.bare_key_intent
   | navigation.ShortcutKey.Other => ok none
 
 /-- [velocity_core::navigation::control_key_intent]:
-    Source: 'crates/velocity-core/src/navigation.rs', lines 151:0-165:1 -/
+    Source: 'crates/velocity-core/src/navigation.rs', lines 187:0-201:1 -/
 def navigation.control_key_intent
   (stroke : navigation.KeyStroke) :
   Result (Option navigation.NavigationIntent)
@@ -899,7 +1396,7 @@ def navigation.control_key_intent
   | navigation.ShortcutKey.Other => ok none
 
 /-- [velocity_core::navigation::decode_key]:
-    Source: 'crates/velocity-core/src/navigation.rs', lines 133:0-149:1
+    Source: 'crates/velocity-core/src/navigation.rs', lines 169:0-185:1
     Visibility: public -/
 def navigation.decode_key
   (view : navigation.NavigationView) (stroke : navigation.KeyStroke) :
@@ -966,7 +1463,7 @@ def navigation.decode_key
         else navigation.bare_key_intent view sk
 
 /-- [velocity_core::navigation::select_if]:
-    Source: 'crates/velocity-core/src/navigation.rs', lines 227:0-229:1 -/
+    Source: 'crates/velocity-core/src/navigation.rs', lines 263:0-265:1 -/
 def navigation.select_if
   (condition : Bool) (intent : navigation.NavigationIntent) :
   Result (Option navigation.NavigationIntent)
@@ -976,7 +1473,7 @@ def navigation.select_if
   else ok none
 
 /-- [velocity_core::navigation::route_bare_intent]:
-    Source: 'crates/velocity-core/src/navigation.rs', lines 167:0-194:1
+    Source: 'crates/velocity-core/src/navigation.rs', lines 203:0-230:1
     Visibility: public -/
 def navigation.route_bare_intent
   (view : navigation.NavigationView) (intent : navigation.NavigationIntent) :
@@ -1170,7 +1667,7 @@ def navigation.route_bare_intent
   | navigation.NavigationIntent.SaveAgents => ok none
 
 /-- [velocity_core::navigation::route_intent]:
-    Source: 'crates/velocity-core/src/navigation.rs', lines 196:0-223:1
+    Source: 'crates/velocity-core/src/navigation.rs', lines 232:0-259:1
     Visibility: public -/
 def navigation.route_intent
   (context : navigation.ShortcutContext) (control_chord : Bool)
@@ -1414,7 +1911,7 @@ def navigation.route_intent
     navigation.select_if b navigation.NavigationIntent.SaveAgents
 
 /-- [velocity_core::navigation::shortcut_intent]:
-    Source: 'crates/velocity-core/src/navigation.rs', lines 231:0-236:1
+    Source: 'crates/velocity-core/src/navigation.rs', lines 267:0-272:1
     Visibility: public -/
 def navigation.shortcut_intent
   (context : navigation.ShortcutContext) (stroke : navigation.KeyStroke) :

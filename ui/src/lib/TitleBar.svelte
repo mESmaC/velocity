@@ -1,6 +1,14 @@
 <script lang="ts">
   import { onMount } from 'svelte';
   import { onWindowState, windowCommands } from './ipc';
+  import type { LayoutAction, LayoutSnapshot } from './ipc';
+  import Icon from './Icon.svelte';
+
+  let {
+    layout,
+    send,
+  }: { layout: LayoutSnapshot | null; send: (action: LayoutAction) => void } =
+    $props();
 
   let maximized = $state(false);
   let error = $state('');
@@ -26,8 +34,8 @@
           return;
         }
         unsubscribe = stop;
-        const state = await windowCommands.getState();
-        if (!disposed) maximized = state.maximized;
+        const layout = await windowCommands.getState();
+        if (!disposed) maximized = layout.maximized;
       })
       .catch(reportError);
     return () => {
@@ -40,8 +48,34 @@
 <header class="window-titlebar">
   <div class="brand" data-tauri-drag-region>
     <b data-tauri-drag-region>Velocity</b>
+    <button
+      class="project-select"
+      title="Switch project"
+      onclick={() =>
+        send({
+          Request: {
+            Navigation: layout?.project_name ? 'Palette' : 'NewProject',
+          },
+        })}
+      >{layout?.project_name || 'Open project'}<Icon name="chevron" /></button
+    >
   </div>
-  <div class="titlebar-space" data-tauri-drag-region></div>
+  <div class="titlebar-space" data-tauri-drag-region>
+    <div class="pulse" aria-label="Project pulse">
+      {#each layout?.pulse ?? [] as count (count.kind)}<span
+          data-kind={count.kind}
+          >{#if count.kind !== 'MergedToday'}<span class="pulse-dot"
+            ></span>{:else}↳{/if}{count.count}
+          {count.label}</span
+        >{/each}
+      <button
+        title="Command palette (Ctrl+K)"
+        aria-label="Open command palette"
+        onclick={() => send({ Request: { Navigation: 'Palette' } })}
+        ><kbd>Ctrl</kbd><kbd>K</kbd></button
+      >
+    </div>
+  </div>
   <div class="window-controls" aria-label="Window controls">
     <button
       aria-label="Minimize"
