@@ -36,6 +36,7 @@ pub struct OutlineLine {
     pub(crate) prefix: String,
     pub(crate) ending: String,
     pub(crate) continuation: String,
+    pub(crate) placeholder: bool,
 }
 
 impl OutlineLine {
@@ -51,6 +52,7 @@ impl OutlineLine {
             prefix: prefix.into(),
             ending: ending.into(),
             continuation: String::new(),
+            placeholder: false,
         }
     }
 
@@ -61,6 +63,9 @@ impl OutlineLine {
     }
 
     pub(crate) fn markdown(&self) -> String {
+        if self.placeholder && self.text.trim().is_empty() && self.continuation.is_empty() {
+            return String::new();
+        }
         format!(
             "{}{}{}{}",
             self.prefix, self.text, self.ending, self.continuation

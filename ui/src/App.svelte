@@ -10,13 +10,22 @@
   import CommandPalette from './lib/CommandPalette.svelte';
   import WorktreeSettings from './lib/WorktreeSettings.svelte';
   import NewProjectDialog from './lib/NewProjectDialog.svelte';
+  import ThreadMenu from './lib/ThreadMenu.svelte';
+  import Toast from './lib/Toast.svelte';
   import {
     layoutCommands,
     onLayoutState,
     onLayoutIntent,
     projectCommands,
+    threadMenuCommands,
   } from './lib/ipc';
-  import type { LayoutAction, LayoutSnapshot, LayoutIntent } from './lib/ipc';
+  import type {
+    LayoutAction,
+    LayoutSnapshot,
+    LayoutIntent,
+    ThreadMenuAction,
+    ThreadMenuView,
+  } from './lib/ipc';
   import './lib/theme/layout.css';
   import './lib/theme/thread-view.css';
   import './lib/theme/spec-interview.css';
@@ -108,6 +117,40 @@
     enqueue(() => layoutCommands.dispatch(action));
   }
 
+  let threadMenu = $state<{
+    view: ThreadMenuView;
+    x: number;
+    y: number;
+  } | null>(null);
+
+  // Right-click a sidebar thread (F12). Rust decides the entries; this places them.
+  function openThreadMenu(identifier: string, x: number, y: number) {
+    threadMenu = null;
+    threadMenuCommands
+      .get(Number(identifier))
+      .then((view) => (threadMenu = view ? { view, x, y } : null))
+      .catch(report);
+  }
+
+  function chooseThreadAction(action: ThreadMenuAction) {
+    const menu = threadMenu?.view;
+    threadMenu = null;
+    if (!menu) return;
+    const { project_identifier, thread_identifier } = menu;
+    if (action === 'Delete')
+      enqueue(() =>
+        threadMenuCommands.delete(project_identifier, thread_identifier),
+      );
+    else
+      threadMenuCommands
+        .run(project_identifier, thread_identifier, action)
+        .catch(report);
+  }
+
+  function undoDelete(deletion: number) {
+    enqueue(() => threadMenuCommands.undoDelete(deletion));
+  }
+
   function switchProject(identifier: number) {
     enqueue(() => projectCommands.switch(identifier));
   }
@@ -197,7 +240,7 @@
 <div class="app-shell">
   <TitleBar {layout} {send} {switchProject} />
   {#if layout}<div class="workspace">
-      <Sidebar {layout} {send} />
+      <Sidebar {layout} {send} openMenu={openThreadMenu} />
       <main class="main-view" aria-label="Velocity workspace">
         {#if layout.view === 'Agents' && layout.project_identifier !== null}
           {#key layout.project_identifier}<AgentsEditor
@@ -228,6 +271,14 @@
     {send}
     submitRequests={newProjectSubmits}
   />{/if}
+{#if threadMenu}<ThreadMenu
+    menu={threadMenu.view}
+    x={threadMenu.x}
+    y={threadMenu.y}
+    choose={chooseThreadAction}
+    close={() => (threadMenu = null)}
+  />{/if}
+<Toast toast={layout?.toast ?? null} undo={undoDelete} />
 {#if error || layout?.launch_notice}<p class="layout-error" role="alert">
     {error || layout?.launch_notice}
   </p>{/if}

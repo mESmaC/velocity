@@ -98,7 +98,7 @@ impl AgentsEditor {
             rule_count: u32::try_from(
                 self.lines
                     .iter()
-                    .filter(|line| line.kind == OutlineKind::Rule)
+                    .filter(|line| line.kind == OutlineKind::Rule && !line.text.trim().is_empty())
                     .count(),
             )
             .unwrap_or(u32::MAX),
@@ -166,7 +166,8 @@ impl AgentsEditor {
         {
             previous.ending = self.newline.clone();
         }
-        let line = OutlineLine::new(identifier, &format!("{source}{}", self.newline), false);
+        let mut line = OutlineLine::new(identifier, &format!("{source}{}", self.newline), false);
+        line.placeholder = line.kind == OutlineKind::Rule && line.text.is_empty();
         self.lines.insert(index, line);
         identifier
     }
