@@ -6,13 +6,14 @@ use std::process::Stdio;
 use tokio::process::{Child, Command};
 
 use super::ClientError;
+use super::program_path::find_program;
 
 /// The command that runs one provider's ACP agent. This is the only provider-specific part
 /// of a session (§3.2 Provider code).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct AgentLaunch {
-    /// The agent's executable. On Windows, give the full path of a `.cmd` or `.bat` shim:
-    /// the system looks up only `.exe` files on `PATH`.
+    /// The agent's executable: a path, or a bare name looked up on `PATH`, including `.cmd`
+    /// shims such as `claude-code-acp` on Windows (`program_path::find_program`).
     pub program: PathBuf,
     pub args: Vec<String>,
     /// Added to Velocity's own environment, which the agent inherits whole: your `PATH`,
@@ -23,7 +24,7 @@ pub struct AgentLaunch {
 /// Starts the agent in `worktree` with piped stdio for ACP. It loads your user and project
 /// config as it would in a terminal: no isolated home, no empty config, no sandbox.
 pub fn spawn_agent(launch: &AgentLaunch, worktree: &Path) -> Result<Child, ClientError> {
-    let mut command = Command::new(&launch.program);
+    let mut command = Command::new(find_program(launch.program.as_os_str()));
     command
         .args(&launch.args)
         .envs(launch.env.iter().map(|(name, value)| (name, value)))

@@ -18,6 +18,8 @@ use tokio::task::JoinHandle;
 use super::ClientError;
 use super::files::resolve_in_worktree;
 use super::process::hide_console_window;
+#[cfg(windows)]
+use super::program_path::find_program;
 use crate::retained_output_start;
 
 /// Output kept so far, truncated from the front at a character boundary
@@ -157,7 +159,7 @@ fn shell_command(command: &str, args: &[String]) -> Command {
         built.raw_arg(format!("/D /S /C \"{command}\""));
         built
     } else {
-        let mut built = Command::new(command);
+        let mut built = Command::new(find_program(command.as_ref()));
         built.args(args);
         built
     }

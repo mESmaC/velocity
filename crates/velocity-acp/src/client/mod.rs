@@ -9,6 +9,7 @@ mod error;
 mod files;
 mod handlers;
 mod process;
+mod program_path;
 mod session;
 mod terminals;
 mod updates;
@@ -140,15 +141,31 @@ pub async fn run_session(
     result.map_err(ClientError::from)
 }
 
+/// Reads the agent's stderr to the end, whatever it holds. Stopping early would close the
+/// pipe and make the agent's next stderr write fail, which crashes many agents. So lines that
+/// aren't UTF-8 (code-page output from git or cmd) are forwarded lossily, and lines are still
+/// read and dropped once nobody listens.
 fn forward_log(stderr: ChildStderr, events: UnboundedSender<AgentEvent>) {
     tokio::spawn(async move {
-        let mut lines = BufReader::new(stderr).lines();
-        while let Ok(Some(line)) = lines.next_line().await {
-            if events.send(AgentEvent::Log(line)).is_err() {
-                break;
+        let mut reader = BufReader::new(stderr);
+        let mut line = Vec::new();
+        loop {
+            line.clear();
+            match reader.read_until(b'\n', &mut line).await {
+                Ok(0) | Err(_) => break,
+                Ok(_) => {
+                    let text = String::from_utf8_lossy(without_line_end(&line)).into_owned();
+                    // No receiver: the session is ending; keep draining regardless.
+                    let _ = events.send(AgentEvent::Log(text));
+                }
             }
         }
     });
+}
+
+fn without_line_end(line: &[u8]) -> &[u8] {
+    let line = line.strip_suffix(b"\n").unwrap_or(line);
+    line.strip_suffix(b"\r").unwrap_or(line)
 }
 
 /// The session's main loop: thread inputs and ended turns go through [`Steering`], whose
