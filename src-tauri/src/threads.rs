@@ -35,7 +35,7 @@ pub struct ThreadStepRecorded {
     pub block: TranscriptBlock,
 }
 
-fn lock<'guard, Value>(
+pub(crate) fn lock<'guard, Value>(
     mutex: &'guard Mutex<Value>,
     what: &str,
 ) -> Result<MutexGuard<'guard, Value>, String> {
@@ -130,15 +130,25 @@ async fn run_thread(
         Ok(Err(error)) => Some(error.to_string()),
         Err(error) => Some(error.to_string()),
     };
+    // A thread deleted while its worktree was being created starts no agent (F12).
+    let wanted = lock(
+        application.state::<ManagedThreads>().inner(),
+        "thread sessions",
+    )
+    .map(|mut runtimes| {
+        if failure.is_some() {
+            runtimes.is_live(key)
+        } else {
+            runtimes.worktree_ready(key)
+        }
+    })
+    .unwrap_or(false);
+    if !wanted {
+        return remove_deleted_worktree(plan).await;
+    }
     if let Some(detail) = failure {
         // The worktree is kept for a failed thread (F5).
         return fail(&application, key, "Could not set up the worktree", &detail);
-    }
-    if let Ok(mut runtimes) = lock(
-        application.state::<ManagedThreads>().inner(),
-        "thread sessions",
-    ) {
-        runtimes.worktree_ready(key);
     }
     report(refresh(&application, key, false));
     let session = spawn_session(
@@ -164,7 +174,18 @@ async fn pump(application: &AppHandle, key: ThreadKey, mut session: RunningSessi
         }
         report(apply_batch(application, key, &batch));
     }
-    match session.outcome.await {
+    let outcome = session.outcome.await;
+    let still_wanted = lock(
+        application.state::<ManagedThreads>().inner(),
+        "thread sessions",
+    )
+    .map(|mut runtimes| runtimes.session_ended(key))
+    .unwrap_or(false);
+    if !still_wanted {
+        // Deleting the thread stopped it; the deletion takes it from here (F12).
+        return;
+    }
+    match outcome {
         Ok(Ok(())) => report(
             save_activity(application, key, AgentActivity::Idle, None)
                 .and_then(|_| refresh(application, key, false).map(|_| ())),
@@ -230,6 +251,23 @@ fn save_activity(
         }
     })
     .map_err(|error| error.to_string())
+}
+
+/// The thread was deleted while its worktree was being created. Its deletion skipped the
+/// worktree because setup still held it, so it is removed here once setup is done (F12).
+async fn remove_deleted_worktree(plan: LaunchPlan) {
+    let request = plan.worktree;
+    let removed = tauri::async_runtime::spawn_blocking(move || {
+        velocity_threads::deletion::remove_worktree(
+            &request.repository_root,
+            &request.worktree_path,
+        )
+        .map_err(|error| error.to_string())
+    })
+    .await
+    .map_err(|error| error.to_string())
+    .and_then(|result| result);
+    report(removed);
 }
 
 /// The thread moves to `error` and keeps its worktree (§2.1, F5).
@@ -332,7 +370,7 @@ fn emit_step(application: &AppHandle, key: ThreadKey) {
 }
 
 /// Background work has no caller to return an error to; the log is where it goes.
-fn report<Value>(result: Result<Value, String>) {
+pub(crate) fn report<Value>(result: Result<Value, String>) {
     if let Err(error) = result {
         eprintln!("Velocity thread runtime: {error}");
     }

@@ -25,8 +25,11 @@ specta-typescript = "=0.0.13"
 sysinfo = { version = "=0.40.1", default-features = false, features = ["disk"] }
 tauri = { version = "2.12.5", features = ["specta"] }
 tauri-specta = { version = "=2.0.0-rc.26", features = ["derive", "typescript"] }
+tauri-plugin-clipboard-manager = "=2.5.0"
 tauri-plugin-dialog = "=2.8.4"
+tauri-plugin-opener = "=2.7.2"
 thiserror = "2.0"
+tokio = { version = "1.54", features = ["rt", "sync", "time"] }
 velocity-core = { path = "crates/velocity-core" }
 velocity-git = { path = "crates/velocity-git" }
 velocity-github = { path = "crates/velocity-github" }

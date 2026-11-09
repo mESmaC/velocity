@@ -30,6 +30,16 @@ export const commands = {
 	/**  Create & start interview. `git` and `gh` run off the UI thread. */
 	createProject: (request: NewProjectRequest_Deserialize) => __TAURI_INVOKE<CreatedProject>("create_project", { request }),
 	getLaunchEligibility: (request: LaunchRequest) => __TAURI_INVOKE<LaunchEligibility>("get_launch_eligibility", { request }),
+	getThreadMenu: (threadIdentifier: number) => __TAURI_INVOKE<ThreadMenuView_Serialize | null>("get_thread_menu", { threadIdentifier }),
+	/**
+	 *  Open worktree in Explorer, Copy worktree path and Open PR on GitHub. Delete has its own
+	 *  command because it can be undone.
+	 */
+	runThreadMenuAction: (projectIdentifier: number, threadIdentifier: number, action: ThreadMenuAction) => __TAURI_INVOKE<null>("run_thread_menu_action", { projectIdentifier, threadIdentifier, action }),
+	/**  Hides the thread at once and offers Undo; the deletion lands after 5 s (F12). */
+	deleteThread: (projectIdentifier: number, threadIdentifier: number) => __TAURI_INVOKE<LayoutSnapshot_Serialize>("delete_thread", { projectIdentifier, threadIdentifier }),
+	/**  Undo within the 5 s: the thread is back exactly as it was, since nothing was touched. */
+	undoDeleteThread: (deletion: number) => __TAURI_INVOKE<LayoutSnapshot_Serialize>("undo_delete_thread", { deletion }),
 };
 
 /* Constants */
@@ -223,6 +233,7 @@ export type LayoutSnapshot_Deserialize = {
 	tasks_draft: boolean,
 	task_count_label: string,
 	launch_notice?: string | null,
+	toast?: ToastView_Deserialize | null,
 };
 
 export type LayoutSnapshot_Serialize = {
@@ -261,6 +272,7 @@ export type LayoutSnapshot_Serialize = {
 	tasks_draft: boolean,
 	task_count_label: string,
 	launch_notice: string | null,
+	toast: ToastView_Serialize | null,
 };
 
 export type LayoutStateChanged = LayoutStateChanged_Serialize | LayoutStateChanged_Deserialize;
@@ -1026,6 +1038,43 @@ export type ThreadItem_Serialize = {
 	model_supports_fast: boolean,
 };
 
+export type ThreadMenuAction = "OpenWorktree" | "CopyWorktreePath" | "OpenPullRequest" | "Delete";
+
+export type ThreadMenuEntry = ThreadMenuEntry_Serialize | ThreadMenuEntry_Deserialize;
+
+export type ThreadMenuEntry_Deserialize = { Item: {
+	action: ThreadMenuAction,
+	label: string,
+	detail?: string | null,
+	danger: boolean,
+} } | "Separator";
+
+export type ThreadMenuEntry_Serialize = { Item: {
+	action: ThreadMenuAction,
+	label: string,
+	detail: string | null,
+	danger: boolean,
+} } | "Separator";
+
+/**  One thread's right-click menu, built from saved state and what is on disk. */
+export type ThreadMenuView = ThreadMenuView_Serialize | ThreadMenuView_Deserialize;
+
+/**  One thread's right-click menu, built from saved state and what is on disk. */
+export type ThreadMenuView_Deserialize = {
+	/**  The project the menu was opened in; actions check it is still selected. */
+	project_identifier: number,
+	thread_identifier: number,
+	entries: ThreadMenuEntry_Deserialize[],
+};
+
+/**  One thread's right-click menu, built from saved state and what is on disk. */
+export type ThreadMenuView_Serialize = {
+	/**  The project the menu was opened in; actions check it is still selected. */
+	project_identifier: number,
+	thread_identifier: number,
+	entries: ThreadMenuEntry_Serialize[],
+};
+
 export type ThreadState = "draft" | "spec" | "working" | "review" | "error" | "closed" | "done" | "merged";
 
 export type ThreadStatusChanged = {
@@ -1049,6 +1098,32 @@ export type ThreadStepRecorded_Serialize = {
 	thread_identifier: number,
 	/**  The thread's newest transcript block after the update. */
 	block: TranscriptBlock_Serialize,
+};
+
+/**
+ *  The bottom-centre toast. `identifier` changes with every new toast so the window can
+ *  time it out; one with `undo_deletion` offers Undo until that deletion lands (F12).
+ */
+export type ToastView = ToastView_Serialize | ToastView_Deserialize;
+
+/**
+ *  The bottom-centre toast. `identifier` changes with every new toast so the window can
+ *  time it out; one with `undo_deletion` offers Undo until that deletion lands (F12).
+ */
+export type ToastView_Deserialize = {
+	identifier: number,
+	message: string,
+	undo_deletion?: number | null,
+};
+
+/**
+ *  The bottom-centre toast. `identifier` changes with every new toast so the window can
+ *  time it out; one with `undo_deletion` offers Undo until that deletion lands (F12).
+ */
+export type ToastView_Serialize = {
+	identifier: number,
+	message: string,
+	undo_deletion: number | null,
 };
 
 export type ToolStepRow = {

@@ -777,3 +777,40 @@
   --new-project-footer-background: rgba(0, 0, 0, 0.22);
   --new-project-error-font-size: 11px;
 }
+
+/* Thread right-click menu and toast (F12): the reference's `.ctx` and `.toast`, with the
+   frosted popover overrides that win over the base rules. */
+:root {
+  --thread-menu-z-index: 40;
+  --thread-menu-min-width: 230px;
+  --thread-menu-padding: 5px;
+  --thread-menu-edge-gap: 8px;
+  --thread-menu-border: 1px solid rgba(255, 255, 255, 0.13);
+  --thread-menu-radius: 12px;
+  --thread-menu-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.12), 0 0 0 0.5px #000,
+    0 30px 90px rgba(0, 0, 0, 0.9);
+  --thread-menu-button-gap: 1px;
+  --thread-menu-button-padding: 6px 9px;
+  --thread-menu-button-radius: 7px;
+  --thread-menu-button-font-size: 11.5px;
+  --thread-menu-button-hover: rgba(255, 255, 255, 0.13);
+  --thread-menu-danger-hover: #e8807a18;
+  --thread-menu-detail-font: 10px var(--mono);
+  --thread-menu-detail-max-width: 300px;
+  --thread-menu-divider-margin: 4px 2px;
+  --thread-menu-divider-top: 1px solid rgba(255, 255, 255, 0.09);
+  --toast-bottom: 22px;
+  --toast-hidden-transform: translateX(-50%) translateY(20px);
+  --toast-shown-transform: translateX(-50%);
+  --toast-padding: 8px 15px;
+  --toast-border: 1px solid rgba(255, 255, 255, 0.13);
+  --toast-radius: 999px;
+  --toast-font-size: 11px;
+  --toast-transition: 0.18s;
+  --toast-z-index: 30;
+  --toast-action-gap: 10px;
+  --toast-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.12), 0 0 0 0.5px #000,
+    0 30px 90px rgba(0, 0, 0, 0.9);
+}

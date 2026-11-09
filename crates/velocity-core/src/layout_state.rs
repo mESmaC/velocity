@@ -12,7 +12,7 @@ use crate::thread_view_model::{
     self, AgentCommandView, LiveThreadView, ModelPillView, SlashCommandItem, ThreadDetailSnapshot,
     TranscriptBlock,
 };
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 #[derive(Clone)]
 pub struct LayoutState {
@@ -37,6 +37,11 @@ pub struct LayoutState {
     task_text: String,
     project_spec_locked: Option<bool>,
     launch_notice: Option<String>,
+    /// `(project, thread)` rows deleted but still inside their undo window (F12). Kept apart
+    /// from `data` for the same reason as `live`: the store does not know about them yet.
+    hidden_threads: BTreeSet<(u32, usize)>,
+    toast: Option<ToastView>,
+    toast_count: u32,
 }
 
 impl Default for LayoutState {
@@ -61,6 +66,9 @@ impl Default for LayoutState {
             task_text: String::new(),
             project_spec_locked: None,
             launch_notice: None,
+            hidden_threads: BTreeSet::new(),
+            toast: None,
+            toast_count: 0,
         }
     }
 }
@@ -83,6 +91,7 @@ impl LayoutState {
         search: String,
     ) {
         self.data = data;
+        self.hide_pending_rows();
         self.search = search;
         self.palette_open = false;
         self.palette_query.clear();
@@ -127,6 +136,71 @@ impl LayoutState {
     /// Feature owners replace their read model after domain events, then emit a snapshot.
     pub fn replace_data(&mut self, data: LayoutData) {
         self.data = data;
+        self.hide_pending_rows();
+        self.deselect_hidden();
+        self.palette_selection =
+            layout::bounded_selection(self.palette_results().len(), self.palette_selection);
+        self.changed();
+    }
+
+    /// Deleted threads leave the sidebar at once and come back on Undo (F12).
+    pub fn set_threads_hidden(&mut self, project: u32, identifiers: &[usize], hidden: bool) {
+        for identifier in identifiers {
+            if hidden {
+                self.hidden_threads.insert((project, *identifier));
+            } else {
+                self.hidden_threads.remove(&(project, *identifier));
+            }
+        }
+        if Some(project) == self.data.project_identifier {
+            for thread in &mut self.data.threads {
+                if identifiers.contains(&thread.policy.identifier) {
+                    thread.policy.hidden = hidden;
+                }
+            }
+        }
+        self.deselect_hidden();
+        self.changed();
+    }
+
+    /// A short message, or a deletion's Undo offer, replacing any toast already showing.
+    pub fn show_toast(&mut self, message: String, undo_deletion: Option<u32>) {
+        self.toast_count = self.toast_count.wrapping_add(1);
+        self.toast = Some(ToastView {
+            identifier: self.toast_count,
+            message,
+            undo_deletion,
+        });
+        self.changed();
+    }
+
+    /// The deletion landed or was undone, so its Undo is no longer on offer.
+    pub fn clear_deletion_toast(&mut self, deletion: u32) {
+        if self
+            .toast
+            .as_ref()
+            .is_some_and(|toast| toast.undo_deletion == Some(deletion))
+        {
+            self.toast = None;
+            self.changed();
+        }
+    }
+
+    fn hide_pending_rows(&mut self) {
+        let Some(project) = self.data.project_identifier else {
+            return;
+        };
+        for thread in &mut self.data.threads {
+            if self
+                .hidden_threads
+                .contains(&(project, thread.policy.identifier))
+            {
+                thread.policy.hidden = true;
+            }
+        }
+    }
+
+    fn deselect_hidden(&mut self) {
         if self.selected_thread.is_some_and(|identifier| {
             !self
                 .data
@@ -137,9 +211,6 @@ impl LayoutState {
             self.selected_thread = None;
             self.view = NavigationView::Home;
         }
-        self.palette_selection =
-            layout::bounded_selection(self.palette_results().len(), self.palette_selection);
-        self.changed();
     }
 
     /// A running session's transcript and commands for one thread (`SPEC.md §3.2`, F4).
@@ -290,6 +361,7 @@ impl LayoutState {
             tasks_draft: self.project_spec_locked == Some(false),
             task_count_label: self.task_count_label(),
             launch_notice: self.launch_notice.clone(),
+            toast: self.toast.clone(),
         }
     }
 

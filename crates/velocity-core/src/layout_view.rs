@@ -303,4 +303,18 @@ pub struct LayoutSnapshot {
     pub tasks_draft: bool,
     pub task_count_label: String,
     pub launch_notice: Option<String>,
+    pub toast: Option<ToastView>,
+}
+
+/// The bottom-centre toast. `identifier` changes with every new toast so the window can
+/// time it out; one with `undo_deletion` offers Undo until that deletion lands (F12).
+#[cfg_attr(
+    feature = "bindings",
+    derive(serde::Serialize, serde::Deserialize, specta::Type)
+)]
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ToastView {
+    pub identifier: u32,
+    pub message: String,
+    pub undo_deletion: Option<u32>,
 }

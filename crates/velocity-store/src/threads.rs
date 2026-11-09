@@ -6,7 +6,7 @@ use velocity_core::layout_state::LayoutState;
 
 use crate::{
     AgentActivity, EffortLevel, ProjectItem, ProviderKind, SpeedMode, StateStore, StoreError,
-    ThreadItem, ThreadState, WorktreeRole,
+    TaskState, ThreadItem, ThreadState, WorktreeRole,
 };
 
 #[derive(Debug, Error)]
@@ -119,6 +119,37 @@ impl StateStore {
         }
         self.commit(next)?;
         Ok(true)
+    }
+
+    /// Removes a deleted thread's record once its undo window has passed (F12). Tasks it
+    /// was working on go back to todo for someone else to pick up, and it stops being the
+    /// project's active thread. Returns the removed record.
+    pub fn remove_thread(&mut self, project: u32, thread: u32) -> Result<ThreadItem, ThreadError> {
+        let mut next = self.state.clone();
+        let item = next
+            .projects
+            .iter_mut()
+            .find(|item| item.id == project)
+            .ok_or(ThreadError::UnknownProject(project))?;
+        let position = item
+            .threads
+            .iter()
+            .position(|record| record.id == thread)
+            .ok_or(ThreadError::UnknownThread { project, thread })?;
+        let removed = item.threads.remove(position);
+        for task in &mut item.tasks {
+            if task.assigned_thread_id == Some(thread) || removed.task_ids.contains(&task.id) {
+                task.assigned_thread_id = None;
+                if task.state == TaskState::Now {
+                    task.state = TaskState::Todo;
+                }
+            }
+        }
+        if item.active_thread_id == Some(thread) {
+            item.active_thread_id = None;
+        }
+        self.commit(next)?;
+        Ok(removed)
     }
 
     /// Rebuilds the main window's rows from the saved state, keeping the current view.

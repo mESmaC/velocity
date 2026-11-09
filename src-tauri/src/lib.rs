@@ -10,6 +10,7 @@ mod new_project;
 mod projects;
 mod pull_request_panel;
 mod state;
+mod thread_menu;
 mod threads;
 mod window;
 mod worktree_settings;
@@ -45,6 +46,10 @@ fn bindings() -> Builder<tauri::Wry> {
             new_project::pick_project_folder,
             new_project::create_project,
             build_gate::get_launch_eligibility,
+            thread_menu::get_thread_menu,
+            thread_menu::run_thread_menu_action,
+            thread_menu::delete_thread,
+            thread_menu::undo_delete_thread,
         ])
         .typ::<PersistedState>()
         .typ::<window::WindowStateChanged>()
@@ -100,8 +105,11 @@ pub fn run() -> anyhow::Result<()> {
     ]);
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
+        .plugin(tauri_plugin_opener::init())
+        .plugin(tauri_plugin_clipboard_manager::init())
         .manage(layout::MainLayout::default())
         .manage(threads::ManagedThreads::default())
+        .manage(thread_menu::ManagedDeletions::default())
         .invoke_handler(bindings.invoke_handler())
         .setup(move |application| {
             bindings.mount_events(application);
