@@ -85,19 +85,11 @@ lake build
 The native Windows `.lake` build uses Windows object files. Do not build that
 same directory using Linux Lean in WSL. WSL runs only the translators here.
 
-## Bootstrap proof scope
+## Proof scope
 
-`Toolchain/Design.lean` models the successful Charon → Aeneas → Lean workflow.
-Its cost is the number of stage invocations, excluding setup and each tool's
-internal work. `optimal` quantifies over all finite stage sequences that begin
-with Rust and reach checked Lean in that model.
-
-`Toolchain/Confidence.lean` composes that model with the pinned Aeneas result type,
-proves successful refinement and failure propagation, and requires both Mathlib
-and Aeneas to compile in the native project. Its level is **model**. It does not
-prove the PowerShell wrappers, external tools or filesystem. This PR adds no
-application Rust, so there is no application translation or code-level claim.
-Scouts and PR duty own adversarial verification of the wrappers.
+Only features on the proof list in SPEC.md F17 have Lean here: claim lock,
+targeted rebases and landing, worktree deletion, goal swarm work choice, and
+stall detection and claim release. Everything else ships with no Lean.
 
 ## Updating pins
 
