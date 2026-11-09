@@ -72,6 +72,7 @@ fn spec_thread(
         worktree_role: WorktreeRole::default(),
         worktree_path_id: None,
         pull_request_number: None,
+        follow_through: None,
         review_stage: None,
         task_ids: Vec::new(),
         additions: 0,

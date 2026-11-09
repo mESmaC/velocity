@@ -4,12 +4,14 @@
 use thiserror::Error;
 
 use crate::{
-    AgentActivity, EffortLevel, ProjectItem, ProviderKind, SpeedMode, StateStore, StoreError,
-    TaskState, ThreadItem, ThreadState, WorktreeRole,
+    EffortLevel, ProjectItem, ProviderKind, SpeedMode, StateStore, StoreError, TaskState,
+    ThreadItem,
 };
 
 #[derive(Debug, Error)]
 pub enum ThreadError {
+    #[error("This project has exhausted its thread identifiers")]
+    IdentifiersExhausted,
     #[error("Project {0} is not registered")]
     UnknownProject(u32),
     #[error("Thread {thread} is not in project {project}")]
@@ -54,32 +56,25 @@ impl StateStore {
             .iter()
             .map(|existing| existing.id)
             .max()
-            .map_or(1, |highest| highest.saturating_add(1));
-        let record = ThreadItem {
-            id: identifier,
-            title: thread.title,
-            state: ThreadState::Working,
-            activity: AgentActivity::Executing,
-            branch_name: thread.branch_name,
-            worktree_path: Some(thread.worktree_path),
-            // A thread started from the composer builds in its own worktree (F4, F5).
-            worktree_role: WorktreeRole::Thread,
-            worktree_path_id: None,
-            pull_request_number: None,
-            review_stage: None,
-            task_ids: Vec::new(),
-            additions: 0,
-            deletions: 0,
-            elapsed_seconds: 0,
-            provider: thread.provider,
-            model_name: thread.model_name,
-            effort: thread.effort,
-            preferred_speed: thread.preferred_speed,
-            effective_speed: thread.preferred_speed,
-            model_supports_fast: thread.model_supports_fast,
-            interview: None,
-        }
-        .normalize();
+            .unwrap_or(0)
+            .checked_add(1)
+            .ok_or(ThreadError::IdentifiersExhausted)?
+            .max(*next.next_thread_identifiers.get(&project).unwrap_or(&1));
+        next.next_thread_identifiers.insert(
+            project,
+            identifier
+                .checked_add(1)
+                .ok_or(ThreadError::IdentifiersExhausted)?,
+        );
+        next.thread_started_at.entry(project).or_default().insert(
+            identifier,
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_secs()
+                .to_string(),
+        );
+        let record = ThreadItem::for_build(thread, identifier);
         // Newest first, as the reference's sidebar lists new threads at the top of their group.
         item.threads.insert(0, record);
         item.active_thread_id = Some(identifier);
@@ -147,6 +142,9 @@ impl StateStore {
         }
         if item.active_thread_id == Some(thread) {
             item.active_thread_id = None;
+        }
+        if let Some(started) = next.thread_started_at.get_mut(&project) {
+            started.remove(&thread);
         }
         self.commit(next)?;
         Ok(removed)
