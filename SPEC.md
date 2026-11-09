@@ -1127,7 +1127,7 @@ Each milestone ends with a working app. PR duty checks an item off when it lands
 - [ ] PR duty: claiming, review against SPEC.md, request changes, approve, merge; never merge unapproved; approval record bound to the head SHA; severity bar (Rule 4, F7, Q28)
 - [ ] Scouts: sweeps, issue filing with repro, de-duplication (F7)
   - [x] GitHub issue inventory (open and closed), executed failure evidence, duplicate assessment, dispatch labels and scout attribution; runnable backend filing path
-- [ ] Duty view, start dialog, pause/resume, add agents (F7)
+- [x] Duty view, start dialog, pause/resume, add agents (F7)
 
 **M6 · Task List, issues, swarm**
 - [ ] Task List: states, add input, `T`, `/task`, palette, attribution, live agent state (F8)
