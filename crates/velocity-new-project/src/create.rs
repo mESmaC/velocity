@@ -1,9 +1,11 @@
-//! Runs Create: observe, plan, run each step, then switch, save and close.
+//! Runs Create: observe, plan, run each step, then save, switch and close.
 
 use std::sync::{Mutex, MutexGuard};
 use velocity_core::layout_state::LayoutState;
 use velocity_core::layout_view::LayoutSnapshot;
-use velocity_core::new_project::{NewProjectLocation, Observation, SetupStep, plan_new_project};
+use velocity_core::new_project::{
+    NewProjectLocation, Observation, Refusal, SetupStep, plan_new_project,
+};
 use velocity_github::RepositoryName;
 use velocity_store::projects::{ProjectList, ProjectSelectionView};
 use velocity_store::{NewProjectRecord, PendingInterview, ProjectLocationKind, StateStore};
@@ -19,11 +21,13 @@ pub struct Publication {
     pub selection: Option<(ProjectList, ProjectSelectionView)>,
 }
 
-/// What the steps so far have done. The switch itself runs in `finish`, with the
-/// save, so the switcher and main window update in one locked step.
+/// What the store steps asked for. Nothing reaches the store until `finish` saves
+/// it all at once, so a failed save leaves no project behind and Create can be
+/// retried; the repository set up so far is kept.
 #[derive(Default)]
-struct Progress {
-    identifier: Option<u32>,
+struct PendingProject {
+    record: Option<NewProjectRecord>,
+    interview: Option<PendingInterview>,
     switch_requested: bool,
 }
 
@@ -42,20 +46,11 @@ pub fn create_project(
     let observation = observe(&resolved, already_a_project)?;
     let steps = plan_new_project(resolved.location, observation)
         .map_err(|refusal| NewProjectError::Refused(refusal_message(refusal, &resolved)))?;
-    let mut progress = Progress::default();
+    let mut pending = PendingProject::default();
     for step in steps {
-        run_step(step, &resolved, request, store, &mut progress)?;
+        run_step(step, &resolved, request, &mut pending)?;
     }
-    let identifier = progress.identifier.ok_or(NewProjectError::StepOrder(
-        "Create finished without registering the project",
-    ))?;
-    finish(
-        store,
-        layout,
-        identifier,
-        progress.switch_requested,
-        publish,
-    )?;
+    let identifier = finish(&resolved, pending, store, layout, publish)?;
     Ok(CreatedProject {
         identifier,
         name: resolved.name.clone(),
@@ -88,8 +83,7 @@ fn run_step(
     step: SetupStep,
     resolved: &ResolvedRequest,
     request: &NewProjectRequest,
-    store: &Mutex<StateStore>,
-    progress: &mut Progress,
+    pending: &mut PendingProject,
 ) -> Result<(), NewProjectError> {
     match step {
         SetupStep::GitInit => velocity_git::initialize_repository(&resolved.path)?,
@@ -97,23 +91,15 @@ fn run_step(
             velocity_github::create_repository(github_repository(resolved)?, resolved.visibility)?
         }
         SetupStep::Clone => clone(resolved)?,
-        SetupStep::Register => progress.identifier = Some(register(resolved, store)?),
-        SetupStep::SwitchTo => progress.switch_requested = true,
+        SetupStep::Register => pending.record = Some(project_record(resolved)?),
+        SetupStep::SwitchTo => pending.switch_requested = true,
         SetupStep::StartInterview => {
-            let project = progress.identifier.ok_or(NewProjectError::StepOrder(
-                "The interview step ran before Register",
-            ))?;
-            let interview = PendingInterview {
+            pending.interview = Some(PendingInterview {
                 model_name: request.model_name.clone(),
                 effort: request.effort,
                 preferred_speed: request.speed,
                 brief: request.brief.trim().to_owned(),
-            };
-            if !lock(store, "Persisted state store")?.request_interview(project, interview) {
-                return Err(NewProjectError::StepOrder(
-                    "The new project disappeared before its interview was recorded",
-                ));
-            }
+            });
         }
     }
     Ok(())
@@ -141,40 +127,47 @@ fn github_repository(resolved: &ResolvedRequest) -> Result<&RepositoryName, NewP
         ))
 }
 
-fn register(resolved: &ResolvedRequest, store: &Mutex<StateStore>) -> Result<u32, NewProjectError> {
-    let default_branch = velocity_git::current_branch(&resolved.path)?;
-    let record = NewProjectRecord {
+fn project_record(resolved: &ResolvedRequest) -> Result<NewProjectRecord, NewProjectError> {
+    Ok(NewProjectRecord {
         name: resolved.name.clone(),
         location_kind: match resolved.repository {
             Some(_) => ProjectLocationKind::GitHub,
             None => ProjectLocationKind::Local,
         },
         repository_path: resolved.path_text(),
-        default_branch,
+        default_branch: velocity_git::current_branch(&resolved.path)?,
         github_remote: resolved.repository.as_ref().map(RepositoryName::full_name),
-    };
-    Ok(lock(store, "Persisted state store")?.register_project(record))
+    })
 }
 
-/// Switches the way the switcher does, saves, and closes the dialog. As in the
-/// switcher's command, the store is locked before the layout and released before
-/// `publish` runs.
+/// Saves the project, switches to it the way the switcher does, and closes the
+/// dialog. As in the switcher's command, the store is locked before the layout and
+/// released before `publish` runs.
 fn finish(
+    resolved: &ResolvedRequest,
+    pending: PendingProject,
     store: &Mutex<StateStore>,
     layout: &Mutex<LayoutState>,
-    identifier: u32,
-    switch: bool,
     publish: impl FnOnce(Publication) -> Result<(), String>,
-) -> Result<(), NewProjectError> {
+) -> Result<u32, NewProjectError> {
+    let record = pending.record.ok_or(NewProjectError::StepOrder(
+        "Create finished without registering the project",
+    ))?;
     let mut store = lock(store, "Persisted state store")?;
+    // Another Create may have registered the same folder while git or gh ran.
+    if store.has_project_at(&record.repository_path) {
+        let message = refusal_message(Refusal::AlreadyAProject, resolved);
+        return Err(NewProjectError::Refused(message));
+    }
     let mut layout = lock(layout, "Main-window state")?;
-    let selection = if switch {
+    let identifier =
+        store.commit_new_project(record, pending.interview, pending.switch_requested)?;
+    // The project is already saved as active, so this only refreshes the layout.
+    let selection = if pending.switch_requested {
         Some(store.switch_project_layout(&mut layout, identifier)?)
     } else {
         None
     };
-    // The switch writes only when the active project changes; this covers the rest.
-    store.save_if_changed()?;
     layout.close_new_project();
     let projects = store.list_projects();
     drop(store);
@@ -182,7 +175,8 @@ fn finish(
         snapshot: layout.snapshot(),
         selection: selection.map(|selection| (projects, selection)),
     })
-    .map_err(NewProjectError::Publish)
+    .map_err(NewProjectError::Publish)?;
+    Ok(identifier)
 }
 
 fn lock<'a, Value>(
