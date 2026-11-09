@@ -31,6 +31,7 @@ export type {
   ProviderSettings,
   ReviewStage,
   Settings,
+  AgentCommandView,
   SlashCommandItem,
   SpeedMode,
   TaskAttribution,

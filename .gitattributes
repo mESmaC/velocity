@@ -6,6 +6,7 @@
 /stress/pr7-create-save.ps1 -text
 /stress/pr7-create-save-crate.ps1 -text
 /stress/pr39-worktree-safety.ps1 -text
+/stress/pr40-empty-agent-commands.rs -text
 
 # Aeneas output: generated Lean, kept out of language statistics and diffs.
 proofs/**/Generated/** linguist-generated=true

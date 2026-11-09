@@ -3984,6 +3984,7 @@ dependencies = [
  "tauri-build",
  "tauri-plugin-dialog",
  "tauri-specta",
+ "velocity-acp",
  "velocity-core",
  "velocity-new-project",
  "velocity-store",
