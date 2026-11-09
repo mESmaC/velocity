@@ -47,9 +47,7 @@ fn respond(
     if request.get("jsonrpc").and_then(Value::as_str) != Some("2.0") || method.is_none() {
         return Some(failure(id, -32600, "Invalid request"));
     }
-    if request.get("id").is_none() {
-        return None;
-    }
+    request.get("id")?;
     let result = match method.unwrap_or_default() {
         "initialize" => match channel.join(member, nick) {
             Ok(nick) => {
