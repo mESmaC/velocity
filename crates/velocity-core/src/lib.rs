@@ -1,5 +1,6 @@
 //! Pure synchronous Velocity domain logic; native I/O belongs at the edges.
 
+pub mod agents_template;
 pub mod build_gate;
 pub mod interview_view;
 #[cfg(feature = "bindings")]
