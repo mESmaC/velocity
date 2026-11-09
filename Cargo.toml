@@ -32,6 +32,7 @@ tauri-plugin-dialog = "=2.8.4"
 tauri-plugin-opener = "=2.7.2"
 thiserror = "2.0"
 tokio = { version = "1.54", features = ["rt", "sync", "time"] }
+velocity-airc = { path = "crates/velocity-airc" }
 velocity-core = { path = "crates/velocity-core" }
 velocity-git = { path = "crates/velocity-git" }
 velocity-github = { path = "crates/velocity-github" }

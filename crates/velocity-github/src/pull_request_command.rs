@@ -17,6 +17,8 @@ pub enum PullRequestError {
     Missing(String),
     #[error("{0}")]
     Invalid(String),
+    #[error("Approval record: {0}")]
+    Record(#[from] velocity_airc::Error),
 }
 
 pub(crate) struct PullRequestCommand {

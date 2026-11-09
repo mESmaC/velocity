@@ -5529,6 +5529,7 @@ dependencies = [
  "specta",
  "tempfile",
  "thiserror 2.0.21",
+ "velocity-airc",
  "velocity-core",
 ]
 
