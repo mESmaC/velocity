@@ -10,6 +10,7 @@ pub mod navigation;
 pub mod projects;
 pub mod state;
 pub mod theme;
+pub mod thread_titles;
 pub mod thread_view;
 pub mod thread_view_model;
 pub mod window;
