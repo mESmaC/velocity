@@ -187,22 +187,36 @@ pub fn path_key(path: &str) -> String {
                     .unwrap_or(&normalized)
                     .to_owned()
             });
-        normalized.chars().map(windows_upcase).collect()
+        // Only ASCII folding is certain on every Windows volume. Beyond ASCII,
+        // case equivalence comes from each volume's own upcase table, which no
+        // Unicode mapping reproduces: folding more would merge distinct
+        // directories. The inventory resolves real identity from the
+        // filesystem instead (`WorktreeMeasurements::identities`).
+        normalized.to_ascii_lowercase()
     } else {
         path.to_owned()
     }
 }
 
-/// NTFS compares names through its per-volume upcase table, a one-to-one
-/// character mapping. ASCII lowercasing alone gives `Å` and `å` different keys
-/// for the same directory, so the inventory would count and size it twice.
-/// Mappings that expand to several characters (`ß` to `SS`) are not in that
-/// table, so those characters stay as they are.
-fn windows_upcase(character: char) -> char {
-    let mut upper = character.to_uppercase();
-    match (upper.next(), upper.next()) {
-        (Some(single), None) => single,
-        _ => character,
+/// Sizes and filesystem identities measured at the I/O edge.
+#[derive(Default)]
+pub struct WorktreeMeasurements {
+    /// Keyed by filesystem identity, so every spelling of one directory
+    /// shares a single measurement.
+    pub sizes: BTreeMap<String, WorktreeSize>,
+    /// `path_key` of a spelling to the identity of the directory it names.
+    pub identities: BTreeMap<String, String>,
+}
+
+impl WorktreeMeasurements {
+    /// A path not yet resolved on disk falls back to its own `path_key`.
+    pub fn identity(&self, path: &str) -> String {
+        let key = path_key(path);
+        self.identities.get(&key).cloned().unwrap_or(key)
+    }
+
+    pub fn size(&self, path: &str) -> Option<&WorktreeSize> {
+        self.sizes.get(&self.identity(path))
     }
 }
 
@@ -285,39 +299,48 @@ pub fn row_view(owner: &WorktreeOwner, measurement: Option<&WorktreeSize>) -> Wo
     }
 }
 
-pub fn live_owners(context: &WorktreeContext) -> Vec<&WorktreeOwner> {
-    distinct_live_owners(&context.owners)
+pub fn live_owners<'a>(
+    context: &'a WorktreeContext,
+    measurements: &WorktreeMeasurements,
+) -> Vec<&'a WorktreeOwner> {
+    distinct_live_owners(&context.owners, measurements)
 }
 
-fn distinct_live_owners(owners: &[WorktreeOwner]) -> Vec<&WorktreeOwner> {
-    let mut paths = BTreeSet::new();
+fn distinct_live_owners<'a>(
+    owners: &'a [WorktreeOwner],
+    measurements: &WorktreeMeasurements,
+) -> Vec<&'a WorktreeOwner> {
+    let mut identities = BTreeSet::new();
     owners
         .iter()
-        .filter(|owner| is_live(owner.status) && paths.insert(path_key(&owner.path)))
+        .filter(|owner| {
+            is_live(owner.status) && identities.insert(measurements.identity(&owner.path))
+        })
         .collect()
 }
 
 /// The footer's worktree count and drive label. The project read model and the
 /// live inventory both use this rule, so a project switch shows the same figure
-/// the inventory publishes a moment later.
+/// the inventory publishes a moment later. Spellings that only the filesystem
+/// can show to be one directory are merged when the inventory publishes.
 pub fn footer_summary(owners: &[WorktreeOwner], fallback_root: &str) -> (usize, String) {
-    let live = distinct_live_owners(owners);
+    let live = distinct_live_owners(owners, &WorktreeMeasurements::default());
     (live.len(), footer_drive(&live, fallback_root))
 }
 
 pub fn settings_view(
     context: &WorktreeContext,
     drives: &[DriveInfo],
-    sizes: &BTreeMap<String, WorktreeSize>,
+    measurements: &WorktreeMeasurements,
     deleted: &[WorktreeRowView],
     location_changed: bool,
 ) -> WorktreeSettingsView {
     let preferences = &context.preferences;
     let effective_root = effective_project_root(context);
-    let live = live_owners(context);
+    let live = live_owners(context, measurements);
     let mut rows: Vec<_> = live
         .iter()
-        .map(|owner| row_view(owner, sizes.get(&path_key(&owner.path))))
+        .map(|owner| row_view(owner, measurements.size(&owner.path)))
         .collect();
     rows.extend_from_slice(deleted);
     let (drive, folder) = split_location(&preferences.root);
@@ -343,7 +366,7 @@ pub fn settings_view(
             .map(|info| drive_view(info, &preferences.root))
             .collect(),
         live_count: live.len().to_string(),
-        total_size: total_size(&live, sizes),
+        total_size: total_size(&live, measurements),
         free_space: free_space(&effective_root, drives),
         footer_drive: footer_drive(&live, &effective_root),
         location_notice: location_notice(&effective_root, &live, location_changed),
@@ -397,11 +420,11 @@ fn location_notice(root: &str, owners: &[&WorktreeOwner], changed: bool) -> Stri
     )
 }
 
-fn total_size(owners: &[&WorktreeOwner], sizes: &BTreeMap<String, WorktreeSize>) -> String {
+fn total_size(owners: &[&WorktreeOwner], measurements: &WorktreeMeasurements) -> String {
     // A finite owner slice of u64 measurements fits u128 on 32/64-bit hosts.
     let total = owners.iter().try_fold(0_u128, |total, owner| {
-        sizes
-            .get(&path_key(&owner.path))
+        measurements
+            .size(&owner.path)
             .and_then(|size| size.bytes)
             .map(|bytes| total + u128::from(bytes))
     });

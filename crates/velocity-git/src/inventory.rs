@@ -10,8 +10,8 @@ use sysinfo::{DiskKind, Disks};
 use thiserror::Error;
 use velocity_core::worktree_settings::deleted_row_window_start;
 use velocity_core::worktree_view::{
-    self, DriveInfo, WorktreeContext, WorktreeRowTone, WorktreeRowView, WorktreeSettingsView,
-    WorktreeSize, path_key,
+    self, DriveInfo, WorktreeContext, WorktreeMeasurements, WorktreeRowTone, WorktreeRowView,
+    WorktreeSettingsView, WorktreeSize, path_key,
 };
 
 #[derive(Debug, Error)]
@@ -121,7 +121,7 @@ impl WorktreeRuntime {
                     let live_paths: BTreeSet<_> = paths.iter().map(|path| path_key(path)).collect();
                     measured.retain(|path, _| live_paths.contains(path));
                     if let Ok(mut inventory) = self.inventory.lock() {
-                        inventory.sizes.retain(|path, _| live_paths.contains(path));
+                        inventory.retain_paths(&live_paths);
                     }
                     for path in paths {
                         if self.stopped.load(Ordering::Relaxed) {
@@ -134,9 +134,10 @@ impl WorktreeRuntime {
                         {
                             continue;
                         }
+                        let identity = worktree_identity(Path::new(&path));
                         let result = measure_worktree(Path::new(&path), &self.stopped);
                         if let Ok(mut inventory) = self.inventory.lock() {
-                            inventory.update_size(path, result);
+                            inventory.record_size(&path, identity, result);
                         }
                         measured.insert(key, Instant::now());
                     }
@@ -174,6 +175,16 @@ pub fn read_drives() -> Result<Vec<DriveInfo>, InventoryError> {
             slow: matches!(disk.kind(), DiskKind::HDD),
         })
         .collect())
+}
+
+/// The filesystem's own identity for an existing worktree. Canonicalizing
+/// returns the on-disk spelling of the final path, so every spelling the volume
+/// treats as one directory (case aliases, junctions, substituted drives) gets
+/// one key, and spellings it keeps apart stay apart. A missing path has none.
+pub fn worktree_identity(path: &Path) -> Option<String> {
+    fs::canonicalize(path)
+        .ok()
+        .map(|canonical| path_key(&canonical.to_string_lossy()))
 }
 
 fn measure_error(path: &Path, source: std::io::Error) -> InventoryError {
@@ -243,7 +254,7 @@ pub fn measure_worktree(path: &Path, stopped: &AtomicBool) -> Result<u64, Invent
 #[derive(Default)]
 pub struct WorktreeInventory {
     drives: Vec<DriveInfo>,
-    sizes: BTreeMap<String, WorktreeSize>,
+    measurements: WorktreeMeasurements,
     previous: BTreeMap<Option<u32>, Vec<WorktreeRowView>>,
     deleted: BTreeMap<Option<u32>, Vec<(Instant, WorktreeRowView)>>,
     latest: Option<WorktreeSettingsView>,
@@ -263,13 +274,52 @@ impl WorktreeInventory {
         }
     }
 
+    /// Resolves the path's filesystem identity, then records its size.
     pub fn update_size(&mut self, path: String, result: Result<u64, InventoryError>) {
+        let identity = worktree_identity(Path::new(&path));
+        self.record_size(&path, identity, result);
+    }
+
+    pub fn record_size(
+        &mut self,
+        path: &str,
+        identity: Option<String>,
+        result: Result<u64, InventoryError>,
+    ) {
         let (bytes, error) = match result {
             Ok(bytes) => (Some(bytes), None),
             Err(error) => (None, Some(error.to_string())),
         };
-        self.sizes
-            .insert(path_key(&path), WorktreeSize { bytes, error });
+        let key = match identity {
+            Some(identity) => {
+                self.measurements
+                    .identities
+                    .insert(path_key(path), identity.clone());
+                identity
+            }
+            None => {
+                self.measurements.identities.remove(&path_key(path));
+                path_key(path)
+            }
+        };
+        self.measurements
+            .sizes
+            .insert(key, WorktreeSize { bytes, error });
+    }
+
+    /// Drops measurements for worktrees no project owns any more.
+    fn retain_paths(&mut self, live_paths: &BTreeSet<String>) {
+        let measurements = &mut self.measurements;
+        measurements
+            .identities
+            .retain(|key, _| live_paths.contains(key));
+        let live_identities: BTreeSet<_> = live_paths
+            .iter()
+            .map(|key| measurements.identity(key))
+            .collect();
+        measurements
+            .sizes
+            .retain(|identity, _| live_identities.contains(identity));
     }
 
     pub fn mark_location_changed(&mut self) {
@@ -286,7 +336,7 @@ impl WorktreeInventory {
         let current = worktree_view::settings_view(
             context,
             &self.drives,
-            &self.sizes,
+            &self.measurements,
             &[],
             self.location_changed,
         );
@@ -305,7 +355,7 @@ impl WorktreeInventory {
         let mut view = worktree_view::settings_view(
             context,
             &self.drives,
-            &self.sizes,
+            &self.measurements,
             &deleted,
             self.location_changed,
         );
