@@ -1,0 +1,400 @@
+/* F2 New project dialog. Values come from the winning reference rules in
+   design/main-window.html: 470-569 (modal), 1017-1046 (glass controls) and
+   1065-1068 (glass modal). Italics in the reference are dropped (AGENTS.md UI). */
+:root {
+  --new-project-scrim-background: rgba(0, 0, 0, 0.5);
+  --new-project-scrim-backdrop-filter: blur(8px) saturate(1.3);
+  --new-project-width: min(560px, 92vw);
+  --new-project-border: 1px solid rgba(255, 255, 255, 0.13);
+  --new-project-border-radius: 18px;
+  --new-project-box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.12), 0 0 0 0.5px #000,
+    0 30px 90px rgba(0, 0, 0, 0.9);
+  --new-project-header-padding: 14px 16px 6px;
+  --new-project-title-font-size: 13.5px;
+  --new-project-title-font-weight: 600;
+  --new-project-title-letter-spacing: -0.01em;
+  --new-project-title-color: #fff;
+  --new-project-label-font-size: 10.5px;
+  --new-project-body-padding: 8px 16px 14px;
+  --new-project-body-gap: 16px;
+  --new-project-field-gap: 7px;
+  --new-project-row-gap: 8px;
+  --new-project-segment-gap: 2px;
+  --new-project-segment-padding: 2px;
+  --new-project-segment-border-radius: 8px;
+  --new-project-segment-background: rgba(255, 255, 255, 0.07);
+  --new-project-segment-box-shadow: inset 0 0 0 0.5px rgba(255, 255, 255, 0.06);
+  --new-project-segment-button-height: 22px;
+  --new-project-segment-button-padding: 0 12px;
+  --new-project-segment-button-font-size: 11.5px;
+  --new-project-segment-button-gap: 6px;
+  --new-project-segment-button-border-radius: 6px;
+  --new-project-segment-on-background: linear-gradient(
+    rgba(255, 255, 255, 0.24),
+    rgba(255, 255, 255, 0.16)
+  );
+  --new-project-segment-on-color: #fff;
+  --new-project-segment-on-box-shadow:
+    0 1px 3px rgba(0, 0, 0, 0.6), inset 0 1px 0 rgba(255, 255, 255, 0.16);
+  --new-project-small-segment-button-height: 19px;
+  --new-project-small-segment-button-padding: 0 9px;
+  --new-project-small-segment-button-font-size: 10.5px;
+  --new-project-input-height: 30px;
+  --new-project-input-padding: 0 9px;
+  --new-project-input-gap: 6px;
+  --new-project-input-border: 1px solid rgba(255, 255, 255, 0.1);
+  --new-project-input-border-radius: 7px;
+  --new-project-input-background: rgba(0, 0, 0, 0.45);
+  --new-project-input-focus-border-color: rgba(255, 255, 255, 0.26);
+  --new-project-input-font-size: 11.5px;
+  --new-project-button-height: 24px;
+  --new-project-button-padding: 0 10px;
+  --new-project-button-gap: 6px;
+  --new-project-button-border: 1px solid rgba(255, 255, 255, 0.11);
+  --new-project-button-border-radius: 7px;
+  --new-project-button-font-size: 11px;
+  --new-project-button-background: linear-gradient(
+    rgba(255, 255, 255, 0.12),
+    rgba(255, 255, 255, 0.06)
+  );
+  --new-project-button-box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.1);
+  --new-project-button-hover-border-color: rgba(255, 255, 255, 0.18);
+  --new-project-button-hover-background: linear-gradient(
+    rgba(255, 255, 255, 0.17),
+    rgba(255, 255, 255, 0.1)
+  );
+  --new-project-button-kbd-padding: 1px 3px;
+  --new-project-button-kbd-font-size: 9px;
+  --new-project-button-disabled-opacity: 0.35;
+  --new-project-solid-border-color: rgba(255, 255, 255, 0.6);
+  --new-project-solid-background: linear-gradient(#fff, #dcdce0);
+  --new-project-solid-color: #000;
+  --new-project-solid-box-shadow: inset 0 1px 0 #fff;
+  --new-project-solid-font-weight: 600;
+  --new-project-solid-hover-background: #fff;
+  --new-project-solid-kbd-background: rgba(0, 0, 0, 0.08);
+  --new-project-solid-kbd-color: #333;
+  --new-project-check-gap: 7px;
+  --new-project-check-font-size: 11px;
+  --new-project-models-columns: repeat(auto-fill, minmax(150px, 1fr));
+  --new-project-models-gap: 6px;
+  --new-project-card-padding: 8px 10px;
+  --new-project-card-gap: 2px;
+  --new-project-card-border: 1px solid rgba(255, 255, 255, 0.09);
+  --new-project-card-border-radius: 12px;
+  --new-project-card-background: linear-gradient(
+    180deg,
+    rgba(255, 255, 255, 0.05),
+    rgba(255, 255, 255, 0.025)
+  );
+  --new-project-card-box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.05);
+  --new-project-card-hover-border-color: rgba(255, 255, 255, 0.17);
+  --new-project-card-hover-background: linear-gradient(
+    180deg,
+    rgba(255, 255, 255, 0.08),
+    rgba(255, 255, 255, 0.04)
+  );
+  --new-project-card-on-border-color: rgba(255, 255, 255, 0.34);
+  --new-project-card-on-background: linear-gradient(
+    180deg,
+    rgba(255, 255, 255, 0.14),
+    rgba(255, 255, 255, 0.08)
+  );
+  --new-project-card-on-box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.1);
+  --new-project-card-heading-gap: 6px;
+  --new-project-card-heading-font-size: 11.5px;
+  --new-project-card-heading-font-weight: 600;
+  --new-project-card-detail-font-size: 10.5px;
+  --new-project-brief-min-height: 96px;
+  --new-project-brief-padding: 8px 10px;
+  --new-project-brief-font-size: 12px;
+  --new-project-brief-line-height: 1.5;
+  --new-project-note-gap: 8px;
+  --new-project-note-font-size: 10.5px;
+  --new-project-note-line-height: 1.5;
+  --new-project-note-icon-margin-top: 1px;
+  --new-project-footer-padding: 10px 16px;
+  --new-project-footer-gap: 8px;
+  --new-project-footer-border-top: 1px solid rgba(255, 255, 255, 0.08);
+  --new-project-footer-background: rgba(0, 0, 0, 0.22);
+  --new-project-error-font-size: 11px;
+}
+
+.new-project-dialog {
+  position: fixed;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  max-width: none;
+  max-height: none;
+  margin: 0;
+  padding: 0;
+  border: 0;
+  background: none;
+  color: var(--text);
+}
+.new-project-dialog[open] {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+.new-project-dialog::backdrop {
+  background: var(--new-project-scrim-background);
+  backdrop-filter: var(--new-project-scrim-backdrop-filter);
+}
+.np {
+  width: var(--new-project-width);
+  border: var(--new-project-border);
+  border-radius: var(--new-project-border-radius);
+  background: var(--glass-pop);
+  box-shadow: var(--new-project-box-shadow);
+  backdrop-filter: var(--blur-pop);
+  overflow: hidden;
+}
+.np-h {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  padding: var(--new-project-header-padding);
+}
+.np-h h2 {
+  margin: 0;
+  font-size: var(--new-project-title-font-size);
+  font-weight: var(--new-project-title-font-weight);
+  letter-spacing: var(--new-project-title-letter-spacing);
+  color: var(--new-project-title-color);
+}
+.np .label {
+  font-size: var(--new-project-label-font-size);
+  color: var(--text-2);
+}
+.np-body {
+  display: flex;
+  flex-direction: column;
+  gap: var(--new-project-body-gap);
+  padding: var(--new-project-body-padding);
+}
+.np .field,
+.np .where {
+  display: flex;
+  flex-direction: column;
+  gap: var(--new-project-field-gap);
+  margin: 0;
+  padding: 0;
+  border: 0;
+}
+.np .row2 {
+  display: flex;
+  align-items: center;
+  gap: var(--new-project-row-gap);
+}
+.np .row2.spread {
+  justify-content: space-between;
+}
+.np .seg {
+  display: inline-flex;
+  align-self: flex-start;
+  gap: var(--new-project-segment-gap);
+  padding: var(--new-project-segment-padding);
+  border-radius: var(--new-project-segment-border-radius);
+  background: var(--new-project-segment-background);
+  box-shadow: var(--new-project-segment-box-shadow);
+  overflow: hidden;
+}
+.np .seg button {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--new-project-segment-button-gap);
+  height: var(--new-project-segment-button-height);
+  padding: var(--new-project-segment-button-padding);
+  border-radius: var(--new-project-segment-button-border-radius);
+  font-size: var(--new-project-segment-button-font-size);
+  color: var(--text-2);
+}
+.np .seg button.on {
+  background: var(--new-project-segment-on-background);
+  color: var(--new-project-segment-on-color);
+  box-shadow: var(--new-project-segment-on-box-shadow);
+}
+.np .seg.sm button {
+  height: var(--new-project-small-segment-button-height);
+  padding: var(--new-project-small-segment-button-padding);
+  font-size: var(--new-project-small-segment-button-font-size);
+}
+.np .inp {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  gap: var(--new-project-input-gap);
+  height: var(--new-project-input-height);
+  padding: var(--new-project-input-padding);
+  border: var(--new-project-input-border);
+  border-radius: var(--new-project-input-border-radius);
+  background: var(--new-project-input-background);
+}
+.np .where > .inp {
+  flex: none;
+}
+.np .inp:focus-within,
+.np .brief:focus {
+  border-color: var(--new-project-input-focus-border-color);
+  box-shadow: var(--focus);
+}
+.np .inp input {
+  flex: 1;
+  width: 0;
+  min-width: 0;
+  border: 0;
+  outline: 0;
+  background: none;
+  color: var(--text);
+  font: var(--new-project-input-font-size) var(--mono);
+}
+.np .inp .pre {
+  color: var(--muted);
+  font: var(--new-project-input-font-size) var(--mono);
+  white-space: nowrap;
+}
+.np .btn {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--new-project-button-gap);
+  height: var(--new-project-button-height);
+  padding: var(--new-project-button-padding);
+  border: var(--new-project-button-border);
+  border-radius: var(--new-project-button-border-radius);
+  background: var(--new-project-button-background);
+  box-shadow: var(--new-project-button-box-shadow);
+  font-size: var(--new-project-button-font-size);
+  color: var(--text);
+  white-space: nowrap;
+}
+.np .row2 .btn {
+  height: var(--new-project-input-height);
+}
+.np .btn:hover {
+  border-color: var(--new-project-button-hover-border-color);
+  background: var(--new-project-button-hover-background);
+}
+.np .btn kbd {
+  padding: var(--new-project-button-kbd-padding);
+  font-size: var(--new-project-button-kbd-font-size);
+}
+.np .btn[disabled] {
+  opacity: var(--new-project-button-disabled-opacity);
+  cursor: default;
+}
+.np .btn.solid {
+  border-color: var(--new-project-solid-border-color);
+  background: var(--new-project-solid-background);
+  color: var(--new-project-solid-color);
+  box-shadow: var(--new-project-solid-box-shadow);
+  font-weight: var(--new-project-solid-font-weight);
+}
+.np .btn.solid:hover {
+  background: var(--new-project-solid-hover-background);
+}
+.np .btn.solid kbd {
+  background: var(--new-project-solid-kbd-background);
+  color: var(--new-project-solid-kbd-color);
+  box-shadow: none;
+}
+.np .check {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--new-project-check-gap);
+  font-size: var(--new-project-check-font-size);
+  color: var(--text-2);
+  cursor: pointer;
+}
+.np .check input {
+  margin: 0;
+  accent-color: var(--accent);
+}
+.np .mono {
+  font-family: var(--mono);
+}
+.np .models {
+  display: grid;
+  grid-template-columns: var(--new-project-models-columns);
+  gap: var(--new-project-models-gap);
+}
+.np .model-card {
+  display: flex;
+  flex-direction: column;
+  gap: var(--new-project-card-gap);
+  padding: var(--new-project-card-padding);
+  border: var(--new-project-card-border);
+  border-radius: var(--new-project-card-border-radius);
+  background: var(--new-project-card-background);
+  box-shadow: var(--new-project-card-box-shadow);
+  text-align: left;
+}
+.np .model-card:hover {
+  border-color: var(--new-project-card-hover-border-color);
+  background: var(--new-project-card-hover-background);
+}
+.np .model-card.on {
+  border-color: var(--new-project-card-on-border-color);
+  background: var(--new-project-card-on-background);
+  box-shadow: var(--new-project-card-on-box-shadow);
+}
+.np .model-card .mh {
+  display: flex;
+  align-items: center;
+  gap: var(--new-project-card-heading-gap);
+  font-size: var(--new-project-card-heading-font-size);
+  font-weight: var(--new-project-card-heading-font-weight);
+  color: var(--text);
+}
+.np .model-card .md {
+  font-size: var(--new-project-card-detail-font-size);
+  color: var(--muted);
+}
+.np .brief {
+  width: 100%;
+  min-height: var(--new-project-brief-min-height);
+  padding: var(--new-project-brief-padding);
+  border: var(--new-project-input-border);
+  border-radius: var(--new-project-input-border-radius);
+  outline: 0;
+  background: var(--new-project-input-background);
+  color: var(--text);
+  font: inherit;
+  font-size: var(--new-project-brief-font-size);
+  line-height: var(--new-project-brief-line-height);
+  resize: vertical;
+}
+.np-note {
+  display: flex;
+  gap: var(--new-project-note-gap);
+  margin: 0;
+  font-size: var(--new-project-note-font-size);
+  line-height: var(--new-project-note-line-height);
+  color: var(--muted);
+}
+/* Until providers sign in (F15) the note stands in for the whole card row. */
+.np .models .np-note {
+  grid-column: 1 / -1;
+}
+.np-note .icon {
+  margin-top: var(--new-project-note-icon-margin-top);
+  color: var(--info);
+}
+.np-f {
+  display: flex;
+  align-items: center;
+  gap: var(--new-project-footer-gap);
+  padding: var(--new-project-footer-padding);
+  border-top: var(--new-project-footer-border-top);
+  background: var(--new-project-footer-background);
+}
+.np-f .spacer {
+  flex: 1;
+}
+.np-f .np-error {
+  margin: 0;
+  font-size: var(--new-project-error-font-size);
+  color: var(--err);
+}

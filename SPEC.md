@@ -111,6 +111,7 @@ A thread's state (§2.1) says where it is in its lifecycle. Its **activity** say
 | command | `get_window_state`, `minimize_window`, `toggle_maximize_window`, `close_window` | native main-window state and custom title-bar controls |
 | command | `get_layout_state`, `dispatch_layout { action }` | backend-owned main-window projection, search, palette selection, Alt hints, contextual keyboard dispatch and navigation requests |
 | command | `list_projects`, `create_project`, `switch_project` | projects |
+| command | `get_new_project_defaults`, `pick_project_folder`, `create_project { request }` | New project dialog (F2): default folders, interview effort, speed and model from Settings; the native folder picker; Create, which refuses before anything runs or sets the project up, registers it, switches to it and records its spec interview |
 | command | `list_threads`, `start_thread`, `send_message`, `delete_thread` | threads |
 | command | `start_duty`, `pause_duty`, `add_duty_agents` | duty agents |
 | command | `launch_swarm`, `add_to_swarm` | swarm |

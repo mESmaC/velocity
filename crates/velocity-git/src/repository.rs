@@ -60,6 +60,19 @@ pub fn initialize_repository(folder: &Path) -> Result<(), GitError> {
     succeeded("config", folder, configured)
 }
 
+/// The branch HEAD points at: the default branch of a fresh `git init` or clone.
+pub fn current_branch(folder: &Path) -> Result<String, GitError> {
+    let output = git()
+        .arg("--git-dir")
+        .arg(folder.join(".git"))
+        .args(["symbolic-ref", "--short", "HEAD"])
+        .output()
+        .map_err(GitError::Spawn)?;
+    let branch = String::from_utf8_lossy(&output.stdout).trim().to_owned();
+    succeeded("symbolic-ref", folder, output)?;
+    Ok(branch)
+}
+
 fn succeeded(operation: &'static str, path: &Path, output: Output) -> Result<(), GitError> {
     if output.status.success() {
         Ok(())

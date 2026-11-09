@@ -21,6 +21,7 @@ pub struct LayoutState {
     palette_query: String,
     palette_selection: usize,
     slash_selection: usize,
+    new_project_open: bool,
     form_open: bool,
     overlay_open: bool,
     composer_text: String,
@@ -40,6 +41,7 @@ impl Default for LayoutState {
             palette_query: String::new(),
             palette_selection: 0,
             slash_selection: 0,
+            new_project_open: false,
             form_open: false,
             overlay_open: false,
             composer_text: String::new(),
@@ -98,6 +100,12 @@ impl LayoutState {
         }
         self.palette_selection =
             layout::bounded_selection(self.palette_results().len(), self.palette_selection);
+        self.changed();
+    }
+
+    /// Create closes the New project dialog once the project is set up (F2).
+    pub fn close_new_project(&mut self) {
+        self.new_project_open = false;
         self.changed();
     }
 
@@ -200,6 +208,7 @@ impl LayoutState {
             pulse: self.pulse(),
             show_numbers: self.show_numbers,
             palette_open: self.palette_open,
+            new_project_open: self.new_project_open,
             palette_query: self.palette_query.clone(),
             palette_results: self.palette_results(),
             palette_selection: self.palette_selection,
@@ -355,7 +364,14 @@ impl LayoutState {
                 self.palette_query.clear();
                 self.palette_selection = 0;
             }
-            NavigationIntent::Dismiss => self.palette_open = false,
+            NavigationIntent::Dismiss => {
+                self.palette_open = false;
+                self.new_project_open = false;
+            }
+            NavigationIntent::NewProject => {
+                self.palette_open = false;
+                self.new_project_open = true;
+            }
             NavigationIntent::ShowNumbers => self.show_numbers = true,
             NavigationIntent::Jump(number) => {
                 let visible: Vec<_> = self
@@ -394,8 +410,9 @@ impl LayoutState {
         let context = ShortcutContext {
             view: self.view,
             typing: input.typing,
-            overlay_open: self.overlay_open || self.palette_open,
-            form_open: self.form_open,
+            overlay_open: self.overlay_open || self.palette_open || self.new_project_open,
+            // The New project dialog is a form: Ctrl+Enter submits it (F2).
+            form_open: self.form_open || self.new_project_open,
         };
         let stroke = KeyStroke {
             key: shortcut_key(&input),
