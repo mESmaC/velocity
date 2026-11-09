@@ -1,6 +1,8 @@
 # Preserve the exact bytes of the reviewer-authored regression artifact.
 /stress/pr2-titlebar-reference.ps1 -text
 /stress/pr3-font-csp.py -text whitespace=cr-at-eol
+/stress/pr4-swarm-selection.rs -text
+/stress/pr4-swarm-selection-thread-detail.rs -text
 
 # Aeneas output: generated Lean, kept out of language statistics and diffs.
 proofs/**/Generated/** linguist-generated=true

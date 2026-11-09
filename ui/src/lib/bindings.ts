@@ -14,6 +14,10 @@ export const commands = {
 	dispatchLayout: (action: LayoutAction_Deserialize) => __TAURI_INVOKE<LayoutSnapshot_Serialize>("dispatch_layout", { action }),
 	listProjects: () => __TAURI_INVOKE<ProjectList>("list_projects"),
 	switchProject: (identifier: number) => __TAURI_INVOKE<LayoutSnapshot_Serialize>("switch_project", { identifier }),
+	listPullRequests: (projectIdentifier: number) => __TAURI_INVOKE<PullRequest_Serialize[]>("list_pull_requests", { projectIdentifier }),
+	getPullRequest: (projectIdentifier: number, number: number) => __TAURI_INVOKE<PullRequestSnapshot_Serialize>("get_pull_request", { projectIdentifier, number }),
+	dispatchPullRequest: (projectIdentifier: number, operation: PullRequestOperation_Deserialize) => __TAURI_INVOKE<PullRequestReceipt>("dispatch_pull_request", { projectIdentifier, operation }),
+	getLaunchEligibility: (request: LaunchRequest) => __TAURI_INVOKE<LaunchEligibility>("get_launch_eligibility", { request }),
 };
 
 /* Constants */
@@ -42,6 +46,13 @@ export type AgentSettings_Serialize = {
 	max_duration_minutes: number | null,
 	stall_timeout_minutes: number,
 	claim_release_grace_minutes: number,
+};
+
+export type CreatePullRequest = {
+	title: string,
+	body: string,
+	head_branch: string,
+	draft: boolean,
 };
 
 export type DiffBlockView = DiffBlockView_Serialize | DiffBlockView_Deserialize;
@@ -74,6 +85,10 @@ export type ErrorCardView = {
 	detail: string,
 };
 
+export type GitHubActor = {
+	login: string,
+};
+
 export type KeyboardInput = {
 	key: string,
 	code: string,
@@ -83,6 +98,10 @@ export type KeyboardInput = {
 	meta_held: boolean,
 	typing: boolean,
 };
+
+export type LaunchEligibility = "allowed" | "lock_spec_first" | "no_project";
+
+export type LaunchRequest = "interview" | "thread" | "fan_out" | "task_swarm" | "issue_swarm" | "goal_swarm" | "issue_dispatch";
 
 export type LayoutAction = LayoutAction_Serialize | LayoutAction_Deserialize;
 
@@ -142,6 +161,14 @@ export type LayoutSnapshot_Deserialize = {
 	overlap_unread: boolean,
 	composer_text: string,
 	task_text: string,
+	build_allowed: boolean,
+	build_block_reason?: string | null,
+	composer_allowed: boolean,
+	composer_block_reason?: string | null,
+	blocked_navigation: NavigationIntent_Deserialize[],
+	tasks_draft: boolean,
+	task_count_label: string,
+	launch_notice?: string | null,
 };
 
 export type LayoutSnapshot_Serialize = {
@@ -170,6 +197,14 @@ export type LayoutSnapshot_Serialize = {
 	overlap_unread: boolean,
 	composer_text: string,
 	task_text: string,
+	build_allowed: boolean,
+	build_block_reason: string | null,
+	composer_allowed: boolean,
+	composer_block_reason: string | null,
+	blocked_navigation: NavigationIntent_Serialize[],
+	tasks_draft: boolean,
+	task_count_label: string,
+	launch_notice: string | null,
 };
 
 export type LayoutStateChanged = LayoutStateChanged_Serialize | LayoutStateChanged_Deserialize;
@@ -181,6 +216,8 @@ export type LayoutStateChanged_Deserialize = {
 export type LayoutStateChanged_Serialize = {
 	state: LayoutSnapshot_Serialize,
 };
+
+export type MergeMethod = "SQUASH" | "REBASE" | "MERGE";
 
 export type ModelPillView = {
 	provider: ProviderColor,
@@ -198,6 +235,13 @@ export type NavigationIntent_Deserialize = "Palette" | "NewThread" | "NewProject
 export type NavigationIntent_Serialize = "Palette" | "NewThread" | "NewProject" | "Settings" | "ShowNumbers" | ({ Jump: string }) & { Answer?: never } | "Search" | "Task" | "Swarm" | "Goal" | "Airc" | "Dismiss" | "Submit" | "Dispatch" | "Resume" | "Fanout" | "PrDuty" | "Scouts" | ({ Answer: string }) & { Jump?: never } | "Lock" | "SpecFile" | "Grill" | "Diff" | "Editor" | "SaveAgents";
 
 export type NavigationView = "Home" | "Thread" | "SpecScan" | "SpecAsk" | "SpecReady" | "SpecLocked" | "Agents" | "Settings" | "Other";
+
+export type NewReviewComment = {
+	path: string,
+	line: number,
+	side: ReviewSide,
+	body: string,
+};
 
 export type NumberHintEvent = "AltDown" | "AltUp" | "Blur" | "Other";
 
@@ -350,6 +394,205 @@ export type ProviderUsage = {
 	percent_used: number,
 };
 
+export type PullRequest = PullRequest_Serialize | PullRequest_Deserialize;
+
+export type PullRequestCheck = PullRequestCheck_Serialize | PullRequestCheck_Deserialize;
+
+export type PullRequestCheck_Deserialize = { __typename: "CheckRun"; name: string; status: string; conclusion?: string | null; detailsUrl?: string | null } | { __typename: "StatusContext"; context: string; state: string; targetUrl?: string | null };
+
+export type PullRequestCheck_Serialize = { __typename: "CheckRun"; name: string; status: string; conclusion: string | null; detailsUrl: string | null } | { __typename: "StatusContext"; context: string; state: string; targetUrl: string | null };
+
+export type PullRequestComment = PullRequestComment_Serialize | PullRequestComment_Deserialize;
+
+export type PullRequestComment_Deserialize = {
+	id: string,
+	body: string,
+	url: string,
+	author?: GitHubActor | null,
+	createdAt: string,
+	updatedAt: string,
+};
+
+export type PullRequestComment_Serialize = {
+	id: string,
+	body: string,
+	url: string,
+	author: GitHubActor | null,
+	createdAt: string,
+	updatedAt: string,
+};
+
+export type PullRequestOperation = PullRequestOperation_Serialize | PullRequestOperation_Deserialize;
+
+export type PullRequestOperation_Deserialize = ({ Create: CreatePullRequest }) & { Close?: never; Comment?: never; Merge?: never; Reply?: never; RequestReview?: never; Resolve?: never; Review?: never } | ({ Review: {
+	number: number,
+	expected_head: string,
+	action: ReviewAction,
+	body: string,
+	comments?: NewReviewComment[],
+} }) & { Close?: never; Comment?: never; Create?: never; Merge?: never; Reply?: never; RequestReview?: never; Resolve?: never } | ({ Comment: {
+	number: number,
+	body: string,
+} }) & { Close?: never; Create?: never; Merge?: never; Reply?: never; RequestReview?: never; Resolve?: never; Review?: never } | ({ Reply: {
+	number: number,
+	thread: string,
+	body: string,
+} }) & { Close?: never; Comment?: never; Create?: never; Merge?: never; RequestReview?: never; Resolve?: never; Review?: never } | ({ Resolve: {
+	number: number,
+	thread: string,
+} }) & { Close?: never; Comment?: never; Create?: never; Merge?: never; Reply?: never; RequestReview?: never; Review?: never } | ({ RequestReview: {
+	number: number,
+	reviewers: string[],
+} }) & { Close?: never; Comment?: never; Create?: never; Merge?: never; Reply?: never; Resolve?: never; Review?: never } | ({ Merge: {
+	number: number,
+	expected_head: string,
+	method: MergeMethod,
+} }) & { Close?: never; Comment?: never; Create?: never; Reply?: never; RequestReview?: never; Resolve?: never; Review?: never } | ({ Close: {
+	number: number,
+} }) & { Comment?: never; Create?: never; Merge?: never; Reply?: never; RequestReview?: never; Resolve?: never; Review?: never };
+
+export type PullRequestOperation_Serialize = ({ Create: CreatePullRequest }) & { Close?: never; Comment?: never; Merge?: never; Reply?: never; RequestReview?: never; Resolve?: never; Review?: never } | ({ Review: {
+	number: number,
+	expected_head: string,
+	action: ReviewAction,
+	body: string,
+	comments: NewReviewComment[],
+} }) & { Close?: never; Comment?: never; Create?: never; Merge?: never; Reply?: never; RequestReview?: never; Resolve?: never } | ({ Comment: {
+	number: number,
+	body: string,
+} }) & { Close?: never; Create?: never; Merge?: never; Reply?: never; RequestReview?: never; Resolve?: never; Review?: never } | ({ Reply: {
+	number: number,
+	thread: string,
+	body: string,
+} }) & { Close?: never; Comment?: never; Create?: never; Merge?: never; RequestReview?: never; Resolve?: never; Review?: never } | ({ Resolve: {
+	number: number,
+	thread: string,
+} }) & { Close?: never; Comment?: never; Create?: never; Merge?: never; Reply?: never; RequestReview?: never; Review?: never } | ({ RequestReview: {
+	number: number,
+	reviewers: string[],
+} }) & { Close?: never; Comment?: never; Create?: never; Merge?: never; Reply?: never; Resolve?: never; Review?: never } | ({ Merge: {
+	number: number,
+	expected_head: string,
+	method: MergeMethod,
+} }) & { Close?: never; Comment?: never; Create?: never; Reply?: never; RequestReview?: never; Resolve?: never; Review?: never } | ({ Close: {
+	number: number,
+} }) & { Comment?: never; Create?: never; Merge?: never; Reply?: never; RequestReview?: never; Resolve?: never; Review?: never };
+
+/**
+ *  A successful write is reported without a follow-up read that could fail and
+ *  make a caller retry an already-published comment, review or PR.
+ */
+export type PullRequestReceipt = {
+	number: number,
+	operation: string,
+};
+
+export type PullRequestReview = PullRequestReview_Serialize | PullRequestReview_Deserialize;
+
+export type PullRequestReviewThread = PullRequestReviewThread_Serialize | PullRequestReviewThread_Deserialize;
+
+export type PullRequestReviewThread_Deserialize = {
+	id: string,
+	path: string,
+	line?: number | null,
+	startLine?: number | null,
+	isResolved: boolean,
+	isOutdated: boolean,
+	comments?: PullRequestComment_Deserialize[],
+};
+
+export type PullRequestReviewThread_Serialize = {
+	id: string,
+	path: string,
+	line: number | null,
+	startLine: number | null,
+	isResolved: boolean,
+	isOutdated: boolean,
+	comments: PullRequestComment_Serialize[],
+};
+
+export type PullRequestReview_Deserialize = {
+	id: string,
+	body: string,
+	state: string,
+	author?: GitHubActor | null,
+	submittedAt?: string | null,
+	commit?: ReviewCommit | null,
+};
+
+export type PullRequestReview_Serialize = {
+	id: string,
+	body: string,
+	state: string,
+	author: GitHubActor | null,
+	submittedAt: string | null,
+	commit: ReviewCommit | null,
+};
+
+export type PullRequestSnapshot = PullRequestSnapshot_Serialize | PullRequestSnapshot_Deserialize;
+
+export type PullRequestSnapshot_Deserialize = {
+	pull_request: PullRequest_Deserialize,
+	checks: PullRequestCheck_Deserialize[],
+	reviews: PullRequestReview_Deserialize[],
+	comments: PullRequestComment_Deserialize[],
+	review_threads: PullRequestReviewThread_Deserialize[],
+};
+
+export type PullRequestSnapshot_Serialize = {
+	pull_request: PullRequest_Serialize,
+	checks: PullRequestCheck_Serialize[],
+	reviews: PullRequestReview_Serialize[],
+	comments: PullRequestComment_Serialize[],
+	review_threads: PullRequestReviewThread_Serialize[],
+};
+
+export type PullRequestState = "OPEN" | "CLOSED" | "MERGED";
+
+export type PullRequest_Deserialize = {
+	id: string,
+	number: number,
+	title: string,
+	body: string,
+	url: string,
+	state: PullRequestState,
+	isDraft: boolean,
+	author?: GitHubActor | null,
+	headRefOid: string,
+	headRefName: string,
+	baseRefName: string,
+	additions: number,
+	deletions: number,
+	createdAt: string,
+	updatedAt: string,
+	closedAt?: string | null,
+	mergedAt?: string | null,
+	reviewDecision?: string | null,
+	mergeStateStatus: string,
+};
+
+export type PullRequest_Serialize = {
+	id: string,
+	number: number,
+	title: string,
+	body: string,
+	url: string,
+	state: PullRequestState,
+	isDraft: boolean,
+	author: GitHubActor | null,
+	headRefOid: string,
+	headRefName: string,
+	baseRefName: string,
+	additions: number,
+	deletions: number,
+	createdAt: string,
+	updatedAt: string,
+	closedAt: string | null,
+	mergedAt: string | null,
+	reviewDecision: string | null,
+	mergeStateStatus: string,
+};
+
 export type PulseCount = PulseCount_Serialize | PulseCount_Deserialize;
 
 export type PulseCount_Deserialize = {
@@ -379,6 +622,14 @@ export type RailItem_Serialize = {
 	title: string,
 	metadata: string,
 };
+
+export type ReviewAction = "APPROVE" | "REQUEST_CHANGES" | "COMMENT";
+
+export type ReviewCommit = {
+	oid: string,
+};
+
+export type ReviewSide = "LEFT" | "RIGHT";
 
 export type ReviewStage = "continuous_integration" | "review" | "fixing" | "approved";
 

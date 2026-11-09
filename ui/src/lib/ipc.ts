@@ -20,6 +20,8 @@ export type {
   EffortLevel,
   ErrorCardView,
   ModelPillView,
+  LaunchEligibility,
+  LaunchRequest,
   PersistedState,
   ProjectItem,
   ProjectLocationKind,
@@ -104,6 +106,10 @@ export const windowCommands = {
 export const settingsCommands = {
   get: commands.getSettings,
   set: commands.setSettings,
+};
+
+export const launchCommands = {
+  getEligibility: commands.getLaunchEligibility,
 };
 
 export const onWindowState = (callback: EventCallback<WindowStateChanged>) =>

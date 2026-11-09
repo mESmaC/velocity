@@ -80,15 +80,14 @@ impl PullRequestClient {
         if pull_request.state != PullRequestState::Open
             || pull_request.is_draft
             || pull_request.head_ref_oid != head
-            || pull_request.merge_state_status != "CLEAN"
+            || pull_request.merge_state_status == "DIRTY"
         {
             return Err(PullRequestError::Invalid(
                 "Merge requires an open, ready, conflict-free PR at the reviewed head".into(),
             ));
         }
-        if snapshot.checks.is_empty() || !snapshot.checks.iter().all(|check| check.passed()) {
-            return Err(PullRequestError::Invalid("Merge requires green CI".into()));
-        }
+        // F7 makes GitHub CI advisory. The duty runner validates the local
+        // merge result; UNSTABLE must not turn a red GitHub run into a gate.
         if snapshot
             .review_threads
             .iter()
@@ -103,15 +102,11 @@ impl PullRequestClient {
             .get("login")
             .and_then(Value::as_str)
             .ok_or_else(|| PullRequestError::Missing("signed-in GitHub login".into()))?;
-        require_approval(snapshot, login, head)
+        require_approval(snapshot, login)
     }
 }
 
-fn require_approval(
-    snapshot: &PullRequestSnapshot,
-    login: &str,
-    head: &str,
-) -> Result<(), PullRequestError> {
+fn require_approval(snapshot: &PullRequestSnapshot, login: &str) -> Result<(), PullRequestError> {
     let mut decisions = BTreeMap::new();
     for review in &snapshot.reviews {
         if matches!(
@@ -122,15 +117,13 @@ fn require_approval(
             decisions.insert(author.login.to_ascii_lowercase(), review);
         }
     }
+    // A clean master-update merge preserves the approving review (F7). The
+    // duty runner re-reviews author changes and conflict resolutions; this
+    // transport checks the recorded decision without demanding a duplicate
+    // approval merely because master was merged into the branch.
     let approved = decisions
         .get(&login.to_ascii_lowercase())
-        .is_some_and(|review| {
-            review.state == "APPROVED"
-                && review
-                    .commit
-                    .as_ref()
-                    .is_some_and(|commit| commit.oid == head)
-        });
+        .is_some_and(|review| review.state == "APPROVED");
     let author = snapshot
         .pull_request
         .author
@@ -143,7 +136,10 @@ fn require_approval(
             .any(|review| review.state == "CHANGES_REQUESTED")
         || snapshot.pull_request.review_decision.as_deref() == Some("CHANGES_REQUESTED")
     {
-        return Err(PullRequestError::Invalid("Only a reviewer who approved the current head may merge; requested changes must be cleared".into()));
+        return Err(PullRequestError::Invalid(
+            "Only a reviewer who approved this PR may merge; requested changes must be cleared"
+                .into(),
+        ));
     }
     Ok(())
 }
