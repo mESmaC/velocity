@@ -4,7 +4,10 @@ use std::sync::Arc;
 use tauri::{AppHandle, Manager, State, Window, WindowEvent};
 use tauri_plugin_dialog::DialogExt;
 use tauri_specta::Event;
-use velocity_core::worktree_view::{WorktreeContext, WorktreeSettingsEdit, WorktreeSettingsView};
+use velocity_core::worktree_view::{
+    WorktreeContext, WorktreePathPreview, WorktreeSettingsEdit, WorktreeSettingsView,
+    folder_preview,
+};
 use velocity_git::inventory::{InventoryError, WorktreeRuntime, WorktreeSource};
 
 pub type ManagedWorktrees = Arc<WorktreeRuntime>;
@@ -123,6 +126,16 @@ fn save_worktree_settings(
     drop(store);
     publish(application, view.clone());
     Ok(view)
+}
+
+#[tauri::command]
+#[specta::specta]
+pub fn preview_worktree_folder(
+    store: State<'_, ManagedStateStore>,
+    folder: String,
+) -> Result<WorktreePathPreview, String> {
+    let store = store.lock().map_err(|error| error.to_string())?;
+    Ok(folder_preview(&store.worktree_context(), &folder))
 }
 
 #[tauri::command]

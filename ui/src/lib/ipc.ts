@@ -63,6 +63,7 @@ export type {
   ProjectLabel,
   WorktreeSettingsView_Serialize as WorktreeSettingsView,
   WorktreeSettingsEdit,
+  WorktreePathPreview,
   PullRequest,
   PullRequestSnapshot,
   PullRequestCheck,
@@ -126,6 +127,7 @@ export const settingsCommands = {
 export const worktreeCommands = {
   list: commands.listWorktrees,
   set: commands.setWorktreeSettings,
+  preview: commands.previewWorktreeFolder,
   browse: commands.browseWorktreeFolder,
   prune: commands.pruneWorktrees,
 };

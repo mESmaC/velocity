@@ -5,6 +5,7 @@
     LayoutAction,
     WorktreeSettingsView,
     WorktreeSettingsEdit,
+    WorktreePathPreview,
   } from './ipc';
   import WorktreeSettingsPanel from './WorktreeSettingsPanel.svelte';
 
@@ -13,6 +14,9 @@
   let error = $state('');
   let notice = $state('');
   let pruning = $state(false);
+  // The preview for a folder still being typed; cleared once a save lands.
+  let preview = $state<WorktreePathPreview | null>(null);
+  let previewRequest = 0;
   let latest: WorktreeSettingsView | null = null;
   let pending = 0;
   let queue = Promise.resolve();
@@ -26,7 +30,19 @@
     if (!pending) view = latest;
   }
 
+  function previewFolder(folder: string) {
+    const request = ++previewRequest;
+    worktreeCommands
+      .preview(folder)
+      .then((result) => {
+        if (request === previewRequest) preview = result;
+      })
+      .catch(report);
+  }
+
   function edit(change: WorktreeSettingsEdit) {
+    previewRequest += 1;
+    preview = null;
     const project = view?.project_identifier ?? null;
     pending += 1;
     error = '';
@@ -90,6 +106,8 @@
   {error}
   {notice}
   {pruning}
+  {preview}
+  {previewFolder}
   {edit}
   {browse}
   {prune}

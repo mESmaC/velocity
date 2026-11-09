@@ -16,6 +16,7 @@ export const commands = {
 	switchProject: (identifier: number) => __TAURI_INVOKE<LayoutSnapshot_Serialize>("switch_project", { identifier }),
 	listWorktrees: () => __TAURI_INVOKE<WorktreeSettingsView_Serialize>("list_worktrees"),
 	setWorktreeSettings: (edit: WorktreeSettingsEdit, projectIdentifier: number | null) => __TAURI_INVOKE<WorktreeSettingsView_Serialize>("set_worktree_settings", { edit, projectIdentifier }),
+	previewWorktreeFolder: (folder: string) => __TAURI_INVOKE<WorktreePathPreview>("preview_worktree_folder", { folder }),
 	browseWorktreeFolder: () => __TAURI_INVOKE<string | null>("browse_worktree_folder"),
 	pruneWorktrees: () => __TAURI_INVOKE<string>("prune_worktrees"),
 	listPullRequests: (projectIdentifier: number) => __TAURI_INVOKE<PullRequest_Serialize[]>("list_pull_requests", { projectIdentifier }),
@@ -1042,6 +1043,12 @@ export type WorktreeInventoryChanged_Deserialize = {
 
 export type WorktreeInventoryChanged_Serialize = {
 	state: WorktreeSettingsView_Serialize,
+};
+
+/**  The path preview for a folder the user is still typing, before it is saved. */
+export type WorktreePathPreview = {
+	preview_root: string,
+	example_path: string,
 };
 
 export type WorktreeRole = "thread" | "review" | "sweep";

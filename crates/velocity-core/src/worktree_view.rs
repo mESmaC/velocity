@@ -135,6 +135,28 @@ pub enum WorktreeSettingsEdit {
     ReadyCount(u32),
 }
 
+/// The path preview for a folder the user is still typing, before it is saved.
+#[cfg_attr(
+    feature = "bindings",
+    derive(serde::Serialize, serde::Deserialize, specta::Type)
+)]
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct WorktreePathPreview {
+    pub preview_root: String,
+    pub example_path: String,
+}
+
+/// Previews a folder on the saved drive, so typing can update the preview
+/// while the folder itself is saved only when the input commits.
+pub fn folder_preview(context: &WorktreeContext, folder: &str) -> WorktreePathPreview {
+    let drive = split_location(&context.preferences.root).0;
+    let root = join_location(&drive, folder);
+    WorktreePathPreview {
+        preview_root: preview_prefix(&root),
+        example_path: example_path(&root, &context.project_name),
+    }
+}
+
 pub fn split_location(root: &str) -> (String, String) {
     let path = Path::new(root);
     if let Some(Component::Prefix(prefix)) = path.components().next() {
@@ -165,9 +187,22 @@ pub fn path_key(path: &str) -> String {
                     .unwrap_or(&normalized)
                     .to_owned()
             });
-        normalized.to_ascii_lowercase()
+        normalized.chars().map(windows_upcase).collect()
     } else {
         path.to_owned()
+    }
+}
+
+/// NTFS compares names through its per-volume upcase table, a one-to-one
+/// character mapping. ASCII lowercasing alone gives `Å` and `å` different keys
+/// for the same directory, so the inventory would count and size it twice.
+/// Mappings that expand to several characters (`ß` to `SS`) are not in that
+/// table, so those characters stay as they are.
+fn windows_upcase(character: char) -> char {
+    let mut upper = character.to_uppercase();
+    match (upper.next(), upper.next()) {
+        (Some(single), None) => single,
+        _ => character,
     }
 }
 
@@ -251,12 +286,23 @@ pub fn row_view(owner: &WorktreeOwner, measurement: Option<&WorktreeSize>) -> Wo
 }
 
 pub fn live_owners(context: &WorktreeContext) -> Vec<&WorktreeOwner> {
+    distinct_live_owners(&context.owners)
+}
+
+fn distinct_live_owners(owners: &[WorktreeOwner]) -> Vec<&WorktreeOwner> {
     let mut paths = BTreeSet::new();
-    context
-        .owners
+    owners
         .iter()
         .filter(|owner| is_live(owner.status) && paths.insert(path_key(&owner.path)))
         .collect()
+}
+
+/// The footer's worktree count and drive label. The project read model and the
+/// live inventory both use this rule, so a project switch shows the same figure
+/// the inventory publishes a moment later.
+pub fn footer_summary(owners: &[WorktreeOwner], fallback_root: &str) -> (usize, String) {
+    let live = distinct_live_owners(owners);
+    (live.len(), footer_drive(&live, fallback_root))
 }
 
 pub fn settings_view(
@@ -284,7 +330,7 @@ pub fn settings_view(
         root: preferences.root.clone(),
         effective_root: effective_root.clone(),
         preview_root: preview_prefix(&preferences.root),
-        example_path: example_path(context),
+        example_path: example_path(&preferences.root, &context.project_name),
         separator: std::path::MAIN_SEPARATOR.to_string(),
         project_override: preferences.project_override.clone(),
         delete_local_branch: preferences.delete_local_branch,
@@ -327,9 +373,9 @@ fn preview_prefix(root: &str) -> String {
     )
 }
 
-fn example_path(context: &WorktreeContext) -> String {
-    Path::new(&context.preferences.root)
-        .join(&context.project_name)
+fn example_path(root: &str, project_name: &str) -> String {
+    Path::new(root)
+        .join(project_name)
         .join("command-palette")
         .to_string_lossy()
         .into_owned()

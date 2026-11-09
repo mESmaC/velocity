@@ -540,12 +540,13 @@ impl LayoutState {
         if let LayoutIntent::Navigation(navigation) = intent {
             return self.navigate(navigation);
         }
-        if let LayoutIntent::SettingsTab(tab) = &intent {
+        // Only the Worktrees page exists so far. Other tabs keep the current
+        // view, as before Settings was built, instead of opening a blank pane.
+        if let LayoutIntent::SettingsTab(tab) = &intent
+            && tab == "worktrees"
+        {
             self.view = NavigationView::Settings;
-            self.settings_tab = match tab.as_str() {
-                "worktrees" | "providers" | "skills" | "agents" | "proofs" => tab.clone(),
-                _ => "worktrees".into(),
-            };
+            self.settings_tab = tab.clone();
         }
         Some(intent)
     }

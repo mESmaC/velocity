@@ -31,6 +31,7 @@ fn bindings() -> Builder<tauri::Wry> {
             projects::switch_project,
             worktree_settings::list_worktrees,
             worktree_settings::set_worktree_settings,
+            worktree_settings::preview_worktree_folder,
             worktree_settings::browse_worktree_folder,
             worktree_settings::prune_worktrees,
             github::list_pull_requests,

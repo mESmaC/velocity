@@ -175,7 +175,7 @@ fn require_project(context: &WorktreeContext) -> Result<(), StoreError> {
     })
 }
 
-fn project_owners(project: &ProjectItem) -> Vec<WorktreeOwner> {
+pub(crate) fn project_owners(project: &ProjectItem) -> Vec<WorktreeOwner> {
     project
         .threads
         .iter()

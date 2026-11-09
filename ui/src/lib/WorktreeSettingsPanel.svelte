@@ -3,6 +3,7 @@
     LayoutAction,
     WorktreeSettingsView,
     WorktreeSettingsEdit,
+    WorktreePathPreview,
   } from './ipc';
   import './theme/worktrees.css';
 
@@ -11,6 +12,8 @@
     error,
     notice,
     pruning,
+    preview,
+    previewFolder,
     edit,
     browse,
     prune,
@@ -20,6 +23,8 @@
     error: string;
     notice: string;
     pruning: boolean;
+    preview: WorktreePathPreview | null;
+    previewFolder: (folder: string) => void;
     edit: (change: WorktreeSettingsEdit) => void;
     browse: () => Promise<void>;
     prune: () => Promise<void>;
@@ -95,7 +100,9 @@
                 value={view.folder}
                 spellcheck="false"
                 onkeydown={blurOnEscape}
-                oninput={(event) => edit({ Folder: event.currentTarget.value })}
+                oninput={(event) => previewFolder(event.currentTarget.value)}
+                onchange={(event) =>
+                  edit({ Folder: event.currentTarget.value })}
               /></label
             >
             <button class="worktree-button browse" onclick={() => void browse()}
@@ -103,9 +110,11 @@
             >
           </div>
           <div class="worktree-path-preview">
-            {view.preview_root}<span>&lt;project&gt;</span>{view.separator}<span
-              >&lt;branch&gt;</span
-            ><br /><small>e.g. {view.example_path}</small>
+            {preview?.preview_root ?? view.preview_root}<span
+              >&lt;project&gt;</span
+            >{view.separator}<span>&lt;branch&gt;</span><br /><small
+              >e.g. {preview?.example_path ?? view.example_path}</small
+            >
           </div>
           <div class="worktree-setting-row">
             <label class="worktree-check"
@@ -212,7 +221,7 @@
                 value={view.setup_command}
                 spellcheck="false"
                 onkeydown={blurOnEscape}
-                oninput={(event) =>
+                onchange={(event) =>
                   edit({ SetupCommand: event.currentTarget.value })}
               /></label
             >
