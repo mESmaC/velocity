@@ -70,7 +70,7 @@ pub async fn request_title(request: TitleRequest) -> Result<String, ClientError>
             title_turn(&connection, &request).await
         });
     let outcome = tokio::time::timeout(deadline, session).await;
-    process::kill_agent_tree(&mut agent).await;
+    process::stop_agent(&mut agent).await;
     outcome.map_err(|_| ClientError::TimedOut(deadline))??;
     Ok(agent_reply(&mut received))
 }
