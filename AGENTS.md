@@ -13,7 +13,7 @@ You are building Velocity: a Rust + Tauri desktop IDE that runs many coding agen
 - Format: `cargo fmt --all`. Run it before every commit.
 - Proofs: `lake build` in `proofs/`. Run it before every push.
 - Proof toolchain setup (Windows + Ubuntu WSL): `powershell -File proofs/scripts/Setup-Toolchain.ps1`.
-- Charon and Aeneas: `powershell -File proofs/scripts/Export-Rust.ps1 -CratePath crates/<crate> -Feature <Feature>`. This runs pinned `charon cargo --preset=aeneas` then `aeneas -backend lean`; complete the confidence proof and run `lake build` afterwards. See `proofs/README.md`.
+- Charon and Aeneas: `powershell -File proofs/scripts/Export-Rust.ps1 -CratePath crates/<crate> -Feature <Feature> -StartFrom crate::<module>`. This runs pinned `charon cargo --preset=aeneas` then `aeneas -backend lean`; complete the confidence proof and run `lake build` afterwards. See `proofs/README.md`.
 - Stress: `cargo run -p stress -- --all`. Scouts and PR duty agents only.
 - UI type check: `pnpm -C ui check` (svelte-check). Zero errors and zero warnings.
 - UI lint: `pnpm -C ui lint`. Zero warnings.

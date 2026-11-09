@@ -2,7 +2,10 @@
 param(
     [Parameter(Mandatory)] [string] $CratePath,
     [Parameter(Mandatory)] [ValidatePattern('^[A-Z][A-Za-z0-9]*$')] [string] $Feature,
-    [string] $Distribution = 'Ubuntu'
+    [string] $Distribution = 'Ubuntu',
+    # Item paths to translate, e.g. 'crate::theme'. Each feature translates only its
+    # own module: two translations of the same item collide when Lean imports both.
+    [string[]] $StartFrom = @()
 )
 
 Set-StrictMode -Version Latest
@@ -38,8 +41,10 @@ $linuxCrate = ConvertTo-LinuxPath $resolvedCrate
 $linuxProofs = ConvertTo-LinuxPath $proofsDirectory
 
 # Argument arrays keep Windows drive letters, spaces and shell metacharacters out of shell code.
-Invoke-Checked 'wsl.exe' @('-d', $Distribution, '--cd', $linuxCrate, '--exec', 'env', "PATH=$linuxPath",
-    "$translatorDirectory/charon", 'cargo', '--preset=aeneas', '--dest-file', $intermediateFile, '--', '--lib')
+$charonArguments = @('-d', $Distribution, '--cd', $linuxCrate, '--exec', 'env', "PATH=$linuxPath",
+    "$translatorDirectory/charon", 'cargo', '--preset=aeneas', '--dest-file', $intermediateFile)
+foreach ($item in $StartFrom) { $charonArguments += @('--start-from', $item) }
+Invoke-Checked 'wsl.exe' ($charonArguments + @('--', '--lib'))
 Invoke-Checked 'wsl.exe' @('-d', $Distribution, '--exec', "$translatorDirectory/aeneas", '-backend', 'lean',
     $intermediateFile, '-dest', $linuxProofs, '-subdir', "$Feature/Generated", '-split-files',
     '-namespace', "Velocity.$Feature.Generated", '-no-progress-bar')

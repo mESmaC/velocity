@@ -13,6 +13,8 @@
     "bindings": "cargo run --manifest-path ../Cargo.toml -p velocity-app --bin export-bindings"
   },
   "dependencies": {
+    "@fontsource/inter": "5.3.0",
+    "@fontsource/jetbrains-mono": "5.3.0",
     "@tauri-apps/api": "2.12.4"
   },
   "devDependencies": {
