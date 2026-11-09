@@ -1,14 +1,17 @@
 //! Read the active project's persisted context into the shell's public read model.
 
 use crate::{
-    AgentActivity, PersistedState, ProjectItem, ReviewStage, TaskState, ThreadItem, ThreadState,
+    AgentActivity, EffortLevel, PersistedState, ProjectItem, ProviderKind, ReviewStage, SpeedMode,
+    TaskState, ThreadItem, ThreadState,
 };
 use std::collections::BTreeSet;
 use velocity_core::layout::{LayoutRow, ThreadGroup};
 use velocity_core::layout_view::{
-    LayoutData, LayoutIntent, PaletteItem, PaletteTarget, RailItem, ThreadEntry,
+    LayoutData, LayoutIntent, PaletteItem, PaletteTarget, ProviderColor, RailItem, ThreadEntry,
 };
 use velocity_core::navigation::NavigationView;
+use velocity_core::thread_view::ThreadLifecycle;
+use velocity_core::thread_view_model::ThreadDetailEntry;
 
 pub(crate) fn active_project(state: &PersistedState) -> Option<&ProjectItem> {
     usize::try_from(state.active_project_index)
@@ -79,6 +82,79 @@ fn thread_entry(thread: &ThreadItem) -> ThreadEntry {
         } else {
             NavigationView::Thread
         },
+        detail: Some(thread_detail(thread)),
+    }
+}
+
+/// The thread header and model pill from what `state.json` keeps. The
+/// transcript is not persisted, so a reopened thread starts with no blocks
+/// until its agent session streams new ones.
+fn thread_detail(thread: &ThreadItem) -> ThreadDetailEntry {
+    ThreadDetailEntry {
+        identifier: thread.id as usize,
+        title: thread.title.clone(),
+        titling: false,
+        title_model_name: String::new(),
+        branch: thread.branch_name.clone(),
+        worktree_path: thread.worktree_path.clone().unwrap_or_default(),
+        lifecycle: thread_lifecycle(thread.state),
+        added: thread.additions as usize,
+        deleted: thread.deletions as usize,
+        elapsed_label: elapsed_label(thread.elapsed_seconds),
+        pull_request_number: thread.pull_request_number.map(|number| number as usize),
+        agent_busy: thread.state == ThreadState::Working
+            && matches!(
+                thread.activity,
+                AgentActivity::Thinking | AgentActivity::Executing
+            ),
+        show_work: false,
+        worked_summary: None,
+        blocks: Vec::new(),
+        provider: provider_color(thread.provider),
+        model_name: thread.model_name.clone(),
+        effort_label: effort_label(thread.effort).into(),
+        requested_fast: thread.preferred_speed == SpeedMode::Fast,
+        model_has_fast_mode: thread.model_supports_fast,
+    }
+}
+
+fn thread_lifecycle(state: ThreadState) -> ThreadLifecycle {
+    match state {
+        ThreadState::Draft => ThreadLifecycle::Draft,
+        // A spec interview is live agent work in its own checkout.
+        ThreadState::Spec | ThreadState::Working => ThreadLifecycle::Working,
+        ThreadState::Review => ThreadLifecycle::Review,
+        ThreadState::Error => ThreadLifecycle::Error,
+        // A locked spec thread finished without a merge, so its checkout stays.
+        ThreadState::Closed | ThreadState::Done => ThreadLifecycle::Closed,
+        ThreadState::Merged => ThreadLifecycle::Merged,
+    }
+}
+
+fn provider_color(provider: ProviderKind) -> ProviderColor {
+    match provider {
+        ProviderKind::Claude => ProviderColor::Claude,
+        ProviderKind::Codex => ProviderColor::Codex,
+        ProviderKind::Antigravity => ProviderColor::Antigravity,
+        ProviderKind::Kimi => ProviderColor::Kimi,
+    }
+}
+
+fn effort_label(effort: EffortLevel) -> &'static str {
+    match effort {
+        EffortLevel::Low => "Low",
+        EffortLevel::Medium => "Medium",
+        EffortLevel::High => "High",
+        EffortLevel::Max => "Max",
+    }
+}
+
+/// The reference's compact largest-unit time: `0s`, `6m`, `3h`.
+fn elapsed_label(seconds: u32) -> String {
+    match seconds {
+        0..60 => format!("{seconds}s"),
+        60..3600 => format!("{}m", seconds / 60),
+        _ => format!("{}h", seconds / 3600),
     }
 }
 
