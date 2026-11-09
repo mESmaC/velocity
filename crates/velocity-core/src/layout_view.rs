@@ -1,5 +1,6 @@
 //! Read models and actions for the main-window shell (SPEC.md F1, F4).
 
+use crate::interview_view::InterviewEntry;
 use crate::layout::{LayoutRow, PulseKind, ThreadGroup};
 use crate::navigation::{NavigationIntent, NavigationView, NumberHintEvent};
 use crate::thread_view_model::{
@@ -46,6 +47,8 @@ pub struct LayoutData {
     pub overlap_unread: bool,
     pub default_model_pill: Option<ModelPillView>,
     pub agent_commands: Vec<AgentCommandView>,
+    /// Spec interview read models, keyed by thread (F3).
+    pub interviews: Vec<InterviewEntry>,
 }
 
 #[cfg_attr(
@@ -167,6 +170,12 @@ pub enum LayoutIntent {
         queued: bool,
     },
     AddTask(String),
+    /// Ready card: include or leave out one proposed proof-list entry (F3, F17).
+    ToggleProofListEntry(
+        #[cfg_attr(feature = "bindings", serde(with = "crate::ipc_number"))]
+        #[cfg_attr(feature = "bindings", specta(type = String))]
+        usize,
+    ),
 }
 
 #[cfg_attr(

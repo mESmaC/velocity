@@ -22,8 +22,8 @@ use crate::{
 pub struct SessionSetup {
     /// The thread's worktree: the agent's working directory and `session/new`'s `cwd`.
     pub worktree: PathBuf,
-    /// The AIRC MCP server, always passed (F14).
-    pub airc: McpServer,
+    /// The AIRC MCP server, always passed once it exists (F14, M8). `None` until then.
+    pub airc: Option<McpServer>,
     /// Settings → Agents → shared MCP servers, passed to every agent.
     pub shared_servers: Vec<McpServer>,
     /// The ids of the agent's session modes that skip its permission checks, as the provider
@@ -66,7 +66,10 @@ pub(super) fn initialize_request() -> InitializeRequest {
 
 /// AIRC, then the shared servers, keeping the first server of each name.
 pub fn session_servers(setup: &SessionSetup) -> Vec<McpServer> {
-    let servers: Vec<McpServer> = std::iter::once(setup.airc.clone())
+    let servers: Vec<McpServer> = setup
+        .airc
+        .iter()
+        .cloned()
         .chain(setup.shared_servers.iter().cloned())
         .collect();
     let keep: Vec<bool> = {

@@ -1,6 +1,7 @@
 //! Pure synchronous Velocity domain logic; native I/O belongs at the edges.
 
 pub mod build_gate;
+pub mod interview_view;
 #[cfg(feature = "bindings")]
 pub mod ipc_number;
 pub mod layout;
