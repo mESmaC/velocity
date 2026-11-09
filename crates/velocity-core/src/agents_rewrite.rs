@@ -111,7 +111,13 @@ impl AgentsEditor {
         if let Some(index) = self.index(identifier)
             && let Some(original) = record.original
         {
+            // The copy may come from a last line without a newline. A bullet added after the
+            // rewrite must not join the restored wording, so keep the line's current ending.
+            let ending = std::mem::take(&mut self.lines[index].ending);
             self.lines[index] = original;
+            if self.lines[index].ending.is_empty() {
+                self.lines[index].ending = ending;
+            }
             self.lines
                 .retain(|line| !record.inserted.contains(&line.identifier));
         }
