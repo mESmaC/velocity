@@ -51,12 +51,22 @@ impl StateStore {
             .iter_mut()
             .find(|item| item.id == project)
             .ok_or(ThreadError::UnknownProject(project))?;
-        let identifier = item
+        let highest_thread = item
             .threads
             .iter()
             .map(|existing| existing.id)
             .max()
-            .unwrap_or(0)
+            .unwrap_or(0);
+        // Duty roles share the project's entry identifiers with threads (F7), and a deleted
+        // thread's identifier is never handed out again (#65).
+        let highest_duty = item
+            .duty_roles
+            .iter()
+            .map(|duty| duty.id)
+            .max()
+            .unwrap_or(0);
+        let identifier = highest_thread
+            .max(highest_duty)
             .checked_add(1)
             .ok_or(ThreadError::IdentifiersExhausted)?
             .max(*next.next_thread_identifiers.get(&project).unwrap_or(&1));

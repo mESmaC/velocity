@@ -4,6 +4,7 @@ pub mod agents_editor;
 mod agents_markdown;
 pub mod agents_rewrite;
 pub mod build_gate;
+pub mod duty;
 pub mod interview_view;
 #[cfg(feature = "bindings")]
 pub mod ipc_number;

@@ -68,6 +68,7 @@ fn seed(repository: &str, snapshot: &PullRequestSnapshot) -> PersistedState {
         tasks: Vec::new(),
         threads: vec![seed_thread(repository, snapshot)],
         pending_interview: None,
+        duty_roles: Vec::new(),
     });
     state
 }
