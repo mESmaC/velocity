@@ -391,14 +391,14 @@ When the task is done, the agent opens a PR. The PR description links the Task L
   - the fix steps (edit, prove, push, reply) and "re-requested review"
   - approval, then a merged card
 - **Agent behaviour:**
-  - If CI fails, fix and push.
+  - If the local checks or CI fail on its own change, fix and push.
   - Answer every review comment: either fix and push, or reply with the reason. Then resolve the thread and re-request review.
   - If the PR is closed without merging, report why in the thread.
 - **Status line:** "watching PR #n · <stage> · answers new comments as they arrive", or "addressing N open review comment(s)".
-- **Sidebar meta:** `#n` plus the stage label in the stage colour: waiting on CI / in review / addressing review / approved · merging.
+- **Sidebar meta:** `#n` plus the stage label in the stage colour: checking / in review / addressing review / approved · merging.
 
 **Landing and rebases** (from Anthropic's Scion):
-- **No global merge queue or lock.** PR duty merges a PR as soon as it is approved and green, without waiting its turn behind other PRs.
+- **No global merge queue or lock.** PR duty merges a PR as soon as it is approved and its local checks pass (F7), without waiting its turn behind other PRs.
 - **Targeted rebases.** When a PR merges, Velocity compares the merged change's files with each open agent's claimed files and edited files (§3.2).
   - Only agents with an overlap rebase straight away; each gets a `rebased` event.
   - Every other agent rebases once, at landing time, instead of after every merge.
@@ -434,12 +434,16 @@ Long-running roles. They appear under **On duty**, with an agent count (×N) and
 
 **PR duty:**
 - Claims unclaimed PRs, one PR per agent, so two agents never review the same one.
-- Waits for CI, reviews the diff against SPEC.md and the Task List, leaves inline comments, requests changes or approves, then merges.
+- Runs the local checks, reviews the diff against SPEC.md and the Task List, leaves inline comments, requests changes or approves, then merges.
+- **Local checks decide, not GitHub CI.** PR duty runs the project's checks in its review worktree, on the PR merged onto the current `master`: format, build with locked dependencies, lint with zero warnings, the UI checks, and `lake build` with the axiom audit when `proofs/` changes (the commands come from AGENTS.md). When they pass, the PR can merge.
+  - GitHub CI is advisory. A pending, red or stale run never holds up a PR whose local checks pass.
+  - **Why:** a merge queue stalled for an hour on CI that was red only because `master` had been broken. GitHub CI also costs money per run.
+  - Testing the merge result, not the PR head, also catches a PR that broke only after another PR merged.
 - **Rules:**
   - **Never merge without an approving review** (locked).
   - **Never merge unless the proofs check** (F17; locked).
   - Review every theorem statement against the claim and SPEC.md.
-  - CI green before merge.
+  - Local checks pass on the merge result before merge (locked). GitHub CI never blocks.
   - Check against SPEC.md.
   - Re-review on new commits. A merge commit PR duty pushed to update the branch is not a new commit to review; only its conflict resolutions are.
   - Update branches with `master` (F6): allowed and encouraged, never by force-push.
@@ -453,7 +457,7 @@ Long-running roles. They appear under **On duty**, with an agent count (×N) and
   - Is the cost model honest, and is the class of alternatives the one that matters?
 - **PR duty writes tests too.** When a reviewer doubts a claim a proof doesn't cover, it writes a stress script, runs it, and attaches the result to its comment.
 - **Tiered review** *(proposed)*. Velocity tiers each PR from its diff:
-  - **Trivial:** docs, comments or formatting. No proof needed. Approved once CI is green and the change matches its claim.
+  - **Trivial:** docs, comments or formatting. No proof needed. Approved once the local checks pass and the change matches its claim.
   - **Normal:** everything else. Full review.
   - **Sensitive:** touches any path listed under "Sensitive paths" in AGENTS.md (e.g. migrations, worktree deletion, CI config, auth). Full review, plus the full stress suite before merge, plus a confidence proof at the strongest level the language allows (F17).
 
@@ -898,7 +902,7 @@ theorem optimal : ∀ strat ∈ RebaseStrategies,
 
 **Where it runs:**
 - Proofs and stress scripts run locally, in each agent's worktree, on the machine that already runs the agents.
-- GitHub CI runs build and lint only.
+- GitHub CI runs build and lint only, and is advisory: it never blocks a merge (F7).
 - Tests and stress scripts live in `stress/` (and the project's own test folder). Scouts run them on every sweep and the main watcher runs them after every merge. They never run in per-PR GitHub CI.
 
 **Proof card** (in the PR history, F6):
@@ -916,6 +920,7 @@ theorem optimal : ∀ strat ∈ RebaseStrategies,
 - [ ] Every issue a scout files carries a failing test or stress script.
 - [ ] The proof card shows each language's level, and a model-only level is flagged when a stronger one exists.
 - [ ] Per-PR GitHub CI runs only build and lint.
+- [ ] A PR whose local checks pass on the merge result merges while its GitHub CI run is still pending or red.
 
 ### F18 · Skills
 
@@ -1160,7 +1165,7 @@ Each milestone ends with a working app. Check items off as their PRs merge.
 | Q18 | Should "keep going" be on by default? Built: off, which matches the prompt you use today (stop after the merge). | F16 |
 | Q19 | Should Velocity also accept any other ACP agent (a custom command and arguments, as Zed allows), or only the four providers? | F15, §3.2 |
 | Q20 | Defaults for the stall timeout (5 min) and the claim-release grace period (10 min)? Should a failed agent's pushed branch be offered to whoever claims the piece next? | §2.2 |
-| Q21 | Decided: pre-merge GitHub CI is build and lint, proofs are checked locally before merge, and tests and stress scripts run after the merge (F17). | F7, F17 |
+| Q21 | Decided: pre-merge GitHub CI is build and lint and only advisory, the local checks on the merge result decide the merge (F7), proofs are checked locally before merge, and tests and stress scripts run after the merge (F17). | F7, F17 |
 | Q22 | Name for the "Main watcher" duty role. | F7 |
 | Q23 | Which code-level translators should ship besides Aeneas for Rust (C, C++, Python and others)? Until one exists for a language, that language tops out at the reference level. | F17 |
 | Q24 | Should the spec interview write design proofs for SPEC.md sections up front, or leave every design proof to the agent that builds the feature (as specified)? | F3, F17 |
