@@ -3,15 +3,11 @@
 //! Each entry shows one thing: a user message, an agent message, the agent's thoughts, a
 //! tool call or the plan. Message chunks and plan updates join the last entry when it shows
 //! the same thing, so a streamed message is one entry. A tool call's updates join that call's
-//! entry wherever it is, so a tool step updates in place. `proofs/AcpClient/Design.lean`
-//! (`transcript`) proves that every update is kept, in order, under its own entry, and that no
-//! transcript showing things in the order they happened has fewer entries.
+//! entry wherever it is, so a tool step updates in place. Every update is
+//! kept, in order, under its own entry.
 
 /// The message a chunk belongs to: ACP's optional `messageId`. Two messages streamed back to
 /// back stay apart when the agent names them.
-///
-/// Its own type rather than `Option<Key>`: the derived impls then translate without
-/// `Option`'s `Clone`, `Debug` and `PartialEq`, which the pinned Aeneas library does not model.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum MessageKey<Key> {
     Unnamed,
@@ -88,32 +84,16 @@ impl<Key: PartialEq, Payload> Transcript<Key, Payload> {
     }
 }
 
-fn is_tool_call<Key>(class: &EntryClass<Key>) -> bool {
-    match class {
-        EntryClass::ToolCall(_) => true,
-        EntryClass::UserMessage(_)
-        | EntryClass::AgentMessage(_)
-        | EntryClass::AgentThought(_)
-        | EntryClass::Plan => false,
-    }
-}
-
 /// The entry an update joins, or `None` when it starts a new one.
 fn entry_for<Key: PartialEq, Payload>(
     entries: &[Entry<Key, Payload>],
     class: &EntryClass<Key>,
 ) -> Option<usize> {
-    if is_tool_call(class) {
+    if matches!(class, EntryClass::ToolCall(_)) {
         find_class(entries, class)
-    } else if entries.is_empty() {
-        None
     } else {
-        let last = entries.len() - 1;
-        if same_class(&entries[last].class, class) {
-            Some(last)
-        } else {
-            None
-        }
+        let last = entries.len().checked_sub(1)?;
+        (entries[last].class == *class).then_some(last)
     }
 }
 
@@ -122,46 +102,5 @@ fn find_class<Key: PartialEq, Payload>(
     entries: &[Entry<Key, Payload>],
     class: &EntryClass<Key>,
 ) -> Option<usize> {
-    let mut index = 0;
-    while index < entries.len() {
-        if same_class(&entries[index].class, class) {
-            return Some(index);
-        }
-        index += 1;
-    }
-    None
-}
-
-// Written out rather than derived so that the translation compares keys only through
-// `Key::eq`, the one assumption the confidence proof makes about keys.
-fn same_class<Key: PartialEq>(first: &EntryClass<Key>, second: &EntryClass<Key>) -> bool {
-    match first {
-        EntryClass::UserMessage(first) => match second {
-            EntryClass::UserMessage(second) => same_message(first, second),
-            _ => false,
-        },
-        EntryClass::AgentMessage(first) => match second {
-            EntryClass::AgentMessage(second) => same_message(first, second),
-            _ => false,
-        },
-        EntryClass::AgentThought(first) => match second {
-            EntryClass::AgentThought(second) => same_message(first, second),
-            _ => false,
-        },
-        EntryClass::ToolCall(first) => match second {
-            EntryClass::ToolCall(second) => first == second,
-            _ => false,
-        },
-        EntryClass::Plan => matches!(second, EntryClass::Plan),
-    }
-}
-
-fn same_message<Key: PartialEq>(first: &MessageKey<Key>, second: &MessageKey<Key>) -> bool {
-    match first {
-        MessageKey::Named(first) => match second {
-            MessageKey::Named(second) => first == second,
-            MessageKey::Unnamed => false,
-        },
-        MessageKey::Unnamed => matches!(second, MessageKey::Unnamed),
-    }
+    entries.iter().position(|entry| entry.class == *class)
 }

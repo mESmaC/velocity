@@ -1,5 +1,5 @@
 //! The ACP client edge (SPEC.md §3.2): the agent process, the JSON-RPC connection, and the
-//! `fs` and `terminal` capabilities. Every decision it makes comes from the proved pure
+//! `fs` and `terminal` capabilities. Every decision it makes comes from the pure
 //! modules: which servers and mode a session starts with (`session_start`), how permission
 //! requests are answered (`permissions`), when prompts are sent (`steering`), where paths point
 //! (`paths`), how much terminal output is kept (`terminal_output`) and where an update goes in

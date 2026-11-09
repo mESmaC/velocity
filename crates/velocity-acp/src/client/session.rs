@@ -31,8 +31,7 @@ pub struct SessionSetup {
     pub bypass_modes: Vec<String>,
 }
 
-/// `initialize` → `session/new` → `session/set_mode` where it changes the mode
-/// (`Design.lean`, `startRequests`).
+/// `initialize` → `session/new` → `session/set_mode` where it changes the mode.
 pub async fn start_session(
     connection: &ConnectionTo<Agent>,
     setup: &SessionSetup,
@@ -65,8 +64,7 @@ fn initialize_request() -> InitializeRequest {
         .client_info(Implementation::new("velocity", env!("CARGO_PKG_VERSION")))
 }
 
-/// AIRC, then the shared servers, keeping the first server of each name
-/// (`Design.lean`, `sessionServers`).
+/// AIRC, then the shared servers, keeping the first server of each name.
 pub fn session_servers(setup: &SessionSetup) -> Vec<McpServer> {
     let servers: Vec<McpServer> = std::iter::once(setup.airc.clone())
         .chain(setup.shared_servers.iter().cloned())

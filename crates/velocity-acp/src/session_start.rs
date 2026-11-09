@@ -1,9 +1,8 @@
 //! Starting an ACP session (SPEC.md §3.2): which MCP servers `session/new` receives, and
 //! whether the session needs a `session/set_mode`.
 //!
-//! `proofs/AcpClient/Design.lean` proves both: AIRC is always passed with every shared
-//! server's name and no name twice, and the start sends the fewest requests that leave the
-//! session in its bypass mode.
+//! AIRC is always passed, with every shared server's name and no name twice, and the start
+//! sends the fewest requests that leave the session in its bypass mode.
 
 /// Marks the first server of each name, in order.
 ///

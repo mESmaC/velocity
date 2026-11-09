@@ -1,8 +1,8 @@
 //! How much terminal output to keep under the agent's `outputByteLimit` (ACP `terminal/create`).
 //!
 //! ACP: when the output passes the limit, the client truncates it from the beginning, at a
-//! character boundary. `proofs/AcpClient/Design.lean` (`retainedStart`) proves that this keeps
-//! at most the limit, starts on a character, and drops the fewest bytes that allows.
+//! character boundary. This keeps at most the limit, starts on a
+//! character, and drops the fewest bytes that allows.
 
 /// UTF-8 continuation bytes, `10xxxxxx`: no character starts on one.
 fn is_continuation(byte: u8) -> bool {

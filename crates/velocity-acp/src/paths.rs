@@ -3,9 +3,9 @@
 //! Relative paths are resolved against the thread's worktree. Absolute paths are used as
 //! given: the worktree is the agent's working directory, not a jail (§3.2 Tool access).
 //! Paths are UTF-8 bytes; separators, drive letters and colons are ASCII, so every test here
-//! is exact on UTF-8. `proofs/AcpClient/Design.lean` (`resolvePath`) proves that the result
-//! on an absolute worktree is always absolute, so no relative path ever reaches the operating
-//! system, where it would resolve against Velocity's own folder instead of the worktree.
+//! is exact on UTF-8. On an absolute worktree the result is always
+//! absolute, so no relative path ever reaches the operating system, where it would resolve
+//! against Velocity's own folder instead of the worktree.
 //!
 //! Paths over 260 characters need no special form here: Rust's standard library adds the
 //! `\\?\` prefix itself when it opens a long path on Windows.

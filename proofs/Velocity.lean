@@ -14,5 +14,3 @@ public import Layout.Design
 public import Layout.Confidence
 public import WorktreeManager.Design
 public import WorktreeManager.Confidence
-public import AcpClient.Design
-public import AcpClient.Confidence

@@ -1,11 +1,11 @@
 //! Velocity's ACP client and agent processes (SPEC.md §3.2).
 //!
-//! The pure core is synchronous and free of I/O so that Charon and Aeneas can translate it:
+//! The pure core is synchronous and free of I/O:
 //! - the agent runner (`proofs/AgentRunner/`): the settings an agent runs with (F15), the
 //!   answers that keep every agent unrestricted (Rule 1), and queued steering (Rule 1, F4);
-//! - the ACP client (`proofs/AcpClient/`): the servers and requests that start a session,
-//!   where `fs` and `terminal` paths point, how much terminal output to keep, and how
-//!   `session/update` notifications become the transcript.
+//! - the ACP client: the servers and requests that start a session, where `fs` and `terminal`
+//!   paths point, how much terminal output to keep, and how `session/update` notifications
+//!   become the transcript.
 //!
 //! `client` is the async edge around them: the agent process, the ACP connection, and the
 //! `fs` and `terminal` capabilities.
