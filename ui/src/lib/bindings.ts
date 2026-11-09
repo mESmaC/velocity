@@ -17,6 +17,8 @@ export const commands = {
 	listPullRequests: (projectIdentifier: number) => __TAURI_INVOKE<PullRequest_Serialize[]>("list_pull_requests", { projectIdentifier }),
 	getPullRequest: (projectIdentifier: number, number: number) => __TAURI_INVOKE<PullRequestSnapshot_Serialize>("get_pull_request", { projectIdentifier, number }),
 	dispatchPullRequest: (projectIdentifier: number, operation: PullRequestOperation_Deserialize) => __TAURI_INVOKE<PullRequestReceipt>("dispatch_pull_request", { projectIdentifier, operation }),
+	getPullRequestPanel: () => __TAURI_INVOKE<PullRequestPanelSnapshot_Serialize>("get_pull_request_panel"),
+	openProjectPullRequest: (projectIdentifier: number, number: number) => __TAURI_INVOKE<LayoutSnapshot_Serialize | null>("open_project_pull_request", { projectIdentifier, number }),
 	getNewProjectDefaults: () => __TAURI_INVOKE<NewProjectDefaults_Serialize>("get_new_project_defaults"),
 	/**  Browse…: the native folder picker. `None` when it is dismissed. */
 	pickProjectFolder: () => __TAURI_INVOKE<string | null>("pick_project_folder"),
@@ -31,6 +33,8 @@ export const LAYOUT_INTENT_EVENT = "layout://intent" as const;
 export const LAYOUT_STATE_EVENT = "layout://state" as const;
 
 export const PROJECT_SELECTED_EVENT = "project://selected" as const;
+
+export const PULL_REQUEST_PANEL_EVENT = "pr://panel" as const;
 
 export const WINDOW_STATE_EVENT = "window://state" as const;
 
@@ -57,6 +61,8 @@ export type AgentSettings_Serialize = {
 	stall_timeout_minutes: number,
 	claim_release_grace_minutes: number,
 };
+
+export type CheckStatus = "passing" | "running" | "failing" | "unavailable";
 
 export type CreatePullRequest = CreatePullRequest_Serialize | CreatePullRequest_Deserialize;
 
@@ -599,6 +605,64 @@ export type PullRequestOperation_Serialize = ({ Create: CreatePullRequest_Serial
 	number: number,
 } }) & { Comment?: never; Create?: never; Merge?: never; Reply?: never; RequestReview?: never; Resolve?: never; Review?: never };
 
+export type PullRequestPanelChanged = PullRequestPanelChanged_Serialize | PullRequestPanelChanged_Deserialize;
+
+export type PullRequestPanelChanged_Deserialize = {
+	panel: PullRequestPanelSnapshot_Deserialize,
+};
+
+export type PullRequestPanelChanged_Serialize = {
+	panel: PullRequestPanelSnapshot_Serialize,
+};
+
+export type PullRequestPanelRow = PullRequestPanelRow_Serialize | PullRequestPanelRow_Deserialize;
+
+export type PullRequestPanelRow_Deserialize = {
+	number: number,
+	title: string,
+	head_branch: string,
+	head_in_project: boolean,
+	additions: number,
+	deletions: number,
+	checks: CheckStatus,
+	review: ReviewStatus,
+	review_label: string,
+	reviewer?: string | null,
+	thread_identifier?: number | null,
+};
+
+export type PullRequestPanelRow_Serialize = {
+	number: number,
+	title: string,
+	head_branch: string,
+	head_in_project: boolean,
+	additions: number,
+	deletions: number,
+	checks: CheckStatus,
+	review: ReviewStatus,
+	review_label: string,
+	reviewer: string | null,
+	thread_identifier: number | null,
+};
+
+export type PullRequestPanelSnapshot = PullRequestPanelSnapshot_Serialize | PullRequestPanelSnapshot_Deserialize;
+
+export type PullRequestPanelSnapshot_Deserialize = {
+	revision: number,
+	project_identifier?: number | null,
+	loading: boolean,
+	rows: PullRequestPanelRow_Deserialize[],
+	error?: string | null,
+};
+
+export type PullRequestPanelSnapshot_Serialize = {
+	revision: number,
+	project_identifier: number | null,
+	loading: boolean,
+	rows: PullRequestPanelRow_Serialize[],
+	error: string | null,
+};
+
 /**
  *  A successful write is reported without a follow-up read that could fail and
  *  make a caller retry an already-published comment, review or PR.
@@ -755,6 +819,8 @@ export type ReviewCommit = {
 export type ReviewSide = "LEFT" | "RIGHT";
 
 export type ReviewStage = "continuous_integration" | "review" | "fixing" | "approved";
+
+export type ReviewStatus = "draft" | "checking" | "unclaimed" | "reviewing" | "changes_requested" | "approved";
 
 export type Settings = Settings_Serialize | Settings_Deserialize;
 
