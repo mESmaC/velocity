@@ -15,8 +15,3 @@ specta = { workspace = true, optional = true }
 [lints]
 workspace = true
 
-# The embedded tokens.css is too large a literal for Lean to elaborate, so the
-# Charon/Aeneas translation leaves it and `tokens()` (which only passes it to the
-# proven scanner) out. See proofs/Theme/Confidence.lean.
-[package.metadata.charon]
-exclude = ["crate::theme::TOKENS_CSS", "crate::theme::tokens"]
