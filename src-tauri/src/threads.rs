@@ -68,7 +68,10 @@ fn start_thread(application: &AppHandle, prompt: &str) -> Result<LayoutSnapshot,
         let project = store
             .active_project()
             .ok_or("Select or create a project first")?;
-        let plan = plan_launch(project, &store.settings(), prompt).map_err(|e| e.to_string())?;
+        // Settings → Worktrees for the active project, which is the one the thread starts in.
+        let worktrees = store.worktree_context().preferences;
+        let plan = plan_launch(project, &worktrees, &store.settings(), prompt)
+            .map_err(|error| error.to_string())?;
         let thread = store
             .add_thread(plan.project, plan.thread.clone())
             .map_err(|error| error.to_string())?;

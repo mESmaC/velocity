@@ -17,7 +17,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let prompt = arguments.next().ok_or("missing \"<prompt>\"")?;
     let store = StateStore::load_or_default(folder)?;
     let project = store.active_project().ok_or("no active project")?;
-    let plan = plan_launch(project, &store.settings(), &prompt)?;
+    let worktrees = store.worktree_context().preferences;
+    let plan = plan_launch(project, &worktrees, &store.settings(), &prompt)?;
     println!("branch   {}", plan.thread.branch_name);
     println!("worktree {}", plan.thread.worktree_path);
     let key = (plan.project, 0);
