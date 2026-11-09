@@ -111,7 +111,8 @@ impl AgentsFiles {
     }
 }
 
-fn commit_agents(directory: &Path) -> Result<(), AgentsFileError> {
+/// Commit only AGENTS.md, using a short Windows alias when Git needs one.
+pub fn commit_agents(directory: &Path) -> Result<(), AgentsFileError> {
     #[cfg(windows)]
     let short = ShortCheckout::new(directory)?;
     #[cfg(windows)]

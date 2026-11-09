@@ -626,6 +626,8 @@ Open it from the rail link or the palette. It reads and writes the repo's `AGENT
 
 - **Leaving a bullet** you changed also submits it.
 
+**Default installation:** New project setup installs the F11 template in the main checkout when `AGENTS.md` is absent and commits that file alone before registering the project and starting its interview. Existing files (including empty files), directories and symbolic links are preserved. The template is installed atomically, so concurrent setup cannot replace instructions. Installation or commit failures stop setup and report the error; created instructions remain available for recovery. The interview continues to write only SPEC.md (Q7). The template includes implementation-first, proof-list-only, scope, PR follow-through, Task List, AIRC, shared-file and review-severity rules. Project-specific commands are filled in from the project's manifests and spec rather than assuming Rust or a frontend stack.
+
 **The default AGENTS.md** includes these rules:
 - Opening the PR does not finish the task; monitor it until it merges.
 - Address every PR duty comment.
@@ -1139,7 +1141,7 @@ Each milestone ends with a working app. PR duty checks an item off when it lands
 - [x] Outliner editor with markdown round-trip (F11)
 - [ ] Live lint, coverage checks with Add (F11)
 - [ ] Rewrite agent on Enter: tighten / expand / split / flag, with Undo (F11)
-- [ ] Default AGENTS.md template with the PR, Task List and AIRC rules (F11)
+- [x] Default AGENTS.md template with the PR, Task List and AIRC rules (F11)
 
 **M8 · AIRC**
 - [ ] Channel per project: log files, nicks, join/leave, MCP tools for agents (F14)

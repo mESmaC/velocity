@@ -9,6 +9,7 @@
 #![forbid(unsafe_code)]
 
 pub mod agents_file;
+pub mod agents_template;
 mod command;
 pub mod inventory;
 pub mod lifecycle;
