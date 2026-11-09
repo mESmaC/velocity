@@ -306,7 +306,7 @@ theorem alt_target_exact {Item : Type} (number : Nat) (visible : List Item) :
     simp [altTarget, invalid]
 
 inductive View where
-  | home | thread | specAsk | specReady | agents | settings | other
+  | home | thread | specScan | specAsk | specReady | specLocked | agents | settings | other
   deriving DecidableEq, Repr
 
 inductive Intent where
@@ -322,7 +322,9 @@ inductive Intent where
 @[expose] def routeBare (view : View) (intent : Intent) : Option Intent :=
   match intent with
   | .search | .task | .swarm | .airc => some intent
-  | .goal => if view == .specAsk || view == .specReady then none else some intent
+  | .goal =>
+      if view == .specScan || view == .specAsk || view == .specReady || view == .specLocked
+      then none else some intent
   | .dispatch | .resume | .fanout | .prDuty | .scouts =>
       if view == .home then some intent else none
   | .answer number => if view == .specAsk && 1 ≤ number && number ≤ 4 then some intent else none
@@ -435,14 +437,20 @@ theorem number_hints_reset (shown : Bool) :
     route view true overlay form chord .airc = none) ∧
   (∀ view typing overlay form, route view typing overlay form true .palette = some .palette) ∧
   (∀ typing overlay form chord, route .specReady typing overlay form chord .goal = none) ∧
-  (∀ typing overlay form chord, route .specAsk typing overlay form chord .goal = none)
+  (∀ typing overlay form chord, route .specAsk typing overlay form chord .goal = none) ∧
+  (∀ typing overlay form chord, route .specScan typing overlay form chord .goal = none) ∧
+  (∀ typing overlay form chord, route .specLocked typing overlay form chord .goal = none)
 
 theorem correct : Spec := by
-  refine ⟨rfl, roots_exact, fuzzy_exact, pulse_hides_zero, ?_, ?_, ?_, ?_⟩
+  refine ⟨rfl, roots_exact, fuzzy_exact, pulse_hides_zero, ?_, ?_, ?_, ?_, ?_, ?_⟩
   · intros
     simp [route]
   · intros
     rfl
+  · intros
+    simp [route, routeBare]
+  · intros
+    simp [route, routeBare]
   · intros
     simp [route, routeBare]
   · intros
