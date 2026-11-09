@@ -52,7 +52,26 @@ export type {
   ProjectList,
   ProjectRow,
   ProjectLabel,
+  PullRequest,
+  PullRequestSnapshot,
+  PullRequestCheck,
+  PullRequestReview,
+  PullRequestComment,
+  PullRequestReviewThread,
+  PullRequestOperation,
+  PullRequestReceipt,
+  CreatePullRequest,
+  ReviewAction,
+  ReviewSide,
+  NewReviewComment,
+  MergeMethod,
 } from './bindings';
+
+export const pullRequestCommands = {
+  list: commands.listPullRequests,
+  get: commands.getPullRequest,
+  dispatch: commands.dispatchPullRequest,
+};
 
 export const layoutCommands = {
   getState: commands.getLayoutState,

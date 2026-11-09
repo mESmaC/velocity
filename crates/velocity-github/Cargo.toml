@@ -1,0 +1,17 @@
+[package]
+name = "velocity-github"
+description = "Velocity's GitHub access through the gh CLI"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish = false
+
+[dependencies]
+gix = { version = "0.90.0", default-features = false, features = ["sha1", "sha256"] }
+serde.workspace = true
+serde_json.workspace = true
+specta.workspace = true
+thiserror.workspace = true
+
+[lints]
+workspace = true

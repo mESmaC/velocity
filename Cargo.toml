@@ -1,5 +1,5 @@
 [workspace]
-members = ["crates/velocity-acp", "crates/velocity-core", "crates/velocity-git", "crates/velocity-store", "src-tauri"]
+members = ["crates/velocity-acp", "crates/velocity-core", "crates/velocity-git", "crates/velocity-github", "crates/velocity-store", "src-tauri"]
 resolver = "3"
 
 [workspace.package]
@@ -18,6 +18,7 @@ tauri-specta = { version = "=2.0.0-rc.26", features = ["derive", "typescript"] }
 thiserror = "2.0"
 velocity-core = { path = "crates/velocity-core" }
 velocity-store = { path = "crates/velocity-store" }
+velocity-github = { path = "crates/velocity-github" }
 
 [workspace.lints.rust]
 unsafe_code = "forbid"

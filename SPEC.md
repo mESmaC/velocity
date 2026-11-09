@@ -112,6 +112,7 @@ A thread's state (§2.1) says where it is in its lifecycle. Its **activity** say
 | command | `get_layout_state`, `dispatch_layout { action }` | backend-owned main-window projection, search, palette selection, Alt hints, contextual keyboard dispatch and navigation requests |
 | command | `list_projects`, `create_project`, `switch_project` | projects |
 | command | `list_threads`, `start_thread`, `send_message`, `delete_thread` | threads |
+| command | `list_pull_requests { project_identifier }`, `get_pull_request { project_identifier, number }`, `dispatch_pull_request { project_identifier, operation }` | GitHub through signed-in `gh`: paginated open PRs and snapshots (head, CI, reviews, issue comments, inline threads); typed create, review with inline comments, comment, reply, resolve, re-request review, merge and close operations. New PRs target `master`. Merge requires green CI, resolved threads and the signed-in reviewer’s approval of the current head, and sends the expected head to GitHub. Closing preserves the checkout and branches. |
 | command | `start_duty`, `pause_duty`, `add_duty_agents` | duty agents |
 | command | `launch_swarm`, `add_to_swarm` | swarm |
 | command | `launch_goal_swarm { prompt, mix: [{ model, effort, speed, count }], keep_going }`, `add_goal_agents` | goal swarm |

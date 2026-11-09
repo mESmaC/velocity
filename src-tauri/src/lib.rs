@@ -3,6 +3,7 @@ use std::path::Path;
 use tauri_specta::{Builder, Event, collect_commands, collect_events};
 use velocity_store::PersistedState;
 
+mod github;
 mod layout;
 mod projects;
 mod state;
@@ -23,6 +24,9 @@ fn bindings() -> Builder<tauri::Wry> {
             layout::dispatch_layout,
             projects::list_projects,
             projects::switch_project,
+            github::list_pull_requests,
+            github::get_pull_request,
+            github::dispatch_pull_request,
         ])
         .typ::<PersistedState>()
         .typ::<window::WindowStateChanged>()
