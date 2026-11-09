@@ -95,5 +95,6 @@ fn describe(block: &TranscriptBlock) -> String {
         TranscriptBlock::ErrorCard { card } => {
             format!("error: {} · {}", card.headline, card.detail)
         }
+        TranscriptBlock::Decision { key, value, .. } => format!("decision: {key}: {value}"),
     }
 }
