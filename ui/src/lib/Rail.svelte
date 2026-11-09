@@ -1,5 +1,6 @@
 <script lang="ts">
   import Icon from './Icon.svelte';
+  import PullRequestPanel from './PullRequestPanel.svelte';
   import type { LayoutAction, LayoutSnapshot } from './ipc';
   let {
     layout,
@@ -49,24 +50,7 @@
       </form>
     </div>
   </section>
-  <section class="panel" aria-label="Open Pull Requests">
-    <div class="panel-h">
-      <span class="label">Open Pull Requests</span><span class="count"
-        >{layout.pull_requests.length || ''}</span
-      >
-    </div>
-    <div class="panel-body">
-      {#each layout.pull_requests as pullRequest (pullRequest.identifier)}<button
-          class="item"
-          onclick={() =>
-            send({ Request: { OpenPullRequest: pullRequest.identifier } })}
-          ><Icon name="pr" /><span class="item-title">{pullRequest.title}</span
-          ><span class="count">#{pullRequest.identifier}</span><span
-            class="item-meta">{pullRequest.metadata}</span
-          ></button
-        >{:else}<p class="empty">No open pull requests.</p>{/each}
-    </div>
-  </section>
+  <PullRequestPanel />
   <section class="panel" aria-label="Open Issues">
     <div class="panel-h">
       <span class="label">Open Issues</span>

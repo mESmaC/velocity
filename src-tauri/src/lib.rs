@@ -8,6 +8,7 @@ mod github;
 pub mod layout;
 mod new_project;
 mod projects;
+mod pull_request_panel;
 mod state;
 mod window;
 
@@ -31,6 +32,8 @@ fn bindings() -> Builder<tauri::Wry> {
             github::list_pull_requests,
             github::get_pull_request,
             github::dispatch_pull_request,
+            pull_request_panel::get_pull_request_panel,
+            pull_request_panel::open_project_pull_request,
             new_project::get_new_project_defaults,
             new_project::pick_project_folder,
             new_project::create_project,
@@ -41,10 +44,15 @@ fn bindings() -> Builder<tauri::Wry> {
         .typ::<layout::LayoutStateChanged>()
         .typ::<layout::LayoutIntentRequested>()
         .typ::<projects::ProjectSelected>()
+        .typ::<pull_request_panel::PullRequestPanelChanged>()
         .constant("WINDOW_STATE_EVENT", window::WindowStateChanged::NAME)
         .constant("LAYOUT_STATE_EVENT", layout::LayoutStateChanged::NAME)
         .constant("LAYOUT_INTENT_EVENT", layout::LayoutIntentRequested::NAME)
         .constant("PROJECT_SELECTED_EVENT", projects::ProjectSelected::NAME)
+        .constant(
+            "PULL_REQUEST_PANEL_EVENT",
+            pull_request_panel::PullRequestPanelChanged::NAME,
+        )
         .error_handling(tauri_specta::ErrorHandlingMode::Throw)
 }
 
@@ -68,7 +76,8 @@ pub fn run() -> anyhow::Result<()> {
         window::WindowStateChanged,
         layout::LayoutStateChanged,
         layout::LayoutIntentRequested,
-        projects::ProjectSelected
+        projects::ProjectSelected,
+        pull_request_panel::PullRequestPanelChanged
     ]);
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
@@ -78,6 +87,7 @@ pub fn run() -> anyhow::Result<()> {
             bindings.mount_events(application);
             state::initialize(application.handle())?;
             projects::initialize(application.handle())?;
+            pull_request_panel::initialize(application.handle());
             Ok(())
         })
         .on_window_event(window::on_window_event)

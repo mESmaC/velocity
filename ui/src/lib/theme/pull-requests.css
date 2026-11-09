@@ -1,0 +1,60 @@
+.pull-request-check {
+  width: var(--pull-request-check-size);
+  height: var(--pull-request-check-size);
+  border-radius: var(--pull-request-check-radius);
+  margin-top: var(--pull-request-check-margin-top);
+  justify-self: center;
+  background: var(--muted);
+}
+.pull-request-check[data-status='passing'] {
+  background: var(--ok);
+}
+.pull-request-check[data-status='failing'] {
+  background: var(--err);
+}
+.pull-request-check[data-status='running'] {
+  background: var(--warn);
+  animation: pull-request-blink var(--pull-request-check-duration) infinite;
+}
+@keyframes pull-request-blink {
+  0%,
+  80%,
+  100% {
+    opacity: var(--pull-request-check-dim-opacity);
+  }
+  40% {
+    opacity: var(--pull-request-check-full-opacity);
+  }
+}
+.pull-request-meta {
+  display: flex;
+  gap: var(--pull-request-meta-gap);
+  white-space: nowrap;
+  overflow: hidden;
+}
+.pull-request-add {
+  color: var(--ok);
+}
+.pull-request-delete,
+.pull-request-review[data-status='changes_requested'],
+.pull-request-error {
+  color: var(--err);
+}
+.pull-request-review {
+  font-family: var(--sans);
+}
+.pull-request-review[data-status='reviewing'] {
+  color: var(--text-2);
+}
+.pull-request-review[data-status='approved'] {
+  color: var(--ok);
+}
+.pull-request-review[data-status='checking'] {
+  color: var(--warn);
+}
+.pull-request-reviewer {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--pull-request-reviewer-gap);
+  color: var(--duty);
+}
