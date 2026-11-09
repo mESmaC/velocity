@@ -14,9 +14,11 @@ package velocity where
 
 @[default_target]
 lean_lib Velocity where
-  roots := #[`Velocity, `Toolchain, `Shell, `Theme, `AgentRunner, `State, `Layout, `WorktreeManager]
+  roots := #[`Velocity, `Toolchain, `Shell, `Theme, `AgentRunner, `State, `Layout, `WorktreeManager,
+    `AcpClient]
   globs := #[.one `Velocity, .submodules `Toolchain, .submodules `Shell, .submodules `Theme,
-    .submodules `AgentRunner, .submodules `State, .submodules `Layout, .submodules `WorktreeManager]
+    .submodules `AgentRunner, .submodules `State, .submodules `Layout, .submodules `WorktreeManager,
+    .submodules `AcpClient]
 
 lean_exe shell_appearance_reference where
   root := `Shell.ReferenceMain
