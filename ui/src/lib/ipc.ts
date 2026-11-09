@@ -19,6 +19,7 @@ export type {
   DiffLineView,
   EffortLevel,
   ErrorCardView,
+  InterviewView_Serialize as InterviewView,
   ModelPillView,
   LaunchEligibility,
   LaunchRequest,

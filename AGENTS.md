@@ -37,6 +37,7 @@ Your job is working functionality. Proofs, tests and docs support it; they never
 - `crates/velocity-airc/`: claims, events, ledgers and the AIRC MCP server.
 - `crates/velocity-github/`: GitHub through `gh`.
 - `crates/velocity-new-project/`: Create in the New project dialog (F2): resolves the request and runs the planned git, `gh` and store steps.
+- `crates/velocity-interview/`: the spec interview (F3): runs the spec agent in the main checkout, parses its questions, records decisions and draft tasks, and locks the spec.
 - `ui/`: the frontend: Svelte 5, TypeScript and Vite, built with pnpm.
 - `proofs/`: the Lean 4 Lake project.
 - `stress/`: tests and stress scripts. Scouts and PR duty agents own it.
