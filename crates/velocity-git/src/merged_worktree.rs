@@ -15,6 +15,30 @@ pub enum MergedWorktreeError {
     Io(#[from] std::io::Error),
 }
 
+/// Resuming must use the owning thread's existing linked checkout, never the base clone.
+pub fn verify_thread_worktree(
+    repository: &Path,
+    path: &Path,
+    branch: &str,
+) -> Result<(), MergedWorktreeError> {
+    if !repository.is_absolute() || !path.is_absolute() {
+        return Err(MergedWorktreeError::Ownership(
+            "Resuming requires absolute checkout paths".into(),
+        ));
+    }
+    if path_identity(repository)? == path_identity(path)? {
+        return Err(MergedWorktreeError::Ownership(
+            "The project's checkout is not a thread worktree".into(),
+        ));
+    }
+    if !registered_worktree(repository, path, branch)? {
+        return Err(MergedWorktreeError::Ownership(
+            "The thread's worktree no longer exists".into(),
+        ));
+    }
+    verify_worktree(repository, path, branch)
+}
+
 pub fn remove_merged_worktree(
     repository: &Path,
     path: &Path,

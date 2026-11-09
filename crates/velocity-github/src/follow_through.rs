@@ -7,7 +7,7 @@ use std::collections::BTreeMap;
 
 use crate::{PullRequest, PullRequestCheck, PullRequestSnapshot, PullRequestState};
 pub use velocity_core::thread_view_model::PullRequestHistoryCard as HistoryCard;
-use velocity_core::thread_view_model::ToolStepRow;
+use velocity_core::thread_view_model::SessionWork;
 use velocity_core::thread_view_model::{PullRequestHistoryView, PullRequestTrackStep};
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, Type)]
@@ -31,6 +31,8 @@ pub struct FollowThrough {
     pub worktree_deleted: bool,
     pub cleanup_error: Option<String>,
     pub coding_tool_count: Option<u32>,
+    pub work_session_identifier: Option<String>,
+    pub work_tool_start: u32,
     pub ci_state: String,
 }
 
@@ -68,19 +70,32 @@ impl FollowThrough {
             .retain(|message| message.identifier != identifier);
     }
 
-    pub fn observe_work(&mut self, steps: Vec<ToolStepRow>) {
-        let boundary = *self
-            .coding_tool_count
-            .get_or_insert(u32::try_from(steps.len()).unwrap_or(u32::MAX));
-        for (index, step) in steps.into_iter().enumerate().skip(boundary as usize) {
+    pub fn observe_work(&mut self, work: &SessionWork) {
+        if self.work_session_identifier.as_ref() != Some(&work.session_identifier) {
+            self.work_tool_start =
+                if self.work_session_identifier.is_none() && !work.follows_pull_request {
+                    *self
+                        .coding_tool_count
+                        .get_or_insert(u32::try_from(work.steps.len()).unwrap_or(u32::MAX))
+                } else {
+                    0
+                };
+            self.work_session_identifier = Some(work.session_identifier.clone());
+        }
+        for (index, step) in work
+            .steps
+            .iter()
+            .enumerate()
+            .skip(self.work_tool_start as usize)
+        {
             self.replace_card(HistoryCard {
-                identifier: format!("fix:{index}"),
+                identifier: format!("fix:{}:{index}", work.session_identifier),
                 title: String::new(),
                 body: String::new(),
                 path: None,
                 line: None,
                 resolved: false,
-                tool: Some(step),
+                tool: Some(step.clone()),
             });
         }
     }

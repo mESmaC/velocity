@@ -7,13 +7,18 @@ use tauri_specta::Event;
 use velocity_git::remove_merged_worktree;
 use velocity_github::{PullRequestClient, PullRequestSnapshot, PullRequestState};
 use velocity_store::{ProjectItem, ThreadItem, ThreadState};
+use velocity_threads::DeliveryStatus;
 
 use crate::{layout::MainLayout, state::ManagedStateStore};
 
 type ThreadKey = (u32, u32);
-type Deliver = fn(&AppHandle, ThreadKey, &str) -> Result<(), String>;
+type Deliver = fn(
+    &AppHandle,
+    ThreadKey,
+    &velocity_github::follow_through::AgentFollowUp,
+) -> Result<DeliveryStatus, String>;
 type Stop = fn(&AppHandle, ThreadKey) -> Result<bool, String>;
-type ToolSteps = fn(&AppHandle, ThreadKey) -> Vec<velocity_core::thread_view_model::ToolStepRow>;
+type ToolSteps = fn(&AppHandle, ThreadKey) -> Option<velocity_core::thread_view_model::SessionWork>;
 
 pub const PR_OPENED_EVENT: &str = "pr://opened";
 pub const PR_CI_EVENT: &str = "pr://ci";
@@ -33,7 +38,17 @@ impl Default for Hooks {
         Self {
             deliver: |_, _, _| Err("No agent session is running for this thread".into()),
             stop: |_, _| Ok(false),
-            tool_steps: |_, _| Vec::new(),
+            tool_steps: |_, _| None,
+        }
+    }
+}
+
+impl Hooks {
+    pub fn new(deliver: Deliver, stop: Stop, tool_steps: ToolSteps) -> Self {
+        Self {
+            deliver,
+            stop,
+            tool_steps,
         }
     }
 }
@@ -112,6 +127,13 @@ fn observe(
     project: &ProjectItem,
     thread: &ThreadItem,
 ) -> Result<(), String> {
+    if project
+        .threads
+        .iter()
+        .any(|other| other.id != thread.id && other.branch_name == thread.branch_name)
+    {
+        return Err("Multiple saved threads own this branch; keeping their worktrees".into());
+    }
     let mut watch = thread.follow_through.clone().unwrap_or_default();
     let number = match thread.pull_request_number {
         Some(number) => number,
@@ -134,9 +156,13 @@ fn observe(
     }
     watch.observe(&snapshot);
     let key = (project.id, thread.id);
-    watch.observe_work((hooks.tool_steps)(application, key));
+    if let Some(work) = (hooks.tool_steps)(application, key) {
+        watch.observe_work(&work);
+    }
     checkpoint(application, key, &snapshot, watch.clone())?;
     if snapshot.pull_request.state == PullRequestState::Merged && !watch.worktree_deleted {
+        // A completed PR must never restart an agent to fix superseded review work.
+        watch.pending.clear();
         match (hooks.stop)(application, key).and_then(|stopped| {
             if stopped {
                 cleanup(project, thread, application)
@@ -148,9 +174,14 @@ fn observe(
             Err(error) => watch.cleanup_error = Some(error),
         }
     }
+    if snapshot.pull_request.state == PullRequestState::Merged {
+        return checkpoint(application, key, &snapshot, watch);
+    }
     for pending in watch.pending.clone() {
-        if (hooks.deliver)(application, key, &pending.message).is_err() {
-            break;
+        match (hooks.deliver)(application, key, &pending) {
+            Ok(DeliveryStatus::Pending) => continue,
+            Ok(DeliveryStatus::Delivered) => {}
+            Err(_) => break,
         }
         watch.delivered(&pending.identifier);
         checkpoint(application, key, &snapshot, watch.clone())?;

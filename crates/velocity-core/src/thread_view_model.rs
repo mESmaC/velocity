@@ -261,6 +261,38 @@ pub struct ThreadDetailSnapshot {
     pub interview: Option<InterviewView>,
 }
 
+/// What a running agent session adds to a thread on top of `state.json`: the transcript
+/// (which is not persisted) and the agent's advertised slash commands (`SPEC.md §3.2`, F4).
+#[derive(Clone, Debug, Default)]
+pub struct LiveThreadView {
+    pub blocks: Vec<TranscriptBlock>,
+    /// `None` until the agent's first `available_commands_update`; an empty list withdraws them.
+    pub agent_commands: Option<Vec<AgentCommandView>>,
+}
+
+/// A process session's tool steps, with a stable identity across watcher ticks.
+/// A resumed PR session starts at step zero without replacing an earlier fix's card.
+#[derive(Clone, Debug)]
+pub struct SessionWork {
+    pub session_identifier: String,
+    pub follows_pull_request: bool,
+    pub steps: Vec<ToolStepRow>,
+}
+
+impl SessionWork {
+    pub fn new(
+        session_identifier: String,
+        follows_pull_request: bool,
+        steps: Vec<ToolStepRow>,
+    ) -> Self {
+        Self {
+            session_identifier,
+            follows_pull_request,
+            steps,
+        }
+    }
+}
+
 #[derive(Clone)]
 pub struct ThreadDetailEntry {
     pub identifier: usize,

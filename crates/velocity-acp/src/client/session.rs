@@ -22,13 +22,25 @@ use crate::{
 pub struct SessionSetup {
     /// The thread's worktree: the agent's working directory and `session/new`'s `cwd`.
     pub worktree: PathBuf,
-    /// The AIRC MCP server, always passed once it exists (F14, M8). `None` until then.
+    /// The AIRC MCP server, always passed once it exists (F14). AIRC ships in M8; until then
+    /// threads start with `None` so the launch path works without it.
     pub airc: Option<McpServer>,
     /// Settings → Agents → shared MCP servers, passed to every agent.
     pub shared_servers: Vec<McpServer>,
     /// The ids of the agent's session modes that skip its permission checks, as the provider
     /// layer classifies them.
     pub bypass_modes: Vec<String>,
+}
+
+impl SessionSetup {
+    pub fn new(worktree: PathBuf, bypass_modes: Vec<String>) -> Self {
+        Self {
+            worktree,
+            airc: None,
+            shared_servers: Vec::new(),
+            bypass_modes,
+        }
+    }
 }
 
 /// `initialize` → `session/new` → `session/set_mode` where it changes the mode.
