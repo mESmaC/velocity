@@ -3,6 +3,7 @@ use std::path::Path;
 use tauri_specta::{Builder, Event, collect_commands, collect_events};
 use velocity_store::PersistedState;
 
+mod agents;
 mod build_gate;
 mod github;
 mod interview;
@@ -21,6 +22,9 @@ fn bindings() -> Builder<tauri::Wry> {
     // Export event payloads/names without the generator's `any`-typed helpers;
     // ipc.ts supplies typed listeners, while run() registers native emitters.
     let builder = Builder::new().commands(collect_commands![
+        agents::read_agents_md,
+        agents::edit_agents_md,
+        agents::write_agents_md,
         window::get_window_state,
         window::minimize_window,
         window::toggle_maximize_window,
@@ -105,6 +109,7 @@ pub fn run() -> anyhow::Result<()> {
     ]);
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
+        .manage(agents::ManagedAgents::default())
         .manage(layout::MainLayout::default())
         .manage(threads::ManagedThreads::default())
         .manage(velocity_interview::Interviews::default())

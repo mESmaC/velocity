@@ -2,6 +2,59 @@
    copy. These values come from the winning reference rules, including the
    later title-bar overrides at design/main-window.html:947-973. */
 :root {
+  /* F11 outliner: reference winning declarations at 746–815; no italics (§6). */
+  --agents-zero: 0;
+  --agents-flex: 1;
+  --agents-columns: minmax(0, 1fr) 280px;
+  --agents-outline-width: 780px;
+  --agents-outline-padding: 18px 32px 140px;
+  --agents-row-columns: 18px minmax(0, 1fr) auto;
+  --agents-row-gap: 0 6px;
+  --agents-row-padding: 1px 6px 1px 0;
+  --agents-indent: 20px;
+  --agents-text-height: 21px;
+  --agents-text-padding: 1px 0;
+  --agents-text-size: 12.5px;
+  --agents-text-leading: 1.6;
+  --agents-code-padding: 0 2px;
+  --agents-code-radius: 3px;
+  --agents-code-font: 11.5px var(--mono);
+  --agents-dot-size: 4px;
+  --agents-dot-margin: 9px 0 0 8px;
+  --agents-dot-radius: 50%;
+  --agents-subdot-size: 5px;
+  --agents-subdot-border: 1px solid var(--muted);
+  --agents-heading-padding: 2px 0 5px;
+  --agents-heading-top: 20px;
+  --agents-heading-bottom: 4px;
+  --agents-heading-border: 1px solid var(--line-dim);
+  --agents-heading-weight: 600;
+  --agents-title-font: 10.5px var(--mono);
+  --agents-add-margin: 3px 0 0 18px;
+  --agents-add-size: 11px;
+  --agents-add-section-margin: 22px 0 0;
+  --agents-raw-padding: 18px 32px 80px;
+  --agents-raw-font: 12px/1.7 var(--mono);
+  --agents-help-border: 1px solid var(--line-dim);
+  --agents-help-padding: 14px 14px 24px;
+  --agents-help-gap: 18px;
+  --agents-help-size: 10.5px;
+  --agents-help-leading: 1.55;
+  --agents-keys-columns: auto 1fr;
+  --agents-keys-gap: 5px 10px;
+  --agents-keys-key-gap: 2px;
+  /* Save notification: .toast and its frosted overrides at 428, 960, 1076. */
+  --agents-notice-left: 50%;
+  --agents-notice-bottom: 22px;
+  --agents-notice-transform: translateX(-50%);
+  --agents-notice-z-index: 30;
+  --agents-notice-padding: 8px 15px;
+  --agents-notice-border: 1px solid rgba(255, 255, 255, 0.13);
+  --agents-notice-radius: 999px;
+  --agents-notice-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.12), 0 0 0 0.5px #000,
+    0 30px 90px rgba(0, 0, 0, 0.9);
+  --agents-notice-size: 11px;
   /* F5/F13: Settings and Worktrees, reference rules 227–233, 373–411,
      482–489, 683–687, 740 and their final overrides at 1000–1050. */
   --worktrees-scrollbar-size: 8px;

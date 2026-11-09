@@ -6,6 +6,7 @@
   import Home from './lib/Home.svelte';
   import ThreadView from './lib/ThreadView.svelte';
   import SpecInterview from './lib/SpecInterview.svelte';
+  import AgentsEditor from './lib/AgentsEditor.svelte';
   import CommandPalette from './lib/CommandPalette.svelte';
   import WorktreeSettings from './lib/WorktreeSettings.svelte';
   import NewProjectDialog from './lib/NewProjectDialog.svelte';
@@ -25,6 +26,7 @@
   let latest: LayoutSnapshot | null = null;
   let pending = 0;
   let newProjectSubmits = $state(0);
+  let agentsSaves = $state(0);
   let queue = Promise.resolve();
   const intents: LayoutIntent[] = [];
   const shortcutKeys = new Set([
@@ -72,6 +74,10 @@
   function focusIntent(intent: LayoutIntent) {
     if (typeof intent === 'string' || !('Navigation' in intent)) return;
     const navigation = intent.Navigation;
+    if (navigation === 'SaveAgents' && layout?.view === 'Agents') {
+      agentsSaves += 1;
+      return;
+    }
     if (navigation === 'Submit' && layout?.new_project_open) {
       newProjectSubmits += 1;
       return;
@@ -193,7 +199,12 @@
   {#if layout}<div class="workspace">
       <Sidebar {layout} {send} />
       <main class="main-view" aria-label="Velocity workspace">
-        {#if layout.view === 'Home'}<Home
+        {#if layout.view === 'Agents' && layout.project_identifier !== null}
+          {#key layout.project_identifier}<AgentsEditor
+              project={layout.project_identifier}
+              saveRequests={agentsSaves}
+            />{/key}
+        {:else if layout.view === 'Home'}<Home
             {layout}
             {send}
           />{:else if layout.active_thread?.interview}<SpecInterview

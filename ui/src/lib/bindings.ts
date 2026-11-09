@@ -4,6 +4,9 @@ import { invoke as __TAURI_INVOKE } from "@tauri-apps/api/core";
 
 /** Commands */
 export const commands = {
+	readAgentsMd: (projectIdentifier: number) => __TAURI_INVOKE<OutlineSnapshot_Serialize>("read_agents_md", { projectIdentifier }),
+	editAgentsMd: (projectIdentifier: number, action: OutlineAction_Deserialize) => __TAURI_INVOKE<OutlineSnapshot_Serialize>("edit_agents_md", { projectIdentifier, action }),
+	writeAgentsMd: (projectIdentifier: number) => __TAURI_INVOKE<OutlineSnapshot_Serialize>("write_agents_md", { projectIdentifier }),
 	getWindowState: () => __TAURI_INVOKE<WindowStateChanged>("get_window_state"),
 	minimizeWindow: () => __TAURI_INVOKE<null>("minimize_window"),
 	toggleMaximizeWindow: () => __TAURI_INVOKE<null>("toggle_maximize_window"),
@@ -139,6 +142,11 @@ export type ErrorCardView = {
 
 export type GitHubActor = {
 	login: string,
+};
+
+export type InlineText = {
+	text: string,
+	code: boolean,
 };
 
 /**  An answer, recorded as `key: value` (F3 Ask). */
@@ -319,6 +327,7 @@ export type LayoutSnapshot = LayoutSnapshot_Serialize | LayoutSnapshot_Deseriali
 
 export type LayoutSnapshot_Deserialize = {
 	revision: number,
+	project_identifier?: number | null,
 	project_name: string,
 	view: NavigationView,
 	settings_tab: string,
@@ -357,6 +366,7 @@ export type LayoutSnapshot_Deserialize = {
 
 export type LayoutSnapshot_Serialize = {
 	revision: number,
+	project_identifier: number | null,
 	project_name: string,
 	view: NavigationView,
 	settings_tab: string,
@@ -468,6 +478,96 @@ export type NewReviewComment = {
 };
 
 export type NumberHintEvent = "AltDown" | "AltUp" | "Blur" | "Other";
+
+export type OutlineAction = OutlineAction_Serialize | OutlineAction_Deserialize;
+
+export type OutlineAction_Deserialize = ({ Edit: {
+	identifier: number,
+	text: string,
+} }) & { AddRule?: never; DeleteEmpty?: never; Enter?: never; Indent?: never; Move?: never; Neighbor?: never } | ({ Enter: {
+	identifier: number,
+} }) & { AddRule?: never; DeleteEmpty?: never; Edit?: never; Indent?: never; Move?: never; Neighbor?: never } | ({ Indent: {
+	identifier: number,
+	nested: boolean,
+} }) & { AddRule?: never; DeleteEmpty?: never; Edit?: never; Enter?: never; Move?: never; Neighbor?: never } | ({ Move: {
+	identifier: number,
+	down: boolean,
+} }) & { AddRule?: never; DeleteEmpty?: never; Edit?: never; Enter?: never; Indent?: never; Neighbor?: never } | ({ DeleteEmpty: {
+	identifier: number,
+} }) & { AddRule?: never; Edit?: never; Enter?: never; Indent?: never; Move?: never; Neighbor?: never } | ({ Neighbor: {
+	identifier: number,
+	down: boolean,
+} }) & { AddRule?: never; DeleteEmpty?: never; Edit?: never; Enter?: never; Indent?: never; Move?: never } | ({ AddRule: {
+	section?: number | null,
+} }) & { DeleteEmpty?: never; Edit?: never; Enter?: never; Indent?: never; Move?: never; Neighbor?: never } | "AddSection";
+
+export type OutlineAction_Serialize = ({ Edit: {
+	identifier: number,
+	text: string,
+} }) & { AddRule?: never; DeleteEmpty?: never; Enter?: never; Indent?: never; Move?: never; Neighbor?: never } | ({ Enter: {
+	identifier: number,
+} }) & { AddRule?: never; DeleteEmpty?: never; Edit?: never; Indent?: never; Move?: never; Neighbor?: never } | ({ Indent: {
+	identifier: number,
+	nested: boolean,
+} }) & { AddRule?: never; DeleteEmpty?: never; Edit?: never; Enter?: never; Move?: never; Neighbor?: never } | ({ Move: {
+	identifier: number,
+	down: boolean,
+} }) & { AddRule?: never; DeleteEmpty?: never; Edit?: never; Enter?: never; Indent?: never; Neighbor?: never } | ({ DeleteEmpty: {
+	identifier: number,
+} }) & { AddRule?: never; Edit?: never; Enter?: never; Indent?: never; Move?: never; Neighbor?: never } | ({ Neighbor: {
+	identifier: number,
+	down: boolean,
+} }) & { AddRule?: never; DeleteEmpty?: never; Edit?: never; Enter?: never; Indent?: never; Move?: never } | ({ AddRule: {
+	section: number | null,
+} }) & { DeleteEmpty?: never; Edit?: never; Enter?: never; Indent?: never; Move?: never; Neighbor?: never } | "AddSection";
+
+export type OutlineFocus = {
+	identifier: number,
+	at_end: boolean,
+};
+
+export type OutlineKind = "Title" | "Section" | "Rule" | "Source";
+
+export type OutlineLine = {
+	identifier: number,
+	kind: OutlineKind,
+	text: string,
+	nested: boolean,
+	inline: InlineText[],
+	prefix: string,
+	ending: string,
+	continuation: string,
+};
+
+export type OutlineSection = OutlineSection_Serialize | OutlineSection_Deserialize;
+
+export type OutlineSection_Deserialize = {
+	identifier?: number | null,
+	lines: OutlineLine[],
+};
+
+export type OutlineSection_Serialize = {
+	identifier: number | null,
+	lines: OutlineLine[],
+};
+
+export type OutlineSnapshot = OutlineSnapshot_Serialize | OutlineSnapshot_Deserialize;
+
+export type OutlineSnapshot_Deserialize = {
+	sections: OutlineSection_Deserialize[],
+	markdown: string,
+	dirty: boolean,
+	rule_count: number,
+	focus?: OutlineFocus | null,
+};
+
+export type OutlineSnapshot_Serialize = {
+	sections: OutlineSection_Serialize[],
+	markdown: string,
+	dirty: boolean,
+	rule_count: number,
+	focus: OutlineFocus | null,
+};
 
 export type PaletteItem = PaletteItem_Serialize | PaletteItem_Deserialize;
 
