@@ -6,6 +6,13 @@ You are building Velocity: a Rust + Tauri desktop IDE that runs many coding agen
 - `SPEC.md` defines what to build. §1 holds the product rules; §7 is the build order; §8 lists open questions.
 - `design/main-window.html` is the reference UI. Open it in a browser. Every feature in SPEC.md is mocked there with live simulated data, and its behaviour is part of the spec.
 
+## Implementation first
+Your job is working functionality. Proofs, tests and docs support it; they never replace it.
+- Build the feature first, end to end, then run it (`cargo tauri dev`, or the crate's own entry point) and see it work.
+- Only then add the proof, test or doc the piece needs (see Proofs, and Tests and docs).
+- Implementation is the larger part of every PR. Proofs, tests and docs together stay smaller than the implementation code. Lockfiles, generated files and §7 checkbox ticks count on neither side.
+- Never claim a piece that is only tests, proofs or docs while an implementation piece in the current milestone is unclaimed.
+
 ## Commands
 - Build: `cargo build --workspace`
 - Run the app: `cargo tauri dev`
@@ -13,7 +20,7 @@ You are building Velocity: a Rust + Tauri desktop IDE that runs many coding agen
 - Format: `cargo fmt --all`. Run it before every commit.
 - Proofs: `lake build` in `proofs/`. Run it before every push.
 - Proof toolchain setup (Windows + Ubuntu WSL): `powershell -File proofs/scripts/Setup-Toolchain.ps1`.
-- Charon and Aeneas: `powershell -File proofs/scripts/Export-Rust.ps1 -CratePath crates/<crate> -Feature <Feature> -StartFrom crate::<module>`. This runs pinned `charon cargo --preset=aeneas` then `aeneas -backend lean`; complete the confidence proof and run `lake build` afterwards. See `proofs/README.md`.
+- Charon and Aeneas (only when an issue asks for a translation): `powershell -File proofs/scripts/Export-Rust.ps1 -CratePath crates/<crate> -Feature <Feature> -StartFrom crate::<module>`. This runs pinned `charon cargo --preset=aeneas` then `aeneas -backend lean`; complete the confidence proof and run `lake build` afterwards. See `proofs/README.md`.
 - Stress: `cargo run -p stress -- --all`. Scouts and PR duty agents only.
 - UI type check: `pnpm -C ui check` (svelte-check). Zero errors and zero warnings.
 - UI lint: `pnpm -C ui lint`. Zero warnings.
@@ -49,7 +56,7 @@ SPEC.md §1 overrides everything else. Never build any of these:
 - Keep functions under 60 lines. Split anything longer.
 - Name functions, types and variables for what they do. No abbreviations.
 - Use the IPC names in SPEC.md §3.1. If you need a new command or event, add it to §3.1 in the same PR.
-- Put logic you prove in pure, synchronous functions in the crates. Keep I/O, async and Tauri at the edges, so Aeneas can translate the logic (see Proofs).
+- Put logic you prove in pure, synchronous functions in the crates. Keep I/O, async and Tauri at the edges, so the logic can be checked against fixture tables (see Proofs).
 - Handle Windows paths everywhere: drive letters, spaces, backslashes and paths over 260 characters. Windows 11 is the primary platform.
 - Comment code whose purpose isn't clear from reading it. Explain why, not what.
 
@@ -68,24 +75,32 @@ SPEC.md §1 overrides everything else. Never build any of these:
 - A screen is done when it matches the reference UI's layout, states and keyboard behaviour (SPEC.md §5).
 
 ## Proofs
-Lean proves the few design decisions that can go badly wrong. It is not a test suite, and most work has no Lean at all.
-- Write Lean only for features on the proof list in SPEC.md F17. Every other piece ships with no Lean: UI, layout, theme, shell, settings, IPC, persistence, providers, the agent runner, toolchain and plumbing.
+Lean proves a few algorithms where a mistake loses work or breaks coordination. It never blocks implementation, and most pieces have no Lean.
+- Write Lean only for features on the proof list in SPEC.md F17: claim lock, targeted rebases and landing, worktree deletion, goal swarm work choice, and stall detection and claim release. Every other piece ships with no Lean.
 - If you think a feature belongs on the proof list, file an issue. Never write a proof for a feature that isn't on it.
-- Never write tests or stress scripts. Scouts and PR duty agents write them.
-- For a feature on the proof list, prove its design in `proofs/<Feature>/Design.lean` before you write its code. The file states exactly three theorems:
-  - `correct`: it meets the SPEC.md section it implements. Name that section in the file.
+- For a proof-list feature, write the code first. Then, in the same PR, write `proofs/<Feature>/Design.lean`. It states exactly three theorems:
+  - `correct`: the model meets the SPEC.md section it implements. Name that section in the file.
   - `cost_bound`: its cost stays within a bound, under a cost model the file defines.
   - `optimal`: no alternative in a class the theorem states costs less.
 - Lemmas are allowed only as steps toward those three theorems.
 - Never write a theorem about one behaviour, case, key, value or example. That is a test.
 - State the cost model and the class of alternatives in the theorem itself. A proof against an unstated alternative does not count.
 - If a design proof passes 300 lines, stop and file an issue. The model is too detailed.
-- After the code is written, prove it in `proofs/<Feature>/Confidence.lean`. Rust code is translated with Charon and Aeneas, and you prove the translation refines the design model.
-- Aeneas output in `proofs/**/Generated/` is marked generated in `.gitattributes`. Never edit it by hand.
-- A bug fix in a proof-list feature extends its confidence proof to cover the input the scout's evidence failed on. A bug fix anywhere else has no Lean. Either way, copy the scout's script into `stress/` unchanged; never edit it.
+- Tie the proof to the Rust with fixtures, not a translation. Export a compact fixture table from the Lean model to `proofs/fixtures/<feature>.tsv`, and add one Rust test that checks the implementation against it.
+- Never run Charon or Aeneas unless an issue asks for it.
+- A bug fix in a proof-list feature adds the failing input to its fixture table. A bug fix anywhere else has no Lean.
 - Never use `sorry`, `admit`, `axiom` or `native_decide`. `#print axioms` lists only `propext`, `Classical.choice` and `Quot.sound`.
 - Never change a theorem statement after review to make its proof go through.
 - `proofs/` is the pinned Lake project. `proofs/toolchain-pins.json` records the compatible Lean, Mathlib, Charon and Aeneas versions. Keep its pins, `lean-toolchain`, `lakefile.lean` and `lake-manifest.json` consistent; follow `proofs/README.md` when updating them.
+
+## Tests and docs
+Both are low priority. Add them only where they pay for themselves, and only after the feature works.
+- Default: add no tests.
+- Add a targeted test only for a critical contract: the claim lock, worktree deletion, saved state surviving a save and load, the fixture check for a proof-list feature, or a concrete failure a scout found. Put the risk it covers in a comment above it.
+- Never write a test that restates the implementation, and never add a test suite for a whole module.
+- Scouts and PR duty agents write the adversarial tests and stress scripts.
+- A bug fix copies the scout's failing script into `stress/` unchanged. Never edit it.
+- Docs: update SPEC.md when behaviour changes, and comment code whose purpose isn't clear. Never add a new markdown file unless the piece asks for one.
 
 ## Choosing work
 - Work comes from three places: unchecked items in SPEC.md §7, open GitHub issues, and SPEC.md sections nothing implements yet.
@@ -132,6 +147,7 @@ Velocity's AIRC (F14) replaces this section once M8 merges. Until then, claims a
 - Request changes on any PR that adds Lean for a feature not on the proof list, or a theorem about a single behaviour or case.
 - Review every theorem statement: does it say what the SPEC section says, do its hypotheses exclude real inputs, is the cost model honest, and is the class of alternatives the one that matters? Lean already checked the proofs.
 - When you doubt a claim no proof covers, write a stress script in `stress/`, run it, and attach the result to your comment.
+- Request changes on a PR whose proofs, tests and docs together outweigh its implementation, or that adds tests outside the critical contracts in Tests and docs.
 - Approve only when CI is green, `lake build` passes, and the axiom check above holds.
 - Never merge without an approving review. Merge with squash and delete the branch.
 
@@ -143,7 +159,7 @@ Velocity's AIRC (F14) replaces this section once M8 merges. Until then, claims a
 - Never file a duplicate. Search open and closed issues first.
 
 ## Done means
-- The piece is built exactly as SPEC.md describes it and behaves like the reference UI.
+- The piece is built exactly as SPEC.md describes it and behaves like the reference UI. You ran it and saw it work.
 - The proofs check, clippy, `pnpm -C ui check` and `pnpm -C ui lint` report zero warnings, and CI is green.
 - The PR is merged and your worktree is removed.
 

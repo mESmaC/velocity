@@ -3429,34 +3429,40 @@ const modOf = t => (t.branch.split('/')[1] || t.branch).replace(/-/g, '_').slice
 const ModOf = t => modOf(t).split('_').filter(Boolean).map(w => w[0].toUpperCase() + w.slice(1)).join('');
 function workRows(t) {
   const mod = modOf(t), Mod = ModOf(t), L = mod.length, fix = t.item && t.item.kind === 'issue';
-  return [
+  // Implementation first: build and run the feature, then prove it, and only
+  // for features on the proof list (F17). Everything else ships with no Lean.
+  const rows = [
     ['Read', 'AGENTS.md · SPEC.md', 'rules loaded'],
     ['Search', `"${t.title.split(/\W+/)[0].toLowerCase()}" in src/`, `${3 + L % 7} hits · ${2 + L % 3} files`],
-    ['Write', `proofs/${Mod}/Design.lean`, 'model · 3 theorems'],
-    ['Bash', `lake build Proofs.${Mod}.Design`, 'proved · 0 sorry'],
     ['Edit', `src-tauri/src/${mod}.rs`, `+${38 + L * 5} −${L % 9}`],
     ['Edit', `ui/src/${mod}.ts`, `+${18 + L * 2} −${L % 5}`],
-    ['Write', `proofs/${Mod}/Confidence.lean`, '2 theorems'],
-    ['Bash', `aeneas ${mod}.rs && lake build Proofs.${Mod}.Confidence`, 'proved against the code'],
-    ['Bash', 'cargo clippy --workspace -- -D warnings', 'clean'],
-  ].filter(r => !(fix && /Design/.test(r[1])));            // a bug fix proves the fixed behaviour, not a new design
+    ['Bash', 'cargo tauri dev', 'ran it · works'],
+  ];
+  if (onProofList(t)) {
+    if (!fix) rows.push(['Write', `proofs/${Mod}/Design.lean`, 'model · 3 theorems'], ['Bash', `lake build Proofs.${Mod}.Design`, 'proved · 0 sorry']);
+    rows.push(['Write', `proofs/fixtures/${mod}.tsv`, fix ? `adds the input ${t.item.ref} failed on` : 'exported from the model'],
+      ['Bash', `cargo test ${mod}_matches_fixtures`, 'code agrees with the model']);
+  }
+  rows.push(['Bash', 'cargo clippy --workspace -- -D warnings', 'clean']);
+  return rows;
 }
+/* The proof list (F17): coordination and destructive operations, where a
+   mistake loses work. Matched on the item title for the simulation. */
+const onProofList = t => /claim|rebase|land|worktree|stall|goal swarm|work choice|delet/i.test(t.title);
 /* The proof card on a PR. Velocity checks every proof itself (lake build, no
    sorry/admit, only Lean's standard axioms, statements unchanged since review)
    and shows how far each language's code is tied to the proven model. */
 function proofEntry(t) {
   const Mod = ModOf(t), mod = modOf(t), fix = t.item && t.item.kind === 'issue';
+  const lv = [['Rust', 'ref', `fixture table · proofs/fixtures/${mod}.tsv · checked by one test`]];
   if (fix) return { k:'proof', Mod, thms:[
-    ['Confidence', `<b>fixed</b> : ∀ s : State, Spec s (${mod}.step s) · covers the input ${t.item.ref} failed on`],
-    ['Confidence', `<b>impl_refines</b> : ∀ s, ${mod}_rs.step s = .ok (Model.step s)`],
-  ], lv:[['Rust', 'code', 'checked against the code · Aeneas'], ['TypeScript', 'ref', 'Lean reference model · the scout’s failing script now passes']] };
+    ['Fixture', `the input ${t.item.ref} failed on, added to <b>proofs/fixtures/${mod}.tsv</b> · the scout’s failing script now passes`],
+  ], lv };
   return { k:'proof', Mod, thms:[
     ['Design', `<b>correct</b> : ∀ s : State, Spec s (${mod}.step s)`],
     ['Design', `<b>cost_bound</b> : ∀ s, cost (step s) ≤ s.items.length`],
     ['Design', `<b>optimal</b> : ∀ alg ∈ OrderPreserving, Spec alg → cost step ≤ cost alg`],
-    ['Confidence', `<b>impl_refines</b> : ∀ s, ${mod}_rs.step s = .ok (Model.step s)`],
-    ['Confidence', `<b>ui_agrees</b> : Model.step exported as @[export vel_${mod}_step] for the stress harness`],
-  ], lv:[['Rust', 'code', 'checked against the code · Aeneas'], ['TypeScript', 'ref', 'Lean reference model · scouts diff 10,000 stress inputs against it']] };
+  ], lv };
 }
 function proofHTML(e) {
   return `<div class="proof"><div class="ph"><span class="q">∎</span><span>Proofs · <code>proofs/${e.Mod}/</code> · checked locally by Velocity</span><span class="st">${e.thms.length} theorems proved</span></div>
@@ -3479,7 +3485,7 @@ function runMember(P, S, t, k) {
     if (i === 0 && !t.posted) postClaim(P, t, S);
     const m = r[0] === 'Edit' && r[2].match(/\+(\d+) −(\d+)/); if (m) { t.add += +m[1]; t.del += +m[2]; }
     if (r[0] === 'Bash' && /lake build .*Design$/.test(r[1])) aev(P, 'proof', nickOf(t), `design proved · proofs/${ModOf(t)}/Design.lean · correct, cost bound, optimal over OrderPreserving`);
-    if (r[0] === 'Bash' && /Confidence$/.test(r[1])) aev(P, 'proof', nickOf(t), `confidence proved · Rust checked against the code · TypeScript against the Lean model`);
+    if (r[0] === 'Bash' && /matches_fixtures$/.test(r[1])) aev(P, 'proof', nickOf(t), `fixtures pass · Rust agrees with the Lean model on proofs/fixtures/${modOf(t)}.tsv`);
   }]));
   const ef = rows.find(r => r[0] === 'Edit')[1];
   steps.splice(2, 0, [600, () => {
@@ -3579,7 +3585,7 @@ const STAGE = {
 function initLog(t) {
   if (t.prlog) return t.prlog;
   const L = [{ k:'open', html:`Opened <b>PR #${t.pr}</b> · ${t.item && t.item.kind === 'issue' ? `“Fixes ${t.item.ref}”` : 'description links its Task List item'} · watching it until it merges` }];
-  if (t.branch) L.push(proofEntry(t));
+  if (t.branch && onProofList(t)) L.push(proofEntry(t));
   if (t.ci === 'run') L.push({ k:'check', st:'run', html:'CI running · build · 1/2' });
   if (t.ci === 'pass') L.push({ k:'check', st:'pass', html:'CI green · build, lint · 2/2' });
   if (t.ci === 'fail') L.push({ k:'check', st:'fail', html:'CI failed · <code>clippy</code> · 2 warnings' });
@@ -3663,18 +3669,25 @@ SPEC.md defines what we are building. The Task List defines what is left.
   - After pushing fixes, re-request review.
 - If the PR is closed without merging, report why in your thread.
 
+## Implementation first
+- Build the feature first, end to end, then run it and see it work.
+- Implementation is the larger part of every PR. Proofs, tests and docs together stay smaller than the code.
+
 ## Proofs
-- Never write tests or stress scripts. Scouts and PR duty agents write them.
-- Before you write code for a new feature, prove its design in \`proofs/<Feature>/Design.lean\`:
-  - It is correct: it meets the SPEC.md section it implements.
-  - Its cost stays within a bound, under a cost model the theorem states.
-  - No alternative in a class the theorem states costs less.
-- After the code is written, prove it in \`proofs/<Feature>/Confidence.lean\`:
-  - Where a translator exists (Rust: Aeneas), prove the translated code refines the design model.
-  - Otherwise, export the design model with \`@[export]\` so the stress harness can diff your code against it.
-- A bug fix needs no design proof. It needs a confidence proof of the fixed behaviour.
+- Write Lean only for features on the proof list in SPEC.md. Every other piece ships with no Lean.
+- For a proof-list feature, write the code first. Then, in the same PR, write \`proofs/<Feature>/Design.lean\` with exactly three theorems:
+  - \`correct\`: it meets the SPEC.md section it implements.
+  - \`cost_bound\`: its cost stays within a bound, under a cost model the file defines.
+  - \`optimal\`: no alternative in a class the theorem states costs less.
+- Export a fixture table from the model to \`proofs/fixtures/<feature>.tsv\`, and add one test that checks the code against it.
+- Never write a theorem about one behaviour, case or example. That is a test.
 - Never use \`sorry\`, \`admit\`, \`axiom\` or \`native_decide\`.
 - Never weaken a theorem statement to make its proof go through.
+
+## Tests and docs
+- Default: add no tests. Add one only for a critical contract, with the risk it covers in a comment.
+- Scouts and PR duty agents write the adversarial tests and stress scripts.
+- Update SPEC.md when behaviour changes.
 
 ## Coordination (AIRC)
 - Before you edit anything, claim your work in AIRC: the task, your branch and every file you expect to touch.
@@ -3715,7 +3728,9 @@ const toMd = d => `# AGENTS.md · ${state.name}\n` + d.map(x => `\n## ${x.title 
 
 const COVER = [
   { t:'Build, proof and lint commands', re:/^## *commands/im, sec:'Commands', rules:['Build: `…`', 'Proofs: `lake build` in `proofs/`. Run it before every push.', 'Lint: `…`. Zero warnings.'] },
-  { t:'Proofs: design before code, confidence after', re:/^## *proofs/im, sec:'Proofs', rules:['Never write tests or stress scripts. Scouts and PR duty agents write them.', 'Before you write code for a new feature, prove its design in `proofs/<Feature>/Design.lean`: correct, within a stated cost bound, and no alternative in a stated class costs less.', 'After the code is written, prove it in `proofs/<Feature>/Confidence.lean`.', 'Never use `sorry`, `admit`, `axiom` or `native_decide`.', 'Never weaken a theorem statement to make its proof go through.'] },
+  { t:'Implementation first', re:/^## *implementation first/im, sec:'Implementation first', rules:['Build the feature first, end to end, then run it and see it work.', 'Implementation is the larger part of every PR. Proofs, tests and docs together stay smaller than the code.'] },
+  { t:'Proofs: proof list only, after the code', re:/^## *proofs/im, sec:'Proofs', rules:['Write Lean only for features on the proof list in SPEC.md. Every other piece ships with no Lean.', 'For a proof-list feature, write the code first, then `proofs/<Feature>/Design.lean` in the same PR: correct, within a stated cost bound, and no alternative in a stated class costs less.', 'Export a fixture table from the model and add one test that checks the code against it.', 'Never use `sorry`, `admit`, `axiom` or `native_decide`.', 'Never weaken a theorem statement to make its proof go through.'] },
+  { t:'Tests and docs: low priority', re:/^## *tests/im, sec:'Tests and docs', rules:['Default: add no tests. Add one only for a critical contract, with the risk it covers in a comment.', 'Scouts and PR duty agents write the adversarial tests and stress scripts.'] },
   { t:'Scope: stay on your task', re:/^## *scope/im, sec:'Scope', rules:['Work only on the task you were given.', 'If you find an unrelated problem, file an issue for it. Do not fix it in your PR.'] },
   { t:'PR: monitor until merged', re:/until (it is |it’s |it's )?merged/i, sec:'Pull requests', rules:['Opening the PR does not finish the task. Monitor the PR until it is merged.', [1, 'If CI fails, fix it and push.']] },
   { t:'PR: address every review comment', re:/address every (review )?comment/i, sec:'Pull requests', rules:['Address every comment PR duty agents leave: fix it and push, or reply with the reason you didn’t. Resolve the thread.', 'After pushing fixes, re-request review.'] },

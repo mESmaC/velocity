@@ -20,7 +20,7 @@ These hold for every feature. A feature that breaks one of them is wrong, whatev
 5. **One worktree per unit of work.** Every thread and every agent works in its own git worktree. The worktree is deleted as soon as that work's PR merges.
 6. **AGENTS.md is direct and explicit.** Hedged or vague wording counts as a defect.
 7. **Agents coordinate in AIRC through claims, not conversation.** Every agent claims its work and files, records a share or a wait when it needs a file another agent claimed, and waits for a PR it depends on to merge. Agents can message each other, but only when a claim, overlap or dependency needs words. A dependency wait is not an approval gate (Rule 1).
-8. **Prove what matters; don't test it.** Building agents never write tests. Features on the project's proof list are proven in Lean: the design before its code, the code once it exists (F17). Everything else ships with no Lean. Only the agents whose job is to break things write tests and stress scripts: scouts and PR duty. Lean is the proving ground, not the test suite.
+8. **Implementation first.** Agents build working functionality before anything else. Features on the project's proof list are proven in Lean after their code, in the same PR (F17); everything else ships with no Lean. Tests and docs are low priority: a building agent adds a test only for a critical contract, and scouts and PR duty write the adversarial tests. Only the agents whose job is to break things write tests and stress scripts: scouts and PR duty. Lean is the proving ground, not the test suite.
 
 ---
 
@@ -38,8 +38,8 @@ These hold for every feature. A feature that breaks one of them is wrong, whatev
 | **Worktree** | A `git worktree` checkout made for one thread or one agent's job. |
 | **AIRC** | The project's coordination channel. It is first a log of claims and project events (PRs, reviews, merges, issues, Task List changes); agents can also message each other. Overlaps and dependencies are settled there and shared ledgers are kept there, so no agent works in isolation. Modelled on xros_chat. |
 | **Claim** | An agent's public statement of its task, branch and the files it expects to touch. Claims on a piece of work are locked: the first claim wins and a later one is refused with the holder's nick. |
-| **Design proof** | `proofs/<Feature>/Design.lean`: the feature modelled in Lean, proven correct, within a stated cost bound, and no worse than a stated class of alternatives. Written before any code. |
-| **Confidence proof** | `proofs/<Feature>/Confidence.lean`: proof that what was built matches the design. Written after the code. "Don't state your confidence; prove it." |
+| **Design proof** | `proofs/<Feature>/Design.lean`: the feature modelled in Lean, proven correct, within a stated cost bound, and no worse than a stated class of alternatives. Only for features on the proof list (F17), written after the code in the same PR. |
+| **Confidence proof** | Ties what was built to the design model. By default, the model exports a fixture table and one test checks the code against it; a code translation runs only when an issue asks for it. "Don't state your confidence; prove it." |
 | **Proof level** | How firmly a language's code is tied to the proven model: **code** (the code itself is translated into Lean and proven), **reference** (the code is stress-tested against the compiled Lean model) or **model** (only the design is proven). |
 | **Skill** | An Agent Skills folder (`SKILL.md` plus optional scripts, references and data) that an agent loads when a task needs it. Velocity installs skill packs once and turns them on per project (F18). |
 | **Evidence** | The failing test or stress script a scout attaches to every issue it files. |
@@ -560,7 +560,7 @@ Open it from the rail link or the palette. It reads and writes the repo's `AGENT
   - Every rewritten bullet shows "was ~~original~~ · **Undo**" until you save.
 - **Live lint while typing:** marks hedges (should probably, maybe, try to, where possible, as needed, consider), "should", and vague words (clean, good, nice, appropriate, reasonable, properly, etc.).
 - **Side panel:**
-  - **Covers:** commands (build, proofs, lint); proofs: design before code, confidence after; scope; PR: monitor until merged; PR: address every review comment; definition of done; hard "never" list. Each missing item has **Add**, which inserts editable bullets into the right section.
+  - **Covers:** commands (build, proofs, lint); implementation first; proofs: proof list only, after the code; tests and docs: low priority; scope; PR: monitor until merged; PR: address every review comment; definition of done; hard "never" list. Each missing item has **Add**, which inserts editable bullets into the right section.
   - **Flagged:** the list, with **Tighten all**.
   - a key legend
 - **Keys:**
@@ -616,7 +616,7 @@ Delete is **immediate, with no confirmation** (decided).
 
 ### F13 · Settings
 
-Open with the footer gear, `Ctrl+,`, the palette, the footer worktree count (→ Worktrees) or the footer limit meter (→ Providers). Pages: **Worktrees** (F5), **Providers** (F15: sign-in, default model, effort and speed for new threads, and the thread title model), **Skills** (F18), **Agents** and **Proofs**. Proofs sets the code-level translator for each language (Rust: Aeneas) and the stress-diff input count (F17). Agents holds the shared MCP servers passed to every agent (§3.2 Tool access), the per-agent caps (max turns, max duration; off by default), the stall timeout (5 min) and the claim-release grace period (10 min) from §2.2. The rest of the Agents page is unspecified. There is no Keys page: every provider signs in with OAuth.
+Open with the footer gear, `Ctrl+,`, the palette, the footer worktree count (→ Worktrees) or the footer limit meter (→ Providers). Pages: **Worktrees** (F5), **Providers** (F15: sign-in, default model, effort and speed for new threads, and the thread title model), **Skills** (F18), **Agents** and **Proofs**. Proofs holds the project's proof list, the code-level translator for each language when an issue asks for one (Rust: Aeneas), and the stress-diff input count (F17). Agents holds the shared MCP servers passed to every agent (§3.2 Tool access), the per-agent caps (max turns, max duration; off by default), the stall timeout (5 min) and the claim-release grace period (10 min) from §2.2. The rest of the Agents page is unspecified. There is no Keys page: every provider signs in with OAuth.
 
 ### F14 · AIRC (claims, events, agent messages)
 
@@ -816,7 +816,7 @@ Lean is the proving ground, not the test suite.
 
 | Who | Writes | Never writes |
 |---|---|---|
-| Building agents (threads, swarms, goal swarms) | Code; design and confidence proofs for proof-list features | Tests, stress scripts, Lean for anything off the proof list |
+| Building agents (threads, swarms, goal swarms) | Code first; then proofs for proof-list features, and a targeted test only for a critical contract | Test suites, stress scripts, Lean for anything off the proof list |
 | Scouts | Tests, stress scripts, issues with evidence | Fixes |
 | PR duty | Reviews of theorem statements, stress scripts to back a doubt | Proofs for the author |
 | Main watcher | Nothing new. It runs every test and stress script after each merge. | |
@@ -837,7 +837,9 @@ Velocity's own proof list:
 | Goal swarm work choice | F16 | a piece is taken twice, or an agent leaves while a piece is unclaimed |
 | Stall detection and claim release | §2.2 | a live agent's claims are released, or a dead agent's never are |
 
-**Design proof** (`proofs/<Feature>/Design.lean`, before any code, for every feature on the proof list):
+**Implementation first.** Proofs never block building. The agent builds and runs the feature, then writes its proofs in the same PR. Implementation stays the larger part of every PR: proofs, tests and docs together are smaller than the code, and PR duty requests changes when they aren't.
+
+**Design proof** (`proofs/<Feature>/Design.lean`, after the code, in the same PR, for every feature on the proof list):
 - **Exactly three theorems:** `correct`, `cost_bound` and `optimal`, below. Lemmas are allowed only as steps toward them.
 - **No theorem about a single behaviour, case, key, value or example.** That is a test, and PR duty requests changes.
 - **Size tripwire:** a design proof over 300 lines means the model is too detailed. The agent stops and files an issue.
@@ -862,8 +864,8 @@ theorem optimal : ∀ strat ∈ RebaseStrategies,
 
 | Level | How | Available for |
 |---|---|---|
-| **code** | A translator turns the code into Lean, and the proof shows the translated code refines the design model. | Any language with a translator set for the project. Rust ships with Aeneas (its safe subset). More translators are added per language in Settings → Proofs (Q23). |
-| **reference** | The design model is compiled (Lean 4 compiles to C) and exported with `@[export]`. Scouts' stress scripts run the code and the model on the same inputs and diff the outputs. C and C++ link the model directly. Python, TypeScript and every other language call it through their FFI or a small process. | Every language |
+| **code** (on request) | A translator turns the code into Lean, and the proof shows the translated code refines the design model. | Any language with a translator set for the project. Rust ships with Aeneas (its safe subset). More translators are added per language in Settings → Proofs (Q23). |
+| **reference** (default) | The Lean model exports a compact fixture table, and one test checks the code against it. For larger input spaces, the model is compiled (Lean 4 compiles to C) and exported with `@[export]`. Scouts' stress scripts run the code and the model on the same inputs and diff the outputs. C and C++ link the model directly. Python, TypeScript and every other language call it through their FFI or a small process. | Every language |
 | **model** | Only the design is proven. The PR is flagged, and scouts treat it as a proof gap. | Every language |
 
 **Generated translations** (Aeneas output) are marked generated in `.gitattributes`, so they stay out of language statistics and PR diffs.
@@ -892,10 +894,10 @@ theorem optimal : ∀ strat ∈ RebaseStrategies,
 - the proof folder, and "N theorems proved";
 - the four checks, each ticked: lake build; no sorry or admit; standard axioms; statements locked at review;
 - every theorem: Design or Confidence, its name and its statement;
-- the level reached per language, e.g. "Rust · code · Aeneas", "TypeScript · reference · scouts diff 10,000 stress inputs against it".
+- the level reached per language, e.g. "Rust · reference · fixture table checked by one test", "TypeScript · reference · scouts diff 10,000 stress inputs against it".
 
 **Accept when:**
-- [ ] No building agent's PR adds or edits a test or stress script, except copying a scout's script unchanged in a bug fix.
+- [ ] A building agent's PR adds tests only for critical contracts, and its implementation outweighs its proofs, tests and docs together.
 - [ ] A proof-list feature's PR can't merge without a design proof that checks.
 - [ ] A PR for a feature off the proof list contains no Lean.
 - [ ] A PR whose proofs use `sorry`, `admit`, `native_decide` or a new axiom can't merge.
@@ -1111,8 +1113,8 @@ Each milestone ends with a working app. Check items off as their PRs merge.
 - [ ] Proof card on the PR, "Proved" on the PR track, `proved`/`statement`/`stress` events
 - [ ] Merge gate in PR duty; statement review; tiers updated (F7)
 - [ ] Scouts: assume-it-fails sweeps, evidence required, Stress and Proof gaps focus areas, stress runs against Lean reference models
-- [ ] Levels per language: code (Aeneas for Rust), reference (compiled Lean model through FFI), model
-- [ ] AGENTS.md: Proofs section and Covers check (F11)
+- [ ] Levels per language: reference by default (fixture table plus one test; compiled Lean model through FFI for stress), code on request (Aeneas for Rust), model
+- [ ] AGENTS.md: Implementation first, Proofs, and Tests and docs sections; Covers check (F11)
 
 **M12 · Skills** (F18)
 - [ ] Skill library: clone and pin packs, update with a diff, Windows symlink and UTF-8 handling
