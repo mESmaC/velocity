@@ -122,10 +122,12 @@ fn rewrite_rule(
     let launch = velocity_acp::client::AgentLaunch::new("claude-code-acp".into());
     let setup =
         velocity_acp::client::SessionSetup::new(directory.into(), vec!["bypassPermissions".into()]);
-    let response = runtime.block_on(velocity_acp::client::rewrite::rewrite(
-        launch,
-        setup,
-        velocity_core::agents_rewrite::rewrite_prompt(ticket),
-    ))?;
+    let response = runtime
+        .block_on(velocity_acp::client::rewrite::rewrite(
+            launch,
+            setup,
+            velocity_core::agents_rewrite::rewrite_prompt(ticket),
+        ))
+        .map_err(|error| error.to_string())?;
     velocity_core::agents_rewrite::parse_rewrite(&response)
 }

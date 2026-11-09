@@ -1,6 +1,7 @@
 //! A single F11 rewrite turn, using the ordinary unrestricted ACP client handlers.
 use super::{
-    AgentEvent, AgentLaunch, SessionSetup, Shared, handlers, process, session, terminals::Terminals,
+    AgentEvent, AgentLaunch, ClientError, SessionSetup, Shared, handlers, process, session,
+    terminals::Terminals,
 };
 use crate::Transcript;
 use agent_client_protocol::v1::{
@@ -12,16 +13,23 @@ use std::sync::{Arc, Mutex};
 use tokio::sync::mpsc::unbounded_channel;
 use tokio_util::compat::{TokioAsyncReadCompatExt, TokioAsyncWriteCompatExt};
 
+#[derive(Debug, thiserror::Error)]
+pub enum RewriteError {
+    #[error(transparent)]
+    Client(#[from] ClientError),
+    #[error("Rewrite timed out; your wording is kept")]
+    Timeout,
+}
+
 pub async fn rewrite(
     mut launch: AgentLaunch,
     setup: SessionSetup,
     prompt: String,
-) -> Result<String, String> {
+) -> Result<String, RewriteError> {
     // The Claude SDK reads its model from the inherited launch environment, including
     // adapters predating ACP config options. Credentials remain in its OAuth store.
     launch.env.push(("ANTHROPIC_MODEL".into(), "haiku".into()));
-    let mut agent =
-        process::spawn_agent(&launch, &setup.worktree).map_err(|error| error.to_string())?;
+    let mut agent = process::spawn_agent(&launch, &setup.worktree)?;
     let result = tokio::time::timeout(
         std::time::Duration::from_secs(60),
         request(&mut agent, setup, prompt),
@@ -29,17 +37,25 @@ pub async fn rewrite(
     .await;
     process::stop_agent(&mut agent)
         .await
-        .map_err(|error| error.to_string())?;
-    result.map_err(|_| "Rewrite timed out; your wording is kept".to_owned())?
+        .map_err(ClientError::from)?;
+    result
+        .map_err(|_| RewriteError::Timeout)?
+        .map_err(RewriteError::from)
 }
 
 async fn request(
     agent: &mut process::AgentProcess,
     setup: SessionSetup,
     prompt: String,
-) -> Result<String, String> {
-    let stdin = agent.stdin().take().ok_or("No agent stdin")?;
-    let stdout = agent.stdout().take().ok_or("No agent stdout")?;
+) -> Result<String, ClientError> {
+    let stdin = agent
+        .stdin()
+        .take()
+        .ok_or(ClientError::MissingPipe("stdin"))?;
+    let stdout = agent
+        .stdout()
+        .take()
+        .ok_or(ClientError::MissingPipe("stdout"))?;
     let (events, mut updates) = unbounded_channel();
     if let Some(stderr) = agent.stderr().take() {
         super::forward_log(stderr, events.clone());
@@ -75,11 +91,7 @@ async fn request(
             Ok(response)
         })
         .await
-        .map_err(|error| error.to_string());
-    shared
-        .terminals
-        .stop_all()
-        .await
-        .map_err(|error| error.to_string())?;
+        .map_err(ClientError::from);
+    shared.terminals.stop_all().await?;
     result
 }
