@@ -192,3 +192,57 @@ pub fn close_pull_request(repository: &Path, number: u32) -> Result<(), Deletion
         }),
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use velocity_store::{
+        AgentActivity, EffortLevel, ProviderKind, SpeedMode, ThreadItem, WorktreeRole,
+    };
+
+    fn thread(state: ThreadState, worktree_path: &str) -> ThreadItem {
+        ThreadItem {
+            id: 1,
+            title: "thread".into(),
+            state,
+            activity: AgentActivity::Idle,
+            branch_name: "vel/thread".into(),
+            worktree_path: Some(worktree_path.into()),
+            worktree_role: WorktreeRole::Thread,
+            worktree_path_id: None,
+            pull_request_number: Some(7),
+            review_stage: None,
+            task_ids: Vec::new(),
+            additions: 0,
+            deletions: 0,
+            elapsed_seconds: 0,
+            provider: ProviderKind::Claude,
+            model_name: "model".into(),
+            effort: EffortLevel::High,
+            preferred_speed: SpeedMode::Regular,
+            effective_speed: SpeedMode::Regular,
+            model_supports_fast: false,
+        }
+    }
+
+    // Risk: deleting a thread removes the project's own checkout. A spec thread runs in the
+    // main checkout (F3), and a recorded worktree path can resolve to the repository itself
+    // (the same folder spelled differently); both must be refused, not removed.
+    #[test]
+    fn deletion_never_removes_the_main_checkout() -> Result<(), std::io::Error> {
+        let repository = std::env::temp_dir().join(format!("velocity-f12-{}", std::process::id()));
+        std::fs::create_dir_all(&repository)?;
+        let spelled_differently = repository.join(".");
+        let spec = plan_deletion(
+            &repository,
+            &thread(ThreadState::Spec, &repository.display().to_string()),
+        );
+        assert_eq!(spec.remove_worktree, None);
+        let refused = remove_worktree(&repository, &spelled_differently);
+        let still_there = repository.is_dir();
+        std::fs::remove_dir_all(&repository)?;
+        assert!(matches!(refused, Err(DeletionError::MainCheckout(_))));
+        assert!(still_there);
+        Ok(())
+    }
+}
