@@ -80,8 +80,15 @@ pub fn is_member_visible(parent: usize, row: LayoutRow) -> bool {
     }
 }
 
-pub fn expand_members(row: LayoutRow) -> bool {
-    matches!(row.group, ThreadGroup::Swarm) && row.expanded
+/// Member visibility follows navigation, including restored and palette selections.
+pub fn expand_members(row: LayoutRow, selected: Option<LayoutRow>) -> bool {
+    !row.hidden
+        && matches!(row.group, ThreadGroup::Swarm)
+        && selected.is_some_and(|selected| {
+            !selected.hidden
+                && (selected.identifier == row.identifier
+                    || selected.member_of == Some(row.identifier))
+        })
 }
 
 pub fn show_group(group: ThreadGroup, has_rows: bool, search_empty: bool) -> bool {
