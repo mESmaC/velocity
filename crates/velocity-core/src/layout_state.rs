@@ -300,7 +300,8 @@ impl LayoutState {
     }
 
     fn sidebar(&self) -> Vec<SidebarGroup> {
-        let query = normalized(&self.search);
+        // The reference trims the sidebar query, so a query of only spaces shows every thread.
+        let query = normalized(self.search.trim());
         let mut number = 0;
         GROUPS
             .into_iter()
@@ -312,7 +313,7 @@ impl LayoutState {
                     .filter(|thread| {
                         let mut row = thread.policy;
                         row.matches_search =
-                            layout::fuzzy_match(&query, &normalized(&thread.title));
+                            layout::substring_match(&query, &normalized(&thread.title));
                         layout::is_root_visible(group, row)
                     })
                     .collect();

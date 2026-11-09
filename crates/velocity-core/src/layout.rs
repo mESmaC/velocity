@@ -143,6 +143,12 @@ pub fn alt_target(number: usize, visible: &[usize]) -> Option<usize> {
     }
 }
 
+/// Literal substring matching, used by the sidebar thread search. The reference's
+/// `renderThreads` filters with `title.includes(query)`; only the palette is fuzzy.
+pub fn substring_match(query: &[char], label: &[char]) -> bool {
+    query.is_empty() || label.windows(query.len()).any(|window| window == query)
+}
+
 /// Greedy literal subsequence matching, with no regex interpretation or recursion.
 pub fn fuzzy_match(query: &[char], label: &[char]) -> bool {
     let mut query_index = 0;
