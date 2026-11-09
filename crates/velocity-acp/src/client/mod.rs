@@ -85,6 +85,16 @@ struct Shared {
 }
 
 impl Shared {
+    /// Handler state for a session rooted at `worktree`, reporting to `events`.
+    fn new(worktree: PathBuf, events: UnboundedSender<AgentEvent>) -> Self {
+        Shared {
+            terminals: Terminals::new(worktree.clone()),
+            worktree,
+            transcript: Mutex::new(Transcript::new()),
+            events,
+        }
+    }
+
     fn emit(&self, event: AgentEvent) {
         // The thread stopped listening: the session is ending, nothing to report to.
         let _ = self.events.send(event);

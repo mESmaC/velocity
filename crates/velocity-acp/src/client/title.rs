@@ -2,7 +2,7 @@
 //! own agent, run while the thread's worktree is being taken.
 
 use std::path::PathBuf;
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 use std::time::Duration;
 
 use agent_client_protocol::v1::ConnectionTo;
@@ -16,14 +16,13 @@ use agent_client_protocol::{Agent, ByteStreams, Client};
 use tokio::sync::mpsc::{UnboundedReceiver, unbounded_channel};
 use tokio_util::compat::{TokioAsyncReadCompatExt, TokioAsyncWriteCompatExt};
 
-use super::terminals::Terminals;
 use super::{
     AgentEvent, AgentLaunch, ClientError, Shared, forward_log, handlers, process, session,
 };
+use crate::RunSettings;
 use crate::session_config::{
     ConfigCategory, ConfigChoices, ConfigOption, ConfigValue, choose_config_values,
 };
-use crate::{RunSettings, Transcript};
 
 /// What a title request runs with.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -57,12 +56,7 @@ pub async fn request_title(request: TitleRequest) -> Result<String, ClientError>
     if let Some(stderr) = agent.stderr.take() {
         forward_log(stderr, events.clone());
     }
-    let shared = Arc::new(Shared {
-        worktree: request.working_directory.clone(),
-        terminals: Terminals::new(request.working_directory.clone()),
-        transcript: Mutex::new(Transcript::new()),
-        events,
-    });
+    let shared = Arc::new(Shared::new(request.working_directory.clone(), events));
     let transport = ByteStreams::new(stdin.compat_write(), stdout.compat());
     let deadline = request.deadline;
     let session = handlers::register(Client.v1(), &shared)
@@ -148,12 +142,12 @@ fn option_view(option: &SessionConfigOption) -> Option<ConfigOption<Arc<str>>> {
         },
         _ => return None,
     };
-    Some(ConfigOption {
-        id: Arc::clone(&option.id.0),
-        name: Arc::from(option.name.as_str()),
+    Some(ConfigOption::new(
+        Arc::clone(&option.id.0),
+        Arc::from(option.name.as_str()),
         category,
         choices,
-    })
+    ))
 }
 
 fn select_values(options: &SessionConfigSelectOptions) -> Vec<(Arc<str>, Arc<str>)> {

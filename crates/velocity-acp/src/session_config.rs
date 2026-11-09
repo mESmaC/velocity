@@ -34,6 +34,22 @@ pub struct ConfigOption<Text> {
     pub choices: ConfigChoices<Text>,
 }
 
+impl<Text> ConfigOption<Text> {
+    pub fn new(
+        id: Text,
+        name: Text,
+        category: ConfigCategory,
+        choices: ConfigChoices<Text>,
+    ) -> Self {
+        ConfigOption {
+            id,
+            name,
+            category,
+            choices,
+        }
+    }
+}
+
 /// A value to send with `session/set_config_option`.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum ConfigValue<Text> {
