@@ -1462,9 +1462,9 @@ projects.velocity = {
     { id:'duty-pr', title:'PR duty', status:'duty', duty:true, role:'pr',
       agents:[
         { n:'pr-1', prov:'claude', model:'Opus 5.5', doing:'reviewing #42', busy:true },
-        { n:'pr-2', prov:'codex', model:'GPT-5.5 Codex', doing:'waiting on CI · #41', busy:false },
+        { n:'pr-2', prov:'codex', model:'GPT-5.5 Codex', doing:'running local checks · #41', busy:false },
       ],
-      rules:[ { t:'Never merge without an approving review', hard:true }, { t:'Proofs check', hard:true }, { t:'Review statements' }, { t:'CI green' }, { t:'Check against SPEC.md' }, { t:'Re-review on new commits' }, { t:'Squash merge' }, { t:'Delete branch' } ],
+      rules:[ { t:'Never merge without an approving review', hard:true }, { t:'Proofs check', hard:true }, { t:'Review statements' }, { t:'Local checks pass' }, { t:'Check against SPEC.md' }, { t:'Re-review on new commits' }, { t:'Squash merge' }, { t:'Delete branch' } ],
       feed:[
         { ts:'20:41', who:'pr-1', kind:'merge', html:'Merged <b>#40</b> Frameless window + drag region · squash · branch deleted' },
         { ts:'20:44', who:'pr-2', kind:'changes', html:'Requested changes on <b>#39</b> Settings pane · 2 blocking: <code>settings.rs:88</code> unwraps a missing file; <code>defaults_total</code> assumes the file exists' },
@@ -2282,7 +2282,7 @@ document.addEventListener('mousedown', e => { if (!e.target.closest('.brand')) $
    and file issues with that evidence. Builders never write tests; they write Lean proofs. */
 const REV = {
   reviewing: ['reviewing', 'var(--text-2)'],
-  waiting:   ['waiting on CI', 'var(--warn)'],
+  waiting:   ['checking', 'var(--warn)'],
   approved:  ['approved', 'var(--ok)'],
   changes:   ['changes req.', 'var(--err)'],
   unclaimed: ['needs a reviewer', 'var(--muted)'],
@@ -2458,7 +2458,7 @@ function startDuty() {
     d = { id:'duty-' + dm.role, title:R.name, status:'duty', duty:true, role:dm.role, filed:0, cadence:'every 30m',
           agents: Array.from({ length: dm.n }, (_, i) => mk(i + 1)),
           rules: dm.role === 'pr'
-            ? [{ t:'Never merge without an approving review', hard:true }, { t:'Proofs check', hard:true }, { t:'Review statements' }, { t:'CI green' }, { t:'Check against SPEC.md' }, { t:'Re-review on new commits' }, { t:'Squash merge' }]
+            ? [{ t:'Never merge without an approving review', hard:true }, { t:'Proofs check', hard:true }, { t:'Review statements' }, { t:'Local checks pass' }, { t:'Check against SPEC.md' }, { t:'Re-review on new commits' }, { t:'Squash merge' }]
             : [{ t:'Never file duplicates', hard:true }, { t:'Evidence attached', hard:true }, { t:'Assume it fails' }, { t:'Bugs · stress · proof gaps · spec drift' }, { t:'Sweep every 30m' }],
           feed:[{ ts:clock(), who:'you', kind:'you', html:`Started ${R.name.toLowerCase()} with ${dm.n} agent${dm.n > 1 ? 's' : ''}`, fresh:true }] };
     state.threads.push(d);
@@ -3066,7 +3066,7 @@ function ensurePrDuty(P, add) {
   let d = P.threads.find(x => x.duty && x.role === 'pr');
   if (!d) {
     d = { id:'duty-pr', title:'PR duty', status:'duty', duty:true, role:'pr', agents:[], feed:[],
-          rules:[{ t:'Never merge without an approving review', hard:true }, { t:'Proofs check', hard:true }, { t:'Review statements' }, { t:'CI green' }, { t:'Check against SPEC.md' }, { t:'Re-review on new commits' }, { t:'Squash merge' }] };
+          rules:[{ t:'Never merge without an approving review', hard:true }, { t:'Proofs check', hard:true }, { t:'Review statements' }, { t:'Local checks pass' }, { t:'Check against SPEC.md' }, { t:'Re-review on new commits' }, { t:'Squash merge' }] };
     P.threads.push(d); P.mergedToday = P.mergedToday || 0;
   }
   for (let i = 0; i < add; i++) d.agents.push({ n:`pr-${d.agents.length + 1}`, prov:'claude', model:'Opus 5.5', busy:false, doing:'idle · watching for new PRs' });

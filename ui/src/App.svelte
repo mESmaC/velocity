@@ -197,4 +197,6 @@
     </div>{:else}<p class="empty" role="status">Opening workspace…</p>{/if}
 </div>
 {#if layout?.palette_open}<CommandPalette {layout} {send} />{/if}
-{#if error}<p class="layout-error" role="alert">{error}</p>{/if}
+{#if error || layout?.launch_notice}<p class="layout-error" role="alert">
+    {error || layout?.launch_notice}
+  </p>{/if}

@@ -13,7 +13,7 @@
     <div class="panel-h">
       <span class="label">Task List</span>
       <div class="panel-actions">
-        <span class="count">{layout.tasks.length || ''}</span><button
+        <span class="count">{layout.task_count_label}</span><button
           class="swarm-button"
           onclick={() => send({ Request: { Navigation: 'Swarm' } })}
           ><Icon name="swarm" />Swarm</button
@@ -25,7 +25,8 @@
         {#each layout.tasks as task (task.identifier)}<button
             class="item"
             onclick={() => send({ Request: { OpenTask: task.identifier } })}
-            ><Icon name="circle" /><span class="item-title">{task.title}</span
+            ><Icon name={layout.tasks_draft ? 'dashed' : 'circle'} /><span
+              class="item-title">{task.title}</span
             ><span></span><span class="item-meta">{task.metadata}</span></button
           >{:else}<p class="empty">
             Tasks show up here as the spec takes shape.
@@ -89,6 +90,8 @@
           ><button
             class="dispatch"
             aria-label={`Dispatch issue ${issue.identifier}`}
+            disabled={!layout.build_allowed}
+            title={layout.build_block_reason ?? 'Dispatch issue'}
             onclick={() =>
               send({ Request: { DispatchIssue: issue.identifier } })}
             ><Icon name="play" />Dispatch</button
