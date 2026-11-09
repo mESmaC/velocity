@@ -47,7 +47,9 @@ pub enum WorktreeError {
     InvalidProjectName(String),
     #[error("worktree drive `{0}` is not a valid Windows drive prefix")]
     InvalidDrivePrefix(String),
-    #[error("worktree path `{path}` exceeds the Windows worktree path limit of {limit} characters")]
+    #[error(
+        "worktree path `{path}` was rejected as too long on Windows (pre-check limit: {limit} characters)"
+    )]
     PathTooLong { path: PathBuf, limit: usize },
     #[error("untracked file entry `{0}` must be a relative path inside the repository")]
     InvalidUntrackedFilePath(String),
@@ -337,7 +339,7 @@ where
 pub enum BranchExistenceProbe {
     /// Exit status 0: the branch already existed before `worktree add -b`.
     Existing,
-    /// Exit status 1: `show-ref` confirmed the branch did not exist before `worktree add -b`.
+    /// Exit status 1: `show-ref` confirmed the branch did not exist at probe time.
     Absent,
     /// Any other exit status or spawn failure: skip `git branch -D` rollback so a pre-existing
     /// branch cannot be deleted when `show-ref` failed for an unrelated reason.
@@ -345,12 +347,43 @@ pub enum BranchExistenceProbe {
 }
 
 /// Classifies the exit code of `git show-ref --verify --quiet` so only exit code `Some(1)`
-/// enables `git branch -D` rollback on a failed `git worktree add -b`.
+/// is treated as absent before `git worktree add -b`.
 pub fn classify_show_ref_exit_code(exit_code: Option<i32>) -> BranchExistenceProbe {
     match exit_code {
         Some(0) => BranchExistenceProbe::Existing,
         Some(1) => BranchExistenceProbe::Absent,
         _ => BranchExistenceProbe::Indeterminate,
+    }
+}
+
+/// Returns `true` when `git worktree add -b` failed because the target branch already existed
+/// (including when a concurrent process created the branch between the preflight probe and
+/// `worktree add -b`), in which case this attempt did not create the branch and must not
+/// delete it.
+pub fn is_branch_already_exists_stderr(stderr: &str, branch_name: &str) -> bool {
+    let lower = stderr.to_ascii_lowercase();
+    let expected = format!("a branch named '{branch_name}' already exists").to_ascii_lowercase();
+    lower.contains(&expected)
+        || (lower.contains("a branch named ") && lower.contains(" already exists"))
+}
+
+/// Decides whether `git branch -D` rollback is permitted after a failed `git worktree add -b`:
+/// only when `show-ref` confirmed the branch was absent before the attempt AND the failure was
+/// not `a branch named ... already exists` (which proves another actor owned the branch before
+/// `worktree add -b` created it).
+pub fn should_rollback_branch_after_worktree_add_error(
+    probe: BranchExistenceProbe,
+    branch_name: &str,
+    error: &WorktreeError,
+) -> bool {
+    if probe != BranchExistenceProbe::Absent {
+        return false;
+    }
+    match error {
+        WorktreeError::CommandFailed { stderr, .. } => {
+            !is_branch_already_exists_stderr(stderr, branch_name)
+        }
+        _ => true,
     }
 }
 
@@ -370,10 +403,9 @@ pub fn map_worktree_add_error(worktree_path: &Path, error: WorktreeError) -> Wor
         WorktreeError::CommandFailed { ref stderr, .. }
             if is_git_worktree_path_too_long_stderr(stderr) =>
         {
-            let character_count = worktree_path.to_string_lossy().chars().count();
             WorktreeError::PathTooLong {
                 path: worktree_path.to_path_buf(),
-                limit: character_count.min(MAX_WORKTREE_PATH_LENGTH),
+                limit: MAX_WORKTREE_PATH_LENGTH,
             }
         }
         other => other,
@@ -434,7 +466,7 @@ fn create_git_worktree_from_base(
     let worktree_path_text = worktree_path.to_string_lossy().into_owned();
     if let Some(branch) = &request.branch_name {
         let probe = probe_local_branch_existence(&request.repository_root, branch);
-        let result = run_git_command(
+        let raw_result = run_git_command(
             &request.repository_root,
             [
                 "worktree",
@@ -444,12 +476,13 @@ fn create_git_worktree_from_base(
                 worktree_path_text.as_str(),
                 &request.base_ref,
             ],
-        )
-        .map_err(|error| map_worktree_add_error(worktree_path, error));
-        if result.is_err() && probe == BranchExistenceProbe::Absent {
+        );
+        if let Err(ref error) = raw_result
+            && should_rollback_branch_after_worktree_add_error(probe, branch, error)
+        {
             let _ = run_git_command(&request.repository_root, ["branch", "-D", branch.as_str()]);
         }
-        result
+        raw_result.map_err(|error| map_worktree_add_error(worktree_path, error))
     } else {
         run_git_command(
             &request.repository_root,
