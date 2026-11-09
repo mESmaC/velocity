@@ -205,18 +205,15 @@ impl LayoutState {
     }
 
     fn deselect_hidden(&mut self) {
-        if let Some(identifier) = self.selected_thread {
-            if let Some(entry) = self
+        if self.selected_thread.is_some_and(|identifier| {
+            !self
                 .data
                 .threads
                 .iter()
-                .find(|thread| thread.policy.identifier == identifier && !thread.policy.hidden)
-            {
-                self.view = entry.view;
-            } else {
-                self.selected_thread = None;
-                self.view = NavigationView::Home;
-            }
+                .any(|thread| thread.policy.identifier == identifier && !thread.policy.hidden)
+        }) {
+            self.selected_thread = None;
+            self.view = NavigationView::Home;
         }
     }
 
@@ -246,6 +243,7 @@ impl LayoutState {
         let follows = matches!(
             self.view,
             NavigationView::Thread
+                | NavigationView::Duty
                 | NavigationView::SpecScan
                 | NavigationView::SpecAsk
                 | NavigationView::SpecReady

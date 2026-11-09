@@ -3,12 +3,9 @@
 use crate::layout_view::ProviderColor;
 use crate::thread_view_model::ModelPillView;
 
-#[cfg_attr(
-    feature = "bindings",
-    derive(serde::Serialize, serde::Deserialize, specta::Type)
-)]
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-#[cfg_attr(feature = "bindings", serde(rename_all = "snake_case"))]
+#[cfg_attr(feature = "bindings", derive(specta::Type))]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum DutyRole {
     #[default]
     PrDuty,
@@ -51,12 +48,9 @@ impl DutyRole {
     }
 }
 
-#[cfg_attr(
-    feature = "bindings",
-    derive(serde::Serialize, serde::Deserialize, specta::Type)
-)]
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-#[cfg_attr(feature = "bindings", serde(rename_all = "snake_case"))]
+#[cfg_attr(feature = "bindings", derive(specta::Type))]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum DutyMergeMethod {
     #[default]
     Squash,
@@ -74,12 +68,9 @@ impl DutyMergeMethod {
     }
 }
 
-#[cfg_attr(
-    feature = "bindings",
-    derive(serde::Serialize, serde::Deserialize, specta::Type)
-)]
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-#[cfg_attr(feature = "bindings", serde(rename_all = "snake_case"))]
+#[cfg_attr(feature = "bindings", derive(specta::Type))]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum ScoutFocusArea {
     Bugs,
     Stress,
@@ -128,12 +119,9 @@ pub fn default_scout_focus_areas() -> Vec<ScoutFocusArea> {
     ]
 }
 
-#[cfg_attr(
-    feature = "bindings",
-    derive(serde::Serialize, serde::Deserialize, specta::Type)
-)]
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-#[cfg_attr(feature = "bindings", serde(rename_all = "snake_case"))]
+#[cfg_attr(feature = "bindings", derive(specta::Type))]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum ScoutCadence {
     Once,
     #[default]
@@ -159,11 +147,8 @@ impl ScoutCadence {
     }
 }
 
-#[cfg_attr(
-    feature = "bindings",
-    derive(serde::Serialize, serde::Deserialize, specta::Type)
-)]
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[cfg_attr(feature = "bindings", derive(specta::Type))]
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct PrDutyRuleSettings {
     pub review_theorem_statements: bool,
     pub ci_green_before_merge: bool,
@@ -186,11 +171,8 @@ impl Default for PrDutyRuleSettings {
     }
 }
 
-#[cfg_attr(
-    feature = "bindings",
-    derive(serde::Serialize, serde::Deserialize, specta::Type)
-)]
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[cfg_attr(feature = "bindings", derive(specta::Type))]
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct ScoutRuleSettings {
     pub focus_areas: Vec<ScoutFocusArea>,
     pub assume_every_part_fails: bool,
@@ -234,12 +216,9 @@ pub struct DutyAgentCard {
     pub doing: String,
 }
 
-#[cfg_attr(
-    feature = "bindings",
-    derive(serde::Serialize, serde::Deserialize, specta::Type)
-)]
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-#[cfg_attr(feature = "bindings", serde(rename_all = "snake_case"))]
+#[cfg_attr(feature = "bindings", derive(specta::Type))]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum DutyEventKind {
     Merge,
     Approve,
@@ -253,11 +232,8 @@ pub enum DutyEventKind {
     You,
 }
 
-#[cfg_attr(
-    feature = "bindings",
-    derive(serde::Serialize, serde::Deserialize, specta::Type)
-)]
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[cfg_attr(feature = "bindings", derive(specta::Type))]
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct DutyFeedEvent {
     pub timestamp: String,
     pub actor: String,
