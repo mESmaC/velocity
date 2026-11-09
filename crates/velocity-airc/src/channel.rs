@@ -15,6 +15,72 @@ pub struct Entry {
     pub to: Vec<String>,
     #[serde(default)]
     pub intent: Option<String>,
+    /// The PR an event is about, so readers such as the approval record (F7)
+    /// never parse it back out of the display text.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pull_request: Option<u32>,
+    /// The PR head commit the event applies to (`approved` binds to it).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub head: Option<String>,
+}
+
+/// Event tags Velocity posts from what it observes (F14). Agents never type them.
+const EVENT_TAGS: &[&str] = &[
+    "claim",
+    "refused",
+    "overlap",
+    "shares",
+    "waits",
+    "unblocked",
+    "PR",
+    "changes",
+    "pushed",
+    "approved",
+    "merged",
+    "order",
+    "issue",
+    "task",
+    "failed",
+    "swarm",
+    "left",
+    "rebased",
+    "updated",
+    "conflict",
+    "stalled",
+    "at limit",
+    "released",
+    "broken",
+    "reverted",
+    "proved",
+    "statement",
+    "stress",
+];
+
+/// One event line: its type tag, the nick it is about, and what happened.
+pub struct Event {
+    tag: String,
+    nick: String,
+    text: String,
+    pull_request: Option<u32>,
+    head: Option<String>,
+}
+
+impl Event {
+    pub fn new(tag: &str, nick: &str, text: &str) -> Self {
+        Self {
+            tag: tag.into(),
+            nick: nick.into(),
+            text: text.into(),
+            pull_request: None,
+            head: None,
+        }
+    }
+
+    pub fn for_pull_request(mut self, number: u32, head: Option<&str>) -> Self {
+        self.pull_request = Some(number);
+        self.head = head.map(Into::into);
+        self
+    }
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -157,6 +223,23 @@ impl Channel {
         self.post(member, ledger, text, Vec::new(), None)
     }
 
+    /// Velocity posts events on behalf of the nick they name; posting needs no
+    /// channel membership because the poster is Velocity itself.
+    pub fn post_event(&self, event: Event) -> Result<Entry, Error> {
+        if !EVENT_TAGS.contains(&event.tag.as_str()) {
+            return Err(Error::Invalid(format!("Unknown event tag: {}", event.tag)));
+        }
+        require_text(&event.nick)?;
+        require_text(&event.text)?;
+        let storage = Storage::open(&self.directory)?;
+        let entries = storage.read()?;
+        let mut record = entry(&entries, &event.tag, "velocity", &event.nick, &event.text);
+        record.pull_request = event.pull_request;
+        record.head = event.head;
+        storage.append(&record)?;
+        Ok(record)
+    }
+
     fn post(
         &self,
         member: &str,
@@ -200,6 +283,8 @@ fn entry(entries: &[Entry], kind: &str, member: &str, nick: &str, text: &str) ->
         text: text.into(),
         to: Vec::new(),
         intent: None,
+        pull_request: None,
+        head: None,
     }
 }
 

@@ -1,8 +1,10 @@
 use serde_json::{Value, json};
 
+use crate::approval::mirror_body;
+use crate::pull_request_reviews::missing_record;
 use crate::{
-    CreatePullRequest, MergeMethod, NewReviewComment, PullRequestClient, PullRequestError,
-    PullRequestOperation, PullRequestReceipt, PullRequestState, ReviewAction,
+    CreatePullRequest, MergeMethod, NewReviewComment, PullRequest, PullRequestClient,
+    PullRequestError, PullRequestOperation, PullRequestReceipt, PullRequestState, ReviewAction,
 };
 
 impl PullRequestClient {
@@ -26,10 +28,7 @@ impl PullRequestClient {
                 number,
                 expected_head,
                 method,
-            } => {
-                self.merge(number, &expected_head, method)?;
-                (number, "merged")
-            }
+            } => (number, self.merge(number, &expected_head, method)?),
             discussion => return self.execute_discussion(discussion),
         };
         Ok(PullRequestReceipt {
@@ -163,16 +162,50 @@ impl PullRequestClient {
         body: &str,
         comments: &[NewReviewComment],
     ) -> Result<(), PullRequestError> {
-        if self.get(number)?.head_ref_oid != head {
+        let pull_request = self.get(number)?;
+        if pull_request.head_ref_oid != head {
             return Err(PullRequestError::Invalid(
                 "PR head changed; review the new commit".into(),
             ));
         }
+        let approve = match action {
+            ReviewAction::Comment => {
+                let review =
+                    json!({"event":action,"body":body,"commit_id":head,"comments":comments});
+                return self.write(number, "reviews", &review);
+            }
+            ReviewAction::Approve => true,
+            ReviewAction::RequestChanges => false,
+        };
+        let record = self.review_record.as_ref().ok_or_else(missing_record)?;
+        require_text(body, "review reason")?;
+        if !approve {
+            // Recorded first: the merge is blocked before anything else can fail.
+            record.request_changes(number, head)?;
+        }
+        // GitHub refuses a review that approves or blocks the login's own PR,
+        // which is every PR when all agents share one login. The mirror is
+        // then a comment review; GitHub's review state is advisory (F7).
+        let viewer = self.viewer_login()?;
+        let own = pull_request
+            .author
+            .as_ref()
+            .is_some_and(|author| author.login.eq_ignore_ascii_case(&viewer));
+        let event = if own { ReviewAction::Comment } else { action };
+        let mirror = mirror_body(approve, head, record.nick(), body);
         self.write(
             number,
             "reviews",
-            &json!({"event":action,"body":body,"commit_id":head,"comments":comments}),
-        )
+            &json!({"event":event,"body":mirror,"commit_id":head,"comments":comments}),
+        )?;
+        if approve {
+            record.approve(number, head).map_err(|error| {
+                PullRequestError::Invalid(format!(
+                    "The approval comment is on #{number}, but the approval was not recorded,                      so the merge stays blocked: {error}"
+                ))
+            })?;
+        }
+        Ok(())
     }
 
     fn thread_mutation(
@@ -203,16 +236,58 @@ impl PullRequestClient {
         Ok(())
     }
 
-    fn merge(&self, number: u32, head: &str, method: MergeMethod) -> Result<(), PullRequestError> {
+    /// Merges only the head Velocity's record approved, then deletes the
+    /// branch (F7 "Delete the branch after merge"). Returns the receipt name.
+    fn merge(
+        &self,
+        number: u32,
+        head: &str,
+        method: MergeMethod,
+    ) -> Result<&'static str, PullRequestError> {
         let snapshot = self.snapshot(number)?;
         self.require_merge(&snapshot, head)?;
+        let record = self.review_record.as_ref().ok_or_else(missing_record)?;
+        let response = match self.merge_on_github(&snapshot.pull_request.id, head, method) {
+            Ok(response) => response,
+            // F7: a refused merge (for example branch protection demanding a
+            // GitHub approval) is a `failed` event; it is never bypassed.
+            Err(error) => {
+                return Err(
+                    match record.merge_failed(number, head, &error.to_string()) {
+                        Ok(()) => error,
+                        Err(record_error) => PullRequestError::Invalid(format!(
+                            "{error}; the failed event was not recorded: {record_error}"
+                        )),
+                    },
+                );
+            }
+        };
+        let head_reference = response.pointer("/headRef/id").and_then(Value::as_str);
+        Ok(match head_reference {
+            Some(reference) if self.owns_head_branch(&snapshot.pull_request) => {
+                if self.delete_reference(reference).is_ok() {
+                    "merged"
+                } else {
+                    "merged_branch_kept"
+                }
+            }
+            // Already deleted (GitHub's automatic head-branch deletion).
+            None => "merged",
+            Some(_) => "merged_branch_kept",
+        })
+    }
+
+    fn merge_on_github(
+        &self,
+        identifier: &str,
+        head: &str,
+        method: MergeMethod,
+    ) -> Result<Value, PullRequestError> {
         let query = "mutation($input:MergePullRequestInput!) {
-          mergePullRequest(input:$input) { pullRequest { state } } }";
+          mergePullRequest(input:$input) { pullRequest { state headRef { id } } } }";
         let response: Value = self.graphql_at(
             query,
-            json!({"input":{
-                "pullRequestId":snapshot.pull_request.id,"expectedHeadOid":head,"mergeMethod":method
-            }}),
+            json!({"input":{"pullRequestId":identifier,"expectedHeadOid":head,"mergeMethod":method}}),
             "/data/mergePullRequest/pullRequest",
         )?;
         if response.get("state").and_then(Value::as_str) != Some("MERGED") {
@@ -220,6 +295,29 @@ impl PullRequestClient {
                 "GitHub did not merge the PR".into(),
             ));
         }
+        Ok(response)
+    }
+
+    /// Only a same-repository topic branch is deleted: never a fork's branch,
+    /// the repository's default branch, or the branch the PR merged into.
+    fn owns_head_branch(&self, pull_request: &PullRequest) -> bool {
+        let same_repository = pull_request
+            .head_repository
+            .as_ref()
+            .is_some_and(|head| head.name_with_owner.eq_ignore_ascii_case(&self.repository));
+        same_repository
+            && pull_request.head_ref_name != pull_request.base_ref_name
+            && self.default_branch.as_deref() != Some(pull_request.head_ref_name.as_str())
+    }
+
+    fn delete_reference(&self, reference: &str) -> Result<(), PullRequestError> {
+        let query =
+            "mutation($input:DeleteRefInput!) { deleteRef(input:$input) { clientMutationId } }";
+        self.graphql_at::<Value>(
+            query,
+            json!({"input":{"refId":reference}}),
+            "/data/deleteRef",
+        )?;
         Ok(())
     }
 }

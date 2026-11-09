@@ -3,6 +3,7 @@ use serde::de::DeserializeOwned;
 use serde_json::{Value, json};
 use std::path::Path;
 
+use crate::approval::ReviewRecord;
 use crate::pull_request_command::PullRequestCommand;
 use crate::pull_request_queries::{CHECKS, FIELDS};
 use crate::{PullRequest, PullRequestCheck, PullRequestError, PullRequestSnapshot};
@@ -11,6 +12,7 @@ pub struct PullRequestClient {
     pub(crate) command: PullRequestCommand,
     pub(crate) repository: String,
     pub(crate) default_branch: Option<String>,
+    pub(crate) review_record: Option<ReviewRecord>,
     owner: String,
     name: String,
 }
@@ -71,8 +73,17 @@ impl PullRequestClient {
             name: name.into(),
             default_branch: identity.default_branch_ref.map(|branch| branch.name),
             repository: identity.name_with_owner,
+            review_record: None,
             command,
         })
+    }
+
+    /// Approve, request changes and merge read and write Velocity's approval
+    /// record (F7); without one they refuse rather than fall back to GitHub's
+    /// review state, which the shared login can never satisfy.
+    pub fn with_review_record(mut self, record: ReviewRecord) -> Self {
+        self.review_record = Some(record);
+        self
     }
 
     pub fn list(&self) -> Result<Vec<PullRequest>, PullRequestError> {

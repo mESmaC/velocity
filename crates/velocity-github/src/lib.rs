@@ -2,6 +2,7 @@
 //! Every call runs `gh` as a child process with its arguments passed directly, never
 //! through a shell.
 
+mod approval;
 mod branch_pull_requests;
 mod command;
 pub mod follow_through;
@@ -20,6 +21,7 @@ mod scout_directory;
 mod scout_evidence;
 mod scout_issues;
 
+pub use approval::ReviewRecord;
 pub use issue_panel::{IssuePanelRow, IssuePanelSnapshot, SpecQuestion};
 pub use issue_types::*;
 pub use issues::IssueClient;
