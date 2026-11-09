@@ -39,4 +39,4 @@ pub use setup::{
     SetupAction, SetupPhase, WorktreeSettings, can_start_agent, default_settings,
     plan_setup_actions, resolve_cargo_target_dir,
 };
-pub use titled::{WorktreeName, execute_titled_worktree_setup, rename_worktree};
+pub use titled::{TitledWorktree, WorktreeName, execute_titled_worktree_setup, rename_worktree};

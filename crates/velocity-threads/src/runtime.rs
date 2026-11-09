@@ -41,7 +41,31 @@ pub struct ThreadProgress {
     pub deleted: u32,
 }
 
+/// Where a thread's agent session is.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum SessionPhase {
+    /// The worktree is being created; the agent has not started.
+    SettingUp,
+    Running,
+    /// The session ended or failed; only the transcript remains.
+    Ended,
+}
+
+/// What stopping a thread's agent involved (F12).
+#[derive(Debug)]
+pub enum StopOutcome {
+    /// Nothing runs for the thread in this app session.
+    NotRunning,
+    /// Its worktree is still being created. The launch sees the thread is gone once setup
+    /// ends, starts no agent and removes the worktree itself.
+    SettingUp,
+    /// The agent was told to stop. Resolves when its session has ended and its process no
+    /// longer holds the worktree.
+    Stopping(oneshot::Receiver<()>),
+}
+
 struct ThreadRuntime {
+    phase: SessionPhase,
     transcript: LiveTranscript,
     inputs: UnboundedSender<AgentInput>,
     /// Mirrors the client's steering (Rule 1): whether a turn is running, and which
@@ -57,6 +81,8 @@ struct ThreadRuntime {
 #[derive(Default)]
 pub struct ThreadRuntimes {
     threads: BTreeMap<ThreadKey, ThreadRuntime>,
+    /// Threads stopped for deletion, signalled when their session ends.
+    stopping: BTreeMap<ThreadKey, oneshot::Sender<()>>,
 }
 
 impl ThreadRuntimes {
@@ -78,6 +104,7 @@ impl ThreadRuntimes {
         self.threads.insert(
             key,
             ThreadRuntime {
+                phase: SessionPhase::SettingUp,
                 transcript: LiveTranscript::new(worktree),
                 inputs,
                 steering,
@@ -118,10 +145,56 @@ impl ThreadRuntimes {
         }
     }
 
-    pub fn worktree_ready(&mut self, key: ThreadKey) {
-        if let Some(thread) = self.threads.get_mut(&key) {
-            thread.transcript.worktree_ready();
+    /// The worktree is set up. `false` means the thread was deleted meanwhile, so its agent
+    /// must not start (F12).
+    pub fn worktree_ready(&mut self, key: ThreadKey) -> bool {
+        match self.threads.get_mut(&key) {
+            Some(thread) => {
+                thread.phase = SessionPhase::Running;
+                thread.transcript.worktree_ready();
+                true
+            }
+            None => false,
         }
+    }
+
+    /// Whether the thread's worktree setup or agent is running in this app session.
+    pub fn is_live(&self, key: ThreadKey) -> bool {
+        self.threads
+            .get(&key)
+            .is_some_and(|thread| thread.phase != SessionPhase::Ended)
+    }
+
+    /// Stops the thread's agent and forgets the thread: it is being deleted (F12).
+    pub fn stop(&mut self, key: ThreadKey) -> StopOutcome {
+        let Some(thread) = self.threads.remove(&key) else {
+            return StopOutcome::NotRunning;
+        };
+        match thread.phase {
+            SessionPhase::Ended => StopOutcome::NotRunning,
+            SessionPhase::SettingUp => StopOutcome::SettingUp,
+            SessionPhase::Running => {
+                // Dropping the inputs would end the session too; `Stop` says so explicitly.
+                let _ = thread.inputs.send(AgentInput::Stop);
+                let (ended, receiver) = oneshot::channel();
+                self.stopping.insert(key, ended);
+                StopOutcome::Stopping(receiver)
+            }
+        }
+    }
+
+    /// The thread's session is over. `false` means [`Self::stop`] ended it for a deletion,
+    /// so there is no thread left to update.
+    pub fn session_ended(&mut self, key: ThreadKey) -> bool {
+        if let Some(ended) = self.stopping.remove(&key) {
+            // The deletion may have given up waiting.
+            let _ = ended.send(());
+            return false;
+        }
+        if let Some(thread) = self.threads.get_mut(&key) {
+            thread.phase = SessionPhase::Ended;
+        }
+        self.threads.contains_key(&key)
     }
 
     /// Shows why the thread stopped, with the agent's last stderr lines when it has any.
@@ -133,6 +206,7 @@ impl ThreadRuntimes {
                 text.push_str(&Vec::from(thread.log_tail.clone()).join("\n"));
             }
             thread.transcript.record_error(headline, &text);
+            thread.phase = SessionPhase::Ended;
             // The session is over: nothing runs and nothing queued will be sent.
             thread.steering = Steering::new(());
         }

@@ -21,6 +21,16 @@ pub struct WorktreeName {
     pub branch_name: String,
 }
 
+/// Where a titled worktree ended up, and how its setup went. The names are reported even
+/// when setup fails: a failed thread keeps its worktree (F5) and a deleted one removes it
+/// (F12), and both need the folder git actually left, not the one first planned.
+#[derive(Debug)]
+pub struct TitledWorktree {
+    pub worktree_path: PathBuf,
+    pub branch_name: Option<String>,
+    pub setup: Result<CreatedWorktree, WorktreeError>,
+}
+
 /// Checks out `request` under its provisional names, waits for `final_name` (which blocks
 /// until the title settles, at most F4's two seconds), renames, then runs the setup step.
 ///
@@ -30,13 +40,25 @@ pub struct WorktreeName {
 pub fn execute_titled_worktree_setup(
     request: &WorktreeSetupRequest,
     final_name: impl FnOnce() -> Option<WorktreeName>,
-) -> Result<CreatedWorktree, WorktreeError> {
-    create_git_worktree_from_base(request, &request.worktree_path)?;
-    let named = match final_name() {
-        Some(name) => rename_worktree(request, &name).unwrap_or_else(|_| request.clone()),
-        None => request.clone(),
-    };
-    finish_worktree_setup(&named)
+) -> TitledWorktree {
+    let named = create_git_worktree_from_base(request, &request.worktree_path).map(|()| {
+        match final_name() {
+            Some(name) => rename_worktree(request, &name).unwrap_or_else(|_| request.clone()),
+            None => request.clone(),
+        }
+    });
+    match named {
+        Ok(named) => TitledWorktree {
+            setup: finish_worktree_setup(&named),
+            worktree_path: named.worktree_path,
+            branch_name: named.branch_name,
+        },
+        Err(error) => TitledWorktree {
+            worktree_path: request.worktree_path.clone(),
+            branch_name: request.branch_name.clone(),
+            setup: Err(error),
+        },
+    }
 }
 
 /// Renames the branch, then moves the folder, and returns the request under its new names.

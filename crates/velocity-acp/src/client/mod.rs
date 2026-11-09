@@ -149,7 +149,7 @@ pub async fn run_session(
         })
         .await;
     // The agent may still run when the thread stopped it; `kill_on_drop` covers a panic.
-    let _ = agent.start_kill();
+    process::stop_agent(&mut agent).await;
     result.map_err(ClientError::from)
 }
 

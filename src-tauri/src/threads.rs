@@ -1,3 +1,4 @@
+use std::path::PathBuf;
 use std::sync::{Mutex, MutexGuard};
 
 use tauri::{AppHandle, Manager};
@@ -5,7 +6,7 @@ use tauri_specta::Event;
 use velocity_acp::client::{AgentEvent, SessionSetup};
 use velocity_core::layout_view::{LayoutIntent, LayoutSnapshot};
 use velocity_core::thread_view_model::TranscriptBlock;
-use velocity_git::{CreatedWorktree, WorktreeName};
+use velocity_git::{TitledWorktree, WorktreeName};
 use velocity_store::build_gate::{LaunchRequest, require_launch};
 use velocity_store::{AgentActivity, ThreadState};
 use velocity_threads::{
@@ -36,7 +37,7 @@ pub struct ThreadStepRecorded {
     pub block: TranscriptBlock,
 }
 
-fn lock<'guard, Value>(
+pub(crate) fn lock<'guard, Value>(
     mutex: &'guard Mutex<Value>,
     what: &str,
 ) -> Result<MutexGuard<'guard, Value>, String> {
@@ -130,44 +131,52 @@ async fn run_thread(
     plan: LaunchPlan,
     inputs: SessionInputs,
 ) {
-    let (name_sender, name_receiver) = std::sync::mpsc::channel();
-    let request = plan.worktree.clone();
-    // The checkout runs while the title model answers; naming and setup wait for the title,
-    // at most F4's two seconds (`resolve_title` enforces the deadline).
-    let worktree = tauri::async_runtime::spawn_blocking(move || {
-        velocity_git::execute_titled_worktree_setup(&request, || {
-            name_receiver.recv().ok().flatten()
-        })
-    });
-    let name = settle_title(&application, key, &plan).await;
-    // Setup is waiting for this; if the checkout already failed, nobody is listening.
-    let _ = name_sender.send(name);
-    let created = match worktree.await {
-        Ok(Ok(created)) => created,
-        // The worktree is kept for a failed thread (F5).
-        Ok(Err(error)) => {
-            return fail(
-                &application,
-                key,
-                "Could not set up the worktree",
-                &error.to_string(),
-            );
-        }
-        Err(error) => {
-            return fail(
-                &application,
-                key,
-                "Could not set up the worktree",
-                &error.to_string(),
-            );
-        }
+    let (worktree_path, branch_name, failure) = match take_worktree(&application, key, &plan).await
+    {
+        Ok(worktree) => (
+            worktree.worktree_path,
+            worktree.branch_name,
+            worktree.setup.err().map(|error| error.to_string()),
+        ),
+        Err(error) => (
+            plan.worktree.worktree_path.clone(),
+            plan.worktree.branch_name.clone(),
+            Some(error),
+        ),
     };
-    report(record_worktree(&application, key, &created));
+    let path = worktree_path.display().to_string();
+    // A thread deleted while its worktree was being created starts no agent (F12).
+    let wanted = lock(
+        application.state::<ManagedThreads>().inner(),
+        "thread sessions",
+    )
+    .map(|mut runtimes| {
+        runtimes.rename_worktree(key, &path);
+        if failure.is_some() {
+            runtimes.is_live(key)
+        } else {
+            runtimes.worktree_ready(key)
+        }
+    })
+    .unwrap_or(false);
+    if !wanted {
+        return remove_deleted_worktree(plan.worktree.repository_root, worktree_path).await;
+    }
+    report(record_names(
+        &application,
+        key,
+        &path,
+        branch_name.as_deref(),
+    ));
+    if let Some(detail) = failure {
+        // The worktree is kept for a failed thread (F5).
+        return fail(&application, key, "Could not set up the worktree", &detail);
+    }
     report(refresh(&application, key, false));
     let session = spawn_session(
         plan.agent,
         SessionSetup {
-            worktree: created.worktree_path,
+            worktree: worktree_path,
             airc: None,
             shared_servers: Vec::new(),
             bypass_modes: plan.bypass_modes,
@@ -175,6 +184,26 @@ async fn run_thread(
         inputs,
     );
     pump(&application, key, session).await;
+}
+
+/// Checks the worktree out while the title model answers; naming and setup wait for the
+/// title, at most F4's two seconds (`resolve_title` enforces the deadline).
+async fn take_worktree(
+    application: &AppHandle,
+    key: ThreadKey,
+    plan: &LaunchPlan,
+) -> Result<TitledWorktree, String> {
+    let (name_sender, name_receiver) = std::sync::mpsc::channel();
+    let request = plan.worktree.clone();
+    let worktree = tauri::async_runtime::spawn_blocking(move || {
+        velocity_git::execute_titled_worktree_setup(&request, || {
+            name_receiver.recv().ok().flatten()
+        })
+    });
+    let name = settle_title(application, key, plan).await;
+    // Setup is waiting for this; if the checkout already failed, nobody is listening.
+    let _ = name_sender.send(name);
+    worktree.await.map_err(|error| error.to_string())
 }
 
 /// Asks the title model, shows the title it settles on, and returns the names the worktree
@@ -209,28 +238,20 @@ async fn settle_title(
 
 /// Saves the branch and folder git ended with: the title's, or the message slug's when the
 /// title was missing or the rename failed.
-fn record_worktree(
+fn record_names(
     application: &AppHandle,
     key: ThreadKey,
-    created: &CreatedWorktree,
+    path: &str,
+    branch: Option<&str>,
 ) -> Result<bool, String> {
-    let path = created.worktree_path.display().to_string();
-    {
-        let mut runtimes = lock(
-            application.state::<ManagedThreads>().inner(),
-            "thread sessions",
-        )?;
-        runtimes.rename_worktree(key, &path);
-        runtimes.worktree_ready(key);
-    }
     lock(
         application.state::<ManagedStateStore>().inner(),
         "persisted state",
     )?
     .update_thread(key.0, key.1, |thread| {
-        thread.worktree_path = Some(path.clone());
-        if let Some(branch) = &created.branch_name {
-            thread.branch_name.clone_from(branch);
+        thread.worktree_path = Some(path.to_owned());
+        if let Some(branch) = branch {
+            branch.clone_into(&mut thread.branch_name);
         }
     })
     .map_err(|error| error.to_string())
@@ -246,7 +267,18 @@ async fn pump(application: &AppHandle, key: ThreadKey, mut session: RunningSessi
         }
         report(apply_batch(application, key, &batch));
     }
-    match session.outcome.await {
+    let outcome = session.outcome.await;
+    let still_wanted = lock(
+        application.state::<ManagedThreads>().inner(),
+        "thread sessions",
+    )
+    .map(|mut runtimes| runtimes.session_ended(key))
+    .unwrap_or(false);
+    if !still_wanted {
+        // Deleting the thread stopped it; the deletion takes it from here (F12).
+        return;
+    }
+    match outcome {
         Ok(Ok(())) => report(
             save_activity(application, key, AgentActivity::Idle, None)
                 .and_then(|_| refresh(application, key, false).map(|_| ())),
@@ -312,6 +344,20 @@ fn save_activity(
         }
     })
     .map_err(|error| error.to_string())
+}
+
+/// The thread was deleted while its worktree was being created. Its deletion skipped the
+/// worktree because setup still held it, so it is removed here once setup is done (F12).
+/// Removes the worktree of a thread deleted during setup, under whatever name git left it.
+async fn remove_deleted_worktree(repository: PathBuf, worktree: PathBuf) {
+    let removed = tauri::async_runtime::spawn_blocking(move || {
+        velocity_threads::deletion::remove_worktree(&repository, &worktree)
+            .map_err(|error| error.to_string())
+    })
+    .await
+    .map_err(|error| error.to_string())
+    .and_then(|result| result);
+    report(removed);
 }
 
 /// The thread moves to `error` and keeps its worktree (§2.1, F5).
@@ -414,7 +460,7 @@ fn emit_step(application: &AppHandle, key: ThreadKey) {
 }
 
 /// Background work has no caller to return an error to; the log is where it goes.
-fn report<Value>(result: Result<Value, String>) {
+pub(crate) fn report<Value>(result: Result<Value, String>) {
     if let Err(error) = result {
         eprintln!("Velocity thread runtime: {error}");
     }
