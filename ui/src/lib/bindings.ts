@@ -8,12 +8,216 @@ export const commands = {
 	minimizeWindow: () => __TAURI_INVOKE<null>("minimize_window"),
 	toggleMaximizeWindow: () => __TAURI_INVOKE<null>("toggle_maximize_window"),
 	closeWindow: () => __TAURI_INVOKE<null>("close_window"),
+	getSettings: () => __TAURI_INVOKE<Settings_Serialize>("get_settings"),
+	setSettings: (settings: Settings_Deserialize) => __TAURI_INVOKE<Settings_Serialize>("set_settings", { settings }),
 };
 
 /* Constants */
 export const WINDOW_STATE_EVENT = "window://state" as const;
 
 /* Types */
+export type AgentActivity = "thinking" | "executing" | "parked" | "stalled" | "at_limit" | "idle";
+
+export type AgentSettings = AgentSettings_Serialize | AgentSettings_Deserialize;
+
+export type AgentSettings_Deserialize = {
+	max_turns?: number | null,
+	max_duration_minutes?: number | null,
+	stall_timeout_minutes: number,
+	claim_release_grace_minutes: number,
+};
+
+export type AgentSettings_Serialize = {
+	max_turns: number | null,
+	max_duration_minutes: number | null,
+	stall_timeout_minutes: number,
+	claim_release_grace_minutes: number,
+};
+
+export type EffortLevel = "low" | "medium" | "high" | "max";
+
+export type PersistedState = PersistedState_Serialize | PersistedState_Deserialize;
+
+export type PersistedState_Deserialize = {
+	revision: number,
+	active_project_index: number,
+	projects: ProjectItem_Deserialize[],
+	settings: Settings_Deserialize,
+};
+
+export type PersistedState_Serialize = {
+	revision: number,
+	active_project_index: number,
+	projects: ProjectItem_Serialize[],
+	settings: Settings_Serialize,
+};
+
+export type ProjectItem = ProjectItem_Serialize | ProjectItem_Deserialize;
+
+export type ProjectItem_Deserialize = {
+	id: number,
+	name: string,
+	location_kind: ProjectLocationKind,
+	repository_path: string,
+	default_branch: string,
+	github_remote?: string | null,
+	spec_path: string,
+	spec_locked: boolean,
+	active_thread_id?: number | null,
+	merged_today: number,
+	tasks: TaskItem_Deserialize[],
+	threads: ThreadItem_Deserialize[],
+};
+
+export type ProjectItem_Serialize = {
+	id: number,
+	name: string,
+	location_kind: ProjectLocationKind,
+	repository_path: string,
+	default_branch: string,
+	github_remote: string | null,
+	spec_path: string,
+	spec_locked: boolean,
+	active_thread_id: number | null,
+	merged_today: number,
+	tasks: TaskItem_Serialize[],
+	threads: ThreadItem_Serialize[],
+};
+
+export type ProjectLocationKind = "local" | "git_hub";
+
+export type ProofSettings = {
+	stress_diff_input_count: number,
+};
+
+export type ProviderKind = "claude" | "codex" | "antigravity" | "kimi";
+
+export type ProviderSettings = ProviderSettings_Serialize | ProviderSettings_Deserialize;
+
+export type ProviderSettings_Deserialize = {
+	default_provider: ProviderKind,
+	default_model?: string | null,
+	default_effort: EffortLevel,
+	default_speed: SpeedMode,
+	title_model: string,
+	title_effort: EffortLevel,
+	title_speed: SpeedMode,
+};
+
+export type ProviderSettings_Serialize = {
+	default_provider: ProviderKind,
+	default_model: string | null,
+	default_effort: EffortLevel,
+	default_speed: SpeedMode,
+	title_model: string,
+	title_effort: EffortLevel,
+	title_speed: SpeedMode,
+};
+
+export type ReviewStage = "continuous_integration" | "review" | "fixing" | "approved";
+
+export type Settings = Settings_Serialize | Settings_Deserialize;
+
+export type Settings_Deserialize = {
+	worktrees: WorktreeSettings_Deserialize,
+	providers: ProviderSettings_Deserialize,
+	agents: AgentSettings_Deserialize,
+	proofs: ProofSettings,
+};
+
+export type Settings_Serialize = {
+	worktrees: WorktreeSettings_Serialize,
+	providers: ProviderSettings_Serialize,
+	agents: AgentSettings_Serialize,
+	proofs: ProofSettings,
+};
+
+export type SpeedMode = "regular" | "fast";
+
+export type TaskAttribution = { kind: "spec" } | { kind: "user" } | { kind: "thread"; thread_id: number };
+
+export type TaskItem = TaskItem_Serialize | TaskItem_Deserialize;
+
+export type TaskItem_Deserialize = {
+	id: number,
+	text: string,
+	state: TaskState,
+	added_by: TaskAttribution,
+	assigned_thread_id?: number | null,
+};
+
+export type TaskItem_Serialize = {
+	id: number,
+	text: string,
+	state: TaskState,
+	added_by: TaskAttribution,
+	assigned_thread_id: number | null,
+};
+
+export type TaskState = "draft" | "todo" | "now" | "done";
+
+export type ThreadItem = ThreadItem_Serialize | ThreadItem_Deserialize;
+
+export type ThreadItem_Deserialize = {
+	id: number,
+	title: string,
+	state: ThreadState,
+	activity: AgentActivity,
+	branch_name: string,
+	worktree_path: string | null,
+	pull_request_number?: number | null,
+	review_stage?: ReviewStage | null,
+	task_ids: number[],
+	additions: number,
+	deletions: number,
+	elapsed_seconds: number,
+	provider: ProviderKind,
+	model_name: string,
+	effort: EffortLevel,
+	preferred_speed: SpeedMode,
+	effective_speed: SpeedMode,
+	model_supports_fast: boolean,
+};
+
+export type ThreadItem_Serialize = {
+	id: number,
+	title: string,
+	state: ThreadState,
+	activity: AgentActivity,
+	branch_name: string,
+	worktree_path: string | null,
+	pull_request_number: number | null,
+	review_stage: ReviewStage | null,
+	task_ids: number[],
+	additions: number,
+	deletions: number,
+	elapsed_seconds: number,
+	provider: ProviderKind,
+	model_name: string,
+	effort: EffortLevel,
+	preferred_speed: SpeedMode,
+	effective_speed: SpeedMode,
+	model_supports_fast: boolean,
+};
+
+export type ThreadState = "draft" | "spec" | "working" | "review" | "error" | "closed" | "done" | "merged";
+
 export type WindowStateChanged = {
 	maximized: boolean,
+};
+
+export type WorktreeSettings = WorktreeSettings_Serialize | WorktreeSettings_Deserialize;
+
+export type WorktreeSettings_Deserialize = {
+	location_root?: string | null,
+	delete_local_branch_on_merge: boolean,
+	share_rust_build_cache: boolean,
+	warm_pool_count: number,
+};
+
+export type WorktreeSettings_Serialize = {
+	location_root: string | null,
+	delete_local_branch_on_merge: boolean,
+	share_rust_build_cache: boolean,
+	warm_pool_count: number,
 };

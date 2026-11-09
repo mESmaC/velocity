@@ -1,0 +1,16 @@
+[package]
+name = "velocity-store"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish = false
+
+[dependencies]
+serde.workspace = true
+serde_json.workspace = true
+specta.workspace = true
+thiserror.workspace = true
+velocity-core.workspace = true
+
+[lints]
+workspace = true
