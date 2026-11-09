@@ -11,10 +11,12 @@ workspace = true
 
 [dependencies]
 thiserror.workspace = true
+sysinfo.workspace = true
+velocity-core.workspace = true
 
 # `manager`, `command` and `repository` hold the OS/filesystem/git-process edge (`std::process::Command`, `std::fs`,
 # `PathBuf`, `thiserror`) that executes the plans produced by the pure modules
 # (`path_scheme`, `setup`, `lifecycle`). Excluding the I/O edge lets Charon and Aeneas
 # translate the pure modules directly into `proofs/WorktreeManager/Generated/`.
 [package.metadata.charon]
-exclude = ["crate::command", "crate::manager", "crate::repository"]
+exclude = ["crate::command", "crate::inventory", "crate::manager", "crate::repository"]

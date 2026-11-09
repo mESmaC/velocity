@@ -1,5 +1,6 @@
 //! Read the active project's persisted context into the shell's public read model.
 
+use crate::worktree_settings::project_owners;
 use crate::{
     AgentActivity, EffortLevel, PersistedState, ProjectItem, ProviderKind, ReviewStage, SpeedMode,
     TaskState, ThreadItem, ThreadState,
@@ -12,6 +13,7 @@ use velocity_core::layout_view::{
 use velocity_core::navigation::NavigationView;
 use velocity_core::thread_view::ThreadLifecycle;
 use velocity_core::thread_view_model::ThreadDetailEntry;
+use velocity_core::worktree_view::footer_summary;
 
 pub(crate) fn active_project(state: &PersistedState) -> Option<&ProjectItem> {
     usize::try_from(state.active_project_index)
@@ -43,12 +45,8 @@ pub(crate) fn read_model(state: &PersistedState) -> LayoutData {
             .count();
         data.pull_requests = pull_requests(project);
         data.merged_today = project.merged_today as usize;
-        data.worktree_count = project
-            .threads
-            .iter()
-            .filter(|thread| thread.worktree_path.is_some())
-            .count();
-        data.worktree_drive = worktree_drive(project, state);
+        (data.worktree_count, data.worktree_drive) =
+            footer_summary(&project_owners(project), &fallback_root(project, state));
     }
     data
 }
@@ -228,35 +226,13 @@ fn pull_requests(project: &ProjectItem) -> Vec<RailItem> {
         .collect()
 }
 
-fn drive_label(path: &str) -> String {
-    let path = path.strip_prefix(r"\\?\").unwrap_or(path);
-    if path.as_bytes().get(1) == Some(&b':') && path.as_bytes()[0].is_ascii_alphabetic() {
-        path[..2].to_owned()
-    } else {
-        String::new()
-    }
-}
-
-fn worktree_drive(project: &ProjectItem, state: &PersistedState) -> String {
-    let drives: BTreeSet<_> = project
-        .threads
-        .iter()
-        .filter_map(|thread| thread.worktree_path.as_deref())
-        .map(drive_label)
-        .collect();
-    if drives.is_empty() {
-        state
-            .settings
-            .worktrees
-            .location_root
-            .as_deref()
-            .map(drive_label)
-            .unwrap_or_default()
-    } else if drives.len() == 1 {
-        drives.into_iter().next().unwrap_or_default()
-    } else {
-        // Old worktrees stay on their original drives after a settings change.
-        // The shell's count-only label avoids attributing all of them to one drive.
-        String::new()
-    }
+/// The footer names this drive while the project has no live worktree.
+fn fallback_root(project: &ProjectItem, state: &PersistedState) -> String {
+    let settings = &state.settings.worktrees;
+    settings
+        .project_roots
+        .get(&project.id)
+        .or(settings.location_root.as_ref())
+        .cloned()
+        .unwrap_or_default()
 }
