@@ -17,6 +17,32 @@
   --reference-close-hover-color: #fff;
 }
 
+/* Project switcher: rules 459–467, with the winning glass/menu overrides at
+   960–964 and 1072–1075. Margin/width are structural popover resets. */
+:root {
+  --project-menu-top: 32px;
+  --project-menu-left: 84px;
+  --project-menu-width: 240px;
+  --project-menu-margin: 0;
+  --project-menu-z-index: 15;
+  --project-menu-padding: 5px;
+  --project-menu-border: 1px solid rgba(255, 255, 255, 0.13);
+  --project-menu-radius: 12px;
+  --project-menu-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.12), 0 0 0 0.5px #000,
+    0 30px 90px rgba(0, 0, 0, 0.9);
+  --project-menu-button-width: 100%;
+  --project-menu-button-gap: 8px;
+  --project-menu-button-padding: 6px 8px;
+  --project-menu-button-radius: 7px;
+  --project-menu-button-font-size: 11.5px;
+  --project-menu-button-selected: rgba(255, 255, 255, 0.13);
+  --project-menu-meta-font: 10px var(--mono);
+  --project-menu-divider-border: 0;
+  --project-menu-divider-top: 1px solid rgba(255, 255, 255, 0.09);
+  --project-menu-divider-margin: 4px 0;
+}
+
 /* F1 supplement: values from design/main-window.html rules 82–193, 283–321,
    415–427, 455, 553–555, 611–634, 813–814 and final overrides 947–1080.
    Structural zero/full-size declarations adapt those layouts to Svelte and dialog. */

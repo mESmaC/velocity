@@ -4,6 +4,7 @@ use tauri_specta::{Builder, Event, collect_commands, collect_events};
 use velocity_store::PersistedState;
 
 mod layout;
+mod projects;
 mod state;
 mod window;
 
@@ -20,14 +21,18 @@ fn bindings() -> Builder<tauri::Wry> {
             state::set_settings,
             layout::get_layout_state,
             layout::dispatch_layout,
+            projects::list_projects,
+            projects::switch_project,
         ])
         .typ::<PersistedState>()
         .typ::<window::WindowStateChanged>()
         .typ::<layout::LayoutStateChanged>()
         .typ::<layout::LayoutIntentRequested>()
+        .typ::<projects::ProjectSelected>()
         .constant("WINDOW_STATE_EVENT", window::WindowStateChanged::NAME)
         .constant("LAYOUT_STATE_EVENT", layout::LayoutStateChanged::NAME)
         .constant("LAYOUT_INTENT_EVENT", layout::LayoutIntentRequested::NAME)
+        .constant("PROJECT_SELECTED_EVENT", projects::ProjectSelected::NAME)
         .error_handling(tauri_specta::ErrorHandlingMode::Throw)
 }
 
@@ -50,7 +55,8 @@ pub fn run() -> anyhow::Result<()> {
     let bindings = bindings().events(collect_events![
         window::WindowStateChanged,
         layout::LayoutStateChanged,
-        layout::LayoutIntentRequested
+        layout::LayoutIntentRequested,
+        projects::ProjectSelected
     ]);
     tauri::Builder::default()
         .manage(layout::MainLayout::default())
@@ -58,6 +64,7 @@ pub fn run() -> anyhow::Result<()> {
         .setup(move |application| {
             bindings.mount_events(application);
             state::initialize(application.handle())?;
+            projects::initialize(application.handle())?;
             Ok(())
         })
         .on_window_event(window::on_window_event)

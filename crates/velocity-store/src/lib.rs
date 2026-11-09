@@ -22,6 +22,9 @@ use velocity_core::state::{
     WorktreeSettings as CoreWorktreeSettings, apply_dirty_checked_step,
 };
 
+mod project_layout;
+pub mod projects;
+
 pub const STATE_FILE_NAME: &str = "state.json";
 pub const PARTIAL_STATE_FILE_NAME: &str = "state.json.partial";
 pub const DEFAULT_TITLE_MODEL_NAME: &str = "GPT-6 Luna";

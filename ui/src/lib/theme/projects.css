@@ -1,0 +1,44 @@
+.project-menu {
+  position: fixed;
+  inset: auto;
+  top: var(--project-menu-top);
+  left: var(--project-menu-left);
+  width: var(--project-menu-width);
+  margin: var(--project-menu-margin);
+  z-index: var(--project-menu-z-index);
+  padding: var(--project-menu-padding);
+  border: var(--project-menu-border);
+  border-radius: var(--project-menu-radius);
+  background: var(--glass-pop);
+  box-shadow: var(--project-menu-shadow);
+  backdrop-filter: var(--blur-pop);
+  -webkit-backdrop-filter: var(--blur-pop);
+  color: var(--text);
+}
+.project-menu button {
+  width: var(--project-menu-button-width);
+  display: flex;
+  align-items: center;
+  gap: var(--project-menu-button-gap);
+  padding: var(--project-menu-button-padding);
+  border-radius: var(--project-menu-button-radius);
+  font-size: var(--project-menu-button-font-size);
+  color: var(--text-2);
+  text-align: left;
+}
+.project-menu button:hover,
+.project-menu button:focus-visible,
+.project-menu button.cur {
+  background: var(--project-menu-button-selected);
+  color: var(--text);
+}
+.project-menu .sub {
+  margin-left: auto;
+  font: var(--project-menu-meta-font);
+  color: var(--muted);
+}
+.project-menu hr {
+  border: var(--project-menu-divider-border);
+  border-top: var(--project-menu-divider-top);
+  margin: var(--project-menu-divider-margin);
+}
