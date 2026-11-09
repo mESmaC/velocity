@@ -113,11 +113,11 @@ A thread's state (§2.1) says where it is in its lifecycle. Its **activity** say
 | command | `list_projects`, `create_project`, `switch_project` | projects |
 | command | `get_new_project_defaults`, `pick_project_folder`, `create_project { request }` | New project dialog (F2): default folders, interview effort, speed and model from Settings; the native folder picker; Create, which refuses before anything runs or sets the project up, registers it, switches to it and records its spec interview |
 | command | `list_threads`, `start_thread`, `send_message`, `delete_thread` | threads. `start_thread` and `send_message` are the composer's `StartPrompt` and `SteerThread` intents from `dispatch_layout`: the backend checks the launch gate afresh, records a `working` thread, creates its worktree on `vel/<slug>` (the message slug until thread titles land), starts the provider's ACP agent there and streams its transcript into `layout://state`. Messages to a busy agent are queued (Rule 1). |
-| command | `list_pull_requests { project_identifier }`, `get_pull_request { project_identifier, number }`, `dispatch_pull_request { project_identifier, operation }` | GitHub through signed-in `gh`: paginated PR snapshots and typed create, review, comment, reply, resolve, review-request, merge and close operations. Create accepts `base_branch` (the project's configured branch), defaulting to GitHub's default branch. Shared-login approval follows F7's approval record (Q28, proposed; not built yet); the existing merge guard fails closed and sends the expected head to GitHub. CI is advisory (F7). Branch cleanup and PR lifecycle events come with PR follow-through (F6); the live rail uses `pr://panel` below. Closing preserves the checkout and branches. |
+| command | `list_pull_requests { project_identifier }`, `get_pull_request { project_identifier, number }`, `dispatch_pull_request { project_identifier, operation }` | GitHub through signed-in `gh`: paginated PR snapshots and typed create, review, comment, reply, resolve, review-request, merge and close operations. Create accepts `base_branch` (the project's configured branch), defaulting to GitHub's default branch. Shared-login approval follows F7's approval record (Q28, proposed; not built yet); the existing merge guard fails closed and sends the expected head to GitHub. CI is advisory (F7). F6 observes same-repository PRs by the thread's immutable branch, including a PR closed or merged between observations. An open draft claim leaves its thread working until the PR is marked ready; a closed draft still reports closure. The native watcher checkpoints its history and pending agent notifications in `state.json`, queues changed CI/review/conflict information at agent step boundaries, and publishes the thread lifecycle. Closing preserves the checkout and branches; confirmed merges stop the agent and remove only its registered worktree through the existing F5 lifecycle plan, retrying cleanup errors. The live rail uses the independent `pr://panel` projection below. |
 | command | `get_pull_request_panel`, `open_project_pull_request { project_identifier, number }` | Backend-owned active-project PR rail. Native refresh reads all open PRs, the current head's aggregate CI, line counts, review decision and the first explicit `Reviewing` claim comment. A row opens its owning thread (recorded PR identity, then an unassigned matching branch from the same repository), otherwise GitHub in the browser. Clicks validate project identity. |
 | command | `get_thread_menu { thread_identifier }`, `run_thread_menu_action { project_identifier, thread_identifier, action }`, `delete_thread { project_identifier, thread_identifier }`, `undo_delete_thread { deletion }` | Sidebar right-click menu and Delete with Undo (F12). The backend builds the menu from saved state, the agent session and the worktree's measured size. Actions: open the worktree in Explorer, copy its path (with a toast), open the PR in the browser. `delete_thread` hides the thread at once and publishes a toast carrying the deletion's Undo token on `layout://state`. Nothing is touched for 5 s. Then the backend stops the agent, removes the worktree (the worktree lifecycle's `UserDeletedThread`), closes any open PR, returns the thread's tasks to todo and drops its record. A worktree that cannot be removed keeps the thread and shows why. |
 | command | `get_launch_eligibility { request }` | UI eligibility for the active project, read from the backend state. No project/lock flag is accepted from the frontend. Launch handlers check the guard afresh before worktree or agent effects (Rule 2, F3). |
-| command | `start_duty`, `pause_duty`, `add_duty_agents` | duty agents |
+| command | `get_duty_dialog_defaults { project_id }`, `start_duty { request }`, `pause_duty { request }`, `add_duty_agents { request }` | Duty view, start dialog defaults, start/pause/resume and add-agents lifecycle, persisted on the project in `state.json` and broadcast over `duty://event` (F7) |
 | command | `launch_swarm`, `add_to_swarm` | swarm |
 | command | `launch_goal_swarm { prompt, mix: [{ model, effort, speed, count }], keep_going }`, `add_goal_agents` | goal swarm |
 | command | `add_task`, `list_tasks` | Task List |
@@ -132,7 +132,7 @@ A thread's state (§2.1) says where it is in its lifecycle. Its **activity** say
 | event | `window://state` | native maximize/restore state, including changes made by the operating system |
 | event | `layout://state`, `layout://intent` | ordered main-window snapshots and typed navigation requests for feature owners; no shell commands cross IPC |
 | event | `project://selected` | persisted project selection and refreshed switcher rows, paired with the selected project's `layout://state` snapshot |
-| event | `pr://opened`, `pr://ci`, `pr://review`, `pr://merged`, `pr://closed` | PR lifecycle |
+| event | `pr://opened`, `pr://ci`, `pr://review`, `pr://merged`, `pr://closed` | F6 lifecycle snapshots: project/thread identifiers, PR number, stage and worktree-deleted status. `pr://merged` follows successful worktree cleanup; the layout carries the history and review cards. |
 | event | `pr://panel` | Ordered active-project PR panel snapshots, refreshed natively after project selection and at 30-second intervals. Loading and failed refreshes are explicit; failed refreshes retain the last rows with the error. The UI never polls GitHub. |
 | event | `duty://event`, `swarm://event` | activity feeds |
 | event | `worktree://created`, `worktree://deleted` | worktree lifecycle |
@@ -376,6 +376,7 @@ A worktree's path is fixed when it is created. Changing the location setting aff
 - **Skills.** Pool setup links the project's enabled skills into the worktree (F18), so an agent never starts without them.
 - **Lean.** Pool setup installs the project's pinned Lean toolchain (`lean-toolchain`, through elan) and runs `lake exe cache get`. Mathlib's built files live in the shared build cache, so a worktree never rebuilds them.
 - **Swarm launches.** Launching a swarm or goal swarm tops the pool up to its agent count. Agents that find no ready worktree wait for one rather than racing each other on setup.
+- **Build queue** *(proposed)*. Velocity runs agents' heavy builds (compile, test, lint, the PR duty landing check) through one machine-wide queue, one build at a time at full machine resources. Builds run side by side split the cores and memory and all finish late together; run one at a time, the first in line finishes in a fraction of the time and the average wait drops. Order: landing checks first, then checks before a PR is marked ready, then everything else, first come, first served within each. The footer shows the running build and the queue. Long-running dev servers never hold the queue. Until Velocity runs builds itself, `scripts/build-queue.ps1` is the stand-in: a named machine-wide lock, released by Windows when its holder exits.
 
 **Guards** (from Google Scion's worktree work):
 - Velocity is the only thing that creates worktrees, and agents never run `git worktree add` themselves (AGENTS.md).
@@ -389,10 +390,13 @@ A worktree's path is fixed when it is created. Changing the location setting aff
 - [ ] Closed and failed threads keep their worktree until the thread is deleted.
 - [ ] Changing the location never moves or breaks existing worktrees.
 - [ ] Sharing the build cache uses one compiler cache shared by every worktree (sccache as `RUSTC_WRAPPER` for Rust) and a separate target folder per worktree *(proposed mechanism)*. A shared `CARGO_TARGET_DIR` is not used: cargo locks it, so agents would build one at a time.
+- [ ] Two agents' heavy builds never run at the same time, a landing check never waits behind a lower-priority build, and the footer shows the running build and the queue *(proposed)*.
 
 ### F6 · PR follow-through
 
 When the task is done, the agent opens a PR. The PR description links the Task List item or says `Fixes #n`. The thread moves to **PR open · watching**.
+
+Draft claims keep the coding transcript until the PR is ready. The watcher follows the thread's same-repository branch and excludes historical PRs from earlier uses of that branch. New review work is saved before delivery and remains pending until its ACP prompt completes; after a restart it resumes in the retained worktree. The PR author's own progress replies remain in history without prompting another response. Merge cleanup and explicit deletion (F12) share the thread's lifecycle lock and wait for confirmed shutdown of its agent and owned terminals before removing the checkout.
 
 - **PR track** under the header: Task done → Proved → PR #n → CI → Review → Merged → Worktree deleted. A closed PR shows: … → Closed without merging → Worktree kept.
 - **The transcript switches to the PR history:**
@@ -1107,7 +1111,7 @@ Each milestone ends with a working app. PR duty checks an item off when it lands
 
 **M3 · Threads and worktrees**
 - [x] Agent runner: providers, models, effort, speed (Regular / Fast where the agent offers it), full permissions, queued steering (Rule 1, F4, F15)
-- [ ] Thread titles from the title model (default GPT-6 Luna · Low · Fast), in parallel with taking a worktree; branch named from the title (F4, F15)
+- [x] Thread titles from the title model (default GPT-6 Luna · Low · Fast), in parallel with taking a worktree; branch named from the title (F4, F15)
 - [x] ACP client (`agent-client-protocol`): spawn per thread, `session/new` in the worktree with AIRC as an MCP server, updates → transcript, auto-allow permissions, cancel, queued prompts, `fs`/`terminal` rooted at the worktree but not confined to it, full tool access with your config loaded and shared MCP servers (§3.2)
 - [ ] ACP agents for Claude Code (`claude-code-acp`), Codex (`codex-acp`), Kimi Code (`kimi --acp`) and Antigravity, each using its own OAuth login through `authenticate`; Settings → Providers, model menu, limit meter (F15)
 - [x] Worktree manager: create / delete / prune, path scheme, setup step (copy files, run command, shared build cache) (F5)
@@ -1117,15 +1121,15 @@ Each milestone ends with a working app. PR duty checks an item off when it lands
 **M4 · PR loop**
 - [ ] GitHub integration: open PR, CI checks, reviews, comments, merge, close
   - [x] Live Open Pull Requests rail: real project PRs, CI, line counts, review state, reviewer claims and owning-thread navigation (F6/F7)
-- [ ] PR follow-through: track, PR history, auto-response to review comments, merge → worktree delete (F6)
-- [ ] Closed-without-merge state with the worktree kept (F5, F6)
+- [x] PR follow-through: track, PR history, auto-response to review comments, merge → worktree delete (F6)
+- [x] Closed-without-merge state with the worktree kept (F5, F6)
 - [x] Right-click menu and delete with 5 s undo (F12)
 
 **M5 · Duty agents**
 - [ ] PR duty: claiming, review against SPEC.md, request changes, approve, merge; never merge unapproved; approval record bound to the head SHA; severity bar (Rule 4, F7, Q28)
 - [ ] Scouts: sweeps, issue filing with repro, de-duplication (F7)
   - [x] GitHub issue inventory (open and closed), executed failure evidence, duplicate assessment, dispatch labels and scout attribution; runnable backend filing path
-- [ ] Duty view, start dialog, pause/resume, add agents (F7)
+- [x] Duty view, start dialog, pause/resume, add agents (F7)
 
 **M6 · Task List, issues, swarm**
 - [ ] Task List: states, add input, `T`, `/task`, palette, attribution, live agent state (F8)

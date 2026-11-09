@@ -7,6 +7,7 @@
 //! and serde/specta serialization.
 
 pub mod build_gate;
+pub mod follow_through;
 
 use serde::{Deserialize, Serialize};
 use specta::Type;
@@ -34,9 +35,12 @@ use velocity_core::state::{
     WorktreeSettings as CoreWorktreeSettings, apply_dirty_checked_step,
 };
 
+pub mod duty;
 mod project_layout;
 pub mod projects;
 pub mod threads;
+
+pub use duty::DutyRoleItem;
 
 pub const STATE_FILE_NAME: &str = "state.json";
 pub mod worktree_settings;
@@ -386,9 +390,16 @@ pub struct ProviderSettings {
     pub default_model: Option<String>,
     pub default_effort: EffortLevel,
     pub default_speed: SpeedMode,
+    /// Absent from state saved before thread titles; GPT-6 Luna's provider then (F15).
+    #[serde(default = "default_title_provider")]
+    pub title_provider: ProviderKind,
     pub title_model: String,
     pub title_effort: EffortLevel,
     pub title_speed: SpeedMode,
+}
+
+fn default_title_provider() -> ProviderKind {
+    ProviderKind::Codex
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, Type)]
@@ -426,6 +437,7 @@ impl Settings {
                 default_model: self.providers.default_model.clone(),
                 default_effort: self.providers.default_effort.into(),
                 default_speed: self.providers.default_speed.into(),
+                title_provider: self.providers.title_provider.into(),
                 title_model: self.providers.title_model.clone(),
                 title_effort: self.providers.title_effort.into(),
                 title_speed: self.providers.title_speed.into(),
@@ -458,6 +470,7 @@ impl Settings {
                 default_model: core_settings.providers.default_model,
                 default_effort: core_settings.providers.default_effort.into(),
                 default_speed: core_settings.providers.default_speed.into(),
+                title_provider: core_settings.providers.title_provider.into(),
                 title_model: core_settings.providers.title_model,
                 title_effort: core_settings.providers.title_effort.into(),
                 title_speed: core_settings.providers.title_speed.into(),
@@ -538,6 +551,8 @@ pub struct ThreadItem {
     #[specta(skip)]
     pub worktree_path_id: Option<String>,
     pub pull_request_number: Option<u32>,
+    #[serde(default)]
+    pub follow_through: Option<velocity_github::follow_through::FollowThrough>,
     pub review_stage: Option<ReviewStage>,
     pub task_ids: Vec<u32>,
     pub additions: u32,
@@ -555,6 +570,35 @@ pub struct ThreadItem {
 }
 
 impl ThreadItem {
+    pub(crate) fn for_build(thread: threads::NewThread, identifier: u32) -> Self {
+        Self {
+            id: identifier,
+            title: thread.title,
+            state: ThreadState::Working,
+            activity: AgentActivity::Executing,
+            branch_name: thread.branch_name,
+            worktree_path: Some(thread.worktree_path),
+            // A thread started from the composer builds in its own worktree (F4, F5).
+            worktree_role: WorktreeRole::Thread,
+            worktree_path_id: None,
+            pull_request_number: None,
+            follow_through: None,
+            review_stage: None,
+            task_ids: Vec::new(),
+            additions: 0,
+            deletions: 0,
+            elapsed_seconds: 0,
+            provider: thread.provider,
+            model_name: thread.model_name,
+            effort: thread.effort,
+            preferred_speed: thread.preferred_speed,
+            effective_speed: thread.preferred_speed,
+            model_supports_fast: thread.model_supports_fast,
+            interview: None,
+        }
+        .normalize()
+    }
+
     fn into_core_record(self) -> (Self, CoreThreadRecord<String, String>) {
         let core_record = CoreThreadRecord {
             id: self.id,
@@ -625,6 +669,9 @@ pub struct ProjectItem {
     /// The spec interview Create asked for and nothing has started yet (F2, F3).
     #[serde(default)]
     pub pending_interview: Option<PendingInterview>,
+    /// Duty roles started on this project (F7).
+    #[serde(default)]
+    pub duty_roles: Vec<DutyRoleItem>,
 }
 
 /// The New project dialog's interview choices, kept until the spec interview
@@ -661,6 +708,11 @@ pub struct PersistedState {
     pub active_project_index: u32,
     pub projects: Vec<ProjectItem>,
     pub settings: Settings,
+    /// Deleted rows must never let delayed agent or watcher events address a new thread.
+    #[serde(default)]
+    pub next_thread_identifiers: BTreeMap<u32, u32>,
+    #[serde(default)]
+    pub thread_started_at: BTreeMap<u32, BTreeMap<u32, String>>,
 }
 
 impl Default for PersistedState {
@@ -670,6 +722,8 @@ impl Default for PersistedState {
             active_project_index: 0,
             projects: Vec::new(),
             settings: Settings::default(),
+            next_thread_identifiers: BTreeMap::new(),
+            thread_started_at: BTreeMap::new(),
         }
     }
 }

@@ -1,5 +1,6 @@
-//! Read models and actions for the main-window shell (SPEC.md F1, F4).
+//! Read models and actions for the main-window shell (SPEC.md F1, F4, F7).
 
+use crate::duty::{DutyRole, DutyRoleEntry, DutyViewSnapshot};
 use crate::interview_view::InterviewEntry;
 use crate::layout::{LayoutRow, PulseKind, ThreadGroup};
 use crate::navigation::{NavigationIntent, NavigationView, NumberHintEvent};
@@ -14,6 +15,7 @@ pub struct ThreadEntry {
     pub metadata: String,
     pub view: NavigationView,
     pub detail: Option<ThreadDetailEntry>,
+    pub duty: Option<DutyRoleEntry>,
 }
 
 #[cfg_attr(
@@ -68,7 +70,7 @@ pub struct ProviderUsage {
     feature = "bindings",
     derive(serde::Serialize, serde::Deserialize, specta::Type)
 )]
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ProviderColor {
     Claude,
     Codex,
@@ -86,8 +88,12 @@ pub struct SidebarRow {
     #[cfg_attr(feature = "bindings", specta(type = String))]
     pub identifier: usize,
     pub title: String,
+    /// The title model hasn't answered yet: the title is the message's first words, pulsing
+    /// (F4).
+    pub titling: bool,
     pub metadata: String,
     pub group: ThreadGroup,
+    pub duty_role: Option<DutyRole>,
     pub member: bool,
     pub expanded: bool,
     pub active: bool,
@@ -278,6 +284,7 @@ pub struct LayoutSnapshot {
     #[cfg_attr(feature = "bindings", specta(type = Option<String>))]
     pub selected_thread: Option<usize>,
     pub active_thread: Option<ThreadDetailSnapshot>,
+    pub active_duty: Option<DutyViewSnapshot>,
     pub default_model_pill: ModelPillView,
     pub search: String,
     pub groups: Vec<SidebarGroup>,
@@ -285,6 +292,8 @@ pub struct LayoutSnapshot {
     pub show_numbers: bool,
     pub palette_open: bool,
     pub new_project_open: bool,
+    pub duty_dialog_open: bool,
+    pub duty_dialog_role: DutyRole,
     pub palette_query: String,
     pub palette_results: Vec<PaletteItem>,
     #[cfg_attr(feature = "bindings", serde(with = "crate::ipc_number"))]

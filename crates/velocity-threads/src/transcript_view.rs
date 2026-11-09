@@ -62,6 +62,14 @@ impl LiveTranscript {
         }
     }
 
+    /// The worktree took the title's name while setup was still running (F4).
+    pub fn rename_worktree(&mut self, worktree: &str) {
+        worktree.clone_into(&mut self.worktree);
+        if let Some(EntryView::Setup(step)) = self.entries.first_mut() {
+            *step = setup_step(worktree, true);
+        }
+    }
+
     /// The worktree is ready and the agent may start (F5).
     pub fn worktree_ready(&mut self) {
         let worktree = self.worktree.clone();
@@ -159,6 +167,17 @@ impl LiveTranscript {
             queued: true,
         }));
         blocks
+    }
+
+    /// Agent calls only: the worktree setup row is not a provider tool call.
+    pub fn tool_steps(&self) -> Vec<ToolStepRow> {
+        self.entries
+            .iter()
+            .filter_map(|entry| match entry {
+                EntryView::Tool(tool) => Some(tool_step(tool)),
+                _ => None,
+            })
+            .collect()
     }
 }
 

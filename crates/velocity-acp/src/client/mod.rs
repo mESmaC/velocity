@@ -12,6 +12,7 @@ mod process;
 mod program_path;
 mod session;
 mod terminals;
+mod title;
 mod updates;
 
 use std::path::PathBuf;
@@ -26,12 +27,14 @@ use agent_client_protocol::{Agent, ByteStreams, Client};
 use tokio::io::{AsyncBufReadExt, BufReader};
 use tokio::process::ChildStderr;
 use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender, unbounded_channel};
+use tokio::sync::oneshot;
 use tokio_util::compat::{TokioAsyncReadCompatExt, TokioAsyncWriteCompatExt};
 
 pub use error::ClientError;
 pub use files::resolve_in_worktree;
 pub use process::AgentLaunch;
 pub use session::{SessionSetup, answer_permission, session_servers};
+pub use title::{TitleReply, TitleRequest, request_title};
 pub use updates::{AgentSlashCommand, available_commands, entry_class};
 
 use crate::{Placement, Steering, SteeringEffect, SteeringInput, Transcript};
@@ -83,6 +86,16 @@ struct Shared {
 }
 
 impl Shared {
+    /// Handler state for a session rooted at `worktree`, reporting to `events`.
+    fn new(worktree: PathBuf, events: UnboundedSender<AgentEvent>) -> Self {
+        Shared {
+            terminals: Terminals::new(worktree.clone()),
+            worktree,
+            transcript: Mutex::new(Transcript::new()),
+            events,
+        }
+    }
+
     fn emit(&self, event: AgentEvent) {
         // The thread stopped listening: the session is ending, nothing to report to.
         let _ = self.events.send(event);
@@ -112,33 +125,70 @@ pub async fn run_session(
     events: UnboundedSender<AgentEvent>,
 ) -> Result<(), ClientError> {
     let mut agent = process::spawn_agent(&launch, &setup.worktree)?;
-    let stdin = agent
-        .stdin
-        .take()
-        .ok_or(ClientError::MissingPipe("stdin"))?;
-    let stdout = agent
-        .stdout
-        .take()
-        .ok_or(ClientError::MissingPipe("stdout"))?;
-    if let Some(stderr) = agent.stderr.take() {
-        forward_log(stderr, events.clone());
-    }
     let shared = Arc::new(Shared {
         worktree: setup.worktree.clone(),
         terminals: Terminals::new(setup.worktree.clone()),
         transcript: Mutex::new(Transcript::new()),
         events,
     });
+    let result = connect_agent(&mut agent, Arc::clone(&shared), setup, inputs).await;
+    let terminals_stopped = shared.terminals.stop_all().await;
+    let agent_stopped = process::stop_agent(&mut agent)
+        .await
+        .map_err(|error| ClientError::Shutdown(error.to_string()));
+    terminals_stopped?;
+    agent_stopped?;
+    result
+}
+
+async fn connect_agent(
+    agent: &mut process::AgentProcess,
+    shared: Arc<Shared>,
+    setup: SessionSetup,
+    inputs: UnboundedReceiver<AgentInput>,
+) -> Result<(), ClientError> {
+    let stdin = agent
+        .stdin()
+        .take()
+        .ok_or(ClientError::MissingPipe("stdin"))?;
+    let stdout = agent
+        .stdout()
+        .take()
+        .ok_or(ClientError::MissingPipe("stdout"))?;
+    if let Some(stderr) = agent.stderr().take() {
+        forward_log(stderr, shared.events.clone());
+    }
     let transport = ByteStreams::new(stdin.compat_write(), stdout.compat());
     let session_state = Arc::clone(&shared);
-    let result = handlers::register(Client.v1(), &shared)
-        .connect_with(transport, async move |connection: ConnectionTo<Agent>| {
+    let (inputs, stopped) = forward_inputs(inputs);
+    let connection = handlers::register(Client.v1(), &shared).connect_with(
+        transport,
+        async move |connection: ConnectionTo<Agent>| {
             drive(connection, session_state, setup, inputs).await
-        })
-        .await;
-    // The agent may still run when the thread stopped it; `kill_on_drop` covers a panic.
-    process::stop_agent(&mut agent).await;
+        },
+    );
+    let result = tokio::select! {
+        result = connection => result,
+        _ = stopped => return Ok(()),
+    };
     result.map_err(ClientError::from)
+}
+
+/// Stop also cancels a hung initialize/session-new request, before drive reads prompts.
+fn forward_inputs(
+    mut inputs: UnboundedReceiver<AgentInput>,
+) -> (UnboundedReceiver<AgentInput>, oneshot::Receiver<()>) {
+    let (forwarded, receiver) = unbounded_channel();
+    let (stop, stopped) = oneshot::channel();
+    tokio::spawn(async move {
+        while let Some(input) = inputs.recv().await {
+            if matches!(input, AgentInput::Stop) || forwarded.send(input).is_err() {
+                break;
+            }
+        }
+        let _ = stop.send(());
+    });
+    (receiver, stopped)
 }
 
 /// Reads the agent's stderr to the end, whatever it holds. Stopping early would close the
