@@ -1076,7 +1076,7 @@ Each milestone ends with a working app. Check items off as their PRs merge.
 - [ ] ACP agents for Claude Code (`claude-code-acp`), Codex (`codex-acp`), Kimi Code (`kimi --acp`) and Antigravity, each using its own OAuth login through `authenticate`; Settings → Providers, model menu, limit meter (F15)
 - [x] Worktree manager: create / delete / prune, path scheme, setup step (copy files, run command, shared build cache) (F5)
 - [x] Thread view: transcript, tool steps, diffs, header with worktree path, composer, slash menu (F4)
-- [ ] Settings → Worktrees, including the live list and the footer count (F5, F13)
+- [x] Settings → Worktrees, including the live list and the footer count (F5, F13)
 
 **M4 · PR loop**
 - [ ] GitHub integration: open PR, CI checks, reviews, comments, merge, close

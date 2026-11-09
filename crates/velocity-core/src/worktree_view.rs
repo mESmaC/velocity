@@ -365,15 +365,19 @@ fn total_size(owners: &[&WorktreeOwner], sizes: &BTreeMap<String, WorktreeSize>)
 }
 
 fn footer_drive(owners: &[&WorktreeOwner], fallback: &str) -> String {
-    let drives: BTreeSet<_> = owners
+    // Windows prefixes with different spelling still refer to the same drive.
+    let drives: BTreeMap<_, _> = owners
         .iter()
-        .map(|owner| split_location(&owner.path).0)
+        .map(|owner| {
+            let drive = split_location(&owner.path).0;
+            (path_key(&drive), drive)
+        })
         .collect();
     if drives.len() > 1 {
         format!("{} drives", drives.len())
     } else {
         drives
-            .into_iter()
+            .into_values()
             .next()
             .unwrap_or_else(|| split_location(fallback).0)
     }
