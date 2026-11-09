@@ -78,6 +78,7 @@ impl StateStore {
             preferred_speed: thread.preferred_speed,
             effective_speed: thread.preferred_speed,
             model_supports_fast: thread.model_supports_fast,
+            follow_through: None,
             interview: None,
         }
         .normalize();

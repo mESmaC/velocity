@@ -39,6 +39,16 @@ export const LAYOUT_STATE_EVENT = "layout://state" as const;
 
 export const PROJECT_SELECTED_EVENT = "project://selected" as const;
 
+export const PR_CI_EVENT = "pr://ci" as const;
+
+export const PR_CLOSED_EVENT = "pr://closed" as const;
+
+export const PR_MERGED_EVENT = "pr://merged" as const;
+
+export const PR_OPENED_EVENT = "pr://opened" as const;
+
+export const PR_REVIEW_EVENT = "pr://review" as const;
+
 export const PULL_REQUEST_PANEL_EVENT = "pr://panel" as const;
 
 export const THREAD_STATUS_EVENT = "thread://status" as const;
@@ -55,6 +65,11 @@ export type AgentActivity = "thinking" | "executing" | "parked" | "stalled" | "a
 export type AgentCommandView = {
 	name: string,
 	description: string,
+};
+
+export type AgentFollowUp = {
+	identifier: string,
+	message: string,
 };
 
 export type AgentSettings = AgentSettings_Serialize | AgentSettings_Deserialize;
@@ -135,6 +150,40 @@ export type EffortLevel = "low" | "medium" | "high" | "max";
 export type ErrorCardView = {
 	headline: string,
 	detail: string,
+};
+
+export type FollowThrough = FollowThrough_Serialize | FollowThrough_Deserialize;
+
+export type FollowThrough_Deserialize = {
+	number?: number,
+	url?: string,
+	head?: string,
+	stage?: string,
+	status?: string,
+	track?: string[],
+	history?: PullRequestHistoryCard_Deserialize[],
+	pending?: AgentFollowUp[],
+	observed?: { [key in string]: string },
+	worktree_deleted?: boolean,
+	cleanup_error?: string | null,
+	coding_tool_count?: number | null,
+	ci_state?: string,
+};
+
+export type FollowThrough_Serialize = {
+	number: number,
+	url: string,
+	head: string,
+	stage: string,
+	status: string,
+	track: string[],
+	history: PullRequestHistoryCard_Serialize[],
+	pending: AgentFollowUp[],
+	observed: { [key in string]: string },
+	worktree_deleted: boolean,
+	cleanup_error: string | null,
+	coding_tool_count: number | null,
+	ci_state: string,
 };
 
 export type GitHubActor = {
@@ -706,6 +755,54 @@ export type PullRequestComment_Serialize = {
 	updatedAt: string,
 };
 
+export type PullRequestHistoryCard = PullRequestHistoryCard_Serialize | PullRequestHistoryCard_Deserialize;
+
+export type PullRequestHistoryCard_Deserialize = {
+	identifier: string,
+	title: string,
+	body: string,
+	path?: string | null,
+	line?: number | null,
+	resolved: boolean,
+	tool?: ToolStepRow | null,
+};
+
+export type PullRequestHistoryCard_Serialize = {
+	identifier: string,
+	title: string,
+	body: string,
+	path: string | null,
+	line: number | null,
+	resolved: boolean,
+	tool: ToolStepRow | null,
+};
+
+export type PullRequestHistoryView = PullRequestHistoryView_Serialize | PullRequestHistoryView_Deserialize;
+
+export type PullRequestHistoryView_Deserialize = {
+	status: string,
+	stage: string,
+	track: PullRequestTrackStep[],
+	cards: PullRequestHistoryCard_Deserialize[],
+	cleanup_error?: string | null,
+};
+
+export type PullRequestHistoryView_Serialize = {
+	status: string,
+	stage: string,
+	track: PullRequestTrackStep[],
+	cards: PullRequestHistoryCard_Serialize[],
+	cleanup_error: string | null,
+};
+
+export type PullRequestLifecycleEvent = {
+	project_identifier: number,
+	thread_identifier: number,
+	number: number,
+	stage: string,
+	worktree_deleted: boolean,
+};
+
 export type PullRequestOperation = PullRequestOperation_Serialize | PullRequestOperation_Deserialize;
 
 export type PullRequestOperation_Deserialize = ({ Create: CreatePullRequest_Deserialize }) & { Close?: never; Comment?: never; Merge?: never; Reply?: never; RequestReview?: never; Resolve?: never; Review?: never } | ({ Review: {
@@ -829,6 +926,10 @@ export type PullRequestReceipt = {
 	operation: string,
 };
 
+export type PullRequestRepository = {
+	nameWithOwner: string,
+};
+
 export type PullRequestReview = PullRequestReview_Serialize | PullRequestReview_Deserialize;
 
 export type PullRequestReviewThread = PullRequestReviewThread_Serialize | PullRequestReviewThread_Deserialize;
@@ -891,6 +992,11 @@ export type PullRequestSnapshot_Serialize = {
 
 export type PullRequestState = "OPEN" | "CLOSED" | "MERGED";
 
+export type PullRequestTrackStep = {
+	label: string,
+	state: string,
+};
+
 export type PullRequest_Deserialize = {
 	id: string,
 	number: number,
@@ -911,6 +1017,7 @@ export type PullRequest_Deserialize = {
 	mergedAt?: string | null,
 	reviewDecision?: string | null,
 	mergeStateStatus: string,
+	headRepository?: PullRequestRepository | null,
 };
 
 export type PullRequest_Serialize = {
@@ -933,6 +1040,7 @@ export type PullRequest_Serialize = {
 	mergedAt: string | null,
 	reviewDecision: string | null,
 	mergeStateStatus: string,
+	headRepository: PullRequestRepository | null,
 };
 
 export type PulseCount = PulseCount_Serialize | PulseCount_Deserialize;
@@ -1090,6 +1198,7 @@ export type ThreadDetailSnapshot_Deserialize = {
 	show_work: boolean,
 	transcript_mode: TranscriptModeView,
 	worked_summary?: WorkedSummaryView_Deserialize | null,
+	pull_request_history?: PullRequestHistoryView_Deserialize | null,
 	blocks: TranscriptBlock_Deserialize[],
 	agent_commands: AgentCommandView[],
 	composer_placeholder: string,
@@ -1118,6 +1227,7 @@ export type ThreadDetailSnapshot_Serialize = {
 	show_work: boolean,
 	transcript_mode: TranscriptModeView,
 	worked_summary: WorkedSummaryView_Serialize | null,
+	pull_request_history: PullRequestHistoryView_Serialize | null,
 	blocks: TranscriptBlock_Serialize[],
 	agent_commands: AgentCommandView[],
 	composer_placeholder: string,
@@ -1139,6 +1249,7 @@ export type ThreadItem_Deserialize = {
 	worktree_path: string | null,
 	worktree_role?: WorktreeRole,
 	pull_request_number?: number | null,
+	follow_through?: FollowThrough_Deserialize | null,
 	review_stage?: ReviewStage | null,
 	task_ids: number[],
 	additions: number,
@@ -1163,6 +1274,7 @@ export type ThreadItem_Serialize = {
 	worktree_path: string | null,
 	worktree_role: WorktreeRole,
 	pull_request_number: number | null,
+	follow_through: FollowThrough_Serialize | null,
 	review_stage: ReviewStage | null,
 	task_ids: number[],
 	additions: number,
