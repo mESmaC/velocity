@@ -1,0 +1,51 @@
+//! Launching an agent: one process per thread, in that thread's worktree (§3.2).
+
+use std::path::{Path, PathBuf};
+use std::process::Stdio;
+
+use tokio::process::{Child, Command};
+
+use super::ClientError;
+
+/// The command that runs one provider's ACP agent. This is the only provider-specific part
+/// of a session (§3.2 Provider code).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct AgentLaunch {
+    /// The agent's executable. On Windows, give the full path of a `.cmd` or `.bat` shim:
+    /// the system looks up only `.exe` files on `PATH`.
+    pub program: PathBuf,
+    pub args: Vec<String>,
+    /// Added to Velocity's own environment, which the agent inherits whole: your `PATH`,
+    /// toolchains, credentials and config (§3.2 Tool access).
+    pub env: Vec<(String, String)>,
+}
+
+/// Starts the agent in `worktree` with piped stdio for ACP. It loads your user and project
+/// config as it would in a terminal: no isolated home, no empty config, no sandbox.
+pub fn spawn_agent(launch: &AgentLaunch, worktree: &Path) -> Result<Child, ClientError> {
+    let mut command = Command::new(&launch.program);
+    command
+        .args(&launch.args)
+        .envs(launch.env.iter().map(|(name, value)| (name, value)))
+        .current_dir(worktree)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .kill_on_drop(true);
+    hide_console_window(&mut command);
+    command.spawn().map_err(|source| ClientError::Spawn {
+        program: launch.program.display().to_string(),
+        source,
+    })
+}
+
+/// Velocity is a windowed app: without this flag every agent and terminal command would
+/// open its own console window.
+#[cfg(windows)]
+pub fn hide_console_window(command: &mut Command) {
+    const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+    command.creation_flags(CREATE_NO_WINDOW);
+}
+
+#[cfg(not(windows))]
+pub fn hide_console_window(_command: &mut Command) {}

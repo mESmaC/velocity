@@ -10,3 +10,7 @@ publish = false
 workspace = true
 
 [dependencies]
+agent-client-protocol = "5.0.0"
+thiserror.workspace = true
+tokio = { version = "1.54", features = ["io-util", "macros", "process", "rt", "sync", "fs"] }
+tokio-util = { version = "0.7.20", features = ["compat"] }
