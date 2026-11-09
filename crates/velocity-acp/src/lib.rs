@@ -21,6 +21,7 @@ pub mod steering;
 pub mod terminal_output;
 pub mod transcript;
 
+pub use client::{AgentSlashCommand, available_commands};
 pub use paths::{PathShape, resolve_path};
 pub use permissions::{PermissionKind, SessionModeKind, choose_permission, choose_session_mode};
 pub use run_settings::{Effort, Provider, RunSettings, Speed, effective_speed};

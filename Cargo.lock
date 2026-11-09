@@ -4799,6 +4799,7 @@ dependencies = [
  "tauri",
  "tauri-build",
  "tauri-specta",
+ "velocity-acp",
  "velocity-core",
  "velocity-github",
  "velocity-store",

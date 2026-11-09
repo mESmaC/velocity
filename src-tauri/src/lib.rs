@@ -5,10 +5,12 @@ use velocity_store::PersistedState;
 
 mod build_gate;
 mod github;
-mod layout;
+pub mod layout;
 mod projects;
 mod state;
 mod window;
+
+pub use layout::{apply_agent_event, record_agent_event};
 
 fn bindings() -> Builder<tauri::Wry> {
     // Export event payloads/names without the generator's `any`-typed helpers;

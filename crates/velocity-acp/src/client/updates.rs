@@ -6,6 +6,30 @@ use agent_client_protocol::v1::schema::{ContentChunk, SessionUpdate};
 
 use crate::{EntryClass, MessageKey};
 
+/// An agent-advertised slash command from `available_commands_update` (SPEC.md §3.2, F4).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct AgentSlashCommand {
+    pub name: String,
+    pub description: String,
+}
+
+/// Extracts the agent's advertised slash commands when `update` is `available_commands_update`.
+pub fn available_commands(update: &SessionUpdate) -> Option<Vec<AgentSlashCommand>> {
+    match update {
+        SessionUpdate::AvailableCommandsUpdate(commands) => Some(
+            commands
+                .available_commands
+                .iter()
+                .map(|command| AgentSlashCommand {
+                    name: command.name.clone(),
+                    description: command.description.clone(),
+                })
+                .collect(),
+        ),
+        _ => None,
+    }
+}
+
 /// The transcript entry an update belongs to, or `None` for updates that are session state
 /// rather than transcript: available commands (the slash menu), mode, config options, usage,
 /// session info and notices.
