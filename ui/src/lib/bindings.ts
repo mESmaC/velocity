@@ -793,6 +793,11 @@ export type SidebarRow = SidebarRow_Serialize | SidebarRow_Deserialize;
 export type SidebarRow_Deserialize = {
 	identifier: string,
 	title: string,
+	/**
+	 *  The title model hasn't answered yet: the title is the message's first words, pulsing
+	 *  (F4).
+	 */
+	titling: boolean,
 	metadata: string,
 	group: ThreadGroup,
 	member: boolean,
@@ -806,6 +811,11 @@ export type SidebarRow_Deserialize = {
 export type SidebarRow_Serialize = {
 	identifier: string,
 	title: string,
+	/**
+	 *  The title model hasn't answered yet: the title is the message's first words, pulsing
+	 *  (F4).
+	 */
+	titling: boolean,
 	metadata: string,
 	group: ThreadGroup,
 	member: boolean,

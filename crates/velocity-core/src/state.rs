@@ -98,6 +98,8 @@ pub struct ProviderSettings<ModelValue> {
     pub default_model: Option<ModelValue>,
     pub default_effort: EffortLevel,
     pub default_speed: SpeedMode,
+    /// The title model's provider, whose agent is asked for thread titles (F4, F15).
+    pub title_provider: ProviderKind,
     pub title_model: ModelValue,
     pub title_effort: EffortLevel,
     pub title_speed: SpeedMode,
@@ -258,6 +260,7 @@ pub fn default_settings<PathValue, ModelValue>(
             default_model: None,
             default_effort: EffortLevel::High,
             default_speed: SpeedMode::Regular,
+            title_provider: ProviderKind::Codex,
             title_model: default_title_model,
             title_effort: EffortLevel::Low,
             title_speed: SpeedMode::Fast,

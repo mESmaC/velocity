@@ -142,6 +142,9 @@
   );
   --layout-thread-active-box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.1);
   --layout-t-title-font-size: 12px;
+  /* .t-title.titling and @keyframes ttl in the reference */
+  --layout-t-title-titling-duration: 1.1s;
+  --layout-t-title-titling-opacity: 0.45;
   --layout-t-meta-grid-column: 2 / 4;
   --layout-t-meta-font: 10px var(--mono);
   --layout-t-meta-margin-top: -2px;

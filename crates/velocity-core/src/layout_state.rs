@@ -715,6 +715,7 @@ impl LayoutState {
         SidebarRow {
             identifier: entry.policy.identifier,
             title: entry.title.clone(),
+            titling: entry.detail.as_ref().is_some_and(|detail| detail.titling),
             metadata: entry.metadata.clone(),
             group: entry.policy.group,
             member,

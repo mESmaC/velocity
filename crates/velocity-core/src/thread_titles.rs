@@ -94,3 +94,96 @@ impl<Title> ThreadTitle<Title> {
         !self.is_pending() && worktree_ready && name_applied
     }
 }
+
+/// Titles are cut to the reference's 48 characters so they fit a sidebar row and keep the
+/// worktree path well under the Windows limit.
+pub const TITLE_LENGTH: usize = 48;
+
+/// Used when a title has no letters or digits to name a branch after.
+const FALLBACK_SLUG: &str = "thread";
+
+/// The prompt the title model receives. Only the first message is ever sent (F4: threads are
+/// titled once), and the model is asked for a bare line so no parsing beyond
+/// [`title_from_response`] is needed.
+pub fn title_request_prompt(first_message: &str) -> String {
+    format!(
+        "Name this coding task as a short imperative title of at most six words, \
+         like \"Wire thread list to Tauri IPC\". Reply with the title only: no quotes, \
+         no punctuation at the end, no explanation.\n\nTask:\n{first_message}"
+    )
+}
+
+/// The title in a model's reply: its first non-empty line, without markdown, quotes, a
+/// "Title:" label or a closing full stop, on one line and cut to [`TITLE_LENGTH`] at a word
+/// boundary. `None` when nothing with a letter or digit is left, so the caller keeps the
+/// message fallback.
+pub fn title_from_response(response: &str) -> Option<String> {
+    let line = response
+        .lines()
+        .map(str::trim)
+        .find(|line| !line.is_empty())?;
+    let unlabeled = strip_title_label(line.trim_start_matches(['#', '*', '-', '>', ' ']));
+    let unquoted = unlabeled.trim_matches(|character: char| {
+        matches!(
+            character,
+            '"' | '\'' | '`' | '*' | '_' | '“' | '”' | '‘' | '’'
+        ) || character.is_whitespace()
+    });
+    let words: Vec<&str> = unquoted
+        .trim_end_matches(['.', '!', ':', ';', ','])
+        .split_whitespace()
+        .collect();
+    let title = cut_at_word_boundary(&words, TITLE_LENGTH);
+    title.chars().any(char::is_alphanumeric).then_some(title)
+}
+
+fn strip_title_label(line: &str) -> &str {
+    let lowered = line.to_lowercase();
+    if lowered.starts_with("title:") {
+        line["title:".len()..].trim_start()
+    } else {
+        line
+    }
+}
+
+/// Whole words up to `limit` characters; a single word longer than the limit is cut.
+fn cut_at_word_boundary(words: &[&str], limit: usize) -> String {
+    let mut title = String::new();
+    for word in words {
+        let separator = usize::from(!title.is_empty());
+        if title.chars().count() + separator + word.chars().count() > limit {
+            break;
+        }
+        if separator == 1 {
+            title.push(' ');
+        }
+        title.push_str(word);
+    }
+    if title.is_empty() {
+        words
+            .first()
+            .map(|word| word.chars().take(limit).collect())
+            .unwrap_or_default()
+    } else {
+        title
+    }
+}
+
+/// The `vel/`-less branch slug for a model title, as the reference names it: lowercase ASCII
+/// letters and digits, every other run as one `-`, no leading or trailing `-`.
+pub fn title_slug(title: &str) -> String {
+    let mut slug = String::new();
+    for character in title.chars().flat_map(char::to_lowercase) {
+        if character.is_ascii_lowercase() || character.is_ascii_digit() {
+            slug.push(character);
+        } else if !slug.is_empty() && !slug.ends_with('-') {
+            slug.push('-');
+        }
+    }
+    let trimmed = slug.trim_end_matches('-');
+    if trimmed.is_empty() {
+        FALLBACK_SLUG.to_owned()
+    } else {
+        trimmed.to_owned()
+    }
+}

@@ -12,6 +12,7 @@ mod process;
 mod program_path;
 mod session;
 mod terminals;
+mod title;
 mod updates;
 
 use std::path::PathBuf;
@@ -32,6 +33,7 @@ pub use error::ClientError;
 pub use files::resolve_in_worktree;
 pub use process::AgentLaunch;
 pub use session::{SessionSetup, answer_permission, session_servers};
+pub use title::{TitleRequest, request_title};
 pub use updates::{AgentSlashCommand, available_commands, entry_class};
 
 use crate::{Placement, Steering, SteeringEffect, SteeringInput, Transcript};

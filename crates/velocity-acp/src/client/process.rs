@@ -40,6 +40,25 @@ pub fn spawn_agent(launch: &AgentLaunch, worktree: &Path) -> Result<Child, Clien
     })
 }
 
+/// Stops the agent and every process it started. Agents installed with npm run through a
+/// `.cmd` shim, so the child is `cmd.exe` and the agent is its `node` grandchild: killing only
+/// the child leaves the agent running with the pipes open.
+pub async fn kill_agent_tree(agent: &mut Child) {
+    #[cfg(windows)]
+    if let Some(process_id) = agent.id() {
+        let mut taskkill = Command::new("taskkill");
+        taskkill
+            .args(["/T", "/F", "/PID", &process_id.to_string()])
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null());
+        hide_console_window(&mut taskkill);
+        // Already exited, or taskkill missing: `start_kill` below still stops the child.
+        let _ = taskkill.status().await;
+    }
+    let _ = agent.start_kill();
+}
+
 /// Velocity is a windowed app: without this flag every agent and terminal command would
 /// open its own console window.
 #[cfg(windows)]

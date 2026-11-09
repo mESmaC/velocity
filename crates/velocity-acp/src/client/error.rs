@@ -17,6 +17,8 @@ pub enum ClientError {
     UnknownTerminal(String),
     #[error(transparent)]
     Io(#[from] std::io::Error),
+    #[error("the agent did not answer within {0:?}")]
+    TimedOut(std::time::Duration),
     #[error("ACP: {0}")]
     Protocol(#[from] agent_client_protocol::Error),
 }
