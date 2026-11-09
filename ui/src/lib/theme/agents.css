@@ -187,3 +187,19 @@
   color: var(--text);
   background: var(--surface-3);
 }
+
+.agents-rewrite {
+  display: flex;
+  align-items: center;
+  gap: var(--agents-rewrite-gap);
+  margin: var(--agents-rewrite-margin);
+  font-size: var(--agents-rewrite-size);
+  color: var(--muted);
+}
+.agents-rewrite s {
+  text-decoration-color: var(--agents-rewrite-strike);
+}
+
+.agents-rewrite.flagged {
+  color: var(--warn);
+}

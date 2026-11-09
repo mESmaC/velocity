@@ -7,6 +7,7 @@ export const commands = {
 	readAgentsMd: (projectIdentifier: number) => __TAURI_INVOKE<OutlineSnapshot_Serialize>("read_agents_md", { projectIdentifier }),
 	editAgentsMd: (projectIdentifier: number, action: OutlineAction_Deserialize) => __TAURI_INVOKE<OutlineSnapshot_Serialize>("edit_agents_md", { projectIdentifier, action }),
 	writeAgentsMd: (projectIdentifier: number) => __TAURI_INVOKE<OutlineSnapshot_Serialize>("write_agents_md", { projectIdentifier }),
+	tightenRule: (projectIdentifier: number, identifier: number) => __TAURI_INVOKE<OutlineSnapshot_Serialize>("tighten_rule", { projectIdentifier, identifier }),
 	getWindowState: () => __TAURI_INVOKE<WindowStateChanged>("get_window_state"),
 	minimizeWindow: () => __TAURI_INVOKE<null>("minimize_window"),
 	toggleMaximizeWindow: () => __TAURI_INVOKE<null>("toggle_maximize_window"),
@@ -557,42 +558,46 @@ export type OutlineAction = OutlineAction_Serialize | OutlineAction_Deserialize;
 export type OutlineAction_Deserialize = ({ Edit: {
 	identifier: number,
 	text: string,
-} }) & { AddRule?: never; DeleteEmpty?: never; Enter?: never; Indent?: never; Move?: never; Neighbor?: never } | ({ Enter: {
+} }) & { AddRule?: never; DeleteEmpty?: never; Enter?: never; Indent?: never; Move?: never; Neighbor?: never; Undo?: never } | ({ Enter: {
 	identifier: number,
-} }) & { AddRule?: never; DeleteEmpty?: never; Edit?: never; Indent?: never; Move?: never; Neighbor?: never } | ({ Indent: {
+} }) & { AddRule?: never; DeleteEmpty?: never; Edit?: never; Indent?: never; Move?: never; Neighbor?: never; Undo?: never } | ({ Indent: {
 	identifier: number,
 	nested: boolean,
-} }) & { AddRule?: never; DeleteEmpty?: never; Edit?: never; Enter?: never; Move?: never; Neighbor?: never } | ({ Move: {
+} }) & { AddRule?: never; DeleteEmpty?: never; Edit?: never; Enter?: never; Move?: never; Neighbor?: never; Undo?: never } | ({ Move: {
 	identifier: number,
 	down: boolean,
-} }) & { AddRule?: never; DeleteEmpty?: never; Edit?: never; Enter?: never; Indent?: never; Neighbor?: never } | ({ DeleteEmpty: {
+} }) & { AddRule?: never; DeleteEmpty?: never; Edit?: never; Enter?: never; Indent?: never; Neighbor?: never; Undo?: never } | ({ DeleteEmpty: {
 	identifier: number,
-} }) & { AddRule?: never; Edit?: never; Enter?: never; Indent?: never; Move?: never; Neighbor?: never } | ({ Neighbor: {
+} }) & { AddRule?: never; Edit?: never; Enter?: never; Indent?: never; Move?: never; Neighbor?: never; Undo?: never } | ({ Neighbor: {
 	identifier: number,
 	down: boolean,
-} }) & { AddRule?: never; DeleteEmpty?: never; Edit?: never; Enter?: never; Indent?: never; Move?: never } | ({ AddRule: {
+} }) & { AddRule?: never; DeleteEmpty?: never; Edit?: never; Enter?: never; Indent?: never; Move?: never; Undo?: never } | ({ AddRule: {
 	section?: number | null,
-} }) & { DeleteEmpty?: never; Edit?: never; Enter?: never; Indent?: never; Move?: never; Neighbor?: never } | "AddSection";
+} }) & { DeleteEmpty?: never; Edit?: never; Enter?: never; Indent?: never; Move?: never; Neighbor?: never; Undo?: never } | "AddSection" | ({ Undo: {
+	identifier: number,
+} }) & { AddRule?: never; DeleteEmpty?: never; Edit?: never; Enter?: never; Indent?: never; Move?: never; Neighbor?: never };
 
 export type OutlineAction_Serialize = ({ Edit: {
 	identifier: number,
 	text: string,
-} }) & { AddRule?: never; DeleteEmpty?: never; Enter?: never; Indent?: never; Move?: never; Neighbor?: never } | ({ Enter: {
+} }) & { AddRule?: never; DeleteEmpty?: never; Enter?: never; Indent?: never; Move?: never; Neighbor?: never; Undo?: never } | ({ Enter: {
 	identifier: number,
-} }) & { AddRule?: never; DeleteEmpty?: never; Edit?: never; Indent?: never; Move?: never; Neighbor?: never } | ({ Indent: {
+} }) & { AddRule?: never; DeleteEmpty?: never; Edit?: never; Indent?: never; Move?: never; Neighbor?: never; Undo?: never } | ({ Indent: {
 	identifier: number,
 	nested: boolean,
-} }) & { AddRule?: never; DeleteEmpty?: never; Edit?: never; Enter?: never; Move?: never; Neighbor?: never } | ({ Move: {
+} }) & { AddRule?: never; DeleteEmpty?: never; Edit?: never; Enter?: never; Move?: never; Neighbor?: never; Undo?: never } | ({ Move: {
 	identifier: number,
 	down: boolean,
-} }) & { AddRule?: never; DeleteEmpty?: never; Edit?: never; Enter?: never; Indent?: never; Neighbor?: never } | ({ DeleteEmpty: {
+} }) & { AddRule?: never; DeleteEmpty?: never; Edit?: never; Enter?: never; Indent?: never; Neighbor?: never; Undo?: never } | ({ DeleteEmpty: {
 	identifier: number,
-} }) & { AddRule?: never; Edit?: never; Enter?: never; Indent?: never; Move?: never; Neighbor?: never } | ({ Neighbor: {
+} }) & { AddRule?: never; Edit?: never; Enter?: never; Indent?: never; Move?: never; Neighbor?: never; Undo?: never } | ({ Neighbor: {
 	identifier: number,
 	down: boolean,
-} }) & { AddRule?: never; DeleteEmpty?: never; Edit?: never; Enter?: never; Indent?: never; Move?: never } | ({ AddRule: {
+} }) & { AddRule?: never; DeleteEmpty?: never; Edit?: never; Enter?: never; Indent?: never; Move?: never; Undo?: never } | ({ AddRule: {
 	section: number | null,
-} }) & { DeleteEmpty?: never; Edit?: never; Enter?: never; Indent?: never; Move?: never; Neighbor?: never } | "AddSection";
+} }) & { DeleteEmpty?: never; Edit?: never; Enter?: never; Indent?: never; Move?: never; Neighbor?: never; Undo?: never } | "AddSection" | ({ Undo: {
+	identifier: number,
+} }) & { AddRule?: never; DeleteEmpty?: never; Edit?: never; Enter?: never; Indent?: never; Move?: never; Neighbor?: never };
 
 export type OutlineFocus = {
 	identifier: number,
@@ -633,6 +638,7 @@ export type OutlineSnapshot_Deserialize = {
 	dirty: boolean,
 	rule_count: number,
 	focus?: OutlineFocus | null,
+	rewrites: RewriteView_Deserialize[],
 };
 
 export type OutlineSnapshot_Serialize = {
@@ -641,6 +647,7 @@ export type OutlineSnapshot_Serialize = {
 	dirty: boolean,
 	rule_count: number,
 	focus: OutlineFocus | null,
+	rewrites: RewriteView_Serialize[],
 };
 
 export type PaletteItem = PaletteItem_Serialize | PaletteItem_Deserialize;
@@ -1227,6 +1234,22 @@ export type ReviewSide = "LEFT" | "RIGHT";
 export type ReviewStage = "continuous_integration" | "review" | "fixing" | "approved";
 
 export type ReviewStatus = "draft" | "checking" | "unclaimed" | "reviewing" | "changes_requested" | "approved";
+
+export type RewriteView = RewriteView_Serialize | RewriteView_Deserialize;
+
+export type RewriteView_Deserialize = {
+	identifier: number,
+	original?: string | null,
+	pending: boolean,
+	note?: string | null,
+};
+
+export type RewriteView_Serialize = {
+	identifier: number,
+	original: string | null,
+	pending: boolean,
+	note: string | null,
+};
 
 export type Settings = Settings_Serialize | Settings_Deserialize;
 

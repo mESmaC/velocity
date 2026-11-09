@@ -16,6 +16,7 @@ pub enum OutlineAction {
     Neighbor { identifier: u32, down: bool },
     AddRule { section: Option<u32> },
     AddSection,
+    Undo { identifier: u32 },
 }
 
 #[cfg_attr(
@@ -39,14 +40,17 @@ pub struct OutlineSnapshot {
     pub dirty: bool,
     pub rule_count: u32,
     pub focus: Option<OutlineFocus>,
+    pub rewrites: Vec<crate::agents_rewrite::RewriteView>,
 }
 
 #[derive(Clone, Debug)]
 pub struct AgentsEditor {
-    lines: Vec<OutlineLine>,
+    pub(crate) lines: Vec<OutlineLine>,
     baseline: String,
     next_identifier: u32,
     newline: String,
+    pub(crate) rewrites: std::collections::BTreeMap<u32, crate::agents_rewrite::RewriteRecord>,
+    pub(crate) revision: u64,
 }
 
 #[cfg_attr(
@@ -73,6 +77,8 @@ impl AgentsEditor {
             baseline: source,
             next_identifier,
             newline,
+            rewrites: Default::default(),
+            revision: 0,
         }
     }
 
@@ -82,6 +88,8 @@ impl AgentsEditor {
 
     pub fn saved(&mut self) {
         self.baseline = self.markdown();
+        self.rewrites.clear();
+        self.revision += 1;
     }
 
     pub fn markdown(&self) -> String {
@@ -95,6 +103,7 @@ impl AgentsEditor {
             markdown,
             sections: self.sections(),
             focus,
+            rewrites: self.rewrite_views(),
             rule_count: u32::try_from(
                 self.lines
                     .iter()
@@ -135,7 +144,13 @@ impl AgentsEditor {
                     if let Some(line) = self.lines.iter_mut().find(|line| {
                         line.identifier == identifier && line.kind != OutlineKind::Source
                     }) {
-                        line.replace(text);
+                        if line.text != text {
+                            line.replace(text);
+                            self.revision += 1;
+                            if let Some(record) = self.rewrites.get_mut(&identifier) {
+                                record.pending = None;
+                            }
+                        }
                     }
                     None
                 }
@@ -146,17 +161,21 @@ impl AgentsEditor {
                 Neighbor { identifier, down } => self.neighbor(identifier, down),
                 AddRule { section } => self.add_rule(section),
                 AddSection => self.add_section(),
+                Undo { identifier } => {
+                    self.undo_rewrite(identifier);
+                    None
+                }
             };
         self.snapshot(focus)
     }
 
-    fn index(&self, identifier: u32) -> Option<usize> {
+    pub(crate) fn index(&self, identifier: u32) -> Option<usize> {
         self.lines
             .iter()
             .position(|line| line.identifier == identifier)
     }
 
-    fn insert(&mut self, index: usize, source: &str) -> u32 {
+    pub(crate) fn insert(&mut self, index: usize, source: &str) -> u32 {
         let identifier = self.next_identifier;
         self.next_identifier = self.next_identifier.saturating_add(1);
         if let Some(previous) = index

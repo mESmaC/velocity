@@ -1,5 +1,6 @@
 <script lang="ts">
   import { onMount, tick } from 'svelte';
+  import { SvelteSet } from 'svelte/reactivity';
   import {
     agentsCommands,
     type OutlineAction,
@@ -60,12 +61,40 @@
       .catch(report);
   }
 
+  let rewriting = $state<number[]>([]);
+  const rewrites = new SvelteSet<Promise<void>>();
+
+  function submit(identifier: number) {
+    queue = queue
+      .then(() => {
+        if (rewriting.includes(identifier)) return;
+        rewriting = [...rewriting, identifier];
+        const request = agentsCommands
+          .tighten(project, identifier)
+          .then(() => {
+            queue = queue
+              .then(async () => {
+                await receive(await agentsCommands.read(project));
+              })
+              .catch(report);
+          })
+          .catch(report)
+          .finally(() => {
+            rewriting = rewriting.filter((item) => item !== identifier);
+            rewrites.delete(request);
+          });
+        rewrites.add(request);
+      })
+      .catch(report);
+  }
+
   function save() {
     if (saving) return;
     saving = true;
     queue = queue
       .then(async () => {
         error = '';
+        await Promise.all([...rewrites]);
         await receive(await agentsCommands.save(project));
         if (active) {
           notice =
@@ -137,7 +166,15 @@
       {:else}<div class="agents-outline">
           {#each documentState.sections as section (section.identifier)}
             {#each section.lines as line (line.identifier)}
-              <OutlineLine {line} {send} />
+              <OutlineLine
+                {line}
+                {send}
+                {submit}
+                rewrite={documentState.rewrites.find(
+                  (item) => item.identifier === line.identifier,
+                )}
+                pending={rewriting.includes(line.identifier)}
+              />
             {/each}
             <button
               class="agents-add"
@@ -155,7 +192,7 @@
         Write one rule per bullet. Use a sub-rule for a single level of detail.
       </p>
       <div class="agents-keys">
-        <kbd>Enter</kbd><span>next bullet</span>
+        <kbd>Enter</kbd><span>submit � agent rewrites it</span>
         <span><kbd>Shift</kbd><kbd>Enter</kbd></span><span
           >next bullet, keep as typed</span
         >

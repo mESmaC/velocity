@@ -986,3 +986,11 @@
   --spec-check-gap: 7px;
   --spec-check-font-size: 11px;
 }
+
+/* F11 .was declarations in the reference. */
+:root {
+  --agents-rewrite-gap: 6px;
+  --agents-rewrite-margin: 0 0 3px;
+  --agents-rewrite-size: 10.5px;
+  --agents-rewrite-strike: #e8807a99;
+}

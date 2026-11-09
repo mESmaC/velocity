@@ -121,7 +121,7 @@ A thread's state (§2.1) says where it is in its lifecycle. Its **activity** say
 | command | `launch_swarm`, `add_to_swarm` | swarm |
 | command | `launch_goal_swarm { prompt, mix: [{ model, effort, speed, count }], keep_going }`, `add_goal_agents` | goal swarm |
 | command | `add_task`, `list_tasks` | Task List |
-| command | `read_agents_md`, `write_agents_md`, `tighten_rule` | AGENTS.md |
+| command | `read_agents_md`, `write_agents_md`, `tighten_rule { project_identifier, identifier }` | AGENTS.md. F11 rewrites use the normal unrestricted Claude ACP client in the project checkout, with the Haiku model selected through the Claude SDK launch environment and whole-file context. Late results are discarded after edits, Undo or save; invalid responses and failures retain the original rule with an explanation. |
 | command | `read_agents_md { project_identifier }`, `edit_agents_md { project_identifier, action }`, `write_agents_md { project_identifier }` | F11 outliner: read the checkout's real AGENTS.md, apply section/rule and structural keyboard edits in Rust, and save/commit only that file. Snapshots include the exact Markdown, rule count, dirty state and focus target. Unsupported Markdown is preserved verbatim. Saving rejects external changes and keeps the draft; a failed commit can be retried. |
 | command | `get_settings`, `set_settings`, `list_worktrees`, `prune_worktrees` | settings |
 | command | `set_worktree_settings { edit, project_identifier }`, `preview_worktree_folder { folder }`, `browse_worktree_folder` | persist a worktree preference edit; preview the path for a folder still being typed, without saving it; select a location through the native folder picker |
