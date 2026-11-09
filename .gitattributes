@@ -5,6 +5,8 @@
 /stress/pr4-swarm-selection-thread-detail.rs -text
 /stress/pr7-create-save.ps1 -text
 /stress/pr7-create-save-crate.ps1 -text
+/stress/pr22-distinct-windows-paths.ps1 -text
+/stress/pr22-settings-adversarial.ps1 -text
 /stress/pr39-worktree-safety.ps1 -text
 /stress/pr40-empty-agent-commands.rs -text
 

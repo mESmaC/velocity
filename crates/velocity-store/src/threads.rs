@@ -6,7 +6,7 @@ use velocity_core::layout_state::LayoutState;
 
 use crate::{
     AgentActivity, EffortLevel, ProjectItem, ProviderKind, SpeedMode, StateStore, StoreError,
-    ThreadItem, ThreadState,
+    ThreadItem, ThreadState, WorktreeRole,
 };
 
 #[derive(Debug, Error)]
@@ -63,6 +63,8 @@ impl StateStore {
             activity: AgentActivity::Executing,
             branch_name: thread.branch_name,
             worktree_path: Some(thread.worktree_path),
+            // A thread started from the composer builds in its own worktree (F4, F5).
+            worktree_role: WorktreeRole::Thread,
             worktree_path_id: None,
             pull_request_number: None,
             review_stage: None,

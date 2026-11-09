@@ -12,6 +12,7 @@ mod pull_request_panel;
 mod state;
 mod threads;
 mod window;
+mod worktree_settings;
 
 pub use layout::{apply_agent_event, record_agent_event};
 
@@ -30,6 +31,11 @@ fn bindings() -> Builder<tauri::Wry> {
             layout::dispatch_layout,
             projects::list_projects,
             projects::switch_project,
+            worktree_settings::list_worktrees,
+            worktree_settings::set_worktree_settings,
+            worktree_settings::preview_worktree_folder,
+            worktree_settings::browse_worktree_folder,
+            worktree_settings::prune_worktrees,
             github::list_pull_requests,
             github::get_pull_request,
             github::dispatch_pull_request,
@@ -45,13 +51,18 @@ fn bindings() -> Builder<tauri::Wry> {
         .typ::<layout::LayoutStateChanged>()
         .typ::<layout::LayoutIntentRequested>()
         .typ::<projects::ProjectSelected>()
+        .typ::<worktree_settings::WorktreeInventoryChanged>()
         .typ::<pull_request_panel::PullRequestPanelChanged>()
         .typ::<threads::ThreadStatusChanged>()
         .typ::<threads::ThreadStepRecorded>()
+        .constant("PROJECT_SELECTED_EVENT", projects::ProjectSelected::NAME)
         .constant("WINDOW_STATE_EVENT", window::WindowStateChanged::NAME)
         .constant("LAYOUT_STATE_EVENT", layout::LayoutStateChanged::NAME)
         .constant("LAYOUT_INTENT_EVENT", layout::LayoutIntentRequested::NAME)
-        .constant("PROJECT_SELECTED_EVENT", projects::ProjectSelected::NAME)
+        .constant(
+            "WORKTREE_INVENTORY_EVENT",
+            worktree_settings::WorktreeInventoryChanged::NAME,
+        )
         .constant(
             "PULL_REQUEST_PANEL_EVENT",
             pull_request_panel::PullRequestPanelChanged::NAME,
@@ -82,6 +93,7 @@ pub fn run() -> anyhow::Result<()> {
         layout::LayoutStateChanged,
         layout::LayoutIntentRequested,
         projects::ProjectSelected,
+        worktree_settings::WorktreeInventoryChanged,
         pull_request_panel::PullRequestPanelChanged,
         threads::ThreadStatusChanged,
         threads::ThreadStepRecorded
@@ -95,10 +107,14 @@ pub fn run() -> anyhow::Result<()> {
             bindings.mount_events(application);
             state::initialize(application.handle())?;
             projects::initialize(application.handle())?;
+            worktree_settings::initialize(application.handle())?;
             pull_request_panel::initialize(application.handle());
             Ok(())
         })
-        .on_window_event(window::on_window_event)
+        .on_window_event(|window, event| {
+            window::on_window_event(window, event);
+            worktree_settings::on_window_event(window, event);
+        })
         .run(tauri::generate_context!())
         .context("Could not run Velocity")
 }

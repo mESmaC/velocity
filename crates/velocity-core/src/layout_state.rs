@@ -22,6 +22,7 @@ pub struct LayoutState {
     live: BTreeMap<(u32, usize), LiveThreadView>,
     revision: u32,
     view: NavigationView,
+    settings_tab: String,
     selected_thread: Option<usize>,
     search: String,
     show_numbers: bool,
@@ -45,6 +46,7 @@ impl Default for LayoutState {
             live: BTreeMap::new(),
             revision: 0,
             view: NavigationView::Home,
+            settings_tab: "worktrees".into(),
             selected_thread: None,
             search: String::new(),
             show_numbers: false,
@@ -97,6 +99,20 @@ impl LayoutState {
             self.open_thread(identifier);
         }
         self.changed();
+    }
+
+    pub fn set_worktree_summary(
+        &mut self,
+        view: &crate::worktree_view::WorktreeSettingsView,
+    ) -> bool {
+        let count = view.rows.iter().filter(|row| !row.deleted).count();
+        if self.data.worktree_count == count && self.data.worktree_drive == view.footer_drive {
+            return false;
+        }
+        self.data.worktree_count = count;
+        self.data.worktree_drive = view.footer_drive.clone();
+        self.changed();
+        true
     }
 
     /// Only the backend's persisted project projection supplies this context.
@@ -242,6 +258,7 @@ impl LayoutState {
             revision: self.revision,
             project_name: self.data.project_name.clone(),
             view: self.view,
+            settings_tab: self.settings_tab.clone(),
             selected_thread: self.selected_thread,
             active_thread: self.active_thread_snapshot(),
             default_model_pill: self.default_model_pill(),
@@ -560,6 +577,14 @@ impl LayoutState {
         if let LayoutIntent::Navigation(navigation) = intent {
             return self.navigate(navigation);
         }
+        // Only the Worktrees page exists so far. Other tabs keep the current
+        // view, as before Settings was built, instead of opening a blank pane.
+        if let LayoutIntent::SettingsTab(tab) = &intent
+            && tab == "worktrees"
+        {
+            self.view = NavigationView::Settings;
+            self.settings_tab = tab.clone();
+        }
         Some(intent)
     }
 
@@ -578,6 +603,7 @@ impl LayoutState {
                 self.palette_open = false;
                 self.new_project_open = true;
             }
+            NavigationIntent::Settings => self.view = NavigationView::Settings,
             NavigationIntent::ShowNumbers => self.show_numbers = true,
             NavigationIntent::Jump(number) => {
                 let visible: Vec<_> = self
