@@ -371,6 +371,7 @@ impl LayoutState {
         };
         LayoutSnapshot {
             revision: self.revision,
+            project_identifier: self.data.project_identifier,
             project_name: self.data.project_name.clone(),
             view: self.view,
             settings_tab: self.settings_tab.clone(),
@@ -704,8 +705,11 @@ impl LayoutState {
         if let LayoutIntent::Navigation(navigation) = intent {
             return self.navigate(navigation);
         }
-        // Only the Worktrees page exists so far. Other tabs keep the current
-        // view, as before Settings was built, instead of opening a blank pane.
+        if let LayoutIntent::SettingsTab(tab) = &intent
+            && tab == "agents"
+        {
+            self.view = NavigationView::Agents;
+        }
         if let LayoutIntent::SettingsTab(tab) = &intent
             && tab == "worktrees"
         {

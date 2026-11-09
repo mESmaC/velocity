@@ -51,11 +51,7 @@ pub fn create_project(
         run_step(step, &resolved, request, &mut pending)?;
     }
     if velocity_git::agents_template::install_default_agents(&resolved.path, &resolved.name)? {
-        velocity_git::commit_file(
-            &resolved.path,
-            std::path::Path::new("AGENTS.md"),
-            "Add default project agent instructions",
-        )?;
+        velocity_git::agents_file::commit_agents(&resolved.path)?;
     }
     let identifier = finish(&resolved, pending, store, layout, publish)?;
     Ok(CreatedProject {
