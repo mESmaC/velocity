@@ -1,0 +1,38 @@
+.issue-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--issue-meta-gap);
+  text-align: left;
+}
+.issue-agent {
+  color: var(--swarm);
+}
+.issue-scout {
+  color: var(--duty);
+  display: inline-flex;
+  align-items: center;
+  gap: var(--layout-swarm-button-dispatch-gap);
+}
+.issue-group {
+  padding: var(--layout-item-padding);
+}
+.issue-error {
+  color: var(--err);
+}
+.issue-recommendation {
+  padding: var(--layout-item-padding);
+  font-size: var(--layout-item-font-size);
+  color: var(--text-2);
+}
+.issue-blocks {
+  padding: var(--layout-item-padding);
+  font: var(--layout-item-meta-font);
+  color: var(--warn);
+}
+.issue-row:not(.taken):hover .issue-number,
+.issue-row:not(.taken):focus-within .issue-number {
+  visibility: hidden;
+}
+.issue-row.taken:hover .dispatch {
+  display: none;
+}

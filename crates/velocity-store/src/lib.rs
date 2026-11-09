@@ -18,6 +18,7 @@ use std::path::{Path, PathBuf};
 use thiserror::Error;
 
 pub mod interview;
+pub mod issues;
 mod new_project;
 
 pub use interview::{
@@ -555,6 +556,8 @@ pub struct ThreadItem {
     pub follow_through: Option<velocity_github::follow_through::FollowThrough>,
     pub review_stage: Option<ReviewStage>,
     pub task_ids: Vec<u32>,
+    #[serde(default)]
+    pub issue: Option<issues::ThreadIssue>,
     pub additions: u32,
     pub deletions: u32,
     pub elapsed_seconds: u32,
@@ -570,6 +573,34 @@ pub struct ThreadItem {
 }
 
 impl ThreadItem {
+    pub fn new(id: u32, title: String) -> Self {
+        Self {
+            id,
+            title,
+            state: ThreadState::Working,
+            activity: AgentActivity::Executing,
+            branch_name: String::new(),
+            worktree_path: None,
+            worktree_role: WorktreeRole::Thread,
+            worktree_path_id: None,
+            pull_request_number: None,
+            follow_through: None,
+            review_stage: None,
+            task_ids: Vec::new(),
+            issue: None,
+            additions: 0,
+            deletions: 0,
+            elapsed_seconds: 0,
+            provider: ProviderKind::Codex,
+            model_name: String::new(),
+            effort: EffortLevel::High,
+            preferred_speed: SpeedMode::Regular,
+            effective_speed: SpeedMode::Regular,
+            model_supports_fast: false,
+            interview: None,
+        }
+    }
+
     pub(crate) fn for_build(thread: threads::NewThread, identifier: u32) -> Self {
         Self {
             id: identifier,
@@ -585,6 +616,7 @@ impl ThreadItem {
             follow_through: None,
             review_stage: None,
             task_ids: Vec::new(),
+            issue: None,
             additions: 0,
             deletions: 0,
             elapsed_seconds: 0,

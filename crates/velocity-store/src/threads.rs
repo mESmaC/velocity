@@ -16,6 +16,8 @@ pub enum ThreadError {
     UnknownProject(u32),
     #[error("Thread {thread} is not in project {project}")]
     UnknownThread { project: u32, thread: u32 },
+    #[error("Issue #{number} already belongs to thread {thread}")]
+    IssueAssigned { number: u32, thread: u32 },
     #[error(transparent)]
     Persistence(#[from] StoreError),
 }
@@ -34,6 +36,30 @@ pub struct NewThread {
     pub preferred_speed: SpeedMode,
 }
 
+impl NewThread {
+    pub fn new(
+        title: String,
+        branch_name: String,
+        worktree_path: String,
+        settings: &crate::Settings,
+    ) -> Self {
+        Self {
+            title,
+            branch_name,
+            worktree_path,
+            provider: settings.providers.default_provider,
+            model_name: settings
+                .providers
+                .default_model
+                .clone()
+                .unwrap_or_else(|| "agent default".into()),
+            model_supports_fast: false,
+            effort: settings.providers.default_effort,
+            preferred_speed: settings.providers.default_speed,
+        }
+    }
+}
+
 impl StateStore {
     pub fn active_project(&self) -> Option<&ProjectItem> {
         crate::project_layout::active_project(&self.state)
@@ -45,12 +71,38 @@ impl StateStore {
 
     /// Records a `working` thread and makes it the project's active thread.
     pub fn add_thread(&mut self, project: u32, thread: NewThread) -> Result<u32, ThreadError> {
+        self.add_linked_thread(project, thread, None)
+    }
+
+    pub fn add_issue_thread(
+        &mut self,
+        project: u32,
+        thread: NewThread,
+        issue: crate::issues::ThreadIssue,
+    ) -> Result<u32, ThreadError> {
+        self.add_linked_thread(project, thread, Some(issue))
+    }
+
+    fn add_linked_thread(
+        &mut self,
+        project: u32,
+        thread: NewThread,
+        issue: Option<crate::issues::ThreadIssue>,
+    ) -> Result<u32, ThreadError> {
         let mut next = self.state.clone();
         let item = next
             .projects
             .iter_mut()
             .find(|item| item.id == project)
             .ok_or(ThreadError::UnknownProject(project))?;
+        if let Some(issue) = &issue
+            && let Some(existing) = crate::issues::issue_thread(item, issue)
+        {
+            return Err(ThreadError::IssueAssigned {
+                number: issue.number,
+                thread: existing.id,
+            });
+        }
         let highest_thread = item
             .threads
             .iter()
@@ -76,15 +128,12 @@ impl StateStore {
                 .checked_add(1)
                 .ok_or(ThreadError::IdentifiersExhausted)?,
         );
-        next.thread_started_at.entry(project).or_default().insert(
-            identifier,
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap_or_default()
-                .as_secs()
-                .to_string(),
-        );
-        let record = ThreadItem::for_build(thread, identifier);
+        next.thread_started_at
+            .entry(project)
+            .or_default()
+            .insert(identifier, thread_start_timestamp());
+        let mut record = ThreadItem::for_build(thread, identifier);
+        record.issue = issue;
         // Newest first, as the reference's sidebar lists new threads at the top of their group.
         item.threads.insert(0, record);
         item.active_thread_id = Some(identifier);
@@ -159,4 +208,12 @@ impl StateStore {
         self.commit(next)?;
         Ok(removed)
     }
+}
+
+fn thread_start_timestamp() -> String {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs()
+        .to_string()
 }

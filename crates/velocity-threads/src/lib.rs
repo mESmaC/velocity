@@ -4,6 +4,7 @@
 #![forbid(unsafe_code)]
 
 pub mod deletion;
+pub mod dispatch;
 pub mod follow_through;
 pub mod launch;
 pub mod naming;
@@ -12,6 +13,7 @@ pub mod titles;
 pub mod transcript_view;
 
 pub use deletion::{DeletionError, DeletionPlan, PendingDeletions, plan_deletion};
+pub use dispatch::{DispatchError, IssueDispatchPlan, plan_issue_dispatch};
 pub use follow_through::DeliveryStatus;
 pub use launch::{
     LaunchError, LaunchPlan, WorktreeNaming, agent_launch, plan_launch, title_worktree_name,

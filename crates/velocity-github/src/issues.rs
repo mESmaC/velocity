@@ -36,6 +36,42 @@ struct Label {
 }
 
 impl IssueClient {
+    pub fn has_origin(directory: &Path) -> Result<bool, PullRequestError> {
+        let repository = gix::discover(directory)
+            .map_err(|error| PullRequestError::Invalid(error.to_string()))?;
+        Ok(repository.find_remote("origin").is_ok())
+    }
+    pub fn repository(&self) -> &str {
+        &self.transport.repository
+    }
+
+    pub(crate) fn open_issues(&self) -> Result<Vec<GitHubIssue>, PullRequestError> {
+        let query = format!(
+            "query($owner:String!,$name:String!,$cursor:String) {{ repository(owner:$owner,name:$name) {{ issues(first:100,after:$cursor,states:OPEN,orderBy:{{field:CREATED_AT,direction:ASC}}) {{ nodes {{ {ISSUE_FIELDS} }} pageInfo {{ hasNextPage endCursor }} }} }} }}"
+        );
+        let issues: Vec<IssueNode> = self.transport.connection(
+            &query,
+            self.transport.variables(0),
+            "/data/repository/issues",
+        )?;
+        issues
+            .into_iter()
+            .map(|issue| self.decode_issue(issue))
+            .collect()
+    }
+
+    pub(crate) fn read_issue(&self, number: u32) -> Result<GitHubIssue, PullRequestError> {
+        let query = format!(
+            "query($owner:String!,$name:String!,$number:Int!) {{ repository(owner:$owner,name:$name) {{ issue(number:$number) {{ {ISSUE_FIELDS} }} }} }}"
+        );
+        let issue = self.transport.graphql_at(
+            &query,
+            self.transport.variables(number),
+            "/data/repository/issue",
+        )?;
+        self.decode_issue(issue)
+    }
+
     pub fn discover(directory: &Path) -> Result<Self, PullRequestError> {
         Ok(Self {
             transport: PullRequestClient::discover(directory)?,

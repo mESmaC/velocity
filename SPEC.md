@@ -118,6 +118,7 @@ A thread's state (§2.1) says where it is in its lifecycle. Its **activity** say
 | command | `get_thread_menu { thread_identifier }`, `run_thread_menu_action { project_identifier, thread_identifier, action }`, `delete_thread { project_identifier, thread_identifier }`, `undo_delete_thread { deletion }` | Sidebar right-click menu and Delete with Undo (F12). The backend builds the menu from saved state, the agent session and the worktree's measured size. Actions: open the worktree in Explorer, copy its path (with a toast), open the PR in the browser. `delete_thread` hides the thread at once and publishes a toast carrying the deletion's Undo token on `layout://state`. Nothing is touched for 5 s. Then the backend stops the agent, removes the worktree (the worktree lifecycle's `UserDeletedThread`), closes any open PR, returns the thread's tasks to todo and drops its record. A worktree that cannot be removed keeps the thread and shows why. |
 | command | `get_launch_eligibility { request }` | UI eligibility for the active project, read from the backend state. No project/lock flag is accepted from the frontend. Launch handlers check the guard afresh before worktree or agent effects (Rule 2, F3). |
 | command | `get_duty_dialog_defaults { project_id }`, `start_duty { request }`, `pause_duty { request }`, `add_duty_agents { request }` | Duty view, start dialog defaults, start/pause/resume and add-agents lifecycle, persisted on the project in `state.json` and broadcast over `duty://event` (F7) |
+| command | `get_issue_panel`, `open_project_issue { project_identifier, number }`, `dispatch_issue { project_identifier, number, accept_recommendation }` | Active-project issue rail (F9). Native refresh reads open issues, labels, scout attribution and spec-question recommendations. Opening an assigned issue selects its thread; otherwise it opens GitHub. Dispatch re-reads the issue, checks the saved spec lock and atomically records issue ownership before starting the ordinary worktree/ACP lifecycle. Accept scopes that thread to the recommended one-line proposed SPEC.md answer. |
 | command | `launch_swarm`, `add_to_swarm` | swarm |
 | command | `launch_goal_swarm { prompt, mix: [{ model, effort, speed, count }], keep_going }`, `add_goal_agents` | goal swarm |
 | command | `add_task`, `list_tasks` | Task List |
@@ -135,6 +136,7 @@ A thread's state (§2.1) says where it is in its lifecycle. Its **activity** say
 | event | `pr://opened`, `pr://ci`, `pr://review`, `pr://merged`, `pr://closed` | F6 lifecycle snapshots: project/thread identifiers, PR number, stage and worktree-deleted status. `pr://merged` follows successful worktree cleanup; the layout carries the history and review cards. |
 | event | `pr://panel` | Ordered active-project PR panel snapshots, refreshed natively after project selection and at 30-second intervals. Loading and failed refreshes are explicit; failed refreshes retain the last rows with the error. The UI never polls GitHub. |
 | event | `duty://event`, `swarm://event` | activity feeds |
+| event | `issue://panel` | Ordered active-project issue snapshots, refreshed natively on project selection and every 30 seconds, with owning-thread state updated from saved changes. Failed refreshes retain the previous rows with the error. |
 | event | `worktree://created`, `worktree://deleted` | worktree lifecycle |
 | event | `worktree://inventory` | cached live worktree rows, sizes, drive capacity and settings; metadata measurements run outside the UI thread |
 | event | `airc://event`, `airc://message`, `airc://overlap` | AIRC events, agent messages and overlap detection |
@@ -550,6 +552,8 @@ The project-scoped list in the top-right panel.
   - Agents never wait on a question: they file it and claim other work (Rule 1).
   - **Why:** unanswered questions, not code, were what kept most of a milestone unclaimable.
 - **Dispatch** (hover button, `I`, or the palette): starts one agent on the issue, in its own worktree, with the normal lifecycle. The issue stays listed with its agent's live state until the PR merges, which closes it.
+  - `I` opens the palette filtered to issues. Dispatched threads keep the issue title and use `vel/issue-<n>` (with a unique suffix when needed), without calling the title model. Their saved issue identity includes the repository; repeat dispatch opens the owning thread. Deleting that thread frees the issue after Undo expires (F12).
+  - A question's recommended answer is read from a `Recommended answer:` or `Recommendation:` paragraph; its `Blocks:` bullet list supplies the blocked-item count. Questions without a recorded recommendation stay readable on GitHub. Accept starts the normal agent lifecycle with a prompt limited to the one-line proposed SPEC answer and its PR.
 
 ### F10 · Swarm
 
@@ -1136,7 +1140,7 @@ Each milestone ends with a working app. PR duty checks an item off when it lands
 **M6 · Task List, issues, swarm**
 - [ ] Task List: states, add input, `T`, `/task`, palette, attribution, live agent state (F8)
 - [ ] Agent `task_add` tool, used only when asked (F8)
-- [ ] Issues panel and single dispatch (F9)
+- [x] Issues panel and single dispatch (F9)
 - [ ] Swarm: dialog, launch, PR duty capacity, sidebar row, view, broadcast, + Items, rebase on merge, task done / issue close (F10)
 
 **M7 · AGENTS.md**

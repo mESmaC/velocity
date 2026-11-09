@@ -219,13 +219,23 @@ fn start_thread(application: &AppHandle, prompt: &str) -> Result<LayoutSnapshot,
             .map_err(|error| error.to_string())?;
         (plan, thread)
     };
+    start_planned(application, plan, thread)
+}
+
+/// F9 uses the same unrestricted worktree/session lifecycle after atomically
+/// recording an issue's owning thread.
+pub(crate) fn start_planned(
+    application: &AppHandle,
+    plan: LaunchPlan,
+    thread: u32,
+) -> Result<LayoutSnapshot, String> {
     let key = (plan.project, thread);
     let inputs = {
         let mut runtimes = lock(
             application.state::<ManagedThreads>().inner(),
             "thread sessions",
         )?;
-        let inputs = runtimes.start(key, &plan.thread.worktree_path, prompt);
+        let inputs = runtimes.start(key, &plan.thread.worktree_path, &plan.prompt);
         if plan.title.request.is_some() {
             runtimes.set_titling(key, Some(plan.title.model_name.clone()));
         }
@@ -571,7 +581,11 @@ fn refresh(
     if let Some(view) = view {
         layout.set_live_thread(key.0, identifier, view);
     }
-    if select {
+    if select
+        && store
+            .active_project()
+            .is_some_and(|project| project.id == key.0)
+    {
         layout.select_thread(identifier);
     }
     let snapshot = layout.snapshot();

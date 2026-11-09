@@ -30,6 +30,9 @@ export const commands = {
 	listPullRequests: (projectIdentifier: number) => __TAURI_INVOKE<PullRequest_Serialize[]>("list_pull_requests", { projectIdentifier }),
 	getPullRequest: (projectIdentifier: number, number: number) => __TAURI_INVOKE<PullRequestSnapshot_Serialize>("get_pull_request", { projectIdentifier, number }),
 	dispatchPullRequest: (projectIdentifier: number, operation: PullRequestOperation_Deserialize) => __TAURI_INVOKE<PullRequestReceipt>("dispatch_pull_request", { projectIdentifier, operation }),
+	getIssuePanel: () => __TAURI_INVOKE<IssuePanelSnapshot_Serialize>("get_issue_panel"),
+	openProjectIssue: (projectIdentifier: number, number: number) => __TAURI_INVOKE<null>("open_project_issue", { projectIdentifier, number }),
+	dispatchIssue: (projectIdentifier: number, number: number, acceptRecommendation: boolean) => __TAURI_INVOKE<LayoutSnapshot_Serialize>("dispatch_issue", { projectIdentifier, number, acceptRecommendation }),
 	getPullRequestPanel: () => __TAURI_INVOKE<PullRequestPanelSnapshot_Serialize>("get_pull_request_panel"),
 	openProjectPullRequest: (projectIdentifier: number, number: number) => __TAURI_INVOKE<LayoutSnapshot_Serialize | null>("open_project_pull_request", { projectIdentifier, number }),
 	getThreadMenu: (threadIdentifier: number) => __TAURI_INVOKE<ThreadMenuView_Serialize | null>("get_thread_menu", { threadIdentifier }),
@@ -52,6 +55,8 @@ export const commands = {
 
 /* Constants */
 export const DUTY_EVENT = "duty://event" as const;
+
+export const ISSUE_PANEL_EVENT = "issue://panel" as const;
 
 export const LAYOUT_INTENT_EVENT = "layout://intent" as const;
 
@@ -456,6 +461,58 @@ export type InterviewView_Serialize = {
 	status_label: string,
 	/**  Why the last action did not go through, such as locking before SPEC.md exists. */
 	notice: string | null,
+};
+
+export type IssuePanelChanged = IssuePanelChanged_Serialize | IssuePanelChanged_Deserialize;
+
+export type IssuePanelChanged_Deserialize = {
+	panel: IssuePanelSnapshot_Deserialize,
+};
+
+export type IssuePanelChanged_Serialize = {
+	panel: IssuePanelSnapshot_Serialize,
+};
+
+export type IssuePanelRow = IssuePanelRow_Serialize | IssuePanelRow_Deserialize;
+
+export type IssuePanelRow_Deserialize = {
+	number: number,
+	title: string,
+	labels: string[],
+	scout?: string | null,
+	question?: SpecQuestion | null,
+	thread_identifier?: number | null,
+	thread_label?: string | null,
+};
+
+export type IssuePanelRow_Serialize = {
+	number: number,
+	title: string,
+	labels: string[],
+	scout: string | null,
+	question: SpecQuestion | null,
+	thread_identifier: number | null,
+	thread_label: string | null,
+};
+
+export type IssuePanelSnapshot = IssuePanelSnapshot_Serialize | IssuePanelSnapshot_Deserialize;
+
+export type IssuePanelSnapshot_Deserialize = {
+	revision: number,
+	project_identifier?: number | null,
+	repository?: string | null,
+	loading: boolean,
+	rows: IssuePanelRow_Deserialize[],
+	error?: string | null,
+};
+
+export type IssuePanelSnapshot_Serialize = {
+	revision: number,
+	project_identifier: number | null,
+	repository: string | null,
+	loading: boolean,
+	rows: IssuePanelRow_Serialize[],
+	error: string | null,
 };
 
 export type KeyboardInput = {
@@ -1484,6 +1541,11 @@ export type SlashCommandItem = {
 	description: string,
 };
 
+export type SpecQuestion = {
+	recommendation: string,
+	blocked_items: number,
+};
+
 export type SpeedMode = "regular" | "fast";
 
 export type StartDutyRequest = StartDutyRequest_Serialize | StartDutyRequest_Deserialize;
@@ -1590,6 +1652,18 @@ export type ThreadDetailSnapshot_Serialize = {
 
 export type ThreadGroup = "Draft" | "Duty" | "Swarm" | "Spec" | "Working" | "Review" | "Error" | "Closed" | "Done" | "Merged";
 
+export type ThreadIssue = ThreadIssue_Serialize | ThreadIssue_Deserialize;
+
+export type ThreadIssue_Deserialize = {
+	repository?: string,
+	number?: number,
+};
+
+export type ThreadIssue_Serialize = {
+	repository: string,
+	number: number,
+};
+
 export type ThreadItem = ThreadItem_Serialize | ThreadItem_Deserialize;
 
 export type ThreadItem_Deserialize = {
@@ -1604,6 +1678,7 @@ export type ThreadItem_Deserialize = {
 	follow_through?: FollowThrough_Deserialize | null,
 	review_stage?: ReviewStage | null,
 	task_ids: number[],
+	issue?: ThreadIssue_Deserialize | null,
 	additions: number,
 	deletions: number,
 	elapsed_seconds: number,
@@ -1629,6 +1704,7 @@ export type ThreadItem_Serialize = {
 	follow_through: FollowThrough_Serialize | null,
 	review_stage: ReviewStage | null,
 	task_ids: number[],
+	issue: ThreadIssue_Serialize | null,
 	additions: number,
 	deletions: number,
 	elapsed_seconds: number,

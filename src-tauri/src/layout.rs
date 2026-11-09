@@ -64,7 +64,8 @@ pub fn dispatch_layout(
     // The interview consumes spec-thread intents; build-thread intents remain queued.
     let intent = outcome
         .intent
-        .filter(|intent| !crate::interview::handle_intent(window.app_handle(), intent));
+        .filter(|intent| !crate::interview::handle_intent(window.app_handle(), intent))
+        .filter(|intent| !crate::issue_panel::handle_intent(window.app_handle(), intent));
     publish(&window, &snapshot, intent.clone())?;
     if let Some((role, event)) = outcome.duty_event {
         crate::duty::publish_duty_event(&window, role, event)?;

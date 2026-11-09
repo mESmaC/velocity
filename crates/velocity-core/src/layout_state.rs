@@ -19,6 +19,7 @@ use std::collections::{BTreeMap, BTreeSet};
 #[derive(Clone)]
 pub struct LayoutState {
     data: LayoutData,
+    issue_rows: BTreeMap<u32, Vec<RailItem>>,
     /// Running sessions' transcripts by `(project, thread)`. Kept apart from `data` because the
     /// store rebuilds `data` from `state.json`, which has no transcript, after every change.
     live: BTreeMap<(u32, usize), LiveThreadView>,
@@ -52,6 +53,7 @@ impl Default for LayoutState {
     fn default() -> Self {
         Self {
             data: LayoutData::default(),
+            issue_rows: BTreeMap::new(),
             live: BTreeMap::new(),
             revision: 0,
             view: NavigationView::Home,
@@ -80,6 +82,20 @@ impl Default for LayoutState {
 }
 
 impl LayoutState {
+    pub fn set_project_issues(&mut self, project: u32, issues: Vec<RailItem>) {
+        self.issue_rows.insert(project, issues);
+        if self.data.project_identifier == Some(project) {
+            self.changed();
+        }
+    }
+
+    fn project_issues(&self) -> &[RailItem] {
+        self.data
+            .project_identifier
+            .and_then(|project| self.issue_rows.get(&project))
+            .map_or(&self.data.issues, Vec::as_slice)
+    }
+
     pub fn search_query(&self) -> &str {
         &self.search
     }
@@ -408,7 +424,7 @@ impl LayoutState {
             slash_selection,
             tasks: self.tasks(),
             pull_requests: self.data.pull_requests.clone(),
-            issues: self.data.issues.clone(),
+            issues: self.project_issues().to_vec(),
             worktree_label: self.worktree_label(),
             providers: self.data.providers.clone(),
             airc_unread: self.data.airc_unread,
@@ -764,6 +780,12 @@ impl LayoutState {
                 self.palette_query.clear();
                 self.palette_selection = 0;
             }
+            NavigationIntent::Dispatch => {
+                self.palette_open = true;
+                self.palette_query = "#".into();
+                self.palette_selection = 0;
+                return None;
+            }
             NavigationIntent::Dismiss => {
                 self.palette_open = false;
                 self.new_project_open = false;
@@ -1025,7 +1047,7 @@ impl LayoutState {
                     target: PaletteTarget::Thread(thread.policy.identifier),
                 }),
         );
-        items.extend(self.data.issues.iter().map(|issue| PaletteItem {
+        items.extend(self.project_issues().iter().map(|issue| PaletteItem {
             identifier: format!("issue:{}", issue.identifier),
             label: format!("#{} {}", issue.identifier, issue.title),
             group: "issue".into(),

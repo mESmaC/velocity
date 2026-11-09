@@ -55,6 +55,8 @@
     inset 0 1px 0 rgba(255, 255, 255, 0.12), 0 0 0 0.5px #000,
     0 30px 90px rgba(0, 0, 0, 0.9);
   --agents-notice-size: 11px;
+  /* Reference .item .sub gap, shared by each rail item's metadata. */
+  --issue-meta-gap: 8px;
   /* F5/F13: Settings and Worktrees, reference rules 227–233, 373–411,
      482–489, 683–687, 740 and their final overrides at 1000–1050. */
   --worktrees-scrollbar-size: 8px;

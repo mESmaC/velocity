@@ -1,5 +1,6 @@
 import { listen, type EventCallback } from '@tauri-apps/api/event';
 export * from './ipc/agents';
+export * from './ipc/issues';
 import {
   commands,
   WINDOW_STATE_EVENT,
