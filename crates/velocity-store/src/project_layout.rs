@@ -1,11 +1,13 @@
 //! Read the active project's persisted context into the shell's public read model.
 
+use crate::duty::DutyRoleItem;
 use crate::worktree_settings::project_owners;
 use crate::{
     AgentActivity, EffortLevel, PersistedState, ProjectItem, ProviderKind, ReviewStage, SpeedMode,
     TaskState, ThreadItem, ThreadState,
 };
 use std::collections::BTreeSet;
+use velocity_core::duty;
 use velocity_core::layout::{LayoutRow, ThreadGroup};
 use velocity_core::layout_view::{
     LayoutData, LayoutIntent, PaletteItem, PaletteTarget, ProviderColor, RailItem, ThreadEntry,
@@ -28,7 +30,14 @@ pub(crate) fn read_model(state: &PersistedState) -> LayoutData {
     };
     if let Some(project) = active_project(state) {
         data.project_name = project.name.clone();
-        data.threads = project.threads.iter().map(thread_entry).collect();
+        let merged_today = project.merged_today as usize;
+        let mut entries: Vec<ThreadEntry> = project
+            .duty_roles
+            .iter()
+            .map(|duty| duty_entry(duty, merged_today))
+            .collect();
+        entries.extend(project.threads.iter().map(thread_entry));
+        data.threads = entries;
         data.tasks = project
             .tasks
             .iter()
@@ -44,7 +53,7 @@ pub(crate) fn read_model(state: &PersistedState) -> LayoutData {
             .filter(|task| task.state == TaskState::Done)
             .count();
         data.pull_requests = pull_requests(project);
-        data.merged_today = project.merged_today as usize;
+        data.merged_today = merged_today;
         (data.worktree_count, data.worktree_drive) =
             footer_summary(&project_owners(project), &fallback_root(project, state));
     }
@@ -64,6 +73,28 @@ fn project_palette(state: &PersistedState) -> Vec<PaletteItem> {
             target: PaletteTarget::Intent(LayoutIntent::SwitchProject(project.id.to_string())),
         })
         .collect()
+}
+
+fn duty_entry(item: &DutyRoleItem, merged_today: usize) -> ThreadEntry {
+    let core_entry = item.to_core();
+    let metadata = duty::duty_sidebar_summary(&core_entry, merged_today);
+    ThreadEntry {
+        policy: LayoutRow {
+            identifier: core_entry.identifier,
+            group: ThreadGroup::Duty,
+            hidden: false,
+            matches_search: true,
+            member_of: None,
+            expanded: false,
+            agent_count: core_entry.agents.len(),
+            paused: core_entry.paused,
+        },
+        title: core_entry.role.title().into(),
+        metadata,
+        view: NavigationView::Duty,
+        detail: None,
+        duty: Some(core_entry),
+    }
 }
 
 fn thread_entry(thread: &ThreadItem) -> ThreadEntry {
@@ -86,6 +117,7 @@ fn thread_entry(thread: &ThreadItem) -> ThreadEntry {
             NavigationView::Thread
         },
         detail: Some(thread_detail(thread)),
+        duty: None,
     }
 }
 
@@ -135,7 +167,7 @@ fn thread_lifecycle(state: ThreadState) -> ThreadLifecycle {
     }
 }
 
-fn provider_color(provider: ProviderKind) -> ProviderColor {
+pub(crate) fn provider_color(provider: ProviderKind) -> ProviderColor {
     match provider {
         ProviderKind::Claude => ProviderColor::Claude,
         ProviderKind::Codex => ProviderColor::Codex,

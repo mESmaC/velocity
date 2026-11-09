@@ -4,6 +4,7 @@ use tauri_specta::{Builder, Event, collect_commands, collect_events};
 use velocity_store::PersistedState;
 
 mod build_gate;
+pub mod duty;
 mod github;
 pub mod layout;
 mod new_project;
@@ -40,18 +41,24 @@ fn bindings() -> Builder<tauri::Wry> {
             github::dispatch_pull_request,
             pull_request_panel::get_pull_request_panel,
             pull_request_panel::open_project_pull_request,
+            duty::get_duty_dialog_defaults,
+            duty::start_duty,
+            duty::pause_duty,
+            duty::add_duty_agents,
             new_project::get_new_project_defaults,
             new_project::pick_project_folder,
             new_project::create_project,
             build_gate::get_launch_eligibility,
         ])
         .typ::<PersistedState>()
+        .typ::<duty::DutyEventPublished>()
         .typ::<window::WindowStateChanged>()
         .typ::<layout::LayoutStateChanged>()
         .typ::<layout::LayoutIntentRequested>()
         .typ::<projects::ProjectSelected>()
         .typ::<worktree_settings::WorktreeInventoryChanged>()
         .typ::<pull_request_panel::PullRequestPanelChanged>()
+        .constant("DUTY_EVENT", duty::DutyEventPublished::NAME)
         .constant("PROJECT_SELECTED_EVENT", projects::ProjectSelected::NAME)
         .constant("WINDOW_STATE_EVENT", window::WindowStateChanged::NAME)
         .constant("LAYOUT_STATE_EVENT", layout::LayoutStateChanged::NAME)
@@ -84,6 +91,7 @@ pub fn run() -> anyhow::Result<()> {
     export_bindings()?;
 
     let bindings = bindings().events(collect_events![
+        duty::DutyEventPublished,
         window::WindowStateChanged,
         layout::LayoutStateChanged,
         layout::LayoutIntentRequested,

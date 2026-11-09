@@ -6,6 +6,7 @@ import {
   LAYOUT_INTENT_EVENT,
   PROJECT_SELECTED_EVENT,
   PULL_REQUEST_PANEL_EVENT,
+  DUTY_EVENT,
   type WindowStateChanged,
   type LayoutStateChanged_Serialize,
   type LayoutIntentRequested_Serialize,
@@ -13,6 +14,7 @@ import {
   WORKTREE_INVENTORY_EVENT,
   type WorktreeInventoryChanged_Serialize,
   type PullRequestPanelChanged,
+  type DutyEventPublished,
 } from './bindings';
 
 export type {
@@ -21,12 +23,23 @@ export type {
   DiffBlockView_Serialize as DiffBlockView,
   DiffLineRole,
   DiffLineView,
+  DutyAgentCard,
+  DutyDialogDefaults,
+  DutyEventKind,
+  DutyEventPublished,
+  DutyFeedEvent,
+  DutyMergeMethod,
+  DutyRole,
+  DutyRuleChip,
+  DutyViewSnapshot_Serialize as DutyViewSnapshot,
   EffortLevel,
   ErrorCardView,
   ModelPillView,
   LaunchEligibility,
   LaunchRequest,
+  PauseDutyRequest,
   PersistedState,
+  PrDutyRuleSettings,
   ProjectItem,
   ProjectLocationKind,
   ProofSettings,
@@ -34,10 +47,16 @@ export type {
   ProviderKind,
   ProviderSettings,
   ReviewStage,
+  ScoutCadence,
+  ScoutFocusArea,
+  ScoutRuleSettings,
   Settings,
+  SidebarGroup_Serialize as SidebarGroup,
+  SidebarRow_Serialize as SidebarRow,
   AgentCommandView,
   SlashCommandItem,
   SpeedMode,
+  StartDutyRequest_Deserialize as StartDutyRequest,
   TaskAttribution,
   TaskItem,
   TaskState,
@@ -121,6 +140,16 @@ export const newProjectCommands = {
   pickFolder: commands.pickProjectFolder,
   create: commands.createProject,
 };
+
+export const dutyCommands = {
+  defaults: commands.getDutyDialogDefaults,
+  start: commands.startDuty,
+  pause: commands.pauseDuty,
+  addAgents: commands.addDutyAgents,
+};
+
+export const onDutyEvent = (callback: EventCallback<DutyEventPublished>) =>
+  listen(DUTY_EVENT, callback);
 
 export const windowCommands = {
   getState: commands.getWindowState,

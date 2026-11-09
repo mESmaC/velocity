@@ -29,10 +29,16 @@ export const commands = {
 	pickProjectFolder: () => __TAURI_INVOKE<string | null>("pick_project_folder"),
 	/**  Create & start interview. `git` and `gh` run off the UI thread. */
 	createProject: (request: NewProjectRequest_Deserialize) => __TAURI_INVOKE<CreatedProject>("create_project", { request }),
+	getDutyDialogDefaults: () => __TAURI_INVOKE<DutyDialogDefaults>("get_duty_dialog_defaults"),
+	startDuty: (request: StartDutyRequest_Deserialize) => __TAURI_INVOKE<LayoutSnapshot_Serialize>("start_duty", { request }),
+	pauseDuty: (request: PauseDutyRequest_Deserialize) => __TAURI_INVOKE<LayoutSnapshot_Serialize>("pause_duty", { request }),
+	addDutyAgents: (request: StartDutyRequest_Deserialize) => __TAURI_INVOKE<LayoutSnapshot_Serialize>("add_duty_agents", { request }),
 	getLaunchEligibility: (request: LaunchRequest) => __TAURI_INVOKE<LaunchEligibility>("get_launch_eligibility", { request }),
 };
 
 /* Constants */
+export const DUTY_EVENT = "duty://event" as const;
+
 export const LAYOUT_INTENT_EVENT = "layout://intent" as const;
 
 export const LAYOUT_STATE_EVENT = "layout://state" as const;
@@ -126,6 +132,111 @@ export type DiffLineView = {
 	text: string,
 };
 
+export type DutyAgentCard = {
+	nickname: string,
+	provider: ProviderColor,
+	model_name: string,
+	busy: boolean,
+	doing: string,
+};
+
+export type DutyAgentItem = {
+	nickname: string,
+	provider: ProviderKind,
+	model_name: string,
+	busy: boolean,
+	doing: string,
+};
+
+export type DutyDialogDefaults = {
+	provider: ProviderKind,
+	model_name: string,
+	model_configured: boolean,
+	pr_duty_exists: boolean,
+	scouts_exists: boolean,
+	pr_rules: PrDutyRuleSettings,
+	scout_rules: ScoutRuleSettings,
+};
+
+export type DutyEventKind = "merge" | "approve" | "changes" | "wait" | "file" | "sweep" | "claim" | "skip" | "task" | "you";
+
+export type DutyEventPublished = {
+	role: DutyRole,
+	event: DutyFeedEvent,
+};
+
+export type DutyFeedEvent = {
+	timestamp: string,
+	actor: string,
+	kind: DutyEventKind,
+	message: string,
+};
+
+export type DutyFeedItem = {
+	timestamp: string,
+	actor: string,
+	kind: DutyEventKind,
+	message: string,
+};
+
+export type DutyMergeMethod = "squash" | "rebase" | "merge_commit";
+
+export type DutyRole = "pr_duty" | "scouts";
+
+export type DutyRoleItem = {
+	id: number,
+	role: DutyRole,
+	paused: boolean,
+	issues_filed: number,
+	pr_rules: PrDutyRuleSettings,
+	scout_rules: ScoutRuleSettings,
+	agents: DutyAgentItem[],
+	feed: DutyFeedItem[],
+};
+
+export type DutyRuleChip = {
+	text: string,
+	hard: boolean,
+};
+
+export type DutyViewSnapshot = DutyViewSnapshot_Serialize | DutyViewSnapshot_Deserialize;
+
+export type DutyViewSnapshot_Deserialize = {
+	identifier: string,
+	role: DutyRole,
+	title: string,
+	paused: boolean,
+	agent_count: string,
+	agent_count_label: string,
+	open_pull_request_count: string,
+	merged_today: string,
+	issues_filed: string,
+	cadence_label: string,
+	rules: DutyRuleChip[],
+	agents: DutyAgentCard[],
+	feed: DutyFeedEvent[],
+	composer_placeholder: string,
+	model_pill: ModelPillView,
+};
+
+export type DutyViewSnapshot_Serialize = {
+	identifier: string,
+	role: DutyRole,
+	title: string,
+	paused: boolean,
+	agent_count: string,
+	agent_count_label: string,
+	open_pull_request_count: string,
+	merged_today: string,
+	issues_filed: string,
+	cadence_label: string,
+	rules: DutyRuleChip[],
+	agents: DutyAgentCard[],
+	feed: DutyFeedEvent[],
+	composer_placeholder: string,
+	model_pill: ModelPillView,
+};
+
 export type EffortLevel = "low" | "medium" | "high" | "max";
 
 export type ErrorCardView = {
@@ -190,6 +301,7 @@ export type LayoutSnapshot_Deserialize = {
 	settings_tab: string,
 	selected_thread: string | null,
 	active_thread?: ThreadDetailSnapshot_Deserialize | null,
+	active_duty?: DutyViewSnapshot_Deserialize | null,
 	default_model_pill: ModelPillView,
 	search: string,
 	groups: SidebarGroup_Deserialize[],
@@ -197,6 +309,8 @@ export type LayoutSnapshot_Deserialize = {
 	show_numbers: boolean,
 	palette_open: boolean,
 	new_project_open: boolean,
+	duty_dialog_open: boolean,
+	duty_dialog_role: DutyRole,
 	palette_query: string,
 	palette_results: PaletteItem_Deserialize[],
 	palette_selection: string,
@@ -228,6 +342,7 @@ export type LayoutSnapshot_Serialize = {
 	settings_tab: string,
 	selected_thread: string | null,
 	active_thread: ThreadDetailSnapshot_Serialize | null,
+	active_duty: DutyViewSnapshot_Serialize | null,
 	default_model_pill: ModelPillView,
 	search: string,
 	groups: SidebarGroup_Serialize[],
@@ -235,6 +350,8 @@ export type LayoutSnapshot_Serialize = {
 	show_numbers: boolean,
 	palette_open: boolean,
 	new_project_open: boolean,
+	duty_dialog_open: boolean,
+	duty_dialog_role: DutyRole,
 	palette_query: string,
 	palette_results: PaletteItem_Serialize[],
 	palette_selection: string,
@@ -286,7 +403,7 @@ export type NavigationIntent_Deserialize = "Palette" | "NewThread" | "NewProject
 
 export type NavigationIntent_Serialize = "Palette" | "NewThread" | "NewProject" | "Settings" | "ShowNumbers" | ({ Jump: string }) & { Answer?: never } | "Search" | "Task" | "Swarm" | "Goal" | "Airc" | "Dismiss" | "Submit" | "Dispatch" | "Resume" | "Fanout" | "PrDuty" | "Scouts" | ({ Answer: string }) & { Jump?: never } | "Lock" | "SpecFile" | "Grill" | "Diff" | "Editor" | "SaveAgents";
 
-export type NavigationView = "Home" | "Thread" | "SpecScan" | "SpecAsk" | "SpecReady" | "SpecLocked" | "Agents" | "Settings" | "Other";
+export type NavigationView = "Home" | "Thread" | "Duty" | "SpecScan" | "SpecAsk" | "SpecReady" | "SpecLocked" | "Agents" | "Settings" | "Other";
 
 export type NewProjectDefaults = NewProjectDefaults_Serialize | NewProjectDefaults_Deserialize;
 
@@ -359,6 +476,16 @@ export type PaletteTarget_Deserialize = ({ Intent: LayoutIntent_Deserialize }) &
 
 export type PaletteTarget_Serialize = ({ Intent: LayoutIntent_Serialize }) & { Thread?: never } | ({ Thread: string }) & { Intent?: never };
 
+export type PauseDutyRequest = PauseDutyRequest_Serialize | PauseDutyRequest_Deserialize;
+
+export type PauseDutyRequest_Deserialize = {
+	role?: DutyRole | null,
+};
+
+export type PauseDutyRequest_Serialize = {
+	role: DutyRole | null,
+};
+
 /**
  *  The New project dialog's interview choices, kept until the spec interview
  *  (F3) starts its thread from them.
@@ -405,6 +532,15 @@ export type PersistedState_Serialize = {
 	settings: Settings_Serialize,
 };
 
+export type PrDutyRuleSettings = {
+	review_theorem_statements: boolean,
+	ci_green_before_merge: boolean,
+	check_diff_against_spec: boolean,
+	re_review_on_new_commits: boolean,
+	delete_branch_after_merge: boolean,
+	merge_method: DutyMergeMethod,
+};
+
 export type ProjectItem = ProjectItem_Serialize | ProjectItem_Deserialize;
 
 export type ProjectItem_Deserialize = {
@@ -422,6 +558,8 @@ export type ProjectItem_Deserialize = {
 	threads: ThreadItem_Deserialize[],
 	/**  The spec interview Create asked for and nothing has started yet (F2, F3). */
 	pending_interview?: PendingInterview_Deserialize | null,
+	/**  Duty roles started on this project (F7). */
+	duty_roles?: DutyRoleItem[],
 };
 
 export type ProjectItem_Serialize = {
@@ -439,6 +577,8 @@ export type ProjectItem_Serialize = {
 	threads: ThreadItem_Serialize[],
 	/**  The spec interview Create asked for and nothing has started yet (F2, F3). */
 	pending_interview: PendingInterview_Serialize | null,
+	/**  Duty roles started on this project (F7). */
+	duty_roles: DutyRoleItem[],
 };
 
 export type ProjectLabel = "local" | "github" | "speccing";
@@ -831,6 +971,18 @@ export type ReviewStage = "continuous_integration" | "review" | "fixing" | "appr
 
 export type ReviewStatus = "draft" | "checking" | "unclaimed" | "reviewing" | "changes_requested" | "approved";
 
+export type ScoutCadence = "once" | "every_thirty_minutes" | "after_every_merge";
+
+export type ScoutFocusArea = "bugs" | "stress" | "proof_gaps" | "spec_drift" | "performance" | "security" | "dead_code" | "ux";
+
+export type ScoutRuleSettings = {
+	focus_areas: ScoutFocusArea[],
+	assume_every_part_fails: boolean,
+	run_stress_against_models: boolean,
+	label_issues_for_dispatch: boolean,
+	cadence: ScoutCadence,
+};
+
 export type Settings = Settings_Serialize | Settings_Deserialize;
 
 export type Settings_Deserialize = {
@@ -870,6 +1022,7 @@ export type SidebarRow_Deserialize = {
 	title: string,
 	metadata: string,
 	group: ThreadGroup,
+	duty_role?: DutyRole | null,
 	member: boolean,
 	expanded: boolean,
 	active: boolean,
@@ -883,6 +1036,7 @@ export type SidebarRow_Serialize = {
 	title: string,
 	metadata: string,
 	group: ThreadGroup,
+	duty_role: DutyRole | null,
 	member: boolean,
 	expanded: boolean,
 	active: boolean,
@@ -897,6 +1051,26 @@ export type SlashCommandItem = {
 };
 
 export type SpeedMode = "regular" | "fast";
+
+export type StartDutyRequest = StartDutyRequest_Serialize | StartDutyRequest_Deserialize;
+
+export type StartDutyRequest_Deserialize = {
+	role: DutyRole,
+	agent_count: number,
+	provider?: ProviderKind | null,
+	model_name?: string | null,
+	pr_rules?: PrDutyRuleSettings | null,
+	scout_rules?: ScoutRuleSettings | null,
+};
+
+export type StartDutyRequest_Serialize = {
+	role: DutyRole,
+	agent_count: number,
+	provider: ProviderKind | null,
+	model_name: string | null,
+	pr_rules: PrDutyRuleSettings | null,
+	scout_rules: ScoutRuleSettings | null,
+};
 
 export type TaskAttribution = { kind: "spec" } | { kind: "user" } | { kind: "thread"; thread_id: number };
 

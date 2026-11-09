@@ -55,6 +55,9 @@ pub fn dispatch_layout(
         .map(|selection| (store.list_projects(), selection));
     drop(store);
     publish(&window, &outcome.snapshot, outcome.intent)?;
+    if let Some((role, event)) = outcome.duty_event {
+        crate::duty::publish_duty_event(&window, role, event)?;
+    }
     if let Some((projects, selection)) = project_selection {
         crate::projects::publish_selection(&window, projects, selection)?;
     }

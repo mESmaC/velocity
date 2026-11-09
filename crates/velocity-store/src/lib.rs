@@ -29,8 +29,11 @@ use velocity_core::state::{
     WorktreeSettings as CoreWorktreeSettings, apply_dirty_checked_step,
 };
 
+pub mod duty;
 mod project_layout;
 pub mod projects;
+
+pub use duty::DutyRoleItem;
 
 pub const STATE_FILE_NAME: &str = "state.json";
 pub mod worktree_settings;
@@ -616,6 +619,9 @@ pub struct ProjectItem {
     /// The spec interview Create asked for and nothing has started yet (F2, F3).
     #[serde(default)]
     pub pending_interview: Option<PendingInterview>,
+    /// Duty roles started on this project (F7).
+    #[serde(default)]
+    pub duty_roles: Vec<DutyRoleItem>,
 }
 
 /// The New project dialog's interview choices, kept until the spec interview

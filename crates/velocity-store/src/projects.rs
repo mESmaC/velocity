@@ -4,6 +4,7 @@
 use serde::{Deserialize, Serialize};
 use specta::Type;
 use thiserror::Error;
+use velocity_core::duty::{DutyFeedEvent, DutyRole};
 use velocity_core::layout_state::LayoutState;
 use velocity_core::layout_view::{LayoutAction, LayoutIntent, LayoutSnapshot};
 use velocity_core::projects::{self as policy, ProjectSelection, ProjectSource};
@@ -49,6 +50,7 @@ pub struct ProjectDispatch {
     pub snapshot: LayoutSnapshot,
     pub intent: Option<LayoutIntent>,
     pub selection: Option<ProjectSelectionView>,
+    pub duty_event: Option<(DutyRole, DutyFeedEvent)>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, Type)]
@@ -154,6 +156,7 @@ impl StateStore {
         // selection unchanged. Apply transient actions to a candidate first.
         let mut candidate = layout.clone();
         let mut intent = crate::build_gate::dispatch_layout(&self.state, &mut candidate, action);
+        let mut duty_event = None;
         let selection = if let Some(LayoutIntent::SwitchProject(identifier)) = &intent {
             let requested = identifier
                 .parse()
@@ -162,6 +165,17 @@ impl StateStore {
             intent = None;
             Some(selection)
         } else {
+            if let Some(LayoutIntent::SteerThread {
+                identifier, prompt, ..
+            }) = &intent
+            {
+                duty_event = self.record_duty_composer_message(
+                    &mut candidate,
+                    *identifier,
+                    prompt.clone(),
+                    crate::duty::clock_timestamp(),
+                )?;
+            }
             self.remember_project_thread(candidate.selected_thread())?;
             None
         };
@@ -170,6 +184,7 @@ impl StateStore {
             snapshot: layout.snapshot(),
             intent,
             selection,
+            duty_event,
         })
     }
 
@@ -184,6 +199,7 @@ impl StateStore {
                     .threads
                     .iter()
                     .any(|thread| thread.id == *identifier)
+                    || project.duty_roles.iter().any(|duty| duty.id == *identifier)
             });
         if project.active_thread_id == selected {
             return Ok(());

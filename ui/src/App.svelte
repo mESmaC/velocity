@@ -5,9 +5,11 @@
   import Rail from './lib/Rail.svelte';
   import Home from './lib/Home.svelte';
   import ThreadView from './lib/ThreadView.svelte';
+  import DutyView from './lib/DutyView.svelte';
   import CommandPalette from './lib/CommandPalette.svelte';
   import WorktreeSettings from './lib/WorktreeSettings.svelte';
   import NewProjectDialog from './lib/NewProjectDialog.svelte';
+  import DutyDialog from './lib/DutyDialog.svelte';
   import {
     layoutCommands,
     onLayoutState,
@@ -17,12 +19,14 @@
   import type { LayoutAction, LayoutSnapshot, LayoutIntent } from './lib/ipc';
   import './lib/theme/layout.css';
   import './lib/theme/thread-view.css';
+  import './lib/theme/duty.css';
 
   let layout = $state<LayoutSnapshot | null>(null);
   let error = $state('');
   let latest: LayoutSnapshot | null = null;
   let pending = 0;
   let newProjectSubmits = $state(0);
+  let dutySubmits = $state(0);
   let queue = Promise.resolve();
   const intents: LayoutIntent[] = [];
   const shortcutKeys = new Set([
@@ -72,6 +76,10 @@
     const navigation = intent.Navigation;
     if (navigation === 'Submit' && layout?.new_project_open) {
       newProjectSubmits += 1;
+      return;
+    }
+    if (navigation === 'Submit' && layout?.duty_dialog_open) {
+      dutySubmits += 1;
       return;
     }
     const target =
@@ -198,6 +206,12 @@
             {layout}
             thread={layout.active_thread}
             {send}
+          />{:else if layout.view === 'Duty' && layout.active_duty}<DutyView
+            {layout}
+            duty={layout.active_duty}
+            {send}
+            onResult={receive}
+            onError={report}
           />{:else if layout.view === 'Settings' && layout.settings_tab === 'worktrees'}<WorktreeSettings
             {send}
           />{/if}
@@ -209,6 +223,12 @@
 {#if layout?.new_project_open}<NewProjectDialog
     {send}
     submitRequests={newProjectSubmits}
+  />{/if}
+{#if layout?.duty_dialog_open}<DutyDialog
+    initialRole={layout.duty_dialog_role}
+    {send}
+    submitRequests={dutySubmits}
+    onResult={receive}
   />{/if}
 {#if error || layout?.launch_notice}<p class="layout-error" role="alert">
     {error || layout?.launch_notice}
