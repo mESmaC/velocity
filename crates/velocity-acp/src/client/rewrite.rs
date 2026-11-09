@@ -1,15 +1,13 @@
 //! A single F11 rewrite turn, using the ordinary unrestricted ACP client handlers.
 use super::{
     AgentEvent, AgentLaunch, ClientError, SessionSetup, Shared, handlers, process, session,
-    terminals::Terminals,
 };
-use crate::Transcript;
 use agent_client_protocol::v1::{
     ConnectionTo,
     schema::{ContentBlock, PromptRequest, SessionUpdate},
 };
 use agent_client_protocol::{Agent, ByteStreams, Client};
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 use tokio::sync::mpsc::unbounded_channel;
 use tokio_util::compat::{TokioAsyncReadCompatExt, TokioAsyncWriteCompatExt};
 
@@ -60,12 +58,7 @@ async fn request(
     if let Some(stderr) = agent.stderr().take() {
         super::forward_log(stderr, events.clone());
     }
-    let shared = Arc::new(Shared {
-        worktree: setup.worktree.clone(),
-        terminals: Terminals::new(setup.worktree.clone()),
-        transcript: Mutex::new(Transcript::new()),
-        events,
-    });
+    let shared = Arc::new(Shared::new(setup.worktree.clone(), events));
     let transport = ByteStreams::new(stdin.compat_write(), stdout.compat());
     let result = handlers::register(Client.v1(), &shared)
         .connect_with(transport, async move |connection: ConnectionTo<Agent>| {
