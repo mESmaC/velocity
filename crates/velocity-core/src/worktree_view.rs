@@ -9,7 +9,7 @@ pub struct WorktreeContext {
     pub project_identifier: Option<u32>,
     pub project_name: String,
     pub repository_path: Option<String>,
-    pub preferences: WorktreePreferences<String, String>,
+    pub preferences: WorktreePreferences,
     pub owners: Vec<WorktreeOwner>,
     pub merged_owners: Vec<u32>,
 }
@@ -35,7 +35,6 @@ pub struct DriveInfo {
 
 #[derive(Clone)]
 pub struct WorktreeSize {
-    pub path: String,
     pub bytes: Option<u64>,
     pub error: Option<String>,
 }
@@ -301,7 +300,7 @@ pub fn settings_view(
         total_size: total_size(&live, sizes),
         free_space: free_space(&effective_root, drives),
         footer_drive: footer_drive(&live, &effective_root),
-        location_notice: location_notice(&effective_root, live.len(), location_changed),
+        location_notice: location_notice(&effective_root, &live, location_changed),
         can_prune: context.repository_path.is_some(),
         rows,
     }
@@ -336,10 +335,17 @@ fn example_path(context: &WorktreeContext) -> String {
         .into_owned()
 }
 
-fn location_notice(root: &str, count: usize, changed: bool) -> String {
-    if !changed {
+fn location_notice(root: &str, owners: &[&WorktreeOwner], changed: bool) -> String {
+    let destination = path_key(root).trim_end_matches(['\\', '/']).to_owned();
+    let existing_elsewhere = owners.iter().any(|owner| {
+        Path::new(&owner.path).parent().is_some_and(|parent| {
+            path_key(&parent.to_string_lossy()).trim_end_matches(['\\', '/']) != destination
+        })
+    });
+    if !changed || !existing_elsewhere {
         return String::new();
     }
+    let count = owners.len();
     format!(
         "New worktrees go to {root}. The {count} that exist stay where they are until their PRs merge."
     )

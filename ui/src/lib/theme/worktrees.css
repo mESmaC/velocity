@@ -382,3 +382,20 @@
 .worktree-message.error {
   color: var(--err);
 }
+
+.worktree-settings-main::-webkit-scrollbar {
+  width: var(--worktrees-scrollbar-size);
+  height: var(--worktrees-scrollbar-size);
+}
+.worktree-settings-main::-webkit-scrollbar-thumb {
+  background: var(--worktrees-scrollbar-thumb);
+  border-radius: var(--worktrees-scrollbar-radius);
+  border: var(--worktrees-scrollbar-border);
+  background-clip: padding-box;
+}
+.worktree-settings-main::-webkit-scrollbar-thumb:hover {
+  background-color: var(--worktrees-scrollbar-hover);
+}
+.worktree-settings-main::-webkit-scrollbar-track {
+  background: var(--worktrees-transparent);
+}

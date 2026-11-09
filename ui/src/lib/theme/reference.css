@@ -4,6 +4,11 @@
 :root {
   /* F5/F13: Settings and Worktrees, reference rules 227–233, 373–411,
      482–489, 683–687, 740 and their final overrides at 1000–1050. */
+  --worktrees-scrollbar-size: 8px;
+  --worktrees-scrollbar-radius: 8px;
+  --worktrees-scrollbar-border: 2px solid transparent;
+  --worktrees-scrollbar-thumb: rgba(255, 255, 255, 0.14);
+  --worktrees-scrollbar-hover: rgba(255, 255, 255, 0.24);
   --worktrees-zero: 0;
   --worktrees-full: 100%;
   --worktrees-flex: 1;

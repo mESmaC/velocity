@@ -89,15 +89,28 @@ pub fn list_worktrees(
 
 #[tauri::command]
 #[specta::specta]
-pub fn set_worktree_settings(
+pub async fn set_worktree_settings(
     application: AppHandle,
-    store: State<'_, ManagedStateStore>,
-    runtime: State<'_, ManagedWorktrees>,
     edit: WorktreeSettingsEdit,
+    project_identifier: Option<u32>,
 ) -> Result<WorktreeSettingsView, String> {
-    let mut store = store.lock().map_err(|error| error.to_string())?;
+    tauri::async_runtime::spawn_blocking(move || {
+        save_worktree_settings(&application, edit, project_identifier)
+    })
+    .await
+    .map_err(|error| error.to_string())?
+}
+
+fn save_worktree_settings(
+    application: &AppHandle,
+    edit: WorktreeSettingsEdit,
+    project_identifier: Option<u32>,
+) -> Result<WorktreeSettingsView, String> {
+    let state = application.state::<ManagedStateStore>();
+    let runtime = application.state::<ManagedWorktrees>();
+    let mut store = state.lock().map_err(|error| error.to_string())?;
     if store
-        .edit_worktree_settings(edit)
+        .edit_worktree_settings(edit, project_identifier)
         .map_err(|error| error.to_string())?
     {
         runtime
@@ -108,7 +121,7 @@ pub fn set_worktree_settings(
         .snapshot(&store.worktree_context())
         .map_err(|error| error.to_string())?;
     drop(store);
-    publish(&application, view.clone());
+    publish(application, view.clone());
     Ok(view)
 }
 

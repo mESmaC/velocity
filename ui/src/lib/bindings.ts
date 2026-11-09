@@ -14,6 +14,10 @@ export const commands = {
 	dispatchLayout: (action: LayoutAction_Deserialize) => __TAURI_INVOKE<LayoutSnapshot_Serialize>("dispatch_layout", { action }),
 	listProjects: () => __TAURI_INVOKE<ProjectList>("list_projects"),
 	switchProject: (identifier: number) => __TAURI_INVOKE<LayoutSnapshot_Serialize>("switch_project", { identifier }),
+	listWorktrees: () => __TAURI_INVOKE<WorktreeSettingsView_Serialize>("list_worktrees"),
+	setWorktreeSettings: (edit: WorktreeSettingsEdit, projectIdentifier: number | null) => __TAURI_INVOKE<WorktreeSettingsView_Serialize>("set_worktree_settings", { edit, projectIdentifier }),
+	browseWorktreeFolder: () => __TAURI_INVOKE<string | null>("browse_worktree_folder"),
+	pruneWorktrees: () => __TAURI_INVOKE<string>("prune_worktrees"),
 };
 
 /* Constants */
@@ -24,6 +28,8 @@ export const LAYOUT_STATE_EVENT = "layout://state" as const;
 export const PROJECT_SELECTED_EVENT = "project://selected" as const;
 
 export const WINDOW_STATE_EVENT = "window://state" as const;
+
+export const WORKTREE_INVENTORY_EVENT = "worktree://inventory" as const;
 
 /* Types */
 export type AgentActivity = "thinking" | "executing" | "parked" | "stalled" | "at_limit" | "idle";
@@ -120,6 +126,7 @@ export type LayoutSnapshot_Deserialize = {
 	revision: number,
 	project_name: string,
 	view: NavigationView,
+	settings_tab: string,
 	selected_thread: string | null,
 	active_thread?: ThreadDetailSnapshot_Deserialize | null,
 	default_model_pill: ModelPillView,
@@ -148,6 +155,7 @@ export type LayoutSnapshot_Serialize = {
 	revision: number,
 	project_name: string,
 	view: NavigationView,
+	settings_tab: string,
 	selected_thread: string | null,
 	active_thread: ThreadDetailSnapshot_Serialize | null,
 	default_model_pill: ModelPillView,
@@ -534,6 +542,7 @@ export type ThreadItem_Deserialize = {
 	activity: AgentActivity,
 	branch_name: string,
 	worktree_path: string | null,
+	worktree_role?: WorktreeRole,
 	pull_request_number?: number | null,
 	review_stage?: ReviewStage | null,
 	task_ids: number[],
@@ -555,6 +564,7 @@ export type ThreadItem_Serialize = {
 	activity: AgentActivity,
 	branch_name: string,
 	worktree_path: string | null,
+	worktree_role: WorktreeRole,
 	pull_request_number: number | null,
 	review_stage: ReviewStage | null,
 	task_ids: number[],
@@ -638,13 +648,110 @@ export type WorkedSummaryView_Serialize = {
 
 export type WorktreeChipView = "Hidden" | "Live" | "Deleted";
 
+export type WorktreeDriveView = {
+	root: string,
+	name: string,
+	kind: string,
+	free_label: string,
+	used_percent: number,
+	selected: boolean,
+	slow: boolean,
+};
+
+export type WorktreeInventoryChanged = WorktreeInventoryChanged_Serialize | WorktreeInventoryChanged_Deserialize;
+
+export type WorktreeInventoryChanged_Deserialize = {
+	state: WorktreeSettingsView_Deserialize,
+};
+
+export type WorktreeInventoryChanged_Serialize = {
+	state: WorktreeSettingsView_Serialize,
+};
+
+export type WorktreeRole = "thread" | "review" | "sweep";
+
+export type WorktreeRowTone = "Working" | "PullRequest" | "Fixing" | "Failed" | "Closed" | "Duty" | "Deleted";
+
+export type WorktreeRowView = {
+	owner_identifier: number,
+	owner: string,
+	path: string,
+	short_path: string,
+	size: string,
+	label: string,
+	tone: WorktreeRowTone,
+	warning: string,
+	deleted: boolean,
+};
+
 export type WorktreeSettings = WorktreeSettings_Serialize | WorktreeSettings_Deserialize;
+
+export type WorktreeSettingsEdit = ({ Root: string }) & { CopyFiles?: never; DeleteLocalBranch?: never; Drive?: never; Folder?: never; OverrideEnabled?: never; ProjectRoot?: never; ReadyCount?: never; SetupCommand?: never; ShareBuildCache?: never } | ({ Drive: string }) & { CopyFiles?: never; DeleteLocalBranch?: never; Folder?: never; OverrideEnabled?: never; ProjectRoot?: never; ReadyCount?: never; Root?: never; SetupCommand?: never; ShareBuildCache?: never } | ({ Folder: string }) & { CopyFiles?: never; DeleteLocalBranch?: never; Drive?: never; OverrideEnabled?: never; ProjectRoot?: never; ReadyCount?: never; Root?: never; SetupCommand?: never; ShareBuildCache?: never } | ({ OverrideEnabled: boolean }) & { CopyFiles?: never; DeleteLocalBranch?: never; Drive?: never; Folder?: never; ProjectRoot?: never; ReadyCount?: never; Root?: never; SetupCommand?: never; ShareBuildCache?: never } | ({ ProjectRoot: string }) & { CopyFiles?: never; DeleteLocalBranch?: never; Drive?: never; Folder?: never; OverrideEnabled?: never; ReadyCount?: never; Root?: never; SetupCommand?: never; ShareBuildCache?: never } | ({ DeleteLocalBranch: boolean }) & { CopyFiles?: never; Drive?: never; Folder?: never; OverrideEnabled?: never; ProjectRoot?: never; ReadyCount?: never; Root?: never; SetupCommand?: never; ShareBuildCache?: never } | ({ ShareBuildCache: boolean }) & { CopyFiles?: never; DeleteLocalBranch?: never; Drive?: never; Folder?: never; OverrideEnabled?: never; ProjectRoot?: never; ReadyCount?: never; Root?: never; SetupCommand?: never } | ({ CopyFiles: string }) & { DeleteLocalBranch?: never; Drive?: never; Folder?: never; OverrideEnabled?: never; ProjectRoot?: never; ReadyCount?: never; Root?: never; SetupCommand?: never; ShareBuildCache?: never } | ({ SetupCommand: string }) & { CopyFiles?: never; DeleteLocalBranch?: never; Drive?: never; Folder?: never; OverrideEnabled?: never; ProjectRoot?: never; ReadyCount?: never; Root?: never; ShareBuildCache?: never } | ({ ReadyCount: number }) & { CopyFiles?: never; DeleteLocalBranch?: never; Drive?: never; Folder?: never; OverrideEnabled?: never; ProjectRoot?: never; Root?: never; SetupCommand?: never; ShareBuildCache?: never };
+
+export type WorktreeSettingsView = WorktreeSettingsView_Serialize | WorktreeSettingsView_Deserialize;
+
+export type WorktreeSettingsView_Deserialize = {
+	revision: number,
+	project_identifier?: number | null,
+	project_name: string,
+	drive: string,
+	folder: string,
+	root: string,
+	effective_root: string,
+	preview_root: string,
+	example_path: string,
+	separator: string,
+	project_override?: string | null,
+	delete_local_branch: boolean,
+	share_build_cache: boolean,
+	copy_files: string,
+	setup_command: string,
+	ready_count: number,
+	drives: WorktreeDriveView[],
+	rows: WorktreeRowView[],
+	live_count: string,
+	total_size: string,
+	free_space: string,
+	footer_drive: string,
+	location_notice: string,
+	can_prune: boolean,
+};
+
+export type WorktreeSettingsView_Serialize = {
+	revision: number,
+	project_identifier: number | null,
+	project_name: string,
+	drive: string,
+	folder: string,
+	root: string,
+	effective_root: string,
+	preview_root: string,
+	example_path: string,
+	separator: string,
+	project_override: string | null,
+	delete_local_branch: boolean,
+	share_build_cache: boolean,
+	copy_files: string,
+	setup_command: string,
+	ready_count: number,
+	drives: WorktreeDriveView[],
+	rows: WorktreeRowView[],
+	live_count: string,
+	total_size: string,
+	free_space: string,
+	footer_drive: string,
+	location_notice: string,
+	can_prune: boolean,
+};
 
 export type WorktreeSettings_Deserialize = {
 	location_root?: string | null,
 	delete_local_branch_on_merge: boolean,
 	share_rust_build_cache: boolean,
 	warm_pool_count: number,
+	project_roots?: { [key in number]: string },
+	copy_files?: string,
+	setup_command?: string,
 };
 
 export type WorktreeSettings_Serialize = {
@@ -652,4 +759,7 @@ export type WorktreeSettings_Serialize = {
 	delete_local_branch_on_merge: boolean,
 	share_rust_build_cache: boolean,
 	warm_pool_count: number,
+	project_roots: { [key in number]: string },
+	copy_files: string,
+	setup_command: string,
 };

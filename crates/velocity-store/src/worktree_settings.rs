@@ -73,8 +73,18 @@ impl StateStore {
     pub fn edit_worktree_settings(
         &mut self,
         edit: WorktreeSettingsEdit,
+        project_identifier: Option<u32>,
     ) -> Result<bool, StoreError> {
         let context = self.worktree_context();
+        if matches!(
+            edit,
+            WorktreeSettingsEdit::OverrideEnabled(_) | WorktreeSettingsEdit::ProjectRoot(_)
+        ) && context.project_identifier != project_identifier
+        {
+            return Err(StoreError::WorktreeSetting(
+                "The selected project changed; retry this edit".into(),
+            ));
+        }
         let change = preference_change(&context, edit)?;
         let location_changed = velocity_core::worktree_settings::changes_location(&change);
         let preferences = update_preferences(context.preferences, change);
@@ -117,7 +127,7 @@ fn validate_root(root: &str) -> Result<(), StoreError> {
 fn preference_change(
     context: &WorktreeContext,
     edit: WorktreeSettingsEdit,
-) -> Result<WorktreePreferenceChange<String, String>, StoreError> {
+) -> Result<WorktreePreferenceChange, StoreError> {
     use WorktreePreferenceChange as Change;
     use WorktreeSettingsEdit as Edit;
     let preferences = &context.preferences;
@@ -195,6 +205,9 @@ fn thread_status(thread: &ThreadItem) -> WorktreeDisplayStatus {
         _ => match thread.worktree_role {
             WorktreeRole::Review => WorktreeDisplayStatus::Review,
             WorktreeRole::Sweep => WorktreeDisplayStatus::Sweep,
+            WorktreeRole::Thread if thread.state != ThreadState::Review => {
+                WorktreeDisplayStatus::Working
+            }
             WorktreeRole::Thread => thread
                 .pull_request_number
                 .map(WorktreeDisplayStatus::PullRequest)

@@ -5,38 +5,38 @@
 
 /// Settings for the active project, including its optional location override.
 #[derive(Clone)]
-pub struct WorktreePreferences<Location, Text> {
-    pub root: Location,
-    pub project_override: Option<Location>,
+pub struct WorktreePreferences {
+    pub root: String,
+    pub project_override: Option<String>,
     pub delete_local_branch: bool,
     pub share_build_cache: bool,
-    pub copy_files: Text,
-    pub setup_command: Text,
+    pub copy_files: String,
+    pub setup_command: String,
     pub ready_count: u32,
 }
 
 /// An explicit user edit. Lifecycle creation/deletion rules have no setters.
-pub enum WorktreePreferenceChange<Location, Text> {
-    Root(Location),
-    ProjectOverride(Option<Location>),
+pub enum WorktreePreferenceChange {
+    Root(String),
+    ProjectOverride(Option<String>),
     DeleteLocalBranch(bool),
     ShareBuildCache(bool),
-    CopyFiles(Text),
-    SetupCommand(Text),
+    CopyFiles(String),
+    SetupCommand(String),
     ReadyCount(u32),
 }
 
-pub fn changes_location<Location, Text>(change: &WorktreePreferenceChange<Location, Text>) -> bool {
+pub fn changes_location(change: &WorktreePreferenceChange) -> bool {
     matches!(
         change,
         WorktreePreferenceChange::Root(_) | WorktreePreferenceChange::ProjectOverride(_)
     )
 }
 
-pub fn update_preferences<Location, Text>(
-    mut preferences: WorktreePreferences<Location, Text>,
-    change: WorktreePreferenceChange<Location, Text>,
-) -> WorktreePreferences<Location, Text> {
+pub fn update_preferences(
+    mut preferences: WorktreePreferences,
+    change: WorktreePreferenceChange,
+) -> WorktreePreferences {
     match change {
         WorktreePreferenceChange::Root(location) => preferences.root = location,
         WorktreePreferenceChange::ProjectOverride(location) => {

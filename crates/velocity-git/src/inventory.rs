@@ -1,6 +1,6 @@
 //! Native drive/size measurements and cached worktree inventory (SPEC.md F5).
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -118,8 +118,11 @@ impl WorktreeRuntime {
             }
             match source.paths() {
                 Ok(paths) => {
-                    measured
-                        .retain(|path, _| paths.iter().any(|current| path_key(current) == *path));
+                    let live_paths: BTreeSet<_> = paths.iter().map(|path| path_key(path)).collect();
+                    measured.retain(|path, _| live_paths.contains(path));
+                    if let Ok(mut inventory) = self.inventory.lock() {
+                        inventory.sizes.retain(|path, _| live_paths.contains(path));
+                    }
                     for path in paths {
                         if self.stopped.load(Ordering::Relaxed) {
                             break;
@@ -204,14 +207,24 @@ pub fn measure_worktree(path: &Path, stopped: &AtomicBool) -> Result<u64, Invent
         if stopped.load(Ordering::Relaxed) {
             return Err(InventoryError::Stopped);
         }
-        for entry in fs::read_dir(&directory).map_err(|error| measure_error(&directory, error))? {
+        let entries = match fs::read_dir(&directory) {
+            Ok(entries) => entries,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => continue,
+            Err(error) => return Err(measure_error(&directory, error)),
+        };
+        for entry in entries {
             if stopped.load(Ordering::Relaxed) {
                 return Err(InventoryError::Stopped);
             }
             let entry = entry.map_err(|error| measure_error(&directory, error))?;
             let entry_path = entry.path();
-            let metadata = fs::symlink_metadata(&entry_path)
-                .map_err(|error| measure_error(&entry_path, error))?;
+            // Build outputs can disappear during a scan; vanished entries no
+            // longer consume space and must not invalidate the whole reading.
+            let metadata = match fs::symlink_metadata(&entry_path) {
+                Ok(metadata) => metadata,
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => continue,
+                Err(error) => return Err(measure_error(&entry_path, error)),
+            };
             if linked_directory(&metadata) {
                 continue;
             }
@@ -256,7 +269,7 @@ impl WorktreeInventory {
             Err(error) => (None, Some(error.to_string())),
         };
         self.sizes
-            .insert(path_key(&path), WorktreeSize { path, bytes, error });
+            .insert(path_key(&path), WorktreeSize { bytes, error });
     }
 
     pub fn mark_location_changed(&mut self) {

@@ -118,7 +118,7 @@ A thread's state (§2.1) says where it is in its lifecycle. Its **activity** say
 | command | `add_task`, `list_tasks` | Task List |
 | command | `read_agents_md`, `write_agents_md`, `tighten_rule` | AGENTS.md |
 | command | `get_settings`, `set_settings`, `list_worktrees`, `prune_worktrees` | settings |
-| command | `set_worktree_settings { edit }`, `browse_worktree_folder` | persist a worktree preference edit; select a location through the native folder picker |
+| command | `set_worktree_settings { edit, project_identifier }`, `browse_worktree_folder` | persist a worktree preference edit; select a location through the native folder picker |
 | command | `list_providers`, `provider_sign_in`, `provider_sign_out`, `provider_models` | providers (OAuth) |
 | command | `airc_events`, `airc_messages`, `airc_send`, `airc_claims`, `airc_claim`, `airc_release`, `airc_share`, `airc_wait`, `airc_ledger` | AIRC (agents get the same as MCP tools). `airc_claim` is atomic: it returns `granted`, or `refused { holder, since }` |
 | event | `thread://status`, `thread://step` | thread state and tool steps |
