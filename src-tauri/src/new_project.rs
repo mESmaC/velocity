@@ -55,13 +55,16 @@ pub async fn create_project(
     request: NewProjectRequest,
 ) -> Result<CreatedProject, String> {
     tauri::async_runtime::spawn_blocking(move || {
-        velocity_new_project::create_project(
+        let created = velocity_new_project::create_project(
             &request,
             &application.state::<ManagedStateStore>(),
             &application.state::<MainLayout>(),
             |publication| publish(&application, publication),
         )
-        .map_err(|error| error.to_string())
+        .map_err(|error| error.to_string())?;
+        // F2: Create "starts the spec interview thread straight away".
+        crate::interview::start(&application);
+        Ok(created)
     })
     .await
     .map_err(|error| format!("Create stopped: {error}"))?

@@ -3,11 +3,16 @@
 use crate::duty::DutyRoleItem;
 use crate::worktree_settings::project_owners;
 use crate::{
-    AgentActivity, EffortLevel, PersistedState, ProjectItem, ProviderKind, ReviewStage, SpeedMode,
-    TaskState, ThreadItem, ThreadState,
+    AgentActivity, EffortLevel, InterviewRecord, InterviewStage, PersistedState, ProjectItem,
+    ProviderKind, ReviewStage, SpeedMode, TaskState, ThreadItem, ThreadState,
 };
 use std::collections::BTreeSet;
 use velocity_core::duty;
+use velocity_core::interview_view::{
+    InterviewDecisionView, InterviewEntry, InterviewOptionView, InterviewPhase,
+    InterviewQuestionView, InterviewView, ProofListEntryView, interview_navigation_view,
+    interview_status_label,
+};
 use velocity_core::layout::{LayoutRow, ThreadGroup};
 use velocity_core::layout_view::{
     LayoutData, LayoutIntent, PaletteItem, PaletteTarget, ProviderColor, RailItem, ThreadEntry,
@@ -31,13 +36,29 @@ pub(crate) fn read_model(state: &PersistedState) -> LayoutData {
     if let Some(project) = active_project(state) {
         data.project_name = project.name.clone();
         let merged_today = project.merged_today as usize;
+        let task_count = project.tasks.len();
         let mut entries: Vec<ThreadEntry> = project
             .duty_roles
             .iter()
             .map(|duty| duty_entry(duty, merged_today))
             .collect();
-        entries.extend(project.threads.iter().map(thread_entry));
+        entries.extend(
+            project
+                .threads
+                .iter()
+                .map(|thread| thread_entry(thread, task_count)),
+        );
         data.threads = entries;
+        data.interviews = project
+            .threads
+            .iter()
+            .filter_map(|thread| {
+                Some(InterviewEntry {
+                    thread_identifier: thread.id as usize,
+                    view: interview_view(thread.interview.as_ref()?, task_count),
+                })
+            })
+            .collect();
         data.tasks = project
             .tasks
             .iter()
@@ -97,7 +118,7 @@ fn duty_entry(item: &DutyRoleItem, merged_today: usize) -> ThreadEntry {
     }
 }
 
-fn thread_entry(thread: &ThreadItem) -> ThreadEntry {
+fn thread_entry(thread: &ThreadItem, task_count: usize) -> ThreadEntry {
     ThreadEntry {
         policy: LayoutRow {
             identifier: thread.id as usize,
@@ -110,11 +131,14 @@ fn thread_entry(thread: &ThreadItem) -> ThreadEntry {
             paused: false,
         },
         title: thread.title.clone(),
-        metadata: thread_metadata(thread),
-        view: if thread.state == ThreadState::Spec {
-            NavigationView::SpecScan
-        } else {
-            NavigationView::Thread
+        metadata: match &thread.interview {
+            Some(interview) => interview_view(interview, task_count).status_label,
+            None => thread_metadata(thread),
+        },
+        view: match &thread.interview {
+            Some(interview) => interview_navigation_view(interview_phase(interview.stage)),
+            None if thread.state == ThreadState::Spec => NavigationView::SpecScan,
+            None => NavigationView::Thread,
         },
         detail: Some(thread_detail(thread)),
         duty: None,
@@ -267,4 +291,64 @@ fn fallback_root(project: &ProjectItem, state: &PersistedState) -> String {
         .or(settings.location_root.as_ref())
         .cloned()
         .unwrap_or_default()
+}
+
+fn interview_phase(stage: InterviewStage) -> InterviewPhase {
+    match stage {
+        InterviewStage::Scan => InterviewPhase::Scan,
+        InterviewStage::Ask => InterviewPhase::Ask,
+        InterviewStage::Ready => InterviewPhase::Ready,
+        InterviewStage::Locked => InterviewPhase::Locked,
+    }
+}
+
+fn interview_view(interview: &InterviewRecord, task_count: usize) -> InterviewView {
+    let phase = interview_phase(interview.stage);
+    // The reference numbers questions by answers so far: the next one is decided + 1.
+    let asked = interview.decisions.len() + 1;
+    let question = interview
+        .question
+        .as_ref()
+        .filter(|_| phase == InterviewPhase::Ask)
+        .map(|question| InterviewQuestionView {
+            number: asked,
+            key: question.key.clone(),
+            text: question.text.clone(),
+            why: question.why.clone(),
+            options: question
+                .options
+                .iter()
+                .map(|option| InterviewOptionView {
+                    label: option.label.clone(),
+                    detail: option.detail.clone(),
+                    recommended: option.recommended,
+                })
+                .collect(),
+        });
+    let decided = interview.decisions.len();
+    InterviewView {
+        phase,
+        brief: interview.brief.clone(),
+        summary: interview.summary.clone(),
+        question,
+        decisions: interview
+            .decisions
+            .iter()
+            .map(|decision| InterviewDecisionView {
+                key: decision.key.clone(),
+                value: decision.value.clone(),
+            })
+            .collect(),
+        proof_list: interview
+            .proof_list
+            .iter()
+            .map(|entry| ProofListEntryView {
+                feature: entry.feature.clone(),
+                included: entry.included,
+            })
+            .collect(),
+        task_count,
+        status_label: interview_status_label(phase, asked, decided, task_count),
+        notice: interview.notice.clone(),
+    }
 }

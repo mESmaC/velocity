@@ -34,6 +34,7 @@ export type {
   DutyViewSnapshot_Serialize as DutyViewSnapshot,
   EffortLevel,
   ErrorCardView,
+  InterviewView_Serialize as InterviewView,
   ModelPillView,
   LaunchEligibility,
   LaunchRequest,

@@ -2,6 +2,7 @@
 
 pub mod build_gate;
 pub mod duty;
+pub mod interview_view;
 #[cfg(feature = "bindings")]
 pub mod ipc_number;
 pub mod layout;
