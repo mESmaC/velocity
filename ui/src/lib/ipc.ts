@@ -9,6 +9,8 @@ import {
   type LayoutStateChanged_Serialize,
   type LayoutIntentRequested_Serialize,
   type ProjectSelected,
+  WORKTREE_INVENTORY_EVENT,
+  type WorktreeInventoryChanged_Serialize,
 } from './bindings';
 
 export type {
@@ -52,6 +54,8 @@ export type {
   ProjectList,
   ProjectRow,
   ProjectLabel,
+  WorktreeSettingsView_Serialize as WorktreeSettingsView,
+  WorktreeSettingsEdit,
 } from './bindings';
 
 export const layoutCommands = {
@@ -86,6 +90,17 @@ export const settingsCommands = {
   get: commands.getSettings,
   set: commands.setSettings,
 };
+
+export const worktreeCommands = {
+  list: commands.listWorktrees,
+  set: commands.setWorktreeSettings,
+  browse: commands.browseWorktreeFolder,
+  prune: commands.pruneWorktrees,
+};
+
+export const onWorktreeInventory = (
+  callback: EventCallback<WorktreeInventoryChanged_Serialize>,
+) => listen(WORKTREE_INVENTORY_EVENT, callback);
 
 export const onWindowState = (callback: EventCallback<WindowStateChanged>) =>
   listen(WINDOW_STATE_EVENT, callback);

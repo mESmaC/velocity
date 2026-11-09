@@ -7,6 +7,7 @@ mod layout;
 mod projects;
 mod state;
 mod window;
+mod worktree_settings;
 
 fn bindings() -> Builder<tauri::Wry> {
     // Export event payloads/names without the generator's `any`-typed helpers;
@@ -23,16 +24,25 @@ fn bindings() -> Builder<tauri::Wry> {
             layout::dispatch_layout,
             projects::list_projects,
             projects::switch_project,
+            worktree_settings::list_worktrees,
+            worktree_settings::set_worktree_settings,
+            worktree_settings::browse_worktree_folder,
+            worktree_settings::prune_worktrees,
         ])
         .typ::<PersistedState>()
         .typ::<window::WindowStateChanged>()
         .typ::<layout::LayoutStateChanged>()
         .typ::<layout::LayoutIntentRequested>()
         .typ::<projects::ProjectSelected>()
+        .typ::<worktree_settings::WorktreeInventoryChanged>()
+        .constant("PROJECT_SELECTED_EVENT", projects::ProjectSelected::NAME)
         .constant("WINDOW_STATE_EVENT", window::WindowStateChanged::NAME)
         .constant("LAYOUT_STATE_EVENT", layout::LayoutStateChanged::NAME)
         .constant("LAYOUT_INTENT_EVENT", layout::LayoutIntentRequested::NAME)
-        .constant("PROJECT_SELECTED_EVENT", projects::ProjectSelected::NAME)
+        .constant(
+            "WORKTREE_INVENTORY_EVENT",
+            worktree_settings::WorktreeInventoryChanged::NAME,
+        )
         .error_handling(tauri_specta::ErrorHandlingMode::Throw)
 }
 
@@ -56,18 +66,24 @@ pub fn run() -> anyhow::Result<()> {
         window::WindowStateChanged,
         layout::LayoutStateChanged,
         layout::LayoutIntentRequested,
-        projects::ProjectSelected
+        projects::ProjectSelected,
+        worktree_settings::WorktreeInventoryChanged
     ]);
     tauri::Builder::default()
+        .plugin(tauri_plugin_dialog::init())
         .manage(layout::MainLayout::default())
         .invoke_handler(bindings.invoke_handler())
         .setup(move |application| {
             bindings.mount_events(application);
             state::initialize(application.handle())?;
             projects::initialize(application.handle())?;
+            worktree_settings::initialize(application.handle())?;
             Ok(())
         })
-        .on_window_event(window::on_window_event)
+        .on_window_event(|window, event| {
+            window::on_window_event(window, event);
+            worktree_settings::on_window_event(window, event);
+        })
         .run(tauri::generate_context!())
         .context("Could not run Velocity")
 }

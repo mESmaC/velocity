@@ -259,6 +259,7 @@ pub struct LayoutSnapshot {
     pub revision: u32,
     pub project_name: String,
     pub view: NavigationView,
+    pub settings_tab: String,
     #[cfg_attr(feature = "bindings", serde(with = "crate::ipc_number::optional"))]
     #[cfg_attr(feature = "bindings", specta(type = Option<String>))]
     pub selected_thread: Option<usize>,

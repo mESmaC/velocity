@@ -8,6 +8,7 @@
 
 #![forbid(unsafe_code)]
 
+pub mod inventory;
 pub mod lifecycle;
 pub mod manager;
 pub mod path_scheme;

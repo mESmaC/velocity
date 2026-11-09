@@ -6,6 +6,7 @@
   import Home from './lib/Home.svelte';
   import ThreadView from './lib/ThreadView.svelte';
   import CommandPalette from './lib/CommandPalette.svelte';
+  import WorktreeSettings from './lib/WorktreeSettings.svelte';
   import {
     layoutCommands,
     onLayoutState,
@@ -190,6 +191,8 @@
           />{:else if layout.view === 'Thread' && layout.active_thread}<ThreadView
             {layout}
             thread={layout.active_thread}
+            {send}
+          />{:else if layout.view === 'Settings' && layout.settings_tab === 'worktrees'}<WorktreeSettings
             {send}
           />{/if}
       </main>
