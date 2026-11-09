@@ -403,14 +403,21 @@ When the task is done, the agent opens a PR. The PR description links the Task L
 - **Targeted rebases.** When a PR merges, Velocity compares the merged change's files with each open agent's claimed files and edited files (§3.2).
   - Only agents with an overlap rebase straight away; each gets a `rebased` event.
   - Every other agent rebases once, at landing time, instead of after every merge.
-- **Landing on a moved `master`.** PR duty updates the branch onto `master` just before merging.
-  - **No overlapping files:** if it applies cleanly and none of its files changed on `master` since CI ran, PR duty merges.
-  - **Overlapping files, clean apply:** if files changed on `master` but the update applies cleanly, CI runs again first.
-  - **Conflict:** the PR goes straight back to its own agent, with a `conflict` event naming the files. The agent resolves the conflict and pushes, then PR duty re-checks only the changed hunks and merges. A conflict is never routed through you.
+- **PR duty updates branches.** PR duty agents are allowed, and encouraged, to update any open PR's branch with `master`. They don't wait for the authoring agent to rebase.
+  - **When:** whenever a PR they are reviewing or about to merge is behind `master`, and again just before merging.
+  - **How:** a merge of `master` into the PR branch (`gh pr update-branch`, or a merge commit pushed to the branch). PR duty never force-pushes and never rewrites the author's commits, so the author's history and open review threads stay intact. Each update posts an `updated` event naming the PR and the new head.
+  - **Why:** waiting for each author to notice and rebase was the main source of landing delays. The author may be busy, rate-limited or paused, and every merge to `master` restarted the wait.
+  - **The author** gets the `updated` event in its thread and pulls before it pushes again, so its next push builds on PR duty's update instead of being rejected.
+- **Landing on a moved `master`.** PR duty updates the branch with `master` just before merging, then runs the checks on the merge result, not on the old PR head.
+  - **No overlapping files:** if it applies cleanly and none of its files changed on `master` since the checks ran, PR duty merges.
+  - **Overlapping files, clean apply:** if files changed on `master` but the update applies cleanly, the checks run again first.
+  - **Conflict PR duty can resolve:** when both sides are clear and the resolution keeps both changes as written (imports, lists, neighbouring hunks, lockfiles regenerated), PR duty resolves it in its review worktree, pushes the merge commit and re-runs the checks.
+  - **Conflict that needs the author:** when resolving would mean choosing between two behaviours, the PR goes straight back to its own agent, with a `conflict` event naming the files. The agent resolves the conflict and pushes, then PR duty re-checks only the changed hunks and merges. A conflict is never routed through you.
 - **Merge order** (`order` events, F7) is set only for PRs that overlap each other. Unrelated PRs never wait on each other.
 
 **Accept when:**
 - [ ] A merge rebases only the open agents whose claimed or edited files it touched.
+- [ ] A PR that falls behind `master` is updated by PR duty without waiting for its author, and the author's commits are never rewritten.
 - [ ] A conflict at landing reaches the owning agent within one event cycle and is resolved without user input.
 - [ ] A comment from a PR duty agent reaches the authoring thread automatically and is acted on without user input.
 - [ ] The thread is not finished until `pr://merged`.
@@ -435,7 +442,8 @@ Long-running roles. They appear under **On duty**, with an agent count (×N) and
   - Review every theorem statement against the claim and SPEC.md.
   - CI green before merge.
   - Check against SPEC.md.
-  - Re-review on new commits.
+  - Re-review on new commits. A merge commit PR duty pushed to update the branch is not a new commit to review; only its conflict resolutions are.
+  - Update branches with `master` (F6): allowed and encouraged, never by force-push.
   - Delete the branch after merge.
   - Merge method: Squash / Rebase / Merge commit.
 - Each review runs in its own worktree (F5).
@@ -645,7 +653,8 @@ One IRC-style channel per project, `#<project>`, shared by every agent in it: th
 | `swarm` | a swarm or goal swarm starts | you |
 | `left` | an agent leaves without a PR (e.g. nothing left to claim) | agent runner |
 | `rebased` | a merge touched an agent's files and it rebased (F6) | Velocity |
-| `conflict` | a PR's update onto `master` conflicts at landing; names the files and the owning agent (F6) | PR duty |
+| `updated` | PR duty merged `master` into a PR's branch; names the PR and its new head (F6) | PR duty |
+| `conflict` | a PR's update onto `master` conflicts in a way only its author can resolve; names the files and the owning agent (F6) | PR duty |
 | `stalled` · `at limit` · `released` | activity changes and claim release (§2.2) | Velocity |
 | `broken` · `reverted` | `master` broke after a merge, and its fix or revert (F7) | Main watcher |
 | `proved` | a design or confidence proof checks, with its level per language (F17) | Velocity |

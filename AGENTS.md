@@ -128,7 +128,7 @@ Velocity's AIRC (F14) replaces this section once M8 merges. Until then, claims a
 - Every agent works in its own git worktree under `X:\velocity-wt\`. Create it from the latest `master`: `git fetch origin` then `git worktree add X:\velocity-wt\<slug> -b vel/<slug> origin/master`.
 - Branch name: `vel/<slug>`, where the slug is a short name for the piece.
 - After your PR merges, remove your worktree (`git worktree remove X:\velocity-wt\<slug>`) and delete your local branch.
-- Never touch another agent's worktree or branch. Never run `git worktree prune`.
+- Never touch another agent's worktree or branch. Never run `git worktree prune`. The one exception: PR duty agents update PR branches with `master` (see If you are on PR duty).
 
 ## Pull requests
 - One piece, one branch, one PR, against `master`.
@@ -138,7 +138,8 @@ Velocity's AIRC (F14) replaces this section once M8 merges. Until then, claims a
   - If CI fails, fix it and push.
   - Address every comment PR duty agents leave: fix it and push, or reply with the reason you didn't. Resolve the thread.
   - After pushing fixes, re-request review.
-  - If `master` moves and your PR conflicts, rebase onto `master`, resolve the conflict and push with `--force-with-lease`. Your own branch only.
+  - PR duty agents may update your branch with `master` at any time. Pull before you push again (`git pull --no-rebase`).
+  - If `master` moves and your PR conflicts, merge `master` into your branch, resolve the conflict and push. Never force-push a branch PR duty may have updated.
 - If the PR is closed without merging, report why in your thread and keep your worktree.
 
 ## If you are on PR duty
@@ -149,6 +150,11 @@ Velocity's AIRC (F14) replaces this section once M8 merges. Until then, claims a
 - When you doubt a claim no proof covers, write a stress script in `stress/`, run it, and attach the result to your comment.
 - Request changes on a PR whose proofs, tests and docs together outweigh its implementation, or that adds tests outside the critical contracts in Tests and docs.
 - Approve only when CI is green, `lake build` passes, and the axiom check above holds.
+- Update PR branches with `master`. You are allowed and encouraged to, so PRs never wait on their author to rebase:
+  - Whenever a PR you review or are about to merge is behind `master`, run `gh pr update-branch <n>`, or merge `master` into it in your review worktree and push.
+  - Resolve a conflict yourself when the resolution keeps both changes as written. When it means choosing between two behaviours, send it back to the author.
+  - Never force-push, and never rewrite the author's commits.
+  - Run the checks on the updated branch, not the old PR head.
 - Never merge without an approving review. Merge with squash and delete the branch.
 
 ## If you are a scout
