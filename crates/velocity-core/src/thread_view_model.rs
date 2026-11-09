@@ -199,6 +199,15 @@ pub struct ThreadDetailSnapshot {
     pub model_pill: ModelPillView,
 }
 
+/// What a running agent session adds to a thread on top of `state.json`: the transcript
+/// (which is not persisted) and the agent's advertised slash commands (`SPEC.md §3.2`, F4).
+#[derive(Clone, Debug, Default)]
+pub struct LiveThreadView {
+    pub blocks: Vec<TranscriptBlock>,
+    /// `None` until the agent's first `available_commands_update`; an empty list withdraws them.
+    pub agent_commands: Option<Vec<AgentCommandView>>,
+}
+
 #[derive(Clone)]
 pub struct ThreadDetailEntry {
     pub identifier: usize,

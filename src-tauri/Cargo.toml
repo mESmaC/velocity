@@ -29,6 +29,8 @@ velocity-core = { workspace = true, features = ["bindings"] }
 velocity-new-project.workspace = true
 velocity-store.workspace = true
 velocity-github.workspace = true
+velocity-git.workspace = true
+velocity-threads.workspace = true
 
 [lints]
 workspace = true

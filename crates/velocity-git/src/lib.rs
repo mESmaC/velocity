@@ -22,8 +22,9 @@ pub use manager::{
     CreatedWorktree, DEFAULT_SETUP_COMMAND, DEFAULT_UNTRACKED_FILES, MAX_WORKTREE_PATH_LENGTH,
     WorktreeError, WorktreeSetupRequest, copy_configured_untracked_files, creation_transcript_step,
     execute_git_command, execute_git_commands, execute_worktree_setup, format_leaf_folder,
-    parse_untracked_file_list, prune_orphan_worktrees, resolve_project_worktree_root,
-    resolve_worktree_directory, strip_velocity_branch_prefix, validate_worktree_path_length,
+    local_branch_exists, parse_untracked_file_list, prune_orphan_worktrees,
+    resolve_project_worktree_root, resolve_worktree_directory, strip_velocity_branch_prefix,
+    validate_worktree_path_length,
 };
 pub use path_scheme::{
     JobKind, LocationConfig, WorktreeLeaf, WorktreePath, can_allocate_leaf, effective_root,

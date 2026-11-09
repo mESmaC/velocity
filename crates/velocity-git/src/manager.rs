@@ -412,6 +412,16 @@ pub fn map_worktree_add_error(worktree_path: &Path, error: WorktreeError) -> Wor
     }
 }
 
+/// Whether `refs/heads/<branch_name>` exists, so a new thread can pick a branch nobody has.
+/// A probe that fails for another reason answers `false`: `git worktree add -b` then reports
+/// the real problem instead of the caller searching for a free name forever.
+pub fn local_branch_exists(repository_root: &Path, branch_name: &str) -> bool {
+    matches!(
+        probe_local_branch_existence(repository_root, branch_name),
+        BranchExistenceProbe::Existing
+    )
+}
+
 fn probe_local_branch_existence(repository_root: &Path, branch_name: &str) -> BranchExistenceProbe {
     let reference = format!("refs/heads/{branch_name}");
     let output = Command::new("git")

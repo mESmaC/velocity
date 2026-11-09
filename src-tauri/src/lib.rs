@@ -9,6 +9,7 @@ pub mod layout;
 mod new_project;
 mod projects;
 mod state;
+mod threads;
 mod window;
 
 pub use layout::{apply_agent_event, record_agent_event};
@@ -41,10 +42,14 @@ fn bindings() -> Builder<tauri::Wry> {
         .typ::<layout::LayoutStateChanged>()
         .typ::<layout::LayoutIntentRequested>()
         .typ::<projects::ProjectSelected>()
+        .typ::<threads::ThreadStatusChanged>()
+        .typ::<threads::ThreadStepRecorded>()
         .constant("WINDOW_STATE_EVENT", window::WindowStateChanged::NAME)
         .constant("LAYOUT_STATE_EVENT", layout::LayoutStateChanged::NAME)
         .constant("LAYOUT_INTENT_EVENT", layout::LayoutIntentRequested::NAME)
         .constant("PROJECT_SELECTED_EVENT", projects::ProjectSelected::NAME)
+        .constant("THREAD_STATUS_EVENT", threads::ThreadStatusChanged::NAME)
+        .constant("THREAD_STEP_EVENT", threads::ThreadStepRecorded::NAME)
         .error_handling(tauri_specta::ErrorHandlingMode::Throw)
 }
 
@@ -68,11 +73,14 @@ pub fn run() -> anyhow::Result<()> {
         window::WindowStateChanged,
         layout::LayoutStateChanged,
         layout::LayoutIntentRequested,
-        projects::ProjectSelected
+        projects::ProjectSelected,
+        threads::ThreadStatusChanged,
+        threads::ThreadStepRecorded
     ]);
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
         .manage(layout::MainLayout::default())
+        .manage(threads::ManagedThreads::default())
         .invoke_handler(bindings.invoke_handler())
         .setup(move |application| {
             bindings.mount_events(application);
