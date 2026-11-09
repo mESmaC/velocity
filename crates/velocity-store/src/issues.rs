@@ -3,7 +3,7 @@
 use serde::{Deserialize, Serialize};
 use specta::Type;
 
-use crate::{ProjectItem, ThreadItem, ThreadState};
+use crate::{AgentActivity, ProjectItem, ThreadItem, ThreadState};
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, Type)]
 pub struct ThreadIssue {
@@ -43,6 +43,8 @@ pub fn issue_thread_label(thread: &ThreadItem) -> String {
         ThreadState::Error => "failed · kept".into(),
         ThreadState::Closed => "closed · kept".into(),
         ThreadState::Merged => "merged".into(),
+        // An ACP turn can end while the thread is still waiting to reach its PR.
+        ThreadState::Working if thread.activity == AgentActivity::Idle => "agent idle".into(),
         _ => "agent working".into(),
     }
 }
