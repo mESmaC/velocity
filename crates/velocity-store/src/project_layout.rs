@@ -33,6 +33,11 @@ pub(crate) fn read_model(state: &PersistedState) -> LayoutData {
                 metadata: task_label(task.state).into(),
             })
             .collect();
+        data.completed_task_count = project
+            .tasks
+            .iter()
+            .filter(|task| task.state == TaskState::Done)
+            .count();
         data.pull_requests = pull_requests(project);
         data.merged_today = project.merged_today as usize;
         data.worktree_count = project
@@ -62,6 +67,7 @@ fn project_palette(state: &PersistedState) -> Vec<PaletteItem> {
 
 fn thread_entry(thread: &ThreadItem) -> ThreadEntry {
     ThreadEntry {
+        detail: None,
         policy: LayoutRow {
             identifier: thread.id as usize,
             group: thread_group(thread.state),
