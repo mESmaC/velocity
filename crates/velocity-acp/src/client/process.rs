@@ -40,6 +40,33 @@ pub fn spawn_agent(launch: &AgentLaunch, worktree: &Path) -> Result<Child, Clien
     })
 }
 
+/// Ends the agent and every process it started. On Windows an npm agent runs as
+/// `cmd.exe → node.exe`, and killing the shim alone orphans `node.exe`, which keeps running
+/// with the worktree as its working directory, so the worktree cannot be deleted (#47, F12).
+/// `taskkill /T` ends the tree while the shim still links it together; then the shim goes.
+pub async fn stop_agent(agent: &mut Child) {
+    #[cfg(windows)]
+    if let Some(process_id) = agent.id() {
+        let system_root = std::env::var_os("SystemRoot").unwrap_or_else(|| r"C:\Windows".into());
+        let mut command = Command::new(
+            Path::new(&system_root)
+                .join("System32")
+                .join("taskkill.exe"),
+        );
+        command
+            .args(["/PID", &process_id.to_string(), "/T", "/F"])
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null());
+        hide_console_window(&mut command);
+        // An agent that already exited has no tree left to end.
+        let _ = command.status().await;
+    }
+    let _ = agent.start_kill();
+    // Reaped, so its handles on the worktree are released before the session reports its end.
+    let _ = agent.wait().await;
+}
+
 /// Velocity is a windowed app: without this flag every agent and terminal command would
 /// open its own console window.
 #[cfg(windows)]
