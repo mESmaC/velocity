@@ -25,8 +25,7 @@ tauri.workspace = true
 tauri-plugin-dialog.workspace = true
 tauri-specta.workspace = true
 velocity-core = { workspace = true, features = ["bindings"] }
-velocity-git.workspace = true
-velocity-github.workspace = true
+velocity-new-project.workspace = true
 velocity-store.workspace = true
 
 [lints]

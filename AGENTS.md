@@ -36,6 +36,7 @@ Your job is working functionality. Proofs, tests and docs support it; they never
 - `crates/velocity-acp/`: the ACP client and agent processes.
 - `crates/velocity-airc/`: claims, events, ledgers and the AIRC MCP server.
 - `crates/velocity-github/`: GitHub through `gh`.
+- `crates/velocity-new-project/`: Create in the New project dialog (F2): resolves the request and runs the planned git, `gh` and store steps.
 - `ui/`: the frontend: Svelte 5, TypeScript and Vite, built with pnpm.
 - `proofs/`: the Lean 4 Lake project.
 - `stress/`: tests and stress scripts. Scouts and PR duty agents own it.

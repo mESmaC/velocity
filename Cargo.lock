@@ -3985,8 +3985,7 @@ dependencies = [
  "tauri-plugin-dialog",
  "tauri-specta",
  "velocity-core",
- "velocity-git",
- "velocity-github",
+ "velocity-new-project",
  "velocity-store",
 ]
 
@@ -4010,6 +4009,19 @@ name = "velocity-github"
 version = "0.1.0"
 dependencies = [
  "thiserror 2.0.21",
+]
+
+[[package]]
+name = "velocity-new-project"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "specta",
+ "thiserror 2.0.21",
+ "velocity-core",
+ "velocity-git",
+ "velocity-github",
+ "velocity-store",
 ]
 
 [[package]]
