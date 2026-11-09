@@ -36,7 +36,8 @@ fn launch_kind(intent: &LayoutIntent, interview_thread: bool) -> Option<LaunchKi
         | LayoutIntent::SettingsTab(_)
         | LayoutIntent::Usage
         | LayoutIntent::Updates
-        | LayoutIntent::AddTask(_) => None,
+        | LayoutIntent::AddTask(_)
+        | LayoutIntent::ToggleProofListEntry(_) => None,
     }
 }
 

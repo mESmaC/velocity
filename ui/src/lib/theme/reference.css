@@ -777,3 +777,67 @@
   --new-project-footer-background: rgba(0, 0, 0, 0.22);
   --new-project-error-font-size: 11px;
 }
+
+/* Spec interview (F3): rules 575-601, with the glass card override at 1043-1047 and
+   .check at 488-489, 683-684 and 1039. Italic declarations are dropped (AGENTS.md UI). */
+:root {
+  --spec-qa-gap: 5px;
+  --spec-qa-padding: 2px 0 2px 4px;
+  --spec-qa-question-font-size: 11.5px;
+  --spec-decision-gap: 8px;
+  --spec-decision-font-size: 12px;
+  --spec-decision-key-font-weight: 400;
+  --spec-decision-key-font-size: 10.5px;
+  --spec-decision-key-min-width: 74px;
+  --spec-glass-card-border-color: rgba(255, 255, 255, 0.09);
+  --spec-glass-card-radius: 12px;
+  --spec-glass-card-background: linear-gradient(
+    180deg,
+    rgba(255, 255, 255, 0.05),
+    rgba(255, 255, 255, 0.025)
+  );
+  --spec-glass-card-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.05);
+  --spec-q-card-padding: 12px 12px 10px;
+  --spec-qn-font: 10px var(--mono);
+  --spec-qn-margin-bottom: 5px;
+  --spec-qt-font-size: 13px;
+  --spec-qt-font-weight: 600;
+  --spec-qt-margin-bottom: 3px;
+  --spec-why-font-size: 11px;
+  --spec-why-margin-bottom: 10px;
+  --spec-foot-margin-top: 9px;
+  --spec-foot-font-size: 10.5px;
+  --spec-opts-gap: 5px;
+  --spec-opt-columns: 22px 1fr;
+  --spec-opt-gap: 8px;
+  --spec-opt-padding: 7px 9px;
+  --spec-opt-hover-border-color: rgba(255, 255, 255, 0.17);
+  --spec-opt-hover-background: linear-gradient(
+    180deg,
+    rgba(255, 255, 255, 0.08),
+    rgba(255, 255, 255, 0.04)
+  );
+  --spec-opt-kbd-margin-top: 1px;
+  --spec-opt-label-font-weight: 500;
+  --spec-opt-label-font-size: 12px;
+  --spec-opt-detail-font-size: 10.5px;
+  --spec-opt-recommended-margin-left: 8px;
+  --spec-opt-recommended-font: 400 10px var(--sans);
+  --spec-card-radius: 12px;
+  --spec-card-padding: 12px;
+  --spec-card-background: #8fb4e80a;
+  --spec-card-locked-border-color: #3f5a3c;
+  --spec-card-locked-background: #9ccc950a;
+  --spec-card-head-gap: 8px;
+  --spec-card-head-font-size: 11px;
+  --spec-card-head-margin-bottom: 10px;
+  --spec-card-locked-head-margin-bottom: 4px;
+  --spec-card-dl-columns: max-content 1fr;
+  --spec-card-dl-gap: 5px 14px;
+  --spec-card-dl-margin: 0 0 12px;
+  --spec-card-dl-font-size: 11.5px;
+  --spec-card-actions-gap: 6px;
+  --spec-checks-gap: 8px;
+  --spec-check-gap: 7px;
+  --spec-check-font-size: 11px;
+}
