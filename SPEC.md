@@ -1132,7 +1132,7 @@ Each milestone ends with a working app. PR duty checks an item off when it lands
 - [ ] Swarm: dialog, launch, PR duty capacity, sidebar row, view, broadcast, + Items, rebase on merge, task done / issue close (F10)
 
 **M7 · AGENTS.md**
-- [ ] Outliner editor with markdown round-trip (F11)
+- [x] Outliner editor with markdown round-trip (F11)
 - [ ] Live lint, coverage checks with Add (F11)
 - [ ] Rewrite agent on Enter: tighten / expand / split / flag, with Undo (F11)
 - [ ] Default AGENTS.md template with the PR, Task List and AIRC rules (F11)
