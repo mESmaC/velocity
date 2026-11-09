@@ -113,7 +113,7 @@ A thread's state (§2.1) says where it is in its lifecycle. Its **activity** say
 | command | `list_projects`, `create_project`, `switch_project` | projects |
 | command | `get_new_project_defaults`, `pick_project_folder`, `create_project { request }` | New project dialog (F2): default folders, interview effort, speed and model from Settings; the native folder picker; Create, which refuses before anything runs or sets the project up, registers it, switches to it and records its spec interview |
 | command | `list_threads`, `start_thread`, `send_message`, `delete_thread` | threads. `start_thread` and `send_message` are the composer's `StartPrompt` and `SteerThread` intents from `dispatch_layout`: the backend checks the launch gate afresh, records a `working` thread, creates its worktree on `vel/<slug>` (the message slug until thread titles land), starts the provider's ACP agent there and streams its transcript into `layout://state`. Messages to a busy agent are queued (Rule 1). |
-| command | `list_pull_requests { project_identifier }`, `get_pull_request { project_identifier, number }`, `dispatch_pull_request { project_identifier, operation }` | GitHub through signed-in `gh`: paginated PR snapshots and typed create, review, comment, reply, resolve, review-request, merge and close operations. Create accepts `base_branch` (the project's configured branch), defaulting to GitHub's default branch. Shared-login approve/merge behavior awaits Q28 (#42); the existing merge guard fails closed and sends the expected head to GitHub. CI is advisory (F7). Branch cleanup and PR lifecycle events come with PR follow-through (F6); the live rail uses `pr://panel` below. Closing preserves the checkout and branches. |
+| command | `list_pull_requests { project_identifier }`, `get_pull_request { project_identifier, number }`, `dispatch_pull_request { project_identifier, operation }` | GitHub through signed-in `gh`: paginated PR snapshots and typed create, review, comment, reply, resolve, review-request, merge and close operations. Create accepts `base_branch` (the project's configured branch), defaulting to GitHub's default branch. Shared-login approval follows F7's approval record (Q28, proposed; not built yet); the existing merge guard fails closed and sends the expected head to GitHub. CI is advisory (F7). Branch cleanup and PR lifecycle events come with PR follow-through (F6); the live rail uses `pr://panel` below. Closing preserves the checkout and branches. |
 | command | `get_pull_request_panel`, `open_project_pull_request { project_identifier, number }` | Backend-owned active-project PR rail. Native refresh reads all open PRs, the current head's aggregate CI, line counts, review decision and the first explicit `Reviewing` claim comment. A row opens its owning thread (recorded PR identity, then an unassigned matching branch from the same repository), otherwise GitHub in the browser. Clicks validate project identity. |
 | command | `get_launch_eligibility { request }` | UI eligibility for the active project, read from the backend state. No project/lock flag is accepted from the frontend. Launch handlers check the guard afresh before worktree or agent effects (Rule 2, F3). |
 | command | `start_duty`, `pause_duty`, `add_duty_agents` | duty agents |
@@ -370,7 +370,7 @@ A worktree's path is fixed when it is created. Changing the location setting aff
 - **One base clone.** Velocity keeps one base clone per project, and every worktree is a `git worktree add` from it, so only the first worktree pays for a clone.
 - **Ready-made worktrees.** Velocity keeps a few worktrees ready at the tip of `master` with setup already done: files copied, setup command run, shared build cache linked. The count is 4 by default and set by "Keep N worktrees ready" on this page.
 - **Taking one.** A new thread or agent takes a ready worktree, renames it to its path, and creates its branch there. If `master` has moved since the worktree was made, it fast-forwards first, which is cheap.
-- **Refilling.** The pool refills in the background. Ready worktrees fast-forward after each merge to `master`, then re-run setup only if the dependency manifests changed.
+- **Refilling.** The pool refills in the background. Ready worktrees fast-forward after each merge to `master`, then re-run setup only if the dependency manifests changed, and build the project at the new tip, so an agent's first build compiles only what it changes.
 - **Skills.** Pool setup links the project's enabled skills into the worktree (F18), so an agent never starts without them.
 - **Lean.** Pool setup installs the project's pinned Lean toolchain (`lean-toolchain`, through elan) and runs `lake exe cache get`. Mathlib's built files live in the shared build cache, so a worktree never rebuilds them.
 - **Swarm launches.** Launching a swarm or goal swarm tops the pool up to its agent count. Agents that find no ready worktree wait for one rather than racing each other on setup.
@@ -386,7 +386,7 @@ A worktree's path is fixed when it is created. Changing the location setting aff
 - [ ] Every merge deletes its worktree within one event cycle.
 - [ ] Closed and failed threads keep their worktree until the thread is deleted.
 - [ ] Changing the location never moves or breaks existing worktrees.
-- [ ] Sharing the build cache uses one `CARGO_TARGET_DIR` per project *(proposed mechanism)*.
+- [ ] Sharing the build cache uses one compiler cache shared by every worktree (sccache as `RUSTC_WRAPPER` for Rust) and a separate target folder per worktree *(proposed mechanism)*. A shared `CARGO_TARGET_DIR` is not used: cargo locks it, so agents would build one at a time.
 
 ### F6 · PR follow-through
 
@@ -411,13 +411,16 @@ When the task is done, the agent opens a PR. The PR description links the Task L
 - **Targeted rebases.** When a PR merges, Velocity compares the merged change's files with each open agent's claimed files and edited files (§3.2).
   - Only agents with an overlap rebase straight away; each gets a `rebased` event.
   - Every other agent rebases once, at landing time, instead of after every merge.
+  - Generated files and registration lists (AGENTS.md "Shared files", F14) never count as an overlap. Generated files are regenerated, and registration lists take both sides' additions.
+  - For edited files, an overlap means the changed regions touch or sit within a few lines of each other, not just that both changes are in the same file *(proposed)*.
 - **PR duty updates branches.** PR duty agents are allowed, and encouraged, to update any open PR's branch with `master`. They don't wait for the authoring agent to rebase.
   - **When:** whenever a PR they are reviewing or about to merge is behind `master`, and again just before merging.
   - **How:** a merge of `master` into the PR branch (`gh pr update-branch`, or a merge commit pushed to the branch). PR duty never force-pushes and never rewrites the author's commits, so the author's history and open review threads stay intact. Each update posts an `updated` event naming the PR and the new head.
   - **Why:** waiting for each author to notice and rebase was the main source of landing delays. The author may be busy, rate-limited or paused, and every merge to `master` restarted the wait.
   - **The author** gets the `updated` event in its thread and pulls before it pushes again, so its next push builds on PR duty's update instead of being rejected.
 - **Landing on a moved `master`.** PR duty updates the branch with `master` just before merging, then runs the checks on the merge result, not on the old PR head.
-  - **No overlapping files:** if it applies cleanly and none of its files changed on `master` since the checks ran, PR duty merges.
+  - **`master` unchanged since the checks ran:** PR duty merges.
+  - **No overlapping files:** if it applies cleanly and none of its files changed on `master` since the checks ran, PR duty rebuilds the merge result (incremental build and lint) and merges. It skips only the rest of the checks. A clean textual merge can still break the build: a field one PR adds to a struct breaks another PR's struct literal in a file the first PR never touched.
   - **Overlapping files, clean apply:** if files changed on `master` but the update applies cleanly, the checks run again first.
   - **Conflict PR duty can resolve:** when both sides are clear and the resolution keeps both changes as written (imports, lists, neighbouring hunks, lockfiles regenerated), PR duty resolves it in its review worktree, pushes the merge commit and re-runs the checks.
   - **Conflict that needs the author:** when resolving would mean choosing between two behaviours, the PR goes straight back to its own agent, with a `conflict` event naming the files. The agent resolves the conflict and pushes, then PR duty re-checks only the changed hunks and merges. A conflict is never routed through you.
@@ -442,7 +445,7 @@ Long-running roles. They appear under **On duty**, with an agent count (×N) and
 - **Composer:** instructs every agent in the role.
 
 **PR duty:**
-- Claims unclaimed PRs, one PR per agent, so two agents never review the same one.
+- Claims unclaimed PRs, one PR per agent, so two agents never review the same one. The review claim goes through the AIRC lock (`airc_claim` on the PR), so it is atomic. Only its holder updates, approves or merges that PR. A finding that arrives after the PR merged is filed as an issue.
 - Runs the local checks, reviews the diff against SPEC.md and the Task List, leaves inline comments, requests changes or approves, then merges.
 - **Local checks decide, not GitHub CI.** PR duty runs the project's checks in its review worktree, on the PR merged onto the current `master`: format, build with locked dependencies, lint with zero warnings, the UI checks, and `lake build` with the axiom audit when `proofs/` changes (the commands come from AGENTS.md). When they pass, the PR can merge.
   - GitHub CI is advisory. A pending, red or stale run never holds up a PR whose local checks pass.
@@ -459,7 +462,18 @@ Long-running roles. They appear under **On duty**, with an agent count (×N) and
   - Delete the branch after merge.
   - Merge method: Squash / Rebase / Merge commit.
 - Each review runs in its own worktree (F5).
+- **Approval record** *(proposed; answers Q28)*. Velocity records each approval itself, as an `approved` AIRC event naming the PR, the reviewer's nick and the head SHA it approved. That event is the approval Rule 4 requires.
+  - GitHub's review state is advisory, like CI. Every agent shares your one GitHub login, which can't approve its own PRs, and Velocity never asks for a second account's credentials or an app key (F15).
+  - PR duty merges only the head it approved (`gh pr merge --match-head-commit <sha>`), so a commit pushed after approval needs a new review.
+  - A branch update PR duty made itself with no conflict resolution moves the approval to the new head (it is not a new commit to review, see Rules below). Any other push clears it.
+  - A `changes` event newer than the approval blocks the merge. PR duty mirrors each record on GitHub as a comment ("Approved at `<sha7>`") so people reading the PR see it.
+  - On a repository whose branch protection requires a GitHub approval, the merge fails and Velocity posts a `failed` event. It never bypasses the rule (`--admin`).
 - **Review the intent, not each line.** The reviewer checks the PR against its claim, its Task List item, issue or SPEC.md section, and AGENTS.md. Style is left to linters.
+- **Severity bar** (locked). A finding blocks a merge only for: data loss or corruption, a crash or hang, a §1 rule violation, a security hole, a failing local check, or the main path of the claimed piece not doing what its SPEC.md section says.
+  - Everything else (edge cases on rare inputs, display miscounts, naming, polish) is filed as an issue with its evidence, linked from an approving review, and goes back to the pool for scouts and other agents.
+  - Every blocking finding goes in the first review. Later rounds review only the commits pushed since, and block only on findings in those commits or on new data loss or a crash.
+  - When a reviewer is unsure whether a finding blocks, it does not block.
+  - **Why:** one PR took 14 hours and five review rounds, each blocking on a narrower display edge case than the last, while the PRs queued behind it fell into conflict with every merge.
 - **Review the statements, not the proofs.** Lean has already checked every proof. The reviewer's job is whether the right thing was proven (F17).
   - Does each statement say what the SPEC.md section says?
   - Do its hypotheses exclude real inputs?
@@ -471,6 +485,7 @@ Long-running roles. They appear under **On duty**, with an agent count (×N) and
   - **Sensitive:** touches any path listed under "Sensitive paths" in AGENTS.md (e.g. migrations, worktree deletion, CI config, auth). Full review, plus the full stress suite before merge, plus a confidence proof at the strongest level the language allows (F17).
 
   The tier shows on the rail PR row. Every tier still needs an approving review, so "never merge without approval" holds.
+- **Landing ticks the plan.** When PR duty lands a PR for a §7-style checklist item, it ticks the item in the same branch update it makes before merging. Authors never tick it, so PRs don't all edit the same checklist lines.
 
 **Main watcher** *(role name proposed)*: a duty role that watches `master` after merges, modelled on Anthropic's "superfan" agents.
 - After each merge it runs every scout test and stress script (F17). Pre-merge CI is only build and lint, and the proofs are checked locally.
@@ -524,6 +539,10 @@ The project-scoped list in the top-right panel.
 ### F9 · Issues and dispatch
 
 - **The Issues panel** lists open GitHub issues: number, title, label and the scout that filed it.
+- **Questions** *(proposed)*: issues labelled `spec-question` are open SPEC.md §8 questions an agent ran into. They show as their own group at the top of the panel, sorted by how many pieces each one blocks. Each row shows the filer's recommended answer.
+  - **Accept** opens a one-line SPEC.md PR that records the answer as *(proposed)*. PR duty lands it as Trivial (F7), and the blocked pieces become claimable.
+  - Agents never wait on a question: they file it and claim other work (Rule 1).
+  - **Why:** unanswered questions, not code, were what kept most of a milestone unclaimable.
 - **Dispatch** (hover button, `I`, or the palette): starts one agent on the issue, in its own worktree, with the normal lifecycle. The issue stays listed with its agent's live state until the PR merges, which closes it.
 
 ### F10 · Swarm
@@ -605,6 +624,8 @@ Open it from the rail link or the palette. It reads and writes the repo's `AGENT
 - Opening the PR does not finish the task; monitor it until it merges.
 - Address every PR duty comment.
 - Add to the Task List only when the user asks; otherwise file an issue.
+- Review severity: what blocks a merge, and that everything else becomes an issue (F7).
+- Shared files: the project's generated files and registration lists, and how to merge them (F14).
 
 **Accept when:**
 - [ ] Saving commits AGENTS.md; agents pick it up on their next task.
@@ -656,7 +677,7 @@ One IRC-style channel per project, `#<project>`, shared by every agent in it: th
 | `overlap` (amber row) | two working or PR-open agents claim the same file | Velocity's claim comparison |
 | `shares` | an agent will make a small change in another agent's file and rebase after it merges | `airc_share` |
 | `waits` / `unblocked` | an agent waits for another agent's PR, then rebases after it merges | `airc_wait`, `pr://merged` |
-| `PR` · `changes` · `pushed` · `approved` · `merged` | the PR lifecycle (F6, F7) | GitHub |
+| `PR` · `changes` · `pushed` · `approved` · `merged` | the PR lifecycle (F6, F7) | GitHub; `approved` is PR duty's approval record (F7) |
 | `order` | PR duty sets a merge order | PR duty |
 | `issue` | a scout or agent files an issue | GitHub |
 | `task` | a Task List item is added (by you or by an agent, F8) | Task List |
@@ -675,6 +696,11 @@ One IRC-style channel per project, `#<project>`, shared by every agent in it: th
 
 **What agents do** (enforced by the AGENTS.md "Coordination (AIRC)" section, F11):
 - **Claim before editing.** Claim the task, branch and every file they expect to touch. Claims on a piece of work go through Velocity's lock (`airc_claim`): the first claim wins, and a later claim is refused with the holder's nick, so the refused agent picks other work. The claim stays until the PR merges or the thread is deleted. A failed or closed thread keeps holding its claim.
+- **Shared files are not contested.** AGENTS.md lists them under "Shared files":
+  - **Generated files** (lockfiles, generated bindings) are never claimed. They are regenerated after every merge with `master`, never merged by hand.
+  - **Registration lists** (the command, event and module lists every feature adds a line to) take shared claims, which never raise an overlap.
+
+  Without this, every agent overlaps every other on the same few files, and targeted rebases (F6) turn into rebasing everyone.
 - **Record overlaps instead of discussing them.** When Velocity posts an overlap, the later agent records either a share (`airc_share`) or a wait (`airc_wait`) before it edits the shared file. In a wait, its thread shows "waiting for <nick> · #n · shares <file>" and makes no edits. When the PR merges, it rebases and an `unblocked` event is posted. If the PR is closed, fails or is deleted, the wait ends.
 - **Message only when needed.** A message is for something events can't say: asking the file's owner for a change, a handoff note after a merge, or answering a mention. Agents never restate an event in a message.
 - **Address every message.** A message names its recipients (`to`) and its `intent`: `inform`, `request` or `question`. An agent never replies to an `inform`. It answers a `question`, and replies "done" or "declined, because …" to a `request`. Agents can't broadcast; only your comments go to every agent.
@@ -802,7 +828,7 @@ Four providers: **Anthropic** (Claude Code agent), **Codex** (Codex CLI agent), 
    - **Granted:** it renames its branch for the piece (`vel/<slug>`, or `vel/issue-<n>`), posts its claim with files, and continues.
    - **Refused** (another agent claimed the piece after this agent read the board): a `refused` event names the holder. The agent re-reads the board and claims the first open piece, which posts a `claim` event. No message is needed.
    - **Nothing left:** a `left` event is posted; the agent removes its worktree and leaves.
-4. From here it is an ordinary thread (F4–F6). It settles overlaps and dependency waits in AIRC (F14), opens a PR, watches it until PR duty merges it, and its worktree is deleted. Merging ticks the task, closes the issue, or marks the SPEC.md section built.
+4. From here it is an ordinary thread (F4–F6). It settles overlaps and dependency waits in AIRC (F14), opens a PR, watches it until PR duty merges it, and its worktree is deleted. Merging ticks the task, closes the issue, or records the SPEC.md section as built in the project's state. Velocity records it at landing; the agent's PR never edits SPEC.md to mark it, so PRs don't all touch SPEC.md.
 5. With keep going on, the same nick goes back to step 2.
 
 Agents launched together read the board within seconds of each other, so several often want the same piece. The lock is what makes that safe. The losers pick again within one step instead of duplicating work.
@@ -1058,7 +1084,7 @@ theorem optimal : ∀ strat ∈ RebaseStrategies,
 
 ## 7. Implementation order
 
-Each milestone ends with a working app. Check items off as their PRs merge.
+Each milestone ends with a working app. PR duty checks an item off when it lands that item's PR (F7).
 
 **Bootstrap prerequisite** (AGENTS.md Proofs, F17)
 - [x] Pinned Lake project, Lean 4, Mathlib, Charon and Aeneas, with documented setup and extraction commands
@@ -1092,7 +1118,7 @@ Each milestone ends with a working app. Check items off as their PRs merge.
 - [ ] Right-click menu and delete with 5 s undo (F12)
 
 **M5 · Duty agents**
-- [ ] PR duty: claiming, review against SPEC.md, request changes, approve, merge; never merge unapproved (Rule 4, F7)
+- [ ] PR duty: claiming, review against SPEC.md, request changes, approve, merge; never merge unapproved; approval record bound to the head SHA; severity bar (Rule 4, F7, Q28)
 - [ ] Scouts: sweeps, issue filing with repro, de-duplication (F7)
 - [ ] Duty view, start dialog, pause/resume, add agents (F7)
 
@@ -1128,8 +1154,8 @@ Each milestone ends with a working app. Check items off as their PRs merge.
 - [ ] Agent activity, stall detection with nudge then restart, per-agent caps, claim release after the grace period (§2.2)
 - [ ] Parking: end the session on `airc_wait`, resume on the subscribed `merged` event; optional provider concurrency cap (§2.2, F15)
 - [ ] Targeted AIRC delivery, message envelope (`to`, `intent`), heads-down and quarantine modes (F14)
-- [ ] Targeted rebases, optimistic landing, conflicts sent back to the owning agent (F6)
-- [ ] Warm worktree pool from one base clone; worktree guards (F5)
+- [ ] Targeted rebases, optimistic landing, conflicts sent back to the owning agent; rebuild the merge result whenever `master` moved; Shared files exempt from overlaps (F6, F14)
+- [ ] Warm worktree pool from one base clone, prebuilt at the tip of `master` with a shared compiler cache; worktree guards (F5)
 - [ ] PR duty tiered review and intent review; Sensitive paths in AGENTS.md (F7)
 - [ ] Main watcher duty role: post-merge suite, bisect, fix or revert PR (F7)
 
@@ -1182,5 +1208,5 @@ Each milestone ends with a working app. Check items off as their PRs merge.
 | Q25 | Does fast mode draw down each provider's subscription limit faster, and how does each provider report it? | F15 |
 | Q26 | Which folder does Kimi Code read skills from inside a project (`.kimi-code/skills/`, `.agents/skills/` or another)? And does Antigravity read `.agents/skills/` as the gamedev and UI UX Pro Max docs say? | F18 |
 | Q27 | Should "Add a skill pack" also search the skills.sh registry, or take only GitHub repos? | F18 |
-| Q28 | How is Rule 4 approval recorded when all agents share one GitHub account, which cannot approve its own PRs? Tracked in #42. | M4 approve/merge, F7 |
+| Q28 | How is Rule 4 approval recorded when all agents share one GitHub account, which cannot approve its own PRs? Tracked in #42. Proposed: Velocity's own approval record bound to the head SHA (F7). Velocity's own repository uses a PR duty GitHub App until that is built (AGENTS.md). | M4 approve/merge, F7 |
 
