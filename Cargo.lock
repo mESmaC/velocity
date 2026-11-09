@@ -5455,6 +5455,7 @@ name = "velocity-acp"
 version = "0.1.0"
 dependencies = [
  "agent-client-protocol",
+ "libc",
  "process-wrap",
  "thiserror 2.0.21",
  "tokio",

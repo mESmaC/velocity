@@ -34,43 +34,6 @@ pub struct NewThread {
     pub preferred_speed: SpeedMode,
 }
 
-impl NewThread {
-    fn into_record(self, identifier: u32) -> ThreadItem {
-        ThreadItem {
-            id: identifier,
-            title: self.title,
-            state: ThreadState::Working,
-            activity: AgentActivity::Executing,
-            branch_name: self.branch_name,
-            worktree_path: Some(self.worktree_path),
-            // A thread started from the composer builds in its own worktree (F4, F5).
-            worktree_role: WorktreeRole::Thread,
-            worktree_path_id: None,
-            pull_request_number: None,
-            follow_through: Some(velocity_github::follow_through::FollowThrough::for_thread(
-                std::time::SystemTime::now()
-                    .duration_since(std::time::UNIX_EPOCH)
-                    .unwrap_or_default()
-                    .as_secs()
-                    .to_string(),
-            )),
-            review_stage: None,
-            task_ids: Vec::new(),
-            additions: 0,
-            deletions: 0,
-            elapsed_seconds: 0,
-            provider: self.provider,
-            model_name: self.model_name,
-            effort: self.effort,
-            preferred_speed: self.preferred_speed,
-            effective_speed: self.preferred_speed,
-            model_supports_fast: self.model_supports_fast,
-            interview: None,
-        }
-        .normalize()
-    }
-}
-
 impl StateStore {
     pub fn active_project(&self) -> Option<&ProjectItem> {
         crate::project_layout::active_project(&self.state)
@@ -103,7 +66,7 @@ impl StateStore {
                 .checked_add(1)
                 .ok_or(ThreadError::IdentifiersExhausted)?,
         );
-        let record = thread.into_record(identifier);
+        let record = ThreadItem::for_build(thread, identifier);
         // Newest first, as the reference's sidebar lists new threads at the top of their group.
         item.threads.insert(0, record);
         item.active_thread_id = Some(identifier);

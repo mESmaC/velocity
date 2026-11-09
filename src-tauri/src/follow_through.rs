@@ -3,7 +3,6 @@ use std::path::Path;
 use std::thread;
 use std::time::Duration;
 use tauri::{AppHandle, Emitter, Manager};
-use tauri_specta::Event;
 use velocity_git::remove_merged_worktree;
 use velocity_github::{PullRequestClient, PullRequestSnapshot, PullRequestState};
 use velocity_store::{ProjectItem, ThreadItem, ThreadState};
@@ -272,9 +271,7 @@ fn checkpoint(
     let mut layout = layout_state.lock().map_err(|error| error.to_string())?;
     store.refresh_follow_through_layout(&mut layout);
     let state = layout.snapshot();
-    crate::layout::LayoutStateChanged { state }
-        .emit(application)
-        .map_err(|error| error.to_string())?;
+    crate::layout::publish(application, &state, None)?;
     drop(layout);
     drop(store);
     publish_lifecycle(

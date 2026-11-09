@@ -558,6 +558,41 @@ pub struct ThreadItem {
 }
 
 impl ThreadItem {
+    pub(crate) fn for_build(thread: threads::NewThread, identifier: u32) -> Self {
+        Self {
+            id: identifier,
+            title: thread.title,
+            state: ThreadState::Working,
+            activity: AgentActivity::Executing,
+            branch_name: thread.branch_name,
+            worktree_path: Some(thread.worktree_path),
+            // A thread started from the composer builds in its own worktree (F4, F5).
+            worktree_role: WorktreeRole::Thread,
+            worktree_path_id: None,
+            pull_request_number: None,
+            follow_through: Some(velocity_github::follow_through::FollowThrough::for_thread(
+                std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .unwrap_or_default()
+                    .as_secs()
+                    .to_string(),
+            )),
+            review_stage: None,
+            task_ids: Vec::new(),
+            additions: 0,
+            deletions: 0,
+            elapsed_seconds: 0,
+            provider: thread.provider,
+            model_name: thread.model_name,
+            effort: thread.effort,
+            preferred_speed: thread.preferred_speed,
+            effective_speed: thread.preferred_speed,
+            model_supports_fast: thread.model_supports_fast,
+            interview: None,
+        }
+        .normalize()
+    }
+
     fn into_core_record(self) -> (Self, CoreThreadRecord<String, String>) {
         let core_record = CoreThreadRecord {
             id: self.id,

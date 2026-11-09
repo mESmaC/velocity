@@ -281,12 +281,14 @@ async fn watch_child(
     exit: watch::Sender<Option<TerminalCompletion>>,
 ) {
     // A dropped sender (the terminal was released) kills the command as well.
-    let status = tokio::select! {
-        status = child.wait() => status,
-        _ = kill_requested => {
-            stop_owned_process(&mut child).await
-        }
+    // Only the inner process wait is cancelled. Cancelling the group's wait after
+    // it caches the shell's exit can make its next wait skip living descendants.
+    let exited = tokio::select! {
+        status = child.inner_mut().wait() => status.map(|_| ()),
+        _ = kill_requested => Ok(()),
     };
+    let stopped = stop_owned_process(&mut child).await;
+    let status = exited.and(stopped);
     // Report the exit only after all output has been read, so `terminal/output` after
     // `wait_for_exit` sees all of it.
     for reader in readers.into_iter().flatten() {

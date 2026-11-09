@@ -72,7 +72,14 @@ pub fn spawn_owned_command(mut command: Command) -> std::io::Result<AgentProcess
 }
 
 pub async fn stop_owned_process(agent: &mut AgentProcess) -> std::io::Result<ExitStatus> {
-    agent.start_kill()?;
+    if let Err(error) = agent.start_kill() {
+        // A Unix group that already exited has no remaining processes to signal.
+        #[cfg(unix)]
+        if error.raw_os_error() == Some(libc::ESRCH) {
+            return agent.wait().await;
+        }
+        return Err(error);
+    }
     agent.wait().await
 }
 
