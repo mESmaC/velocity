@@ -68,6 +68,24 @@ impl Interviews {
         use_session(lock(&self.sessions).entry(key).or_default())
     }
 
+    /// Whether the spec thread's agent is running, so deleting it stops one (F12).
+    pub fn is_running(&self, key: InterviewKey) -> bool {
+        lock(&self.sessions)
+            .get(&key)
+            .is_some_and(|session| session.inputs.is_some())
+    }
+
+    /// Ends the spec thread's agent because the thread is being deleted (F12). A spec
+    /// thread works in the main checkout, so there is no worktree to wait for.
+    pub fn stop_agent(&self, key: InterviewKey) {
+        if let Some(inputs) = lock(&self.sessions)
+            .get_mut(&key)
+            .and_then(|session| session.inputs.take())
+        {
+            let _ = inputs.send(AgentInput::Stop);
+        }
+    }
+
     /// The live blocks and busy flag of every interview in `project`.
     fn live_for(&self, project: u32) -> Vec<(u32, Vec<TranscriptBlock>, bool)> {
         lock(&self.sessions)
