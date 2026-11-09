@@ -1,6 +1,7 @@
 //! Backend-owned main-window state. No native effects or persistence live here.
 
 use crate::build_gate::{BuildKind, LaunchKind, launch_block_reason};
+use crate::interview_view;
 use crate::layout::{self, ThreadGroup};
 use crate::layout_catalog::{self, GROUPS, PULSE};
 use crate::layout_view::*;
@@ -127,6 +128,7 @@ impl LayoutState {
     /// Feature owners replace their read model after domain events, then emit a snapshot.
     pub fn replace_data(&mut self, data: LayoutData) {
         self.data = data;
+        self.follow_selected_view();
         if self.selected_thread.is_some_and(|identifier| {
             !self
                 .data
@@ -157,6 +159,52 @@ impl LayoutState {
     fn live_thread(&self, identifier: usize) -> Option<&LiveThreadView> {
         let project = self.data.project_identifier?;
         self.live.get(&(project, identifier))
+    }
+
+    /// A spec interview moves from scan to ask to ready while it is open, and each phase
+    /// takes different keys (§5), so the open thread's view follows its latest phase.
+    fn follow_selected_view(&mut self) {
+        let Some(identifier) = self.selected_thread else {
+            return;
+        };
+        let follows = matches!(
+            self.view,
+            NavigationView::Thread
+                | NavigationView::SpecScan
+                | NavigationView::SpecAsk
+                | NavigationView::SpecReady
+                | NavigationView::SpecLocked
+        );
+        if let Some(entry) = self
+            .data
+            .threads
+            .iter()
+            .find(|thread| thread.policy.identifier == identifier)
+            && follows
+        {
+            self.view = entry.view;
+        }
+    }
+
+    /// Live agent output that `state.json` does not keep: the transcript streamed so far
+    /// and whether a turn is running.
+    pub fn set_thread_live(
+        &mut self,
+        identifier: usize,
+        blocks: Vec<TranscriptBlock>,
+        agent_busy: bool,
+    ) {
+        if let Some(thread) = self
+            .data
+            .threads
+            .iter_mut()
+            .find(|thread| thread.policy.identifier == identifier)
+            && let Some(detail) = thread.detail.as_mut()
+        {
+            detail.blocks = blocks;
+            detail.agent_busy = agent_busy;
+            self.changed();
+        }
     }
 
     /// Create closes the New project dialog once the project is set up (F2).
@@ -404,6 +452,17 @@ impl LayoutState {
             if let Some(commands) = &live.agent_commands {
                 snapshot.agent_commands = commands.clone();
             }
+        }
+
+        if let Some(interview) = self
+            .data
+            .interviews
+            .iter()
+            .find(|interview| interview.thread_identifier == identifier)
+        {
+            snapshot.composer_placeholder =
+                interview_view::interview_placeholder(interview.view.phase).into();
+            snapshot.interview = Some(interview.view.clone());
         }
         Some(snapshot)
     }

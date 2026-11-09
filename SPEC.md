@@ -125,6 +125,7 @@ A thread's state (§2.1) says where it is in its lifecycle. Its **activity** say
 | command | `set_worktree_settings { edit, project_identifier }`, `preview_worktree_folder { folder }`, `browse_worktree_folder` | persist a worktree preference edit; preview the path for a folder still being typed, without saving it; select a location through the native folder picker |
 | command | `list_providers`, `provider_sign_in`, `provider_sign_out`, `provider_models` | providers (OAuth) |
 | command | `airc_events`, `airc_messages`, `airc_send`, `airc_claims`, `airc_claim`, `airc_release`, `airc_share`, `airc_wait`, `airc_ledger` | AIRC (agents get the same as MCP tools). `airc_claim` is atomic: it returns `granted`, or `refused { holder, since }` |
+| command | `dispatch_layout` with `Navigation(Answer(n))`, `Navigation(Lock)`, `Navigation(SpecFile)`, `Navigation(Grill)`, `SteerThread` on a spec thread, and `ToggleProofListEntry(index)` | spec interview (F3): answer `1`–`4` or in your own words, Lock spec & publish tasks, open SPEC.md, Keep grilling, and switch a proposed proof-list entry. The backend carries these out; the interview's phase, question, decisions and proof list arrive on `active_thread.interview` in `layout://state`. |
 | event | `thread://status`, `thread://step` | thread state and tool steps: `thread://status` carries a thread's state and activity (§2.1, §2.2) whenever either changes; `thread://step` carries the thread's newest transcript block after each agent update |
 | event | `window://state` | native maximize/restore state, including changes made by the operating system |
 | event | `layout://state`, `layout://intent` | ordered main-window snapshots and typed navigation requests for feature owners; no shell commands cross IPC |
@@ -297,6 +298,7 @@ The layout has three columns:
    - **Lock spec & publish tasks** (`L`): commits SPEC.md, turns the draft tasks into real tasks, and marks the thread done.
    - **SPEC.md** (`S`): opens the file.
    - **Keep grilling** (`G`): asks more questions.
+4. **How the agent reports structure:** the interview runs on any provider, so the prompt carries the whole protocol. The agent ends each reply with a fenced `velocity-interview` JSON block: the scan summary (first reply), the draft tasks the last answer adds, and either the next question (`key`, `text`, `why`, up to 4 options, one recommended) or `ready` with the proposed proof list. Velocity hides the block from the transcript. A reply without one leaves the question open for a free-text answer. Lock writes the edited proof list into SPEC.md's `## Proof list` section before committing. After a restart, an interview resumes on your next message from its saved decisions (§3.2 Resume after a restart).
 
 **Accept when:**
 - [ ] No build thread, swarm or dispatch can start on a project whose spec is unlocked. Swarm marks draft tasks "lock the spec first".
@@ -1070,7 +1072,7 @@ Each milestone ends with a working app. Check items off as their PRs merge.
 **M2 · Projects and spec**
 - [x] Project store and switcher (F1)
 - [x] New-project dialog: local (git init) and GitHub (new/existing, visibility, clone) (F2)
-- [ ] Spec interview: scan, ask, ready, lock; SPEC.md written and committed; draft → published tasks (F3)
+- [x] Spec interview: scan, ask, ready, lock; SPEC.md written and committed; draft → published tasks (F3)
 - [x] Gate: no build work on unlocked projects (Rule 2)
 
 **M3 · Threads and worktrees**
@@ -1160,7 +1162,7 @@ Each milestone ends with a working app. Check items off as their PRs merge.
 | Q4 | Does a swarm ever cap how many agents run at once, or always start everything? Built: everything starts. A per-provider cap is specified, off by default (F15). | F10 |
 | Q5 | Does a running swarm pick up items added after launch? (Built: no.) | F10 |
 | Q6 | After the spec is locked, does a task added outside the spec update SPEC.md (via a short interview), or stay outside it? | F3, F8 |
-| Q7 | Does the spec interview also write the first AGENTS.md? | F3, F11 |
+| Q7 | Decided: no. The spec interview writes SPEC.md only; AGENTS.md comes from F11. | F3, F11 |
 | Q8 | Does the AGENTS.md lint only advise, or also block (e.g. PR duty flags hedged wording in AGENTS.md changes)? | F11 |
 | Q10 | Ghost-text autocomplete while typing in AGENTS.md? (It would take Tab from indent.) | F11 |
 | Q11 | Decided: Svelte 5 + TypeScript on Vite, built with pnpm (§3). | M1 |
@@ -1176,7 +1178,7 @@ Each milestone ends with a working app. Check items off as their PRs merge.
 | Q21 | Decided: pre-merge GitHub CI is build and lint and only advisory, the local checks on the merge result decide the merge (F7), proofs are checked locally before merge, and tests and stress scripts run after the merge (F17). | F7, F17 |
 | Q22 | Name for the "Main watcher" duty role. | F7 |
 | Q23 | Which code-level translators should ship besides Aeneas for Rust (C, C++, Python and others)? Until one exists for a language, that language tops out at the reference level. | F17 |
-| Q24 | Should the spec interview write design proofs for SPEC.md sections up front, or leave every design proof to the agent that builds the feature (as specified)? | F3, F17 |
+| Q24 | Decided: no. The spec interview only proposes the proof list; each building agent writes its design proof after the code (Rule 8). | F3, F17 |
 | Q25 | Does fast mode draw down each provider's subscription limit faster, and how does each provider report it? | F15 |
 | Q26 | Which folder does Kimi Code read skills from inside a project (`.kimi-code/skills/`, `.agents/skills/` or another)? And does Antigravity read `.agents/skills/` as the gamedev and UI UX Pro Max docs say? | F18 |
 | Q27 | Should "Add a skill pack" also search the skills.sh registry, or take only GitHub repos? | F18 |

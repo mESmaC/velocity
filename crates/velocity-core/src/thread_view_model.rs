@@ -2,6 +2,7 @@
 //!
 //! All domain decisions delegate to the Aeneas-verified functions in `crate::thread_view`.
 
+use crate::interview_view::InterviewView;
 use crate::layout_view::ProviderColor;
 use crate::thread_view::{
     self, ComposerKey, ComposerKeyAction, ComposerSubmissionKind, ComposerSubmitEffect, DiffCounts,
@@ -120,12 +121,32 @@ pub struct ErrorCardView {
 )]
 #[derive(Clone, Debug)]
 pub enum TranscriptBlock {
-    UserMessage { text: String, queued: bool },
-    AgentMessage { paragraphs: Vec<String> },
-    ToolGroup { steps: Vec<ToolStepRow> },
-    Diff { block: DiffBlockView },
-    StatusLine { running: bool, text: String },
-    ErrorCard { card: ErrorCardView },
+    UserMessage {
+        text: String,
+        queued: bool,
+    },
+    AgentMessage {
+        paragraphs: Vec<String>,
+    },
+    ToolGroup {
+        steps: Vec<ToolStepRow>,
+    },
+    Diff {
+        block: DiffBlockView,
+    },
+    StatusLine {
+        running: bool,
+        text: String,
+    },
+    ErrorCard {
+        card: ErrorCardView,
+    },
+    /// A spec interview answer recorded as a decision (F3).
+    Decision {
+        question: String,
+        key: String,
+        value: String,
+    },
 }
 
 #[cfg_attr(
@@ -197,6 +218,8 @@ pub struct ThreadDetailSnapshot {
     pub agent_commands: Vec<AgentCommandView>,
     pub composer_placeholder: String,
     pub model_pill: ModelPillView,
+    /// Present on spec interview threads (F3).
+    pub interview: Option<InterviewView>,
 }
 
 /// What a running agent session adds to a thread on top of `state.json`: the transcript
@@ -440,6 +463,7 @@ pub fn project_thread_detail(entry: &ThreadDetailEntry) -> ThreadDetailSnapshot 
             speed_control_enabled: pill.speed_control_enabled,
             preserve_requested_fast: pill.preserve_requested_fast,
         },
+        interview: None,
     }
 }
 
