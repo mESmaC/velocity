@@ -90,7 +90,9 @@
                   >{row.number}</span
                 >{/if}
               <span class="status-icon"><Icon name={rowIcon(row)} /></span>
-              <span class="t-title">{row.title}</span>
+              <span class="t-title" class:titling={row.titling}
+                >{row.title}</span
+              >
               {#if row.agents !== '0'}<span class="agents-count"
                   >×{row.agents}</span
                 >{/if}

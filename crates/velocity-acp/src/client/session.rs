@@ -67,7 +67,7 @@ pub async fn start_session(
     Ok(session.session_id)
 }
 
-fn initialize_request() -> InitializeRequest {
+pub(super) fn initialize_request() -> InitializeRequest {
     let files = FileSystemCapabilities::new()
         .read_text_file(true)
         .write_text_file(true);

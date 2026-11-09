@@ -74,6 +74,8 @@ struct ThreadRuntime {
     steering: Steering<String, ()>,
     log_tail: VecDeque<String>,
     agent_commands: Option<Vec<AgentCommandView>>,
+    /// The title model's name until the thread's title settles (F4).
+    titling_model: Option<String>,
 }
 
 #[derive(Default)]
@@ -120,6 +122,7 @@ impl ThreadRuntimes {
                 steering,
                 log_tail: VecDeque::new(),
                 agent_commands: None,
+                titling_model: None,
             },
         );
         receiver
@@ -187,6 +190,21 @@ impl ThreadRuntimes {
             thread.transcript.queue(prompt);
         }
         Ok(())
+    }
+
+    /// `Some(model)` while the title model names the thread, `None` once its title settles.
+    pub fn set_titling(&mut self, key: ThreadKey, model: Option<String>) {
+        if let Some(thread) = self.threads.get_mut(&key) {
+            thread.titling_model = model;
+        }
+    }
+
+    /// The worktree was named from the title before setup (F4), so the transcript shows and
+    /// resolves paths under its new folder.
+    pub fn rename_worktree(&mut self, key: ThreadKey, worktree: &str) {
+        if let Some(thread) = self.threads.get_mut(&key) {
+            thread.transcript.rename_worktree(worktree);
+        }
     }
 
     /// False when deletion retired the thread during setup (F12).
@@ -328,10 +346,11 @@ impl ThreadRuntimes {
 
     pub fn view(&self, key: ThreadKey) -> Option<LiveThreadView> {
         let thread = self.threads.get(&key)?;
-        Some(LiveThreadView {
-            blocks: thread.transcript.blocks(),
-            agent_commands: thread.agent_commands.clone(),
-        })
+        Some(LiveThreadView::new(
+            thread.transcript.blocks(),
+            thread.agent_commands.clone(),
+            thread.titling_model.clone(),
+        ))
     }
 }
 

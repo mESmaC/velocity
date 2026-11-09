@@ -1,3 +1,4 @@
+use std::path::PathBuf;
 use std::sync::{Mutex, MutexGuard};
 
 use tauri::{AppHandle, Manager};
@@ -5,12 +6,14 @@ use tauri_specta::Event;
 use velocity_acp::client::{AgentEvent, SessionSetup};
 use velocity_core::layout_view::{LayoutIntent, LayoutSnapshot};
 use velocity_core::thread_view_model::TranscriptBlock;
+use velocity_git::{TitledWorktree, WorktreeName};
 use velocity_github::follow_through::AgentFollowUp;
 use velocity_store::build_gate::{LaunchRequest, require_launch};
 use velocity_store::{AgentActivity, ThreadState};
 use velocity_threads::{
     DeliveryStatus, LaunchPlan, RunningSession, SessionInputs, StopOutcome, ThreadKey,
-    ThreadProgress, ThreadRuntimes, agent_launch, plan_launch, spawn_session,
+    ThreadProgress, ThreadRuntimes, agent_launch, plan_launch, resolve_title, spawn_session,
+    title_worktree_name,
 };
 
 use crate::layout::MainLayout;
@@ -217,11 +220,17 @@ fn start_thread(application: &AppHandle, prompt: &str) -> Result<LayoutSnapshot,
         (plan, thread)
     };
     let key = (plan.project, thread);
-    let inputs = lock(
-        application.state::<ManagedThreads>().inner(),
-        "thread sessions",
-    )?
-    .start(key, &plan.thread.worktree_path, prompt);
+    let inputs = {
+        let mut runtimes = lock(
+            application.state::<ManagedThreads>().inner(),
+            "thread sessions",
+        )?;
+        let inputs = runtimes.start(key, &plan.thread.worktree_path, prompt);
+        if plan.title.request.is_some() {
+            runtimes.set_titling(key, Some(plan.title.model_name.clone()));
+        }
+        inputs
+    };
     let snapshot = refresh(application, key, true)?;
     emit_status(application, key);
     let handle = application.clone();
@@ -262,22 +271,27 @@ async fn run_thread(
     plan: LaunchPlan,
     inputs: SessionInputs,
 ) {
-    let request = plan.worktree.clone();
-    let created = tauri::async_runtime::spawn_blocking(move || {
-        velocity_git::execute_worktree_setup(&request)
-    })
-    .await;
-    let failure = match created {
-        Ok(Ok(_)) => None,
-        Ok(Err(error)) => Some(error.to_string()),
-        Err(error) => Some(error.to_string()),
+    let (worktree_path, branch_name, failure) = match take_worktree(&application, key, &plan).await
+    {
+        Ok(worktree) => (
+            worktree.worktree_path,
+            worktree.branch_name,
+            worktree.setup.err().map(|error| error.to_string()),
+        ),
+        Err(error) => (
+            plan.worktree.worktree_path.clone(),
+            plan.worktree.branch_name.clone(),
+            Some(error),
+        ),
     };
+    let path = worktree_path.display().to_string();
     // A thread deleted while its worktree was being created starts no agent (F12).
     let wanted = lock(
         application.state::<ManagedThreads>().inner(),
         "thread sessions",
     )
     .map(|mut runtimes| {
+        runtimes.rename_worktree(key, &path);
         if failure.is_some() {
             runtimes.is_live(key)
         } else {
@@ -286,8 +300,14 @@ async fn run_thread(
     })
     .unwrap_or(false);
     if !wanted {
-        return remove_deleted_worktree(plan).await;
+        return remove_deleted_worktree(plan.worktree.repository_root, worktree_path).await;
     }
+    report(record_names(
+        &application,
+        key,
+        &path,
+        branch_name.as_deref(),
+    ));
     if let Some(detail) = failure {
         // The worktree is kept for a failed thread (F5).
         return fail(&application, key, "Could not set up the worktree", &detail);
@@ -304,10 +324,81 @@ async fn run_thread(
     report(refresh(&application, key, false));
     let session = spawn_session(
         plan.agent,
-        SessionSetup::new(plan.worktree.worktree_path, plan.bypass_modes),
+        SessionSetup::new(worktree_path, plan.bypass_modes),
         inputs,
     );
     pump(&application, key, session).await;
+}
+
+/// Checks the worktree out while the title model answers; naming and setup wait for the
+/// title, at most F4's two seconds (`resolve_title` enforces the deadline).
+async fn take_worktree(
+    application: &AppHandle,
+    key: ThreadKey,
+    plan: &LaunchPlan,
+) -> Result<TitledWorktree, String> {
+    let (name_sender, name_receiver) = std::sync::mpsc::channel();
+    let request = plan.worktree.clone();
+    let worktree = tauri::async_runtime::spawn_blocking(move || {
+        velocity_git::execute_titled_worktree_setup(&request, || {
+            name_receiver.recv().ok().flatten()
+        })
+    });
+    let name = settle_title(application, key, plan).await;
+    // Setup is waiting for this; if the checkout already failed, nobody is listening.
+    let _ = name_sender.send(name);
+    worktree.await.map_err(|error| error.to_string())
+}
+
+/// Asks the title model, shows the title it settles on, and returns the names the worktree
+/// takes from it: `None` keeps the message slug (F4).
+async fn settle_title(
+    application: &AppHandle,
+    key: ThreadKey,
+    plan: &LaunchPlan,
+) -> Option<WorktreeName> {
+    let title = resolve_title(plan.title.clone()).await;
+    if let Ok(mut runtimes) = lock(
+        application.state::<ManagedThreads>().inner(),
+        "thread sessions",
+    ) {
+        runtimes.set_titling(key, None);
+    }
+    if let Some(title) = &title {
+        let saved = lock(
+            application.state::<ManagedStateStore>().inner(),
+            "persisted state",
+        )
+        .and_then(|mut store| {
+            store
+                .update_thread(key.0, key.1, |thread| thread.title.clone_from(title))
+                .map_err(|error| error.to_string())
+        });
+        report(saved);
+    }
+    report(refresh(application, key, false));
+    title.and_then(|title| title_worktree_name(&plan.naming, &plan.worktree, &title))
+}
+
+/// Saves the branch and folder git ended with: the title's, or the message slug's when the
+/// title was missing or the rename failed.
+fn record_names(
+    application: &AppHandle,
+    key: ThreadKey,
+    path: &str,
+    branch: Option<&str>,
+) -> Result<bool, String> {
+    lock(
+        application.state::<ManagedStateStore>().inner(),
+        "persisted state",
+    )?
+    .update_thread(key.0, key.1, |thread| {
+        thread.worktree_path = Some(path.to_owned());
+        if let Some(branch) = branch {
+            branch.clone_into(&mut thread.branch_name);
+        }
+    })
+    .map_err(|error| error.to_string())
 }
 
 fn setup_no_longer_wanted(application: &AppHandle, key: ThreadKey) -> bool {
@@ -419,14 +510,11 @@ fn save_activity(
 
 /// The thread was deleted while its worktree was being created. Its deletion skipped the
 /// worktree because setup still held it, so it is removed here once setup is done (F12).
-async fn remove_deleted_worktree(plan: LaunchPlan) {
-    let request = plan.worktree;
+/// Removes the worktree of a thread deleted during setup, under whatever name git left it.
+async fn remove_deleted_worktree(repository: PathBuf, worktree: PathBuf) {
     let removed = tauri::async_runtime::spawn_blocking(move || {
-        velocity_threads::deletion::remove_worktree(
-            &request.repository_root,
-            &request.worktree_path,
-        )
-        .map_err(|error| error.to_string())
+        velocity_threads::deletion::remove_worktree(&repository, &worktree)
+            .map_err(|error| error.to_string())
     })
     .await
     .map_err(|error| error.to_string())

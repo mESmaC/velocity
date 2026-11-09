@@ -62,6 +62,14 @@ impl LiveTranscript {
         }
     }
 
+    /// The worktree took the title's name while setup was still running (F4).
+    pub fn rename_worktree(&mut self, worktree: &str) {
+        worktree.clone_into(&mut self.worktree);
+        if let Some(EntryView::Setup(step)) = self.entries.first_mut() {
+            *step = setup_step(worktree, true);
+        }
+    }
+
     /// The worktree is ready and the agent may start (F5).
     pub fn worktree_ready(&mut self) {
         let worktree = self.worktree.clone();

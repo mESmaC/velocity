@@ -319,7 +319,10 @@ where
     Ok(())
 }
 
-fn run_git_command<I, S>(working_directory: &Path, arguments: I) -> Result<(), WorktreeError>
+pub(crate) fn run_git_command<I, S>(
+    working_directory: &Path,
+    arguments: I,
+) -> Result<(), WorktreeError>
 where
     I: IntoIterator<Item = S>,
     S: AsRef<OsStr>,
@@ -462,7 +465,7 @@ fn run_setup_shell_command(
     }
 }
 
-fn create_git_worktree_from_base(
+pub(crate) fn create_git_worktree_from_base(
     request: &WorktreeSetupRequest,
     worktree_path: &Path,
 ) -> Result<(), WorktreeError> {
@@ -554,6 +557,34 @@ pub fn execute_worktree_setup(
         request.settings.share_build_cache,
         request.shared_cargo_target_dir.clone(),
     );
+    run_setup_actions(request, actions, cargo_target_dir)
+}
+
+/// Every setup step after the checkout, for a worktree [`create_git_worktree_from_base`]
+/// already created (see `titled`, which names the worktree in between).
+pub(crate) fn finish_worktree_setup(
+    request: &WorktreeSetupRequest,
+) -> Result<CreatedWorktree, WorktreeError> {
+    let actions = plan_setup_actions(
+        request.settings,
+        &request.worktree_path,
+        &request.shared_cargo_target_dir,
+    )
+    .into_iter()
+    .filter(|action| !matches!(action, SetupAction::CreateWorktreeFromMaster(_)))
+    .collect();
+    let cargo_target_dir = resolve_cargo_target_dir(
+        request.settings.share_build_cache,
+        request.shared_cargo_target_dir.clone(),
+    );
+    run_setup_actions(request, actions, cargo_target_dir)
+}
+
+fn run_setup_actions(
+    request: &WorktreeSetupRequest,
+    actions: Vec<SetupAction<&PathBuf>>,
+    cargo_target_dir: Option<PathBuf>,
+) -> Result<CreatedWorktree, WorktreeError> {
     let mut copied_files = Vec::new();
     for action in actions {
         execute_setup_action(

@@ -390,9 +390,16 @@ pub struct ProviderSettings {
     pub default_model: Option<String>,
     pub default_effort: EffortLevel,
     pub default_speed: SpeedMode,
+    /// Absent from state saved before thread titles; GPT-6 Luna's provider then (F15).
+    #[serde(default = "default_title_provider")]
+    pub title_provider: ProviderKind,
     pub title_model: String,
     pub title_effort: EffortLevel,
     pub title_speed: SpeedMode,
+}
+
+fn default_title_provider() -> ProviderKind {
+    ProviderKind::Codex
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, Type)]
@@ -430,6 +437,7 @@ impl Settings {
                 default_model: self.providers.default_model.clone(),
                 default_effort: self.providers.default_effort.into(),
                 default_speed: self.providers.default_speed.into(),
+                title_provider: self.providers.title_provider.into(),
                 title_model: self.providers.title_model.clone(),
                 title_effort: self.providers.title_effort.into(),
                 title_speed: self.providers.title_speed.into(),
@@ -462,6 +470,7 @@ impl Settings {
                 default_model: core_settings.providers.default_model,
                 default_effort: core_settings.providers.default_effort.into(),
                 default_speed: core_settings.providers.default_speed.into(),
+                title_provider: core_settings.providers.title_provider.into(),
                 title_model: core_settings.providers.title_model,
                 title_effort: core_settings.providers.title_effort.into(),
                 title_speed: core_settings.providers.title_speed.into(),

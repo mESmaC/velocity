@@ -17,6 +17,7 @@ mod merged_worktree;
 pub mod path_scheme;
 mod repository;
 pub mod setup;
+mod titled;
 
 pub use lifecycle::{
     GitCommand, LifecycleEvent, LifecycleState, WorktreeRecord, prune_orphans_command,
@@ -41,3 +42,4 @@ pub use setup::{
     SetupAction, SetupPhase, WorktreeSettings, can_start_agent, default_settings,
     plan_setup_actions, resolve_cargo_target_dir,
 };
+pub use titled::{TitledWorktree, WorktreeName, execute_titled_worktree_setup, rename_worktree};

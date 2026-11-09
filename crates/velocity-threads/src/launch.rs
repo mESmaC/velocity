@@ -5,16 +5,19 @@ use std::path::{Path, PathBuf};
 
 use thiserror::Error;
 use velocity_acp::client::AgentLaunch;
+use velocity_core::thread_titles::title_slug;
 use velocity_core::worktree_settings::WorktreePreferences;
 use velocity_core::worktree_view::split_location;
 use velocity_git::{
-    JobKind, WorktreeError, WorktreeSettings as GitWorktreeSettings, WorktreeSetupRequest,
-    local_branch_exists, resolve_project_worktree_root, resolve_worktree_directory,
+    JobKind, WorktreeError, WorktreeName, WorktreeSettings as GitWorktreeSettings,
+    WorktreeSetupRequest, local_branch_exists, resolve_project_worktree_root,
+    resolve_worktree_directory,
 };
 use velocity_store::threads::NewThread;
 use velocity_store::{ProjectItem, ProviderKind, Settings};
 
 use crate::naming::{fallback_title, message_slug, unique_slug};
+use crate::titles::{TitlePlan, plan_title};
 
 /// The project's shared `CARGO_TARGET_DIR` (F5), beside its worktrees. Slugs never contain a
 /// dot, so no worktree can take this name.
@@ -39,6 +42,55 @@ pub struct LaunchPlan {
     pub worktree: WorktreeSetupRequest,
     pub agent: AgentLaunch,
     pub bypass_modes: Vec<String>,
+    /// The title model's request (F4), run while the worktree is checked out.
+    pub title: TitlePlan,
+    /// What naming the worktree from the title needs.
+    pub naming: WorktreeNaming,
+}
+
+/// The project and its Settings → Worktrees as they were at launch, so the title's branch
+/// and folder follow the same rules as the message slug's.
+#[derive(Clone)]
+pub struct WorktreeNaming {
+    project: ProjectItem,
+    worktrees: WorktreePreferences,
+}
+
+impl std::fmt::Debug for WorktreeNaming {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("WorktreeNaming")
+            .field("project", &self.project.id)
+            .finish_non_exhaustive()
+    }
+}
+
+/// The branch and folder a model title names (F4): `vel/<title-slug>`, made unique the way
+/// the message slug is. `None` when the names would not change or can't be planned (a path
+/// too long), and the provisional names stay.
+pub fn title_worktree_name(
+    naming: &WorktreeNaming,
+    current: &WorktreeSetupRequest,
+    title: &str,
+) -> Option<WorktreeName> {
+    let location = Location::new(&naming.project, &naming.worktrees);
+    let wanted = title_slug(title);
+    if current.branch_name.as_deref() == Some(format!("vel/{wanted}").as_str()) {
+        return None;
+    }
+    let slug = unique_slug(&wanted, |candidate| {
+        slug_taken(
+            &naming.project,
+            &current.repository_root,
+            &location,
+            candidate,
+        )
+    });
+    let worktree_path = location.worktree(&slug).ok()??;
+    Some(WorktreeName {
+        worktree_path,
+        branch_name: format!("vel/{slug}"),
+    })
 }
 
 /// Plans a thread for `project` from Settings → Worktrees as the store reads it for that
@@ -84,6 +136,16 @@ pub fn plan_launch(
         },
         agent: with_shared_target(agent, share_cache.then_some(shared_target)),
         bypass_modes,
+        title: plan_title(
+            settings,
+            PathBuf::from(&project.repository_path),
+            prompt,
+            fallback_title(prompt),
+        ),
+        naming: WorktreeNaming {
+            project: project.clone(),
+            worktrees: worktrees.clone(),
+        },
     })
 }
 

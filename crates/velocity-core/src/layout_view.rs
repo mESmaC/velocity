@@ -88,6 +88,9 @@ pub struct SidebarRow {
     #[cfg_attr(feature = "bindings", specta(type = String))]
     pub identifier: usize,
     pub title: String,
+    /// The title model hasn't answered yet: the title is the message's first words, pulsing
+    /// (F4).
+    pub titling: bool,
     pub metadata: String,
     pub group: ThreadGroup,
     pub duty_role: Option<DutyRole>,
