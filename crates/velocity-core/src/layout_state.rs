@@ -170,7 +170,7 @@ impl LayoutState {
             LayoutAction::PaletteAccept => self.accept_palette(),
             LayoutAction::OpenThread(identifier) => self.open_thread(identifier),
             LayoutAction::ToggleSwarm(identifier) => {
-                self.toggle_swarm(identifier);
+                self.open_swarm(identifier);
                 None
             }
             LayoutAction::Keyboard(input) => self.keyboard(input),
@@ -485,17 +485,30 @@ impl LayoutState {
         None
     }
 
-    fn toggle_swarm(&mut self, identifier: usize) {
-        if let Some(thread) = self.data.threads.iter_mut().find(|thread| {
+    fn open_swarm(&mut self, identifier: usize) {
+        // Retain the action for existing callers; expansion is owned by selection.
+        if self.data.threads.iter().any(|thread| {
             thread.policy.identifier == identifier
                 && matches!(thread.policy.group, ThreadGroup::Swarm)
         }) {
-            thread.policy.expanded = !thread.policy.expanded;
+            self.open_thread(identifier);
         }
     }
 
+    fn selected_row(&self) -> Option<layout::LayoutRow> {
+        self.selected_thread.and_then(|identifier| {
+            self.data
+                .threads
+                .iter()
+                .find(|thread| thread.policy.identifier == identifier)
+                .map(|thread| thread.policy)
+        })
+    }
+
     fn sidebar(&self) -> Vec<SidebarGroup> {
-        let query = normalized(&self.search);
+        // The reference trims the sidebar query, so a query of only spaces shows every thread.
+        let query = normalized(self.search.trim());
+        let selected = self.selected_row();
         let mut number = 0;
         GROUPS
             .into_iter()
@@ -507,7 +520,7 @@ impl LayoutState {
                     .filter(|thread| {
                         let mut row = thread.policy;
                         row.matches_search =
-                            layout::fuzzy_match(&query, &normalized(&thread.title));
+                            layout::substring_match(&query, &normalized(&thread.title));
                         layout::is_root_visible(group, row)
                     })
                     .collect();
@@ -515,17 +528,7 @@ impl LayoutState {
                     return None;
                 }
                 let count = roots.len();
-                let mut rows = Vec::new();
-                for root in roots {
-                    rows.push(self.sidebar_row(root, false, &mut number));
-                    if layout::expand_members(root.policy) {
-                        for member in self.data.threads.iter().filter(|thread| {
-                            layout::is_member_visible(root.policy.identifier, thread.policy)
-                        }) {
-                            rows.push(self.sidebar_row(member, true, &mut number));
-                        }
-                    }
-                }
+                let rows = self.sidebar_rows(&roots, selected, &mut number);
                 Some(SidebarGroup {
                     group,
                     title: layout_catalog::group_title(group).into(),
@@ -536,7 +539,34 @@ impl LayoutState {
             .collect()
     }
 
-    fn sidebar_row(&self, entry: &ThreadEntry, member: bool, number: &mut usize) -> SidebarRow {
+    fn sidebar_rows(
+        &self,
+        roots: &[&ThreadEntry],
+        selected: Option<layout::LayoutRow>,
+        number: &mut usize,
+    ) -> Vec<SidebarRow> {
+        let mut rows = Vec::new();
+        for root in roots {
+            let expanded = layout::expand_members(root.policy, selected);
+            rows.push(self.sidebar_row(root, false, expanded, number));
+            if expanded {
+                for member in self.data.threads.iter().filter(|thread| {
+                    layout::is_member_visible(root.policy.identifier, thread.policy)
+                }) {
+                    rows.push(self.sidebar_row(member, true, false, number));
+                }
+            }
+        }
+        rows
+    }
+
+    fn sidebar_row(
+        &self,
+        entry: &ThreadEntry,
+        member: bool,
+        expanded: bool,
+        number: &mut usize,
+    ) -> SidebarRow {
         *number = number.saturating_add(1);
         SidebarRow {
             identifier: entry.policy.identifier,
@@ -544,7 +574,7 @@ impl LayoutState {
             metadata: entry.metadata.clone(),
             group: entry.policy.group,
             member,
-            expanded: entry.policy.expanded,
+            expanded,
             active: self.selected_thread == Some(entry.policy.identifier),
             paused: entry.policy.paused,
             agents: entry.policy.agent_count,
