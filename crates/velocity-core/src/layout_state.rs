@@ -11,12 +11,17 @@ use crate::navigation::{
 };
 use crate::thread_view::{self, ComposerSubmitEffect};
 use crate::thread_view_model::{
-    self, AgentCommandView, ModelPillView, SlashCommandItem, ThreadDetailSnapshot, TranscriptBlock,
+    self, AgentCommandView, LiveThreadView, ModelPillView, SlashCommandItem, ThreadDetailSnapshot,
+    TranscriptBlock,
 };
+use std::collections::{BTreeMap, BTreeSet};
 
 #[derive(Clone)]
 pub struct LayoutState {
     data: LayoutData,
+    /// Running sessions' transcripts by `(project, thread)`. Kept apart from `data` because the
+    /// store rebuilds `data` from `state.json`, which has no transcript, after every change.
+    live: BTreeMap<(u32, usize), LiveThreadView>,
     revision: u32,
     view: NavigationView,
     settings_tab: String,
@@ -36,12 +41,18 @@ pub struct LayoutState {
     task_text: String,
     project_spec_locked: Option<bool>,
     launch_notice: Option<String>,
+    /// `(project, thread)` rows deleted but still inside their undo window (F12). Kept apart
+    /// from `data` for the same reason as `live`: the store does not know about them yet.
+    hidden_threads: BTreeSet<(u32, usize)>,
+    toast: Option<ToastView>,
+    toast_count: u32,
 }
 
 impl Default for LayoutState {
     fn default() -> Self {
         Self {
             data: LayoutData::default(),
+            live: BTreeMap::new(),
             revision: 0,
             view: NavigationView::Home,
             settings_tab: "worktrees".into(),
@@ -61,6 +72,9 @@ impl Default for LayoutState {
             task_text: String::new(),
             project_spec_locked: None,
             launch_notice: None,
+            hidden_threads: BTreeSet::new(),
+            toast: None,
+            toast_count: 0,
         }
     }
 }
@@ -83,6 +97,7 @@ impl LayoutState {
         search: String,
     ) {
         self.data = data;
+        self.hide_pending_rows();
         self.search = search;
         self.palette_open = false;
         self.palette_query.clear();
@@ -128,7 +143,68 @@ impl LayoutState {
     /// Feature owners replace their read model after domain events, then emit a snapshot.
     pub fn replace_data(&mut self, data: LayoutData) {
         self.data = data;
+        self.hide_pending_rows();
         self.follow_selected_view();
+        self.deselect_hidden();
+        self.palette_selection =
+            layout::bounded_selection(self.palette_results().len(), self.palette_selection);
+        self.changed();
+    }
+
+    /// Deleted threads leave the sidebar at once and come back on Undo (F12).
+    pub fn set_threads_hidden(&mut self, project: u32, identifiers: &[usize], hidden: bool) {
+        for identifier in identifiers {
+            if hidden {
+                self.hidden_threads.insert((project, *identifier));
+            } else {
+                self.hidden_threads.remove(&(project, *identifier));
+            }
+        }
+        if Some(project) == self.data.project_identifier {
+            for thread in &mut self.data.threads {
+                if identifiers.contains(&thread.policy.identifier) {
+                    thread.policy.hidden = hidden;
+                }
+            }
+        }
+        self.deselect_hidden();
+        self.changed();
+    }
+
+    /// A short message, or a deletion's Undo offer, replacing any toast already showing.
+    pub fn show_toast(&mut self, message: String, undo_deletion: Option<u32>) {
+        self.toast_count = self.toast_count.wrapping_add(1);
+        self.toast = Some(ToastView::new(self.toast_count, message, undo_deletion));
+        self.changed();
+    }
+
+    /// The deletion landed or was undone, so its Undo is no longer on offer.
+    pub fn clear_deletion_toast(&mut self, deletion: u32) {
+        if self
+            .toast
+            .as_ref()
+            .is_some_and(|toast| toast.undo_deletion == Some(deletion))
+        {
+            self.toast = None;
+            self.changed();
+        }
+    }
+
+    fn hide_pending_rows(&mut self) {
+        let Some(project) = self.data.project_identifier else {
+            return;
+        };
+        for thread in &mut self.data.threads {
+            if self
+                .hidden_threads
+                .contains(&(project, thread.policy.identifier))
+            {
+                thread.policy.hidden = true;
+            }
+        }
+    }
+
+    fn deselect_hidden(&mut self) {
         if let Some(identifier) = self.selected_thread {
             if let Some(entry) = self
                 .data
@@ -142,9 +218,23 @@ impl LayoutState {
                 self.view = NavigationView::Home;
             }
         }
-        self.palette_selection =
-            layout::bounded_selection(self.palette_results().len(), self.palette_selection);
+    }
+
+    /// A running session's transcript and commands for one thread (`SPEC.md §3.2`, F4).
+    pub fn set_live_thread(&mut self, project: u32, identifier: usize, view: LiveThreadView) {
+        self.live.insert((project, identifier), view);
         self.changed();
+    }
+
+    /// Opens a thread the backend just started, as if it had been clicked (F4).
+    pub fn select_thread(&mut self, identifier: usize) {
+        self.open_thread(identifier);
+        self.changed();
+    }
+
+    fn live_thread(&self, identifier: usize) -> Option<&LiveThreadView> {
+        let project = self.data.project_identifier?;
+        self.live.get(&(project, identifier))
     }
 
     /// A spec interview moves from scan to ask to ready while it is open, and each phase
@@ -334,6 +424,7 @@ impl LayoutState {
             tasks_draft: self.project_spec_locked == Some(false),
             task_count_label: self.task_count_label(),
             launch_notice: self.launch_notice.clone(),
+            toast: self.toast.clone(),
         }
     }
 
@@ -443,6 +534,13 @@ impl LayoutState {
             .find(|thread| thread.policy.identifier == identifier && !thread.policy.hidden)?;
         let detail = entry.detail.as_ref()?;
         let mut snapshot = thread_view_model::project_thread_detail(detail);
+        if let Some(live) = self.live_thread(identifier) {
+            snapshot.blocks = live.blocks.clone();
+            if let Some(commands) = &live.agent_commands {
+                snapshot.agent_commands = commands.clone();
+            }
+        }
+
         if let Some(interview) = self
             .data
             .interviews
@@ -489,6 +587,13 @@ impl LayoutState {
     }
 
     fn active_agent_commands(&self) -> &[AgentCommandView] {
+        if let Some(identifier) = self.selected_thread
+            && let Some(commands) = self
+                .live_thread(identifier)
+                .and_then(|live| live.agent_commands.as_ref())
+        {
+            return commands;
+        }
         if let Some(identifier) = self.selected_thread
             && let Some(entry) = self
                 .data

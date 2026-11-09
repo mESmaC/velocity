@@ -37,6 +37,7 @@ use velocity_core::state::{
 pub mod duty;
 mod project_layout;
 pub mod projects;
+pub mod threads;
 
 pub use duty::DutyRoleItem;
 

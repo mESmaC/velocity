@@ -6,7 +6,10 @@ import {
   LAYOUT_INTENT_EVENT,
   PROJECT_SELECTED_EVENT,
   PULL_REQUEST_PANEL_EVENT,
-  DUTY_EVENT,
+  THREAD_STATUS_EVENT,
+  THREAD_STEP_EVENT,
+  type ThreadStatusChanged,
+  type ThreadStepRecorded_Serialize,
   type WindowStateChanged,
   type LayoutStateChanged_Serialize,
   type LayoutIntentRequested_Serialize,
@@ -14,7 +17,6 @@ import {
   WORKTREE_INVENTORY_EVENT,
   type WorktreeInventoryChanged_Serialize,
   type PullRequestPanelChanged,
-  type DutyEventPublished,
 } from './bindings';
 
 export type {
@@ -23,24 +25,13 @@ export type {
   DiffBlockView_Serialize as DiffBlockView,
   DiffLineRole,
   DiffLineView,
-  DutyAgentCard,
-  DutyDialogDefaults,
-  DutyEventKind,
-  DutyEventPublished,
-  DutyFeedEvent,
-  DutyMergeMethod,
-  DutyRole,
-  DutyRuleChip,
-  DutyViewSnapshot_Serialize as DutyViewSnapshot,
   EffortLevel,
   ErrorCardView,
   InterviewView_Serialize as InterviewView,
   ModelPillView,
   LaunchEligibility,
   LaunchRequest,
-  PauseDutyRequest,
   PersistedState,
-  PrDutyRuleSettings,
   ProjectItem,
   ProjectLocationKind,
   ProofSettings,
@@ -48,22 +39,20 @@ export type {
   ProviderKind,
   ProviderSettings,
   ReviewStage,
-  ScoutCadence,
-  ScoutFocusArea,
-  ScoutRuleSettings,
   Settings,
   SidebarGroup_Serialize as SidebarGroup,
   SidebarRow_Serialize as SidebarRow,
   AgentCommandView,
   SlashCommandItem,
   SpeedMode,
-  StartDutyRequest_Deserialize as StartDutyRequest,
   TaskAttribution,
   TaskItem,
   TaskState,
   ThreadDetailSnapshot_Serialize as ThreadDetailSnapshot,
   ThreadItem,
   ThreadState,
+  ThreadStatusChanged,
+  ThreadStepRecorded_Serialize as ThreadStepRecorded,
   ToolStepRow,
   TranscriptBlock_Serialize as TranscriptBlock,
   TranscriptModeView,
@@ -142,16 +131,6 @@ export const newProjectCommands = {
   create: commands.createProject,
 };
 
-export const dutyCommands = {
-  defaults: commands.getDutyDialogDefaults,
-  start: commands.startDuty,
-  pause: commands.pauseDuty,
-  addAgents: commands.addDutyAgents,
-};
-
-export const onDutyEvent = (callback: EventCallback<DutyEventPublished>) =>
-  listen(DUTY_EVENT, callback);
-
 export const windowCommands = {
   getState: commands.getWindowState,
   minimize: commands.minimizeWindow,
@@ -182,3 +161,15 @@ export const launchCommands = {
 
 export const onWindowState = (callback: EventCallback<WindowStateChanged>) =>
   listen(WINDOW_STATE_EVENT, callback);
+
+// Threads start and steer through the composer's layout intents (`start_thread`,
+// `send_message`); their lifecycle also goes out as these events (SPEC.md §3.1).
+export const onThreadStatus = (callback: EventCallback<ThreadStatusChanged>) =>
+  listen(THREAD_STATUS_EVENT, callback);
+
+export const onThreadStep = (
+  callback: EventCallback<ThreadStepRecorded_Serialize>,
+) => listen(THREAD_STEP_EVENT, callback);
+
+export * from './ipc/duty';
+export * from './ipc/thread-menu';

@@ -34,6 +34,8 @@ pub struct RailItem {
 /// Feature owners publish their real data here; the shell invents no activity.
 #[derive(Clone, Default)]
 pub struct LayoutData {
+    /// The persisted project these rows belong to; keys the live thread overlay.
+    pub project_identifier: Option<u32>,
     pub project_name: String,
     pub threads: Vec<ThreadEntry>,
     pub projects: Vec<PaletteItem>,
@@ -316,4 +318,28 @@ pub struct LayoutSnapshot {
     pub tasks_draft: bool,
     pub task_count_label: String,
     pub launch_notice: Option<String>,
+    pub toast: Option<ToastView>,
+}
+
+/// The bottom-centre toast. `identifier` changes with every new toast so the window can
+/// time it out; one with `undo_deletion` offers Undo until that deletion lands (F12).
+#[cfg_attr(
+    feature = "bindings",
+    derive(serde::Serialize, serde::Deserialize, specta::Type)
+)]
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ToastView {
+    pub identifier: u32,
+    pub message: String,
+    pub undo_deletion: Option<u32>,
+}
+
+impl ToastView {
+    pub fn new(identifier: u32, message: String, undo_deletion: Option<u32>) -> Self {
+        ToastView {
+            identifier,
+            message,
+            undo_deletion,
+        }
+    }
 }

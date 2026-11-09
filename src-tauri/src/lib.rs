@@ -12,6 +12,8 @@ mod new_project;
 mod projects;
 mod pull_request_panel;
 mod state;
+mod thread_menu;
+mod threads;
 mod window;
 mod worktree_settings;
 
@@ -20,37 +22,45 @@ pub use layout::{apply_agent_event, record_agent_event};
 fn bindings() -> Builder<tauri::Wry> {
     // Export event payloads/names without the generator's `any`-typed helpers;
     // ipc.ts supplies typed listeners, while run() registers native emitters.
-    Builder::new()
-        .commands(collect_commands![
-            window::get_window_state,
-            window::minimize_window,
-            window::toggle_maximize_window,
-            window::close_window,
-            state::get_settings,
-            state::set_settings,
-            layout::get_layout_state,
-            layout::dispatch_layout,
-            projects::list_projects,
-            projects::switch_project,
-            worktree_settings::list_worktrees,
-            worktree_settings::set_worktree_settings,
-            worktree_settings::preview_worktree_folder,
-            worktree_settings::browse_worktree_folder,
-            worktree_settings::prune_worktrees,
-            github::list_pull_requests,
-            github::get_pull_request,
-            github::dispatch_pull_request,
-            pull_request_panel::get_pull_request_panel,
-            pull_request_panel::open_project_pull_request,
-            duty::get_duty_dialog_defaults,
-            duty::start_duty,
-            duty::pause_duty,
-            duty::add_duty_agents,
-            new_project::get_new_project_defaults,
-            new_project::pick_project_folder,
-            new_project::create_project,
-            build_gate::get_launch_eligibility,
-        ])
+    let builder = Builder::new().commands(collect_commands![
+        window::get_window_state,
+        window::minimize_window,
+        window::toggle_maximize_window,
+        window::close_window,
+        state::get_settings,
+        state::set_settings,
+        layout::get_layout_state,
+        layout::dispatch_layout,
+        projects::list_projects,
+        projects::switch_project,
+        worktree_settings::list_worktrees,
+        worktree_settings::set_worktree_settings,
+        worktree_settings::preview_worktree_folder,
+        worktree_settings::browse_worktree_folder,
+        worktree_settings::prune_worktrees,
+        duty::get_duty_dialog_defaults,
+        duty::start_duty,
+        duty::pause_duty,
+        duty::add_duty_agents,
+        github::list_pull_requests,
+        github::get_pull_request,
+        github::dispatch_pull_request,
+        pull_request_panel::get_pull_request_panel,
+        pull_request_panel::open_project_pull_request,
+        thread_menu::get_thread_menu,
+        thread_menu::run_thread_menu_action,
+        thread_menu::delete_thread,
+        thread_menu::undo_delete_thread,
+        new_project::get_new_project_defaults,
+        new_project::pick_project_folder,
+        new_project::create_project,
+        build_gate::get_launch_eligibility,
+    ]);
+    event_bindings(builder)
+}
+
+fn event_bindings(builder: Builder<tauri::Wry>) -> Builder<tauri::Wry> {
+    builder
         .typ::<PersistedState>()
         .typ::<duty::DutyEventPublished>()
         .typ::<window::WindowStateChanged>()
@@ -59,6 +69,8 @@ fn bindings() -> Builder<tauri::Wry> {
         .typ::<projects::ProjectSelected>()
         .typ::<worktree_settings::WorktreeInventoryChanged>()
         .typ::<pull_request_panel::PullRequestPanelChanged>()
+        .typ::<threads::ThreadStatusChanged>()
+        .typ::<threads::ThreadStepRecorded>()
         .constant("DUTY_EVENT", duty::DutyEventPublished::NAME)
         .constant("PROJECT_SELECTED_EVENT", projects::ProjectSelected::NAME)
         .constant("WINDOW_STATE_EVENT", window::WindowStateChanged::NAME)
@@ -72,6 +84,8 @@ fn bindings() -> Builder<tauri::Wry> {
             "PULL_REQUEST_PANEL_EVENT",
             pull_request_panel::PullRequestPanelChanged::NAME,
         )
+        .constant("THREAD_STATUS_EVENT", threads::ThreadStatusChanged::NAME)
+        .constant("THREAD_STEP_EVENT", threads::ThreadStepRecorded::NAME)
         .error_handling(tauri_specta::ErrorHandlingMode::Throw)
 }
 
@@ -98,12 +112,18 @@ pub fn run() -> anyhow::Result<()> {
         layout::LayoutIntentRequested,
         projects::ProjectSelected,
         worktree_settings::WorktreeInventoryChanged,
-        pull_request_panel::PullRequestPanelChanged
+        pull_request_panel::PullRequestPanelChanged,
+        threads::ThreadStatusChanged,
+        threads::ThreadStepRecorded
     ]);
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
+        .plugin(tauri_plugin_opener::init())
+        .plugin(tauri_plugin_clipboard_manager::init())
         .manage(layout::MainLayout::default())
+        .manage(threads::ManagedThreads::default())
         .manage(velocity_interview::Interviews::default())
+        .manage(thread_menu::ManagedDeletions::default())
         .invoke_handler(bindings.invoke_handler())
         .setup(move |application| {
             bindings.mount_events(application);

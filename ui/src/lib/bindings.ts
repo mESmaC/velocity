@@ -19,15 +19,25 @@ export const commands = {
 	previewWorktreeFolder: (folder: string) => __TAURI_INVOKE<WorktreePathPreview>("preview_worktree_folder", { folder }),
 	browseWorktreeFolder: () => __TAURI_INVOKE<string | null>("browse_worktree_folder"),
 	pruneWorktrees: () => __TAURI_INVOKE<string>("prune_worktrees"),
+	getDutyDialogDefaults: () => __TAURI_INVOKE<DutyDialogDefaults>("get_duty_dialog_defaults"),
+	startDuty: (request: StartDutyRequest_Deserialize) => __TAURI_INVOKE<LayoutSnapshot_Serialize>("start_duty", { request }),
+	pauseDuty: (request: PauseDutyRequest_Deserialize) => __TAURI_INVOKE<LayoutSnapshot_Serialize>("pause_duty", { request }),
+	addDutyAgents: (request: StartDutyRequest_Deserialize) => __TAURI_INVOKE<LayoutSnapshot_Serialize>("add_duty_agents", { request }),
 	listPullRequests: (projectIdentifier: number) => __TAURI_INVOKE<PullRequest_Serialize[]>("list_pull_requests", { projectIdentifier }),
 	getPullRequest: (projectIdentifier: number, number: number) => __TAURI_INVOKE<PullRequestSnapshot_Serialize>("get_pull_request", { projectIdentifier, number }),
 	dispatchPullRequest: (projectIdentifier: number, operation: PullRequestOperation_Deserialize) => __TAURI_INVOKE<PullRequestReceipt>("dispatch_pull_request", { projectIdentifier, operation }),
 	getPullRequestPanel: () => __TAURI_INVOKE<PullRequestPanelSnapshot_Serialize>("get_pull_request_panel"),
 	openProjectPullRequest: (projectIdentifier: number, number: number) => __TAURI_INVOKE<LayoutSnapshot_Serialize | null>("open_project_pull_request", { projectIdentifier, number }),
-	getDutyDialogDefaults: () => __TAURI_INVOKE<DutyDialogDefaults>("get_duty_dialog_defaults"),
-	startDuty: (request: StartDutyRequest_Deserialize) => __TAURI_INVOKE<LayoutSnapshot_Serialize>("start_duty", { request }),
-	pauseDuty: (request: PauseDutyRequest_Deserialize) => __TAURI_INVOKE<LayoutSnapshot_Serialize>("pause_duty", { request }),
-	addDutyAgents: (request: StartDutyRequest_Deserialize) => __TAURI_INVOKE<LayoutSnapshot_Serialize>("add_duty_agents", { request }),
+	getThreadMenu: (threadIdentifier: number) => __TAURI_INVOKE<ThreadMenuView_Serialize | null>("get_thread_menu", { threadIdentifier }),
+	/**
+	 *  Open worktree in Explorer, Copy worktree path and Open PR on GitHub. Delete has its own
+	 *  command because it can be undone.
+	 */
+	runThreadMenuAction: (projectIdentifier: number, threadIdentifier: number, action: ThreadMenuAction) => __TAURI_INVOKE<null>("run_thread_menu_action", { projectIdentifier, threadIdentifier, action }),
+	/**  Hides the thread at once and offers Undo; the deletion lands after 5 s (F12). */
+	deleteThread: (projectIdentifier: number, threadIdentifier: number) => __TAURI_INVOKE<LayoutSnapshot_Serialize>("delete_thread", { projectIdentifier, threadIdentifier }),
+	/**  Undo within the 5 s: the thread is back exactly as it was, since nothing was touched. */
+	undoDeleteThread: (deletion: number) => __TAURI_INVOKE<LayoutSnapshot_Serialize>("undo_delete_thread", { deletion }),
 	getNewProjectDefaults: () => __TAURI_INVOKE<NewProjectDefaults_Serialize>("get_new_project_defaults"),
 	/**  Browse…: the native folder picker. `None` when it is dismissed. */
 	pickProjectFolder: () => __TAURI_INVOKE<string | null>("pick_project_folder"),
@@ -46,6 +56,10 @@ export const LAYOUT_STATE_EVENT = "layout://state" as const;
 export const PROJECT_SELECTED_EVENT = "project://selected" as const;
 
 export const PULL_REQUEST_PANEL_EVENT = "pr://panel" as const;
+
+export const THREAD_STATUS_EVENT = "thread://status" as const;
+
+export const THREAD_STEP_EVENT = "thread://step" as const;
 
 export const WINDOW_STATE_EVENT = "window://state" as const;
 
@@ -463,6 +477,7 @@ export type LayoutSnapshot_Deserialize = {
 	tasks_draft: boolean,
 	task_count_label: string,
 	launch_notice?: string | null,
+	toast?: ToastView_Deserialize | null,
 };
 
 export type LayoutSnapshot_Serialize = {
@@ -504,6 +519,7 @@ export type LayoutSnapshot_Serialize = {
 	tasks_draft: boolean,
 	task_count_label: string,
 	launch_notice: string | null,
+	toast: ToastView_Serialize | null,
 };
 
 export type LayoutStateChanged = LayoutStateChanged_Serialize | LayoutStateChanged_Deserialize;
@@ -1348,7 +1364,93 @@ export type ThreadItem_Serialize = {
 	interview: InterviewRecord_Serialize | null,
 };
 
+export type ThreadMenuAction = "OpenWorktree" | "CopyWorktreePath" | "OpenPullRequest" | "Delete";
+
+export type ThreadMenuEntry = ThreadMenuEntry_Serialize | ThreadMenuEntry_Deserialize;
+
+export type ThreadMenuEntry_Deserialize = { Item: {
+	action: ThreadMenuAction,
+	label: string,
+	detail?: string | null,
+	danger: boolean,
+} } | "Separator";
+
+export type ThreadMenuEntry_Serialize = { Item: {
+	action: ThreadMenuAction,
+	label: string,
+	detail: string | null,
+	danger: boolean,
+} } | "Separator";
+
+/**  One thread's right-click menu, built from saved state and what is on disk. */
+export type ThreadMenuView = ThreadMenuView_Serialize | ThreadMenuView_Deserialize;
+
+/**  One thread's right-click menu, built from saved state and what is on disk. */
+export type ThreadMenuView_Deserialize = {
+	/**  The project the menu was opened in; actions check it is still selected. */
+	project_identifier: number,
+	thread_identifier: number,
+	entries: ThreadMenuEntry_Deserialize[],
+};
+
+/**  One thread's right-click menu, built from saved state and what is on disk. */
+export type ThreadMenuView_Serialize = {
+	/**  The project the menu was opened in; actions check it is still selected. */
+	project_identifier: number,
+	thread_identifier: number,
+	entries: ThreadMenuEntry_Serialize[],
+};
+
 export type ThreadState = "draft" | "spec" | "working" | "review" | "error" | "closed" | "done" | "merged";
+
+export type ThreadStatusChanged = {
+	project_identifier: number,
+	thread_identifier: number,
+	state: ThreadState,
+	activity: AgentActivity,
+};
+
+export type ThreadStepRecorded = ThreadStepRecorded_Serialize | ThreadStepRecorded_Deserialize;
+
+export type ThreadStepRecorded_Deserialize = {
+	project_identifier: number,
+	thread_identifier: number,
+	/**  The thread's newest transcript block after the update. */
+	block: TranscriptBlock_Deserialize,
+};
+
+export type ThreadStepRecorded_Serialize = {
+	project_identifier: number,
+	thread_identifier: number,
+	/**  The thread's newest transcript block after the update. */
+	block: TranscriptBlock_Serialize,
+};
+
+/**
+ *  The bottom-centre toast. `identifier` changes with every new toast so the window can
+ *  time it out; one with `undo_deletion` offers Undo until that deletion lands (F12).
+ */
+export type ToastView = ToastView_Serialize | ToastView_Deserialize;
+
+/**
+ *  The bottom-centre toast. `identifier` changes with every new toast so the window can
+ *  time it out; one with `undo_deletion` offers Undo until that deletion lands (F12).
+ */
+export type ToastView_Deserialize = {
+	identifier: number,
+	message: string,
+	undo_deletion?: number | null,
+};
+
+/**
+ *  The bottom-centre toast. `identifier` changes with every new toast so the window can
+ *  time it out; one with `undo_deletion` offers Undo until that deletion lands (F12).
+ */
+export type ToastView_Serialize = {
+	identifier: number,
+	message: string,
+	undo_deletion: number | null,
+};
 
 export type ToolStepRow = {
 	running: boolean,

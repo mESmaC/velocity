@@ -1,6 +1,6 @@
 use crate::state::ManagedStateStore;
 use std::sync::Mutex;
-use tauri::{Manager, State, Window};
+use tauri::{Emitter, Manager, State, Window, Wry};
 use tauri_specta::Event;
 use velocity_acp::{available_commands, client::AgentEvent};
 use velocity_core::layout_state::LayoutState;
@@ -61,22 +61,27 @@ pub fn dispatch_layout(
         .map(|selection| (store.list_projects(), selection));
     drop(state);
     drop(store);
-    // The spec interview carries out its own answers, Lock, SPEC.md and Keep grilling (F3).
+    // The interview consumes spec-thread intents; build-thread intents remain queued.
     let intent = outcome
         .intent
         .filter(|intent| !crate::interview::handle_intent(window.app_handle(), intent));
-    publish(&window, &snapshot, intent)?;
+    publish(&window, &snapshot, intent.clone())?;
     if let Some((role, event)) = outcome.duty_event {
         crate::duty::publish_duty_event(&window, role, event)?;
     }
     if let Some((projects, selection)) = project_selection {
         crate::projects::publish_selection(&window, projects, selection)?;
     }
-    Ok(snapshot)
+    // Starting or steering a thread publishes its own newer snapshot.
+    match intent {
+        Some(intent) => crate::threads::handle_intent(window.app_handle(), &intent)
+            .map(|updated| updated.unwrap_or(snapshot)),
+        None => Ok(snapshot),
+    }
 }
 
-pub fn publish(
-    window: &Window,
+pub fn publish<Handle: Emitter<Wry> + Manager<Wry>>(
+    window: &Handle,
     snapshot: &LayoutSnapshot,
     intent: Option<LayoutIntent>,
 ) -> Result<(), String> {

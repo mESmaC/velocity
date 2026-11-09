@@ -175,6 +175,9 @@ impl StateStore {
                     prompt.clone(),
                     crate::duty::clock_timestamp(),
                 )?;
+                if duty_event.is_some() {
+                    intent = None;
+                }
             }
             self.remember_project_thread(candidate.selected_thread())?;
             None

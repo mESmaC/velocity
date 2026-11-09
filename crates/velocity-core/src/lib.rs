@@ -15,6 +15,7 @@ pub mod new_project;
 pub mod projects;
 pub mod state;
 pub mod theme;
+pub mod thread_menu;
 pub mod thread_view;
 pub mod thread_view_model;
 pub mod window;
