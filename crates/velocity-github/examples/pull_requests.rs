@@ -13,6 +13,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         let path = arguments.get(2).ok_or("--operation requires a JSON file")?;
         let operation: PullRequestOperation = serde_json::from_slice(&std::fs::read(path)?)?;
         serde_json::to_value(client.execute(operation)?)?
+    } else if arguments
+        .get(1)
+        .is_some_and(|argument| argument == "--panel")
+    {
+        serde_json::to_value(client.panel()?)?
     } else if let Some(number) = arguments.get(1) {
         serde_json::to_value(client.snapshot(number.parse()?)?)?
     } else {

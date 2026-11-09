@@ -7,6 +7,7 @@ mod command;
 pub mod follow_through;
 mod pull_request_command;
 mod pull_request_mutations;
+mod pull_request_panel;
 mod pull_request_queries;
 mod pull_request_reviews;
 mod pull_request_types;
@@ -14,6 +15,9 @@ mod pull_requests;
 mod repository;
 
 pub use pull_request_command::PullRequestError;
+pub use pull_request_panel::{
+    CheckStatus, PullRequestPanelRow, PullRequestPanelSnapshot, PullRequestThread, ReviewStatus,
+};
 pub use pull_request_types::*;
 pub use pull_requests::PullRequestClient;
 pub use repository::{

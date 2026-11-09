@@ -11,10 +11,12 @@ import {
   PR_MERGED_EVENT,
   PR_CLOSED_EVENT,
   type PullRequestLifecycleEvent,
+  PULL_REQUEST_PANEL_EVENT,
   type WindowStateChanged,
   type LayoutStateChanged_Serialize,
   type LayoutIntentRequested_Serialize,
   type ProjectSelected,
+  type PullRequestPanelChanged,
 } from './bindings';
 
 export type {
@@ -80,13 +82,21 @@ export type {
   ReviewSide,
   NewReviewComment,
   MergeMethod,
+  PullRequestPanelRow,
+  PullRequestPanelSnapshot,
 } from './bindings';
 
 export const pullRequestCommands = {
   list: commands.listPullRequests,
   get: commands.getPullRequest,
   dispatch: commands.dispatchPullRequest,
+  panel: commands.getPullRequestPanel,
+  open: commands.openProjectPullRequest,
 };
+
+export const onPullRequestPanel = (
+  callback: EventCallback<PullRequestPanelChanged>,
+) => listen(PULL_REQUEST_PANEL_EVENT, callback);
 
 export const layoutCommands = {
   getState: commands.getLayoutState,
