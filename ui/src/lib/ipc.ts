@@ -5,6 +5,12 @@ import {
   LAYOUT_STATE_EVENT,
   LAYOUT_INTENT_EVENT,
   PROJECT_SELECTED_EVENT,
+  PR_OPENED_EVENT,
+  PR_CI_EVENT,
+  PR_REVIEW_EVENT,
+  PR_MERGED_EVENT,
+  PR_CLOSED_EVENT,
+  type PullRequestLifecycleEvent,
   type WindowStateChanged,
   type LayoutStateChanged_Serialize,
   type LayoutIntentRequested_Serialize,
@@ -60,6 +66,8 @@ export type {
   ProjectRow,
   ProjectLabel,
   PullRequest,
+  PullRequestHistoryView,
+  PullRequestLifecycleEvent,
   PullRequestSnapshot,
   PullRequestCheck,
   PullRequestReview,
@@ -92,6 +100,22 @@ export const projectCommands = {
 
 export const onProjectSelected = (callback: EventCallback<ProjectSelected>) =>
   listen(PROJECT_SELECTED_EVENT, callback);
+
+export const onPullRequestOpened = (
+  callback: EventCallback<PullRequestLifecycleEvent>,
+) => listen(PR_OPENED_EVENT, callback);
+export const onPullRequestCi = (
+  callback: EventCallback<PullRequestLifecycleEvent>,
+) => listen(PR_CI_EVENT, callback);
+export const onPullRequestReview = (
+  callback: EventCallback<PullRequestLifecycleEvent>,
+) => listen(PR_REVIEW_EVENT, callback);
+export const onPullRequestMerged = (
+  callback: EventCallback<PullRequestLifecycleEvent>,
+) => listen(PR_MERGED_EVENT, callback);
+export const onPullRequestClosed = (
+  callback: EventCallback<PullRequestLifecycleEvent>,
+) => listen(PR_CLOSED_EVENT, callback);
 
 export const onLayoutState = (
   callback: EventCallback<LayoutStateChanged_Serialize>,

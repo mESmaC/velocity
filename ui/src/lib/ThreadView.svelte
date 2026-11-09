@@ -1,6 +1,7 @@
 <script lang="ts">
   import Composer from './Composer.svelte';
   import Icon from './Icon.svelte';
+  import PullRequestHistory from './PullRequestHistory.svelte';
   import type {
     DiffLineRole,
     LayoutAction,
@@ -94,6 +95,11 @@
     </div>
   </header>
 
+  {#if thread.pull_request_history}<PullRequestHistory
+      history={thread.pull_request_history}
+      track
+    />{/if}
+
   <div class="transcript">
     <div class="transcript-inner">
       {#if thread.worked_summary && thread.transcript_mode !== 'FullTranscript'}
@@ -180,6 +186,9 @@
           {/if}
         {/each}
       {/if}
+      {#if thread.pull_request_history}<PullRequestHistory
+          history={thread.pull_request_history}
+        />{/if}
     </div>
   </div>
 

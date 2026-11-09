@@ -58,7 +58,7 @@ pub struct ModelPillView {
     feature = "bindings",
     derive(serde::Serialize, serde::Deserialize, specta::Type)
 )]
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ToolStepRow {
     pub running: bool,
     pub verb: String,
@@ -164,6 +164,44 @@ pub struct WorkedSummaryView {
     feature = "bindings",
     derive(serde::Serialize, serde::Deserialize, specta::Type)
 )]
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct PullRequestHistoryCard {
+    pub identifier: String,
+    pub title: String,
+    pub body: String,
+    pub path: Option<String>,
+    pub line: Option<u32>,
+    pub resolved: bool,
+    pub tool: Option<ToolStepRow>,
+}
+
+#[cfg_attr(
+    feature = "bindings",
+    derive(serde::Serialize, serde::Deserialize, specta::Type)
+)]
+#[derive(Clone, Debug)]
+pub struct PullRequestTrackStep {
+    pub label: String,
+    pub state: String,
+}
+
+#[cfg_attr(
+    feature = "bindings",
+    derive(serde::Serialize, serde::Deserialize, specta::Type)
+)]
+#[derive(Clone, Debug)]
+pub struct PullRequestHistoryView {
+    pub status: String,
+    pub stage: String,
+    pub track: Vec<PullRequestTrackStep>,
+    pub cards: Vec<PullRequestHistoryCard>,
+    pub cleanup_error: Option<String>,
+}
+
+#[cfg_attr(
+    feature = "bindings",
+    derive(serde::Serialize, serde::Deserialize, specta::Type)
+)]
 #[derive(Clone, Debug)]
 pub struct ThreadDetailSnapshot {
     #[cfg_attr(feature = "bindings", serde(with = "crate::ipc_number"))]
@@ -193,6 +231,7 @@ pub struct ThreadDetailSnapshot {
     pub show_work: bool,
     pub transcript_mode: TranscriptModeView,
     pub worked_summary: Option<WorkedSummaryView>,
+    pub pull_request_history: Option<PullRequestHistoryView>,
     pub blocks: Vec<TranscriptBlock>,
     pub agent_commands: Vec<AgentCommandView>,
     pub composer_placeholder: String,
@@ -215,6 +254,7 @@ pub struct ThreadDetailEntry {
     pub agent_busy: bool,
     pub show_work: bool,
     pub worked_summary: Option<WorkedSummaryView>,
+    pub pull_request_history: Option<PullRequestHistoryView>,
     pub blocks: Vec<TranscriptBlock>,
     pub agent_commands: Vec<AgentCommandView>,
     pub provider: ProviderColor,
@@ -419,7 +459,8 @@ pub fn project_thread_detail(entry: &ThreadDetailEntry) -> ThreadDetailSnapshot 
         agent_busy: entry.agent_busy,
         show_work: entry.show_work,
         transcript_mode: mode,
-        worked_summary: entry.worked_summary.clone(),
+        worked_summary: worked_summary(entry),
+        pull_request_history: entry.pull_request_history.clone(),
         blocks: entry.blocks.clone(),
         agent_commands: entry.agent_commands.clone(),
         composer_placeholder: placeholder,
@@ -432,6 +473,36 @@ pub fn project_thread_detail(entry: &ThreadDetailEntry) -> ThreadDetailSnapshot 
             preserve_requested_fast: pill.preserve_requested_fast,
         },
     }
+}
+
+fn worked_summary(entry: &ThreadDetailEntry) -> Option<WorkedSummaryView> {
+    if entry.pull_request_number.is_none() {
+        return entry.worked_summary.clone();
+    }
+    let tool_calls = entry
+        .blocks
+        .iter()
+        .map(|block| match block {
+            TranscriptBlock::ToolGroup { steps } => steps.len(),
+            _ => 0,
+        })
+        .sum();
+    let files_touched = entry
+        .blocks
+        .iter()
+        .filter_map(|block| match block {
+            TranscriptBlock::Diff { block } => Some(block.file_path.as_str()),
+            _ => None,
+        })
+        .collect::<std::collections::BTreeSet<_>>()
+        .len();
+    Some(WorkedSummaryView {
+        tool_calls,
+        files_touched,
+        added: entry.added,
+        deleted: entry.deleted,
+        proved: false,
+    })
 }
 
 /// Evaluates composer submission using the verified `submit_composer` and `queued_notice_visible` rules.

@@ -15,3 +15,4 @@ serde.workspace = true
 serde_json.workspace = true
 specta.workspace = true
 thiserror.workspace = true
+velocity-core = { workspace = true, features = ["bindings"] }

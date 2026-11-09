@@ -7,6 +7,7 @@
 //! and serde/specta serialization.
 
 pub mod build_gate;
+pub mod follow_through;
 
 use serde::{Deserialize, Serialize};
 use specta::Type;
@@ -508,6 +509,8 @@ pub struct ThreadItem {
     #[specta(skip)]
     pub worktree_path_id: Option<String>,
     pub pull_request_number: Option<u32>,
+    #[serde(default)]
+    pub follow_through: Option<velocity_github::follow_through::FollowThrough>,
     pub review_stage: Option<ReviewStage>,
     pub task_ids: Vec<u32>,
     pub additions: u32,

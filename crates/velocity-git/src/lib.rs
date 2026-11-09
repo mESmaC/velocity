@@ -11,6 +11,7 @@
 mod command;
 pub mod lifecycle;
 pub mod manager;
+mod merged_worktree;
 pub mod path_scheme;
 mod repository;
 pub mod setup;
@@ -25,6 +26,7 @@ pub use manager::{
     parse_untracked_file_list, prune_orphan_worktrees, resolve_project_worktree_root,
     resolve_worktree_directory, strip_velocity_branch_prefix, validate_worktree_path_length,
 };
+pub use merged_worktree::{MergedWorktreeError, remove_merged_worktree};
 pub use path_scheme::{
     JobKind, LocationConfig, WorktreeLeaf, WorktreePath, can_allocate_leaf, effective_root,
     leaf_for_job, plan_worktree_path, same_leaf_id,

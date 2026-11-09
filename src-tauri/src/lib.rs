@@ -4,6 +4,7 @@ use tauri_specta::{Builder, Event, collect_commands, collect_events};
 use velocity_store::PersistedState;
 
 mod build_gate;
+mod follow_through;
 mod github;
 pub mod layout;
 mod new_project;
@@ -37,6 +38,7 @@ fn bindings() -> Builder<tauri::Wry> {
             build_gate::get_launch_eligibility,
         ])
         .typ::<PersistedState>()
+        .typ::<follow_through::PullRequestLifecycleEvent>()
         .typ::<window::WindowStateChanged>()
         .typ::<layout::LayoutStateChanged>()
         .typ::<layout::LayoutIntentRequested>()
@@ -45,6 +47,11 @@ fn bindings() -> Builder<tauri::Wry> {
         .constant("LAYOUT_STATE_EVENT", layout::LayoutStateChanged::NAME)
         .constant("LAYOUT_INTENT_EVENT", layout::LayoutIntentRequested::NAME)
         .constant("PROJECT_SELECTED_EVENT", projects::ProjectSelected::NAME)
+        .constant("PR_OPENED_EVENT", follow_through::PR_OPENED_EVENT)
+        .constant("PR_CI_EVENT", follow_through::PR_CI_EVENT)
+        .constant("PR_REVIEW_EVENT", follow_through::PR_REVIEW_EVENT)
+        .constant("PR_MERGED_EVENT", follow_through::PR_MERGED_EVENT)
+        .constant("PR_CLOSED_EVENT", follow_through::PR_CLOSED_EVENT)
         .error_handling(tauri_specta::ErrorHandlingMode::Throw)
 }
 
@@ -78,6 +85,7 @@ pub fn run() -> anyhow::Result<()> {
             bindings.mount_events(application);
             state::initialize(application.handle())?;
             projects::initialize(application.handle())?;
+            follow_through::initialize(application.handle(), follow_through::Hooks::default());
             Ok(())
         })
         .on_window_event(window::on_window_event)

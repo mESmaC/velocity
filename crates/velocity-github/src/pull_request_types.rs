@@ -8,6 +8,12 @@ pub struct GitHubActor {
 
 #[derive(Clone, Debug, Serialize, Deserialize, Type)]
 #[serde(rename_all = "camelCase")]
+pub struct PullRequestRepository {
+    pub name_with_owner: String,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
 pub struct PullRequest {
     pub id: String,
     pub number: u32,
@@ -28,6 +34,8 @@ pub struct PullRequest {
     pub merged_at: Option<String>,
     pub review_decision: Option<String>,
     pub merge_state_status: String,
+    #[serde(default)]
+    pub head_repository: Option<PullRequestRepository>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, Type)]

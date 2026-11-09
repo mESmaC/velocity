@@ -4885,6 +4885,7 @@ dependencies = [
  "tauri-specta",
  "velocity-acp",
  "velocity-core",
+ "velocity-git",
  "velocity-github",
  "velocity-new-project",
  "velocity-store",
@@ -4914,6 +4915,7 @@ dependencies = [
  "serde_json",
  "specta",
  "thiserror 2.0.21",
+ "velocity-core",
 ]
 
 [[package]]
@@ -4938,6 +4940,7 @@ dependencies = [
  "specta",
  "thiserror 2.0.21",
  "velocity-core",
+ "velocity-github",
 ]
 
 [[package]]
