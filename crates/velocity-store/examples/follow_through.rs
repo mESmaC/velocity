@@ -6,8 +6,8 @@ use velocity_github::{
     PullRequestClient, PullRequestSnapshot, PullRequestState, follow_through::FollowThrough,
 };
 use velocity_store::{
-    AgentActivity, EffortLevel, PersistedState, ProjectItem, ProjectLocationKind, ProviderKind,
-    SpeedMode, StateStore, ThreadItem, ThreadState,
+    AgentActivity, EffortLevel, PersistedState, ProjectItem, ProjectLocationKind, StateStore,
+    ThreadItem,
 };
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -75,27 +75,11 @@ fn seed(repository: &str, snapshot: &PullRequestSnapshot) -> PersistedState {
 
 fn seed_thread(repository: &str, snapshot: &PullRequestSnapshot) -> ThreadItem {
     ThreadItem {
-        id: 1,
-        title: snapshot.pull_request.title.clone(),
-        state: ThreadState::Working,
         activity: AgentActivity::Idle,
         branch_name: snapshot.pull_request.head_ref_name.clone(),
         worktree_path: Some(repository.into()),
-        worktree_role: velocity_store::WorktreeRole::Thread,
-        worktree_path_id: None,
-        pull_request_number: None,
-        follow_through: None,
-        review_stage: None,
-        task_ids: Vec::new(),
-        additions: 0,
-        deletions: 0,
-        elapsed_seconds: 0,
-        provider: ProviderKind::Codex,
         model_name: "agent default".into(),
         effort: EffortLevel::Low,
-        preferred_speed: SpeedMode::Regular,
-        effective_speed: SpeedMode::Regular,
-        model_supports_fast: false,
-        interview: None,
+        ..ThreadItem::new(1, snapshot.pull_request.title.clone())
     }
 }
