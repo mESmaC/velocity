@@ -24,6 +24,7 @@ specta-typescript.workspace = true
 tauri.workspace = true
 tauri-specta.workspace = true
 velocity-core.workspace = true
+velocity-store.workspace = true
 
 [lints]
 workspace = true

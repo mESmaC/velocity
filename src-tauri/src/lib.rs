@@ -1,7 +1,9 @@
 use anyhow::Context;
 use std::path::Path;
 use tauri_specta::{Builder, Event, collect_commands, collect_events};
+use velocity_store::PersistedState;
 
+mod state;
 mod window;
 
 fn bindings() -> Builder<tauri::Wry> {
@@ -13,7 +15,10 @@ fn bindings() -> Builder<tauri::Wry> {
             window::minimize_window,
             window::toggle_maximize_window,
             window::close_window,
+            state::get_settings,
+            state::set_settings,
         ])
+        .typ::<PersistedState>()
         .typ::<window::WindowStateChanged>()
         .constant("WINDOW_STATE_EVENT", window::WindowStateChanged::NAME)
         .error_handling(tauri_specta::ErrorHandlingMode::Throw)
@@ -40,6 +45,7 @@ pub fn run() -> anyhow::Result<()> {
         .invoke_handler(bindings.invoke_handler())
         .setup(move |application| {
             bindings.mount_events(application);
+            state::initialize(application.handle())?;
             Ok(())
         })
         .on_window_event(window::on_window_event)

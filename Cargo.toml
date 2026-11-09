@@ -1,5 +1,5 @@
 [workspace]
-members = ["crates/velocity-acp", "crates/velocity-core", "src-tauri"]
+members = ["crates/velocity-acp", "crates/velocity-core", "crates/velocity-store", "src-tauri"]
 resolver = "3"
 
 [workspace.package]
@@ -10,11 +10,14 @@ rust-version = "1.99"
 [workspace.dependencies]
 anyhow = "1.0"
 serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
 specta = { version = "=2.0.0-rc.26", features = ["derive", "function"] }
 specta-typescript = "=0.0.13"
 tauri = { version = "2.12.5", features = ["specta"] }
 tauri-specta = { version = "=2.0.0-rc.26", features = ["derive", "typescript"] }
+thiserror = "2.0"
 velocity-core = { path = "crates/velocity-core" }
+velocity-store = { path = "crates/velocity-store" }
 
 [workspace.lints.rust]
 unsafe_code = "forbid"

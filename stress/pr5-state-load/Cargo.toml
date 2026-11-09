@@ -1,0 +1,11 @@
+[package]
+name = "pr5-state-load"
+version = "0.1.0"
+edition = "2024"
+publish = false
+
+[dependencies]
+velocity-store = { path = "../../crates/velocity-store" }
+serde_json = "1"
+
+[workspace]

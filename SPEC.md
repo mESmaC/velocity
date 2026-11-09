@@ -1014,7 +1014,7 @@ Each milestone ends with a working app. Check items off as their PRs merge.
 - [x] Tauri v2 app, frameless window, title bar, drag regions, window controls (F1)
 - [x] Design tokens → theme module; bundled fonts
 - [ ] Three-column layout, sidebar groups, rail panels, pulse, palette, keyboard map (F1, §5)
-- [ ] Persisted state: projects, threads, tasks, settings
+- [x] Persisted state: projects, threads, tasks, settings
 
 **M2 · Projects and spec**
 - [ ] Project store and switcher (F1)
