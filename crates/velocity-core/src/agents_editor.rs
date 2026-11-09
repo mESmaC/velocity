@@ -162,9 +162,8 @@ impl AgentsEditor {
         if let Some(previous) = index
             .checked_sub(1)
             .and_then(|index| self.lines.get_mut(index))
-            && previous.ending.is_empty()
         {
-            previous.ending = self.newline.clone();
+            previous.terminate(&self.newline);
         }
         let mut line = OutlineLine::new(identifier, &format!("{source}{}", self.newline), false);
         line.placeholder = line.kind == OutlineKind::Rule && line.text.is_empty();
@@ -252,9 +251,7 @@ impl AgentsEditor {
             // A former last line without a newline must not join its new neighbour.
             let last = self.lines.len().saturating_sub(1);
             for line in self.lines.iter_mut().take(last) {
-                if line.ending.is_empty() {
-                    line.ending = self.newline.clone();
-                }
+                line.terminate(&self.newline);
             }
         }
         Some(focus(identifier, true))

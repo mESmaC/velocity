@@ -62,6 +62,16 @@ impl OutlineLine {
         self.inline = inline_text(&self.text);
     }
 
+    /// Ends this line's last physical line, continuation included, so a line placed after it
+    /// never joins it. A file's last line may have no newline.
+    pub(crate) fn terminate(&mut self, newline: &str) {
+        if self.ending.is_empty() {
+            self.ending = newline.into();
+        } else if !self.continuation.is_empty() && !self.continuation.ends_with('\n') {
+            self.continuation.push_str(newline);
+        }
+    }
+
     pub(crate) fn markdown(&self) -> String {
         if self.placeholder && self.text.trim().is_empty() && self.continuation.is_empty() {
             return String::new();
