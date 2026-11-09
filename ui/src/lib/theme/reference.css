@@ -2,6 +2,142 @@
    copy. These values come from the winning reference rules, including the
    later title-bar overrides at design/main-window.html:947-973. */
 :root {
+  /* F5/F13: Settings and Worktrees, reference rules 227–233, 373–411,
+     482–489, 683–687, 740 and their final overrides at 1000–1050. */
+  --worktrees-scrollbar-size: 8px;
+  --worktrees-scrollbar-radius: 8px;
+  --worktrees-scrollbar-border: 2px solid transparent;
+  --worktrees-scrollbar-thumb: rgba(255, 255, 255, 0.14);
+  --worktrees-scrollbar-hover: rgba(255, 255, 255, 0.24);
+  --worktrees-zero: 0;
+  --worktrees-full: 100%;
+  --worktrees-flex: 1;
+  --worktrees-head-gap: 10px;
+  --worktrees-head-padding: 12px 22px 11px;
+  --worktrees-head-border: 1px solid rgba(255, 255, 255, 0.08);
+  --worktrees-head-font-size: 13.5px;
+  --worktrees-head-font-weight: 600;
+  --worktrees-head-letter-spacing: -0.01em;
+  --worktrees-title-color: #fff;
+  --worktrees-meta-font: 10.5px var(--mono);
+  --worktrees-body-columns: 168px minmax(0, 1fr);
+  --worktrees-nav-gap: 2px;
+  --worktrees-nav-padding: 12px 8px;
+  --worktrees-nav-border: 1px solid rgba(255, 255, 255, 0.07);
+  --worktrees-nav-button-padding: 6px 9px;
+  --worktrees-nav-button-radius: 7px;
+  --worktrees-nav-button-font-size: 11.5px;
+  --worktrees-nav-small-font-size: 10px;
+  --worktrees-nav-active-background: linear-gradient(
+    180deg,
+    rgba(255, 255, 255, 0.13),
+    rgba(255, 255, 255, 0.08)
+  );
+  --worktrees-nav-active-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.08);
+  --worktrees-main-padding: 18px 28px 80px;
+  --worktrees-section-width: 720px;
+  --worktrees-section-margin: 28px;
+  --worktrees-heading-margin: 3px;
+  --worktrees-heading-size: 12.5px;
+  --worktrees-heading-weight: 600;
+  --worktrees-description-margin: 12px;
+  --worktrees-description-size: 11px;
+  --worktrees-description-line-height: 1.5;
+  --worktrees-drive-columns: repeat(3, 1fr);
+  --worktrees-drive-gap: 6px;
+  --worktrees-drive-margin: 10px;
+  --worktrees-drive-padding: 9px 10px;
+  --worktrees-drive-border: 1px solid rgba(255, 255, 255, 0.09);
+  --worktrees-drive-radius: 12px;
+  --worktrees-drive-background: linear-gradient(
+    180deg,
+    rgba(255, 255, 255, 0.05),
+    rgba(255, 255, 255, 0.025)
+  );
+  --worktrees-drive-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.05);
+  --worktrees-drive-hover-border: rgba(255, 255, 255, 0.17);
+  --worktrees-drive-hover-background: linear-gradient(
+    180deg,
+    rgba(255, 255, 255, 0.08),
+    rgba(255, 255, 255, 0.04)
+  );
+  --worktrees-drive-on-border: rgba(255, 255, 255, 0.34);
+  --worktrees-drive-on-background: linear-gradient(
+    180deg,
+    rgba(255, 255, 255, 0.14),
+    rgba(255, 255, 255, 0.08)
+  );
+  --worktrees-drive-on-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.1);
+  --worktrees-drive-heading-size: 12px;
+  --worktrees-drive-heading-weight: 600;
+  --worktrees-drive-meta-font: 10px var(--mono);
+  --worktrees-bar-height: 3px;
+  --worktrees-bar-radius: 2px;
+  --worktrees-location-gap: 8px;
+  --worktrees-input-gap: 6px;
+  --worktrees-input-height: 30px;
+  --worktrees-input-padding: 0 9px;
+  --worktrees-input-border: 1px solid rgba(255, 255, 255, 0.1);
+  --worktrees-input-radius: 7px;
+  --worktrees-input-background: rgba(0, 0, 0, 0.45);
+  --worktrees-input-focus-border: rgba(255, 255, 255, 0.26);
+  --worktrees-input-font: 11.5px var(--mono);
+  --worktrees-preview-margin: 8px;
+  --worktrees-preview-padding: 8px 10px;
+  --worktrees-preview-border: 1px dashed var(--line-mid);
+  --worktrees-preview-radius: 8px;
+  --worktrees-preview-background: rgba(255, 255, 255, 0.03);
+  --worktrees-preview-font: 11px/1.6 var(--mono);
+  --worktrees-row-gap: 14px;
+  --worktrees-row-padding: 8px 0;
+  --worktrees-row-border: 1px solid var(--line-dim);
+  --worktrees-row-font-size: 11.5px;
+  --worktrees-row-input-flex: 0 1 320px;
+  --worktrees-hint-font-size: 10.5px;
+  --worktrees-note-margin: 8px;
+  --worktrees-note-font-size: 10.5px;
+  --worktrees-check-gap: 7px;
+  --worktrees-check-font-size: 11px;
+  --worktrees-checks-gap: 8px;
+  --worktrees-lock-gap: 4px;
+  --worktrees-lock-font-size: 10px;
+  --worktrees-lock-size: 11px;
+  --worktrees-lock-stroke: 1.5;
+  --worktrees-summary-gap: 10px;
+  --worktrees-summary-margin: 6px;
+  --worktrees-summary-font-size: 11px;
+  --worktrees-button-height: 24px;
+  --worktrees-button-padding: 0 10px;
+  --worktrees-button-border: 1px solid rgba(255, 255, 255, 0.11);
+  --worktrees-button-radius: 7px;
+  --worktrees-button-background: linear-gradient(
+    rgba(255, 255, 255, 0.12),
+    rgba(255, 255, 255, 0.06)
+  );
+  --worktrees-button-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.1);
+  --worktrees-button-hover-border: rgba(255, 255, 255, 0.18);
+  --worktrees-button-hover-background: linear-gradient(
+    rgba(255, 255, 255, 0.17),
+    rgba(255, 255, 255, 0.1)
+  );
+  --worktrees-mini-height: 18px;
+  --worktrees-mini-padding: 0 7px;
+  --worktrees-mini-border: 1px solid var(--line-mid);
+  --worktrees-mini-radius: 6px;
+  --worktrees-mini-font-size: 10px;
+  --worktrees-table-columns: 8px minmax(0, 1.3fr) minmax(0, 1fr) 62px 70px;
+  --worktrees-table-gap: 10px;
+  --worktrees-table-padding: 6px 4px;
+  --worktrees-table-font-size: 11px;
+  --worktrees-dot-size: 7px;
+  --worktrees-dot-radius: 50%;
+  --worktrees-dot-gone-border: 1px solid var(--muted);
+  --worktrees-path-font: 10.5px var(--mono);
+  --worktrees-table-meta-font: 10px var(--mono);
+  --worktrees-gone-opacity: 0.55;
+  --worktrees-gone-decoration-color: #777;
+  --worktrees-transparent: transparent;
+  --worktrees-none: none;
   /* PR rail: .ci (300-301), .item .sub (294), .item .by (664).
      Review text stays upright under the product's no-italics rule. */
   --pull-request-check-size: 7px;

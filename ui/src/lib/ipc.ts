@@ -10,6 +10,8 @@ import {
   type LayoutStateChanged_Serialize,
   type LayoutIntentRequested_Serialize,
   type ProjectSelected,
+  WORKTREE_INVENTORY_EVENT,
+  type WorktreeInventoryChanged_Serialize,
   type PullRequestPanelChanged,
 } from './bindings';
 
@@ -61,6 +63,9 @@ export type {
   ProjectList,
   ProjectRow,
   ProjectLabel,
+  WorktreeSettingsView_Serialize as WorktreeSettingsView,
+  WorktreeSettingsEdit,
+  WorktreePathPreview,
   PullRequest,
   PullRequestSnapshot,
   PullRequestCheck,
@@ -128,6 +133,18 @@ export const settingsCommands = {
   get: commands.getSettings,
   set: commands.setSettings,
 };
+
+export const worktreeCommands = {
+  list: commands.listWorktrees,
+  set: commands.setWorktreeSettings,
+  preview: commands.previewWorktreeFolder,
+  browse: commands.browseWorktreeFolder,
+  prune: commands.pruneWorktrees,
+};
+
+export const onWorktreeInventory = (
+  callback: EventCallback<WorktreeInventoryChanged_Serialize>,
+) => listen(WORKTREE_INVENTORY_EVENT, callback);
 
 export const launchCommands = {
   getEligibility: commands.getLaunchEligibility,
