@@ -10,4 +10,8 @@ publish = false
 workspace = true
 
 [dependencies]
+gix = { version = "0.90.0", default-features = false, features = ["sha1", "sha256"] }
+serde.workspace = true
+serde_json.workspace = true
+specta.workspace = true
 thiserror.workspace = true

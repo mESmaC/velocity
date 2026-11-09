@@ -1,0 +1,23 @@
+//! Entry point for inspecting PRs or executing a typed operation from a JSON file.
+use std::path::Path;
+use velocity_github::{PullRequestClient, PullRequestOperation};
+
+fn main() -> Result<(), Box<dyn std::error::Error>> {
+    let arguments: Vec<String> = std::env::args().skip(1).collect();
+    let directory = arguments.first().map(String::as_str).unwrap_or(".");
+    let client = PullRequestClient::discover(Path::new(directory))?;
+    let output = if arguments
+        .get(1)
+        .is_some_and(|argument| argument == "--operation")
+    {
+        let path = arguments.get(2).ok_or("--operation requires a JSON file")?;
+        let operation: PullRequestOperation = serde_json::from_slice(&std::fs::read(path)?)?;
+        serde_json::to_value(client.execute(operation)?)?
+    } else if let Some(number) = arguments.get(1) {
+        serde_json::to_value(client.snapshot(number.parse()?)?)?
+    } else {
+        serde_json::to_value(client.list()?)?
+    };
+    println!("{}", serde_json::to_string_pretty(&output)?);
+    Ok(())
+}
