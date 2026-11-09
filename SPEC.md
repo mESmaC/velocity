@@ -1125,7 +1125,7 @@ Each milestone ends with a working app. PR duty checks an item off when it lands
 - [x] Settings → Worktrees, including the live list and the footer count (F5, F13)
 
 **M4 · PR loop**
-- [ ] GitHub integration: open PR, CI checks, reviews, comments, merge, close
+- [x] GitHub integration: open PR, CI checks, reviews, comments, merge, close
   - [x] Live Open Pull Requests rail: real project PRs, CI, line counts, review state, reviewer claims and owning-thread navigation (F6/F7)
 - [x] PR follow-through: track, PR history, auto-response to review comments, merge → worktree delete (F6)
 - [x] Closed-without-merge state with the worktree kept (F5, F6)
