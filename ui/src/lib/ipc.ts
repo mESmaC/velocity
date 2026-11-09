@@ -41,6 +41,8 @@ export type {
   ProviderSettings,
   ReviewStage,
   Settings,
+  SidebarGroup_Serialize as SidebarGroup,
+  SidebarRow_Serialize as SidebarRow,
   AgentCommandView,
   SlashCommandItem,
   SpeedMode,
@@ -171,4 +173,5 @@ export const onThreadStep = (
   callback: EventCallback<ThreadStepRecorded_Serialize>,
 ) => listen(THREAD_STEP_EVENT, callback);
 
+export * from './ipc/duty';
 export * from './ipc/thread-menu';

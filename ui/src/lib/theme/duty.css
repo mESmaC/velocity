@@ -1,0 +1,269 @@
+/* F7 Duty view and Start a duty agent dialog rules. Visual values live in
+   reference.css (--duty-*, --thread-*, --new-project-*). Italics in the
+   reference are dropped per AGENTS.md. */
+.duty-view {
+  flex: var(--thread-view-flex);
+  display: flex;
+  flex-direction: column;
+  min-height: var(--thread-view-min-height);
+}
+.duty-meta-paused {
+  color: var(--warn);
+}
+.duty-view .section-h {
+  font-size: var(--duty-section-heading-font-size);
+  color: var(--muted);
+  margin-bottom: var(--duty-section-heading-margin-bottom);
+}
+.duty-view .rule-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--duty-rule-chips-gap);
+}
+.duty-view .rule {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--duty-rule-gap);
+  height: var(--duty-rule-height);
+  padding: var(--duty-rule-padding);
+  border: var(--duty-rule-border);
+  border-radius: var(--duty-rule-border-radius);
+  font-size: var(--duty-rule-font-size);
+  color: var(--text-2);
+}
+.duty-view .rule.hard {
+  border-color: var(--duty-rule-hard-border-color);
+  color: var(--duty);
+}
+.duty-view .rule .icon {
+  width: var(--duty-rule-icon-size);
+  height: var(--duty-rule-icon-size);
+}
+.duty-view .duty-agents {
+  display: grid;
+  grid-template-columns: var(--duty-agents-columns);
+  gap: var(--duty-agents-gap);
+}
+.duty-view .agent-card {
+  padding: var(--duty-agent-card-padding);
+  border: var(--duty-agent-card-border);
+  border-radius: var(--duty-agent-card-border-radius);
+  background: var(--duty-agent-card-background);
+  box-shadow: var(--duty-agent-card-box-shadow);
+}
+.duty-view .agent-card .ah {
+  display: flex;
+  align-items: center;
+  gap: var(--duty-agent-heading-gap);
+  font-size: var(--duty-agent-heading-font-size);
+}
+.duty-view .agent-card .ah .prov {
+  display: inline-flex;
+  align-items: center;
+}
+.duty-view .agent-card .ah b {
+  font: var(--duty-agent-nick-font);
+  color: var(--text);
+}
+.duty-view .agent-card .ah span.model-name {
+  margin-left: auto;
+  font: var(--duty-agent-model-font);
+  color: var(--muted);
+}
+.duty-view .agent-card .doing {
+  display: flex;
+  align-items: center;
+  gap: var(--duty-agent-doing-gap);
+  margin-top: var(--duty-agent-doing-margin-top);
+  font-size: var(--duty-agent-doing-font-size);
+  color: var(--text-2);
+}
+.duty-view .feed {
+  display: flex;
+  flex-direction: column;
+}
+.duty-view .ev {
+  display: grid;
+  grid-template-columns: var(--duty-event-columns);
+  gap: var(--duty-event-gap);
+  padding: var(--duty-event-padding);
+  font-size: var(--duty-event-font-size);
+  align-items: baseline;
+  border-bottom: var(--duty-event-border-bottom);
+  border-radius: var(--duty-event-border-radius);
+}
+.duty-view .ev .ts {
+  font: var(--duty-event-ts-font);
+  color: var(--muted);
+}
+.duty-view .ev .who {
+  font: var(--duty-event-who-font);
+  color: var(--duty);
+}
+.duty-view .ev .what {
+  color: var(--text-2);
+}
+.duty-view .ev .what::before {
+  content: '';
+  display: inline-block;
+  width: var(--duty-event-dot-size);
+  height: var(--duty-event-dot-size);
+  border-radius: var(--duty-event-dot-radius);
+  margin-right: var(--duty-event-dot-margin-right);
+  vertical-align: var(--duty-event-dot-vertical-align);
+  background: var(--muted);
+}
+.duty-view .ev.merge .what::before,
+.duty-view .ev.approve .what::before {
+  background: var(--ok);
+}
+.duty-view .ev.changes .what::before {
+  background: var(--err);
+}
+.duty-view .ev.wait .what::before {
+  background: var(--warn);
+}
+.duty-view .ev.file .what::before {
+  background: var(--info);
+}
+.duty-view .ev.sweep .what::before,
+.duty-view .ev.claim .what::before {
+  background: var(--duty);
+}
+.duty-view .ev.you .who {
+  color: var(--text);
+}
+.duty-view .ev.you .what {
+  color: var(--text);
+}
+.duty-view .ev.you .what::before {
+  background: var(--text);
+}
+.duty-dialog {
+  position: fixed;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  max-width: none;
+  max-height: none;
+  margin: 0;
+  padding: 0;
+  border: 0;
+  background: none;
+  color: var(--text);
+}
+.duty-dialog[open] {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+.duty-dialog::backdrop {
+  background: var(--new-project-scrim-background);
+  backdrop-filter: var(--new-project-scrim-backdrop-filter);
+}
+.duty-dialog .role-cards {
+  display: grid;
+  grid-template-columns: var(--duty-role-cards-columns);
+  gap: var(--duty-role-cards-gap);
+}
+.duty-dialog .role-card {
+  display: flex;
+  flex-direction: column;
+  gap: var(--duty-role-card-gap);
+  padding: var(--duty-role-card-padding);
+  border: var(--duty-role-card-border);
+  border-radius: var(--duty-role-card-border-radius);
+  text-align: left;
+}
+.duty-dialog .role-card:hover {
+  border-color: var(--duty-role-card-hover-border-color);
+}
+.duty-dialog .role-card.on {
+  border-color: var(--duty-role-card-on-border-color);
+  background: var(--duty-role-card-on-background);
+}
+.duty-dialog .role-card .mh {
+  display: flex;
+  align-items: center;
+  gap: var(--duty-role-card-heading-gap);
+  font-size: var(--duty-role-card-heading-font-size);
+  font-weight: var(--duty-role-card-heading-font-weight);
+  color: var(--text);
+}
+.duty-dialog .role-card .mh .icon {
+  color: var(--duty);
+}
+.duty-dialog .role-card .md {
+  font-size: var(--duty-role-card-detail-font-size);
+  line-height: var(--duty-role-card-detail-line-height);
+  color: var(--muted);
+}
+.duty-dialog .stepper {
+  display: inline-flex;
+  align-items: center;
+  border: var(--duty-stepper-border);
+  border-radius: var(--duty-stepper-border-radius);
+}
+.duty-dialog .stepper button {
+  width: var(--duty-stepper-button-width);
+  height: var(--duty-stepper-button-height);
+  color: var(--text-2);
+}
+.duty-dialog .stepper button:hover {
+  color: var(--text);
+  background: var(--surface-3);
+}
+.duty-dialog .stepper span {
+  min-width: var(--duty-stepper-count-min-width);
+  text-align: center;
+  font: var(--duty-stepper-count-font);
+}
+.duty-dialog .checks {
+  display: flex;
+  flex-direction: column;
+  gap: var(--duty-checks-gap);
+}
+.duty-dialog .checks .check {
+  display: flex;
+}
+.duty-dialog .check.locked {
+  color: var(--text);
+  cursor: default;
+}
+.duty-dialog .check .lockt {
+  margin-left: auto;
+  display: inline-flex;
+  align-items: center;
+  gap: var(--duty-lockt-gap);
+  font-size: var(--duty-lockt-font-size);
+  color: var(--duty);
+}
+.duty-dialog .check .lockt .icon {
+  width: var(--duty-lockt-icon-size);
+  height: var(--duty-lockt-icon-size);
+}
+.duty-dialog .focus-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--duty-focus-chips-gap);
+}
+.duty-dialog .focus-chips button {
+  height: var(--duty-focus-chip-height);
+  padding: var(--duty-focus-chip-padding);
+  border: var(--duty-focus-chip-border);
+  border-radius: var(--duty-focus-chip-border-radius);
+  font-size: var(--duty-focus-chip-font-size);
+  color: var(--muted);
+}
+.duty-dialog .focus-chips button.on {
+  border-color: var(--duty-focus-chip-on-border-color);
+  color: var(--text);
+  background: var(--duty-focus-chip-on-background);
+}
+.duty-dialog .hint {
+  font-size: var(--duty-hint-font-size);
+  color: var(--muted);
+}
+.duty-dialog .sub-row {
+  margin-top: var(--duty-sub-row-margin-top);
+}

@@ -9,6 +9,7 @@
 pub enum NavigationView {
     Home,
     Thread,
+    Duty,
     SpecScan,
     SpecAsk,
     SpecReady,

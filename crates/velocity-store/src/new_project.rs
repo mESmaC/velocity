@@ -75,6 +75,7 @@ fn project_item(
         merged_today: 0,
         tasks: Vec::new(),
         threads: Vec::new(),
+        duty_roles: Vec::new(),
         pending_interview: interview,
     }
 }
