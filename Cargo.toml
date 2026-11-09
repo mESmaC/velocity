@@ -46,3 +46,13 @@ unsafe_code = "forbid"
 [workspace.lints.clippy]
 unwrap_used = "deny"
 expect_used = "deny"
+
+# Debug builds spent most of their time on debug info: each binary's PDB was
+# about 1.7 GB, and the app crate plus its two links took 9 of a cold build's
+# 12 minutes. Line tables keep file:line in panics, backtraces and debuggers;
+# dependencies need no debug info at all.
+[profile.dev]
+debug = "line-tables-only"
+
+[profile.dev.package."*"]
+debug = false

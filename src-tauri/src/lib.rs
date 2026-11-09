@@ -3,7 +3,10 @@ use std::path::Path;
 use tauri_specta::{Builder, Event, collect_commands, collect_events};
 use velocity_store::PersistedState;
 
+mod agents;
 mod build_gate;
+pub mod duty;
+mod follow_through;
 mod github;
 mod interview;
 pub mod layout;
@@ -22,6 +25,9 @@ fn bindings() -> Builder<tauri::Wry> {
     // Export event payloads/names without the generator's `any`-typed helpers;
     // ipc.ts supplies typed listeners, while run() registers native emitters.
     let builder = Builder::new().commands(collect_commands![
+        agents::read_agents_md,
+        agents::edit_agents_md,
+        agents::write_agents_md,
         window::get_window_state,
         window::minimize_window,
         window::toggle_maximize_window,
@@ -37,6 +43,10 @@ fn bindings() -> Builder<tauri::Wry> {
         worktree_settings::preview_worktree_folder,
         worktree_settings::browse_worktree_folder,
         worktree_settings::prune_worktrees,
+        duty::get_duty_dialog_defaults,
+        duty::start_duty,
+        duty::pause_duty,
+        duty::add_duty_agents,
         github::list_pull_requests,
         github::get_pull_request,
         github::dispatch_pull_request,
@@ -57,6 +67,8 @@ fn bindings() -> Builder<tauri::Wry> {
 fn event_bindings(builder: Builder<tauri::Wry>) -> Builder<tauri::Wry> {
     builder
         .typ::<PersistedState>()
+        .typ::<duty::DutyEventPublished>()
+        .typ::<follow_through::PullRequestLifecycleEvent>()
         .typ::<window::WindowStateChanged>()
         .typ::<layout::LayoutStateChanged>()
         .typ::<layout::LayoutIntentRequested>()
@@ -65,10 +77,16 @@ fn event_bindings(builder: Builder<tauri::Wry>) -> Builder<tauri::Wry> {
         .typ::<pull_request_panel::PullRequestPanelChanged>()
         .typ::<threads::ThreadStatusChanged>()
         .typ::<threads::ThreadStepRecorded>()
+        .constant("DUTY_EVENT", duty::DutyEventPublished::NAME)
         .constant("PROJECT_SELECTED_EVENT", projects::ProjectSelected::NAME)
         .constant("WINDOW_STATE_EVENT", window::WindowStateChanged::NAME)
         .constant("LAYOUT_STATE_EVENT", layout::LayoutStateChanged::NAME)
         .constant("LAYOUT_INTENT_EVENT", layout::LayoutIntentRequested::NAME)
+        .constant("PR_OPENED_EVENT", follow_through::PR_OPENED_EVENT)
+        .constant("PR_CI_EVENT", follow_through::PR_CI_EVENT)
+        .constant("PR_REVIEW_EVENT", follow_through::PR_REVIEW_EVENT)
+        .constant("PR_MERGED_EVENT", follow_through::PR_MERGED_EVENT)
+        .constant("PR_CLOSED_EVENT", follow_through::PR_CLOSED_EVENT)
         .constant(
             "WORKTREE_INVENTORY_EVENT",
             worktree_settings::WorktreeInventoryChanged::NAME,
@@ -99,6 +117,7 @@ pub fn run() -> anyhow::Result<()> {
     export_bindings()?;
 
     let bindings = bindings().events(collect_events![
+        duty::DutyEventPublished,
         window::WindowStateChanged,
         layout::LayoutStateChanged,
         layout::LayoutIntentRequested,
@@ -112,6 +131,7 @@ pub fn run() -> anyhow::Result<()> {
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_clipboard_manager::init())
+        .manage(agents::ManagedAgents::default())
         .manage(layout::MainLayout::default())
         .manage(threads::ManagedThreads::default())
         .manage(velocity_interview::Interviews::default())
@@ -121,6 +141,7 @@ pub fn run() -> anyhow::Result<()> {
             bindings.mount_events(application);
             state::initialize(application.handle())?;
             projects::initialize(application.handle())?;
+            follow_through::initialize(application.handle(), threads::follow_through_hooks());
             worktree_settings::initialize(application.handle())?;
             pull_request_panel::initialize(application.handle());
             interview::start(application.handle());

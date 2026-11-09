@@ -20,6 +20,7 @@ Your job is working functionality. Proofs, tests and docs support it; they never
 - Format: `cargo fmt --all`. Run it before every commit.
 - All local checks: `pwsh -NoProfile -File scripts/check.ps1`. It runs every check PR duty approves on: format, locked build, each crate built on its own, generated bindings, clippy, UI check, lint and build, and `lake build` with the axiom audit when `proofs/` changes. Run it on the merge result before you mark a PR ready.
 - One-time machine setup: `pwsh -NoProfile -File scripts/Setup-DevMachine.ps1`. It registers the merge driver for generated files and turns on the shared sccache compiler cache.
+- Heavy builds go through the build queue: `pwsh -NoProfile -File scripts/build-queue.ps1 cargo build --workspace`. Use it for `cargo build`, `cargo test`, `cargo clippy` and `cargo run`. It runs one build at a time on this machine, so each gets every core and finishes several times faster than five builds side by side. `scripts/check.ps1` already uses it. While you wait, it prints who holds the queue; never stop that process to jump the queue. Never run `cargo tauri dev` through it: the dev server runs until stopped and would hold the queue.
 - Proofs: `lake build` in `proofs/`. Run it before every push that changes `proofs/`.
 - Proof toolchain setup (Windows + Ubuntu WSL): `powershell -File proofs/scripts/Setup-Toolchain.ps1`.
 - Charon and Aeneas (only when an issue asks for a translation): `powershell -File proofs/scripts/Export-Rust.ps1 -CratePath crates/<crate> -Feature <Feature> -StartFrom crate::<module>`. This runs pinned `charon cargo --preset=aeneas` then `aeneas -backend lean`; complete the confidence proof and run `lake build` afterwards. See `proofs/README.md`.
@@ -146,6 +147,7 @@ Most merge conflicts come from a few files every feature touches. Keep your edit
 - Edits to generated files and registration lists never need a "shares" note (Coordination).
 - **`.gitattributes`:** `/stress/*` already preserves every stress script's bytes. Never add a line per script.
 - **SPEC.md §7:** never tick a checkbox in your PR. PR duty ticks it when it lands the PR.
+- **Overlapping fixes, first come, first served:** when two open PRs fix the same root problem or add the same helper, the one that lands first wins. The later PR drops its own version and switches to `master`'s in the commit that merges `master` in. Never land two implementations of one thing, and never hold a PR back so another can land its version first.
 - **Silent conflicts:** after merging `master`, a build error in code neither side edited (a struct gained a field, a function was renamed) is a merge conflict. Fix it in the merge commit.
 
 ## Pull requests
@@ -175,7 +177,7 @@ Most merge conflicts come from a few files every feature touches. Keep your edit
 - After another PR merges, run the checks again on the new merge result before you merge the next one.
 - Update PR branches with `master`. You are allowed and encouraged to, so PRs never wait on their author to rebase:
   - Whenever a PR you review or are about to merge is behind `master`, run `gh pr update-branch <n>`, or merge `master` into it in your review worktree and push.
-  - Resolve a conflict yourself when the resolution keeps both changes as written. When it means choosing between two behaviours, send it back to the author.
+  - Resolve a conflict yourself when the resolution keeps both changes as written, or when both sides implement the same thing: keep `master`'s version and adapt the PR to it (first come, first served, see Shared files). Send it back to the author only when it means choosing between two different behaviours, or adapting takes more than a few lines.
   - Never force-push, and never rewrite the author's commits.
   - Run the checks on the updated branch, not the old PR head.
 - Land a PR in this order: update the branch with `master`, tick its §7 checkbox in SPEC.md in a commit on the branch, run `scripts/check.ps1`, approve, then merge with `gh pr merge <n> --squash --delete-branch --match-head-commit <the SHA you approved>`. A commit pushed after your approval then stops the merge.

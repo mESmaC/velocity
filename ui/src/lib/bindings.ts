@@ -4,6 +4,9 @@ import { invoke as __TAURI_INVOKE } from "@tauri-apps/api/core";
 
 /** Commands */
 export const commands = {
+	readAgentsMd: (projectIdentifier: number) => __TAURI_INVOKE<OutlineSnapshot_Serialize>("read_agents_md", { projectIdentifier }),
+	editAgentsMd: (projectIdentifier: number, action: OutlineAction_Deserialize) => __TAURI_INVOKE<OutlineSnapshot_Serialize>("edit_agents_md", { projectIdentifier, action }),
+	writeAgentsMd: (projectIdentifier: number) => __TAURI_INVOKE<OutlineSnapshot_Serialize>("write_agents_md", { projectIdentifier }),
 	getWindowState: () => __TAURI_INVOKE<WindowStateChanged>("get_window_state"),
 	minimizeWindow: () => __TAURI_INVOKE<null>("minimize_window"),
 	toggleMaximizeWindow: () => __TAURI_INVOKE<null>("toggle_maximize_window"),
@@ -19,6 +22,10 @@ export const commands = {
 	previewWorktreeFolder: (folder: string) => __TAURI_INVOKE<WorktreePathPreview>("preview_worktree_folder", { folder }),
 	browseWorktreeFolder: () => __TAURI_INVOKE<string | null>("browse_worktree_folder"),
 	pruneWorktrees: () => __TAURI_INVOKE<string>("prune_worktrees"),
+	getDutyDialogDefaults: () => __TAURI_INVOKE<DutyDialogDefaults>("get_duty_dialog_defaults"),
+	startDuty: (request: StartDutyRequest_Deserialize) => __TAURI_INVOKE<LayoutSnapshot_Serialize>("start_duty", { request }),
+	pauseDuty: (request: PauseDutyRequest_Deserialize) => __TAURI_INVOKE<LayoutSnapshot_Serialize>("pause_duty", { request }),
+	addDutyAgents: (request: StartDutyRequest_Deserialize) => __TAURI_INVOKE<LayoutSnapshot_Serialize>("add_duty_agents", { request }),
 	listPullRequests: (projectIdentifier: number) => __TAURI_INVOKE<PullRequest_Serialize[]>("list_pull_requests", { projectIdentifier }),
 	getPullRequest: (projectIdentifier: number, number: number) => __TAURI_INVOKE<PullRequestSnapshot_Serialize>("get_pull_request", { projectIdentifier, number }),
 	dispatchPullRequest: (projectIdentifier: number, operation: PullRequestOperation_Deserialize) => __TAURI_INVOKE<PullRequestReceipt>("dispatch_pull_request", { projectIdentifier, operation }),
@@ -43,11 +50,23 @@ export const commands = {
 };
 
 /* Constants */
+export const DUTY_EVENT = "duty://event" as const;
+
 export const LAYOUT_INTENT_EVENT = "layout://intent" as const;
 
 export const LAYOUT_STATE_EVENT = "layout://state" as const;
 
 export const PROJECT_SELECTED_EVENT = "project://selected" as const;
+
+export const PR_CI_EVENT = "pr://ci" as const;
+
+export const PR_CLOSED_EVENT = "pr://closed" as const;
+
+export const PR_MERGED_EVENT = "pr://merged" as const;
+
+export const PR_OPENED_EVENT = "pr://opened" as const;
+
+export const PR_REVIEW_EVENT = "pr://review" as const;
 
 export const PULL_REQUEST_PANEL_EVENT = "pr://panel" as const;
 
@@ -65,6 +84,11 @@ export type AgentActivity = "thinking" | "executing" | "parked" | "stalled" | "a
 export type AgentCommandView = {
 	name: string,
 	description: string,
+};
+
+export type AgentFollowUp = {
+	identifier: string,
+	message: string,
 };
 
 export type AgentSettings = AgentSettings_Serialize | AgentSettings_Deserialize;
@@ -140,6 +164,111 @@ export type DiffLineView = {
 	text: string,
 };
 
+export type DutyAgentCard = {
+	nickname: string,
+	provider: ProviderColor,
+	model_name: string,
+	busy: boolean,
+	doing: string,
+};
+
+export type DutyAgentItem = {
+	nickname: string,
+	provider: ProviderKind,
+	model_name: string,
+	busy: boolean,
+	doing: string,
+};
+
+export type DutyDialogDefaults = {
+	provider: ProviderKind,
+	model_name: string,
+	model_configured: boolean,
+	pr_duty_exists: boolean,
+	scouts_exists: boolean,
+	pr_rules: PrDutyRuleSettings,
+	scout_rules: ScoutRuleSettings,
+};
+
+export type DutyEventKind = "merge" | "approve" | "changes" | "wait" | "file" | "sweep" | "claim" | "skip" | "task" | "you";
+
+export type DutyEventPublished = {
+	role: DutyRole,
+	event: DutyFeedEvent,
+};
+
+export type DutyFeedEvent = {
+	timestamp: string,
+	actor: string,
+	kind: DutyEventKind,
+	message: string,
+};
+
+export type DutyFeedItem = {
+	timestamp: string,
+	actor: string,
+	kind: DutyEventKind,
+	message: string,
+};
+
+export type DutyMergeMethod = "squash" | "rebase" | "merge_commit";
+
+export type DutyRole = "pr_duty" | "scouts";
+
+export type DutyRoleItem = {
+	id: number,
+	role: DutyRole,
+	paused: boolean,
+	issues_filed: number,
+	pr_rules: PrDutyRuleSettings,
+	scout_rules: ScoutRuleSettings,
+	agents: DutyAgentItem[],
+	feed: DutyFeedItem[],
+};
+
+export type DutyRuleChip = {
+	text: string,
+	hard: boolean,
+};
+
+export type DutyViewSnapshot = DutyViewSnapshot_Serialize | DutyViewSnapshot_Deserialize;
+
+export type DutyViewSnapshot_Deserialize = {
+	identifier: string,
+	role: DutyRole,
+	title: string,
+	paused: boolean,
+	agent_count: string,
+	agent_count_label: string,
+	open_pull_request_count: string,
+	merged_today: string,
+	issues_filed: string,
+	cadence_label: string,
+	rules: DutyRuleChip[],
+	agents: DutyAgentCard[],
+	feed: DutyFeedEvent[],
+	composer_placeholder: string,
+	model_pill: ModelPillView,
+};
+
+export type DutyViewSnapshot_Serialize = {
+	identifier: string,
+	role: DutyRole,
+	title: string,
+	paused: boolean,
+	agent_count: string,
+	agent_count_label: string,
+	open_pull_request_count: string,
+	merged_today: string,
+	issues_filed: string,
+	cadence_label: string,
+	rules: DutyRuleChip[],
+	agents: DutyAgentCard[],
+	feed: DutyFeedEvent[],
+	composer_placeholder: string,
+	model_pill: ModelPillView,
+};
+
 export type EffortLevel = "low" | "medium" | "high" | "max";
 
 export type ErrorCardView = {
@@ -147,8 +276,59 @@ export type ErrorCardView = {
 	detail: string,
 };
 
+export type FollowThrough = FollowThrough_Serialize | FollowThrough_Deserialize;
+
+export type FollowThrough_Deserialize = {
+	thread_started_at?: string | null,
+	number?: number,
+	url?: string,
+	head?: string,
+	stage?: string,
+	status?: string,
+	track?: string[],
+	history?: PullRequestHistoryCard_Deserialize[],
+	pending?: AgentFollowUp[],
+	observed?: { [key in string]: string },
+	worktree_deleted?: boolean,
+	cleanup_error?: string | null,
+	coding_tool_count?: number | null,
+	coding_file_count?: number | null,
+	coding_additions?: number,
+	coding_deletions?: number,
+	work_session_identifier?: string | null,
+	work_tool_start?: number,
+	ci_state?: string,
+};
+
+export type FollowThrough_Serialize = {
+	thread_started_at: string | null,
+	number: number,
+	url: string,
+	head: string,
+	stage: string,
+	status: string,
+	track: string[],
+	history: PullRequestHistoryCard_Serialize[],
+	pending: AgentFollowUp[],
+	observed: { [key in string]: string },
+	worktree_deleted: boolean,
+	cleanup_error: string | null,
+	coding_tool_count: number | null,
+	coding_file_count: number | null,
+	coding_additions: number,
+	coding_deletions: number,
+	work_session_identifier: string | null,
+	work_tool_start: number,
+	ci_state: string,
+};
+
 export type GitHubActor = {
 	login: string,
+};
+
+export type InlineText = {
+	text: string,
+	code: boolean,
 };
 
 /**  An answer, recorded as `key: value` (F3 Ask). */
@@ -329,11 +509,13 @@ export type LayoutSnapshot = LayoutSnapshot_Serialize | LayoutSnapshot_Deseriali
 
 export type LayoutSnapshot_Deserialize = {
 	revision: number,
+	project_identifier?: number | null,
 	project_name: string,
 	view: NavigationView,
 	settings_tab: string,
 	selected_thread: string | null,
 	active_thread?: ThreadDetailSnapshot_Deserialize | null,
+	active_duty?: DutyViewSnapshot_Deserialize | null,
 	default_model_pill: ModelPillView,
 	search: string,
 	groups: SidebarGroup_Deserialize[],
@@ -341,6 +523,8 @@ export type LayoutSnapshot_Deserialize = {
 	show_numbers: boolean,
 	palette_open: boolean,
 	new_project_open: boolean,
+	duty_dialog_open: boolean,
+	duty_dialog_role: DutyRole,
 	palette_query: string,
 	palette_results: PaletteItem_Deserialize[],
 	palette_selection: string,
@@ -368,11 +552,13 @@ export type LayoutSnapshot_Deserialize = {
 
 export type LayoutSnapshot_Serialize = {
 	revision: number,
+	project_identifier: number | null,
 	project_name: string,
 	view: NavigationView,
 	settings_tab: string,
 	selected_thread: string | null,
 	active_thread: ThreadDetailSnapshot_Serialize | null,
+	active_duty: DutyViewSnapshot_Serialize | null,
 	default_model_pill: ModelPillView,
 	search: string,
 	groups: SidebarGroup_Serialize[],
@@ -380,6 +566,8 @@ export type LayoutSnapshot_Serialize = {
 	show_numbers: boolean,
 	palette_open: boolean,
 	new_project_open: boolean,
+	duty_dialog_open: boolean,
+	duty_dialog_role: DutyRole,
 	palette_query: string,
 	palette_results: PaletteItem_Serialize[],
 	palette_selection: string,
@@ -432,7 +620,7 @@ export type NavigationIntent_Deserialize = "Palette" | "NewThread" | "NewProject
 
 export type NavigationIntent_Serialize = "Palette" | "NewThread" | "NewProject" | "Settings" | "ShowNumbers" | ({ Jump: string }) & { Answer?: never } | "Search" | "Task" | "Swarm" | "Goal" | "Airc" | "Dismiss" | "Submit" | "Dispatch" | "Resume" | "Fanout" | "PrDuty" | "Scouts" | ({ Answer: string }) & { Jump?: never } | "Lock" | "SpecFile" | "Grill" | "Diff" | "Editor" | "SaveAgents";
 
-export type NavigationView = "Home" | "Thread" | "SpecScan" | "SpecAsk" | "SpecReady" | "SpecLocked" | "Agents" | "Settings" | "Other";
+export type NavigationView = "Home" | "Thread" | "Duty" | "SpecScan" | "SpecAsk" | "SpecReady" | "SpecLocked" | "Agents" | "Settings" | "Other";
 
 export type NewProjectDefaults = NewProjectDefaults_Serialize | NewProjectDefaults_Deserialize;
 
@@ -481,6 +669,97 @@ export type NewReviewComment = {
 
 export type NumberHintEvent = "AltDown" | "AltUp" | "Blur" | "Other";
 
+export type OutlineAction = OutlineAction_Serialize | OutlineAction_Deserialize;
+
+export type OutlineAction_Deserialize = ({ Edit: {
+	identifier: number,
+	text: string,
+} }) & { AddRule?: never; DeleteEmpty?: never; Enter?: never; Indent?: never; Move?: never; Neighbor?: never } | ({ Enter: {
+	identifier: number,
+} }) & { AddRule?: never; DeleteEmpty?: never; Edit?: never; Indent?: never; Move?: never; Neighbor?: never } | ({ Indent: {
+	identifier: number,
+	nested: boolean,
+} }) & { AddRule?: never; DeleteEmpty?: never; Edit?: never; Enter?: never; Move?: never; Neighbor?: never } | ({ Move: {
+	identifier: number,
+	down: boolean,
+} }) & { AddRule?: never; DeleteEmpty?: never; Edit?: never; Enter?: never; Indent?: never; Neighbor?: never } | ({ DeleteEmpty: {
+	identifier: number,
+} }) & { AddRule?: never; Edit?: never; Enter?: never; Indent?: never; Move?: never; Neighbor?: never } | ({ Neighbor: {
+	identifier: number,
+	down: boolean,
+} }) & { AddRule?: never; DeleteEmpty?: never; Edit?: never; Enter?: never; Indent?: never; Move?: never } | ({ AddRule: {
+	section?: number | null,
+} }) & { DeleteEmpty?: never; Edit?: never; Enter?: never; Indent?: never; Move?: never; Neighbor?: never } | "AddSection";
+
+export type OutlineAction_Serialize = ({ Edit: {
+	identifier: number,
+	text: string,
+} }) & { AddRule?: never; DeleteEmpty?: never; Enter?: never; Indent?: never; Move?: never; Neighbor?: never } | ({ Enter: {
+	identifier: number,
+} }) & { AddRule?: never; DeleteEmpty?: never; Edit?: never; Indent?: never; Move?: never; Neighbor?: never } | ({ Indent: {
+	identifier: number,
+	nested: boolean,
+} }) & { AddRule?: never; DeleteEmpty?: never; Edit?: never; Enter?: never; Move?: never; Neighbor?: never } | ({ Move: {
+	identifier: number,
+	down: boolean,
+} }) & { AddRule?: never; DeleteEmpty?: never; Edit?: never; Enter?: never; Indent?: never; Neighbor?: never } | ({ DeleteEmpty: {
+	identifier: number,
+} }) & { AddRule?: never; Edit?: never; Enter?: never; Indent?: never; Move?: never; Neighbor?: never } | ({ Neighbor: {
+	identifier: number,
+	down: boolean,
+} }) & { AddRule?: never; DeleteEmpty?: never; Edit?: never; Enter?: never; Indent?: never; Move?: never } | ({ AddRule: {
+	section: number | null,
+} }) & { DeleteEmpty?: never; Edit?: never; Enter?: never; Indent?: never; Move?: never; Neighbor?: never } | "AddSection";
+
+export type OutlineFocus = {
+	identifier: number,
+	at_end: boolean,
+};
+
+export type OutlineKind = "Title" | "Section" | "Rule" | "Source";
+
+export type OutlineLine = {
+	identifier: number,
+	kind: OutlineKind,
+	text: string,
+	nested: boolean,
+	inline: InlineText[],
+	prefix: string,
+	ending: string,
+	continuation: string,
+	placeholder: boolean,
+};
+
+export type OutlineSection = OutlineSection_Serialize | OutlineSection_Deserialize;
+
+export type OutlineSection_Deserialize = {
+	identifier?: number | null,
+	lines: OutlineLine[],
+};
+
+export type OutlineSection_Serialize = {
+	identifier: number | null,
+	lines: OutlineLine[],
+};
+
+export type OutlineSnapshot = OutlineSnapshot_Serialize | OutlineSnapshot_Deserialize;
+
+export type OutlineSnapshot_Deserialize = {
+	sections: OutlineSection_Deserialize[],
+	markdown: string,
+	dirty: boolean,
+	rule_count: number,
+	focus?: OutlineFocus | null,
+};
+
+export type OutlineSnapshot_Serialize = {
+	sections: OutlineSection_Serialize[],
+	markdown: string,
+	dirty: boolean,
+	rule_count: number,
+	focus: OutlineFocus | null,
+};
+
 export type PaletteItem = PaletteItem_Serialize | PaletteItem_Deserialize;
 
 export type PaletteItem_Deserialize = {
@@ -504,6 +783,16 @@ export type PaletteTarget = PaletteTarget_Serialize | PaletteTarget_Deserialize;
 export type PaletteTarget_Deserialize = ({ Intent: LayoutIntent_Deserialize }) & { Thread?: never } | ({ Thread: string }) & { Intent?: never };
 
 export type PaletteTarget_Serialize = ({ Intent: LayoutIntent_Serialize }) & { Thread?: never } | ({ Thread: string }) & { Intent?: never };
+
+export type PauseDutyRequest = PauseDutyRequest_Serialize | PauseDutyRequest_Deserialize;
+
+export type PauseDutyRequest_Deserialize = {
+	role?: DutyRole | null,
+};
+
+export type PauseDutyRequest_Serialize = {
+	role: DutyRole | null,
+};
 
 /**
  *  The New project dialog's interview choices, kept until the spec interview
@@ -542,6 +831,9 @@ export type PersistedState_Deserialize = {
 	active_project_index: number,
 	projects: ProjectItem_Deserialize[],
 	settings: Settings_Deserialize,
+	/**  Deleted rows must never let delayed agent or watcher events address a new thread. */
+	next_thread_identifiers?: { [key in number]: number },
+	thread_started_at?: { [key in number]: { [key in number]: string } },
 };
 
 export type PersistedState_Serialize = {
@@ -549,6 +841,18 @@ export type PersistedState_Serialize = {
 	active_project_index: number,
 	projects: ProjectItem_Serialize[],
 	settings: Settings_Serialize,
+	/**  Deleted rows must never let delayed agent or watcher events address a new thread. */
+	next_thread_identifiers: { [key in number]: number },
+	thread_started_at: { [key in number]: { [key in number]: string } },
+};
+
+export type PrDutyRuleSettings = {
+	review_theorem_statements: boolean,
+	ci_green_before_merge: boolean,
+	check_diff_against_spec: boolean,
+	re_review_on_new_commits: boolean,
+	delete_branch_after_merge: boolean,
+	merge_method: DutyMergeMethod,
 };
 
 export type ProjectItem = ProjectItem_Serialize | ProjectItem_Deserialize;
@@ -568,6 +872,8 @@ export type ProjectItem_Deserialize = {
 	threads: ThreadItem_Deserialize[],
 	/**  The spec interview Create asked for and nothing has started yet (F2, F3). */
 	pending_interview?: PendingInterview_Deserialize | null,
+	/**  Duty roles started on this project (F7). */
+	duty_roles?: DutyRoleItem[],
 };
 
 export type ProjectItem_Serialize = {
@@ -585,6 +891,8 @@ export type ProjectItem_Serialize = {
 	threads: ThreadItem_Serialize[],
 	/**  The spec interview Create asked for and nothing has started yet (F2, F3). */
 	pending_interview: PendingInterview_Serialize | null,
+	/**  Duty roles started on this project (F7). */
+	duty_roles: DutyRoleItem[],
 };
 
 export type ProjectLabel = "local" | "github" | "speccing";
@@ -669,6 +977,8 @@ export type ProviderSettings_Deserialize = {
 	default_model?: string | null,
 	default_effort: EffortLevel,
 	default_speed: SpeedMode,
+	/**  Absent from state saved before thread titles; GPT-6 Luna's provider then (F15). */
+	title_provider?: ProviderKind,
 	title_model: string,
 	title_effort: EffortLevel,
 	title_speed: SpeedMode,
@@ -679,6 +989,8 @@ export type ProviderSettings_Serialize = {
 	default_model: string | null,
 	default_effort: EffortLevel,
 	default_speed: SpeedMode,
+	/**  Absent from state saved before thread titles; GPT-6 Luna's provider then (F15). */
+	title_provider: ProviderKind,
 	title_model: string,
 	title_effort: EffortLevel,
 	title_speed: SpeedMode,
@@ -716,6 +1028,62 @@ export type PullRequestComment_Serialize = {
 	author: GitHubActor | null,
 	createdAt: string,
 	updatedAt: string,
+};
+
+export type PullRequestHistoryCard = PullRequestHistoryCard_Serialize | PullRequestHistoryCard_Deserialize;
+
+export type PullRequestHistoryCard_Deserialize = {
+	identifier: string,
+	title: string,
+	body: string,
+	path?: string | null,
+	line?: number | null,
+	resolved: boolean,
+	tool?: ToolStepRow | null,
+};
+
+export type PullRequestHistoryCard_Serialize = {
+	identifier: string,
+	title: string,
+	body: string,
+	path: string | null,
+	line: number | null,
+	resolved: boolean,
+	tool: ToolStepRow | null,
+};
+
+export type PullRequestHistoryView = PullRequestHistoryView_Serialize | PullRequestHistoryView_Deserialize;
+
+export type PullRequestHistoryView_Deserialize = {
+	coding_tool_count?: number | null,
+	coding_file_count?: number | null,
+	coding_additions: number,
+	coding_deletions: number,
+	status: string,
+	stage: string,
+	track: PullRequestTrackStep[],
+	cards: PullRequestHistoryCard_Deserialize[],
+	cleanup_error?: string | null,
+};
+
+export type PullRequestHistoryView_Serialize = {
+	coding_tool_count: number | null,
+	coding_file_count: number | null,
+	coding_additions: number,
+	coding_deletions: number,
+	status: string,
+	stage: string,
+	track: PullRequestTrackStep[],
+	cards: PullRequestHistoryCard_Serialize[],
+	cleanup_error: string | null,
+};
+
+export type PullRequestLifecycleEvent = {
+	project_identifier: number,
+	thread_identifier: number,
+	number: number,
+	stage: string,
+	worktree_deleted: boolean,
 };
 
 export type PullRequestOperation = PullRequestOperation_Serialize | PullRequestOperation_Deserialize;
@@ -841,6 +1209,10 @@ export type PullRequestReceipt = {
 	operation: string,
 };
 
+export type PullRequestRepository = {
+	nameWithOwner: string,
+};
+
 export type PullRequestReview = PullRequestReview_Serialize | PullRequestReview_Deserialize;
 
 export type PullRequestReviewThread = PullRequestReviewThread_Serialize | PullRequestReviewThread_Deserialize;
@@ -903,6 +1275,11 @@ export type PullRequestSnapshot_Serialize = {
 
 export type PullRequestState = "OPEN" | "CLOSED" | "MERGED";
 
+export type PullRequestTrackStep = {
+	label: string,
+	state: string,
+};
+
 export type PullRequest_Deserialize = {
 	id: string,
 	number: number,
@@ -917,12 +1294,14 @@ export type PullRequest_Deserialize = {
 	baseRefName: string,
 	additions: number,
 	deletions: number,
+	changedFiles?: number,
 	createdAt: string,
 	updatedAt: string,
 	closedAt?: string | null,
 	mergedAt?: string | null,
 	reviewDecision?: string | null,
 	mergeStateStatus: string,
+	headRepository?: PullRequestRepository | null,
 };
 
 export type PullRequest_Serialize = {
@@ -939,12 +1318,14 @@ export type PullRequest_Serialize = {
 	baseRefName: string,
 	additions: number,
 	deletions: number,
+	changedFiles: number,
 	createdAt: string,
 	updatedAt: string,
 	closedAt: string | null,
 	mergedAt: string | null,
 	reviewDecision: string | null,
 	mergeStateStatus: string,
+	headRepository: PullRequestRepository | null,
 };
 
 export type PulseCount = PulseCount_Serialize | PulseCount_Deserialize;
@@ -991,6 +1372,18 @@ export type ReviewStage = "continuous_integration" | "review" | "fixing" | "appr
 
 export type ReviewStatus = "draft" | "checking" | "unclaimed" | "reviewing" | "changes_requested" | "approved";
 
+export type ScoutCadence = "once" | "every_thirty_minutes" | "after_every_merge";
+
+export type ScoutFocusArea = "bugs" | "stress" | "proof_gaps" | "spec_drift" | "performance" | "security" | "dead_code" | "ux";
+
+export type ScoutRuleSettings = {
+	focus_areas: ScoutFocusArea[],
+	assume_every_part_fails: boolean,
+	run_stress_against_models: boolean,
+	label_issues_for_dispatch: boolean,
+	cadence: ScoutCadence,
+};
+
 export type Settings = Settings_Serialize | Settings_Deserialize;
 
 export type Settings_Deserialize = {
@@ -1028,8 +1421,14 @@ export type SidebarRow = SidebarRow_Serialize | SidebarRow_Deserialize;
 export type SidebarRow_Deserialize = {
 	identifier: string,
 	title: string,
+	/**
+	 *  The title model hasn't answered yet: the title is the message's first words, pulsing
+	 *  (F4).
+	 */
+	titling: boolean,
 	metadata: string,
 	group: ThreadGroup,
+	duty_role?: DutyRole | null,
 	member: boolean,
 	expanded: boolean,
 	active: boolean,
@@ -1041,8 +1440,14 @@ export type SidebarRow_Deserialize = {
 export type SidebarRow_Serialize = {
 	identifier: string,
 	title: string,
+	/**
+	 *  The title model hasn't answered yet: the title is the message's first words, pulsing
+	 *  (F4).
+	 */
+	titling: boolean,
 	metadata: string,
 	group: ThreadGroup,
+	duty_role: DutyRole | null,
 	member: boolean,
 	expanded: boolean,
 	active: boolean,
@@ -1057,6 +1462,26 @@ export type SlashCommandItem = {
 };
 
 export type SpeedMode = "regular" | "fast";
+
+export type StartDutyRequest = StartDutyRequest_Serialize | StartDutyRequest_Deserialize;
+
+export type StartDutyRequest_Deserialize = {
+	role: DutyRole,
+	agent_count: number,
+	provider?: ProviderKind | null,
+	model_name?: string | null,
+	pr_rules?: PrDutyRuleSettings | null,
+	scout_rules?: ScoutRuleSettings | null,
+};
+
+export type StartDutyRequest_Serialize = {
+	role: DutyRole,
+	agent_count: number,
+	provider: ProviderKind | null,
+	model_name: string | null,
+	pr_rules: PrDutyRuleSettings | null,
+	scout_rules: ScoutRuleSettings | null,
+};
 
 export type TaskAttribution = { kind: "spec" } | { kind: "user" } | { kind: "thread"; thread_id: number };
 
@@ -1102,6 +1527,7 @@ export type ThreadDetailSnapshot_Deserialize = {
 	show_work: boolean,
 	transcript_mode: TranscriptModeView,
 	worked_summary?: WorkedSummaryView_Deserialize | null,
+	pull_request_history?: PullRequestHistoryView_Deserialize | null,
 	blocks: TranscriptBlock_Deserialize[],
 	agent_commands: AgentCommandView[],
 	composer_placeholder: string,
@@ -1130,6 +1556,7 @@ export type ThreadDetailSnapshot_Serialize = {
 	show_work: boolean,
 	transcript_mode: TranscriptModeView,
 	worked_summary: WorkedSummaryView_Serialize | null,
+	pull_request_history: PullRequestHistoryView_Serialize | null,
 	blocks: TranscriptBlock_Serialize[],
 	agent_commands: AgentCommandView[],
 	composer_placeholder: string,
@@ -1151,6 +1578,7 @@ export type ThreadItem_Deserialize = {
 	worktree_path: string | null,
 	worktree_role?: WorktreeRole,
 	pull_request_number?: number | null,
+	follow_through?: FollowThrough_Deserialize | null,
 	review_stage?: ReviewStage | null,
 	task_ids: number[],
 	additions: number,
@@ -1175,6 +1603,7 @@ export type ThreadItem_Serialize = {
 	worktree_path: string | null,
 	worktree_role: WorktreeRole,
 	pull_request_number: number | null,
+	follow_through: FollowThrough_Serialize | null,
 	review_stage: ReviewStage | null,
 	task_ids: number[],
 	additions: number,

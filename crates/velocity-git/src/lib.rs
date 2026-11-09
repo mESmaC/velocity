@@ -8,13 +8,17 @@
 
 #![forbid(unsafe_code)]
 
+pub mod agents_file;
+pub mod agents_template;
 mod command;
 pub mod inventory;
 pub mod lifecycle;
 pub mod manager;
+mod merged_worktree;
 pub mod path_scheme;
 mod repository;
 pub mod setup;
+mod titled;
 
 pub use lifecycle::{
     GitCommand, LifecycleEvent, LifecycleState, WorktreeRecord, prune_orphans_command,
@@ -27,6 +31,7 @@ pub use manager::{
     resolve_project_worktree_root, resolve_worktree_directory, strip_velocity_branch_prefix,
     validate_worktree_path_length,
 };
+pub use merged_worktree::{MergedWorktreeError, remove_merged_worktree, verify_thread_worktree};
 pub use path_scheme::{
     JobKind, LocationConfig, WorktreeLeaf, WorktreePath, can_allocate_leaf, effective_root,
     leaf_for_job, plan_worktree_path, same_leaf_id,
@@ -38,3 +43,4 @@ pub use setup::{
     SetupAction, SetupPhase, WorktreeSettings, can_start_agent, default_settings,
     plan_setup_actions, resolve_cargo_target_dir,
 };
+pub use titled::{TitledWorktree, WorktreeName, execute_titled_worktree_setup, rename_worktree};
