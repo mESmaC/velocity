@@ -19,6 +19,7 @@ mod repository;
 mod scout_directory;
 mod scout_evidence;
 mod scout_issues;
+mod scout_server;
 
 pub use issue_panel::{IssuePanelRow, IssuePanelSnapshot, SpecQuestion};
 pub use issue_types::*;
@@ -34,3 +35,4 @@ pub use repository::{
 };
 pub use scout_evidence::Reproduction;
 pub use scout_issues::{ScoutFinding, ScoutIssueError, ScoutIssueOutcome};
+pub use scout_server::{ScoutReport, ScoutServer, read_scout_reports};

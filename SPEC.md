@@ -513,6 +513,10 @@ Long-running roles. They appear under **On duty**, with an agent count (×N) and
   - **No issue without evidence:** a failing test or stress script, attached (locked).
   - Label issues for dispatch.
 - Sweep: Once / Every 30 m / After every merge.
+  - Each scout sweeps once when it joins, then on this cadence. "After every merge" sweeps when the base branch's tip on the remote moves. Pausing lets running sweeps finish and starts none.
+  - A sweep is one agent turn in the scout's own `<scout>-sweep` worktree (F5), a detached checkout of the base branch's tip, reset before each sweep. Its card shows the agent's current step; the feed gets the sweep's start and end and each filing.
+  - Scouts file only through Velocity's scout MCP tools: `scout_issues` (every open and closed issue, which the scout compares its finding against) and `scout_file` (runs the reproduction, which must fail, attaches the script and its output, refuses duplicates, and signs the issue with the scout's name).
+  - A message from the Scouts composer goes to every running sweep as its next message; idle scouts start a sweep that follows it.
 - Issues they file show their name in the Issues panel.
 
 **Accept when:**

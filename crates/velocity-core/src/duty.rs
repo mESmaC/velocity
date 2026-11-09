@@ -214,6 +214,10 @@ pub struct DutyAgentCard {
     pub model_name: String,
     pub busy: bool,
     pub doing: String,
+    /// A scout's last sweep. Saved state only; the window never reads it.
+    #[cfg_attr(feature = "bindings", serde(skip))]
+    #[cfg_attr(feature = "bindings", specta(skip))]
+    pub sweep: Option<crate::scout_sweep::SweepRecord>,
 }
 
 #[cfg_attr(feature = "bindings", derive(specta::Type))]
@@ -239,6 +243,17 @@ pub struct DutyFeedEvent {
     pub actor: String,
     pub kind: DutyEventKind,
     pub message: String,
+}
+
+impl DutyFeedEvent {
+    pub fn new(timestamp: &str, actor: &str, kind: DutyEventKind, message: String) -> Self {
+        Self {
+            timestamp: timestamp.to_owned(),
+            actor: actor.to_owned(),
+            kind,
+            message,
+        }
+    }
 }
 
 #[cfg_attr(
@@ -418,7 +433,8 @@ pub fn initial_agent_doing(role: DutyRole, has_open_pull_requests: bool) -> Stri
                 "idle · watching for new PRs".into()
             }
         }
-        DutyRole::Scouts => "starting a sweep".into(),
+        // The sweep runner replaces this as soon as it starts the scout's sweep.
+        DutyRole::Scouts => "waiting to start".into(),
     }
 }
 
@@ -502,6 +518,7 @@ pub fn build_duty_agents(
                 model_name: model_name.to_owned(),
                 busy: false,
                 doing: doing.clone(),
+                sweep: None,
             }
         })
         .collect()
@@ -564,7 +581,9 @@ pub fn add_agents_to_duty_entry(entry: &mut DutyRoleEntry, spec: DutyStartSpec) 
 
 pub fn toggle_duty_pause(entry: &mut DutyRoleEntry, timestamp: String) -> DutyFeedEvent {
     entry.paused = !entry.paused;
-    let message = if entry.paused {
+    let message = if entry.paused && entry.role == DutyRole::Scouts {
+        "Paused duty · in-flight sweeps finish, no new sweep starts"
+    } else if entry.paused {
         "Paused duty · in-flight reviews finish, nothing new gets claimed"
     } else {
         "Resumed duty"

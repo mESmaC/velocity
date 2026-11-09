@@ -17,6 +17,7 @@ pub mod layout_view;
 pub mod navigation;
 pub mod new_project;
 pub mod projects;
+pub mod scout_sweep;
 pub mod state;
 pub mod theme;
 pub mod thread_menu;

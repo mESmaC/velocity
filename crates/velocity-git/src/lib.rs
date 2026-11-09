@@ -18,6 +18,7 @@ mod merged_worktree;
 pub mod path_scheme;
 mod repository;
 pub mod setup;
+mod sweep;
 mod titled;
 
 pub use lifecycle::{
@@ -43,4 +44,5 @@ pub use setup::{
     SetupAction, SetupPhase, WorktreeSettings, can_start_agent, default_settings,
     plan_setup_actions, resolve_cargo_target_dir,
 };
+pub use sweep::{prepare_sweep_worktree, resolve_commit, sweep_base};
 pub use titled::{TitledWorktree, WorktreeName, execute_titled_worktree_setup, rename_worktree};

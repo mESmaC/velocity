@@ -92,6 +92,30 @@ pub struct WorktreeSetupRequest {
     pub shared_cargo_target_dir: PathBuf,
 }
 
+impl WorktreeSetupRequest {
+    /// A worktree with no branch, checked out detached at `base_ref` (a scout's sweep).
+    pub fn detached(
+        repository_root: PathBuf,
+        worktree_path: PathBuf,
+        base_ref: String,
+        settings: WorktreeSettings,
+        untracked_files: String,
+        setup_command: String,
+        shared_cargo_target_dir: PathBuf,
+    ) -> Self {
+        Self {
+            repository_root,
+            worktree_path,
+            branch_name: None,
+            base_ref,
+            settings,
+            untracked_files,
+            setup_command,
+            shared_cargo_target_dir,
+        }
+    }
+}
+
 /// Summary of a created and initialized worktree that is ready for its agent to start.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct CreatedWorktree {

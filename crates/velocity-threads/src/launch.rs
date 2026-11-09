@@ -21,7 +21,7 @@ use crate::titles::{TitlePlan, plan_title};
 
 /// The project's shared `CARGO_TARGET_DIR` (F5), beside its worktrees. Slugs never contain a
 /// dot, so no worktree can take this name.
-const SHARED_TARGET_FOLDER: &str = ".cargo-target";
+pub(crate) const SHARED_TARGET_FOLDER: &str = ".cargo-target";
 
 #[derive(Debug, Error)]
 pub enum LaunchError {
@@ -145,13 +145,7 @@ pub(crate) fn plan_named_launch(
             worktree_path,
             branch_name: Some(branch_name),
             base_ref: base_branch(project),
-            settings: GitWorktreeSettings {
-                delete_branch_on_merge: worktrees.delete_local_branch,
-                share_build_cache: share_cache,
-                // Clearing either field in Settings → Worktrees skips that step.
-                copy_untracked_files: !worktrees.copy_files.trim().is_empty(),
-                run_setup_command: !worktrees.setup_command.trim().is_empty(),
-            },
+            settings: setup_settings(worktrees),
             untracked_files: worktrees.copy_files.clone(),
             setup_command: worktrees.setup_command.clone(),
             shared_cargo_target_dir: shared_target.clone(),
@@ -190,8 +184,22 @@ pub fn agent_launch(provider: ProviderKind) -> Result<(AgentLaunch, Vec<String>)
     ))
 }
 
+/// Settings → Worktrees as the worktree setup steps read them (F5).
+pub(crate) fn setup_settings(worktrees: &WorktreePreferences) -> GitWorktreeSettings {
+    GitWorktreeSettings {
+        delete_branch_on_merge: worktrees.delete_local_branch,
+        share_build_cache: worktrees.share_build_cache,
+        // Clearing either field in Settings → Worktrees skips that step.
+        copy_untracked_files: !worktrees.copy_files.trim().is_empty(),
+        run_setup_command: !worktrees.setup_command.trim().is_empty(),
+    }
+}
+
 /// Agents build with the project's shared Rust cache, as the setup command did (F5).
-fn with_shared_target(mut agent: AgentLaunch, shared_target: Option<PathBuf>) -> AgentLaunch {
+pub(crate) fn with_shared_target(
+    mut agent: AgentLaunch,
+    shared_target: Option<PathBuf>,
+) -> AgentLaunch {
     if let Some(target) = shared_target {
         agent
             .env
@@ -202,7 +210,7 @@ fn with_shared_target(mut agent: AgentLaunch, shared_target: Option<PathBuf>) ->
 
 /// Where a project's worktrees go, by the same rule as Settings → Worktrees: the project's
 /// own location when set, otherwise `<location>\<project name>`.
-struct Location {
+pub(crate) struct Location {
     drive: String,
     folder: String,
     project_name: String,
@@ -210,7 +218,7 @@ struct Location {
 }
 
 impl Location {
-    fn new(project: &ProjectItem, worktrees: &WorktreePreferences) -> Self {
+    pub(crate) fn new(project: &ProjectItem, worktrees: &WorktreePreferences) -> Self {
         let (drive, folder) = split_location(&worktrees.root);
         Location {
             drive,
@@ -220,7 +228,7 @@ impl Location {
         }
     }
 
-    fn project_root(&self) -> Result<PathBuf, WorktreeError> {
+    pub(crate) fn project_root(&self) -> Result<PathBuf, WorktreeError> {
         resolve_project_worktree_root(
             &self.drive,
             &self.folder,
@@ -230,17 +238,24 @@ impl Location {
     }
 
     fn worktree(&self, slug: &str) -> Result<Option<PathBuf>, WorktreeError> {
+        self.job_worktree(&JobKind::Branch(slug.to_owned()))
+    }
+
+    pub(crate) fn job_worktree(
+        &self,
+        job: &JobKind<String, String>,
+    ) -> Result<Option<PathBuf>, WorktreeError> {
         resolve_worktree_directory(
             &self.drive,
             &self.folder,
             &self.project_name,
             self.project_override.as_deref(),
-            &JobKind::Branch(slug.to_owned()),
+            job,
         )
     }
 }
 
-fn base_branch(project: &ProjectItem) -> String {
+pub(crate) fn base_branch(project: &ProjectItem) -> String {
     if project.default_branch.trim().is_empty() {
         "master".into()
     } else {

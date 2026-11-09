@@ -15,6 +15,7 @@ mod new_project;
 mod projects;
 mod pull_request_panel;
 mod state;
+pub mod sweeps;
 mod thread_menu;
 mod threads;
 mod window;
@@ -154,6 +155,7 @@ pub fn run() -> anyhow::Result<()> {
             worktree_settings::initialize(application.handle())?;
             pull_request_panel::initialize(application.handle());
             interview::start(application.handle());
+            sweeps::initialize(application.handle())?;
             Ok(())
         })
         .on_window_event(|window, event| {

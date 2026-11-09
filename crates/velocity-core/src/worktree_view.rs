@@ -23,6 +23,24 @@ pub struct WorktreeOwner {
     pub fixing: bool,
 }
 
+impl WorktreeOwner {
+    /// An owner that is not fixing review findings.
+    pub fn new(
+        identifier: u32,
+        title: String,
+        path: String,
+        status: WorktreeDisplayStatus,
+    ) -> Self {
+        Self {
+            identifier,
+            title,
+            path,
+            status,
+            fixing: false,
+        }
+    }
+}
+
 #[derive(Clone)]
 pub struct DriveInfo {
     pub root: String,

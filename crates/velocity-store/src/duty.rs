@@ -13,6 +13,7 @@ use velocity_core::duty::{
 };
 use velocity_core::layout_state::LayoutState;
 use velocity_core::layout_view::LayoutSnapshot;
+use velocity_core::scout_sweep::SweepRecord;
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, Type)]
 pub struct DutyAgentItem {
@@ -21,6 +22,10 @@ pub struct DutyAgentItem {
     pub model_name: String,
     pub busy: bool,
     pub doing: String,
+    /// A scout's last sweep (F7), so its cadence and worktree survive a restart.
+    #[serde(default)]
+    #[specta(skip)]
+    pub sweep: Option<SweepRecord>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, Type)]
@@ -61,6 +66,7 @@ impl DutyRoleItem {
                     model_name: agent.model_name.clone(),
                     busy: agent.busy,
                     doing: agent.doing.clone(),
+                    sweep: agent.sweep.clone(),
                 })
                 .collect(),
             feed: self
@@ -93,6 +99,7 @@ impl DutyRoleItem {
                     model_name: agent.model_name,
                     busy: agent.busy,
                     doing: agent.doing,
+                    sweep: agent.sweep,
                 })
                 .collect(),
             feed: entry
@@ -131,6 +138,19 @@ impl IntoWithFallback for ProviderKind {
     fn into_with_fallback(self, _fallback: Self) -> Self {
         self
     }
+}
+
+/// How many activity events a duty role keeps.
+const FEED_LIMIT: usize = 200;
+
+/// A project's Scouts as the sweep runner reads them.
+#[derive(Clone)]
+pub struct ScoutRoster {
+    pub project: ProjectItem,
+    pub worktrees: velocity_core::worktree_settings::WorktreePreferences,
+    pub paused: bool,
+    pub rules: ScoutRuleSettings,
+    pub scouts: Vec<DutyAgentItem>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, Type)]
@@ -295,6 +315,61 @@ impl StateStore {
         layout.replace_data(read_model(&self.state));
         crate::build_gate::sync_layout(&self.state, layout);
         Ok(Some((role, event)))
+    }
+
+    /// Every project's Scouts role, for the sweep runner (F7), paused ones included so their
+    /// cards still say so.
+    pub fn scout_rosters(&self) -> Vec<ScoutRoster> {
+        self.state
+            .projects
+            .iter()
+            .filter_map(|project| {
+                let role = find_role(project, DutyRole::Scouts)?;
+                Some(ScoutRoster {
+                    project: project.clone(),
+                    worktrees: self.worktree_preferences(project),
+                    paused: role.paused,
+                    rules: role.scout_rules.clone(),
+                    scouts: role.agents.clone(),
+                })
+            })
+            .collect()
+    }
+
+    /// Changes a project's Scouts role through `change`, which is given the feed's timestamp
+    /// and returns the feed events to post, and saves it. Returns the posted events, or `None`
+    /// when the project or its Scouts role is gone (deleted while a sweep ran).
+    pub fn update_scouts(
+        &mut self,
+        project: u32,
+        change: impl FnOnce(&mut DutyRoleEntry, &str) -> Vec<DutyFeedEvent>,
+    ) -> Result<Option<Vec<DutyFeedEvent>>, ProjectError> {
+        let mut next = self.state.clone();
+        let Some(item) = next
+            .projects
+            .iter_mut()
+            .find(|item| item.id == project)
+            .and_then(|item| {
+                item.duty_roles
+                    .iter_mut()
+                    .find(|role| role.role == DutyRole::Scouts)
+            })
+        else {
+            return Ok(None);
+        };
+        let mut entry = item.to_core();
+        let events = change(&mut entry, &clock_timestamp());
+        entry.feed.extend(events.iter().cloned());
+        // Sweeps run for as long as the app does; the feed keeps the recent part.
+        let overflow = entry.feed.len().saturating_sub(FEED_LIMIT);
+        entry.feed.drain(..overflow);
+        let fallback = self.state.settings.providers.default_provider;
+        let updated = DutyRoleItem::from_core(entry, fallback);
+        if *item != updated {
+            *item = updated;
+            self.commit_duty_state(next)?;
+        }
+        Ok(Some(events))
     }
 
     fn commit_duty_state(&mut self, mut next: PersistedState) -> Result<(), ProjectError> {
