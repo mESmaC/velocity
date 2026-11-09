@@ -1202,7 +1202,14 @@ export type ThreadDetailSnapshot_Serialize = {
 
 export type ThreadGroup = "Draft" | "Duty" | "Swarm" | "Spec" | "Working" | "Review" | "Error" | "Closed" | "Done" | "Merged";
 
-export type ThreadIssue = {
+export type ThreadIssue = ThreadIssue_Serialize | ThreadIssue_Deserialize;
+
+export type ThreadIssue_Deserialize = {
+	repository?: string,
+	number?: number,
+};
+
+export type ThreadIssue_Serialize = {
 	repository: string,
 	number: number,
 };
@@ -1220,7 +1227,7 @@ export type ThreadItem_Deserialize = {
 	pull_request_number?: number | null,
 	review_stage?: ReviewStage | null,
 	task_ids: number[],
-	issue?: ThreadIssue | null,
+	issue?: ThreadIssue_Deserialize | null,
 	additions: number,
 	deletions: number,
 	elapsed_seconds: number,
@@ -1245,7 +1252,7 @@ export type ThreadItem_Serialize = {
 	pull_request_number: number | null,
 	review_stage: ReviewStage | null,
 	task_ids: number[],
-	issue: ThreadIssue | null,
+	issue: ThreadIssue_Serialize | null,
 	additions: number,
 	deletions: number,
 	elapsed_seconds: number,
