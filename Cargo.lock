@@ -5464,7 +5464,9 @@ dependencies = [
 name = "velocity-git"
 version = "0.1.0"
 dependencies = [
+ "junction",
  "sysinfo",
+ "tempfile",
  "thiserror 2.0.21",
  "velocity-core",
 ]
