@@ -1,3 +1,4 @@
 # Preserve the exact bytes of the reviewer-authored regression artifact.
 /stress/pr2-titlebar-reference.ps1 -text
 /stress/pr2-titlebar-lean-reference.ps1 -text
+/stress/pr3-font-csp.py -text whitespace=cr-at-eol

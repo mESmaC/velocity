@@ -6,5 +6,6 @@ export default defineConfig({
   clearScreen: false,
   server: { port: 1420, strictPort: true },
   envPrefix: ['VITE_', 'TAURI_ENV_*'],
-  build: { target: 'es2022' },
+  // The packaged font-src policy permits same-origin files, not data URLs.
+  build: { target: 'es2022', assetsInlineLimit: 0 },
 });
