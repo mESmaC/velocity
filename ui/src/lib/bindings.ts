@@ -494,6 +494,8 @@ export type ProviderSettings_Deserialize = {
 	default_model?: string | null,
 	default_effort: EffortLevel,
 	default_speed: SpeedMode,
+	/**  Absent from state saved before thread titles; GPT-6 Luna's provider then (F15). */
+	title_provider?: ProviderKind,
 	title_model: string,
 	title_effort: EffortLevel,
 	title_speed: SpeedMode,
@@ -504,6 +506,8 @@ export type ProviderSettings_Serialize = {
 	default_model: string | null,
 	default_effort: EffortLevel,
 	default_speed: SpeedMode,
+	/**  Absent from state saved before thread titles; GPT-6 Luna's provider then (F15). */
+	title_provider: ProviderKind,
 	title_model: string,
 	title_effort: EffortLevel,
 	title_speed: SpeedMode,
