@@ -5,11 +5,12 @@ use tauri_specta::Event;
 use velocity_acp::client::{AgentEvent, SessionSetup};
 use velocity_core::layout_view::{LayoutIntent, LayoutSnapshot};
 use velocity_core::thread_view_model::TranscriptBlock;
+use velocity_git::{CreatedWorktree, WorktreeName};
 use velocity_store::build_gate::{LaunchRequest, require_launch};
 use velocity_store::{AgentActivity, ThreadState};
 use velocity_threads::{
     LaunchPlan, RunningSession, SessionInputs, ThreadKey, ThreadProgress, ThreadRuntimes,
-    plan_launch, spawn_session,
+    plan_launch, resolve_title, spawn_session, title_worktree_name,
 };
 
 use crate::layout::MainLayout;
@@ -78,11 +79,17 @@ fn start_thread(application: &AppHandle, prompt: &str) -> Result<LayoutSnapshot,
         (plan, thread)
     };
     let key = (plan.project, thread);
-    let inputs = lock(
-        application.state::<ManagedThreads>().inner(),
-        "thread sessions",
-    )?
-    .start(key, &plan.thread.worktree_path, prompt);
+    let inputs = {
+        let mut runtimes = lock(
+            application.state::<ManagedThreads>().inner(),
+            "thread sessions",
+        )?;
+        let inputs = runtimes.start(key, &plan.thread.worktree_path, prompt);
+        if plan.title.request.is_some() {
+            runtimes.set_titling(key, Some(plan.title.model_name.clone()));
+        }
+        inputs
+    };
     let snapshot = refresh(application, key, true)?;
     emit_status(application, key);
     let handle = application.clone();
@@ -123,31 +130,44 @@ async fn run_thread(
     plan: LaunchPlan,
     inputs: SessionInputs,
 ) {
+    let (name_sender, name_receiver) = std::sync::mpsc::channel();
     let request = plan.worktree.clone();
-    let created = tauri::async_runtime::spawn_blocking(move || {
-        velocity_git::execute_worktree_setup(&request)
-    })
-    .await;
-    let failure = match created {
-        Ok(Ok(_)) => None,
-        Ok(Err(error)) => Some(error.to_string()),
-        Err(error) => Some(error.to_string()),
-    };
-    if let Some(detail) = failure {
+    // The checkout runs while the title model answers; naming and setup wait for the title,
+    // at most F4's two seconds (`resolve_title` enforces the deadline).
+    let worktree = tauri::async_runtime::spawn_blocking(move || {
+        velocity_git::execute_titled_worktree_setup(&request, || {
+            name_receiver.recv().ok().flatten()
+        })
+    });
+    let name = settle_title(&application, key, &plan).await;
+    // Setup is waiting for this; if the checkout already failed, nobody is listening.
+    let _ = name_sender.send(name);
+    let created = match worktree.await {
+        Ok(Ok(created)) => created,
         // The worktree is kept for a failed thread (F5).
-        return fail(&application, key, "Could not set up the worktree", &detail);
-    }
-    if let Ok(mut runtimes) = lock(
-        application.state::<ManagedThreads>().inner(),
-        "thread sessions",
-    ) {
-        runtimes.worktree_ready(key);
-    }
+        Ok(Err(error)) => {
+            return fail(
+                &application,
+                key,
+                "Could not set up the worktree",
+                &error.to_string(),
+            );
+        }
+        Err(error) => {
+            return fail(
+                &application,
+                key,
+                "Could not set up the worktree",
+                &error.to_string(),
+            );
+        }
+    };
+    report(record_worktree(&application, key, &created));
     report(refresh(&application, key, false));
     let session = spawn_session(
         plan.agent,
         SessionSetup {
-            worktree: plan.worktree.worktree_path,
+            worktree: created.worktree_path,
             airc: None,
             shared_servers: Vec::new(),
             bypass_modes: plan.bypass_modes,
@@ -155,6 +175,65 @@ async fn run_thread(
         inputs,
     );
     pump(&application, key, session).await;
+}
+
+/// Asks the title model, shows the title it settles on, and returns the names the worktree
+/// takes from it: `None` keeps the message slug (F4).
+async fn settle_title(
+    application: &AppHandle,
+    key: ThreadKey,
+    plan: &LaunchPlan,
+) -> Option<WorktreeName> {
+    let title = resolve_title(plan.title.clone()).await;
+    if let Ok(mut runtimes) = lock(
+        application.state::<ManagedThreads>().inner(),
+        "thread sessions",
+    ) {
+        runtimes.set_titling(key, None);
+    }
+    if let Some(title) = &title {
+        let saved = lock(
+            application.state::<ManagedStateStore>().inner(),
+            "persisted state",
+        )
+        .and_then(|mut store| {
+            store
+                .update_thread(key.0, key.1, |thread| thread.title.clone_from(title))
+                .map_err(|error| error.to_string())
+        });
+        report(saved);
+    }
+    report(refresh(application, key, false));
+    title.and_then(|title| title_worktree_name(&plan.naming, &plan.worktree, &title))
+}
+
+/// Saves the branch and folder git ended with: the title's, or the message slug's when the
+/// title was missing or the rename failed.
+fn record_worktree(
+    application: &AppHandle,
+    key: ThreadKey,
+    created: &CreatedWorktree,
+) -> Result<bool, String> {
+    let path = created.worktree_path.display().to_string();
+    {
+        let mut runtimes = lock(
+            application.state::<ManagedThreads>().inner(),
+            "thread sessions",
+        )?;
+        runtimes.rename_worktree(key, &path);
+        runtimes.worktree_ready(key);
+    }
+    lock(
+        application.state::<ManagedStateStore>().inner(),
+        "persisted state",
+    )?
+    .update_thread(key.0, key.1, |thread| {
+        thread.worktree_path = Some(path.clone());
+        if let Some(branch) = &created.branch_name {
+            thread.branch_name.clone_from(branch);
+        }
+    })
+    .map_err(|error| error.to_string())
 }
 
 /// Applies agent events as they arrive. A burst of streamed chunks is applied together and

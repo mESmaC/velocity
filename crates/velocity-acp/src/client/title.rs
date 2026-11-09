@@ -3,7 +3,7 @@
 
 use std::path::PathBuf;
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use agent_client_protocol::v1::ConnectionTo;
 use agent_client_protocol::v1::schema::{
@@ -40,9 +40,38 @@ pub struct TitleRequest {
     pub deadline: Duration,
 }
 
-/// The model's raw reply, or why there is none. The agent's whole process tree is stopped
-/// when the reply arrives or the deadline passes, so a slow model never outlives its request.
-pub async fn request_title(request: TitleRequest) -> Result<String, ClientError> {
+impl TitleRequest {
+    pub fn new(
+        launch: AgentLaunch,
+        working_directory: PathBuf,
+        settings: RunSettings<String>,
+        prompt: String,
+        deadline: Duration,
+    ) -> Self {
+        TitleRequest {
+            launch,
+            working_directory,
+            settings,
+            prompt,
+            deadline,
+        }
+    }
+}
+
+/// The model's raw reply and how long it took to arrive.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct TitleReply {
+    pub text: String,
+    /// From starting the agent to the prompt's answer, before the agent is stopped: stopping
+    /// a process tree takes a few hundred milliseconds that the deadline must not count.
+    pub elapsed: Duration,
+}
+
+/// The model's reply, or why there is none. The agent's whole process tree is stopped when
+/// the reply arrives or the deadline passes, so a slow model never outlives its request.
+/// Call it inside a Tokio runtime: stopping the agent runs as a task of its own.
+pub async fn request_title(request: TitleRequest) -> Result<TitleReply, ClientError> {
+    let started = Instant::now();
     let mut agent = process::spawn_agent(&request.launch, &request.working_directory)?;
     let stdin = agent
         .stdin
@@ -64,9 +93,16 @@ pub async fn request_title(request: TitleRequest) -> Result<String, ClientError>
             title_turn(&connection, &request).await
         });
     let outcome = tokio::time::timeout(deadline, session).await;
-    process::stop_agent(&mut agent).await;
+    let elapsed = started.elapsed();
+    // Ending an agent's process tree can take seconds (Claude Code's took five), and the
+    // thread's setup waits for its title, so the agent is stopped without waiting for it.
+    // If the runtime shuts down first, `kill_on_drop` still ends the shim.
+    tokio::spawn(async move { process::stop_agent(&mut agent).await });
     outcome.map_err(|_| ClientError::TimedOut(deadline))??;
-    Ok(agent_reply(&mut received))
+    Ok(TitleReply {
+        text: agent_reply(&mut received),
+        elapsed,
+    })
 }
 
 /// `initialize` → `session/new` → the title model's config → one prompt. The agent sends

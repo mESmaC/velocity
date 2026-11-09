@@ -452,6 +452,10 @@ impl LayoutState {
             if let Some(commands) = &live.agent_commands {
                 snapshot.agent_commands = commands.clone();
             }
+            if let Some(model) = &live.titling_model {
+                snapshot.titling = true;
+                snapshot.title_model_name = model.clone();
+            }
         }
 
         if let Some(interview) = self
@@ -837,7 +841,10 @@ impl LayoutState {
         SidebarRow {
             identifier: entry.policy.identifier,
             title: entry.title.clone(),
-            titling: entry.detail.as_ref().is_some_and(|detail| detail.titling),
+            titling: entry.detail.as_ref().is_some_and(|detail| detail.titling)
+                || self
+                    .live_thread(entry.policy.identifier)
+                    .is_some_and(|live| live.titling_model.is_some()),
             metadata: entry.metadata.clone(),
             group: entry.policy.group,
             member,
