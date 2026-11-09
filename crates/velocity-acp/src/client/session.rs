@@ -33,12 +33,12 @@ pub struct SessionSetup {
 }
 
 impl SessionSetup {
-    pub fn new(worktree: PathBuf) -> Self {
+    pub fn new(worktree: PathBuf, bypass_modes: Vec<String>) -> Self {
         Self {
             worktree,
             airc: None,
             shared_servers: Vec::new(),
-            bypass_modes: Vec::new(),
+            bypass_modes,
         }
     }
 }

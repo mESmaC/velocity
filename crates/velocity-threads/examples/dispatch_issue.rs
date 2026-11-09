@@ -56,8 +56,10 @@ fn run(plan: &IssueDispatchPlan, thread: u32) -> Result<(), Box<dyn std::error::
     let created = velocity_git::execute_worktree_setup(&launch.worktree)?;
     println!("{}", created.transcript_step);
     runtimes.worktree_ready(key);
-    let mut setup = SessionSetup::new(launch.worktree.worktree_path.clone());
-    setup.bypass_modes = launch.bypass_modes.clone();
+    let setup = SessionSetup::new(
+        launch.worktree.worktree_path.clone(),
+        launch.bypass_modes.clone(),
+    );
     let mut session = spawn_session(launch.agent.clone(), setup, inputs);
     while let Some(event) = session.events.blocking_recv() {
         runtimes.apply(key, &event);
