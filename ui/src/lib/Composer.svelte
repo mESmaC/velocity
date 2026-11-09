@@ -107,7 +107,9 @@
       class="send"
       type="submit"
       aria-label="Send prompt"
-      title="Send (Enter)"><Icon name="arrow" /></button
+      disabled={!layout.composer_allowed}
+      title={layout.composer_block_reason ?? 'Send (Enter)'}
+      ><Icon name="arrow" /></button
     >
   </div>
 </form>
