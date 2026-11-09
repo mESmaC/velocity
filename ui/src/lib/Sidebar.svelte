@@ -1,6 +1,6 @@
 <script lang="ts">
   import Icon from './Icon.svelte';
-  import type { LayoutAction, LayoutSnapshot } from './ipc';
+  import type { LayoutAction, LayoutSnapshot, SidebarRow } from './ipc';
   let {
     layout,
     send,
@@ -22,6 +22,11 @@
     Done: 'check',
     Merged: 'check',
   };
+
+  function rowIcon(row: SidebarRow): string {
+    if (row.group === 'Duty' && row.duty_role === 'pr_duty') return 'pr';
+    return icons[row.group] ?? 'circle';
+  }
 </script>
 
 <aside class="sidebar" aria-label="Threads">
@@ -84,7 +89,7 @@
               {#if layout.show_numbers && row.number}<span class="t-key"
                   >{row.number}</span
                 >{/if}
-              <span class="status-icon"><Icon name={icons[row.group]} /></span>
+              <span class="status-icon"><Icon name={rowIcon(row)} /></span>
               <span class="t-title" class:titling={row.titling}
                 >{row.title}</span
               >
