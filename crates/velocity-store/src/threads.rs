@@ -4,8 +4,8 @@
 use thiserror::Error;
 
 use crate::{
-    AgentActivity, EffortLevel, ProjectItem, ProviderKind, SpeedMode, StateStore, StoreError,
-    TaskState, ThreadItem, ThreadState, WorktreeRole,
+    EffortLevel, ProjectItem, ProviderKind, SpeedMode, StateStore, StoreError, TaskState,
+    ThreadItem,
 };
 
 #[derive(Debug, Error)]
