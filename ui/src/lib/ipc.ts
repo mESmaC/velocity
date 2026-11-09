@@ -2,25 +2,11 @@ import { listen, type EventCallback } from '@tauri-apps/api/event';
 import {
   commands,
   WINDOW_STATE_EVENT,
-  type AgentActivity,
-  type AgentSettings,
-  type EffortLevel,
-  type PersistedState,
-  type ProjectItem,
-  type ProjectLocationKind,
-  type ProofSettings,
-  type ProviderKind,
-  type ProviderSettings,
-  type ReviewStage,
-  type Settings,
-  type SpeedMode,
-  type TaskAttribution,
-  type TaskItem,
-  type TaskState,
-  type ThreadItem,
-  type ThreadState,
+  LAYOUT_STATE_EVENT,
+  LAYOUT_INTENT_EVENT,
   type WindowStateChanged,
-  type WorktreeSettings,
+  type LayoutStateChanged_Serialize,
+  type LayoutIntentRequested_Serialize,
 } from './bindings';
 
 export type {
@@ -43,7 +29,25 @@ export type {
   ThreadState,
   WindowStateChanged,
   WorktreeSettings,
+  LayoutAction_Deserialize as LayoutAction,
+  LayoutSnapshot_Serialize as LayoutSnapshot,
+  LayoutIntent_Serialize as LayoutIntent,
+  NavigationIntent_Deserialize as NavigationIntent,
+  RailItem_Serialize as RailItem,
+} from './bindings';
+
+export const layoutCommands = {
+  getState: commands.getLayoutState,
+  dispatch: commands.dispatchLayout,
 };
+
+export const onLayoutState = (
+  callback: EventCallback<LayoutStateChanged_Serialize>,
+) => listen(LAYOUT_STATE_EVENT, callback);
+
+export const onLayoutIntent = (
+  callback: EventCallback<LayoutIntentRequested_Serialize>,
+) => listen(LAYOUT_INTENT_EVENT, callback);
 
 export const windowCommands = {
   getState: commands.getWindowState,

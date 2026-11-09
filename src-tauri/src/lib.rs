@@ -3,6 +3,7 @@ use std::path::Path;
 use tauri_specta::{Builder, Event, collect_commands, collect_events};
 use velocity_store::PersistedState;
 
+mod layout;
 mod state;
 mod window;
 
@@ -17,10 +18,16 @@ fn bindings() -> Builder<tauri::Wry> {
             window::close_window,
             state::get_settings,
             state::set_settings,
+            layout::get_layout_state,
+            layout::dispatch_layout,
         ])
         .typ::<PersistedState>()
         .typ::<window::WindowStateChanged>()
+        .typ::<layout::LayoutStateChanged>()
+        .typ::<layout::LayoutIntentRequested>()
         .constant("WINDOW_STATE_EVENT", window::WindowStateChanged::NAME)
+        .constant("LAYOUT_STATE_EVENT", layout::LayoutStateChanged::NAME)
+        .constant("LAYOUT_INTENT_EVENT", layout::LayoutIntentRequested::NAME)
         .error_handling(tauri_specta::ErrorHandlingMode::Throw)
 }
 
@@ -40,8 +47,13 @@ pub fn run() -> anyhow::Result<()> {
     #[cfg(debug_assertions)]
     export_bindings()?;
 
-    let bindings = bindings().events(collect_events![window::WindowStateChanged]);
+    let bindings = bindings().events(collect_events![
+        window::WindowStateChanged,
+        layout::LayoutStateChanged,
+        layout::LayoutIntentRequested
+    ]);
     tauri::Builder::default()
+        .manage(layout::MainLayout::default())
         .invoke_handler(bindings.invoke_handler())
         .setup(move |application| {
             bindings.mount_events(application);

@@ -109,6 +109,7 @@ A thread's state (§2.1) says where it is in its lifecycle. Its **activity** say
 | Kind | Name | Purpose |
 |---|---|---|
 | command | `get_window_state`, `minimize_window`, `toggle_maximize_window`, `close_window` | native main-window state and custom title-bar controls |
+| command | `get_layout_state`, `dispatch_layout { action }` | backend-owned main-window projection, search, palette selection, Alt hints, contextual keyboard dispatch and navigation requests |
 | command | `list_projects`, `create_project`, `switch_project` | projects |
 | command | `list_threads`, `start_thread`, `send_message`, `delete_thread` | threads |
 | command | `start_duty`, `pause_duty`, `add_duty_agents` | duty agents |
@@ -121,6 +122,7 @@ A thread's state (§2.1) says where it is in its lifecycle. Its **activity** say
 | command | `airc_events`, `airc_messages`, `airc_send`, `airc_claims`, `airc_claim`, `airc_release`, `airc_share`, `airc_wait`, `airc_ledger` | AIRC (agents get the same as MCP tools). `airc_claim` is atomic: it returns `granted`, or `refused { holder, since }` |
 | event | `thread://status`, `thread://step` | thread state and tool steps |
 | event | `window://state` | native maximize/restore state, including changes made by the operating system |
+| event | `layout://state`, `layout://intent` | ordered main-window snapshots and typed navigation requests for feature owners; no shell commands cross IPC |
 | event | `pr://opened`, `pr://ci`, `pr://review`, `pr://merged`, `pr://closed` | PR lifecycle |
 | event | `duty://event`, `swarm://event` | activity feeds |
 | event | `worktree://created`, `worktree://deleted` | worktree lifecycle |
@@ -1013,7 +1015,7 @@ Each milestone ends with a working app. Check items off as their PRs merge.
 **M1 · Shell**
 - [x] Tauri v2 app, frameless window, title bar, drag regions, window controls (F1)
 - [x] Design tokens → theme module; bundled fonts
-- [ ] Three-column layout, sidebar groups, rail panels, pulse, palette, keyboard map (F1, §5)
+- [x] Three-column layout, sidebar groups, rail panels, pulse, palette, keyboard map (F1, §5)
 - [x] Persisted state: projects, threads, tasks, settings
 
 **M2 · Projects and spec**

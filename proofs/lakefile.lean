@@ -14,9 +14,9 @@ package velocity where
 
 @[default_target]
 lean_lib Velocity where
-  roots := #[`Velocity, `Toolchain, `Shell, `Theme, `AgentRunner, `State]
+  roots := #[`Velocity, `Toolchain, `Shell, `Theme, `AgentRunner, `State, `Layout]
   globs := #[.one `Velocity, .submodules `Toolchain, .submodules `Shell, .submodules `Theme,
-    .submodules `AgentRunner, .submodules `State]
+    .submodules `AgentRunner, .submodules `State, .submodules `Layout]
 
 lean_exe shell_appearance_reference where
   root := `Shell.ReferenceMain
