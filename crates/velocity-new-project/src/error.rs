@@ -20,6 +20,10 @@ pub enum NewProjectError {
     GitHub(#[from] GitHubError),
     #[error(transparent)]
     Git(#[from] GitError),
+    #[error(transparent)]
+    AgentsTemplate(#[from] velocity_git::agents_template::AgentsTemplateError),
+    #[error(transparent)]
+    AgentsFile(#[from] velocity_git::agents_file::AgentsFileError),
     /// The remote now exists, so a plain retry would be refused as RemoteAlreadyExists.
     #[error(
         "github.com/{repository} was created, but cloning it failed: {source}. Choose Existing repo to clone it again."

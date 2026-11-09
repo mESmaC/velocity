@@ -35,6 +35,22 @@ pub struct NewProjectRequest {
     pub brief: String,
 }
 
+impl NewProjectRequest {
+    /// Register a local project using the same path as the New project dialog.
+    pub fn local_folder(path: String, brief: String) -> Self {
+        Self {
+            location: ProjectLocationRequest::LocalFolder {
+                path,
+                create_if_needed: true,
+            },
+            model_name: None,
+            effort: EffortLevel::Low,
+            speed: SpeedMode::Regular,
+            brief,
+        }
+    }
+}
+
 #[derive(Clone, Debug, serde::Serialize, specta::Type)]
 pub struct NewProjectDefaults {
     pub folder: String,
