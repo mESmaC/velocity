@@ -984,6 +984,8 @@ export type ProviderSettings_Deserialize = {
 	default_model?: string | null,
 	default_effort: EffortLevel,
 	default_speed: SpeedMode,
+	/**  Absent from state saved before thread titles; GPT-6 Luna's provider then (F15). */
+	title_provider?: ProviderKind,
 	title_model: string,
 	title_effort: EffortLevel,
 	title_speed: SpeedMode,
@@ -994,6 +996,8 @@ export type ProviderSettings_Serialize = {
 	default_model: string | null,
 	default_effort: EffortLevel,
 	default_speed: SpeedMode,
+	/**  Absent from state saved before thread titles; GPT-6 Luna's provider then (F15). */
+	title_provider: ProviderKind,
 	title_model: string,
 	title_effort: EffortLevel,
 	title_speed: SpeedMode,
@@ -1440,6 +1444,11 @@ export type SidebarRow = SidebarRow_Serialize | SidebarRow_Deserialize;
 export type SidebarRow_Deserialize = {
 	identifier: string,
 	title: string,
+	/**
+	 *  The title model hasn't answered yet: the title is the message's first words, pulsing
+	 *  (F4).
+	 */
+	titling: boolean,
 	metadata: string,
 	group: ThreadGroup,
 	duty_role?: DutyRole | null,
@@ -1454,6 +1463,11 @@ export type SidebarRow_Deserialize = {
 export type SidebarRow_Serialize = {
 	identifier: string,
 	title: string,
+	/**
+	 *  The title model hasn't answered yet: the title is the message's first words, pulsing
+	 *  (F4).
+	 */
+	titling: boolean,
 	metadata: string,
 	group: ThreadGroup,
 	duty_role: DutyRole | null,

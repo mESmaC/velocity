@@ -231,6 +231,16 @@ kbd {
   white-space: nowrap;
   font-size: var(--layout-t-title-font-size);
 }
+/* The first words of the message pulse until the title model answers (F4). */
+.t-title.titling {
+  animation: thread-titling var(--layout-t-title-titling-duration) ease-in-out
+    infinite;
+}
+@keyframes thread-titling {
+  50% {
+    opacity: var(--layout-t-title-titling-opacity);
+  }
+}
 .t-meta {
   grid-column: var(--layout-t-meta-grid-column);
   display: block;

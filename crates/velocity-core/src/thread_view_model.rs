@@ -272,6 +272,24 @@ pub struct LiveThreadView {
     pub blocks: Vec<TranscriptBlock>,
     /// `None` until the agent's first `available_commands_update`; an empty list withdraws them.
     pub agent_commands: Option<Vec<AgentCommandView>>,
+    /// The title model's name while it is naming the thread (F4): the sidebar title pulses
+    /// and the header shows "titling · <model>". Titling never outlives the session that
+    /// started it, so it is live state, not saved.
+    pub titling_model: Option<String>,
+}
+
+impl LiveThreadView {
+    pub fn new(
+        blocks: Vec<TranscriptBlock>,
+        agent_commands: Option<Vec<AgentCommandView>>,
+        titling_model: Option<String>,
+    ) -> Self {
+        LiveThreadView {
+            blocks,
+            agent_commands,
+            titling_model,
+        }
+    }
 }
 
 /// A process session's tool steps, with a stable identity across watcher ticks.
