@@ -13,10 +13,13 @@ workspace = true
 agent-client-protocol = "5.0.0"
 similar = "2.7"
 thiserror.workspace = true
-tokio = { version = "1.54", features = ["rt", "sync"] }
+tokio = { version = "1.54", features = ["rt", "sync", "time"] }
 uuid = { version = "1", features = ["v4"] }
 velocity-acp = { path = "../velocity-acp" }
 velocity-core.workspace = true
 velocity-git.workspace = true
 velocity-github.workspace = true
 velocity-store.workspace = true
+
+[dev-dependencies]
+serde_json.workspace = true

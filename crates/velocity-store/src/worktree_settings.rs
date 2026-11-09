@@ -28,6 +28,18 @@ impl StateStore {
             .location_root
             .clone()
             .unwrap_or_else(|| default_worktree_root(&self.directory));
+        let preferences = match project {
+            Some(project) => self.worktree_preferences(project),
+            None => WorktreePreferences {
+                root,
+                project_override: None,
+                delete_local_branch: settings.delete_local_branch_on_merge,
+                share_build_cache: settings.share_rust_build_cache,
+                copy_files: settings.copy_files.clone(),
+                setup_command: settings.setup_command.clone(),
+                ready_count: settings.warm_pool_count,
+            },
+        };
         WorktreeContext {
             revision: self.state.revision,
             project_identifier: project.map(|project| project.id),
@@ -35,16 +47,7 @@ impl StateStore {
                 .map(|project| project.name.clone())
                 .unwrap_or_else(|| "<project>".into()),
             repository_path: project.map(|project| project.repository_path.clone()),
-            preferences: WorktreePreferences {
-                root,
-                project_override: project
-                    .and_then(|project| settings.project_roots.get(&project.id).cloned()),
-                delete_local_branch: settings.delete_local_branch_on_merge,
-                share_build_cache: settings.share_rust_build_cache,
-                copy_files: settings.copy_files.clone(),
-                setup_command: settings.setup_command.clone(),
-                ready_count: settings.warm_pool_count,
-            },
+            preferences,
             owners: project.map(project_owners).unwrap_or_default(),
             merged_owners: project
                 .map(|project| {
@@ -56,6 +59,24 @@ impl StateStore {
                         .collect()
                 })
                 .unwrap_or_default(),
+        }
+    }
+
+    /// Settings → Worktrees as they apply to `project`, active or not (F5), so background
+    /// work such as a scout sweep lands where the settings page says it does.
+    pub fn worktree_preferences(&self, project: &ProjectItem) -> WorktreePreferences {
+        let settings = &self.state.settings.worktrees;
+        WorktreePreferences {
+            root: settings
+                .location_root
+                .clone()
+                .unwrap_or_else(|| default_worktree_root(&self.directory)),
+            project_override: settings.project_roots.get(&project.id).cloned(),
+            delete_local_branch: settings.delete_local_branch_on_merge,
+            share_build_cache: settings.share_rust_build_cache,
+            copy_files: settings.copy_files.clone(),
+            setup_command: settings.setup_command.clone(),
+            ready_count: settings.warm_pool_count,
         }
     }
 
@@ -183,6 +204,33 @@ fn require_project(context: &WorktreeContext) -> Result<(), StoreError> {
 }
 
 pub(crate) fn project_owners(project: &ProjectItem) -> Vec<WorktreeOwner> {
+    let mut owners = thread_owners(project);
+    owners.extend(sweep_owners(project));
+    owners
+}
+
+/// Each scout's sweep worktree (`<scout>-sweep`), listed with the Scouts role as its owner.
+fn sweep_owners(project: &ProjectItem) -> Vec<WorktreeOwner> {
+    project
+        .duty_roles
+        .iter()
+        .flat_map(|role| {
+            role.agents.iter().filter_map(move |agent| {
+                let sweep = agent.sweep.as_ref()?;
+                (!sweep.worktree.is_empty()).then(|| {
+                    WorktreeOwner::new(
+                        role.id,
+                        format!("{} · sweep", agent.nickname),
+                        sweep.worktree.clone(),
+                        WorktreeDisplayStatus::Sweep,
+                    )
+                })
+            })
+        })
+        .collect()
+}
+
+fn thread_owners(project: &ProjectItem) -> Vec<WorktreeOwner> {
     project
         .threads
         .iter()

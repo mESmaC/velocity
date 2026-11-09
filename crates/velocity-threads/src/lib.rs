@@ -9,6 +9,8 @@ pub mod follow_through;
 pub mod launch;
 pub mod naming;
 pub mod runtime;
+pub mod sweep;
+pub mod sweep_runner;
 pub mod titles;
 pub mod transcript_view;
 
@@ -22,5 +24,7 @@ pub use runtime::{
     RunningSession, SessionInputs, SteerError, StopOutcome, ThreadKey, ThreadProgress,
     ThreadRuntimes, spawn_session,
 };
+pub use sweep::{SCOUT_SERVER_SWITCH, SweepPlan, plan_sweep};
+pub use sweep_runner::{ScoutChange, ScoutSweeps, SweepHost};
 pub use titles::{TitlePlan, plan_title, resolve_title};
 pub use transcript_view::LiveTranscript;

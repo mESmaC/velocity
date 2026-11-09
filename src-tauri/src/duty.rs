@@ -2,7 +2,7 @@
 
 use crate::layout::{LayoutStateChanged, MainLayout};
 use crate::state::ManagedStateStore;
-use tauri::{State, Window};
+use tauri::{Manager, State, Window};
 use tauri_specta::Event;
 use velocity_core::duty::{DutyFeedEvent, DutyRole};
 use velocity_core::layout_view::LayoutSnapshot;
@@ -65,7 +65,9 @@ pub fn pause_duty(
             .toggle_pause_duty(&mut state, request, clock_timestamp())
             .map_err(|error| error.to_string())?
     };
-    publish_duty_outcome(&window, outcome)
+    let snapshot = publish_duty_outcome(&window, outcome);
+    crate::sweeps::wake(window.app_handle());
+    snapshot
 }
 
 fn apply_start_or_add(
@@ -83,7 +85,10 @@ fn apply_start_or_add(
             .start_or_add_duty(&mut state, request, clock_timestamp())
             .map_err(|error| error.to_string())?
     };
-    publish_duty_outcome(window, outcome)
+    let snapshot = publish_duty_outcome(window, outcome);
+    // New scouts sweep at once (F7).
+    crate::sweeps::wake(window.app_handle());
+    snapshot
 }
 
 fn publish_duty_outcome(
