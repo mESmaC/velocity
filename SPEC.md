@@ -1146,7 +1146,7 @@ Each milestone ends with a working app. PR duty checks an item off when it lands
 - [x] Default AGENTS.md template with the PR, Task List and AIRC rules (F11)
 
 **M8 · AIRC**
-- [ ] Channel per project: log files, nicks, join/leave, MCP tools for agents (F14)
+- [x] Channel per project: log files, nicks, join/leave, MCP tools for agents (F14)
 - [ ] Claims from each agent's first step; overlap detection and `velocity` lines (F14)
 - [ ] Dependency wait → rebase → continue in the agent runner (F14)
 - [ ] Mention delivery to threads at step boundaries; your comments (F14)
