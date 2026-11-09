@@ -35,6 +35,11 @@ export const WORKTREE_INVENTORY_EVENT = "worktree://inventory" as const;
 /* Types */
 export type AgentActivity = "thinking" | "executing" | "parked" | "stalled" | "at_limit" | "idle";
 
+export type AgentCommandView = {
+	name: string,
+	description: string,
+};
+
 export type AgentSettings = AgentSettings_Serialize | AgentSettings_Deserialize;
 
 export type AgentSettings_Deserialize = {
@@ -523,6 +528,7 @@ export type ThreadDetailSnapshot_Deserialize = {
 	transcript_mode: TranscriptModeView,
 	worked_summary?: WorkedSummaryView_Deserialize | null,
 	blocks: TranscriptBlock_Deserialize[],
+	agent_commands: AgentCommandView[],
 	composer_placeholder: string,
 	model_pill: ModelPillView,
 };
@@ -548,6 +554,7 @@ export type ThreadDetailSnapshot_Serialize = {
 	transcript_mode: TranscriptModeView,
 	worked_summary: WorkedSummaryView_Serialize | null,
 	blocks: TranscriptBlock_Serialize[],
+	agent_commands: AgentCommandView[],
 	composer_placeholder: string,
 	model_pill: ModelPillView,
 };

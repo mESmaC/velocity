@@ -8,7 +8,9 @@ use crate::navigation::{
     self, KeyStroke, NavigationIntent, NavigationView, ShortcutContext, ShortcutKey,
 };
 use crate::thread_view::{self, ComposerSubmitEffect};
-use crate::thread_view_model::{self, ModelPillView, ThreadDetailSnapshot, TranscriptBlock};
+use crate::thread_view_model::{
+    self, AgentCommandView, ModelPillView, SlashCommandItem, ThreadDetailSnapshot, TranscriptBlock,
+};
 
 #[derive(Clone)]
 pub struct LayoutState {
@@ -215,7 +217,7 @@ impl LayoutState {
     }
 
     pub fn snapshot(&self) -> LayoutSnapshot {
-        let slash_items = thread_view_model::slash_menu_items(&self.composer_text);
+        let slash_items = self.current_slash_items();
         let slash_selection = if slash_items.is_empty() {
             0
         } else {
@@ -382,8 +384,47 @@ impl LayoutState {
         }
     }
 
+    fn active_agent_commands(&self) -> &[AgentCommandView] {
+        if let Some(identifier) = self.selected_thread
+            && let Some(entry) = self
+                .data
+                .threads
+                .iter()
+                .find(|thread| thread.policy.identifier == identifier && !thread.policy.hidden)
+            && let Some(detail) = entry.detail.as_ref()
+        {
+            return &detail.agent_commands;
+        }
+        &self.data.agent_commands
+    }
+
+    fn current_slash_items(&self) -> Vec<SlashCommandItem> {
+        thread_view_model::slash_menu_items_with_agent(
+            &self.composer_text,
+            self.active_agent_commands(),
+        )
+    }
+
+    /// Updates the advertised slash commands (`available_commands_update`, `SPEC.md §3.2`) for a thread.
+    pub fn set_thread_agent_commands(
+        &mut self,
+        identifier: usize,
+        commands: Vec<AgentCommandView>,
+    ) {
+        if let Some(thread) = self
+            .data
+            .threads
+            .iter_mut()
+            .find(|thread| thread.policy.identifier == identifier)
+            && let Some(detail) = thread.detail.as_mut()
+        {
+            detail.agent_commands = commands;
+            self.changed();
+        }
+    }
+
     fn select_slash(&mut self, selected: usize) {
-        let count = thread_view_model::slash_menu_items(&self.composer_text).len();
+        let count = self.current_slash_items().len();
         self.slash_selection = if count == 0 {
             0
         } else {
@@ -392,12 +433,12 @@ impl LayoutState {
     }
 
     fn move_slash(&mut self, down: bool) {
-        let count = thread_view_model::slash_menu_items(&self.composer_text).len();
+        let count = self.current_slash_items().len();
         self.slash_selection = thread_view::move_slash_selection(self.slash_selection, count, down);
     }
 
     fn complete_slash(&mut self) {
-        let items = thread_view_model::slash_menu_items(&self.composer_text);
+        let items = self.current_slash_items();
         if items.is_empty() {
             return;
         }

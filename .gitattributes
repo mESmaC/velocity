@@ -4,6 +4,7 @@
 /stress/pr4-swarm-selection.rs -text
 /stress/pr4-swarm-selection-thread-detail.rs -text
 /stress/pr39-worktree-safety.ps1 -text
+/stress/pr40-empty-agent-commands.rs -text
 
 # Aeneas output: generated Lean, kept out of language statistics and diffs.
 proofs/**/Generated/** linguist-generated=true

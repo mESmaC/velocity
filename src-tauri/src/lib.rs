@@ -4,11 +4,13 @@ use tauri_specta::{Builder, Event, collect_commands, collect_events};
 use velocity_store::PersistedState;
 
 mod build_gate;
-mod layout;
+pub mod layout;
 mod projects;
 mod state;
 mod window;
 mod worktree_settings;
+
+pub use layout::{apply_agent_event, record_agent_event};
 
 fn bindings() -> Builder<tauri::Wry> {
     // Export event payloads/names without the generator's `any`-typed helpers;

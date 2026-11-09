@@ -32,7 +32,7 @@ pub use error::ClientError;
 pub use files::resolve_in_worktree;
 pub use process::AgentLaunch;
 pub use session::{SessionSetup, answer_permission, session_servers};
-pub use updates::entry_class;
+pub use updates::{AgentSlashCommand, available_commands, entry_class};
 
 use crate::{Placement, Steering, SteeringEffect, SteeringInput, Transcript};
 use terminals::Terminals;

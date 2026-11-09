@@ -25,6 +25,7 @@ tauri.workspace = true
 tauri-specta.workspace = true
 tauri-plugin-dialog.workspace = true
 velocity-git.workspace = true
+velocity-acp = { path = "../crates/velocity-acp" }
 velocity-core = { workspace = true, features = ["bindings"] }
 velocity-store.workspace = true
 
