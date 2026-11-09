@@ -1,4 +1,5 @@
 module
+public meta import Lean
 public import Theme.Design
 public import Theme.Generated.Funs
 public section
@@ -356,3 +357,111 @@ theorem scan_token_spans_correct (css : Slice U8) (items : List Design.Item)
 #print axioms scan_token_spans_correct
 
 end Velocity.Theme.Confidence
+
+/-!
+SPEC.md §6, issue #17: bundled font sources under the production CSP.
+
+This part is model-level confidence for a Vite configuration fix; no Rust
+changed, so the scanner's Charon/Aeneas translation above is unchanged.
+`include_configuration` reads the actual checked-in configuration at elaboration time.
+The two configuration theorems check its numeric inline limit and first
+font-src directive. Re-elaborate this file after changing either configuration.
+
+`fontSource` models the pinned Vite 8.3.6 numeric size comparison for ordinary
+font imports: content.length < assetsInlineLimit. These imports have no inline
+query, library build or forced-inline override. Vite's implementation and the
+browser's CSP implementation are not translated or proved here. The unchanged
+reviewer artifact stress/pr3-font-csp.py checks the actual production CSS.
+
+The regression inputs are the exact WOFF2/WOFF byte lengths for JetBrains Mono
+5.3.0 Cyrillic Extended weights 400/500/600. Both sources were below 4096 bytes;
+the zero-limit theorem covers every size, including empty assets.
+-/
+
+namespace Velocity.Theme.FontAssets.Confidence
+
+/- Like include_str, but quotes characters directly so the kernel need not
+repeatedly decode a large UTF-8 string while checking the source snapshots. -/
+elab "include_configuration " path:str : term => do
+  let context ← readThe Lean.Core.Context
+  let some directory := (System.FilePath.mk context.fileName).parent
+    | throwError "Cannot resolve the configuration's source directory"
+  let contents ← IO.FS.readFile (directory / path.getString)
+  return Lean.toExpr contents.toList
+
+@[expose] def viteConfiguration : List Char :=
+  include_configuration "../../ui/vite.config.ts"
+
+@[expose] def tauriConfiguration : List Char :=
+  include_configuration "../../src-tauri/tauri.conf.json"
+
+/- List operations let the kernel evaluate these small, literal configuration
+inputs without relying on the legacy String.splitOn implementation. -/
+@[expose] def suffixAfter (marker : List Char) : List Char → List Char
+  | [] => []
+  | first :: rest =>
+      if marker.isPrefixOf (first :: rest) then (first :: rest).drop marker.length
+      else suffixAfter marker rest
+
+@[expose] def configuredInlineLimit : Nat :=
+  let declaration := suffixAfter "assetsInlineLimit: ".toList viteConfiguration
+  let digits := declaration.takeWhile Char.isDigit
+  if digits.isEmpty then 4096
+  else digits.foldl (fun value digit => value * 10 + (digit.toNat - '0'.toNat)) 0
+
+@[expose] def fontDirective : String :=
+  let declaration := suffixAfter "font-src ".toList tauriConfiguration
+  String.ofList (declaration.takeWhile (· != ';'))
+
+inductive FontSource where
+  | sameOrigin
+  | dataUrl
+  deriving DecidableEq
+
+@[expose] def fontSource (inlineLimit byteLength : Nat) : FontSource :=
+  if byteLength < inlineLimit then .dataUrl else .sameOrigin
+
+/-- The two source forms under font-src 'self'. -/
+@[expose] def selfPermits : FontSource → Bool
+  | .sameOrigin => true
+  | .dataUrl => false
+
+/-- Weight, WOFF2 byte length, WOFF byte length, from the pinned font package. -/
+@[expose] def reportedFaces : List (Nat × Nat × Nat) :=
+  [(400, 1160, 1748), (500, 1172, 1744), (600, 1160, 1728)]
+
+@[expose] def facePermitted (inlineLimit : Nat) (face : Nat × Nat × Nat) : Bool :=
+  selfPermits (fontSource inlineLimit face.2.1) ||
+    selfPermits (fontSource inlineLimit face.2.2)
+
+set_option maxRecDepth 10000 in
+theorem configured_inline_limit_zero : configuredInlineLimit = 0 := by decide
+
+set_option maxRecDepth 10000 in
+theorem production_font_policy_self_only : fontDirective = "'self'" := by decide
+
+/-- With inlining disabled, every size produces a source permitted by 'self'. -/
+theorem every_font_size_permitted (byteLength : Nat) :
+    selfPermits (fontSource configuredInlineLimit byteLength) = true := by
+  simp [configured_inline_limit_zero, fontSource, selfPermits]
+
+/-- The original 4 KiB threshold blocks both sources of all three reported faces. -/
+theorem reported_faces_were_blocked :
+    fontDirective = "'self'" ∧
+      reportedFaces.all (fun face => !facePermitted 4096 face) = true := by
+  exact ⟨production_font_policy_self_only, by decide⟩
+
+/-- The actual configuration permits the sources of every reported face. -/
+theorem reported_faces_now_permitted :
+    fontDirective = "'self'" ∧
+      reportedFaces.all (facePermitted configuredInlineLimit) = true := by
+  refine ⟨production_font_policy_self_only, ?_⟩
+  simp [reportedFaces, facePermitted, every_font_size_permitted]
+
+#print axioms configured_inline_limit_zero
+#print axioms production_font_policy_self_only
+#print axioms every_font_size_permitted
+#print axioms reported_faces_were_blocked
+#print axioms reported_faces_now_permitted
+
+end Velocity.Theme.FontAssets.Confidence
