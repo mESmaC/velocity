@@ -123,6 +123,7 @@ A thread's state (§2.1) says where it is in its lifecycle. Its **activity** say
 | event | `thread://status`, `thread://step` | thread state and tool steps |
 | event | `window://state` | native maximize/restore state, including changes made by the operating system |
 | event | `layout://state`, `layout://intent` | ordered main-window snapshots and typed navigation requests for feature owners; no shell commands cross IPC |
+| event | `project://selected` | persisted project selection and refreshed switcher rows, paired with the selected project's `layout://state` snapshot |
 | event | `pr://opened`, `pr://ci`, `pr://review`, `pr://merged`, `pr://closed` | PR lifecycle |
 | event | `duty://event`, `swarm://event` | activity feeds |
 | event | `worktree://created`, `worktree://deleted` | worktree lifecycle |
@@ -213,6 +214,7 @@ The layout has three columns:
 
 **Title bar:**
 - **Brand and project switcher:** a dropdown listing every project. Each entry shows whether it is local or on GitHub, or "speccing" if its spec isn't locked yet.
+  - Switching restores that project's saved active thread, sidebar and rail context, clears transient search and input, and closes the dropdown. The last active project and each project's active thread survive restart. Unknown project IDs leave the current selection unchanged.
 - **Pulse:** live counts, each shown only when it is non-zero:
   - on duty
   - in spec
@@ -1045,7 +1047,7 @@ Each milestone ends with a working app. Check items off as their PRs merge.
 - [x] Persisted state: projects, threads, tasks, settings
 
 **M2 · Projects and spec**
-- [ ] Project store and switcher (F1)
+- [x] Project store and switcher (F1)
 - [ ] New-project dialog: local (git init) and GitHub (new/existing, visibility, clone) (F2)
 - [ ] Spec interview: scan, ask, ready, lock; SPEC.md written and committed; draft → published tasks (F3)
 - [ ] Gate: no build work on unlocked projects (Rule 2)

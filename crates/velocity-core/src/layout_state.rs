@@ -7,6 +7,7 @@ use crate::navigation::{
     self, KeyStroke, NavigationIntent, NavigationView, ShortcutContext, ShortcutKey,
 };
 
+#[derive(Clone)]
 pub struct LayoutState {
     data: LayoutData,
     revision: u32,
@@ -44,6 +45,40 @@ impl Default for LayoutState {
 }
 
 impl LayoutState {
+    pub fn search_query(&self) -> &str {
+        &self.search
+    }
+
+    pub fn selected_thread(&self) -> Option<usize> {
+        self.selected_thread
+    }
+
+    /// Restore the selected project's retained view and discard transient input
+    /// that could otherwise send a prompt or task to a different project.
+    pub fn restore_project(
+        &mut self,
+        data: LayoutData,
+        selected_thread: Option<usize>,
+        search: String,
+    ) {
+        self.data = data;
+        self.search = search;
+        self.palette_open = false;
+        self.palette_query.clear();
+        self.palette_selection = 0;
+        self.form_open = false;
+        self.overlay_open = false;
+        self.composer_text.clear();
+        self.task_text.clear();
+        self.show_numbers = false;
+        self.selected_thread = None;
+        self.view = NavigationView::Home;
+        if let Some(identifier) = selected_thread {
+            self.open_thread(identifier);
+        }
+        self.changed();
+    }
+
     /// Feature owners replace their read model after domain events, then emit a snapshot.
     pub fn replace_data(&mut self, data: LayoutData) {
         self.data = data;

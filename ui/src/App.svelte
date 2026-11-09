@@ -5,7 +5,12 @@
   import Rail from './lib/Rail.svelte';
   import Home from './lib/Home.svelte';
   import CommandPalette from './lib/CommandPalette.svelte';
-  import { layoutCommands, onLayoutState, onLayoutIntent } from './lib/ipc';
+  import {
+    layoutCommands,
+    onLayoutState,
+    onLayoutIntent,
+    projectCommands,
+  } from './lib/ipc';
   import type { LayoutAction, LayoutSnapshot, LayoutIntent } from './lib/ipc';
   import './lib/theme/layout.css';
 
@@ -71,15 +76,23 @@
     if (target) document.getElementById(target)?.focus();
   }
 
-  function send(action: LayoutAction) {
+  function enqueue(request: () => Promise<LayoutSnapshot>) {
     pending += 1;
     queue = queue
-      .then(async () => receive(await layoutCommands.dispatch(action)))
+      .then(async () => receive(await request()))
       .catch(report)
       .finally(() => {
         pending -= 1;
         flush();
       });
+  }
+
+  function send(action: LayoutAction) {
+    enqueue(() => layoutCommands.dispatch(action));
+  }
+
+  function switchProject(identifier: number) {
+    enqueue(() => projectCommands.switch(identifier));
   }
 
   function keydown(event: KeyboardEvent) {
@@ -160,7 +173,7 @@
 />
 
 <div class="app-shell">
-  <TitleBar {layout} {send} />
+  <TitleBar {layout} {send} {switchProject} />
   {#if layout}<div class="workspace">
       <Sidebar {layout} {send} />
       <main class="main-view" aria-label="Velocity workspace">

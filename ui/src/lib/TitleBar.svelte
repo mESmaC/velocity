@@ -2,13 +2,17 @@
   import { onMount } from 'svelte';
   import { onWindowState, windowCommands } from './ipc';
   import type { LayoutAction, LayoutSnapshot } from './ipc';
-  import Icon from './Icon.svelte';
+  import ProjectSwitcher from './ProjectSwitcher.svelte';
 
   let {
     layout,
     send,
-  }: { layout: LayoutSnapshot | null; send: (action: LayoutAction) => void } =
-    $props();
+    switchProject,
+  }: {
+    layout: LayoutSnapshot | null;
+    send: (action: LayoutAction) => void;
+    switchProject: (identifier: number) => void;
+  } = $props();
 
   let maximized = $state(false);
   let error = $state('');
@@ -48,17 +52,11 @@
 <header class="window-titlebar">
   <div class="brand" data-tauri-drag-region>
     <b data-tauri-drag-region>Velocity</b>
-    <button
-      class="project-select"
-      title="Switch project"
-      onclick={() =>
-        send({
-          Request: {
-            Navigation: layout?.project_name ? 'Palette' : 'NewProject',
-          },
-        })}
-      >{layout?.project_name || 'Open project'}<Icon name="chevron" /></button
-    >
+    <ProjectSwitcher
+      name={layout?.project_name ?? ''}
+      {send}
+      select={switchProject}
+    />
   </div>
   <div class="titlebar-space" data-tauri-drag-region>
     <div class="pulse" aria-label="Project pulse">

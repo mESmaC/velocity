@@ -4,9 +4,11 @@ import {
   WINDOW_STATE_EVENT,
   LAYOUT_STATE_EVENT,
   LAYOUT_INTENT_EVENT,
+  PROJECT_SELECTED_EVENT,
   type WindowStateChanged,
   type LayoutStateChanged_Serialize,
   type LayoutIntentRequested_Serialize,
+  type ProjectSelected,
 } from './bindings';
 
 export type {
@@ -34,12 +36,23 @@ export type {
   LayoutIntent_Serialize as LayoutIntent,
   NavigationIntent_Deserialize as NavigationIntent,
   RailItem_Serialize as RailItem,
+  ProjectList,
+  ProjectRow,
+  ProjectLabel,
 } from './bindings';
 
 export const layoutCommands = {
   getState: commands.getLayoutState,
   dispatch: commands.dispatchLayout,
 };
+
+export const projectCommands = {
+  list: commands.listProjects,
+  switch: commands.switchProject,
+};
+
+export const onProjectSelected = (callback: EventCallback<ProjectSelected>) =>
+  listen(PROJECT_SELECTED_EVENT, callback);
 
 export const onLayoutState = (
   callback: EventCallback<LayoutStateChanged_Serialize>,

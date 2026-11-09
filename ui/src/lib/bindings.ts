@@ -12,12 +12,16 @@ export const commands = {
 	setSettings: (settings: Settings_Deserialize) => __TAURI_INVOKE<Settings_Serialize>("set_settings", { settings }),
 	getLayoutState: () => __TAURI_INVOKE<LayoutSnapshot_Serialize>("get_layout_state"),
 	dispatchLayout: (action: LayoutAction_Deserialize) => __TAURI_INVOKE<LayoutSnapshot_Serialize>("dispatch_layout", { action }),
+	listProjects: () => __TAURI_INVOKE<ProjectList>("list_projects"),
+	switchProject: (identifier: number) => __TAURI_INVOKE<LayoutSnapshot_Serialize>("switch_project", { identifier }),
 };
 
 /* Constants */
 export const LAYOUT_INTENT_EVENT = "layout://intent" as const;
 
 export const LAYOUT_STATE_EVENT = "layout://state" as const;
+
+export const PROJECT_SELECTED_EVENT = "project://selected" as const;
 
 export const WINDOW_STATE_EVENT = "window://state" as const;
 
@@ -216,7 +220,46 @@ export type ProjectItem_Serialize = {
 	threads: ThreadItem_Serialize[],
 };
 
+export type ProjectLabel = "local" | "github" | "speccing";
+
+export type ProjectList = {
+	revision: number,
+	rows: ProjectRow[],
+};
+
 export type ProjectLocationKind = "local" | "git_hub";
+
+export type ProjectRow = {
+	identifier: number,
+	name: string,
+	repository_path: string,
+	label: ProjectLabel,
+	selected: boolean,
+};
+
+export type ProjectSelected = ProjectSelected_Serialize | ProjectSelected_Deserialize;
+
+export type ProjectSelected_Deserialize = {
+	projects: ProjectList,
+	selection: ProjectSelectionView_Deserialize,
+};
+
+export type ProjectSelected_Serialize = {
+	projects: ProjectList,
+	selection: ProjectSelectionView_Serialize,
+};
+
+export type ProjectSelectionView = ProjectSelectionView_Serialize | ProjectSelectionView_Deserialize;
+
+export type ProjectSelectionView_Deserialize = {
+	active_project?: number | null,
+	menu_open: boolean,
+};
+
+export type ProjectSelectionView_Serialize = {
+	active_project: number | null,
+	menu_open: boolean,
+};
 
 export type ProofSettings = {
 	stress_diff_input_count: number,
