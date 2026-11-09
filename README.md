@@ -2,8 +2,6 @@
 
 # velocity
 
-Created in [T3 Code](https://t3.codes).
-
 ## Development
 
 Windows 11 is the primary platform. Install the Visual Studio C++ build tools,
