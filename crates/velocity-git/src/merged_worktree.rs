@@ -95,10 +95,10 @@ fn registered_worktree(
     Ok(false)
 }
 
-fn path_identity(path: &Path) -> Result<String, MergedWorktreeError> {
+fn path_identity(path: &Path) -> Result<PathBuf, MergedWorktreeError> {
     let mut parent = path;
     let mut suffix = Vec::new();
-    while !parent.exists() {
+    while !parent.try_exists()? {
         suffix.push(parent.file_name().ok_or_else(|| {
             MergedWorktreeError::Ownership("The worktree drive is unavailable".into())
         })?);
@@ -110,12 +110,9 @@ fn path_identity(path: &Path) -> Result<String, MergedWorktreeError> {
     for part in suffix.into_iter().rev() {
         resolved.push(part);
     }
-    let normalized = resolved.to_string_lossy().replace('\\', "/");
-    Ok(if cfg!(windows) {
-        normalized.to_lowercase()
-    } else {
-        normalized
-    })
+    // Canonicalization uses the volume's actual spelling and resolves drive
+    // aliases. Unicode case folding can merge names Windows keeps distinct.
+    Ok(resolved)
 }
 
 /// A main checkout, another repository or another thread's branch fails closed.
