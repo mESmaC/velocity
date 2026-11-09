@@ -166,11 +166,7 @@ impl LayoutState {
     /// A short message, or a deletion's Undo offer, replacing any toast already showing.
     pub fn show_toast(&mut self, message: String, undo_deletion: Option<u32>) {
         self.toast_count = self.toast_count.wrapping_add(1);
-        self.toast = Some(ToastView {
-            identifier: self.toast_count,
-            message,
-            undo_deletion,
-        });
+        self.toast = Some(ToastView::new(self.toast_count, message, undo_deletion));
         self.changed();
     }
 

@@ -57,10 +57,6 @@ export type {
   WorkedSummaryView_Serialize as WorkedSummaryView,
   WorktreeChipView,
   WorktreeSettings,
-  ThreadMenuAction,
-  ThreadMenuEntry_Serialize as ThreadMenuEntry,
-  ThreadMenuView_Serialize as ThreadMenuView,
-  ToastView_Serialize as ToastView,
   LayoutAction_Deserialize as LayoutAction,
   LayoutSnapshot_Serialize as LayoutSnapshot,
   LayoutIntent_Serialize as LayoutIntent,
@@ -156,14 +152,6 @@ export const onWorktreeInventory = (
   callback: EventCallback<WorktreeInventoryChanged_Serialize>,
 ) => listen(WORKTREE_INVENTORY_EVENT, callback);
 
-// The sidebar thread menu and Delete with Undo (SPEC.md F12).
-export const threadMenuCommands = {
-  get: commands.getThreadMenu,
-  run: commands.runThreadMenuAction,
-  delete: commands.deleteThread,
-  undoDelete: commands.undoDeleteThread,
-};
-
 export const launchCommands = {
   getEligibility: commands.getLaunchEligibility,
 };
@@ -179,3 +167,5 @@ export const onThreadStatus = (callback: EventCallback<ThreadStatusChanged>) =>
 export const onThreadStep = (
   callback: EventCallback<ThreadStepRecorded_Serialize>,
 ) => listen(THREAD_STEP_EVENT, callback);
+
+export * from './ipc/thread-menu';

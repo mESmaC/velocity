@@ -1088,7 +1088,7 @@ Each milestone ends with a working app. Check items off as their PRs merge.
   - [x] Live Open Pull Requests rail: real project PRs, CI, line counts, review state, reviewer claims and owning-thread navigation (F6/F7)
 - [ ] PR follow-through: track, PR history, auto-response to review comments, merge → worktree delete (F6)
 - [ ] Closed-without-merge state with the worktree kept (F5, F6)
-- [x] Right-click menu and delete with 5 s undo (F12)
+- [ ] Right-click menu and delete with 5 s undo (F12)
 
 **M5 · Duty agents**
 - [ ] PR duty: claiming, review against SPEC.md, request changes, approve, merge; never merge unapproved (Rule 4, F7)

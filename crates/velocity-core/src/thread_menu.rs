@@ -21,6 +21,20 @@ pub struct ThreadMenuFacts {
     pub worktree_bytes: Option<u64>,
 }
 
+impl ThreadMenuFacts {
+    /// A thread that is not a duty agent's, with nothing measured on disk yet.
+    pub fn new(state: ThreadState) -> Self {
+        ThreadMenuFacts {
+            state,
+            duty: false,
+            worktree_path: None,
+            pull_request_number: None,
+            agent_running: false,
+            worktree_bytes: None,
+        }
+    }
+}
+
 #[cfg_attr(
     feature = "bindings",
     derive(serde::Serialize, serde::Deserialize, specta::Type)

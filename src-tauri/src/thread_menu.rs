@@ -85,12 +85,11 @@ pub async fn get_thread_menu(
     .await
     .map_err(|error| error.to_string())?;
     let facts = ThreadMenuFacts {
-        state: thread.state.into(),
-        duty: false,
         worktree_path: thread.worktree_path,
         pull_request_number: thread.pull_request_number,
         agent_running,
         worktree_bytes,
+        ..ThreadMenuFacts::new(thread.state.into())
     };
     Ok(thread_menu(&facts).map(|entries| ThreadMenuView {
         project_identifier,

@@ -318,3 +318,13 @@ pub struct ToastView {
     pub message: String,
     pub undo_deletion: Option<u32>,
 }
+
+impl ToastView {
+    pub fn new(identifier: u32, message: String, undo_deletion: Option<u32>) -> Self {
+        ToastView {
+            identifier,
+            message,
+            undo_deletion,
+        }
+    }
+}
