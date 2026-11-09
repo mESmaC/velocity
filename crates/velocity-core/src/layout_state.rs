@@ -10,12 +10,17 @@ use crate::navigation::{
 };
 use crate::thread_view::{self, ComposerSubmitEffect};
 use crate::thread_view_model::{
-    self, AgentCommandView, ModelPillView, SlashCommandItem, ThreadDetailSnapshot, TranscriptBlock,
+    self, AgentCommandView, LiveThreadView, ModelPillView, SlashCommandItem, ThreadDetailSnapshot,
+    TranscriptBlock,
 };
+use std::collections::BTreeMap;
 
 #[derive(Clone)]
 pub struct LayoutState {
     data: LayoutData,
+    /// Running sessions' transcripts by `(project, thread)`. Kept apart from `data` because the
+    /// store rebuilds `data` from `state.json`, which has no transcript, after every change.
+    live: BTreeMap<(u32, usize), LiveThreadView>,
     revision: u32,
     view: NavigationView,
     settings_tab: String,
@@ -39,6 +44,7 @@ impl Default for LayoutState {
     fn default() -> Self {
         Self {
             data: LayoutData::default(),
+            live: BTreeMap::new(),
             revision: 0,
             view: NavigationView::Home,
             settings_tab: "worktrees".into(),
@@ -136,6 +142,23 @@ impl LayoutState {
         self.palette_selection =
             layout::bounded_selection(self.palette_results().len(), self.palette_selection);
         self.changed();
+    }
+
+    /// A running session's transcript and commands for one thread (`SPEC.md §3.2`, F4).
+    pub fn set_live_thread(&mut self, project: u32, identifier: usize, view: LiveThreadView) {
+        self.live.insert((project, identifier), view);
+        self.changed();
+    }
+
+    /// Opens a thread the backend just started, as if it had been clicked (F4).
+    pub fn select_thread(&mut self, identifier: usize) {
+        self.open_thread(identifier);
+        self.changed();
+    }
+
+    fn live_thread(&self, identifier: usize) -> Option<&LiveThreadView> {
+        let project = self.data.project_identifier?;
+        self.live.get(&(project, identifier))
     }
 
     /// A spec interview moves from scan to ask to ready while it is open, and each phase
@@ -424,6 +447,13 @@ impl LayoutState {
             .find(|thread| thread.policy.identifier == identifier && !thread.policy.hidden)?;
         let detail = entry.detail.as_ref()?;
         let mut snapshot = thread_view_model::project_thread_detail(detail);
+        if let Some(live) = self.live_thread(identifier) {
+            snapshot.blocks = live.blocks.clone();
+            if let Some(commands) = &live.agent_commands {
+                snapshot.agent_commands = commands.clone();
+            }
+        }
+
         if let Some(interview) = self
             .data
             .interviews
@@ -453,6 +483,13 @@ impl LayoutState {
     }
 
     fn active_agent_commands(&self) -> &[AgentCommandView] {
+        if let Some(identifier) = self.selected_thread
+            && let Some(commands) = self
+                .live_thread(identifier)
+                .and_then(|live| live.agent_commands.as_ref())
+        {
+            return commands;
+        }
         if let Some(identifier) = self.selected_thread
             && let Some(entry) = self
                 .data

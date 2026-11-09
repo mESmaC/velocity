@@ -18,7 +18,9 @@ Your job is working functionality. Proofs, tests and docs support it; they never
 - Run the app: `cargo tauri dev`
 - Lint: `cargo clippy --workspace --all-targets -- -D warnings`. Zero warnings.
 - Format: `cargo fmt --all`. Run it before every commit.
-- Proofs: `lake build` in `proofs/`. Run it before every push.
+- All local checks: `pwsh -NoProfile -File scripts/check.ps1`. It runs every check PR duty approves on: format, locked build, generated bindings, clippy, UI check, lint and build, and `lake build` with the axiom audit when `proofs/` changes. Run it on the merge result before you mark a PR ready.
+- One-time machine setup: `pwsh -NoProfile -File scripts/Setup-DevMachine.ps1`. It registers the merge driver for generated files and turns on the shared sccache compiler cache.
+- Proofs: `lake build` in `proofs/`. Run it before every push that changes `proofs/`.
 - Proof toolchain setup (Windows + Ubuntu WSL): `powershell -File proofs/scripts/Setup-Toolchain.ps1`.
 - Charon and Aeneas (only when an issue asks for a translation): `powershell -File proofs/scripts/Export-Rust.ps1 -CratePath crates/<crate> -Feature <Feature> -StartFrom crate::<module>`. This runs pinned `charon cargo --preset=aeneas` then `aeneas -backend lean`; complete the confidence proof and run `lake build` afterwards. See `proofs/README.md`.
 - Stress: `cargo run -p stress -- --all`. Scouts and PR duty agents only.
@@ -36,12 +38,14 @@ Your job is working functionality. Proofs, tests and docs support it; they never
 - `crates/velocity-acp/`: the ACP client and agent processes.
 - `crates/velocity-airc/`: claims, events, ledgers and the AIRC MCP server.
 - `crates/velocity-github/`: GitHub through `gh`.
+- `crates/velocity-threads/`: starting build threads from the composer (F4): the thread's name and worktree plan, its live agent session, and the transcript the thread view shows.
 - `crates/velocity-new-project/`: Create in the New project dialog (F2): resolves the request and runs the planned git, `gh` and store steps.
 - `crates/velocity-interview/`: the spec interview (F3): runs the spec agent in the main checkout, parses its questions, records decisions and draft tasks, and locks the spec.
 - `ui/`: the frontend: Svelte 5, TypeScript and Vite, built with pnpm.
 - `proofs/`: the Lean 4 Lake project.
 - `stress/`: tests and stress scripts. Scouts and PR duty agents own it.
 - `design/`: the reference UI. Read-only.
+- `scripts/`: development tooling: the local checks, machine setup and the PR duty app token.
 - If your work needs a crate that isn't listed here, add it to this list in the same PR.
 
 ## Product rules
@@ -61,12 +65,15 @@ SPEC.md §1 overrides everything else. Never build any of these:
 - Put logic you prove in pure, synchronous functions in the crates. Keep I/O, async and Tauri at the edges, so the logic can be checked against fixture tables (see Proofs).
 - Handle Windows paths everywhere: drive letters, spaces, backslashes and paths over 260 characters. Windows 11 is the primary platform.
 - Comment code whose purpose isn't clear from reading it. Explain why, not what.
+- Add every new field on a saved record in `velocity-store` with `#[serde(default)]`, so an existing `state.json` still loads.
+- Build a struct that another module defines through a function that module provides (`new`, `Default`, a builder), never a full struct literal. If none exists, add one in that module. A field another PR adds then can't break your code after a clean merge.
 
 ## UI
 - Svelte 5 with runes (`$state`, `$derived`, `$effect`, `$props`). Never use Svelte 4 stores or `export let`.
 - Plain Vite. No SvelteKit: Velocity is one window with no routes and no server.
 - TypeScript in strict mode. Never use `any`, `@ts-ignore` or `@ts-expect-error`.
-- Every Tauri command and event goes through `ui/src/lib/ipc.ts`. Components never call `invoke` or `listen` directly.
+- Every Tauri command and event goes through the IPC layer, `ui/src/lib/ipc.ts` and `ui/src/lib/ipc/`. Components never call `invoke` or `listen` directly.
+- Put a new feature's IPC wrappers and type re-exports in their own file, `ui/src/lib/ipc/<feature>.ts`, and add one line to `ipc.ts`: `export * from './ipc/<feature>';`. Never append to the shared lists in `ipc.ts`.
 - The TypeScript types for commands and events are generated from Rust with `tauri-specta`. Never write them by hand.
 - Keep logic out of the UI. State changes happen in Rust; components render state and send commands.
 - Copy `:root` from `design/main-window.html` exactly into `ui/src/lib/theme/tokens.css`.
@@ -106,8 +113,8 @@ Both are low priority. Add them only where they pay for themselves, and only aft
 
 ## Choosing work
 - Work comes from three places: unchecked items in SPEC.md §7, open GitHub issues, and SPEC.md sections nothing implements yet.
-- Take the lowest milestone that still has unclaimed items. Within it, take the first unclaimed item.
-- Never build anything that depends on an open question in SPEC.md §8. File an issue that names the question, then pick other work.
+- Take the first unclaimed item that nothing blocks, from the lowest milestone that has one. An item is blocked when it depends on an open question in §8, or on an unmerged PR. Skip blocked items; never wait for them.
+- Never build anything that depends on an open question in SPEC.md §8. File an issue that names the question, labelled `spec-question`, with your recommended answer and the items it blocks, then pick other work.
 - Items marked *(proposed)* are decided enough to build. Build them as written.
 - If SPEC.md is wrong or contradicts itself, file an issue. Never change a decision in SPEC.md yourself.
 - If your change alters behaviour SPEC.md describes, update SPEC.md in the same PR.
@@ -132,10 +139,19 @@ Velocity's AIRC (F14) replaces this section once M8 merges. Until then, claims a
 - After your PR merges, remove your worktree (`git worktree remove X:\velocity-wt\<slug>`) and delete your local branch.
 - Never touch another agent's worktree or branch. Never run `git worktree prune`. The one exception: PR duty agents update PR branches with `master` (see If you are on PR duty).
 
+## Shared files
+Most merge conflicts come from a few files every feature touches. Keep your edits to them conflict-free:
+- **Generated files:** `ui/src/lib/bindings.ts`, `Cargo.lock` and `ui/pnpm-lock.yaml`. Never resolve a conflict in them by hand. After `scripts/Setup-DevMachine.ps1`, `git merge origin/master` keeps master's copy without stopping. Then regenerate and commit: `pnpm -C ui bindings`, `cargo build --workspace` for `Cargo.lock`, `pnpm -C ui install` for `pnpm-lock.yaml`. `scripts/check.ps1` fails if you forget.
+- **Registration lists:** `collect_commands!`, `collect_events!`, `.typ` and `.constant` in `src-tauri/src/lib.rs`, the `mod` lines in each crate's `lib.rs`, and the dependency and member lists in `Cargo.toml`. Add your lines inside your module's group. A new module's group goes in alphabetical order, never at the end: two PRs that both append at the end always conflict.
+- Edits to generated files and registration lists never need a "shares" note (Coordination).
+- **`.gitattributes`:** `/stress/*` already preserves every stress script's bytes. Never add a line per script.
+- **SPEC.md §7:** never tick a checkbox in your PR. PR duty ticks it when it lands the PR.
+- **Silent conflicts:** after merging `master`, a build error in code neither side edited (a struct gained a field, a function was renamed) is a merge conflict. Fix it in the merge commit.
+
 ## Pull requests
 - One piece, one branch, one PR, against `master`.
 - PR description: what changed, why, the theorems you proved, and the piece it completes (§7 item, `Fixes #n`, or SPEC section).
-- Tick the §7 checkbox for your item in the same PR.
+- Name your §7 item in the PR description. Never tick its checkbox yourself: PR duty ticks it when it lands the PR.
 - Opening the PR does not finish the task. Monitor the PR until it is merged:
   - If the local checks or CI fail on your change, fix it and push.
   - Address every comment PR duty agents leave: fix it and push, or reply with the reason you didn't. Resolve the thread.
@@ -145,13 +161,15 @@ Velocity's AIRC (F14) replaces this section once M8 merges. Until then, claims a
 - If the PR is closed without merging, report why in your thread and keep your worktree.
 
 ## If you are on PR duty
-- Claim one open, ready PR at a time by commenting "Reviewing". Never review a PR another agent claimed.
+- Hold one open, ready PR at a time. To take one: pick a ready PR without the `reviewing` label, add the label (`gh pr edit <n> --add-label reviewing`), comment "Reviewing · <your worktree slug>", then read the PR's comments again. If another agent's "Reviewing" comment is earlier than yours, leave the label and pick another PR.
+- Never review, update or merge a PR another agent holds. Remove the `reviewing` label when you merge, send the PR back to its author, or stop.
+- Review, approve, request changes and merge as the PR duty GitHub app, not the shared login, so approvals are real GitHub reviews (#42). Set the token in the same command as `gh`: `$env:GH_TOKEN = pwsh -NoProfile -File scripts/Get-PrDutyToken.ps1; gh pr review <n> --approve`. Approve with `gh pr review --approve` and block with `gh pr review --request-changes`, never with a plain comment. If the script says its settings are missing, the app isn't set up on this machine: record approval as a comment starting `Approved at <head SHA>`.
 - Review the intent, not each line: check the PR against its claim, its SPEC.md section and this file.
 - Request changes on any PR that adds Lean for a feature not on the proof list, or a theorem about a single behaviour or case.
 - Review every theorem statement: does it say what the SPEC section says, do its hypotheses exclude real inputs, is the cost model honest, and is the class of alternatives the one that matters? Lean already checked the proofs.
 - When you doubt a claim no proof covers, write a stress script in `stress/`, run it, and attach the result to your comment.
 - Request changes on a PR whose proofs, tests and docs together outweigh its implementation, or that adds tests outside the critical contracts in Tests and docs.
-- Approve only when the local checks pass on the PR merged onto the current `master`, in your review worktree: `cargo fmt --all --check`, `cargo build --workspace --locked`, clippy, `pnpm -C ui check`, `pnpm -C ui lint`, `pnpm -C ui build`, and, when `proofs/` changes, `lake build` with the axiom check above.
+- Approve only when `scripts/check.ps1` passes on the PR merged onto the current `master`, in your review worktree. It runs format, the locked build, bindings, clippy, `pnpm -C ui check`, `pnpm -C ui lint`, `pnpm -C ui build`, and, when `proofs/` changes, `lake build` with the axiom check above.
 - GitHub CI never holds up a PR. A pending, red or stale run doesn't block a merge when the local checks pass on the merge result.
 - After another PR merges, run the checks again on the new merge result before you merge the next one.
 - Update PR branches with `master`. You are allowed and encouraged to, so PRs never wait on their author to rebase:
@@ -159,7 +177,16 @@ Velocity's AIRC (F14) replaces this section once M8 merges. Until then, claims a
   - Resolve a conflict yourself when the resolution keeps both changes as written. When it means choosing between two behaviours, send it back to the author.
   - Never force-push, and never rewrite the author's commits.
   - Run the checks on the updated branch, not the old PR head.
-- Never merge without an approving review. Merge with squash and delete the branch.
+- Land a PR in this order: update the branch with `master`, tick its §7 checkbox in SPEC.md in a commit on the branch, run `scripts/check.ps1`, approve, then merge with `gh pr merge <n> --squash --delete-branch --match-head-commit <the SHA you approved>`. A commit pushed after your approval then stops the merge.
+- Never merge without an approving review.
+- If a PR merges while you are still reviewing it, file your findings as issues. Never post them on the merged PR.
+
+### Review severity
+Long review cycles cost more than the defects they catch. Block only what matters:
+- Request changes only for: data loss or corruption; a crash or hang; a violation of SPEC.md §1 or the Product rules; a security hole; a failing local check; the main path of the claimed piece not doing what its SPEC.md section says; or a Lean or tests rule above.
+- Everything else does not block: edge cases on rare inputs, display miscounts, naming, style, missing polish. File each as an issue with its evidence, link it in your review, and approve.
+- Put every blocking finding in your first review. A later round reviews only the commits pushed since your last review, and blocks only on a finding in those commits, or on new data loss or a crash.
+- When you are unsure whether a finding blocks, it does not block. File the issue.
 
 ## If you are a scout
 - Assume every part of Velocity is broken and will fail. Prove it.

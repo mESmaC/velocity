@@ -2526,6 +2526,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "junction"
+version = "2.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "cde48f36530cbd91b65f050101e6c056d6eb743cea2a8f0f19beef69c6742ff8"
+dependencies = [
+ "scopeguard",
+ "windows-sys 0.61.2",
+]
+
+[[package]]
 name = "keyboard-types"
 version = "0.8.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3800,6 +3810,12 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "3a219298ac11a56ea9a6d2120044824d6f01aeb034955e7af7bc16858527deea"
 
 [[package]]
+name = "similar"
+version = "2.7.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "bbbb5d9659141646ae647b42fe094daf6c6192d1620870b449d9557f748b2daa"
+
+[[package]]
 name = "siphasher"
 version = "1.0.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -4914,6 +4930,7 @@ dependencies = [
  "velocity-interview",
  "velocity-new-project",
  "velocity-store",
+ "velocity-threads",
 ]
 
 [[package]]
@@ -4938,9 +4955,11 @@ name = "velocity-github"
 version = "0.1.0"
 dependencies = [
  "gix",
+ "junction",
  "serde",
  "serde_json",
  "specta",
+ "tempfile",
  "thiserror 2.0.21",
 ]
 
@@ -4982,6 +5001,20 @@ dependencies = [
  "thiserror 2.0.21",
  "velocity-core",
  "velocity-git",
+]
+
+[[package]]
+name = "velocity-threads"
+version = "0.1.0"
+dependencies = [
+ "agent-client-protocol",
+ "similar",
+ "thiserror 2.0.21",
+ "tokio",
+ "velocity-acp",
+ "velocity-core",
+ "velocity-git",
+ "velocity-store",
 ]
 
 [[package]]

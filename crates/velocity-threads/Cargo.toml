@@ -1,0 +1,20 @@
+[package]
+name = "velocity-threads"
+description = "Starting build threads: worktree, agent session and live transcript"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish = false
+
+[lints]
+workspace = true
+
+[dependencies]
+agent-client-protocol = "5.0.0"
+similar = "2.7"
+thiserror.workspace = true
+tokio = { version = "1.54", features = ["rt", "sync"] }
+velocity-acp = { path = "../velocity-acp" }
+velocity-core.workspace = true
+velocity-git.workspace = true
+velocity-store.workspace = true
