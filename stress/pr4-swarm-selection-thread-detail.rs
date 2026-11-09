@@ -1,6 +1,5 @@
 //! PR-duty reproducer for SPEC.md F10's selection-dependent sidebar members.
 //! Compile against the reviewed velocity-core library; this uses its real reducer.
-//! Adapted from stress/pr4-swarm-selection.rs for ThreadEntry.detail (#21); logic unchanged.
 
 use std::process::ExitCode;
 use velocity_core::layout::{LayoutRow, ThreadGroup};
