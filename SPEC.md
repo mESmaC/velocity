@@ -1056,7 +1056,7 @@ Each milestone ends with a working app. Check items off as their PRs merge.
 - [ ] ACP client (`agent-client-protocol`): spawn per thread, `session/new` in the worktree with AIRC as an MCP server, updates → transcript, auto-allow permissions, cancel, queued prompts, `fs`/`terminal` rooted at the worktree but not confined to it, full tool access with your config loaded and shared MCP servers (§3.2)
 - [ ] ACP agents for Claude Code (`claude-code-acp`), Codex (`codex-acp`), Kimi Code (`kimi --acp`) and Antigravity, each using its own OAuth login through `authenticate`; Settings → Providers, model menu, limit meter (F15)
 - [x] Worktree manager: create / delete / prune, path scheme, setup step (copy files, run command, shared build cache) (F5)
-- [ ] Thread view: transcript, tool steps, diffs, header with worktree path, composer, slash menu (F4)
+- [x] Thread view: transcript, tool steps, diffs, header with worktree path, composer, slash menu (F4)
 - [ ] Settings → Worktrees, including the live list and the footer count (F5, F13)
 
 **M4 · PR loop**
@@ -1156,3 +1156,4 @@ Each milestone ends with a working app. Check items off as their PRs merge.
 | Q25 | Does fast mode draw down each provider's subscription limit faster, and how does each provider report it? | F15 |
 | Q26 | Which folder does Kimi Code read skills from inside a project (`.kimi-code/skills/`, `.agents/skills/` or another)? And does Antigravity read `.agents/skills/` as the gamedev and UI UX Pro Max docs say? | F18 |
 | Q27 | Should "Add a skill pack" also search the skills.sh registry, or take only GitHub repos? | F18 |
+

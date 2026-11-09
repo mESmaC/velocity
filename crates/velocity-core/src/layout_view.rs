@@ -1,7 +1,10 @@
-//! Read models and actions for the main-window shell (SPEC.md F1).
+//! Read models and actions for the main-window shell (SPEC.md F1, F4).
 
 use crate::layout::{LayoutRow, PulseKind, ThreadGroup};
 use crate::navigation::{NavigationIntent, NavigationView, NumberHintEvent};
+use crate::thread_view_model::{
+    ModelPillView, SlashCommandItem, ThreadDetailEntry, ThreadDetailSnapshot,
+};
 
 #[derive(Clone)]
 pub struct ThreadEntry {
@@ -9,6 +12,7 @@ pub struct ThreadEntry {
     pub title: String,
     pub metadata: String,
     pub view: NavigationView,
+    pub detail: Option<ThreadDetailEntry>,
 }
 
 #[cfg_attr(
@@ -39,6 +43,7 @@ pub struct LayoutData {
     pub providers: Vec<ProviderUsage>,
     pub airc_unread: usize,
     pub overlap_unread: bool,
+    pub default_model_pill: Option<ModelPillView>,
 }
 
 #[cfg_attr(
@@ -144,10 +149,18 @@ pub enum LayoutIntent {
         #[cfg_attr(feature = "bindings", specta(type = String))]
         usize,
     ),
+    OpenWorktreeInExplorer(String),
     SettingsTab(String),
     Usage,
     Updates,
     StartPrompt(String),
+    SteerThread {
+        #[cfg_attr(feature = "bindings", serde(with = "crate::ipc_number"))]
+        #[cfg_attr(feature = "bindings", specta(type = String))]
+        identifier: usize,
+        prompt: String,
+        queued: bool,
+    },
     AddTask(String),
 }
 
@@ -223,6 +236,15 @@ pub enum LayoutAction {
     Keyboard(KeyboardInput),
     NumberHints(NumberHintEvent),
     ComposerText(String),
+    SlashSelect(
+        #[cfg_attr(feature = "bindings", serde(with = "crate::ipc_number"))]
+        #[cfg_attr(feature = "bindings", specta(type = String))]
+        usize,
+    ),
+    SlashNext,
+    SlashPrevious,
+    SlashComplete,
+    ToggleShowWork,
     TaskText(String),
     SubmitComposer,
     SubmitTask,
@@ -240,6 +262,8 @@ pub struct LayoutSnapshot {
     #[cfg_attr(feature = "bindings", serde(with = "crate::ipc_number::optional"))]
     #[cfg_attr(feature = "bindings", specta(type = Option<String>))]
     pub selected_thread: Option<usize>,
+    pub active_thread: Option<ThreadDetailSnapshot>,
+    pub default_model_pill: ModelPillView,
     pub search: String,
     pub groups: Vec<SidebarGroup>,
     pub pulse: Vec<PulseCount>,
@@ -250,6 +274,10 @@ pub struct LayoutSnapshot {
     #[cfg_attr(feature = "bindings", serde(with = "crate::ipc_number"))]
     #[cfg_attr(feature = "bindings", specta(type = String))]
     pub palette_selection: usize,
+    pub slash_items: Vec<SlashCommandItem>,
+    #[cfg_attr(feature = "bindings", serde(with = "crate::ipc_number"))]
+    #[cfg_attr(feature = "bindings", specta(type = String))]
+    pub slash_selection: usize,
     pub tasks: Vec<RailItem>,
     pub pull_requests: Vec<RailItem>,
     pub issues: Vec<RailItem>,

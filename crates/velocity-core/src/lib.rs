@@ -9,4 +9,6 @@ pub mod layout_view;
 pub mod navigation;
 pub mod state;
 pub mod theme;
+pub mod thread_view;
+pub mod thread_view_model;
 pub mod window;

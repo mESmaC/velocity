@@ -40,7 +40,35 @@ export type AgentSettings_Serialize = {
 	claim_release_grace_minutes: number,
 };
 
+export type DiffBlockView = DiffBlockView_Serialize | DiffBlockView_Deserialize;
+
+export type DiffBlockView_Deserialize = {
+	file_path: string,
+	added: string,
+	deleted: string,
+	lines: DiffLineView[],
+};
+
+export type DiffBlockView_Serialize = {
+	file_path: string,
+	added: string,
+	deleted: string,
+	lines: DiffLineView[],
+};
+
+export type DiffLineRole = "Added" | "Deleted" | "Context" | "HunkHeader";
+
+export type DiffLineView = {
+	role: DiffLineRole,
+	text: string,
+};
+
 export type EffortLevel = "low" | "medium" | "high" | "max";
+
+export type ErrorCardView = {
+	headline: string,
+	detail: string,
+};
 
 export type KeyboardInput = {
 	key: string,
@@ -54,9 +82,9 @@ export type KeyboardInput = {
 
 export type LayoutAction = LayoutAction_Serialize | LayoutAction_Deserialize;
 
-export type LayoutAction_Deserialize = ({ Request: LayoutIntent_Deserialize }) & { ComposerText?: never; Keyboard?: never; NumberHints?: never; OpenThread?: never; PaletteSearch?: never; PaletteSelect?: never; SidebarSearch?: never; TaskText?: never; ToggleSwarm?: never } | ({ SidebarSearch: string }) & { ComposerText?: never; Keyboard?: never; NumberHints?: never; OpenThread?: never; PaletteSearch?: never; PaletteSelect?: never; Request?: never; TaskText?: never; ToggleSwarm?: never } | ({ PaletteSearch: string }) & { ComposerText?: never; Keyboard?: never; NumberHints?: never; OpenThread?: never; PaletteSelect?: never; Request?: never; SidebarSearch?: never; TaskText?: never; ToggleSwarm?: never } | ({ PaletteSelect: string }) & { ComposerText?: never; Keyboard?: never; NumberHints?: never; OpenThread?: never; PaletteSearch?: never; Request?: never; SidebarSearch?: never; TaskText?: never; ToggleSwarm?: never } | "PaletteNext" | "PalettePrevious" | "PaletteAccept" | ({ OpenThread: string }) & { ComposerText?: never; Keyboard?: never; NumberHints?: never; PaletteSearch?: never; PaletteSelect?: never; Request?: never; SidebarSearch?: never; TaskText?: never; ToggleSwarm?: never } | ({ ToggleSwarm: string }) & { ComposerText?: never; Keyboard?: never; NumberHints?: never; OpenThread?: never; PaletteSearch?: never; PaletteSelect?: never; Request?: never; SidebarSearch?: never; TaskText?: never } | ({ Keyboard: KeyboardInput }) & { ComposerText?: never; NumberHints?: never; OpenThread?: never; PaletteSearch?: never; PaletteSelect?: never; Request?: never; SidebarSearch?: never; TaskText?: never; ToggleSwarm?: never } | ({ NumberHints: NumberHintEvent }) & { ComposerText?: never; Keyboard?: never; OpenThread?: never; PaletteSearch?: never; PaletteSelect?: never; Request?: never; SidebarSearch?: never; TaskText?: never; ToggleSwarm?: never } | ({ ComposerText: string }) & { Keyboard?: never; NumberHints?: never; OpenThread?: never; PaletteSearch?: never; PaletteSelect?: never; Request?: never; SidebarSearch?: never; TaskText?: never; ToggleSwarm?: never } | ({ TaskText: string }) & { ComposerText?: never; Keyboard?: never; NumberHints?: never; OpenThread?: never; PaletteSearch?: never; PaletteSelect?: never; Request?: never; SidebarSearch?: never; ToggleSwarm?: never } | "SubmitComposer" | "SubmitTask";
+export type LayoutAction_Deserialize = ({ Request: LayoutIntent_Deserialize }) & { ComposerText?: never; Keyboard?: never; NumberHints?: never; OpenThread?: never; PaletteSearch?: never; PaletteSelect?: never; SidebarSearch?: never; SlashSelect?: never; TaskText?: never; ToggleSwarm?: never } | ({ SidebarSearch: string }) & { ComposerText?: never; Keyboard?: never; NumberHints?: never; OpenThread?: never; PaletteSearch?: never; PaletteSelect?: never; Request?: never; SlashSelect?: never; TaskText?: never; ToggleSwarm?: never } | ({ PaletteSearch: string }) & { ComposerText?: never; Keyboard?: never; NumberHints?: never; OpenThread?: never; PaletteSelect?: never; Request?: never; SidebarSearch?: never; SlashSelect?: never; TaskText?: never; ToggleSwarm?: never } | ({ PaletteSelect: string }) & { ComposerText?: never; Keyboard?: never; NumberHints?: never; OpenThread?: never; PaletteSearch?: never; Request?: never; SidebarSearch?: never; SlashSelect?: never; TaskText?: never; ToggleSwarm?: never } | "PaletteNext" | "PalettePrevious" | "PaletteAccept" | ({ OpenThread: string }) & { ComposerText?: never; Keyboard?: never; NumberHints?: never; PaletteSearch?: never; PaletteSelect?: never; Request?: never; SidebarSearch?: never; SlashSelect?: never; TaskText?: never; ToggleSwarm?: never } | ({ ToggleSwarm: string }) & { ComposerText?: never; Keyboard?: never; NumberHints?: never; OpenThread?: never; PaletteSearch?: never; PaletteSelect?: never; Request?: never; SidebarSearch?: never; SlashSelect?: never; TaskText?: never } | ({ Keyboard: KeyboardInput }) & { ComposerText?: never; NumberHints?: never; OpenThread?: never; PaletteSearch?: never; PaletteSelect?: never; Request?: never; SidebarSearch?: never; SlashSelect?: never; TaskText?: never; ToggleSwarm?: never } | ({ NumberHints: NumberHintEvent }) & { ComposerText?: never; Keyboard?: never; OpenThread?: never; PaletteSearch?: never; PaletteSelect?: never; Request?: never; SidebarSearch?: never; SlashSelect?: never; TaskText?: never; ToggleSwarm?: never } | ({ ComposerText: string }) & { Keyboard?: never; NumberHints?: never; OpenThread?: never; PaletteSearch?: never; PaletteSelect?: never; Request?: never; SidebarSearch?: never; SlashSelect?: never; TaskText?: never; ToggleSwarm?: never } | ({ SlashSelect: string }) & { ComposerText?: never; Keyboard?: never; NumberHints?: never; OpenThread?: never; PaletteSearch?: never; PaletteSelect?: never; Request?: never; SidebarSearch?: never; TaskText?: never; ToggleSwarm?: never } | "SlashNext" | "SlashPrevious" | "SlashComplete" | "ToggleShowWork" | ({ TaskText: string }) & { ComposerText?: never; Keyboard?: never; NumberHints?: never; OpenThread?: never; PaletteSearch?: never; PaletteSelect?: never; Request?: never; SidebarSearch?: never; SlashSelect?: never; ToggleSwarm?: never } | "SubmitComposer" | "SubmitTask";
 
-export type LayoutAction_Serialize = ({ Request: LayoutIntent_Serialize }) & { ComposerText?: never; Keyboard?: never; NumberHints?: never; OpenThread?: never; PaletteSearch?: never; PaletteSelect?: never; SidebarSearch?: never; TaskText?: never; ToggleSwarm?: never } | ({ SidebarSearch: string }) & { ComposerText?: never; Keyboard?: never; NumberHints?: never; OpenThread?: never; PaletteSearch?: never; PaletteSelect?: never; Request?: never; TaskText?: never; ToggleSwarm?: never } | ({ PaletteSearch: string }) & { ComposerText?: never; Keyboard?: never; NumberHints?: never; OpenThread?: never; PaletteSelect?: never; Request?: never; SidebarSearch?: never; TaskText?: never; ToggleSwarm?: never } | ({ PaletteSelect: string }) & { ComposerText?: never; Keyboard?: never; NumberHints?: never; OpenThread?: never; PaletteSearch?: never; Request?: never; SidebarSearch?: never; TaskText?: never; ToggleSwarm?: never } | "PaletteNext" | "PalettePrevious" | "PaletteAccept" | ({ OpenThread: string }) & { ComposerText?: never; Keyboard?: never; NumberHints?: never; PaletteSearch?: never; PaletteSelect?: never; Request?: never; SidebarSearch?: never; TaskText?: never; ToggleSwarm?: never } | ({ ToggleSwarm: string }) & { ComposerText?: never; Keyboard?: never; NumberHints?: never; OpenThread?: never; PaletteSearch?: never; PaletteSelect?: never; Request?: never; SidebarSearch?: never; TaskText?: never } | ({ Keyboard: KeyboardInput }) & { ComposerText?: never; NumberHints?: never; OpenThread?: never; PaletteSearch?: never; PaletteSelect?: never; Request?: never; SidebarSearch?: never; TaskText?: never; ToggleSwarm?: never } | ({ NumberHints: NumberHintEvent }) & { ComposerText?: never; Keyboard?: never; OpenThread?: never; PaletteSearch?: never; PaletteSelect?: never; Request?: never; SidebarSearch?: never; TaskText?: never; ToggleSwarm?: never } | ({ ComposerText: string }) & { Keyboard?: never; NumberHints?: never; OpenThread?: never; PaletteSearch?: never; PaletteSelect?: never; Request?: never; SidebarSearch?: never; TaskText?: never; ToggleSwarm?: never } | ({ TaskText: string }) & { ComposerText?: never; Keyboard?: never; NumberHints?: never; OpenThread?: never; PaletteSearch?: never; PaletteSelect?: never; Request?: never; SidebarSearch?: never; ToggleSwarm?: never } | "SubmitComposer" | "SubmitTask";
+export type LayoutAction_Serialize = ({ Request: LayoutIntent_Serialize }) & { ComposerText?: never; Keyboard?: never; NumberHints?: never; OpenThread?: never; PaletteSearch?: never; PaletteSelect?: never; SidebarSearch?: never; SlashSelect?: never; TaskText?: never; ToggleSwarm?: never } | ({ SidebarSearch: string }) & { ComposerText?: never; Keyboard?: never; NumberHints?: never; OpenThread?: never; PaletteSearch?: never; PaletteSelect?: never; Request?: never; SlashSelect?: never; TaskText?: never; ToggleSwarm?: never } | ({ PaletteSearch: string }) & { ComposerText?: never; Keyboard?: never; NumberHints?: never; OpenThread?: never; PaletteSelect?: never; Request?: never; SidebarSearch?: never; SlashSelect?: never; TaskText?: never; ToggleSwarm?: never } | ({ PaletteSelect: string }) & { ComposerText?: never; Keyboard?: never; NumberHints?: never; OpenThread?: never; PaletteSearch?: never; Request?: never; SidebarSearch?: never; SlashSelect?: never; TaskText?: never; ToggleSwarm?: never } | "PaletteNext" | "PalettePrevious" | "PaletteAccept" | ({ OpenThread: string }) & { ComposerText?: never; Keyboard?: never; NumberHints?: never; PaletteSearch?: never; PaletteSelect?: never; Request?: never; SidebarSearch?: never; SlashSelect?: never; TaskText?: never; ToggleSwarm?: never } | ({ ToggleSwarm: string }) & { ComposerText?: never; Keyboard?: never; NumberHints?: never; OpenThread?: never; PaletteSearch?: never; PaletteSelect?: never; Request?: never; SidebarSearch?: never; SlashSelect?: never; TaskText?: never } | ({ Keyboard: KeyboardInput }) & { ComposerText?: never; NumberHints?: never; OpenThread?: never; PaletteSearch?: never; PaletteSelect?: never; Request?: never; SidebarSearch?: never; SlashSelect?: never; TaskText?: never; ToggleSwarm?: never } | ({ NumberHints: NumberHintEvent }) & { ComposerText?: never; Keyboard?: never; OpenThread?: never; PaletteSearch?: never; PaletteSelect?: never; Request?: never; SidebarSearch?: never; SlashSelect?: never; TaskText?: never; ToggleSwarm?: never } | ({ ComposerText: string }) & { Keyboard?: never; NumberHints?: never; OpenThread?: never; PaletteSearch?: never; PaletteSelect?: never; Request?: never; SidebarSearch?: never; SlashSelect?: never; TaskText?: never; ToggleSwarm?: never } | ({ SlashSelect: string }) & { ComposerText?: never; Keyboard?: never; NumberHints?: never; OpenThread?: never; PaletteSearch?: never; PaletteSelect?: never; Request?: never; SidebarSearch?: never; TaskText?: never; ToggleSwarm?: never } | "SlashNext" | "SlashPrevious" | "SlashComplete" | "ToggleShowWork" | ({ TaskText: string }) & { ComposerText?: never; Keyboard?: never; NumberHints?: never; OpenThread?: never; PaletteSearch?: never; PaletteSelect?: never; Request?: never; SidebarSearch?: never; SlashSelect?: never; ToggleSwarm?: never } | "SubmitComposer" | "SubmitTask";
 
 export type LayoutIntent = LayoutIntent_Serialize | LayoutIntent_Deserialize;
 
@@ -70,9 +98,17 @@ export type LayoutIntentRequested_Serialize = {
 	intent: LayoutIntent_Serialize,
 };
 
-export type LayoutIntent_Deserialize = ({ Navigation: NavigationIntent_Deserialize }) & { AddTask?: never; DispatchIssue?: never; OpenIssue?: never; OpenPullRequest?: never; OpenTask?: never; SettingsTab?: never; StartPrompt?: never; SwitchProject?: never } | ({ SwitchProject: string }) & { AddTask?: never; DispatchIssue?: never; Navigation?: never; OpenIssue?: never; OpenPullRequest?: never; OpenTask?: never; SettingsTab?: never; StartPrompt?: never } | ({ DispatchIssue: string }) & { AddTask?: never; Navigation?: never; OpenIssue?: never; OpenPullRequest?: never; OpenTask?: never; SettingsTab?: never; StartPrompt?: never; SwitchProject?: never } | "SwarmIssues" | ({ OpenTask: string }) & { AddTask?: never; DispatchIssue?: never; Navigation?: never; OpenIssue?: never; OpenPullRequest?: never; SettingsTab?: never; StartPrompt?: never; SwitchProject?: never } | ({ OpenPullRequest: string }) & { AddTask?: never; DispatchIssue?: never; Navigation?: never; OpenIssue?: never; OpenTask?: never; SettingsTab?: never; StartPrompt?: never; SwitchProject?: never } | ({ OpenIssue: string }) & { AddTask?: never; DispatchIssue?: never; Navigation?: never; OpenPullRequest?: never; OpenTask?: never; SettingsTab?: never; StartPrompt?: never; SwitchProject?: never } | ({ SettingsTab: string }) & { AddTask?: never; DispatchIssue?: never; Navigation?: never; OpenIssue?: never; OpenPullRequest?: never; OpenTask?: never; StartPrompt?: never; SwitchProject?: never } | "Usage" | "Updates" | ({ StartPrompt: string }) & { AddTask?: never; DispatchIssue?: never; Navigation?: never; OpenIssue?: never; OpenPullRequest?: never; OpenTask?: never; SettingsTab?: never; SwitchProject?: never } | ({ AddTask: string }) & { DispatchIssue?: never; Navigation?: never; OpenIssue?: never; OpenPullRequest?: never; OpenTask?: never; SettingsTab?: never; StartPrompt?: never; SwitchProject?: never };
+export type LayoutIntent_Deserialize = ({ Navigation: NavigationIntent_Deserialize }) & { AddTask?: never; DispatchIssue?: never; OpenIssue?: never; OpenPullRequest?: never; OpenTask?: never; OpenWorktreeInExplorer?: never; SettingsTab?: never; StartPrompt?: never; SteerThread?: never; SwitchProject?: never } | ({ SwitchProject: string }) & { AddTask?: never; DispatchIssue?: never; Navigation?: never; OpenIssue?: never; OpenPullRequest?: never; OpenTask?: never; OpenWorktreeInExplorer?: never; SettingsTab?: never; StartPrompt?: never; SteerThread?: never } | ({ DispatchIssue: string }) & { AddTask?: never; Navigation?: never; OpenIssue?: never; OpenPullRequest?: never; OpenTask?: never; OpenWorktreeInExplorer?: never; SettingsTab?: never; StartPrompt?: never; SteerThread?: never; SwitchProject?: never } | "SwarmIssues" | ({ OpenTask: string }) & { AddTask?: never; DispatchIssue?: never; Navigation?: never; OpenIssue?: never; OpenPullRequest?: never; OpenWorktreeInExplorer?: never; SettingsTab?: never; StartPrompt?: never; SteerThread?: never; SwitchProject?: never } | ({ OpenPullRequest: string }) & { AddTask?: never; DispatchIssue?: never; Navigation?: never; OpenIssue?: never; OpenTask?: never; OpenWorktreeInExplorer?: never; SettingsTab?: never; StartPrompt?: never; SteerThread?: never; SwitchProject?: never } | ({ OpenIssue: string }) & { AddTask?: never; DispatchIssue?: never; Navigation?: never; OpenPullRequest?: never; OpenTask?: never; OpenWorktreeInExplorer?: never; SettingsTab?: never; StartPrompt?: never; SteerThread?: never; SwitchProject?: never } | ({ OpenWorktreeInExplorer: string }) & { AddTask?: never; DispatchIssue?: never; Navigation?: never; OpenIssue?: never; OpenPullRequest?: never; OpenTask?: never; SettingsTab?: never; StartPrompt?: never; SteerThread?: never; SwitchProject?: never } | ({ SettingsTab: string }) & { AddTask?: never; DispatchIssue?: never; Navigation?: never; OpenIssue?: never; OpenPullRequest?: never; OpenTask?: never; OpenWorktreeInExplorer?: never; StartPrompt?: never; SteerThread?: never; SwitchProject?: never } | "Usage" | "Updates" | ({ StartPrompt: string }) & { AddTask?: never; DispatchIssue?: never; Navigation?: never; OpenIssue?: never; OpenPullRequest?: never; OpenTask?: never; OpenWorktreeInExplorer?: never; SettingsTab?: never; SteerThread?: never; SwitchProject?: never } | ({ SteerThread: {
+	identifier: string,
+	prompt: string,
+	queued: boolean,
+} }) & { AddTask?: never; DispatchIssue?: never; Navigation?: never; OpenIssue?: never; OpenPullRequest?: never; OpenTask?: never; OpenWorktreeInExplorer?: never; SettingsTab?: never; StartPrompt?: never; SwitchProject?: never } | ({ AddTask: string }) & { DispatchIssue?: never; Navigation?: never; OpenIssue?: never; OpenPullRequest?: never; OpenTask?: never; OpenWorktreeInExplorer?: never; SettingsTab?: never; StartPrompt?: never; SteerThread?: never; SwitchProject?: never };
 
-export type LayoutIntent_Serialize = ({ Navigation: NavigationIntent_Serialize }) & { AddTask?: never; DispatchIssue?: never; OpenIssue?: never; OpenPullRequest?: never; OpenTask?: never; SettingsTab?: never; StartPrompt?: never; SwitchProject?: never } | ({ SwitchProject: string }) & { AddTask?: never; DispatchIssue?: never; Navigation?: never; OpenIssue?: never; OpenPullRequest?: never; OpenTask?: never; SettingsTab?: never; StartPrompt?: never } | ({ DispatchIssue: string }) & { AddTask?: never; Navigation?: never; OpenIssue?: never; OpenPullRequest?: never; OpenTask?: never; SettingsTab?: never; StartPrompt?: never; SwitchProject?: never } | "SwarmIssues" | ({ OpenTask: string }) & { AddTask?: never; DispatchIssue?: never; Navigation?: never; OpenIssue?: never; OpenPullRequest?: never; SettingsTab?: never; StartPrompt?: never; SwitchProject?: never } | ({ OpenPullRequest: string }) & { AddTask?: never; DispatchIssue?: never; Navigation?: never; OpenIssue?: never; OpenTask?: never; SettingsTab?: never; StartPrompt?: never; SwitchProject?: never } | ({ OpenIssue: string }) & { AddTask?: never; DispatchIssue?: never; Navigation?: never; OpenPullRequest?: never; OpenTask?: never; SettingsTab?: never; StartPrompt?: never; SwitchProject?: never } | ({ SettingsTab: string }) & { AddTask?: never; DispatchIssue?: never; Navigation?: never; OpenIssue?: never; OpenPullRequest?: never; OpenTask?: never; StartPrompt?: never; SwitchProject?: never } | "Usage" | "Updates" | ({ StartPrompt: string }) & { AddTask?: never; DispatchIssue?: never; Navigation?: never; OpenIssue?: never; OpenPullRequest?: never; OpenTask?: never; SettingsTab?: never; SwitchProject?: never } | ({ AddTask: string }) & { DispatchIssue?: never; Navigation?: never; OpenIssue?: never; OpenPullRequest?: never; OpenTask?: never; SettingsTab?: never; StartPrompt?: never; SwitchProject?: never };
+export type LayoutIntent_Serialize = ({ Navigation: NavigationIntent_Serialize }) & { AddTask?: never; DispatchIssue?: never; OpenIssue?: never; OpenPullRequest?: never; OpenTask?: never; OpenWorktreeInExplorer?: never; SettingsTab?: never; StartPrompt?: never; SteerThread?: never; SwitchProject?: never } | ({ SwitchProject: string }) & { AddTask?: never; DispatchIssue?: never; Navigation?: never; OpenIssue?: never; OpenPullRequest?: never; OpenTask?: never; OpenWorktreeInExplorer?: never; SettingsTab?: never; StartPrompt?: never; SteerThread?: never } | ({ DispatchIssue: string }) & { AddTask?: never; Navigation?: never; OpenIssue?: never; OpenPullRequest?: never; OpenTask?: never; OpenWorktreeInExplorer?: never; SettingsTab?: never; StartPrompt?: never; SteerThread?: never; SwitchProject?: never } | "SwarmIssues" | ({ OpenTask: string }) & { AddTask?: never; DispatchIssue?: never; Navigation?: never; OpenIssue?: never; OpenPullRequest?: never; OpenWorktreeInExplorer?: never; SettingsTab?: never; StartPrompt?: never; SteerThread?: never; SwitchProject?: never } | ({ OpenPullRequest: string }) & { AddTask?: never; DispatchIssue?: never; Navigation?: never; OpenIssue?: never; OpenTask?: never; OpenWorktreeInExplorer?: never; SettingsTab?: never; StartPrompt?: never; SteerThread?: never; SwitchProject?: never } | ({ OpenIssue: string }) & { AddTask?: never; DispatchIssue?: never; Navigation?: never; OpenPullRequest?: never; OpenTask?: never; OpenWorktreeInExplorer?: never; SettingsTab?: never; StartPrompt?: never; SteerThread?: never; SwitchProject?: never } | ({ OpenWorktreeInExplorer: string }) & { AddTask?: never; DispatchIssue?: never; Navigation?: never; OpenIssue?: never; OpenPullRequest?: never; OpenTask?: never; SettingsTab?: never; StartPrompt?: never; SteerThread?: never; SwitchProject?: never } | ({ SettingsTab: string }) & { AddTask?: never; DispatchIssue?: never; Navigation?: never; OpenIssue?: never; OpenPullRequest?: never; OpenTask?: never; OpenWorktreeInExplorer?: never; StartPrompt?: never; SteerThread?: never; SwitchProject?: never } | "Usage" | "Updates" | ({ StartPrompt: string }) & { AddTask?: never; DispatchIssue?: never; Navigation?: never; OpenIssue?: never; OpenPullRequest?: never; OpenTask?: never; OpenWorktreeInExplorer?: never; SettingsTab?: never; SteerThread?: never; SwitchProject?: never } | ({ SteerThread: {
+	identifier: string,
+	prompt: string,
+	queued: boolean,
+} }) & { AddTask?: never; DispatchIssue?: never; Navigation?: never; OpenIssue?: never; OpenPullRequest?: never; OpenTask?: never; OpenWorktreeInExplorer?: never; SettingsTab?: never; StartPrompt?: never; SwitchProject?: never } | ({ AddTask: string }) & { DispatchIssue?: never; Navigation?: never; OpenIssue?: never; OpenPullRequest?: never; OpenTask?: never; OpenWorktreeInExplorer?: never; SettingsTab?: never; StartPrompt?: never; SteerThread?: never; SwitchProject?: never };
 
 export type LayoutSnapshot = LayoutSnapshot_Serialize | LayoutSnapshot_Deserialize;
 
@@ -81,6 +117,8 @@ export type LayoutSnapshot_Deserialize = {
 	project_name: string,
 	view: NavigationView,
 	selected_thread: string | null,
+	active_thread?: ThreadDetailSnapshot_Deserialize | null,
+	default_model_pill: ModelPillView,
 	search: string,
 	groups: SidebarGroup_Deserialize[],
 	pulse: PulseCount_Deserialize[],
@@ -89,6 +127,8 @@ export type LayoutSnapshot_Deserialize = {
 	palette_query: string,
 	palette_results: PaletteItem_Deserialize[],
 	palette_selection: string,
+	slash_items: SlashCommandItem[],
+	slash_selection: string,
 	tasks: RailItem_Deserialize[],
 	pull_requests: RailItem_Deserialize[],
 	issues: RailItem_Deserialize[],
@@ -105,6 +145,8 @@ export type LayoutSnapshot_Serialize = {
 	project_name: string,
 	view: NavigationView,
 	selected_thread: string | null,
+	active_thread: ThreadDetailSnapshot_Serialize | null,
+	default_model_pill: ModelPillView,
 	search: string,
 	groups: SidebarGroup_Serialize[],
 	pulse: PulseCount_Serialize[],
@@ -113,6 +155,8 @@ export type LayoutSnapshot_Serialize = {
 	palette_query: string,
 	palette_results: PaletteItem_Serialize[],
 	palette_selection: string,
+	slash_items: SlashCommandItem[],
+	slash_selection: string,
 	tasks: RailItem_Serialize[],
 	pull_requests: RailItem_Serialize[],
 	issues: RailItem_Serialize[],
@@ -132,6 +176,15 @@ export type LayoutStateChanged_Deserialize = {
 
 export type LayoutStateChanged_Serialize = {
 	state: LayoutSnapshot_Serialize,
+};
+
+export type ModelPillView = {
+	provider: ProviderColor,
+	model_name: string,
+	effort_label: string,
+	show_fast_badge: boolean,
+	speed_control_enabled: boolean,
+	preserve_requested_fast: boolean,
 };
 
 export type NavigationIntent = NavigationIntent_Serialize | NavigationIntent_Deserialize;
@@ -346,6 +399,11 @@ export type SidebarRow_Serialize = {
 	number: string | null,
 };
 
+export type SlashCommandItem = {
+	command: string,
+	description: string,
+};
+
 export type SpeedMode = "regular" | "fast";
 
 export type TaskAttribution = { kind: "spec" } | { kind: "user" } | { kind: "thread"; thread_id: number };
@@ -369,6 +427,58 @@ export type TaskItem_Serialize = {
 };
 
 export type TaskState = "draft" | "todo" | "now" | "done";
+
+export type ThreadDetailSnapshot = ThreadDetailSnapshot_Serialize | ThreadDetailSnapshot_Deserialize;
+
+export type ThreadDetailSnapshot_Deserialize = {
+	identifier: string,
+	title: string,
+	titling: boolean,
+	title_model_name: string,
+	branch: string,
+	worktree_path: string,
+	worktree_short_path: string,
+	worktree_chip: WorktreeChipView,
+	added: string,
+	deleted: string,
+	elapsed_label: string,
+	has_diff_action: boolean,
+	has_editor_action: boolean,
+	pull_request_number: string | null,
+	has_ship_pr_button: boolean,
+	agent_busy: boolean,
+	show_work: boolean,
+	transcript_mode: TranscriptModeView,
+	worked_summary?: WorkedSummaryView_Deserialize | null,
+	blocks: TranscriptBlock_Deserialize[],
+	composer_placeholder: string,
+	model_pill: ModelPillView,
+};
+
+export type ThreadDetailSnapshot_Serialize = {
+	identifier: string,
+	title: string,
+	titling: boolean,
+	title_model_name: string,
+	branch: string,
+	worktree_path: string,
+	worktree_short_path: string,
+	worktree_chip: WorktreeChipView,
+	added: string,
+	deleted: string,
+	elapsed_label: string,
+	has_diff_action: boolean,
+	has_editor_action: boolean,
+	pull_request_number: string | null,
+	has_ship_pr_button: boolean,
+	agent_busy: boolean,
+	show_work: boolean,
+	transcript_mode: TranscriptModeView,
+	worked_summary: WorkedSummaryView_Serialize | null,
+	blocks: TranscriptBlock_Serialize[],
+	composer_placeholder: string,
+	model_pill: ModelPillView,
+};
 
 export type ThreadGroup = "Draft" | "Duty" | "Swarm" | "Spec" | "Working" | "Review" | "Error" | "Closed" | "Done" | "Merged";
 
@@ -418,9 +528,72 @@ export type ThreadItem_Serialize = {
 
 export type ThreadState = "draft" | "spec" | "working" | "review" | "error" | "closed" | "done" | "merged";
 
+export type ToolStepRow = {
+	running: boolean,
+	verb: string,
+	argument: string,
+	result_text: string,
+};
+
+export type TranscriptBlock = TranscriptBlock_Serialize | TranscriptBlock_Deserialize;
+
+export type TranscriptBlock_Deserialize = ({ UserMessage: {
+	text: string,
+	queued: boolean,
+} }) & { AgentMessage?: never; Diff?: never; ErrorCard?: never; StatusLine?: never; ToolGroup?: never } | ({ AgentMessage: {
+	paragraphs: string[],
+} }) & { Diff?: never; ErrorCard?: never; StatusLine?: never; ToolGroup?: never; UserMessage?: never } | ({ ToolGroup: {
+	steps: ToolStepRow[],
+} }) & { AgentMessage?: never; Diff?: never; ErrorCard?: never; StatusLine?: never; UserMessage?: never } | ({ Diff: {
+	block: DiffBlockView_Deserialize,
+} }) & { AgentMessage?: never; ErrorCard?: never; StatusLine?: never; ToolGroup?: never; UserMessage?: never } | ({ StatusLine: {
+	running: boolean,
+	text: string,
+} }) & { AgentMessage?: never; Diff?: never; ErrorCard?: never; ToolGroup?: never; UserMessage?: never } | ({ ErrorCard: {
+	card: ErrorCardView,
+} }) & { AgentMessage?: never; Diff?: never; StatusLine?: never; ToolGroup?: never; UserMessage?: never };
+
+export type TranscriptBlock_Serialize = ({ UserMessage: {
+	text: string,
+	queued: boolean,
+} }) & { AgentMessage?: never; Diff?: never; ErrorCard?: never; StatusLine?: never; ToolGroup?: never } | ({ AgentMessage: {
+	paragraphs: string[],
+} }) & { Diff?: never; ErrorCard?: never; StatusLine?: never; ToolGroup?: never; UserMessage?: never } | ({ ToolGroup: {
+	steps: ToolStepRow[],
+} }) & { AgentMessage?: never; Diff?: never; ErrorCard?: never; StatusLine?: never; UserMessage?: never } | ({ Diff: {
+	block: DiffBlockView_Serialize,
+} }) & { AgentMessage?: never; ErrorCard?: never; StatusLine?: never; ToolGroup?: never; UserMessage?: never } | ({ StatusLine: {
+	running: boolean,
+	text: string,
+} }) & { AgentMessage?: never; Diff?: never; ErrorCard?: never; ToolGroup?: never; UserMessage?: never } | ({ ErrorCard: {
+	card: ErrorCardView,
+} }) & { AgentMessage?: never; Diff?: never; StatusLine?: never; ToolGroup?: never; UserMessage?: never };
+
+export type TranscriptModeView = "FullTranscript" | "CollapsedWithPrHistory" | "ExpandedWithPrHistory";
+
 export type WindowStateChanged = {
 	maximized: boolean,
 };
+
+export type WorkedSummaryView = WorkedSummaryView_Serialize | WorkedSummaryView_Deserialize;
+
+export type WorkedSummaryView_Deserialize = {
+	tool_calls: string,
+	files_touched: string,
+	added: string,
+	deleted: string,
+	proved: boolean,
+};
+
+export type WorkedSummaryView_Serialize = {
+	tool_calls: string,
+	files_touched: string,
+	added: string,
+	deleted: string,
+	proved: boolean,
+};
+
+export type WorktreeChipView = "Hidden" | "Live" | "Deleted";
 
 export type WorktreeSettings = WorktreeSettings_Serialize | WorktreeSettings_Deserialize;
 

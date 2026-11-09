@@ -340,3 +340,145 @@
   --layout-layout-error-padding: 8px 15px;
   --layout-layout-error-border-radius: 999px;
 }
+
+/* F4 supplement: thread view, transcript, tool steps, diffs, header, composer,
+   and slash menu values from design/main-window.html rules 153–156, 198–280,
+   412–414, 705–707, 740–741, and OLED overrides 1000–1075. */
+:root {
+  --thread-view-flex: 1;
+  --thread-view-min-height: 0;
+  --thread-head-gap: 10px;
+  --thread-head-padding: 12px 22px 11px;
+  --thread-head-border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+  --thread-head-h1-margin: 0;
+  --thread-head-h1-font-size: 13.5px;
+  --thread-head-h1-font-weight: 600;
+  --thread-head-h1-letter-spacing: -0.01em;
+  --thread-head-h1-color: #fff;
+  --thread-ttl-chip-margin-left: 10px;
+  --thread-ttl-chip-padding: 1px 8px;
+  --thread-ttl-chip-border-radius: 999px;
+  --thread-ttl-chip-font: 500 10px/16px var(--mono);
+  --thread-ttl-chip-background: rgba(255, 255, 255, 0.07);
+  --thread-ttl-chip-vertical-align: 2px;
+  --thread-meta-gap: 8px;
+  --thread-meta-font: 10.5px var(--mono);
+  --thread-meta-item-gap: 4px;
+  --thread-head-actions-gap: 4px;
+  --thread-btn-gap: 6px;
+  --thread-btn-height: 24px;
+  --thread-btn-padding: 0 10px;
+  --thread-btn-border: 1px solid rgba(255, 255, 255, 0.11);
+  --thread-btn-border-radius: 7px;
+  --thread-btn-font-size: 11px;
+  --thread-btn-background: linear-gradient(
+    rgba(255, 255, 255, 0.12),
+    rgba(255, 255, 255, 0.06)
+  );
+  --thread-btn-box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.1);
+  --thread-btn-hover-border-color: rgba(255, 255, 255, 0.18);
+  --thread-btn-hover-background: linear-gradient(
+    rgba(255, 255, 255, 0.17),
+    rgba(255, 255, 255, 0.1)
+  );
+  --thread-btn-primary-border-color: rgba(255, 255, 255, 0.22);
+  --thread-btn-primary-background: linear-gradient(#85858b, #626267);
+  --thread-btn-primary-color: #fff;
+  --thread-btn-primary-box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.22);
+  --thread-btn-primary-hover-background: linear-gradient(#909096, #6c6c71);
+  --thread-btn-kbd-padding: 1px 3px;
+  --thread-btn-kbd-font-size: 9px;
+  --thread-mini-height: 18px;
+  --thread-mini-padding: 0 7px;
+  --thread-mini-border: 1px solid var(--line-mid);
+  --thread-mini-border-radius: 6px;
+  --thread-mini-font-size: 10px;
+  --thread-transcript-flex: 1;
+  --thread-transcript-padding: 18px 22px 8px;
+  --thread-transcript-inner-max-width: 720px;
+  --thread-transcript-inner-margin: 0 auto;
+  --thread-transcript-inner-gap: 12px;
+  --thread-msg-user-max-width: 82%;
+  --thread-msg-user-padding: 8px 12px;
+  --thread-msg-user-border: 0;
+  --thread-msg-user-border-radius: 17px 17px 5px 17px;
+  --thread-msg-user-font-size: 12px;
+  --thread-msg-user-color: #fff;
+  --thread-msg-user-background: linear-gradient(
+    180deg,
+    rgba(255, 255, 255, 0.14),
+    rgba(255, 255, 255, 0.09)
+  );
+  --thread-msg-user-box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.09);
+  --thread-msg-agent-font-size: 12px;
+  --thread-msg-agent-p-margin: 0 0 6px;
+  --thread-msg-code-font: 11px var(--mono);
+  --thread-msg-code-padding: 1px 4px;
+  --thread-msg-code-border-radius: 4px;
+  --thread-msg-code-background: rgba(255, 255, 255, 0.1);
+  --thread-tools-border-left: 1px solid rgba(255, 255, 255, 0.09);
+  --thread-tools-margin-left: 4px;
+  --thread-tools-padding-left: 12px;
+  --thread-tools-gap: 1px;
+  --thread-tool-grid-template-columns: 14px 46px minmax(0, 1fr) auto;
+  --thread-tool-gap: 8px;
+  --thread-tool-font-size: 11px;
+  --thread-tool-padding: 3px 0;
+  --thread-tool-arg-font-size: 10.5px;
+  --thread-tool-res-font: 10px var(--mono);
+  --thread-diff-border: 1px solid rgba(255, 255, 255, 0.09);
+  --thread-diff-border-radius: 12px;
+  --thread-diff-background: rgba(255, 255, 255, 0.025);
+  --thread-diff-font: 10.5px/1.6 var(--mono);
+  --thread-diff-h-padding: 5px 10px;
+  --thread-diff-h-background: rgba(255, 255, 255, 0.045);
+  --thread-diff-h-border-bottom: 1px solid var(--line-dim);
+  --thread-diff-h-font-size: 10.5px;
+  --thread-diff-pre-margin: 0;
+  --thread-diff-pre-padding: 6px 0;
+  --thread-diff-line-padding: 0 10px;
+  --thread-diff-added-background: #9ccc9512;
+  --thread-diff-added-color: #c3e6be;
+  --thread-diff-deleted-background: #e8807a12;
+  --thread-worked-gap: 8px;
+  --thread-worked-padding: 7px 10px;
+  --thread-worked-border: 1px dashed var(--line-mid);
+  --thread-worked-border-radius: var(--r-md);
+  --thread-worked-font-size: 11px;
+  --thread-err-card-border: 1px solid #6b3532;
+  --thread-err-card-border-radius: 12px;
+  --thread-err-card-padding: 10px 12px;
+  --thread-err-card-background: #e8807a0a;
+  --thread-err-card-ah-font-size: 11px;
+  --thread-err-card-ah-margin-bottom: 6px;
+  --thread-err-card-ah-gap: 8px;
+  --thread-err-card-pre-margin: 0 0 8px;
+  --thread-err-card-pre-font: 10.5px/1.55 var(--mono);
+  --thread-status-line-gap: 8px;
+  --thread-status-line-font-size: 10.5px;
+  --thread-status-line-padding: 2px 0 6px 4px;
+  --thread-queued-font-size: 10.5px;
+  --thread-queued-margin-top: -6px;
+  --thread-working-dots-gap: 2px;
+  --thread-working-dot-size: 3px;
+  --thread-dock-padding: 6px 22px 14px;
+  --thread-dock-composer-max-width: 720px;
+  --thread-dock-composer-margin: 0 auto;
+  --thread-slash-menu-left: 8px;
+  --thread-slash-menu-bottom: calc(100% + 6px);
+  --thread-slash-menu-width: 300px;
+  --thread-slash-menu-padding: 5px;
+  --thread-slash-menu-border: 1px solid rgba(255, 255, 255, 0.13);
+  --thread-slash-menu-border-radius: 12px;
+  --thread-slash-menu-box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.12), 0 0 0 0.5px #000,
+    0 30px 90px rgba(0, 0, 0, 0.9);
+  --thread-slash-item-width: 100%;
+  --thread-slash-item-gap: 10px;
+  --thread-slash-item-padding: 5px 8px;
+  --thread-slash-item-border-radius: 7px;
+  --thread-slash-item-font-size: 11.5px;
+  --thread-slash-item-sel-background: rgba(255, 255, 255, 0.13);
+  --thread-slash-desc-font-size: 10.5px;
+  --thread-pill-bold-font-weight: 600;
+}
