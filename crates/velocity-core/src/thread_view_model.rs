@@ -34,6 +34,16 @@ pub struct SlashCommandItem {
     feature = "bindings",
     derive(serde::Serialize, serde::Deserialize, specta::Type)
 )]
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct AgentCommandView {
+    pub name: String,
+    pub description: String,
+}
+
+#[cfg_attr(
+    feature = "bindings",
+    derive(serde::Serialize, serde::Deserialize, specta::Type)
+)]
 #[derive(Clone, Debug)]
 pub struct ModelPillView {
     pub provider: ProviderColor,
@@ -184,6 +194,7 @@ pub struct ThreadDetailSnapshot {
     pub transcript_mode: TranscriptModeView,
     pub worked_summary: Option<WorkedSummaryView>,
     pub blocks: Vec<TranscriptBlock>,
+    pub agent_commands: Vec<AgentCommandView>,
     pub composer_placeholder: String,
     pub model_pill: ModelPillView,
 }
@@ -205,6 +216,7 @@ pub struct ThreadDetailEntry {
     pub show_work: bool,
     pub worked_summary: Option<WorkedSummaryView>,
     pub blocks: Vec<TranscriptBlock>,
+    pub agent_commands: Vec<AgentCommandView>,
     pub provider: ProviderColor,
     pub model_name: String,
     pub effort_label: String,
@@ -251,10 +263,50 @@ pub fn slash_command_item(command: SlashCommand) -> SlashCommandItem {
 
 /// Projects the visible slash menu items for the current composer text.
 pub fn slash_menu_items(composer_text: &str) -> Vec<SlashCommandItem> {
-    thread_view::filter_slash_commands(parse_slash_prefix(composer_text))
-        .into_iter()
-        .map(slash_command_item)
-        .collect()
+    slash_menu_items_with_agent(composer_text, &[])
+}
+
+/// Normalizes an advertised agent command name into `/<name>`.
+fn normalize_agent_command(name: &str) -> Option<String> {
+    let trimmed = name.trim().trim_start_matches('/');
+    if trimmed.is_empty() {
+        None
+    } else {
+        Some(format!("/{trimmed}"))
+    }
+}
+
+/// Projects the visible slash menu items for the current composer text, appending the
+/// agent's advertised commands (`available_commands_update`, `SPEC.md §3.2`, `F4`) after
+/// Velocity's fixed commands when filtered by the same prefix.
+pub fn slash_menu_items_with_agent(
+    composer_text: &str,
+    agent_commands: &[AgentCommandView],
+) -> Vec<SlashCommandItem> {
+    if !composer_text.starts_with('/') || composer_text.contains(char::is_whitespace) {
+        return Vec::new();
+    }
+    let mut items: Vec<SlashCommandItem> =
+        thread_view::filter_slash_commands(parse_slash_prefix(composer_text))
+            .into_iter()
+            .map(slash_command_item)
+            .collect();
+    for command in agent_commands {
+        let Some(formatted) = normalize_agent_command(&command.name) else {
+            continue;
+        };
+        if !formatted.starts_with(composer_text) {
+            continue;
+        }
+        if items.iter().any(|existing| existing.command == formatted) {
+            continue;
+        }
+        items.push(SlashCommandItem {
+            command: formatted,
+            description: command.description.clone(),
+        });
+    }
+    items
 }
 
 /// Shortens a worktree path to match `wtChip` in `design/main-window.html`.
@@ -369,6 +421,7 @@ pub fn project_thread_detail(entry: &ThreadDetailEntry) -> ThreadDetailSnapshot 
         transcript_mode: mode,
         worked_summary: entry.worked_summary.clone(),
         blocks: entry.blocks.clone(),
+        agent_commands: entry.agent_commands.clone(),
         composer_placeholder: placeholder,
         model_pill: ModelPillView {
             provider: entry.provider,

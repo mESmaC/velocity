@@ -3900,6 +3900,7 @@ dependencies = [
  "tauri",
  "tauri-build",
  "tauri-specta",
+ "velocity-acp",
  "velocity-core",
  "velocity-store",
 ]
