@@ -257,7 +257,6 @@ impl LayoutState {
                 .iter()
                 .find(|thread| thread.policy.identifier == identifier && !thread.policy.hidden)
             && let Some(detail) = entry.detail.as_ref()
-            && !detail.agent_commands.is_empty()
         {
             return &detail.agent_commands;
         }

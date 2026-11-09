@@ -3,7 +3,8 @@ use std::path::Path;
 use tauri_specta::{Builder, Event, collect_commands, collect_events};
 use velocity_store::PersistedState;
 
-mod layout;
+pub mod layout;
+pub use layout::{apply_agent_event, record_agent_event};
 mod projects;
 mod state;
 mod window;
