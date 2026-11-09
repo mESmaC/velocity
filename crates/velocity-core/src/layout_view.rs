@@ -270,6 +270,7 @@ pub enum LayoutAction {
 #[derive(Clone, Debug)]
 pub struct LayoutSnapshot {
     pub revision: u32,
+    pub project_identifier: Option<u32>,
     pub project_name: String,
     pub view: NavigationView,
     pub settings_tab: String,
