@@ -33,7 +33,7 @@ pub use path_scheme::{
     leaf_for_job, plan_worktree_path, same_leaf_id,
 };
 pub use repository::{
-    GitError, current_branch, folder_is_occupied, initialize_repository, is_repository,
+    GitError, commit_file, current_branch, folder_is_occupied, initialize_repository, is_repository,
 };
 pub use setup::{
     SetupAction, SetupPhase, WorktreeSettings, can_start_agent, default_settings,

@@ -17,8 +17,13 @@ use std::io::Write;
 use std::path::{Path, PathBuf};
 use thiserror::Error;
 
+pub mod interview;
 mod new_project;
 
+pub use interview::{
+    InterviewDecision, InterviewOption, InterviewQuestion, InterviewRecord, InterviewStage,
+    ProofListEntry,
+};
 pub use new_project::NewProjectRecord;
 use velocity_core::state::{
     self as core_state, AgentActivity as CoreAgentActivity, AgentSettings as CoreAgentSettings,
@@ -546,6 +551,9 @@ pub struct ThreadItem {
     pub preferred_speed: SpeedMode,
     pub effective_speed: SpeedMode,
     pub model_supports_fast: bool,
+    /// Spec interview threads only (F3).
+    #[serde(default)]
+    pub interview: Option<InterviewRecord>,
 }
 
 impl ThreadItem {

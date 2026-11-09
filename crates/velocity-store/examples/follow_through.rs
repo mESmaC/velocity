@@ -95,5 +95,6 @@ fn seed_thread(repository: &str, snapshot: &PullRequestSnapshot) -> ThreadItem {
         preferred_speed: SpeedMode::Regular,
         effective_speed: SpeedMode::Regular,
         model_supports_fast: false,
+        interview: None,
     }
 }

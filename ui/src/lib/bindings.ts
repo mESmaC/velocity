@@ -186,6 +186,132 @@ export type GitHubActor = {
 	login: string,
 };
 
+/**  An answer, recorded as `key: value` (F3 Ask). */
+export type InterviewDecision = {
+	question: string,
+	key: string,
+	value: string,
+};
+
+export type InterviewDecisionView = {
+	key: string,
+	value: string,
+};
+
+export type InterviewOption = InterviewOption_Serialize | InterviewOption_Deserialize;
+
+export type InterviewOptionView = {
+	label: string,
+	detail: string,
+	recommended: boolean,
+};
+
+export type InterviewOption_Deserialize = {
+	label: string,
+	detail?: string,
+	recommended?: boolean,
+};
+
+export type InterviewOption_Serialize = {
+	label: string,
+	detail: string,
+	recommended: boolean,
+};
+
+export type InterviewPhase = "Scan" | "Ask" | "Ready" | "Locked";
+
+export type InterviewQuestion = InterviewQuestion_Serialize | InterviewQuestion_Deserialize;
+
+export type InterviewQuestionView = InterviewQuestionView_Serialize | InterviewQuestionView_Deserialize;
+
+export type InterviewQuestionView_Deserialize = {
+	number: string,
+	key: string,
+	text: string,
+	why: string,
+	options: InterviewOptionView[],
+};
+
+export type InterviewQuestionView_Serialize = {
+	number: string,
+	key: string,
+	text: string,
+	why: string,
+	options: InterviewOptionView[],
+};
+
+export type InterviewQuestion_Deserialize = {
+	key: string,
+	text: string,
+	why?: string,
+	options?: InterviewOption_Deserialize[],
+};
+
+export type InterviewQuestion_Serialize = {
+	key: string,
+	text: string,
+	why: string,
+	options: InterviewOption_Serialize[],
+};
+
+export type InterviewRecord = InterviewRecord_Serialize | InterviewRecord_Deserialize;
+
+export type InterviewRecord_Deserialize = {
+	stage: InterviewStage,
+	brief: string,
+	summary?: string,
+	/**  The question waiting for an answer, if any. */
+	question?: InterviewQuestion_Deserialize | null,
+	decisions?: InterviewDecision[],
+	proof_list?: ProofListEntry[],
+	notice?: string | null,
+};
+
+export type InterviewRecord_Serialize = {
+	stage: InterviewStage,
+	brief: string,
+	summary: string,
+	/**  The question waiting for an answer, if any. */
+	question: InterviewQuestion_Serialize | null,
+	decisions: InterviewDecision[],
+	proof_list: ProofListEntry[],
+	notice: string | null,
+};
+
+export type InterviewStage = "scan" | "ask" | "ready" | "locked";
+
+export type InterviewView = InterviewView_Serialize | InterviewView_Deserialize;
+
+export type InterviewView_Deserialize = {
+	phase: InterviewPhase,
+	brief: string,
+	summary: string,
+	/**  Shown only while the agent waits for an answer, never while it is still working. */
+	question?: InterviewQuestionView_Deserialize | null,
+	decisions: InterviewDecisionView[],
+	proof_list: ProofListEntryView[],
+	task_count: string,
+	/**  "scanning…", "Q3 · 2 decided", "ready to lock", "locked · 9 tasks". */
+	status_label: string,
+	/**  Why the last action did not go through, such as locking before SPEC.md exists. */
+	notice?: string | null,
+};
+
+export type InterviewView_Serialize = {
+	phase: InterviewPhase,
+	brief: string,
+	summary: string,
+	/**  Shown only while the agent waits for an answer, never while it is still working. */
+	question: InterviewQuestionView_Serialize | null,
+	decisions: InterviewDecisionView[],
+	proof_list: ProofListEntryView[],
+	task_count: string,
+	/**  "scanning…", "Q3 · 2 decided", "ready to lock", "locked · 9 tasks". */
+	status_label: string,
+	/**  Why the last action did not go through, such as locking before SPEC.md exists. */
+	notice: string | null,
+};
+
 export type KeyboardInput = {
 	key: string,
 	code: string,
@@ -218,17 +344,21 @@ export type LayoutIntentRequested_Serialize = {
 	intent: LayoutIntent_Serialize,
 };
 
-export type LayoutIntent_Deserialize = ({ Navigation: NavigationIntent_Deserialize }) & { AddTask?: never; DispatchIssue?: never; OpenIssue?: never; OpenPullRequest?: never; OpenTask?: never; OpenWorktreeInExplorer?: never; SettingsTab?: never; StartPrompt?: never; SteerThread?: never; SwitchProject?: never } | ({ SwitchProject: string }) & { AddTask?: never; DispatchIssue?: never; Navigation?: never; OpenIssue?: never; OpenPullRequest?: never; OpenTask?: never; OpenWorktreeInExplorer?: never; SettingsTab?: never; StartPrompt?: never; SteerThread?: never } | ({ DispatchIssue: string }) & { AddTask?: never; Navigation?: never; OpenIssue?: never; OpenPullRequest?: never; OpenTask?: never; OpenWorktreeInExplorer?: never; SettingsTab?: never; StartPrompt?: never; SteerThread?: never; SwitchProject?: never } | "SwarmIssues" | ({ OpenTask: string }) & { AddTask?: never; DispatchIssue?: never; Navigation?: never; OpenIssue?: never; OpenPullRequest?: never; OpenWorktreeInExplorer?: never; SettingsTab?: never; StartPrompt?: never; SteerThread?: never; SwitchProject?: never } | ({ OpenPullRequest: string }) & { AddTask?: never; DispatchIssue?: never; Navigation?: never; OpenIssue?: never; OpenTask?: never; OpenWorktreeInExplorer?: never; SettingsTab?: never; StartPrompt?: never; SteerThread?: never; SwitchProject?: never } | ({ OpenIssue: string }) & { AddTask?: never; DispatchIssue?: never; Navigation?: never; OpenPullRequest?: never; OpenTask?: never; OpenWorktreeInExplorer?: never; SettingsTab?: never; StartPrompt?: never; SteerThread?: never; SwitchProject?: never } | ({ OpenWorktreeInExplorer: string }) & { AddTask?: never; DispatchIssue?: never; Navigation?: never; OpenIssue?: never; OpenPullRequest?: never; OpenTask?: never; SettingsTab?: never; StartPrompt?: never; SteerThread?: never; SwitchProject?: never } | ({ SettingsTab: string }) & { AddTask?: never; DispatchIssue?: never; Navigation?: never; OpenIssue?: never; OpenPullRequest?: never; OpenTask?: never; OpenWorktreeInExplorer?: never; StartPrompt?: never; SteerThread?: never; SwitchProject?: never } | "Usage" | "Updates" | ({ StartPrompt: string }) & { AddTask?: never; DispatchIssue?: never; Navigation?: never; OpenIssue?: never; OpenPullRequest?: never; OpenTask?: never; OpenWorktreeInExplorer?: never; SettingsTab?: never; SteerThread?: never; SwitchProject?: never } | ({ SteerThread: {
+export type LayoutIntent_Deserialize = ({ Navigation: NavigationIntent_Deserialize }) & { AddTask?: never; DispatchIssue?: never; OpenIssue?: never; OpenPullRequest?: never; OpenTask?: never; OpenWorktreeInExplorer?: never; SettingsTab?: never; StartPrompt?: never; SteerThread?: never; SwitchProject?: never; ToggleProofListEntry?: never } | ({ SwitchProject: string }) & { AddTask?: never; DispatchIssue?: never; Navigation?: never; OpenIssue?: never; OpenPullRequest?: never; OpenTask?: never; OpenWorktreeInExplorer?: never; SettingsTab?: never; StartPrompt?: never; SteerThread?: never; ToggleProofListEntry?: never } | ({ DispatchIssue: string }) & { AddTask?: never; Navigation?: never; OpenIssue?: never; OpenPullRequest?: never; OpenTask?: never; OpenWorktreeInExplorer?: never; SettingsTab?: never; StartPrompt?: never; SteerThread?: never; SwitchProject?: never; ToggleProofListEntry?: never } | "SwarmIssues" | ({ OpenTask: string }) & { AddTask?: never; DispatchIssue?: never; Navigation?: never; OpenIssue?: never; OpenPullRequest?: never; OpenWorktreeInExplorer?: never; SettingsTab?: never; StartPrompt?: never; SteerThread?: never; SwitchProject?: never; ToggleProofListEntry?: never } | ({ OpenPullRequest: string }) & { AddTask?: never; DispatchIssue?: never; Navigation?: never; OpenIssue?: never; OpenTask?: never; OpenWorktreeInExplorer?: never; SettingsTab?: never; StartPrompt?: never; SteerThread?: never; SwitchProject?: never; ToggleProofListEntry?: never } | ({ OpenIssue: string }) & { AddTask?: never; DispatchIssue?: never; Navigation?: never; OpenPullRequest?: never; OpenTask?: never; OpenWorktreeInExplorer?: never; SettingsTab?: never; StartPrompt?: never; SteerThread?: never; SwitchProject?: never; ToggleProofListEntry?: never } | ({ OpenWorktreeInExplorer: string }) & { AddTask?: never; DispatchIssue?: never; Navigation?: never; OpenIssue?: never; OpenPullRequest?: never; OpenTask?: never; SettingsTab?: never; StartPrompt?: never; SteerThread?: never; SwitchProject?: never; ToggleProofListEntry?: never } | ({ SettingsTab: string }) & { AddTask?: never; DispatchIssue?: never; Navigation?: never; OpenIssue?: never; OpenPullRequest?: never; OpenTask?: never; OpenWorktreeInExplorer?: never; StartPrompt?: never; SteerThread?: never; SwitchProject?: never; ToggleProofListEntry?: never } | "Usage" | "Updates" | ({ StartPrompt: string }) & { AddTask?: never; DispatchIssue?: never; Navigation?: never; OpenIssue?: never; OpenPullRequest?: never; OpenTask?: never; OpenWorktreeInExplorer?: never; SettingsTab?: never; SteerThread?: never; SwitchProject?: never; ToggleProofListEntry?: never } | ({ SteerThread: {
 	identifier: string,
 	prompt: string,
 	queued: boolean,
-} }) & { AddTask?: never; DispatchIssue?: never; Navigation?: never; OpenIssue?: never; OpenPullRequest?: never; OpenTask?: never; OpenWorktreeInExplorer?: never; SettingsTab?: never; StartPrompt?: never; SwitchProject?: never } | ({ AddTask: string }) & { DispatchIssue?: never; Navigation?: never; OpenIssue?: never; OpenPullRequest?: never; OpenTask?: never; OpenWorktreeInExplorer?: never; SettingsTab?: never; StartPrompt?: never; SteerThread?: never; SwitchProject?: never };
+} }) & { AddTask?: never; DispatchIssue?: never; Navigation?: never; OpenIssue?: never; OpenPullRequest?: never; OpenTask?: never; OpenWorktreeInExplorer?: never; SettingsTab?: never; StartPrompt?: never; SwitchProject?: never; ToggleProofListEntry?: never } | ({ AddTask: string }) & { DispatchIssue?: never; Navigation?: never; OpenIssue?: never; OpenPullRequest?: never; OpenTask?: never; OpenWorktreeInExplorer?: never; SettingsTab?: never; StartPrompt?: never; SteerThread?: never; SwitchProject?: never; ToggleProofListEntry?: never } | 
+/**  Ready card: include or leave out one proposed proof-list entry (F3, F17). */
+({ ToggleProofListEntry: string }) & { AddTask?: never; DispatchIssue?: never; Navigation?: never; OpenIssue?: never; OpenPullRequest?: never; OpenTask?: never; OpenWorktreeInExplorer?: never; SettingsTab?: never; StartPrompt?: never; SteerThread?: never; SwitchProject?: never };
 
-export type LayoutIntent_Serialize = ({ Navigation: NavigationIntent_Serialize }) & { AddTask?: never; DispatchIssue?: never; OpenIssue?: never; OpenPullRequest?: never; OpenTask?: never; OpenWorktreeInExplorer?: never; SettingsTab?: never; StartPrompt?: never; SteerThread?: never; SwitchProject?: never } | ({ SwitchProject: string }) & { AddTask?: never; DispatchIssue?: never; Navigation?: never; OpenIssue?: never; OpenPullRequest?: never; OpenTask?: never; OpenWorktreeInExplorer?: never; SettingsTab?: never; StartPrompt?: never; SteerThread?: never } | ({ DispatchIssue: string }) & { AddTask?: never; Navigation?: never; OpenIssue?: never; OpenPullRequest?: never; OpenTask?: never; OpenWorktreeInExplorer?: never; SettingsTab?: never; StartPrompt?: never; SteerThread?: never; SwitchProject?: never } | "SwarmIssues" | ({ OpenTask: string }) & { AddTask?: never; DispatchIssue?: never; Navigation?: never; OpenIssue?: never; OpenPullRequest?: never; OpenWorktreeInExplorer?: never; SettingsTab?: never; StartPrompt?: never; SteerThread?: never; SwitchProject?: never } | ({ OpenPullRequest: string }) & { AddTask?: never; DispatchIssue?: never; Navigation?: never; OpenIssue?: never; OpenTask?: never; OpenWorktreeInExplorer?: never; SettingsTab?: never; StartPrompt?: never; SteerThread?: never; SwitchProject?: never } | ({ OpenIssue: string }) & { AddTask?: never; DispatchIssue?: never; Navigation?: never; OpenPullRequest?: never; OpenTask?: never; OpenWorktreeInExplorer?: never; SettingsTab?: never; StartPrompt?: never; SteerThread?: never; SwitchProject?: never } | ({ OpenWorktreeInExplorer: string }) & { AddTask?: never; DispatchIssue?: never; Navigation?: never; OpenIssue?: never; OpenPullRequest?: never; OpenTask?: never; SettingsTab?: never; StartPrompt?: never; SteerThread?: never; SwitchProject?: never } | ({ SettingsTab: string }) & { AddTask?: never; DispatchIssue?: never; Navigation?: never; OpenIssue?: never; OpenPullRequest?: never; OpenTask?: never; OpenWorktreeInExplorer?: never; StartPrompt?: never; SteerThread?: never; SwitchProject?: never } | "Usage" | "Updates" | ({ StartPrompt: string }) & { AddTask?: never; DispatchIssue?: never; Navigation?: never; OpenIssue?: never; OpenPullRequest?: never; OpenTask?: never; OpenWorktreeInExplorer?: never; SettingsTab?: never; SteerThread?: never; SwitchProject?: never } | ({ SteerThread: {
+export type LayoutIntent_Serialize = ({ Navigation: NavigationIntent_Serialize }) & { AddTask?: never; DispatchIssue?: never; OpenIssue?: never; OpenPullRequest?: never; OpenTask?: never; OpenWorktreeInExplorer?: never; SettingsTab?: never; StartPrompt?: never; SteerThread?: never; SwitchProject?: never; ToggleProofListEntry?: never } | ({ SwitchProject: string }) & { AddTask?: never; DispatchIssue?: never; Navigation?: never; OpenIssue?: never; OpenPullRequest?: never; OpenTask?: never; OpenWorktreeInExplorer?: never; SettingsTab?: never; StartPrompt?: never; SteerThread?: never; ToggleProofListEntry?: never } | ({ DispatchIssue: string }) & { AddTask?: never; Navigation?: never; OpenIssue?: never; OpenPullRequest?: never; OpenTask?: never; OpenWorktreeInExplorer?: never; SettingsTab?: never; StartPrompt?: never; SteerThread?: never; SwitchProject?: never; ToggleProofListEntry?: never } | "SwarmIssues" | ({ OpenTask: string }) & { AddTask?: never; DispatchIssue?: never; Navigation?: never; OpenIssue?: never; OpenPullRequest?: never; OpenWorktreeInExplorer?: never; SettingsTab?: never; StartPrompt?: never; SteerThread?: never; SwitchProject?: never; ToggleProofListEntry?: never } | ({ OpenPullRequest: string }) & { AddTask?: never; DispatchIssue?: never; Navigation?: never; OpenIssue?: never; OpenTask?: never; OpenWorktreeInExplorer?: never; SettingsTab?: never; StartPrompt?: never; SteerThread?: never; SwitchProject?: never; ToggleProofListEntry?: never } | ({ OpenIssue: string }) & { AddTask?: never; DispatchIssue?: never; Navigation?: never; OpenPullRequest?: never; OpenTask?: never; OpenWorktreeInExplorer?: never; SettingsTab?: never; StartPrompt?: never; SteerThread?: never; SwitchProject?: never; ToggleProofListEntry?: never } | ({ OpenWorktreeInExplorer: string }) & { AddTask?: never; DispatchIssue?: never; Navigation?: never; OpenIssue?: never; OpenPullRequest?: never; OpenTask?: never; SettingsTab?: never; StartPrompt?: never; SteerThread?: never; SwitchProject?: never; ToggleProofListEntry?: never } | ({ SettingsTab: string }) & { AddTask?: never; DispatchIssue?: never; Navigation?: never; OpenIssue?: never; OpenPullRequest?: never; OpenTask?: never; OpenWorktreeInExplorer?: never; StartPrompt?: never; SteerThread?: never; SwitchProject?: never; ToggleProofListEntry?: never } | "Usage" | "Updates" | ({ StartPrompt: string }) & { AddTask?: never; DispatchIssue?: never; Navigation?: never; OpenIssue?: never; OpenPullRequest?: never; OpenTask?: never; OpenWorktreeInExplorer?: never; SettingsTab?: never; SteerThread?: never; SwitchProject?: never; ToggleProofListEntry?: never } | ({ SteerThread: {
 	identifier: string,
 	prompt: string,
 	queued: boolean,
-} }) & { AddTask?: never; DispatchIssue?: never; Navigation?: never; OpenIssue?: never; OpenPullRequest?: never; OpenTask?: never; OpenWorktreeInExplorer?: never; SettingsTab?: never; StartPrompt?: never; SwitchProject?: never } | ({ AddTask: string }) & { DispatchIssue?: never; Navigation?: never; OpenIssue?: never; OpenPullRequest?: never; OpenTask?: never; OpenWorktreeInExplorer?: never; SettingsTab?: never; StartPrompt?: never; SteerThread?: never; SwitchProject?: never };
+} }) & { AddTask?: never; DispatchIssue?: never; Navigation?: never; OpenIssue?: never; OpenPullRequest?: never; OpenTask?: never; OpenWorktreeInExplorer?: never; SettingsTab?: never; StartPrompt?: never; SwitchProject?: never; ToggleProofListEntry?: never } | ({ AddTask: string }) & { DispatchIssue?: never; Navigation?: never; OpenIssue?: never; OpenPullRequest?: never; OpenTask?: never; OpenWorktreeInExplorer?: never; SettingsTab?: never; StartPrompt?: never; SteerThread?: never; SwitchProject?: never; ToggleProofListEntry?: never } | 
+/**  Ready card: include or leave out one proposed proof-list entry (F3, F17). */
+({ ToggleProofListEntry: string }) & { AddTask?: never; DispatchIssue?: never; Navigation?: never; OpenIssue?: never; OpenPullRequest?: never; OpenTask?: never; OpenWorktreeInExplorer?: never; SettingsTab?: never; StartPrompt?: never; SteerThread?: never; SwitchProject?: never };
 
 export type LayoutSnapshot = LayoutSnapshot_Serialize | LayoutSnapshot_Deserialize;
 
@@ -541,6 +671,20 @@ export type ProjectSelectionView_Deserialize = {
 export type ProjectSelectionView_Serialize = {
 	active_project: number | null,
 	menu_open: boolean,
+};
+
+/**
+ *  One feature the Ready card proposes for a Lean proof (F3, F17). You switch entries off
+ *  before locking; the ones left on are written into SPEC.md.
+ */
+export type ProofListEntry = {
+	feature: string,
+	included: boolean,
+};
+
+export type ProofListEntryView = {
+	feature: string,
+	included: boolean,
 };
 
 export type ProofSettings = {
@@ -1055,6 +1199,8 @@ export type ThreadDetailSnapshot_Deserialize = {
 	agent_commands: AgentCommandView[],
 	composer_placeholder: string,
 	model_pill: ModelPillView,
+	/**  Present on spec interview threads (F3). */
+	interview?: InterviewView_Deserialize | null,
 };
 
 export type ThreadDetailSnapshot_Serialize = {
@@ -1082,6 +1228,8 @@ export type ThreadDetailSnapshot_Serialize = {
 	agent_commands: AgentCommandView[],
 	composer_placeholder: string,
 	model_pill: ModelPillView,
+	/**  Present on spec interview threads (F3). */
+	interview: InterviewView_Serialize | null,
 };
 
 export type ThreadGroup = "Draft" | "Duty" | "Swarm" | "Spec" | "Working" | "Review" | "Error" | "Closed" | "Done" | "Merged";
@@ -1109,6 +1257,8 @@ export type ThreadItem_Deserialize = {
 	preferred_speed: SpeedMode,
 	effective_speed: SpeedMode,
 	model_supports_fast: boolean,
+	/**  Spec interview threads only (F3). */
+	interview?: InterviewRecord_Deserialize | null,
 };
 
 export type ThreadItem_Serialize = {
@@ -1132,6 +1282,8 @@ export type ThreadItem_Serialize = {
 	preferred_speed: SpeedMode,
 	effective_speed: SpeedMode,
 	model_supports_fast: boolean,
+	/**  Spec interview threads only (F3). */
+	interview: InterviewRecord_Serialize | null,
 };
 
 export type ThreadState = "draft" | "spec" | "working" | "review" | "error" | "closed" | "done" | "merged";
@@ -1148,34 +1300,46 @@ export type TranscriptBlock = TranscriptBlock_Serialize | TranscriptBlock_Deseri
 export type TranscriptBlock_Deserialize = ({ UserMessage: {
 	text: string,
 	queued: boolean,
-} }) & { AgentMessage?: never; Diff?: never; ErrorCard?: never; StatusLine?: never; ToolGroup?: never } | ({ AgentMessage: {
+} }) & { AgentMessage?: never; Decision?: never; Diff?: never; ErrorCard?: never; StatusLine?: never; ToolGroup?: never } | ({ AgentMessage: {
 	paragraphs: string[],
-} }) & { Diff?: never; ErrorCard?: never; StatusLine?: never; ToolGroup?: never; UserMessage?: never } | ({ ToolGroup: {
+} }) & { Decision?: never; Diff?: never; ErrorCard?: never; StatusLine?: never; ToolGroup?: never; UserMessage?: never } | ({ ToolGroup: {
 	steps: ToolStepRow[],
-} }) & { AgentMessage?: never; Diff?: never; ErrorCard?: never; StatusLine?: never; UserMessage?: never } | ({ Diff: {
+} }) & { AgentMessage?: never; Decision?: never; Diff?: never; ErrorCard?: never; StatusLine?: never; UserMessage?: never } | ({ Diff: {
 	block: DiffBlockView_Deserialize,
-} }) & { AgentMessage?: never; ErrorCard?: never; StatusLine?: never; ToolGroup?: never; UserMessage?: never } | ({ StatusLine: {
+} }) & { AgentMessage?: never; Decision?: never; ErrorCard?: never; StatusLine?: never; ToolGroup?: never; UserMessage?: never } | ({ StatusLine: {
 	running: boolean,
 	text: string,
-} }) & { AgentMessage?: never; Diff?: never; ErrorCard?: never; ToolGroup?: never; UserMessage?: never } | ({ ErrorCard: {
+} }) & { AgentMessage?: never; Decision?: never; Diff?: never; ErrorCard?: never; ToolGroup?: never; UserMessage?: never } | ({ ErrorCard: {
 	card: ErrorCardView,
-} }) & { AgentMessage?: never; Diff?: never; StatusLine?: never; ToolGroup?: never; UserMessage?: never };
+} }) & { AgentMessage?: never; Decision?: never; Diff?: never; StatusLine?: never; ToolGroup?: never; UserMessage?: never } | 
+/**  A spec interview answer recorded as a decision (F3). */
+({ Decision: {
+	question: string,
+	key: string,
+	value: string,
+} }) & { AgentMessage?: never; Diff?: never; ErrorCard?: never; StatusLine?: never; ToolGroup?: never; UserMessage?: never };
 
 export type TranscriptBlock_Serialize = ({ UserMessage: {
 	text: string,
 	queued: boolean,
-} }) & { AgentMessage?: never; Diff?: never; ErrorCard?: never; StatusLine?: never; ToolGroup?: never } | ({ AgentMessage: {
+} }) & { AgentMessage?: never; Decision?: never; Diff?: never; ErrorCard?: never; StatusLine?: never; ToolGroup?: never } | ({ AgentMessage: {
 	paragraphs: string[],
-} }) & { Diff?: never; ErrorCard?: never; StatusLine?: never; ToolGroup?: never; UserMessage?: never } | ({ ToolGroup: {
+} }) & { Decision?: never; Diff?: never; ErrorCard?: never; StatusLine?: never; ToolGroup?: never; UserMessage?: never } | ({ ToolGroup: {
 	steps: ToolStepRow[],
-} }) & { AgentMessage?: never; Diff?: never; ErrorCard?: never; StatusLine?: never; UserMessage?: never } | ({ Diff: {
+} }) & { AgentMessage?: never; Decision?: never; Diff?: never; ErrorCard?: never; StatusLine?: never; UserMessage?: never } | ({ Diff: {
 	block: DiffBlockView_Serialize,
-} }) & { AgentMessage?: never; ErrorCard?: never; StatusLine?: never; ToolGroup?: never; UserMessage?: never } | ({ StatusLine: {
+} }) & { AgentMessage?: never; Decision?: never; ErrorCard?: never; StatusLine?: never; ToolGroup?: never; UserMessage?: never } | ({ StatusLine: {
 	running: boolean,
 	text: string,
-} }) & { AgentMessage?: never; Diff?: never; ErrorCard?: never; ToolGroup?: never; UserMessage?: never } | ({ ErrorCard: {
+} }) & { AgentMessage?: never; Decision?: never; Diff?: never; ErrorCard?: never; ToolGroup?: never; UserMessage?: never } | ({ ErrorCard: {
 	card: ErrorCardView,
-} }) & { AgentMessage?: never; Diff?: never; StatusLine?: never; ToolGroup?: never; UserMessage?: never };
+} }) & { AgentMessage?: never; Decision?: never; Diff?: never; StatusLine?: never; ToolGroup?: never; UserMessage?: never } | 
+/**  A spec interview answer recorded as a decision (F3). */
+({ Decision: {
+	question: string,
+	key: string,
+	value: string,
+} }) & { AgentMessage?: never; Diff?: never; ErrorCard?: never; StatusLine?: never; ToolGroup?: never; UserMessage?: never };
 
 export type TranscriptModeView = "FullTranscript" | "CollapsedWithPrHistory" | "ExpandedWithPrHistory";
 
