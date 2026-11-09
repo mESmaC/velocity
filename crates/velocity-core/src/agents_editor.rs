@@ -143,13 +143,12 @@ impl AgentsEditor {
                 Edit { identifier, text } => {
                     if let Some(line) = self.lines.iter_mut().find(|line| {
                         line.identifier == identifier && line.kind != OutlineKind::Source
-                    }) {
-                        if line.text != text {
-                            line.replace(text);
-                            self.revision += 1;
-                            if let Some(record) = self.rewrites.get_mut(&identifier) {
-                                record.pending = None;
-                            }
+                    }) && line.text != text
+                    {
+                        line.replace(text);
+                        self.revision += 1;
+                        if let Some(record) = self.rewrites.get_mut(&identifier) {
+                            record.pending = None;
                         }
                     }
                     None
