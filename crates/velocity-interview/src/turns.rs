@@ -42,12 +42,7 @@ pub struct InterviewDefaults {
 /// Returns the new thread's identifier, or `None` when nothing was pending.
 pub fn start_from_pending(project: &mut ProjectItem, defaults: &InterviewDefaults) -> Option<u32> {
     let pending = project.pending_interview.take()?;
-    let identifier = project
-        .threads
-        .iter()
-        .map(|thread| thread.id)
-        .max()
-        .map_or(1, |highest| highest.saturating_add(1));
+    let identifier = project.allocate_thread_id();
     let thread = spec_thread(identifier, &project.default_branch, pending, defaults);
     project.threads.push(thread.normalize());
     project.active_thread_id = Some(identifier);

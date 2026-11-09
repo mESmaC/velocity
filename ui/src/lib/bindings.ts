@@ -568,6 +568,14 @@ export type ProjectItem_Deserialize = {
 	threads: ThreadItem_Deserialize[],
 	/**  The spec interview Create asked for and nothing has started yet (F2, F3). */
 	pending_interview?: PendingInterview_Deserialize | null,
+	/**
+	 *  The next thread identifier to hand out. Identifiers are never reused, even after a
+	 *  thread is deleted (F12), so work still running for a deleted thread (worktree setup,
+	 *  agent events, PR watching) finds its key gone instead of landing on a new thread that
+	 *  took the same number (#65). State saved before #65 has none; the highest saved
+	 *  identifier is used then.
+	 */
+	next_thread_id?: number,
 };
 
 export type ProjectItem_Serialize = {
@@ -585,6 +593,14 @@ export type ProjectItem_Serialize = {
 	threads: ThreadItem_Serialize[],
 	/**  The spec interview Create asked for and nothing has started yet (F2, F3). */
 	pending_interview: PendingInterview_Serialize | null,
+	/**
+	 *  The next thread identifier to hand out. Identifiers are never reused, even after a
+	 *  thread is deleted (F12), so work still running for a deleted thread (worktree setup,
+	 *  agent events, PR watching) finds its key gone instead of landing on a new thread that
+	 *  took the same number (#65). State saved before #65 has none; the highest saved
+	 *  identifier is used then.
+	 */
+	next_thread_id: number,
 };
 
 export type ProjectLabel = "local" | "github" | "speccing";

@@ -634,6 +634,13 @@ pub struct ProjectItem {
     /// The spec interview Create asked for and nothing has started yet (F2, F3).
     #[serde(default)]
     pub pending_interview: Option<PendingInterview>,
+    /// The next thread identifier to hand out. Identifiers are never reused, even after a
+    /// thread is deleted (F12), so work still running for a deleted thread (worktree setup,
+    /// agent events, PR watching) finds its key gone instead of landing on a new thread that
+    /// took the same number (#65). State saved before #65 has none; the highest saved
+    /// identifier is used then.
+    #[serde(default)]
+    pub next_thread_id: u32,
 }
 
 /// The New project dialog's interview choices, kept until the spec interview
@@ -648,6 +655,20 @@ pub struct PendingInterview {
 }
 
 impl ProjectItem {
+    /// An identifier no thread of this project has had (#65). Every new thread takes its
+    /// identifier from here.
+    pub fn allocate_thread_id(&mut self) -> u32 {
+        let after_saved = self
+            .threads
+            .iter()
+            .map(|thread| thread.id)
+            .max()
+            .map_or(1, |highest| highest.saturating_add(1));
+        let identifier = self.next_thread_id.max(after_saved);
+        self.next_thread_id = identifier.saturating_add(1);
+        identifier
+    }
+
     pub fn normalize(mut self) -> Self {
         let spec_locked = self.spec_locked;
         self.tasks = self

@@ -49,12 +49,7 @@ impl StateStore {
             .iter_mut()
             .find(|item| item.id == project)
             .ok_or(ThreadError::UnknownProject(project))?;
-        let identifier = item
-            .threads
-            .iter()
-            .map(|existing| existing.id)
-            .max()
-            .map_or(1, |highest| highest.saturating_add(1));
+        let identifier = item.allocate_thread_id();
         let record = ThreadItem {
             id: identifier,
             title: thread.title,
