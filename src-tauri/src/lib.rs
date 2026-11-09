@@ -3,11 +3,13 @@ use std::path::Path;
 use tauri_specta::{Builder, Event, collect_commands, collect_events};
 use velocity_store::PersistedState;
 
+mod build_gate;
 pub mod layout;
-pub use layout::{apply_agent_event, record_agent_event};
 mod projects;
 mod state;
 mod window;
+
+pub use layout::{apply_agent_event, record_agent_event};
 
 fn bindings() -> Builder<tauri::Wry> {
     // Export event payloads/names without the generator's `any`-typed helpers;
@@ -24,6 +26,7 @@ fn bindings() -> Builder<tauri::Wry> {
             layout::dispatch_layout,
             projects::list_projects,
             projects::switch_project,
+            build_gate::get_launch_eligibility,
         ])
         .typ::<PersistedState>()
         .typ::<window::WindowStateChanged>()

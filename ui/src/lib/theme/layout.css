@@ -309,21 +309,6 @@ kbd {
   border-color: var(--layout-thread-active-data-status-swarm-border-color);
   background: var(--layout-thread-active-data-status-swarm-background);
 }
-.swarm-toggle {
-  position: absolute;
-  right: var(--layout-swarm-toggle-right);
-  top: var(--layout-swarm-toggle-top);
-  width: var(--layout-swarm-toggle-width);
-  height: var(--layout-swarm-toggle-height);
-  display: grid;
-  place-items: center;
-  color: var(--muted);
-}
-.thread-wrap:has(.swarm-toggle) .thread {
-  padding-right: var(
-    --layout-thread-wrap-has-swarm-toggle-thread-padding-right
-  );
-}
 .duty-empty {
   display: flex;
   align-items: center;

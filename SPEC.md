@@ -109,9 +109,10 @@ A thread's state (§2.1) says where it is in its lifecycle. Its **activity** say
 | Kind | Name | Purpose |
 |---|---|---|
 | command | `get_window_state`, `minimize_window`, `toggle_maximize_window`, `close_window` | native main-window state and custom title-bar controls |
-| command | `get_layout_state`, `dispatch_layout { action }` | backend-owned main-window projection, search, palette selection, Alt hints, contextual keyboard dispatch and navigation requests |
+| command | `get_layout_state`, `dispatch_layout { action }` | backend-owned main-window projection, search, palette selection, Alt hints, contextual keyboard dispatch and navigation requests. Build intents are gated from the persisted active project's spec lock before publication; snapshots carry launch eligibility, rejection notices and draft-task hints. |
 | command | `list_projects`, `create_project`, `switch_project` | projects |
 | command | `list_threads`, `start_thread`, `send_message`, `delete_thread` | threads |
+| command | `get_launch_eligibility { request }` | UI eligibility for the active project, read from the backend state. No project/lock flag is accepted from the frontend. Launch handlers check the guard afresh before worktree or agent effects (Rule 2, F3). |
 | command | `start_duty`, `pause_duty`, `add_duty_agents` | duty agents |
 | command | `launch_swarm`, `add_to_swarm` | swarm |
 | command | `launch_goal_swarm { prompt, mix: [{ model, effort, speed, count }], keep_going }`, `add_goal_agents` | goal swarm |
@@ -391,25 +392,32 @@ When the task is done, the agent opens a PR. The PR description links the Task L
   - the fix steps (edit, prove, push, reply) and "re-requested review"
   - approval, then a merged card
 - **Agent behaviour:**
-  - If CI fails, fix and push.
+  - If the local checks or CI fail on its own change, fix and push.
   - Answer every review comment: either fix and push, or reply with the reason. Then resolve the thread and re-request review.
   - If the PR is closed without merging, report why in the thread.
 - **Status line:** "watching PR #n · <stage> · answers new comments as they arrive", or "addressing N open review comment(s)".
-- **Sidebar meta:** `#n` plus the stage label in the stage colour: waiting on CI / in review / addressing review / approved · merging.
+- **Sidebar meta:** `#n` plus the stage label in the stage colour: checking / in review / addressing review / approved · merging.
 
 **Landing and rebases** (from Anthropic's Scion):
-- **No global merge queue or lock.** PR duty merges a PR as soon as it is approved and green, without waiting its turn behind other PRs.
+- **No global merge queue or lock.** PR duty merges a PR as soon as it is approved and its local checks pass (F7), without waiting its turn behind other PRs.
 - **Targeted rebases.** When a PR merges, Velocity compares the merged change's files with each open agent's claimed files and edited files (§3.2).
   - Only agents with an overlap rebase straight away; each gets a `rebased` event.
   - Every other agent rebases once, at landing time, instead of after every merge.
-- **Landing on a moved `master`.** PR duty updates the branch onto `master` just before merging.
-  - **No overlapping files:** if it applies cleanly and none of its files changed on `master` since CI ran, PR duty merges.
-  - **Overlapping files, clean apply:** if files changed on `master` but the update applies cleanly, CI runs again first.
-  - **Conflict:** the PR goes straight back to its own agent, with a `conflict` event naming the files. The agent resolves the conflict and pushes, then PR duty re-checks only the changed hunks and merges. A conflict is never routed through you.
+- **PR duty updates branches.** PR duty agents are allowed, and encouraged, to update any open PR's branch with `master`. They don't wait for the authoring agent to rebase.
+  - **When:** whenever a PR they are reviewing or about to merge is behind `master`, and again just before merging.
+  - **How:** a merge of `master` into the PR branch (`gh pr update-branch`, or a merge commit pushed to the branch). PR duty never force-pushes and never rewrites the author's commits, so the author's history and open review threads stay intact. Each update posts an `updated` event naming the PR and the new head.
+  - **Why:** waiting for each author to notice and rebase was the main source of landing delays. The author may be busy, rate-limited or paused, and every merge to `master` restarted the wait.
+  - **The author** gets the `updated` event in its thread and pulls before it pushes again, so its next push builds on PR duty's update instead of being rejected.
+- **Landing on a moved `master`.** PR duty updates the branch with `master` just before merging, then runs the checks on the merge result, not on the old PR head.
+  - **No overlapping files:** if it applies cleanly and none of its files changed on `master` since the checks ran, PR duty merges.
+  - **Overlapping files, clean apply:** if files changed on `master` but the update applies cleanly, the checks run again first.
+  - **Conflict PR duty can resolve:** when both sides are clear and the resolution keeps both changes as written (imports, lists, neighbouring hunks, lockfiles regenerated), PR duty resolves it in its review worktree, pushes the merge commit and re-runs the checks.
+  - **Conflict that needs the author:** when resolving would mean choosing between two behaviours, the PR goes straight back to its own agent, with a `conflict` event naming the files. The agent resolves the conflict and pushes, then PR duty re-checks only the changed hunks and merges. A conflict is never routed through you.
 - **Merge order** (`order` events, F7) is set only for PRs that overlap each other. Unrelated PRs never wait on each other.
 
 **Accept when:**
 - [ ] A merge rebases only the open agents whose claimed or edited files it touched.
+- [ ] A PR that falls behind `master` is updated by PR duty without waiting for its author, and the author's commits are never rewritten.
 - [ ] A conflict at landing reaches the owning agent within one event cycle and is resolved without user input.
 - [ ] A comment from a PR duty agent reaches the authoring thread automatically and is acted on without user input.
 - [ ] The thread is not finished until `pr://merged`.
@@ -427,14 +435,19 @@ Long-running roles. They appear under **On duty**, with an agent count (×N) and
 
 **PR duty:**
 - Claims unclaimed PRs, one PR per agent, so two agents never review the same one.
-- Waits for CI, reviews the diff against SPEC.md and the Task List, leaves inline comments, requests changes or approves, then merges.
+- Runs the local checks, reviews the diff against SPEC.md and the Task List, leaves inline comments, requests changes or approves, then merges.
+- **Local checks decide, not GitHub CI.** PR duty runs the project's checks in its review worktree, on the PR merged onto the current `master`: format, build with locked dependencies, lint with zero warnings, the UI checks, and `lake build` with the axiom audit when `proofs/` changes (the commands come from AGENTS.md). When they pass, the PR can merge.
+  - GitHub CI is advisory. A pending, red or stale run never holds up a PR whose local checks pass.
+  - **Why:** a merge queue stalled for an hour on CI that was red only because `master` had been broken. GitHub CI also costs money per run.
+  - Testing the merge result, not the PR head, also catches a PR that broke only after another PR merged.
 - **Rules:**
   - **Never merge without an approving review** (locked).
   - **Never merge unless the proofs check** (F17; locked).
   - Review every theorem statement against the claim and SPEC.md.
-  - CI green before merge.
+  - Local checks pass on the merge result before merge (locked). GitHub CI never blocks.
   - Check against SPEC.md.
-  - Re-review on new commits.
+  - Re-review on new commits. A merge commit PR duty pushed to update the branch is not a new commit to review; only its conflict resolutions are.
+  - Update branches with `master` (F6): allowed and encouraged, never by force-push.
   - Delete the branch after merge.
   - Merge method: Squash / Rebase / Merge commit.
 - Each review runs in its own worktree (F5).
@@ -445,7 +458,7 @@ Long-running roles. They appear under **On duty**, with an agent count (×N) and
   - Is the cost model honest, and is the class of alternatives the one that matters?
 - **PR duty writes tests too.** When a reviewer doubts a claim a proof doesn't cover, it writes a stress script, runs it, and attaches the result to its comment.
 - **Tiered review** *(proposed)*. Velocity tiers each PR from its diff:
-  - **Trivial:** docs, comments or formatting. No proof needed. Approved once CI is green and the change matches its claim.
+  - **Trivial:** docs, comments or formatting. No proof needed. Approved once the local checks pass and the change matches its claim.
   - **Normal:** everything else. Full review.
   - **Sensitive:** touches any path listed under "Sensitive paths" in AGENTS.md (e.g. migrations, worktree deletion, CI config, auth). Full review, plus the full stress suite before merge, plus a confidence proof at the strongest level the language allows (F17).
 
@@ -644,7 +657,8 @@ One IRC-style channel per project, `#<project>`, shared by every agent in it: th
 | `swarm` | a swarm or goal swarm starts | you |
 | `left` | an agent leaves without a PR (e.g. nothing left to claim) | agent runner |
 | `rebased` | a merge touched an agent's files and it rebased (F6) | Velocity |
-| `conflict` | a PR's update onto `master` conflicts at landing; names the files and the owning agent (F6) | PR duty |
+| `updated` | PR duty merged `master` into a PR's branch; names the PR and its new head (F6) | PR duty |
+| `conflict` | a PR's update onto `master` conflicts in a way only its author can resolve; names the files and the owning agent (F6) | PR duty |
 | `stalled` · `at limit` · `released` | activity changes and claim release (§2.2) | Velocity |
 | `broken` · `reverted` | `master` broke after a merge, and its fix or revert (F7) | Main watcher |
 | `proved` | a design or confidence proof checks, with its level per language (F17) | Velocity |
@@ -889,7 +903,7 @@ theorem optimal : ∀ strat ∈ RebaseStrategies,
 
 **Where it runs:**
 - Proofs and stress scripts run locally, in each agent's worktree, on the machine that already runs the agents.
-- GitHub CI runs build and lint only.
+- GitHub CI runs build and lint only, and is advisory: it never blocks a merge (F7).
 - Tests and stress scripts live in `stress/` (and the project's own test folder). Scouts run them on every sweep and the main watcher runs them after every merge. They never run in per-PR GitHub CI.
 
 **Proof card** (in the PR history, F6):
@@ -907,6 +921,7 @@ theorem optimal : ∀ strat ∈ RebaseStrategies,
 - [ ] Every issue a scout files carries a failing test or stress script.
 - [ ] The proof card shows each language's level, and a model-only level is flagged when a stronger one exists.
 - [ ] Per-PR GitHub CI runs only build and lint.
+- [ ] A PR whose local checks pass on the merge result merges while its GitHub CI run is still pending or red.
 
 ### F18 · Skills
 
@@ -1050,7 +1065,7 @@ Each milestone ends with a working app. Check items off as their PRs merge.
 - [x] Project store and switcher (F1)
 - [ ] New-project dialog: local (git init) and GitHub (new/existing, visibility, clone) (F2)
 - [ ] Spec interview: scan, ask, ready, lock; SPEC.md written and committed; draft → published tasks (F3)
-- [ ] Gate: no build work on unlocked projects (Rule 2)
+- [x] Gate: no build work on unlocked projects (Rule 2)
 
 **M3 · Threads and worktrees**
 - [x] Agent runner: providers, models, effort, speed (Regular / Fast where the agent offers it), full permissions, queued steering (Rule 1, F4, F15)
@@ -1151,7 +1166,7 @@ Each milestone ends with a working app. Check items off as their PRs merge.
 | Q18 | Should "keep going" be on by default? Built: off, which matches the prompt you use today (stop after the merge). | F16 |
 | Q19 | Should Velocity also accept any other ACP agent (a custom command and arguments, as Zed allows), or only the four providers? | F15, §3.2 |
 | Q20 | Defaults for the stall timeout (5 min) and the claim-release grace period (10 min)? Should a failed agent's pushed branch be offered to whoever claims the piece next? | §2.2 |
-| Q21 | Decided: pre-merge GitHub CI is build and lint, proofs are checked locally before merge, and tests and stress scripts run after the merge (F17). | F7, F17 |
+| Q21 | Decided: pre-merge GitHub CI is build and lint and only advisory, the local checks on the merge result decide the merge (F7), proofs are checked locally before merge, and tests and stress scripts run after the merge (F17). | F7, F17 |
 | Q22 | Name for the "Main watcher" duty role. | F7 |
 | Q23 | Which code-level translators should ship besides Aeneas for Rust (C, C++, Python and others)? Until one exists for a language, that language tops out at the reference level. | F17 |
 | Q24 | Should the spec interview write design proofs for SPEC.md sections up front, or leave every design proof to the agent that builds the feature (as specified)? | F3, F17 |

@@ -128,17 +128,18 @@ Velocity's AIRC (F14) replaces this section once M8 merges. Until then, claims a
 - Every agent works in its own git worktree under `X:\velocity-wt\`. Create it from the latest `master`: `git fetch origin` then `git worktree add X:\velocity-wt\<slug> -b vel/<slug> origin/master`.
 - Branch name: `vel/<slug>`, where the slug is a short name for the piece.
 - After your PR merges, remove your worktree (`git worktree remove X:\velocity-wt\<slug>`) and delete your local branch.
-- Never touch another agent's worktree or branch. Never run `git worktree prune`.
+- Never touch another agent's worktree or branch. Never run `git worktree prune`. The one exception: PR duty agents update PR branches with `master` (see If you are on PR duty).
 
 ## Pull requests
 - One piece, one branch, one PR, against `master`.
 - PR description: what changed, why, the theorems you proved, and the piece it completes (§7 item, `Fixes #n`, or SPEC section).
 - Tick the §7 checkbox for your item in the same PR.
 - Opening the PR does not finish the task. Monitor the PR until it is merged:
-  - If CI fails, fix it and push.
+  - If the local checks or CI fail on your change, fix it and push.
   - Address every comment PR duty agents leave: fix it and push, or reply with the reason you didn't. Resolve the thread.
   - After pushing fixes, re-request review.
-  - If `master` moves and your PR conflicts, rebase onto `master`, resolve the conflict and push with `--force-with-lease`. Your own branch only.
+  - PR duty agents may update your branch with `master` at any time. Pull before you push again (`git pull --no-rebase`).
+  - If `master` moves and your PR conflicts, merge `master` into your branch, resolve the conflict and push. Never force-push a branch PR duty may have updated.
 - If the PR is closed without merging, report why in your thread and keep your worktree.
 
 ## If you are on PR duty
@@ -148,7 +149,14 @@ Velocity's AIRC (F14) replaces this section once M8 merges. Until then, claims a
 - Review every theorem statement: does it say what the SPEC section says, do its hypotheses exclude real inputs, is the cost model honest, and is the class of alternatives the one that matters? Lean already checked the proofs.
 - When you doubt a claim no proof covers, write a stress script in `stress/`, run it, and attach the result to your comment.
 - Request changes on a PR whose proofs, tests and docs together outweigh its implementation, or that adds tests outside the critical contracts in Tests and docs.
-- Approve only when CI is green, `lake build` passes, and the axiom check above holds.
+- Approve only when the local checks pass on the PR merged onto the current `master`, in your review worktree: `cargo fmt --all --check`, `cargo build --workspace --locked`, clippy, `pnpm -C ui check`, `pnpm -C ui lint`, `pnpm -C ui build`, and, when `proofs/` changes, `lake build` with the axiom check above.
+- GitHub CI never holds up a PR. A pending, red or stale run doesn't block a merge when the local checks pass on the merge result.
+- After another PR merges, run the checks again on the new merge result before you merge the next one.
+- Update PR branches with `master`. You are allowed and encouraged to, so PRs never wait on their author to rebase:
+  - Whenever a PR you review or are about to merge is behind `master`, run `gh pr update-branch <n>`, or merge `master` into it in your review worktree and push.
+  - Resolve a conflict yourself when the resolution keeps both changes as written. When it means choosing between two behaviours, send it back to the author.
+  - Never force-push, and never rewrite the author's commits.
+  - Run the checks on the updated branch, not the old PR head.
 - Never merge without an approving review. Merge with squash and delete the branch.
 
 ## If you are a scout
@@ -160,7 +168,7 @@ Velocity's AIRC (F14) replaces this section once M8 merges. Until then, claims a
 
 ## Done means
 - The piece is built exactly as SPEC.md describes it and behaves like the reference UI. You ran it and saw it work.
-- The proofs check, clippy, `pnpm -C ui check` and `pnpm -C ui lint` report zero warnings, and CI is green.
+- The proofs check, clippy, `pnpm -C ui check` and `pnpm -C ui lint` report zero warnings on the merge result.
 - The PR is merged and your worktree is removed.
 
 ## Never
