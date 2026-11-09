@@ -22,6 +22,8 @@ export type {
   EffortLevel,
   ErrorCardView,
   ModelPillView,
+  LaunchEligibility,
+  LaunchRequest,
   PersistedState,
   ProjectItem,
   ProjectLocationKind,
@@ -101,6 +103,10 @@ export const worktreeCommands = {
 export const onWorktreeInventory = (
   callback: EventCallback<WorktreeInventoryChanged_Serialize>,
 ) => listen(WORKTREE_INVENTORY_EVENT, callback);
+
+export const launchCommands = {
+  getEligibility: commands.getLaunchEligibility,
+};
 
 export const onWindowState = (callback: EventCallback<WindowStateChanged>) =>
   listen(WINDOW_STATE_EVENT, callback);

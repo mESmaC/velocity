@@ -6,6 +6,8 @@
 //! This crate owns atomic filesystem reads/writes, corrupt-snapshot quarantine,
 //! and serde/specta serialization.
 
+pub mod build_gate;
+
 use serde::{Deserialize, Serialize};
 use specta::Type;
 use std::collections::BTreeMap;
