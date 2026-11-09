@@ -11,8 +11,8 @@ use agent_client_protocol::v1::schema::ContentBlock;
 use thiserror::Error;
 use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender, unbounded_channel};
 use tokio::sync::oneshot;
-use velocity_acp::available_commands;
 use velocity_acp::client::{AgentEvent, AgentInput, AgentLaunch, SessionSetup, run_session};
+use velocity_acp::{Steering, SteeringEffect, SteeringInput, available_commands};
 use velocity_core::thread_view_model::{AgentCommandView, LiveThreadView};
 use velocity_store::AgentActivity;
 
@@ -44,8 +44,10 @@ pub struct ThreadProgress {
 struct ThreadRuntime {
     transcript: LiveTranscript,
     inputs: UnboundedSender<AgentInput>,
-    /// Mirrors the client's steering: a turn is running, so new messages queue (Rule 1).
-    busy: bool,
+    /// Mirrors the client's steering (Rule 1): whether a turn is running, and which
+    /// messages wait for it to end. The client sees the same sends and turn ends, so the
+    /// mirror knows exactly which queued messages each prompt carries.
+    steering: Steering<String, ()>,
     log_tail: VecDeque<String>,
     agent_commands: Option<Vec<AgentCommandView>>,
 }
@@ -68,12 +70,15 @@ impl ThreadRuntimes {
         let (inputs, receiver) = unbounded_channel();
         // The receiver is alive: it is returned below.
         let _ = inputs.send(text_input(prompt));
+        let mut steering = Steering::new(());
+        // An idle client prompts the first message at once, so it is never queued.
+        steering.step(SteeringInput::Send(prompt.to_owned()));
         self.threads.insert(
             key,
             ThreadRuntime {
                 transcript: LiveTranscript::new(worktree),
                 inputs,
-                busy: true,
+                steering,
                 log_tail: VecDeque::new(),
                 agent_commands: None,
             },
@@ -88,10 +93,10 @@ impl ThreadRuntimes {
             .inputs
             .send(text_input(prompt))
             .map_err(|_| SteerError::NoSession)?;
-        if thread.busy {
+        if let SteeringEffect::Queued = thread.steering.step(SteeringInput::Send(prompt.to_owned()))
+        {
             thread.transcript.queue(prompt);
         }
-        thread.busy = true;
         Ok(())
     }
 
@@ -110,7 +115,8 @@ impl ThreadRuntimes {
                 text.push_str(&Vec::from(thread.log_tail.clone()).join("\n"));
             }
             thread.transcript.record_error(headline, &text);
-            thread.busy = false;
+            // The session is over: nothing runs and nothing queued will be sent.
+            thread.steering = Steering::new(());
         }
     }
 
@@ -140,7 +146,12 @@ impl ThreadRuntimes {
                         .transcript
                         .record_error("The agent's turn failed", error);
                 }
-                thread.busy = thread.transcript.has_queued();
+                // The client emits the turn end before it prompts what was queued, so the
+                // queued rows leave just before the prompt's own message arrives.
+                if let SteeringEffect::Prompt(sent) = thread.steering.step(SteeringInput::TurnEnded)
+                {
+                    thread.transcript.sent_queued(sent.len());
+                }
             }
             AgentEvent::Log(line) => {
                 thread.log_tail.push_back(line.clone());
@@ -167,7 +178,7 @@ impl ThreadRuntimes {
 
 fn progress(thread: &ThreadRuntime) -> ThreadProgress {
     // A turn that ended leaves no tool running, whatever status its calls last reported.
-    let activity = if !thread.busy {
+    let activity = if !thread.steering.is_busy() {
         AgentActivity::Idle
     } else if thread.transcript.has_running_tool() {
         AgentActivity::Executing

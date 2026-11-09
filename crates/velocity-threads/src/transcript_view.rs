@@ -4,7 +4,7 @@
 //! ([`Placement`]). This mirrors those entries and folds them into the thread view's blocks:
 //! messages, tool steps (consecutive calls share one group, as in the reference) and the
 //! diffs an edit carries. The worktree step comes first (F5), and messages sent while the
-//! agent is busy show as queued until the agent's next prompt carries them (Rule 1).
+//! agent is busy show as queued until a prompt carries them (Rule 1).
 
 use std::path::Path;
 
@@ -88,10 +88,6 @@ impl LiveTranscript {
             Placement::Added(_) => {
                 // The client adds entries in order, so the next ACP index is the next one here.
                 let entry = new_entry(update, &self.worktree);
-                if matches!(entry, EntryView::User(_)) {
-                    // The queued messages went out as this prompt.
-                    self.queued.clear();
-                }
                 self.acp_entries.push(self.entries.len());
                 self.entries.push(entry);
             }
@@ -107,9 +103,10 @@ impl LiveTranscript {
         }
     }
 
-    /// Messages still waiting: when a turn ends, the client prompts them at once.
-    pub fn has_queued(&self) -> bool {
-        !self.queued.is_empty()
+    /// The oldest `count` queued messages went out as the agent's next prompt. Only those
+    /// leave the queue: a message queued after them still waits for the following turn.
+    pub fn sent_queued(&mut self, count: usize) {
+        self.queued.drain(..count.min(self.queued.len()));
     }
 
     /// Whether a tool call is pending or running: activity `executing` (§2.2).
