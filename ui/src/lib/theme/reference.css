@@ -138,6 +138,16 @@
   --worktrees-gone-decoration-color: #777;
   --worktrees-transparent: transparent;
   --worktrees-none: none;
+  /* PR rail: .ci (300-301), .item .sub (294), .item .by (664).
+     Review text stays upright under the product's no-italics rule. */
+  --pull-request-check-size: 7px;
+  --pull-request-check-radius: 50%;
+  --pull-request-check-margin-top: 4px;
+  --pull-request-check-duration: 1.4s;
+  --pull-request-check-dim-opacity: 0.25;
+  --pull-request-check-full-opacity: 1;
+  --pull-request-meta-gap: 8px;
+  --pull-request-reviewer-gap: 3px;
   --reference-body-font-size: 12px;
   --reference-body-line-height: 1.45;
   --reference-body-letter-spacing: -0.003em;
