@@ -10,6 +10,8 @@ use crate::{
 
 #[derive(Debug, Error)]
 pub enum ThreadError {
+    #[error("This project has exhausted its thread identifiers")]
+    IdentifiersExhausted,
     #[error("Project {0} is not registered")]
     UnknownProject(u32),
     #[error("Thread {thread} is not in project {project}")]
@@ -35,20 +37,6 @@ pub struct NewThread {
 }
 
 impl NewThread {
-    fn into_record(self, identifier: u32, issue: Option<crate::issues::ThreadIssue>) -> ThreadItem {
-        let mut record = ThreadItem::new(identifier, self.title);
-        record.branch_name = self.branch_name;
-        record.worktree_path = Some(self.worktree_path);
-        record.provider = self.provider;
-        record.model_name = self.model_name;
-        record.effort = self.effort;
-        record.preferred_speed = self.preferred_speed;
-        record.effective_speed = self.preferred_speed;
-        record.model_supports_fast = self.model_supports_fast;
-        record.issue = issue;
-        record.normalize()
-    }
-
     pub fn new(
         title: String,
         branch_name: String,
@@ -120,8 +108,26 @@ impl StateStore {
             .iter()
             .map(|existing| existing.id)
             .max()
-            .map_or(1, |highest| highest.saturating_add(1));
-        let record = thread.into_record(identifier, issue);
+            .unwrap_or(0)
+            .checked_add(1)
+            .ok_or(ThreadError::IdentifiersExhausted)?
+            .max(*next.next_thread_identifiers.get(&project).unwrap_or(&1));
+        next.next_thread_identifiers.insert(
+            project,
+            identifier
+                .checked_add(1)
+                .ok_or(ThreadError::IdentifiersExhausted)?,
+        );
+        next.thread_started_at.entry(project).or_default().insert(
+            identifier,
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_secs()
+                .to_string(),
+        );
+        let mut record = ThreadItem::for_build(thread, identifier);
+        record.issue = issue;
         // Newest first, as the reference's sidebar lists new threads at the top of their group.
         item.threads.insert(0, record);
         item.active_thread_id = Some(identifier);
@@ -189,6 +195,9 @@ impl StateStore {
         }
         if item.active_thread_id == Some(thread) {
             item.active_thread_id = None;
+        }
+        if let Some(started) = next.thread_started_at.get_mut(&project) {
+            started.remove(&thread);
         }
         self.commit(next)?;
         Ok(removed)

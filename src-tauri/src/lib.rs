@@ -5,6 +5,7 @@ use velocity_store::PersistedState;
 
 mod agents;
 mod build_gate;
+mod follow_through;
 mod github;
 mod interview;
 mod issue_panel;
@@ -65,6 +66,7 @@ fn bindings() -> Builder<tauri::Wry> {
 fn event_bindings(builder: Builder<tauri::Wry>) -> Builder<tauri::Wry> {
     builder
         .typ::<PersistedState>()
+        .typ::<follow_through::PullRequestLifecycleEvent>()
         .typ::<window::WindowStateChanged>()
         .typ::<layout::LayoutStateChanged>()
         .typ::<layout::LayoutIntentRequested>()
@@ -79,6 +81,11 @@ fn event_bindings(builder: Builder<tauri::Wry>) -> Builder<tauri::Wry> {
         .constant("WINDOW_STATE_EVENT", window::WindowStateChanged::NAME)
         .constant("LAYOUT_STATE_EVENT", layout::LayoutStateChanged::NAME)
         .constant("LAYOUT_INTENT_EVENT", layout::LayoutIntentRequested::NAME)
+        .constant("PR_OPENED_EVENT", follow_through::PR_OPENED_EVENT)
+        .constant("PR_CI_EVENT", follow_through::PR_CI_EVENT)
+        .constant("PR_REVIEW_EVENT", follow_through::PR_REVIEW_EVENT)
+        .constant("PR_MERGED_EVENT", follow_through::PR_MERGED_EVENT)
+        .constant("PR_CLOSED_EVENT", follow_through::PR_CLOSED_EVENT)
         .constant(
             "WORKTREE_INVENTORY_EVENT",
             worktree_settings::WorktreeInventoryChanged::NAME,
@@ -133,6 +140,7 @@ pub fn run() -> anyhow::Result<()> {
             bindings.mount_events(application);
             state::initialize(application.handle())?;
             projects::initialize(application.handle())?;
+            follow_through::initialize(application.handle(), threads::follow_through_hooks());
             issue_panel::initialize(application.handle());
             worktree_settings::initialize(application.handle())?;
             pull_request_panel::initialize(application.handle());

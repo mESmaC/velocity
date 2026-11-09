@@ -833,6 +833,61 @@
   --new-project-error-font-size: 11px;
 }
 
+/* F6 values copied from the reference's winning PR track/history declarations. */
+:root {
+  --pr-track-padding: 9px 22px;
+  --pr-track-font-size: 11px;
+  --pr-track-gap: 0;
+  --pr-track-border: 1px solid rgba(255, 255, 255, 0.07);
+  --pr-track-background: rgba(255, 255, 255, 0.025);
+  --pr-step-gap: 6px;
+  --pr-step-dot-size: 8px;
+  --pr-step-dot-border: 1.5px solid currentColor;
+  --pr-dot-radius: 50%;
+  --pr-bar-min-width: 18px;
+  --pr-bar-max-width: 70px;
+  --pr-bar-height: 1px;
+  --pr-bar-margin: 0 10px;
+  --pr-bar-done-background: #3f5a3c;
+  --pr-log-gap: 8px;
+  --pr-log-font-size: 11.5px;
+  --pr-log-padding-left: 4px;
+  --pr-log-dot-size: 6px;
+  --pr-log-bold-weight: 600;
+  --pr-comment-border: 1px solid #6b3532;
+  --pr-comment-border-left: 2px solid var(--err);
+  --pr-comment-background: #e8807a08;
+  --pr-comment-resolved-background: transparent;
+  --pr-comment-header-padding: 6px 10px;
+  --pr-comment-header-border: 1px solid var(--line-dim);
+  --pr-comment-header-font-size: 10.5px;
+  --pr-comment-body-padding: 8px 10px;
+  --pr-log-detail-white-space: normal;
+}
+
+:root {
+  --pr-bar-flex: 1;
+  --pr-dot-active-background: currentColor;
+  --pr-card-padding: 10px 12px;
+  --pr-done-border: 1px solid #3f5a3c;
+  --pr-done-background: #9ccc950a;
+  --pr-card-radius: 12px;
+  --pr-done-heading-font-size: 11px;
+  --pr-done-heading-gap: 8px;
+  --pr-done-heading-margin-bottom: 6px;
+  --pr-closed-border: 1px solid rgba(255, 255, 255, 0.09);
+  --pr-closed-background: linear-gradient(
+    180deg,
+    rgba(255, 255, 255, 0.05),
+    rgba(255, 255, 255, 0.025)
+  );
+  --pr-closed-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.05);
+  --pr-closed-heading-gap: 7px;
+  --pr-closed-heading-font-size: 12px;
+  --pr-kept-margin-top: 6px;
+  --pr-kept-font-size: 11px;
+}
+
 /* Thread right-click menu and toast (F12): the reference's `.ctx` and `.toast`, with the
    frosted popover overrides that win over the base rules. */
 :root {

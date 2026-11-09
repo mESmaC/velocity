@@ -4,20 +4,20 @@
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::process::{ExitStatus, Stdio};
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 
 use agent_client_protocol::v1::schema::{
     CreateTerminalRequest, CreateTerminalResponse, TerminalExitStatus, TerminalOutputResponse,
 };
 use tokio::io::{AsyncRead, AsyncReadExt};
-use tokio::process::{Child, Command};
+use tokio::process::Command;
 use tokio::sync::{oneshot, watch};
 use tokio::task::JoinHandle;
 
 use super::ClientError;
 use super::files::resolve_in_worktree;
-use super::process::hide_console_window;
+use super::process::{AgentProcess, spawn_owned_command, stop_owned_process};
 #[cfg(windows)]
 use super::program_path::find_program;
 use crate::retained_output_start;
@@ -43,9 +43,12 @@ impl OutputBuffer {
     }
 }
 
+type TerminalCompletion = Result<TerminalExitStatus, String>;
+type TerminalExit = watch::Receiver<Option<TerminalCompletion>>;
+
 struct Terminal {
     output: Arc<Mutex<OutputBuffer>>,
-    exit: watch::Receiver<Option<TerminalExitStatus>>,
+    exit: TerminalExit,
     /// Sending kills the command. Dropping it on release kills it too.
     kill: Mutex<Option<oneshot::Sender<()>>>,
 }
@@ -55,6 +58,8 @@ pub struct Terminals {
     worktree: PathBuf,
     next_id: AtomicU64,
     terminals: Mutex<HashMap<String, Arc<Terminal>>>,
+    completions: Mutex<Vec<TerminalExit>>,
+    stopping: AtomicBool,
 }
 
 fn lock<Value>(mutex: &Mutex<Value>) -> MutexGuard<'_, Value> {
@@ -68,6 +73,8 @@ impl Terminals {
             worktree,
             next_id: AtomicU64::new(1),
             terminals: Mutex::new(HashMap::new()),
+            completions: Mutex::new(Vec::new()),
+            stopping: AtomicBool::new(false),
         }
     }
 
@@ -75,6 +82,10 @@ impl Terminals {
         &self,
         request: CreateTerminalRequest,
     ) -> Result<CreateTerminalResponse, ClientError> {
+        let mut terminals = lock(&self.terminals);
+        if self.stopping.load(Ordering::Acquire) {
+            return Err(ClientError::Shutdown("The session is stopping".into()));
+        }
         let folder = match &request.cwd {
             Some(folder) => resolve_in_worktree(&self.worktree, folder)?,
             None => self.worktree.clone(),
@@ -92,8 +103,7 @@ impl Terminals {
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
             .kill_on_drop(true);
-        hide_console_window(&mut command);
-        let child = command.spawn().map_err(|source| ClientError::Spawn {
+        let child = spawn_owned_command(command).map_err(|source| ClientError::Spawn {
             program: request.command.clone(),
             source,
         })?;
@@ -102,7 +112,10 @@ impl Terminals {
             .map(|limit| usize::try_from(limit).unwrap_or(usize::MAX));
         let terminal = start_terminal(child, limit);
         let id = format!("terminal-{}", self.next_id.fetch_add(1, Ordering::Relaxed));
-        lock(&self.terminals).insert(id.clone(), Arc::new(terminal));
+        let mut completions = lock(&self.completions);
+        completions.retain(|exit| !exit.borrow().as_ref().is_some_and(Result::is_ok));
+        completions.push(terminal.exit.clone());
+        terminals.insert(id.clone(), Arc::new(terminal));
         Ok(CreateTerminalResponse::new(id))
     }
 
@@ -117,7 +130,12 @@ impl Terminals {
         let terminal = self.find(id)?;
         let buffer = lock(&terminal.output);
         let text = String::from_utf8_lossy(&buffer.bytes).into_owned();
-        let exit = terminal.exit.borrow().clone();
+        let exit = terminal
+            .exit
+            .borrow()
+            .as_ref()
+            .and_then(|completion| completion.as_ref().ok())
+            .cloned();
         Ok(TerminalOutputResponse::new(text, buffer.truncated).exit_status(exit))
     }
 
@@ -127,7 +145,11 @@ impl Terminals {
             .wait_for(Option::is_some)
             .await
             .map_err(|_| ClientError::UnknownTerminal(id.to_owned()))?;
-        Ok(status.clone().unwrap_or_default())
+        status
+            .as_ref()
+            .cloned()
+            .ok_or_else(|| ClientError::UnknownTerminal(id.to_owned()))?
+            .map_err(ClientError::Shutdown)
     }
 
     pub fn kill(&self, id: &str) -> Result<(), ClientError> {
@@ -145,6 +167,38 @@ impl Terminals {
             .remove(id)
             .map(drop)
             .ok_or_else(|| ClientError::UnknownTerminal(id.to_owned()))
+    }
+
+    /// Released terminals are included: dropping their public id only requests a stop.
+    /// Session completion waits until every owned process and output reader has ended.
+    pub async fn stop_all(&self) -> Result<(), ClientError> {
+        self.stopping.store(true, Ordering::Release);
+        let terminals: Vec<_> = lock(&self.terminals)
+            .drain()
+            .map(|(_, terminal)| terminal)
+            .collect();
+        for terminal in terminals {
+            if let Some(kill) = lock(&terminal.kill).take() {
+                let _ = kill.send(());
+            }
+        }
+        let completions: Vec<_> = lock(&self.completions).drain(..).collect();
+        let mut failures = Vec::new();
+        for mut exit in completions {
+            match exit.wait_for(Option::is_some).await {
+                Ok(completion) => {
+                    if let Some(Err(error)) = completion.as_ref() {
+                        failures.push(error.clone());
+                    }
+                }
+                Err(error) => failures.push(error.to_string()),
+            }
+        }
+        if failures.is_empty() {
+            Ok(())
+        } else {
+            Err(ClientError::Shutdown(failures.join("; ")))
+        }
     }
 }
 
@@ -179,7 +233,7 @@ fn shell_command(command: &str, args: &[String]) -> Command {
     }
 }
 
-fn start_terminal(mut child: Child, limit: Option<usize>) -> Terminal {
+fn start_terminal(mut child: AgentProcess, limit: Option<usize>) -> Terminal {
     let output = Arc::new(Mutex::new(OutputBuffer {
         bytes: Vec::new(),
         limit,
@@ -187,11 +241,11 @@ fn start_terminal(mut child: Child, limit: Option<usize>) -> Terminal {
     }));
     let readers = [
         child
-            .stdout
+            .stdout()
             .take()
             .map(|stdout| pump(stdout, Arc::clone(&output))),
         child
-            .stderr
+            .stderr()
             .take()
             .map(|stderr| pump(stderr, Arc::clone(&output))),
     ];
@@ -221,25 +275,31 @@ fn pump(
 }
 
 async fn watch_child(
-    mut child: Child,
+    mut child: AgentProcess,
     kill_requested: oneshot::Receiver<()>,
     readers: [Option<JoinHandle<()>>; 2],
-    exit: watch::Sender<Option<TerminalExitStatus>>,
+    exit: watch::Sender<Option<TerminalCompletion>>,
 ) {
     // A dropped sender (the terminal was released) kills the command as well.
-    let status = tokio::select! {
-        status = child.wait() => status,
-        _ = kill_requested => {
-            let _ = child.start_kill();
-            child.wait().await
-        }
+    // Only the inner process wait is cancelled. Cancelling the group's wait after
+    // it caches the shell's exit can make its next wait skip living descendants.
+    let exited = tokio::select! {
+        status = child.inner_mut().wait() => status.map(|_| ()),
+        _ = kill_requested => Ok(()),
     };
+    let stopped = stop_owned_process(&mut child).await;
+    let status = exited.and(stopped);
     // Report the exit only after all output has been read, so `terminal/output` after
     // `wait_for_exit` sees all of it.
     for reader in readers.into_iter().flatten() {
+        if status.is_err() {
+            reader.abort();
+        }
         let _ = reader.await;
     }
-    let status = status.map_or_else(|_| TerminalExitStatus::new(), |status| exit_status(&status));
+    let status = status
+        .map(|status| exit_status(&status))
+        .map_err(|error| error.to_string());
     let _ = exit.send(Some(status));
 }
 
