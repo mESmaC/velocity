@@ -2,7 +2,6 @@
 //! Each change is written to `state.json` before the main window sees it.
 
 use thiserror::Error;
-use velocity_core::layout_state::LayoutState;
 
 use crate::{
     AgentActivity, EffortLevel, ProjectItem, ProviderKind, SpeedMode, StateStore, StoreError,
@@ -78,6 +77,7 @@ impl StateStore {
             preferred_speed: thread.preferred_speed,
             effective_speed: thread.preferred_speed,
             model_supports_fast: thread.model_supports_fast,
+            interview: None,
         }
         .normalize();
         // Newest first, as the reference's sidebar lists new threads at the top of their group.
@@ -150,11 +150,5 @@ impl StateStore {
         }
         self.commit(next)?;
         Ok(removed)
-    }
-
-    /// Rebuilds the main window's rows from the saved state, keeping the current view.
-    pub fn refresh_layout(&self, layout: &mut LayoutState) {
-        layout.replace_data(crate::project_layout::read_model(&self.state));
-        crate::build_gate::sync_layout(&self.state, layout);
     }
 }

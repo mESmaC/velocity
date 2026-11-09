@@ -73,6 +73,51 @@ pub fn current_branch(folder: &Path) -> Result<String, GitError> {
     Ok(branch)
 }
 
+/// Commits one file in `folder`, and nothing else that happens to be staged. Returns
+/// `false` when the file already matches `HEAD`, so there is nothing to commit.
+pub fn commit_file(folder: &Path, file: &Path, message: &str) -> Result<bool, GitError> {
+    let added = git()
+        .arg("-C")
+        .arg(folder)
+        .args(["add", "--"])
+        .arg(file)
+        .output()
+        .map_err(GitError::Spawn)?;
+    succeeded("add", folder, added)?;
+    let unchanged = git()
+        .arg("-C")
+        .arg(folder)
+        .args(["diff", "--cached", "--quiet", "--"])
+        .arg(file)
+        .status()
+        .map_err(GitError::Spawn)?
+        .success();
+    // A repository with no commits yet has no HEAD to compare with: always commit.
+    if unchanged && has_head(folder)? {
+        return Ok(false);
+    }
+    let committed = git()
+        .arg("-C")
+        .arg(folder)
+        .args(["commit", "--quiet", "-m", message, "--"])
+        .arg(file)
+        .output()
+        .map_err(GitError::Spawn)?;
+    succeeded("commit", folder, committed)?;
+    Ok(true)
+}
+
+fn has_head(folder: &Path) -> Result<bool, GitError> {
+    Ok(git()
+        .arg("-C")
+        .arg(folder)
+        .args(["rev-parse", "--verify", "--quiet", "HEAD"])
+        .output()
+        .map_err(GitError::Spawn)?
+        .status
+        .success())
+}
+
 fn succeeded(operation: &'static str, path: &Path, output: Output) -> Result<(), GitError> {
     if output.status.success() {
         Ok(())

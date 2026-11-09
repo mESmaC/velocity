@@ -5,6 +5,7 @@ use velocity_store::PersistedState;
 
 mod build_gate;
 mod github;
+mod interview;
 pub mod layout;
 mod new_project;
 mod projects;
@@ -20,37 +21,41 @@ pub use layout::{apply_agent_event, record_agent_event};
 fn bindings() -> Builder<tauri::Wry> {
     // Export event payloads/names without the generator's `any`-typed helpers;
     // ipc.ts supplies typed listeners, while run() registers native emitters.
-    Builder::new()
-        .commands(collect_commands![
-            window::get_window_state,
-            window::minimize_window,
-            window::toggle_maximize_window,
-            window::close_window,
-            state::get_settings,
-            state::set_settings,
-            layout::get_layout_state,
-            layout::dispatch_layout,
-            projects::list_projects,
-            projects::switch_project,
-            worktree_settings::list_worktrees,
-            worktree_settings::set_worktree_settings,
-            worktree_settings::preview_worktree_folder,
-            worktree_settings::browse_worktree_folder,
-            worktree_settings::prune_worktrees,
-            github::list_pull_requests,
-            github::get_pull_request,
-            github::dispatch_pull_request,
-            pull_request_panel::get_pull_request_panel,
-            pull_request_panel::open_project_pull_request,
-            new_project::get_new_project_defaults,
-            new_project::pick_project_folder,
-            new_project::create_project,
-            build_gate::get_launch_eligibility,
-            thread_menu::get_thread_menu,
-            thread_menu::run_thread_menu_action,
-            thread_menu::delete_thread,
-            thread_menu::undo_delete_thread,
-        ])
+    let builder = Builder::new().commands(collect_commands![
+        window::get_window_state,
+        window::minimize_window,
+        window::toggle_maximize_window,
+        window::close_window,
+        state::get_settings,
+        state::set_settings,
+        layout::get_layout_state,
+        layout::dispatch_layout,
+        projects::list_projects,
+        projects::switch_project,
+        worktree_settings::list_worktrees,
+        worktree_settings::set_worktree_settings,
+        worktree_settings::preview_worktree_folder,
+        worktree_settings::browse_worktree_folder,
+        worktree_settings::prune_worktrees,
+        github::list_pull_requests,
+        github::get_pull_request,
+        github::dispatch_pull_request,
+        pull_request_panel::get_pull_request_panel,
+        pull_request_panel::open_project_pull_request,
+        thread_menu::get_thread_menu,
+        thread_menu::run_thread_menu_action,
+        thread_menu::delete_thread,
+        thread_menu::undo_delete_thread,
+        new_project::get_new_project_defaults,
+        new_project::pick_project_folder,
+        new_project::create_project,
+        build_gate::get_launch_eligibility,
+    ]);
+    event_bindings(builder)
+}
+
+fn event_bindings(builder: Builder<tauri::Wry>) -> Builder<tauri::Wry> {
+    builder
         .typ::<PersistedState>()
         .typ::<window::WindowStateChanged>()
         .typ::<layout::LayoutStateChanged>()
@@ -109,6 +114,7 @@ pub fn run() -> anyhow::Result<()> {
         .plugin(tauri_plugin_clipboard_manager::init())
         .manage(layout::MainLayout::default())
         .manage(threads::ManagedThreads::default())
+        .manage(velocity_interview::Interviews::default())
         .manage(thread_menu::ManagedDeletions::default())
         .invoke_handler(bindings.invoke_handler())
         .setup(move |application| {
@@ -117,6 +123,7 @@ pub fn run() -> anyhow::Result<()> {
             projects::initialize(application.handle())?;
             worktree_settings::initialize(application.handle())?;
             pull_request_panel::initialize(application.handle());
+            interview::start(application.handle());
             Ok(())
         })
         .on_window_event(|window, event| {

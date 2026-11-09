@@ -1,0 +1,176 @@
+/* F3 spec interview: decisions, the question card, the Ready and Locked cards. Values
+   come from reference.css (design/main-window.html rules 452-454, 488-489, 575-601,
+   683-684, 1022-1024, 1039, 1043-1047). No italics (AGENTS.md UI). */
+.qa {
+  display: flex;
+  flex-direction: column;
+  gap: var(--spec-qa-gap);
+  padding: var(--spec-qa-padding);
+}
+.qa .q {
+  color: var(--muted);
+  font-size: var(--spec-qa-question-font-size);
+}
+.qa .d {
+  display: flex;
+  gap: var(--spec-decision-gap);
+  align-items: baseline;
+  font-size: var(--spec-decision-font-size);
+  color: var(--ok);
+}
+.qa .d b {
+  font-weight: var(--spec-decision-key-font-weight);
+  font-size: var(--spec-decision-key-font-size);
+  color: var(--muted);
+  min-width: var(--spec-decision-key-min-width);
+}
+.qa .d span {
+  color: var(--text);
+}
+.q-card {
+  border: 1px solid var(--spec-glass-card-border-color);
+  border-radius: var(--spec-glass-card-radius);
+  padding: var(--spec-q-card-padding);
+  background: var(--spec-glass-card-background);
+  box-shadow: var(--spec-glass-card-shadow);
+}
+.q-card .qn {
+  font: var(--spec-qn-font);
+  color: var(--info);
+  margin-bottom: var(--spec-qn-margin-bottom);
+}
+.q-card .qt {
+  font-size: var(--spec-qt-font-size);
+  font-weight: var(--spec-qt-font-weight);
+  margin-bottom: var(--spec-qt-margin-bottom);
+}
+.q-card .why {
+  font-size: var(--spec-why-font-size);
+  color: var(--muted);
+  margin-bottom: var(--spec-why-margin-bottom);
+}
+.q-card .foot {
+  margin-top: var(--spec-foot-margin-top);
+  font-size: var(--spec-foot-font-size);
+  color: var(--muted);
+}
+.opts {
+  display: flex;
+  flex-direction: column;
+  gap: var(--spec-opts-gap);
+}
+.opt {
+  display: grid;
+  grid-template-columns: var(--spec-opt-columns);
+  gap: var(--spec-opt-gap);
+  align-items: start;
+  text-align: left;
+  padding: var(--spec-opt-padding);
+  border: 1px solid var(--spec-glass-card-border-color);
+  border-radius: var(--spec-glass-card-radius);
+  background: var(--spec-glass-card-background);
+  box-shadow: var(--spec-glass-card-shadow);
+  color: var(--text);
+  font: inherit;
+  cursor: pointer;
+}
+.opt:hover {
+  border-color: var(--spec-opt-hover-border-color);
+  background: var(--spec-opt-hover-background);
+}
+.opt kbd {
+  justify-self: start;
+  margin-top: var(--spec-opt-kbd-margin-top);
+}
+.opt b {
+  display: block;
+  font-weight: var(--spec-opt-label-font-weight);
+  font-size: var(--spec-opt-label-font-size);
+}
+.opt span {
+  font-size: var(--spec-opt-detail-font-size);
+  color: var(--muted);
+}
+.opt.rec b::after {
+  content: 'recommended';
+  margin-left: var(--spec-opt-recommended-margin-left);
+  font: var(--spec-opt-recommended-font);
+  color: var(--info);
+}
+.spec-card {
+  border: 1px solid var(--info);
+  border-radius: var(--spec-card-radius);
+  padding: var(--spec-card-padding);
+  background: var(--spec-card-background);
+}
+.spec-card.locked {
+  border-color: var(--spec-card-locked-border-color);
+  background: var(--spec-card-locked-background);
+}
+.spec-card .ah {
+  display: flex;
+  align-items: center;
+  gap: var(--spec-card-head-gap);
+  font-size: var(--spec-card-head-font-size);
+  color: var(--info);
+  margin-bottom: var(--spec-card-head-margin-bottom);
+}
+.spec-card.locked .ah {
+  color: var(--ok);
+  margin-bottom: var(--spec-card-locked-head-margin-bottom);
+}
+.spec-card dl {
+  display: grid;
+  grid-template-columns: var(--spec-card-dl-columns);
+  gap: var(--spec-card-dl-gap);
+  margin: var(--spec-card-dl-margin);
+  font-size: var(--spec-card-dl-font-size);
+}
+.spec-card dt {
+  color: var(--muted);
+}
+.spec-card dd {
+  margin: 0;
+}
+.spec-card .acts {
+  display: flex;
+  gap: var(--spec-card-actions-gap);
+  flex-wrap: wrap;
+}
+.spec-card .checks {
+  display: flex;
+  flex-direction: column;
+  gap: var(--spec-checks-gap);
+  margin: var(--spec-card-dl-margin);
+}
+.spec-card .check {
+  display: flex;
+  gap: var(--spec-check-gap);
+  align-items: center;
+  font-size: var(--spec-check-font-size);
+  color: var(--text-2);
+  cursor: pointer;
+}
+.spec-card .check input {
+  accent-color: var(--accent);
+  margin: 0;
+}
+.spec-view .btn.solid {
+  border-color: var(--new-project-solid-border-color);
+  background: var(--new-project-solid-background);
+  color: var(--new-project-solid-color);
+  box-shadow: var(--new-project-solid-box-shadow);
+  font-weight: var(--new-project-solid-font-weight);
+}
+.spec-view .btn.solid:hover {
+  background: var(--new-project-solid-hover-background);
+}
+.spec-view .btn.solid kbd {
+  background: var(--new-project-solid-kbd-background);
+  color: var(--new-project-solid-kbd-color);
+  box-shadow: none;
+}
+.spec-notice {
+  font-size: var(--spec-foot-font-size);
+  color: var(--warn);
+}

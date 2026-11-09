@@ -5,6 +5,7 @@
   import Rail from './lib/Rail.svelte';
   import Home from './lib/Home.svelte';
   import ThreadView from './lib/ThreadView.svelte';
+  import SpecInterview from './lib/SpecInterview.svelte';
   import CommandPalette from './lib/CommandPalette.svelte';
   import WorktreeSettings from './lib/WorktreeSettings.svelte';
   import NewProjectDialog from './lib/NewProjectDialog.svelte';
@@ -26,6 +27,7 @@
   } from './lib/ipc';
   import './lib/theme/layout.css';
   import './lib/theme/thread-view.css';
+  import './lib/theme/spec-interview.css';
 
   let layout = $state<LayoutSnapshot | null>(null);
   let error = $state('');
@@ -236,6 +238,11 @@
       <main class="main-view" aria-label="Velocity workspace">
         {#if layout.view === 'Home'}<Home
             {layout}
+            {send}
+          />{:else if layout.active_thread?.interview}<SpecInterview
+            {layout}
+            thread={layout.active_thread}
+            interview={layout.active_thread.interview}
             {send}
           />{:else if layout.view === 'Thread' && layout.active_thread}<ThreadView
             {layout}

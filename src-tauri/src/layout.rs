@@ -6,6 +6,7 @@ use velocity_acp::{available_commands, client::AgentEvent};
 use velocity_core::layout_state::LayoutState;
 use velocity_core::layout_view::{LayoutAction, LayoutIntent, LayoutSnapshot};
 use velocity_core::thread_view_model::AgentCommandView;
+use velocity_interview::Interviews;
 use velocity_store::build_gate;
 
 pub type MainLayout = Mutex<LayoutState>;
@@ -50,20 +51,29 @@ pub fn dispatch_layout(
     let outcome = store
         .dispatch_project_layout(&mut state, action)
         .map_err(|error| error.to_string())?;
+    if outcome.selection.is_some() {
+        // A project switch rebuilds the window from state.json; put live interviews back.
+        velocity_interview::overlay_live(window.state::<Interviews>().inner(), &store, &mut state);
+    }
+    let snapshot = state.snapshot();
     let project_selection = outcome
         .selection
         .map(|selection| (store.list_projects(), selection));
-    drop(store);
     drop(state);
-    publish(&window, &outcome.snapshot, outcome.intent.clone())?;
+    drop(store);
+    // The interview consumes spec-thread intents; build-thread intents remain queued.
+    let intent = outcome
+        .intent
+        .filter(|intent| !crate::interview::handle_intent(window.app_handle(), intent));
+    publish(&window, &snapshot, intent.clone())?;
     if let Some((projects, selection)) = project_selection {
         crate::projects::publish_selection(&window, projects, selection)?;
     }
     // Starting or steering a thread publishes its own newer snapshot.
-    match outcome.intent {
+    match intent {
         Some(intent) => crate::threads::handle_intent(window.app_handle(), &intent)
-            .map(|snapshot| snapshot.unwrap_or(outcome.snapshot)),
-        None => Ok(outcome.snapshot),
+            .map(|updated| updated.unwrap_or(snapshot)),
+        None => Ok(snapshot),
     }
 }
 

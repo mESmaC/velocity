@@ -72,7 +72,10 @@ pub async fn get_thread_menu(
         application.state::<ManagedThreads>().inner(),
         "thread sessions",
     )?
-    .is_live(key);
+    .is_live(key)
+        || application
+            .state::<velocity_interview::Interviews>()
+            .is_running(key);
     // Measuring walks the worktree, so it runs off the main thread (F5's live sizes do too).
     let path = thread.worktree_path.clone();
     let worktree_bytes = tauri::async_runtime::spawn_blocking(move || {
@@ -226,6 +229,9 @@ async fn land(application: &AppHandle, token: u32) {
 async fn land_effects(application: &AppHandle, key: ThreadKey) -> Result<(), String> {
     let (repository, thread) = find_saved_thread(application, key)?;
     let mut plan = plan_deletion(&repository, &thread);
+    application
+        .state::<velocity_interview::Interviews>()
+        .stop_agent(key);
     let stopped = lock(
         application.state::<ManagedThreads>().inner(),
         "thread sessions",
