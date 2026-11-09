@@ -24,12 +24,10 @@ impl StateStore {
             .ok()
             .and_then(|index| self.state.projects.get(index));
         let settings = &self.state.settings.worktrees;
-        let root = settings.location_root.clone().unwrap_or_else(|| {
-            self.directory
-                .join("worktrees")
-                .to_string_lossy()
-                .into_owned()
-        });
+        let root = settings
+            .location_root
+            .clone()
+            .unwrap_or_else(|| default_worktree_root(&self.directory));
         WorktreeContext {
             revision: self.state.revision,
             project_identifier: project.map(|project| project.id),
@@ -113,6 +111,15 @@ impl StateStore {
         }
         Ok(location_changed)
     }
+}
+
+// Store I/O keeps extended paths; the settings planner needs a normal drive/share prefix.
+fn default_worktree_root(directory: &Path) -> String {
+    let root = directory.join("worktrees").to_string_lossy().into_owned();
+    if let Some(share) = root.strip_prefix(r"\\?\UNC\") {
+        return format!(r"\\{share}");
+    }
+    root.strip_prefix(r"\\?\").unwrap_or(&root).to_owned()
 }
 
 fn validate_root(root: &str) -> Result<(), StoreError> {

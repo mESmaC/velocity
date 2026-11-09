@@ -160,6 +160,17 @@ impl LiveTranscript {
         }));
         blocks
     }
+
+    /// Agent calls only: the worktree setup row is not a provider tool call.
+    pub fn tool_steps(&self) -> Vec<ToolStepRow> {
+        self.entries
+            .iter()
+            .filter_map(|entry| match entry {
+                EntryView::Tool(tool) => Some(tool_step(tool)),
+                _ => None,
+            })
+            .collect()
+    }
 }
 
 fn setup_step(worktree: &str, running: bool) -> ToolStepRow {

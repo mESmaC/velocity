@@ -1,9 +1,10 @@
 //! Launching an agent: one process per thread, in that thread's worktree (§3.2).
 
 use std::path::{Path, PathBuf};
-use std::process::Stdio;
+use std::process::{ExitStatus, Stdio};
 
-use tokio::process::{Child, Command};
+use process_wrap::tokio::{ChildWrapper, CommandWrap, KillOnDrop};
+use tokio::process::Command;
 
 use super::ClientError;
 use super::program_path::find_program;
@@ -21,9 +22,21 @@ pub struct AgentLaunch {
     pub env: Vec<(String, String)>,
 }
 
+impl AgentLaunch {
+    pub fn new(program: PathBuf) -> Self {
+        Self {
+            program,
+            args: Vec::new(),
+            env: Vec::new(),
+        }
+    }
+}
+
+pub type AgentProcess = Box<dyn ChildWrapper>;
+
 /// Starts the agent in `worktree` with piped stdio for ACP. It loads your user and project
 /// config as it would in a terminal: no isolated home, no empty config, no sandbox.
-pub fn spawn_agent(launch: &AgentLaunch, worktree: &Path) -> Result<Child, ClientError> {
+pub fn spawn_agent(launch: &AgentLaunch, worktree: &Path) -> Result<AgentProcess, ClientError> {
     let mut command = Command::new(find_program(launch.program.as_os_str()));
     command
         .args(&launch.args)
@@ -33,38 +46,47 @@ pub fn spawn_agent(launch: &AgentLaunch, worktree: &Path) -> Result<Child, Clien
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .kill_on_drop(true);
-    hide_console_window(&mut command);
-    command.spawn().map_err(|source| ClientError::Spawn {
+    spawn_owned_command(command).map_err(|source| ClientError::Spawn {
         program: launch.program.display().to_string(),
         source,
     })
 }
 
-/// Ends the agent and every process it started. On Windows an npm agent runs as
-/// `cmd.exe → node.exe`, and killing the shim alone orphans `node.exe`, which keeps running
-/// with the worktree as its working directory, so the worktree cannot be deleted (#47, F12).
-/// `taskkill /T` ends the tree while the shim still links it together; then the shim goes.
-pub async fn stop_agent(agent: &mut Child) {
+/// Ownership groups terminate descendants even after their shell shim exits.
+/// No resource or security limits are applied to the agent or its tools.
+pub fn spawn_owned_command(mut command: Command) -> std::io::Result<AgentProcess> {
+    hide_console_window(&mut command);
+    let mut command = CommandWrap::from(command);
+    command.wrap(KillOnDrop);
     #[cfg(windows)]
-    if let Some(process_id) = agent.id() {
-        let system_root = std::env::var_os("SystemRoot").unwrap_or_else(|| r"C:\Windows".into());
-        let mut command = Command::new(
-            Path::new(&system_root)
-                .join("System32")
-                .join("taskkill.exe"),
-        );
+    {
+        use process_wrap::tokio::{CreationFlags, JobObject};
+        use windows::Win32::System::Threading::CREATE_NO_WINDOW;
         command
-            .args(["/PID", &process_id.to_string(), "/T", "/F"])
-            .stdin(Stdio::null())
-            .stdout(Stdio::null())
-            .stderr(Stdio::null());
-        hide_console_window(&mut command);
-        // An agent that already exited has no tree left to end.
-        let _ = command.status().await;
+            .wrap(CreationFlags(CREATE_NO_WINDOW))
+            .wrap(JobObject);
     }
-    let _ = agent.start_kill();
-    // Reaped, so its handles on the worktree are released before the session reports its end.
-    let _ = agent.wait().await;
+    #[cfg(unix)]
+    command.wrap(process_wrap::tokio::ProcessGroup::leader());
+    command.spawn()
+}
+
+pub async fn stop_owned_process(agent: &mut AgentProcess) -> std::io::Result<ExitStatus> {
+    #[cfg(not(unix))]
+    agent.start_kill()?;
+    #[cfg(unix)]
+    if let Err(error) = agent.start_kill() {
+        // A Unix group that already exited has no remaining processes to signal.
+        if error.raw_os_error() == Some(libc::ESRCH) {
+            return agent.wait().await;
+        }
+        return Err(error);
+    }
+    agent.wait().await
+}
+
+pub async fn stop_agent(agent: &mut AgentProcess) -> std::io::Result<()> {
+    stop_owned_process(agent).await.map(|_| ())
 }
 
 /// Velocity is a windowed app: without this flag every agent and terminal command would

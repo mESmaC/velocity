@@ -210,6 +210,11 @@ async fn land(application: &AppHandle, token: u32) {
     let Ok(Some(key)) = landed else {
         return;
     };
+    let action = match crate::threads::action_lock(application, key) {
+        Ok(action) => action,
+        Err(error) => return report(Err::<(), _>(error)),
+    };
+    let _action = action.lock_owned().await;
     report(update_layout(application, |layout| layout.clear_deletion_toast(token)).map(|_| ()));
     let outcome = match land_effects(application, key).await {
         Ok(()) => remove_record(application, key),
@@ -239,12 +244,22 @@ async fn land_effects(application: &AppHandle, key: ThreadKey) -> Result<(), Str
     .stop(key);
     match stopped {
         StopOutcome::Stopping(ended) => {
-            // An agent that ignores the stop is cut off; its folder removal retries below.
-            let _ = tokio::time::timeout(AGENT_EXIT_WAIT, ended).await;
+            tokio::time::timeout(AGENT_EXIT_WAIT, ended)
+                .await
+                .map_err(|_| "The agent is still stopping; its worktree was kept".to_owned())?
+                .map_err(|error| error.to_string())?;
         }
         // The launch removes the worktree itself once setup ends.
         StopOutcome::SettingUp => plan.remove_worktree = None,
         StopOutcome::NotRunning => {}
+    }
+    if lock(
+        application.state::<ManagedThreads>().inner(),
+        "thread sessions",
+    )?
+    .shutdown_failed(key)
+    {
+        return Err("Agent shutdown was not confirmed; its worktree was kept".into());
     }
     tauri::async_runtime::spawn_blocking(move || {
         if let Some(worktree) = &plan.remove_worktree {
