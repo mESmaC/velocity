@@ -82,9 +82,15 @@ pub struct ThreadRuntimes {
     stopping: BTreeMap<ThreadKey, Vec<oneshot::Sender<()>>>,
     retired: BTreeSet<ThreadKey>,
     shutdown_failures: BTreeSet<ThreadKey>,
+    actions: BTreeMap<ThreadKey, Arc<tokio::sync::Mutex<()>>>,
 }
 
 impl ThreadRuntimes {
+    /// Merge cleanup and explicit deletion share one lease through their saved checkpoint.
+    pub fn action_lock(&mut self, key: ThreadKey) -> Arc<tokio::sync::Mutex<()>> {
+        Arc::clone(self.actions.entry(key).or_default())
+    }
+
     /// Registers a starting thread with its first prompt already waiting, and returns the
     /// inputs its session reads once the worktree is ready. Messages sent meanwhile queue
     /// behind the first prompt in order.
@@ -148,9 +154,7 @@ impl ThreadRuntimes {
     ) -> Result<DeliveryStatus, SteerError> {
         let thread = self.threads.get_mut(&key).ok_or(SteerError::NoSession)?;
         if let Some(status) = thread.deliveries.status(identifier, message) {
-            if status == DeliveryStatus::Delivered {
-                thread.deliveries.forget(identifier);
-            } else if thread.inputs.is_closed() {
+            if status == DeliveryStatus::Pending && thread.inputs.is_closed() {
                 return Err(SteerError::NoSession);
             }
             return Ok(status);
@@ -185,10 +189,14 @@ impl ThreadRuntimes {
         Ok(())
     }
 
-    pub fn worktree_ready(&mut self, key: ThreadKey) {
+    /// False when deletion retired the thread during setup (F12).
+    pub fn worktree_ready(&mut self, key: ThreadKey) -> bool {
         if let Some(thread) = self.threads.get_mut(&key) {
             thread.phase = SessionPhase::Running;
             thread.transcript.worktree_ready();
+            true
+        } else {
+            false
         }
     }
 

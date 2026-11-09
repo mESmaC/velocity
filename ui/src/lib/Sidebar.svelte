@@ -4,8 +4,12 @@
   let {
     layout,
     send,
-  }: { layout: LayoutSnapshot; send: (action: LayoutAction) => void } =
-    $props();
+    openMenu,
+  }: {
+    layout: LayoutSnapshot;
+    send: (action: LayoutAction) => void;
+    openMenu: (identifier: string, x: number, y: number) => void;
+  } = $props();
   const icons: Record<string, string> = {
     Draft: 'new',
     Duty: 'scout',
@@ -72,6 +76,10 @@
               aria-current={row.active ? 'page' : undefined}
               title={row.title}
               onclick={() => send({ OpenThread: row.identifier })}
+              oncontextmenu={(event) => {
+                event.preventDefault();
+                openMenu(row.identifier, event.clientX, event.clientY);
+              }}
             >
               {#if layout.show_numbers && row.number}<span class="t-key"
                   >{row.number}</span

@@ -138,7 +138,11 @@ fn thread_detail(thread: &ThreadItem) -> ThreadDetailEntry {
         ),
         show_work: false,
         worked_summary: None,
-        pull_request_history: thread.follow_through.as_ref().map(|watch| watch.view()),
+        pull_request_history: thread
+            .follow_through
+            .as_ref()
+            .filter(|watch| watch.number != 0)
+            .map(|watch| watch.view()),
         blocks: Vec::new(),
         agent_commands: Vec::new(),
         provider: provider_color(thread.provider),

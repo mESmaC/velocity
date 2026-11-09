@@ -18,6 +18,17 @@ use crate::state::ManagedStateStore;
 
 pub type ManagedThreads = Mutex<ThreadRuntimes>;
 
+pub fn action_lock(
+    application: &AppHandle,
+    key: ThreadKey,
+) -> Result<std::sync::Arc<tokio::sync::Mutex<()>>, String> {
+    Ok(lock(
+        application.state::<ManagedThreads>().inner(),
+        "thread sessions",
+    )?
+    .action_lock(key))
+}
+
 pub fn follow_through_hooks() -> crate::follow_through::Hooks {
     crate::follow_through::Hooks::new(deliver_follow_up, stop_follow_through, work_snapshot)
 }
@@ -134,7 +145,7 @@ pub struct ThreadStepRecorded {
     pub block: TranscriptBlock,
 }
 
-fn lock<'guard, Value>(
+pub(crate) fn lock<'guard, Value>(
     mutex: &'guard Mutex<Value>,
     what: &str,
 ) -> Result<MutexGuard<'guard, Value>, String> {
@@ -149,12 +160,41 @@ pub fn handle_intent(
     intent: &LayoutIntent,
 ) -> Result<Option<LayoutSnapshot>, String> {
     match intent {
+        LayoutIntent::OpenPullRequest(number) => {
+            open_pull_request(application, *number).map(|_| None)
+        }
         LayoutIntent::StartPrompt(prompt) => start_thread(application, prompt).map(Some),
         LayoutIntent::SteerThread {
             identifier, prompt, ..
         } => send_message(application, *identifier, prompt).map(Some),
         _ => Ok(None),
     }
+}
+
+fn open_pull_request(application: &AppHandle, number: usize) -> Result<(), String> {
+    let directory =
+        {
+            let store = lock(
+                application.state::<ManagedStateStore>().inner(),
+                "persisted state",
+            )?;
+            let project = store.active_project().ok_or("Select a project first")?;
+            if !project.threads.iter().any(|thread| {
+                thread.pull_request_number.map(|value| value as usize) == Some(number)
+            }) {
+                return Err("The PR does not belong to a thread in this project".into());
+            }
+            std::path::PathBuf::from(&project.repository_path)
+        };
+    let number = u32::try_from(number).map_err(|error| error.to_string())?;
+    tauri::async_runtime::spawn_blocking(move || {
+        report(
+            velocity_github::PullRequestClient::discover(&directory)
+                .and_then(|client| client.open_in_browser(number))
+                .map_err(|error| error.to_string()),
+        );
+    });
+    Ok(())
 }
 
 /// Records the thread, shows it, and starts its worktree and agent in the background (F4).
@@ -232,15 +272,25 @@ async fn run_thread(
         Ok(Err(error)) => Some(error.to_string()),
         Err(error) => Some(error.to_string()),
     };
+    // A thread deleted while its worktree was being created starts no agent (F12).
+    let wanted = lock(
+        application.state::<ManagedThreads>().inner(),
+        "thread sessions",
+    )
+    .map(|mut runtimes| {
+        if failure.is_some() {
+            runtimes.is_live(key)
+        } else {
+            runtimes.worktree_ready(key)
+        }
+    })
+    .unwrap_or(false);
+    if !wanted {
+        return remove_deleted_worktree(plan).await;
+    }
     if let Some(detail) = failure {
         // The worktree is kept for a failed thread (F5).
         return fail(&application, key, "Could not set up the worktree", &detail);
-    }
-    if let Ok(mut runtimes) = lock(
-        application.state::<ManagedThreads>().inner(),
-        "thread sessions",
-    ) {
-        runtimes.worktree_ready(key);
     }
     if setup_no_longer_wanted(&application, key) {
         if let Ok(mut runtimes) = lock(
@@ -358,13 +408,30 @@ fn save_activity(
     .update_thread(key.0, key.1, |thread| {
         thread.activity = activity;
         if let Some(progress) = progress
-            && thread.follow_through.is_none()
+            && thread.pull_request_number.is_none()
         {
             thread.additions = progress.added;
             thread.deletions = progress.deleted;
         }
     })
     .map_err(|error| error.to_string())
+}
+
+/// The thread was deleted while its worktree was being created. Its deletion skipped the
+/// worktree because setup still held it, so it is removed here once setup is done (F12).
+async fn remove_deleted_worktree(plan: LaunchPlan) {
+    let request = plan.worktree;
+    let removed = tauri::async_runtime::spawn_blocking(move || {
+        velocity_threads::deletion::remove_worktree(
+            &request.repository_root,
+            &request.worktree_path,
+        )
+        .map_err(|error| error.to_string())
+    })
+    .await
+    .map_err(|error| error.to_string())
+    .and_then(|result| result);
+    report(removed);
 }
 
 /// The thread moves to `error` and keeps its worktree (§2.1, F5).
@@ -467,7 +534,7 @@ fn emit_step(application: &AppHandle, key: ThreadKey) {
 }
 
 /// Background work has no caller to return an error to; the log is where it goes.
-fn report<Value>(result: Result<Value, String>) {
+pub(crate) fn report<Value>(result: Result<Value, String>) {
     if let Err(error) = result {
         eprintln!("Velocity thread runtime: {error}");
     }

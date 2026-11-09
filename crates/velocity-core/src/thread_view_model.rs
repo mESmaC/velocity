@@ -212,6 +212,10 @@ pub struct PullRequestTrackStep {
 )]
 #[derive(Clone, Debug)]
 pub struct PullRequestHistoryView {
+    pub coding_tool_count: Option<u32>,
+    pub coding_file_count: Option<u32>,
+    pub coding_additions: u32,
+    pub coding_deletions: u32,
     pub status: String,
     pub stage: String,
     pub track: Vec<PullRequestTrackStep>,
@@ -534,6 +538,15 @@ pub fn project_thread_detail(entry: &ThreadDetailEntry) -> ThreadDetailSnapshot 
 fn worked_summary(entry: &ThreadDetailEntry) -> Option<WorkedSummaryView> {
     if entry.pull_request_number.is_none() {
         return entry.worked_summary.clone();
+    }
+    if let Some(history) = &entry.pull_request_history {
+        return Some(WorkedSummaryView {
+            tool_calls: history.coding_tool_count.unwrap_or(0) as usize,
+            files_touched: history.coding_file_count.unwrap_or(0) as usize,
+            added: history.coding_additions as usize,
+            deleted: history.coding_deletions as usize,
+            proved: false,
+        });
     }
     let tool_calls = entry
         .blocks

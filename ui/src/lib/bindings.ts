@@ -24,6 +24,16 @@ export const commands = {
 	dispatchPullRequest: (projectIdentifier: number, operation: PullRequestOperation_Deserialize) => __TAURI_INVOKE<PullRequestReceipt>("dispatch_pull_request", { projectIdentifier, operation }),
 	getPullRequestPanel: () => __TAURI_INVOKE<PullRequestPanelSnapshot_Serialize>("get_pull_request_panel"),
 	openProjectPullRequest: (projectIdentifier: number, number: number) => __TAURI_INVOKE<LayoutSnapshot_Serialize | null>("open_project_pull_request", { projectIdentifier, number }),
+	getThreadMenu: (threadIdentifier: number) => __TAURI_INVOKE<ThreadMenuView_Serialize | null>("get_thread_menu", { threadIdentifier }),
+	/**
+	 *  Open worktree in Explorer, Copy worktree path and Open PR on GitHub. Delete has its own
+	 *  command because it can be undone.
+	 */
+	runThreadMenuAction: (projectIdentifier: number, threadIdentifier: number, action: ThreadMenuAction) => __TAURI_INVOKE<null>("run_thread_menu_action", { projectIdentifier, threadIdentifier, action }),
+	/**  Hides the thread at once and offers Undo; the deletion lands after 5 s (F12). */
+	deleteThread: (projectIdentifier: number, threadIdentifier: number) => __TAURI_INVOKE<LayoutSnapshot_Serialize>("delete_thread", { projectIdentifier, threadIdentifier }),
+	/**  Undo within the 5 s: the thread is back exactly as it was, since nothing was touched. */
+	undoDeleteThread: (deletion: number) => __TAURI_INVOKE<LayoutSnapshot_Serialize>("undo_delete_thread", { deletion }),
 	getNewProjectDefaults: () => __TAURI_INVOKE<NewProjectDefaults_Serialize>("get_new_project_defaults"),
 	/**  Browse…: the native folder picker. `None` when it is dismissed. */
 	pickProjectFolder: () => __TAURI_INVOKE<string | null>("pick_project_folder"),
@@ -155,6 +165,7 @@ export type ErrorCardView = {
 export type FollowThrough = FollowThrough_Serialize | FollowThrough_Deserialize;
 
 export type FollowThrough_Deserialize = {
+	thread_started_at?: string | null,
 	number?: number,
 	url?: string,
 	head?: string,
@@ -167,10 +178,16 @@ export type FollowThrough_Deserialize = {
 	worktree_deleted?: boolean,
 	cleanup_error?: string | null,
 	coding_tool_count?: number | null,
+	coding_file_count?: number | null,
+	coding_additions?: number,
+	coding_deletions?: number,
+	work_session_identifier?: string | null,
+	work_tool_start?: number,
 	ci_state?: string,
 };
 
 export type FollowThrough_Serialize = {
+	thread_started_at: string | null,
 	number: number,
 	url: string,
 	head: string,
@@ -183,6 +200,11 @@ export type FollowThrough_Serialize = {
 	worktree_deleted: boolean,
 	cleanup_error: string | null,
 	coding_tool_count: number | null,
+	coding_file_count: number | null,
+	coding_additions: number,
+	coding_deletions: number,
+	work_session_identifier: string | null,
+	work_tool_start: number,
 	ci_state: string,
 };
 
@@ -402,6 +424,7 @@ export type LayoutSnapshot_Deserialize = {
 	tasks_draft: boolean,
 	task_count_label: string,
 	launch_notice?: string | null,
+	toast?: ToastView_Deserialize | null,
 };
 
 export type LayoutSnapshot_Serialize = {
@@ -440,6 +463,7 @@ export type LayoutSnapshot_Serialize = {
 	tasks_draft: boolean,
 	task_count_label: string,
 	launch_notice: string | null,
+	toast: ToastView_Serialize | null,
 };
 
 export type LayoutStateChanged = LayoutStateChanged_Serialize | LayoutStateChanged_Deserialize;
@@ -579,6 +603,8 @@ export type PersistedState_Deserialize = {
 	active_project_index: number,
 	projects: ProjectItem_Deserialize[],
 	settings: Settings_Deserialize,
+	/**  Deleted rows must never let delayed agent or watcher events address a new thread. */
+	next_thread_identifiers?: { [key in number]: number },
 };
 
 export type PersistedState_Serialize = {
@@ -586,6 +612,8 @@ export type PersistedState_Serialize = {
 	active_project_index: number,
 	projects: ProjectItem_Serialize[],
 	settings: Settings_Serialize,
+	/**  Deleted rows must never let delayed agent or watcher events address a new thread. */
+	next_thread_identifiers: { [key in number]: number },
 };
 
 export type ProjectItem = ProjectItem_Serialize | ProjectItem_Deserialize;
@@ -780,6 +808,10 @@ export type PullRequestHistoryCard_Serialize = {
 export type PullRequestHistoryView = PullRequestHistoryView_Serialize | PullRequestHistoryView_Deserialize;
 
 export type PullRequestHistoryView_Deserialize = {
+	coding_tool_count?: number | null,
+	coding_file_count?: number | null,
+	coding_additions: number,
+	coding_deletions: number,
 	status: string,
 	stage: string,
 	track: PullRequestTrackStep[],
@@ -788,6 +820,10 @@ export type PullRequestHistoryView_Deserialize = {
 };
 
 export type PullRequestHistoryView_Serialize = {
+	coding_tool_count: number | null,
+	coding_file_count: number | null,
+	coding_additions: number,
+	coding_deletions: number,
 	status: string,
 	stage: string,
 	track: PullRequestTrackStep[],
@@ -1011,6 +1047,7 @@ export type PullRequest_Deserialize = {
 	baseRefName: string,
 	additions: number,
 	deletions: number,
+	changedFiles?: number,
 	createdAt: string,
 	updatedAt: string,
 	closedAt?: string | null,
@@ -1034,6 +1071,7 @@ export type PullRequest_Serialize = {
 	baseRefName: string,
 	additions: number,
 	deletions: number,
+	changedFiles: number,
 	createdAt: string,
 	updatedAt: string,
 	closedAt: string | null,
@@ -1290,6 +1328,43 @@ export type ThreadItem_Serialize = {
 	interview: InterviewRecord_Serialize | null,
 };
 
+export type ThreadMenuAction = "OpenWorktree" | "CopyWorktreePath" | "OpenPullRequest" | "Delete";
+
+export type ThreadMenuEntry = ThreadMenuEntry_Serialize | ThreadMenuEntry_Deserialize;
+
+export type ThreadMenuEntry_Deserialize = { Item: {
+	action: ThreadMenuAction,
+	label: string,
+	detail?: string | null,
+	danger: boolean,
+} } | "Separator";
+
+export type ThreadMenuEntry_Serialize = { Item: {
+	action: ThreadMenuAction,
+	label: string,
+	detail: string | null,
+	danger: boolean,
+} } | "Separator";
+
+/**  One thread's right-click menu, built from saved state and what is on disk. */
+export type ThreadMenuView = ThreadMenuView_Serialize | ThreadMenuView_Deserialize;
+
+/**  One thread's right-click menu, built from saved state and what is on disk. */
+export type ThreadMenuView_Deserialize = {
+	/**  The project the menu was opened in; actions check it is still selected. */
+	project_identifier: number,
+	thread_identifier: number,
+	entries: ThreadMenuEntry_Deserialize[],
+};
+
+/**  One thread's right-click menu, built from saved state and what is on disk. */
+export type ThreadMenuView_Serialize = {
+	/**  The project the menu was opened in; actions check it is still selected. */
+	project_identifier: number,
+	thread_identifier: number,
+	entries: ThreadMenuEntry_Serialize[],
+};
+
 export type ThreadState = "draft" | "spec" | "working" | "review" | "error" | "closed" | "done" | "merged";
 
 export type ThreadStatusChanged = {
@@ -1313,6 +1388,32 @@ export type ThreadStepRecorded_Serialize = {
 	thread_identifier: number,
 	/**  The thread's newest transcript block after the update. */
 	block: TranscriptBlock_Serialize,
+};
+
+/**
+ *  The bottom-centre toast. `identifier` changes with every new toast so the window can
+ *  time it out; one with `undo_deletion` offers Undo until that deletion lands (F12).
+ */
+export type ToastView = ToastView_Serialize | ToastView_Deserialize;
+
+/**
+ *  The bottom-centre toast. `identifier` changes with every new toast so the window can
+ *  time it out; one with `undo_deletion` offers Undo until that deletion lands (F12).
+ */
+export type ToastView_Deserialize = {
+	identifier: number,
+	message: string,
+	undo_deletion?: number | null,
+};
+
+/**
+ *  The bottom-centre toast. `identifier` changes with every new toast so the window can
+ *  time it out; one with `undo_deletion` offers Undo until that deletion lands (F12).
+ */
+export type ToastView_Serialize = {
+	identifier: number,
+	message: string,
+	undo_deletion: number | null,
 };
 
 export type ToolStepRow = {

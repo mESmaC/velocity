@@ -52,10 +52,6 @@ impl Deliveries {
         }
     }
 
-    pub fn forget(&mut self, identifier: &str) {
-        self.pending.remove(identifier);
-    }
-
     pub fn apply(&mut self, event: &AgentEvent) {
         match event {
             AgentEvent::Transcript {

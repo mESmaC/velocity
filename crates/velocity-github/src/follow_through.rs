@@ -19,6 +19,7 @@ pub struct AgentFollowUp {
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize, Type)]
 #[serde(default)]
 pub struct FollowThrough {
+    pub thread_started_at: Option<String>,
     pub number: u32,
     pub url: String,
     pub head: String,
@@ -31,12 +32,34 @@ pub struct FollowThrough {
     pub worktree_deleted: bool,
     pub cleanup_error: Option<String>,
     pub coding_tool_count: Option<u32>,
+    pub coding_file_count: Option<u32>,
+    pub coding_additions: u32,
+    pub coding_deletions: u32,
     pub work_session_identifier: Option<String>,
     pub work_tool_start: u32,
     pub ci_state: String,
 }
 
 impl FollowThrough {
+    pub fn for_thread(started_at: String) -> Self {
+        Self {
+            thread_started_at: Some(started_at),
+            ..Self::default()
+        }
+    }
+
+    /// Branch names can be reused after deletion. An older PR cannot own this job.
+    pub fn belongs_to_thread(&self, request: &PullRequest) -> bool {
+        let created = request.created_at.parse::<jiff::Timestamp>().ok();
+        let started = self
+            .thread_started_at
+            .as_ref()
+            .and_then(|value| value.parse::<i64>().ok());
+        match (created, started) {
+            (Some(created), Some(started)) => created.as_second() >= started,
+            _ => request.state == PullRequestState::Open,
+        }
+    }
     /// A draft claim exists while coding is still in progress. Attaching the PR
     /// loop then would collapse unfinished work and send premature CI prompts.
     pub fn should_follow(&self, pull_request: &PullRequest) -> bool {
@@ -49,6 +72,11 @@ impl FollowThrough {
         let pull_request = &snapshot.pull_request;
         if !self.should_follow(pull_request) {
             return;
+        }
+        if self.coding_file_count.is_none() {
+            self.coding_file_count = Some(pull_request.changed_files);
+            self.coding_additions = pull_request.additions;
+            self.coding_deletions = pull_request.deletions;
         }
         self.number = pull_request.number;
         self.url = pull_request.url.clone();
@@ -133,6 +161,10 @@ impl FollowThrough {
             })
             .collect();
         PullRequestHistoryView {
+            coding_tool_count: self.coding_tool_count,
+            coding_file_count: self.coding_file_count,
+            coding_additions: self.coding_additions,
+            coding_deletions: self.coding_deletions,
             status: self.status.clone(),
             stage: self.stage.clone(),
             track,
@@ -248,6 +280,10 @@ impl FollowThrough {
             self.card(&key, format!("{author} · {}", review.state), &review.body);
             let changed = self.changed(&key, format!("{}:{}", review.state, review.body));
             if changed
+                && !same_author(
+                    review.author.as_ref(),
+                    snapshot.pull_request.author.as_ref(),
+                )
                 && review.state != "PENDING"
                 && review.state != "APPROVED"
                 && snapshot.pull_request.state == PullRequestState::Open
@@ -269,6 +305,10 @@ impl FollowThrough {
                 .map_or("unknown", |author| author.login.as_str());
             self.card(&key, format!("{author} commented"), &comment.body);
             if self.changed(&key, comment.updated_at.clone())
+                && !same_author(
+                    comment.author.as_ref(),
+                    snapshot.pull_request.author.as_ref(),
+                )
                 && snapshot.pull_request.state == PullRequestState::Open
             {
                 self.queue(
@@ -286,18 +326,7 @@ impl FollowThrough {
     fn observe_review_threads(&mut self, snapshot: &PullRequestSnapshot) {
         for thread in &snapshot.review_threads {
             let key = format!("thread:{}", thread.id);
-            let body = thread
-                .comments
-                .iter()
-                .map(|comment| {
-                    let author = comment
-                        .author
-                        .as_ref()
-                        .map_or("unknown", |author| author.login.as_str());
-                    format!("{author}: {}", comment.body)
-                })
-                .collect::<Vec<_>>()
-                .join("\n\n");
+            let body = review_thread_body(thread);
             self.replace_card(HistoryCard {
                 identifier: key.clone(),
                 title: "Review comment".into(),
@@ -307,7 +336,9 @@ impl FollowThrough {
                 resolved: thread.is_resolved,
                 tool: None,
             });
-            if self.changed(&key, format!("{}:{body}", thread.is_resolved))
+            let incoming = incoming_review_comments(thread, snapshot.pull_request.author.as_ref());
+            if self.changed(&key, format!("{}:{incoming}", thread.is_resolved))
+                && !incoming.is_empty()
                 && !thread.is_resolved
                 && snapshot.pull_request.state == PullRequestState::Open
             {
@@ -420,6 +451,38 @@ impl FollowThrough {
                 .extend(["Merged".into(), "Worktree deleted".into()]);
         }
     }
+}
+
+fn review_thread_body(thread: &crate::PullRequestReviewThread) -> String {
+    thread
+        .comments
+        .iter()
+        .map(|comment| {
+            let author = comment
+                .author
+                .as_ref()
+                .map_or("unknown", |author| author.login.as_str());
+            format!("{author}: {}", comment.body)
+        })
+        .collect::<Vec<_>>()
+        .join("\n\n")
+}
+
+fn incoming_review_comments(
+    thread: &crate::PullRequestReviewThread,
+    author: Option<&crate::GitHubActor>,
+) -> String {
+    thread
+        .comments
+        .iter()
+        .filter(|comment| !same_author(comment.author.as_ref(), author))
+        .map(|comment| format!("{}:{}:{}", comment.id, comment.updated_at, comment.body))
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+fn same_author(left: Option<&crate::GitHubActor>, right: Option<&crate::GitHubActor>) -> bool {
+    matches!((left, right), (Some(left), Some(right)) if left.login.eq_ignore_ascii_case(&right.login))
 }
 
 fn ci_state(checks: &[PullRequestCheck]) -> &'static str {

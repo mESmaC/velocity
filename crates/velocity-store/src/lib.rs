@@ -664,6 +664,9 @@ pub struct PersistedState {
     pub active_project_index: u32,
     pub projects: Vec<ProjectItem>,
     pub settings: Settings,
+    /// Deleted rows must never let delayed agent or watcher events address a new thread.
+    #[serde(default)]
+    pub next_thread_identifiers: BTreeMap<u32, u32>,
 }
 
 impl Default for PersistedState {
@@ -673,6 +676,7 @@ impl Default for PersistedState {
             active_project_index: 0,
             projects: Vec::new(),
             settings: Settings::default(),
+            next_thread_identifiers: BTreeMap::new(),
         }
     }
 }

@@ -135,6 +135,31 @@ fn observe(
         return Err("Multiple saved threads own this branch; keeping their worktrees".into());
     }
     let mut watch = thread.follow_through.clone().unwrap_or_default();
+    let Some(snapshot) = owning_snapshot(client, thread, &watch)? else {
+        return Ok(());
+    };
+    let key = (project.id, thread.id);
+    let action = crate::threads::action_lock(application, key)?;
+    let _action = action.blocking_lock_owned();
+    verify_saved_owner(application, key, thread)?;
+    watch.observe(&snapshot);
+    if let Some(work) = (hooks.tool_steps)(application, key) {
+        watch.observe_work(&work);
+    }
+    checkpoint(application, key, &snapshot, watch.clone())?;
+    if snapshot.pull_request.state == PullRequestState::Merged {
+        finish_merged(application, hooks, project, thread, &mut watch);
+    } else {
+        deliver_pending(application, hooks, key, &snapshot, &mut watch)?;
+    }
+    checkpoint(application, key, &snapshot, watch)
+}
+
+fn owning_snapshot(
+    client: &PullRequestClient,
+    thread: &ThreadItem,
+    watch: &velocity_github::follow_through::FollowThrough,
+) -> Result<Option<PullRequestSnapshot>, String> {
     let number = match thread.pull_request_number {
         Some(number) => number,
         None => match client
@@ -142,41 +167,72 @@ fn observe(
             .map_err(|error| error.to_string())?
             .first()
         {
-            Some(request) if watch.should_follow(request) => request.number,
-            Some(_) => return Ok(()),
-            None => return Ok(()),
+            Some(request) if watch.should_follow(request) && watch.belongs_to_thread(request) => {
+                request.number
+            }
+            _ => return Ok(None),
         },
     };
     let snapshot = client.snapshot(number).map_err(|error| error.to_string())?;
     if !client.owns_branch(&snapshot.pull_request, &thread.branch_name) {
         return Err("The PR head does not match this thread's immutable branch".into());
     }
-    if !watch.should_follow(&snapshot.pull_request) {
-        return Ok(());
+    Ok(watch
+        .should_follow(&snapshot.pull_request)
+        .then_some(snapshot))
+}
+
+fn verify_saved_owner(
+    application: &AppHandle,
+    key: ThreadKey,
+    expected: &ThreadItem,
+) -> Result<(), String> {
+    let store = application.state::<ManagedStateStore>();
+    let store = store.lock().map_err(|error| error.to_string())?;
+    let current = store
+        .project(key.0)
+        .and_then(|project| project.threads.iter().find(|thread| thread.id == key.1))
+        .ok_or("The owning thread was removed while reading GitHub")?;
+    if current.branch_name != expected.branch_name
+        || current.worktree_path != expected.worktree_path
+        || current.pull_request_number != expected.pull_request_number
+    {
+        return Err("Thread ownership changed while reading GitHub".into());
     }
-    watch.observe(&snapshot);
+    Ok(())
+}
+
+fn finish_merged(
+    application: &AppHandle,
+    hooks: &Hooks,
+    project: &ProjectItem,
+    thread: &ThreadItem,
+    watch: &mut velocity_github::follow_through::FollowThrough,
+) {
+    watch.pending.clear();
+    if watch.worktree_deleted {
+        return;
+    }
     let key = (project.id, thread.id);
-    if let Some(work) = (hooks.tool_steps)(application, key) {
-        watch.observe_work(&work);
-    }
-    checkpoint(application, key, &snapshot, watch.clone())?;
-    if snapshot.pull_request.state == PullRequestState::Merged && !watch.worktree_deleted {
-        // A completed PR must never restart an agent to fix superseded review work.
-        watch.pending.clear();
-        match (hooks.stop)(application, key).and_then(|stopped| {
-            if stopped {
-                cleanup(project, thread, application)
-            } else {
-                Err("Waiting for the agent session to stop before removing its worktree".into())
-            }
-        }) {
-            Ok(()) => watch.cleaned_up(),
-            Err(error) => watch.cleanup_error = Some(error),
+    match (hooks.stop)(application, key).and_then(|stopped| {
+        if stopped {
+            cleanup(project, thread, application)
+        } else {
+            Err("Waiting for the agent session to stop before removing its worktree".into())
         }
+    }) {
+        Ok(()) => watch.cleaned_up(),
+        Err(error) => watch.cleanup_error = Some(error),
     }
-    if snapshot.pull_request.state == PullRequestState::Merged {
-        return checkpoint(application, key, &snapshot, watch);
-    }
+}
+
+fn deliver_pending(
+    application: &AppHandle,
+    hooks: &Hooks,
+    key: ThreadKey,
+    snapshot: &PullRequestSnapshot,
+    watch: &mut velocity_github::follow_through::FollowThrough,
+) -> Result<(), String> {
     for pending in watch.pending.clone() {
         match (hooks.deliver)(application, key, &pending) {
             Ok(DeliveryStatus::Pending) => continue,
@@ -184,9 +240,9 @@ fn observe(
             Err(_) => break,
         }
         watch.delivered(&pending.identifier);
-        checkpoint(application, key, &snapshot, watch.clone())?;
+        checkpoint(application, key, snapshot, watch.clone())?;
     }
-    checkpoint(application, key, &snapshot, watch)
+    Ok(())
 }
 
 fn checkpoint(
@@ -221,7 +277,12 @@ fn checkpoint(
         .map_err(|error| error.to_string())?;
     drop(layout);
     drop(store);
-    publish_lifecycle(application, key, &watch, before.is_none())
+    publish_lifecycle(
+        application,
+        key,
+        &watch,
+        before.is_none_or(|watch| watch.number == 0),
+    )
 }
 
 fn publish_lifecycle(

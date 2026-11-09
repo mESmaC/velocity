@@ -28,6 +28,8 @@ pub struct PullRequest {
     pub base_ref_name: String,
     pub additions: u32,
     pub deletions: u32,
+    #[serde(default)]
+    pub changed_files: u32,
     pub created_at: String,
     pub updated_at: String,
     pub closed_at: Option<String>,

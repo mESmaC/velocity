@@ -169,3 +169,5 @@ export const onThreadStatus = (callback: EventCallback<ThreadStatusChanged>) =>
 export const onThreadStep = (
   callback: EventCallback<ThreadStepRecorded_Serialize>,
 ) => listen(THREAD_STEP_EVENT, callback);
+
+export * from './ipc/thread-menu';

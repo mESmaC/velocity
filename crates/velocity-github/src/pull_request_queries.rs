@@ -1,5 +1,5 @@
 pub(crate) const FIELDS: &str = "id number title body url state isDraft author { login }
-    headRefOid headRefName baseRefName additions deletions createdAt updatedAt
+    headRefOid headRefName baseRefName additions deletions changedFiles createdAt updatedAt
     closedAt mergedAt reviewDecision mergeStateStatus headRepository { nameWithOwner }";
 
 pub(crate) const COMMENT_FIELDS: &str = "id body url author { login } createdAt updatedAt";
