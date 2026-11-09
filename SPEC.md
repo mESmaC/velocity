@@ -1141,7 +1141,7 @@ Each milestone ends with a working app. PR duty checks an item off when it lands
 - [x] Outliner editor with markdown round-trip (F11)
 - [ ] Live lint, coverage checks with Add (F11)
 - [ ] Rewrite agent on Enter: tighten / expand / split / flag, with Undo (F11)
-- [ ] Default AGENTS.md template with the PR, Task List and AIRC rules (F11)
+- [x] Default AGENTS.md template with the PR, Task List and AIRC rules (F11)
 
 **M8 · AIRC**
 - [ ] Channel per project: log files, nicks, join/leave, MCP tools for agents (F14)
