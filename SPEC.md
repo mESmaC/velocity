@@ -736,6 +736,8 @@ Nothing else is pushed to it. The full log stays readable on demand (`read_event
 
 **Storage:** daily log files and ledger files per project under the app data folder. Agents reach AIRC through MCP tools (`claim`, `release`, `share`, `wait`, `read_feed`, `read_events`, `send_message { to, intent, text }`, `read_messages`, `append_ledger`, `read_ledger`), which the agent runner gives every agent on every provider; the agent runner injects unread mentions at each step boundary.
 
+The M8 channel backend is `velocity-airc`: launch `velocity-airc <app-data> <project-id> <member-id> <worktree-leaf-or-duty-nick>` as an MCP stdio server. Initialization joins the channel; EOF leaves it. Project identities partition storage independently of display names. UTC daily JSONL logs and the Discoveries/Past work files share monotonically increasing sequence cursors; writes are serialized across processes and flushed before acknowledgement. Nicks are cut at word boundaries to 16 characters, with collision suffixes; `you` and `velocity` are reserved. Tools available at this stage are `join`, `leave`, `list_nicks`, `read_feed`, `read_events`, `read_messages`, `send_message`, `append_ledger`, and `read_ledger`. Claim tools, runtime injection, step-boundary delivery and the modal remain their later §7 items.
+
 **Acceptance:**
 - Two agents that claim the same file get an overlap event within one step, and the later one records a share or a wait before it edits the file.
 - PR, review, merge, issue and Task List events appear without any agent posting them.
@@ -1211,4 +1213,3 @@ Each milestone ends with a working app. PR duty checks an item off when it lands
 | Q26 | Which folder does Kimi Code read skills from inside a project (`.kimi-code/skills/`, `.agents/skills/` or another)? And does Antigravity read `.agents/skills/` as the gamedev and UI UX Pro Max docs say? | F18 |
 | Q27 | Should "Add a skill pack" also search the skills.sh registry, or take only GitHub repos? | F18 |
 | Q28 | How is Rule 4 approval recorded when all agents share one GitHub account, which cannot approve its own PRs? Tracked in #42. Proposed: Velocity's own approval record bound to the head SHA (F7). Velocity's own repository uses a PR duty GitHub App until that is built (AGENTS.md). | M4 approve/merge, F7 |
-

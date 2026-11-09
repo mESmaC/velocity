@@ -1,6 +1,7 @@
 [workspace]
 members = [
     "crates/velocity-acp",
+    "crates/velocity-airc",
     "crates/velocity-core",
     "crates/velocity-git",
     "crates/velocity-github",
