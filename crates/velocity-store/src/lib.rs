@@ -570,13 +570,7 @@ impl ThreadItem {
             worktree_role: WorktreeRole::Thread,
             worktree_path_id: None,
             pull_request_number: None,
-            follow_through: Some(velocity_github::follow_through::FollowThrough::for_thread(
-                std::time::SystemTime::now()
-                    .duration_since(std::time::UNIX_EPOCH)
-                    .unwrap_or_default()
-                    .as_secs()
-                    .to_string(),
-            )),
+            follow_through: None,
             review_stage: None,
             task_ids: Vec::new(),
             additions: 0,
@@ -702,6 +696,8 @@ pub struct PersistedState {
     /// Deleted rows must never let delayed agent or watcher events address a new thread.
     #[serde(default)]
     pub next_thread_identifiers: BTreeMap<u32, u32>,
+    #[serde(default)]
+    pub thread_started_at: BTreeMap<u32, BTreeMap<u32, String>>,
 }
 
 impl Default for PersistedState {
@@ -712,6 +708,7 @@ impl Default for PersistedState {
             projects: Vec::new(),
             settings: Settings::default(),
             next_thread_identifiers: BTreeMap::new(),
+            thread_started_at: BTreeMap::new(),
         }
     }
 }

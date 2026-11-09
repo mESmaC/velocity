@@ -66,6 +66,14 @@ impl StateStore {
                 .checked_add(1)
                 .ok_or(ThreadError::IdentifiersExhausted)?,
         );
+        next.thread_started_at.entry(project).or_default().insert(
+            identifier,
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_secs()
+                .to_string(),
+        );
         let record = ThreadItem::for_build(thread, identifier);
         // Newest first, as the reference's sidebar lists new threads at the top of their group.
         item.threads.insert(0, record);
@@ -134,6 +142,9 @@ impl StateStore {
         }
         if item.active_thread_id == Some(thread) {
             item.active_thread_id = None;
+        }
+        if let Some(started) = next.thread_started_at.get_mut(&project) {
+            started.remove(&thread);
         }
         self.commit(next)?;
         Ok(removed)

@@ -133,7 +133,12 @@ fn observe(
     {
         return Err("Multiple saved threads own this branch; keeping their worktrees".into());
     }
-    let mut watch = thread.follow_through.clone().unwrap_or_default();
+    let mut watch = application
+        .state::<ManagedStateStore>()
+        .lock()
+        .map_err(|error| error.to_string())?
+        .follow_through_observer(project.id, thread.id)
+        .ok_or("The owning thread was removed before reading GitHub")?;
     let Some(snapshot) = owning_snapshot(client, thread, &watch)? else {
         return Ok(());
     };

@@ -605,6 +605,7 @@ export type PersistedState_Deserialize = {
 	settings: Settings_Deserialize,
 	/**  Deleted rows must never let delayed agent or watcher events address a new thread. */
 	next_thread_identifiers?: { [key in number]: number },
+	thread_started_at?: { [key in number]: { [key in number]: string } },
 };
 
 export type PersistedState_Serialize = {
@@ -614,6 +615,7 @@ export type PersistedState_Serialize = {
 	settings: Settings_Serialize,
 	/**  Deleted rows must never let delayed agent or watcher events address a new thread. */
 	next_thread_identifiers: { [key in number]: number },
+	thread_started_at: { [key in number]: { [key in number]: string } },
 };
 
 export type ProjectItem = ProjectItem_Serialize | ProjectItem_Deserialize;

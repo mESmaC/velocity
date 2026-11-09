@@ -17,6 +17,23 @@ pub enum FollowThroughError {
 }
 
 impl StateStore {
+    pub fn follow_through_observer(&self, project: u32, thread: u32) -> Option<FollowThrough> {
+        let record = self
+            .project(project)?
+            .threads
+            .iter()
+            .find(|record| record.id == thread)?;
+        Some(record.follow_through.clone().unwrap_or_else(|| {
+            self.state
+                .thread_started_at
+                .get(&project)
+                .and_then(|threads| threads.get(&thread))
+                .map_or_else(FollowThrough::default, |started| {
+                    FollowThrough::for_thread(started.clone())
+                })
+        }))
+    }
+
     pub fn follow_through_thread(
         &self,
         project_identifier: u32,
