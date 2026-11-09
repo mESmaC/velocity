@@ -9,6 +9,7 @@ pub mod layout_guard;
 pub mod layout_state;
 pub mod layout_view;
 pub mod navigation;
+pub mod new_project;
 pub mod projects;
 pub mod state;
 pub mod theme;

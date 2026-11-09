@@ -7,6 +7,7 @@
   import ThreadView from './lib/ThreadView.svelte';
   import CommandPalette from './lib/CommandPalette.svelte';
   import WorktreeSettings from './lib/WorktreeSettings.svelte';
+  import NewProjectDialog from './lib/NewProjectDialog.svelte';
   import {
     layoutCommands,
     onLayoutState,
@@ -21,6 +22,7 @@
   let error = $state('');
   let latest: LayoutSnapshot | null = null;
   let pending = 0;
+  let newProjectSubmits = $state(0);
   let queue = Promise.resolve();
   const intents: LayoutIntent[] = [];
   const shortcutKeys = new Set([
@@ -68,6 +70,10 @@
   function focusIntent(intent: LayoutIntent) {
     if (typeof intent === 'string' || !('Navigation' in intent)) return;
     const navigation = intent.Navigation;
+    if (navigation === 'Submit' && layout?.new_project_open) {
+      newProjectSubmits += 1;
+      return;
+    }
     const target =
       navigation === 'Search'
         ? 'thread-search'
@@ -200,6 +206,10 @@
     </div>{:else}<p class="empty" role="status">Opening workspace…</p>{/if}
 </div>
 {#if layout?.palette_open}<CommandPalette {layout} {send} />{/if}
+{#if layout?.new_project_open}<NewProjectDialog
+    {send}
+    submitRequests={newProjectSubmits}
+  />{/if}
 {#if error || layout?.launch_notice}<p class="layout-error" role="alert">
     {error || layout?.launch_notice}
   </p>{/if}

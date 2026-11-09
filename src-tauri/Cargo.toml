@@ -22,11 +22,12 @@ serde.workspace = true
 specta.workspace = true
 specta-typescript.workspace = true
 tauri.workspace = true
-tauri-specta.workspace = true
 tauri-plugin-dialog.workspace = true
+tauri-specta.workspace = true
 velocity-git.workspace = true
 velocity-acp = { path = "../crates/velocity-acp" }
 velocity-core = { workspace = true, features = ["bindings"] }
+velocity-new-project.workspace = true
 velocity-store.workspace = true
 
 [lints]

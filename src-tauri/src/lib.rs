@@ -5,6 +5,7 @@ use velocity_store::PersistedState;
 
 mod build_gate;
 pub mod layout;
+mod new_project;
 mod projects;
 mod state;
 mod window;
@@ -31,6 +32,9 @@ fn bindings() -> Builder<tauri::Wry> {
             worktree_settings::set_worktree_settings,
             worktree_settings::browse_worktree_folder,
             worktree_settings::prune_worktrees,
+            new_project::get_new_project_defaults,
+            new_project::pick_project_folder,
+            new_project::create_project,
             build_gate::get_launch_eligibility,
         ])
         .typ::<PersistedState>()

@@ -644,3 +644,126 @@
   --thread-slash-desc-font-size: 10.5px;
   --thread-pill-bold-font-weight: 600;
 }
+
+/* F2 New project dialog. Values come from the winning reference rules in
+   design/main-window.html: 470-569 (modal), 1017-1046 (glass controls) and
+   1065-1068 (glass modal). Italics in the reference are dropped (AGENTS.md UI). */
+:root {
+  --new-project-scrim-background: rgba(0, 0, 0, 0.5);
+  --new-project-scrim-backdrop-filter: blur(8px) saturate(1.3);
+  --new-project-width: min(560px, 92vw);
+  --new-project-border: 1px solid rgba(255, 255, 255, 0.13);
+  --new-project-border-radius: 18px;
+  --new-project-box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.12), 0 0 0 0.5px #000,
+    0 30px 90px rgba(0, 0, 0, 0.9);
+  --new-project-header-padding: 14px 16px 6px;
+  --new-project-title-font-size: 13.5px;
+  --new-project-title-font-weight: 600;
+  --new-project-title-letter-spacing: -0.01em;
+  --new-project-title-color: #fff;
+  --new-project-label-font-size: 10.5px;
+  --new-project-body-padding: 8px 16px 14px;
+  --new-project-body-gap: 16px;
+  --new-project-field-gap: 7px;
+  --new-project-row-gap: 8px;
+  --new-project-segment-gap: 2px;
+  --new-project-segment-padding: 2px;
+  --new-project-segment-border-radius: 8px;
+  --new-project-segment-background: rgba(255, 255, 255, 0.07);
+  --new-project-segment-box-shadow: inset 0 0 0 0.5px rgba(255, 255, 255, 0.06);
+  --new-project-segment-button-height: 22px;
+  --new-project-segment-button-padding: 0 12px;
+  --new-project-segment-button-font-size: 11.5px;
+  --new-project-segment-button-gap: 6px;
+  --new-project-segment-button-border-radius: 6px;
+  --new-project-segment-on-background: linear-gradient(
+    rgba(255, 255, 255, 0.24),
+    rgba(255, 255, 255, 0.16)
+  );
+  --new-project-segment-on-color: #fff;
+  --new-project-segment-on-box-shadow:
+    0 1px 3px rgba(0, 0, 0, 0.6), inset 0 1px 0 rgba(255, 255, 255, 0.16);
+  --new-project-small-segment-button-height: 19px;
+  --new-project-small-segment-button-padding: 0 9px;
+  --new-project-small-segment-button-font-size: 10.5px;
+  --new-project-input-height: 30px;
+  --new-project-input-padding: 0 9px;
+  --new-project-input-gap: 6px;
+  --new-project-input-border: 1px solid rgba(255, 255, 255, 0.1);
+  --new-project-input-border-radius: 7px;
+  --new-project-input-background: rgba(0, 0, 0, 0.45);
+  --new-project-input-focus-border-color: rgba(255, 255, 255, 0.26);
+  --new-project-input-font-size: 11.5px;
+  --new-project-button-height: 24px;
+  --new-project-button-padding: 0 10px;
+  --new-project-button-gap: 6px;
+  --new-project-button-border: 1px solid rgba(255, 255, 255, 0.11);
+  --new-project-button-border-radius: 7px;
+  --new-project-button-font-size: 11px;
+  --new-project-button-background: linear-gradient(
+    rgba(255, 255, 255, 0.12),
+    rgba(255, 255, 255, 0.06)
+  );
+  --new-project-button-box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.1);
+  --new-project-button-hover-border-color: rgba(255, 255, 255, 0.18);
+  --new-project-button-hover-background: linear-gradient(
+    rgba(255, 255, 255, 0.17),
+    rgba(255, 255, 255, 0.1)
+  );
+  --new-project-button-kbd-padding: 1px 3px;
+  --new-project-button-kbd-font-size: 9px;
+  --new-project-button-disabled-opacity: 0.35;
+  --new-project-solid-border-color: rgba(255, 255, 255, 0.6);
+  --new-project-solid-background: linear-gradient(#fff, #dcdce0);
+  --new-project-solid-color: #000;
+  --new-project-solid-box-shadow: inset 0 1px 0 #fff;
+  --new-project-solid-font-weight: 600;
+  --new-project-solid-hover-background: #fff;
+  --new-project-solid-kbd-background: rgba(0, 0, 0, 0.08);
+  --new-project-solid-kbd-color: #333;
+  --new-project-check-gap: 7px;
+  --new-project-check-font-size: 11px;
+  --new-project-models-columns: repeat(auto-fill, minmax(150px, 1fr));
+  --new-project-models-gap: 6px;
+  --new-project-card-padding: 8px 10px;
+  --new-project-card-gap: 2px;
+  --new-project-card-border: 1px solid rgba(255, 255, 255, 0.09);
+  --new-project-card-border-radius: 12px;
+  --new-project-card-background: linear-gradient(
+    180deg,
+    rgba(255, 255, 255, 0.05),
+    rgba(255, 255, 255, 0.025)
+  );
+  --new-project-card-box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.05);
+  --new-project-card-hover-border-color: rgba(255, 255, 255, 0.17);
+  --new-project-card-hover-background: linear-gradient(
+    180deg,
+    rgba(255, 255, 255, 0.08),
+    rgba(255, 255, 255, 0.04)
+  );
+  --new-project-card-on-border-color: rgba(255, 255, 255, 0.34);
+  --new-project-card-on-background: linear-gradient(
+    180deg,
+    rgba(255, 255, 255, 0.14),
+    rgba(255, 255, 255, 0.08)
+  );
+  --new-project-card-on-box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.1);
+  --new-project-card-heading-gap: 6px;
+  --new-project-card-heading-font-size: 11.5px;
+  --new-project-card-heading-font-weight: 600;
+  --new-project-card-detail-font-size: 10.5px;
+  --new-project-brief-min-height: 96px;
+  --new-project-brief-padding: 8px 10px;
+  --new-project-brief-font-size: 12px;
+  --new-project-brief-line-height: 1.5;
+  --new-project-note-gap: 8px;
+  --new-project-note-font-size: 10.5px;
+  --new-project-note-line-height: 1.5;
+  --new-project-note-icon-margin-top: 1px;
+  --new-project-footer-padding: 10px 16px;
+  --new-project-footer-gap: 8px;
+  --new-project-footer-border-top: 1px solid rgba(255, 255, 255, 0.08);
+  --new-project-footer-background: rgba(0, 0, 0, 0.22);
+  --new-project-error-font-size: 11px;
+}

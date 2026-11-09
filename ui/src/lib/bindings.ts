@@ -18,6 +18,11 @@ export const commands = {
 	setWorktreeSettings: (edit: WorktreeSettingsEdit, projectIdentifier: number | null) => __TAURI_INVOKE<WorktreeSettingsView_Serialize>("set_worktree_settings", { edit, projectIdentifier }),
 	browseWorktreeFolder: () => __TAURI_INVOKE<string | null>("browse_worktree_folder"),
 	pruneWorktrees: () => __TAURI_INVOKE<string>("prune_worktrees"),
+	getNewProjectDefaults: () => __TAURI_INVOKE<NewProjectDefaults_Serialize>("get_new_project_defaults"),
+	/**  Browse…: the native folder picker. `None` when it is dismissed. */
+	pickProjectFolder: () => __TAURI_INVOKE<string | null>("pick_project_folder"),
+	/**  Create & start interview. `git` and `gh` run off the UI thread. */
+	createProject: (request: NewProjectRequest_Deserialize) => __TAURI_INVOKE<CreatedProject>("create_project", { request }),
 	getLaunchEligibility: (request: LaunchRequest) => __TAURI_INVOKE<LaunchEligibility>("get_launch_eligibility", { request }),
 };
 
@@ -54,6 +59,12 @@ export type AgentSettings_Serialize = {
 	max_duration_minutes: number | null,
 	stall_timeout_minutes: number,
 	claim_release_grace_minutes: number,
+};
+
+export type CreatedProject = {
+	identifier: number,
+	name: string,
+	repository_path: string,
 };
 
 export type DiffBlockView = DiffBlockView_Serialize | DiffBlockView_Deserialize;
@@ -145,6 +156,7 @@ export type LayoutSnapshot_Deserialize = {
 	pulse: PulseCount_Deserialize[],
 	show_numbers: boolean,
 	palette_open: boolean,
+	new_project_open: boolean,
 	palette_query: string,
 	palette_results: PaletteItem_Deserialize[],
 	palette_selection: string,
@@ -182,6 +194,7 @@ export type LayoutSnapshot_Serialize = {
 	pulse: PulseCount_Serialize[],
 	show_numbers: boolean,
 	palette_open: boolean,
+	new_project_open: boolean,
 	palette_query: string,
 	palette_results: PaletteItem_Serialize[],
 	palette_selection: string,
@@ -233,6 +246,44 @@ export type NavigationIntent_Serialize = "Palette" | "NewThread" | "NewProject" 
 
 export type NavigationView = "Home" | "Thread" | "SpecScan" | "SpecAsk" | "SpecReady" | "SpecLocked" | "Agents" | "Settings" | "Other";
 
+export type NewProjectDefaults = NewProjectDefaults_Serialize | NewProjectDefaults_Deserialize;
+
+export type NewProjectDefaults_Deserialize = {
+	folder: string,
+	clone_to: string,
+	provider: ProviderKind,
+	model_name?: string | null,
+	effort: EffortLevel,
+	speed: SpeedMode,
+};
+
+export type NewProjectDefaults_Serialize = {
+	folder: string,
+	clone_to: string,
+	provider: ProviderKind,
+	model_name: string | null,
+	effort: EffortLevel,
+	speed: SpeedMode,
+};
+
+export type NewProjectRequest = NewProjectRequest_Serialize | NewProjectRequest_Deserialize;
+
+export type NewProjectRequest_Deserialize = {
+	location: ProjectLocationRequest,
+	model_name?: string | null,
+	effort: EffortLevel,
+	speed: SpeedMode,
+	brief: string,
+};
+
+export type NewProjectRequest_Serialize = {
+	location: ProjectLocationRequest,
+	model_name: string | null,
+	effort: EffortLevel,
+	speed: SpeedMode,
+	brief: string,
+};
+
 export type NumberHintEvent = "AltDown" | "AltUp" | "Blur" | "Other";
 
 export type PaletteItem = PaletteItem_Serialize | PaletteItem_Deserialize;
@@ -258,6 +309,36 @@ export type PaletteTarget = PaletteTarget_Serialize | PaletteTarget_Deserialize;
 export type PaletteTarget_Deserialize = ({ Intent: LayoutIntent_Deserialize }) & { Thread?: never } | ({ Thread: string }) & { Intent?: never };
 
 export type PaletteTarget_Serialize = ({ Intent: LayoutIntent_Serialize }) & { Thread?: never } | ({ Thread: string }) & { Intent?: never };
+
+/**
+ *  The New project dialog's interview choices, kept until the spec interview
+ *  (F3) starts its thread from them.
+ */
+export type PendingInterview = PendingInterview_Serialize | PendingInterview_Deserialize;
+
+/**
+ *  The New project dialog's interview choices, kept until the spec interview
+ *  (F3) starts its thread from them.
+ */
+export type PendingInterview_Deserialize = {
+	/**  `None` until a provider is signed in and offers a model (F15, issue #25). */
+	model_name?: string | null,
+	effort: EffortLevel,
+	preferred_speed: SpeedMode,
+	brief: string,
+};
+
+/**
+ *  The New project dialog's interview choices, kept until the spec interview
+ *  (F3) starts its thread from them.
+ */
+export type PendingInterview_Serialize = {
+	/**  `None` until a provider is signed in and offers a model (F15, issue #25). */
+	model_name: string | null,
+	effort: EffortLevel,
+	preferred_speed: SpeedMode,
+	brief: string,
+};
 
 export type PersistedState = PersistedState_Serialize | PersistedState_Deserialize;
 
@@ -290,6 +371,8 @@ export type ProjectItem_Deserialize = {
 	merged_today: number,
 	tasks: TaskItem_Deserialize[],
 	threads: ThreadItem_Deserialize[],
+	/**  The spec interview Create asked for and nothing has started yet (F2, F3). */
+	pending_interview?: PendingInterview_Deserialize | null,
 };
 
 export type ProjectItem_Serialize = {
@@ -305,6 +388,8 @@ export type ProjectItem_Serialize = {
 	merged_today: number,
 	tasks: TaskItem_Serialize[],
 	threads: ThreadItem_Serialize[],
+	/**  The spec interview Create asked for and nothing has started yet (F2, F3). */
+	pending_interview: PendingInterview_Serialize | null,
 };
 
 export type ProjectLabel = "local" | "github" | "speccing";
@@ -315,6 +400,18 @@ export type ProjectList = {
 };
 
 export type ProjectLocationKind = "local" | "git_hub";
+
+export type ProjectLocationRequest = ({ LocalFolder: {
+	path: string,
+	create_if_needed: boolean,
+} }) & { GitHubExisting?: never; GitHubNew?: never } | ({ GitHubNew: {
+	repository: string,
+	visibility: RepositoryVisibility,
+	clone_to: string,
+} }) & { GitHubExisting?: never; LocalFolder?: never } | ({ GitHubExisting: {
+	repository: string,
+	clone_to: string,
+} }) & { GitHubNew?: never; LocalFolder?: never };
 
 export type ProjectRow = {
 	identifier: number,
@@ -413,6 +510,8 @@ export type RailItem_Serialize = {
 	title: string,
 	metadata: string,
 };
+
+export type RepositoryVisibility = "Private" | "Public";
 
 export type ReviewStage = "continuous_integration" | "review" | "fixing" | "approved";
 

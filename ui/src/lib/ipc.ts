@@ -53,6 +53,10 @@ export type {
   LayoutSnapshot_Serialize as LayoutSnapshot,
   LayoutIntent_Serialize as LayoutIntent,
   NavigationIntent_Deserialize as NavigationIntent,
+  NewProjectDefaults_Serialize as NewProjectDefaults,
+  NewProjectRequest_Deserialize as NewProjectRequest,
+  ProjectLocationRequest,
+  RepositoryVisibility,
   RailItem_Serialize as RailItem,
   ProjectList,
   ProjectRow,
@@ -81,6 +85,12 @@ export const onLayoutState = (
 export const onLayoutIntent = (
   callback: EventCallback<LayoutIntentRequested_Serialize>,
 ) => listen(LAYOUT_INTENT_EVENT, callback);
+
+export const newProjectCommands = {
+  defaults: commands.getNewProjectDefaults,
+  pickFolder: commands.pickProjectFolder,
+  create: commands.createProject,
+};
 
 export const windowCommands = {
   getState: commands.getWindowState,
