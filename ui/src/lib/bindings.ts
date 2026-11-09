@@ -165,6 +165,7 @@ export type ErrorCardView = {
 export type FollowThrough = FollowThrough_Serialize | FollowThrough_Deserialize;
 
 export type FollowThrough_Deserialize = {
+	thread_started_at?: string | null,
 	number?: number,
 	url?: string,
 	head?: string,
@@ -177,10 +178,16 @@ export type FollowThrough_Deserialize = {
 	worktree_deleted?: boolean,
 	cleanup_error?: string | null,
 	coding_tool_count?: number | null,
+	coding_file_count?: number | null,
+	coding_additions?: number,
+	coding_deletions?: number,
+	work_session_identifier?: string | null,
+	work_tool_start?: number,
 	ci_state?: string,
 };
 
 export type FollowThrough_Serialize = {
+	thread_started_at: string | null,
 	number: number,
 	url: string,
 	head: string,
@@ -193,6 +200,11 @@ export type FollowThrough_Serialize = {
 	worktree_deleted: boolean,
 	cleanup_error: string | null,
 	coding_tool_count: number | null,
+	coding_file_count: number | null,
+	coding_additions: number,
+	coding_deletions: number,
+	work_session_identifier: string | null,
+	work_tool_start: number,
 	ci_state: string,
 };
 
@@ -591,6 +603,8 @@ export type PersistedState_Deserialize = {
 	active_project_index: number,
 	projects: ProjectItem_Deserialize[],
 	settings: Settings_Deserialize,
+	/**  Deleted rows must never let delayed agent or watcher events address a new thread. */
+	next_thread_identifiers?: { [key in number]: number },
 };
 
 export type PersistedState_Serialize = {
@@ -598,6 +612,8 @@ export type PersistedState_Serialize = {
 	active_project_index: number,
 	projects: ProjectItem_Serialize[],
 	settings: Settings_Serialize,
+	/**  Deleted rows must never let delayed agent or watcher events address a new thread. */
+	next_thread_identifiers: { [key in number]: number },
 };
 
 export type ProjectItem = ProjectItem_Serialize | ProjectItem_Deserialize;
@@ -792,6 +808,10 @@ export type PullRequestHistoryCard_Serialize = {
 export type PullRequestHistoryView = PullRequestHistoryView_Serialize | PullRequestHistoryView_Deserialize;
 
 export type PullRequestHistoryView_Deserialize = {
+	coding_tool_count?: number | null,
+	coding_file_count?: number | null,
+	coding_additions: number,
+	coding_deletions: number,
 	status: string,
 	stage: string,
 	track: PullRequestTrackStep[],
@@ -800,6 +820,10 @@ export type PullRequestHistoryView_Deserialize = {
 };
 
 export type PullRequestHistoryView_Serialize = {
+	coding_tool_count: number | null,
+	coding_file_count: number | null,
+	coding_additions: number,
+	coding_deletions: number,
 	status: string,
 	stage: string,
 	track: PullRequestTrackStep[],
@@ -1023,6 +1047,7 @@ export type PullRequest_Deserialize = {
 	baseRefName: string,
 	additions: number,
 	deletions: number,
+	changedFiles?: number,
 	createdAt: string,
 	updatedAt: string,
 	closedAt?: string | null,
@@ -1046,6 +1071,7 @@ export type PullRequest_Serialize = {
 	baseRefName: string,
 	additions: number,
 	deletions: number,
+	changedFiles: number,
 	createdAt: string,
 	updatedAt: string,
 	closedAt: string | null,
