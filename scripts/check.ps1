@@ -37,6 +37,21 @@ if (-not (Test-Path -LiteralPath 'ui/node_modules')) {
 }
 Invoke-Check 'Rust format' { cargo fmt --all --check }
 Invoke-Check 'Rust build (locked)' { cargo build --workspace --locked }
+# The workspace build turns on every crate's features together, so a crate that
+# only compiles with a feature another member enables still passes it. Stress
+# scripts and other crates build each crate alone, so check alone each crate this
+# branch changes. Checking all of them costs minutes in a fresh worktree.
+$mergeBase = git merge-base $Base HEAD
+$changedPaths = @(git diff --name-only $mergeBase) + @(git status --porcelain | ForEach-Object { $_.Substring(3) })
+$changedCrates = (cargo metadata --no-deps --format-version 1 --locked | ConvertFrom-Json).packages |
+    Where-Object { $_.manifest_path -like '*crates*' } |
+    Where-Object {
+        $crateFolder = 'crates/' + (Split-Path -Leaf (Split-Path -Parent $_.manifest_path)) + '/'
+        $changedPaths | Where-Object { $_.StartsWith($crateFolder) }
+    }
+foreach ($crate in $changedCrates) {
+    Invoke-Check "Builds alone: $($crate.name)" { cargo check -p $crate.name --locked }
+}
 Invoke-Check 'Regenerate IPC bindings' { pnpm -C ui bindings }
 Invoke-Check 'Bindings are committed' { git diff --exit-code -- ui/src/lib/bindings.ts }
 Invoke-Check 'Clippy' { cargo clippy --workspace --all-targets --locked -- -D warnings }
@@ -44,7 +59,6 @@ Invoke-Check 'UI type check' { pnpm -C ui check }
 Invoke-Check 'UI lint' { pnpm -C ui lint }
 Invoke-Check 'UI build' { pnpm -C ui build }
 
-$mergeBase = git merge-base $Base HEAD
 $proofChanges = @(git diff --name-only $mergeBase -- proofs) + @(git status --porcelain -- proofs)
 if (-not ($proofChanges -join '').Trim()) {
     Write-Host '==> Proofs: proofs/ unchanged, skipped' -ForegroundColor Cyan

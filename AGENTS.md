@@ -18,7 +18,7 @@ Your job is working functionality. Proofs, tests and docs support it; they never
 - Run the app: `cargo tauri dev`
 - Lint: `cargo clippy --workspace --all-targets -- -D warnings`. Zero warnings.
 - Format: `cargo fmt --all`. Run it before every commit.
-- All local checks: `pwsh -NoProfile -File scripts/check.ps1`. It runs every check PR duty approves on: format, locked build, generated bindings, clippy, UI check, lint and build, and `lake build` with the axiom audit when `proofs/` changes. Run it on the merge result before you mark a PR ready.
+- All local checks: `pwsh -NoProfile -File scripts/check.ps1`. It runs every check PR duty approves on: format, locked build, each crate built on its own, generated bindings, clippy, UI check, lint and build, and `lake build` with the axiom audit when `proofs/` changes. Run it on the merge result before you mark a PR ready.
 - One-time machine setup: `pwsh -NoProfile -File scripts/Setup-DevMachine.ps1`. It registers the merge driver for generated files and turns on the shared sccache compiler cache.
 - Proofs: `lake build` in `proofs/`. Run it before every push that changes `proofs/`.
 - Proof toolchain setup (Windows + Ubuntu WSL): `powershell -File proofs/scripts/Setup-Toolchain.ps1`.
@@ -156,20 +156,21 @@ Most merge conflicts come from a few files every feature touches. Keep your edit
   - If the local checks or CI fail on your change, fix it and push.
   - Address every comment PR duty agents leave: fix it and push, or reply with the reason you didn't. Resolve the thread.
   - After pushing fixes, re-request review.
-  - PR duty agents may update your branch with `master` at any time. Pull before you push again (`git pull --no-rebase`).
-  - If `master` moves and your PR conflicts, merge `master` into your branch, resolve the conflict and push. Never force-push a branch PR duty may have updated.
+  - PR duty agents may update your branch with `master`, and push small fixes to it, at any time. Pull before you push again (`git pull --no-rebase`).
+  - Merge `master` into your branch only before you mark the PR ready, or when PR duty sends a conflict back to you. While the PR has the `reviewing` label, PR duty owns branch updates: a merge you push at the same time throws away the check it is running. Never force-push a branch PR duty may have updated.
 - If the PR is closed without merging, report why in your thread and keep your worktree.
 
 ## If you are on PR duty
 - Hold one open, ready PR at a time. To take one: pick a ready PR without the `reviewing` label, add the label (`gh pr edit <n> --add-label reviewing`), comment "Reviewing · <your worktree slug>", then read the PR's comments again. If another agent's "Reviewing" comment is earlier than yours, leave the label and pick another PR.
 - Never review, update or merge a PR another agent holds. Remove the `reviewing` label when you merge, send the PR back to its author, or stop.
+- Never sit idle while a ready PR waits. Each time you merge, send a PR back, or would otherwise wait, list open PRs again and take the oldest ready PR without the `reviewing` label. Wait only when every ready PR is held by another agent or waiting on its author.
 - Review, approve, request changes and merge as the PR duty GitHub app, not the shared login, so approvals are real GitHub reviews (#42). Set the token in the same command as `gh`: `$env:GH_TOKEN = pwsh -NoProfile -File scripts/Get-PrDutyToken.ps1; gh pr review <n> --approve`. Approve with `gh pr review --approve` and block with `gh pr review --request-changes`, never with a plain comment. If the script says its settings are missing, the app isn't set up on this machine: record approval as a comment starting `Approved at <head SHA>`.
 - Review the intent, not each line: check the PR against its claim, its SPEC.md section and this file.
 - Request changes on any PR that adds Lean for a feature not on the proof list, or a theorem about a single behaviour or case.
 - Review every theorem statement: does it say what the SPEC section says, do its hypotheses exclude real inputs, is the cost model honest, and is the class of alternatives the one that matters? Lean already checked the proofs.
-- When you doubt a claim no proof covers, write a stress script in `stress/`, run it, and attach the result to your comment.
+- When you doubt a claim no proof covers, write a stress script in `stress/`, run it, and attach the result to your comment. Point its `CARGO_TARGET_DIR` at your review worktree's `target/` so it reuses the crates already compiled there.
 - Request changes on a PR whose proofs, tests and docs together outweigh its implementation, or that adds tests outside the critical contracts in Tests and docs.
-- Approve only when `scripts/check.ps1` passes on the PR merged onto the current `master`, in your review worktree. It runs format, the locked build, bindings, clippy, `pnpm -C ui check`, `pnpm -C ui lint`, `pnpm -C ui build`, and, when `proofs/` changes, `lake build` with the axiom check above.
+- Approve only when `scripts/check.ps1` passes on the PR merged onto the current `master`, in your review worktree. It runs format, the locked build, each crate built on its own, bindings, clippy, `pnpm -C ui check`, `pnpm -C ui lint`, `pnpm -C ui build`, and, when `proofs/` changes, `lake build` with the axiom check above.
 - GitHub CI never holds up a PR. A pending, red or stale run doesn't block a merge when the local checks pass on the merge result.
 - After another PR merges, run the checks again on the new merge result before you merge the next one.
 - Update PR branches with `master`. You are allowed and encouraged to, so PRs never wait on their author to rebase:
@@ -185,6 +186,7 @@ Most merge conflicts come from a few files every feature touches. Keep your edit
 Long review cycles cost more than the defects they catch. Block only what matters:
 - Request changes only for: data loss or corruption; a crash or hang; a violation of SPEC.md §1 or the Product rules; a security hole; a failing local check; the main path of the claimed piece not doing what its SPEC.md section says; or a Lean or tests rule above.
 - Everything else does not block: edge cases on rare inputs, display miscounts, naming, style, missing polish. File each as an issue with its evidence, link it in your review, and approve.
+- Fix a blocking finding yourself when the fix is a few lines with one obvious correct form, such as a missing derive, a wrong guard or a dropped field. Push it as your own commit on the branch, with its stress script in `stress/`, say what you changed in your review, and carry on landing the PR. Send the PR back only when the fix needs a design choice or is larger.
 - Put every blocking finding in your first review. A later round reviews only the commits pushed since your last review, and blocks only on a finding in those commits, or on new data loss or a crash.
 - When you are unsure whether a finding blocks, it does not block. File the issue.
 
