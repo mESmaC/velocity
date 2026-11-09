@@ -25,12 +25,12 @@ pub use manager::{
     parse_untracked_file_list, prune_orphan_worktrees, resolve_project_worktree_root,
     resolve_worktree_directory, strip_velocity_branch_prefix, validate_worktree_path_length,
 };
-pub use repository::{
-    GitError, current_branch, folder_is_occupied, initialize_repository, is_repository,
-};
 pub use path_scheme::{
     JobKind, LocationConfig, WorktreeLeaf, WorktreePath, can_allocate_leaf, effective_root,
     leaf_for_job, plan_worktree_path, same_leaf_id,
+};
+pub use repository::{
+    GitError, current_branch, folder_is_occupied, initialize_repository, is_repository,
 };
 pub use setup::{
     SetupAction, SetupPhase, WorktreeSettings, can_start_agent, default_settings,

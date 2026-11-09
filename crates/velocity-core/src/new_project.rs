@@ -3,8 +3,7 @@
 //! The plan is computed from what Velocity observed before it acts, so a refused
 //! request runs nothing ("Esc cancels; nothing is created"). This module decides
 //! which steps run and in what order. The I/O edge fills each step's arguments
-//! (paths, repository, interview settings) from the dialog's request. The design and
-//! this code's refinement of it are proven in `proofs/NewProject/`.
+//! (paths, repository, interview settings) from the dialog's request.
 
 /// Where the project lives, as chosen under Location in the dialog.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -44,7 +43,8 @@ pub enum SetupStep {
     Register,
     /// Make it the active project.
     SwitchTo,
-    /// Start the spec interview thread with the dialog's model, effort, speed and brief.
+    /// Record the spec interview with the dialog's model, effort, speed and brief.
+    /// The interview thread itself starts once F3 lands (#25).
     StartInterview,
 }
 
@@ -107,13 +107,11 @@ pub fn plan_new_project(
     if observation.already_a_project {
         return Err(Refusal::AlreadyAProject);
     }
-    match setup_steps(location, observation) {
-        Ok(mut steps) => {
-            steps.push(SetupStep::Register);
-            steps.push(SetupStep::SwitchTo);
-            steps.push(SetupStep::StartInterview);
-            Ok(steps)
-        }
-        Err(refusal) => Err(refusal),
-    }
+    let mut steps = setup_steps(location, observation)?;
+    steps.extend([
+        SetupStep::Register,
+        SetupStep::SwitchTo,
+        SetupStep::StartInterview,
+    ]);
+    Ok(steps)
 }

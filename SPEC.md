@@ -1049,7 +1049,7 @@ Each milestone ends with a working app. Check items off as their PRs merge.
 
 **M2 · Projects and spec**
 - [x] Project store and switcher (F1)
-- [ ] New-project dialog: local (git init) and GitHub (new/existing, visibility, clone) (F2)
+- [x] New-project dialog: local (git init) and GitHub (new/existing, visibility, clone) (F2)
 - [ ] Spec interview: scan, ask, ready, lock; SPEC.md written and committed; draft → published tasks (F3)
 - [ ] Gate: no build work on unlocked projects (Rule 2)
 

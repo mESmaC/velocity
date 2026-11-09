@@ -1,7 +1,6 @@
 //! Tauri commands for the New project dialog (SPEC.md F2). The steps come from
-//! `velocity_core::new_project::plan_new_project`, proven in `proofs/NewProject/`;
-//! this file observes the world, runs each planned step through the crates and
-//! reports the outcome.
+//! `velocity_core::new_project::plan_new_project`; this file observes the world,
+//! runs each planned step through the crates and reports the outcome.
 
 use anyhow::{Context, anyhow, bail};
 use std::path::{Path, PathBuf};

@@ -1,6 +1,6 @@
 //! Store updates for Create in the New project dialog (SPEC.md F2). Each one is a
-//! step of the plan proven in `proofs/NewProject/`; the caller saves once after the
-//! last step so a failed save leaves no half-registered project on disk.
+//! step of `velocity_core::new_project::plan_new_project`; the caller saves once
+//! after the last step so a failed save leaves no half-registered project on disk.
 
 use crate::{PendingInterview, ProjectItem, ProjectLocationKind, StateStore};
 
