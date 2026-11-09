@@ -98,6 +98,7 @@ impl StateStore {
             selected,
             String::new(),
         );
+        crate::build_gate::sync_layout(&self.state, layout);
     }
 
     pub fn switch_project_layout(
@@ -140,6 +141,7 @@ impl StateStore {
             selected,
             search,
         );
+        crate::build_gate::sync_layout(&self.state, layout);
         Ok(view)
     }
 
@@ -151,7 +153,7 @@ impl StateStore {
         // A failed persistence write must leave both the live view and its saved
         // selection unchanged. Apply transient actions to a candidate first.
         let mut candidate = layout.clone();
-        let mut intent = candidate.apply(action);
+        let mut intent = crate::build_gate::dispatch_layout(&self.state, &mut candidate, action);
         let selection = if let Some(LayoutIntent::SwitchProject(identifier)) = &intent {
             let requested = identifier
                 .parse()

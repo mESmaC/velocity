@@ -7,6 +7,11 @@
       'M10.2 8a2.2 2.2 0 1 1-4.4 0 2.2 2.2 0 0 1 4.4 0M8 1.5v2M8 12.5v2M1.5 8h2M12.5 8h2M3.4 3.4l1.4 1.4M11.2 11.2l1.4 1.4M3.4 12.6l1.4-1.4M11.2 4.8l1.4-1.4',
     folder: 'M1.5 4h5l1.5 1.5h6.5v7H1.5zM1.5 5V3h5l1.5 1',
     plus: 'M8 3v10M3 8h10',
+    localFolder:
+      'M2 4.5a1 1 0 0 1 1-1h3.2l1.5 1.5H13a1 1 0 0 1 1 1V12a1 1 0 0 1-1 1H3a1 1 0 0 1-1-1z',
+    github:
+      'M6 3.5a1.5 1.5 0 1 1-3 0 1.5 1.5 0 0 1 3 0M6 12.5a1.5 1.5 0 1 1-3 0 1.5 1.5 0 0 1 3 0M13 5.5a1.5 1.5 0 1 1-3 0 1.5 1.5 0 0 1 3 0M4.5 5v6M11.5 7c0 2.5-2 3-7 4',
+    info: 'M14 8A6 6 0 1 1 2 8a6 6 0 0 1 12 0M8 7.5V11M8 5v.1',
     chevron: 'M4 6l4 4 4-4',
     circle: 'M13.5 8a5.5 5.5 0 1 1-11 0 5.5 5.5 0 0 1 11 0',
     check: 'M3 8l3 3 7-7',
@@ -38,6 +43,15 @@
   };
 </script>
 
-<svg class="icon" viewBox="0 0 16 16" aria-hidden="true"
-  ><path d={paths[name] ?? paths.circle} /></svg
+<svg
+  class="icon"
+  viewBox="0 0 16 16"
+  aria-hidden="true"
+  style:color={name === 'dashed' ? 'var(--info)' : undefined}
+  >{#if name === 'dashed'}<circle
+      cx="8"
+      cy="8"
+      r="4.5"
+      stroke-dasharray="2.2 2"
+    />{:else}<path d={paths[name] ?? paths.circle} />{/if}</svg
 >

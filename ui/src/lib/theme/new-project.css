@@ -1,0 +1,279 @@
+/* F2 New project dialog rules. Their values are the --new-project-* tokens in
+   reference.css. */
+.new-project-dialog {
+  position: fixed;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  max-width: none;
+  max-height: none;
+  margin: 0;
+  padding: 0;
+  border: 0;
+  background: none;
+  color: var(--text);
+}
+.new-project-dialog[open] {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+.new-project-dialog::backdrop {
+  background: var(--new-project-scrim-background);
+  backdrop-filter: var(--new-project-scrim-backdrop-filter);
+}
+.np {
+  width: var(--new-project-width);
+  border: var(--new-project-border);
+  border-radius: var(--new-project-border-radius);
+  background: var(--glass-pop);
+  box-shadow: var(--new-project-box-shadow);
+  backdrop-filter: var(--blur-pop);
+  overflow: hidden;
+}
+.np-h {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  padding: var(--new-project-header-padding);
+}
+.np-h h2 {
+  margin: 0;
+  font-size: var(--new-project-title-font-size);
+  font-weight: var(--new-project-title-font-weight);
+  letter-spacing: var(--new-project-title-letter-spacing);
+  color: var(--new-project-title-color);
+}
+.np .label {
+  font-size: var(--new-project-label-font-size);
+  color: var(--text-2);
+}
+.np-body {
+  display: flex;
+  flex-direction: column;
+  gap: var(--new-project-body-gap);
+  padding: var(--new-project-body-padding);
+}
+.np .field,
+.np .where {
+  display: flex;
+  flex-direction: column;
+  gap: var(--new-project-field-gap);
+  margin: 0;
+  padding: 0;
+  border: 0;
+}
+.np .row2 {
+  display: flex;
+  align-items: center;
+  gap: var(--new-project-row-gap);
+}
+.np .row2.spread {
+  justify-content: space-between;
+}
+.np .seg {
+  display: inline-flex;
+  align-self: flex-start;
+  gap: var(--new-project-segment-gap);
+  padding: var(--new-project-segment-padding);
+  border-radius: var(--new-project-segment-border-radius);
+  background: var(--new-project-segment-background);
+  box-shadow: var(--new-project-segment-box-shadow);
+  overflow: hidden;
+}
+.np .seg button {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--new-project-segment-button-gap);
+  height: var(--new-project-segment-button-height);
+  padding: var(--new-project-segment-button-padding);
+  border-radius: var(--new-project-segment-button-border-radius);
+  font-size: var(--new-project-segment-button-font-size);
+  color: var(--text-2);
+}
+.np .seg button.on {
+  background: var(--new-project-segment-on-background);
+  color: var(--new-project-segment-on-color);
+  box-shadow: var(--new-project-segment-on-box-shadow);
+}
+.np .seg.sm button {
+  height: var(--new-project-small-segment-button-height);
+  padding: var(--new-project-small-segment-button-padding);
+  font-size: var(--new-project-small-segment-button-font-size);
+}
+.np .inp {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  gap: var(--new-project-input-gap);
+  height: var(--new-project-input-height);
+  padding: var(--new-project-input-padding);
+  border: var(--new-project-input-border);
+  border-radius: var(--new-project-input-border-radius);
+  background: var(--new-project-input-background);
+}
+.np .where > .inp {
+  flex: none;
+}
+.np .inp:focus-within,
+.np .brief:focus {
+  border-color: var(--new-project-input-focus-border-color);
+  box-shadow: var(--focus);
+}
+.np .inp input {
+  flex: 1;
+  width: 0;
+  min-width: 0;
+  border: 0;
+  outline: 0;
+  background: none;
+  color: var(--text);
+  font: var(--new-project-input-font-size) var(--mono);
+}
+.np .inp .pre {
+  color: var(--muted);
+  font: var(--new-project-input-font-size) var(--mono);
+  white-space: nowrap;
+}
+.np .btn {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--new-project-button-gap);
+  height: var(--new-project-button-height);
+  padding: var(--new-project-button-padding);
+  border: var(--new-project-button-border);
+  border-radius: var(--new-project-button-border-radius);
+  background: var(--new-project-button-background);
+  box-shadow: var(--new-project-button-box-shadow);
+  font-size: var(--new-project-button-font-size);
+  color: var(--text);
+  white-space: nowrap;
+}
+.np .row2 .btn {
+  height: var(--new-project-input-height);
+}
+.np .btn:hover {
+  border-color: var(--new-project-button-hover-border-color);
+  background: var(--new-project-button-hover-background);
+}
+.np .btn kbd {
+  padding: var(--new-project-button-kbd-padding);
+  font-size: var(--new-project-button-kbd-font-size);
+}
+.np .btn[disabled] {
+  opacity: var(--new-project-button-disabled-opacity);
+  cursor: default;
+}
+.np .btn.solid {
+  border-color: var(--new-project-solid-border-color);
+  background: var(--new-project-solid-background);
+  color: var(--new-project-solid-color);
+  box-shadow: var(--new-project-solid-box-shadow);
+  font-weight: var(--new-project-solid-font-weight);
+}
+.np .btn.solid:hover {
+  background: var(--new-project-solid-hover-background);
+}
+.np .btn.solid kbd {
+  background: var(--new-project-solid-kbd-background);
+  color: var(--new-project-solid-kbd-color);
+  box-shadow: none;
+}
+.np .check {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--new-project-check-gap);
+  font-size: var(--new-project-check-font-size);
+  color: var(--text-2);
+  cursor: pointer;
+}
+.np .check input {
+  margin: 0;
+  accent-color: var(--accent);
+}
+.np .mono {
+  font-family: var(--mono);
+}
+.np .models {
+  display: grid;
+  grid-template-columns: var(--new-project-models-columns);
+  gap: var(--new-project-models-gap);
+}
+.np .model-card {
+  display: flex;
+  flex-direction: column;
+  gap: var(--new-project-card-gap);
+  padding: var(--new-project-card-padding);
+  border: var(--new-project-card-border);
+  border-radius: var(--new-project-card-border-radius);
+  background: var(--new-project-card-background);
+  box-shadow: var(--new-project-card-box-shadow);
+  text-align: left;
+}
+.np .model-card:hover {
+  border-color: var(--new-project-card-hover-border-color);
+  background: var(--new-project-card-hover-background);
+}
+.np .model-card.on {
+  border-color: var(--new-project-card-on-border-color);
+  background: var(--new-project-card-on-background);
+  box-shadow: var(--new-project-card-on-box-shadow);
+}
+.np .model-card .mh {
+  display: flex;
+  align-items: center;
+  gap: var(--new-project-card-heading-gap);
+  font-size: var(--new-project-card-heading-font-size);
+  font-weight: var(--new-project-card-heading-font-weight);
+  color: var(--text);
+}
+.np .model-card .md {
+  font-size: var(--new-project-card-detail-font-size);
+  color: var(--muted);
+}
+.np .brief {
+  width: 100%;
+  min-height: var(--new-project-brief-min-height);
+  padding: var(--new-project-brief-padding);
+  border: var(--new-project-input-border);
+  border-radius: var(--new-project-input-border-radius);
+  outline: 0;
+  background: var(--new-project-input-background);
+  color: var(--text);
+  font: inherit;
+  font-size: var(--new-project-brief-font-size);
+  line-height: var(--new-project-brief-line-height);
+  resize: vertical;
+}
+.np-note {
+  display: flex;
+  gap: var(--new-project-note-gap);
+  margin: 0;
+  font-size: var(--new-project-note-font-size);
+  line-height: var(--new-project-note-line-height);
+  color: var(--muted);
+}
+/* Until providers sign in (F15) the note stands in for the whole card row. */
+.np .models .np-note {
+  grid-column: 1 / -1;
+}
+.np-note .icon {
+  margin-top: var(--new-project-note-icon-margin-top);
+  color: var(--info);
+}
+.np-f {
+  display: flex;
+  align-items: center;
+  gap: var(--new-project-footer-gap);
+  padding: var(--new-project-footer-padding);
+  border-top: var(--new-project-footer-border-top);
+  background: var(--new-project-footer-background);
+}
+.np-f .spacer {
+  flex: 1;
+}
+.np-f .np-error {
+  margin: 0;
+  font-size: var(--new-project-error-font-size);
+  color: var(--err);
+}
