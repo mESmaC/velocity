@@ -376,6 +376,7 @@ A worktree's path is fixed when it is created. Changing the location setting aff
 - **Skills.** Pool setup links the project's enabled skills into the worktree (F18), so an agent never starts without them.
 - **Lean.** Pool setup installs the project's pinned Lean toolchain (`lean-toolchain`, through elan) and runs `lake exe cache get`. Mathlib's built files live in the shared build cache, so a worktree never rebuilds them.
 - **Swarm launches.** Launching a swarm or goal swarm tops the pool up to its agent count. Agents that find no ready worktree wait for one rather than racing each other on setup.
+- **Build queue** *(proposed)*. Velocity runs agents' heavy builds (compile, test, lint, the PR duty landing check) through one machine-wide queue, one build at a time at full machine resources. Builds run side by side split the cores and memory and all finish late together; run one at a time, the first in line finishes in a fraction of the time and the average wait drops. Order: landing checks first, then checks before a PR is marked ready, then everything else, first come, first served within each. The footer shows the running build and the queue. Long-running dev servers never hold the queue. Until Velocity runs builds itself, `scripts/build-queue.ps1` is the stand-in: a named machine-wide lock, released by Windows when its holder exits.
 
 **Guards** (from Google Scion's worktree work):
 - Velocity is the only thing that creates worktrees, and agents never run `git worktree add` themselves (AGENTS.md).
@@ -389,6 +390,7 @@ A worktree's path is fixed when it is created. Changing the location setting aff
 - [ ] Closed and failed threads keep their worktree until the thread is deleted.
 - [ ] Changing the location never moves or breaks existing worktrees.
 - [ ] Sharing the build cache uses one compiler cache shared by every worktree (sccache as `RUSTC_WRAPPER` for Rust) and a separate target folder per worktree *(proposed mechanism)*. A shared `CARGO_TARGET_DIR` is not used: cargo locks it, so agents would build one at a time.
+- [ ] Two agents' heavy builds never run at the same time, a landing check never waits behind a lower-priority build, and the footer shows the running build and the queue *(proposed)*.
 
 ### F6 · PR follow-through
 

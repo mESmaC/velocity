@@ -23,6 +23,9 @@ Set-Location -LiteralPath (Split-Path -Parent $PSScriptRoot)
 # (#44). Putting System32 first, for this process only, fixes it.
 $env:Path = (Join-Path $env:SystemRoot 'System32') + ';' + $env:Path
 
+# Cargo steps run in the machine-wide build queue, one build at a time (build-queue.ps1).
+. (Join-Path $PSScriptRoot 'build-queue.ps1')
+
 function Invoke-Check([string]$Name, [scriptblock]$Command) {
     Write-Host "==> $Name" -ForegroundColor Cyan
     & $Command
@@ -36,25 +39,27 @@ if (-not (Test-Path -LiteralPath 'ui/node_modules')) {
     Invoke-Check 'Install UI dependencies' { pnpm -C ui install --frozen-lockfile }
 }
 Invoke-Check 'Rust format' { cargo fmt --all --check }
-Invoke-Check 'Rust build (locked)' { cargo build --workspace --locked }
-# The workspace build turns on every crate's features together, so a crate that
-# only compiles with a feature another member enables still passes it. Stress
-# scripts and other crates build each crate alone, so check alone each crate this
-# branch changes. Checking all of them costs minutes in a fresh worktree.
 $mergeBase = git merge-base $Base HEAD
-$changedPaths = @(git diff --name-only $mergeBase) + @(git status --porcelain | ForEach-Object { $_.Substring(3) })
-$changedCrates = (cargo metadata --no-deps --format-version 1 --locked | ConvertFrom-Json).packages |
-    Where-Object { $_.manifest_path -like '*crates*' } |
-    Where-Object {
-        $crateFolder = 'crates/' + (Split-Path -Leaf (Split-Path -Parent $_.manifest_path)) + '/'
-        $changedPaths | Where-Object { $_.StartsWith($crateFolder) }
+Invoke-InBuildQueue "check.ps1 cargo steps" {
+    Invoke-Check 'Rust build (locked)' { cargo build --workspace --locked }
+    # The workspace build turns on every crate's features together, so a crate that
+    # only compiles with a feature another member enables still passes it. Stress
+    # scripts and other crates build each crate alone, so check alone each crate this
+    # branch changes. Checking all of them costs minutes in a fresh worktree.
+    $changedPaths = @(git diff --name-only $mergeBase) + @(git status --porcelain | ForEach-Object { $_.Substring(3) })
+    $changedCrates = (cargo metadata --no-deps --format-version 1 --locked | ConvertFrom-Json).packages |
+        Where-Object { $_.manifest_path -like '*crates*' } |
+        Where-Object {
+            $crateFolder = 'crates/' + (Split-Path -Leaf (Split-Path -Parent $_.manifest_path)) + '/'
+            $changedPaths | Where-Object { $_.StartsWith($crateFolder) }
+        }
+    foreach ($crate in $changedCrates) {
+        Invoke-Check "Builds alone: $($crate.name)" { cargo check -p $crate.name --locked }
     }
-foreach ($crate in $changedCrates) {
-    Invoke-Check "Builds alone: $($crate.name)" { cargo check -p $crate.name --locked }
+    Invoke-Check 'Regenerate IPC bindings' { pnpm -C ui bindings }
+    Invoke-Check 'Bindings are committed' { git diff --exit-code -- ui/src/lib/bindings.ts }
+    Invoke-Check 'Clippy' { cargo clippy --workspace --all-targets --locked -- -D warnings }
 }
-Invoke-Check 'Regenerate IPC bindings' { pnpm -C ui bindings }
-Invoke-Check 'Bindings are committed' { git diff --exit-code -- ui/src/lib/bindings.ts }
-Invoke-Check 'Clippy' { cargo clippy --workspace --all-targets --locked -- -D warnings }
 Invoke-Check 'UI type check' { pnpm -C ui check }
 Invoke-Check 'UI lint' { pnpm -C ui lint }
 Invoke-Check 'UI build' { pnpm -C ui build }
