@@ -20,7 +20,7 @@ These hold for every feature. A feature that breaks one of them is wrong, whatev
 5. **One worktree per unit of work.** Every thread and every agent works in its own git worktree. The worktree is deleted as soon as that work's PR merges.
 6. **AGENTS.md is direct and explicit.** Hedged or vague wording counts as a defect.
 7. **Agents coordinate in AIRC through claims, not conversation.** Every agent claims its work and files, records a share or a wait when it needs a file another agent claimed, and waits for a PR it depends on to merge. Agents can message each other, but only when a claim, overlap or dependency needs words. A dependency wait is not an approval gate (Rule 1).
-8. **Prove it; don't test it.** Building agents never write tests. A new feature's design is proven in Lean before its code is written, and every change is proven again once the code exists (F17). Only the agents whose job is to break things write tests and stress scripts: scouts and PR duty. Lean is the proving ground, not the test suite.
+8. **Prove what matters; don't test it.** Building agents never write tests. Features on the project's proof list are proven in Lean: the design before its code, the code once it exists (F17). Everything else ships with no Lean. Only the agents whose job is to break things write tests and stress scripts: scouts and PR duty. Lean is the proving ground, not the test suite.
 
 ---
 
@@ -284,6 +284,7 @@ The layout has three columns:
    - Each answer is recorded as a decision (key: value) and can add draft tasks to the Task List. Draft tasks show with a dashed icon.
    - The agent keeps asking until nothing is ambiguous.
 3. **Ready:** a spec card lists every decision.
+   - **Proof list:** the card proposes which features get Lean proofs (F17), and you edit it before locking. Most projects list a handful; UI and plumbing never appear on it.
    - **Lock spec & publish tasks** (`L`): commits SPEC.md, turns the draft tasks into real tasks, and marks the thread done.
    - **SPEC.md** (`S`): opens the file.
    - **Keep grilling** (`G`): asks more questions.
@@ -815,12 +816,31 @@ Lean is the proving ground, not the test suite.
 
 | Who | Writes | Never writes |
 |---|---|---|
-| Building agents (threads, swarms, goal swarms) | Design proof, confidence proof, code | Tests, stress scripts |
+| Building agents (threads, swarms, goal swarms) | Code; design and confidence proofs for proof-list features | Tests, stress scripts, Lean for anything off the proof list |
 | Scouts | Tests, stress scripts, issues with evidence | Fixes |
 | PR duty | Reviews of theorem statements, stress scripts to back a doubt | Proofs for the author |
 | Main watcher | Nothing new. It runs every test and stress script after each merge. | |
 
-**Design proof** (`proofs/<Feature>/Design.lean`, before any code, for every new feature: Task List items, SPEC.md sections, goal swarm pieces):
+**Which features get proofs.** Only the features on the project's **proof list**: design decisions where a mistake loses work, corrupts data or breaks coordination, and where there is a real choice between designs.
+- **On the list:** algorithms, concurrency and coordination, data integrity, and anything destructive.
+- **Never on the list:** UI, layout, styling, configuration, persistence formats, IPC, provider sign-in and toolchain glue. These ship with no Lean.
+- **Who sets it:** the spec interview (F3) proposes the list and SPEC.md records it. Adding a feature takes your decision; an agent that thinks one belongs files an issue.
+- **Why:** proving every feature turned Lean into a test suite. On Velocity's own first milestones, Lean grew to 43% of the repo, with theorems about single keyboard shortcuts and token values, while implementation stalled.
+
+Velocity's own proof list:
+
+| Feature | SPEC | What could go wrong |
+|---|---|---|
+| Claim lock | F14 | two agents hold the same piece or file |
+| Targeted rebases and landing | F6 | an affected agent isn't rebased, or a merge drops a change |
+| Worktree deletion | F5, F12 | a worktree with unpushed work, or another thread's, is deleted |
+| Goal swarm work choice | F16 | a piece is taken twice, or an agent leaves while a piece is unclaimed |
+| Stall detection and claim release | §2.2 | a live agent's claims are released, or a dead agent's never are |
+
+**Design proof** (`proofs/<Feature>/Design.lean`, before any code, for every feature on the proof list):
+- **Exactly three theorems:** `correct`, `cost_bound` and `optimal`, below. Lemmas are allowed only as steps toward them.
+- **No theorem about a single behaviour, case, key, value or example.** That is a test, and PR duty requests changes.
+- **Size tripwire:** a design proof over 300 lines means the model is too detailed. The agent stops and files an issue.
 - **Model:** the feature as Lean definitions: its state, its operations and the SPEC.md section it implements, stated as a `Spec` predicate.
 - **`correct`:** the design meets `Spec` on every input.
 - **`cost_bound`:** its cost stays within a bound, under a cost model the file defines (steps, allocations, rebases, round trips, whatever the feature spends).
@@ -846,7 +866,9 @@ theorem optimal : ∀ strat ∈ RebaseStrategies,
 | **reference** | The design model is compiled (Lean 4 compiles to C) and exported with `@[export]`. Scouts' stress scripts run the code and the model on the same inputs and diff the outputs. C and C++ link the model directly. Python, TypeScript and every other language call it through their FFI or a small process. | Every language |
 | **model** | Only the design is proven. The PR is flagged, and scouts treat it as a proof gap. | Every language |
 
-**Bug fixes:** no design proof. The confidence proof must cover the input the scout's evidence failed on. The fixing agent copies the scout's script into `stress/` unchanged as part of its PR. Copying isn't writing: Velocity checks the file matches the issue's attachment byte for byte.
+**Generated translations** (Aeneas output) are marked generated in `.gitattributes`, so they stay out of language statistics and PR diffs.
+
+**Bug fixes:** no design proof. In a proof-list feature, the confidence proof must cover the input the scout's evidence failed on. Elsewhere, a fix has no Lean. The fixing agent copies the scout's script into `stress/` unchanged as part of its PR. Copying isn't writing: Velocity checks the file matches the issue's attachment byte for byte.
 
 **What Velocity checks** (in the PR's worktree, before PR duty sees it, and again on every push):
 - `lake build` succeeds for the PR's proof files.
@@ -857,7 +879,8 @@ theorem optimal : ∀ strat ∈ RebaseStrategies,
 
 **Merge gate:**
 - PR duty can't merge until the proofs check (locked, F7).
-- A missing design proof on a new feature blocks the merge.
+- A missing design proof on a proof-list feature blocks the merge.
+- Lean for a feature off the list, or a theorem about a single behaviour, gets changes requested.
 - A confidence proof at the model level for a language that has a stronger level available is flagged on the proof card and left to the reviewer. Sensitive paths need the strongest level (F7).
 
 **Where it runs:**
@@ -873,7 +896,8 @@ theorem optimal : ∀ strat ∈ RebaseStrategies,
 
 **Accept when:**
 - [ ] No building agent's PR adds or edits a test or stress script, except copying a scout's script unchanged in a bug fix.
-- [ ] A new feature's PR can't merge without a design proof that checks.
+- [ ] A proof-list feature's PR can't merge without a design proof that checks.
+- [ ] A PR for a feature off the proof list contains no Lean.
 - [ ] A PR whose proofs use `sorry`, `admit`, `native_decide` or a new axiom can't merge.
 - [ ] Changing a theorem statement after approval withdraws the approval and posts a `statement` event.
 - [ ] Every issue a scout files carries a failing test or stress script.

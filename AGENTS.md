@@ -68,14 +68,21 @@ SPEC.md §1 overrides everything else. Never build any of these:
 - A screen is done when it matches the reference UI's layout, states and keyboard behaviour (SPEC.md §5).
 
 ## Proofs
+Lean proves the few design decisions that can go badly wrong. It is not a test suite, and most work has no Lean at all.
+- Write Lean only for features on the proof list in SPEC.md F17. Every other piece ships with no Lean: UI, layout, theme, shell, settings, IPC, persistence, providers, the agent runner, toolchain and plumbing.
+- If you think a feature belongs on the proof list, file an issue. Never write a proof for a feature that isn't on it.
 - Never write tests or stress scripts. Scouts and PR duty agents write them.
-- Before you write code for a new feature, prove its design in `proofs/<Feature>/Design.lean`:
+- For a feature on the proof list, prove its design in `proofs/<Feature>/Design.lean` before you write its code. The file states exactly three theorems:
   - `correct`: it meets the SPEC.md section it implements. Name that section in the file.
   - `cost_bound`: its cost stays within a bound, under a cost model the file defines.
   - `optimal`: no alternative in a class the theorem states costs less.
+- Lemmas are allowed only as steps toward those three theorems.
+- Never write a theorem about one behaviour, case, key, value or example. That is a test.
 - State the cost model and the class of alternatives in the theorem itself. A proof against an unstated alternative does not count.
+- If a design proof passes 300 lines, stop and file an issue. The model is too detailed.
 - After the code is written, prove it in `proofs/<Feature>/Confidence.lean`. Rust code is translated with Charon and Aeneas, and you prove the translation refines the design model.
-- A bug fix needs no design proof. Its confidence proof must cover the input the scout's evidence failed on. Copy the scout's script into `stress/` unchanged; never edit it.
+- Aeneas output in `proofs/**/Generated/` is marked generated in `.gitattributes`. Never edit it by hand.
+- A bug fix in a proof-list feature extends its confidence proof to cover the input the scout's evidence failed on. A bug fix anywhere else has no Lean. Either way, copy the scout's script into `stress/` unchanged; never edit it.
 - Never use `sorry`, `admit`, `axiom` or `native_decide`. `#print axioms` lists only `propext`, `Classical.choice` and `Quot.sound`.
 - Never change a theorem statement after review to make its proof go through.
 - `proofs/` is the pinned Lake project. `proofs/toolchain-pins.json` records the compatible Lean, Mathlib, Charon and Aeneas versions. Keep its pins, `lean-toolchain`, `lakefile.lean` and `lake-manifest.json` consistent; follow `proofs/README.md` when updating them.
@@ -122,6 +129,7 @@ Velocity's AIRC (F14) replaces this section once M8 merges. Until then, claims a
 ## If you are on PR duty
 - Claim one open, ready PR at a time by commenting "Reviewing". Never review a PR another agent claimed.
 - Review the intent, not each line: check the PR against its claim, its SPEC.md section and this file.
+- Request changes on any PR that adds Lean for a feature not on the proof list, or a theorem about a single behaviour or case.
 - Review every theorem statement: does it say what the SPEC section says, do its hypotheses exclude real inputs, is the cost model honest, and is the class of alternatives the one that matters? Lean already checked the proofs.
 - When you doubt a claim no proof covers, write a stress script in `stress/`, run it, and attach the result to your comment.
 - Approve only when CI is green, `lake build` passes, and the axiom check above holds.
