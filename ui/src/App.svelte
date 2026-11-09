@@ -207,4 +207,6 @@
     {send}
     submitRequests={newProjectSubmits}
   />{/if}
-{#if error}<p class="layout-error" role="alert">{error}</p>{/if}
+{#if error || layout?.launch_notice}<p class="layout-error" role="alert">
+    {error || layout?.launch_notice}
+  </p>{/if}

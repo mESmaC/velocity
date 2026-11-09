@@ -19,6 +19,7 @@ export const commands = {
 	pickProjectFolder: () => __TAURI_INVOKE<string | null>("pick_project_folder"),
 	/**  Create & start interview. `git` and `gh` run off the UI thread. */
 	createProject: (request: NewProjectRequest_Deserialize) => __TAURI_INVOKE<CreatedProject>("create_project", { request }),
+	getLaunchEligibility: (request: LaunchRequest) => __TAURI_INVOKE<LaunchEligibility>("get_launch_eligibility", { request }),
 };
 
 /* Constants */
@@ -95,6 +96,10 @@ export type KeyboardInput = {
 	typing: boolean,
 };
 
+export type LaunchEligibility = "allowed" | "lock_spec_first" | "no_project";
+
+export type LaunchRequest = "interview" | "thread" | "fan_out" | "task_swarm" | "issue_swarm" | "goal_swarm" | "issue_dispatch";
+
 export type LayoutAction = LayoutAction_Serialize | LayoutAction_Deserialize;
 
 export type LayoutAction_Deserialize = ({ Request: LayoutIntent_Deserialize }) & { ComposerText?: never; Keyboard?: never; NumberHints?: never; OpenThread?: never; PaletteSearch?: never; PaletteSelect?: never; SidebarSearch?: never; SlashSelect?: never; TaskText?: never; ToggleSwarm?: never } | ({ SidebarSearch: string }) & { ComposerText?: never; Keyboard?: never; NumberHints?: never; OpenThread?: never; PaletteSearch?: never; PaletteSelect?: never; Request?: never; SlashSelect?: never; TaskText?: never; ToggleSwarm?: never } | ({ PaletteSearch: string }) & { ComposerText?: never; Keyboard?: never; NumberHints?: never; OpenThread?: never; PaletteSelect?: never; Request?: never; SidebarSearch?: never; SlashSelect?: never; TaskText?: never; ToggleSwarm?: never } | ({ PaletteSelect: string }) & { ComposerText?: never; Keyboard?: never; NumberHints?: never; OpenThread?: never; PaletteSearch?: never; Request?: never; SidebarSearch?: never; SlashSelect?: never; TaskText?: never; ToggleSwarm?: never } | "PaletteNext" | "PalettePrevious" | "PaletteAccept" | ({ OpenThread: string }) & { ComposerText?: never; Keyboard?: never; NumberHints?: never; PaletteSearch?: never; PaletteSelect?: never; Request?: never; SidebarSearch?: never; SlashSelect?: never; TaskText?: never; ToggleSwarm?: never } | ({ ToggleSwarm: string }) & { ComposerText?: never; Keyboard?: never; NumberHints?: never; OpenThread?: never; PaletteSearch?: never; PaletteSelect?: never; Request?: never; SidebarSearch?: never; SlashSelect?: never; TaskText?: never } | ({ Keyboard: KeyboardInput }) & { ComposerText?: never; NumberHints?: never; OpenThread?: never; PaletteSearch?: never; PaletteSelect?: never; Request?: never; SidebarSearch?: never; SlashSelect?: never; TaskText?: never; ToggleSwarm?: never } | ({ NumberHints: NumberHintEvent }) & { ComposerText?: never; Keyboard?: never; OpenThread?: never; PaletteSearch?: never; PaletteSelect?: never; Request?: never; SidebarSearch?: never; SlashSelect?: never; TaskText?: never; ToggleSwarm?: never } | ({ ComposerText: string }) & { Keyboard?: never; NumberHints?: never; OpenThread?: never; PaletteSearch?: never; PaletteSelect?: never; Request?: never; SidebarSearch?: never; SlashSelect?: never; TaskText?: never; ToggleSwarm?: never } | ({ SlashSelect: string }) & { ComposerText?: never; Keyboard?: never; NumberHints?: never; OpenThread?: never; PaletteSearch?: never; PaletteSelect?: never; Request?: never; SidebarSearch?: never; TaskText?: never; ToggleSwarm?: never } | "SlashNext" | "SlashPrevious" | "SlashComplete" | "ToggleShowWork" | ({ TaskText: string }) & { ComposerText?: never; Keyboard?: never; NumberHints?: never; OpenThread?: never; PaletteSearch?: never; PaletteSelect?: never; Request?: never; SidebarSearch?: never; SlashSelect?: never; ToggleSwarm?: never } | "SubmitComposer" | "SubmitTask";
@@ -154,6 +159,14 @@ export type LayoutSnapshot_Deserialize = {
 	overlap_unread: boolean,
 	composer_text: string,
 	task_text: string,
+	build_allowed: boolean,
+	build_block_reason?: string | null,
+	composer_allowed: boolean,
+	composer_block_reason?: string | null,
+	blocked_navigation: NavigationIntent_Deserialize[],
+	tasks_draft: boolean,
+	task_count_label: string,
+	launch_notice?: string | null,
 };
 
 export type LayoutSnapshot_Serialize = {
@@ -183,6 +196,14 @@ export type LayoutSnapshot_Serialize = {
 	overlap_unread: boolean,
 	composer_text: string,
 	task_text: string,
+	build_allowed: boolean,
+	build_block_reason: string | null,
+	composer_allowed: boolean,
+	composer_block_reason: string | null,
+	blocked_navigation: NavigationIntent_Serialize[],
+	tasks_draft: boolean,
+	task_count_label: string,
+	launch_notice: string | null,
 };
 
 export type LayoutStateChanged = LayoutStateChanged_Serialize | LayoutStateChanged_Deserialize;

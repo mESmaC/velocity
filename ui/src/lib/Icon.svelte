@@ -43,6 +43,15 @@
   };
 </script>
 
-<svg class="icon" viewBox="0 0 16 16" aria-hidden="true"
-  ><path d={paths[name] ?? paths.circle} /></svg
+<svg
+  class="icon"
+  viewBox="0 0 16 16"
+  aria-hidden="true"
+  style:color={name === 'dashed' ? 'var(--info)' : undefined}
+  >{#if name === 'dashed'}<circle
+      cx="8"
+      cy="8"
+      r="4.5"
+      stroke-dasharray="2.2 2"
+    />{:else}<path d={paths[name] ?? paths.circle} />{/if}</svg
 >

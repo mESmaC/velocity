@@ -3,6 +3,7 @@ use std::path::Path;
 use tauri_specta::{Builder, Event, collect_commands, collect_events};
 use velocity_store::PersistedState;
 
+mod build_gate;
 mod layout;
 mod new_project;
 mod projects;
@@ -27,6 +28,7 @@ fn bindings() -> Builder<tauri::Wry> {
             new_project::get_new_project_defaults,
             new_project::pick_project_folder,
             new_project::create_project,
+            build_gate::get_launch_eligibility,
         ])
         .typ::<PersistedState>()
         .typ::<window::WindowStateChanged>()
