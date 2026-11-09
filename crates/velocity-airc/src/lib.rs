@@ -3,7 +3,7 @@ mod channel;
 mod protocol;
 mod storage;
 
-pub use channel::{Channel, Entry, Presence};
+pub use channel::{Channel, Entry, Event, Presence};
 pub use protocol::serve;
 
 #[derive(Debug, thiserror::Error)]
