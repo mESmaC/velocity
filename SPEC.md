@@ -113,7 +113,7 @@ A thread's state (§2.1) says where it is in its lifecycle. Its **activity** say
 | command | `list_projects`, `create_project`, `switch_project` | projects |
 | command | `get_new_project_defaults`, `pick_project_folder`, `create_project { request }` | New project dialog (F2): default folders, interview effort, speed and model from Settings; the native folder picker; Create, which refuses before anything runs or sets the project up, registers it, switches to it and records its spec interview |
 | command | `list_threads`, `start_thread`, `send_message`, `delete_thread` | threads |
-| command | `list_pull_requests { project_identifier }`, `get_pull_request { project_identifier, number }`, `dispatch_pull_request { project_identifier, operation }` | GitHub through signed-in `gh`: paginated open PRs and snapshots (head, CI, reviews, issue comments, inline threads); typed create, review with inline comments, comment, reply, resolve, re-request review, merge and close operations. New PRs target `master`. Merge requires resolved threads and the signed-in reviewer’s approving review, and sends the expected head to GitHub. GitHub CI is advisory; PR duty runs local checks on the merge result (F7). Closing preserves the checkout and branches. |
+| command | `list_pull_requests { project_identifier }`, `get_pull_request { project_identifier, number }`, `dispatch_pull_request { project_identifier, operation }` | GitHub through signed-in `gh`: paginated PR snapshots and typed create, review, comment, reply, resolve, review-request, merge and close operations. Create accepts `base_branch` (the project's configured branch), defaulting to GitHub's default branch. Shared-login approve/merge behavior awaits Q28 (#42); the existing merge guard fails closed and sends the expected head to GitHub. CI is advisory (F7). Branch cleanup, the rail PR panel and `pr://` events come with PR follow-through (F6). Closing preserves the checkout and branches. |
 | command | `get_launch_eligibility { request }` | UI eligibility for the active project, read from the backend state. No project/lock flag is accepted from the frontend. Launch handlers check the guard afresh before worktree or agent effects (Rule 2, F3). |
 | command | `start_duty`, `pause_duty`, `add_duty_agents` | duty agents |
 | command | `launch_swarm`, `add_to_swarm` | swarm |
@@ -1079,7 +1079,7 @@ Each milestone ends with a working app. Check items off as their PRs merge.
 - [ ] Settings → Worktrees, including the live list and the footer count (F5, F13)
 
 **M4 · PR loop**
-- [x] GitHub integration: open PR, CI checks, reviews, comments, merge, close
+- [ ] GitHub integration: open PR, CI checks, reviews, comments, merge, close
 - [ ] PR follow-through: track, PR history, auto-response to review comments, merge → worktree delete (F6)
 - [ ] Closed-without-merge state with the worktree kept (F5, F6)
 - [ ] Right-click menu and delete with 5 s undo (F12)
@@ -1175,4 +1175,5 @@ Each milestone ends with a working app. Check items off as their PRs merge.
 | Q25 | Does fast mode draw down each provider's subscription limit faster, and how does each provider report it? | F15 |
 | Q26 | Which folder does Kimi Code read skills from inside a project (`.kimi-code/skills/`, `.agents/skills/` or another)? And does Antigravity read `.agents/skills/` as the gamedev and UI UX Pro Max docs say? | F18 |
 | Q27 | Should "Add a skill pack" also search the skills.sh registry, or take only GitHub repos? | F18 |
+| Q28 | How is Rule 4 approval recorded when all agents share one GitHub account, which cannot approve its own PRs? Tracked in #42. | M4 approve/merge, F7 |
 

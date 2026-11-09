@@ -96,23 +96,6 @@ pub enum PullRequestCheck {
     },
 }
 
-impl PullRequestCheck {
-    pub fn passed(&self) -> bool {
-        match self {
-            Self::CheckRun {
-                status, conclusion, ..
-            } => {
-                status == "COMPLETED"
-                    && matches!(
-                        conclusion.as_deref(),
-                        Some("SUCCESS" | "NEUTRAL" | "SKIPPED")
-                    )
-            }
-            Self::StatusContext { state, .. } => state == "SUCCESS",
-        }
-    }
-}
-
 #[derive(Clone, Debug, Serialize, Deserialize, Type)]
 pub struct PullRequestSnapshot {
     pub pull_request: PullRequest,
@@ -127,6 +110,10 @@ pub struct CreatePullRequest {
     pub title: String,
     pub body: String,
     pub head_branch: String,
+    /// The caller may supply the project's configured branch; otherwise use
+    /// GitHub's default branch rather than assuming a particular branch name.
+    #[serde(default)]
+    pub base_branch: Option<String>,
     pub draft: bool,
 }
 

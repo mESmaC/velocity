@@ -82,8 +82,17 @@ impl PullRequestClient {
     fn create(&self, request: CreatePullRequest) -> Result<u32, PullRequestError> {
         require_text(&request.title, "PR title")?;
         require_text(&request.head_branch, "PR head branch")?;
+        let base_branch = request
+            .base_branch
+            .or_else(|| self.default_branch.clone())
+            .ok_or_else(|| {
+                PullRequestError::Invalid(
+                    "Repository has no default branch; supply a base branch".into(),
+                )
+            })?;
+        require_text(&base_branch, "PR base branch")?;
         let body = json!({"title":request.title,"body":request.body,"head":request.head_branch,
-            "base":"master","draft":request.draft});
+            "base":base_branch,"draft":request.draft});
         let response: Value =
             self.command
                 .api("POST", &format!("repos/{}/pulls", self.repository), &body)?;

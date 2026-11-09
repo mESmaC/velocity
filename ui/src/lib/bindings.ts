@@ -58,10 +58,29 @@ export type AgentSettings_Serialize = {
 	claim_release_grace_minutes: number,
 };
 
-export type CreatePullRequest = {
+export type CreatePullRequest = CreatePullRequest_Serialize | CreatePullRequest_Deserialize;
+
+export type CreatePullRequest_Deserialize = {
 	title: string,
 	body: string,
 	head_branch: string,
+	/**
+	 *  The caller may supply the project's configured branch; otherwise use
+	 *  GitHub's default branch rather than assuming a particular branch name.
+	 */
+	base_branch?: string | null,
+	draft: boolean,
+};
+
+export type CreatePullRequest_Serialize = {
+	title: string,
+	body: string,
+	head_branch: string,
+	/**
+	 *  The caller may supply the project's configured branch; otherwise use
+	 *  GitHub's default branch rather than assuming a particular branch name.
+	 */
+	base_branch: string | null,
 	draft: boolean,
 };
 
@@ -526,7 +545,7 @@ export type PullRequestComment_Serialize = {
 
 export type PullRequestOperation = PullRequestOperation_Serialize | PullRequestOperation_Deserialize;
 
-export type PullRequestOperation_Deserialize = ({ Create: CreatePullRequest }) & { Close?: never; Comment?: never; Merge?: never; Reply?: never; RequestReview?: never; Resolve?: never; Review?: never } | ({ Review: {
+export type PullRequestOperation_Deserialize = ({ Create: CreatePullRequest_Deserialize }) & { Close?: never; Comment?: never; Merge?: never; Reply?: never; RequestReview?: never; Resolve?: never; Review?: never } | ({ Review: {
 	number: number,
 	expected_head: string,
 	action: ReviewAction,
@@ -553,7 +572,7 @@ export type PullRequestOperation_Deserialize = ({ Create: CreatePullRequest }) &
 	number: number,
 } }) & { Comment?: never; Create?: never; Merge?: never; Reply?: never; RequestReview?: never; Resolve?: never; Review?: never };
 
-export type PullRequestOperation_Serialize = ({ Create: CreatePullRequest }) & { Close?: never; Comment?: never; Merge?: never; Reply?: never; RequestReview?: never; Resolve?: never; Review?: never } | ({ Review: {
+export type PullRequestOperation_Serialize = ({ Create: CreatePullRequest_Serialize }) & { Close?: never; Comment?: never; Merge?: never; Reply?: never; RequestReview?: never; Resolve?: never; Review?: never } | ({ Review: {
 	number: number,
 	expected_head: string,
 	action: ReviewAction,

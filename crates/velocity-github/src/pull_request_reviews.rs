@@ -2,10 +2,18 @@ use serde_json::{Value, json};
 use std::collections::BTreeMap;
 
 use crate::pull_request_queries::{COMMENT_FIELDS, REVIEWS, THREADS};
+use crate::pull_requests::Connection;
 use crate::{
     PullRequestClient, PullRequestComment, PullRequestError, PullRequestReview,
     PullRequestReviewThread, PullRequestSnapshot, PullRequestState,
 };
+
+#[derive(serde::Deserialize)]
+struct ThreadPage {
+    #[serde(flatten)]
+    thread: PullRequestReviewThread,
+    comments: Connection<PullRequestComment>,
+}
 
 impl PullRequestClient {
     pub(crate) fn reviews(&self, number: u32) -> Result<Vec<PullRequestReview>, PullRequestError> {
@@ -23,16 +31,27 @@ impl PullRequestClient {
         &self,
         number: u32,
     ) -> Result<Vec<PullRequestReviewThread>, PullRequestError> {
-        let mut threads: Vec<PullRequestReviewThread> =
-            self.pull_request_connection(number, "reviewThreads", THREADS)?;
-        for thread in &mut threads {
-            let query = format!(
-                "query($thread:ID!,$cursor:String) {{ node(id:$thread) {{
+        let fields = format!(
+            "{THREADS} comments(first:100) {{ nodes {{ {COMMENT_FIELDS} }}
+            pageInfo {{ hasNextPage endCursor }} }}"
+        );
+        let pages: Vec<ThreadPage> =
+            self.pull_request_connection(number, "reviewThreads", &fields)?;
+        let query = format!(
+            "query($thread:ID!,$cursor:String) {{ node(id:$thread) {{
               ... on PullRequestReviewThread {{ comments(first:100,after:$cursor) {{
                 nodes {{ {COMMENT_FIELDS} }} pageInfo {{ hasNextPage endCursor }} }} }} }} }}"
-            );
-            thread.comments =
-                self.connection(&query, json!({"thread":thread.id}), "/data/node/comments")?;
+        );
+        let mut threads = Vec::with_capacity(pages.len());
+        for mut page in pages {
+            // Only threads with more than one page need another gh process.
+            page.thread.comments = self.complete_connection(
+                &query,
+                json!({"thread":page.thread.id}),
+                "/data/node/comments",
+                page.comments,
+            )?;
+            threads.push(page.thread);
         }
         Ok(threads)
     }

@@ -112,10 +112,22 @@ fn origin_url(directory: &Path) -> Result<String, PullRequestError> {
     let remote = repository
         .find_remote("origin")
         .map_err(|error| PullRequestError::Invalid(format!("Could not read origin: {error}")))?;
-    let url = remote
+    let mut url = remote
         .url(gix::remote::Direction::Fetch)
+        .cloned()
         .ok_or_else(|| PullRequestError::Invalid("Origin has no fetch URL".into()))?;
-    Ok(url.to_bstring().to_string())
+    // gh uses its own credential store. Git remote userinfo must never become
+    // process arguments, even when the checkout's origin embeds credentials.
+    url.set_user(None);
+    url.set_password(None);
+    // gh accepts SSH URIs, but not a stripped SCP-style host:path argument.
+    if url.scheme == gix::url::Scheme::Ssh && !url.path.starts_with(b"/") {
+        url.path = format!("/{}", url.path).into();
+    }
+    Ok(url
+        .with_request_alternate_form(false)
+        .to_bstring()
+        .to_string())
 }
 
 fn hide_console(command: &mut Command) {

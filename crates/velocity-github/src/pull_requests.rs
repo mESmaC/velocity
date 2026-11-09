@@ -10,6 +10,7 @@ use crate::{PullRequest, PullRequestCheck, PullRequestError, PullRequestSnapshot
 pub struct PullRequestClient {
     pub(crate) command: PullRequestCommand,
     pub(crate) repository: String,
+    pub(crate) default_branch: Option<String>,
     owner: String,
     name: String,
 }
@@ -18,10 +19,16 @@ pub struct PullRequestClient {
 #[serde(rename_all = "camelCase")]
 struct RepositoryIdentity {
     name_with_owner: String,
+    default_branch_ref: Option<DefaultBranch>,
 }
 
 #[derive(Deserialize)]
-struct Connection<T> {
+struct DefaultBranch {
+    name: String,
+}
+
+#[derive(Deserialize)]
+pub(crate) struct Connection<T> {
     nodes: Vec<T>,
     #[serde(rename = "pageInfo")]
     page: PageInfo,
@@ -37,8 +44,14 @@ struct PageInfo {
 impl PullRequestClient {
     pub fn discover(directory: &Path) -> Result<Self, PullRequestError> {
         let (command, repository) = PullRequestCommand::new(directory)?;
-        let identity: RepositoryIdentity =
-            command.read(&["repo", "view", "--json", "nameWithOwner", "--", &repository])?;
+        let identity: RepositoryIdentity = command.read(&[
+            "repo",
+            "view",
+            "--json",
+            "nameWithOwner,defaultBranchRef",
+            "--",
+            &repository,
+        ])?;
         let (owner, name) = identity
             .name_with_owner
             .split_once('/')
@@ -56,6 +69,7 @@ impl PullRequestClient {
         Ok(Self {
             owner: owner.into(),
             name: name.into(),
+            default_branch: identity.default_branch_ref.map(|branch| branch.name),
             repository: identity.name_with_owner,
             command,
         })
@@ -131,12 +145,22 @@ impl PullRequestClient {
     pub(crate) fn connection<T: DeserializeOwned>(
         &self,
         query: &str,
+        variables: Value,
+        path: &str,
+    ) -> Result<Vec<T>, PullRequestError> {
+        let first_page = self.graphql_at(query, variables.clone(), path)?;
+        self.complete_connection(query, variables, path, first_page)
+    }
+
+    pub(crate) fn complete_connection<T: DeserializeOwned>(
+        &self,
+        query: &str,
         mut variables: Value,
         path: &str,
+        mut page: Connection<T>,
     ) -> Result<Vec<T>, PullRequestError> {
         let mut nodes = Vec::new();
         loop {
-            let page: Connection<T> = self.graphql_at(query, variables.clone(), path)?;
             nodes.extend(page.nodes);
             if !page.page.has_next_page {
                 return Ok(nodes);
@@ -152,23 +176,29 @@ impl PullRequestClient {
                 ));
             }
             variables["cursor"] = json!(cursor);
+            page = self.graphql_at(query, variables.clone(), path)?;
         }
     }
 
     fn checks(&self, number: u32) -> Result<Vec<PullRequestCheck>, PullRequestError> {
         let path = "/data/repository/pullRequest/commits/nodes/0/commit/statusCheckRollup";
-        let rollup: Option<Value> = self
-            .graphql_at::<Value>(
-                CHECKS,
-                self.variables(number),
-                "/data/repository/pullRequest/commits/nodes/0/commit",
-            )?
-            .get("statusCheckRollup")
-            .cloned()
-            .filter(|value| !value.is_null());
-        if rollup.is_none() {
+        let commit: Value = self.graphql_at::<Value>(
+            CHECKS,
+            self.variables(number),
+            "/data/repository/pullRequest/commits/nodes/0/commit",
+        )?;
+        if commit.get("statusCheckRollup").is_none_or(Value::is_null) {
             return Ok(Vec::new());
         }
-        self.connection(CHECKS, self.variables(number), &format!("{path}/contexts"))
+        let first_page = commit
+            .pointer("/statusCheckRollup/contexts")
+            .ok_or_else(|| PullRequestError::Missing("CI check contexts".into()))?;
+        let first_page = serde_json::from_value(first_page.clone())?;
+        self.complete_connection(
+            CHECKS,
+            self.variables(number),
+            &format!("{path}/contexts"),
+            first_page,
+        )
     }
 }
