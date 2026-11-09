@@ -9,8 +9,10 @@ mod interview;
 pub mod layout;
 mod new_project;
 mod projects;
+mod pull_request_panel;
 mod state;
 mod window;
+mod worktree_settings;
 
 pub use layout::{apply_agent_event, record_agent_event};
 
@@ -29,9 +31,16 @@ fn bindings() -> Builder<tauri::Wry> {
             layout::dispatch_layout,
             projects::list_projects,
             projects::switch_project,
+            worktree_settings::list_worktrees,
+            worktree_settings::set_worktree_settings,
+            worktree_settings::preview_worktree_folder,
+            worktree_settings::browse_worktree_folder,
+            worktree_settings::prune_worktrees,
             github::list_pull_requests,
             github::get_pull_request,
             github::dispatch_pull_request,
+            pull_request_panel::get_pull_request_panel,
+            pull_request_panel::open_project_pull_request,
             new_project::get_new_project_defaults,
             new_project::pick_project_folder,
             new_project::create_project,
@@ -42,10 +51,20 @@ fn bindings() -> Builder<tauri::Wry> {
         .typ::<layout::LayoutStateChanged>()
         .typ::<layout::LayoutIntentRequested>()
         .typ::<projects::ProjectSelected>()
+        .typ::<worktree_settings::WorktreeInventoryChanged>()
+        .typ::<pull_request_panel::PullRequestPanelChanged>()
+        .constant("PROJECT_SELECTED_EVENT", projects::ProjectSelected::NAME)
         .constant("WINDOW_STATE_EVENT", window::WindowStateChanged::NAME)
         .constant("LAYOUT_STATE_EVENT", layout::LayoutStateChanged::NAME)
         .constant("LAYOUT_INTENT_EVENT", layout::LayoutIntentRequested::NAME)
-        .constant("PROJECT_SELECTED_EVENT", projects::ProjectSelected::NAME)
+        .constant(
+            "WORKTREE_INVENTORY_EVENT",
+            worktree_settings::WorktreeInventoryChanged::NAME,
+        )
+        .constant(
+            "PULL_REQUEST_PANEL_EVENT",
+            pull_request_panel::PullRequestPanelChanged::NAME,
+        )
         .error_handling(tauri_specta::ErrorHandlingMode::Throw)
 }
 
@@ -69,7 +88,9 @@ pub fn run() -> anyhow::Result<()> {
         window::WindowStateChanged,
         layout::LayoutStateChanged,
         layout::LayoutIntentRequested,
-        projects::ProjectSelected
+        projects::ProjectSelected,
+        worktree_settings::WorktreeInventoryChanged,
+        pull_request_panel::PullRequestPanelChanged
     ]);
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
@@ -80,10 +101,15 @@ pub fn run() -> anyhow::Result<()> {
             bindings.mount_events(application);
             state::initialize(application.handle())?;
             projects::initialize(application.handle())?;
+            worktree_settings::initialize(application.handle())?;
+            pull_request_panel::initialize(application.handle());
             interview::start(application.handle());
             Ok(())
         })
-        .on_window_event(window::on_window_event)
+        .on_window_event(|window, event| {
+            window::on_window_event(window, event);
+            worktree_settings::on_window_event(window, event);
+        })
         .run(tauri::generate_context!())
         .context("Could not run Velocity")
 }

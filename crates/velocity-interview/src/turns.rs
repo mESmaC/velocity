@@ -4,7 +4,7 @@
 use velocity_store::{
     AgentActivity, InterviewDecision, InterviewRecord, InterviewStage, PendingInterview,
     ProjectItem, ProofListEntry, ProviderKind, SpeedMode, TaskAttribution, TaskItem, TaskState,
-    ThreadItem, ThreadState,
+    ThreadItem, ThreadState, WorktreeRole,
 };
 
 use crate::envelope::Envelope;
@@ -68,6 +68,8 @@ fn spec_thread(
         // F3: the interview works in the main checkout, so the header shows its branch.
         branch_name: branch.into(),
         worktree_path: None,
+        // No worktree at all (F3); the role only matters once a path exists.
+        worktree_role: WorktreeRole::default(),
         worktree_path_id: None,
         pull_request_number: None,
         review_stage: None,

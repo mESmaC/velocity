@@ -17,3 +17,5 @@ pub mod theme;
 pub mod thread_view;
 pub mod thread_view_model;
 pub mod window;
+pub mod worktree_settings;
+pub mod worktree_view;
