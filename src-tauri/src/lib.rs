@@ -3,10 +3,15 @@ use std::path::Path;
 use tauri_specta::{Builder, Event, collect_commands, collect_events};
 use velocity_store::PersistedState;
 
-mod layout;
+mod build_gate;
+mod github;
+pub mod layout;
+mod new_project;
 mod projects;
 mod state;
 mod window;
+
+pub use layout::{apply_agent_event, record_agent_event};
 
 fn bindings() -> Builder<tauri::Wry> {
     // Export event payloads/names without the generator's `any`-typed helpers;
@@ -23,6 +28,13 @@ fn bindings() -> Builder<tauri::Wry> {
             layout::dispatch_layout,
             projects::list_projects,
             projects::switch_project,
+            github::list_pull_requests,
+            github::get_pull_request,
+            github::dispatch_pull_request,
+            new_project::get_new_project_defaults,
+            new_project::pick_project_folder,
+            new_project::create_project,
+            build_gate::get_launch_eligibility,
         ])
         .typ::<PersistedState>()
         .typ::<window::WindowStateChanged>()
@@ -59,6 +71,7 @@ pub fn run() -> anyhow::Result<()> {
         projects::ProjectSelected
     ]);
     tauri::Builder::default()
+        .plugin(tauri_plugin_dialog::init())
         .manage(layout::MainLayout::default())
         .invoke_handler(bindings.invoke_handler())
         .setup(move |application| {

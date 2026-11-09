@@ -40,6 +40,10 @@
   <div class="starters">
     {#each starters as starter (starter.intent)}<button
         class="chip"
+        disabled={layout.blocked_navigation.includes(starter.intent)}
+        title={layout.blocked_navigation.includes(starter.intent)
+          ? (layout.build_block_reason ?? undefined)
+          : undefined}
         onclick={() => send({ Request: { Navigation: starter.intent } })}
         ><Icon name={starter.icon} />{starter.label}<kbd>{starter.key}</kbd
         ></button

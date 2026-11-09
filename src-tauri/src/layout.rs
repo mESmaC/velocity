@@ -2,8 +2,11 @@ use crate::state::ManagedStateStore;
 use std::sync::Mutex;
 use tauri::{State, Window};
 use tauri_specta::Event;
+use velocity_acp::{available_commands, client::AgentEvent};
 use velocity_core::layout_state::LayoutState;
 use velocity_core::layout_view::{LayoutAction, LayoutIntent, LayoutSnapshot};
+use velocity_core::thread_view_model::AgentCommandView;
+use velocity_store::build_gate;
 
 pub type MainLayout = Mutex<LayoutState>;
 
@@ -21,11 +24,15 @@ pub struct LayoutIntentRequested {
 
 #[tauri::command]
 #[specta::specta]
-pub fn get_layout_state(state: State<'_, MainLayout>) -> Result<LayoutSnapshot, String> {
-    state
+pub fn get_layout_state(
+    store: State<'_, ManagedStateStore>,
+    state: State<'_, MainLayout>,
+) -> Result<LayoutSnapshot, String> {
+    let store = store.lock().map_err(|error| error.to_string())?;
+    let mut state = state
         .lock()
-        .map(|state| state.snapshot())
-        .map_err(|error| format!("Could not read main-window state: {error}"))
+        .map_err(|error| format!("Could not read main-window state: {error}"))?;
+    Ok(build_gate::layout_snapshot(store.state(), &mut state))
 }
 
 #[tauri::command]
@@ -71,4 +78,44 @@ pub fn publish(
             .map_err(|error| format!("Could not publish navigation intent: {error}"))?;
     }
     Ok(())
+}
+
+/// Routes a live ACP `AgentEvent` (`available_commands_update`, `SPEC.md §3.2`) into the thread's
+/// slash menu read model and returns the updated `LayoutSnapshot` when the state changed.
+pub fn record_agent_event(
+    state: &mut LayoutState,
+    thread_identifier: usize,
+    event: &AgentEvent,
+) -> Option<LayoutSnapshot> {
+    if let AgentEvent::SessionUpdate(update) = event
+        && let Some(commands) = available_commands(update)
+    {
+        let mapped = commands
+            .into_iter()
+            .map(|command| AgentCommandView {
+                name: command.name,
+                description: command.description,
+            })
+            .collect();
+        state.set_thread_agent_commands(thread_identifier, mapped);
+        return Some(state.snapshot());
+    }
+    None
+}
+
+/// Applies a live ACP `AgentEvent` to the managed layout state and publishes `layout://state`.
+pub fn apply_agent_event(
+    window: &Window,
+    state: &MainLayout,
+    thread_identifier: usize,
+    event: &AgentEvent,
+) -> Result<Option<LayoutSnapshot>, String> {
+    let mut state = state
+        .lock()
+        .map_err(|error| format!("Could not update main-window state: {error}"))?;
+    let Some(snapshot) = record_agent_event(&mut state, thread_identifier, event) else {
+        return Ok(None);
+    };
+    publish(window, &snapshot, None)?;
+    Ok(Some(snapshot))
 }

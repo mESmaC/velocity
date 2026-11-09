@@ -3,7 +3,7 @@
 use crate::layout::{LayoutRow, PulseKind, ThreadGroup};
 use crate::navigation::{NavigationIntent, NavigationView, NumberHintEvent};
 use crate::thread_view_model::{
-    ModelPillView, SlashCommandItem, ThreadDetailEntry, ThreadDetailSnapshot,
+    AgentCommandView, ModelPillView, SlashCommandItem, ThreadDetailEntry, ThreadDetailSnapshot,
 };
 
 #[derive(Clone)]
@@ -35,6 +35,7 @@ pub struct LayoutData {
     pub threads: Vec<ThreadEntry>,
     pub projects: Vec<PaletteItem>,
     pub tasks: Vec<RailItem>,
+    pub completed_task_count: usize,
     pub pull_requests: Vec<RailItem>,
     pub issues: Vec<RailItem>,
     pub merged_today: usize,
@@ -44,6 +45,7 @@ pub struct LayoutData {
     pub airc_unread: usize,
     pub overlap_unread: bool,
     pub default_model_pill: Option<ModelPillView>,
+    pub agent_commands: Vec<AgentCommandView>,
 }
 
 #[cfg_attr(
@@ -269,6 +271,7 @@ pub struct LayoutSnapshot {
     pub pulse: Vec<PulseCount>,
     pub show_numbers: bool,
     pub palette_open: bool,
+    pub new_project_open: bool,
     pub palette_query: String,
     pub palette_results: Vec<PaletteItem>,
     #[cfg_attr(feature = "bindings", serde(with = "crate::ipc_number"))]
@@ -289,4 +292,12 @@ pub struct LayoutSnapshot {
     pub overlap_unread: bool,
     pub composer_text: String,
     pub task_text: String,
+    pub build_allowed: bool,
+    pub build_block_reason: Option<String>,
+    pub composer_allowed: bool,
+    pub composer_block_reason: Option<String>,
+    pub blocked_navigation: Vec<NavigationIntent>,
+    pub tasks_draft: bool,
+    pub task_count_label: String,
+    pub launch_notice: Option<String>,
 }

@@ -20,6 +20,8 @@ export type {
   EffortLevel,
   ErrorCardView,
   ModelPillView,
+  LaunchEligibility,
+  LaunchRequest,
   PersistedState,
   ProjectItem,
   ProjectLocationKind,
@@ -29,6 +31,7 @@ export type {
   ProviderSettings,
   ReviewStage,
   Settings,
+  AgentCommandView,
   SlashCommandItem,
   SpeedMode,
   TaskAttribution,
@@ -48,11 +51,34 @@ export type {
   LayoutSnapshot_Serialize as LayoutSnapshot,
   LayoutIntent_Serialize as LayoutIntent,
   NavigationIntent_Deserialize as NavigationIntent,
+  NewProjectDefaults_Serialize as NewProjectDefaults,
+  NewProjectRequest_Deserialize as NewProjectRequest,
+  ProjectLocationRequest,
+  RepositoryVisibility,
   RailItem_Serialize as RailItem,
   ProjectList,
   ProjectRow,
   ProjectLabel,
+  PullRequest,
+  PullRequestSnapshot,
+  PullRequestCheck,
+  PullRequestReview,
+  PullRequestComment,
+  PullRequestReviewThread,
+  PullRequestOperation,
+  PullRequestReceipt,
+  CreatePullRequest,
+  ReviewAction,
+  ReviewSide,
+  NewReviewComment,
+  MergeMethod,
 } from './bindings';
+
+export const pullRequestCommands = {
+  list: commands.listPullRequests,
+  get: commands.getPullRequest,
+  dispatch: commands.dispatchPullRequest,
+};
 
 export const layoutCommands = {
   getState: commands.getLayoutState,
@@ -75,6 +101,12 @@ export const onLayoutIntent = (
   callback: EventCallback<LayoutIntentRequested_Serialize>,
 ) => listen(LAYOUT_INTENT_EVENT, callback);
 
+export const newProjectCommands = {
+  defaults: commands.getNewProjectDefaults,
+  pickFolder: commands.pickProjectFolder,
+  create: commands.createProject,
+};
+
 export const windowCommands = {
   getState: commands.getWindowState,
   minimize: commands.minimizeWindow,
@@ -85,6 +117,10 @@ export const windowCommands = {
 export const settingsCommands = {
   get: commands.getSettings,
   set: commands.setSettings,
+};
+
+export const launchCommands = {
+  getEligibility: commands.getLaunchEligibility,
 };
 
 export const onWindowState = (callback: EventCallback<WindowStateChanged>) =>

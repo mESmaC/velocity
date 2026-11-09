@@ -1,0 +1,19 @@
+[package]
+name = "velocity-new-project"
+description = "Velocity's New project setup: resolves the dialog's request and runs the planned git, gh and store steps"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish = false
+
+[lints]
+workspace = true
+
+[dependencies]
+serde.workspace = true
+specta.workspace = true
+thiserror.workspace = true
+velocity-core.workspace = true
+velocity-git.workspace = true
+velocity-github.workspace = true
+velocity-store.workspace = true

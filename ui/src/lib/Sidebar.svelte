@@ -83,13 +83,6 @@
                 >{/if}
               {#if row.metadata}<span class="t-meta">{row.metadata}</span>{/if}
             </button>
-            {#if row.group === 'Swarm'}<button
-                class="swarm-toggle"
-                aria-label={row.expanded ? 'Collapse swarm' : 'Expand swarm'}
-                aria-expanded={row.expanded}
-                onclick={() => send({ ToggleSwarm: row.identifier })}
-                ><Icon name="chevron" /></button
-              >{/if}
           </div>
         {/each}
       </section>
