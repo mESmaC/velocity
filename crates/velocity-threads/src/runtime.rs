@@ -5,17 +5,22 @@
 //! The registry keeps what the thread view shows while the session runs and turns each
 //! agent event into the activity `state.json` records.
 
-use std::collections::{BTreeMap, VecDeque};
+use std::collections::{BTreeMap, BTreeSet, VecDeque};
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 use agent_client_protocol::v1::schema::ContentBlock;
 use thiserror::Error;
 use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender, unbounded_channel};
 use tokio::sync::oneshot;
-use velocity_acp::client::{AgentEvent, AgentInput, AgentLaunch, SessionSetup, run_session};
+use velocity_acp::client::{
+    AgentEvent, AgentInput, AgentLaunch, ClientError, SessionSetup, run_session,
+};
 use velocity_acp::{Steering, SteeringEffect, SteeringInput, available_commands};
-use velocity_core::thread_view_model::{AgentCommandView, LiveThreadView};
+use velocity_core::thread_view_model::{AgentCommandView, LiveThreadView, SessionWork};
 use velocity_store::AgentActivity;
 
+use crate::follow_through::{Deliveries, DeliveryStatus};
 use crate::transcript_view::LiveTranscript;
 
 /// `(project, thread)`: thread identifiers are unique within a project.
@@ -41,31 +46,26 @@ pub struct ThreadProgress {
     pub deleted: u32,
 }
 
-/// Where a thread's agent session is.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, PartialEq, Eq)]
 enum SessionPhase {
-    /// The worktree is being created; the agent has not started.
     SettingUp,
     Running,
-    /// The session ended or failed; only the transcript remains.
     Ended,
 }
 
-/// What stopping a thread's agent involved (F12).
+/// Shared with explicit deletion: callers await the session's actual end.
 #[derive(Debug)]
 pub enum StopOutcome {
-    /// Nothing runs for the thread in this app session.
     NotRunning,
-    /// Its worktree is still being created. The launch sees the thread is gone once setup
-    /// ends, starts no agent and removes the worktree itself.
     SettingUp,
-    /// The agent was told to stop. Resolves when its session has ended and its process no
-    /// longer holds the worktree.
     Stopping(oneshot::Receiver<()>),
 }
 
 struct ThreadRuntime {
     phase: SessionPhase,
+    session_identifier: String,
+    follows_pull_request: bool,
+    deliveries: Deliveries,
     transcript: LiveTranscript,
     inputs: UnboundedSender<AgentInput>,
     /// Mirrors the client's steering (Rule 1): whether a turn is running, and which
@@ -81,11 +81,18 @@ struct ThreadRuntime {
 #[derive(Default)]
 pub struct ThreadRuntimes {
     threads: BTreeMap<ThreadKey, ThreadRuntime>,
-    /// Threads stopped for deletion, signalled when their session ends.
-    stopping: BTreeMap<ThreadKey, oneshot::Sender<()>>,
+    stopping: BTreeMap<ThreadKey, Vec<oneshot::Sender<()>>>,
+    retired: BTreeSet<ThreadKey>,
+    shutdown_failures: BTreeSet<ThreadKey>,
+    actions: BTreeMap<ThreadKey, Arc<tokio::sync::Mutex<()>>>,
 }
 
 impl ThreadRuntimes {
+    /// Merge cleanup and explicit deletion share one lease through their saved checkpoint.
+    pub fn action_lock(&mut self, key: ThreadKey) -> Arc<tokio::sync::Mutex<()>> {
+        Arc::clone(self.actions.entry(key).or_default())
+    }
+
     /// Registers a starting thread with its first prompt already waiting, and returns the
     /// inputs its session reads once the worktree is ready. Messages sent meanwhile queue
     /// behind the first prompt in order.
@@ -95,6 +102,8 @@ impl ThreadRuntimes {
         worktree: &str,
         prompt: &str,
     ) -> UnboundedReceiver<AgentInput> {
+        self.retired.remove(&key);
+        self.shutdown_failures.remove(&key);
         let (inputs, receiver) = unbounded_channel();
         // The receiver is alive: it is returned below.
         let _ = inputs.send(text_input(prompt));
@@ -105,6 +114,9 @@ impl ThreadRuntimes {
             key,
             ThreadRuntime {
                 phase: SessionPhase::SettingUp,
+                session_identifier: uuid::Uuid::new_v4().to_string(),
+                follows_pull_request: false,
+                deliveries: Deliveries::default(),
                 transcript: LiveTranscript::new(worktree),
                 inputs,
                 steering,
@@ -114,6 +126,56 @@ impl ThreadRuntimes {
             },
         );
         receiver
+    }
+
+    /// Resumes a saved PR thread in its existing checkout; no new worktree is created.
+    pub fn resume_follow_through(
+        &mut self,
+        key: ThreadKey,
+        worktree: &str,
+        identifier: &str,
+        message: &str,
+    ) -> Result<SessionInputs, SteerError> {
+        if self.retired.contains(&key) || self.shutdown_failures.contains(&key) {
+            return Err(SteerError::NoSession);
+        }
+        let receiver = self.start(key, worktree, message);
+        if let Some(thread) = self.threads.get_mut(&key) {
+            thread.phase = SessionPhase::Running;
+            thread.follows_pull_request = true;
+            thread.deliveries.stage(identifier, message);
+            thread.transcript.worktree_ready();
+        }
+        Ok(receiver)
+    }
+
+    pub fn deliver_follow_up(
+        &mut self,
+        key: ThreadKey,
+        identifier: &str,
+        message: &str,
+    ) -> Result<DeliveryStatus, SteerError> {
+        let thread = self.threads.get_mut(&key).ok_or(SteerError::NoSession)?;
+        if let Some(status) = thread.deliveries.status(identifier, message) {
+            if status == DeliveryStatus::Pending && thread.inputs.is_closed() {
+                return Err(SteerError::NoSession);
+            }
+            return Ok(status);
+        }
+        self.steer(key, message)?;
+        if let Some(thread) = self.threads.get_mut(&key) {
+            thread.deliveries.stage(identifier, message);
+        }
+        Ok(DeliveryStatus::Pending)
+    }
+
+    pub fn work_snapshot(&self, key: ThreadKey) -> Option<SessionWork> {
+        let thread = self.threads.get(&key)?;
+        Some(SessionWork::new(
+            thread.session_identifier.clone(),
+            thread.follows_pull_request,
+            thread.transcript.tool_steps(),
+        ))
     }
 
     /// A message for the thread's agent: sent now when it is idle, queued otherwise (Rule 1).
@@ -145,28 +207,45 @@ impl ThreadRuntimes {
         }
     }
 
-    /// The worktree is set up. `false` means the thread was deleted meanwhile, so its agent
-    /// must not start (F12).
+    /// False when deletion retired the thread during setup (F12).
     pub fn worktree_ready(&mut self, key: ThreadKey) -> bool {
-        match self.threads.get_mut(&key) {
-            Some(thread) => {
-                thread.phase = SessionPhase::Running;
-                thread.transcript.worktree_ready();
-                true
-            }
-            None => false,
+        if let Some(thread) = self.threads.get_mut(&key) {
+            thread.phase = SessionPhase::Running;
+            thread.transcript.worktree_ready();
+            true
+        } else {
+            false
         }
     }
 
-    /// Whether the thread's worktree setup or agent is running in this app session.
     pub fn is_live(&self, key: ThreadKey) -> bool {
         self.threads
             .get(&key)
             .is_some_and(|thread| thread.phase != SessionPhase::Ended)
     }
 
-    /// Stops the thread's agent and forgets the thread: it is being deleted (F12).
+    pub fn is_setting_up(&self, key: ThreadKey) -> bool {
+        self.threads
+            .get(&key)
+            .is_some_and(|thread| thread.phase == SessionPhase::SettingUp)
+    }
+
+    /// A watcher must not recreate a session stopped for merge or explicit deletion.
+    pub fn is_retired(&self, key: ThreadKey) -> bool {
+        self.retired.contains(&key)
+    }
+
+    pub fn shutdown_failed(&self, key: ThreadKey) -> bool {
+        self.shutdown_failures.contains(&key)
+    }
+
     pub fn stop(&mut self, key: ThreadKey) -> StopOutcome {
+        self.retired.insert(key);
+        if let Some(waiters) = self.stopping.get_mut(&key) {
+            let (ended, receiver) = oneshot::channel();
+            waiters.push(ended);
+            return StopOutcome::Stopping(receiver);
+        }
         let Some(thread) = self.threads.remove(&key) else {
             return StopOutcome::NotRunning;
         };
@@ -174,21 +253,26 @@ impl ThreadRuntimes {
             SessionPhase::Ended => StopOutcome::NotRunning,
             SessionPhase::SettingUp => StopOutcome::SettingUp,
             SessionPhase::Running => {
-                // Dropping the inputs would end the session too; `Stop` says so explicitly.
                 let _ = thread.inputs.send(AgentInput::Stop);
                 let (ended, receiver) = oneshot::channel();
-                self.stopping.insert(key, ended);
+                self.stopping.insert(key, Vec::from([ended]));
                 StopOutcome::Stopping(receiver)
             }
         }
     }
 
-    /// The thread's session is over. `false` means [`Self::stop`] ended it for a deletion,
-    /// so there is no thread left to update.
     pub fn session_ended(&mut self, key: ThreadKey) -> bool {
-        if let Some(ended) = self.stopping.remove(&key) {
-            // The deletion may have given up waiting.
-            let _ = ended.send(());
+        self.session_ended_with_shutdown(key, true)
+    }
+
+    pub fn session_ended_with_shutdown(&mut self, key: ThreadKey, confirmed: bool) -> bool {
+        if !confirmed {
+            self.shutdown_failures.insert(key);
+        }
+        if let Some(waiters) = self.stopping.remove(&key) {
+            for ended in waiters {
+                let _ = ended.send(());
+            }
             return false;
         }
         if let Some(thread) = self.threads.get_mut(&key) {
@@ -214,6 +298,7 @@ impl ThreadRuntimes {
 
     pub fn apply(&mut self, key: ThreadKey, event: &AgentEvent) -> Option<ThreadProgress> {
         let thread = self.threads.get_mut(&key)?;
+        thread.deliveries.apply(event);
         match event {
             AgentEvent::Transcript { placement, update } => {
                 thread.transcript.record(*placement, update);
@@ -296,6 +381,20 @@ pub struct RunningSession {
     pub events: UnboundedReceiver<AgentEvent>,
     /// How the session ended: `Err` holds why it could not start or stopped.
     pub outcome: oneshot::Receiver<Result<(), String>>,
+    pub shutdown: SessionShutdown,
+}
+
+#[derive(Clone, Default)]
+pub struct SessionShutdown(Arc<AtomicBool>);
+
+impl SessionShutdown {
+    pub fn confirmed(&self) -> bool {
+        self.0.load(Ordering::Acquire)
+    }
+
+    fn confirm(&self) {
+        self.0.store(true, Ordering::Release);
+    }
 }
 
 /// Starts the agent in the worktree and runs its session until the inputs close or the
@@ -307,21 +406,31 @@ pub fn spawn_session(
 ) -> RunningSession {
     let (events, event_receiver) = unbounded_channel();
     let (finished, outcome) = oneshot::channel();
+    let shutdown = SessionShutdown::default();
+    let stopped = shutdown.clone();
     std::thread::spawn(move || {
-        let result = tokio::runtime::Builder::new_current_thread()
+        let runtime = tokio::runtime::Builder::new_current_thread()
             .enable_all()
-            .build()
-            .map_err(|error| format!("Could not start the agent's runtime: {error}"))
-            .and_then(|runtime| {
-                runtime
-                    .block_on(run_session(agent, setup, inputs, events))
-                    .map_err(|error| error.to_string())
-            });
+            .build();
+        let result = match runtime {
+            Ok(runtime) => {
+                let result = runtime.block_on(run_session(agent, setup, inputs, events));
+                if !matches!(&result, Err(ClientError::Shutdown(_))) {
+                    stopped.confirm();
+                }
+                result.map_err(|error| error.to_string())
+            }
+            Err(error) => {
+                stopped.confirm();
+                Err(format!("Could not start the agent's runtime: {error}"))
+            }
+        };
         // Nobody waits when the app is closing.
         let _ = finished.send(result);
     });
     RunningSession {
         events: event_receiver,
         outcome,
+        shutdown,
     }
 }

@@ -15,6 +15,8 @@ pub enum ClientError {
     NonUtf8Path(PathBuf),
     #[error("no terminal has the id `{0}`")]
     UnknownTerminal(String),
+    #[error("Could not confirm session shutdown: {0}")]
+    Shutdown(String),
     #[error(transparent)]
     Io(#[from] std::io::Error),
     #[error("the agent did not answer within {0:?}")]

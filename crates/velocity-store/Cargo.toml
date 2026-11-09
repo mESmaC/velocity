@@ -11,6 +11,7 @@ serde_json.workspace = true
 specta.workspace = true
 thiserror.workspace = true
 velocity-core.workspace = true
+velocity-github.workspace = true
 velocity-git.workspace = true
 
 [lints]

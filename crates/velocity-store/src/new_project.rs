@@ -76,7 +76,6 @@ fn project_item(
         tasks: Vec::new(),
         threads: Vec::new(),
         pending_interview: interview,
-        next_thread_id: 1,
     }
 }
 

@@ -74,15 +74,15 @@ pub async fn request_title(request: TitleRequest) -> Result<TitleReply, ClientEr
     let started = Instant::now();
     let mut agent = process::spawn_agent(&request.launch, &request.working_directory)?;
     let stdin = agent
-        .stdin
+        .stdin()
         .take()
         .ok_or(ClientError::MissingPipe("stdin"))?;
     let stdout = agent
-        .stdout
+        .stdout()
         .take()
         .ok_or(ClientError::MissingPipe("stdout"))?;
     let (events, mut received) = unbounded_channel();
-    if let Some(stderr) = agent.stderr.take() {
+    if let Some(stderr) = agent.stderr().take() {
         forward_log(stderr, events.clone());
     }
     let shared = Arc::new(Shared::new(request.working_directory.clone(), events));
@@ -96,8 +96,12 @@ pub async fn request_title(request: TitleRequest) -> Result<TitleReply, ClientEr
     let elapsed = started.elapsed();
     // Ending an agent's process tree can take seconds (Claude Code's took five), and the
     // thread's setup waits for its title, so the agent is stopped without waiting for it.
-    // If the runtime shuts down first, `kill_on_drop` still ends the shim.
-    tokio::spawn(async move { process::stop_agent(&mut agent).await });
+    // If the runtime shuts down first, dropping the job object still ends the tree.
+    tokio::spawn(async move {
+        // Nothing waits on the title agent any more; a failed stop leaves the job object,
+        // which ends the tree when its handle drops.
+        let _ = process::stop_agent(&mut agent).await;
+    });
     outcome.map_err(|_| ClientError::TimedOut(deadline))??;
     Ok(TitleReply {
         text: agent_reply(&mut received),
