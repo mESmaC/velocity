@@ -1092,6 +1092,7 @@ Each milestone ends with a working app. Check items off as their PRs merge.
 **M5 · Duty agents**
 - [ ] PR duty: claiming, review against SPEC.md, request changes, approve, merge; never merge unapproved (Rule 4, F7)
 - [ ] Scouts: sweeps, issue filing with repro, de-duplication (F7)
+  - [x] GitHub issue inventory (open and closed), executed failure evidence, duplicate assessment, dispatch labels and scout attribution; runnable backend filing path
 - [ ] Duty view, start dialog, pause/resume, add agents (F7)
 
 **M6 · Task List, issues, swarm**
