@@ -23,9 +23,14 @@ pub const DEFAULT_UNTRACKED_FILES: &str = ".env, .env.local";
 /// Default command executed in a newly created worktree before the agent starts (F5).
 pub const DEFAULT_SETUP_COMMAND: &str = "pnpm -C ui install";
 
-/// Maximum character length of a worktree directory path so `<worktree>\.git` stays within
-/// Windows `MAX_PATH` (260 characters including the null terminator, i.e. 259 usable
-/// characters minus 5 for `\.git` = 254 characters).
+/// Upper-bound pre-check character length for a worktree directory path so `<worktree>\.git`
+/// stays within Windows `MAX_PATH` (260 characters including the null terminator, i.e. 259
+/// usable characters minus 5 for `\.git` = 254 characters).
+///
+/// Git's own internal `$GIT_DIR` buffer can reject slightly shorter paths (around 215+
+/// characters on Windows depending on repository and leaf names); `create_git_worktree_from_base`
+/// maps those `git worktree add` failures (`'$GIT_DIR' too big` or `Filename too long`) to
+/// [`WorktreeError::PathTooLong`] as well.
 pub const MAX_WORKTREE_PATH_LENGTH: usize = 254;
 
 /// Retry backoff delays (in milliseconds) when `git worktree remove` hits a transient
@@ -42,7 +47,9 @@ pub enum WorktreeError {
     InvalidProjectName(String),
     #[error("worktree drive `{0}` is not a valid Windows drive prefix")]
     InvalidDrivePrefix(String),
-    #[error("worktree path `{path}` exceeds the Windows worktree path limit of {limit} characters")]
+    #[error(
+        "worktree path `{path}` was rejected as too long on Windows (pre-check limit: {limit} characters)"
+    )]
     PathTooLong { path: PathBuf, limit: usize },
     #[error("untracked file entry `{0}` must be a relative path inside the repository")]
     InvalidUntrackedFilePath(String),
@@ -97,8 +104,10 @@ pub struct CreatedWorktree {
     pub transcript_step: String,
 }
 
-/// Validates that `worktree_path` does not exceed [`MAX_WORKTREE_PATH_LENGTH`] so that
-/// `git worktree add` never fails on `<worktree>\.git` exceeding Windows `MAX_PATH`.
+/// Pre-checks that `worktree_path` does not exceed [`MAX_WORKTREE_PATH_LENGTH`] before running
+/// any filesystem or git command. Because git's internal `$GIT_DIR` limit can still reject
+/// paths below [`MAX_WORKTREE_PATH_LENGTH`], `git worktree add` stderr is also mapped via
+/// [`map_worktree_add_error`].
 pub fn validate_worktree_path_length(worktree_path: &Path) -> Result<(), WorktreeError> {
     let character_count = worktree_path.to_string_lossy().chars().count();
     if character_count > MAX_WORKTREE_PATH_LENGTH {
@@ -325,13 +334,101 @@ where
     run_checked_command(working_directory, "git", git_arguments, None)
 }
 
-fn local_branch_exists(repository_root: &Path, branch_name: &str) -> bool {
+/// Outcome of probing `git show-ref --verify --quiet refs/heads/<branch>` before `worktree add -b`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum BranchExistenceProbe {
+    /// Exit status 0: the branch already existed before `worktree add -b`.
+    Existing,
+    /// Exit status 1: `show-ref` confirmed the branch did not exist at probe time.
+    Absent,
+    /// Any other exit status or spawn failure: skip `git branch -D` rollback so a pre-existing
+    /// branch cannot be deleted when `show-ref` failed for an unrelated reason.
+    Indeterminate,
+}
+
+/// Classifies the exit code of `git show-ref --verify --quiet` so only exit code `Some(1)`
+/// is treated as absent before `git worktree add -b`.
+pub fn classify_show_ref_exit_code(exit_code: Option<i32>) -> BranchExistenceProbe {
+    match exit_code {
+        Some(0) => BranchExistenceProbe::Existing,
+        Some(1) => BranchExistenceProbe::Absent,
+        _ => BranchExistenceProbe::Indeterminate,
+    }
+}
+
+/// Returns `true` when `git worktree add -b` failed because the target branch already existed
+/// (including when a concurrent process created the branch between the preflight probe and
+/// `worktree add -b`), in which case this attempt did not create the branch and must not
+/// delete it.
+pub fn is_branch_already_exists_stderr(stderr: &str, branch_name: &str) -> bool {
+    let lower = stderr.to_ascii_lowercase();
+    let expected = format!("a branch named '{branch_name}' already exists").to_ascii_lowercase();
+    lower.contains(&expected)
+        || (lower.contains("a branch named ") && lower.contains(" already exists"))
+}
+
+/// Decides whether `git branch -D` rollback is permitted after a failed `git worktree add -b`:
+/// only when `show-ref` confirmed the branch was absent before the attempt AND the failure was
+/// not `a branch named ... already exists` (which proves another actor owned the branch before
+/// `worktree add -b` created it).
+pub fn should_rollback_branch_after_worktree_add_error(
+    probe: BranchExistenceProbe,
+    branch_name: &str,
+    error: &WorktreeError,
+) -> bool {
+    if probe != BranchExistenceProbe::Absent {
+        return false;
+    }
+    match error {
+        WorktreeError::CommandFailed { stderr, .. } => {
+            !is_branch_already_exists_stderr(stderr, branch_name)
+        }
+        _ => true,
+    }
+}
+
+/// Returns `true` when `git worktree add` stderr indicates git's path or `$GIT_DIR` length limit.
+pub fn is_git_worktree_path_too_long_stderr(stderr: &str) -> bool {
+    let lower = stderr.to_ascii_lowercase();
+    stderr.contains("'$GIT_DIR' too big")
+        || stderr.contains("\"$GIT_DIR\" too big")
+        || lower.contains("git_dir' too big")
+        || lower.contains("filename too long")
+}
+
+/// Maps a `git worktree add` failure whose stderr reports `'$GIT_DIR' too big` or
+/// `Filename too long` to [`WorktreeError::PathTooLong`].
+pub fn map_worktree_add_error(worktree_path: &Path, error: WorktreeError) -> WorktreeError {
+    match error {
+        WorktreeError::CommandFailed { ref stderr, .. }
+            if is_git_worktree_path_too_long_stderr(stderr) =>
+        {
+            WorktreeError::PathTooLong {
+                path: worktree_path.to_path_buf(),
+                limit: MAX_WORKTREE_PATH_LENGTH,
+            }
+        }
+        other => other,
+    }
+}
+
+fn probe_local_branch_existence(repository_root: &Path, branch_name: &str) -> BranchExistenceProbe {
     let reference = format!("refs/heads/{branch_name}");
-    run_git_command(
-        repository_root,
-        ["show-ref", "--verify", "--quiet", reference.as_str()],
-    )
-    .is_ok()
+    let output = Command::new("git")
+        .current_dir(repository_root)
+        .args([
+            "-c",
+            "core.longpaths=true",
+            "show-ref",
+            "--verify",
+            "--quiet",
+            reference.as_str(),
+        ])
+        .output();
+    match output {
+        Ok(process_output) => classify_show_ref_exit_code(process_output.status.code()),
+        Err(_) => BranchExistenceProbe::Indeterminate,
+    }
 }
 
 fn run_setup_shell_command(
@@ -368,8 +465,8 @@ fn create_git_worktree_from_base(
     }
     let worktree_path_text = worktree_path.to_string_lossy().into_owned();
     if let Some(branch) = &request.branch_name {
-        let existed_before = local_branch_exists(&request.repository_root, branch);
-        let result = run_git_command(
+        let probe = probe_local_branch_existence(&request.repository_root, branch);
+        let raw_result = run_git_command(
             &request.repository_root,
             [
                 "worktree",
@@ -380,10 +477,12 @@ fn create_git_worktree_from_base(
                 &request.base_ref,
             ],
         );
-        if result.is_err() && !existed_before {
+        if let Err(ref error) = raw_result
+            && should_rollback_branch_after_worktree_add_error(probe, branch, error)
+        {
             let _ = run_git_command(&request.repository_root, ["branch", "-D", branch.as_str()]);
         }
-        result
+        raw_result.map_err(|error| map_worktree_add_error(worktree_path, error))
     } else {
         run_git_command(
             &request.repository_root,
@@ -395,6 +494,7 @@ fn create_git_worktree_from_base(
                 &request.base_ref,
             ],
         )
+        .map_err(|error| map_worktree_add_error(worktree_path, error))
     }
 }
 
