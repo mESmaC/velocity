@@ -70,7 +70,6 @@ fn project_palette(state: &PersistedState) -> Vec<PaletteItem> {
 
 fn thread_entry(thread: &ThreadItem) -> ThreadEntry {
     ThreadEntry {
-        detail: None,
         policy: LayoutRow {
             identifier: thread.id as usize,
             group: thread_group(thread.state),
