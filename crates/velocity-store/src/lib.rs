@@ -31,6 +31,7 @@ use velocity_core::state::{
 
 mod project_layout;
 pub mod projects;
+pub mod threads;
 
 pub const STATE_FILE_NAME: &str = "state.json";
 pub mod worktree_settings;

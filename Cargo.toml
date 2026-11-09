@@ -6,6 +6,7 @@ members = [
     "crates/velocity-github",
     "crates/velocity-new-project",
     "crates/velocity-store",
+    "crates/velocity-threads",
     "src-tauri",
 ]
 resolver = "3"
@@ -31,6 +32,7 @@ velocity-git = { path = "crates/velocity-git" }
 velocity-github = { path = "crates/velocity-github" }
 velocity-new-project = { path = "crates/velocity-new-project" }
 velocity-store = { path = "crates/velocity-store" }
+velocity-threads = { path = "crates/velocity-threads" }
 
 [workspace.lints.rust]
 unsafe_code = "forbid"

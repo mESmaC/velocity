@@ -41,6 +41,10 @@ export const PROJECT_SELECTED_EVENT = "project://selected" as const;
 
 export const PULL_REQUEST_PANEL_EVENT = "pr://panel" as const;
 
+export const THREAD_STATUS_EVENT = "thread://status" as const;
+
+export const THREAD_STEP_EVENT = "thread://step" as const;
+
 export const WINDOW_STATE_EVENT = "window://state" as const;
 
 export const WORKTREE_INVENTORY_EVENT = "worktree://inventory" as const;
@@ -1023,6 +1027,29 @@ export type ThreadItem_Serialize = {
 };
 
 export type ThreadState = "draft" | "spec" | "working" | "review" | "error" | "closed" | "done" | "merged";
+
+export type ThreadStatusChanged = {
+	project_identifier: number,
+	thread_identifier: number,
+	state: ThreadState,
+	activity: AgentActivity,
+};
+
+export type ThreadStepRecorded = ThreadStepRecorded_Serialize | ThreadStepRecorded_Deserialize;
+
+export type ThreadStepRecorded_Deserialize = {
+	project_identifier: number,
+	thread_identifier: number,
+	/**  The thread's newest transcript block after the update. */
+	block: TranscriptBlock_Deserialize,
+};
+
+export type ThreadStepRecorded_Serialize = {
+	project_identifier: number,
+	thread_identifier: number,
+	/**  The thread's newest transcript block after the update. */
+	block: TranscriptBlock_Serialize,
+};
 
 export type ToolStepRow = {
 	running: boolean,

@@ -31,6 +31,8 @@ pub struct RailItem {
 /// Feature owners publish their real data here; the shell invents no activity.
 #[derive(Clone, Default)]
 pub struct LayoutData {
+    /// The persisted project these rows belong to; keys the live thread overlay.
+    pub project_identifier: Option<u32>,
     pub project_name: String,
     pub threads: Vec<ThreadEntry>,
     pub projects: Vec<PaletteItem>,
