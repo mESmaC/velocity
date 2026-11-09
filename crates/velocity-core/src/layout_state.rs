@@ -6,6 +6,8 @@ use crate::layout_view::*;
 use crate::navigation::{
     self, KeyStroke, NavigationIntent, NavigationView, ShortcutContext, ShortcutKey,
 };
+use crate::thread_view::{self, ComposerSubmitEffect};
+use crate::thread_view_model::{self, ModelPillView, ThreadDetailSnapshot, TranscriptBlock};
 
 #[derive(Clone)]
 pub struct LayoutState {
@@ -18,6 +20,7 @@ pub struct LayoutState {
     palette_open: bool,
     palette_query: String,
     palette_selection: usize,
+    slash_selection: usize,
     form_open: bool,
     overlay_open: bool,
     composer_text: String,
@@ -36,6 +39,7 @@ impl Default for LayoutState {
             palette_open: false,
             palette_query: String::new(),
             palette_selection: 0,
+            slash_selection: 0,
             form_open: false,
             overlay_open: false,
             composer_text: String::new(),
@@ -109,16 +113,35 @@ impl LayoutState {
         let intent = match action {
             LayoutAction::ComposerText(text) => {
                 self.composer_text = text;
+                self.slash_selection = 0;
+                None
+            }
+            LayoutAction::SlashSelect(selected) => {
+                self.select_slash(selected);
+                None
+            }
+            LayoutAction::SlashNext => {
+                self.move_slash(true);
+                None
+            }
+            LayoutAction::SlashPrevious => {
+                self.move_slash(false);
+                None
+            }
+            LayoutAction::SlashComplete => {
+                self.complete_slash();
+                None
+            }
+            LayoutAction::ToggleShowWork => {
+                self.toggle_show_work();
                 None
             }
             LayoutAction::TaskText(text) => {
                 self.task_text = text;
                 None
             }
-            LayoutAction::SubmitComposer => {
-                nonempty_request(&self.composer_text, LayoutIntent::StartPrompt)
-            }
-            LayoutAction::SubmitTask => nonempty_request(&self.task_text, LayoutIntent::AddTask),
+            LayoutAction::SubmitComposer => self.submit_composer(),
+            LayoutAction::SubmitTask => self.submit_task(),
             LayoutAction::Request(intent) => self.request(intent),
             LayoutAction::SidebarSearch(query) => {
                 self.search = query;
@@ -159,11 +182,19 @@ impl LayoutState {
     }
 
     pub fn snapshot(&self) -> LayoutSnapshot {
+        let slash_items = thread_view_model::slash_menu_items(&self.composer_text);
+        let slash_selection = if slash_items.is_empty() {
+            0
+        } else {
+            thread_view::clamp_slash_selection(self.slash_selection, slash_items.len())
+        };
         LayoutSnapshot {
             revision: self.revision,
             project_name: self.data.project_name.clone(),
             view: self.view,
             selected_thread: self.selected_thread,
+            active_thread: self.active_thread_snapshot(),
+            default_model_pill: self.default_model_pill(),
             search: self.search.clone(),
             groups: self.sidebar(),
             pulse: self.pulse(),
@@ -172,6 +203,8 @@ impl LayoutState {
             palette_query: self.palette_query.clone(),
             palette_results: self.palette_results(),
             palette_selection: self.palette_selection,
+            slash_items,
+            slash_selection,
             tasks: self.data.tasks.clone(),
             pull_requests: self.data.pull_requests.clone(),
             issues: self.data.issues.clone(),
@@ -186,6 +219,126 @@ impl LayoutState {
 
     fn changed(&mut self) {
         self.revision = self.revision.saturating_add(1);
+    }
+
+    fn active_thread_snapshot(&self) -> Option<ThreadDetailSnapshot> {
+        let identifier = self.selected_thread?;
+        let entry = self
+            .data
+            .threads
+            .iter()
+            .find(|thread| thread.policy.identifier == identifier && !thread.policy.hidden)?;
+        let detail = entry.detail.as_ref()?;
+        Some(thread_view_model::project_thread_detail(detail))
+    }
+
+    fn default_model_pill(&self) -> ModelPillView {
+        if let Some(pill) = &self.data.default_model_pill {
+            return pill.clone();
+        }
+        let state = thread_view::project_model_pill(false, true);
+        ModelPillView {
+            provider: ProviderColor::Claude,
+            model_name: "Opus 5.5".into(),
+            effort_label: "High".into(),
+            show_fast_badge: state.show_fast_badge,
+            speed_control_enabled: state.speed_control_enabled,
+            preserve_requested_fast: state.preserve_requested_fast,
+        }
+    }
+
+    fn select_slash(&mut self, selected: usize) {
+        let count = thread_view_model::slash_menu_items(&self.composer_text).len();
+        self.slash_selection = if count == 0 {
+            0
+        } else {
+            thread_view::clamp_slash_selection(selected, count)
+        };
+    }
+
+    fn move_slash(&mut self, down: bool) {
+        let count = thread_view_model::slash_menu_items(&self.composer_text).len();
+        self.slash_selection = thread_view::move_slash_selection(self.slash_selection, count, down);
+    }
+
+    fn complete_slash(&mut self) {
+        let items = thread_view_model::slash_menu_items(&self.composer_text);
+        if items.is_empty() {
+            return;
+        }
+        let index = thread_view::clamp_slash_selection(self.slash_selection, items.len());
+        if let Some(item) = items.get(index) {
+            self.composer_text = format!("{} ", item.command);
+            self.slash_selection = 0;
+        }
+    }
+
+    fn toggle_show_work(&mut self) {
+        let Some(identifier) = self.selected_thread else {
+            return;
+        };
+        if let Some(thread) = self
+            .data
+            .threads
+            .iter_mut()
+            .find(|thread| thread.policy.identifier == identifier)
+            && let Some(detail) = thread.detail.as_mut()
+        {
+            detail.show_work = !detail.show_work;
+        }
+    }
+
+    fn submit_task(&mut self) -> Option<LayoutIntent> {
+        let intent = nonempty_request(&self.task_text, LayoutIntent::AddTask)?;
+        self.task_text.clear();
+        Some(intent)
+    }
+
+    fn submit_composer(&mut self) -> Option<LayoutIntent> {
+        let is_draft = self.selected_thread.is_none() || matches!(self.view, NavigationView::Home);
+        let agent_busy = self
+            .selected_thread
+            .and_then(|identifier| {
+                self.data
+                    .threads
+                    .iter()
+                    .find(|thread| thread.policy.identifier == identifier)
+            })
+            .and_then(|thread| thread.detail.as_ref())
+            .is_some_and(|detail| detail.agent_busy);
+        let (effect, payload, queued) = thread_view_model::evaluate_composer_submission(
+            &self.composer_text,
+            is_draft,
+            agent_busy,
+        );
+        let text = payload?;
+        self.composer_text.clear();
+        self.slash_selection = 0;
+        match effect {
+            ComposerSubmitEffect::Nothing => None,
+            ComposerSubmitEffect::AddTask => Some(LayoutIntent::AddTask(text)),
+            ComposerSubmitEffect::StartThreadFromDraft => Some(LayoutIntent::StartPrompt(text)),
+            ComposerSubmitEffect::SendPromptNow | ComposerSubmitEffect::QueueForNextStep => {
+                let identifier = self.selected_thread?;
+                if let Some(thread) = self
+                    .data
+                    .threads
+                    .iter_mut()
+                    .find(|thread| thread.policy.identifier == identifier)
+                    && let Some(detail) = thread.detail.as_mut()
+                {
+                    detail.blocks.push(TranscriptBlock::UserMessage {
+                        text: text.clone(),
+                        queued,
+                    });
+                }
+                Some(LayoutIntent::SteerThread {
+                    identifier,
+                    prompt: text,
+                    queued,
+                })
+            }
+        }
     }
 
     fn request(&mut self, intent: LayoutIntent) -> Option<LayoutIntent> {
@@ -311,7 +464,8 @@ impl LayoutState {
     }
 
     fn sidebar(&self) -> Vec<SidebarGroup> {
-        let query = normalized(&self.search);
+        // The reference trims the sidebar query, so a query of only spaces shows every thread.
+        let query = normalized(self.search.trim());
         let selected = self.selected_row();
         let mut number = 0;
         GROUPS
@@ -324,7 +478,7 @@ impl LayoutState {
                     .filter(|thread| {
                         let mut row = thread.policy;
                         row.matches_search =
-                            layout::fuzzy_match(&query, &normalized(&thread.title));
+                            layout::substring_match(&query, &normalized(&thread.title));
                         layout::is_root_visible(group, row)
                     })
                     .collect();
