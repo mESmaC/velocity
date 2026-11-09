@@ -3,6 +3,7 @@
 pub mod agents_editor;
 mod agents_markdown;
 pub mod build_gate;
+pub mod duty;
 pub mod interview_view;
 #[cfg(feature = "bindings")]
 pub mod ipc_number;
@@ -17,6 +18,7 @@ pub mod projects;
 pub mod state;
 pub mod theme;
 pub mod thread_menu;
+pub mod thread_titles;
 pub mod thread_view;
 pub mod thread_view_model;
 pub mod window;

@@ -1,6 +1,7 @@
 //! Backend-owned main-window state. No native effects or persistence live here.
 
 use crate::build_gate::{BuildKind, LaunchKind, launch_block_reason};
+use crate::duty::{self, DutyRole, DutyViewSnapshot};
 use crate::interview_view;
 use crate::layout::{self, ThreadGroup};
 use crate::layout_catalog::{self, GROUPS, PULSE};
@@ -33,6 +34,8 @@ pub struct LayoutState {
     palette_selection: usize,
     slash_selection: usize,
     new_project_open: bool,
+    duty_dialog_open: bool,
+    duty_dialog_role: DutyRole,
     form_open: bool,
     overlay_open: bool,
     composer_text: String,
@@ -63,6 +66,8 @@ impl Default for LayoutState {
             palette_selection: 0,
             slash_selection: 0,
             new_project_open: false,
+            duty_dialog_open: false,
+            duty_dialog_role: DutyRole::PrDuty,
             form_open: false,
             overlay_open: false,
             composer_text: String::new(),
@@ -113,6 +118,7 @@ impl LayoutState {
         self.palette_open = false;
         self.palette_query.clear();
         self.palette_selection = 0;
+        self.duty_dialog_open = false;
         self.form_open = false;
         self.overlay_open = false;
         self.composer_text.clear();
@@ -253,6 +259,7 @@ impl LayoutState {
         let follows = matches!(
             self.view,
             NavigationView::Thread
+                | NavigationView::Duty
                 | NavigationView::SpecScan
                 | NavigationView::SpecAsk
                 | NavigationView::SpecReady
@@ -293,6 +300,13 @@ impl LayoutState {
     /// Create closes the New project dialog once the project is set up (F2).
     pub fn close_new_project(&mut self) {
         self.new_project_open = false;
+        self.changed();
+    }
+
+    /// Starting or adding duty agents closes the Start a duty agent dialog and selects the role (F7).
+    pub fn close_duty_dialog_and_select(&mut self, identifier: usize) {
+        self.duty_dialog_open = false;
+        self.open_thread(identifier);
         self.changed();
     }
 
@@ -393,6 +407,7 @@ impl LayoutState {
             settings_tab: self.settings_tab.clone(),
             selected_thread: self.selected_thread,
             active_thread: self.active_thread_snapshot(),
+            active_duty: self.active_duty_snapshot(),
             default_model_pill: self.default_model_pill(),
             search: self.search.clone(),
             groups: self.sidebar(),
@@ -400,6 +415,8 @@ impl LayoutState {
             show_numbers: self.show_numbers,
             palette_open: self.palette_open,
             new_project_open: self.new_project_open,
+            duty_dialog_open: self.duty_dialog_open,
+            duty_dialog_role: self.duty_dialog_role,
             palette_query: self.palette_query.clone(),
             palette_results: self.palette_results(),
             palette_selection: self.palette_selection,
@@ -537,6 +554,10 @@ impl LayoutState {
             if let Some(commands) = &live.agent_commands {
                 snapshot.agent_commands = commands.clone();
             }
+            if let Some(model) = &live.titling_model {
+                snapshot.titling = true;
+                snapshot.title_model_name = model.clone();
+            }
         }
 
         if let Some(interview) = self
@@ -550,6 +571,23 @@ impl LayoutState {
             snapshot.interview = Some(interview.view.clone());
         }
         Some(snapshot)
+    }
+
+    fn active_duty_snapshot(&self) -> Option<DutyViewSnapshot> {
+        let identifier = self.selected_thread?;
+        let entry = self
+            .data
+            .threads
+            .iter()
+            .find(|thread| thread.policy.identifier == identifier && !thread.policy.hidden)?;
+        let duty = entry.duty.as_ref()?;
+        let default_pill = self.default_model_pill();
+        Some(duty::project_duty_view(
+            duty,
+            self.data.pull_requests.len(),
+            self.data.merged_today,
+            &default_pill,
+        ))
     }
 
     fn default_model_pill(&self) -> ModelPillView {
@@ -751,12 +789,26 @@ impl LayoutState {
             NavigationIntent::Dismiss => {
                 self.palette_open = false;
                 self.new_project_open = false;
+                self.duty_dialog_open = false;
             }
             NavigationIntent::NewProject => {
                 self.palette_open = false;
+                self.duty_dialog_open = false;
                 self.new_project_open = true;
             }
             NavigationIntent::Settings => self.view = NavigationView::Settings,
+            NavigationIntent::PrDuty => {
+                self.palette_open = false;
+                self.new_project_open = false;
+                self.duty_dialog_role = DutyRole::PrDuty;
+                self.duty_dialog_open = true;
+            }
+            NavigationIntent::Scouts => {
+                self.palette_open = false;
+                self.new_project_open = false;
+                self.duty_dialog_role = DutyRole::Scouts;
+                self.duty_dialog_open = true;
+            }
             NavigationIntent::ShowNumbers => self.show_numbers = true,
             NavigationIntent::Jump(number) => {
                 let visible: Vec<_> = self
@@ -795,9 +847,12 @@ impl LayoutState {
         let context = ShortcutContext {
             view: self.view,
             typing: input.typing,
-            overlay_open: self.overlay_open || self.palette_open || self.new_project_open,
-            // The New project dialog is a form: Ctrl+Enter submits it (F2).
-            form_open: self.form_open || self.new_project_open,
+            overlay_open: self.overlay_open
+                || self.palette_open
+                || self.new_project_open
+                || self.duty_dialog_open,
+            // Dialogs with a primary action accept Ctrl+Enter (F2, F7).
+            form_open: self.form_open || self.new_project_open || self.duty_dialog_open,
         };
         let stroke = KeyStroke {
             key: shortcut_key(&input),
@@ -931,8 +986,13 @@ impl LayoutState {
         SidebarRow {
             identifier: entry.policy.identifier,
             title: entry.title.clone(),
+            titling: entry.detail.as_ref().is_some_and(|detail| detail.titling)
+                || self
+                    .live_thread(entry.policy.identifier)
+                    .is_some_and(|live| live.titling_model.is_some()),
             metadata: entry.metadata.clone(),
             group: entry.policy.group,
+            duty_role: entry.duty.as_ref().map(|duty| duty.role),
             member,
             expanded,
             active: self.selected_thread == Some(entry.policy.identifier),

@@ -12,6 +12,7 @@ mod process;
 mod program_path;
 mod session;
 mod terminals;
+mod title;
 mod updates;
 
 use std::path::PathBuf;
@@ -33,6 +34,7 @@ pub use error::ClientError;
 pub use files::resolve_in_worktree;
 pub use process::AgentLaunch;
 pub use session::{SessionSetup, answer_permission, session_servers};
+pub use title::{TitleReply, TitleRequest, request_title};
 pub use updates::{AgentSlashCommand, available_commands, entry_class};
 
 use crate::{Placement, Steering, SteeringEffect, SteeringInput, Transcript};
@@ -84,6 +86,16 @@ struct Shared {
 }
 
 impl Shared {
+    /// Handler state for a session rooted at `worktree`, reporting to `events`.
+    fn new(worktree: PathBuf, events: UnboundedSender<AgentEvent>) -> Self {
+        Shared {
+            terminals: Terminals::new(worktree.clone()),
+            worktree,
+            transcript: Mutex::new(Transcript::new()),
+            events,
+        }
+    }
+
     fn emit(&self, event: AgentEvent) {
         // The thread stopped listening: the session is ending, nothing to report to.
         let _ = self.events.send(event);

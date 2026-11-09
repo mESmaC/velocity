@@ -67,6 +67,9 @@ pub fn dispatch_layout(
         .filter(|intent| !crate::interview::handle_intent(window.app_handle(), intent))
         .filter(|intent| !crate::issue_panel::handle_intent(window.app_handle(), intent));
     publish(&window, &snapshot, intent.clone())?;
+    if let Some((role, event)) = outcome.duty_event {
+        crate::duty::publish_duty_event(&window, role, event)?;
+    }
     if let Some((projects, selection)) = project_selection {
         crate::projects::publish_selection(&window, projects, selection)?;
     }

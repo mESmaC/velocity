@@ -10,7 +10,9 @@ serde.workspace = true
 serde_json.workspace = true
 specta.workspace = true
 thiserror.workspace = true
-velocity-core.workspace = true
+# The store's IPC request and outcome types embed core duty and layout types, so they need
+# those types' specta derives.
+velocity-core = { workspace = true, features = ["bindings"] }
 velocity-github.workspace = true
 velocity-git.workspace = true
 

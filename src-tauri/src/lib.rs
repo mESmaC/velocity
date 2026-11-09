@@ -5,6 +5,7 @@ use velocity_store::PersistedState;
 
 mod agents;
 mod build_gate;
+pub mod duty;
 mod follow_through;
 mod github;
 mod interview;
@@ -43,6 +44,10 @@ fn bindings() -> Builder<tauri::Wry> {
         worktree_settings::preview_worktree_folder,
         worktree_settings::browse_worktree_folder,
         worktree_settings::prune_worktrees,
+        duty::get_duty_dialog_defaults,
+        duty::start_duty,
+        duty::pause_duty,
+        duty::add_duty_agents,
         github::list_pull_requests,
         github::get_pull_request,
         github::dispatch_pull_request,
@@ -66,6 +71,7 @@ fn bindings() -> Builder<tauri::Wry> {
 fn event_bindings(builder: Builder<tauri::Wry>) -> Builder<tauri::Wry> {
     builder
         .typ::<PersistedState>()
+        .typ::<duty::DutyEventPublished>()
         .typ::<follow_through::PullRequestLifecycleEvent>()
         .typ::<window::WindowStateChanged>()
         .typ::<layout::LayoutStateChanged>()
@@ -76,6 +82,7 @@ fn event_bindings(builder: Builder<tauri::Wry>) -> Builder<tauri::Wry> {
         .typ::<pull_request_panel::PullRequestPanelChanged>()
         .typ::<threads::ThreadStatusChanged>()
         .typ::<threads::ThreadStepRecorded>()
+        .constant("DUTY_EVENT", duty::DutyEventPublished::NAME)
         .constant("PROJECT_SELECTED_EVENT", projects::ProjectSelected::NAME)
         .constant("ISSUE_PANEL_EVENT", issue_panel::IssuePanelChanged::NAME)
         .constant("WINDOW_STATE_EVENT", window::WindowStateChanged::NAME)
@@ -116,6 +123,7 @@ pub fn run() -> anyhow::Result<()> {
     export_bindings()?;
 
     let bindings = bindings().events(collect_events![
+        duty::DutyEventPublished,
         window::WindowStateChanged,
         layout::LayoutStateChanged,
         layout::LayoutIntentRequested,

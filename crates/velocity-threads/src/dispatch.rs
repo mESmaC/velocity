@@ -98,7 +98,7 @@ pub fn plan_issue_dispatch(
         .into());
     }
     let prompt = dispatch_prompt(repository, issue, accept_recommendation)?;
-    let launch = crate::launch::plan_named_launch(
+    let mut launch = crate::launch::plan_named_launch(
         project,
         &store.worktree_context().preferences,
         &store.settings(),
@@ -106,6 +106,8 @@ pub fn plan_issue_dispatch(
         &issue.title,
         &format!("issue-{}", issue.number),
     )?;
+    // F4: the issue already supplies its title, including recommendation threads.
+    launch.title.request = None;
     Ok(IssueDispatchPlan {
         launch,
         issue: assignment,

@@ -343,6 +343,9 @@
   );
   --layout-thread-active-box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.1);
   --layout-t-title-font-size: 12px;
+  /* .t-title.titling and @keyframes ttl in the reference */
+  --layout-t-title-titling-duration: 1.1s;
+  --layout-t-title-titling-opacity: 0.45;
   --layout-t-meta-grid-column: 2 / 4;
   --layout-t-meta-font: 10px var(--mono);
   --layout-t-meta-margin-top: -2px;
@@ -987,4 +990,86 @@
   --spec-checks-gap: 8px;
   --spec-check-gap: 7px;
   --spec-check-font-size: 11px;
+}
+
+/* F7 Duty view and Start a duty agent dialog. Values come from
+   design/main-window.html: 623-691 (duty view & modal), 1017-1046 (glass
+   controls & cards) and 1062-1068 (event code & modal). Italics in the
+   reference are dropped (AGENTS.md UI). */
+:root {
+  --duty-section-heading-font-size: 10.5px;
+  --duty-section-heading-margin-bottom: 6px;
+  --duty-rule-chips-gap: 6px;
+  --duty-rule-gap: 5px;
+  --duty-rule-height: 22px;
+  --duty-rule-padding: 0 9px;
+  --duty-rule-border: 1px solid var(--line-dim);
+  --duty-rule-border-radius: 999px;
+  --duty-rule-font-size: 10.5px;
+  --duty-rule-hard-border-color: #4b4166;
+  --duty-rule-icon-size: 11px;
+  --duty-agents-columns: repeat(auto-fill, minmax(210px, 1fr));
+  --duty-agents-gap: 6px;
+  --duty-agent-card-padding: 8px 10px;
+  --duty-agent-card-border: 1px solid rgba(255, 255, 255, 0.09);
+  --duty-agent-card-border-radius: 12px;
+  --duty-agent-card-background: linear-gradient(
+    180deg,
+    rgba(255, 255, 255, 0.05),
+    rgba(255, 255, 255, 0.025)
+  );
+  --duty-agent-card-box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.05);
+  --duty-agent-heading-gap: 6px;
+  --duty-agent-heading-font-size: 11.5px;
+  --duty-agent-nick-font: 500 11px var(--mono);
+  --duty-agent-model-font: 10px var(--mono);
+  --duty-agent-doing-gap: 6px;
+  --duty-agent-doing-margin-top: 4px;
+  --duty-agent-doing-font-size: 11px;
+  --duty-event-columns: 38px 62px 1fr;
+  --duty-event-gap: 8px;
+  --duty-event-padding: 6px 4px;
+  --duty-event-font-size: 11.5px;
+  --duty-event-border-bottom: 1px solid #ffffff08;
+  --duty-event-border-radius: 3px;
+  --duty-event-ts-font: 10px var(--mono);
+  --duty-event-who-font: 10.5px var(--mono);
+  --duty-event-dot-size: 6px;
+  --duty-event-dot-radius: 50%;
+  --duty-event-dot-margin-right: 8px;
+  --duty-event-dot-vertical-align: 1px;
+  --duty-role-cards-columns: 1fr 1fr;
+  --duty-role-cards-gap: 6px;
+  --duty-role-card-padding: 10px;
+  --duty-role-card-border: 1px solid var(--line-dim);
+  --duty-role-card-border-radius: var(--r-sm);
+  --duty-role-card-gap: 4px;
+  --duty-role-card-hover-border-color: var(--line-mid);
+  --duty-role-card-on-border-color: var(--line);
+  --duty-role-card-on-background: var(--surface-3);
+  --duty-role-card-heading-gap: 7px;
+  --duty-role-card-heading-font-size: 12px;
+  --duty-role-card-heading-font-weight: 600;
+  --duty-role-card-detail-font-size: 10.5px;
+  --duty-role-card-detail-line-height: 1.45;
+  --duty-stepper-border: 1px solid var(--line-mid);
+  --duty-stepper-border-radius: var(--r-sm);
+  --duty-stepper-button-width: 24px;
+  --duty-stepper-button-height: 22px;
+  --duty-stepper-count-min-width: 22px;
+  --duty-stepper-count-font: 11px var(--mono);
+  --duty-checks-gap: 8px;
+  --duty-lockt-gap: 4px;
+  --duty-lockt-font-size: 10px;
+  --duty-lockt-icon-size: 11px;
+  --duty-focus-chips-gap: 5px;
+  --duty-focus-chip-height: 22px;
+  --duty-focus-chip-padding: 0 9px;
+  --duty-focus-chip-border: 1px solid var(--line-dim);
+  --duty-focus-chip-border-radius: 999px;
+  --duty-focus-chip-font-size: 10.5px;
+  --duty-focus-chip-on-border-color: var(--line-mid);
+  --duty-focus-chip-on-background: var(--surface-3);
+  --duty-hint-font-size: 10.5px;
+  --duty-sub-row-margin-top: 4px;
 }

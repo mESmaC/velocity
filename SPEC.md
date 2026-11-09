@@ -117,7 +117,7 @@ A thread's state (§2.1) says where it is in its lifecycle. Its **activity** say
 | command | `get_pull_request_panel`, `open_project_pull_request { project_identifier, number }` | Backend-owned active-project PR rail. Native refresh reads all open PRs, the current head's aggregate CI, line counts, review decision and the first explicit `Reviewing` claim comment. A row opens its owning thread (recorded PR identity, then an unassigned matching branch from the same repository), otherwise GitHub in the browser. Clicks validate project identity. |
 | command | `get_thread_menu { thread_identifier }`, `run_thread_menu_action { project_identifier, thread_identifier, action }`, `delete_thread { project_identifier, thread_identifier }`, `undo_delete_thread { deletion }` | Sidebar right-click menu and Delete with Undo (F12). The backend builds the menu from saved state, the agent session and the worktree's measured size. Actions: open the worktree in Explorer, copy its path (with a toast), open the PR in the browser. `delete_thread` hides the thread at once and publishes a toast carrying the deletion's Undo token on `layout://state`. Nothing is touched for 5 s. Then the backend stops the agent, removes the worktree (the worktree lifecycle's `UserDeletedThread`), closes any open PR, returns the thread's tasks to todo and drops its record. A worktree that cannot be removed keeps the thread and shows why. |
 | command | `get_launch_eligibility { request }` | UI eligibility for the active project, read from the backend state. No project/lock flag is accepted from the frontend. Launch handlers check the guard afresh before worktree or agent effects (Rule 2, F3). |
-| command | `start_duty`, `pause_duty`, `add_duty_agents` | duty agents |
+| command | `get_duty_dialog_defaults { project_id }`, `start_duty { request }`, `pause_duty { request }`, `add_duty_agents { request }` | Duty view, start dialog defaults, start/pause/resume and add-agents lifecycle, persisted on the project in `state.json` and broadcast over `duty://event` (F7) |
 | command | `get_issue_panel`, `open_project_issue { project_identifier, number }`, `dispatch_issue { project_identifier, number, accept_recommendation }` | Active-project issue rail (F9). Native refresh reads open issues, labels, scout attribution and spec-question recommendations. Opening an assigned issue selects its thread; otherwise it opens GitHub. Dispatch re-reads the issue, checks the saved spec lock and atomically records issue ownership before starting the ordinary worktree/ACP lifecycle. Accept scopes that thread to the recommended one-line proposed SPEC.md answer. |
 | command | `launch_swarm`, `add_to_swarm` | swarm |
 | command | `launch_goal_swarm { prompt, mix: [{ model, effort, speed, count }], keep_going }`, `add_goal_agents` | goal swarm |
@@ -1113,7 +1113,7 @@ Each milestone ends with a working app. PR duty checks an item off when it lands
 
 **M3 · Threads and worktrees**
 - [x] Agent runner: providers, models, effort, speed (Regular / Fast where the agent offers it), full permissions, queued steering (Rule 1, F4, F15)
-- [ ] Thread titles from the title model (default GPT-6 Luna · Low · Fast), in parallel with taking a worktree; branch named from the title (F4, F15)
+- [x] Thread titles from the title model (default GPT-6 Luna · Low · Fast), in parallel with taking a worktree; branch named from the title (F4, F15)
 - [x] ACP client (`agent-client-protocol`): spawn per thread, `session/new` in the worktree with AIRC as an MCP server, updates → transcript, auto-allow permissions, cancel, queued prompts, `fs`/`terminal` rooted at the worktree but not confined to it, full tool access with your config loaded and shared MCP servers (§3.2)
 - [ ] ACP agents for Claude Code (`claude-code-acp`), Codex (`codex-acp`), Kimi Code (`kimi --acp`) and Antigravity, each using its own OAuth login through `authenticate`; Settings → Providers, model menu, limit meter (F15)
 - [x] Worktree manager: create / delete / prune, path scheme, setup step (copy files, run command, shared build cache) (F5)
@@ -1131,7 +1131,7 @@ Each milestone ends with a working app. PR duty checks an item off when it lands
 - [ ] PR duty: claiming, review against SPEC.md, request changes, approve, merge; never merge unapproved; approval record bound to the head SHA; severity bar (Rule 4, F7, Q28)
 - [ ] Scouts: sweeps, issue filing with repro, de-duplication (F7)
   - [x] GitHub issue inventory (open and closed), executed failure evidence, duplicate assessment, dispatch labels and scout attribution; runnable backend filing path
-- [ ] Duty view, start dialog, pause/resume, add agents (F7)
+- [x] Duty view, start dialog, pause/resume, add agents (F7)
 
 **M6 · Task List, issues, swarm**
 - [ ] Task List: states, add input, `T`, `/task`, palette, attribution, live agent state (F8)
