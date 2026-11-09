@@ -2,7 +2,9 @@
 //! Every call runs `gh` as a child process with its arguments passed directly, never
 //! through a shell.
 
+mod branch_pull_requests;
 mod command;
+pub mod follow_through;
 mod issue_types;
 mod issues;
 mod pull_request_command;

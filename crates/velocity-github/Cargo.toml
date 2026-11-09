@@ -11,10 +11,12 @@ workspace = true
 
 [dependencies]
 gix = { version = "0.90.0", default-features = false, features = ["sha1", "sha256"] }
+jiff = "0.2"
 serde.workspace = true
 serde_json.workspace = true
 specta.workspace = true
 thiserror.workspace = true
+velocity-core = { workspace = true, features = ["bindings"] }
 
 [target.'cfg(windows)'.dependencies]
 junction = "=2.1.0"

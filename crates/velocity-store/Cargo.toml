@@ -13,6 +13,7 @@ thiserror.workspace = true
 # The store's IPC request and outcome types embed core duty and layout types, so they need
 # those types' specta derives.
 velocity-core = { workspace = true, features = ["bindings"] }
+velocity-github.workspace = true
 velocity-git.workspace = true
 
 [lints]

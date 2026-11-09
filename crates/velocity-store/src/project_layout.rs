@@ -162,13 +162,20 @@ fn thread_detail(thread: &ThreadItem) -> ThreadDetailEntry {
         deleted: thread.deletions as usize,
         elapsed_label: elapsed_label(thread.elapsed_seconds),
         pull_request_number: thread.pull_request_number.map(|number| number as usize),
-        agent_busy: thread.state == ThreadState::Working
-            && matches!(
-                thread.activity,
-                AgentActivity::Thinking | AgentActivity::Executing
-            ),
+        agent_busy: matches!(
+            thread.state,
+            ThreadState::Working | ThreadState::Review | ThreadState::Closed
+        ) && matches!(
+            thread.activity,
+            AgentActivity::Thinking | AgentActivity::Executing
+        ),
         show_work: false,
         worked_summary: None,
+        pull_request_history: thread
+            .follow_through
+            .as_ref()
+            .filter(|watch| watch.number != 0)
+            .map(|watch| watch.view()),
         blocks: Vec::new(),
         agent_commands: Vec::new(),
         provider: provider_color(thread.provider),

@@ -7,6 +7,7 @@
 //! and serde/specta serialization.
 
 pub mod build_gate;
+pub mod follow_through;
 
 use serde::{Deserialize, Serialize};
 use specta::Type;
@@ -541,6 +542,8 @@ pub struct ThreadItem {
     #[specta(skip)]
     pub worktree_path_id: Option<String>,
     pub pull_request_number: Option<u32>,
+    #[serde(default)]
+    pub follow_through: Option<velocity_github::follow_through::FollowThrough>,
     pub review_stage: Option<ReviewStage>,
     pub task_ids: Vec<u32>,
     pub additions: u32,
@@ -558,6 +561,35 @@ pub struct ThreadItem {
 }
 
 impl ThreadItem {
+    pub(crate) fn for_build(thread: threads::NewThread, identifier: u32) -> Self {
+        Self {
+            id: identifier,
+            title: thread.title,
+            state: ThreadState::Working,
+            activity: AgentActivity::Executing,
+            branch_name: thread.branch_name,
+            worktree_path: Some(thread.worktree_path),
+            // A thread started from the composer builds in its own worktree (F4, F5).
+            worktree_role: WorktreeRole::Thread,
+            worktree_path_id: None,
+            pull_request_number: None,
+            follow_through: None,
+            review_stage: None,
+            task_ids: Vec::new(),
+            additions: 0,
+            deletions: 0,
+            elapsed_seconds: 0,
+            provider: thread.provider,
+            model_name: thread.model_name,
+            effort: thread.effort,
+            preferred_speed: thread.preferred_speed,
+            effective_speed: thread.preferred_speed,
+            model_supports_fast: thread.model_supports_fast,
+            interview: None,
+        }
+        .normalize()
+    }
+
     fn into_core_record(self) -> (Self, CoreThreadRecord<String, String>) {
         let core_record = CoreThreadRecord {
             id: self.id,
@@ -667,6 +699,11 @@ pub struct PersistedState {
     pub active_project_index: u32,
     pub projects: Vec<ProjectItem>,
     pub settings: Settings,
+    /// Deleted rows must never let delayed agent or watcher events address a new thread.
+    #[serde(default)]
+    pub next_thread_identifiers: BTreeMap<u32, u32>,
+    #[serde(default)]
+    pub thread_started_at: BTreeMap<u32, BTreeMap<u32, String>>,
 }
 
 impl Default for PersistedState {
@@ -676,6 +713,8 @@ impl Default for PersistedState {
             active_project_index: 0,
             projects: Vec::new(),
             settings: Settings::default(),
+            next_thread_identifiers: BTreeMap::new(),
+            thread_started_at: BTreeMap::new(),
         }
     }
 }

@@ -163,6 +163,7 @@ export const launchCommands = {
 export const onWindowState = (callback: EventCallback<WindowStateChanged>) =>
   listen(WINDOW_STATE_EVENT, callback);
 
+export * from './ipc/follow-through';
 // Threads start and steer through the composer's layout intents (`start_thread`,
 // `send_message`); their lifecycle also goes out as these events (SPEC.md §3.1).
 export const onThreadStatus = (callback: EventCallback<ThreadStatusChanged>) =>
