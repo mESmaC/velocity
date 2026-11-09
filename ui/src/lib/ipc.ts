@@ -12,6 +12,10 @@ import {
   PR_CLOSED_EVENT,
   type PullRequestLifecycleEvent,
   PULL_REQUEST_PANEL_EVENT,
+  THREAD_STATUS_EVENT,
+  THREAD_STEP_EVENT,
+  type ThreadStatusChanged,
+  type ThreadStepRecorded_Serialize,
   type WindowStateChanged,
   type LayoutStateChanged_Serialize,
   type LayoutIntentRequested_Serialize,
@@ -51,6 +55,8 @@ export type {
   ThreadDetailSnapshot_Serialize as ThreadDetailSnapshot,
   ThreadItem,
   ThreadState,
+  ThreadStatusChanged,
+  ThreadStepRecorded_Serialize as ThreadStepRecorded,
   ToolStepRow,
   TranscriptBlock_Serialize as TranscriptBlock,
   TranscriptModeView,
@@ -177,3 +183,12 @@ export const launchCommands = {
 
 export const onWindowState = (callback: EventCallback<WindowStateChanged>) =>
   listen(WINDOW_STATE_EVENT, callback);
+
+// Threads start and steer through the composer's layout intents (`start_thread`,
+// `send_message`); their lifecycle also goes out as these events (SPEC.md §3.1).
+export const onThreadStatus = (callback: EventCallback<ThreadStatusChanged>) =>
+  listen(THREAD_STATUS_EVENT, callback);
+
+export const onThreadStep = (
+  callback: EventCallback<ThreadStepRecorded_Serialize>,
+) => listen(THREAD_STEP_EVENT, callback);

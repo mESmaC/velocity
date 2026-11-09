@@ -12,6 +12,7 @@ mod new_project;
 mod projects;
 mod pull_request_panel;
 mod state;
+mod threads;
 mod window;
 mod worktree_settings;
 
@@ -59,6 +60,8 @@ fn event_bindings(builder: Builder<tauri::Wry>) -> Builder<tauri::Wry> {
         .typ::<projects::ProjectSelected>()
         .typ::<worktree_settings::WorktreeInventoryChanged>()
         .typ::<pull_request_panel::PullRequestPanelChanged>()
+        .typ::<threads::ThreadStatusChanged>()
+        .typ::<threads::ThreadStepRecorded>()
         .constant("PROJECT_SELECTED_EVENT", projects::ProjectSelected::NAME)
         .constant("WINDOW_STATE_EVENT", window::WindowStateChanged::NAME)
         .constant("LAYOUT_STATE_EVENT", layout::LayoutStateChanged::NAME)
@@ -76,6 +79,8 @@ fn event_bindings(builder: Builder<tauri::Wry>) -> Builder<tauri::Wry> {
             "PULL_REQUEST_PANEL_EVENT",
             pull_request_panel::PullRequestPanelChanged::NAME,
         )
+        .constant("THREAD_STATUS_EVENT", threads::ThreadStatusChanged::NAME)
+        .constant("THREAD_STEP_EVENT", threads::ThreadStepRecorded::NAME)
         .error_handling(tauri_specta::ErrorHandlingMode::Throw)
 }
 
@@ -101,11 +106,14 @@ pub fn run() -> anyhow::Result<()> {
         layout::LayoutIntentRequested,
         projects::ProjectSelected,
         worktree_settings::WorktreeInventoryChanged,
-        pull_request_panel::PullRequestPanelChanged
+        pull_request_panel::PullRequestPanelChanged,
+        threads::ThreadStatusChanged,
+        threads::ThreadStepRecorded
     ]);
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
         .manage(layout::MainLayout::default())
+        .manage(threads::ManagedThreads::default())
         .manage(velocity_interview::Interviews::default())
         .invoke_handler(bindings.invoke_handler())
         .setup(move |application| {

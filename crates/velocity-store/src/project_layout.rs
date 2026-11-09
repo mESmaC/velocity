@@ -32,6 +32,7 @@ pub(crate) fn read_model(state: &PersistedState) -> LayoutData {
         ..LayoutData::default()
     };
     if let Some(project) = active_project(state) {
+        data.project_identifier = Some(project.id);
         data.project_name = project.name.clone();
         let task_count = project.tasks.len();
         data.threads = project
