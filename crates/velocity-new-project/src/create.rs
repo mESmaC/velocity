@@ -50,6 +50,9 @@ pub fn create_project(
     for step in steps {
         run_step(step, &resolved, request, &mut pending)?;
     }
+    if velocity_git::agents_template::install_default_agents(&resolved.path, &resolved.name)? {
+        velocity_git::agents_file::commit_agents(&resolved.path)?;
+    }
     let identifier = finish(&resolved, pending, store, layout, publish)?;
     Ok(CreatedProject {
         identifier,
