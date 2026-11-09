@@ -1,6 +1,7 @@
 <script lang="ts">
   import Icon from './Icon.svelte';
   import PullRequestPanel from './PullRequestPanel.svelte';
+  import IssuePanel from './IssuePanel.svelte';
   import type { LayoutAction, LayoutSnapshot } from './ipc';
   let {
     layout,
@@ -51,38 +52,7 @@
     </div>
   </section>
   <PullRequestPanel />
-  <section class="panel" aria-label="Open Issues">
-    <div class="panel-h">
-      <span class="label">Open Issues</span>
-      <div class="panel-actions">
-        <span class="count">{layout.issues.length || ''}</span><button
-          class="swarm-button"
-          onclick={() => send({ Request: 'SwarmIssues' })}
-          ><Icon name="swarm" />Swarm</button
-        >
-      </div>
-    </div>
-    <div class="panel-body">
-      {#each layout.issues as issue (issue.identifier)}<div class="issue-row">
-          <button
-            class="item"
-            onclick={() => send({ Request: { OpenIssue: issue.identifier } })}
-            ><Icon name="issue" /><span class="item-title">{issue.title}</span
-            ><span class="count">#{issue.identifier}</span><span
-              class="item-meta">{issue.metadata}</span
-            ></button
-          ><button
-            class="dispatch"
-            aria-label={`Dispatch issue ${issue.identifier}`}
-            disabled={!layout.build_allowed}
-            title={layout.build_block_reason ?? 'Dispatch issue'}
-            onclick={() =>
-              send({ Request: { DispatchIssue: issue.identifier } })}
-            ><Icon name="play" />Dispatch</button
-          >
-        </div>{:else}<p class="empty">No open issues.</p>{/each}
-    </div>
-  </section>
+  <IssuePanel {layout} {send} />
   <footer class="rail-foot">
     <button onclick={() => send({ Request: { Navigation: 'Airc' } })}
       >AIRC{#if layout.airc_unread !== '0'}<span

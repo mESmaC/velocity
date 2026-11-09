@@ -6,6 +6,7 @@ use velocity_store::PersistedState;
 mod build_gate;
 mod github;
 mod interview;
+mod issue_panel;
 pub mod layout;
 mod new_project;
 mod projects;
@@ -40,6 +41,9 @@ fn bindings() -> Builder<tauri::Wry> {
         github::list_pull_requests,
         github::get_pull_request,
         github::dispatch_pull_request,
+        issue_panel::get_issue_panel,
+        issue_panel::open_project_issue,
+        issue_panel::dispatch_issue,
         pull_request_panel::get_pull_request_panel,
         pull_request_panel::open_project_pull_request,
         thread_menu::get_thread_menu,
@@ -61,11 +65,13 @@ fn event_bindings(builder: Builder<tauri::Wry>) -> Builder<tauri::Wry> {
         .typ::<layout::LayoutStateChanged>()
         .typ::<layout::LayoutIntentRequested>()
         .typ::<projects::ProjectSelected>()
+        .typ::<issue_panel::IssuePanelChanged>()
         .typ::<worktree_settings::WorktreeInventoryChanged>()
         .typ::<pull_request_panel::PullRequestPanelChanged>()
         .typ::<threads::ThreadStatusChanged>()
         .typ::<threads::ThreadStepRecorded>()
         .constant("PROJECT_SELECTED_EVENT", projects::ProjectSelected::NAME)
+        .constant("ISSUE_PANEL_EVENT", issue_panel::IssuePanelChanged::NAME)
         .constant("WINDOW_STATE_EVENT", window::WindowStateChanged::NAME)
         .constant("LAYOUT_STATE_EVENT", layout::LayoutStateChanged::NAME)
         .constant("LAYOUT_INTENT_EVENT", layout::LayoutIntentRequested::NAME)
@@ -103,6 +109,7 @@ pub fn run() -> anyhow::Result<()> {
         layout::LayoutStateChanged,
         layout::LayoutIntentRequested,
         projects::ProjectSelected,
+        issue_panel::IssuePanelChanged,
         worktree_settings::WorktreeInventoryChanged,
         pull_request_panel::PullRequestPanelChanged,
         threads::ThreadStatusChanged,
@@ -121,6 +128,7 @@ pub fn run() -> anyhow::Result<()> {
             bindings.mount_events(application);
             state::initialize(application.handle())?;
             projects::initialize(application.handle())?;
+            issue_panel::initialize(application.handle());
             worktree_settings::initialize(application.handle())?;
             pull_request_panel::initialize(application.handle());
             interview::start(application.handle());

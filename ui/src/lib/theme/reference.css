@@ -2,6 +2,8 @@
    copy. These values come from the winning reference rules, including the
    later title-bar overrides at design/main-window.html:947-973. */
 :root {
+  /* Reference .item .sub gap, shared by each rail item's metadata. */
+  --issue-meta-gap: 8px;
   /* F5/F13: Settings and Worktrees, reference rules 227–233, 373–411,
      482–489, 683–687, 740 and their final overrides at 1000–1050. */
   --worktrees-scrollbar-size: 8px;

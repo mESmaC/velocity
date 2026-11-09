@@ -3,6 +3,7 @@
 //! through a shell.
 
 mod command;
+mod issue_panel;
 mod issue_types;
 mod issues;
 mod pull_request_command;
@@ -17,6 +18,7 @@ mod scout_directory;
 mod scout_evidence;
 mod scout_issues;
 
+pub use issue_panel::{IssuePanelRow, IssuePanelSnapshot, SpecQuestion};
 pub use issue_types::*;
 pub use issues::IssueClient;
 pub use pull_request_command::PullRequestError;

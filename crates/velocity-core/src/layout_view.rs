@@ -29,6 +29,16 @@ pub struct RailItem {
     pub metadata: String,
 }
 
+impl RailItem {
+    pub fn new(identifier: usize, title: String, metadata: String) -> Self {
+        Self {
+            identifier,
+            title,
+            metadata,
+        }
+    }
+}
+
 /// Feature owners publish their real data here; the shell invents no activity.
 #[derive(Clone, Default)]
 pub struct LayoutData {

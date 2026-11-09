@@ -4,8 +4,8 @@
 use thiserror::Error;
 
 use crate::{
-    AgentActivity, EffortLevel, ProjectItem, ProviderKind, SpeedMode, StateStore, StoreError,
-    TaskState, ThreadItem, ThreadState, WorktreeRole,
+    EffortLevel, ProjectItem, ProviderKind, SpeedMode, StateStore, StoreError, TaskState,
+    ThreadItem,
 };
 
 #[derive(Debug, Error)]
@@ -14,6 +14,8 @@ pub enum ThreadError {
     UnknownProject(u32),
     #[error("Thread {thread} is not in project {project}")]
     UnknownThread { project: u32, thread: u32 },
+    #[error("Issue #{number} already belongs to thread {thread}")]
+    IssueAssigned { number: u32, thread: u32 },
     #[error(transparent)]
     Persistence(#[from] StoreError),
 }
@@ -32,6 +34,44 @@ pub struct NewThread {
     pub preferred_speed: SpeedMode,
 }
 
+impl NewThread {
+    fn into_record(self, identifier: u32, issue: Option<crate::issues::ThreadIssue>) -> ThreadItem {
+        let mut record = ThreadItem::new(identifier, self.title);
+        record.branch_name = self.branch_name;
+        record.worktree_path = Some(self.worktree_path);
+        record.provider = self.provider;
+        record.model_name = self.model_name;
+        record.effort = self.effort;
+        record.preferred_speed = self.preferred_speed;
+        record.effective_speed = self.preferred_speed;
+        record.model_supports_fast = self.model_supports_fast;
+        record.issue = issue;
+        record.normalize()
+    }
+
+    pub fn new(
+        title: String,
+        branch_name: String,
+        worktree_path: String,
+        settings: &crate::Settings,
+    ) -> Self {
+        Self {
+            title,
+            branch_name,
+            worktree_path,
+            provider: settings.providers.default_provider,
+            model_name: settings
+                .providers
+                .default_model
+                .clone()
+                .unwrap_or_else(|| "agent default".into()),
+            model_supports_fast: false,
+            effort: settings.providers.default_effort,
+            preferred_speed: settings.providers.default_speed,
+        }
+    }
+}
+
 impl StateStore {
     pub fn active_project(&self) -> Option<&ProjectItem> {
         crate::project_layout::active_project(&self.state)
@@ -43,43 +83,45 @@ impl StateStore {
 
     /// Records a `working` thread and makes it the project's active thread.
     pub fn add_thread(&mut self, project: u32, thread: NewThread) -> Result<u32, ThreadError> {
+        self.add_linked_thread(project, thread, None)
+    }
+
+    pub fn add_issue_thread(
+        &mut self,
+        project: u32,
+        thread: NewThread,
+        issue: crate::issues::ThreadIssue,
+    ) -> Result<u32, ThreadError> {
+        self.add_linked_thread(project, thread, Some(issue))
+    }
+
+    fn add_linked_thread(
+        &mut self,
+        project: u32,
+        thread: NewThread,
+        issue: Option<crate::issues::ThreadIssue>,
+    ) -> Result<u32, ThreadError> {
         let mut next = self.state.clone();
         let item = next
             .projects
             .iter_mut()
             .find(|item| item.id == project)
             .ok_or(ThreadError::UnknownProject(project))?;
+        if let Some(issue) = &issue
+            && let Some(existing) = crate::issues::issue_thread(item, issue)
+        {
+            return Err(ThreadError::IssueAssigned {
+                number: issue.number,
+                thread: existing.id,
+            });
+        }
         let identifier = item
             .threads
             .iter()
             .map(|existing| existing.id)
             .max()
             .map_or(1, |highest| highest.saturating_add(1));
-        let record = ThreadItem {
-            id: identifier,
-            title: thread.title,
-            state: ThreadState::Working,
-            activity: AgentActivity::Executing,
-            branch_name: thread.branch_name,
-            worktree_path: Some(thread.worktree_path),
-            // A thread started from the composer builds in its own worktree (F4, F5).
-            worktree_role: WorktreeRole::Thread,
-            worktree_path_id: None,
-            pull_request_number: None,
-            review_stage: None,
-            task_ids: Vec::new(),
-            additions: 0,
-            deletions: 0,
-            elapsed_seconds: 0,
-            provider: thread.provider,
-            model_name: thread.model_name,
-            effort: thread.effort,
-            preferred_speed: thread.preferred_speed,
-            effective_speed: thread.preferred_speed,
-            model_supports_fast: thread.model_supports_fast,
-            interview: None,
-        }
-        .normalize();
+        let record = thread.into_record(identifier, issue);
         // Newest first, as the reference's sidebar lists new threads at the top of their group.
         item.threads.insert(0, record);
         item.active_thread_id = Some(identifier);

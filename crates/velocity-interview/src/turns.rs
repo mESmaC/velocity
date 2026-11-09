@@ -61,8 +61,6 @@ fn spec_thread(
     defaults: &InterviewDefaults,
 ) -> ThreadItem {
     ThreadItem {
-        id: identifier,
-        title: SPEC_THREAD_TITLE.into(),
         state: ThreadState::Spec,
         activity: AgentActivity::Thinking,
         // F3: the interview works in the main checkout, so the header shows its branch.
@@ -94,6 +92,7 @@ fn spec_thread(
             proof_list: Vec::new(),
             notice: None,
         }),
+        ..ThreadItem::new(identifier, SPEC_THREAD_TITLE.into())
     }
 }
 

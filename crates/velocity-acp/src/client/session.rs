@@ -32,6 +32,17 @@ pub struct SessionSetup {
     pub bypass_modes: Vec<String>,
 }
 
+impl SessionSetup {
+    pub fn new(worktree: PathBuf) -> Self {
+        Self {
+            worktree,
+            airc: None,
+            shared_servers: Vec::new(),
+            bypass_modes: Vec::new(),
+        }
+    }
+}
+
 /// `initialize` → `session/new` → `session/set_mode` where it changes the mode.
 pub async fn start_session(
     connection: &ConnectionTo<Agent>,

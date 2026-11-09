@@ -19,8 +19,6 @@ use crate::naming::{fallback_title, message_slug, unique_slug};
 /// The project's shared `CARGO_TARGET_DIR` (F5), beside its worktrees. Slugs never contain a
 /// dot, so no worktree can take this name.
 const SHARED_TARGET_FOLDER: &str = ".cargo-target";
-/// Shown on the model pill until the model menu (F15) chooses one: the agent's own default.
-const AGENT_DEFAULT_MODEL: &str = "agent default";
 
 #[derive(Debug, Error)]
 pub enum LaunchError {
@@ -50,9 +48,28 @@ pub fn plan_launch(
     settings: &Settings,
     prompt: &str,
 ) -> Result<LaunchPlan, LaunchError> {
+    plan_named_launch(
+        project,
+        worktrees,
+        settings,
+        prompt,
+        &fallback_title(prompt),
+        &message_slug(prompt),
+    )
+}
+
+/// Dispatched work keeps its item's title and never calls the title model (F4).
+pub(crate) fn plan_named_launch(
+    project: &ProjectItem,
+    worktrees: &WorktreePreferences,
+    settings: &Settings,
+    prompt: &str,
+    title: &str,
+    requested_slug: &str,
+) -> Result<LaunchPlan, LaunchError> {
     let location = Location::new(project, worktrees);
     let repository = PathBuf::from(&project.repository_path);
-    let slug = unique_slug(&message_slug(prompt), |candidate| {
+    let slug = unique_slug(requested_slug, |candidate| {
         slug_taken(project, &repository, &location, candidate)
     });
     let worktree_path = location
@@ -65,7 +82,12 @@ pub fn plan_launch(
     Ok(LaunchPlan {
         project: project.id,
         prompt: prompt.to_owned(),
-        thread: new_thread(settings, prompt, &branch_name, &worktree_path),
+        thread: NewThread::new(
+            title.into(),
+            branch_name.clone(),
+            worktree_path.display().to_string(),
+            settings,
+        ),
         worktree: WorktreeSetupRequest {
             repository_root: repository,
             worktree_path,
@@ -85,24 +107,6 @@ pub fn plan_launch(
         agent: with_shared_target(agent, share_cache.then_some(shared_target)),
         bypass_modes,
     })
-}
-
-fn new_thread(settings: &Settings, prompt: &str, branch: &str, worktree: &Path) -> NewThread {
-    NewThread {
-        title: fallback_title(prompt),
-        branch_name: branch.to_owned(),
-        worktree_path: worktree.display().to_string(),
-        provider: settings.providers.default_provider,
-        model_name: settings
-            .providers
-            .default_model
-            .clone()
-            .unwrap_or_else(|| AGENT_DEFAULT_MODEL.into()),
-        // Read from the agent's config options once the model menu exists (F15).
-        model_supports_fast: false,
-        effort: settings.providers.default_effort,
-        preferred_speed: settings.providers.default_speed,
-    }
 }
 
 /// The command for each provider's ACP agent (§3.2) and the ids of its session modes that
