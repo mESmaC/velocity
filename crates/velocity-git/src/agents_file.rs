@@ -62,6 +62,34 @@ impl AgentsFiles {
         Ok(document.editor.apply(action))
     }
 
+    pub fn begin_rewrite(
+        &mut self,
+        directory: &Path,
+        identifier: u32,
+    ) -> Result<Option<velocity_core::agents_rewrite::RewriteTicket>, AgentsFileError> {
+        let path = file_path(directory)?;
+        let document = self
+            .documents
+            .get_mut(&path)
+            .ok_or(AgentsFileError::NotOpen)?;
+        Ok(document.editor.begin_rewrite(identifier))
+    }
+
+    pub fn finish_rewrite(
+        &mut self,
+        directory: &Path,
+        ticket: &velocity_core::agents_rewrite::RewriteTicket,
+        result: Result<Vec<String>, String>,
+    ) -> Result<OutlineSnapshot, AgentsFileError> {
+        let path = file_path(directory)?;
+        let document = self
+            .documents
+            .get_mut(&path)
+            .ok_or(AgentsFileError::NotOpen)?;
+        document.editor.finish_rewrite(ticket, result);
+        Ok(document.editor.snapshot(None))
+    }
+
     pub fn save(&mut self, directory: &Path) -> Result<OutlineSnapshot, AgentsFileError> {
         let path = file_path(directory)?;
         let document = self

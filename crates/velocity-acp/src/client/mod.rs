@@ -10,6 +10,7 @@ mod files;
 mod handlers;
 mod process;
 mod program_path;
+pub mod rewrite;
 mod session;
 mod terminals;
 mod title;

@@ -1,13 +1,25 @@
 <script lang="ts">
-  import type { OutlineAction, OutlineLine } from './ipc';
+  import type { OutlineAction, OutlineLine, RewriteView } from './ipc';
 
   let {
     line,
     send,
+    submit,
+    rewrite,
+    pending,
   }: {
     line: OutlineLine;
     send: (action: OutlineAction, caret?: number) => void;
+    submit: (identifier: number) => void;
+    rewrite: RewriteView | undefined;
+    pending: boolean;
   } = $props();
+
+  let changed = false;
+  function leave() {
+    if (changed && line.kind === 'Rule') submit(line.identifier);
+    changed = false;
+  }
 
   // Keep the browser's live text node while typing; acknowledgements never replace the caret.
   function editable(node: HTMLElement, value: OutlineLine) {
@@ -82,8 +94,11 @@
     if (!(node instanceof HTMLElement)) return;
     const identifier = line.identifier;
     let action: OutlineAction | null = null;
-    if (event.key === 'Enter') action = { Enter: { identifier } };
-    else if (event.key === 'Tab')
+    if (event.key === 'Enter') {
+      if (!event.shiftKey && line.kind === 'Rule') submit(identifier);
+      changed = false;
+      action = { Enter: { identifier } };
+    } else if (event.key === 'Tab')
       action = { Indent: { identifier, nested: !event.shiftKey } };
     else if (event.key === 'Backspace' && !node.textContent)
       action = { DeleteEmpty: { identifier } };
@@ -132,16 +147,37 @@
         : 'Write a rule'}
       spellcheck="false"
       use:editable={line}
-      oninput={(event) =>
+      onblur={leave}
+      oninput={(event) => {
+        changed = true;
         send({
           Edit: {
             identifier: line.identifier,
             text: event.currentTarget.textContent ?? '',
           },
-        })}
+        });
+      }}
       onkeydown={keydown}
     ></div>
   </div>
+  {#if pending || rewrite?.note || rewrite?.original != null}
+    <div
+      class="agents-rewrite"
+      class:flagged={Boolean(rewrite?.note)}
+      role="status"
+    >
+      {#if pending}<span>Haiku � rewriting</span>{/if}
+      {#if rewrite?.note}<span>{rewrite.note}</span>{/if}
+      {#if rewrite?.original != null}<span>was <s>{rewrite.original}</s></span>
+        <button
+          class="mini"
+          onmousedown={(event) => event.preventDefault()}
+          onclick={() => send({ Undo: { identifier: line.identifier } })}
+          >Undo</button
+        >
+      {/if}
+    </div>
+  {/if}
   {#if line.continuation}<pre
       class="agents-continuation">{line.continuation}</pre>{/if}
 {/if}

@@ -2,6 +2,7 @@
 
 pub mod agents_editor;
 mod agents_markdown;
+pub mod agents_rewrite;
 pub mod agents_template;
 pub mod build_gate;
 pub mod duty;

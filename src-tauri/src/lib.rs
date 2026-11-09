@@ -28,6 +28,7 @@ fn bindings() -> Builder<tauri::Wry> {
         agents::read_agents_md,
         agents::edit_agents_md,
         agents::write_agents_md,
+        agents::tighten_rule,
         window::get_window_state,
         window::minimize_window,
         window::toggle_maximize_window,
