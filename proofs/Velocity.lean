@@ -12,3 +12,4 @@ public import State.Design
 public import State.Confidence
 public import Layout.Design
 public import Layout.Confidence
+public import WorktreeManager.Design
