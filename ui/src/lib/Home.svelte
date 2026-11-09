@@ -1,4 +1,5 @@
 <script lang="ts">
+  import Composer from './Composer.svelte';
   import Icon from './Icon.svelte';
   import type { LayoutAction, LayoutSnapshot, NavigationIntent } from './ipc';
   let {
@@ -12,6 +13,7 @@
     icon: string;
     intent: NavigationIntent;
   }[] = [
+    { label: 'Goal swarm', key: 'G', icon: 'goal', intent: 'Goal' },
     { label: 'Dispatch an issue', key: 'I', icon: 'issue', intent: 'Dispatch' },
     { label: 'Resume last thread', key: 'R', icon: 'play', intent: 'Resume' },
     { label: 'Fan out ×3', key: 'F', icon: 'swarm', intent: 'Fanout' },
@@ -27,36 +29,14 @@
 </script>
 
 <div class="home-view">
-  <form
-    class="composer"
-    onsubmit={(event) => {
-      event.preventDefault();
-      send('SubmitComposer');
-    }}
-  >
-    <textarea
-      id="home-composer"
-      aria-label="Prompt"
-      placeholder="What do you want to build?"
-      value={layout.composer_text}
-      oninput={(event) => send({ ComposerText: event.currentTarget.value })}
-    ></textarea>
-    <div class="composer-row">
-      <button
-        class="pill"
-        type="button"
-        onclick={() => send({ Request: { SettingsTab: 'providers' } })}
-        >Choose model <Icon name="chevron" /></button
-      >
-      <span class="spacer"></span>
-      <button
-        class="send"
-        type="submit"
-        aria-label="Send prompt"
-        title="Send prompt"><Icon name="arrow" /></button
-      >
-    </div>
-  </form>
+  <Composer
+    {layout}
+    {send}
+    id="home-composer"
+    placeholder="Ask anything. @ files, $ skills, / commands"
+    modelPill={layout.default_model_pill}
+    showWorktreePill={true}
+  />
   <div class="starters">
     {#each starters as starter (starter.intent)}<button
         class="chip"

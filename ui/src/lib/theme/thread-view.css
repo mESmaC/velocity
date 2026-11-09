@@ -1,0 +1,352 @@
+/* F4 thread view, transcript, tool steps, diffs, header, composer, and slash menu. */
+.thread-view {
+  flex: var(--thread-view-flex);
+  min-height: var(--thread-view-min-height);
+  display: flex;
+  flex-direction: column;
+}
+.thread-head {
+  display: flex;
+  align-items: center;
+  gap: var(--thread-head-gap);
+  padding: var(--thread-head-padding);
+  border-bottom: var(--thread-head-border-bottom);
+}
+.thread-head h1 {
+  margin: var(--thread-head-h1-margin);
+  font-size: var(--thread-head-h1-font-size);
+  font-weight: var(--thread-head-h1-font-weight);
+  letter-spacing: var(--thread-head-h1-letter-spacing);
+  color: var(--thread-head-h1-color);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.ttl-chip {
+  margin-left: var(--thread-ttl-chip-margin-left);
+  padding: var(--thread-ttl-chip-padding);
+  border-radius: var(--thread-ttl-chip-border-radius);
+  font: var(--thread-ttl-chip-font);
+  color: var(--muted);
+  background: var(--thread-ttl-chip-background);
+  vertical-align: var(--thread-ttl-chip-vertical-align);
+}
+.thread-head .meta {
+  display: flex;
+  align-items: center;
+  gap: var(--thread-meta-gap);
+  font: var(--thread-meta-font);
+  color: var(--muted);
+  white-space: nowrap;
+}
+.thread-head .meta .branch {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--thread-meta-item-gap);
+  color: var(--text-2);
+}
+.thread-head .meta .wt {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--thread-meta-item-gap);
+  color: var(--text-2);
+}
+.thread-head .meta .wt:hover {
+  color: var(--text);
+}
+.thread-head .meta .wt.gone {
+  color: var(--muted);
+  text-decoration: line-through;
+  cursor: default;
+}
+.add {
+  color: var(--ok);
+}
+.del {
+  color: var(--err);
+}
+.mono {
+  font-family: var(--mono);
+}
+.head-actions {
+  display: flex;
+  gap: var(--thread-head-actions-gap);
+}
+.btn {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--thread-btn-gap);
+  height: var(--thread-btn-height);
+  padding: var(--thread-btn-padding);
+  border: var(--thread-btn-border);
+  border-radius: var(--thread-btn-border-radius);
+  font-size: var(--thread-btn-font-size);
+  color: var(--text);
+  background: var(--thread-btn-background);
+  box-shadow: var(--thread-btn-box-shadow);
+  white-space: nowrap;
+}
+.btn:hover {
+  border-color: var(--thread-btn-hover-border-color);
+  background: var(--thread-btn-hover-background);
+}
+.btn.primary {
+  border-color: var(--thread-btn-primary-border-color);
+  background: var(--thread-btn-primary-background);
+  color: var(--thread-btn-primary-color);
+  box-shadow: var(--thread-btn-primary-box-shadow);
+}
+.btn.primary:hover {
+  background: var(--thread-btn-primary-hover-background);
+}
+.btn kbd {
+  padding: var(--thread-btn-kbd-padding);
+  font-size: var(--thread-btn-kbd-font-size);
+}
+.mini {
+  height: var(--thread-mini-height);
+  padding: var(--thread-mini-padding);
+  border: var(--thread-mini-border);
+  border-radius: var(--thread-mini-border-radius);
+  font-size: var(--thread-mini-font-size);
+  color: var(--text);
+  white-space: nowrap;
+}
+.mini:hover {
+  border-color: var(--line);
+  background: var(--surface-3);
+}
+.transcript {
+  flex: var(--thread-transcript-flex);
+  min-height: var(--thread-view-min-height);
+  overflow-y: auto;
+  padding: var(--thread-transcript-padding);
+  user-select: text;
+}
+.transcript-inner {
+  max-width: var(--thread-transcript-inner-max-width);
+  margin: var(--thread-transcript-inner-margin);
+  display: flex;
+  flex-direction: column;
+  gap: var(--thread-transcript-inner-gap);
+}
+.msg-user {
+  align-self: flex-end;
+  max-width: var(--thread-msg-user-max-width);
+  padding: var(--thread-msg-user-padding);
+  border: var(--thread-msg-user-border);
+  border-radius: var(--thread-msg-user-border-radius);
+  font-size: var(--thread-msg-user-font-size);
+  color: var(--thread-msg-user-color);
+  background: var(--thread-msg-user-background);
+  box-shadow: var(--thread-msg-user-box-shadow);
+}
+.msg-agent {
+  font-size: var(--thread-msg-agent-font-size);
+  color: var(--text);
+}
+.msg-agent p {
+  margin: var(--thread-msg-agent-p-margin);
+}
+.msg-agent code,
+.msg-user code {
+  font: var(--thread-msg-code-font);
+  padding: var(--thread-msg-code-padding);
+  border-radius: var(--thread-msg-code-border-radius);
+  background: var(--thread-msg-code-background);
+}
+.tools {
+  display: flex;
+  flex-direction: column;
+  border-left: var(--thread-tools-border-left);
+  margin-left: var(--thread-tools-margin-left);
+  padding-left: var(--thread-tools-padding-left);
+  gap: var(--thread-tools-gap);
+}
+.tool {
+  display: grid;
+  grid-template-columns: var(--thread-tool-grid-template-columns);
+  gap: var(--thread-tool-gap);
+  align-items: center;
+  font-size: var(--thread-tool-font-size);
+  padding: var(--thread-tool-padding);
+  color: var(--text-2);
+}
+.tool .verb {
+  color: var(--muted);
+}
+.tool .arg {
+  font-family: var(--mono);
+  font-size: var(--thread-tool-arg-font-size);
+  color: var(--text-2);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.tool .res {
+  font: var(--thread-tool-res-font);
+  color: var(--muted);
+}
+.tool .ok {
+  color: var(--ok);
+}
+.tool.running .arg {
+  color: var(--text);
+}
+.diff {
+  border: var(--thread-diff-border);
+  border-radius: var(--thread-diff-border-radius);
+  background: var(--thread-diff-background);
+  overflow: hidden;
+  font: var(--thread-diff-font);
+}
+.diff-h {
+  display: flex;
+  justify-content: space-between;
+  padding: var(--thread-diff-h-padding);
+  background: var(--thread-diff-h-background);
+  color: var(--text-2);
+  border-bottom: var(--thread-diff-h-border-bottom);
+  font-size: var(--thread-diff-h-font-size);
+}
+.diff pre {
+  margin: var(--thread-diff-pre-margin);
+  padding: var(--thread-diff-pre-padding);
+  overflow-x: auto;
+}
+.diff pre span {
+  display: block;
+  padding: var(--thread-diff-line-padding);
+  white-space: pre;
+}
+.diff .a {
+  background: var(--thread-diff-added-background);
+  color: var(--thread-diff-added-color);
+}
+.diff .d {
+  background: var(--thread-diff-deleted-background);
+  color: var(--err);
+}
+.diff .c {
+  color: var(--muted);
+}
+.worked {
+  display: flex;
+  align-items: center;
+  gap: var(--thread-worked-gap);
+  padding: var(--thread-worked-padding);
+  border: var(--thread-worked-border);
+  border-radius: var(--thread-worked-border-radius);
+  font-size: var(--thread-worked-font-size);
+  color: var(--text-2);
+}
+.worked .icon {
+  color: var(--ok);
+}
+.worked .mini {
+  margin-left: auto;
+}
+.err-card {
+  border: var(--thread-err-card-border);
+  border-radius: var(--thread-err-card-border-radius);
+  padding: var(--thread-err-card-padding);
+  background: var(--thread-err-card-background);
+}
+.err-card .ah {
+  color: var(--err);
+  font-size: var(--thread-err-card-ah-font-size);
+  margin-bottom: var(--thread-err-card-ah-margin-bottom);
+  display: flex;
+  gap: var(--thread-err-card-ah-gap);
+  align-items: center;
+}
+.err-card pre {
+  margin: var(--thread-err-card-pre-margin);
+  font: var(--thread-err-card-pre-font);
+  color: var(--text-2);
+  white-space: pre-wrap;
+}
+.status-line {
+  display: flex;
+  align-items: center;
+  gap: var(--thread-status-line-gap);
+  font-size: var(--thread-status-line-font-size);
+  color: var(--muted);
+  padding: var(--thread-status-line-padding);
+}
+.queued {
+  align-self: flex-end;
+  font-size: var(--thread-queued-font-size);
+  color: var(--muted);
+  margin-top: var(--thread-queued-margin-top);
+}
+.working-dots {
+  display: inline-flex;
+  gap: var(--thread-working-dots-gap);
+}
+.working-dots i {
+  width: var(--thread-working-dot-size);
+  height: var(--thread-working-dot-size);
+  border-radius: var(--layout-pulse-dot-border-radius);
+  background: var(--text-2);
+}
+.dock {
+  padding: var(--thread-dock-padding);
+}
+.dock .composer {
+  width: var(--layout-item-width);
+  max-width: var(--thread-dock-composer-max-width);
+  margin: var(--thread-dock-composer-margin);
+}
+.slash-menu {
+  position: absolute;
+  left: var(--thread-slash-menu-left);
+  bottom: var(--thread-slash-menu-bottom);
+  width: var(--thread-slash-menu-width);
+  padding: var(--thread-slash-menu-padding);
+  border: var(--thread-slash-menu-border);
+  border-radius: var(--thread-slash-menu-border-radius);
+  background: var(--glass-pop);
+  box-shadow: var(--thread-slash-menu-box-shadow);
+  backdrop-filter: var(--blur-pop);
+}
+.slash-menu button {
+  width: var(--thread-slash-item-width);
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: var(--thread-slash-item-gap);
+  padding: var(--thread-slash-item-padding);
+  border-radius: var(--thread-slash-item-border-radius);
+  font-size: var(--thread-slash-item-font-size);
+  text-align: left;
+}
+.slash-menu button.sel {
+  background: var(--thread-slash-item-sel-background);
+}
+.slash-menu .mono {
+  white-space: nowrap;
+}
+.slash-menu .desc {
+  color: var(--muted);
+  font-size: var(--thread-slash-desc-font-size);
+}
+.pill b {
+  color: var(--text);
+  font-weight: var(--thread-pill-bold-font-weight);
+}
+.pill i {
+  color: var(--muted);
+}
+.pill .prov[data-provider='Claude'] {
+  color: var(--claude);
+}
+.pill .prov[data-provider='Codex'] {
+  color: var(--codex);
+}
+.pill .prov[data-provider='Antigravity'] {
+  color: var(--agy);
+}
+.pill .prov[data-provider='Kimi'] {
+  color: var(--kimi);
+}

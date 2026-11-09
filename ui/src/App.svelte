@@ -4,6 +4,7 @@
   import Sidebar from './lib/Sidebar.svelte';
   import Rail from './lib/Rail.svelte';
   import Home from './lib/Home.svelte';
+  import ThreadView from './lib/ThreadView.svelte';
   import CommandPalette from './lib/CommandPalette.svelte';
   import {
     layoutCommands,
@@ -13,6 +14,7 @@
   } from './lib/ipc';
   import type { LayoutAction, LayoutSnapshot, LayoutIntent } from './lib/ipc';
   import './lib/theme/layout.css';
+  import './lib/theme/thread-view.css';
 
   let layout = $state<LayoutSnapshot | null>(null);
   let error = $state('');
@@ -96,7 +98,12 @@
   }
 
   function keydown(event: KeyboardEvent) {
-    if (event.isComposing || !layout) return;
+    if (!layout || event.isComposing || event.key === 'Process') return;
+    if (event.key === 'Alt' && !event.ctrlKey && !event.metaKey) {
+      event.preventDefault();
+      if (!event.repeat) send({ NumberHints: 'AltDown' });
+      return;
+    }
     const typing =
       event.target instanceof Element &&
       !!event.target.closest(
@@ -177,7 +184,14 @@
   {#if layout}<div class="workspace">
       <Sidebar {layout} {send} />
       <main class="main-view" aria-label="Velocity workspace">
-        {#if layout.view === 'Home'}<Home {layout} {send} />{/if}
+        {#if layout.view === 'Home'}<Home
+            {layout}
+            {send}
+          />{:else if layout.view === 'Thread' && layout.active_thread}<ThreadView
+            {layout}
+            thread={layout.active_thread}
+            {send}
+          />{/if}
       </main>
       <Rail {layout} {send} />
     </div>{:else}<p class="empty" role="status">Opening workspace…</p>{/if}
