@@ -992,6 +992,14 @@
   --spec-check-font-size: 11px;
 }
 
+/* F11 .was declarations in the reference. */
+:root {
+  --agents-rewrite-gap: 6px;
+  --agents-rewrite-margin: 0 0 3px;
+  --agents-rewrite-size: 10.5px;
+  --agents-rewrite-strike: #e8807a99;
+}
+
 /* F7 Duty view and Start a duty agent dialog. Values come from
    design/main-window.html: 623-691 (duty view & modal), 1017-1046 (glass
    controls & cards) and 1062-1068 (event code & modal). Italics in the
