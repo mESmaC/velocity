@@ -12,6 +12,7 @@ specta.workspace = true
 thiserror.workspace = true
 velocity-core.workspace = true
 velocity-github.workspace = true
+velocity-git.workspace = true
 
 [lints]
 workspace = true

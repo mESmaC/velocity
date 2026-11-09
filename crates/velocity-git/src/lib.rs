@@ -9,6 +9,7 @@
 #![forbid(unsafe_code)]
 
 mod command;
+pub mod inventory;
 pub mod lifecycle;
 pub mod manager;
 mod merged_worktree;

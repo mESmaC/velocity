@@ -112,6 +112,7 @@ fn observe(
     project: &ProjectItem,
     thread: &ThreadItem,
 ) -> Result<(), String> {
+    let mut watch = thread.follow_through.clone().unwrap_or_default();
     let number = match thread.pull_request_number {
         Some(number) => number,
         None => match client
@@ -119,7 +120,8 @@ fn observe(
             .map_err(|error| error.to_string())?
             .first()
         {
-            Some(request) => request.number,
+            Some(request) if watch.should_follow(request) => request.number,
+            Some(_) => return Ok(()),
             None => return Ok(()),
         },
     };
@@ -127,7 +129,9 @@ fn observe(
     if !client.owns_branch(&snapshot.pull_request, &thread.branch_name) {
         return Err("The PR head does not match this thread's immutable branch".into());
     }
-    let mut watch = thread.follow_through.clone().unwrap_or_default();
+    if !watch.should_follow(&snapshot.pull_request) {
+        return Ok(());
+    }
     watch.observe(&snapshot);
     let key = (project.id, thread.id);
     watch.observe_work((hooks.tool_steps)(application, key));

@@ -26,6 +26,13 @@ pub fn remove_merged_worktree(
             "Worktree cleanup requires absolute Windows or Unix paths".into(),
         ));
     }
+    // A project's checkout can itself be a linked worktree. Keep it even when
+    // its branch and common git directory match the requested cleanup target.
+    if path_identity(repository)? == path_identity(path)? {
+        return Err(MergedWorktreeError::Ownership(
+            "The project's checkout cannot be removed as a thread worktree".into(),
+        ));
+    }
     let registered = registered_worktree(repository, path, branch)?;
     if path.exists() {
         verify_worktree(repository, path, branch)?;

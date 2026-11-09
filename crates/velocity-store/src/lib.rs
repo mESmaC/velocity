@@ -11,6 +11,7 @@ pub mod follow_through;
 
 use serde::{Deserialize, Serialize};
 use specta::Type;
+use std::collections::BTreeMap;
 use std::fs::{self, File};
 use std::io::Write;
 use std::path::{Path, PathBuf};
@@ -33,11 +34,14 @@ mod project_layout;
 pub mod projects;
 
 pub const STATE_FILE_NAME: &str = "state.json";
+pub mod worktree_settings;
 pub const PARTIAL_STATE_FILE_NAME: &str = "state.json.partial";
 pub const DEFAULT_TITLE_MODEL_NAME: &str = "GPT-6 Luna";
 
 #[derive(Debug, Error)]
 pub enum StoreError {
+    #[error("Invalid worktree setting: {0}")]
+    WorktreeSetting(String),
     #[error("Could not create state directory '{path}': {source}")]
     CreateDirectory {
         path: String,
@@ -363,6 +367,12 @@ pub struct WorktreeSettings {
     pub delete_local_branch_on_merge: bool,
     pub share_rust_build_cache: bool,
     pub warm_pool_count: u32,
+    #[serde(default)]
+    pub project_roots: BTreeMap<u32, String>,
+    #[serde(default = "worktree_settings::default_copy_files")]
+    pub copy_files: String,
+    #[serde(default = "worktree_settings::default_setup_command")]
+    pub setup_command: String,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, Type)]
@@ -434,6 +444,9 @@ impl Settings {
                 delete_local_branch_on_merge: core_settings.worktrees.delete_local_branch_on_merge,
                 share_rust_build_cache: core_settings.worktrees.share_rust_build_cache,
                 warm_pool_count: core_settings.worktrees.warm_pool_count,
+                project_roots: BTreeMap::new(),
+                copy_files: worktree_settings::default_copy_files(),
+                setup_command: worktree_settings::default_setup_command(),
             },
             providers: ProviderSettings {
                 default_provider: core_settings.providers.default_provider.into(),
@@ -495,6 +508,15 @@ impl TaskItem {
     }
 }
 
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize, Type)]
+#[serde(rename_all = "snake_case")]
+pub enum WorktreeRole {
+    #[default]
+    Thread,
+    Review,
+    Sweep,
+}
+
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, Type)]
 pub struct ThreadItem {
     pub id: u32,
@@ -505,6 +527,8 @@ pub struct ThreadItem {
     #[serde(deserialize_with = "deserialize_optional_non_empty_string")]
     #[specta(type = Option<String>)]
     pub worktree_path: Option<String>,
+    #[serde(default)]
+    pub worktree_role: WorktreeRole,
     #[serde(default, skip_serializing)]
     #[specta(skip)]
     pub worktree_path_id: Option<String>,
@@ -654,7 +678,8 @@ impl PersistedState {
                 settings: self.settings.to_core(),
             });
         self.active_project_index = normalized_header.active_project_index;
-        self.settings = Settings::from_core(normalized_header.settings);
+        // The pure header normalizes selection only. Retain serialized worktree
+        // preferences that are intentionally outside that minimal core header.
         self.projects = self
             .projects
             .into_iter()
@@ -674,7 +699,7 @@ impl PersistedState {
             next_settings.to_core(),
         );
         self.active_project_index = updated_header.active_project_index;
-        self.settings = Settings::from_core(updated_header.settings);
+        self.settings = next_settings;
         self.revision = self.revision.wrapping_add(1);
     }
 }

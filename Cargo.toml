@@ -21,9 +21,10 @@ serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 specta = { version = "=2.0.0-rc.26", features = ["derive", "function"] }
 specta-typescript = "=0.0.13"
+sysinfo = { version = "=0.40.1", default-features = false, features = ["disk"] }
 tauri = { version = "2.12.5", features = ["specta"] }
-tauri-plugin-dialog = "=2.8.3"
 tauri-specta = { version = "=2.0.0-rc.26", features = ["derive", "typescript"] }
+tauri-plugin-dialog = "=2.8.4"
 thiserror = "2.0"
 velocity-core = { path = "crates/velocity-core" }
 velocity-git = { path = "crates/velocity-git" }

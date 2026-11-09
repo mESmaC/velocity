@@ -23,6 +23,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     if arguments.get(4).is_some_and(|mode| mode == "closed") {
         snapshot.pull_request.state = PullRequestState::Closed;
     }
+    if !FollowThrough::default().should_follow(&snapshot.pull_request) {
+        return Err("Choose a ready PR, or use the isolated closed projection".into());
+    }
     std::fs::create_dir_all(directory)?;
     let state_file = directory.join("state.json");
     if state_file.exists() {
@@ -77,6 +80,7 @@ fn seed_thread(repository: &str, snapshot: &PullRequestSnapshot) -> ThreadItem {
         activity: AgentActivity::Idle,
         branch_name: snapshot.pull_request.head_ref_name.clone(),
         worktree_path: Some(repository.into()),
+        worktree_role: velocity_store::WorktreeRole::Thread,
         worktree_path_id: None,
         pull_request_number: None,
         follow_through: None,

@@ -18,6 +18,9 @@ impl StateStore {
         snapshot: &PullRequestSnapshot,
         follow_through: FollowThrough,
     ) -> Result<bool, StoreError> {
+        if !follow_through.should_follow(&snapshot.pull_request) {
+            return Ok(false);
+        }
         let mut next = self.state.clone();
         let Some(thread) = next
             .projects

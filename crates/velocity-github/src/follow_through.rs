@@ -5,7 +5,7 @@ use serde::{Deserialize, Serialize};
 use specta::Type;
 use std::collections::BTreeMap;
 
-use crate::{PullRequestCheck, PullRequestSnapshot, PullRequestState};
+use crate::{PullRequest, PullRequestCheck, PullRequestSnapshot, PullRequestState};
 pub use velocity_core::thread_view_model::PullRequestHistoryCard as HistoryCard;
 use velocity_core::thread_view_model::ToolStepRow;
 use velocity_core::thread_view_model::{PullRequestHistoryView, PullRequestTrackStep};
@@ -35,10 +35,19 @@ pub struct FollowThrough {
 }
 
 impl FollowThrough {
+    /// A draft claim exists while coding is still in progress. Attaching the PR
+    /// loop then would collapse unfinished work and send premature CI prompts.
+    pub fn should_follow(&self, pull_request: &PullRequest) -> bool {
+        self.number != 0 || pull_request.state != PullRequestState::Open || !pull_request.is_draft
+    }
+
     /// Observations are checkpointed before delivery. A disconnected agent keeps
     /// its pending work, and seeing the same GitHub snapshot adds nothing twice.
     pub fn observe(&mut self, snapshot: &PullRequestSnapshot) {
         let pull_request = &snapshot.pull_request;
+        if !self.should_follow(pull_request) {
+            return;
+        }
         self.number = pull_request.number;
         self.url = pull_request.url.clone();
         self.head = pull_request.head_ref_oid.clone();

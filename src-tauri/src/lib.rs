@@ -12,50 +12,65 @@ mod projects;
 mod pull_request_panel;
 mod state;
 mod window;
+mod worktree_settings;
 
 pub use layout::{apply_agent_event, record_agent_event};
 
 fn bindings() -> Builder<tauri::Wry> {
     // Export event payloads/names without the generator's `any`-typed helpers;
     // ipc.ts supplies typed listeners, while run() registers native emitters.
-    Builder::new()
-        .commands(collect_commands![
-            window::get_window_state,
-            window::minimize_window,
-            window::toggle_maximize_window,
-            window::close_window,
-            state::get_settings,
-            state::set_settings,
-            layout::get_layout_state,
-            layout::dispatch_layout,
-            projects::list_projects,
-            projects::switch_project,
-            github::list_pull_requests,
-            github::get_pull_request,
-            github::dispatch_pull_request,
-            pull_request_panel::get_pull_request_panel,
-            pull_request_panel::open_project_pull_request,
-            new_project::get_new_project_defaults,
-            new_project::pick_project_folder,
-            new_project::create_project,
-            build_gate::get_launch_eligibility,
-        ])
+    let builder = Builder::new().commands(collect_commands![
+        window::get_window_state,
+        window::minimize_window,
+        window::toggle_maximize_window,
+        window::close_window,
+        state::get_settings,
+        state::set_settings,
+        layout::get_layout_state,
+        layout::dispatch_layout,
+        projects::list_projects,
+        projects::switch_project,
+        worktree_settings::list_worktrees,
+        worktree_settings::set_worktree_settings,
+        worktree_settings::preview_worktree_folder,
+        worktree_settings::browse_worktree_folder,
+        worktree_settings::prune_worktrees,
+        github::list_pull_requests,
+        github::get_pull_request,
+        github::dispatch_pull_request,
+        pull_request_panel::get_pull_request_panel,
+        pull_request_panel::open_project_pull_request,
+        new_project::get_new_project_defaults,
+        new_project::pick_project_folder,
+        new_project::create_project,
+        build_gate::get_launch_eligibility,
+    ]);
+    event_bindings(builder)
+}
+
+fn event_bindings(builder: Builder<tauri::Wry>) -> Builder<tauri::Wry> {
+    builder
         .typ::<PersistedState>()
         .typ::<follow_through::PullRequestLifecycleEvent>()
         .typ::<window::WindowStateChanged>()
         .typ::<layout::LayoutStateChanged>()
         .typ::<layout::LayoutIntentRequested>()
         .typ::<projects::ProjectSelected>()
+        .typ::<worktree_settings::WorktreeInventoryChanged>()
         .typ::<pull_request_panel::PullRequestPanelChanged>()
+        .constant("PROJECT_SELECTED_EVENT", projects::ProjectSelected::NAME)
         .constant("WINDOW_STATE_EVENT", window::WindowStateChanged::NAME)
         .constant("LAYOUT_STATE_EVENT", layout::LayoutStateChanged::NAME)
         .constant("LAYOUT_INTENT_EVENT", layout::LayoutIntentRequested::NAME)
-        .constant("PROJECT_SELECTED_EVENT", projects::ProjectSelected::NAME)
         .constant("PR_OPENED_EVENT", follow_through::PR_OPENED_EVENT)
         .constant("PR_CI_EVENT", follow_through::PR_CI_EVENT)
         .constant("PR_REVIEW_EVENT", follow_through::PR_REVIEW_EVENT)
         .constant("PR_MERGED_EVENT", follow_through::PR_MERGED_EVENT)
         .constant("PR_CLOSED_EVENT", follow_through::PR_CLOSED_EVENT)
+        .constant(
+            "WORKTREE_INVENTORY_EVENT",
+            worktree_settings::WorktreeInventoryChanged::NAME,
+        )
         .constant(
             "PULL_REQUEST_PANEL_EVENT",
             pull_request_panel::PullRequestPanelChanged::NAME,
@@ -84,6 +99,7 @@ pub fn run() -> anyhow::Result<()> {
         layout::LayoutStateChanged,
         layout::LayoutIntentRequested,
         projects::ProjectSelected,
+        worktree_settings::WorktreeInventoryChanged,
         pull_request_panel::PullRequestPanelChanged
     ]);
     tauri::Builder::default()
@@ -95,10 +111,14 @@ pub fn run() -> anyhow::Result<()> {
             state::initialize(application.handle())?;
             projects::initialize(application.handle())?;
             follow_through::initialize(application.handle(), follow_through::Hooks::default());
+            worktree_settings::initialize(application.handle())?;
             pull_request_panel::initialize(application.handle());
             Ok(())
         })
-        .on_window_event(window::on_window_event)
+        .on_window_event(|window, event| {
+            window::on_window_event(window, event);
+            worktree_settings::on_window_event(window, event);
+        })
         .run(tauri::generate_context!())
         .context("Could not run Velocity")
 }

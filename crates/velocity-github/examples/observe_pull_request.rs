@@ -8,6 +8,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let number = arguments.get(2).ok_or("expected PR number")?.parse()?;
     let snapshot = PullRequestClient::discover(Path::new(directory))?.snapshot(number)?;
     let mut observer = FollowThrough::default();
+    if !observer.should_follow(&snapshot.pull_request) {
+        println!("Draft PR #{number} is still a claim; the thread keeps coding until it is ready.");
+        return Ok(());
+    }
     observer.observe(&snapshot);
     println!("{}", serde_json::to_string_pretty(&observer)?);
     let original = observer.clone();

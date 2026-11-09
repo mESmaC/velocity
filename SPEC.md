@@ -113,7 +113,7 @@ A thread's state (§2.1) says where it is in its lifecycle. Its **activity** say
 | command | `list_projects`, `create_project`, `switch_project` | projects |
 | command | `get_new_project_defaults`, `pick_project_folder`, `create_project { request }` | New project dialog (F2): default folders, interview effort, speed and model from Settings; the native folder picker; Create, which refuses before anything runs or sets the project up, registers it, switches to it and records its spec interview |
 | command | `list_threads`, `start_thread`, `send_message`, `delete_thread` | threads |
-| command | `list_pull_requests { project_identifier }`, `get_pull_request { project_identifier, number }`, `dispatch_pull_request { project_identifier, operation }` | GitHub through signed-in `gh`: paginated PR snapshots and typed create, review, comment, reply, resolve, review-request, merge and close operations. Create accepts `base_branch` (the project's configured branch), defaulting to GitHub's default branch. Shared-login approve/merge behavior awaits Q28 (#42); the existing merge guard fails closed and sends the expected head to GitHub. CI is advisory (F7). F6 observes same-repository PRs by the thread's immutable branch, including a PR closed or merged between observations. The native watcher checkpoints its history and pending agent notifications in `state.json`, queues changed CI/review/conflict information at agent step boundaries, and publishes the thread lifecycle. Closing preserves the checkout and branches; confirmed merges stop the agent and remove only its registered worktree through the existing F5 lifecycle plan, retrying cleanup errors. The live rail uses the independent `pr://panel` projection below. |
+| command | `list_pull_requests { project_identifier }`, `get_pull_request { project_identifier, number }`, `dispatch_pull_request { project_identifier, operation }` | GitHub through signed-in `gh`: paginated PR snapshots and typed create, review, comment, reply, resolve, review-request, merge and close operations. Create accepts `base_branch` (the project's configured branch), defaulting to GitHub's default branch. Shared-login approve/merge behavior awaits Q28 (#42); the existing merge guard fails closed and sends the expected head to GitHub. CI is advisory (F7). F6 observes same-repository PRs by the thread's immutable branch, including a PR closed or merged between observations. An open draft claim leaves its thread working until the PR is marked ready; a closed draft still reports closure. The native watcher checkpoints its history and pending agent notifications in `state.json`, queues changed CI/review/conflict information at agent step boundaries, and publishes the thread lifecycle. Closing preserves the checkout and branches; confirmed merges stop the agent and remove only its registered worktree through the existing F5 lifecycle plan, retrying cleanup errors. The live rail uses the independent `pr://panel` projection below. |
 | command | `get_pull_request_panel`, `open_project_pull_request { project_identifier, number }` | Backend-owned active-project PR rail. Native refresh reads all open PRs, the current head's aggregate CI, line counts, review decision and the first explicit `Reviewing` claim comment. A row opens its owning thread (recorded PR identity, then an unassigned matching branch from the same repository), otherwise GitHub in the browser. Clicks validate project identity. |
 | command | `get_launch_eligibility { request }` | UI eligibility for the active project, read from the backend state. No project/lock flag is accepted from the frontend. Launch handlers check the guard afresh before worktree or agent effects (Rule 2, F3). |
 | command | `start_duty`, `pause_duty`, `add_duty_agents` | duty agents |
@@ -122,6 +122,7 @@ A thread's state (§2.1) says where it is in its lifecycle. Its **activity** say
 | command | `add_task`, `list_tasks` | Task List |
 | command | `read_agents_md`, `write_agents_md`, `tighten_rule` | AGENTS.md |
 | command | `get_settings`, `set_settings`, `list_worktrees`, `prune_worktrees` | settings |
+| command | `set_worktree_settings { edit, project_identifier }`, `preview_worktree_folder { folder }`, `browse_worktree_folder` | persist a worktree preference edit; preview the path for a folder still being typed, without saving it; select a location through the native folder picker |
 | command | `list_providers`, `provider_sign_in`, `provider_sign_out`, `provider_models` | providers (OAuth) |
 | command | `airc_events`, `airc_messages`, `airc_send`, `airc_claims`, `airc_claim`, `airc_release`, `airc_share`, `airc_wait`, `airc_ledger` | AIRC (agents get the same as MCP tools). `airc_claim` is atomic: it returns `granted`, or `refused { holder, since }` |
 | event | `thread://status`, `thread://step` | thread state and tool steps |
@@ -132,6 +133,7 @@ A thread's state (§2.1) says where it is in its lifecycle. Its **activity** say
 | event | `pr://panel` | Ordered active-project PR panel snapshots, refreshed natively after project selection and at 30-second intervals. Loading and failed refreshes are explicit; failed refreshes retain the last rows with the error. The UI never polls GitHub. |
 | event | `duty://event`, `swarm://event` | activity feeds |
 | event | `worktree://created`, `worktree://deleted` | worktree lifecycle |
+| event | `worktree://inventory` | cached live worktree rows, sizes, drive capacity and settings; metadata measurements run outside the UI thread |
 | event | `airc://event`, `airc://message`, `airc://overlap` | AIRC events, agent messages and overlap detection |
 | event | `provider://status`, `provider://limits` | sign-in state and subscription limits |
 
@@ -1078,7 +1080,7 @@ Each milestone ends with a working app. Check items off as their PRs merge.
 - [ ] ACP agents for Claude Code (`claude-code-acp`), Codex (`codex-acp`), Kimi Code (`kimi --acp`) and Antigravity, each using its own OAuth login through `authenticate`; Settings → Providers, model menu, limit meter (F15)
 - [x] Worktree manager: create / delete / prune, path scheme, setup step (copy files, run command, shared build cache) (F5)
 - [x] Thread view: transcript, tool steps, diffs, header with worktree path, composer, slash menu (F4)
-- [ ] Settings → Worktrees, including the live list and the footer count (F5, F13)
+- [x] Settings → Worktrees, including the live list and the footer count (F5, F13)
 
 **M4 · PR loop**
 - [ ] GitHub integration: open PR, CI checks, reviews, comments, merge, close
