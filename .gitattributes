@@ -1,14 +1,14 @@
-# Preserve the exact bytes of the reviewer-authored regression artifact.
-/stress/pr2-titlebar-reference.ps1 -text
+# Scout and reviewer regression scripts: preserve their exact bytes. Covers
+# every file directly in stress/, so a new script needs no line here.
+/stress/* -text
 /stress/pr3-font-csp.py -text whitespace=cr-at-eol
-/stress/pr4-swarm-selection.rs -text
-/stress/pr4-swarm-selection-thread-detail.rs -text
-/stress/pr7-create-save.ps1 -text
-/stress/pr7-create-save-crate.ps1 -text
-/stress/pr22-distinct-windows-paths.ps1 -text
-/stress/pr22-settings-adversarial.ps1 -text
-/stress/pr39-worktree-safety.ps1 -text
-/stress/pr40-empty-agent-commands.rs -text
+
+# Generated files: on a merge with master, keep master's copy and regenerate
+# (AGENTS.md, Shared files). Needs scripts/Setup-DevMachine.ps1; without it git
+# uses its normal text merge.
+/ui/src/lib/bindings.ts merge=velocity-take-master linguist-generated=true
+/Cargo.lock merge=velocity-take-master
+/ui/pnpm-lock.yaml merge=velocity-take-master
 
 # Aeneas output: generated Lean, kept out of language statistics and diffs.
 proofs/**/Generated/** linguist-generated=true
