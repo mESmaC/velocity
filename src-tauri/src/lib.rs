@@ -5,6 +5,7 @@ use velocity_store::PersistedState;
 
 mod build_gate;
 mod github;
+mod interview;
 pub mod layout;
 mod new_project;
 mod projects;
@@ -94,6 +95,7 @@ pub fn run() -> anyhow::Result<()> {
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
         .manage(layout::MainLayout::default())
+        .manage(velocity_interview::Interviews::default())
         .invoke_handler(bindings.invoke_handler())
         .setup(move |application| {
             bindings.mount_events(application);
@@ -101,6 +103,7 @@ pub fn run() -> anyhow::Result<()> {
             projects::initialize(application.handle())?;
             worktree_settings::initialize(application.handle())?;
             pull_request_panel::initialize(application.handle());
+            interview::start(application.handle());
             Ok(())
         })
         .on_window_event(|window, event| {

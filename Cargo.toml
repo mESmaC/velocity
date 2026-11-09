@@ -4,6 +4,7 @@ members = [
     "crates/velocity-core",
     "crates/velocity-git",
     "crates/velocity-github",
+    "crates/velocity-interview",
     "crates/velocity-new-project",
     "crates/velocity-store",
     "src-tauri",
@@ -29,6 +30,7 @@ thiserror = "2.0"
 velocity-core = { path = "crates/velocity-core" }
 velocity-git = { path = "crates/velocity-git" }
 velocity-github = { path = "crates/velocity-github" }
+velocity-interview = { path = "crates/velocity-interview" }
 velocity-new-project = { path = "crates/velocity-new-project" }
 velocity-store = { path = "crates/velocity-store" }
 
