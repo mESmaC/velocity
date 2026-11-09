@@ -199,6 +199,30 @@ impl Channel {
         Ok(())
     }
 
+    /// Your comments may broadcast; `nick:` resolves exactly and never silently broadcasts.
+    pub fn comment(&self, text: &str) -> Result<Entry, Error> {
+        require_text(text)?;
+        let storage = Storage::open(&self.directory)?;
+        let entries = storage.read()?;
+        let mut record = entry(&entries, "message", "you", "you", text);
+        if let Some((nickname, body)) = text.split_once(':') {
+            let nickname = nickname.trim();
+            if presence(&entries)
+                .values()
+                .any(|member| member.joined && member.nick == nickname)
+            {
+                require_text(body)?;
+                record.to.push(nickname.into());
+                record.text = body.trim().into();
+            } else if !nickname.contains(char::is_whitespace) {
+                return Err(Error::Invalid(format!("Unknown AIRC nick: {nickname}")));
+            }
+        }
+        record.intent = Some("comment".into());
+        storage.append(&record)?;
+        Ok(record)
+    }
+
     pub fn message(
         &self,
         member: &str,
