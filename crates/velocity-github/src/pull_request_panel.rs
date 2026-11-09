@@ -43,6 +43,7 @@ pub struct PullRequestPanelRow {
     pub number: u32,
     pub title: String,
     pub head_branch: String,
+    pub head_in_project: bool,
     pub additions: u32,
     pub deletions: u32,
     pub checks: CheckStatus,
@@ -66,7 +67,8 @@ impl PullRequestPanelRow {
             .find(|thread| thread.number == Some(self.number))
             .or_else(|| {
                 threads.iter().find(|thread| {
-                    thread.number.is_none()
+                    self.head_in_project
+                        && thread.number.is_none()
                         && !self.head_branch.is_empty()
                         && thread.branch == self.head_branch
                 })
@@ -119,7 +121,15 @@ impl PullRequestPanelSnapshot {
 struct PanelEntry {
     #[serde(flatten)]
     pull_request: PullRequest,
+    #[serde(rename = "headRepository")]
+    head_repository: Option<HeadRepository>,
     commits: CommitConnection,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct HeadRepository {
+    name_with_owner: String,
 }
 
 #[derive(Deserialize)]
@@ -151,6 +161,7 @@ impl PullRequestClient {
                 pullRequests(states:OPEN,first:100,after:$cursor,
                   orderBy:{{field:UPDATED_AT,direction:DESC}}) {{
                   nodes {{ {FIELDS}
+                    headRepository {{ nameWithOwner }}
                     commits(last:1) {{ nodes {{ commit {{ statusCheckRollup {{ state }} }} }} }}
                   }} pageInfo {{ hasNextPage endCursor }}
                 }}
@@ -191,6 +202,11 @@ impl PullRequestClient {
             number: entry.pull_request.number,
             title: entry.pull_request.title,
             head_branch: entry.pull_request.head_ref_name,
+            head_in_project: entry.head_repository.is_some_and(|repository| {
+                repository
+                    .name_with_owner
+                    .eq_ignore_ascii_case(&self.repository)
+            }),
             additions: entry.pull_request.additions,
             deletions: entry.pull_request.deletions,
             checks,
