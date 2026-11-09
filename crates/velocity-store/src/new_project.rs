@@ -23,7 +23,7 @@ impl StateStore {
             .any(|project| comparable_path(&project.repository_path) == wanted)
     }
 
-    /// Adds the project and returns its identifier. It is not active yet.
+    /// Adds the project and returns its identifier. `switch_project_layout` makes it active.
     pub fn register_project(&mut self, record: NewProjectRecord) -> u32 {
         let identifier = self
             .state
@@ -49,16 +49,6 @@ impl StateStore {
         });
         self.changed();
         identifier
-    }
-
-    /// Makes the project with `identifier` the active one. False if there is none.
-    pub fn activate_project(&mut self, identifier: u32) -> bool {
-        let Some(index) = self.index_of(identifier) else {
-            return false;
-        };
-        self.state.active_project_index = u32::try_from(index).unwrap_or(u32::MAX);
-        self.changed();
-        true
     }
 
     /// Records the interview the dialog asked for. False if there is no such project.

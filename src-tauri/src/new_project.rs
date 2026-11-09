@@ -16,6 +16,7 @@ use velocity_store::{
 };
 
 use crate::layout::{LayoutStateChanged, MainLayout};
+use crate::projects::ProjectSelected;
 use crate::state::ManagedStateStore;
 
 #[derive(Clone, Copy, Debug, serde::Deserialize, specta::Type)]
@@ -65,6 +66,15 @@ pub struct CreatedProject {
     pub identifier: u32,
     pub name: String,
     pub repository_path: String,
+}
+
+/// What the steps so far have done: the registered project and whether the plan
+/// asked to switch to it. The switch itself runs in `finish`, together with the
+/// save, so the switcher and main window update in one locked step.
+#[derive(Default)]
+struct Progress {
+    identifier: Option<u32>,
+    switch_requested: bool,
 }
 
 /// The request with its path, name and repository worked out.
@@ -139,13 +149,14 @@ fn create_blocking(
     let observation = observe(application, &resolved)?;
     let steps = plan_new_project(resolved.location, observation)
         .map_err(|refusal| anyhow!(refusal_message(refusal, &resolved)))?;
-    let mut identifier = None;
+    let mut progress = Progress::default();
     for step in steps {
-        run_step(application, step, &resolved, request, &mut identifier)?;
+        run_step(application, step, &resolved, request, &mut progress)?;
     }
-    let identifier = identifier.context("Create finished without registering the project")?;
-    save(application)?;
-    close_dialog(application)?;
+    let identifier = progress
+        .identifier
+        .context("Create finished without registering the project")?;
+    finish(application, identifier, progress.switch_requested)?;
     Ok(CreatedProject {
         identifier,
         name: resolved.name,
@@ -284,7 +295,7 @@ fn run_step(
     step: SetupStep,
     resolved: &ResolvedRequest,
     request: &NewProjectRequest,
-    identifier: &mut Option<u32>,
+    progress: &mut Progress,
 ) -> anyhow::Result<()> {
     match step {
         SetupStep::GitInit => velocity_git::initialize_repository(&resolved.path)?,
@@ -294,15 +305,12 @@ fn run_step(
         SetupStep::Clone => {
             velocity_github::clone_repository(github_repository(resolved)?, &resolved.path)?
         }
-        SetupStep::Register => *identifier = Some(register(application, resolved)?),
-        SetupStep::SwitchTo => {
-            let project = identifier.context("Switch ran before Register")?;
-            if !with_store(application, |store| store.activate_project(project))? {
-                bail!("The new project disappeared before Velocity could switch to it");
-            }
-        }
+        SetupStep::Register => progress.identifier = Some(register(application, resolved)?),
+        SetupStep::SwitchTo => progress.switch_requested = true,
         SetupStep::StartInterview => {
-            let project = identifier.context("The interview step ran before Register")?;
+            let project = progress
+                .identifier
+                .context("The interview step ran before Register")?;
             let interview = PendingInterview {
                 model_name: request.model_name.clone(),
                 effort: request.effort,
@@ -352,21 +360,43 @@ fn with_store<Output>(
     Ok(update(&mut guard))
 }
 
-fn save(application: &AppHandle) -> anyhow::Result<()> {
-    with_store(application, |store| store.save_if_changed())?
-        .context("Could not save the new project")?;
-    Ok(())
-}
-
-fn close_dialog(application: &AppHandle) -> anyhow::Result<()> {
+/// Switches to the project the way the switcher does, saves, closes the dialog and
+/// publishes both events. As in `projects::switch_project`, the store is locked
+/// before the layout and released before the events go out, while the layout
+/// lock keeps them in order with other layout updates.
+fn finish(application: &AppHandle, identifier: u32, switch: bool) -> anyhow::Result<()> {
+    let store = application.state::<ManagedStateStore>();
+    let mut store = store
+        .lock()
+        .map_err(|_| anyhow!("Persisted state store lock is poisoned"))?;
     let layout = application.state::<MainLayout>();
-    let mut guard = layout
+    let mut layout = layout
         .lock()
         .map_err(|_| anyhow!("Main-window state lock is poisoned"))?;
-    guard.close_new_project();
+    let selection = if switch {
+        Some(store.switch_project_layout(&mut layout, identifier)?)
+    } else {
+        None
+    };
+    // The switch writes only when the active project changes; this covers the rest.
+    store
+        .save_if_changed()
+        .context("Could not save the new project")?;
+    layout.close_new_project();
+    let projects = store.list_projects();
+    drop(store);
     LayoutStateChanged {
-        state: guard.snapshot(),
+        state: layout.snapshot(),
     }
     .emit(application)
-    .context("Could not publish main-window state")
+    .context("Could not publish main-window state")?;
+    if let Some(selection) = selection {
+        ProjectSelected {
+            projects,
+            selection,
+        }
+        .emit(application)
+        .context("Could not publish project selection")?;
+    }
+    Ok(())
 }
