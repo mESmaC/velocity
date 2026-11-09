@@ -3,7 +3,7 @@
 use crate::layout::{LayoutRow, PulseKind, ThreadGroup};
 use crate::navigation::{NavigationIntent, NavigationView, NumberHintEvent};
 use crate::thread_view_model::{
-    ModelPillView, SlashCommandItem, ThreadDetailEntry, ThreadDetailSnapshot,
+    AgentCommandView, ModelPillView, SlashCommandItem, ThreadDetailEntry, ThreadDetailSnapshot,
 };
 
 #[derive(Clone)]
@@ -44,6 +44,7 @@ pub struct LayoutData {
     pub airc_unread: usize,
     pub overlap_unread: bool,
     pub default_model_pill: Option<ModelPillView>,
+    pub agent_commands: Vec<AgentCommandView>,
 }
 
 #[cfg_attr(

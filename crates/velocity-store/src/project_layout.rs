@@ -110,6 +110,7 @@ fn thread_detail(thread: &ThreadItem) -> ThreadDetailEntry {
         show_work: false,
         worked_summary: None,
         blocks: Vec::new(),
+        agent_commands: Vec::new(),
         provider: provider_color(thread.provider),
         model_name: thread.model_name.clone(),
         effort_label: effort_label(thread.effort).into(),
