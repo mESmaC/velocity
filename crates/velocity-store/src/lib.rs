@@ -14,6 +14,10 @@ use std::fs::{self, File};
 use std::io::Write;
 use std::path::{Path, PathBuf};
 use thiserror::Error;
+
+mod new_project;
+
+pub use new_project::NewProjectRecord;
 use velocity_core::state::{
     self as core_state, AgentActivity as CoreAgentActivity, AgentSettings as CoreAgentSettings,
     EffortLevel as CoreEffortLevel, PersistedStateHeader, ProofSettings as CoreProofSettings,
@@ -585,6 +589,20 @@ pub struct ProjectItem {
     pub merged_today: u32,
     pub tasks: Vec<TaskItem>,
     pub threads: Vec<ThreadItem>,
+    /// The spec interview Create asked for and nothing has started yet (F2, F3).
+    #[serde(default)]
+    pub pending_interview: Option<PendingInterview>,
+}
+
+/// The New project dialog's interview choices, kept until the spec interview
+/// (F3) starts its thread from them.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, Type)]
+pub struct PendingInterview {
+    /// `None` until a provider is signed in and offers a model (F15, issue #25).
+    pub model_name: Option<String>,
+    pub effort: EffortLevel,
+    pub preferred_speed: SpeedMode,
+    pub brief: String,
 }
 
 impl ProjectItem {

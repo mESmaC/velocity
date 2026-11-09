@@ -271,6 +271,7 @@ pub struct LayoutSnapshot {
     pub pulse: Vec<PulseCount>,
     pub show_numbers: bool,
     pub palette_open: bool,
+    pub new_project_open: bool,
     pub palette_query: String,
     pub palette_results: Vec<PaletteItem>,
     #[cfg_attr(feature = "bindings", serde(with = "crate::ipc_number"))]

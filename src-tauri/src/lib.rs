@@ -5,6 +5,7 @@ use velocity_store::PersistedState;
 
 mod build_gate;
 pub mod layout;
+mod new_project;
 mod projects;
 mod state;
 mod window;
@@ -26,6 +27,9 @@ fn bindings() -> Builder<tauri::Wry> {
             layout::dispatch_layout,
             projects::list_projects,
             projects::switch_project,
+            new_project::get_new_project_defaults,
+            new_project::pick_project_folder,
+            new_project::create_project,
             build_gate::get_launch_eligibility,
         ])
         .typ::<PersistedState>()
@@ -63,6 +67,7 @@ pub fn run() -> anyhow::Result<()> {
         projects::ProjectSelected
     ]);
     tauri::Builder::default()
+        .plugin(tauri_plugin_dialog::init())
         .manage(layout::MainLayout::default())
         .invoke_handler(bindings.invoke_handler())
         .setup(move |application| {
