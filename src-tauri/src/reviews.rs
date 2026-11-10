@@ -52,6 +52,11 @@ pub fn serve_pr_duty_server() -> anyhow::Result<bool> {
         number,
         method,
         Some(PathBuf::from(report)),
+    )
+    .with_statement_lock(
+        PathBuf::from(worktree),
+        PathBuf::from(app_data),
+        project.clone(),
     );
     let input = BufReader::new(std::io::stdin().lock());
     let mut output = std::io::stdout().lock();

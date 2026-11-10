@@ -48,6 +48,7 @@ pub enum NavigationIntent {
     Fanout,
     PrDuty,
     Scouts,
+    MainWatcher,
     Answer(
         #[cfg_attr(feature = "bindings", serde(with = "crate::ipc_number"))]
         #[cfg_attr(feature = "bindings", specta(type = String))]
@@ -216,9 +217,12 @@ pub fn route_bare_intent(
             | NavigationView::SpecLocked => None,
             _ => Some(intent),
         },
-        Intent::Dispatch | Intent::Resume | Intent::Fanout | Intent::PrDuty | Intent::Scouts => {
-            select_if(matches!(view, NavigationView::Home), intent)
-        }
+        Intent::Dispatch
+        | Intent::Resume
+        | Intent::Fanout
+        | Intent::PrDuty
+        | Intent::Scouts
+        | Intent::MainWatcher => select_if(matches!(view, NavigationView::Home), intent),
         Intent::Answer(number) => select_if(
             matches!(view, NavigationView::SpecAsk) && matches!(number, 1..=4),
             intent,

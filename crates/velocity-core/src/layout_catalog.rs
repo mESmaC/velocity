@@ -47,7 +47,7 @@ enum CommandTarget {
     SwarmIssues,
 }
 
-const COMMANDS: [(&str, &str, CommandTarget); 14] = {
+const COMMANDS: [(&str, &str, CommandTarget); 15] = {
     use CommandTarget::{Navigation, Settings, SwarmIssues};
     use NavigationIntent::*;
     [
@@ -69,6 +69,11 @@ const COMMANDS: [(&str, &str, CommandTarget); 14] = {
         ("Fan out prompt across 3 models", "F", Navigation(Fanout)),
         ("Put agents on PR duty…", "V", Navigation(PrDuty)),
         ("Send scouts to review the repo…", "S", Navigation(Scouts)),
+        (
+            "Put an agent on main watch…",
+            "watch",
+            Navigation(MainWatcher),
+        ),
     ]
 };
 

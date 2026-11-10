@@ -19,3 +19,14 @@ fn hide_console_window(command: &mut Command) {
 
 #[cfg(not(windows))]
 fn hide_console_window(_command: &mut Command) {}
+
+/// `git -C <checkout>` for the watcher's commit checks. The checkout goes in `-C`, not the
+/// working directory, because CreateProcess rejects working directories over 260 characters.
+pub(crate) fn git_in(checkout: &std::path::Path) -> Command {
+    let mut command = Command::new("git");
+    command
+        .args(["-c", "core.longpaths=true", "-C"])
+        .arg(checkout);
+    hide_console_window(&mut command);
+    command
+}

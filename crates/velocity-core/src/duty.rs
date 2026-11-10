@@ -10,6 +10,8 @@ pub enum DutyRole {
     #[default]
     PrDuty,
     Scouts,
+    /// Watches the base branch after merges (F7 Main watcher; the role name is proposed, Q22).
+    MainWatcher,
 }
 
 impl DutyRole {
@@ -17,6 +19,7 @@ impl DutyRole {
         match self {
             Self::PrDuty => "PR duty",
             Self::Scouts => "Scouts",
+            Self::MainWatcher => "Main watcher",
         }
     }
 
@@ -24,6 +27,7 @@ impl DutyRole {
         match self {
             Self::PrDuty => "pr",
             Self::Scouts => "scout",
+            Self::MainWatcher => "watch",
         }
     }
 
@@ -35,6 +39,9 @@ impl DutyRole {
             Self::Scouts => {
                 "Assumes every part of the app is broken and sets out to prove it: writes the tests and stress scripts, and files each issue with the failing one attached."
             }
+            Self::MainWatcher => {
+                "Watches master after every merge: runs every test and stress script, bisects a break to the merge that caused it, and opens a fix or revert PR."
+            }
         }
     }
 
@@ -44,6 +51,9 @@ impl DutyRole {
                 "With several agents, each one claims a PR so two never review the same one."
             }
             Self::Scouts => "With several scouts, each takes a different area of the repo.",
+            Self::MainWatcher => {
+                "One watcher takes each merge. With several, a merge that lands mid-watch goes to the next one."
+            }
         }
     }
 }
@@ -400,6 +410,20 @@ pub fn build_scout_rule_chips(settings: &ScoutRuleSettings) -> Vec<DutyRuleChip>
     chips
 }
 
+/// The Main watcher's rules (F7). It has no settings: what it runs comes from AGENTS.md.
+pub fn build_main_watcher_rule_chips() -> Vec<DutyRuleChip> {
+    let rule = |text: &str, hard: bool| DutyRuleChip {
+        text: text.into(),
+        hard,
+    };
+    vec![
+        rule("Never push to master · every fix or revert is a PR", true),
+        rule("Every test and stress script after each merge", false),
+        rule("Bisect a break to its merge", false),
+        rule("File flaky tests", false),
+    ]
+}
+
 fn format_focus_areas(areas: &[ScoutFocusArea]) -> Option<String> {
     let first = areas.first()?;
     let mut text = String::from(first.label());
@@ -426,6 +450,13 @@ pub fn duty_sidebar_summary(entry: &DutyRoleEntry, merged_today: usize) -> Strin
                 .map_or("idle", |agent| agent.doing.as_str());
             format!("{} filed · {doing}", entry.issues_filed)
         }
+        // The watcher on a merge right now, else what the first one says it waits for.
+        DutyRole::MainWatcher => entry
+            .agents
+            .iter()
+            .find(|agent| agent.busy)
+            .or(entry.agents.first())
+            .map_or_else(|| "idle".into(), |agent| agent.doing.clone()),
     }
 }
 
@@ -440,6 +471,8 @@ pub fn initial_agent_doing(role: DutyRole, has_open_pull_requests: bool) -> Stri
         }
         // The sweep runner replaces this as soon as it starts the scout's sweep.
         DutyRole::Scouts => "waiting to start".into(),
+        // The watch runner replaces this as soon as a watcher takes the base branch's tip.
+        DutyRole::MainWatcher => "waiting for the first watch".into(),
     }
 }
 
@@ -458,10 +491,14 @@ pub fn project_duty_view(
     let rules = match entry.role {
         DutyRole::PrDuty => build_pr_duty_rule_chips(&entry.pr_rules),
         DutyRole::Scouts => build_scout_rule_chips(&entry.scout_rules),
+        DutyRole::MainWatcher => build_main_watcher_rule_chips(),
     };
     let placeholder = match entry.role {
         DutyRole::PrDuty => "Instruct every PR agent, e.g. “hold merges until #41 lands”".into(),
         DutyRole::Scouts => "Point the scouts somewhere, e.g. “dig into the IPC layer”".into(),
+        DutyRole::MainWatcher => {
+            "Instruct the watcher, e.g. “run the stress suite on master again”".into()
+        }
     };
     let model_pill = entry.agents.first().map_or_else(
         || default_pill.clone(),
@@ -589,6 +626,8 @@ pub fn toggle_duty_pause(entry: &mut DutyRoleEntry, timestamp: String) -> DutyFe
     entry.paused = !entry.paused;
     let message = if entry.paused && entry.role == DutyRole::Scouts {
         "Paused duty · in-flight sweeps finish, no new sweep starts"
+    } else if entry.paused && entry.role == DutyRole::MainWatcher {
+        "Paused duty · a running watch finishes, no new watch starts"
     } else if entry.paused {
         "Paused duty · in-flight reviews finish, nothing new gets claimed"
     } else {
