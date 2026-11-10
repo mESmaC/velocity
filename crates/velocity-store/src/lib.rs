@@ -40,6 +40,7 @@ use velocity_core::state::{
 
 pub mod duty;
 pub mod goal_swarm_dialog;
+pub mod goal_swarm_view;
 pub mod goal_swarms;
 mod project_layout;
 pub mod projects;

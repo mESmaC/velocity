@@ -45,6 +45,12 @@ pub(crate) fn read_model(state: &PersistedState) -> LayoutData {
             .collect();
         data.swarms = crate::swarms::swarm_entries(project);
         entries.extend(data.swarms.iter().map(crate::swarms::swarm_row));
+        data.goal_swarms = crate::goal_swarm_view::goal_swarm_entries(project);
+        entries.extend(
+            data.goal_swarms
+                .iter()
+                .map(crate::goal_swarm_view::goal_swarm_row),
+        );
         entries.extend(thread_entries(project, task_count));
         data.threads = entries;
         data.interviews = project
@@ -72,16 +78,18 @@ pub(crate) fn read_model(state: &PersistedState) -> LayoutData {
 }
 
 /// Thread rows. Swarm members are listed under their swarm in agent order (a1, a2, …),
-/// not in the other groups (F10); other threads keep newest first.
+/// and goal swarm members under theirs in launch order (F16), not in the other groups
+/// (F10); other threads keep newest first.
 fn thread_entries(project: &ProjectItem, task_count: usize) -> Vec<ThreadEntry> {
     let mut threads: Vec<_> = project
         .threads
         .iter()
         .map(|thread| {
             let membership = crate::swarms::thread_swarm(project, thread.id)
-                .map(|(swarm, agent)| (swarm.id, agent));
+                .map(|(swarm, agent)| (swarm.id, agent, 0))
+                .or_else(|| crate::goal_swarm_view::goal_membership(project, thread));
             let mut entry = thread_entry(thread, task_count);
-            entry.policy.member_of = membership.map(|(swarm, _)| swarm as usize);
+            entry.policy.member_of = membership.map(|(swarm, _, _)| swarm as usize);
             (membership, entry)
         })
         .collect();
@@ -215,7 +223,7 @@ pub(crate) fn provider_color(provider: ProviderKind) -> ProviderColor {
     }
 }
 
-fn effort_label(effort: EffortLevel) -> &'static str {
+pub(crate) fn effort_label(effort: EffortLevel) -> &'static str {
     match effort {
         EffortLevel::Low => "Low",
         EffortLevel::Medium => "Medium",

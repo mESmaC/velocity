@@ -9,7 +9,7 @@
     send,
   }: { layout: LayoutSnapshot; send: (action: LayoutAction) => void } =
     $props();
-  let taskList: HTMLDivElement;
+  let taskList: globalThis.HTMLDivElement;
   let lastProject = $state<number | null>(null);
   let lastTask = $state<string | undefined>();
   $effect(() => {

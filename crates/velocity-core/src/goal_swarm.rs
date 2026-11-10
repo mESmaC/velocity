@@ -19,6 +19,10 @@ const HOT_LIMIT_PERCENT: u8 = 60;
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct GoalDialogRequest {
     pub prompt: String,
+    /// + Agents: the goal swarm the new agents join, on its own prompt (F16).
+    #[cfg_attr(feature = "bindings", serde(with = "crate::ipc_number::optional"))]
+    #[cfg_attr(feature = "bindings", specta(type = Option<String>))]
+    pub into: Option<usize>,
 }
 
 impl GoalDialogRequest {
@@ -31,6 +35,15 @@ impl GoalDialogRequest {
             } else {
                 typed.into()
             },
+            into: None,
+        }
+    }
+
+    /// + Agents on an existing goal swarm: its prompt, fixed (F16).
+    pub fn add_agents(prompt: &str, swarm: usize) -> Self {
+        Self {
+            prompt: prompt.to_owned(),
+            into: Some(swarm),
         }
     }
 }

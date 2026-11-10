@@ -10,17 +10,19 @@ use tauri::{AppHandle, Manager};
 use tauri_specta::Event as SpectaEvent;
 use velocity_airc::{Channel, Event};
 use velocity_core::goal_swarm::{GoalEventKind, GoalFeedEvent, PoolCounts};
+use velocity_core::goal_swarm_view::GoalClaimsBoard;
 use velocity_core::layout_view::LayoutSnapshot;
 use velocity_core::swarm::{self, PullRequestStep, SwarmEventKind};
 use velocity_github::follow_through::FollowThrough;
-use velocity_store::ThreadItem;
 use velocity_store::duty::{StartDutyRequest, clock_timestamp};
 use velocity_store::goal_swarm_dialog::{
     GoalMixRow, GoalPool, GoalSwarmChoices, GoalSwarmDialog, GoalSwarmDialogQuery,
 };
+use velocity_store::goal_swarm_view::goal_claims_board;
 use velocity_store::goal_swarms::{
     AddGoalAgentsRequest, GoalAgentSlot, LaunchGoalSwarmRequest, thread_goal_swarm,
 };
+use velocity_store::{ThreadItem, ThreadState};
 use velocity_threads::goal_swarm::{KeepGoingOutcome, evaluate_keep_going, plan_goal_member};
 
 use crate::layout::MainLayout;
@@ -109,8 +111,7 @@ pub fn launch_goal_swarm(
             .unwrap_or_default();
         (swarm_id, slots, summary)
     };
-    let (first_thread, started, refused) =
-        spawn_goal_slots(&application, request.project_identifier, slots);
+    let (started, refused) = spawn_goal_slots(&application, request.project_identifier, slots);
     if started > 0 {
         post_swarm_started_event(
             &application,
@@ -119,13 +120,7 @@ pub fn launch_goal_swarm(
             &mix_summary,
         );
     }
-    finish_goal_launch(
-        &application,
-        first_thread,
-        started,
-        &refused,
-        Some(swarm_id),
-    )
+    finish_goal_launch(&application, swarm_id, started, &refused, true)
 }
 
 /// `+ Agents`: starts more agents on an existing goal swarm's prompt (F16).
@@ -148,9 +143,101 @@ pub fn add_goal_agents(
     )?
     .add_goal_swarm_agents(&request, &clock_timestamp())
     .map_err(|error| error.to_string())?;
-    let (first_thread, started, refused) =
-        spawn_goal_slots(&application, request.project_identifier, slots);
-    finish_goal_launch(&application, first_thread, started, &refused, None)
+    let (started, refused) = spawn_goal_slots(&application, request.project_identifier, slots);
+    finish_goal_launch(
+        &application,
+        request.swarm_identifier,
+        started,
+        &refused,
+        false,
+    )
+}
+
+/// The goal swarm view's claims board (F16): every piece in the work pool with its holder
+/// and state, then the pieces this swarm merged. Issues come from GitHub and sections
+/// from `SPEC.md`, so the pool is read off the UI thread.
+#[tauri::command]
+#[specta::specta]
+pub async fn get_goal_swarm_board(
+    application: AppHandle,
+    swarm_identifier: u32,
+) -> Result<GoalClaimsBoard, String> {
+    let project = lock(
+        application.state::<ManagedStateStore>().inner(),
+        "persisted state",
+    )?
+    .active_project()
+    .cloned()
+    .ok_or("Select or create a project first")?;
+    let read = tauri::async_runtime::spawn_blocking(move || {
+        velocity_threads::work_pool::read_work_pool(&project)
+    })
+    .await
+    .map_err(|error| error.to_string())?
+    .map_err(|error| format!("Could not read the work pool: {error}"))?;
+    // Holders are read after the pool, so a claim made meanwhile shows its newest state.
+    let store = lock(
+        application.state::<ManagedStateStore>().inner(),
+        "persisted state",
+    )?;
+    let project = store
+        .project(read.project_identifier)
+        .ok_or("The project no longer exists")?;
+    goal_claims_board(project, swarm_identifier, &read)
+        .ok_or_else(|| "The goal swarm no longer exists".into())
+}
+
+/// The goal swarm composer: a message goes to every agent still working, each picking it
+/// up at its next step (Rule 1). `None` when `identifier` is not a goal swarm.
+pub fn broadcast(
+    application: &AppHandle,
+    identifier: usize,
+    prompt: &str,
+) -> Option<Result<LayoutSnapshot, String>> {
+    let (project, swarm, agents) = {
+        let store = lock(
+            application.state::<ManagedStateStore>().inner(),
+            "persisted state",
+        )
+        .ok()?;
+        let project = store.active_project()?;
+        let swarm = project
+            .goal_swarms
+            .iter()
+            .find(|swarm| swarm.id as usize == identifier)?;
+        let agents: Vec<u32> = swarm
+            .members
+            .iter()
+            .filter_map(|member| member.thread)
+            .filter(|thread| {
+                project.threads.iter().any(|item| {
+                    item.id == *thread
+                        && matches!(item.state, ThreadState::Working | ThreadState::Review)
+                })
+            })
+            .collect();
+        (project.id, swarm.id, agents)
+    };
+    let delivered = agents
+        .iter()
+        .filter(|thread| crate::threads::steer(application, (project, **thread), prompt).is_ok())
+        .count();
+    let message = format!("to every agent · {delivered} of {}: {prompt}", agents.len());
+    let event = GoalFeedEvent::new(&clock_timestamp(), "you", GoalEventKind::You, message);
+    Some(
+        record_event_and_publish(application, project, swarm, event).and_then(|()| {
+            let store = lock(
+                application.state::<ManagedStateStore>().inner(),
+                "persisted state",
+            )?;
+            let mut layout = lock(
+                application.state::<MainLayout>().inner(),
+                "main-window state",
+            )?;
+            store.refresh_follow_through_layout(&mut layout);
+            Ok(layout.snapshot())
+        }),
+    )
 }
 
 fn cached_pool(application: &AppHandle, project: Option<u32>) -> Result<GoalPool, String> {
@@ -208,22 +295,16 @@ fn spawn_goal_slots(
     application: &AppHandle,
     project_id: u32,
     slots: Vec<GoalAgentSlot>,
-) -> (Option<u32>, usize, Vec<String>) {
-    let mut first_thread = None;
+) -> (usize, Vec<String>) {
     let mut started = 0;
     let mut refused = Vec::new();
     for slot in slots {
         match spawn_goal_slot(application, project_id, &slot) {
-            Ok(thread_id) => {
-                if first_thread.is_none() {
-                    first_thread = Some(thread_id);
-                }
-                started += 1;
-            }
+            Ok(_) => started += 1,
             Err(error) => refused.push(error),
         }
     }
-    (first_thread, started, refused)
+    (started, refused)
 }
 
 fn spawn_goal_slot(
@@ -268,12 +349,13 @@ fn post_swarm_started_event(
     report(crate::airc_modal::refresh(application));
 }
 
+/// Closes the dialog and selects the goal swarm, so its view shows the agents starting.
 fn finish_goal_launch(
     application: &AppHandle,
-    first_thread: Option<u32>,
+    swarm_id: u32,
     started: usize,
     refused: &[String],
-    launched_swarm: Option<u32>,
+    launched: bool,
 ) -> Result<LayoutSnapshot, String> {
     if started == 0
         && let Some(reason) = refused.first()
@@ -289,11 +371,9 @@ fn finish_goal_launch(
         "main-window state",
     )?;
     store.refresh_layout(&mut layout);
-    if launched_swarm.is_some() {
-        layout.close_goal_dialog_after_launch(first_thread.map(|id| id as usize));
-    }
+    layout.close_goal_dialog_after_launch(Some(swarm_id as usize));
     let plural = if started == 1 { "" } else { "s" };
-    let toast = if launched_swarm.is_some() {
+    let toast = if launched {
         format!(
             "{started} agent{plural} launched \u{00b7} {started} worktree{plural} \u{00b7} they're claiming work in AIRC"
         )
