@@ -837,3 +837,31 @@ kbd {
 .toast .mini {
   color: var(--text);
 }
+
+.task.done .item-title {
+  color: var(--muted);
+  text-decoration: line-through;
+  text-decoration-color: var(--task-done-decoration);
+}
+.task.now .item-title {
+  color: var(--text);
+}
+.task-sources {
+  display: flex;
+  gap: var(--task-source-gap);
+}
+.task-source,
+.task-sources span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.task-source {
+  color: var(--text-2);
+  cursor: pointer;
+  text-align: left;
+}
+.task-source:hover {
+  color: var(--text);
+  text-decoration: underline;
+  text-underline-offset: var(--task-source-underline-offset);
+}

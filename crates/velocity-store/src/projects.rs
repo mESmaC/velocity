@@ -13,6 +13,8 @@ use crate::{PersistedState, ProjectLocationKind, StateStore, StoreError, write_a
 
 #[derive(Debug, Error)]
 pub enum ProjectError {
+    #[error(transparent)]
+    Task(#[from] crate::task_list::TaskError),
     #[error("Project {0} is not registered")]
     UnknownProject(u32),
     #[error("Invalid project identifier: {0}")]
@@ -50,6 +52,7 @@ pub struct ProjectDispatch {
     pub snapshot: LayoutSnapshot,
     pub intent: Option<LayoutIntent>,
     pub selection: Option<ProjectSelectionView>,
+    pub task_added: Option<(u32, crate::TaskItem)>,
     pub duty_event: Option<(DutyRole, DutyFeedEvent)>,
 }
 
@@ -156,6 +159,7 @@ impl StateStore {
         // selection unchanged. Apply transient actions to a candidate first.
         let mut candidate = layout.clone();
         let mut intent = crate::build_gate::dispatch_layout(&self.state, &mut candidate, action);
+        let task_added = self.dispatch_task_intent(&mut candidate, &mut intent)?;
         let mut duty_event = None;
         let selection = if let Some(LayoutIntent::SwitchProject(identifier)) = &intent {
             let requested = identifier
@@ -187,8 +191,44 @@ impl StateStore {
             snapshot: layout.snapshot(),
             intent,
             selection,
+            task_added,
             duty_event,
         })
+    }
+
+    fn dispatch_task_intent(
+        &mut self,
+        layout: &mut LayoutState,
+        intent: &mut Option<LayoutIntent>,
+    ) -> Result<Option<(u32, crate::TaskItem)>, ProjectError> {
+        let Some(project) = self.active_project() else {
+            if matches!(intent, Some(LayoutIntent::AddTask(_))) {
+                return Err(ProjectError::UnknownProject(0));
+            }
+            return Ok(None);
+        };
+        let project_identifier = project.id;
+        match intent.as_ref() {
+            Some(LayoutIntent::AddTask(title)) => {
+                let task = self.add_task(project_identifier, title.clone())?;
+                layout.set_task_rows(self.list_tasks(project_identifier)?);
+                *intent = None;
+                Ok(Some((project_identifier, task)))
+            }
+            Some(LayoutIntent::OpenTask(identifier)) => {
+                let owner = project
+                    .tasks
+                    .iter()
+                    .find(|task| task.id as usize == *identifier)
+                    .and_then(|task| task.assigned_thread_id);
+                if let Some(owner) = owner {
+                    layout.apply(LayoutAction::OpenThread(owner as usize));
+                }
+                *intent = None;
+                Ok(None)
+            }
+            _ => Ok(None),
+        }
     }
 
     fn remember_project_thread(&mut self, selected: Option<usize>) -> Result<(), ProjectError> {

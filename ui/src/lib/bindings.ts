@@ -75,6 +75,8 @@ export const commands = {
 	launchSwarm: (request: LaunchSwarmRequest_Deserialize) => __TAURI_INVOKE<LayoutSnapshot_Serialize>("launch_swarm", { request }),
 	/**  + Items: the same launch, adding members to an existing swarm. */
 	addToSwarm: (request: LaunchSwarmRequest_Deserialize) => __TAURI_INVOKE<LayoutSnapshot_Serialize>("add_to_swarm", { request }),
+	addTask: (projectIdentifier: number, title: string) => __TAURI_INVOKE<TaskItem_Serialize>("add_task", { projectIdentifier, title }),
+	listTasks: (projectIdentifier: number) => __TAURI_INVOKE<TaskView_Serialize[]>("list_tasks", { projectIdentifier }),
 	getThreadMenu: (threadIdentifier: number) => __TAURI_INVOKE<ThreadMenuView_Serialize | null>("get_thread_menu", { threadIdentifier }),
 	/**
 	 *  Open worktree in Explorer, Copy worktree path and Open PR on GitHub. Delete has its own
@@ -323,13 +325,6 @@ export type Claim_Serialize = {
 	since: string,
 };
 
-export type CoverageItem = {
-	/**  Position in the Covers list; `OutlineAction::AddCoverage` names an item by it. */
-	item: number,
-	title: string,
-	covered: boolean,
-};
-
 export type CreatePullRequest = CreatePullRequest_Serialize | CreatePullRequest_Deserialize;
 
 export type CreatePullRequest_Deserialize = {
@@ -576,15 +571,6 @@ export type Entry_Serialize = {
 export type ErrorCardView = {
 	headline: string,
 	detail: string,
-};
-
-/**  A rule in the side panel's Flagged list, with its first flagged phrase. */
-export type FlaggedRule = {
-	identifier: number,
-	section: string,
-	kind: LintKind,
-	phrase: string,
-	message: string,
 };
 
 export type FollowThrough = FollowThrough_Serialize | FollowThrough_Deserialize;
@@ -985,20 +971,9 @@ export type GoalThreadMember_Serialize = {
 	choosing: boolean,
 };
 
-export type InlineText = InlineText_Serialize | InlineText_Deserialize;
-
-export type InlineText_Deserialize = {
+export type InlineText = {
 	text: string,
 	code: boolean,
-	/**  The live lint mark on this run of text. Code is never linted: `cargo clean` is a command. */
-	mark?: LintKind | null,
-};
-
-export type InlineText_Serialize = {
-	text: string,
-	code: boolean,
-	/**  The live lint mark on this run of text. Code is never linted: `cargo clean` is a command. */
-	mark: LintKind | null,
 };
 
 /**  One installed and pinned skill pack in Velocity's library (SPEC.md F18). */
@@ -1351,7 +1326,7 @@ export type LayoutSnapshot_Deserialize = {
 	palette_selection: string,
 	slash_items: SlashCommandItem[],
 	slash_selection: string,
-	tasks: RailItem_Deserialize[],
+	tasks: TaskView_Deserialize[],
 	pull_requests: RailItem_Deserialize[],
 	issues: RailItem_Deserialize[],
 	worktree_label: string,
@@ -1402,7 +1377,7 @@ export type LayoutSnapshot_Serialize = {
 	palette_selection: string,
 	slash_items: SlashCommandItem[],
 	slash_selection: string,
-	tasks: RailItem_Serialize[],
+	tasks: TaskView_Serialize[],
 	pull_requests: RailItem_Serialize[],
 	issues: RailItem_Serialize[],
 	worktree_label: string,
@@ -1432,14 +1407,6 @@ export type LayoutStateChanged_Deserialize = {
 export type LayoutStateChanged_Serialize = {
 	state: LayoutSnapshot_Serialize,
 };
-
-export type LintKind = 
-/**  Wording that makes a rule optional ("maybe", "try to", "where possible"). */
-"Hedge" | 
-/**  "Should", which agents read as optional. */
-"Modal" | 
-/**  A word with no standard an agent can check ("clean", "good"). */
-"Vague";
 
 export type MergeMethod = "SQUASH" | "REBASE" | "MERGE";
 
@@ -1519,54 +1486,46 @@ export type OutlineAction = OutlineAction_Serialize | OutlineAction_Deserialize;
 export type OutlineAction_Deserialize = ({ Edit: {
 	identifier: number,
 	text: string,
-} }) & { AddCoverage?: never; AddRule?: never; DeleteEmpty?: never; Enter?: never; Indent?: never; Move?: never; Neighbor?: never; Undo?: never } | ({ Enter: {
+} }) & { AddRule?: never; DeleteEmpty?: never; Enter?: never; Indent?: never; Move?: never; Neighbor?: never; Undo?: never } | ({ Enter: {
 	identifier: number,
-} }) & { AddCoverage?: never; AddRule?: never; DeleteEmpty?: never; Edit?: never; Indent?: never; Move?: never; Neighbor?: never; Undo?: never } | ({ Indent: {
+} }) & { AddRule?: never; DeleteEmpty?: never; Edit?: never; Indent?: never; Move?: never; Neighbor?: never; Undo?: never } | ({ Indent: {
 	identifier: number,
 	nested: boolean,
-} }) & { AddCoverage?: never; AddRule?: never; DeleteEmpty?: never; Edit?: never; Enter?: never; Move?: never; Neighbor?: never; Undo?: never } | ({ Move: {
+} }) & { AddRule?: never; DeleteEmpty?: never; Edit?: never; Enter?: never; Move?: never; Neighbor?: never; Undo?: never } | ({ Move: {
 	identifier: number,
 	down: boolean,
-} }) & { AddCoverage?: never; AddRule?: never; DeleteEmpty?: never; Edit?: never; Enter?: never; Indent?: never; Neighbor?: never; Undo?: never } | ({ DeleteEmpty: {
+} }) & { AddRule?: never; DeleteEmpty?: never; Edit?: never; Enter?: never; Indent?: never; Neighbor?: never; Undo?: never } | ({ DeleteEmpty: {
 	identifier: number,
-} }) & { AddCoverage?: never; AddRule?: never; Edit?: never; Enter?: never; Indent?: never; Move?: never; Neighbor?: never; Undo?: never } | ({ Neighbor: {
+} }) & { AddRule?: never; Edit?: never; Enter?: never; Indent?: never; Move?: never; Neighbor?: never; Undo?: never } | ({ Neighbor: {
 	identifier: number,
 	down: boolean,
-} }) & { AddCoverage?: never; AddRule?: never; DeleteEmpty?: never; Edit?: never; Enter?: never; Indent?: never; Move?: never; Undo?: never } | ({ AddRule: {
+} }) & { AddRule?: never; DeleteEmpty?: never; Edit?: never; Enter?: never; Indent?: never; Move?: never; Undo?: never } | ({ AddRule: {
 	section?: number | null,
-} }) & { AddCoverage?: never; DeleteEmpty?: never; Edit?: never; Enter?: never; Indent?: never; Move?: never; Neighbor?: never; Undo?: never } | "AddSection" | ({ Undo: {
+} }) & { DeleteEmpty?: never; Edit?: never; Enter?: never; Indent?: never; Move?: never; Neighbor?: never; Undo?: never } | "AddSection" | ({ Undo: {
 	identifier: number,
-} }) & { AddCoverage?: never; AddRule?: never; DeleteEmpty?: never; Edit?: never; Enter?: never; Indent?: never; Move?: never; Neighbor?: never } | 
-/**  Inserts the bullets for a missing Covers topic (F11 side panel). */
-({ AddCoverage: {
-	item: number,
-} }) & { AddRule?: never; DeleteEmpty?: never; Edit?: never; Enter?: never; Indent?: never; Move?: never; Neighbor?: never; Undo?: never };
+} }) & { AddRule?: never; DeleteEmpty?: never; Edit?: never; Enter?: never; Indent?: never; Move?: never; Neighbor?: never };
 
 export type OutlineAction_Serialize = ({ Edit: {
 	identifier: number,
 	text: string,
-} }) & { AddCoverage?: never; AddRule?: never; DeleteEmpty?: never; Enter?: never; Indent?: never; Move?: never; Neighbor?: never; Undo?: never } | ({ Enter: {
+} }) & { AddRule?: never; DeleteEmpty?: never; Enter?: never; Indent?: never; Move?: never; Neighbor?: never; Undo?: never } | ({ Enter: {
 	identifier: number,
-} }) & { AddCoverage?: never; AddRule?: never; DeleteEmpty?: never; Edit?: never; Indent?: never; Move?: never; Neighbor?: never; Undo?: never } | ({ Indent: {
+} }) & { AddRule?: never; DeleteEmpty?: never; Edit?: never; Indent?: never; Move?: never; Neighbor?: never; Undo?: never } | ({ Indent: {
 	identifier: number,
 	nested: boolean,
-} }) & { AddCoverage?: never; AddRule?: never; DeleteEmpty?: never; Edit?: never; Enter?: never; Move?: never; Neighbor?: never; Undo?: never } | ({ Move: {
+} }) & { AddRule?: never; DeleteEmpty?: never; Edit?: never; Enter?: never; Move?: never; Neighbor?: never; Undo?: never } | ({ Move: {
 	identifier: number,
 	down: boolean,
-} }) & { AddCoverage?: never; AddRule?: never; DeleteEmpty?: never; Edit?: never; Enter?: never; Indent?: never; Neighbor?: never; Undo?: never } | ({ DeleteEmpty: {
+} }) & { AddRule?: never; DeleteEmpty?: never; Edit?: never; Enter?: never; Indent?: never; Neighbor?: never; Undo?: never } | ({ DeleteEmpty: {
 	identifier: number,
-} }) & { AddCoverage?: never; AddRule?: never; Edit?: never; Enter?: never; Indent?: never; Move?: never; Neighbor?: never; Undo?: never } | ({ Neighbor: {
+} }) & { AddRule?: never; Edit?: never; Enter?: never; Indent?: never; Move?: never; Neighbor?: never; Undo?: never } | ({ Neighbor: {
 	identifier: number,
 	down: boolean,
-} }) & { AddCoverage?: never; AddRule?: never; DeleteEmpty?: never; Edit?: never; Enter?: never; Indent?: never; Move?: never; Undo?: never } | ({ AddRule: {
+} }) & { AddRule?: never; DeleteEmpty?: never; Edit?: never; Enter?: never; Indent?: never; Move?: never; Undo?: never } | ({ AddRule: {
 	section: number | null,
-} }) & { AddCoverage?: never; DeleteEmpty?: never; Edit?: never; Enter?: never; Indent?: never; Move?: never; Neighbor?: never; Undo?: never } | "AddSection" | ({ Undo: {
+} }) & { DeleteEmpty?: never; Edit?: never; Enter?: never; Indent?: never; Move?: never; Neighbor?: never; Undo?: never } | "AddSection" | ({ Undo: {
 	identifier: number,
-} }) & { AddCoverage?: never; AddRule?: never; DeleteEmpty?: never; Edit?: never; Enter?: never; Indent?: never; Move?: never; Neighbor?: never } | 
-/**  Inserts the bullets for a missing Covers topic (F11 side panel). */
-({ AddCoverage: {
-	item: number,
-} }) & { AddRule?: never; DeleteEmpty?: never; Edit?: never; Enter?: never; Indent?: never; Move?: never; Neighbor?: never; Undo?: never };
+} }) & { AddRule?: never; DeleteEmpty?: never; Edit?: never; Enter?: never; Indent?: never; Move?: never; Neighbor?: never };
 
 export type OutlineFocus = {
 	identifier: number,
@@ -1575,26 +1534,12 @@ export type OutlineFocus = {
 
 export type OutlineKind = "Title" | "Section" | "Rule" | "Source";
 
-export type OutlineLine = OutlineLine_Serialize | OutlineLine_Deserialize;
-
-export type OutlineLine_Deserialize = {
+export type OutlineLine = {
 	identifier: number,
 	kind: OutlineKind,
 	text: string,
 	nested: boolean,
-	inline: InlineText_Deserialize[],
-	prefix: string,
-	ending: string,
-	continuation: string,
-	placeholder: boolean,
-};
-
-export type OutlineLine_Serialize = {
-	identifier: number,
-	kind: OutlineKind,
-	text: string,
-	nested: boolean,
-	inline: InlineText_Serialize[],
+	inline: InlineText[],
 	prefix: string,
 	ending: string,
 	continuation: string,
@@ -1605,12 +1550,12 @@ export type OutlineSection = OutlineSection_Serialize | OutlineSection_Deseriali
 
 export type OutlineSection_Deserialize = {
 	identifier?: number | null,
-	lines: OutlineLine_Deserialize[],
+	lines: OutlineLine[],
 };
 
 export type OutlineSection_Serialize = {
 	identifier: number | null,
-	lines: OutlineLine_Serialize[],
+	lines: OutlineLine[],
 };
 
 export type OutlineSnapshot = OutlineSnapshot_Serialize | OutlineSnapshot_Deserialize;
@@ -1622,8 +1567,6 @@ export type OutlineSnapshot_Deserialize = {
 	rule_count: number,
 	focus?: OutlineFocus | null,
 	rewrites: RewriteView_Deserialize[],
-	flagged: FlaggedRule[],
-	coverage: CoverageItem[],
 };
 
 export type OutlineSnapshot_Serialize = {
@@ -1633,8 +1576,6 @@ export type OutlineSnapshot_Serialize = {
 	rule_count: number,
 	focus: OutlineFocus | null,
 	rewrites: RewriteView_Serialize[],
-	flagged: FlaggedRule[],
-	coverage: CoverageItem[],
 };
 
 export type PaletteItem = PaletteItem_Serialize | PaletteItem_Deserialize;
@@ -2799,6 +2740,31 @@ export type TaskItem_Serialize = {
 };
 
 export type TaskState = "draft" | "todo" | "now" | "done";
+
+/**  F8 task rows carry independent links for ownership and attribution. */
+export type TaskView = TaskView_Serialize | TaskView_Deserialize;
+
+/**  F8 task rows carry independent links for ownership and attribution. */
+export type TaskView_Deserialize = {
+	identifier: string,
+	title: string,
+	state: string,
+	metadata: string,
+	thread_identifier?: string | null,
+	attribution?: string | null,
+	attribution_thread?: string | null,
+};
+
+/**  F8 task rows carry independent links for ownership and attribution. */
+export type TaskView_Serialize = {
+	identifier: string,
+	title: string,
+	state: string,
+	metadata: string,
+	thread_identifier: string | null,
+	attribution: string | null,
+	attribution_thread: string | null,
+};
 
 export type ThreadDetailSnapshot = ThreadDetailSnapshot_Serialize | ThreadDetailSnapshot_Deserialize;
 

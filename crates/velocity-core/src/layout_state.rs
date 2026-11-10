@@ -184,6 +184,12 @@ impl LayoutState {
         self.changed();
     }
 
+    pub fn set_task_rows(&mut self, tasks: Vec<crate::layout_view::TaskView>) {
+        self.data.completed_task_count = tasks.iter().filter(|task| task.state == "done").count();
+        self.data.tasks = tasks;
+        self.changed();
+    }
+
     /// Deleted threads leave the sidebar at once and come back on Undo (F12).
     pub fn set_threads_hidden(&mut self, project: u32, identifiers: &[usize], hidden: bool) {
         for identifier in identifiers {
@@ -654,14 +660,8 @@ impl LayoutState {
             .collect()
     }
 
-    fn tasks(&self) -> Vec<RailItem> {
-        let mut tasks = self.data.tasks.clone();
-        if self.project_spec_locked == Some(false) {
-            for task in &mut tasks {
-                task.metadata = "lock the spec first".into();
-            }
-        }
-        tasks
+    fn tasks(&self) -> Vec<crate::layout_view::TaskView> {
+        self.data.tasks.clone()
     }
 
     fn task_count_label(&self) -> String {

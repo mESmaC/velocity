@@ -186,3 +186,5 @@ export * from './ipc/airc-modal';
 export * from './ipc/work-pool';
 
 export * from './ipc/airc-routing';
+
+export * from './ipc/tasks';
