@@ -8,9 +8,9 @@ use velocity_acp::client::{AgentEvent, AgentLaunch, SessionSetup};
 use velocity_core::scout_sweep::step_doing;
 use velocity_core::worktree_settings::WorktreePreferences;
 use velocity_git::{JobKind, WorktreeError, WorktreeSetupRequest};
-use velocity_store::ProjectItem;
 use velocity_store::duty::DutyAgentItem;
 use velocity_store::duty::ScoutRoster;
+use velocity_store::{ProjectItem, Settings};
 
 use crate::LaunchError;
 use crate::launch::{
@@ -38,14 +38,19 @@ pub fn plan_sweep(
     scout: &DutyAgentItem,
     base_ref: &str,
 ) -> Result<SweepPlan, LaunchError> {
-    plan_duty_checkout(&roster.project, &roster.worktrees, scout, base_ref)
+    plan_duty_checkout(
+        &roster.settings,
+        (&roster.project, &roster.worktrees),
+        scout,
+        base_ref,
+    )
 }
 
 /// Plans a duty agent's own detached checkout of `base_ref` (`<agent>-sweep`, F5), shared by
 /// scout sweeps and the Main watcher's watches, and its agent from its own provider.
 pub fn plan_duty_checkout(
-    project: &ProjectItem,
-    preferences: &WorktreePreferences,
+    settings: &Settings,
+    (project, preferences): (&ProjectItem, &WorktreePreferences),
     agent_item: &DutyAgentItem,
     base_ref: &str,
 ) -> Result<SweepPlan, LaunchError> {
@@ -63,7 +68,7 @@ pub fn plan_duty_checkout(
         preferences.setup_command.clone(),
         shared_target,
     );
-    let (agent, bypass_modes) = agent_launch(agent_item.provider);
+    let (agent, bypass_modes) = agent_launch(settings, agent_item.provider)?;
     Ok(SweepPlan {
         project: project.id,
         nickname: agent_item.nickname.clone(),

@@ -51,20 +51,24 @@ pub fn plan_title(
                 .unwrap_or(providers.title_provider);
             (first, settings.provider_model(first), EffortLevel::Low)
         };
-    let (launch, _) = agent_launch(title_provider);
     let run_settings = RunSettings {
         provider: provider(title_provider),
         model: model_name.clone(),
         effort: effort(title_effort),
         speed: speed(providers.title_speed),
     };
-    let request = Some(TitleRequest::new(
-        launch,
-        repository,
-        run_settings,
-        title_request_prompt(prompt),
-        Duration::from_millis(TITLE_DEADLINE_MILLISECONDS),
-    ));
+    // A title agent that can't start leaves the message's first words as the title.
+    let request = agent_launch(settings, title_provider)
+        .ok()
+        .map(|(launch, _)| {
+            TitleRequest::new(
+                launch,
+                repository,
+                run_settings,
+                title_request_prompt(prompt),
+                Duration::from_millis(TITLE_DEADLINE_MILLISECONDS),
+            )
+        });
     TitlePlan {
         fallback,
         request,
@@ -108,6 +112,7 @@ pub(crate) fn provider(kind: ProviderKind) -> Provider {
         ProviderKind::Codex => Provider::Codex,
         ProviderKind::Antigravity => Provider::Antigravity,
         ProviderKind::Kimi => Provider::KimiCode,
+        ProviderKind::Custom(identifier) => Provider::Custom(identifier),
     }
 }
 

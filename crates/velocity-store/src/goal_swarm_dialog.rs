@@ -309,15 +309,6 @@ fn unused_provider(mix: &Mix<MixModel>, usable: &[ProviderKind]) -> Option<Provi
         .find(|provider| mix.rows.iter().all(|row| row.model.provider != *provider))
 }
 
-fn provider_name(provider: ProviderKind) -> &'static str {
-    match provider {
-        ProviderKind::Claude => "Anthropic",
-        ProviderKind::Codex => "Codex",
-        ProviderKind::Antigravity => "Antigravity",
-        ProviderKind::Kimi => "Kimi Code",
-    }
-}
-
 fn effort_name(effort: EffortLevel) -> &'static str {
     match effort {
         EffortLevel::Low => "Low",
@@ -346,7 +337,7 @@ fn model_options(settings: &Settings) -> Vec<GoalModelOption> {
         .into_iter()
         .map(|provider| GoalModelOption {
             provider,
-            provider_name: provider_name(provider).into(),
+            provider_name: settings.provider_name(provider),
             model_name: provider_model_name(settings, provider),
         })
         .collect()
@@ -440,7 +431,8 @@ pub(crate) fn used_nick_numbers(project: &ProjectItem) -> BTreeMap<String, u32> 
 /// reports one (F15 Limit sources).
 fn limits(settings: &Settings, mix: &Mix<MixModel>) -> Vec<GoalLimitLine> {
     let now = crate::providers::unix_now();
-    crate::providers::PROVIDERS
+    settings
+        .all_providers()
         .into_iter()
         .filter_map(|provider| {
             let agents: u32 = mix
@@ -458,7 +450,7 @@ fn limits(settings: &Settings, mix: &Mix<MixModel>) -> Vec<GoalLimitLine> {
                     resets_in: crate::provider_views::resets_in(limit, now),
                 });
             let (text, warn) =
-                goal_swarm::limit_line(provider_name(provider), agents, usage.as_ref());
+                goal_swarm::limit_line(&settings.provider_name(provider), agents, usage.as_ref());
             (agents > 0).then_some(GoalLimitLine {
                 provider,
                 text,

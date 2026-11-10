@@ -28,6 +28,7 @@
     Codex: 'codex',
     Antigravity: 'antigravity',
     Kimi: 'kimi',
+    Custom: 'agents',
   };
 
   // Feed dots reuse the duty feed's colours (F7, F10).

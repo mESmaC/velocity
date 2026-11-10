@@ -245,7 +245,9 @@ fn opening_or_resume(project: &ProjectItem, record: &InterviewRecord) -> String 
 /// What an agent needs to start: where, and which provider's command.
 struct LaunchPlan {
     checkout: PathBuf,
-    provider: ProviderKind,
+    /// The provider's ACP agent: its built-in command, the one you set in Settings →
+    /// Providers, or an added agent's (F15). `Err` names a removed agent.
+    agent: Result<velocity_acp::ProviderAgent, String>,
     brief: String,
 }
 
@@ -257,9 +259,15 @@ fn launch_plan<H: Host>(host: &H, (project, thread): InterviewKey) -> Option<Lau
         .iter()
         .find(|item| item.id == project)?;
     let spec_thread = item.threads.iter().find(|item| item.id == thread)?;
+    let settings = &store.state().settings;
+    let command = settings
+        .agent_command(spec_thread.provider)
+        .map(|command| (PathBuf::from(&command.program), command.arguments.clone()));
+    let agent = velocity_acp::configured_agent(acp_provider(spec_thread.provider), command)
+        .ok_or_else(|| velocity_store::providers::ProviderUnavailable::Removed.to_string());
     Some(LaunchPlan {
         checkout: PathBuf::from(&item.repository_path),
-        provider: spec_thread.provider,
+        agent,
         brief: spec_thread.interview.as_ref()?.brief.clone(),
     })
 }
@@ -270,7 +278,15 @@ fn launch<H: Host>(host: &Arc<H>, key: InterviewKey, prompt: String) {
     let Some(plan) = launch_plan(host.as_ref(), key) else {
         return;
     };
-    let agent = velocity_acp::provider_agent(acp_provider(plan.provider));
+    let agent = match plan.agent {
+        Ok(agent) => agent,
+        Err(message) => {
+            save(host.as_ref(), key.0, |project| {
+                turns::fail(project, key.1, message)
+            });
+            return;
+        }
+    };
     let (inputs, receiver) = unbounded_channel();
     // Queued until the session has started: the client reads inputs only after `session/new`.
     let _ = inputs.send(AgentInput::Send(text_message(prompt)));
@@ -536,6 +552,7 @@ fn acp_provider(provider: ProviderKind) -> Provider {
         ProviderKind::Codex => Provider::Codex,
         ProviderKind::Antigravity => Provider::Antigravity,
         ProviderKind::Kimi => Provider::KimiCode,
+        ProviderKind::Custom(identifier) => Provider::Custom(identifier),
     }
 }
 

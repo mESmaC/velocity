@@ -21,7 +21,12 @@ pub fn plan_watch(
     watcher: &DutyAgentItem,
     base_ref: &str,
 ) -> Result<SweepPlan, LaunchError> {
-    plan_duty_checkout(&roster.project, &roster.worktrees, watcher, base_ref)
+    plan_duty_checkout(
+        &roster.settings,
+        (&roster.project, &roster.worktrees),
+        watcher,
+        base_ref,
+    )
 }
 
 /// Where a watch's servers write what they record, for the runner to read.

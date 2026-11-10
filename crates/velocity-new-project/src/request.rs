@@ -56,6 +56,8 @@ pub struct NewProjectDefaults {
     pub folder: String,
     pub clone_to: String,
     pub provider: ProviderKind,
+    /// The provider's name, including an ACP agent you added (F15).
+    pub provider_name: String,
     pub model_name: Option<String>,
     pub effort: EffortLevel,
     pub speed: SpeedMode,
@@ -83,6 +85,7 @@ pub fn new_project_defaults(home: &Path, settings: Settings) -> NewProjectDefaul
         clone_to: folder.clone(),
         folder,
         provider,
+        provider_name: settings.provider_name(provider),
         model_name,
         effort: settings.providers.default_effort,
         speed: settings.providers.default_speed,

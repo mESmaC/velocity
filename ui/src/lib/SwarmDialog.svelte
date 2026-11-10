@@ -1,7 +1,7 @@
 <script lang="ts">
   import { onMount } from 'svelte';
   import Icon from './Icon.svelte';
-  import { swarmCommands } from './ipc';
+  import { providerIcon, swarmCommands } from './ipc';
   import type {
     LayoutAction,
     LayoutSnapshot,
@@ -25,13 +25,6 @@
     submitRequests: number;
     onResult: (snapshot: LayoutSnapshot) => void;
   } = $props();
-
-  const providerNames: Record<ProviderKind, string> = {
-    claude: 'Anthropic',
-    codex: 'Codex',
-    antigravity: 'Antigravity',
-    kimi: 'Kimi',
-  };
 
   let dialogElement: HTMLDialogElement;
   let view = $state<SwarmDialog | null>(null);
@@ -239,9 +232,11 @@
               onclick={() => toggleModel(model.provider)}
             >
               <span class="mh"
-                ><Icon name={model.provider} />{model.model_name}</span
+                ><Icon
+                  name={providerIcon(model.provider)}
+                />{model.model_name}</span
               >
-              <span class="md">{providerNames[model.provider]}</span>
+              <span class="md">{model.provider_name}</span>
             </button>
           {/each}
         </div>

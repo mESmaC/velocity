@@ -383,6 +383,9 @@
 .pill .prov[data-provider='Kimi'] {
   color: var(--kimi);
 }
+.pill .prov[data-provider='Custom'] {
+  color: var(--text-2);
+}
 
 .pr-track {
   display: flex;

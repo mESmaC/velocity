@@ -38,6 +38,7 @@
     Codex: 'codex',
     Antigravity: 'antigravity',
     Kimi: 'kimi',
+    Custom: 'agents',
   };
 
   const pieceIcons: Record<BoardPieceKind, string> = {
