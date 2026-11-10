@@ -6,6 +6,7 @@
 //! This crate owns atomic filesystem reads/writes, corrupt-snapshot quarantine,
 //! and serde/specta serialization.
 
+pub mod agent_activity;
 pub mod airc_members;
 pub mod build_gate;
 pub mod claim_piece;
@@ -58,6 +59,8 @@ pub const DEFAULT_TITLE_MODEL_NAME: &str = "GPT-6 Luna";
 
 #[derive(Debug, Error)]
 pub enum StoreError {
+    #[error("Agent timeouts and caps must be positive; use off for unlimited caps")]
+    AgentSetting,
     #[error("Invalid worktree setting: {0}")]
     WorktreeSetting(String),
     #[error("Could not create state directory '{path}': {source}")]
@@ -416,6 +419,8 @@ pub struct AgentSettings {
     pub max_turns: Option<u32>,
     pub max_duration_minutes: Option<u32>,
     pub stall_timeout_minutes: u32,
+    #[serde(default = "default_tool_timeout")]
+    pub tool_timeout_minutes: u32,
     pub claim_release_grace_minutes: u32,
 }
 
@@ -455,6 +460,7 @@ impl Settings {
                 max_turns: self.agents.max_turns,
                 max_duration_minutes: self.agents.max_duration_minutes,
                 stall_timeout_minutes: self.agents.stall_timeout_minutes,
+                tool_timeout_minutes: self.agents.tool_timeout_minutes,
                 claim_release_grace_minutes: self.agents.claim_release_grace_minutes,
             },
             proofs: CoreProofSettings {
@@ -488,6 +494,7 @@ impl Settings {
                 max_turns: core_settings.agents.max_turns,
                 max_duration_minutes: core_settings.agents.max_duration_minutes,
                 stall_timeout_minutes: core_settings.agents.stall_timeout_minutes,
+                tool_timeout_minutes: core_settings.agents.tool_timeout_minutes,
                 claim_release_grace_minutes: core_settings.agents.claim_release_grace_minutes,
             },
             proofs: ProofSettings {
@@ -556,6 +563,8 @@ pub enum WorktreeRole {
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, Type)]
 pub struct ThreadItem {
+    #[serde(default)]
+    pub supervision: agent_activity::Supervision,
     pub id: u32,
     pub title: String,
     pub state: ThreadState,
@@ -621,6 +630,7 @@ impl ThreadItem {
             airc_cursor: 0,
             dependency_wait: None,
             agent_session: None,
+            supervision: Default::default(),
             review_stage: None,
             task_ids: Vec::new(),
             issue: None,
@@ -655,6 +665,7 @@ impl ThreadItem {
             airc_cursor: 0,
             dependency_wait: None,
             agent_session: None,
+            supervision: Default::default(),
             review_stage: None,
             task_ids: Vec::new(),
             issue: None,
@@ -1054,6 +1065,15 @@ impl StateStore {
     }
 
     pub fn set_settings(&mut self, next_settings: Settings) -> Result<Settings, StoreError> {
+        let agents = &next_settings.agents;
+        if agents.stall_timeout_minutes == 0
+            || agents.tool_timeout_minutes == 0
+            || agents.claim_release_grace_minutes == 0
+            || agents.max_turns == Some(0)
+            || agents.max_duration_minutes == Some(0)
+        {
+            return Err(StoreError::AgentSetting);
+        }
         if self.state.settings != next_settings {
             self.state.apply_settings(next_settings);
         }
@@ -1070,4 +1090,8 @@ impl StateStore {
         self.disk_revision = next_disk_revision;
         Ok(write_now)
     }
+}
+
+fn default_tool_timeout() -> u32 {
+    30
 }

@@ -123,7 +123,7 @@ fn wake(application: &AppHandle, key: ThreadKey, channel: &Channel) -> Result<()
     Ok(())
 }
 
-fn resume(application: &AppHandle, key: ThreadKey, prompt: &str) -> Result<(), String> {
+pub(crate) fn resume(application: &AppHandle, key: ThreadKey, prompt: &str) -> Result<(), String> {
     let (project, thread) = lock(
         application.state::<ManagedStateStore>().inner(),
         "persisted state",
@@ -142,6 +142,46 @@ fn resume(application: &AppHandle, key: ThreadKey, prompt: &str) -> Result<(), S
     setup.airc = crate::airc_access::managed(application)
         .map(|airc| airc.thread(key.0, key.1, Path::new(path)));
     crate::airc_claims::attach(application, key, &setup, &thread.branch_name)?;
+    reset_supervision(application, key)?;
+    let inputs = resume_inputs(application, key, path, prompt, &thread, &mut setup)?;
+    crate::threads::save_activity(application, key, AgentActivity::Thinking, None)?;
+    crate::threads::refresh(application, key, false)?;
+    crate::threads::emit_status(application, key);
+    let handle = application.clone();
+    tauri::async_runtime::spawn(async move {
+        crate::threads::pump(&handle, key, spawn_session(agent, setup, inputs)).await;
+    });
+    Ok(())
+}
+
+fn reset_supervision(application: &AppHandle, key: ThreadKey) -> Result<(), String> {
+    let mut store = lock(
+        application.state::<ManagedStateStore>().inner(),
+        "persisted state",
+    )?;
+    store
+        .reclaim_agent_work(key.0, key.1)
+        .map_err(|error| error.to_string())?;
+    store
+        .update_thread(key.0, key.1, |saved| {
+            saved.activity = AgentActivity::Thinking;
+            saved.supervision.last_update = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_secs();
+        })
+        .map_err(|error| error.to_string())?;
+    Ok(())
+}
+
+fn resume_inputs(
+    application: &AppHandle,
+    key: ThreadKey,
+    path: &str,
+    prompt: &str,
+    thread: &ThreadItem,
+    setup: &mut SessionSetup,
+) -> Result<velocity_threads::SessionInputs, String> {
     let inputs = {
         let mut runtimes = lock(
             application.state::<ManagedThreads>().inner(),
@@ -159,12 +199,5 @@ fn resume(application: &AppHandle, key: ThreadKey, prompt: &str) -> Result<(), S
             .resume_parked(key, path, prompt, thread.state == ThreadState::Review)
             .map_err(|error| error.to_string())?
     };
-    crate::threads::save_activity(application, key, AgentActivity::Thinking, None)?;
-    crate::threads::refresh(application, key, false)?;
-    crate::threads::emit_status(application, key);
-    let handle = application.clone();
-    tauri::async_runtime::spawn(async move {
-        crate::threads::pump(&handle, key, spawn_session(agent, setup, inputs)).await;
-    });
-    Ok(())
+    Ok(inputs)
 }

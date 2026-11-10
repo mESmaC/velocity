@@ -3,6 +3,7 @@
 
 #![forbid(unsafe_code)]
 
+pub mod agent_activity;
 pub mod deletion;
 pub mod dependencies;
 pub mod dispatch;

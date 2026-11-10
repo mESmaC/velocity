@@ -3,6 +3,7 @@ use std::path::Path;
 use tauri_specta::{Builder, Event, collect_commands, collect_events};
 use velocity_store::PersistedState;
 
+mod agent_activity;
 mod agents;
 pub mod airc_access;
 pub mod airc_claims;

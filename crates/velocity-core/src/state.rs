@@ -110,6 +110,7 @@ pub struct AgentSettings {
     pub max_turns: Option<u32>,
     pub max_duration_minutes: Option<u32>,
     pub stall_timeout_minutes: u32,
+    pub tool_timeout_minutes: u32,
     pub claim_release_grace_minutes: u32,
 }
 
@@ -269,6 +270,7 @@ pub fn default_settings<PathValue, ModelValue>(
             max_turns: None,
             max_duration_minutes: None,
             stall_timeout_minutes: 5,
+            tool_timeout_minutes: 30,
             claim_release_grace_minutes: 10,
         },
         proofs: ProofSettings {

@@ -638,6 +638,7 @@ fn setup_no_longer_wanted(application: &AppHandle, key: ThreadKey) -> bool {
 /// Applies agent events as they arrive. A burst of streamed chunks is applied together and
 /// published once, so the window gets one snapshot per burst rather than one per token.
 pub(crate) async fn pump(application: &AppHandle, key: ThreadKey, mut session: RunningSession) {
+    report(crate::agent_activity::observe(application, key, &[]));
     let shutdown = session.shutdown.clone();
     let mut mutations = velocity_acp::tool_mutations::ToolMutations::default();
     let worktree = lock(
@@ -653,6 +654,7 @@ pub(crate) async fn pump(application: &AppHandle, key: ThreadKey, mut session: R
             batch.push(next);
         }
         report(save_agent_session(application, key, &batch));
+        report(crate::agent_activity::observe(application, key, &batch));
         if let Some(worktree) = &worktree {
             for event in &batch {
                 report(crate::airc_claims::observe(
@@ -755,7 +757,9 @@ pub(crate) fn save_activity(
         "persisted state",
     )?
     .update_thread(key.0, key.1, |thread| {
-        thread.activity = activity;
+        if thread.activity != AgentActivity::AtLimit {
+            thread.activity = activity;
+        }
         if let Some(progress) = progress
             && thread.pull_request_number.is_none()
         {
@@ -796,6 +800,12 @@ pub(crate) fn fail(application: &AppHandle, key: ThreadKey, headline: &str, deta
         store
             .update_thread(key.0, key.1, |thread| {
                 thread.state = ThreadState::Error;
+                thread.supervision.unavailable_since.get_or_insert_with(|| {
+                    std::time::SystemTime::now()
+                        .duration_since(std::time::UNIX_EPOCH)
+                        .unwrap_or_default()
+                        .as_secs()
+                });
                 thread.activity = AgentActivity::Idle;
             })
             .map_err(|error| error.to_string())

@@ -169,6 +169,7 @@ export type AgentSettings_Deserialize = {
 	max_turns?: number | null,
 	max_duration_minutes?: number | null,
 	stall_timeout_minutes: number,
+	tool_timeout_minutes?: number,
 	claim_release_grace_minutes: number,
 };
 
@@ -176,6 +177,7 @@ export type AgentSettings_Serialize = {
 	max_turns: number | null,
 	max_duration_minutes: number | null,
 	stall_timeout_minutes: number,
+	tool_timeout_minutes: number,
 	claim_release_grace_minutes: number,
 };
 
@@ -2509,6 +2511,30 @@ export type StartDutyRequest_Serialize = {
 	scout_rules: ScoutRuleSettings | null,
 };
 
+export type Supervision = Supervision_Serialize | Supervision_Deserialize;
+
+export type Supervision_Deserialize = {
+	started?: number,
+	last_update?: number,
+	turns?: number,
+	nudged?: boolean,
+	unavailable_since?: number | null,
+	released?: boolean,
+	pushed_commit?: string | null,
+	retry_after?: number | null,
+};
+
+export type Supervision_Serialize = {
+	started: number,
+	last_update: number,
+	turns: number,
+	nudged: boolean,
+	unavailable_since: number | null,
+	released: boolean,
+	pushed_commit: string | null,
+	retry_after: number | null,
+};
+
 export type SwarmCard = SwarmCard_Serialize | SwarmCard_Deserialize;
 
 export type SwarmCard_Deserialize = {
@@ -2843,6 +2869,7 @@ export type ThreadIssue_Serialize = {
 export type ThreadItem = ThreadItem_Serialize | ThreadItem_Deserialize;
 
 export type ThreadItem_Deserialize = {
+	supervision?: Supervision_Deserialize,
 	id: number,
 	title: string,
 	state: ThreadState,
@@ -2876,6 +2903,7 @@ export type ThreadItem_Deserialize = {
 };
 
 export type ThreadItem_Serialize = {
+	supervision: Supervision_Serialize,
 	id: number,
 	title: string,
 	state: ThreadState,

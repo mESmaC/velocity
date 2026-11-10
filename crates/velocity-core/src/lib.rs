@@ -1,5 +1,6 @@
 //! Pure synchronous Velocity domain logic; native I/O belongs at the edges.
 
+pub mod agent_activity;
 pub mod agents_editor;
 mod agents_markdown;
 pub mod agents_rewrite;

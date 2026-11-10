@@ -255,6 +255,17 @@ fn thread_group(state: ThreadState) -> ThreadGroup {
 }
 
 pub(crate) fn thread_metadata(thread: &ThreadItem) -> String {
+    if matches!(
+        thread.activity,
+        AgentActivity::Stalled | AgentActivity::AtLimit
+    ) {
+        return if thread.activity == AgentActivity::Stalled {
+            "stalled"
+        } else {
+            "at limit"
+        }
+        .into();
+    }
     if let Some(waiting) = &thread.dependency_wait {
         return waiting.clone();
     }

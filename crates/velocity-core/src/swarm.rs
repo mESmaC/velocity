@@ -250,6 +250,9 @@ pub fn member_track(member: &MemberProgress) -> Vec<TrackStep> {
 
 /// The card's "what it is doing now" line.
 pub fn member_doing(member: &MemberProgress) -> String {
+    if member.activity_label == "stalled" || member.activity_label.starts_with("at limit") {
+        return member.activity_label.clone();
+    }
     let number = member.pull_request_number.unwrap_or_default();
     match member_stage(member.state, member.review_stage) {
         SwarmStage::Choosing | SwarmStage::Working => member.activity_label.clone(),

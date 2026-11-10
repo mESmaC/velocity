@@ -98,7 +98,13 @@
               {#if row.agents !== '0'}<span class="agents-count"
                   >×{row.agents}</span
                 >{/if}
-              {#if row.metadata}<span class="t-meta">{row.metadata}</span>{/if}
+              {#if row.metadata}<span
+                  class="t-meta"
+                  style:color={row.metadata === 'stalled' ||
+                  row.metadata === 'at limit'
+                    ? 'var(--warn)'
+                    : undefined}>{row.metadata}</span
+                >{/if}
               {#if row.segments.length}<span
                   class="sw-mini"
                   aria-label="Swarm progress"
