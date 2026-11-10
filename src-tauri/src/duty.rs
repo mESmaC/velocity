@@ -74,6 +74,7 @@ pub fn pause_duty(
     let snapshot = publish_duty_outcome(&window, outcome);
     crate::reviews::wake(window.app_handle());
     crate::sweeps::wake(window.app_handle());
+    crate::main_watch::wake(window.app_handle());
     snapshot
 }
 
@@ -96,6 +97,7 @@ fn apply_start_or_add(
     // New scouts sweep at once, and new PR duty agents claim PRs at once (F7).
     crate::reviews::wake(window.app_handle());
     crate::sweeps::wake(window.app_handle());
+    crate::main_watch::wake(window.app_handle());
     snapshot
 }
 

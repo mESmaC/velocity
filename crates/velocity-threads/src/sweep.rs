@@ -6,7 +6,9 @@ use std::path::{Path, PathBuf};
 use agent_client_protocol::v1::schema::{McpServer, McpServerStdio, SessionUpdate};
 use velocity_acp::client::{AgentEvent, AgentLaunch, SessionSetup};
 use velocity_core::scout_sweep::step_doing;
+use velocity_core::worktree_settings::WorktreePreferences;
 use velocity_git::{JobKind, WorktreeError, WorktreeSetupRequest};
+use velocity_store::ProjectItem;
 use velocity_store::duty::DutyAgentItem;
 use velocity_store::duty::ScoutRoster;
 
@@ -36,14 +38,24 @@ pub fn plan_sweep(
     scout: &DutyAgentItem,
     base_ref: &str,
 ) -> Result<SweepPlan, LaunchError> {
-    let location = Location::new(&roster.project, &roster.worktrees);
+    plan_duty_checkout(&roster.project, &roster.worktrees, scout, base_ref)
+}
+
+/// Plans a duty agent's own detached checkout of `base_ref` (`<agent>-sweep`, F5), shared by
+/// scout sweeps and the Main watcher's watches, and its agent from its own provider.
+pub fn plan_duty_checkout(
+    project: &ProjectItem,
+    preferences: &WorktreePreferences,
+    agent_item: &DutyAgentItem,
+    base_ref: &str,
+) -> Result<SweepPlan, LaunchError> {
+    let location = Location::new(project, preferences);
     let worktree_path = location
-        .job_worktree(&JobKind::ScoutSweep(scout.nickname.clone()))?
+        .job_worktree(&JobKind::ScoutSweep(agent_item.nickname.clone()))?
         .ok_or(WorktreeError::EmptyLeafName)?;
     let shared_target = location.project_root()?.join(SHARED_TARGET_FOLDER);
-    let preferences = &roster.worktrees;
     let worktree = WorktreeSetupRequest::detached(
-        PathBuf::from(&roster.project.repository_path),
+        PathBuf::from(&project.repository_path),
         worktree_path,
         base_ref.to_owned(),
         setup_settings(preferences),
@@ -51,11 +63,11 @@ pub fn plan_sweep(
         preferences.setup_command.clone(),
         shared_target,
     );
-    let (agent, bypass_modes) = agent_launch(scout.provider);
+    let (agent, bypass_modes) = agent_launch(agent_item.provider);
     Ok(SweepPlan {
-        project: roster.project.id,
-        nickname: scout.nickname.clone(),
-        base_branch: base_branch(&roster.project),
+        project: project.id,
+        nickname: agent_item.nickname.clone(),
+        base_branch: base_branch(project),
         worktree,
         agent: with_compiler_cache(agent, preferences.share_build_cache),
         bypass_modes,

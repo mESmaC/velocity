@@ -17,6 +17,7 @@ mod goal_swarm;
 mod interview;
 mod issue_panel;
 pub mod layout;
+pub mod main_watch;
 mod new_project;
 mod parking;
 mod projects;
@@ -224,6 +225,7 @@ pub fn run() -> anyhow::Result<()> {
             interview::start(application.handle());
             reviews::initialize(application.handle())?;
             sweeps::initialize(application.handle())?;
+            main_watch::initialize(application.handle())?;
             airc_delivery::initialize(application.handle());
             airc_modal::initialize(application.handle());
             Ok(())
