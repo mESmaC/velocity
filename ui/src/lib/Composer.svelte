@@ -30,6 +30,18 @@
     Kimi: 'kimi',
   };
 
+  let textarea: HTMLTextAreaElement | undefined = $state();
+
+  // App.svelte coalesces snapshots while requests are pending, so a fast type-and-Enter
+  // can commit "" right after "" and never show the typed text. Svelte's `value=` skips
+  // a write equal to its last one, which left the sent text in the box (#49). Compare
+  // with the live DOM value instead, on every committed snapshot. Once nothing is
+  // pending, Rust's text already includes every keystroke, so this never drops typing.
+  $effect(() => {
+    const text = layout.composer_text;
+    if (textarea && textarea.value !== text) textarea.value = text;
+  });
+
   function handleKeydown(event: KeyboardEvent) {
     const slashOpen = layout.slash_items.length > 0;
     if (slashOpen && (event.key === 'ArrowDown' || event.key === 'ArrowUp')) {
@@ -70,7 +82,7 @@
     aria-label="Prompt"
     {placeholder}
     spellcheck="false"
-    value={layout.composer_text}
+    bind:this={textarea}
     oninput={(event) => send({ ComposerText: event.currentTarget.value })}
     onkeydown={handleKeydown}></textarea>
   <div class="composer-row">
