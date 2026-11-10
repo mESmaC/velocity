@@ -37,7 +37,9 @@ fn cycle(application: &AppHandle) -> Result<(), String> {
     .clone();
     for project in projects {
         for thread in &project.threads {
-            deliver(application, &project, thread)?;
+            if let Err(error) = deliver(application, &project, thread) {
+                eprintln!("Velocity AIRC thread {}: {error}", thread.id);
+            }
         }
     }
     Ok(())
@@ -51,11 +53,13 @@ fn deliver(
     let key = (project.id, thread.id);
     let member = format!("thread-{}-{}", key.0, key.1);
     let channel = channel(application, project.id)?;
-    let live = lock(
-        application.state::<ManagedThreads>().inner(),
-        "thread sessions",
-    )?
-    .is_live(key);
+    let live = {
+        let runtimes = lock(
+            application.state::<ManagedThreads>().inner(),
+            "thread sessions",
+        )?;
+        runtimes.is_live(key) && !runtimes.is_setting_up(key)
+    };
     if !live {
         return channel.leave(&member).map_err(|error| error.to_string());
     }
@@ -68,7 +72,9 @@ fn deliver(
     let cursor = velocity_airc::deliver_messages(
         &channel,
         &nick,
-        thread.airc_cursor,
+        channel
+            .delivery_cursor(&member, thread.airc_cursor)
+            .map_err(|error| error.to_string())?,
         |identifier, message| {
             lock(
                 application.state::<ManagedThreads>().inner(),

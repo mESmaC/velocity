@@ -1,6 +1,21 @@
 //! F14 message selection. Events remain on demand until targeted event delivery ships.
 use crate::{Channel, Entry, Error};
 
+impl Channel {
+    /// A new thread starts at its own join, never at historical broadcast comments.
+    /// Rejoining after restart keeps the original membership's lower bound.
+    pub fn delivery_cursor(&self, member: &str, saved: u64) -> Result<u64, Error> {
+        if saved != 0 {
+            return Ok(saved);
+        }
+        Ok(self
+            .read(0)?
+            .iter()
+            .find(|entry| entry.kind == "join" && entry.member == member)
+            .map_or(0, |entry| entry.sequence))
+    }
+}
+
 /// Drain in sequence order. A pending or failed receiving turn retains the cursor,
 /// so restart replays that message instead of losing queued input.
 pub fn deliver_messages(

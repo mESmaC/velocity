@@ -4,16 +4,22 @@ use velocity_airc::{Channel, deliver_messages};
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let folder = std::env::temp_dir().join(format!("velocity-delivery-{}", std::process::id()));
     let channel = Channel::open(&folder, "headless")?;
+    channel.comment("Historical comment before these threads existed")?;
     let first = channel.join("first", r"C:\work trees\editor")?;
     let second = channel.join("second", r"C:\work trees\builder")?;
     channel.message("second", vec![first.clone()], "question", "Which files?")?;
     channel.comment(&format!("{first}: Keep the saved record"))?;
     channel.comment("Please record progress")?;
     let mut pending = Vec::new();
-    let cursor = deliver_messages(&channel, &first, 0, |identifier, message| {
-        pending.push((identifier.to_owned(), message.to_owned()));
-        Ok(false)
-    })?;
+    let cursor = deliver_messages(
+        &channel,
+        &first,
+        channel.delivery_cursor("first", 0)?,
+        |identifier, message| {
+            pending.push((identifier.to_owned(), message.to_owned()));
+            Ok(false)
+        },
+    )?;
     if pending.len() != 1 {
         return Err("pending delivery was skipped".into());
     }
@@ -31,10 +37,15 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         Err("replayed acknowledged line".into())
     })?;
     let mut others = 0;
-    deliver_messages(&channel, &second, 0, |_, _| {
-        others += 1;
-        Ok(true)
-    })?;
+    deliver_messages(
+        &channel,
+        &second,
+        channel.delivery_cursor("second", 0)?,
+        |_, _| {
+            others += 1;
+            Ok(true)
+        },
+    )?;
     if others != 1 {
         return Err("targeted message reached another agent".into());
     }
