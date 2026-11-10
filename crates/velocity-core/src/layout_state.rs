@@ -965,7 +965,7 @@ impl LayoutState {
             self.view = NavigationView::Agents;
         }
         if let LayoutIntent::SettingsTab(tab) = &intent
-            && (tab == "worktrees" || tab == "providers")
+            && (tab == "worktrees" || tab == "providers" || tab == "agent-settings")
         {
             self.view = NavigationView::Settings;
             self.settings_tab = tab.clone();

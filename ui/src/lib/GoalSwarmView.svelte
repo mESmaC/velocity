@@ -204,7 +204,13 @@
                     class="working-dots"
                     aria-hidden="true"><i></i><i></i><i></i></span
                   >{/if}
-                <span class="doing-text">{card.doing}</span>
+                <span
+                  class="doing-text"
+                  style:color={card.doing === 'stalled' ||
+                  card.doing.startsWith('at limit')
+                    ? 'var(--warn)'
+                    : undefined}>{card.doing}</span
+                >
               </span>
             </button>
           {/each}

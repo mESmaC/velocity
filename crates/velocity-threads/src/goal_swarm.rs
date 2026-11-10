@@ -319,13 +319,15 @@ pub fn goal_agent_prompt(
          - Nick: `{}` in `#{}`\n\
          - Worktree: `{}` on branch `{branch_name}` (removed automatically after your PR merges)\n\
          - Claimed piece in AIRC: {piece_instructions}\n\
+         - Work-pool context: {}. Prior pushed work is optional; never use another thread's checkout.\n\
          - Commit, push `{branch_name}`, open a PR against `{default_branch}`, and watch it until PR duty merges it: fix failed checks, answer every review comment, resolve addressed threads, and re-request review. Never merge your own PR.\n\
          - Settle file overlaps and dependency waits in AIRC (`airc_claims`, `airc_claim`, `airc_send`); first claim wins.\n\
          - Implement and run the feature first; then write Lean proofs only if the feature is on the project's proof list in SPEC.md (Rule 8, F17).",
         slot.prompt,
         slot.nick,
         project.name,
-        worktree_path.display()
+        worktree_path.display(),
+        piece.reference
     )
 }
 

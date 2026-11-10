@@ -21,10 +21,12 @@ impl ThreadIssue {
 
 pub fn issue_thread<'a>(project: &'a ProjectItem, issue: &ThreadIssue) -> Option<&'a ThreadItem> {
     project.threads.iter().find(|thread| {
-        thread.issue.as_ref().is_some_and(|assigned| {
-            assigned.number == issue.number
-                && assigned.repository.eq_ignore_ascii_case(&issue.repository)
-        }) && !matches!(thread.state, ThreadState::Merged | ThreadState::Done)
+        !thread.supervision.released
+            && thread.issue.as_ref().is_some_and(|assigned| {
+                assigned.number == issue.number
+                    && assigned.repository.eq_ignore_ascii_case(&issue.repository)
+            })
+            && !matches!(thread.state, ThreadState::Merged | ThreadState::Done)
     })
 }
 

@@ -159,6 +159,10 @@ impl Channel {
     /// Releases the held claim named by its piece key or, for callers that only know
     /// the display text, its task.
     pub fn release(&self, member: &str, task: &str) -> Result<(), Error> {
+        self.release_with_note(member, task, task)
+    }
+
+    pub fn release_with_note(&self, member: &str, task: &str, note: &str) -> Result<(), Error> {
         let storage = Storage::open(&self.directory)?;
         let entries = storage.read()?;
         crate::routing::require_unfrozen(&entries, member)?;
@@ -176,7 +180,7 @@ impl Channel {
             if claim.member != member {
                 return Err(Error::Invalid("Only the holder can release a claim".into()));
             }
-            let mut record = entry(&entries, "released", "velocity", &claim.nick, task);
+            let mut record = entry(&entries, "released", "velocity", &claim.nick, note);
             record.claim = Some(claim);
             storage.append(&record)?;
         }

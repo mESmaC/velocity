@@ -46,6 +46,25 @@ pub fn read_work_pool(project: &ProjectItem) -> Result<WorkPool, WorkPoolError> 
     let path = checkout.join(&project.spec_path);
     let markdown = std::fs::read_to_string(extended_windows_path(&path))?;
     pieces.extend(available_spec_pieces(project, &markdown));
+    for piece in &mut pieces {
+        let prior = project.threads.iter().rev().find(|thread| {
+            thread.supervision.released
+                && thread.supervision.pushed_commit.is_some()
+                && velocity_store::claim_piece::thread_claim_piece(thread, &thread.branch_name)
+                    == piece.key.claim_piece()
+        });
+        if let Some(thread) = prior {
+            piece.reference.push_str(&format!(
+                " - prior work on {} at {} (optional)",
+                thread.branch_name,
+                thread
+                    .supervision
+                    .pushed_commit
+                    .as_deref()
+                    .unwrap_or_default()
+            ));
+        }
+    }
     Ok(WorkPool::new(project.id, pieces))
 }
 
@@ -61,7 +80,8 @@ fn task_pieces(project: &ProjectItem) -> Vec<WorkPiece> {
                 .assigned_thread_id
                 .and_then(|identifier| {
                     project.threads.iter().find(|thread| {
-                        thread.id == identifier
+                        !thread.supervision.released
+                            && thread.id == identifier
                             && !matches!(thread.state, ThreadState::Merged | ThreadState::Done)
                     })
                 })
@@ -94,7 +114,9 @@ fn available_spec_pieces(project: &ProjectItem, markdown: &str) -> Vec<WorkPiece
             let owners: Vec<_> = project
                 .threads
                 .iter()
-                .filter(|thread| thread.spec_section.as_ref() == Some(section))
+                .filter(|thread| {
+                    !thread.supervision.released && thread.spec_section.as_ref() == Some(section)
+                })
                 .collect();
             if owners
                 .iter()

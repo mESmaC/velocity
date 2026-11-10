@@ -95,6 +95,8 @@ Both timeouts are set in Settings → Agents (F13).
 - **Resuming after a release** *(proposed)*: an agent whose claims were released claims its piece again before it continues. If another agent holds the piece by then, the thread fails with "piece taken by <nick>" and keeps its worktree.
 - **Closed PRs:** a closed PR keeps its claims until you delete the thread. Closing is a decision someone made, so it isn't treated as a failure.
 
+The native supervisor checks live build threads once a second. Its defaulted checkpoint in `state.json` retains completed turns, the session start and last ACP update, the nudge, and the unavailability grace deadline. Recovery stops the owned ACP session and resumes in the registered checkout through the existing load/transcript path. Caps end the session; raising or disabling the cap resumes it. A usage-limit turn error retains the provider and retries after its reported reset, or every 15 minutes when none is reported. Released Task List ownership is returned to todo; issues and SPEC pieces become available again. Optional prior pushed work is shown in the pool. Resumption must win the atomic claim again before starting ACP, and fails with the holder named if the piece was taken.
+
 **Sidebar and views:** `stalled` and `at limit` show in amber in the thread's sidebar meta and on its swarm or goal swarm card. `parked` shows "waiting for <nick> · #n".
 
 ---
@@ -1260,7 +1262,7 @@ Each milestone ends with a working app. PR duty checks an item off when it lands
 - [x] Goal swarm view: claims board, one card per agent, activity; sidebar row (F16)
 
 **M10 · Throughput** (§3.3)
-- [ ] Agent activity, stall detection with nudge then restart, per-agent caps, claim release after the grace period (§2.2)
+- [x] Agent activity, stall detection with nudge then restart, per-agent caps, claim release after the grace period (§2.2)
 - [x] Parking: end the session on `airc_wait`, resume on the subscribed `merged` event; optional provider concurrency cap (§2.2, F15)
 - [x] Targeted AIRC delivery, message envelope (`to`, `intent`), heads-down and quarantine modes (F14)
 - [x] Targeted rebases, optimistic landing, conflicts sent back to the owning agent; rebuild the merge result whenever `master` moved; Shared files exempt from overlaps (F6, F14)

@@ -552,7 +552,9 @@ fn bind_piece_owner(
         WorkKey::Spec { section } => {
             let taken = project.built_spec_sections.contains(section)
                 || project.threads.iter().any(|item| {
-                    item.id != thread_id && item.spec_section.as_ref() == Some(section)
+                    !item.supervision.released
+                        && item.id != thread_id
+                        && item.spec_section.as_ref() == Some(section)
                 });
             if taken {
                 return Err(ThreadError::SpecUnavailable(section.clone()));

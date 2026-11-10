@@ -213,6 +213,11 @@ impl ThreadRuntimes {
         Some(receiver)
     }
 
+    /// Recovery nudges must reach a silent busy session, rather than waiting behind it.
+    pub fn nudge(&mut self, key: ThreadKey, message: &str) -> Result<(), SteerError> {
+        self.steer(key, message)
+    }
+
     pub fn is_parked(&self, key: ThreadKey) -> bool {
         self.parked.contains(&key)
     }

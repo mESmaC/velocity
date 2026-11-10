@@ -221,6 +221,9 @@ pub fn goal_track(agent: &GoalAgentProgress) -> Vec<TrackStep> {
 
 /// The card's "what it is doing now" line.
 pub fn goal_doing(agent: &GoalAgentProgress) -> String {
+    if agent.activity_label == "stalled" || agent.activity_label.starts_with("at limit") {
+        return agent.activity_label.clone();
+    }
     let number = agent.pull_request_number.unwrap_or_default();
     match agent.stage() {
         SwarmStage::Choosing => "reading the claims board".into(),
