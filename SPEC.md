@@ -68,11 +68,17 @@ A thread's state (§2.1) says where it is in its lifecycle. Its **activity** say
 | `thinking` | The agent is producing output. | ACP message chunks |
 | `executing` | A tool call is running. | ACP `tool_call` |
 | `parked` | The agent is waiting on another agent's PR (`airc_wait`). Its ACP session is ended to free a provider slot, and its worktree and claims are kept. | `airc_wait` |
-| `stalled` | No ACP update for 5 minutes *(proposed default)* while not parked. | Velocity |
+| `stalled` | No ACP update for the stall timeout (below) while not parked. | Velocity |
 | `at limit` | The agent hit a per-agent cap or its provider's subscription limit. This stays set until the agent resumes. | Velocity, provider |
 | `idle` | The agent's turn ended and nothing is queued. | ACP turn end |
 
 **Parked agents wake on events, not by polling.** A wait subscribes the agent to the `merged` event of the PR it waits on. When that event fires, Velocity resumes the session (`session/load`, or a new session with the transcript if the agent can't load one), rebases, and posts `unblocked`. If the PR is closed, fails or is deleted, the agent wakes and the wait ends.
+
+**Stall timeout** (decided, Q20): 5 minutes without an ACP update. Two cases never count as silence:
+- **A running tool call** gets 30 minutes *(proposed)*. A build, a test run or `lake build` reports nothing until it ends, and restarting the session would kill it and start it again.
+- **The build queue** (F5): an agent waiting in the queue, or running the build at its head, is never stalled.
+
+Both timeouts are set in Settings → Agents (F13).
 
 **Stall handling:**
 1. Velocity sends one prompt: "No output for 5 minutes. Continue, or say what is blocking you."
@@ -82,7 +88,11 @@ A thread's state (§2.1) says where it is in its lifecycle. Its **activity** say
 **Limits and claim release:**
 - **Per-agent caps:** max turns and max duration, set in Settings → Agents (F13). Off by default.
 - **Hitting a limit:** when an agent hits a cap or its provider's limit, its activity becomes `at limit`.
-- **Release after a grace period:** if an agent stays `at limit`, or its thread has failed (§2.1 `error`), for 10 minutes *(proposed default)*, Velocity releases its claims. It posts a `released` event and the piece goes back to the pool (F16). The worktree is still kept (F5).
+- **Release after a grace period:** if an agent stays `at limit`, or its thread has failed (§2.1 `error`), for 10 minutes (decided, Q20; set in Settings → Agents), Velocity releases its claims. It posts a `released` event and the piece goes back to the pool (F16). The worktree is still kept (F5).
+- **An open PR keeps its claims** *(proposed)*. A thread with an open PR is never released. PR duty can still land that PR, and a second agent on the piece would open a duplicate.
+- **Prior work is offered, never assigned** (decided, Q20). When the released agent pushed a branch, the `released` event names the branch and its last pushed commit. The work pool shows them on the piece, and the agent that claims it next is told "<nick> left work on `<branch>` at `<sha7>`". That agent starts in its own fresh worktree from `master` as always (Rule 5) and decides whether to merge the branch in. The released agent's worktree stays with its thread.
+- **At a provider's limit, the agent waits for the reset** (decided, Q15), as T3 Code does. Velocity never moves a thread, queued work or new work to another provider. The thread shows the window that ran out and when it resets, and Velocity resumes the session at the reset with no action from you. When the provider reports no reset time, Velocity retries every 15 minutes *(proposed)*. You can change the thread's model by hand at any time (F4). The piece itself still moves on: the grace period above returns it to the pool, where an agent on any provider can claim it.
+- **Resuming after a release** *(proposed)*: an agent whose claims were released claims its piece again before it continues. If another agent holds the piece by then, the thread fails with "piece taken by <nick>" and keeps its worktree.
 - **Closed PRs:** a closed PR keeps its claims until you delete the thread. Closing is a decision someone made, so it isn't treated as a failure.
 
 **Sidebar and views:** `stalled` and `at limit` show in amber in the thread's sidebar meta and on its swarm or goal swarm card. `parked` shows "waiting for <nick> · #n".
@@ -132,7 +142,7 @@ A thread's state (§2.1) says where it is in its lifecycle. Its **activity** say
 | command | `list_providers`, `provider_sign_in`, `provider_sign_out`, `provider_models` | providers (OAuth) |
 | command | `get_skill_library`, `install_skill_pack`, `check_skill_pack_update`, `confirm_skill_pack_update` | skill pack library (F18): built-in and custom Agent Skills packs cloned with `core.symlinks=true`, pinned to a commit in `skills-library.json`, update diff preview of `SKILL.md` files, scripts and data, and explicit pin confirmation |
 | command | `set_airc_message_mode { project_identifier, nick, mode }` | Set Open, HeadsDown or Quarantined from the AIRC nick list. Modes persist in the channel log; quarantine freezes claim extension and release. |
-| command | `airc_send { project_identifier, text }` | Your F14 comment in a registered project channel. An exact `nick:` prefix targets that member; an unknown nick is rejected. Other comments broadcast to active thread members. Delivery uses ordinary queued steering and never cancels a running turn. |
+| command | `airc_send { project_identifier, text }` | Your F14 comment in a registered project channel. An exact `nick:` prefix targets that member. A single-word prefix that is a likely mistyped nick (a nick that left, or one within two character edits of a joined nick, ignoring case) is rejected with the closest nick named. Every other comment broadcasts to active thread members, including one that starts with an ordinary word and a colon. Delivery uses ordinary queued steering and never cancels a running turn. |
 | command | `get_airc_modal { project_identifier }` | The F14 AIRC modal's view, built in Rust from the active project's channel and saved thread and duty state: tab counts (Claims adds its overlap count), tagged and toned event rows, messages with mentions of you, the claims board with overlapping files of working and PR-open agents, both ledgers, and the grouped nick list. `A`, the palette and the footer link open the modal through `dispatch_layout` (`airc_open` on `layout://state`); `Esc` closes it. Comments go through `airc_send`. |
 | command | `airc_events { project_identifier, after }`, `airc_messages { project_identifier, after }`, `airc_send`, `airc_claims`, `airc_claim`, `airc_release`, `airc_share`, `airc_wait`, `airc_ledger { project_identifier, ledger, after }` | AIRC (agents get the same as MCP tools). `airc_events` returns only F14 event log entries (`EVENT_TAGS`, including `discovery` notices); `airc_messages` returns only agent messages and user comments; `airc_ledger` reads `discovery` or `past_work`. `airc_claim` is atomic: it returns `granted`, or `refused { holder, since }` |
 | command | `dispatch_layout` with `Navigation(Answer(n))`, `Navigation(Lock)`, `Navigation(SpecFile)`, `Navigation(Grill)`, `SteerThread` on a spec thread, and `ToggleProofListEntry(index)` | spec interview (F3): answer `1`–`4` or in your own words, Lock spec & publish tasks, open SPEC.md, Keep grilling, and switch a proposed proof-list entry. The backend carries these out; the interview's phase, question, decisions and proof list arrive on `active_thread.interview` in `layout://state`. |
@@ -160,10 +170,13 @@ Velocity is an **ACP (Agent Client Protocol) client**, as T3 Code, Zed and most 
 
 | Provider | ACP agent |
 |---|---|
-| Anthropic | Claude Code through the `claude-code-acp` adapter |
-| Codex | Codex through the `codex-acp` adapter |
+| Anthropic | Claude Code through the `claude-agent-acp` adapter (npm `@agentclientprotocol/claude-agent-acp`). Its former name, `claude-code-acp`, is deprecated and fails every prompt on a current Claude Code config (#46). |
+| Codex | Codex through the `codex-acp` adapter (npm `@agentclientprotocol/codex-acp`) |
 | Kimi Code | Kimi CLI's own ACP mode (`kimi acp`) |
-| Antigravity | not confirmed (Q14) |
+| Antigravity | Google's own Antigravity agent: `agy acp` (Antigravity CLI 1.5.0 or later) |
+| Custom | any ACP agent you add in Settings → Providers: a command and its arguments (F15) |
+
+**Antigravity** (decided, Q14). Velocity launches the `agy` on your `PATH` with your own `~/.gemini` profile, as it launches the other three agents (Tool access, below), and selects the agent's `yolo` mode when the session starts (Rule 1). Sign-in is the agent's own Google login, through `authenticate` or `agy acp --login`. The model list comes from your Antigravity account. Velocity doesn't download or pin a runtime of its own, doesn't give the agent a separate profile, and never presents itself to the agent as another client.
 
 How Velocity's features map onto ACP:
 
@@ -180,7 +193,7 @@ How Velocity's features map onto ACP:
 | Model, effort and speed | The agent's session model and config options where it exposes them, otherwise launch arguments. Whether a model has a fast mode is read from the agent's config options, not hard-coded. |
 | File edits and claims (F14) | Velocity advertises the `fs` and `terminal` client capabilities, with relative paths resolved against the thread's worktree. They are not confined to it (Tool access). Edits and tool-call file locations feed the diff view and the claim checker. If an agent edits a file it hasn't claimed, the file is added to its claim, an overlap check runs, and a `claim` event is posted. |
 | Resume after a restart | `session/load`, where the agent supports it. Otherwise the thread restarts from its transcript. |
-| Subscription limits (F15) | Not part of ACP. They are read per provider (Q14). |
+| Subscription limits (F15) | Not part of ACP. They are read per provider (F15 Limit sources). |
 
 **Tool access.** Every agent gets every tool, whatever its role: threads, swarm and goal swarm members, PR duty, scouts, the main watcher and spec interviews. Velocity adds tools and never removes any.
 - **Built-in tools:** each provider's agent keeps its whole native toolset (shell, file read/write/edit, search, web search and fetch, subagents, todo/plan, and anything else it ships). Velocity never passes an allow-list or deny-list, and never starts an agent in a restricted or read-only mode.
@@ -476,7 +489,7 @@ Long-running roles. They appear under **On duty**, with an agent count (×N) and
   - Re-review on new commits. A merge commit PR duty pushed to update the branch is not a new commit to review; only its conflict resolutions are.
   - Update branches with `master` (F6): allowed and encouraged, never by force-push.
   - Delete the branch after merge.
-  - Merge method: Squash / Rebase / Merge commit.
+  - Merge method: Squash (default) / Rebase / Merge commit.
 - Each review runs in its own worktree (F5).
 - **How a review runs.** Every 30 seconds, and at once when PR duty starts, resumes or gets agents, each idle PR duty agent claims the oldest open, ready PR that needs work. A head with no decision gets a review; a head with a standing approval gets its checks and merge; a head with changes requested, or whose approved merge was refused, waits for its author to push. A head an agent already finished a session on without a decision isn't claimed again until it moves, or until you instruct PR duty.
   - The claim posts a `claim` event and a `Reviewing · <nick>` comment on the PR, which the rail reads. Until `airc_claim` lands (M9), the review runner holds the lock itself; the agent's session ending posts `released`.
@@ -484,11 +497,11 @@ Long-running roles. They appear under **On duty**, with an agent count (×N) and
   - The agent records decisions only through Velocity's PR duty MCP tools, served by Velocity's own executable: `pr_duty_pull_request` reads the PR, `pr_duty_review` approves or requests changes at the head it checked (the approval record above), and `pr_duty_merge` merges the approved head with the role's merge method. The launcher fixes the agent's nick and its one PR, so it can't act on another agent's PR or record a decision as anyone else.
   - Its card shows `#n · <current step>`; the feed gets the claim, each approval, request for changes, merge or refused merge, and a review that ended without a decision. A merged PR's review worktree is removed (Rule 5).
   - A message from the PR duty composer goes to each running review as its next message, and to each idle agent with its next claim.
-- **Approval record** *(proposed; answers Q28)*. Velocity records each approval itself, as an `approved` AIRC event naming the PR, the reviewer's nick and the head SHA it approved. That event is the approval Rule 4 requires.
+- **Approval record** (decided, Q28). Velocity records each approval itself, as an `approved` AIRC event naming the PR, the reviewer's nick and the head SHA it approved. That event is the approval Rule 4 requires.
   - GitHub's review state is advisory, like CI. Every agent shares your one GitHub login, which can't approve its own PRs, and Velocity never asks for a second account's credentials or an app key (F15).
   - PR duty merges only the head it approved (`gh pr merge --match-head-commit <sha>`), so a commit pushed after approval needs a new review.
   - A branch update PR duty made itself with no conflict resolution moves the approval to the new head (it is not a new commit to review, see Rules below). Any other push clears it.
-  - A `changes` event newer than the approval blocks the merge. PR duty mirrors each record on GitHub as a comment ("Approved at `<sha7>`") so people reading the PR see it.
+  - A `changes` event newer than the approval blocks the merge. PR duty mirrors each record on GitHub as a comment that starts "Approved at `<sha7>`" and gives a short reason for the approval, so people reading the PR see it. The reviewer that approved then merges.
   - On a repository whose branch protection requires a GitHub approval, the merge fails and Velocity posts a `failed` event. It never bypasses the rule (`--admin`).
 - **Review the intent, not each line.** The reviewer checks the PR against its claim, its Task List item, issue or SPEC.md section, and AGENTS.md. Style is left to linters.
 - **Severity bar** (locked). A finding blocks a merge only for: data loss or corruption, a crash or hang, a §1 rule violation, a security hole, a failing local check, or the main path of the claimed piece not doing what its SPEC.md section says.
@@ -553,6 +566,7 @@ The project-scoped list in the top-right panel.
 - **Agents:** they have a `task_add` tool and use it **only when your message asks them to** (e.g. "add these to the task list: X, Y"). Otherwise they file issues. This rule is written in AGENTS.md.
 - Tasks not created by the spec show who added them: "added by you", or "added by <thread>", which links to that thread.
 - Tasks added before the spec is locked are drafts.
+- **After the spec is locked** (decided, Q6): a task you or an agent adds goes straight to todo and stays outside SPEC.md. Adding a task never starts an interview and never edits SPEC.md. When the work changes behaviour SPEC.md describes, the building agent updates SPEC.md in its own PR (AGENTS.md).
 
 **Live state:** a task with an agent shows that agent's state (agent working / #n · in review / merged · #n), linked to its thread.
 
@@ -629,6 +643,8 @@ Open it from the rail link or the palette. It reads and writes the repo's `AGENT
   - If it cannot work out what a vague word means, it leaves the bullet flagged and says what is missing ("say what 'clean' means").
   - Every rewritten bullet shows "was ~~original~~ · **Undo**" until you save.
 - **Live lint while typing:** marks hedges (should probably, maybe, try to, where possible, as needed, consider), "should", and vague words (clean, good, nice, appropriate, reasonable, properly, etc.).
+  - **The lint advises; it never blocks** (decided, Q8). It marks the words and lists them under Flagged. It never stops typing, saving or committing.
+  - **AGENTS.md changes in a PR:** when a line the PR changed in AGENTS.md trips the lint, PR duty rewrites that line as a direct rule in the branch update it makes before merging (the same tighten rewrite as Enter), and says so in its review. It never requests changes for wording alone. A vague word it can't resolve becomes an issue (F7 severity bar).
 - **Side panel:**
   - **Covers:** commands (build, proofs, lint); implementation first; proofs: proof list only, after the code; tests and docs: low priority; scope; PR: monitor until merged; PR: address every review comment; definition of done; hard "never" list. Each missing item has **Add**, which inserts editable bullets into the right section.
   - **Flagged:** the list, with **Tighten all**.
@@ -690,7 +706,7 @@ Delete is **immediate, with no confirmation** (decided).
 
 ### F13 · Settings
 
-Open with the footer gear, `Ctrl+,`, the palette, the footer worktree count (→ Worktrees) or the footer limit meter (→ Providers). Pages: **Worktrees** (F5), **Providers** (F15: sign-in, default model, effort and speed for new threads, and the thread title model), **Skills** (F18), **Agents** and **Proofs**. Proofs holds the project's proof list, the code-level translator for each language when an issue asks for one (Rust: Aeneas), and the stress-diff input count (F17). Agents holds the shared MCP servers passed to every agent (§3.2 Tool access), the per-agent caps (max turns, max duration; off by default), the stall timeout (5 min) and the claim-release grace period (10 min) from §2.2. The rest of the Agents page is unspecified. There is no Keys page: every provider signs in with OAuth.
+Open with the footer gear, `Ctrl+,`, the palette, the footer worktree count (→ Worktrees) or the footer limit meter (→ Providers). Pages: **Worktrees** (F5), **Providers** (F15: sign-in, default model, effort and speed for new threads, and the thread title model), **Skills** (F18), **Agents** and **Proofs**. Proofs holds the project's proof list, the code-level translator for each language when an issue asks for one (Rust: Aeneas), and the stress-diff input count (F17). Agents holds the shared MCP servers passed to every agent (§3.2 Tool access), the per-agent caps (max turns, max duration; off by default), the stall timeout (5 min, and 30 min for a running tool call) and the claim-release grace period (10 min) from §2.2. The rest of the Agents page is unspecified. There is no Keys page: every provider signs in with OAuth.
 
 ### F14 · AIRC (claims, events, agent messages)
 
@@ -751,7 +767,9 @@ Nothing else is pushed to it. The full log stays readable on demand (`read_event
 - **Heads-down:** messages from other agents are held until it opens or updates its PR, or goes idle. Events and your comments always get through.
 - **Quarantined:** receives nothing from other agents, its messages are delivered to nobody, and its claims are frozen (not released, not extended). You can still message it. Use it for an agent that is misbehaving.
 
-**Your lines are comments, not prompts.** They are messages. A line starting `nick:` is delivered to that agent's thread (shown as "via AIRC") and read at its next step, never mid-step (Rule 1). Other lines are read by every agent at its next step.
+**Your lines are comments, not prompts.** They are messages. A line starting `nick:` is delivered to that agent's thread (shown as "via AIRC") and read at its next step, never mid-step (Rule 1). Other lines are read by every agent at its next step, including a line that starts with an ordinary word and a colon (`FYI: master is broken`, or a URL).
+
+**A mistyped nick is refused, not broadcast** (decided, #93). When the single word before the colon is a nick that has left the channel, or is within two character edits of a joined nick (ignoring case), the line is rejected with "Unknown nick `<word>`. Did you mean `<nick>`?" and nothing is recorded. A line meant for one agent never reaches all of them.
 
 **AIRC modal** (footer link or `A`; `Esc` closes):
 - **Header:** `AIRC #<project>` and the channel topic.
@@ -783,10 +801,10 @@ M8 message delivery registers live build-thread members as `thread-<thread-id>` 
 
 ### F15 · Providers (OAuth)
 
-Four providers: **Anthropic** (Claude Code agent), **Codex** (Codex CLI agent), **Antigravity** and **Kimi Code** (Kimi CLI agent). Every one signs in with OAuth on your own subscription, the way T3 Code does. Velocity talks to each one's agent over ACP (§3.2) and uses that agent's own login. It never asks for, shows or stores an API key, and tokens stay in each provider's own credential store.
+Four providers: **Anthropic** (Claude Code agent), **Codex** (Codex CLI agent), **Antigravity** and **Kimi Code** (Kimi CLI agent). Every one signs in with OAuth on your own subscription, the way T3 Code does. Velocity talks to each one's agent over ACP (§3.2) and uses that agent's own login. It never asks for, shows or stores an API key, and tokens stay in each provider's own credential store. Any other ACP agent can be added beside the four (Custom ACP agents, below).
 
 **Settings → Providers** has one card per provider:
-- Its mark, its name, "runs <agent> over ACP · OAuth", and the ACP agent command (e.g. `claude-code-acp · stdio`).
+- Its mark, its name, "runs <agent> over ACP · OAuth", and the ACP agent command (e.g. `claude-agent-acp · stdio`). The command and its arguments can be edited, with Reset to return to the built-in one *(proposed)*: adapters get renamed (#46), and you may run a build of your own.
 - **Status:**
   - **Signed in** shows the plan and how many agents are on it.
   - **Waiting** shows "Waiting for you to finish signing in at <site>…" with Cancel.
@@ -794,6 +812,7 @@ Four providers: **Anthropic** (Claude Code agent), **Codex** (Codex CLI agent), 
 - **Sign in with Claude / ChatGPT / Google / Kimi:** opens the provider's OAuth page in your browser. When the login completes, the card flips to signed in by itself and a toast lists the models now available.
 - **Sign out:** agents already running on that provider keep their session until they finish. New work can't use it.
 - **Limit:** a bar showing the share of the current subscription window used (5-hour, daily, weekly, whatever the provider reports) and when it resets.
+  - **At the limit** (decided, Q15): agents on that provider wait for the reset and resume by themselves (§2.2). Work never moves to another provider automatically. The pickers keep listing the provider with its limit bar, so you choose where new work goes.
 - **Max agents at once** (off by default): a cap on concurrently running agents for this provider.
   - Agents over the cap wait as "queued · <provider>" and start when a slot frees.
   - Parked agents (§2.2) don't hold a slot, so waiting on another PR never blocks new work.
@@ -806,7 +825,24 @@ Four providers: **Anthropic** (Claude Code agent), **Codex** (Codex CLI agent), 
 - **Where it's set:** everywhere effort is chosen. That covers the composer menu, the defaults above, the thread title model, the new-project interview model, and each goal swarm mix row (F16). The duty and swarm dialogs use the default speed.
 - **Models without a fast mode.** On those models the Speed control is greyed out and says "<model> has no fast mode". A thread set to Fast that switches to such a model runs at Regular, and goes back to Fast if it switches back.
 - **Shown:** the model pill and agent cards add "· Fast" when it is on.
-- **Limits:** if a provider reports that fast mode uses the subscription limit faster, the limit bar counts it that way (Q25).
+- **Limits** (decided, Q25): fast mode uses the subscription limit a little faster. Providers count it inside their ordinary usage, with no category of its own, so the limit bar shows it with no special handling.
+
+**Limit sources** (decided, Q14). ACP doesn't carry subscription limits. Each provider's own usage report is read outside ACP, with the login its agent already holds, from the same sources T3 Code reads. Velocity never stores a token for this.
+
+| Provider | Where it reports its limits |
+|---|---|
+| Anthropic | Claude Code's usage report (the 5-hour and weekly windows), and the rate-limit events it sends during a turn |
+| Codex | `account/rateLimits/read` on Codex's app server, and its rate-limit notifications |
+| Antigravity | Google's quota report for the signed-in account |
+| Kimi Code, custom agents | no known source |
+
+- A provider with no source, or whose read fails, shows "limit not reported". Nothing else depends on the bar.
+- `at limit` (§2.2) never comes from the bar. It is set when an agent's turn fails with its provider's usage-limit error, which carries the reset time when the provider gives one.
+
+**Custom ACP agents** (decided, Q19). The four providers are built first. After them, **Add an ACP agent** takes a name, a command and its arguments, as Zed does.
+- The agent gets its own card and works like a built-in provider everywhere a model is chosen. Its models and fast mode are read over ACP, and it runs unrestricted with every tool (Rule 1, §3.2).
+- It signs in through `authenticate` when it offers an auth method. An agent that offers none counts as signed in once `initialize` succeeds.
+- The form has no field for an environment variable or a key. The agent inherits your environment, as every agent does.
 
 **Thread titles:**
 - **Default:** GPT-6 Luna · Low · Fast.
@@ -1149,7 +1185,8 @@ Each milestone ends with a working app. PR duty checks an item off when it lands
 - [x] Agent runner: providers, models, effort, speed (Regular / Fast where the agent offers it), full permissions, queued steering (Rule 1, F4, F15)
 - [x] Thread titles from the title model (default GPT-6 Luna · Low · Fast), in parallel with taking a worktree; branch named from the title (F4, F15)
 - [x] ACP client (`agent-client-protocol`): spawn per thread, `session/new` in the worktree with AIRC as an MCP server, updates → transcript, auto-allow permissions, cancel, queued prompts, `fs`/`terminal` rooted at the worktree but not confined to it, full tool access with your config loaded and shared MCP servers (§3.2)
-- [ ] ACP agents for Claude Code (`claude-code-acp`), Codex (`codex-acp`), Kimi Code (`kimi acp`) and Antigravity, each using its own OAuth login through `authenticate`; Settings → Providers, model menu, limit meter (F15)
+- [ ] ACP agents for Claude Code (`claude-agent-acp`), Codex (`codex-acp`), Kimi Code (`kimi acp`) and Antigravity (`agy acp`), each using its own OAuth login through `authenticate`; Settings → Providers, model menu, limit meter (F15)
+- [ ] Custom ACP agents: Add an ACP agent (name, command, arguments), and an editable command on each provider card (F15)
 - [x] Worktree manager: create / delete / prune, path scheme, setup step (copy files, run command, shared build cache) (F5)
 - [x] Thread view: transcript, tool steps, diffs, header with worktree path, composer, slash menu (F4)
 - [x] Settings → Worktrees, including the live list and the footer count (F5, F13)
@@ -1232,25 +1269,25 @@ Each milestone ends with a working app. PR duty checks an item off when it lands
 | Q3 | Final names for "duty", "PR duty" and "Scouts". | labels only |
 | Q4 | Does a swarm ever cap how many agents run at once, or always start everything? Built: everything starts. A per-provider cap is specified, off by default (F15). | F10 |
 | Q5 | Does a running swarm pick up items added after launch? (Built: no.) | F10 |
-| Q6 | After the spec is locked, does a task added outside the spec update SPEC.md (via a short interview), or stay outside it? | F3, F8 |
+| Q6 | Decided: it stays outside SPEC.md. Adding a task never starts an interview; a PR that changes specified behaviour updates SPEC.md itself (F8). | F3, F8 |
 | Q7 | Decided: no. The spec interview writes SPEC.md only; AGENTS.md comes from F11. | F3, F11 |
-| Q8 | Does the AGENTS.md lint only advise, or also block (e.g. PR duty flags hedged wording in AGENTS.md changes)? | F11 |
+| Q8 | Decided: the lint only advises. PR duty tightens a hedged line in an AGENTS.md change itself and never blocks on wording (F11). | F11 |
 | Q10 | Ghost-text autocomplete while typing in AGENTS.md? (It would take Tab from indent.) | F11 |
 | Q11 | Decided: Svelte 5 + TypeScript on Vite, built with pnpm (§3). | M1 |
 | Q12 | Should AIRC be one channel per project, or one shared channel across projects (as in xros_chat)? Built: per project. | F14 |
 | Q13 | Should agents be able to schedule jobs for each other through AIRC (xros_chat job queues)? | F14 |
-| Q14 | Which ACP agent does Antigravity use (an ACP mode of its own, or Gemini CLI's ACP mode on the same Google sign-in)? And how does each provider report its subscription limits, which ACP doesn't carry? | F15, §3.2 |
-| Q15 | When a provider hits its subscription limit, should queued and new work move to another signed-in provider, or wait for the reset? | F15, F10, F16 |
+| Q14 | Decided: Antigravity runs Google's own agent, `agy acp` (§3.2). Limits are read per provider outside ACP, from the sources T3 Code reads (F15 Limit sources). | F15, §3.2 |
+| Q15 | Decided: it waits for the reset and resumes by itself, as T3 Code does. Work never moves to another provider automatically (§2.2, F15). | F15, F10, F16 |
 | Q16 | May goal swarm agents claim work outside the Task List, issues and SPEC.md (split a large item, or claim something they found)? Built: no. | F16 |
 | Q17 | When there are more agents than unclaimed pieces, should the extras leave (built), or pair up on existing pieces (tests, review)? | F16 |
 | Q18 | Should "keep going" be on by default? Built: off, which matches the prompt you use today (stop after the merge). | F16 |
-| Q19 | Should Velocity also accept any other ACP agent (a custom command and arguments, as Zed allows), or only the four providers? | F15, §3.2 |
-| Q20 | Defaults for the stall timeout (5 min) and the claim-release grace period (10 min)? Should a failed agent's pushed branch be offered to whoever claims the piece next? | §2.2 |
+| Q19 | Decided: yes. The four providers are built first, then any ACP agent can be added by command and arguments (F15 Custom ACP agents). | F15, §3.2 |
+| Q20 | Decided: stall timeout 5 min (30 min for a running tool call; never in the build queue), grace period 10 min. A released agent's pushed branch is offered to the next claimer, never assigned (§2.2). | §2.2 |
 | Q21 | Decided: pre-merge GitHub CI is build and lint and only advisory, the local checks on the merge result decide the merge (F7), proofs are checked locally before merge, and tests and stress scripts run after the merge (F17). | F7, F17 |
 | Q22 | Name for the "Main watcher" duty role. | F7 |
 | Q23 | Which code-level translators should ship besides Aeneas for Rust (C, C++, Python and others)? Until one exists for a language, that language tops out at the reference level. | F17 |
 | Q24 | Decided: no. The spec interview only proposes the proof list; each building agent writes its design proof after the code (Rule 8). | F3, F17 |
-| Q25 | Does fast mode draw down each provider's subscription limit faster, and how does each provider report it? | F15 |
+| Q25 | Decided: yes, a little faster. Providers count it inside their ordinary usage, with no category of its own (F15). | F15 |
 | Q26 | Which folder does Kimi Code read skills from inside a project (`.kimi-code/skills/`, `.agents/skills/` or another)? And does Antigravity read `.agents/skills/` as the gamedev and UI UX Pro Max docs say? | F18 |
 | Q27 | Should "Add a skill pack" also search the skills.sh registry, or take only GitHub repos? | F18 |
-| Q28 | How is Rule 4 approval recorded when all agents share one GitHub account, which cannot approve its own PRs? Tracked in #42. Proposed: Velocity's own approval record bound to the head SHA (F7). Velocity's own repository uses a PR duty GitHub App until that is built (AGENTS.md). | M4 approve/merge, F7 |
+| Q28 | Decided: Velocity's own approval record bound to the head SHA, mirrored on GitHub as an "Approved at `<sha7>`" comment with a short reason; the approving reviewer then squash merges (F7, #42). Velocity's own repository uses the PR duty GitHub App (AGENTS.md). | M4 approve/merge, F7 |
