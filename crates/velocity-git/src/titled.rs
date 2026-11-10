@@ -4,7 +4,8 @@
 //! Once the title settles, the branch and folder are renamed to the title's slug and only
 //! then is the setup step run. Renaming before setup matters on Windows: setup commands such
 //! as `pnpm install` write junctions and caches with absolute paths that a later move would
-//! break. The warm pool (M10) replaces only the checkout; this naming step stays.
+//! break. The warm pool (F5) replaces only the checkout: a ready worktree is moved to the
+//! provisional path, and this naming step and the setup command follow as before.
 
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -13,6 +14,7 @@ use crate::manager::{
     CreatedWorktree, WorktreeError, WorktreeSetupRequest, create_git_worktree_from_base,
     finish_worktree_setup, run_git_command, validate_worktree_path_length,
 };
+use crate::ready_pool::{ReadyTake, take_ready_worktree};
 
 /// The names a worktree ends with once its title settles.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -41,11 +43,20 @@ pub fn execute_titled_worktree_setup(
     request: &WorktreeSetupRequest,
     final_name: impl FnOnce() -> Option<WorktreeName>,
 ) -> TitledWorktree {
-    let named = create_git_worktree_from_base(request, &request.worktree_path).map(|()| {
-        match final_name() {
-            Some(name) => rename_worktree(request, &name).unwrap_or_else(|_| request.clone()),
-            None => request.clone(),
-        }
+    execute_titled_pooled_setup(request, None, final_name)
+}
+
+/// [`execute_titled_worktree_setup`], taking the checkout from the warm pool when `ready`
+/// names a ready worktree (F5). A take that fails falls back to a fresh checkout, so a thread
+/// never fails because of the pool.
+pub fn execute_titled_pooled_setup(
+    request: &WorktreeSetupRequest,
+    ready: Option<&ReadyTake>,
+    final_name: impl FnOnce() -> Option<WorktreeName>,
+) -> TitledWorktree {
+    let named = checkout(request, ready).map(|()| match final_name() {
+        Some(name) => rename_worktree(request, &name).unwrap_or_else(|_| request.clone()),
+        None => request.clone(),
     });
     match named {
         Ok(named) => TitledWorktree {
@@ -58,6 +69,27 @@ pub fn execute_titled_worktree_setup(
             branch_name: request.branch_name.clone(),
             setup: Err(error),
         },
+    }
+}
+
+/// Takes the checkout from the warm pool when it can, otherwise makes it from the base, then
+/// runs every setup step after the checkout (a goal swarm agent's worktree, F16).
+pub fn execute_pooled_worktree_setup(
+    request: &WorktreeSetupRequest,
+    ready: Option<&ReadyTake>,
+) -> Result<CreatedWorktree, WorktreeError> {
+    checkout(request, ready)?;
+    finish_worktree_setup(request)
+}
+
+fn checkout(
+    request: &WorktreeSetupRequest,
+    ready: Option<&ReadyTake>,
+) -> Result<(), WorktreeError> {
+    let taken = ready.map(|ready| take_ready_worktree(ready, request));
+    match taken {
+        Some(Ok(())) => Ok(()),
+        _ => create_git_worktree_from_base(request, &request.worktree_path),
     }
 }
 

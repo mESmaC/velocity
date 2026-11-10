@@ -14,7 +14,7 @@ use velocity_store::duty::ScoutRoster;
 
 use crate::LaunchError;
 use crate::launch::{
-    Location, SHARED_TARGET_FOLDER, agent_launch, base_branch, setup_settings, with_shared_target,
+    Location, SHARED_TARGET_FOLDER, agent_launch, base_branch, setup_settings, with_compiler_cache,
 };
 
 /// The command-line switch that makes Velocity's own executable serve the scout MCP server,
@@ -61,7 +61,7 @@ pub fn plan_duty_checkout(
         setup_settings(preferences),
         preferences.copy_files.clone(),
         preferences.setup_command.clone(),
-        shared_target.clone(),
+        shared_target,
     );
     let (agent, bypass_modes) = agent_launch(agent_item.provider);
     Ok(SweepPlan {
@@ -69,10 +69,7 @@ pub fn plan_duty_checkout(
         nickname: agent_item.nickname.clone(),
         base_branch: base_branch(project),
         worktree,
-        agent: with_shared_target(
-            agent,
-            preferences.share_build_cache.then_some(shared_target),
-        ),
+        agent: with_compiler_cache(agent, preferences.share_build_cache),
         bypass_modes,
     })
 }

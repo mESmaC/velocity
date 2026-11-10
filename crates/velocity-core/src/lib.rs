@@ -25,6 +25,7 @@ pub mod navigation;
 pub mod new_project;
 pub mod pr_review;
 pub mod projects;
+pub mod ready_pool;
 pub mod review_diff;
 pub mod review_tier;
 pub mod scout_sweep;

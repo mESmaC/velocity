@@ -387,23 +387,27 @@ A worktree's path is fixed when it is created. Changing the location setting aff
 - **New worktree setup:**
   - untracked files to copy (default `.env, .env.local`)
   - a command to run after creation (default `pnpm -C ui install`)
-  - "share the Rust build cache between a project's worktrees" (default on)
+  - "share the Rust build cache between a project's worktrees" (default on): agents, setup commands and the pool's prebuilds get `RUSTC_WRAPPER=sccache` when sccache is installed and no wrapper is set, and each worktree builds in its own `target` folder
 
   The agent starts only after setup finishes.
-- **Live worktrees:** one row per worktree: state dot, path, owner, size and state (working / PR #n / failed · kept / closed · kept / review / sweep). Just-deleted rows show briefly, crossed out. The header shows the count, total size and free space on the drive. **Prune orphans** runs `git worktree prune`. Clicking a row opens its thread.
+- **Live worktrees:** one row per worktree: state dot, path, owner, size and state (working / PR #n / failed · kept / closed · kept / review / sweep / ready / ready · building). Warm pool worktrees are listed with the owner "warm pool" and count toward the header and the footer. Just-deleted rows show briefly, crossed out. The header shows the count, total size and free space on the drive. **Prune orphans** runs `git worktree prune`. Clicking a row opens its thread.
 
 **Warm pool (speed):**
 - **One base clone.** Velocity keeps one base clone per project, and every worktree is a `git worktree add` from it, so only the first worktree pays for a clone.
-- **Ready-made worktrees.** Velocity keeps a few worktrees ready at the tip of `master` with setup already done: files copied, setup command run, shared build cache linked. The count is 4 by default and set by "Keep N worktrees ready" on this page.
-- **Taking one.** A new thread or agent takes a ready worktree, renames it to its path, and creates its branch there. If `master` has moved since the worktree was made, it fast-forwards first, which is cheap.
+- **Ready-made worktrees.** Velocity keeps a few worktrees ready at the tip of `master` with setup already done: files copied, shared build cache linked, the project prebuilt. The count is 4 by default and set by "Keep N worktrees ready" on this page; 0 turns the pool off. Only projects whose spec is locked keep a pool (Rule 2).
+  - A ready worktree is a detached checkout at `<project root>\.ready-<n>`. No thread slug starts with a dot, so it never takes a thread's name. A `velocity-ready` file in its git admin folder (outside the checkout) records its base commit and whether its prebuild finished, so after a restart finished ones rejoin the pool and interrupted ones are removed and made again.
+  - **The setup command runs after the take**, at the thread's own path *(proposed, #128)*. On Windows `pnpm install` links packages with absolute junctions, which point back into the pool folder once the worktree moves, and the next `pnpm install` there aborts. A cargo `target` folder has no such paths and stays fresh across the move.
+- **Taking one.** A new thread or agent takes a ready worktree, renames it to its path, and creates its branch there. If `master` has moved since the worktree was made, it fast-forwards first, which is cheap. The take is marked under the pool's lock, so two threads never get the same worktree. A take that fails falls back to a fresh checkout; no ready worktree, likewise.
 - **Refilling.** The pool refills in the background. Ready worktrees fast-forward after each merge to `master`, then re-run setup only if the dependency manifests changed, and build the project at the new tip, so an agent's first build compiles only what it changes.
+  - Built *(proposed)*: one worker makes, removes and catches up ready worktrees one at a time. It fetches the base branch every minute and at once when Velocity sees a merge, and uses `origin`'s tip when it can be fetched. A second worker prebuilds one worktree at a time, below normal priority so agents' own builds go first: `cargo build --workspace` in the worktree's own `target` folder, when the checkout is a Cargo project and "share the Rust build cache" is on. A prebuild that fails is not retried until `master` moves. Setup re-runs at every take, so no manifest check is needed.
 - **Skills.** Pool setup links the project's enabled skills into the worktree (F18), so an agent never starts without them.
 - **Lean.** Pool setup installs the project's pinned Lean toolchain (`lean-toolchain`, through elan) and runs `lake exe cache get`. Mathlib's built files live in the shared build cache, so a worktree never rebuilds them.
-- **Swarm launches.** Launching a swarm or goal swarm tops the pool up to its agent count. Agents that find no ready worktree wait for one rather than racing each other on setup.
+- **Swarm launches.** Launching a swarm or goal swarm tops the pool up to its agent count. Agents that find no ready worktree wait for one rather than racing each other on setup. They wait at most 2 minutes, then make their own *(proposed)*. Worktrees added beyond the setting are taken as soon as they are checked out, without a prebuild.
 - **Build queue** *(proposed)*. Velocity runs agents' heavy builds (compile, test, lint, the PR duty landing check) through one machine-wide queue, one build at a time at full machine resources. Builds run side by side split the cores and memory and all finish late together; run one at a time, the first in line finishes in a fraction of the time and the average wait drops. Order: landing checks first, then checks before a PR is marked ready, then everything else, first come, first served within each. The footer shows the running build and the queue. Long-running dev servers never hold the queue. Until Velocity runs builds itself, `scripts/build-queue.ps1` is the stand-in: a named machine-wide lock, released by Windows when its holder exits.
 
 **Guards** (from Google Scion's worktree work):
-- Velocity is the only thing that creates worktrees, and agents never run `git worktree add` themselves (AGENTS.md).
+- Velocity is the only thing that creates worktrees, and agents never run `git worktree add` themselves (AGENTS.md; the default template says so, F11).
+- The pool removes only its own ready worktrees: a registered, detached checkout under a `.ready-<n>` name. A thread's worktree is never removed through it.
 - Deleting a worktree removes only that worktree's own entry. A repo-wide `git worktree prune` runs only from the **Prune orphans** button.
 - Worktree folder names are unique per project, never generic names like `workspace`.
 
@@ -1255,7 +1259,7 @@ Each milestone ends with a working app. PR duty checks an item off when it lands
 - [x] Parking: end the session on `airc_wait`, resume on the subscribed `merged` event; optional provider concurrency cap (§2.2, F15)
 - [x] Targeted AIRC delivery, message envelope (`to`, `intent`), heads-down and quarantine modes (F14)
 - [ ] Targeted rebases, optimistic landing, conflicts sent back to the owning agent; rebuild the merge result whenever `master` moved; Shared files exempt from overlaps (F6, F14)
-- [ ] Warm worktree pool from one base clone, prebuilt at the tip of `master` with a shared compiler cache; worktree guards (F5)
+- [x] Warm worktree pool from one base clone, prebuilt at the tip of `master` with a shared compiler cache; worktree guards (F5)
 - [x] PR duty tiered review and intent review; Sensitive paths in AGENTS.md (F7)
 - [ ] Main watcher duty role: post-merge suite, bisect, fix or revert PR (F7)
 

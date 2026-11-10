@@ -63,6 +63,10 @@ pub enum WorktreeDisplayStatus {
     Closed,
     Review,
     Sweep,
+    /// A warm pool worktree, ready for the next thread (F5).
+    Ready,
+    /// A warm pool worktree whose prebuild is running.
+    Prebuilding,
     Deleted,
 }
 
