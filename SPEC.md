@@ -1261,7 +1261,7 @@ Each milestone ends with a working app. PR duty checks an item off when it lands
 - [ ] Targeted rebases, optimistic landing, conflicts sent back to the owning agent; rebuild the merge result whenever `master` moved; Shared files exempt from overlaps (F6, F14)
 - [x] Warm worktree pool from one base clone, prebuilt at the tip of `master` with a shared compiler cache; worktree guards (F5)
 - [x] PR duty tiered review and intent review; Sensitive paths in AGENTS.md (F7)
-- [ ] Main watcher duty role: post-merge suite, bisect, fix or revert PR (F7)
+- [x] Main watcher duty role: post-merge suite, bisect, fix or revert PR (F7)
 
 **M11 · Proofs** (F17)
 - [ ] Lean toolchain and Mathlib cache in the warm pool (F5)
