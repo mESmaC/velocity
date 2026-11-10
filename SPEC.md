@@ -1179,7 +1179,7 @@ Each milestone ends with a working app. PR duty checks an item off when it lands
 - [x] Modal: Events (default), Claims, Messages, Discoveries, Past work, nick list, unread badge, `A` (F14)
 
 **M9 · Goal swarm**
-- [ ] Atomic claim lock: `airc_claim` / `airc_release`, refusal lines, held claims on failure (F14, F16)
+- [x] Atomic claim lock: `airc_claim` / `airc_release`, refusal lines, held claims on failure (F14, F16)
 - [x] AIRC MCP server injected into every provider's agent runtime (F14, F16)
 - [x] Work pool: open Task List items, open issues, unbuilt SPEC.md sections (F16)
 - [ ] Dialog: prompt, count, model mix with "the rest", effort and speed per row, limits, pool size, PR duty capacity, keep going (F16)
