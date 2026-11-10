@@ -152,6 +152,15 @@ export type AircMessagePublished_Serialize = {
 
 export type CheckStatus = "passing" | "running" | "failing" | "unavailable";
 
+export type Claim = {
+	member: string,
+	nick: string,
+	task: string,
+	branch: string,
+	files: string[],
+	since: string,
+};
+
 export type CreatePullRequest = CreatePullRequest_Serialize | CreatePullRequest_Deserialize;
 
 export type CreatePullRequest_Deserialize = {
@@ -355,6 +364,7 @@ export type Entry_Deserialize = {
 	pull_request?: number | null,
 	/**  The PR head commit the event applies to (`approved` binds to it). */
 	head?: string | null,
+	claim?: Claim | null,
 };
 
 export type Entry_Serialize = {
@@ -373,6 +383,7 @@ export type Entry_Serialize = {
 	pull_request?: number,
 	/**  The PR head commit the event applies to (`approved` binds to it). */
 	head?: string,
+	claim?: Claim,
 };
 
 export type ErrorCardView = {

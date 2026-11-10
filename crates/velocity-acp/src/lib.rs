@@ -21,6 +21,7 @@ pub mod session_config;
 pub mod session_start;
 pub mod steering;
 pub mod terminal_output;
+pub mod tool_mutations;
 pub mod transcript;
 
 pub use client::{AgentSlashCommand, available_commands};
