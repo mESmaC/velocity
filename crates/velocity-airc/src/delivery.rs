@@ -26,10 +26,10 @@ pub fn deliver_messages(
 ) -> Result<u64, Error> {
     let mut cursor = after;
     for entry in channel.read(after)? {
-        if let Some(message) = message_for(&entry, nick) {
-            if !deliver(&format!("airc:{}", entry.sequence), &message).map_err(Error::Invalid)? {
-                break;
-            }
+        if let Some(message) = message_for(&entry, nick)
+            && !deliver(&format!("airc:{}", entry.sequence), &message).map_err(Error::Invalid)?
+        {
+            break;
         }
         cursor = entry.sequence;
     }
