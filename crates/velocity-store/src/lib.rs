@@ -457,13 +457,13 @@ impl Settings {
                 title_effort: self.providers.title_effort.into(),
                 title_speed: self.providers.title_speed.into(),
             },
-            agents: CoreAgentSettings {
-                max_turns: self.agents.max_turns,
-                max_duration_minutes: self.agents.max_duration_minutes,
-                stall_timeout_minutes: self.agents.stall_timeout_minutes,
-                tool_timeout_minutes: self.agents.tool_timeout_minutes,
-                claim_release_grace_minutes: self.agents.claim_release_grace_minutes,
-            },
+            agents: CoreAgentSettings::new(
+                self.agents.max_turns,
+                self.agents.max_duration_minutes,
+                self.agents.stall_timeout_minutes,
+                self.agents.tool_timeout_minutes,
+                self.agents.claim_release_grace_minutes,
+            ),
             proofs: CoreProofSettings {
                 stress_diff_input_count: self.proofs.stress_diff_input_count,
             },
