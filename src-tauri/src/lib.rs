@@ -7,6 +7,7 @@ mod agents;
 pub mod airc_access;
 pub mod airc_claims;
 mod airc_delivery;
+mod airc_events;
 mod build_gate;
 pub mod duty;
 mod follow_through;
@@ -36,6 +37,9 @@ fn bindings() -> Builder<tauri::Wry> {
         agents::write_agents_md,
         agents::tighten_rule,
         airc_delivery::airc_send,
+        airc_events::airc_events,
+        airc_events::airc_messages,
+        airc_events::airc_ledger,
         window::get_window_state,
         window::minimize_window,
         window::toggle_maximize_window,
@@ -78,6 +82,8 @@ fn bindings() -> Builder<tauri::Wry> {
 fn event_bindings(builder: Builder<tauri::Wry>) -> Builder<tauri::Wry> {
     builder
         .typ::<PersistedState>()
+        .typ::<airc_events::AircEventPublished>()
+        .typ::<airc_events::AircMessagePublished>()
         .typ::<duty::DutyEventPublished>()
         .typ::<follow_through::PullRequestLifecycleEvent>()
         .typ::<window::WindowStateChanged>()
@@ -89,6 +95,11 @@ fn event_bindings(builder: Builder<tauri::Wry>) -> Builder<tauri::Wry> {
         .typ::<pull_request_panel::PullRequestPanelChanged>()
         .typ::<threads::ThreadStatusChanged>()
         .typ::<threads::ThreadStepRecorded>()
+        .constant("AIRC_EVENT", airc_events::AircEventPublished::NAME)
+        .constant(
+            "AIRC_MESSAGE_EVENT",
+            airc_events::AircMessagePublished::NAME,
+        )
         .constant("DUTY_EVENT", duty::DutyEventPublished::NAME)
         .constant("PROJECT_SELECTED_EVENT", projects::ProjectSelected::NAME)
         .constant("ISSUE_PANEL_EVENT", issue_panel::IssuePanelChanged::NAME)
@@ -130,6 +141,8 @@ pub fn run() -> anyhow::Result<()> {
     export_bindings()?;
 
     let bindings = bindings().events(collect_events![
+        airc_events::AircEventPublished,
+        airc_events::AircMessagePublished,
         duty::DutyEventPublished,
         window::WindowStateChanged,
         layout::LayoutStateChanged,

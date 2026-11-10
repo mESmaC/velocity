@@ -124,24 +124,12 @@ fn read_filtered(
     arguments: &Value,
     after: u64,
 ) -> Result<Value, Error> {
-    let kind = if name == "read_ledger" {
-        ledger(arguments)?
-    } else {
-        "message"
+    let entries = match name {
+        "read_events" => channel.events(after)?,
+        "read_messages" => channel.messages(after)?,
+        _ => channel.ledger(ledger(arguments)?, after)?,
     };
-    Ok(json!(
-        channel
-            .read(after)?
-            .into_iter()
-            .filter(|entry| {
-                if name == "read_events" {
-                    entry.kind != kind
-                } else {
-                    entry.kind == kind
-                }
-            })
-            .collect::<Vec<_>>()
-    ))
+    Ok(serde_json::to_value(entries)?)
 }
 
 fn tool_list() -> Vec<Value> {

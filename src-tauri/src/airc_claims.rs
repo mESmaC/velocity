@@ -1,7 +1,7 @@
 //! Thread claim wiring only; the channel crate owns claim decisions and storage.
 use std::path::Path;
 use tauri::{AppHandle, Manager};
-use velocity_acp::client::{AgentEvent, SessionSetup};
+use velocity_acp::client::SessionSetup;
 use velocity_airc::{Channel, ClaimResult};
 use velocity_threads::ThreadKey;
 
@@ -37,27 +37,8 @@ pub fn observe(
     application: &AppHandle,
     key: ThreadKey,
     worktree: &Path,
-    event: &AgentEvent,
+    paths: &[std::path::PathBuf],
 ) -> Result<(), String> {
-    let paths = match event {
-        AgentEvent::FileWritten { path } => vec![path.clone()],
-        AgentEvent::Transcript { update, .. } => match update {
-            agent_client_protocol::v1::schema::SessionUpdate::ToolCall(call) => call
-                .locations
-                .iter()
-                .map(|location| location.path.clone())
-                .collect(),
-            agent_client_protocol::v1::schema::SessionUpdate::ToolCallUpdate(call) => call
-                .fields
-                .locations
-                .iter()
-                .flatten()
-                .map(|location| location.path.clone())
-                .collect(),
-            _ => Vec::new(),
-        },
-        _ => Vec::new(),
-    };
     if paths.is_empty() {
         return Ok(());
     }
@@ -67,7 +48,7 @@ pub fn observe(
         .map_err(|error| error.to_string())?;
     let channel = Channel::open(&data, &key.0.to_string()).map_err(|error| error.to_string())?;
     for path in paths {
-        let path = path.strip_prefix(worktree).unwrap_or(&path);
+        let path = path.strip_prefix(worktree).unwrap_or(path);
         channel
             .observe_file(&format!("thread-{}", key.1), &path.display().to_string())
             .map_err(|error| error.to_string())?;

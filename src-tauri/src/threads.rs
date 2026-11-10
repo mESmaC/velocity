@@ -443,6 +443,7 @@ fn setup_no_longer_wanted(application: &AppHandle, key: ThreadKey) -> bool {
 /// published once, so the window gets one snapshot per burst rather than one per token.
 async fn pump(application: &AppHandle, key: ThreadKey, mut session: RunningSession) {
     let shutdown = session.shutdown.clone();
+    let mut mutations = velocity_acp::tool_mutations::ToolMutations::default();
     let worktree = lock(
         application.state::<ManagedStateStore>().inner(),
         "persisted state",
@@ -461,7 +462,7 @@ async fn pump(application: &AppHandle, key: ThreadKey, mut session: RunningSessi
                     application,
                     key,
                     worktree,
-                    event,
+                    &mutations.observe(event),
                 ));
             }
         }
@@ -582,6 +583,7 @@ fn fail(application: &AppHandle, key: ThreadKey, headline: &str, detail: &str) {
             .map_err(|error| error.to_string())
     });
     report(saved.map(|_| ()));
+    crate::airc_events::record_thread_failed(application, key.0, key.1, headline, detail);
     report(refresh(application, key, false).map(|_| ()));
     emit_status(application, key);
 }
