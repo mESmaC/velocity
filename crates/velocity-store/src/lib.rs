@@ -6,6 +6,7 @@
 //! This crate owns atomic filesystem reads/writes, corrupt-snapshot quarantine,
 //! and serde/specta serialization.
 
+pub mod airc_members;
 pub mod build_gate;
 pub mod follow_through;
 
@@ -737,6 +738,11 @@ pub struct ProjectItem {
     /// Swarms launched on this project, newest first (F10).
     #[serde(default)]
     pub swarms: Vec<swarms::SwarmRecord>,
+    /// The newest AIRC record shown while the modal was open: the footer badge counts
+    /// lines after it (F14).
+    #[serde(default)]
+    #[specta(skip)]
+    pub airc_seen: u64,
 }
 
 /// The New project dialog's interview choices, kept until the spec interview
@@ -769,6 +775,7 @@ impl ProjectItem {
             pending_interview: None,
             duty_roles: Vec::new(),
             swarms: Vec::new(),
+            airc_seen: 0,
         }
     }
 
