@@ -26,6 +26,10 @@ pub struct DutyAgentItem {
     #[serde(default)]
     #[specta(skip)]
     pub sweep: Option<SweepRecord>,
+    /// A PR duty agent's kept `review-pr-<n>` worktrees (F7), listed in Settings → Worktrees.
+    #[serde(default)]
+    #[specta(skip)]
+    pub review_worktrees: Vec<String>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, Type)]
@@ -67,6 +71,7 @@ impl DutyRoleItem {
                     busy: agent.busy,
                     doing: agent.doing.clone(),
                     sweep: agent.sweep.clone(),
+                    review_worktrees: agent.review_worktrees.clone(),
                 })
                 .collect(),
             feed: self
@@ -100,6 +105,7 @@ impl DutyRoleItem {
                     busy: agent.busy,
                     doing: agent.doing,
                     sweep: agent.sweep,
+                    review_worktrees: agent.review_worktrees,
                 })
                 .collect(),
             feed: entry
@@ -151,6 +157,16 @@ pub struct ScoutRoster {
     pub paused: bool,
     pub rules: ScoutRuleSettings,
     pub scouts: Vec<DutyAgentItem>,
+}
+
+/// A project's PR duty as the review runner reads it.
+#[derive(Clone)]
+pub struct PrDutyRoster {
+    pub project: ProjectItem,
+    pub worktrees: velocity_core::worktree_settings::WorktreePreferences,
+    pub paused: bool,
+    pub rules: PrDutyRuleSettings,
+    pub agents: Vec<DutyAgentItem>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, Type)]
@@ -336,6 +352,25 @@ impl StateStore {
             .collect()
     }
 
+    /// Every project's PR duty role, for the review runner (F7), paused ones included so their
+    /// cards still say so.
+    pub fn pr_duty_rosters(&self) -> Vec<PrDutyRoster> {
+        self.state
+            .projects
+            .iter()
+            .filter_map(|project| {
+                let role = find_role(project, DutyRole::PrDuty)?;
+                Some(PrDutyRoster {
+                    project: project.clone(),
+                    worktrees: self.worktree_preferences(project),
+                    paused: role.paused,
+                    rules: role.pr_rules.clone(),
+                    agents: role.agents.clone(),
+                })
+            })
+            .collect()
+    }
+
     /// Changes a project's Scouts role through `change`, which is given the feed's timestamp
     /// and returns the feed events to post, and saves it. Returns the posted events, or `None`
     /// when the project or its Scouts role is gone (deleted while a sweep ran).
@@ -344,16 +379,22 @@ impl StateStore {
         project: u32,
         change: impl FnOnce(&mut DutyRoleEntry, &str) -> Vec<DutyFeedEvent>,
     ) -> Result<Option<Vec<DutyFeedEvent>>, ProjectError> {
+        self.update_duty(project, DutyRole::Scouts, change)
+    }
+
+    /// [`Self::update_scouts`] for any duty role: PR duty's reviews report the same way.
+    pub fn update_duty(
+        &mut self,
+        project: u32,
+        role: DutyRole,
+        change: impl FnOnce(&mut DutyRoleEntry, &str) -> Vec<DutyFeedEvent>,
+    ) -> Result<Option<Vec<DutyFeedEvent>>, ProjectError> {
         let mut next = self.state.clone();
         let Some(item) = next
             .projects
             .iter_mut()
             .find(|item| item.id == project)
-            .and_then(|item| {
-                item.duty_roles
-                    .iter_mut()
-                    .find(|role| role.role == DutyRole::Scouts)
-            })
+            .and_then(|item| item.duty_roles.iter_mut().find(|entry| entry.role == role))
         else {
             return Ok(None);
         };
