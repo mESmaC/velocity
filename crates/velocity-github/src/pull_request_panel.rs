@@ -177,19 +177,12 @@ impl PullRequestClient {
     }
 
     fn panel_row(&self, entry: PanelEntry) -> Result<PullRequestPanelRow, PullRequestError> {
-        // Until AIRC duty claims exist, honor the repository's explicit claim
-        // comment. Read all pages so a busy discussion cannot hide its reviewer.
+        // Honor the repository's explicit claim comment. Read all pages so a busy
+        // discussion cannot hide its reviewer.
         let reviewer = self
             .comments(entry.pull_request.number)?
             .into_iter()
-            .find_map(|comment| {
-                comment
-                    .body
-                    .trim()
-                    .eq_ignore_ascii_case("Reviewing")
-                    .then(|| comment.author.map(|author| author.login))
-                    .flatten()
-            });
+            .find_map(|comment| claim_reviewer(&comment.body, comment.author));
         let checks = entry
             .commits
             .nodes
@@ -236,6 +229,25 @@ impl PullRequestClient {
             });
         }
         Ok(())
+    }
+}
+
+/// The reviewer a claim comment names. `Reviewing · <nick>` is a PR duty agent's claim
+/// (F7): every agent shares one GitHub login, so the nick, not the author, is the reviewer.
+/// A bare `Reviewing` names its author.
+pub(crate) fn claim_reviewer(body: &str, author: Option<crate::GitHubActor>) -> Option<String> {
+    let body = body.trim();
+    let (lead, nick) = match body.split_once('·') {
+        Some((lead, nick)) => (lead.trim(), Some(nick.trim())),
+        None => (body, None),
+    };
+    if !lead.eq_ignore_ascii_case("Reviewing") {
+        return None;
+    }
+    match nick {
+        Some(nick) if !nick.is_empty() && !nick.contains(char::is_whitespace) => Some(nick.into()),
+        Some(_) => None,
+        None => author.map(|author| author.login),
     }
 }
 
