@@ -26,5 +26,6 @@ pub mod thread_titles;
 pub mod thread_view;
 pub mod thread_view_model;
 pub mod window;
+pub mod work_pool;
 pub mod worktree_settings;
 pub mod worktree_view;

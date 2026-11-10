@@ -191,6 +191,12 @@ impl StateStore {
             .position(|record| record.id == thread)
             .ok_or(ThreadError::UnknownThread { project, thread })?;
         let removed = item.threads.remove(position);
+        if removed.state == crate::ThreadState::Merged
+            && let Some(section) = &removed.spec_section
+            && !item.built_spec_sections.contains(section)
+        {
+            item.built_spec_sections.push(section.clone());
+        }
         for task in &mut item.tasks {
             if task.assigned_thread_id == Some(thread) || removed.task_ids.contains(&task.id) {
                 task.assigned_thread_id = None;

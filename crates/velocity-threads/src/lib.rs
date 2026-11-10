@@ -15,6 +15,7 @@ pub mod sweep;
 pub mod sweep_runner;
 pub mod titles;
 pub mod transcript_view;
+pub mod work_pool;
 
 pub use deletion::{DeletionError, DeletionPlan, PendingDeletions, plan_deletion};
 pub use dispatch::{DispatchError, IssueDispatchPlan, plan_issue_dispatch};

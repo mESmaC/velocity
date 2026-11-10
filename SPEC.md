@@ -120,6 +120,7 @@ A thread's state (§2.1) says where it is in its lifecycle. Its **activity** say
 | command | `get_duty_dialog_defaults { project_id }`, `start_duty { request }`, `pause_duty { request }`, `add_duty_agents { request }` | Duty view, start dialog defaults, start/pause/resume and add-agents lifecycle, persisted on the project in `state.json` and broadcast over `duty://event` (F7) |
 | command | `get_issue_panel`, `open_project_issue { project_identifier, number }`, `dispatch_issue { project_identifier, number, accept_recommendation }` | Active-project issue rail (F9). Native refresh reads open issues, labels, scout attribution and spec-question recommendations. Opening an assigned issue selects its thread; otherwise it opens GitHub. Dispatch re-reads the issue, checks the saved spec lock and atomically records issue ownership before starting the ordinary worktree/ACP lifecycle. Accept scopes that thread to the recommended one-line proposed SPEC.md answer. |
 | command | `launch_swarm`, `add_to_swarm` | swarm |
+| command | `get_work_pool { project_identifier }` | F16 read-only work inventory: open tasks, open GitHub issues and unfinished spec entries, with saved thread owners and separate available counts. The native adapter reads sources off the UI thread; source errors fail the snapshot. |
 | command | `launch_goal_swarm { prompt, mix: [{ model, effort, speed, count }], keep_going }`, `add_goal_agents` | goal swarm |
 | command | `add_task`, `list_tasks` | Task List |
 | command | `read_agents_md`, `write_agents_md`, `tighten_rule { project_identifier, identifier }` | AGENTS.md. F11 rewrites use the normal unrestricted Claude ACP client in the project checkout, with the Haiku model selected through the Claude SDK launch environment and whole-file context. Late results are discarded after edits, Undo or save; invalid responses and failures retain the original rule with an explanation. |
@@ -863,6 +864,8 @@ Four providers: **Anthropic** (Claude Code agent), **Codex** (Codex CLI agent), 
 
 Agents launched together read the board within seconds of each other, so several often want the same piece. The lock is what makes that safe. The losers pick again within one step instead of duplicating work.
 
+**Work inventory.** `get_work_pool` and the `velocity-threads` `work_pool` example read the same project-scoped inventory. Draft/done tasks, ownerless now tasks and closed issues are omitted; owned work stays visible but does not count as available. Failed/closed owners retain their pieces. Unlocked projects return an empty pool. SPEC.md's Implementation order/Implementation plan checklist supplies unfinished entries when present; otherwise checklist-bearing Markdown sections supply one piece each. Fenced examples are ignored. Spec identities use heading context and entry text rather than line offsets. A thread's defaulted `spec_section` identity retains ownership and records completion when merged, without editing SPEC.md; deleting merged history retains the identity in the project's defaulted `built_spec_sections`. Selection, atomic claims and launch remain separate §7 items.
+
 **Sidebar:** one row under Swarms, with a target icon, "Goal · <prompt>", ×<agents> and the segment bar. Its members nest under it like swarm members, and each member is titled by the piece it claimed.
 
 **Goal swarm view:**
@@ -1176,7 +1179,7 @@ Each milestone ends with a working app. PR duty checks an item off when it lands
 **M9 · Goal swarm**
 - [ ] Atomic claim lock: `airc_claim` / `airc_release`, refusal lines, held claims on failure (F14, F16)
 - [x] AIRC MCP server injected into every provider's agent runtime (F14, F16)
-- [ ] Work pool: open Task List items, open issues, unbuilt SPEC.md sections (F16)
+- [x] Work pool: open Task List items, open issues, unbuilt SPEC.md sections (F16)
 - [ ] Dialog: prompt, count, model mix with "the rest", effort and speed per row, limits, pool size, PR duty capacity, keep going (F16)
 - [ ] Launch, choosing → claimed → normal lifecycle, leave when nothing is left, keep going (F16)
 - [ ] Goal swarm view: claims board, one card per agent, activity; sidebar row (F16)

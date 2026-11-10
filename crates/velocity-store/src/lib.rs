@@ -562,6 +562,9 @@ pub struct ThreadItem {
     pub task_ids: Vec<u32>,
     #[serde(default)]
     pub issue: Option<issues::ThreadIssue>,
+    /// F16 inventory identity; merged threads record built sections without editing SPEC.md.
+    #[serde(default)]
+    pub spec_section: Option<String>,
     pub additions: u32,
     pub deletions: u32,
     pub elapsed_seconds: u32,
@@ -593,6 +596,7 @@ impl ThreadItem {
             review_stage: None,
             task_ids: Vec::new(),
             issue: None,
+            spec_section: None,
             additions: 0,
             deletions: 0,
             elapsed_seconds: 0,
@@ -623,6 +627,7 @@ impl ThreadItem {
             review_stage: None,
             task_ids: Vec::new(),
             issue: None,
+            spec_section: None,
             additions: 0,
             deletions: 0,
             elapsed_seconds: 0,
@@ -700,6 +705,9 @@ pub struct ProjectItem {
     pub github_remote: Option<String>,
     pub spec_path: String,
     pub spec_locked: bool,
+    /// Completed F16 pieces retained after their merged thread history is deleted.
+    #[serde(default)]
+    pub built_spec_sections: Vec<String>,
     pub active_thread_id: Option<u32>,
     pub merged_today: u32,
     pub tasks: Vec<TaskItem>,
@@ -724,6 +732,26 @@ pub struct PendingInterview {
 }
 
 impl ProjectItem {
+    pub fn new(identifier: u32, name: String, repository_path: String) -> Self {
+        Self {
+            id: identifier,
+            name,
+            repository_path,
+            location_kind: ProjectLocationKind::Local,
+            default_branch: "master".into(),
+            github_remote: None,
+            spec_path: "SPEC.md".into(),
+            spec_locked: false,
+            built_spec_sections: Vec::new(),
+            active_thread_id: None,
+            merged_today: 0,
+            tasks: Vec::new(),
+            threads: Vec::new(),
+            pending_interview: None,
+            duty_roles: Vec::new(),
+        }
+    }
+
     pub fn normalize(mut self) -> Self {
         let spec_locked = self.spec_locked;
         self.tasks = self
