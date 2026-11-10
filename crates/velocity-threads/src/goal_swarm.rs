@@ -132,7 +132,9 @@ pub fn plan_goal_member(
         .ok_or(WorktreeError::EmptyLeafName)?;
     let shared_target = location.project_root()?.join(SHARED_TARGET_FOLDER);
     let branch_name = format!("vel/{leaf}");
-    let (agent, bypass_modes) = agent_launch(slot.provider)?;
+    // A provider you signed out of since the mix was chosen is refused, never swapped (F15).
+    settings.ensure_new_work(slot.provider)?;
+    let (agent, bypass_modes) = agent_launch(slot.provider);
     let mut member_settings = settings.clone();
     member_settings.providers.default_provider = slot.provider;
     member_settings.providers.default_model = Some(slot.model_name.clone());

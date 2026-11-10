@@ -55,6 +55,25 @@ pub struct ModelPillView {
     pub preserve_requested_fast: bool,
 }
 
+impl ModelPillView {
+    /// A pill for `model_name`, with its fast-mode state from `thread_view::project_model_pill`.
+    pub fn new(
+        provider: ProviderColor,
+        model_name: String,
+        effort_label: String,
+        state: crate::thread_view::ModelPillState,
+    ) -> Self {
+        Self {
+            provider,
+            model_name,
+            effort_label,
+            show_fast_badge: state.show_fast_badge,
+            speed_control_enabled: state.speed_control_enabled,
+            preserve_requested_fast: state.preserve_requested_fast,
+        }
+    }
+}
+
 #[cfg_attr(
     feature = "bindings",
     derive(serde::Serialize, serde::Deserialize, specta::Type)

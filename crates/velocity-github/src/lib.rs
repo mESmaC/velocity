@@ -34,6 +34,7 @@ pub use issues::IssueClient;
 pub use pull_request_command::PullRequestError;
 pub use pull_request_panel::{
     CheckStatus, PullRequestPanelRow, PullRequestPanelSnapshot, PullRequestThread, ReviewStatus,
+    ReviewTierCache,
 };
 pub use pull_request_types::*;
 pub use pull_requests::PullRequestClient;

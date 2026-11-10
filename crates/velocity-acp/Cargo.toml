@@ -12,13 +12,11 @@ workspace = true
 [dependencies]
 agent-client-protocol = "5.0.0"
 process-wrap = { version = "=10.0.1", features = ["tokio1"] }
+serde_json.workspace = true
 thiserror.workspace = true
 tokio = { version = "1.54", features = ["io-util", "macros", "process", "rt", "sync", "fs", "time"] }
 tokio-util = { version = "0.7.20", features = ["compat"] }
 velocity-airc.workspace = true
-
-[dev-dependencies]
-serde_json.workspace = true
 
 [target.'cfg(windows)'.dependencies]
 windows = { version = "0.62", features = ["Win32_System_Threading"] }

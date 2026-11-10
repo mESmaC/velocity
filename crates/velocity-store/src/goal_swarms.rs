@@ -15,7 +15,7 @@ use velocity_core::work_pool::{WorkKey, WorkPiece};
 use crate::build_gate::{LaunchRequest, require_launch};
 use crate::goal_swarm_dialog::{GoalMixRow, mix_rows_summary, used_nick_numbers};
 use crate::issues::{ThreadIssue, issue_thread};
-use crate::swarm_dialog::{LAUNCHABLE, provider_model_name};
+use crate::swarm_dialog::provider_model_name;
 use crate::threads::{NewThread, ThreadError};
 use crate::{
     EffortLevel, ProjectItem, ProviderKind, Settings, SpeedMode, StateStore, TaskState, ThreadState,
@@ -172,7 +172,7 @@ impl StateStore {
         timestamp: String,
     ) -> Result<(u32, Vec<GoalAgentSlot>), ThreadError> {
         require_goal_gate(&self.state, request.project_identifier)?;
-        let rows = validated_rows(&request.mix)?;
+        let rows = validated_rows(&request.mix, &self.state.settings)?;
         let prompt = normalized_prompt(&request.prompt);
         let mut next = self.state.clone();
         let swarm_id =
@@ -219,7 +219,7 @@ impl StateStore {
         timestamp: &str,
     ) -> Result<Vec<GoalAgentSlot>, ThreadError> {
         require_goal_gate(&self.state, request.project_identifier)?;
-        let rows = validated_rows(&request.mix)?;
+        let rows = validated_rows(&request.mix, &self.state.settings)?;
         let mut next = self.state.clone();
         let settings = next.settings.clone();
         let project = project_mut(&mut next, request.project_identifier)?;
@@ -432,7 +432,10 @@ fn require_goal_gate(state: &crate::PersistedState, project_id: u32) -> Result<(
     Ok(())
 }
 
-fn validated_rows(mix: &[GoalMixRow]) -> Result<Vec<GoalMixRow>, ThreadError> {
+fn validated_rows(
+    mix: &[GoalMixRow],
+    settings: &crate::Settings,
+) -> Result<Vec<GoalMixRow>, ThreadError> {
     let rows: Vec<GoalMixRow> = mix.iter().copied().filter(|row| row.count > 0).collect();
     let total: u32 = rows
         .iter()
@@ -442,10 +445,13 @@ fn validated_rows(mix: &[GoalMixRow]) -> Result<Vec<GoalMixRow>, ThreadError> {
             "Choose between 1 and {MAXIMUM_AGENTS} agents"
         )));
     }
-    if let Some(row) = rows.iter().find(|row| !LAUNCHABLE.contains(&row.provider)) {
+    if let Some(row) = rows
+        .iter()
+        .find(|row| !settings.provider_usable(row.provider))
+    {
         return Err(ThreadError::InvalidLaunch(format!(
-            "{:?} cannot launch agents yet",
-            row.provider
+            "{} isn't signed in",
+            crate::providers::provider_facts(row.provider).name
         )));
     }
     Ok(rows)

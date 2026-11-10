@@ -7,15 +7,17 @@ use agent_client_protocol::Agent;
 use agent_client_protocol::schema::ProtocolVersion;
 use agent_client_protocol::v1::ConnectionTo;
 use agent_client_protocol::v1::schema::{
-    ClientCapabilities, FileSystemCapabilities, Implementation, InitializeRequest,
-    LoadSessionRequest, McpServer, NewSessionRequest, PermissionOptionKind,
+    AuthCapabilities, ClientCapabilities, FileSystemCapabilities, Implementation,
+    InitializeRequest, LoadSessionRequest, McpServer, NewSessionRequest, PermissionOptionKind,
     RequestPermissionOutcome, RequestPermissionRequest, RequestPermissionResponse,
-    SelectedPermissionOutcome, SessionId, SessionModeId, SessionModeState, SetSessionModeRequest,
+    SelectedPermissionOutcome, SessionConfigOption, SessionId, SessionModeId, SessionModeState,
+    SetSessionModeRequest,
 };
 
+use super::config;
 use crate::{
-    PermissionKind, SessionModeKind, choose_permission, choose_session_mode, keep_first_by_name,
-    mode_to_select,
+    PermissionKind, RunSettings, SessionModeKind, choose_permission, choose_session_mode,
+    keep_first_by_name, mode_to_select,
 };
 
 /// What a thread's session starts with.
@@ -33,6 +35,9 @@ pub struct SessionSetup {
     pub bypass_modes: Vec<String>,
     /// Set when a parked thread resumes (SPEC.md §2.2): its earlier session and transcript.
     pub resume: Option<SessionResume>,
+    /// The model, effort and speed the session runs on (F15), set through the agent's config
+    /// options once the session starts. `None` leaves the agent's own defaults.
+    pub run_settings: Option<RunSettings<String>>,
 }
 
 /// How a parked thread's agent picks up where it stopped: `session/load` of its earlier
@@ -57,6 +62,8 @@ impl SessionResume {
 pub struct StartedSession {
     pub session_id: SessionId,
     pub loaded: bool,
+    /// The agent's config options once the run settings were applied.
+    pub options: Vec<SessionConfigOption>,
 }
 
 impl SessionSetup {
@@ -67,7 +74,14 @@ impl SessionSetup {
             shared_servers: Vec::new(),
             bypass_modes,
             resume: None,
+            run_settings: None,
         }
+    }
+
+    /// The same setup running on `settings` (F15).
+    pub fn with_run_settings(mut self, settings: RunSettings<String>) -> Self {
+        self.run_settings = Some(settings);
+        self
     }
 }
 
@@ -127,9 +141,12 @@ pub async fn start_or_resume_session(
         // A session the agent no longer has falls back to a new one with the transcript.
         if let Ok(response) = loaded {
             select_bypass_mode(connection, &session_id, response.modes.as_ref(), setup).await?;
+            let options =
+                configure(connection, &session_id, response.config_options, setup).await?;
             return Ok(StartedSession {
                 session_id,
                 loaded: true,
+                options,
             });
         }
     }
@@ -146,10 +163,32 @@ pub async fn start_or_resume_session(
         setup,
     )
     .await?;
+    let options = configure(
+        connection,
+        &session.session_id,
+        session.config_options,
+        setup,
+    )
+    .await?;
     Ok(StartedSession {
         session_id: session.session_id,
         loaded: false,
+        options,
     })
+}
+
+/// Applies the setup's run settings to the session's config options (F15).
+async fn configure(
+    connection: &ConnectionTo<Agent>,
+    session_id: &SessionId,
+    options: Option<Vec<SessionConfigOption>>,
+    setup: &SessionSetup,
+) -> Result<Vec<SessionConfigOption>, agent_client_protocol::Error> {
+    let options = options.unwrap_or_default();
+    match &setup.run_settings {
+        Some(settings) => config::apply_settings(connection, session_id, options, settings).await,
+        None => Ok(options),
+    }
 }
 
 async fn select_bypass_mode(
@@ -172,7 +211,13 @@ pub(super) fn initialize_request() -> InitializeRequest {
         .read_text_file(true)
         .write_text_file(true);
     InitializeRequest::new(ProtocolVersion::V1)
-        .client_capabilities(ClientCapabilities::new().fs(files).terminal(true))
+        .client_capabilities(
+            ClientCapabilities::new()
+                .fs(files)
+                .terminal(true)
+                // Terminal sign-in methods are run by Velocity (F15 Sign in).
+                .auth(AuthCapabilities::new().terminal(true)),
+        )
         .client_info(Implementation::new("velocity", env!("CARGO_PKG_VERSION")))
 }
 

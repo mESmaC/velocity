@@ -25,12 +25,12 @@ pub(crate) const SHARED_TARGET_FOLDER: &str = ".cargo-target";
 
 #[derive(Debug, Error)]
 pub enum LaunchError {
-    #[error("{0} has no confirmed ACP agent yet (SPEC.md Q14)")]
-    ProviderNotConfirmed(&'static str),
     #[error("every branch name for \"vel/{0}\" is already taken in this project")]
     NamesExhausted(String),
     #[error(transparent)]
     Worktree(#[from] WorktreeError),
+    #[error(transparent)]
+    Provider(#[from] velocity_store::providers::ProviderUnavailable),
 }
 
 /// Everything a new thread needs before anything runs.
@@ -132,17 +132,21 @@ pub(crate) fn plan_named_launch(
         .ok_or(WorktreeError::EmptyLeafName)?;
     let shared_target = location.project_root()?.join(SHARED_TARGET_FOLDER);
     let branch_name = format!("vel/{slug}");
-    let (agent, bypass_modes) = agent_launch(settings.providers.default_provider)?;
+    let thread = NewThread::new(
+        title.into(),
+        branch_name.clone(),
+        worktree_path.display().to_string(),
+        settings,
+    );
+    // The thread runs where its record says: the default, or the first signed-in provider
+    // when you signed out of the default. Nothing starts when every provider is signed out.
+    settings.ensure_new_work(thread.provider)?;
+    let (agent, bypass_modes) = agent_launch(thread.provider);
     let share_cache = worktrees.share_build_cache;
     Ok(LaunchPlan {
         project: project.id,
         prompt: prompt.to_owned(),
-        thread: NewThread::new(
-            title.into(),
-            branch_name.clone(),
-            worktree_path.display().to_string(),
-            settings,
-        ),
+        thread,
         worktree: WorktreeSetupRequest {
             repository_root: repository,
             worktree_path,
@@ -169,22 +173,10 @@ pub(crate) fn plan_named_launch(
 }
 
 /// The command for each provider's ACP agent (§3.2) and the ids of its session modes that
-/// skip permission checks (Rule 1). Antigravity's agent is still open (Q14).
-pub fn agent_launch(provider: ProviderKind) -> Result<(AgentLaunch, Vec<String>), LaunchError> {
-    let (program, args, bypass): (&str, &[&str], &[&str]) = match provider {
-        ProviderKind::Claude => ("claude-agent-acp", &[], &["bypassPermissions"]),
-        ProviderKind::Codex => ("codex-acp", &[], &["full-access"]),
-        ProviderKind::Kimi => ("kimi", &["acp"], &[]),
-        ProviderKind::Antigravity => return Err(LaunchError::ProviderNotConfirmed("Antigravity")),
-    };
-    Ok((
-        AgentLaunch {
-            program: PathBuf::from(program),
-            args: args.iter().map(|arg| (*arg).to_owned()).collect(),
-            env: Vec::new(),
-        },
-        bypass.iter().map(|mode| (*mode).to_owned()).collect(),
-    ))
+/// skip permission checks (Rule 1).
+pub fn agent_launch(provider: ProviderKind) -> (AgentLaunch, Vec<String>) {
+    let agent = velocity_acp::provider_agent(crate::titles::provider(provider));
+    (agent.launch, agent.bypass_modes)
 }
 
 /// Settings → Worktrees as the worktree setup steps read them (F5).
