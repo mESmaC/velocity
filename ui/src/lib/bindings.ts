@@ -13,8 +13,6 @@ export const commands = {
 	aircEvents: (projectIdentifier: number, after: number | null) => __TAURI_INVOKE<Entry_Serialize[]>("airc_events", { projectIdentifier, after }),
 	aircMessages: (projectIdentifier: number, after: number | null) => __TAURI_INVOKE<Entry_Serialize[]>("airc_messages", { projectIdentifier, after }),
 	aircLedger: (projectIdentifier: number, ledger: string, after: number | null) => __TAURI_INVOKE<Entry_Serialize[]>("airc_ledger", { projectIdentifier, ledger, after }),
-	/**  The modal's current view, for the window to draw before the next `airc://modal`. */
-	getAircModal: (projectIdentifier: number) => __TAURI_INVOKE<AircModalView>("get_airc_modal", { projectIdentifier }),
 	getWindowState: () => __TAURI_INVOKE<WindowStateChanged>("get_window_state"),
 	minimizeWindow: () => __TAURI_INVOKE<null>("minimize_window"),
 	toggleMaximizeWindow: () => __TAURI_INVOKE<null>("toggle_maximize_window"),
@@ -75,8 +73,6 @@ export const commands = {
 export const AIRC_EVENT = "airc://event" as const;
 
 export const AIRC_MESSAGE_EVENT = "airc://message" as const;
-
-export const AIRC_MODAL_EVENT = "airc://modal" as const;
 
 export const DUTY_EVENT = "duty://event" as const;
 
@@ -139,19 +135,6 @@ export type AgentSettings_Serialize = {
 	claim_release_grace_minutes: number,
 };
 
-export type AircClaimFile = {
-	path: string,
-	overlap: boolean,
-};
-
-export type AircClaimRow = {
-	nick: string,
-	nick_tone: NickTone,
-	task: string,
-	state: string,
-	files: AircClaimFile[],
-};
-
 export type AircEventPublished = AircEventPublished_Serialize | AircEventPublished_Deserialize;
 
 export type AircEventPublished_Deserialize = {
@@ -162,19 +145,6 @@ export type AircEventPublished_Deserialize = {
 export type AircEventPublished_Serialize = {
 	project_identifier: number,
 	entry: Entry_Serialize,
-};
-
-export type AircLineView = {
-	key: string,
-	time: string,
-	tag: string,
-	tone: AircTone,
-	/**  Empty for lines Velocity posts about nobody in particular. */
-	nick: string,
-	nick_tone: NickTone,
-	spans: AircSpan[],
-	mention: boolean,
-	from_you: boolean,
 };
 
 export type AircMessagePublished = AircMessagePublished_Serialize | AircMessagePublished_Deserialize;
@@ -189,56 +159,14 @@ export type AircMessagePublished_Serialize = {
 	entry: Entry_Serialize,
 };
 
-export type AircModalPublished = {
-	project_identifier: number,
-	view: AircModalView,
-};
-
-export type AircModalView = {
-	channel: string,
-	tabs: AircTabView[],
-	events: AircLineView[],
-	messages: AircLineView[],
-	claims_note: string,
-	claims_warn: boolean,
-	claims: AircClaimRow[],
-	discoveries: AircLineView[],
-	past_work: AircLineView[],
-	nick_groups: AircNickGroup[],
-};
-
-export type AircNickGroup = {
-	label: string,
-	rows: AircNickRow[],
-};
-
-export type AircNickRow = {
-	nick: string,
-	tone: NickTone,
-	dot: NickDot,
-	detail: string,
-};
-
-export type AircSpan = ({ Text: string }) & { Nick?: never; PullRequest?: never } | ({ Nick: {
-	nick: string,
-	tone: NickTone,
-} }) & { PullRequest?: never; Text?: never } | 
-/**  `#n`: opens that PR's thread, or GitHub. */
-({ PullRequest: number }) & { Nick?: never; Text?: never };
-
-export type AircTab = "Events" | "Claims" | "Messages" | "Discoveries" | "PastWork";
-
-export type AircTabView = {
-	tab: AircTab,
-	label: string,
-	count: string,
-	warn: boolean,
-};
-
-/**  The type tag's colour family (F14: blue, green, amber, red). */
-export type AircTone = "Neutral" | "Claim" | "Info" | "Positive" | "Warning" | "Danger" | "Muted";
-
 export type CheckStatus = "passing" | "running" | "failing" | "unavailable";
+
+export type Checkout = {
+	repository: string,
+	worktree: string,
+	branch: string,
+	base: string,
+};
 
 export type Claim = {
 	member: string,
@@ -279,6 +207,14 @@ export type CreatedProject = {
 	identifier: number,
 	name: string,
 	repository_path: string,
+};
+
+export type DependencyWait = {
+	member: string,
+	nick: string,
+	holder: string,
+	holder_nick: string,
+	file: string,
 };
 
 export type DiffBlockView = DiffBlockView_Serialize | DiffBlockView_Deserialize;
@@ -453,6 +389,8 @@ export type Entry_Deserialize = {
 	/**  The PR head commit the event applies to (`approved` binds to it). */
 	head?: string | null,
 	claim?: Claim | null,
+	dependency?: DependencyWait | null,
+	checkout?: Checkout | null,
 };
 
 export type Entry_Serialize = {
@@ -472,6 +410,8 @@ export type Entry_Serialize = {
 	/**  The PR head commit the event applies to (`approved` binds to it). */
 	head?: string,
 	claim?: Claim,
+	dependency?: DependencyWait,
+	checkout?: Checkout,
 };
 
 export type ErrorCardView = {
@@ -863,7 +803,6 @@ export type LayoutSnapshot_Deserialize = {
 	issues: RailItem_Deserialize[],
 	worktree_label: string,
 	providers: ProviderUsage[],
-	airc_open: boolean,
 	airc_unread: string,
 	overlap_unread: boolean,
 	composer_text: string,
@@ -910,7 +849,6 @@ export type LayoutSnapshot_Serialize = {
 	issues: RailItem_Serialize[],
 	worktree_label: string,
 	providers: ProviderUsage[],
-	airc_open: boolean,
 	airc_unread: string,
 	overlap_unread: boolean,
 	composer_text: string,
@@ -999,11 +937,6 @@ export type NewReviewComment = {
 	side: ReviewSide,
 	body: string,
 };
-
-export type NickDot = "Active" | "Idle" | "Hold" | "Left";
-
-/**  A nick's stable colour: `you`, `velocity`, or one of the reference's ten hues. */
-export type NickTone = "You" | "Velocity" | { Hue: number };
 
 export type NumberHintEvent = "AltDown" | "AltUp" | "Blur" | "Other";
 
@@ -2315,6 +2248,7 @@ export type ThreadItem_Deserialize = {
 	worktree_role?: WorktreeRole,
 	pull_request_number?: number | null,
 	follow_through?: FollowThrough_Deserialize | null,
+	dependency_wait?: string | null,
 	review_stage?: ReviewStage | null,
 	task_ids: number[],
 	issue?: ThreadIssue_Deserialize | null,
@@ -2343,6 +2277,7 @@ export type ThreadItem_Serialize = {
 	worktree_role: WorktreeRole,
 	pull_request_number: number | null,
 	follow_through: FollowThrough_Serialize | null,
+	dependency_wait: string | null,
 	review_stage: ReviewStage | null,
 	task_ids: number[],
 	issue: ThreadIssue_Serialize | null,

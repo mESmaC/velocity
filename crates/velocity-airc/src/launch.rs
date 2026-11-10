@@ -46,7 +46,7 @@ pub fn serve_stdio(arguments: &[OsString]) -> Result<(), Error> {
         &channel,
         &text(member, "member identity")?,
         &text(nick, "nick")?,
-        std::io::stdin().lock(),
-        std::io::stdout().lock(),
+        std::io::BufReader::new(std::io::stdin()),
+        std::io::stdout(),
     )
 }

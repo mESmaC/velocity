@@ -26,6 +26,10 @@ pub struct Entry {
     pub head: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub claim: Option<crate::claims::Claim>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub dependency: Option<crate::waits::DependencyWait>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub checkout: Option<crate::waits::Checkout>,
 }
 
 /// Event tags Velocity posts from what it observes (F14). Agents never type them.
@@ -354,6 +358,8 @@ pub(crate) fn entry(entries: &[Entry], kind: &str, member: &str, nick: &str, tex
         pull_request: None,
         head: None,
         claim: None,
+        dependency: None,
+        checkout: None,
     }
 }
 

@@ -36,6 +36,7 @@ fn cycle(application: &AppHandle) -> Result<(), String> {
     .projects
     .clone();
     for project in projects {
+        update_waits(application, &project)?;
         for thread in &project.threads {
             if let Err(error) = deliver(application, &project, thread) {
                 eprintln!("Velocity AIRC thread {}: {error}", thread.id);
@@ -93,6 +94,26 @@ fn deliver(
         )?
         .update_thread(key.0, key.1, |saved| saved.airc_cursor = cursor)
         .map_err(|error| error.to_string())?;
+    }
+    Ok(())
+}
+
+/// Translate the runner's saved lifecycle into wake events. The waiting MCP server
+/// subscribes to these writes; it never polls GitHub or the runner.
+fn update_waits(application: &AppHandle, project: &ProjectItem) -> Result<(), String> {
+    let channel = channel(application, project.id)?;
+    for (identifier, description) in velocity_threads::dependencies::refresh(&channel, project)
+        .map_err(|error| error.to_string())?
+    {
+        lock(
+            application.state::<ManagedStateStore>().inner(),
+            "persisted state",
+        )?
+        .update_thread(project.id, identifier, |saved| {
+            saved.dependency_wait = description
+        })
+        .map_err(|error| error.to_string())?;
+        crate::threads::refresh(application, (project.id, identifier), false)?;
     }
     Ok(())
 }
