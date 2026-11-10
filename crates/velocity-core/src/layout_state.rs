@@ -163,6 +163,40 @@ impl LayoutState {
         true
     }
 
+    /// The footer limit meter and the home composer's model pill, after Settings → Providers or
+    /// a provider's agent changed them (F15). Returns whether the window needs redrawing.
+    pub fn set_provider_summary(
+        &mut self,
+        providers: Vec<crate::layout_view::ProviderUsage>,
+        default_pill: crate::thread_view_model::ModelPillView,
+    ) -> bool {
+        let same_meter = self.data.providers.len() == providers.len()
+            && self
+                .data
+                .providers
+                .iter()
+                .zip(&providers)
+                .all(|(old, new)| {
+                    old.provider == new.provider
+                        && old.label == new.label
+                        && old.percent_used == new.percent_used
+                });
+        let same_pill = self.data.default_model_pill.as_ref().is_some_and(|old| {
+            old.provider == default_pill.provider
+                && old.model_name == default_pill.model_name
+                && old.effort_label == default_pill.effort_label
+                && old.show_fast_badge == default_pill.show_fast_badge
+                && old.speed_control_enabled == default_pill.speed_control_enabled
+        });
+        if same_meter && same_pill {
+            return false;
+        }
+        self.data.providers = providers;
+        self.data.default_model_pill = Some(default_pill);
+        self.changed();
+        true
+    }
+
     /// Only the backend's persisted project projection supplies this context.
     pub fn set_project_spec_locked(&mut self, locked: Option<bool>) {
         if self.project_spec_locked != locked {
@@ -901,7 +935,7 @@ impl LayoutState {
             self.view = NavigationView::Agents;
         }
         if let LayoutIntent::SettingsTab(tab) = &intent
-            && tab == "worktrees"
+            && (tab == "worktrees" || tab == "providers")
         {
             self.view = NavigationView::Settings;
             self.settings_tab = tab.clone();

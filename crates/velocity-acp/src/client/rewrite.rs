@@ -62,10 +62,10 @@ async fn request(
     let transport = ByteStreams::new(stdin.compat_write(), stdout.compat());
     let result = handlers::register(Client.v1(), &shared)
         .connect_with(transport, async move |connection: ConnectionTo<Agent>| {
-            let identifier = session::start_session(&connection, &setup).await?;
+            let started = session::start_session(&connection, &setup).await?;
             connection
                 .send_request(PromptRequest::new(
-                    identifier,
+                    started.session_id,
                     vec![ContentBlock::from(prompt)],
                 ))
                 .block_task()

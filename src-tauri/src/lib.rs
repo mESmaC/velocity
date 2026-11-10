@@ -19,6 +19,7 @@ mod issue_panel;
 pub mod layout;
 mod new_project;
 mod projects;
+mod providers;
 mod pull_request_panel;
 pub mod reviews;
 mod skills;
@@ -58,6 +59,12 @@ fn bindings() -> Builder<tauri::Wry> {
         layout::dispatch_layout,
         projects::list_projects,
         projects::switch_project,
+        providers::list_providers,
+        providers::provider_sign_in,
+        providers::provider_sign_out,
+        providers::set_provider_settings,
+        providers::get_model_menu,
+        providers::choose_model,
         work_pool::get_work_pool,
         worktree_settings::list_worktrees,
         worktree_settings::set_worktree_settings,
@@ -111,6 +118,7 @@ fn event_bindings(builder: Builder<tauri::Wry>) -> Builder<tauri::Wry> {
         .typ::<layout::LayoutStateChanged>()
         .typ::<layout::LayoutIntentRequested>()
         .typ::<projects::ProjectSelected>()
+        .typ::<providers::ProvidersChanged>()
         .typ::<swarm::SwarmEventPublished>()
         .typ::<issue_panel::IssuePanelChanged>()
         .typ::<worktree_settings::WorktreeInventoryChanged>()
@@ -125,6 +133,7 @@ fn event_bindings(builder: Builder<tauri::Wry>) -> Builder<tauri::Wry> {
         .constant("AIRC_MODAL_EVENT", airc_modal::AircModalPublished::NAME)
         .constant("DUTY_EVENT", duty::DutyEventPublished::NAME)
         .constant("PROJECT_SELECTED_EVENT", projects::ProjectSelected::NAME)
+        .constant("PROVIDERS_EVENT", providers::ProvidersChanged::NAME)
         .constant("SWARM_EVENT", swarm::SwarmEventPublished::NAME)
         .constant("ISSUE_PANEL_EVENT", issue_panel::IssuePanelChanged::NAME)
         .constant("WINDOW_STATE_EVENT", window::WindowStateChanged::NAME)
@@ -173,6 +182,7 @@ pub fn run() -> anyhow::Result<()> {
         layout::LayoutStateChanged,
         layout::LayoutIntentRequested,
         projects::ProjectSelected,
+        providers::ProvidersChanged,
         swarm::SwarmEventPublished,
         issue_panel::IssuePanelChanged,
         worktree_settings::WorktreeInventoryChanged,
@@ -187,6 +197,7 @@ pub fn run() -> anyhow::Result<()> {
         .manage(agents::ManagedAgents::default())
         .manage(goal_swarm::GoalSwarmPool::default())
         .manage(layout::MainLayout::default())
+        .manage(providers::ManagedProviders::default())
         .manage(airc_modal::ManagedAircModal::default())
         .manage(threads::ManagedThreads::default())
         .manage(velocity_interview::Interviews::default())
@@ -197,6 +208,7 @@ pub fn run() -> anyhow::Result<()> {
             state::initialize(application.handle())?;
             airc_access::initialize(application.handle())?;
             projects::initialize(application.handle())?;
+            providers::initialize(application.handle());
             follow_through::initialize(application.handle(), threads::follow_through_hooks());
             issue_panel::initialize(application.handle());
             worktree_settings::initialize(application.handle())?;

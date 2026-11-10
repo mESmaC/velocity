@@ -19,8 +19,8 @@ use velocity_store::{InterviewRecord, ProjectItem, ProviderKind, StateStore, Thr
 
 use crate::envelope::parse_envelope;
 use crate::live::LiveTranscript;
+use crate::prompts;
 use crate::turns::{self, InterviewDefaults};
-use crate::{InterviewError, prompts};
 
 /// A project and one of its threads.
 pub type InterviewKey = (u32, u32);
@@ -260,13 +260,7 @@ fn launch<H: Host>(host: &Arc<H>, key: InterviewKey, prompt: String) {
     let Some(plan) = launch_plan(host.as_ref(), key) else {
         return;
     };
-    let Some(agent) = velocity_acp::provider_agent(acp_provider(plan.provider)) else {
-        let message = InterviewError::NoAgent(plan.provider).to_string();
-        save(host.as_ref(), key.0, |project| {
-            turns::fail(project, key.1, message)
-        });
-        return;
-    };
+    let agent = velocity_acp::provider_agent(acp_provider(plan.provider));
     let (inputs, receiver) = unbounded_channel();
     // Queued until the session has started: the client reads inputs only after `session/new`.
     let _ = inputs.send(AgentInput::Send(text_message(prompt)));

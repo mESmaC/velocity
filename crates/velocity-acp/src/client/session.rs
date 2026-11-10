@@ -6,15 +6,17 @@ use agent_client_protocol::Agent;
 use agent_client_protocol::schema::ProtocolVersion;
 use agent_client_protocol::v1::ConnectionTo;
 use agent_client_protocol::v1::schema::{
-    ClientCapabilities, FileSystemCapabilities, Implementation, InitializeRequest, McpServer,
-    NewSessionRequest, PermissionOptionKind, RequestPermissionOutcome, RequestPermissionRequest,
-    RequestPermissionResponse, SelectedPermissionOutcome, SessionId, SessionModeId,
-    SessionModeState, SetSessionModeRequest,
+    AuthCapabilities, ClientCapabilities, FileSystemCapabilities, Implementation,
+    InitializeRequest, McpServer, NewSessionRequest, PermissionOptionKind,
+    RequestPermissionOutcome, RequestPermissionRequest, RequestPermissionResponse,
+    SelectedPermissionOutcome, SessionConfigOption, SessionId, SessionModeId, SessionModeState,
+    SetSessionModeRequest,
 };
 
+use super::config;
 use crate::{
-    PermissionKind, SessionModeKind, choose_permission, choose_session_mode, keep_first_by_name,
-    mode_to_select,
+    PermissionKind, RunSettings, SessionModeKind, choose_permission, choose_session_mode,
+    keep_first_by_name, mode_to_select,
 };
 
 /// What a thread's session starts with.
@@ -30,6 +32,9 @@ pub struct SessionSetup {
     /// The ids of the agent's session modes that skip its permission checks, as the provider
     /// layer classifies them.
     pub bypass_modes: Vec<String>,
+    /// The model, effort and speed the session runs on (F15), set through the agent's config
+    /// options after `session/new`. `None` leaves the agent's own defaults.
+    pub run_settings: Option<RunSettings<String>>,
 }
 
 impl SessionSetup {
@@ -39,15 +44,29 @@ impl SessionSetup {
             airc: None,
             shared_servers: Vec::new(),
             bypass_modes,
+            run_settings: None,
         }
+    }
+
+    /// The same setup running on `settings` (F15).
+    pub fn with_run_settings(mut self, settings: RunSettings<String>) -> Self {
+        self.run_settings = Some(settings);
+        self
     }
 }
 
-/// `initialize` → `session/new` → `session/set_mode` where it changes the mode.
-pub async fn start_session(
+/// A started session and the config options it ended up with.
+pub(super) struct StartedSession {
+    pub session_id: SessionId,
+    pub options: Vec<SessionConfigOption>,
+}
+
+/// `initialize` → `session/new` → `session/set_mode` where it changes the mode → the run
+/// settings' config options.
+pub(super) async fn start_session(
     connection: &ConnectionTo<Agent>,
     setup: &SessionSetup,
-) -> Result<SessionId, agent_client_protocol::Error> {
+) -> Result<StartedSession, agent_client_protocol::Error> {
     connection
         .send_request(initialize_request())
         .block_task()
@@ -64,7 +83,15 @@ pub async fn start_session(
             .block_task()
             .await?;
     }
-    Ok(session.session_id)
+    let mut options = session.config_options.unwrap_or_default();
+    if let Some(settings) = &setup.run_settings {
+        options =
+            config::apply_settings(connection, &session.session_id, options, settings).await?;
+    }
+    Ok(StartedSession {
+        session_id: session.session_id,
+        options,
+    })
 }
 
 pub(super) fn initialize_request() -> InitializeRequest {
@@ -72,7 +99,13 @@ pub(super) fn initialize_request() -> InitializeRequest {
         .read_text_file(true)
         .write_text_file(true);
     InitializeRequest::new(ProtocolVersion::V1)
-        .client_capabilities(ClientCapabilities::new().fs(files).terminal(true))
+        .client_capabilities(
+            ClientCapabilities::new()
+                .fs(files)
+                .terminal(true)
+                // Terminal sign-in methods are run by Velocity (F15 Sign in).
+                .auth(AuthCapabilities::new().terminal(true)),
+        )
         .client_info(Implementation::new("velocity", env!("CARGO_PKG_VERSION")))
 }
 

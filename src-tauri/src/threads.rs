@@ -57,6 +57,29 @@ fn deliver_follow_up(
     }
 }
 
+/// The thread's saved model, effort and speed applied to its session (F15). A thread the store
+/// no longer has keeps the agent's own defaults.
+fn with_run_settings(application: &AppHandle, key: ThreadKey, setup: SessionSetup) -> SessionSetup {
+    let settings = lock(
+        application.state::<ManagedStateStore>().inner(),
+        "persisted state",
+    )
+    .ok()
+    .and_then(|store| {
+        let project = store
+            .state()
+            .projects
+            .iter()
+            .find(|item| item.id == key.0)?;
+        let thread = project.threads.iter().find(|item| item.id == key.1)?;
+        Some(velocity_threads::thread_run_settings(thread))
+    });
+    match settings {
+        Some(settings) => setup.with_run_settings(settings),
+        None => setup,
+    }
+}
+
 fn resume_follow_through(
     application: &AppHandle,
     key: ThreadKey,
@@ -75,8 +98,9 @@ fn resume_follow_through(
         &thread.branch_name,
     )
     .map_err(|error| error.to_string())?;
-    let (agent, bypass_modes) = agent_launch(thread.provider).map_err(|error| error.to_string())?;
-    let mut setup = SessionSetup::new(path.into(), bypass_modes);
+    let (agent, bypass_modes) = agent_launch(thread.provider);
+    let mut setup = SessionSetup::new(path.into(), bypass_modes)
+        .with_run_settings(velocity_threads::thread_run_settings(&thread));
     setup.airc = crate::airc_access::managed(application)
         .map(|airc| airc.thread(key.0, key.1, std::path::Path::new(path)));
     crate::airc_claims::attach(application, key, &setup, &thread.branch_name)?;
@@ -358,7 +382,11 @@ async fn run_thread(
         return;
     }
     report(refresh(&application, key, false));
-    let mut setup = SessionSetup::new(worktree_path, plan.bypass_modes);
+    let mut setup = with_run_settings(
+        &application,
+        key,
+        SessionSetup::new(worktree_path, plan.bypass_modes),
+    );
     setup.airc = crate::airc_access::managed(&application)
         .map(|airc| airc.thread(key.0, key.1, &setup.worktree));
     let branch = branch_name.as_deref().unwrap_or(&plan.thread.branch_name);
@@ -516,7 +544,11 @@ async fn finish_goal_claimed(
     report(crate::airc_modal::refresh(application));
     report(refresh(application, key, false));
     emit_status(application, key);
-    let mut setup = SessionSetup::new(worktree_path, plan.bypass_modes);
+    let mut setup = with_run_settings(
+        application,
+        key,
+        SessionSetup::new(worktree_path, plan.bypass_modes),
+    );
     setup.airc = crate::airc_access::managed(application)
         .map(|airc| airc.thread(key.0, key.1, &setup.worktree));
     let session = spawn_session(plan.agent, setup, inputs);

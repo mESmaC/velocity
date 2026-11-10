@@ -10,7 +10,7 @@ use velocity_core::thread_titles::{
     TITLE_DEADLINE_MILLISECONDS, ThreadTitle, TitleSource, title_from_response,
     title_request_prompt,
 };
-use velocity_store::{EffortLevel, ProviderKind, Settings, SpeedMode};
+use velocity_store::{EffortLevel, ProviderKind, Settings, SpeedMode, ThreadItem};
 
 use crate::launch::agent_launch;
 
@@ -19,8 +19,7 @@ use crate::launch::agent_launch;
 pub struct TitlePlan {
     /// The message's first words: the title until the model answers, and after it fails.
     pub fallback: String,
-    /// `None` when the title model's agent has no command yet (Antigravity, Q14): the thread
-    /// keeps its fallback at once instead of waiting on a request that can't start.
+    /// `None` when there is nothing to ask: the thread keeps its fallback at once.
     pub request: Option<TitleRequest>,
     /// Shown in the header as "titling · <model>".
     pub model_name: String,
@@ -35,23 +34,20 @@ pub fn plan_title(
     fallback: String,
 ) -> TitlePlan {
     let providers = &settings.providers;
-    let request = agent_launch(providers.title_provider)
-        .ok()
-        .map(|(launch, _)| {
-            let run_settings = RunSettings {
-                provider: provider(providers.title_provider),
-                model: providers.title_model.clone(),
-                effort: effort(providers.title_effort),
-                speed: speed(providers.title_speed),
-            };
-            TitleRequest::new(
-                launch,
-                repository,
-                run_settings,
-                title_request_prompt(prompt),
-                Duration::from_millis(TITLE_DEADLINE_MILLISECONDS),
-            )
-        });
+    let (launch, _) = agent_launch(providers.title_provider);
+    let run_settings = RunSettings {
+        provider: provider(providers.title_provider),
+        model: providers.title_model.clone(),
+        effort: effort(providers.title_effort),
+        speed: speed(providers.title_speed),
+    };
+    let request = Some(TitleRequest::new(
+        launch,
+        repository,
+        run_settings,
+        title_request_prompt(prompt),
+        Duration::from_millis(TITLE_DEADLINE_MILLISECONDS),
+    ));
     TitlePlan {
         fallback,
         request,
@@ -79,7 +75,17 @@ pub async fn resolve_title(plan: TitlePlan) -> Option<String> {
         .cloned()
 }
 
-fn provider(kind: ProviderKind) -> Provider {
+/// What a thread's agent runs on: its provider, model, effort and chosen speed (F15).
+pub fn thread_run_settings(thread: &ThreadItem) -> RunSettings<String> {
+    RunSettings {
+        provider: provider(thread.provider),
+        model: thread.model_name.clone(),
+        effort: effort(thread.effort),
+        speed: speed(thread.preferred_speed),
+    }
+}
+
+pub(crate) fn provider(kind: ProviderKind) -> Provider {
     match kind {
         ProviderKind::Claude => Provider::Anthropic,
         ProviderKind::Codex => Provider::Codex,

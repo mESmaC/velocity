@@ -76,6 +76,8 @@ pub(crate) fn read_model(state: &PersistedState) -> LayoutData {
         (data.worktree_count, data.worktree_drive) =
             footer_summary(&project_owners(project), &fallback_root(project, state));
     }
+    data.providers = crate::provider_views::provider_usage(&state.settings);
+    data.default_model_pill = Some(crate::provider_views::default_model_pill(&state.settings));
     data
 }
 

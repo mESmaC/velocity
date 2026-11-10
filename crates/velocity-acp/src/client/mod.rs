@@ -6,13 +6,17 @@
 //! the transcript (`transcript`).
 
 mod airc;
+mod config;
 mod error;
 mod files;
 mod handlers;
+mod limits;
+mod probe;
 mod process;
 mod program_path;
 pub mod rewrite;
 mod session;
+mod sign_in;
 mod terminals;
 mod title;
 mod updates;
@@ -35,12 +39,15 @@ use tokio_util::compat::{TokioAsyncReadCompatExt, TokioAsyncWriteCompatExt};
 pub use airc::AircLaunch;
 pub use error::ClientError;
 pub use files::resolve_in_worktree;
+pub use limits::{read_claude_usage, read_codex_usage};
+pub use probe::{AgentProbe, ProbedModel, probe_agent};
 pub use process::AgentLaunch;
 pub use session::{SessionSetup, answer_permission, session_servers};
+pub use sign_in::sign_in;
 pub use title::{TitleReply, TitleRequest, request_title};
 pub use updates::{AgentSlashCommand, available_commands, entry_class};
 
-use crate::{Placement, Steering, SteeringEffect, SteeringInput, Transcript};
+use crate::{Placement, RunSettings, Steering, SteeringEffect, SteeringInput, Transcript};
 use terminals::Terminals;
 
 /// What the thread sends its agent.
@@ -51,6 +58,9 @@ pub enum AgentInput {
     Send(Vec<ContentBlock>),
     /// `Esc`: `session/cancel` when a turn is running.
     Interrupt,
+    /// A new model, effort or speed chosen from the composer menu (F4, F15). The agent
+    /// applies it from its next turn; a running turn is never interrupted (Rule 1).
+    Configure(RunSettings<String>),
     /// Ends the session and stops the agent. Dropping the sender does the same.
     Stop,
 }
@@ -229,7 +239,9 @@ async fn drive(
     setup: SessionSetup,
     mut inputs: UnboundedReceiver<AgentInput>,
 ) -> Result<(), agent_client_protocol::Error> {
-    let session_id = session::start_session(&connection, &setup).await?;
+    let started = session::start_session(&connection, &setup).await?;
+    let session_id = started.session_id;
+    let mut options = started.options;
     shared.emit(AgentEvent::SessionStarted {
         session_id: session_id.clone(),
     });
@@ -240,6 +252,10 @@ async fn drive(
             input = inputs.recv() => match input {
                 Some(AgentInput::Send(message)) => SteeringInput::Send(message),
                 Some(AgentInput::Interrupt) => SteeringInput::Interrupt,
+                Some(AgentInput::Configure(settings)) => {
+                    options = reconfigure(&connection, &shared, &session_id, options, &settings).await;
+                    continue;
+                }
                 Some(AgentInput::Stop) | None => return Ok(()),
             },
             Some(outcome) = turn_ended.recv() => {
@@ -254,6 +270,27 @@ async fn drive(
             turn_sender: &turn_sender,
         };
         turn.apply(steering.step(input))?;
+    }
+}
+
+/// Applies new run settings mid-session. A refused change is logged and leaves the session on
+/// its previous settings rather than ending it.
+async fn reconfigure(
+    connection: &ConnectionTo<Agent>,
+    shared: &Shared,
+    session_id: &SessionId,
+    options: Vec<agent_client_protocol::v1::schema::SessionConfigOption>,
+    settings: &RunSettings<String>,
+) -> Vec<agent_client_protocol::v1::schema::SessionConfigOption> {
+    match config::apply_settings(connection, session_id, options.clone(), settings).await {
+        Ok(updated) => updated,
+        Err(error) => {
+            shared.emit(AgentEvent::Log(format!(
+                "Could not switch to {}: {error}",
+                settings.model
+            )));
+            options
+        }
     }
 }
 
