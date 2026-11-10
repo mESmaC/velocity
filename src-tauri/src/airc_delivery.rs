@@ -74,12 +74,13 @@ fn deliver(
     let nick = channel
         .join(&member, path)
         .map_err(|error| error.to_string())?;
-    let cursor = velocity_airc::deliver_messages(
+    let cursor = velocity_airc::deliver_targeted(
         &channel,
         &nick,
         channel
             .delivery_cursor(&member, thread.airc_cursor)
             .map_err(|error| error.to_string())?,
+        thread.activity == velocity_store::AgentActivity::Idle,
         |identifier, message| {
             lock(
                 application.state::<ManagedThreads>().inner(),

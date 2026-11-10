@@ -48,6 +48,7 @@ fn bindings() -> Builder<tauri::Wry> {
         airc_events::airc_messages,
         airc_events::airc_ledger,
         airc_modal::get_airc_modal,
+        airc_modal::set_airc_message_mode,
         window::get_window_state,
         window::minimize_window,
         window::toggle_maximize_window,

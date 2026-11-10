@@ -241,6 +241,7 @@ pub enum NickDot {
 )]
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct AircNickRow {
+    pub message_mode: String,
     pub nick: String,
     pub tone: NickTone,
     pub dot: NickDot,
@@ -661,6 +662,13 @@ fn presence(records: &[AircRecord]) -> Vec<(String, String, bool)> {
 fn nick_groups(input: &AircModalInput) -> Vec<AircNickGroup> {
     let mut groups: [Vec<AircNickRow>; 6] = Default::default();
     let row = |nick: &str, dot, detail: &str| AircNickRow {
+        message_mode: input
+            .records
+            .iter()
+            .rev()
+            .find(|record| record.nick == nick && record.kind == "message_mode")
+            .map(|record| record.text.clone())
+            .unwrap_or_else(|| "Open".into()),
         nick: nick.into(),
         tone: nick_tone(nick),
         dot,

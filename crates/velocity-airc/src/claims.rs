@@ -114,6 +114,7 @@ impl Channel {
         let key = piece_key(if piece.trim().is_empty() { task } else { piece });
         let storage = Storage::open(&self.directory)?;
         let mut entries = storage.read()?;
+        crate::routing::require_unfrozen(&entries, member)?;
         let nick = active_nick(&entries, member)?;
         let held = claims(&entries);
         let previous = held.iter().find(|claim| claim.key() == key);
@@ -160,6 +161,7 @@ impl Channel {
     pub fn release(&self, member: &str, task: &str) -> Result<(), Error> {
         let storage = Storage::open(&self.directory)?;
         let entries = storage.read()?;
+        crate::routing::require_unfrozen(&entries, member)?;
         let key = piece_key(task);
         let held = claims(&entries);
         let named = held
@@ -184,6 +186,7 @@ impl Channel {
     pub fn share(&self, member: &str, holder: &str, file: &str) -> Result<(), Error> {
         let storage = Storage::open(&self.directory)?;
         let entries = storage.read()?;
+        crate::routing::require_unfrozen(&entries, member)?;
         let nick = active_nick(&entries, member)?;
         let file = normalize_file(file);
         let held = claims(&entries);
