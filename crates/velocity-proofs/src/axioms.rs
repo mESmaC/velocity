@@ -24,6 +24,9 @@ pub struct DisallowedAxiom {
 pub struct AxiomAudit {
     pub audited: usize,
     pub disallowed: Vec<DisallowedAxiom>,
+    /// Changed modules `lake build` produced no `.olean` for (in no library target), so Lean
+    /// never checked them and the audit could not import them.
+    pub unbuilt: Vec<String>,
 }
 
 /// The Lake module a proof file defines: `proofs/ClaimLock/Design.lean` is `ClaimLock.Design`
@@ -37,7 +40,9 @@ pub fn module_name(project_folder: &str, path: &str) -> Option<String> {
         path.strip_prefix(&folder)?.strip_prefix('/')?
     };
     let module = relative.strip_suffix(".lean")?;
-    (!module.is_empty() && !module.starts_with(".lake/")).then(|| module.replace('/', "."))
+    // The Lake configuration is not a module.
+    let module_file = !module.is_empty() && module != "lakefile" && !module.starts_with(".lake/");
+    module_file.then(|| module.replace('/', "."))
 }
 
 /// The audit file for `modules`. Its output lines are read by [`parse_audit`].
@@ -54,6 +59,8 @@ pub fn audit_script(modules: &[String]) -> String {
         .iter()
         .map(|axiom| format!("``{axiom}"))
         .collect();
+    // Plain `++`, not `s!` interpolation, and no variable called `name`: notations from the
+    // project's dependencies (Aeneas, Mathlib) turn those into parse errors.
     format!(
         "import Lean\n{imports}open Lean Elab Command\n\n\
          #eval show CommandElabM Unit from do\n\
@@ -62,15 +69,15 @@ pub fn audit_script(modules: &[String]) -> String {
          \x20 let mut audited := 0\n\
          \x20 for module in ([{names}] : List Name) do\n\
          \x20   let some index := env.getModuleIdx? module\n\
-         \x20     | throwError \"{AUDITED_LINE}: module {{module}} was not imported\"\n\
-         \x20   for name in env.header.moduleData[index.toNat]!.constNames do\n\
-         \x20     if name.isInternal then continue\n\
+         \x20     | throwError (\"a module was not imported: \" ++ toString module)\n\
+         \x20   for declaration in env.header.moduleData[index.toNat]!.constNames do\n\
+         \x20     if declaration.isInternal then continue\n\
          \x20     audited := audited + 1\n\
-         \x20     let axioms ← liftCoreM <| collectAxioms name\n\
+         \x20     let axioms ← liftCoreM <| collectAxioms declaration\n\
          \x20     for axiomName in axioms do\n\
          \x20       unless allowed.contains axiomName do\n\
-         \x20         IO.println s!\"{AXIOM_LINE}\\t{{name}}\\t{{axiomName}}\"\n\
-         \x20 IO.println s!\"{AUDITED_LINE}\\t{{audited}}\"\n",
+         \x20         IO.println (\"{AXIOM_LINE}\\t\" ++ toString declaration ++ \"\\t\" ++ toString axiomName)\n\
+         \x20 IO.println (\"{AUDITED_LINE}\\t\" ++ toString audited)\n",
         allowed = allowed.join(", "),
         names = names.join(", "),
     )

@@ -145,10 +145,16 @@ fn audit_axioms(
     folder: &str,
     changed: &[String],
 ) -> CheckStep<crate::axioms::AxiomAudit> {
-    let modules: Vec<String> = changed
+    let (modules, unbuilt): (Vec<String>, Vec<String>) = changed
         .iter()
         .filter_map(|path| module_name(folder, path))
-        .collect();
+        .partition(|module| built(lake_folder, module));
+    if modules.is_empty() {
+        return CheckStep::Ran(crate::axioms::AxiomAudit {
+            unbuilt,
+            ..Default::default()
+        });
+    }
     let script = lake_folder.join(AUDIT_FILE);
     let written = script
         .parent()
@@ -163,12 +169,22 @@ fn audit_axioms(
         Ok(output) => {
             let stdout = String::from_utf8_lossy(&output.stdout);
             match parse_audit(&stdout) {
-                Some(audit) if output.status.success() => CheckStep::Ran(audit),
+                Some(audit) if output.status.success() => {
+                    CheckStep::Ran(crate::axioms::AxiomAudit { unbuilt, ..audit })
+                }
                 _ => CheckStep::Failed(excerpt("lake lean (axiom audit)", &output)),
             }
         }
         Err(error) => CheckStep::Failed(error),
     }
+}
+
+/// Whether `lake build` left an `.olean` for `module`.
+fn built(lake_folder: &Path, module: &str) -> bool {
+    let mut olean = lake_folder.join(".lake/build/lib/lean");
+    olean.extend(module.split('.'));
+    olean.set_extension("olean");
+    olean.is_file()
 }
 
 fn lake(folder: &Path, arguments: &[&str]) -> Result<Output, String> {

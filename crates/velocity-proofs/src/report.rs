@@ -109,7 +109,11 @@ impl ProofCheckReport {
     fn axiom_line(&self) -> String {
         match &self.axioms {
             CheckStep::Ran(audit) if audit.disallowed.is_empty() => {
-                format!("passed ({} declarations audited)", audit.audited)
+                format!(
+                    "passed ({} declarations audited){}",
+                    audit.audited,
+                    unbuilt_note(audit)
+                )
             }
             CheckStep::Ran(audit) => {
                 let found: Vec<String> = audit
@@ -136,6 +140,18 @@ impl ProofCheckReport {
             )
         }
     }
+}
+
+/// Modules no library target builds are not proofs Lean checked; PR duty decides whether
+/// that matters (a re-export stub doesn't, a design proof does).
+fn unbuilt_note(audit: &AxiomAudit) -> String {
+    if audit.unbuilt.is_empty() {
+        return String::new();
+    }
+    format!(
+        ". Not built by `lake build`, so Lean never checked them: {}",
+        audit.unbuilt.join(", ")
+    )
 }
 
 fn indent(text: &str) -> String {
