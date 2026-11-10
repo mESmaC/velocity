@@ -5,6 +5,7 @@ use velocity_store::PersistedState;
 
 mod agents;
 pub mod airc_claims;
+mod airc_delivery;
 mod build_gate;
 pub mod duty;
 mod follow_through;
@@ -32,6 +33,7 @@ fn bindings() -> Builder<tauri::Wry> {
         agents::edit_agents_md,
         agents::write_agents_md,
         agents::tighten_rule,
+        airc_delivery::airc_send,
         window::get_window_state,
         window::minimize_window,
         window::toggle_maximize_window,
@@ -157,6 +159,7 @@ pub fn run() -> anyhow::Result<()> {
             pull_request_panel::initialize(application.handle());
             interview::start(application.handle());
             sweeps::initialize(application.handle())?;
+            airc_delivery::initialize(application.handle());
             Ok(())
         })
         .on_window_event(|window, event| {

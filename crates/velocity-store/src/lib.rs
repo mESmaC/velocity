@@ -554,6 +554,10 @@ pub struct ThreadItem {
     pub pull_request_number: Option<u32>,
     #[serde(default)]
     pub follow_through: Option<velocity_github::follow_through::FollowThrough>,
+    /// Last AIRC message whose receiving turn completed (F14).
+    #[serde(default)]
+    #[specta(skip)]
+    pub airc_cursor: u64,
     pub review_stage: Option<ReviewStage>,
     pub task_ids: Vec<u32>,
     #[serde(default)]
@@ -585,6 +589,7 @@ impl ThreadItem {
             worktree_path_id: None,
             pull_request_number: None,
             follow_through: None,
+            airc_cursor: 0,
             review_stage: None,
             task_ids: Vec::new(),
             issue: None,
@@ -614,6 +619,7 @@ impl ThreadItem {
             worktree_path_id: None,
             pull_request_number: None,
             follow_through: None,
+            airc_cursor: 0,
             review_stage: None,
             task_ids: Vec::new(),
             issue: None,
