@@ -1187,7 +1187,7 @@ Each milestone ends with a working app. PR duty checks an item off when it lands
 - [x] Agent runner: providers, models, effort, speed (Regular / Fast where the agent offers it), full permissions, queued steering (Rule 1, F4, F15)
 - [x] Thread titles from the title model (default GPT-6 Luna · Low · Fast), in parallel with taking a worktree; branch named from the title (F4, F15)
 - [x] ACP client (`agent-client-protocol`): spawn per thread, `session/new` in the worktree with AIRC as an MCP server, updates → transcript, auto-allow permissions, cancel, queued prompts, `fs`/`terminal` rooted at the worktree but not confined to it, full tool access with your config loaded and shared MCP servers (§3.2)
-- [ ] ACP agents for Claude Code (`claude-agent-acp`), Codex (`codex-acp`), Kimi Code (`kimi acp`) and Antigravity (`agy acp`), each using its own OAuth login through `authenticate`; Settings → Providers, model menu, limit meter (F15)
+- [x] ACP agents for Claude Code (`claude-agent-acp`), Codex (`codex-acp`), Kimi Code (`kimi acp`) and Antigravity (`agy acp`), each using its own OAuth login through `authenticate`; Settings → Providers, model menu, limit meter (F15)
 - [ ] Custom ACP agents: Add an ACP agent (name, command, arguments), and an editable command on each provider card (F15)
 - [x] Worktree manager: create / delete / prune, path scheme, setup step (copy files, run command, shared build cache) (F5)
 - [x] Thread view: transcript, tool steps, diffs, header with worktree path, composer, slash menu (F4)
