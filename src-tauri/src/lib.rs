@@ -18,6 +18,7 @@ mod interview;
 mod issue_panel;
 pub mod layout;
 mod new_project;
+mod parking;
 mod projects;
 mod pull_request_panel;
 pub mod reviews;
