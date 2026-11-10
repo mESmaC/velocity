@@ -19,6 +19,29 @@ pub struct ThreadEntry {
     pub duty: Option<DutyRoleEntry>,
 }
 
+impl ThreadEntry {
+    /// A row under Swarms that opens the Swarm view and nests its members (F10, F16).
+    pub fn swarm_row(identifier: usize, title: String, metadata: String, agents: usize) -> Self {
+        Self {
+            policy: LayoutRow {
+                identifier,
+                group: crate::layout::ThreadGroup::Swarm,
+                hidden: false,
+                matches_search: true,
+                member_of: None,
+                expanded: false,
+                agent_count: agents,
+                paused: false,
+            },
+            title,
+            metadata,
+            view: NavigationView::Swarm,
+            detail: None,
+            duty: None,
+        }
+    }
+}
+
 #[cfg_attr(
     feature = "bindings",
     derive(serde::Serialize, serde::Deserialize, specta::Type)
@@ -64,6 +87,8 @@ pub struct LayoutData {
     pub interviews: Vec<InterviewEntry>,
     /// Swarm rows and views, keyed by their sidebar identifier (F10).
     pub swarms: Vec<SwarmEntry>,
+    /// Goal swarm rows and views, keyed by their sidebar identifier (F16).
+    pub goal_swarms: Vec<crate::goal_swarm_view::GoalSwarmEntry>,
 }
 
 #[cfg_attr(
@@ -117,6 +142,8 @@ pub struct SidebarRow {
     pub number: Option<usize>,
     /// A swarm row's segmented progress bar, one segment per member (F10).
     pub segments: Vec<SwarmStage>,
+    /// A goal swarm row: the target icon instead of the swarm icon (F16).
+    pub goal: bool,
 }
 
 #[cfg_attr(
@@ -271,6 +298,12 @@ pub enum LayoutAction {
         #[cfg_attr(feature = "bindings", specta(type = String))]
         usize,
     ),
+    /// The goal swarm view's + Agents: the Goal swarm dialog adding agents on its prompt (F16).
+    AddGoalAgents(
+        #[cfg_attr(feature = "bindings", serde(with = "crate::ipc_number"))]
+        #[cfg_attr(feature = "bindings", specta(type = String))]
+        usize,
+    ),
     Keyboard(KeyboardInput),
     NumberHints(NumberHintEvent),
     ComposerText(String),
@@ -305,6 +338,8 @@ pub struct LayoutSnapshot {
     pub active_thread: Option<ThreadDetailSnapshot>,
     pub active_duty: Option<DutyViewSnapshot>,
     pub active_swarm: Option<SwarmViewSnapshot>,
+    /// The selected goal swarm's view (F16); its rows share the Swarm view.
+    pub active_goal_swarm: Option<crate::goal_swarm_view::GoalSwarmViewSnapshot>,
     pub default_model_pill: ModelPillView,
     pub search: String,
     pub groups: Vec<SidebarGroup>,
