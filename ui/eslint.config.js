@@ -17,6 +17,7 @@ export default typescript.config(
         HTMLElement: 'readonly',
         KeyboardEvent: 'readonly',
         HTMLInputElement: 'readonly',
+        HTMLTextAreaElement: 'readonly',
         HTMLDialogElement: 'readonly',
         MouseEvent: 'readonly',
         window: 'readonly',
