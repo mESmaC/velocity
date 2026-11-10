@@ -137,8 +137,9 @@ pub(crate) fn resume(application: &AppHandle, key: ThreadKey, prompt: &str) -> R
         &thread.branch_name,
     )
     .map_err(|error| error.to_string())?;
-    let (agent, bypass_modes) = agent_launch(thread.provider).map_err(|error| error.to_string())?;
-    let mut setup = SessionSetup::new(path.into(), bypass_modes);
+    let (agent, bypass_modes) = agent_launch(thread.provider);
+    let mut setup = SessionSetup::new(path.into(), bypass_modes)
+        .with_run_settings(velocity_threads::thread_run_settings(&thread));
     setup.airc = crate::airc_access::managed(application)
         .map(|airc| airc.thread(key.0, key.1, Path::new(path)));
     crate::airc_claims::attach(application, key, &setup, &thread.branch_name)?;

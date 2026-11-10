@@ -3,6 +3,7 @@ import { listen, type EventCallback } from '@tauri-apps/api/event';
 export * from './ipc/agents';
 export * from './ipc/goal-swarm';
 export * from './ipc/issues';
+export * from './ipc/providers';
 export * from './ipc/skills';
 export * from './ipc/swarm';
 import {

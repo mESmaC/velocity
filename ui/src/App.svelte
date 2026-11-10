@@ -15,6 +15,8 @@
   import AgentsEditor from './lib/AgentsEditor.svelte';
   import CommandPalette from './lib/CommandPalette.svelte';
   import WorktreeSettings from './lib/WorktreeSettings.svelte';
+  import ProvidersSettings from './lib/ProvidersSettings.svelte';
+  import AgentSettings from './lib/AgentSettings.svelte';
   import NewProjectDialog from './lib/NewProjectDialog.svelte';
   import DutyDialog from './lib/DutyDialog.svelte';
   import ThreadMenu from './lib/ThreadMenu.svelte';
@@ -297,6 +299,10 @@
             swarm={layout.active_goal_swarm}
             {send}
           />{:else if layout.view === 'Settings' && layout.settings_tab === 'worktrees'}<WorktreeSettings
+            {send}
+          />{:else if layout.view === 'Settings' && layout.settings_tab === 'providers'}<ProvidersSettings
+            {send}
+          />{:else if layout.view === 'Settings' && layout.settings_tab === 'agent-settings'}<AgentSettings
             {send}
           />{/if}
       </main>

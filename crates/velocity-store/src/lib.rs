@@ -46,6 +46,8 @@ pub mod goal_swarm_view;
 pub mod goal_swarms;
 mod project_layout;
 pub mod projects;
+pub mod provider_views;
+pub mod providers;
 pub mod swarm_dialog;
 pub mod swarms;
 pub mod task_list;
@@ -409,6 +411,16 @@ pub struct ProviderSettings {
     pub title_model: String,
     pub title_effort: EffortLevel,
     pub title_speed: SpeedMode,
+    /// What each provider's agent last reported (F15). Absent from state saved before
+    /// Settings → Providers.
+    #[serde(default)]
+    pub catalog: Vec<providers::ProviderCatalog>,
+    /// Providers you signed out of in Velocity: new work can't use them (F15 Sign out).
+    #[serde(default)]
+    pub signed_out: Vec<ProviderKind>,
+    /// Model chips you switched off (F15 Models).
+    #[serde(default)]
+    pub hidden_models: Vec<providers::HiddenModel>,
 }
 
 fn default_title_provider() -> ProviderKind {
@@ -490,6 +502,9 @@ impl Settings {
                 title_model: core_settings.providers.title_model,
                 title_effort: core_settings.providers.title_effort.into(),
                 title_speed: core_settings.providers.title_speed.into(),
+                catalog: Vec::new(),
+                signed_out: Vec::new(),
+                hidden_models: Vec::new(),
             },
             agents: AgentSettings {
                 max_turns: core_settings.agents.max_turns,

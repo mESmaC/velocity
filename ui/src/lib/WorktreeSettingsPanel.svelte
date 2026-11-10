@@ -6,8 +6,7 @@
     WorktreePathPreview,
   } from './ipc';
   import './theme/worktrees.css';
-  import AgentSettings from './AgentSettings.svelte';
-  let agentPage = $state(false);
+  import SettingsNav from './SettingsNav.svelte';
 
   let {
     view,
@@ -48,23 +47,9 @@
     <span>applies to every project</span>
   </header>
   <div class="worktree-settings-body">
-    <nav class="worktree-settings-nav" aria-label="Settings pages">
-      <button
-        class:on={!agentPage}
-        aria-current={!agentPage ? 'page' : undefined}
-        onclick={() => (agentPage = false)}>Worktrees</button
-      >
-      <button disabled>Providers</button>
-      <button disabled>Skills</button>
-      <button
-        class:on={agentPage}
-        aria-current={agentPage ? 'page' : undefined}
-        onclick={() => (agentPage = true)}>Agents</button
-      >
-      <button disabled>Proofs</button>
-    </nav>
+    <SettingsNav current="worktrees" {send} />
     <div class="worktree-settings-main">
-      {#if agentPage}<AgentSettings />{:else if view}
+      {#if view}
         <section>
           <h2>Worktree location</h2>
           <p class="worktree-description">

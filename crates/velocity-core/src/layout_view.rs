@@ -132,6 +132,16 @@ pub struct ProviderUsage {
     pub percent_used: u8,
 }
 
+impl ProviderUsage {
+    pub fn new(provider: ProviderColor, label: String, percent_used: u8) -> Self {
+        Self {
+            provider,
+            label,
+            percent_used,
+        }
+    }
+}
+
 #[cfg_attr(
     feature = "bindings",
     derive(serde::Serialize, serde::Deserialize, specta::Type)

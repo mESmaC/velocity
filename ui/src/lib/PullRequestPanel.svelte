@@ -106,6 +106,11 @@
         <span class="item-meta pull-request-meta">
           <span class="pull-request-add">+{row.additions}</span>
           <span class="pull-request-delete">−{row.deletions}</span>
+          {#if row.tier}<span
+              class="pull-request-tier"
+              data-tier={row.tier}
+              title="Review tier">{row.tier}</span
+            >{/if}
           <span class="pull-request-review" data-status={row.review}
             >{row.review_label}</span
           >
