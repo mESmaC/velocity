@@ -245,6 +245,12 @@ fn release(application: &AppHandle, key: ThreadKey, channel: &Channel) -> Result
     )?
     .release_agent_work(key.0, key.1, pushed)
     .map_err(|error| error.to_string())?;
+    post(
+        channel,
+        key,
+        "released",
+        "Piece returned to the pool; worktree kept",
+    )?;
     publish(application, key)
 }
 
