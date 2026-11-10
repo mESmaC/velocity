@@ -51,7 +51,7 @@ fn deliver(
     thread: &ThreadItem,
 ) -> Result<(), String> {
     let key = (project.id, thread.id);
-    let member = format!("thread-{}-{}", key.0, key.1);
+    let member = format!("thread-{}", key.1);
     let channel = channel(application, project.id)?;
     let live = {
         let runtimes = lock(
