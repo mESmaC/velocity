@@ -5489,6 +5489,7 @@ dependencies = [
  "tauri-specta",
  "tokio",
  "velocity-acp",
+ "velocity-airc",
  "velocity-core",
  "velocity-git",
  "velocity-github",
