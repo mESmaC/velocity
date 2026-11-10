@@ -13,7 +13,7 @@ use velocity_github::ReviewRecord;
 use velocity_proofs::{check_worktree, load_statement_lock, statements_at};
 
 /// The review being prepared: its project's approval record and the commits it checks.
-pub(crate) struct ProofCheckTarget<'a> {
+pub struct ProofCheckTarget<'a> {
     pub app_data: &'a Path,
     pub project: &'a str,
     pub nickname: &'a str,
@@ -25,7 +25,7 @@ pub(crate) struct ProofCheckTarget<'a> {
 
 /// Runs the checks (blocking: Lake can take minutes) and returns what PR duty's prompt adds:
 /// nothing when the PR touches no proofs and no locked statement moved.
-pub(crate) fn check_before_review(target: &ProofCheckTarget) -> String {
+pub fn check_before_review(target: &ProofCheckTarget) -> String {
     let mut sections = Vec::new();
     if let Some(reset) = statement_reset(target) {
         sections.push(reset);
