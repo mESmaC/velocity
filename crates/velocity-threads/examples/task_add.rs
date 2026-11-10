@@ -60,7 +60,7 @@ fn show_locked(
 }
 
 fn seed(directory: &str) -> Result<(), Box<dyn std::error::Error>> {
-    std::fs::create_dir(&directory)?;
+    std::fs::create_dir(directory)?;
     let mut state = PersistedState::default();
     state
         .projects
