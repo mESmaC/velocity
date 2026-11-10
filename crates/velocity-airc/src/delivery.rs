@@ -84,7 +84,9 @@ fn routed(
     entries: &[Entry],
     mode: crate::MessageMode,
 ) -> Option<String> {
-    if crate::routing::event_for(entry, nick, entries) {
+    if crate::routing::event_for(entry, nick, entries)
+        || crate::routing::broken_for(entry, nick, entries)
+    {
         return Some(format!(
             "via AIRC · event {} · #{}\n{}",
             entry.kind, entry.sequence, entry.text
@@ -136,6 +138,7 @@ pub fn message_for(entry: &Entry, nick: &str) -> Option<String> {
         return None;
     }
     let instruction = match entry.intent.as_deref() {
+        Some("inform") => "Information only; do not reply.",
         Some("question") => "Answer in AIRC.",
         Some("request") => "Reply in AIRC with done, or declined and the reason.",
         _ => "Information only; do not reply unless an answer was requested.",

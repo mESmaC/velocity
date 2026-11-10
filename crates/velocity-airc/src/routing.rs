@@ -128,3 +128,45 @@ fn owns_pull_request(
             })
     })
 }
+
+/// Main-watcher notices name a broken merge commit. Check the actual checkout,
+/// rather than notifying every agent on the project when only some contain it.
+pub(crate) fn broken_for(entry: &Entry, nick: &str, entries: &[Entry]) -> bool {
+    if entry.kind != "broken" {
+        return false;
+    }
+    let Some(head) = entry.head.as_deref().filter(|head| {
+        head.len() >= 7 && head.len() <= 64 && head.bytes().all(|byte| byte.is_ascii_hexdigit())
+    }) else {
+        return false;
+    };
+    let Some(member) = entries
+        .iter()
+        .rev()
+        .find(|record| record.kind == "join" && record.nick == nick)
+        .map(|record| record.member.as_str())
+    else {
+        return false;
+    };
+    let Some(checkout) = entries
+        .iter()
+        .rev()
+        .find(|record| record.member == member && record.checkout.is_some())
+        .and_then(|record| record.checkout.as_ref())
+    else {
+        return false;
+    };
+    std::process::Command::new("git")
+        .args([
+            "-c",
+            "core.longpaths=true",
+            "-C",
+            &checkout.worktree,
+            "merge-base",
+            "--is-ancestor",
+            head,
+            "HEAD",
+        ])
+        .output()
+        .is_ok_and(|output| output.status.success())
+}
