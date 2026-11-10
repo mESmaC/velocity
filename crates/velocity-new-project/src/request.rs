@@ -72,11 +72,18 @@ pub struct CreatedProject {
 /// Settings · Providers.
 pub fn new_project_defaults(home: &Path, settings: Settings) -> NewProjectDefaults {
     let folder = format!("{}{MAIN_SEPARATOR}", home.display());
+    // A signed-out default gives way to the first signed-in provider and its model (F15).
+    let provider = settings.new_work_choice();
+    let model_name = if provider == settings.providers.default_provider {
+        settings.providers.default_model.clone()
+    } else {
+        Some(settings.provider_model(provider))
+    };
     NewProjectDefaults {
         clone_to: folder.clone(),
         folder,
-        provider: settings.providers.default_provider,
-        model_name: settings.providers.default_model,
+        provider,
+        model_name,
         effort: settings.providers.default_effort,
         speed: settings.providers.default_speed,
     }

@@ -1362,6 +1362,67 @@
   --airc-nick-9: #d4c38f;
 }
 
+/* Providers (F15): Settings → Providers cards, model chips and the composer model menu,
+   from design/main-window.html rules 494–565 (.pv, .mchip, .mm, .lim), 201–210 (.seg.dis,
+   .ttl-note), 437–443 with 1072–1074 (.ctx), 490–493 (.models, .model-card.out) and the
+   glass overrides 1043–1046. Model cards and segments use the new-project values, and the
+   card frame the worktree drive values, which come from the same reference rules. */
+:root {
+  --providers-list-gap: 8px;
+  --providers-card-columns: 16px minmax(0, 1fr) auto;
+  --providers-card-gap: 3px 10px;
+  --providers-card-padding: 11px 12px;
+  --providers-mark-padding: 2px 0 0;
+  --providers-name-gap: 8px;
+  --providers-name-font-size: 12.5px;
+  --providers-name-font-weight: 600;
+  --providers-name-detail-font-size: 10.5px;
+  --providers-name-detail-font-weight: 400;
+  --providers-status-gap: 6px;
+  --providers-status-font-size: 11px;
+  --providers-dot-size: 6px;
+  --providers-dot-off-border: 1px solid var(--muted);
+  --providers-actions-gap: 6px;
+  --providers-meta-font: 10px var(--mono);
+  --providers-limit-gap: 8px;
+  --providers-limit-margin: 5px 0 0;
+  --providers-bar-width: 140px;
+  --providers-bar-height: 3px;
+  --providers-bar-radius: 2px;
+  --providers-models-gap: 5px;
+  --providers-models-label-margin: 0 3px 0 0;
+  --providers-chip-padding: 2px 8px;
+  --providers-chip-border: 1px solid var(--line-dim);
+  --providers-chip-radius: 999px;
+  --providers-chip-font-size: 10.5px;
+  --providers-chip-on-border: var(--line-mid);
+  --providers-segment-disabled-opacity: 0.4;
+  --providers-row-gap: 14px;
+  --providers-row-padding: 8px 0;
+  --providers-row-border: 1px solid var(--line-dim);
+  --providers-row-font-size: 11.5px;
+  --providers-row-first-margin: 10px 0 0;
+  --providers-title-note-margin: 8px 0 0;
+  --providers-title-note-font-size: 11px;
+  --providers-out-border-style: dashed;
+  --providers-out-heading-weight: 500;
+  --providers-menu-min-width: 260px;
+  /* Not in the reference, whose mock lists four models: a long list scrolls inside the
+     menu instead of running off the top of the window. */
+  --providers-menu-max-height: 60vh;
+  --providers-menu-bottom: calc(100% + 6px);
+  --providers-menu-head-gap: 6px;
+  --providers-menu-head-padding: 7px 9px 3px;
+  --providers-menu-head-font-size: 10.5px;
+  --providers-menu-head-meta-font: 9.5px var(--mono);
+  --providers-menu-item-padding: 6px 9px 6px 28px;
+  --providers-menu-sign-in-padding: 6px 9px;
+  --providers-menu-row-padding: 6px 9px 5px;
+  --providers-menu-row-font-size: 10.5px;
+  --providers-menu-why-font-size: 10px;
+  --providers-menu-why-margin: 0 0 0 6px;
+}
+
 /* F8 Task List, reference .item .sub and .task.done .ttl. */
 :root {
   --task-source-gap: 8px;

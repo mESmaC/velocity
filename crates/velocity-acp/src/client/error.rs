@@ -21,6 +21,10 @@ pub enum ClientError {
     Io(#[from] std::io::Error),
     #[error("the agent did not answer within {0:?}")]
     TimedOut(std::time::Duration),
+    #[error("sign-in failed: {0}")]
+    SignIn(String),
+    #[error("could not read the usage report: {0}")]
+    Usage(String),
     #[error("ACP: {0}")]
     Protocol(#[from] agent_client_protocol::Error),
 }

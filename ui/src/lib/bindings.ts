@@ -27,6 +27,26 @@ export const commands = {
 	dispatchLayout: (action: LayoutAction_Deserialize) => __TAURI_INVOKE<LayoutSnapshot_Serialize>("dispatch_layout", { action }),
 	listProjects: () => __TAURI_INVOKE<ProjectList>("list_projects"),
 	switchProject: (identifier: number) => __TAURI_INVOKE<LayoutSnapshot_Serialize>("switch_project", { identifier }),
+	listProviders: () => __TAURI_INVOKE<ProvidersView_Serialize>("list_providers"),
+	/**
+	 *  Sign in with Claude / ChatGPT / Google / Kimi (F15): runs the agent's own login, which
+	 *  opens the provider's OAuth page in your browser. The card waits until it finishes.
+	 */
+	providerSignIn: (provider: ProviderKind) => __TAURI_INVOKE<ProvidersView_Serialize>("provider_sign_in", { provider }),
+	/**
+	 *  Sign out (F15), or Cancel while waiting for the browser. Agents already running on the
+	 *  provider keep their session until they finish; new work can't use it.
+	 */
+	providerSignOut: (provider: ProviderKind) => __TAURI_INVOKE<ProvidersView_Serialize>("provider_sign_out", { provider }),
+	/**  Model chips, the default for new threads and the thread title model (F15). */
+	setProviderSettings: (edit: ProviderEdit) => __TAURI_INVOKE<ProvidersView_Serialize>("set_provider_settings", { edit }),
+	/**  The composer's model menu (F4): for a thread, or the defaults from the home composer. */
+	getModelMenu: (projectIdentifier: number, threadIdentifier: number | null) => __TAURI_INVOKE<ModelMenuView_Serialize>("get_model_menu", { projectIdentifier, threadIdentifier }),
+	/**
+	 *  A pick from the model menu. On a running thread it applies from the next message; the
+	 *  thread stays on its provider's agent (F4).
+	 */
+	chooseModel: (projectIdentifier: number, threadIdentifier: number | null, choice: ModelMenuChoice) => __TAURI_INVOKE<ModelMenuView_Serialize>("choose_model", { projectIdentifier, threadIdentifier, choice }),
 	getWorkPool: (projectIdentifier: number) => __TAURI_INVOKE<WorkPool_Serialize>("get_work_pool", { projectIdentifier }),
 	listWorktrees: () => __TAURI_INVOKE<WorktreeSettingsView_Serialize>("list_worktrees"),
 	setWorktreeSettings: (edit: WorktreeSettingsEdit, projectIdentifier: number | null) => __TAURI_INVOKE<WorktreeSettingsView_Serialize>("set_worktree_settings", { edit, projectIdentifier }),
@@ -111,6 +131,8 @@ export const LAYOUT_INTENT_EVENT = "layout://intent" as const;
 export const LAYOUT_STATE_EVENT = "layout://state" as const;
 
 export const PROJECT_SELECTED_EVENT = "project://selected" as const;
+
+export const PROVIDERS_EVENT = "provider://status" as const;
 
 export const PR_CI_EVENT = "pr://ci" as const;
 
@@ -987,6 +1009,12 @@ export type GoalThreadMember_Serialize = {
 	choosing: boolean,
 };
 
+/**  A model you hid from the pickers by clicking its chip (F15 Models). */
+export type HiddenModel = {
+	provider: ProviderKind,
+	model: string,
+};
+
 export type InlineText = InlineText_Serialize | InlineText_Deserialize;
 
 export type InlineText_Deserialize = {
@@ -1435,6 +1463,12 @@ export type LayoutStateChanged_Serialize = {
 	state: LayoutSnapshot_Serialize,
 };
 
+export type LimitView = {
+	percent_used: number,
+	/**  `38% of 5-hour · resets in 1h 52m`. */
+	label: string,
+};
+
 export type LintKind = 
 /**  Wording that makes a rule optional ("maybe", "try to", "where possible"). */
 "Hedge" | 
@@ -1446,6 +1480,98 @@ export type LintKind =
 export type MergeMethod = "SQUASH" | "REBASE" | "MERGE";
 
 export type MessageMode = "Open" | "HeadsDown" | "Quarantined";
+
+export type ModelCardView = {
+	provider: ProviderKind,
+	model: string,
+	/**  The provider's name. */
+	note: string,
+	selected: boolean,
+};
+
+export type ModelChipView = {
+	model: string,
+	shown: boolean,
+};
+
+/**  Model cards plus effort and speed: the default for new threads, or the title model. */
+export type ModelChoiceView = ModelChoiceView_Serialize | ModelChoiceView_Deserialize;
+
+/**  Model cards plus effort and speed: the default for new threads, or the title model. */
+export type ModelChoiceView_Deserialize = {
+	cards: ModelCardView[],
+	sign_in: SignInCardView[],
+	effort: EffortLevel,
+	speed: SpeedMode,
+	/**  The chosen model offers a fast mode; otherwise the Speed control is greyed out. */
+	speed_available: boolean,
+	/**  `<model> has no fast mode`. */
+	speed_note?: string | null,
+};
+
+/**  Model cards plus effort and speed: the default for new threads, or the title model. */
+export type ModelChoiceView_Serialize = {
+	cards: ModelCardView[],
+	sign_in: SignInCardView[],
+	effort: EffortLevel,
+	speed: SpeedMode,
+	/**  The chosen model offers a fast mode; otherwise the Speed control is greyed out. */
+	speed_available: boolean,
+	/**  `<model> has no fast mode`. */
+	speed_note: string | null,
+};
+
+/**  A pick from the model menu. */
+export type ModelMenuChoice = ({ Model: {
+	provider: ProviderKind,
+	model: string,
+} }) & { Effort?: never; Speed?: never } | ({ Effort: EffortLevel }) & { Model?: never; Speed?: never } | ({ Speed: SpeedMode }) & { Effort?: never; Model?: never };
+
+export type ModelMenuGroup = {
+	provider: ProviderKind,
+	name: string,
+	/**  `38% of weekly`, `signed out`, `signing in…`. */
+	note: string,
+	signed_in: boolean,
+	sign_in_label: string,
+	can_sign_in: boolean,
+	models: ModelMenuItem[],
+};
+
+export type ModelMenuItem = {
+	model: string,
+	selected: boolean,
+	/**
+	 *  A running thread stays on its provider's agent; other providers' models are listed
+	 *  but can't be picked for it.
+	 */
+	enabled: boolean,
+};
+
+/**  The composer's model menu (F4): grouped by provider, effort and speed at the bottom. */
+export type ModelMenuView = ModelMenuView_Serialize | ModelMenuView_Deserialize;
+
+/**  The composer's model menu (F4): grouped by provider, effort and speed at the bottom. */
+export type ModelMenuView_Deserialize = {
+	/**  The thread the menu changes, or `None` for the home composer (the defaults). */
+	thread_identifier?: number | null,
+	groups: ModelMenuGroup[],
+	effort: EffortLevel,
+	speed: SpeedMode,
+	speed_available: boolean,
+	speed_note?: string | null,
+};
+
+/**  The composer's model menu (F4): grouped by provider, effort and speed at the bottom. */
+export type ModelMenuView_Serialize = {
+	/**  The thread the menu changes, or `None` for the home composer (the defaults). */
+	thread_identifier: number | null,
+	groups: ModelMenuGroup[],
+	effort: EffortLevel,
+	speed: SpeedMode,
+	speed_available: boolean,
+	speed_note: string | null,
+};
 
 export type ModelPillView = {
 	provider: ProviderColor,
@@ -1881,9 +2007,133 @@ export type ProofSettings = {
 	stress_diff_input_count: number,
 };
 
+export type ProviderCardView = ProviderCardView_Serialize | ProviderCardView_Deserialize;
+
+export type ProviderCardView_Deserialize = {
+	provider: ProviderKind,
+	name: string,
+	/**  `runs Claude Code over ACP · OAuth`. */
+	runs: string,
+	command: string,
+	phase: ProviderPhase,
+	status: string,
+	sign_in_label: string,
+	can_sign_in: boolean,
+	limit?: LimitView | null,
+	models: ModelChipView[],
+};
+
+export type ProviderCardView_Serialize = {
+	provider: ProviderKind,
+	name: string,
+	/**  `runs Claude Code over ACP · OAuth`. */
+	runs: string,
+	command: string,
+	phase: ProviderPhase,
+	status: string,
+	sign_in_label: string,
+	can_sign_in: boolean,
+	limit: LimitView | null,
+	models: ModelChipView[],
+};
+
+/**  What Velocity last read from one provider's agent. */
+export type ProviderCatalog = ProviderCatalog_Serialize | ProviderCatalog_Deserialize;
+
+/**  What Velocity last read from one provider's agent. */
+export type ProviderCatalog_Deserialize = {
+	provider: ProviderKind,
+	signed_in: boolean,
+	plan?: string | null,
+	models?: ProviderModel_Deserialize[],
+	limit?: ProviderLimit_Deserialize | null,
+};
+
+/**  What Velocity last read from one provider's agent. */
+export type ProviderCatalog_Serialize = {
+	provider: ProviderKind,
+	signed_in: boolean,
+	plan: string | null,
+	models: ProviderModel_Serialize[],
+	limit: ProviderLimit_Serialize | null,
+};
+
 export type ProviderColor = "Claude" | "Codex" | "Antigravity" | "Kimi";
 
+/**  A change from Settings → Providers or the home composer's model menu. */
+export type ProviderEdit = 
+/**  Show or hide a model chip in the pickers. */
+({ ShowModel: {
+	provider: ProviderKind,
+	model: string,
+	shown: boolean,
+} }) & { DefaultEffort?: never; DefaultModel?: never; DefaultSpeed?: never; TitleEffort?: never; TitleModel?: never; TitleSpeed?: never } | ({ DefaultModel: {
+	provider: ProviderKind,
+	model: string,
+} }) & { DefaultEffort?: never; DefaultSpeed?: never; ShowModel?: never; TitleEffort?: never; TitleModel?: never; TitleSpeed?: never } | ({ DefaultEffort: EffortLevel }) & { DefaultModel?: never; DefaultSpeed?: never; ShowModel?: never; TitleEffort?: never; TitleModel?: never; TitleSpeed?: never } | ({ DefaultSpeed: SpeedMode }) & { DefaultEffort?: never; DefaultModel?: never; ShowModel?: never; TitleEffort?: never; TitleModel?: never; TitleSpeed?: never } | ({ TitleModel: {
+	provider: ProviderKind,
+	model: string,
+} }) & { DefaultEffort?: never; DefaultModel?: never; DefaultSpeed?: never; ShowModel?: never; TitleEffort?: never; TitleSpeed?: never } | ({ TitleEffort: EffortLevel }) & { DefaultEffort?: never; DefaultModel?: never; DefaultSpeed?: never; ShowModel?: never; TitleModel?: never; TitleSpeed?: never } | ({ TitleSpeed: SpeedMode }) & { DefaultEffort?: never; DefaultModel?: never; DefaultSpeed?: never; ShowModel?: never; TitleEffort?: never; TitleModel?: never } | 
+/**  Back to GPT-6 Luna · Low · Fast (F15 Thread titles). */
+"TitleReset";
+
 export type ProviderKind = "claude" | "codex" | "antigravity" | "kimi";
+
+/**  The share of one subscription window used, as last read (F15 Limit sources). */
+export type ProviderLimit = ProviderLimit_Serialize | ProviderLimit_Deserialize;
+
+/**  The share of one subscription window used, as last read (F15 Limit sources). */
+export type ProviderLimit_Deserialize = {
+	percent_used: number,
+	/**  `5-hour`, `daily`, `weekly`. */
+	window: string,
+	/**  When the window resets, in Unix seconds. */
+	resets_at?: number | null,
+};
+
+/**  The share of one subscription window used, as last read (F15 Limit sources). */
+export type ProviderLimit_Serialize = {
+	percent_used: number,
+	/**  `5-hour`, `daily`, `weekly`. */
+	window: string,
+	/**  When the window resets, in Unix seconds. */
+	resets_at: number | null,
+};
+
+/**  One model a provider's agent offers, as last read from it. */
+export type ProviderModel = ProviderModel_Serialize | ProviderModel_Deserialize;
+
+/**  One model a provider's agent offers, as last read from it. */
+export type ProviderModel_Deserialize = {
+	/**  The agent's own value for the model. */
+	id: string,
+	name: string,
+	/**  Whether the agent offers a fast mode on it (F15 Speed). */
+	fast?: boolean,
+};
+
+/**  One model a provider's agent offers, as last read from it. */
+export type ProviderModel_Serialize = {
+	/**  The agent's own value for the model. */
+	id: string,
+	name: string,
+	/**  Whether the agent offers a fast mode on it (F15 Speed). */
+	fast: boolean,
+};
+
+/**
+ *  Where a provider's sign-in stands right now. Only the running app knows this; the saved
+ *  catalog holds the last answer.
+ */
+export type ProviderPhase = 
+/**  Its agent is being asked. */
+"Checking" | 
+/**  Its agent's command isn't on `PATH`. */
+"NotInstalled" | "SignedOut" | 
+/**  Waiting for you to finish signing in in the browser. */
+"Waiting" | "SignedIn" | 
+/**  The agent started but couldn't be read. */
+"Failed";
 
 export type ProviderSettings = ProviderSettings_Serialize | ProviderSettings_Deserialize;
 
@@ -1897,6 +2147,15 @@ export type ProviderSettings_Deserialize = {
 	title_model: string,
 	title_effort: EffortLevel,
 	title_speed: SpeedMode,
+	/**
+	 *  What each provider's agent last reported (F15). Absent from state saved before
+	 *  Settings → Providers.
+	 */
+	catalog?: ProviderCatalog_Deserialize[],
+	/**  Providers you signed out of in Velocity: new work can't use them (F15 Sign out). */
+	signed_out?: ProviderKind[],
+	/**  Model chips you switched off (F15 Models). */
+	hidden_models?: HiddenModel[],
 };
 
 export type ProviderSettings_Serialize = {
@@ -1909,12 +2168,59 @@ export type ProviderSettings_Serialize = {
 	title_model: string,
 	title_effort: EffortLevel,
 	title_speed: SpeedMode,
+	/**
+	 *  What each provider's agent last reported (F15). Absent from state saved before
+	 *  Settings → Providers.
+	 */
+	catalog: ProviderCatalog_Serialize[],
+	/**  Providers you signed out of in Velocity: new work can't use them (F15 Sign out). */
+	signed_out: ProviderKind[],
+	/**  Model chips you switched off (F15 Models). */
+	hidden_models: HiddenModel[],
 };
 
 export type ProviderUsage = {
 	provider: ProviderColor,
 	label: string,
 	percent_used: number,
+};
+
+export type ProvidersChanged = ProvidersChanged_Serialize | ProvidersChanged_Deserialize;
+
+export type ProvidersChanged_Deserialize = {
+	view: ProvidersView_Deserialize,
+};
+
+export type ProvidersChanged_Serialize = {
+	view: ProvidersView_Serialize,
+};
+
+export type ProvidersView = ProvidersView_Serialize | ProvidersView_Deserialize;
+
+export type ProvidersView_Deserialize = {
+	cards: ProviderCardView_Deserialize[],
+	/**  `2/4` signed in, for the settings navigation. */
+	signed_in_label: string,
+	defaults: ModelChoiceView_Deserialize,
+	titles: ModelChoiceView_Deserialize,
+	/**  `Titles use GPT-6 Luna · Low · Fast · the default`, or why they use another model. */
+	title_note: string,
+	title_is_default: boolean,
+	/**  The title model's provider isn't signed in. */
+	title_warning: boolean,
+};
+
+export type ProvidersView_Serialize = {
+	cards: ProviderCardView_Serialize[],
+	/**  `2/4` signed in, for the settings navigation. */
+	signed_in_label: string,
+	defaults: ModelChoiceView_Serialize,
+	titles: ModelChoiceView_Serialize,
+	/**  `Titles use GPT-6 Luna · Low · Fast · the default`, or why they use another model. */
+	title_note: string,
+	title_is_default: boolean,
+	/**  The title model's provider isn't signed in. */
+	title_warning: boolean,
 };
 
 export type PullRequest = PullRequest_Serialize | PullRequest_Deserialize;
@@ -2080,8 +2386,6 @@ export type PullRequestPanelRow_Deserialize = {
 	review: ReviewStatus,
 	review_label: string,
 	reviewer?: string | null,
-	/**  PR duty's review tier (F7); absent until the PR's diff could be read. */
-	tier?: ReviewTier | null,
 	thread_identifier?: number | null,
 };
 
@@ -2096,8 +2400,6 @@ export type PullRequestPanelRow_Serialize = {
 	review: ReviewStatus,
 	review_label: string,
 	reviewer: string | null,
-	/**  PR duty's review tier (F7); absent until the PR's diff could be read. */
-	tier: ReviewTier | null,
 	thread_identifier: number | null,
 };
 
@@ -2291,20 +2593,6 @@ export type ReviewStage = "continuous_integration" | "review" | "fixing" | "appr
 
 export type ReviewStatus = "draft" | "checking" | "unclaimed" | "reviewing" | "changes_requested" | "approved";
 
-export type ReviewTier = 
-/**
- *  Docs, comments or formatting: approved once the local checks pass and the change
- *  matches its claim. No proof needed.
- */
-"trivial" | 
-/**  Full review. */
-"normal" | 
-/**
- *  Touches a sensitive path: full review, the full stress suite before merge, and a
- *  confidence proof at the strongest level the language allows (F17).
- */
-"sensitive";
-
 export type RewriteView = RewriteView_Serialize | RewriteView_Deserialize;
 
 export type RewriteView_Deserialize = {
@@ -2411,6 +2699,14 @@ export type SidebarRow_Serialize = {
 	segments: SwarmStage[],
 	/**  A goal swarm row: the target icon instead of the swarm icon (F16). */
 	goal: boolean,
+};
+
+/**  A dashed card for a provider you can't pick yet; clicking it starts its sign-in. */
+export type SignInCardView = {
+	provider: ProviderKind,
+	name: string,
+	note: string,
+	can_sign_in: boolean,
 };
 
 /**

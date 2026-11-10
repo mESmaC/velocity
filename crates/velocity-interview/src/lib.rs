@@ -19,7 +19,7 @@ pub mod turns;
 pub use actions::handle_intent;
 pub use service::{Host, InterviewKey, Interviews, overlay_live, refresh, start_interviews};
 
-use velocity_store::{ProviderKind, StateStore};
+use velocity_store::StateStore;
 
 /// The active project's saved thread, when it is a spec interview.
 fn project_layout_thread(store: &StateStore) -> Option<usize> {
@@ -39,8 +39,6 @@ fn project_layout_thread(store: &StateStore) -> Option<usize> {
 
 #[derive(Debug, thiserror::Error)]
 pub enum InterviewError {
-    #[error("No ACP agent is decided for {0:?} yet (SPEC.md Q14). Pick another provider.")]
-    NoAgent(ProviderKind),
     #[error("{path} isn't written yet. Keep grilling, or ask the agent to write it: {source}")]
     NoSpec {
         path: String,

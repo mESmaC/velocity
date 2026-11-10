@@ -10,7 +10,7 @@ use specta::Type;
 use velocity_core::goal_swarm::{self, Mix, MixEdit, MixRow, PoolCounts, PoolLine};
 use velocity_core::state::resolve_effective_speed;
 
-use crate::swarm_dialog::{LAUNCHABLE, pr_duty, provider_model_name};
+use crate::swarm_dialog::{pr_duty, provider_model_name};
 use crate::{EffortLevel, ProjectItem, ProviderKind, Settings, SpeedMode, StateStore};
 
 /// One mix row as the window holds it: a provider's model, its effort and speed, and how
@@ -189,7 +189,7 @@ impl StateStore {
             segments: segments(settings, &mix),
             rows: mix.rows.iter().zip(0..).map(row_view(settings)).collect(),
             nick_preview: nick_preview(settings, project, &mix),
-            limits: limits(&mix),
+            limits: limits(settings, &mix),
             pool: pool_line,
             pool_note,
             pr_duty_label,
@@ -210,8 +210,11 @@ impl StateStore {
 /// The user's mix with their edit applied, always holding at least "the rest".
 fn edited_mix(settings: &Settings, query: &GoalSwarmDialogQuery) -> Mix<MixModel> {
     let providers = &settings.providers;
+    let usable = settings.usable_providers();
     let fallback = MixModel {
-        provider: launchable(providers.default_provider).unwrap_or(LAUNCHABLE[0]),
+        provider: launchable(&usable, providers.default_provider)
+            .or_else(|| usable.first().copied())
+            .unwrap_or(providers.default_provider),
         effort: providers.default_effort,
         speed: providers.default_speed,
     };
@@ -226,7 +229,7 @@ fn edited_mix(settings: &Settings, query: &GoalSwarmDialogQuery) -> Mix<MixModel
             .iter()
             .map(|row| MixRow {
                 model: MixModel {
-                    provider: launchable(row.provider).unwrap_or(fallback.provider),
+                    provider: launchable(&usable, row.provider).unwrap_or(fallback.provider),
                     effort: row.effort,
                     speed: row.speed,
                 },
@@ -241,13 +244,13 @@ fn edited_mix(settings: &Settings, query: &GoalSwarmDialogQuery) -> Mix<MixModel
         });
     }
     match query.edit {
-        Some(edit) => apply(&mut mix, edit, fallback),
+        Some(edit) => apply(&mut mix, edit, fallback, &usable),
         None => mix.settle(),
     }
     mix
 }
 
-fn apply(mix: &mut Mix<MixModel>, edit: GoalMixEdit, fallback: MixModel) {
+fn apply(mix: &mut Mix<MixModel>, edit: GoalMixEdit, fallback: MixModel, usable: &[ProviderKind]) {
     let position = |index: u32| usize::try_from(index).unwrap_or(usize::MAX);
     let mut change = |index: u32, set: &dyn Fn(&mut MixModel)| {
         if let Some(row) = mix.rows.get_mut(position(index)) {
@@ -264,11 +267,11 @@ fn apply(mix: &mut Mix<MixModel>, edit: GoalMixEdit, fallback: MixModel) {
         GoalMixEdit::RemoveRow { index } => Some(MixEdit::RemoveRow(position(index))),
         GoalMixEdit::EvenSplit => Some(MixEdit::EvenSplit),
         GoalMixEdit::AddRow => Some(MixEdit::AddRow(MixModel {
-            provider: unused_provider(mix).unwrap_or(fallback.provider),
+            provider: unused_provider(mix, usable).unwrap_or(fallback.provider),
             ..fallback
         })),
         GoalMixEdit::SetModel { index, provider } => {
-            if let Some(provider) = launchable(provider) {
+            if let Some(provider) = launchable(usable, provider) {
                 change(index, &|model| model.provider = provider);
             }
             None
@@ -293,14 +296,16 @@ fn apply(mix: &mut Mix<MixModel>, edit: GoalMixEdit, fallback: MixModel) {
     }
 }
 
-fn launchable(provider: ProviderKind) -> Option<ProviderKind> {
-    LAUNCHABLE.contains(&provider).then_some(provider)
+/// Only signed-in providers' models can be picked (F15).
+fn launchable(usable: &[ProviderKind], provider: ProviderKind) -> Option<ProviderKind> {
+    usable.contains(&provider).then_some(provider)
 }
 
 /// Add a model starts on the first model no row runs yet.
-fn unused_provider(mix: &Mix<MixModel>) -> Option<ProviderKind> {
-    LAUNCHABLE
-        .into_iter()
+fn unused_provider(mix: &Mix<MixModel>, usable: &[ProviderKind]) -> Option<ProviderKind> {
+    usable
+        .iter()
+        .copied()
         .find(|provider| mix.rows.iter().all(|row| row.model.provider != *provider))
 }
 
@@ -336,7 +341,8 @@ fn runs_fast(model: MixModel) -> bool {
 }
 
 fn model_options(settings: &Settings) -> Vec<GoalModelOption> {
-    LAUNCHABLE
+    settings
+        .usable_providers()
         .into_iter()
         .map(|provider| GoalModelOption {
             provider,
@@ -430,10 +436,11 @@ pub(crate) fn used_nick_numbers(project: &ProjectItem) -> BTreeMap<String, u32> 
     used
 }
 
-/// One line per provider in the mix. No provider reports its subscription window yet (F15,
-/// Q14), so each line carries its agent count alone.
-fn limits(mix: &Mix<MixModel>) -> Vec<GoalLimitLine> {
-    LAUNCHABLE
+/// One line per provider in the mix, with the share of its window used where the provider
+/// reports one (F15 Limit sources).
+fn limits(settings: &Settings, mix: &Mix<MixModel>) -> Vec<GoalLimitLine> {
+    let now = crate::providers::unix_now();
+    crate::providers::PROVIDERS
         .into_iter()
         .filter_map(|provider| {
             let agents: u32 = mix
@@ -442,7 +449,16 @@ fn limits(mix: &Mix<MixModel>) -> Vec<GoalLimitLine> {
                 .filter(|row| row.model.provider == provider)
                 .map(|row| row.count)
                 .sum();
-            let (text, warn) = goal_swarm::limit_line(provider_name(provider), agents, None);
+            let usage = settings
+                .provider_catalog(provider)
+                .and_then(|entry| entry.limit.as_ref())
+                .map(|limit| goal_swarm::LimitUsage {
+                    percent_used: limit.percent_used,
+                    window: limit.window.clone(),
+                    resets_in: crate::provider_views::resets_in(limit, now),
+                });
+            let (text, warn) =
+                goal_swarm::limit_line(provider_name(provider), agents, usage.as_ref());
             (agents > 0).then_some(GoalLimitLine {
                 provider,
                 text,
