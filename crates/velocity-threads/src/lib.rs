@@ -12,6 +12,7 @@ pub mod goal_swarm;
 pub mod launch;
 pub mod naming;
 pub mod parking;
+pub mod ready_pool;
 pub mod review;
 pub mod review_runner;
 pub mod runtime;
@@ -28,6 +29,7 @@ pub use follow_through::DeliveryStatus;
 pub use launch::{
     LaunchError, LaunchPlan, WorktreeNaming, agent_launch, plan_launch, title_worktree_name,
 };
+pub use ready_pool::{PoolHost, PoolProject, PoolRow, PoolTicket, ReadyPools};
 pub use review::{PR_DUTY_SERVER_SWITCH, ReviewPlan, plan_review};
 pub use review_runner::{PrDutyReviews, ReviewChange, ReviewHost};
 pub use runtime::{

@@ -19,8 +19,9 @@ use velocity_store::{ProjectItem, ProviderKind, Settings};
 use crate::naming::{fallback_title, message_slug, unique_slug};
 use crate::titles::{TitlePlan, plan_title};
 
-/// The project's shared `CARGO_TARGET_DIR` (F5), beside its worktrees. Slugs never contain a
-/// dot, so no worktree can take this name.
+/// The folder setup plans name for the build cache (F5), beside the worktrees. Builds no
+/// longer share a target folder (see [`with_compiler_cache`]); slugs never contain a dot, so
+/// no worktree can take this name.
 pub(crate) const SHARED_TARGET_FOLDER: &str = ".cargo-target";
 
 #[derive(Debug, Error)]
@@ -151,9 +152,9 @@ pub(crate) fn plan_named_launch(
             settings: setup_settings(worktrees),
             untracked_files: worktrees.copy_files.clone(),
             setup_command: worktrees.setup_command.clone(),
-            shared_cargo_target_dir: shared_target.clone(),
+            shared_cargo_target_dir: shared_target,
         },
-        agent: with_shared_target(agent, share_cache.then_some(shared_target)),
+        agent: with_compiler_cache(agent, share_cache),
         bypass_modes,
         title: plan_title(
             settings,
@@ -198,15 +199,12 @@ pub(crate) fn setup_settings(worktrees: &WorktreePreferences) -> GitWorktreeSett
     }
 }
 
-/// Agents build with the project's shared Rust cache, as the setup command did (F5).
-pub(crate) fn with_shared_target(
-    mut agent: AgentLaunch,
-    shared_target: Option<PathBuf>,
-) -> AgentLaunch {
-    if let Some(target) = shared_target {
-        agent
-            .env
-            .push(("CARGO_TARGET_DIR".into(), target.display().to_string()));
+/// Agents build with the shared compiler cache and their own worktree's `target` folder
+/// (F5), as the setup command and the warm pool's prebuild do, so a prebuilt `target` stays
+/// fresh for the agent's first build.
+pub(crate) fn with_compiler_cache(mut agent: AgentLaunch, share_build_cache: bool) -> AgentLaunch {
+    if share_build_cache {
+        agent.env.extend(velocity_git::compiler_cache_env());
     }
     agent
 }

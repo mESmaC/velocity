@@ -114,6 +114,8 @@ pub(crate) fn record_pull_request_observation(
         );
     }
     if after.stage == "merged" && after.worktree_deleted {
+        // `master` moved: ready worktrees catch up and rebuild at the new tip (F5).
+        crate::ready_pool::wake(application, Some(project_identifier));
         report(record_merged(
             application,
             project_identifier,

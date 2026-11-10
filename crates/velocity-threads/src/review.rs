@@ -11,7 +11,7 @@ use velocity_store::duty::{DutyAgentItem, PrDutyRoster};
 
 use crate::LaunchError;
 use crate::launch::{
-    Location, SHARED_TARGET_FOLDER, agent_launch, base_branch, setup_settings, with_shared_target,
+    Location, SHARED_TARGET_FOLDER, agent_launch, base_branch, setup_settings, with_compiler_cache,
 };
 
 /// The command-line switch that makes Velocity's own executable serve the PR duty MCP server,
@@ -52,7 +52,7 @@ pub fn plan_review(
         setup_settings(preferences),
         preferences.copy_files.clone(),
         preferences.setup_command.clone(),
-        shared_target.clone(),
+        shared_target,
     );
     let (launch, bypass_modes) = agent_launch(agent.provider)?;
     Ok(ReviewPlan {
@@ -62,10 +62,7 @@ pub fn plan_review(
         base_branch: base_branch(&roster.project),
         merge_method: roster.rules.merge_method,
         worktree,
-        agent: with_shared_target(
-            launch,
-            preferences.share_build_cache.then_some(shared_target),
-        ),
+        agent: with_compiler_cache(launch, preferences.share_build_cache),
         bypass_modes,
     })
 }

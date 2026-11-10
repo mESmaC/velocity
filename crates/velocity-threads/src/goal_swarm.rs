@@ -30,7 +30,7 @@ use velocity_store::threads::{NewThread, ThreadError};
 use velocity_store::{ProjectItem, Settings, StateStore};
 
 use crate::launch::{
-    LaunchError, Location, agent_launch, base_branch, setup_settings, with_shared_target,
+    LaunchError, Location, agent_launch, base_branch, setup_settings, with_compiler_cache,
 };
 use crate::naming::unique_slug;
 use crate::work_pool::{WorkPoolError, read_work_pool};
@@ -157,9 +157,9 @@ pub fn plan_goal_member(
             setup_settings(worktrees),
             worktrees.copy_files.clone(),
             worktrees.setup_command.clone(),
-            shared_target.clone(),
+            shared_target,
         ),
-        agent: with_shared_target(agent, worktrees.share_build_cache.then_some(shared_target)),
+        agent: with_compiler_cache(agent, worktrees.share_build_cache),
         bypass_modes,
     })
 }
