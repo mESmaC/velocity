@@ -8,6 +8,7 @@
 use std::path::Path;
 
 use velocity_airc::{Channel, Entry, Event};
+use velocity_core::pr_review::ReviewStanding;
 
 use crate::PullRequestError;
 
@@ -126,4 +127,66 @@ pub(crate) fn mirror_body(approve: bool, head: &str, nick: &str, reason: &str) -
         short_head(head),
         reason.trim()
     )
+}
+
+/// Where the record leaves PR `number`'s `head` (F7): the fold [`approved_reviewer`] uses,
+/// plus a `changes` or a refused merge (`failed`) at this head, so PR duty knows whether the
+/// head needs a review, a merge, or nothing until its author pushes.
+pub fn review_standing(entries: &[Entry], number: u32, head: &str) -> ReviewStanding {
+    let mut approval: Option<&Entry> = None;
+    let mut changes_at_head = false;
+    let mut merge_failed = false;
+    for entry in entries
+        .iter()
+        .filter(|entry| entry.pull_request == Some(number))
+    {
+        let at_head = entry.head.as_deref() == Some(head);
+        match entry.kind.as_str() {
+            "approved" => {
+                approval = Some(entry);
+                changes_at_head = false;
+                merge_failed = false;
+            }
+            "changes" => {
+                approval = None;
+                changes_at_head = at_head;
+            }
+            "failed" if approval.is_some() && at_head => merge_failed = true,
+            _ => {}
+        }
+    }
+    match approval {
+        Some(entry) if entry.head.as_deref() == Some(head) && merge_failed => {
+            ReviewStanding::MergeFailed
+        }
+        Some(entry) if entry.head.as_deref() == Some(head) => ReviewStanding::Approved,
+        _ if changes_at_head => ReviewStanding::ChangesRequested,
+        _ => ReviewStanding::Unreviewed,
+    }
+}
+
+impl ReviewRecord {
+    /// Where the record leaves each `(PR, head)`, from one fresh read of the channel.
+    pub fn standings(
+        &self,
+        heads: &[(u32, &str)],
+    ) -> Result<Vec<ReviewStanding>, PullRequestError> {
+        let entries = self.channel.read(0)?;
+        Ok(heads
+            .iter()
+            .map(|(number, head)| review_standing(&entries, *number, head))
+            .collect())
+    }
+
+    /// Posts this reviewer's `claim` on PR `number` at `head` (F7: one PR per agent).
+    pub fn claim(&self, number: u32, head: &str) -> Result<(), PullRequestError> {
+        let text = format!("claimed #{number} for review at {}", short_head(head));
+        self.post("claim", number, Some(head), &text)
+    }
+
+    /// Posts that this reviewer let PR `number` go.
+    pub fn release(&self, number: u32) -> Result<(), PullRequestError> {
+        let text = format!("released #{number}");
+        self.post("released", number, None, &text)
+    }
 }

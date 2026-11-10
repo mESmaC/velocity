@@ -17,6 +17,7 @@ pub mod manager;
 mod merged_worktree;
 pub mod path_scheme;
 mod repository;
+mod review;
 pub mod setup;
 mod sweep;
 mod titled;
@@ -40,6 +41,7 @@ pub use path_scheme::{
 pub use repository::{
     GitError, commit_file, current_branch, folder_is_occupied, initialize_repository, is_repository,
 };
+pub use review::{ReviewCheckout, prepare_review_worktree, remove_review_worktree};
 pub use setup::{
     SetupAction, SetupPhase, WorktreeSettings, can_start_agent, default_settings,
     plan_setup_actions, resolve_cargo_target_dir,
