@@ -20,7 +20,7 @@ pub fn provider_agent(provider: Provider) -> Option<ProviderAgent> {
     let (program, args, bypass_modes): (&str, &[&str], &[&str]) = match provider {
         Provider::Anthropic => ("claude-code-acp", &[], &["bypassPermissions"]),
         Provider::Codex => ("codex-acp", &[], &[]),
-        Provider::KimiCode => ("kimi", &["--acp"], &[]),
+        Provider::KimiCode => ("kimi", &["acp"], &[]),
         Provider::Antigravity => return None,
     };
     Some(ProviderAgent {
