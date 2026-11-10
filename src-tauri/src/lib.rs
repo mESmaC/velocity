@@ -4,6 +4,7 @@ use tauri_specta::{Builder, Event, collect_commands, collect_events};
 use velocity_store::PersistedState;
 
 mod agents;
+pub mod airc_access;
 mod airc_delivery;
 mod build_gate;
 pub mod duty;
@@ -15,6 +16,7 @@ pub mod layout;
 mod new_project;
 mod projects;
 mod pull_request_panel;
+pub mod reviews;
 mod skills;
 mod state;
 pub mod sweeps;
@@ -156,6 +158,7 @@ pub fn run() -> anyhow::Result<()> {
         .setup(move |application| {
             bindings.mount_events(application);
             state::initialize(application.handle())?;
+            airc_access::initialize(application.handle())?;
             projects::initialize(application.handle())?;
             follow_through::initialize(application.handle(), threads::follow_through_hooks());
             issue_panel::initialize(application.handle());
@@ -163,6 +166,7 @@ pub fn run() -> anyhow::Result<()> {
             pull_request_panel::initialize(application.handle());
             skills::initialize(application.handle())?;
             interview::start(application.handle());
+            reviews::initialize(application.handle())?;
             sweeps::initialize(application.handle())?;
             airc_delivery::initialize(application.handle());
             Ok(())
