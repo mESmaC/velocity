@@ -15,6 +15,7 @@ process-wrap = { version = "=10.0.1", features = ["tokio1"] }
 thiserror.workspace = true
 tokio = { version = "1.54", features = ["io-util", "macros", "process", "rt", "sync", "fs", "time"] }
 tokio-util = { version = "0.7.20", features = ["compat"] }
+velocity-airc.workspace = true
 
 [target.'cfg(windows)'.dependencies]
 windows = { version = "0.62", features = ["Win32_System_Threading"] }

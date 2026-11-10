@@ -7,6 +7,7 @@ use std::sync::{Arc, Mutex};
 
 use tauri::{AppHandle, Manager};
 use tauri_specta::Event;
+use velocity_acp::client::AircLaunch;
 use velocity_core::layout_state::LayoutState;
 use velocity_core::layout_view::{LayoutIntent, LayoutSnapshot};
 use velocity_interview::{Host, Interviews};
@@ -38,6 +39,10 @@ impl Host for AppHost {
 
     fn spawn(&self, task: Pin<Box<dyn Future<Output = ()> + Send>>) {
         tauri::async_runtime::spawn(task);
+    }
+
+    fn airc(&self) -> Option<AircLaunch> {
+        crate::airc_access::managed(&self.0)
     }
 }
 

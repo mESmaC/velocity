@@ -5460,6 +5460,7 @@ dependencies = [
  "thiserror 2.0.21",
  "tokio",
  "tokio-util",
+ "velocity-airc",
  "windows",
 ]
 
@@ -5489,6 +5490,7 @@ dependencies = [
  "tauri-specta",
  "tokio",
  "velocity-acp",
+ "velocity-airc",
  "velocity-core",
  "velocity-git",
  "velocity-github",

@@ -11,7 +11,7 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use agent_client_protocol::v1::schema::ContentBlock;
 use tokio::sync::Notify;
 use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender, unbounded_channel};
-use velocity_acp::client::{AgentEvent, AgentInput};
+use velocity_acp::client::{AgentEvent, AgentInput, AircLaunch};
 use velocity_core::duty::{
     DutyAgentCard, DutyEventKind, DutyFeedEvent, DutyRoleEntry, ScoutCadence,
 };
@@ -70,6 +70,8 @@ pub struct ScoutSweeps {
     scout_server: PathBuf,
     /// The folder each sweep's report file goes in.
     reports: PathBuf,
+    /// The project's AIRC channel, passed to every sweep's agent (F14).
+    airc: Option<AircLaunch>,
 }
 
 impl ScoutSweeps {
@@ -79,7 +81,14 @@ impl ScoutSweeps {
             wake: Arc::new(Notify::new()),
             scout_server,
             reports,
+            airc: None,
         }
+    }
+
+    /// Gives every sweep's agent the project's AIRC channel under its scout nick (F14).
+    pub fn with_airc(mut self, airc: AircLaunch) -> Self {
+        self.airc = Some(airc);
+        self
     }
 
     /// Looks for due sweeps now, e.g. after scouts were started or resumed.
@@ -272,7 +281,12 @@ impl Sweep {
         if !started {
             return;
         }
-        let setup = sweep_session(&plan, worktree, &self.runner.scout_server, &report);
+        let mut setup = sweep_session(&plan, worktree, &self.runner.scout_server, &report);
+        setup.airc = self
+            .runner
+            .airc
+            .as_ref()
+            .map(|airc| airc.duty(plan.project, &plan.nickname));
         let _ = self.input.send(text(&self.prompt(&plan)));
         let session = crate::spawn_session(plan.agent.clone(), setup, inputs);
         let (counts, failure) = self.follow(host, session, &report).await;
