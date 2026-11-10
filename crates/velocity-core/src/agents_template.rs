@@ -63,6 +63,11 @@ SPEC.md defines what to build. The project Task List defines what is left.
 - Regenerate generated files after a merge. Never merge them by hand.
 - Keep both additions to shared registration lists, inside each module's group.
 
+## Sensitive paths
+- PR duty gives a PR that touches a path listed here the sensitive review: full review, the full stress suite before merge, and a confidence proof at the strongest level its language allows.
+- List one path, folder or glob per bullet, as inline code, followed by why it is sensitive. Add migrations, worktree deletion and auth code as they are established.
+- `.github/workflows/`: CI config.
+
 ## Pull requests
 - One piece, one branch, one PR. Name the branch `vel/<task-name>`.
 - Use your thread's own worktree. Velocity creates and removes it. Never run `git worktree add`, `git worktree remove` or `git worktree prune` yourself.

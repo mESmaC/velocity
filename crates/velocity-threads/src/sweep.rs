@@ -51,7 +51,7 @@ pub fn plan_sweep(
         preferences.setup_command.clone(),
         shared_target,
     );
-    let (agent, bypass_modes) = agent_launch(scout.provider)?;
+    let (agent, bypass_modes) = agent_launch(scout.provider);
     Ok(SweepPlan {
         project: roster.project.id,
         nickname: scout.nickname.clone(),

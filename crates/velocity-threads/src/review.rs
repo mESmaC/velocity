@@ -54,7 +54,7 @@ pub fn plan_review(
         preferences.setup_command.clone(),
         shared_target,
     );
-    let (launch, bypass_modes) = agent_launch(agent.provider)?;
+    let (launch, bypass_modes) = agent_launch(agent.provider);
     Ok(ReviewPlan {
         project: roster.project.id,
         nickname: agent.nickname.clone(),

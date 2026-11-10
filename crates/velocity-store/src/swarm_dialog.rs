@@ -11,13 +11,6 @@ use velocity_github::IssuePanelRow;
 use crate::swarms::SwarmItem;
 use crate::{ProjectItem, ProviderKind, StateStore, TaskState, ThreadState};
 
-/// Providers with a confirmed ACP agent (§3.2); Antigravity waits on Q14.
-pub(crate) const LAUNCHABLE: [ProviderKind; 3] = [
-    ProviderKind::Claude,
-    ProviderKind::Codex,
-    ProviderKind::Kimi,
-];
-
 /// What the user has chosen so far. `None` items means the default: every open item.
 #[derive(Clone, Debug, Serialize, Deserialize, Type)]
 pub struct SwarmDialogQuery {
@@ -124,7 +117,10 @@ impl StateStore {
         } else {
             chosen
         };
-        LAUNCHABLE
+        // Only signed-in providers' models are listed (F15).
+        self.state
+            .settings
+            .usable_providers()
             .into_iter()
             .map(|provider| SwarmModelCard {
                 provider,
@@ -136,14 +132,9 @@ impl StateStore {
 }
 
 /// The model a provider's member runs: Settings' default model on the default provider,
-/// otherwise that provider's own default (F15).
+/// otherwise that provider's first model (F15).
 pub fn provider_model_name(settings: &crate::Settings, provider: ProviderKind) -> String {
-    settings
-        .providers
-        .default_model
-        .clone()
-        .filter(|name| provider == settings.providers.default_provider && !name.trim().is_empty())
-        .unwrap_or_else(|| crate::duty::default_provider_model(provider).into())
+    settings.provider_model(provider)
 }
 
 fn task_items(project: &ProjectItem) -> Vec<SwarmDialogItem> {

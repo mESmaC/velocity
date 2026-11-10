@@ -68,7 +68,11 @@ pub fn plan_swarm_member(
         .ok_or_else(|| DispatchError::Invalid("The selected project changed".into()))?;
     let (title, slug, prompt, issue) = member_work(project, request, repository, issues, item)?;
     // The member runs on its round-robin provider; everything else is the user's settings.
+    // A provider you signed out of since the dialog was drawn is refused, never swapped.
     let mut settings = store.settings();
+    settings
+        .ensure_new_work(provider)
+        .map_err(crate::launch::LaunchError::from)?;
     settings.providers.default_model = Some(provider_model_name(&settings, provider));
     settings.providers.default_provider = provider;
     let mut launch = crate::launch::plan_named_launch(
