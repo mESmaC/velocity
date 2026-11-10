@@ -92,7 +92,7 @@ fn visible_lines(markdown: &str) -> Vec<&str> {
     let mut fence: Option<(u8, usize)> = None;
     markdown
         .lines()
-        .filter_map(|line| {
+        .filter(|line| {
             let trimmed = line.trim_start();
             let marker = trimmed.as_bytes().first().copied().unwrap_or_default();
             let count = trimmed.bytes().take_while(|byte| *byte == marker).count();
@@ -102,9 +102,9 @@ fn visible_lines(markdown: &str) -> Vec<&str> {
                     Some((opening, width)) if opening == marker && count >= width => fence = None,
                     _ => (),
                 }
-                return None;
+                return false;
             }
-            fence.is_none().then_some(line)
+            fence.is_none()
         })
         .collect()
 }
