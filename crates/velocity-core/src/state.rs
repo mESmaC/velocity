@@ -49,6 +49,8 @@ pub enum ProviderKind {
     Codex,
     Antigravity,
     Kimi,
+    /// An ACP agent you added, by its identifier (F15 Custom ACP agents).
+    Custom(u32),
 }
 
 /// Agent effort levels (`SPEC.md` F15).

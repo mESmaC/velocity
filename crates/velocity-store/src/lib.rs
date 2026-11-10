@@ -250,13 +250,75 @@ impl From<CoreTaskAttribution> for TaskAttribution {
     }
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, Type)]
-#[serde(rename_all = "snake_case")]
+/// A provider: one of the four built in, or an ACP agent you added (F15 Custom ACP agents).
+///
+/// It crosses IPC and `state.json` as a string: `claude`, `codex`, `antigravity`, `kimi`, or
+/// `custom-<id>`. The four keep the names saved before custom agents existed, and a string
+/// lets the window compare and key providers by value.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum ProviderKind {
     Claude,
     Codex,
     Antigravity,
     Kimi,
+    /// The custom agent with this identifier in `ProviderSettings::custom_agents`.
+    Custom(u32),
+}
+
+const CUSTOM_PROVIDER_PREFIX: &str = "custom-";
+
+impl ProviderKind {
+    /// The provider's IPC and saved name.
+    pub fn key(self) -> String {
+        match self {
+            Self::Claude => "claude".into(),
+            Self::Codex => "codex".into(),
+            Self::Antigravity => "antigravity".into(),
+            Self::Kimi => "kimi".into(),
+            Self::Custom(identifier) => format!("{CUSTOM_PROVIDER_PREFIX}{identifier}"),
+        }
+    }
+
+    pub fn from_key(key: &str) -> Option<Self> {
+        match key {
+            "claude" => Some(Self::Claude),
+            "codex" => Some(Self::Codex),
+            "antigravity" => Some(Self::Antigravity),
+            "kimi" => Some(Self::Kimi),
+            other => other
+                .strip_prefix(CUSTOM_PROVIDER_PREFIX)
+                .and_then(|identifier| identifier.parse().ok())
+                .map(Self::Custom),
+        }
+    }
+}
+
+impl Serialize for ProviderKind {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        serializer.serialize_str(&self.key())
+    }
+}
+
+impl<'de> Deserialize<'de> for ProviderKind {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        let key = String::deserialize(deserializer)?;
+        Self::from_key(&key)
+            .ok_or_else(|| serde::de::Error::custom(format!("unknown provider `{key}`")))
+    }
+}
+
+/// The shape the window sees: `export type ProviderKind = string`, still named so the
+/// frontend keeps one type for a provider.
+mod provider_kind_wire {
+    #[derive(specta::Type)]
+    #[allow(dead_code)]
+    pub struct ProviderKind(String);
+}
+
+impl Type for ProviderKind {
+    fn definition(types: &mut specta::Types) -> specta::datatype::DataType {
+        provider_kind_wire::ProviderKind::definition(types)
+    }
 }
 
 impl From<ProviderKind> for CoreProviderKind {
@@ -266,6 +328,7 @@ impl From<ProviderKind> for CoreProviderKind {
             ProviderKind::Codex => Self::Codex,
             ProviderKind::Antigravity => Self::Antigravity,
             ProviderKind::Kimi => Self::Kimi,
+            ProviderKind::Custom(identifier) => Self::Custom(identifier),
         }
     }
 }
@@ -277,6 +340,7 @@ impl From<CoreProviderKind> for ProviderKind {
             CoreProviderKind::Codex => Self::Codex,
             CoreProviderKind::Antigravity => Self::Antigravity,
             CoreProviderKind::Kimi => Self::Kimi,
+            CoreProviderKind::Custom(identifier) => Self::Custom(identifier),
         }
     }
 }
@@ -421,6 +485,15 @@ pub struct ProviderSettings {
     /// Model chips you switched off (F15 Models).
     #[serde(default)]
     pub hidden_models: Vec<providers::HiddenModel>,
+    /// Built-in providers whose ACP agent command you edited; Reset removes the entry (F15).
+    #[serde(default)]
+    pub commands: Vec<providers::ProviderCommand>,
+    /// ACP agents you added beside the four (F15 Custom ACP agents), in card order.
+    #[serde(default)]
+    pub custom_agents: Vec<providers::CustomAgent>,
+    /// The identifier the next added agent gets. Identifiers are never reused.
+    #[serde(default)]
+    pub next_custom_agent: u32,
 }
 
 fn default_title_provider() -> ProviderKind {
@@ -505,6 +578,9 @@ impl Settings {
                 catalog: Vec::new(),
                 signed_out: Vec::new(),
                 hidden_models: Vec::new(),
+                commands: Vec::new(),
+                custom_agents: Vec::new(),
+                next_custom_agent: 1,
             },
             agents: AgentSettings {
                 max_turns: core_settings.agents.max_turns,

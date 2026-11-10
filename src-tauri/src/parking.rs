@@ -124,12 +124,16 @@ fn wake(application: &AppHandle, key: ThreadKey, channel: &Channel) -> Result<()
 }
 
 pub(crate) fn resume(application: &AppHandle, key: ThreadKey, prompt: &str) -> Result<(), String> {
-    let (project, thread) = lock(
-        application.state::<ManagedStateStore>().inner(),
-        "persisted state",
-    )?
-    .follow_through_thread(key.0, key.1)
-    .map_err(|error| error.to_string())?;
+    let (project, thread, settings) = {
+        let store = lock(
+            application.state::<ManagedStateStore>().inner(),
+            "persisted state",
+        )?;
+        let (project, thread) = store
+            .follow_through_thread(key.0, key.1)
+            .map_err(|error| error.to_string())?;
+        (project, thread, store.settings())
+    };
     let path = thread.worktree_path.as_deref().ok_or("Missing worktree")?;
     velocity_git::verify_thread_worktree(
         Path::new(&project.repository_path),
@@ -137,7 +141,8 @@ pub(crate) fn resume(application: &AppHandle, key: ThreadKey, prompt: &str) -> R
         &thread.branch_name,
     )
     .map_err(|error| error.to_string())?;
-    let (agent, bypass_modes) = agent_launch(thread.provider);
+    let (agent, bypass_modes) =
+        agent_launch(&settings, thread.provider).map_err(|error| error.to_string())?;
     let mut setup = SessionSetup::new(path.into(), bypass_modes)
         .with_run_settings(velocity_threads::thread_run_settings(&thread));
     setup.airc = crate::airc_access::managed(application)

@@ -1,7 +1,7 @@
 <script lang="ts">
   import { onMount } from 'svelte';
   import Icon from './Icon.svelte';
-  import { dutyCommands } from './ipc';
+  import { dutyCommands, providerIcon } from './ipc';
   import type {
     DutyDialogDefaults,
     DutyMergeMethod,
@@ -9,7 +9,6 @@
     LayoutAction,
     LayoutSnapshot,
     PrDutyRuleSettings,
-    ProviderKind,
     ScoutCadence,
     ScoutFocusArea,
     ScoutRuleSettings,
@@ -74,13 +73,6 @@
     ['every_thirty_minutes', 'Every 30m'],
     ['after_every_merge', 'After every merge'],
   ];
-
-  const providerNames: Record<ProviderKind, string> = {
-    claude: 'Anthropic',
-    codex: 'Codex',
-    antigravity: 'Antigravity',
-    kimi: 'Kimi',
-  };
 
   let dialog: HTMLDialogElement;
   let defaults = $state<DutyDialogDefaults | null>(null);
@@ -253,11 +245,11 @@
           {#if defaults}
             <button type="button" class="model-card on" aria-pressed="true">
               <span class="mh">
-                <Icon name={defaults.provider} />
+                <Icon name={providerIcon(defaults.provider)} />
                 {defaults.model_name}
               </span>
               <span class="md">
-                {providerNames[defaults.provider]}{defaults.model_configured
+                {defaults.provider_name}{defaults.model_configured
                   ? ''
                   : ' · default'}
               </span>

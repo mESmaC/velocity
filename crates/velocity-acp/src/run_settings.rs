@@ -1,12 +1,15 @@
 //! The provider, model, effort and speed an agent runs with (§3, F15).
 
-/// The four providers Velocity runs agents from (§3). Each signs in with OAuth (F15).
+/// The providers Velocity runs agents from (§3): the four built in, each signing in with
+/// OAuth, and any ACP agent you added (F15 Custom ACP agents).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Provider {
     Anthropic,
     Codex,
     Antigravity,
     KimiCode,
+    /// An agent you added, by its identifier. Its command comes from your settings.
+    Custom(u32),
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

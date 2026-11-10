@@ -451,7 +451,7 @@ fn validated_rows(
     {
         return Err(ThreadError::InvalidLaunch(format!(
             "{} isn't signed in",
-            crate::providers::provider_facts(row.provider).name
+            settings.provider_name(row.provider)
         )));
     }
     Ok(rows)

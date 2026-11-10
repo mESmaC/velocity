@@ -25,6 +25,10 @@
 [data-provider='kimi'] {
   --provider-color: var(--kimi);
 }
+/* An ACP agent you added has no brand colour of its own (F15 Custom ACP agents). */
+[data-provider='custom'] {
+  --provider-color: var(--text-2);
+}
 .pv-mark {
   padding: var(--providers-mark-padding);
   color: var(--provider-color);
@@ -78,6 +82,56 @@
 }
 .pv-command code {
   color: var(--text-2);
+}
+.pv-command {
+  display: flex;
+  align-items: center;
+  gap: var(--providers-actions-gap);
+}
+/* The command reads as code until you click into it to edit (F15). */
+.pv-command-input {
+  flex: var(--worktrees-flex);
+  display: flex;
+  min-width: var(--worktrees-zero);
+  border: var(--worktrees-zero);
+  border-bottom: var(--providers-chip-border);
+}
+.pv-command-input:focus-within {
+  border-bottom-color: var(--worktrees-input-focus-border);
+}
+.pv-command-input input {
+  flex: var(--worktrees-flex);
+  min-width: var(--worktrees-zero);
+  width: var(--worktrees-zero);
+  background: var(--worktrees-none);
+  border: var(--worktrees-zero);
+  outline: var(--worktrees-zero);
+  font: var(--providers-meta-font);
+  color: var(--text-2);
+}
+.pv-command > span {
+  white-space: nowrap;
+}
+.pv-add-open {
+  margin-top: var(--providers-list-gap);
+}
+.pv-add {
+  display: flex;
+  flex-direction: column;
+  gap: var(--providers-list-gap);
+  margin-top: var(--providers-list-gap);
+  padding: var(--providers-card-padding);
+  border: var(--worktrees-drive-border);
+  border-radius: var(--worktrees-drive-radius);
+  background: var(--worktrees-drive-background);
+}
+.pv-add-row {
+  display: flex;
+  align-items: center;
+  gap: var(--worktrees-location-gap);
+}
+.pv-add-command {
+  flex: var(--worktrees-flex);
 }
 .pv-limit {
   display: flex;

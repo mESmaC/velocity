@@ -134,7 +134,7 @@ pub fn plan_goal_member(
     let branch_name = format!("vel/{leaf}");
     // A provider you signed out of since the mix was chosen is refused, never swapped (F15).
     settings.ensure_new_work(slot.provider)?;
-    let (agent, bypass_modes) = agent_launch(slot.provider);
+    let (agent, bypass_modes) = agent_launch(settings, slot.provider)?;
     let mut member_settings = settings.clone();
     member_settings.providers.default_provider = slot.provider;
     member_settings.providers.default_model = Some(slot.model_name.clone());
