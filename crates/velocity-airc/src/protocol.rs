@@ -54,7 +54,7 @@ fn respond(
                 *initialized = true;
                 json!({"protocolVersion":"2025-11-25","capabilities":{"tools":{}},
                         "serverInfo":{"name":"velocity-airc","version":env!("CARGO_PKG_VERSION")},
-                        "instructions":format!("You joined this project's AIRC channel as {nick}. Read airc_claims before choosing work. Call airc_claim with the task, branch and every file BEFORE editing; on refusal choose other work. Extend your existing task claim to add files. Record airc_share or a dependency wait before editing an overlapping file. Messages require named recipients and an intent.")})
+                        "instructions":format!("You joined this project's AIRC channel as {nick}. Read airc_claims before choosing work. Call airc_claim with the task, branch and every file BEFORE editing, and with piece set to the work item's identity (task:<id>, issue:<number> or spec:<section>) when it has one; on refusal the holder is named, so re-read airc_claims and claim the first open piece. Extend your existing task claim to add files. Record airc_share or a dependency wait before editing an overlapping file. Messages require named recipients and an intent.")})
             }
             Err(error) => return Some(failure(id, -32603, &error.to_string())),
         },
@@ -236,13 +236,13 @@ fn claim_tools() -> Vec<Value> {
         ),
         tool(
             "airc_claim",
-            "Claim or extend your piece BEFORE editing. First claimant wins. Files are repository-relative; use ::registration for shared registration lists.",
-            json!({"task":string,"branch":string,"files":{"type":"array","items":string}}),
+            "Claim or extend your piece BEFORE editing. First claimant wins; a refusal names the holder. piece locks a work item by identity: task:<id>, issue:<number> or spec:<section>; without it the task text is the lock. Files are repository-relative; use ::registration for shared registration lists.",
+            json!({"piece":string,"task":string,"branch":string,"files":{"type":"array","items":string}}),
             &["task", "branch", "files"],
         ),
         tool(
             "airc_release",
-            "Release your own piece after it merges or is deleted",
+            "Release your own piece, named by its piece or task, after it merges or is deleted",
             json!({"task":string}),
             &["task"],
         ),
@@ -265,8 +265,18 @@ fn claim_call(
         "airc_claims" => Ok(serde_json::to_value(channel.claims()?)?),
         "airc_claim" => {
             let files = serde_json::from_value(arguments["files"].clone())?;
-            Ok(serde_json::to_value(channel.claim(
+            let piece = arguments
+                .get("piece")
+                .map(|value| {
+                    value
+                        .as_str()
+                        .ok_or_else(|| Error::Invalid("piece must be a string".into()))
+                })
+                .transpose()?
+                .unwrap_or_default();
+            Ok(serde_json::to_value(channel.claim_piece(
                 member,
+                piece,
                 text(arguments, "task")?,
                 text(arguments, "branch")?,
                 files,

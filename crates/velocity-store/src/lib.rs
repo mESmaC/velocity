@@ -7,6 +7,7 @@
 //! and serde/specta serialization.
 
 pub mod build_gate;
+pub mod claim_piece;
 pub mod follow_through;
 
 use serde::{Deserialize, Serialize};

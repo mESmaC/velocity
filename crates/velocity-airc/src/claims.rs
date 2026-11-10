@@ -8,6 +8,11 @@ use std::collections::BTreeMap;
 pub struct Claim {
     pub member: String,
     pub nick: String,
+    /// The lock key: a work-pool identity (`task:<id>`, `issue:<n>`, `spec:<section>`),
+    /// a build thread's `branch:<name>`, or the task text. Older records have none and
+    /// lock on their task text.
+    #[serde(default)]
+    pub piece: String,
     pub task: String,
     pub branch: String,
     pub files: Vec<String>,
@@ -19,6 +24,34 @@ pub struct Claim {
 pub enum ClaimResult {
     Granted { claim: Claim },
     Refused { holder: String, since: String },
+}
+
+impl Claim {
+    /// What the lock is keyed on. Display text can repeat (two threads titled "Fix
+    /// failing tests"), so pieces lock on identity and only legacy records on their text.
+    pub fn key(&self) -> &str {
+        if self.piece.is_empty() {
+            &self.task
+        } else {
+            &self.piece
+        }
+    }
+}
+
+/// One spelling per piece, so `Issue: #57` and `issue:57` contend for the same lock.
+/// Known prefixes are lower-cased and an issue's `#` dropped; whitespace collapses.
+pub fn piece_key(piece: &str) -> String {
+    let text = piece.split_whitespace().collect::<Vec<_>>().join(" ");
+    let Some((prefix, rest)) = text.split_once(':') else {
+        return text;
+    };
+    let prefix = prefix.trim().to_lowercase();
+    let rest = rest.trim();
+    match prefix.as_str() {
+        "issue" => format!("issue:{}", rest.trim_start_matches('#').trim()),
+        "task" | "spec" | "branch" => format!("{prefix}:{rest}"),
+        _ => text,
+    }
 }
 
 /// The pure decision shared with the Lean fixture model. Reclaiming one's own piece
@@ -35,10 +68,10 @@ pub fn claims(entries: &[Entry]) -> Vec<Claim> {
         };
         match record.kind.as_str() {
             "claim" => {
-                held.insert(claim.task.clone(), claim.clone());
+                held.insert(claim.key().to_owned(), claim.clone());
             }
             "released" => {
-                held.remove(&claim.task);
+                held.remove(claim.key());
             }
             _ => {}
         }
@@ -51,10 +84,23 @@ impl Channel {
         Ok(claims(&self.read(0)?))
     }
 
-    /// Read, decide and append under the same cross-process channel lock.
+    /// A claim locked on its task text. Pieces with an identity use [`Self::claim_piece`].
     pub fn claim(
         &self,
         member: &str,
+        task: &str,
+        branch: &str,
+        files: Vec<String>,
+    ) -> Result<ClaimResult, Error> {
+        self.claim_piece(member, task, task, branch, files)
+    }
+
+    /// Read, decide and append under the same cross-process channel lock. `piece` is
+    /// the lock key and `task` its display text; an empty piece locks on the task.
+    pub fn claim_piece(
+        &self,
+        member: &str,
+        piece: &str,
         task: &str,
         branch: &str,
         files: Vec<String>,
@@ -65,11 +111,12 @@ impl Channel {
         {
             return Err(Error::Invalid("Claims need a task and branch".into()));
         }
+        let key = piece_key(if piece.trim().is_empty() { task } else { piece });
         let storage = Storage::open(&self.directory)?;
         let mut entries = storage.read()?;
         let nick = active_nick(&entries, member)?;
         let held = claims(&entries);
-        let previous = held.iter().find(|claim| claim.task == task);
+        let previous = held.iter().find(|claim| claim.key() == key);
         if !may_claim(previous.map(|claim| claim.member.as_str()), member) {
             let holder = previous.ok_or_else(|| Error::Invalid("Missing holder".into()))?;
             let text = format!(
@@ -90,7 +137,14 @@ impl Channel {
             &nick,
             &format!("{task} on {branch}"),
         );
-        let claim = build_claim(member, nick, task, branch, files, previous, &record.time);
+        let identity = ClaimIdentity {
+            member,
+            nick,
+            piece: key,
+            task,
+            branch,
+        };
+        let claim = build_claim(identity, files, previous, &record.time);
         record.claim = Some(claim.clone());
         if previous == Some(&claim) {
             return Ok(ClaimResult::Granted { claim });
@@ -101,13 +155,22 @@ impl Channel {
         Ok(ClaimResult::Granted { claim })
     }
 
+    /// Releases the held claim named by its piece key or, for callers that only know
+    /// the display text, its task.
     pub fn release(&self, member: &str, task: &str) -> Result<(), Error> {
         let storage = Storage::open(&self.directory)?;
         let entries = storage.read()?;
-        if let Some(claim) = claims(&entries)
-            .into_iter()
-            .find(|claim| claim.task == task)
-        {
+        let key = piece_key(task);
+        let held = claims(&entries);
+        let named = held
+            .iter()
+            .find(|claim| claim.key() == key)
+            .or_else(|| {
+                held.iter()
+                    .find(|claim| claim.member == member && claim.task == task)
+            })
+            .cloned();
+        if let Some(claim) = named {
             if claim.member != member {
                 return Err(Error::Invalid("Only the holder can release a claim".into()));
             }
@@ -150,7 +213,13 @@ impl Channel {
         {
             let normalized = normalize_file(file);
             if !claim.files.contains(&format!("{normalized}::registration")) {
-                self.claim(member, &claim.task, &claim.branch, vec![normalized])?;
+                self.claim_piece(
+                    member,
+                    claim.key(),
+                    &claim.task,
+                    &claim.branch,
+                    vec![normalized],
+                )?;
             }
         }
         Ok(())
@@ -228,11 +297,16 @@ fn shared_registration(file: &str) -> bool {
             || file.contains("/src/lib.rs::"))
 }
 
-fn build_claim(
-    member: &str,
+struct ClaimIdentity<'a> {
+    member: &'a str,
     nick: String,
-    task: &str,
-    branch: &str,
+    piece: String,
+    task: &'a str,
+    branch: &'a str,
+}
+
+fn build_claim(
+    identity: ClaimIdentity,
     files: Vec<String>,
     previous: Option<&Claim>,
     time: &str,
@@ -249,10 +323,11 @@ fn build_claim(
     paths.sort();
     paths.dedup();
     Claim {
-        member: member.into(),
-        nick,
-        task: task.into(),
-        branch: branch.into(),
+        member: identity.member.into(),
+        nick: identity.nick,
+        piece: identity.piece,
+        task: identity.task.into(),
+        branch: identity.branch.into(),
         files: paths,
         since: previous.map_or_else(|| time.into(), |claim| claim.since.clone()),
     }
