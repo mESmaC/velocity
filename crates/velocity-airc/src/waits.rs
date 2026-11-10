@@ -38,6 +38,28 @@ pub struct DependencyWait {
     pub file: String,
 }
 
+/// Starts the `unblocked` line of a wait whose branch update failed after the merge.
+const UPDATE_FAILED: &str = "dependency merged; resolve the update failure before editing";
+
+/// Where a member's dependency wait stands, for parking (SPEC.md §2.2).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum WaitState {
+    /// No wait is pending for the member.
+    NotWaiting,
+    /// The wait is pending and its holder has not merged, closed, failed or been deleted.
+    Waiting,
+    /// The holder's work ended, but nobody has continued the wait yet.
+    HolderEnded,
+}
+
+/// A parked member's wait after [`Channel::wake_parked`]: the `unblocked` line it was
+/// sent, and whether updating its branch failed so it must resolve that first.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct WaitEnded {
+    pub message: String,
+    pub update_failed: bool,
+}
+
 impl Channel {
     pub fn register_checkout(&self, member: &str, checkout: Checkout) -> Result<(), Error> {
         let storage = Storage::open(&self.directory)?;
@@ -187,9 +209,7 @@ impl Channel {
                     .pull_request
                     .map_or(String::new(), |number| format!(" #{number}"))
             ),
-            Err(error) => {
-                format!("dependency merged; resolve the update failure before editing: {error}")
-            }
+            Err(error) => format!("{UPDATE_FAILED}: {error}"),
         };
         let storage = Storage::open(&self.directory)?;
         let entries = storage.read()?;
@@ -205,6 +225,47 @@ impl Channel {
         Ok(
             serde_json::json!({"outcome":ended.text,"message":text,"branch_updated":ended.text == "merged"}),
         )
+    }
+
+    pub fn wait_state(&self, member: &str) -> Result<WaitState, Error> {
+        let entries = self.read(0)?;
+        let Some(dependency) = active_waits(&entries).remove(member) else {
+            return Ok(WaitState::NotWaiting);
+        };
+        Ok(match holder_end(&entries, &dependency) {
+            Some(_) => WaitState::HolderEnded,
+            None => WaitState::Waiting,
+        })
+    }
+
+    /// Ends a parked member's wait the way its pending `airc_wait` call would have: on a
+    /// merge the branch is updated, and `unblocked` is posted. Its session was ended, so
+    /// Velocity does this before resuming it. `None` while the holder's work is still open.
+    /// A wait the call already ended before the session stopped is reported as it ended.
+    pub fn wake_parked(&self, member: &str) -> Result<Option<WaitEnded>, Error> {
+        let entries = self.read(0)?;
+        let mut failure = None;
+        if let Some(dependency) = active_waits(&entries).remove(member) {
+            let Some(ended) = holder_end(&entries, &dependency) else {
+                return Ok(None);
+            };
+            failure = self.continue_wait(member, &dependency, &ended).err();
+        }
+        let unblocked = self.read(0)?.into_iter().rev().find(|entry| {
+            entry.kind == "unblocked"
+                && entry
+                    .dependency
+                    .as_ref()
+                    .is_some_and(|dependency| dependency.member == member)
+        });
+        match (unblocked, failure) {
+            (Some(entry), _) => Ok(Some(WaitEnded {
+                update_failed: entry.text.starts_with(UPDATE_FAILED),
+                message: entry.text,
+            })),
+            (None, Some(error)) => Err(error),
+            (None, None) => Err(Error::Invalid(format!("{member} has no ended wait"))),
+        }
     }
 
     fn update_checkout(&self, member: &str) -> Result<(), Error> {
@@ -239,6 +300,25 @@ fn active_waits(entries: &[Entry]) -> BTreeMap<String, DependencyWait> {
         }
     }
     waits
+}
+
+/// The holder's `dependency_end`, counting only ends after its current checkout so an
+/// earlier run of the same member never ends a new wait.
+fn holder_end(entries: &[Entry], dependency: &DependencyWait) -> Option<Entry> {
+    let checkout = entries
+        .iter()
+        .rev()
+        .find(|entry| entry.member == dependency.holder && entry.checkout.is_some())
+        .map_or(0, |entry| entry.sequence);
+    entries
+        .iter()
+        .rev()
+        .find(|entry| {
+            entry.kind == "dependency_end"
+                && entry.member == dependency.holder
+                && entry.sequence > checkout
+        })
+        .cloned()
 }
 
 fn reject_cycle(

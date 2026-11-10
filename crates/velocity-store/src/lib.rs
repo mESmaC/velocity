@@ -578,6 +578,9 @@ pub struct ThreadItem {
     pub airc_cursor: u64,
     #[serde(default)]
     pub dependency_wait: Option<String>,
+    /// The agent's ACP session id, which a parked thread loads again on resume (§2.2).
+    #[serde(default)]
+    pub agent_session: Option<String>,
     pub review_stage: Option<ReviewStage>,
     pub task_ids: Vec<u32>,
     #[serde(default)]
@@ -617,6 +620,7 @@ impl ThreadItem {
             follow_through: None,
             airc_cursor: 0,
             dependency_wait: None,
+            agent_session: None,
             review_stage: None,
             task_ids: Vec::new(),
             issue: None,
@@ -650,6 +654,7 @@ impl ThreadItem {
             follow_through: None,
             airc_cursor: 0,
             dependency_wait: None,
+            agent_session: None,
             review_stage: None,
             task_ids: Vec::new(),
             issue: None,

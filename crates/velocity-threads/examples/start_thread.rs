@@ -29,12 +29,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     runtimes.worktree_ready(key);
     let mut session = spawn_session(
         plan.agent,
-        SessionSetup {
-            worktree: plan.worktree.worktree_path,
-            airc: None,
-            shared_servers: Vec::new(),
-            bypass_modes: plan.bypass_modes,
-        },
+        SessionSetup::new(plan.worktree.worktree_path, plan.bypass_modes),
         inputs,
     );
     while let Some(event) = session.events.blocking_recv() {

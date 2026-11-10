@@ -1,15 +1,16 @@
 //! Starting a session (§3.2 Start a thread) and answering permission requests (Rule 1).
 
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 use agent_client_protocol::Agent;
 use agent_client_protocol::schema::ProtocolVersion;
 use agent_client_protocol::v1::ConnectionTo;
 use agent_client_protocol::v1::schema::{
-    ClientCapabilities, FileSystemCapabilities, Implementation, InitializeRequest, McpServer,
-    NewSessionRequest, PermissionOptionKind, RequestPermissionOutcome, RequestPermissionRequest,
-    RequestPermissionResponse, SelectedPermissionOutcome, SessionId, SessionModeId,
-    SessionModeState, SetSessionModeRequest,
+    ClientCapabilities, FileSystemCapabilities, Implementation, InitializeRequest,
+    LoadSessionRequest, McpServer, NewSessionRequest, PermissionOptionKind,
+    RequestPermissionOutcome, RequestPermissionRequest, RequestPermissionResponse,
+    SelectedPermissionOutcome, SessionId, SessionModeId, SessionModeState, SetSessionModeRequest,
 };
 
 use crate::{
@@ -30,6 +31,32 @@ pub struct SessionSetup {
     /// The ids of the agent's session modes that skip its permission checks, as the provider
     /// layer classifies them.
     pub bypass_modes: Vec<String>,
+    /// Set when a parked thread resumes (SPEC.md §2.2): its earlier session and transcript.
+    pub resume: Option<SessionResume>,
+}
+
+/// How a parked thread's agent picks up where it stopped: `session/load` of its earlier
+/// session where the agent supports it, else a new session that is sent the transcript.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct SessionResume {
+    pub session_id: Option<String>,
+    pub transcript: String,
+}
+
+impl SessionResume {
+    pub fn new(session_id: Option<String>, transcript: String) -> Self {
+        Self {
+            session_id,
+            transcript,
+        }
+    }
+}
+
+/// The session the agent runs, and whether it is the earlier one loaded again.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct StartedSession {
+    pub session_id: SessionId,
+    pub loaded: bool,
 }
 
 impl SessionSetup {
@@ -39,6 +66,7 @@ impl SessionSetup {
             airc: None,
             shared_servers: Vec::new(),
             bypass_modes,
+            resume: None,
         }
     }
 }
@@ -58,13 +86,85 @@ pub async fn start_session(
         )
         .block_task()
         .await?;
-    if let Some(mode) = bypass_mode(session.modes.as_ref(), &setup.bypass_modes) {
+    select_bypass_mode(
+        connection,
+        &session.session_id,
+        session.modes.as_ref(),
+        setup,
+    )
+    .await?;
+    Ok(session.session_id)
+}
+
+/// Like [`start_session`], but a resumed thread first tries `session/load` of its earlier
+/// session. `replaying` is set while the agent replays that session's history, which the
+/// thread's transcript already holds.
+pub async fn start_or_resume_session(
+    connection: &ConnectionTo<Agent>,
+    setup: &SessionSetup,
+    replaying: &AtomicBool,
+) -> Result<StartedSession, agent_client_protocol::Error> {
+    let initialized = connection
+        .send_request(initialize_request())
+        .block_task()
+        .await?;
+    let earlier = setup
+        .resume
+        .as_ref()
+        .and_then(|resume| resume.session_id.clone())
+        .filter(|_| initialized.agent_capabilities.load_session);
+    if let Some(earlier) = earlier {
+        let session_id = SessionId::new(earlier);
+        replaying.store(true, Ordering::Release);
+        let loaded = connection
+            .send_request(
+                LoadSessionRequest::new(session_id.clone(), setup.worktree.clone())
+                    .mcp_servers(session_servers(setup)),
+            )
+            .block_task()
+            .await;
+        replaying.store(false, Ordering::Release);
+        // A session the agent no longer has falls back to a new one with the transcript.
+        if let Ok(response) = loaded {
+            select_bypass_mode(connection, &session_id, response.modes.as_ref(), setup).await?;
+            return Ok(StartedSession {
+                session_id,
+                loaded: true,
+            });
+        }
+    }
+    let session = connection
+        .send_request(
+            NewSessionRequest::new(setup.worktree.clone()).mcp_servers(session_servers(setup)),
+        )
+        .block_task()
+        .await?;
+    select_bypass_mode(
+        connection,
+        &session.session_id,
+        session.modes.as_ref(),
+        setup,
+    )
+    .await?;
+    Ok(StartedSession {
+        session_id: session.session_id,
+        loaded: false,
+    })
+}
+
+async fn select_bypass_mode(
+    connection: &ConnectionTo<Agent>,
+    session_id: &SessionId,
+    modes: Option<&SessionModeState>,
+    setup: &SessionSetup,
+) -> Result<(), agent_client_protocol::Error> {
+    if let Some(mode) = bypass_mode(modes, &setup.bypass_modes) {
         connection
-            .send_request(SetSessionModeRequest::new(session.session_id.clone(), mode))
+            .send_request(SetSessionModeRequest::new(session_id.clone(), mode))
             .block_task()
             .await?;
     }
-    Ok(session.session_id)
+    Ok(())
 }
 
 pub(super) fn initialize_request() -> InitializeRequest {
