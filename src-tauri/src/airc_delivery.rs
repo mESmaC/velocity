@@ -36,6 +36,22 @@ fn cycle(application: &AppHandle) -> Result<(), String> {
     .projects
     .clone();
     for project in projects {
+        let changed = velocity_threads::agent_tasks::ingest(
+            &mut *lock(
+                application.state::<ManagedStateStore>().inner(),
+                "persisted state",
+            )?,
+            project.id,
+            &channel(application, project.id)?,
+        )
+        .map_err(|error| error.to_string())?;
+        if changed {
+            crate::threads::refresh(
+                application,
+                (project.id, project.active_thread_id.unwrap_or(0)),
+                false,
+            )?;
+        }
         update_waits(application, &project)?;
         crate::parking::cycle(application, &project, &channel(application, project.id)?);
         for thread in &project.threads {

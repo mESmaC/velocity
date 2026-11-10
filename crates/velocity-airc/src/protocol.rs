@@ -63,7 +63,7 @@ fn respond(
                 *initialized = true;
                 json!({"protocolVersion":"2025-11-25","capabilities":{"tools":{}},
                         "serverInfo":{"name":"velocity-airc","version":env!("CARGO_PKG_VERSION")},
-                        "instructions":format!("You joined this project's AIRC channel as {nick}. Read airc_claims before choosing work. Call airc_claim with the task, branch and every file BEFORE editing, and with piece set to the work item's identity (task:<id>, issue:<number> or spec:<section>) when it has one; on refusal the holder is named, so re-read airc_claims and claim the first open piece. Extend your existing task claim to add files. Record airc_share or a dependency wait before editing an overlapping file. Messages require named recipients and an intent.")})
+                        "instructions":format!("You joined this project's AIRC channel as {nick}. Read airc_claims before choosing work. Call airc_claim with the task, branch and every file BEFORE editing, and with piece set to the work item's identity (task:<id>, issue:<number> or spec:<section>) when it has one; on refusal the holder is named, so re-read airc_claims and claim the first open piece. Extend your existing task claim to add files. Record airc_share or a dependency wait before editing an overlapping file. Messages require named recipients and an intent. Use task_add ONLY when the user explicitly asks to add tasks to the project Task List; otherwise file issues. Adding tasks never edits SPEC.md or starts an interview.")})
             }
             Err(error) => return Some(failure(id, -32603, &error.to_string())),
         },
@@ -111,6 +111,8 @@ fn call(
             text(arguments, "file")?,
             || !connected.load(std::sync::atomic::Ordering::Acquire),
         ),
+        "task_add" => Ok(json!({"queued":true,
+            "request":channel.request_task(member, text(arguments, "title")?)?})),
         "join" => Ok(json!({"nick":channel.join(member, nick)?})),
         "leave" => {
             channel.leave(member)?;
@@ -189,6 +191,7 @@ fn tool_list() -> Vec<Value> {
             &[],
         ),
     ];
+    tools.push(tool("task_add", "Add a project Task List item ONLY when the user explicitly asks you to add it. Otherwise file an issue. Returns a durable queued request; Velocity saves it with your attribution. Never edits SPEC.md or starts an interview.", json!({"title":{"type":"string","minLength":1}}), &["title"]));
     tools.extend(writing_tools());
     tools.extend(claim_tools());
     tools.push(tool("airc_wait", "Wait for a file holder. This call stays pending until its dependency ends; do not edit meanwhile. Velocity may park you while you wait: it ends your session to free a provider slot and resumes it when the dependency ends, with the outcome as your next message. On merge Velocity updates your branch before you continue; resolve any reported conflict before continuing.", json!({"holder":{"type":"string"},"file":{"type":"string"}}), &["holder", "file"]));
