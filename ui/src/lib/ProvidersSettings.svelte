@@ -93,7 +93,7 @@
         >{:else if provider.phase === 'Waiting'}<button
           class="worktree-button mini"
           onclick={() => signOut(provider.provider)}>Cancel</button
-        >{:else if provider.phase !== 'Checking'}<button
+        >{:else if provider.phase !== 'Checking' && provider.phase !== 'NotInstalled'}<button
           class="worktree-button"
           disabled={!provider.can_sign_in}
           title={provider.can_sign_in
@@ -147,6 +147,7 @@
       >{/each}
     {#each choices.sign_in as provider (provider.provider)}<button
         class="pv-model out"
+        disabled={!provider.can_sign_in}
         onclick={() => signIn(provider.provider)}
         ><span class="pv-model-head" data-provider={provider.provider}
           ><Icon name={providerIcons[provider.provider]} />{provider.name}</span
@@ -238,9 +239,10 @@
             (mode) => edit({ TitleSpeed: mode }),
           )}
           <p class="pv-title-note" class:warn={view.title_warning}>
-            {view.title_note}{#if view.title_is_default}
-              · the default{:else}
-              ·
+            <span>{view.title_note}</span>
+            {#if view.title_is_default}{#if !view.title_warning}<span
+                  >· the default</span
+                >{/if}{:else}<span>·</span>
               <button
                 class="worktree-button mini"
                 onclick={() => edit('TitleReset')}

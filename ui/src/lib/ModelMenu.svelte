@@ -128,7 +128,7 @@
                 close,
               )}>{item.model}</button
           >{/each}
-      {:else}<button
+      {:else if group.can_sign_in}<button
           class="model-menu-item sign-in"
           role="menuitem"
           onclick={() => signIn(group.provider)}

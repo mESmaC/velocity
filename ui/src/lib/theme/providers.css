@@ -163,7 +163,10 @@
   font-weight: var(--providers-out-heading-weight);
   color: var(--muted);
 }
-.pv-model.out:hover .pv-model-head {
+.pv-model.out:disabled {
+  cursor: default;
+}
+.pv-model.out:hover:not(:disabled) .pv-model-head {
   color: var(--text);
 }
 .pv-model-note {
@@ -235,6 +238,8 @@
   bottom: var(--providers-menu-bottom);
   z-index: var(--thread-menu-z-index);
   min-width: var(--providers-menu-min-width);
+  max-height: var(--providers-menu-max-height);
+  overflow-y: auto;
   padding: var(--thread-menu-padding);
   border: var(--thread-menu-border);
   border-radius: var(--thread-menu-radius);

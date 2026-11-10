@@ -97,6 +97,7 @@ pub struct SignInCardView {
     pub provider: ProviderKind,
     pub name: String,
     pub note: String,
+    pub can_sign_in: bool,
 }
 
 /// Model cards plus effort and speed: the default for new threads, or the title model.
@@ -156,6 +157,24 @@ impl ProviderContext<'_> {
 
     fn runtime(&self, provider: ProviderKind) -> Option<&ProviderRuntime> {
         self.runtime.iter().find(|entry| entry.provider == provider)
+    }
+
+    /// Whether Sign in can do anything: the agent offers a usable method, or its login still
+    /// holds and only Velocity's sign-out stands in the way.
+    fn can_sign_in(&self, provider: ProviderKind) -> bool {
+        self.runtime(provider)
+            .is_some_and(|entry| entry.can_sign_in || entry.phase == ProviderPhase::SignedIn)
+    }
+
+    /// The note a signed-out provider shows in pickers.
+    fn signed_out_note(&self, settings: &Settings, provider: ProviderKind) -> &'static str {
+        match self.phase(settings, provider) {
+            ProviderPhase::Waiting => "finishing sign-in…",
+            ProviderPhase::Checking => "checking…",
+            ProviderPhase::NotInstalled => "not installed",
+            _ if !self.can_sign_in(provider) => "no sign-in available",
+            _ => "not signed in · Sign in",
+        }
     }
 }
 
@@ -237,7 +256,7 @@ impl StateStore {
             phase,
             status,
             sign_in_label: facts.sign_in_label.into(),
-            can_sign_in: runtime.is_some_and(|entry| entry.can_sign_in),
+            can_sign_in: context.can_sign_in(provider),
             limit: (phase == ProviderPhase::SignedIn)
                 .then(|| limit_view(catalog.and_then(|entry| entry.limit.as_ref()), context.now)),
             models,
@@ -403,11 +422,8 @@ fn sign_in_cards(settings: &Settings, context: &ProviderContext<'_>) -> Vec<Sign
         .map(|provider| SignInCardView {
             provider,
             name: provider_facts(provider).name.into(),
-            note: if context.phase(settings, provider) == ProviderPhase::Waiting {
-                "finishing sign-in…".into()
-            } else {
-                "not signed in · Sign in".into()
-            },
+            note: context.signed_out_note(settings, provider).into(),
+            can_sign_in: context.can_sign_in(provider),
         })
         .collect()
 }
@@ -469,6 +485,7 @@ pub struct ModelMenuGroup {
     pub note: String,
     pub signed_in: bool,
     pub sign_in_label: String,
+    pub can_sign_in: bool,
     pub models: Vec<ModelMenuItem>,
 }
 
@@ -597,10 +614,12 @@ fn menu_group(
             Some(limit) => format!("{}% of {}", limit.percent_used, limit.window),
             None => "limit not reported".into(),
         }
-    } else if context.phase(settings, candidate) == ProviderPhase::Waiting {
-        "signing in…".into()
     } else {
-        "signed out".into()
+        match context.phase(settings, candidate) {
+            ProviderPhase::Waiting => "signing in…".into(),
+            ProviderPhase::NotInstalled => "not installed".into(),
+            _ => "signed out".into(),
+        }
     };
     let enabled = live_provider.is_none_or(|live| live == candidate);
     let models = if signed_in {
@@ -622,6 +641,7 @@ fn menu_group(
         note,
         signed_in,
         sign_in_label: facts.sign_in_label.into(),
+        can_sign_in: context.can_sign_in(candidate),
         models,
     }
 }

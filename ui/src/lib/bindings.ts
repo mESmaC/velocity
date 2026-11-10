@@ -1334,6 +1334,7 @@ export type ModelMenuGroup = {
 	note: string,
 	signed_in: boolean,
 	sign_in_label: string,
+	can_sign_in: boolean,
 	models: ModelMenuItem[],
 };
 
@@ -2479,6 +2480,7 @@ export type SignInCardView = {
 	provider: ProviderKind,
 	name: string,
 	note: string,
+	can_sign_in: boolean,
 };
 
 /**

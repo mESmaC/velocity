@@ -34,11 +34,28 @@ pub fn plan_title(
     fallback: String,
 ) -> TitlePlan {
     let providers = &settings.providers;
-    let (launch, _) = agent_launch(providers.title_provider);
+    // A signed-out title provider: the first signed-in model titles at Low until it signs in
+    // again (F15 Thread titles).
+    let (title_provider, model_name, title_effort) =
+        if settings.provider_usable(providers.title_provider) {
+            (
+                providers.title_provider,
+                providers.title_model.clone(),
+                providers.title_effort,
+            )
+        } else {
+            let first = settings
+                .usable_providers()
+                .first()
+                .copied()
+                .unwrap_or(providers.title_provider);
+            (first, settings.provider_model(first), EffortLevel::Low)
+        };
+    let (launch, _) = agent_launch(title_provider);
     let run_settings = RunSettings {
-        provider: provider(providers.title_provider),
-        model: providers.title_model.clone(),
-        effort: effort(providers.title_effort),
+        provider: provider(title_provider),
+        model: model_name.clone(),
+        effort: effort(title_effort),
         speed: speed(providers.title_speed),
     };
     let request = Some(TitleRequest::new(
@@ -51,7 +68,7 @@ pub fn plan_title(
     TitlePlan {
         fallback,
         request,
-        model_name: providers.title_model.clone(),
+        model_name,
     }
 }
 

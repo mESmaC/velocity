@@ -105,8 +105,8 @@
       >
     {/if}
     <span class="spacer"></span>
-    {#if menuOpen && layout.project_identifier !== null}<ModelMenu
-        projectIdentifier={layout.project_identifier}
+    {#if menuOpen}<ModelMenu
+        projectIdentifier={layout.project_identifier ?? 0}
         {threadIdentifier}
         {send}
         close={() => (menuOpen = false)}

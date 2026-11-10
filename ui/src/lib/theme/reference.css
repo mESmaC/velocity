@@ -1349,6 +1349,9 @@
   --providers-out-border-style: dashed;
   --providers-out-heading-weight: 500;
   --providers-menu-min-width: 260px;
+  /* Not in the reference, whose mock lists four models: a long list scrolls inside the
+     menu instead of running off the top of the window. */
+  --providers-menu-max-height: 60vh;
   --providers-menu-bottom: calc(100% + 6px);
   --providers-menu-head-gap: 6px;
   --providers-menu-head-padding: 7px 9px 3px;
