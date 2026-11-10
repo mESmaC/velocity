@@ -1,3 +1,7 @@
+module
+public import Std
+public section
+
 -- SPEC.md F14: serialized first-wins ownership decisions. The channel lock
 -- linearizes read/decide/append; durability and scheduling are outside this model.
 namespace ClaimLock

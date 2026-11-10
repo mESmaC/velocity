@@ -1,1 +1,2 @@
-import ClaimLock.Design
+module
+public import ClaimLock.Design
