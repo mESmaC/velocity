@@ -566,6 +566,7 @@ The project-scoped list in the top-right panel.
   - `/task <title>` in any composer
   - the palette
 - **Agents:** they have a `task_add` tool and use it **only when your message asks them to** (e.g. "add these to the task list: X, Y"). Otherwise they file issues. This rule is written in AGENTS.md.
+- **Agent tool runtime:** `task_add { title }` is served by the AIRC MCP server injected into every agent session. Its instructions say to call it only for an explicit user request; otherwise file issues. It queues a durable project-scoped request under the launcher's identity. The native store owner saves the task with thread attribution (duty agents link to their role), as draft before lock or todo afterward, and publishes the refreshed list and a `task` event. Request identities prevent duplicates after a crash/restart. The tool returns the queued request sequence; `read_feed` includes the saved-task result or rejection. It never edits SPEC.md or starts an interview.
 - Tasks not created by the spec show who added them: "added by you", or "added by <thread>", which links to that thread.
 - Tasks added before the spec is locked are drafts.
 - **After the spec is locked** (decided, Q6): a task you or an agent adds goes straight to todo and stays outside SPEC.md. Adding a task never starts an interview and never edits SPEC.md. When the work changes behaviour SPEC.md describes, the building agent updates SPEC.md in its own PR (AGENTS.md).
@@ -1208,7 +1209,7 @@ Each milestone ends with a working app. PR duty checks an item off when it lands
 
 **M6 · Task List, issues, swarm**
 - [x] Task List: states, add input, `T`, `/task`, palette, attribution, live agent state (F8)
-- [ ] Agent `task_add` tool, used only when asked (F8)
+- [x] Agent `task_add` tool, used only when asked (F8)
 - [x] Issues panel and single dispatch (F9)
 - [x] Swarm: dialog, launch, PR duty capacity, sidebar row, view, broadcast, + Items, rebase on merge, task done / issue close (F10)
 

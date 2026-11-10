@@ -139,6 +139,9 @@ fn capped(thread: &ThreadItem, settings: &AgentSettings, now: u64) -> bool {
 }
 
 pub fn begin(thread: &mut ThreadItem, now: u64) {
+    if thread.activity != AgentActivity::AtLimit {
+        thread.activity = AgentActivity::Thinking;
+    }
     if thread.supervision.started == 0 {
         thread.supervision.started = now;
     }

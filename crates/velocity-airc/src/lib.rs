@@ -7,6 +7,7 @@ mod launch;
 mod protocol;
 mod routing;
 mod storage;
+mod tasks;
 pub mod waits;
 
 pub use channel::{Channel, EVENT_TAGS, Entry, Event, Presence};

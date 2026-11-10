@@ -7,6 +7,7 @@
 //! and serde/specta serialization.
 
 pub mod agent_activity;
+pub mod agent_tasks;
 pub mod airc_members;
 pub mod build_gate;
 pub mod claim_piece;
@@ -514,6 +515,10 @@ impl Default for Settings {
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, Type)]
 pub struct TaskItem {
+    /// AIRC request sequence, saved atomically with the task to prevent replay duplicates.
+    #[serde(default)]
+    #[specta(skip)]
+    pub agent_request: Option<u64>,
     pub id: u32,
     pub text: String,
     pub state: TaskState,
@@ -529,6 +534,7 @@ impl TaskItem {
             state,
             added_by,
             assigned_thread_id: None,
+            agent_request: None,
         }
     }
 
