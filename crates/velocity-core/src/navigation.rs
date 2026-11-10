@@ -10,6 +10,7 @@ pub enum NavigationView {
     Home,
     Thread,
     Duty,
+    Swarm,
     SpecScan,
     SpecAsk,
     SpecReady,

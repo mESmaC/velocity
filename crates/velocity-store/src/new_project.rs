@@ -76,6 +76,7 @@ fn project_item(
         tasks: Vec::new(),
         threads: Vec::new(),
         duty_roles: Vec::new(),
+        swarms: Vec::new(),
         pending_interview: interview,
     }
 }

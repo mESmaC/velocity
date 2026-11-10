@@ -1,6 +1,7 @@
 <script lang="ts">
   import Icon from './Icon.svelte';
   import type { LayoutAction, LayoutSnapshot, SidebarRow } from './ipc';
+  import './theme/swarm.css';
   let {
     layout,
     send,
@@ -97,6 +98,13 @@
                   >×{row.agents}</span
                 >{/if}
               {#if row.metadata}<span class="t-meta">{row.metadata}</span>{/if}
+              {#if row.segments.length}<span
+                  class="sw-mini"
+                  aria-label="Swarm progress"
+                  >{#each row.segments as stage, index (index)}<i
+                      class="sg {stage}"
+                    ></i>{/each}</span
+                >{/if}
             </button>
           </div>
         {/each}

@@ -39,6 +39,8 @@ use velocity_core::state::{
 pub mod duty;
 mod project_layout;
 pub mod projects;
+pub mod swarm_dialog;
+pub mod swarms;
 pub mod threads;
 
 pub use duty::DutyRoleItem;
@@ -710,6 +712,9 @@ pub struct ProjectItem {
     /// Duty roles started on this project (F7).
     #[serde(default)]
     pub duty_roles: Vec<DutyRoleItem>,
+    /// Swarms launched on this project, newest first (F10).
+    #[serde(default)]
+    pub swarms: Vec<swarms::SwarmRecord>,
 }
 
 /// The New project dialog's interview choices, kept until the spec interview

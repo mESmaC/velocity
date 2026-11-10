@@ -20,6 +20,8 @@ mod pull_request_panel;
 pub mod reviews;
 mod skills;
 mod state;
+mod swarm;
+mod swarm_rebase;
 pub mod sweeps;
 mod thread_menu;
 mod threads;
@@ -71,6 +73,9 @@ fn bindings() -> Builder<tauri::Wry> {
         skills::install_skill_pack,
         skills::check_skill_pack_update,
         skills::confirm_skill_pack_update,
+        swarm::get_swarm_dialog,
+        swarm::launch_swarm,
+        swarm::add_to_swarm,
         thread_menu::get_thread_menu,
         thread_menu::run_thread_menu_action,
         thread_menu::delete_thread,
@@ -94,6 +99,7 @@ fn event_bindings(builder: Builder<tauri::Wry>) -> Builder<tauri::Wry> {
         .typ::<layout::LayoutStateChanged>()
         .typ::<layout::LayoutIntentRequested>()
         .typ::<projects::ProjectSelected>()
+        .typ::<swarm::SwarmEventPublished>()
         .typ::<issue_panel::IssuePanelChanged>()
         .typ::<worktree_settings::WorktreeInventoryChanged>()
         .typ::<pull_request_panel::PullRequestPanelChanged>()
@@ -106,6 +112,7 @@ fn event_bindings(builder: Builder<tauri::Wry>) -> Builder<tauri::Wry> {
         )
         .constant("DUTY_EVENT", duty::DutyEventPublished::NAME)
         .constant("PROJECT_SELECTED_EVENT", projects::ProjectSelected::NAME)
+        .constant("SWARM_EVENT", swarm::SwarmEventPublished::NAME)
         .constant("ISSUE_PANEL_EVENT", issue_panel::IssuePanelChanged::NAME)
         .constant("WINDOW_STATE_EVENT", window::WindowStateChanged::NAME)
         .constant("LAYOUT_STATE_EVENT", layout::LayoutStateChanged::NAME)
@@ -152,6 +159,7 @@ pub fn run() -> anyhow::Result<()> {
         layout::LayoutStateChanged,
         layout::LayoutIntentRequested,
         projects::ProjectSelected,
+        swarm::SwarmEventPublished,
         issue_panel::IssuePanelChanged,
         worktree_settings::WorktreeInventoryChanged,
         pull_request_panel::PullRequestPanelChanged,

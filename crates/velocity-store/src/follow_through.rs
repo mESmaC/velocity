@@ -120,10 +120,31 @@ impl StateStore {
         if *thread == previous {
             return Ok(false);
         }
+        if thread.state == ThreadState::Merged && previous.state != ThreadState::Merged {
+            finish_thread_tasks(&mut next, project_identifier, thread_identifier);
+        }
         next.revision = next.revision.wrapping_add(1);
         crate::write_atomic_snapshot(&self.directory, &next)?;
         self.disk_revision = next.revision;
         self.state = next;
         Ok(true)
+    }
+}
+
+/// A task is done when its PR merged (F8): the merged thread's tasks tick off (F10).
+fn finish_thread_tasks(state: &mut crate::PersistedState, project: u32, thread: u32) {
+    let Some(project) = state.projects.iter_mut().find(|item| item.id == project) else {
+        return;
+    };
+    let task_ids = project
+        .threads
+        .iter()
+        .find(|item| item.id == thread)
+        .map(|item| item.task_ids.clone())
+        .unwrap_or_default();
+    for task in &mut project.tasks {
+        if task.assigned_thread_id == Some(thread) || task_ids.contains(&task.id) {
+            task.state = crate::TaskState::Done;
+        }
     }
 }

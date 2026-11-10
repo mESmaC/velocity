@@ -10,6 +10,7 @@
 
 pub mod agents_file;
 pub mod agents_template;
+mod changed_files;
 mod command;
 pub mod inventory;
 pub mod lifecycle;
@@ -22,6 +23,7 @@ pub mod setup;
 mod sweep;
 mod titled;
 
+pub use changed_files::worktree_changed_files;
 pub use lifecycle::{
     GitCommand, LifecycleEvent, LifecycleState, WorktreeRecord, prune_orphans_command,
 };
