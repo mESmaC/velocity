@@ -29,6 +29,8 @@ pub enum LaunchError {
     NamesExhausted(String),
     #[error(transparent)]
     Worktree(#[from] WorktreeError),
+    #[error(transparent)]
+    Provider(#[from] velocity_store::providers::ProviderUnavailable),
 }
 
 /// Everything a new thread needs before anything runs.
@@ -130,17 +132,21 @@ pub(crate) fn plan_named_launch(
         .ok_or(WorktreeError::EmptyLeafName)?;
     let shared_target = location.project_root()?.join(SHARED_TARGET_FOLDER);
     let branch_name = format!("vel/{slug}");
-    let (agent, bypass_modes) = agent_launch(settings.providers.default_provider);
+    let thread = NewThread::new(
+        title.into(),
+        branch_name.clone(),
+        worktree_path.display().to_string(),
+        settings,
+    );
+    // The thread runs where its record says: the default, or the first signed-in provider
+    // when you signed out of the default. Nothing starts when every provider is signed out.
+    settings.ensure_new_work(thread.provider)?;
+    let (agent, bypass_modes) = agent_launch(thread.provider);
     let share_cache = worktrees.share_build_cache;
     Ok(LaunchPlan {
         project: project.id,
         prompt: prompt.to_owned(),
-        thread: NewThread::new(
-            title.into(),
-            branch_name.clone(),
-            worktree_path.display().to_string(),
-            settings,
-        ),
+        thread,
         worktree: WorktreeSetupRequest {
             repository_root: repository,
             worktree_path,

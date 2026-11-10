@@ -23,6 +23,8 @@ pub enum ProjectError {
     IndexOutOfRange,
     #[error(transparent)]
     Persistence(#[from] StoreError),
+    #[error(transparent)]
+    Provider(#[from] crate::providers::ProviderUnavailable),
 }
 
 #[derive(Clone, Copy, Debug, Serialize, Deserialize, Type)]

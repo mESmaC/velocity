@@ -91,6 +91,17 @@ impl ProviderCatalog {
     }
 }
 
+/// Why new work can't start on a provider (F15 Sign out).
+#[derive(Clone, Debug, PartialEq, Eq, thiserror::Error)]
+pub enum ProviderUnavailable {
+    #[error(
+        "You are signed out of {0}. Sign in again in Settings → Providers, or pick another model"
+    )]
+    SignedOut(String),
+    #[error("No provider is signed in. Sign in to one in Settings → Providers")]
+    NoneSignedIn,
+}
+
 /// A model you hid from the pickers by clicking its chip (F15 Models).
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, Type)]
 pub struct HiddenModel {
@@ -174,6 +185,39 @@ impl Settings {
             .into_iter()
             .filter(|provider| self.provider_usable(*provider))
             .collect()
+    }
+
+    /// The provider new work starts on (F15 Sign out): the default for new threads while it
+    /// is usable, else the first usable provider in card order. `None` when you are signed
+    /// out of every provider, so nothing new can start.
+    pub fn new_work_provider(&self) -> Option<ProviderKind> {
+        let default = self.providers.default_provider;
+        if self.provider_usable(default) {
+            Some(default)
+        } else {
+            self.usable_providers().first().copied()
+        }
+    }
+
+    /// The provider a dialog or record shows for new work. When no provider is usable it is
+    /// the default; the launch itself is then refused by `ensure_new_work`.
+    pub fn new_work_choice(&self) -> ProviderKind {
+        self.new_work_provider()
+            .unwrap_or(self.providers.default_provider)
+    }
+
+    /// Refuses new work on `provider` once you signed out of it in Velocity, or its agent
+    /// reported no login. Running sessions never come through here, so they keep going.
+    pub fn ensure_new_work(&self, provider: ProviderKind) -> Result<(), ProviderUnavailable> {
+        if self.provider_usable(provider) {
+            Ok(())
+        } else if self.usable_providers().is_empty() {
+            Err(ProviderUnavailable::NoneSignedIn)
+        } else {
+            Err(ProviderUnavailable::SignedOut(
+                provider_facts(provider).name.into(),
+            ))
+        }
     }
 
     /// The models the pickers list for `provider`: what its agent offers, minus the ones you

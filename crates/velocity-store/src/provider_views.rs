@@ -298,13 +298,15 @@ pub fn provider_usage(settings: &Settings) -> Vec<ProviderUsage> {
         .collect()
 }
 
-/// The home composer's model pill: the default for new threads (F4, F15).
+/// The home composer's model pill: what a new thread starts on, the default for new threads
+/// unless you signed out of it (F4, F15).
 pub fn default_model_pill(settings: &Settings) -> ModelPillView {
     let providers = &settings.providers;
-    let model = settings.provider_model(providers.default_provider);
-    let fast = settings.model_has_fast_mode(providers.default_provider, &model);
+    let provider = settings.new_work_choice();
+    let model = settings.provider_model(provider);
+    let fast = settings.model_has_fast_mode(provider, &model);
     ModelPillView::new(
-        provider_color(providers.default_provider),
+        provider_color(provider),
         model,
         effort_label(providers.default_effort).into(),
         project_model_pill(providers.default_speed == SpeedMode::Fast, fast),
@@ -541,8 +543,8 @@ impl StateStore {
                 thread.preferred_speed,
             ),
             None => (
-                providers.default_provider,
-                settings.provider_model(providers.default_provider),
+                settings.new_work_choice(),
+                settings.provider_model(settings.new_work_choice()),
                 providers.default_effort,
                 providers.default_speed,
             ),

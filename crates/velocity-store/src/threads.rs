@@ -51,7 +51,8 @@ impl NewThread {
         worktree_path: String,
         settings: &crate::Settings,
     ) -> Self {
-        let provider = settings.providers.default_provider;
+        // A signed-out default gives way to the first signed-in provider (F15 Sign out).
+        let provider = settings.new_work_choice();
         let model_name = settings.provider_model(provider);
         Self {
             title,

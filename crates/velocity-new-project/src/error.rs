@@ -34,6 +34,8 @@ pub enum NewProjectError {
     },
     #[error(transparent)]
     Project(#[from] ProjectError),
+    #[error(transparent)]
+    Provider(#[from] velocity_store::providers::ProviderUnavailable),
     #[error("Could not save the new project: {0}")]
     Save(#[from] StoreError),
     #[error("{0} lock is poisoned")]
