@@ -20,16 +20,27 @@
   color: var(--thread-head-h1-color);
   white-space: nowrap;
   overflow: hidden;
+  /* The title truncates and the titling chip stays whole beside it (#63). */
+  display: flex;
+  align-items: baseline;
+  min-width: 0;
+}
+.thread-head h1 .title-text {
+  min-width: 0;
+  overflow: hidden;
   text-overflow: ellipsis;
 }
 .ttl-chip {
+  flex: none;
   margin-left: var(--thread-ttl-chip-margin-left);
   padding: var(--thread-ttl-chip-padding);
   border-radius: var(--thread-ttl-chip-border-radius);
   font: var(--thread-ttl-chip-font);
   color: var(--muted);
   background: var(--thread-ttl-chip-background);
-  vertical-align: var(--thread-ttl-chip-vertical-align);
+  /* A flex item ignores vertical-align; lift it by the reference's same offset. */
+  position: relative;
+  bottom: var(--thread-ttl-chip-vertical-align);
 }
 .thread-head .meta {
   display: flex;
@@ -38,6 +49,15 @@
   font: var(--thread-meta-font);
   color: var(--muted);
   white-space: nowrap;
+  /* The meta row takes the header spacer's place: it starts from zero width and grows into
+     whatever the title and actions leave, so a long branch or worktree path truncates
+     before the title ever does (#63). */
+  flex: var(--layout-spacer-flex);
+  min-width: 0;
+  overflow: hidden;
+}
+.thread-head .meta > * {
+  flex: none;
 }
 .thread-head .meta .branch {
   display: inline-flex;
@@ -50,6 +70,19 @@
   align-items: center;
   gap: var(--thread-meta-item-gap);
   color: var(--text-2);
+}
+.thread-head .meta .branch,
+.thread-head .meta .wt {
+  flex: 0 1 auto;
+  min-width: 0;
+}
+.thread-head .meta svg {
+  flex: none;
+}
+.thread-head .meta .label {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 .thread-head .meta .wt:hover {
   color: var(--text);
