@@ -732,9 +732,9 @@ pub struct PendingInterview {
 }
 
 impl ProjectItem {
-    pub fn new(id: u32, name: String, repository_path: String) -> Self {
+    pub fn new(identifier: u32, name: String, repository_path: String) -> Self {
         Self {
-            id,
+            id: identifier,
             name,
             repository_path,
             location_kind: ProjectLocationKind::Local,
