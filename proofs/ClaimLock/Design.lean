@@ -51,6 +51,11 @@ theorem optimal (decision : Option Nat -> Nat -> Bool) (budget : Nat)
 #print axioms optimal
 
 -- Decision equivalence classes: absent, same owner, different owner.
-def fixtures : String := "-\t7\ttrue\n7\t7\ttrue\n8\t7\tfalse\n"
+def fixtureLine (holder : Option Nat) (requester : Nat) : String :=
+  let label := holder.map toString |>.getD "-"
+  s!"{label}\t{requester}\t{allowed holder requester}\n"
+
+def fixtures : String :=
+  fixtureLine none 7 ++ fixtureLine (some 7) 7 ++ fixtureLine (some 8) 7
 #eval IO.FS.writeFile "fixtures/claim-lock.tsv" fixtures
 end ClaimLock

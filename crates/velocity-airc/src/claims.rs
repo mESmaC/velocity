@@ -193,6 +193,13 @@ fn post_overlaps(
 /// case sensitive, and folding would conflate distinct files on those checkouts.
 pub fn normalize_file(file: &str) -> String {
     let path = file.replace('\\', "/");
+    let prefix = if path.starts_with("//") {
+        "//"
+    } else if path.starts_with('/') {
+        "/"
+    } else {
+        ""
+    };
     let mut parts = Vec::new();
     for part in path.split('/') {
         match part {
@@ -203,7 +210,7 @@ pub fn normalize_file(file: &str) -> String {
             _ => parts.push(part),
         }
     }
-    parts.join("/")
+    format!("{prefix}{}", parts.join("/"))
 }
 
 fn generated(file: &str) -> bool {
@@ -218,6 +225,36 @@ fn shared_registration(file: &str) -> bool {
         && (file.starts_with("src-tauri/src/lib.rs::")
             || file.starts_with("Cargo.toml::")
             || file.contains("/src/lib.rs::"))
+}
+
+fn build_claim(
+    member: &str,
+    nick: String,
+    task: &str,
+    branch: &str,
+    files: Vec<String>,
+    previous: Option<&Claim>,
+    time: &str,
+) -> Claim {
+    let mut paths = previous
+        .map(|claim| claim.files.clone())
+        .unwrap_or_default();
+    paths.extend(
+        files
+            .into_iter()
+            .map(|file| normalize_file(&file))
+            .filter(|file| !generated(file)),
+    );
+    paths.sort();
+    paths.dedup();
+    Claim {
+        member: member.into(),
+        nick,
+        task: task.into(),
+        branch: branch.into(),
+        files: paths,
+        since: previous.map_or_else(|| time.into(), |claim| claim.since.clone()),
+    }
 }
 
 #[cfg(test)]
@@ -271,35 +308,5 @@ mod tests {
             );
         }
         Ok(())
-    }
-}
-
-fn build_claim(
-    member: &str,
-    nick: String,
-    task: &str,
-    branch: &str,
-    files: Vec<String>,
-    previous: Option<&Claim>,
-    time: &str,
-) -> Claim {
-    let mut paths = previous
-        .map(|claim| claim.files.clone())
-        .unwrap_or_default();
-    paths.extend(
-        files
-            .into_iter()
-            .map(|file| normalize_file(&file))
-            .filter(|file| !generated(file)),
-    );
-    paths.sort();
-    paths.dedup();
-    Claim {
-        member: member.into(),
-        nick,
-        task: task.into(),
-        branch: branch.into(),
-        files: paths,
-        since: previous.map_or_else(|| time.into(), |claim| claim.since.clone()),
     }
 }
