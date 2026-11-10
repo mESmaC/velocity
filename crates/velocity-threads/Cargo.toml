@@ -24,3 +24,4 @@ velocity-store.workspace = true
 
 [dev-dependencies]
 serde_json.workspace = true
+velocity-airc.workspace = true

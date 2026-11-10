@@ -8,6 +8,7 @@
 
 pub mod airc_members;
 pub mod build_gate;
+pub mod claim_piece;
 pub mod follow_through;
 
 use serde::{Deserialize, Serialize};
