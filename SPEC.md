@@ -1236,7 +1236,7 @@ Each milestone ends with a working app. PR duty checks an item off when it lands
 - [x] Goal swarm view: claims board, one card per agent, activity; sidebar row (F16)
 
 **M10 · Throughput** (§3.3)
-- [ ] Agent activity, stall detection with nudge then restart, per-agent caps, claim release after the grace period (§2.2)
+- [x] Agent activity, stall detection with nudge then restart, per-agent caps, claim release after the grace period (§2.2)
 - [x] Parking: end the session on `airc_wait`, resume on the subscribed `merged` event; optional provider concurrency cap (§2.2, F15)
 - [x] Targeted AIRC delivery, message envelope (`to`, `intent`), heads-down and quarantine modes (F14)
 - [ ] Targeted rebases, optimistic landing, conflicts sent back to the owning agent; rebuild the merge result whenever `master` moved; Shared files exempt from overlaps (F6, F14)
