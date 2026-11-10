@@ -8,6 +8,7 @@ pub mod airc_modal;
 pub mod build_gate;
 pub mod duty;
 pub mod goal_swarm;
+pub mod goal_swarm_choice;
 pub mod interview_view;
 #[cfg(feature = "bindings")]
 pub mod ipc_number;

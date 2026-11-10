@@ -1,6 +1,7 @@
 import { commands } from '../bindings';
 
 export type {
+  AddGoalAgentsRequest,
   GoalDialogRequest,
   GoalLimitLine,
   GoalMixEdit,
@@ -9,10 +10,13 @@ export type {
   GoalModelOption,
   GoalSwarmChoices,
   GoalSwarmDialog_Serialize as GoalSwarmDialog,
+  LaunchGoalSwarmRequest,
 } from '../bindings';
 
-// Goal swarm dialog: drawn in Rust from the user's choices (SPEC.md F16).
+// Goal swarm dialog and launch commands (SPEC.md F16).
 export const goalSwarmCommands = {
   dialog: commands.getGoalSwarmDialog,
   readPool: commands.readGoalSwarmPool,
+  launch: commands.launchGoalSwarm,
+  addAgents: commands.addGoalAgents,
 };

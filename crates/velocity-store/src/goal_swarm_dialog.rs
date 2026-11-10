@@ -23,11 +23,28 @@ pub struct GoalMixRow {
     pub count: u32,
 }
 
+impl GoalMixRow {
+    pub fn new(provider: ProviderKind, effort: EffortLevel, speed: SpeedMode, count: u32) -> Self {
+        Self {
+            provider,
+            effort,
+            speed,
+            count,
+        }
+    }
+}
+
 /// The user's choices. The first row is "the rest".
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, Type)]
 pub struct GoalSwarmChoices {
     pub agents: u32,
     pub rows: Vec<GoalMixRow>,
+}
+
+impl GoalSwarmChoices {
+    pub fn new(agents: u32, rows: Vec<GoalMixRow>) -> Self {
+        Self { agents, rows }
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, Type)]
@@ -49,6 +66,15 @@ pub enum GoalMixEdit {
 pub struct GoalSwarmDialogQuery {
     pub choices: Option<GoalSwarmChoices>,
     pub edit: Option<GoalMixEdit>,
+}
+
+impl GoalSwarmDialogQuery {
+    pub fn with_choices(choices: GoalSwarmChoices) -> Self {
+        Self {
+            choices: Some(choices),
+            edit: None,
+        }
+    }
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, Type)]
@@ -170,7 +196,12 @@ impl StateStore {
             pr_duty_shortfall,
             summary: summary(settings, &mix),
             launch_label: goal_swarm::launch_label(agents),
-            launch_note: None,
+            launch_note: crate::build_gate::require_launch(
+                &self.state,
+                crate::build_gate::LaunchRequest::GoalSwarm,
+            )
+            .err()
+            .map(|error| error.to_string()),
             choices: choices(&mix),
         })
     }
@@ -373,8 +404,16 @@ fn nick_preview(settings: &Settings, project: &ProjectItem, mix: &Mix<MixModel>)
 /// The highest number each nick stem has used in the project (F14: nicks are counted per
 /// project). A goal swarm agent's worktree keeps its nick, and its branch does until it
 /// claims a piece.
-fn used_nick_numbers(project: &ProjectItem) -> BTreeMap<String, u32> {
+pub(crate) fn used_nick_numbers(project: &ProjectItem) -> BTreeMap<String, u32> {
     let mut used = BTreeMap::new();
+    let record = |used: &mut BTreeMap<String, u32>, name: &str| {
+        if let Some((stem, number)) = name.rsplit_once('-')
+            && let Ok(number) = number.parse::<u32>()
+        {
+            let highest = used.entry(stem.to_owned()).or_insert(0);
+            *highest = number.max(*highest);
+        }
+    };
     for thread in &project.threads {
         let leaf = thread
             .worktree_path
@@ -382,13 +421,11 @@ fn used_nick_numbers(project: &ProjectItem) -> BTreeMap<String, u32> {
             .and_then(|path| path.rsplit(['\\', '/']).next());
         let branch = thread.branch_name.strip_prefix("vel/");
         for name in [leaf, branch].into_iter().flatten() {
-            if let Some((stem, number)) = name.rsplit_once('-')
-                && let Ok(number) = number.parse::<u32>()
-            {
-                let highest = used.entry(stem.to_owned()).or_insert(0);
-                *highest = number.max(*highest);
-            }
+            record(&mut used, name);
         }
+    }
+    for member in project.goal_swarms.iter().flat_map(|swarm| &swarm.members) {
+        record(&mut used, &member.nick);
     }
     used
 }
@@ -416,19 +453,32 @@ fn limits(mix: &Mix<MixModel>) -> Vec<GoalLimitLine> {
 }
 
 fn summary(settings: &Settings, mix: &Mix<MixModel>) -> String {
-    mix.rows
+    let rows: Vec<GoalMixRow> = mix
+        .rows
         .iter()
+        .map(|row| GoalMixRow {
+            provider: row.model.provider,
+            effort: row.model.effort,
+            speed: row.model.speed,
+            count: row.count,
+        })
+        .collect();
+    mix_rows_summary(settings, &rows)
+}
+
+pub(crate) fn mix_rows_summary(settings: &Settings, rows: &[GoalMixRow]) -> String {
+    rows.iter()
         .filter(|row| row.count > 0)
         .map(|row| {
             format!(
                 "{} {} {}",
                 row.count,
-                provider_model_name(settings, row.model.provider),
-                effort_name(row.model.effort)
+                provider_model_name(settings, row.provider),
+                effort_name(row.effort)
             )
         })
         .collect::<Vec<_>>()
-        .join(" · ")
+        .join(" \u{00b7} ")
 }
 
 fn choices(mix: &Mix<MixModel>) -> GoalSwarmChoices {

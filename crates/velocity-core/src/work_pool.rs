@@ -17,11 +17,12 @@ impl WorkKey {
     /// the first claim wins whichever path started it. An issue omits its repository:
     /// each project's channel belongs to one repository.
     pub fn claim_piece(&self) -> String {
-        match self {
+        let raw = match self {
             Self::Task { identifier } => format!("task:{identifier}"),
             Self::Issue { number, .. } => format!("issue:{number}"),
             Self::Spec { section } => format!("spec:{section}"),
-        }
+        };
+        crate::goal_swarm_choice::canonical_piece_key(&raw)
     }
 }
 

@@ -40,6 +40,7 @@ use velocity_core::state::{
 
 pub mod duty;
 pub mod goal_swarm_dialog;
+pub mod goal_swarms;
 mod project_layout;
 pub mod projects;
 pub mod swarm_dialog;
@@ -594,6 +595,9 @@ pub struct ThreadItem {
     /// Spec interview threads only (F3).
     #[serde(default)]
     pub interview: Option<InterviewRecord>,
+    /// Goal swarm membership and choosing-work phase (F16).
+    #[serde(default)]
+    pub goal_member: Option<goal_swarms::GoalThreadMember>,
 }
 
 impl ThreadItem {
@@ -625,6 +629,7 @@ impl ThreadItem {
             effective_speed: SpeedMode::Regular,
             model_supports_fast: false,
             interview: None,
+            goal_member: None,
         }
     }
 
@@ -657,6 +662,7 @@ impl ThreadItem {
             effective_speed: thread.preferred_speed,
             model_supports_fast: thread.model_supports_fast,
             interview: None,
+            goal_member: None,
         }
         .normalize()
     }
@@ -740,6 +746,9 @@ pub struct ProjectItem {
     /// Swarms launched on this project, newest first (F10).
     #[serde(default)]
     pub swarms: Vec<swarms::SwarmRecord>,
+    /// Goal swarms launched on this project, newest first (F16).
+    #[serde(default)]
+    pub goal_swarms: Vec<goal_swarms::GoalSwarmRecord>,
     /// The newest AIRC record shown while the modal was open: the footer badge counts
     /// lines after it (F14).
     #[serde(default)]
@@ -777,6 +786,7 @@ impl ProjectItem {
             pending_interview: None,
             duty_roles: Vec::new(),
             swarms: Vec::new(),
+            goal_swarms: Vec::new(),
             airc_seen: 0,
         }
     }

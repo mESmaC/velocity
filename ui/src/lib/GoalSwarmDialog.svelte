@@ -9,6 +9,7 @@
     GoalSwarmChoices,
     GoalSwarmDialog,
     LayoutAction,
+    LayoutSnapshot,
   } from './ipc';
   import './theme/new-project.css';
   import './theme/goal-swarm.css';
@@ -16,9 +17,13 @@
   let {
     request,
     send,
+    submitRequests,
+    onResult,
   }: {
     request: GoalDialogRequest;
     send: (action: LayoutAction) => void;
+    submitRequests: number;
+    onResult: (snapshot: LayoutSnapshot) => void;
   } = $props();
 
   const efforts: [EffortLevel, string][] = [
@@ -35,13 +40,16 @@
   let prompt = $state('');
   let keepGoing = $state(false);
   let addPrDuty = $state(true);
+  let submitting = $state(false);
   let error = $state('');
+  let handledSubmits = 0;
   // Edits are applied in Rust one after another, each on the choices the last one returned.
   let queue: Promise<void> = Promise.resolve();
 
   onMount(() => {
     const previous = document.activeElement;
     prompt = request.prompt;
+    handledSubmits = submitRequests;
     dialogElement.showModal();
     draw();
     // The pool is read from GitHub and SPEC.md; the dialog is usable meanwhile.
@@ -70,8 +78,38 @@
       .catch(report);
   }
 
+  $effect(() => {
+    if (submitRequests !== handledSubmits) {
+      handledSubmits = submitRequests;
+      void submit();
+    }
+  });
+
   function dismiss() {
-    send({ Request: { Navigation: 'Dismiss' } });
+    if (!submitting) send({ Request: { Navigation: 'Dismiss' } });
+  }
+
+  async function submit() {
+    if (submitting || !view || Boolean(view.launch_note)) return;
+    submitting = true;
+    error = '';
+    try {
+      await queue;
+      if (!view || Boolean(view.launch_note)) return;
+      onResult(
+        await goalSwarmCommands.launch({
+          project_identifier: view.project_identifier,
+          prompt,
+          mix: view.choices.rows,
+          keep_going: keepGoing,
+          add_pr_duty: addPrDuty && view.pr_duty_shortfall > 0,
+        }),
+      );
+    } catch (reason) {
+      report(reason);
+    } finally {
+      submitting = false;
+    }
   }
 </script>
 
@@ -301,8 +339,9 @@
       <button
         type="button"
         class="btn solid"
-        disabled={!view || Boolean(view.launch_note)}
+        disabled={submitting || !view || Boolean(view.launch_note)}
         title={view?.launch_note ?? undefined}
+        onclick={() => void submit()}
       >
         {view?.launch_label ?? 'Launch'}
         <kbd>Ctrl</kbd><kbd>↵</kbd>

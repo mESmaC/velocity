@@ -136,15 +136,20 @@ fn finish_thread_tasks(state: &mut crate::PersistedState, project: u32, thread: 
     let Some(project) = state.projects.iter_mut().find(|item| item.id == project) else {
         return;
     };
-    let task_ids = project
+    let (task_ids, spec_section) = project
         .threads
         .iter()
         .find(|item| item.id == thread)
-        .map(|item| item.task_ids.clone())
+        .map(|item| (item.task_ids.clone(), item.spec_section.clone()))
         .unwrap_or_default();
     for task in &mut project.tasks {
         if task.assigned_thread_id == Some(thread) || task_ids.contains(&task.id) {
             task.state = crate::TaskState::Done;
         }
+    }
+    if let Some(section) = spec_section
+        && !project.built_spec_sections.contains(&section)
+    {
+        project.built_spec_sections.push(section);
     }
 }

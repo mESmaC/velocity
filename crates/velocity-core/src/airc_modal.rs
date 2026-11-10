@@ -83,6 +83,8 @@ pub enum AircMemberState {
         detail: String,
         idle: bool,
     },
+    /// A goal swarm agent reading AGENTS.md, SPEC.md and the claims board (F16).
+    Choosing,
     Working {
         title: String,
     },
@@ -555,6 +557,7 @@ pub fn event_tone(tag: &str) -> AircTone {
 
 fn claim_state(member: Option<&AircMemberState>) -> (&'static str, Option<u32>) {
     match member {
+        Some(AircMemberState::Choosing) => ("choosing", None),
         Some(AircMemberState::Working { .. }) => ("working", None),
         Some(AircMemberState::Review { number, .. }) => ("review", *number),
         Some(AircMemberState::Failed) => ("failed · held", None),
@@ -718,6 +721,9 @@ fn member_row(
             .unwrap_or_default()
     };
     match state {
+        Some(AircMemberState::Choosing) if joined => {
+            Some((1, (NickDot::Idle, "reading the claims board".into())))
+        }
         Some(AircMemberState::Working { title }) => Some((2, (NickDot::Active, title.clone()))),
         Some(AircMemberState::Review { label, .. }) => Some((3, (NickDot::Active, label.clone()))),
         Some(AircMemberState::Failed) if holds => {

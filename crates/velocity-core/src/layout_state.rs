@@ -335,6 +335,19 @@ impl LayoutState {
         self.changed();
     }
 
+    /// Launching a goal swarm closes the dialog, clears the Home composer that prefilled
+    /// its prompt, and selects the launched member when available (F16).
+    pub fn close_goal_dialog_after_launch(&mut self, select: Option<usize>) {
+        self.goal_dialog = None;
+        if matches!(self.view, NavigationView::Home) {
+            self.composer_text.clear();
+        }
+        if let Some(identifier) = select {
+            self.open_thread(identifier);
+        }
+        self.changed();
+    }
+
     /// One overlay at a time: opening a dialog closes the palette and every other dialog.
     fn close_overlays(&mut self) {
         self.palette_open = false;

@@ -425,6 +425,16 @@ pub struct PullRequestStep<'a> {
     pub worktree_deleted: bool,
 }
 
+impl<'a> PullRequestStep<'a> {
+    pub fn new(number: u32, stage: &'a str, worktree_deleted: bool) -> Self {
+        Self {
+            number,
+            stage,
+            worktree_deleted,
+        }
+    }
+}
+
 /// The swarm feed line for a member PR moving from `before` to `after` (F10 Activity):
 /// PR opened, changes requested, comments addressed, merged (with what merging finished),
 /// and closed without merging.

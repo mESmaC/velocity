@@ -44,6 +44,7 @@
   let newProjectSubmits = $state(0);
   let dutySubmits = $state(0);
   let swarmSubmits = $state(0);
+  let goalSubmits = $state(0);
   let agentsSaves = $state(0);
   let queue = Promise.resolve();
   const intents: LayoutIntent[] = [];
@@ -106,6 +107,10 @@
     }
     if (navigation === 'Submit' && layout?.swarm_dialog) {
       swarmSubmits += 1;
+      return;
+    }
+    if (navigation === 'Submit' && layout?.goal_dialog) {
+      goalSubmits += 1;
       return;
     }
     const target =
@@ -313,6 +318,8 @@
 {#if layout?.goal_dialog}<GoalSwarmDialog
     request={layout.goal_dialog}
     {send}
+    submitRequests={goalSubmits}
+    onResult={receive}
   />{/if}
 {#if layout?.airc_open && layout.project_identifier !== null}{#key layout.project_identifier}<AircModal
       project={layout.project_identifier}

@@ -295,6 +295,13 @@ fn checkpoint(
         before.as_ref(),
         &watch,
     );
+    crate::goal_swarm::record_pull_request_observation(
+        application,
+        key.0,
+        &thread,
+        before.as_ref(),
+        &watch,
+    );
     publish_lifecycle(
         application,
         key,

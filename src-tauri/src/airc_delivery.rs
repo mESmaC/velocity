@@ -54,15 +54,18 @@ fn deliver(
     let key = (project.id, thread.id);
     let member = format!("thread-{}", key.1);
     let channel = channel(application, project.id)?;
-    let live = {
+    let (live, setting_up) = {
         let runtimes = lock(
             application.state::<ManagedThreads>().inner(),
             "thread sessions",
         )?;
-        runtimes.is_live(key) && !runtimes.is_setting_up(key)
+        (runtimes.is_live(key), runtimes.is_setting_up(key))
     };
     if !live {
         return channel.leave(&member).map_err(|error| error.to_string());
+    }
+    if setting_up {
+        return Ok(());
     }
     let Some(path) = &thread.worktree_path else {
         return Ok(());
