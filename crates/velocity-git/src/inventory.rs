@@ -11,7 +11,7 @@ use thiserror::Error;
 use velocity_core::worktree_settings::deleted_row_window_start;
 use velocity_core::worktree_view::{
     self, DriveInfo, WorktreeContext, WorktreeMeasurements, WorktreeRowTone, WorktreeRowView,
-    WorktreeSettingsView, WorktreeSize, path_key,
+    WorktreeSettingsView, WorktreeSize, path_spelling,
 };
 
 #[derive(Debug, Error)]
@@ -118,7 +118,8 @@ impl WorktreeRuntime {
             }
             match source.paths() {
                 Ok(paths) => {
-                    let live_paths: BTreeSet<_> = paths.iter().map(|path| path_key(path)).collect();
+                    let live_paths: BTreeSet<_> =
+                        paths.iter().map(|path| path_spelling(path)).collect();
                     measured.retain(|path, _| live_paths.contains(path));
                     if let Ok(mut inventory) = self.inventory.lock() {
                         inventory.retain_paths(&live_paths);
@@ -127,7 +128,7 @@ impl WorktreeRuntime {
                         if self.stopped.load(Ordering::Relaxed) {
                             break;
                         }
-                        let key = path_key(&path);
+                        let key = path_spelling(&path);
                         if measured
                             .get(&key)
                             .is_some_and(|time| time.elapsed() < Duration::from_secs(30))
@@ -184,7 +185,7 @@ pub fn read_drives() -> Result<Vec<DriveInfo>, InventoryError> {
 pub fn worktree_identity(path: &Path) -> Option<String> {
     fs::canonicalize(path)
         .ok()
-        .map(|canonical| path_key(&canonical.to_string_lossy()))
+        .map(|canonical| path_spelling(&canonical.to_string_lossy()))
 }
 
 fn measure_error(path: &Path, source: std::io::Error) -> InventoryError {
@@ -294,12 +295,12 @@ impl WorktreeInventory {
             Some(identity) => {
                 self.measurements
                     .identities
-                    .insert(path_key(path), identity.clone());
+                    .insert(path_spelling(path), identity.clone());
                 identity
             }
             None => {
-                self.measurements.identities.remove(&path_key(path));
-                path_key(path)
+                self.measurements.identities.remove(&path_spelling(path));
+                path_spelling(path)
             }
         };
         self.measurements
@@ -379,13 +380,13 @@ impl WorktreeInventory {
             now.duration_since(*deleted_at) < Duration::from_secs(5)
                 && !rows
                     .iter()
-                    .any(|current| path_key(&current.path) == path_key(&row.path))
+                    .any(|current| path_spelling(&current.path) == path_spelling(&row.path))
         });
         if let Some(previous) = self.previous.insert(project, rows.to_vec()) {
             for mut row in previous {
                 if rows
                     .iter()
-                    .any(|current| path_key(&current.path) == path_key(&row.path))
+                    .any(|current| path_spelling(&current.path) == path_spelling(&row.path))
                 {
                     continue;
                 }
