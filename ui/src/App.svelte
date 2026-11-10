@@ -8,6 +8,7 @@
   import DutyView from './lib/DutyView.svelte';
   import SwarmView from './lib/SwarmView.svelte';
   import SwarmDialog from './lib/SwarmDialog.svelte';
+  import GoalSwarmDialog from './lib/GoalSwarmDialog.svelte';
   import SpecInterview from './lib/SpecInterview.svelte';
   import AgentsEditor from './lib/AgentsEditor.svelte';
   import CommandPalette from './lib/CommandPalette.svelte';
@@ -308,6 +309,10 @@
       submitRequests={swarmSubmits}
       onResult={receive}
     />{/key}{/if}
+{#if layout?.goal_dialog}<GoalSwarmDialog
+    request={layout.goal_dialog}
+    {send}
+  />{/if}
 {#if threadMenu}<ThreadMenu
     menu={threadMenu.view}
     x={threadMenu.x}

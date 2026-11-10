@@ -12,6 +12,7 @@ mod build_gate;
 pub mod duty;
 mod follow_through;
 mod github;
+mod goal_swarm;
 mod interview;
 mod issue_panel;
 pub mod layout;
@@ -67,6 +68,8 @@ fn bindings() -> Builder<tauri::Wry> {
         github::list_pull_requests,
         github::get_pull_request,
         github::dispatch_pull_request,
+        goal_swarm::get_goal_swarm_dialog,
+        goal_swarm::read_goal_swarm_pool,
         issue_panel::get_issue_panel,
         issue_panel::open_project_issue,
         issue_panel::dispatch_issue,
@@ -174,6 +177,7 @@ pub fn run() -> anyhow::Result<()> {
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_clipboard_manager::init())
         .manage(agents::ManagedAgents::default())
+        .manage(goal_swarm::GoalSwarmPool::default())
         .manage(layout::MainLayout::default())
         .manage(threads::ManagedThreads::default())
         .manage(velocity_interview::Interviews::default())

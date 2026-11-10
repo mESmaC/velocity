@@ -12,7 +12,7 @@ use crate::swarms::SwarmItem;
 use crate::{ProjectItem, ProviderKind, StateStore, TaskState, ThreadState};
 
 /// Providers with a confirmed ACP agent (§3.2); Antigravity waits on Q14.
-const LAUNCHABLE: [ProviderKind; 3] = [
+pub(crate) const LAUNCHABLE: [ProviderKind; 3] = [
     ProviderKind::Claude,
     ProviderKind::Codex,
     ProviderKind::Kimi,
@@ -207,7 +207,7 @@ fn split_label(picked: usize, models: &[SwarmModelCard]) -> String {
 }
 
 /// The capacity line and how many PR duty agents to add (one reviewer per 3 open PRs).
-fn pr_duty(project: &ProjectItem, picked: usize) -> (Option<String>, u32) {
+pub(crate) fn pr_duty(project: &ProjectItem, picked: usize) -> (Option<String>, u32) {
     let reviewers = project
         .duty_roles
         .iter()

@@ -1082,6 +1082,85 @@
   --duty-sub-row-margin-top: 4px;
 }
 
+/* F16 goal swarm dialog: values copied from the reference's `goal swarm` declarations
+   (main-window.html 867-905), `.seg.dis` (201-202) and the bolt icon (2000). */
+:root {
+  --goal-dialog-width: min(660px, 94vw);
+  --goal-dialog-body-max-height: calc(100vh - 150px);
+  --goal-dialog-icon-size: 14px;
+  --goal-dialog-icon-margin-right: 4px;
+  --goal-brief-min-height: 50px;
+  --goal-brief-font-size: 12.5px;
+  --goal-count-gap: 10px;
+  --goal-stepper-height: 24px;
+  --goal-stepper-border: 1px solid rgba(255, 255, 255, 0.1);
+  --goal-stepper-border-radius: 7px;
+  --goal-stepper-background: rgba(255, 255, 255, 0.05);
+  --goal-stepper-button-width: 24px;
+  --goal-stepper-button-height: 22px;
+  --goal-stepper-button-font-size: 13px;
+  --goal-stepper-button-hover-background: rgba(255, 255, 255, 0.1);
+  --goal-stepper-count-min-width: 24px;
+  --goal-stepper-count-font: 600 12px var(--mono);
+  --goal-stepper-large-height: 30px;
+  --goal-stepper-large-border-radius: 9px;
+  --goal-stepper-large-button-width: 30px;
+  --goal-stepper-large-button-height: 28px;
+  --goal-stepper-large-button-font-size: 15px;
+  --goal-stepper-large-count-min-width: 38px;
+  --goal-stepper-large-count-font-size: 15px;
+  --goal-quick-gap: 4px;
+  --goal-quick-button-height: 22px;
+  --goal-quick-button-padding: 0 9px;
+  --goal-quick-button-border: 1px solid rgba(255, 255, 255, 0.1);
+  --goal-quick-button-border-radius: 999px;
+  --goal-quick-button-font: 10.5px var(--mono);
+  --goal-quick-button-on-background: rgba(255, 255, 255, 0.11);
+  --goal-mix-gap: 5px;
+  --goal-mix-padding: 8px;
+  --goal-mix-border: 1px solid rgba(255, 255, 255, 0.08);
+  --goal-mix-border-radius: 12px;
+  --goal-mix-background: rgba(255, 255, 255, 0.025);
+  --goal-bar-gap: 2px;
+  --goal-bar-height: 22px;
+  --goal-bar-margin-bottom: 3px;
+  --goal-bar-segment-border-radius: 6px;
+  --goal-bar-segment-font: 600 10.5px var(--mono);
+  --goal-bar-segment-color: #000;
+  --goal-bar-segment-sheen: linear-gradient(
+    rgba(255, 255, 255, 0.28),
+    rgba(255, 255, 255, 0)
+  );
+  --goal-row-columns: 16px minmax(0, 1fr) auto auto auto 48px 18px;
+  --goal-row-gap: 8px;
+  --goal-row-padding: 1px 2px;
+  --goal-select-height: 26px;
+  --goal-select-padding: 0 8px;
+  --goal-select-border: 1px solid rgba(255, 255, 255, 0.1);
+  --goal-select-border-radius: 7px;
+  --goal-select-background: rgba(0, 0, 0, 0.45);
+  --goal-select-font: 12px var(--sans);
+  --goal-select-focus-border-color: rgba(255, 255, 255, 0.26);
+  --goal-select-option-background: #1c1c1e;
+  --goal-segment-disabled-opacity: 0.4;
+  --goal-bolt-size: 10px;
+  --goal-bolt-margin-right: 3px;
+  --goal-row-tag-font: 10px var(--mono);
+  --goal-row-remove-size: 18px;
+  --goal-row-remove-border-radius: 5px;
+  --goal-row-remove-hover-background: rgba(255, 255, 255, 0.1);
+  --goal-tools-gap: 6px;
+  --goal-tools-padding-top: 3px;
+  --goal-tools-mini-gap: 4px;
+  --goal-tools-mini-icon-size: 11px;
+  --goal-limits-gap: 4px 14px;
+  --goal-limits-font-size: 10.5px;
+  --goal-limits-item-gap: 5px;
+  --goal-limits-icon-size: 11px;
+  --goal-pool-font-size: 11px;
+  --goal-pool-count-font-weight: 600;
+}
+
 /* F10 swarm: values copied from the reference's `swarm` declarations (main-window.html).
    Italics there are dropped per AGENTS.md. */
 :root {
