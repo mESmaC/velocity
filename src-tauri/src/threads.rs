@@ -71,7 +71,9 @@ fn resume_follow_through(
     )
     .map_err(|error| error.to_string())?;
     let (agent, bypass_modes) = agent_launch(thread.provider).map_err(|error| error.to_string())?;
-    let setup = SessionSetup::new(path.into(), bypass_modes);
+    let mut setup = SessionSetup::new(path.into(), bypass_modes);
+    setup.airc = crate::airc_access::managed(application)
+        .map(|airc| airc.thread(key.0, key.1, std::path::Path::new(path)));
     let inputs = lock(
         application.state::<ManagedThreads>().inner(),
         "thread sessions",
@@ -332,11 +334,10 @@ async fn run_thread(
         return;
     }
     report(refresh(&application, key, false));
-    let session = spawn_session(
-        plan.agent,
-        SessionSetup::new(worktree_path, plan.bypass_modes),
-        inputs,
-    );
+    let mut setup = SessionSetup::new(worktree_path, plan.bypass_modes);
+    setup.airc = crate::airc_access::managed(&application)
+        .map(|airc| airc.thread(key.0, key.1, &setup.worktree));
+    let session = spawn_session(plan.agent, setup, inputs);
     pump(&application, key, session).await;
 }
 
