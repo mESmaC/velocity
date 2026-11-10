@@ -4,6 +4,8 @@ use tauri_specta::{Builder, Event, collect_commands, collect_events};
 use velocity_store::PersistedState;
 
 mod agents;
+pub mod airc_access;
+mod airc_delivery;
 mod build_gate;
 pub mod duty;
 mod follow_through;
@@ -14,6 +16,7 @@ pub mod layout;
 mod new_project;
 mod projects;
 mod pull_request_panel;
+pub mod reviews;
 mod state;
 pub mod sweeps;
 mod thread_menu;
@@ -31,6 +34,7 @@ fn bindings() -> Builder<tauri::Wry> {
         agents::edit_agents_md,
         agents::write_agents_md,
         agents::tighten_rule,
+        airc_delivery::airc_send,
         window::get_window_state,
         window::minimize_window,
         window::toggle_maximize_window,
@@ -149,13 +153,16 @@ pub fn run() -> anyhow::Result<()> {
         .setup(move |application| {
             bindings.mount_events(application);
             state::initialize(application.handle())?;
+            airc_access::initialize(application.handle())?;
             projects::initialize(application.handle())?;
             follow_through::initialize(application.handle(), threads::follow_through_hooks());
             issue_panel::initialize(application.handle());
             worktree_settings::initialize(application.handle())?;
             pull_request_panel::initialize(application.handle());
             interview::start(application.handle());
+            reviews::initialize(application.handle())?;
             sweeps::initialize(application.handle())?;
+            airc_delivery::initialize(application.handle());
             Ok(())
         })
         .on_window_event(|window, event| {

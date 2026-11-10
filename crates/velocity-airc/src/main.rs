@@ -1,29 +1,11 @@
-use std::path::PathBuf;
-use velocity_airc::{Channel, Error, serve};
+use velocity_airc::{Error, SERVER_SWITCH, serve_stdio};
 
 fn main() -> Result<(), Error> {
-    let arguments: Vec<_> = std::env::args_os().skip(1).collect();
-    if arguments.len() != 4 {
-        return Err(Error::Invalid(
-            "Usage: velocity-airc <app-data> <project-id> <member-id> <worktree-leaf-or-duty-nick>"
-                .into(),
-        ));
+    let mut arguments: Vec<_> = std::env::args_os().skip(1).collect();
+    // Accept Velocity's own switch too, so the standalone server can stand in for the app's
+    // executable in an `AircLaunch` (headless examples).
+    if arguments.first().and_then(|first| first.to_str()) == Some(SERVER_SWITCH) {
+        arguments.remove(0);
     }
-    let project = arguments[1]
-        .to_str()
-        .ok_or_else(|| Error::Invalid("Invalid project identity".into()))?;
-    let member = arguments[2]
-        .to_str()
-        .ok_or_else(|| Error::Invalid("Invalid member identity".into()))?;
-    let nick = arguments[3]
-        .to_str()
-        .ok_or_else(|| Error::Invalid("Invalid nick".into()))?;
-    let channel = Channel::open(&PathBuf::from(&arguments[0]), project)?;
-    serve(
-        &channel,
-        member,
-        nick,
-        std::io::stdin().lock(),
-        std::io::stdout().lock(),
-    )
+    serve_stdio(&arguments)
 }

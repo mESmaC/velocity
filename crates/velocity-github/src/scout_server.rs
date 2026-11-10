@@ -8,7 +8,6 @@
 //! Every published outcome is appended to the sweep's report file, which Velocity reads to
 //! update the Duty view's activity feed and issues-filed count.
 
-use std::fs::OpenOptions;
 use std::io::{BufRead, Write};
 use std::path::PathBuf;
 
@@ -50,60 +49,8 @@ impl ScoutServer {
     }
 
     /// Answers JSON-RPC requests, one per line, until the agent closes the connection.
-    pub fn serve(&mut self, input: impl BufRead, mut output: impl Write) -> std::io::Result<()> {
-        for line in input.lines() {
-            let line = line?;
-            let response = match serde_json::from_str::<Value>(&line) {
-                Ok(request) => self.respond(&request),
-                Err(_) => Some(failure(Value::Null, -32700, "Parse error")),
-            };
-            if let Some(response) = response {
-                serde_json::to_writer(&mut output, &response)?;
-                writeln!(output)?;
-                output.flush()?;
-            }
-        }
-        Ok(())
-    }
-
-    fn respond(&mut self, request: &Value) -> Option<Value> {
-        let id = request.get("id").cloned().unwrap_or(Value::Null);
-        let method = request.get("method").and_then(Value::as_str);
-        if request.get("jsonrpc").and_then(Value::as_str) != Some("2.0") || method.is_none() {
-            return Some(failure(id, -32600, "Invalid request"));
-        }
-        // A notification (no id) gets no answer.
-        request.get("id")?;
-        let result = match method.unwrap_or_default() {
-            "initialize" => json!({
-                "protocolVersion": "2025-11-25",
-                "capabilities": {"tools": {}},
-                "serverInfo": {"name": "velocity-scout", "version": env!("CARGO_PKG_VERSION")},
-                "instructions": format!(
-                    "You are {}. Call scout_issues before filing, then file each finding with scout_file.",
-                    self.scout
-                ),
-            }),
-            "ping" => json!({}),
-            "tools/list" => json!({"tools": tool_list()}),
-            "tools/call" => match self.call(&request["params"]) {
-                Ok(value) => json!({"content": [{"type": "text", "text": value.to_string()}]}),
-                Err(error) => {
-                    json!({"isError": true, "content": [{"type": "text", "text": error.to_string()}]})
-                }
-            },
-            _ => return Some(failure(id, -32601, "Method not found")),
-        };
-        Some(json!({"jsonrpc": "2.0", "id": id, "result": result}))
-    }
-
-    fn call(&mut self, parameters: &Value) -> Result<Value, ScoutIssueError> {
-        let arguments = parameters.get("arguments").cloned().unwrap_or(json!({}));
-        match parameters.get("name").and_then(Value::as_str) {
-            Some("scout_issues") => self.issues(),
-            Some("scout_file") => self.file(arguments),
-            _ => Err(ScoutIssueError::Invalid("Unknown scout tool".into())),
-        }
+    pub fn serve(&mut self, input: impl BufRead, output: impl Write) -> std::io::Result<()> {
+        crate::mcp_stdio::serve(self, input, output)
     }
 
     fn client(&self) -> Result<&IssueClient, ScoutIssueError> {
@@ -189,14 +136,7 @@ impl ScoutServer {
         let Some(path) = &self.report else {
             return Ok(());
         };
-        let mut line = serde_json::to_string(&report)?;
-        line.push('\n');
-        // One short append per outcome; Velocity reads whole lines only.
-        OpenOptions::new()
-            .create(true)
-            .append(true)
-            .open(path)?
-            .write_all(line.as_bytes())?;
+        crate::mcp_stdio::append_report(path, &report)?;
         Ok(())
     }
 }
@@ -241,36 +181,37 @@ fn tool_list() -> Vec<Value> {
     ]
 }
 
-fn failure(id: Value, code: i32, message: &str) -> Value {
-    json!({"jsonrpc": "2.0", "id": id, "error": {"code": code, "message": message}})
-}
-
 /// Reads the report lines appended since `offset` bytes, and the offset after the last
 /// complete line, so a line the server is still writing is read next time.
 pub fn read_scout_reports(
     path: &std::path::Path,
     offset: u64,
 ) -> std::io::Result<(Vec<ScoutReport>, u64)> {
-    let bytes = match std::fs::read(path) {
-        Ok(bytes) => bytes,
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-            return Ok((Vec::new(), offset));
-        }
-        Err(error) => return Err(error),
-    };
-    let start = usize::try_from(offset)
-        .unwrap_or(usize::MAX)
-        .min(bytes.len());
-    let unread = &bytes[start..];
-    let complete = unread
-        .iter()
-        .rposition(|byte| *byte == b'\n')
-        .map_or(0, |last| last + 1);
-    let reports = unread[..complete]
-        .split(|byte| *byte == b'\n')
-        .filter(|line| !line.is_empty())
-        // A line this build can't read is skipped rather than stalling the feed.
-        .filter_map(|line| serde_json::from_slice(line).ok())
-        .collect();
-    Ok((reports, offset + complete as u64))
+    crate::mcp_stdio::read_reports(path, offset)
+}
+
+impl crate::mcp_stdio::ToolServer for ScoutServer {
+    fn name(&self) -> &'static str {
+        "velocity-scout"
+    }
+
+    fn instructions(&self) -> String {
+        format!(
+            "You are {}. Call scout_issues before filing, then file each finding with scout_file.",
+            self.scout
+        )
+    }
+
+    fn tools(&self) -> Vec<Value> {
+        tool_list()
+    }
+
+    fn call(&mut self, name: Option<&str>, arguments: Value) -> Result<Value, String> {
+        let result = match name {
+            Some("scout_issues") => self.issues(),
+            Some("scout_file") => self.file(arguments),
+            _ => Err(ScoutIssueError::Invalid("Unknown scout tool".into())),
+        };
+        result.map_err(|error| error.to_string())
+    }
 }
