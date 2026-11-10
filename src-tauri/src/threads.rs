@@ -72,13 +72,9 @@ fn resume_follow_through(
     .map_err(|error| error.to_string())?;
     let (agent, bypass_modes) = agent_launch(thread.provider).map_err(|error| error.to_string())?;
     let mut setup = SessionSetup::new(path.into(), bypass_modes);
-    crate::airc_claims::attach(
-        application,
-        key,
-        &mut setup,
-        &thread.title,
-        &thread.branch_name,
-    )?;
+    setup.airc = crate::airc_access::managed(application)
+        .map(|airc| airc.thread(key.0, key.1, std::path::Path::new(path)));
+    crate::airc_claims::attach(application, key, &setup, &thread.title, &thread.branch_name)?;
     let inputs = lock(
         application.state::<ManagedThreads>().inner(),
         "thread sessions",
@@ -328,9 +324,11 @@ async fn run_thread(
     }
     report(refresh(&application, key, false));
     let mut setup = SessionSetup::new(worktree_path, plan.bypass_modes);
+    setup.airc = crate::airc_access::managed(&application)
+        .map(|airc| airc.thread(key.0, key.1, &setup.worktree));
     let branch = branch_name.as_deref().unwrap_or(&plan.thread.branch_name);
     if let Err(error) =
-        crate::airc_claims::attach(&application, key, &mut setup, &plan.thread.title, branch)
+        crate::airc_claims::attach(&application, key, &setup, &plan.thread.title, branch)
     {
         return fail(&application, key, "Could not claim work", &error);
     }

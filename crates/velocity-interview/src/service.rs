@@ -11,7 +11,7 @@ use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 use agent_client_protocol::v1::schema::{ContentBlock, TextContent};
 use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender, unbounded_channel};
 use velocity_acp::Provider;
-use velocity_acp::client::{AgentEvent, AgentInput, SessionSetup, run_session};
+use velocity_acp::client::{AgentEvent, AgentInput, AircLaunch, SessionSetup, run_session};
 use velocity_core::layout_state::LayoutState;
 use velocity_core::layout_view::LayoutSnapshot;
 use velocity_core::thread_view_model::TranscriptBlock;
@@ -33,6 +33,10 @@ pub trait Host: Send + Sync + 'static {
     fn interviews(&self) -> &Interviews;
     fn publish(&self, snapshot: LayoutSnapshot);
     fn spawn(&self, task: Pin<Box<dyn Future<Output = ()> + Send>>);
+    /// The project's AIRC channel, passed to the interview agent like every agent (F14).
+    fn airc(&self) -> Option<AircLaunch> {
+        None
+    }
 }
 
 /// Running interview agents and their live transcripts.
@@ -276,12 +280,8 @@ fn launch<H: Host>(host: &Arc<H>, key: InterviewKey, prompt: String) {
         session.live.begin_turn();
         session.inputs = Some(inputs);
     });
-    let setup = SessionSetup {
-        worktree: plan.checkout,
-        airc: None,
-        shared_servers: Vec::new(),
-        bypass_modes: agent.bypass_modes,
-    };
+    let mut setup = SessionSetup::new(plan.checkout, agent.bypass_modes);
+    setup.airc = host.airc().map(|airc| airc.spec_interview(key.0, key.1));
     let task_host = Arc::clone(host);
     host.spawn(Box::pin(async move {
         run(task_host, key, agent.launch, setup, receiver).await;

@@ -2,12 +2,14 @@
 mod channel;
 pub mod claims;
 mod delivery;
+mod launch;
 mod protocol;
 mod storage;
 
 pub use channel::{Channel, Entry, Event, Presence};
 pub use claims::{Claim, ClaimResult};
 pub use delivery::{deliver_messages, message_for};
+pub use launch::{SERVER_NAME, SERVER_SWITCH, serve_stdio, server_arguments};
 pub use protocol::serve;
 
 #[derive(Debug, thiserror::Error)]
