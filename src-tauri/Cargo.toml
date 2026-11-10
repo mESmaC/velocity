@@ -29,7 +29,7 @@ tauri-specta.workspace = true
 tokio.workspace = true
 velocity-git.workspace = true
 velocity-acp = { path = "../crates/velocity-acp" }
-velocity-airc.workspace = true
+velocity-airc = { workspace = true, features = ["bindings"] }
 velocity-core = { workspace = true, features = ["bindings"] }
 velocity-new-project.workspace = true
 velocity-store.workspace = true
