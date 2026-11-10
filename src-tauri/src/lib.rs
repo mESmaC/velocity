@@ -5,6 +5,7 @@ use velocity_store::PersistedState;
 
 mod agents;
 pub mod airc_access;
+pub mod airc_claims;
 mod airc_delivery;
 mod airc_events;
 mod build_gate;
