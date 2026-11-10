@@ -5471,6 +5471,7 @@ dependencies = [
  "chrono",
  "serde",
  "serde_json",
+ "specta",
  "thiserror 2.0.21",
 ]
 
@@ -5496,7 +5497,6 @@ dependencies = [
  "velocity-github",
  "velocity-interview",
  "velocity-new-project",
- "velocity-skills",
  "velocity-store",
  "velocity-threads",
 ]
@@ -5562,16 +5562,6 @@ dependencies = [
  "velocity-git",
  "velocity-github",
  "velocity-store",
-]
-
-[[package]]
-name = "velocity-skills"
-version = "0.1.0"
-dependencies = [
- "serde",
- "serde_json",
- "specta",
- "thiserror 2.0.21",
 ]
 
 [[package]]
