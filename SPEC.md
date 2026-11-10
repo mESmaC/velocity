@@ -1205,7 +1205,7 @@ Each milestone ends with a working app. PR duty checks an item off when it lands
 - [x] Duty view, start dialog, pause/resume, add agents (F7)
 
 **M6 · Task List, issues, swarm**
-- [ ] Task List: states, add input, `T`, `/task`, palette, attribution, live agent state (F8)
+- [x] Task List: states, add input, `T`, `/task`, palette, attribution, live agent state (F8)
 - [ ] Agent `task_add` tool, used only when asked (F8)
 - [x] Issues panel and single dispatch (F9)
 - [x] Swarm: dialog, launch, PR duty capacity, sidebar row, view, broadcast, + Items, rebase on merge, task done / issue close (F10)
