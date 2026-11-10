@@ -161,7 +161,13 @@ fn record(entry: &Entry) -> AircRecord {
         &entry.member,
         &entry.nick,
     )
-    .with_text(&entry.text, entry.to.clone())
+    .with_text(
+        &entry
+            .message_mode
+            .map(|mode| format!("{mode:?}"))
+            .unwrap_or_else(|| entry.text.clone()),
+        entry.to.clone(),
+    )
     .with_event_text(&shown.text)
     .as_event(entry.is_event())
 }
@@ -176,4 +182,26 @@ fn mark_seen(application: &AppHandle, project: u32, seen: u64) -> Result<(), Str
         Ok::<_, ProjectError>(())
     })
     .map_err(|error| error.to_string())
+}
+
+/// User-owned delivery mode, independent of the agent's tool permissions.
+#[tauri::command]
+#[specta::specta]
+pub fn set_airc_message_mode(
+    application: AppHandle,
+    project_identifier: u32,
+    nick: String,
+    mode: velocity_airc::MessageMode,
+) -> Result<(), String> {
+    read_active(&application)?
+        .filter(|active| active.project == project_identifier)
+        .ok_or("That project is not the active project")?;
+    let directory = application
+        .path()
+        .app_data_dir()
+        .map_err(|error| error.to_string())?;
+    Channel::open(&directory, &project_identifier.to_string())
+        .and_then(|channel| channel.set_message_mode(&nick, mode))
+        .map_err(|error| error.to_string())?;
+    refresh(&application)
 }
