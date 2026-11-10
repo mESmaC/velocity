@@ -203,3 +203,130 @@
 .agents-rewrite.flagged {
   color: var(--warn);
 }
+
+/* Live lint (F11): marks while typing, the per-row Tighten button and the side panel. */
+.agents-text mark {
+  color: inherit;
+  background: var(--agents-mark-hedge);
+  border-bottom: var(--agents-mark-border) var(--warn);
+  border-radius: var(--agents-mark-radius);
+}
+.agents-text mark.modal {
+  background: var(--agents-mark-modal);
+  border-bottom-color: var(--err);
+}
+.agents-text mark.vague {
+  background: var(--agents-mark-vague);
+  border-bottom-color: var(--info);
+}
+.agents-state {
+  display: flex;
+  align-items: center;
+  gap: var(--agents-state-gap);
+  min-height: var(--agents-state-height);
+  font: var(--agents-state-font);
+  color: var(--muted);
+  white-space: nowrap;
+}
+.agents-state .mini {
+  opacity: var(--agents-state-hidden);
+}
+.agents-row:hover .agents-state .mini,
+.agents-row:focus-within .agents-state .mini {
+  opacity: var(--agents-state-shown);
+}
+.agents-view .meta .agents-count.warn {
+  color: var(--warn);
+}
+.agents-view .meta .agents-count.ok {
+  color: var(--ok);
+}
+.agents-view .meta .agents-busy {
+  color: var(--text-2);
+}
+.agents-help b {
+  color: var(--text-2);
+  font-weight: var(--agents-note-weight);
+}
+.agents-lint-head {
+  display: flex;
+  align-items: center;
+  gap: var(--agents-lint-head-gap);
+  margin: var(--agents-lint-head-margin);
+  font-size: var(--agents-help-size);
+  color: var(--text-2);
+}
+.agents-lint-head span {
+  font-family: var(--mono);
+  color: var(--muted);
+}
+.agents-lint-head .mini,
+.agents-cover .mini {
+  margin-left: auto;
+}
+.agents-cover {
+  display: flex;
+  align-items: center;
+  gap: var(--agents-cover-gap);
+  padding: var(--agents-cover-padding);
+  font-size: var(--agents-cover-size);
+  color: var(--text-2);
+}
+.agents-cover b {
+  flex: none;
+  width: var(--agents-cover-mark-width);
+  font-weight: var(--agents-cover-mark-weight);
+  color: var(--ok);
+}
+.agents-cover.miss,
+.agents-cover.miss b {
+  color: var(--warn);
+}
+.agents-flag {
+  display: block;
+  width: var(--agents-flag-width);
+  min-width: var(--agents-zero);
+  margin: var(--agents-flag-margin);
+  padding: var(--agents-flag-padding);
+  border: var(--agents-flag-border);
+  border-radius: var(--r-sm);
+  text-align: left;
+  cursor: pointer;
+}
+.agents-flag:hover {
+  border-color: var(--line-mid);
+  background: var(--surface-2);
+}
+.agents-flag-top {
+  display: flex;
+  align-items: center;
+  gap: var(--agents-flag-gap);
+  min-width: var(--agents-zero);
+}
+.agents-flag-section {
+  flex: none;
+  font: var(--agents-flag-section-font);
+  color: var(--muted);
+}
+.agents-flag-phrase {
+  font: var(--agents-flag-phrase-font);
+  color: var(--warn);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.agents-flag.modal .agents-flag-phrase {
+  color: var(--err);
+}
+.agents-flag.vague .agents-flag-phrase {
+  color: var(--info);
+}
+.agents-flag-message {
+  display: block;
+  margin: var(--agents-flag-message-margin);
+  font-size: var(--agents-help-size);
+  color: var(--muted);
+}
+.agents-help .empty {
+  padding: var(--agents-zero);
+}

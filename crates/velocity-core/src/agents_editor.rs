@@ -1,6 +1,7 @@
 //! Pure F11 outliner operations. The native edge owns reading and committing AGENTS.md.
 
-use crate::agents_markdown::{self, OutlineKind, OutlineLine};
+use crate::agents_markdown;
+pub use crate::agents_markdown::{OutlineKind, OutlineLine};
 
 #[cfg_attr(
     feature = "bindings",
@@ -17,6 +18,7 @@ pub enum OutlineAction {
     AddRule { section: Option<u32> },
     AddSection,
     Undo { identifier: u32 },
+    AddCoverage { item: u32 },
 }
 
 #[cfg_attr(
@@ -41,6 +43,8 @@ pub struct OutlineSnapshot {
     pub rule_count: u32,
     pub focus: Option<OutlineFocus>,
     pub rewrites: Vec<crate::agents_rewrite::RewriteView>,
+    pub flagged: Vec<crate::agents_lint::FlaggedRule>,
+    pub coverage: Vec<crate::agents_coverage::CoverageItem>,
 }
 
 #[derive(Clone, Debug)]
@@ -100,6 +104,8 @@ impl AgentsEditor {
         let markdown = self.markdown();
         OutlineSnapshot {
             dirty: markdown != self.baseline,
+            flagged: self.flagged_rules(),
+            coverage: self.coverage(&markdown),
             markdown,
             sections: self.sections(),
             focus,
@@ -164,6 +170,7 @@ impl AgentsEditor {
                     self.undo_rewrite(identifier);
                     None
                 }
+                AddCoverage { item } => self.add_coverage(item),
             };
         self.snapshot(focus)
     }
