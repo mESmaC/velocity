@@ -8,6 +8,8 @@ export const commands = {
 	editAgentsMd: (projectIdentifier: number, action: OutlineAction_Deserialize) => __TAURI_INVOKE<OutlineSnapshot_Serialize>("edit_agents_md", { projectIdentifier, action }),
 	writeAgentsMd: (projectIdentifier: number) => __TAURI_INVOKE<OutlineSnapshot_Serialize>("write_agents_md", { projectIdentifier }),
 	tightenRule: (projectIdentifier: number, identifier: number) => __TAURI_INVOKE<OutlineSnapshot_Serialize>("tighten_rule", { projectIdentifier, identifier }),
+	/**  Sending is independent of the later modal: the typed IPC is also usable headlessly. */
+	aircSend: (projectIdentifier: number, text: string) => __TAURI_INVOKE<null>("airc_send", { projectIdentifier, text }),
 	getWindowState: () => __TAURI_INVOKE<WindowStateChanged>("get_window_state"),
 	minimizeWindow: () => __TAURI_INVOKE<null>("minimize_window"),
 	toggleMaximizeWindow: () => __TAURI_INVOKE<null>("toggle_maximize_window"),
