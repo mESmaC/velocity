@@ -705,6 +705,9 @@ pub struct ProjectItem {
     pub github_remote: Option<String>,
     pub spec_path: String,
     pub spec_locked: bool,
+    /// Completed F16 pieces retained after their merged thread history is deleted.
+    #[serde(default)]
+    pub built_spec_sections: Vec<String>,
     pub active_thread_id: Option<u32>,
     pub merged_today: u32,
     pub tasks: Vec<TaskItem>,
@@ -729,6 +732,26 @@ pub struct PendingInterview {
 }
 
 impl ProjectItem {
+    pub fn new(id: u32, name: String, repository_path: String) -> Self {
+        Self {
+            id,
+            name,
+            repository_path,
+            location_kind: ProjectLocationKind::Local,
+            default_branch: "master".into(),
+            github_remote: None,
+            spec_path: "SPEC.md".into(),
+            spec_locked: false,
+            built_spec_sections: Vec::new(),
+            active_thread_id: None,
+            merged_today: 0,
+            tasks: Vec::new(),
+            threads: Vec::new(),
+            pending_interview: None,
+            duty_roles: Vec::new(),
+        }
+    }
+
     pub fn normalize(mut self) -> Self {
         let spec_locked = self.spec_locked;
         self.tasks = self

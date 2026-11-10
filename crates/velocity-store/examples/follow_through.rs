@@ -54,22 +54,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
 fn seed(repository: &str, snapshot: &PullRequestSnapshot) -> PersistedState {
     let mut state = PersistedState::default();
-    state.projects.push(ProjectItem {
-        id: 1,
-        name: "Velocity follow-through".into(),
-        location_kind: ProjectLocationKind::GitHub,
-        repository_path: repository.into(),
-        default_branch: "master".into(),
-        github_remote: None,
-        spec_path: "SPEC.md".into(),
-        spec_locked: true,
-        active_thread_id: Some(1),
-        merged_today: 0,
-        tasks: Vec::new(),
-        threads: vec![seed_thread(repository, snapshot)],
-        pending_interview: None,
-        duty_roles: Vec::new(),
-    });
+    let mut project = ProjectItem::new(1, "Velocity follow-through".into(), repository.into());
+    project.location_kind = ProjectLocationKind::GitHub;
+    project.spec_locked = true;
+    project.active_thread_id = Some(1);
+    project.threads = vec![seed_thread(repository, snapshot)];
+    state.projects.push(project);
     state
 }
 

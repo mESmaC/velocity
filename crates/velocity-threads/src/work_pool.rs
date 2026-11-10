@@ -88,6 +88,9 @@ fn available_spec_pieces(project: &ProjectItem, markdown: &str) -> Vec<WorkPiece
             let WorkKey::Spec { section } = &piece.key else {
                 return None;
             };
+            if project.built_spec_sections.contains(section) {
+                return None;
+            }
             let owners: Vec<_> = project
                 .threads
                 .iter()

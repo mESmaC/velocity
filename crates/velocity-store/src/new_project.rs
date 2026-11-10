@@ -62,22 +62,12 @@ fn project_item(
     record: NewProjectRecord,
     interview: Option<PendingInterview>,
 ) -> ProjectItem {
-    ProjectItem {
-        id: identifier,
-        name: record.name,
-        location_kind: record.location_kind,
-        repository_path: record.repository_path,
-        default_branch: record.default_branch,
-        github_remote: record.github_remote,
-        spec_path: String::from("SPEC.md"),
-        spec_locked: false,
-        active_thread_id: None,
-        merged_today: 0,
-        tasks: Vec::new(),
-        threads: Vec::new(),
-        duty_roles: Vec::new(),
-        pending_interview: interview,
-    }
+    let mut project = ProjectItem::new(identifier, record.name, record.repository_path);
+    project.location_kind = record.location_kind;
+    project.default_branch = record.default_branch;
+    project.github_remote = record.github_remote;
+    project.pending_interview = interview;
+    project
 }
 
 /// Windows paths name the same folder regardless of case, separator style, a
