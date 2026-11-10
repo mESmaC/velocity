@@ -95,6 +95,8 @@ fn wanted_value<Text: AsRef<str> + Clone>(
             if is_speed_option(option) =>
         {
             select_matching(values, speed_names(speed))
+                // A fast toggle offered as an on/off choice (Claude Code's "Fast mode").
+                .or_else(|| select_matching(values, toggle_names(speed == Speed::Fast)))
         }
         _ => None,
     }
@@ -133,6 +135,14 @@ fn speed_names(speed: Speed) -> &'static [&'static str] {
     }
 }
 
+fn toggle_names(on: bool) -> &'static [&'static str] {
+    if on {
+        &["on", "true", "enabled"]
+    } else {
+        &["off", "false", "disabled"]
+    }
+}
+
 fn is_fast_option<Text: AsRef<str>>(option: &ConfigOption<Text>) -> bool {
     [option.id.as_ref(), option.name.as_ref()]
         .iter()
@@ -160,4 +170,42 @@ fn normalized(text: &str) -> String {
         .filter(|character| character.is_alphanumeric())
         .flat_map(char::to_lowercase)
         .collect()
+}
+
+/// The agent's model option: its id and every model it lists as (id, display name).
+/// A `default` entry that only points at another model is left out, so each model appears
+/// once under its own name.
+pub fn model_values<Text: AsRef<str> + Clone>(
+    options: &[ConfigOption<Text>],
+) -> Option<(Text, Vec<(Text, Text)>)> {
+    options
+        .iter()
+        .find_map(|option| match (&option.category, &option.choices) {
+            (ConfigCategory::Model, ConfigChoices::Select { values, .. }) => Some((
+                option.id.clone(),
+                values
+                    .iter()
+                    .filter(|(id, _)| normalized(id.as_ref()) != "default")
+                    .cloned()
+                    .collect(),
+            )),
+            _ => None,
+        })
+}
+
+/// Whether the session's current model offers a fast mode: a fast toggle or a speed choice
+/// that includes Fast (F15 Speed).
+pub fn offers_fast_mode<Text: AsRef<str> + Clone>(options: &[ConfigOption<Text>]) -> bool {
+    options
+        .iter()
+        .any(|option| match (&option.category, &option.choices) {
+            (ConfigCategory::Other, ConfigChoices::Boolean { .. }) => is_fast_option(option),
+            (ConfigCategory::Other, ConfigChoices::Select { values, .. }) => {
+                is_speed_option(option)
+                    && (select_matching(values, speed_names(Speed::Fast)).is_some()
+                        || (is_fast_option(option)
+                            && select_matching(values, toggle_names(true)).is_some()))
+            }
+            _ => false,
+        })
 }
