@@ -1176,7 +1176,7 @@ Each milestone ends with a working app. PR duty checks an item off when it lands
 - [x] Dependency wait → rebase → continue in the agent runner (F14)
 - [x] Mention delivery to threads at step boundaries; your comments (F14)
 - [x] Event log posted by Velocity from claims, GitHub and the Task List; agent messages kept separate (F14)
-- [ ] Modal: Events (default), Claims, Messages, Discoveries, Past work, nick list, unread badge, `A` (F14)
+- [x] Modal: Events (default), Claims, Messages, Discoveries, Past work, nick list, unread badge, `A` (F14)
 
 **M9 · Goal swarm**
 - [ ] Atomic claim lock: `airc_claim` / `airc_release`, refusal lines, held claims on failure (F14, F16)
