@@ -105,6 +105,10 @@ fn call(
         name @ ("airc_claims" | "airc_claim" | "airc_release" | "airc_share") => {
             claim_call(channel, member, name, arguments)
         }
+        "airc_rebase" => {
+            channel.rebase(member)?;
+            Ok(json!({"rebased":true}))
+        }
         "airc_wait" => channel.wait_until(
             member,
             text(arguments, "holder")?,
@@ -194,6 +198,7 @@ fn tool_list() -> Vec<Value> {
     tools.push(tool("task_add", "Add a project Task List item ONLY when the user explicitly asks you to add it. Otherwise file an issue. Returns a durable queued request; Velocity saves it with your attribution. Never edits SPEC.md or starts an interview.", json!({"title":{"type":"string","minLength":1}}), &["title"]));
     tools.extend(writing_tools());
     tools.extend(claim_tools());
+    tools.push(tool("airc_rebase", "Bring your registered branch up to date without rewriting history. Commit current edits first, then call this on a targeted merge notice or at landing. Velocity posts rebased on success or conflict on failure; resolve conflicts in your own worktree, regenerate artifacts and check before pushing.", json!({}), &[]));
     tools.push(tool("airc_wait", "Wait for a file holder. This call stays pending until its dependency ends; do not edit meanwhile. Velocity may park you while you wait: it ends your session to free a provider slot and resumes it when the dependency ends, with the outcome as your next message. On merge Velocity updates your branch before you continue; resolve any reported conflict before continuing.", json!({"holder":{"type":"string"},"file":{"type":"string"}}), &["holder", "file"]));
     tools
 }

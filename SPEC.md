@@ -443,6 +443,9 @@ Draft claims keep the coding transcript until the PR is ready. The watcher follo
 - **Sidebar meta:** `#n` plus the stage label in the stage colour: checking / in review / addressing review / approved · merging.
 
 **Landing and rebases** (from Anthropic's Scion):
+
+The PR duty MCP server exposes `pr_duty_prepare_landing` and `pr_duty_checked`. Prepare updates the PR branch through GitHub with an expected head and returns its exact head/base and required checks: full initially or on author/overlapping changes, build and lint for an unrelated moved base. The reviewer fetches that head, regenerates artifacts, runs those checks and records success with checked. Merge refuses a missing receipt or moved base. Only an exact two-parent base update carries the reviewer's approval. Updates and update failures post `updated`/`conflict` events. Merge notices target claimed paths and edited regions within three lines, excluding generated artifacts and scoped registration claims. At its next step the affected agent commits current edits and calls `airc_rebase`; Velocity updates only its registered checkout without rewriting history and posts `rebased` or `conflict`.
+
 - **No global merge queue or lock.** PR duty merges a PR as soon as it is approved and its local checks pass (F7), without waiting its turn behind other PRs.
 - **Targeted rebases.** When a PR merges, Velocity compares the merged change's files with each open agent's claimed files and edited files (§3.2).
   - Only agents with an overlap rebase straight away; each gets a `rebased` event.
@@ -1261,7 +1264,7 @@ Each milestone ends with a working app. PR duty checks an item off when it lands
 - [x] Agent activity, stall detection with nudge then restart, per-agent caps, claim release after the grace period (§2.2)
 - [x] Parking: end the session on `airc_wait`, resume on the subscribed `merged` event; optional provider concurrency cap (§2.2, F15)
 - [x] Targeted AIRC delivery, message envelope (`to`, `intent`), heads-down and quarantine modes (F14)
-- [ ] Targeted rebases, optimistic landing, conflicts sent back to the owning agent; rebuild the merge result whenever `master` moved; Shared files exempt from overlaps (F6, F14)
+- [x] Targeted rebases, optimistic landing, conflicts sent back to the owning agent; rebuild the merge result whenever `master` moved; Shared files exempt from overlaps (F6, F14)
 - [x] Warm worktree pool from one base clone, prebuilt at the tip of `master` with a shared compiler cache; worktree guards (F5)
 - [x] PR duty tiered review and intent review; Sensitive paths in AGENTS.md (F7)
 - [x] Main watcher duty role: post-merge suite, bisect, fix or revert PR (F7)

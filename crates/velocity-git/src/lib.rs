@@ -14,6 +14,7 @@ mod changed_files;
 mod command;
 mod dependency;
 pub mod inventory;
+pub mod landing;
 pub mod lifecycle;
 pub mod manager;
 mod merged_worktree;

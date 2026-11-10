@@ -16,6 +16,7 @@ pub mod goal_swarm_view;
 pub mod interview_view;
 #[cfg(feature = "bindings")]
 pub mod ipc_number;
+pub mod landing;
 pub mod layout;
 pub mod layout_catalog;
 pub mod layout_guard;

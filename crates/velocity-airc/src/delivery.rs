@@ -89,7 +89,16 @@ fn routed(
     {
         return Some(format!(
             "via AIRC · event {} · #{}\n{}",
-            entry.kind, entry.sequence, entry.text
+            entry.kind,
+            entry.sequence,
+            if entry.kind == "merged" {
+                format!(
+                    "{}\nIf these files overlap your claim or edits, commit current edits and call airc_rebase now, then regenerate generated files and run the required checks. Velocity records the update outcome; resolve any conflicts in your own worktree. Otherwise update once at landing.",
+                    entry.text
+                )
+            } else {
+                entry.text.clone()
+            }
         ));
     }
     if entry.kind != "message" {
