@@ -440,10 +440,25 @@ fn create_directory_link(link_path: &Path, target_dir: &Path) -> Result<(), Skil
     if std::os::windows::fs::symlink_dir(target_dir, link_path).is_ok() {
         return Ok(());
     }
+    use std::os::windows::process::CommandExt;
     let link_str = strip_verbatim_prefix(link_path);
     let target_str = strip_verbatim_prefix(target_dir);
+    // The link path comes from the pack's own tree. cmd.exe treats `&`, `|`, `^`, `<`, `>`
+    // and parentheses in an unquoted argument as syntax, and Rust quotes only arguments with
+    // spaces, so both paths are always quoted. `%` expands and `"` ends a quote even then.
+    if [&link_str, &target_str]
+        .iter()
+        .any(|path| path.contains(['"', '%']))
+    {
+        return Err(SkillLibraryError::GitCommand {
+            command: format!("mklink /J {link_str} {target_str}"),
+            stderr: "the pack path contains a character cmd.exe cannot take literally".into(),
+        });
+    }
     let output = Command::new("cmd")
-        .args(["/C", "mklink", "/J", &link_str, &target_str])
+        .args(["/C", "mklink", "/J"])
+        .raw_arg(format!("\"{link_str}\""))
+        .raw_arg(format!("\"{target_str}\""))
         .output()
         .map_err(|source| SkillLibraryError::Io {
             path: link_path.to_path_buf(),

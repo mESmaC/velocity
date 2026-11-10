@@ -235,6 +235,11 @@ pub fn resolve_pack_source(
     }
     if let Some(slug) = normalize_github_slug(trimmed) {
         let id = pack_id_from_slug(&slug);
+        // `_/_` is a valid slug with no alphanumerics: an empty id would make the pack's
+        // folder the library's packs folder, which install clears first.
+        if id.is_empty() {
+            return Err(SkillLibraryError::InvalidPackSource(trimmed.to_owned()));
+        }
         let name = slug.split('/').nth(1).unwrap_or(&slug).to_owned();
         let entry = SkillPackCatalogEntry::custom(id, name, slug.clone());
         let remote = match source_override.map(str::trim).filter(|s| !s.is_empty()) {
