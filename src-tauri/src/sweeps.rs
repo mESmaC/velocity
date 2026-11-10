@@ -51,7 +51,8 @@ pub fn initialize(application: &AppHandle) -> anyhow::Result<()> {
         .context("Could not resolve the application data directory")?
         .join("scout-reports");
     std::fs::create_dir_all(&reports).context("Could not create the scout report folder")?;
-    let sweeps = ScoutSweeps::new(executable, reports);
+    let sweeps =
+        ScoutSweeps::new(executable, reports).with_airc(crate::airc_access::launch(application)?);
     application.manage(sweeps.clone());
     let host = TauriSweepHost(application.clone());
     tauri::async_runtime::spawn(sweeps.run(host));
