@@ -21,28 +21,13 @@ impl StateStore {
         project_identifier: u32,
         title: String,
     ) -> Result<TaskItem, TaskError> {
-        let title = task_title(&title).ok_or(TaskError::EmptyTitle)?;
         let mut next = self.state.clone();
         let project = next
             .projects
             .iter_mut()
             .find(|project| project.id == project_identifier)
             .ok_or(TaskError::UnknownProject(project_identifier))?;
-        let identifier = project
-            .tasks
-            .iter()
-            .map(|task| task.id)
-            .max()
-            .unwrap_or(0)
-            .checked_add(1)
-            .ok_or(TaskError::IdentifiersExhausted)?;
-        let state = if project.spec_locked {
-            TaskState::Todo
-        } else {
-            TaskState::Draft
-        };
-        let task = TaskItem::new(identifier, title, state, TaskAttribution::User);
-        project.tasks.push(task.clone());
+        let task = append_task(project, &title, TaskAttribution::User)?;
         self.commit(next)?;
         Ok(task)
     }
@@ -52,6 +37,30 @@ impl StateStore {
             .ok_or(TaskError::UnknownProject(project_identifier))
     }
 }
+pub(crate) fn append_task(
+    project: &mut ProjectItem,
+    title: &str,
+    attribution: TaskAttribution,
+) -> Result<TaskItem, TaskError> {
+    let title = task_title(title).ok_or(TaskError::EmptyTitle)?;
+    let identifier = project
+        .tasks
+        .iter()
+        .map(|task| task.id)
+        .max()
+        .unwrap_or(0)
+        .checked_add(1)
+        .ok_or(TaskError::IdentifiersExhausted)?;
+    let state = if project.spec_locked {
+        TaskState::Todo
+    } else {
+        TaskState::Draft
+    };
+    let task = TaskItem::new(identifier, title, state, attribution);
+    project.tasks.push(task.clone());
+    Ok(task)
+}
+
 fn task_title(title: &str) -> Option<String> {
     let title = title.trim().strip_suffix('.').unwrap_or(title.trim());
     let mut characters = title.chars();
@@ -94,14 +103,14 @@ fn attribution(project: &ProjectItem, source: TaskAttribution) -> (Option<String
                 .threads
                 .iter()
                 .find(|thread| thread.id == identifier);
+            let duty = project.duty_roles.iter().find(|role| role.id == identifier);
+            let name = thread
+                .map(|thread| thread.title.as_str())
+                .or_else(|| duty.map(|role| role.role.title()))
+                .unwrap_or("deleted thread");
             (
-                Some(format!(
-                    "added by {}",
-                    thread
-                        .map(|thread| thread.title.as_str())
-                        .unwrap_or("deleted thread")
-                )),
-                thread.map(|thread| thread.id.to_string()),
+                Some(format!("added by {name}")),
+                (thread.is_some() || duty.is_some()).then(|| identifier.to_string()),
             )
         }
     }
