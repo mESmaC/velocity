@@ -1213,7 +1213,7 @@ Each milestone ends with a working app. PR duty checks an item off when it lands
 
 **M7 · AGENTS.md**
 - [x] Outliner editor with markdown round-trip (F11)
-- [ ] Live lint, coverage checks with Add (F11)
+- [x] Live lint, coverage checks with Add (F11)
 - [x] Rewrite agent on Enter: tighten / expand / split / flag, with Undo (F11)
 - [x] Default AGENTS.md template with the PR, Task List and AIRC rules (F11)
 
