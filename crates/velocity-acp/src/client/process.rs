@@ -14,7 +14,7 @@ use super::program_path::find_program;
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct AgentLaunch {
     /// The agent's executable: a path, or a bare name looked up on `PATH`, including `.cmd`
-    /// shims such as `claude-code-acp` on Windows (`program_path::find_program`).
+    /// shims such as `claude-agent-acp` on Windows (`program_path::find_program`).
     pub program: PathBuf,
     pub args: Vec<String>,
     /// Added to Velocity's own environment, which the agent inherits whole: your `PATH`,
