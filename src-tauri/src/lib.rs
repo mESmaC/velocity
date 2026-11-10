@@ -28,11 +28,11 @@ fn bindings() -> Builder<tauri::Wry> {
     // Export event payloads/names without the generator's `any`-typed helpers;
     // ipc.ts supplies typed listeners, while run() registers native emitters.
     let builder = Builder::new().commands(collect_commands![
-        airc_delivery::airc_send,
         agents::read_agents_md,
         agents::edit_agents_md,
         agents::write_agents_md,
         agents::tighten_rule,
+        airc_delivery::airc_send,
         window::get_window_state,
         window::minimize_window,
         window::toggle_maximize_window,
