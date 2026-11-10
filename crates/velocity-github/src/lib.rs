@@ -10,6 +10,7 @@ pub mod follow_through;
 mod issue_panel;
 mod issue_types;
 mod issues;
+mod landing;
 mod mcp_stdio;
 mod pull_request_command;
 mod pull_request_files;

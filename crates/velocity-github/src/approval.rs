@@ -64,6 +64,24 @@ impl ReviewRecord {
         approved_reviewer(&self.channel.read(0)?, number, head)
     }
 
+    pub(crate) fn conflict(
+        &self,
+        number: u32,
+        head: &str,
+        reason: &str,
+    ) -> Result<(), PullRequestError> {
+        self.post("conflict", number, Some(head), &format!("#{number} could not update with its base: {reason}. Owning agent: fetch the base, resolve the conflicting files in your worktree, regenerate generated files, run checks and push without rewriting history."))
+    }
+
+    pub(crate) fn updated(&self, number: u32, head: &str) -> Result<(), PullRequestError> {
+        self.post(
+            "updated",
+            number,
+            Some(head),
+            &format!("updated #{number} with its base at {}", short_head(head)),
+        )
+    }
+
     fn post(
         &self,
         tag: &str,
