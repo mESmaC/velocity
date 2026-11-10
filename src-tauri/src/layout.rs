@@ -5,6 +5,7 @@ use tauri_specta::Event;
 use velocity_acp::{available_commands, client::AgentEvent};
 use velocity_core::layout_state::LayoutState;
 use velocity_core::layout_view::{LayoutAction, LayoutIntent, LayoutSnapshot};
+use velocity_core::navigation::NavigationIntent;
 use velocity_core::thread_view_model::AgentCommandView;
 use velocity_interview::Interviews;
 use velocity_store::build_gate;
@@ -74,6 +75,10 @@ pub fn dispatch_layout(
     }
     if let Some((projects, selection)) = project_selection {
         crate::projects::publish_selection(&window, projects, selection)?;
+    }
+    // Opening the modal marks the channel read now, not at the watcher's next tick.
+    if let Some(LayoutIntent::Navigation(NavigationIntent::Airc)) = &intent {
+        crate::threads::report(crate::airc_modal::refresh(window.app_handle()));
     }
     // Starting or steering a thread publishes its own newer snapshot.
     match intent {

@@ -118,6 +118,6 @@ pub fn airc_send(
     }
     channel(&application, project_identifier)?
         .comment(&text)
-        .map(|_| ())
-        .map_err(|error| error.to_string())
+        .map_err(|error| error.to_string())?;
+    crate::airc_modal::refresh(&application)
 }

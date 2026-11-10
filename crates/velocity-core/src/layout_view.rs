@@ -58,8 +58,6 @@ pub struct LayoutData {
     pub worktree_count: usize,
     pub worktree_drive: String,
     pub providers: Vec<ProviderUsage>,
-    pub airc_unread: usize,
-    pub overlap_unread: bool,
     pub default_model_pill: Option<ModelPillView>,
     pub agent_commands: Vec<AgentCommandView>,
     /// Spec interview read models, keyed by thread (F3).
@@ -332,6 +330,7 @@ pub struct LayoutSnapshot {
     pub issues: Vec<RailItem>,
     pub worktree_label: String,
     pub providers: Vec<ProviderUsage>,
+    pub airc_open: bool,
     #[cfg_attr(feature = "bindings", serde(with = "crate::ipc_number"))]
     #[cfg_attr(feature = "bindings", specta(type = String))]
     pub airc_unread: usize,
