@@ -58,3 +58,10 @@
   gap: var(--pull-request-reviewer-gap);
   color: var(--duty);
 }
+.pull-request-tier {
+  font-family: var(--sans);
+  color: var(--muted);
+}
+.pull-request-tier[data-tier='sensitive'] {
+  color: var(--warn);
+}

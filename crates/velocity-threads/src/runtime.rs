@@ -325,6 +325,20 @@ impl ThreadRuntimes {
         Ok(())
     }
 
+    /// A model, effort or speed picked from the composer menu (F4): the live session applies it
+    /// from its next turn and never interrupts the running one (Rule 1).
+    pub fn reconfigure(
+        &mut self,
+        key: ThreadKey,
+        settings: velocity_acp::RunSettings<String>,
+    ) -> Result<(), SteerError> {
+        let thread = self.threads.get(&key).ok_or(SteerError::NoSession)?;
+        thread
+            .inputs
+            .send(AgentInput::Configure(settings))
+            .map_err(|_| SteerError::NoSession)
+    }
+
     /// `Some(model)` while the title model names the thread, `None` once its title settles.
     pub fn set_titling(&mut self, key: ThreadKey, model: Option<String>) {
         if let Some(thread) = self.threads.get_mut(&key) {

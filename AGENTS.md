@@ -152,6 +152,15 @@ Most merge conflicts come from a few files every feature touches. Keep your edit
 - **Overlapping fixes, first come, first served:** when two open PRs fix the same root problem or add the same helper, the one that lands first wins. The later PR drops its own version and switches to `master`'s in the commit that merges `master` in. Never land two implementations of one thing, and never hold a PR back so another can land its version first.
 - **Silent conflicts:** after merging `master`, a build error in code neither side edited (a struct gained a field, a function was renamed) is a merge conflict. Fix it in the merge commit.
 
+## Sensitive paths
+PR duty tiers every PR (SPEC.md F7 Tiered review). A PR that touches a path listed here is sensitive: full review, `cargo run -p stress -- --all` on the merge result before merge, and a confidence proof at the strongest level its language allows for any proof-list feature it changes. A PR that changes only docs, comments or formatting is trivial: approve it once `scripts/check.ps1` passes and the change matches its claim. Every other PR gets the full review. Every tier needs an approving review.
+- `crates/velocity-store/`: saved state; a mistake loses `state.json`.
+- `crates/velocity-git/src/lifecycle.rs`, `crates/velocity-git/src/merged_worktree.rs`, `crates/velocity-git/src/review.rs`: worktree deletion.
+- `crates/velocity-airc/src/claims.rs`: the claim lock.
+- `crates/velocity-github/src/approval.rs`: the approval record that gates merges (Rule 4).
+- `.github/workflows/`, `scripts/check.ps1`: CI config and the local checks.
+- `scripts/Get-PrDutyToken.ps1`: PR duty's GitHub App credentials.
+
 ## Pull requests
 - One piece, one branch, one PR, against `master`.
 - PR description: what changed, why, the theorems you proved, and the piece it completes (§7 item, `Fixes #n`, or SPEC section).

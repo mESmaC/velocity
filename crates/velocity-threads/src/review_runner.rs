@@ -18,6 +18,7 @@ use velocity_core::pr_review::{
     ReviewAssignment, ReviewBrief, ReviewCandidate, ReviewWork, assign_reviews, claim_message,
     review_doing, review_finished_message, review_idle_doing, review_prompt, short_commit,
 };
+use velocity_core::review_tier::TierAssessment;
 use velocity_github::{
     PrDutyReport, PullRequestClient, PullRequestOperation, PullRequestState, ReviewRecord,
     read_pr_duty_reports,
@@ -313,6 +314,7 @@ struct Prepared {
     head: String,
     base_commit: String,
     conflicts: Vec<String>,
+    tier: TierAssessment,
 }
 
 /// One agent's review of one PR, from its claim to its release.
@@ -418,12 +420,16 @@ impl Review {
                 .map_err(|error| error.to_string())?;
             let checkout = velocity_git::prepare_review_worktree(&plan.worktree, number)
                 .map_err(|error| error.to_string())?;
+            let tier =
+                velocity_git::review_tier(&checkout.path, &checkout.base_commit, &checkout.head)
+                    .map_err(|error| format!("Could not read the PR's diff: {error}"))?;
             Ok(Prepared {
                 plan,
                 worktree: checkout.path,
                 head: checkout.head,
                 base_commit: checkout.base_commit,
                 conflicts: checkout.conflicts,
+                tier,
             })
         })
         .await
@@ -525,6 +531,7 @@ impl Review {
             base_commit: &prepared.base_commit,
             conflicts: &prepared.conflicts,
             work: self.work,
+            tier: &prepared.tier,
             rules: &self.roster.rules,
             instruction: self.instruction.as_deref(),
         })

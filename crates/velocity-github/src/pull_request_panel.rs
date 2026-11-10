@@ -1,6 +1,10 @@
 //! The reference rail's PR projection (SPEC.md F6/F7). CI is informative only.
+use std::collections::BTreeMap;
+
 use serde::{Deserialize, Serialize};
 use specta::Type;
+use velocity_core::review_diff::DiffSummary;
+use velocity_core::review_tier::{ReviewTier, assess_tier, sensitive_paths};
 
 use crate::pull_request_queries::FIELDS;
 use crate::{PullRequest, PullRequestClient, PullRequestError};
@@ -50,6 +54,8 @@ pub struct PullRequestPanelRow {
     pub review: ReviewStatus,
     pub review_label: String,
     pub reviewer: Option<String>,
+    /// PR duty's review tier (F7); absent until the PR's diff could be read.
+    pub tier: Option<ReviewTier>,
     pub thread_identifier: Option<u32>,
 }
 
@@ -117,6 +123,13 @@ impl PullRequestPanelSnapshot {
     }
 }
 
+/// Each open PR's diff summary at the head it was read at, so a refresh reads a PR's diff
+/// again only after its head moves.
+#[derive(Debug, Default)]
+pub struct ReviewTierCache {
+    summaries: BTreeMap<u32, (String, DiffSummary)>,
+}
+
 #[derive(Deserialize)]
 struct PanelEntry {
     #[serde(flatten)]
@@ -155,6 +168,60 @@ struct CheckRollup {
 
 impl PullRequestClient {
     pub fn panel(&self) -> Result<Vec<PullRequestPanelRow>, PullRequestError> {
+        self.panel_entries()?
+            .into_iter()
+            .map(|entry| self.panel_row(entry))
+            .collect()
+    }
+
+    /// The panel with each row's review tier (F7 Tiered review), read from the PR's diff and
+    /// the Sensitive paths in `agents_markdown`. A diff that cannot be read leaves that row
+    /// without a tier and is tried again on the next refresh.
+    pub fn tiered_panel(
+        &self,
+        cache: &mut ReviewTierCache,
+        agents_markdown: &str,
+    ) -> Result<Vec<PullRequestPanelRow>, PullRequestError> {
+        let entries = self.panel_entries()?;
+        let sensitive = sensitive_paths(agents_markdown);
+        cache.summaries.retain(|number, _| {
+            entries
+                .iter()
+                .any(|entry| entry.pull_request.number == *number)
+        });
+        let mut rows = Vec::with_capacity(entries.len());
+        for entry in entries {
+            let (number, head) = (
+                entry.pull_request.number,
+                entry.pull_request.head_ref_oid.clone(),
+            );
+            let mut row = self.panel_row(entry)?;
+            row.tier = self
+                .cached_summary(cache, number, head)
+                .map(|summary| assess_tier(summary, &sensitive).tier);
+            rows.push(row);
+        }
+        Ok(rows)
+    }
+
+    fn cached_summary<'cache>(
+        &self,
+        cache: &'cache mut ReviewTierCache,
+        number: u32,
+        head: String,
+    ) -> Option<&'cache DiffSummary> {
+        let current = cache
+            .summaries
+            .get(&number)
+            .is_some_and(|(read_at, _)| *read_at == head);
+        if !current {
+            let summary = self.diff_summary(number).ok()?;
+            cache.summaries.insert(number, (head, summary));
+        }
+        cache.summaries.get(&number).map(|(_, summary)| summary)
+    }
+
+    fn panel_entries(&self) -> Result<Vec<PanelEntry>, PullRequestError> {
         let query = format!(
             "query($owner:String!,$name:String!,$cursor:String) {{
               repository(owner:$owner,name:$name) {{
@@ -168,12 +235,7 @@ impl PullRequestClient {
               }}
             }}"
         );
-        let entries: Vec<PanelEntry> =
-            self.connection(&query, self.variables(0), "/data/repository/pullRequests")?;
-        entries
-            .into_iter()
-            .map(|entry| self.panel_row(entry))
-            .collect()
+        self.connection(&query, self.variables(0), "/data/repository/pullRequests")
     }
 
     fn panel_row(&self, entry: PanelEntry) -> Result<PullRequestPanelRow, PullRequestError> {
@@ -206,6 +268,7 @@ impl PullRequestClient {
             review,
             review_label: review.label().into(),
             reviewer,
+            tier: None,
             thread_identifier: None,
         })
     }

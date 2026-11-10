@@ -19,8 +19,8 @@ use velocity_store::{InterviewRecord, ProjectItem, ProviderKind, StateStore, Thr
 
 use crate::envelope::parse_envelope;
 use crate::live::LiveTranscript;
+use crate::prompts;
 use crate::turns::{self, InterviewDefaults};
-use crate::{InterviewError, prompts};
 
 /// A project and one of its threads.
 pub type InterviewKey = (u32, u32);
@@ -176,10 +176,34 @@ fn open_active_interview<H: Host>(host: &H) {
 
 fn interviews_to_start<H: Host>(host: &H) -> Vec<(InterviewKey, String)> {
     let mut store = lock(host.store());
+    start_pending_interviews(&mut store);
+    let running = lock(&host.interviews().sessions);
+    store
+        .state()
+        .projects
+        .iter()
+        .flat_map(|project| {
+            scanning_threads(project).map(move |(thread, prompt)| ((project.id, thread), prompt))
+        })
+        .filter(|(key, _)| {
+            running
+                .get(key)
+                .is_none_or(|session| session.inputs.is_none())
+        })
+        .collect()
+}
+
+/// Turns each interview Create recorded into its spec thread.
+fn start_pending_interviews(store: &mut StateStore) {
     let settings = store.settings();
+    // A signed-out default gives way to the first signed-in provider (F15 Sign out). With
+    // none signed in, pending interviews wait: Create already refuses that case.
+    let Some(provider) = settings.new_work_provider() else {
+        return;
+    };
     let defaults = InterviewDefaults {
-        provider: settings.providers.default_provider,
-        model_name: settings.providers.default_model.unwrap_or_default(),
+        provider,
+        model_name: settings.provider_model(provider),
     };
     let pending: Vec<u32> = store
         .state()
@@ -198,20 +222,6 @@ fn interviews_to_start<H: Host>(host: &H) -> Vec<(InterviewKey, String)> {
             eprintln!("Could not start the spec interview: {error}");
         }
     }
-    let running = lock(&host.interviews().sessions);
-    store
-        .state()
-        .projects
-        .iter()
-        .flat_map(|project| {
-            scanning_threads(project).map(move |(thread, prompt)| ((project.id, thread), prompt))
-        })
-        .filter(|(key, _)| {
-            running
-                .get(key)
-                .is_none_or(|session| session.inputs.is_none())
-        })
-        .collect()
 }
 
 /// Interviews still in the scan with no agent: new ones, or ones a restart cut off.
@@ -260,13 +270,7 @@ fn launch<H: Host>(host: &Arc<H>, key: InterviewKey, prompt: String) {
     let Some(plan) = launch_plan(host.as_ref(), key) else {
         return;
     };
-    let Some(agent) = velocity_acp::provider_agent(acp_provider(plan.provider)) else {
-        let message = InterviewError::NoAgent(plan.provider).to_string();
-        save(host.as_ref(), key.0, |project| {
-            turns::fail(project, key.1, message)
-        });
-        return;
-    };
+    let agent = velocity_acp::provider_agent(acp_provider(plan.provider));
     let (inputs, receiver) = unbounded_channel();
     // Queued until the session has started: the client reads inputs only after `session/new`.
     let _ = inputs.send(AgentInput::Send(text_message(prompt)));

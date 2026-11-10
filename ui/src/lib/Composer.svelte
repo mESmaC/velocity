@@ -1,6 +1,7 @@
 <script lang="ts">
   import Icon from './Icon.svelte';
   import SlashMenu from './SlashMenu.svelte';
+  import ModelMenu from './ModelMenu.svelte';
   import type {
     LayoutAction,
     LayoutSnapshot,
@@ -14,6 +15,7 @@
     placeholder,
     modelPill,
     showWorktreePill = false,
+    threadIdentifier = null,
   }: {
     layout: LayoutSnapshot;
     send: (action: LayoutAction) => void;
@@ -21,7 +23,11 @@
     placeholder: string;
     modelPill: ModelPillView;
     showWorktreePill?: boolean;
+    /** The thread the model menu changes; `null` changes the defaults for new threads. */
+    threadIdentifier?: number | null;
   } = $props();
+
+  let menuOpen = $state(false);
 
   const providerIcons: Record<ProviderColor, string> = {
     Claude: 'claude',
@@ -99,11 +105,19 @@
       >
     {/if}
     <span class="spacer"></span>
+    {#if menuOpen}<ModelMenu
+        projectIdentifier={layout.project_identifier ?? 0}
+        {threadIdentifier}
+        {send}
+        close={() => (menuOpen = false)}
+      />{/if}
     <button
       class="pill model"
       type="button"
       title="Choose model"
-      onclick={() => send({ Request: { SettingsTab: 'providers' } })}
+      aria-haspopup="menu"
+      aria-expanded={menuOpen}
+      onclick={() => (menuOpen = !menuOpen)}
     >
       <span class="prov" data-provider={modelPill.provider}
         ><Icon name={providerIcons[modelPill.provider]} /></span
