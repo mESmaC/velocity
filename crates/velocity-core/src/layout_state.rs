@@ -963,6 +963,7 @@ impl LayoutState {
             NavigationIntent::Settings => self.view = NavigationView::Settings,
             NavigationIntent::PrDuty => self.open_duty_dialog(DutyRole::PrDuty),
             NavigationIntent::Scouts => self.open_duty_dialog(DutyRole::Scouts),
+            NavigationIntent::MainWatcher => self.open_duty_dialog(DutyRole::MainWatcher),
             NavigationIntent::ShowNumbers => self.show_numbers = true,
             NavigationIntent::Jump(number) => {
                 let visible: Vec<_> = self
