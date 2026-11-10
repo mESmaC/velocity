@@ -1269,7 +1269,7 @@ Each milestone ends with a working app. PR duty checks an item off when it lands
 - [x] Proof checks in the worktree: `lake build`, no `sorry`/`admit`, axiom audit, statement lock and review reset
 - [ ] Proof card on the PR, "Proved" on the PR track, `proved`/`statement`/`stress` events
 - [ ] Merge gate in PR duty; statement review; tiers updated (F7)
-- [ ] Scouts: assume-it-fails sweeps, evidence required, Stress and Proof gaps focus areas, stress runs against Lean reference models
+- [x] Scouts: assume-it-fails sweeps, evidence required, Stress and Proof gaps focus areas, stress runs against Lean reference models
 - [ ] Levels per language: reference by default (fixture table plus one test; compiled Lean model through FFI for stress), code on request (Aeneas for Rust), model
 - [ ] AGENTS.md: Implementation first, Proofs, and Tests and docs sections; Covers check (F11)
 
