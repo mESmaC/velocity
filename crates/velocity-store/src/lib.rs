@@ -45,6 +45,7 @@ mod project_layout;
 pub mod projects;
 pub mod swarm_dialog;
 pub mod swarms;
+pub mod task_list;
 pub mod threads;
 
 pub use duty::DutyRoleItem;

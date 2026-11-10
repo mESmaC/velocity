@@ -26,6 +26,7 @@ mod state;
 mod swarm;
 mod swarm_rebase;
 pub mod sweeps;
+mod tasks;
 mod thread_menu;
 mod threads;
 mod window;
@@ -87,6 +88,8 @@ fn bindings() -> Builder<tauri::Wry> {
         swarm::get_swarm_dialog,
         swarm::launch_swarm,
         swarm::add_to_swarm,
+        tasks::add_task,
+        tasks::list_tasks,
         thread_menu::get_thread_menu,
         thread_menu::run_thread_menu_action,
         thread_menu::delete_thread,

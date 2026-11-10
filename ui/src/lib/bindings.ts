@@ -69,6 +69,8 @@ export const commands = {
 	launchSwarm: (request: LaunchSwarmRequest_Deserialize) => __TAURI_INVOKE<LayoutSnapshot_Serialize>("launch_swarm", { request }),
 	/**  + Items: the same launch, adding members to an existing swarm. */
 	addToSwarm: (request: LaunchSwarmRequest_Deserialize) => __TAURI_INVOKE<LayoutSnapshot_Serialize>("add_to_swarm", { request }),
+	addTask: (projectIdentifier: number, title: string) => __TAURI_INVOKE<TaskItem_Serialize>("add_task", { projectIdentifier, title }),
+	listTasks: (projectIdentifier: number) => __TAURI_INVOKE<TaskView_Serialize[]>("list_tasks", { projectIdentifier }),
 	getThreadMenu: (threadIdentifier: number) => __TAURI_INVOKE<ThreadMenuView_Serialize | null>("get_thread_menu", { threadIdentifier }),
 	/**
 	 *  Open worktree in Explorer, Copy worktree path and Open PR on GitHub. Delete has its own
@@ -1163,7 +1165,7 @@ export type LayoutSnapshot_Deserialize = {
 	palette_selection: string,
 	slash_items: SlashCommandItem[],
 	slash_selection: string,
-	tasks: RailItem_Deserialize[],
+	tasks: TaskView_Deserialize[],
 	pull_requests: RailItem_Deserialize[],
 	issues: RailItem_Deserialize[],
 	worktree_label: string,
@@ -1212,7 +1214,7 @@ export type LayoutSnapshot_Serialize = {
 	palette_selection: string,
 	slash_items: SlashCommandItem[],
 	slash_selection: string,
-	tasks: RailItem_Serialize[],
+	tasks: TaskView_Serialize[],
 	pull_requests: RailItem_Serialize[],
 	issues: RailItem_Serialize[],
 	worktree_label: string,
@@ -2569,6 +2571,31 @@ export type TaskItem_Serialize = {
 };
 
 export type TaskState = "draft" | "todo" | "now" | "done";
+
+/**  F8 task rows carry independent links for ownership and attribution. */
+export type TaskView = TaskView_Serialize | TaskView_Deserialize;
+
+/**  F8 task rows carry independent links for ownership and attribution. */
+export type TaskView_Deserialize = {
+	identifier: string,
+	title: string,
+	state: string,
+	metadata: string,
+	thread_identifier?: string | null,
+	attribution?: string | null,
+	attribution_thread?: string | null,
+};
+
+/**  F8 task rows carry independent links for ownership and attribution. */
+export type TaskView_Serialize = {
+	identifier: string,
+	title: string,
+	state: string,
+	metadata: string,
+	thread_identifier: string | null,
+	attribution: string | null,
+	attribution_thread: string | null,
+};
 
 export type ThreadDetailSnapshot = ThreadDetailSnapshot_Serialize | ThreadDetailSnapshot_Deserialize;
 

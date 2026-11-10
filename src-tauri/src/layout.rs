@@ -62,6 +62,9 @@ pub fn dispatch_layout(
         .map(|selection| (store.list_projects(), selection));
     drop(state);
     drop(store);
+    if let Some((project, task)) = outcome.task_added {
+        crate::tasks::record_added(window.app_handle(), project, &task);
+    }
     // The interview consumes spec-thread intents; build-thread intents remain queued.
     let intent = outcome
         .intent

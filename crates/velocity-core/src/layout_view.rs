@@ -42,6 +42,36 @@ impl RailItem {
     }
 }
 
+/// F8 task rows carry independent links for ownership and attribution.
+#[cfg_attr(
+    feature = "bindings",
+    derive(serde::Serialize, serde::Deserialize, specta::Type)
+)]
+#[derive(Clone, Debug)]
+pub struct TaskView {
+    pub identifier: String,
+    pub title: String,
+    pub state: String,
+    pub metadata: String,
+    pub thread_identifier: Option<String>,
+    pub attribution: Option<String>,
+    pub attribution_thread: Option<String>,
+}
+
+impl TaskView {
+    pub fn new(identifier: String, title: String, state: String) -> Self {
+        Self {
+            identifier,
+            title,
+            state,
+            metadata: String::new(),
+            thread_identifier: None,
+            attribution: None,
+            attribution_thread: None,
+        }
+    }
+}
+
 /// Feature owners publish their real data here; the shell invents no activity.
 #[derive(Clone, Default)]
 pub struct LayoutData {
@@ -50,7 +80,7 @@ pub struct LayoutData {
     pub project_name: String,
     pub threads: Vec<ThreadEntry>,
     pub projects: Vec<PaletteItem>,
-    pub tasks: Vec<RailItem>,
+    pub tasks: Vec<TaskView>,
     pub completed_task_count: usize,
     pub pull_requests: Vec<RailItem>,
     pub issues: Vec<RailItem>,
@@ -327,7 +357,7 @@ pub struct LayoutSnapshot {
     #[cfg_attr(feature = "bindings", serde(with = "crate::ipc_number"))]
     #[cfg_attr(feature = "bindings", specta(type = String))]
     pub slash_selection: usize,
-    pub tasks: Vec<RailItem>,
+    pub tasks: Vec<TaskView>,
     pub pull_requests: Vec<RailItem>,
     pub issues: Vec<RailItem>,
     pub worktree_label: String,
