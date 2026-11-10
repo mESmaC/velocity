@@ -161,6 +161,13 @@ export type AircMessagePublished_Serialize = {
 
 export type CheckStatus = "passing" | "running" | "failing" | "unavailable";
 
+export type Checkout = {
+	repository: string,
+	worktree: string,
+	branch: string,
+	base: string,
+};
+
 export type Claim = Claim_Serialize | Claim_Deserialize;
 
 export type Claim_Deserialize = {
@@ -223,6 +230,14 @@ export type CreatedProject = {
 	identifier: number,
 	name: string,
 	repository_path: string,
+};
+
+export type DependencyWait = {
+	member: string,
+	nick: string,
+	holder: string,
+	holder_nick: string,
+	file: string,
 };
 
 export type DiffBlockView = DiffBlockView_Serialize | DiffBlockView_Deserialize;
@@ -397,6 +412,8 @@ export type Entry_Deserialize = {
 	/**  The PR head commit the event applies to (`approved` binds to it). */
 	head?: string | null,
 	claim?: Claim_Deserialize | null,
+	dependency?: DependencyWait | null,
+	checkout?: Checkout | null,
 };
 
 export type Entry_Serialize = {
@@ -416,6 +433,8 @@ export type Entry_Serialize = {
 	/**  The PR head commit the event applies to (`approved` binds to it). */
 	head?: string,
 	claim?: Claim_Serialize,
+	dependency?: DependencyWait,
+	checkout?: Checkout,
 };
 
 export type ErrorCardView = {
@@ -2252,6 +2271,7 @@ export type ThreadItem_Deserialize = {
 	worktree_role?: WorktreeRole,
 	pull_request_number?: number | null,
 	follow_through?: FollowThrough_Deserialize | null,
+	dependency_wait?: string | null,
 	review_stage?: ReviewStage | null,
 	task_ids: number[],
 	issue?: ThreadIssue_Deserialize | null,
@@ -2280,6 +2300,7 @@ export type ThreadItem_Serialize = {
 	worktree_role: WorktreeRole,
 	pull_request_number: number | null,
 	follow_through: FollowThrough_Serialize | null,
+	dependency_wait: string | null,
 	review_stage: ReviewStage | null,
 	task_ids: number[],
 	issue: ThreadIssue_Serialize | null,

@@ -6,6 +6,7 @@ mod event_log;
 mod launch;
 mod protocol;
 mod storage;
+pub mod waits;
 
 pub use channel::{Channel, EVENT_TAGS, Entry, Event, Presence};
 pub use claims::{Claim, ClaimResult, piece_key};

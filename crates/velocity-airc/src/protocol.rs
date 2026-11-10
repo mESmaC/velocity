@@ -7,22 +7,30 @@ pub fn serve(
     channel: &Channel,
     member: &str,
     requested_nick: &str,
-    input: impl BufRead,
-    mut output: impl Write,
+    input: impl BufRead + Send + 'static,
+    output: impl Write + Send + 'static,
 ) -> Result<(), Error> {
     let _connection = channel.connect(member)?;
+    let connected = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true));
+    let output = std::sync::Arc::new(std::sync::Mutex::new(output));
+    let receiver = read_requests(input, connected.clone(), output.clone());
     let mut initialized = false;
     let result = (|| {
-        for line in input.lines() {
+        for line in receiver {
             let line = line?;
             let response = match serde_json::from_str::<Value>(&line) {
-                Ok(request) => respond(channel, member, requested_nick, &request, &mut initialized),
+                Ok(request) => respond(
+                    channel,
+                    member,
+                    requested_nick,
+                    &request,
+                    &mut initialized,
+                    &connected,
+                ),
                 Err(_) => Some(failure(Value::Null, -32700, "Parse error")),
             };
             if let Some(response) = response {
-                serde_json::to_writer(&mut output, &response)?;
-                writeln!(output)?;
-                output.flush()?;
+                write_response(&output, &response)?;
             }
         }
         Ok(())
@@ -41,6 +49,7 @@ fn respond(
     nick: &str,
     request: &Value,
     initialized: &mut bool,
+    connected: &std::sync::atomic::AtomicBool,
 ) -> Option<Value> {
     let id = request.get("id").cloned().unwrap_or(Value::Null);
     let method = request.get("method").and_then(Value::as_str);
@@ -63,7 +72,7 @@ fn respond(
         "tools/list" => json!({"tools":tool_list()}),
         "tools/call" => {
             let parameters = &request["params"];
-            match call(channel, member, nick, parameters) {
+            match call(channel, member, nick, parameters, connected) {
                 Ok(value) => json!({"content":[{"type":"text","text":value.to_string()}]}),
                 Err(error) => {
                     json!({"isError":true,"content":[{"type":"text","text":error.to_string()}]})
@@ -75,7 +84,13 @@ fn respond(
     Some(json!({"jsonrpc":"2.0","id":id,"result":result}))
 }
 
-fn call(channel: &Channel, member: &str, nick: &str, parameters: &Value) -> Result<Value, Error> {
+fn call(
+    channel: &Channel,
+    member: &str,
+    nick: &str,
+    parameters: &Value,
+    connected: &std::sync::atomic::AtomicBool,
+) -> Result<Value, Error> {
     let arguments = &parameters["arguments"];
     let after = arguments
         .get("after")
@@ -90,6 +105,12 @@ fn call(channel: &Channel, member: &str, nick: &str, parameters: &Value) -> Resu
         name @ ("airc_claims" | "airc_claim" | "airc_release" | "airc_share") => {
             claim_call(channel, member, name, arguments)
         }
+        "airc_wait" => channel.wait_until(
+            member,
+            text(arguments, "holder")?,
+            text(arguments, "file")?,
+            || !connected.load(std::sync::atomic::Ordering::Acquire),
+        ),
         "join" => Ok(json!({"nick":channel.join(member, nick)?})),
         "leave" => {
             channel.leave(member)?;
@@ -170,6 +191,7 @@ fn tool_list() -> Vec<Value> {
     ];
     tools.extend(writing_tools());
     tools.extend(claim_tools());
+    tools.push(tool("airc_wait", "Wait for a file holder. This call stays pending until its dependency ends; do not edit meanwhile. On merge Velocity updates your branch before returning; resolve any reported conflict before continuing.", json!({"holder":{"type":"string"},"file":{"type":"string"}}), &["holder", "file"]));
     tools
 }
 
@@ -292,4 +314,45 @@ fn claim_call(
         }
         _ => Err(Error::Invalid("Unknown claim tool".into())),
     }
+}
+
+// Keep answering transport heartbeats while a dependency tool is pending.
+// EOF cancels that tool before the server releases its connection lock.
+fn read_requests(
+    input: impl BufRead + Send + 'static,
+    connected: std::sync::Arc<std::sync::atomic::AtomicBool>,
+    output: std::sync::Arc<std::sync::Mutex<impl Write + Send + 'static>>,
+) -> std::sync::mpsc::Receiver<std::io::Result<String>> {
+    let (sender, receiver) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        for line in input.lines() {
+            if let Ok(text) = &line
+                && let Ok(request) = serde_json::from_str::<Value>(text)
+                && request["jsonrpc"] == "2.0"
+                && request["method"] == "ping"
+                && request.get("id").is_some()
+            {
+                let reply = json!({"jsonrpc":"2.0","id":request["id"],"result":{}});
+                if write_response(&output, &reply).is_err() {
+                    break;
+                }
+                continue;
+            }
+            if sender.send(line).is_err() {
+                break;
+            }
+        }
+        connected.store(false, std::sync::atomic::Ordering::Release);
+    });
+    receiver
+}
+
+fn write_response(output: &std::sync::Mutex<impl Write>, response: &Value) -> Result<(), Error> {
+    let mut output = output
+        .lock()
+        .map_err(|error| Error::Invalid(error.to_string()))?;
+    serde_json::to_writer(&mut *output, response)?;
+    writeln!(output)?;
+    output.flush()?;
+    Ok(())
 }

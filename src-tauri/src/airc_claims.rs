@@ -34,6 +34,29 @@ pub fn attach(
         .map_err(|error| error.to_string())?;
     let channel = Channel::open(&data, &key.0.to_string()).map_err(|error| error.to_string())?;
     let member = format!("thread-{}", key.1);
+    let (project, _) = crate::threads::lock(
+        application
+            .state::<crate::state::ManagedStateStore>()
+            .inner(),
+        "persisted state",
+    )?
+    .follow_through_thread(key.0, key.1)
+    .map_err(|error| error.to_string())?;
+    channel
+        .register_checkout(
+            &member,
+            velocity_airc::waits::Checkout::new(
+                project.repository_path.clone(),
+                setup.worktree.display().to_string(),
+                branch.into(),
+                if project.default_branch.trim().is_empty() {
+                    "master".into()
+                } else {
+                    project.default_branch.clone()
+                },
+            ),
+        )
+        .map_err(|error| error.to_string())?;
     channel
         .join(&member, &setup.worktree.display().to_string())
         .map_err(|error| error.to_string())?;
@@ -82,7 +105,7 @@ pub fn release(application: &AppHandle, key: ThreadKey) -> Result<(), String> {
     for claim in channel.claims().map_err(|error| error.to_string())? {
         if claim.member == member {
             channel
-                .release(&member, &claim.task)
+                .release(&member, claim.key())
                 .map_err(|error| error.to_string())?;
         }
     }

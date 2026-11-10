@@ -255,6 +255,9 @@ fn thread_group(state: ThreadState) -> ThreadGroup {
 }
 
 pub(crate) fn thread_metadata(thread: &ThreadItem) -> String {
+    if let Some(waiting) = &thread.dependency_wait {
+        return waiting.clone();
+    }
     if thread.state == ThreadState::Review {
         let stage = match thread.review_stage {
             Some(ReviewStage::ContinuousIntegration) => "waiting on CI",
