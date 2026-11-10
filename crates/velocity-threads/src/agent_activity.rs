@@ -195,16 +195,16 @@ fn provider_retry_after(error: &str, now: u64) -> u64 {
             if let Ok(epoch) = value.parse::<u64>() {
                 return epoch.max(now);
             }
-            if let Ok(reset) = chrono::DateTime::parse_from_rfc3339(value) {
-                if let Ok(epoch) = u64::try_from(reset.timestamp()) {
-                    return epoch.max(now);
-                }
+            if let Ok(reset) = chrono::DateTime::parse_from_rfc3339(value)
+                && let Ok(epoch) = u64::try_from(reset.timestamp())
+            {
+                return epoch.max(now);
             }
         }
-        if matches!(key, "retry_after" | "retry-after" | "retryafter") {
-            if let Ok(seconds) = value.parse::<u64>() {
-                return now.saturating_add(seconds);
-            }
+        if matches!(key, "retry_after" | "retry-after" | "retryafter")
+            && let Ok(seconds) = value.parse::<u64>()
+        {
+            return now.saturating_add(seconds);
         }
     }
     now.saturating_add(15 * 60)

@@ -215,11 +215,7 @@ impl ThreadRuntimes {
 
     /// Recovery nudges must reach a silent busy session, rather than waiting behind it.
     pub fn nudge(&mut self, key: ThreadKey, message: &str) -> Result<(), SteerError> {
-        let thread = self.threads.get_mut(&key).ok_or(SteerError::NoSession)?;
-        thread
-            .inputs
-            .send(text_input(message))
-            .map_err(|_| SteerError::NoSession)
+        self.steer(key, message)
     }
 
     pub fn is_parked(&self, key: ThreadKey) -> bool {
