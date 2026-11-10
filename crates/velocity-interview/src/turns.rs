@@ -175,13 +175,12 @@ pub fn add_draft_tasks(project: &mut ProjectItem, tasks: Vec<String>) {
             .map(|task| task.id)
             .max()
             .map_or(1, |highest| highest.saturating_add(1));
-        project.tasks.push(TaskItem {
-            id: identifier,
+        project.tasks.push(TaskItem::new(
+            identifier,
             text,
-            state: TaskState::Draft,
-            added_by: TaskAttribution::Spec,
-            assigned_thread_id: None,
-        });
+            TaskState::Draft,
+            TaskAttribution::Spec,
+        ));
     }
 }
 

@@ -3,6 +3,7 @@
 
 #![forbid(unsafe_code)]
 
+pub mod agent_tasks;
 pub mod deletion;
 pub mod dependencies;
 pub mod dispatch;
@@ -10,6 +11,7 @@ pub mod follow_through;
 pub mod goal_swarm;
 pub mod launch;
 pub mod naming;
+pub mod parking;
 pub mod review;
 pub mod review_runner;
 pub mod runtime;

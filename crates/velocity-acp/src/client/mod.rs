@@ -22,6 +22,7 @@ mod title;
 mod updates;
 
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, PoisonError};
 
 use agent_client_protocol::v1::ConnectionTo;
@@ -42,7 +43,9 @@ pub use files::resolve_in_worktree;
 pub use limits::{read_claude_usage, read_codex_usage};
 pub use probe::{AgentProbe, ProbedModel, probe_agent};
 pub use process::AgentLaunch;
-pub use session::{SessionSetup, answer_permission, session_servers};
+pub use session::{
+    SessionResume, SessionSetup, StartedSession, answer_permission, session_servers,
+};
 pub use sign_in::sign_in;
 pub use title::{TitleReply, TitleRequest, request_title};
 pub use updates::{AgentSlashCommand, available_commands, entry_class};
@@ -70,6 +73,8 @@ pub enum AgentInput {
 pub enum AgentEvent {
     SessionStarted {
         session_id: SessionId,
+        /// True when `session/load` resumed the thread's earlier session (§2.2).
+        loaded: bool,
     },
     /// An update recorded in the transcript, and where it went.
     Transcript {
@@ -83,9 +88,7 @@ pub enum AgentEvent {
     /// A turn ended: why, or the error the prompt failed with.
     TurnEnded(Result<StopReason, String>),
     /// The agent wrote a file through `fs/write_text_file` (for the diff view and claims).
-    FileWritten {
-        path: PathBuf,
-    },
+    FileWritten { path: PathBuf },
     /// A line the agent wrote to stderr.
     Log(String),
 }
@@ -96,6 +99,8 @@ struct Shared {
     terminals: Terminals,
     transcript: Mutex<Transcript<Arc<str>, SessionUpdate>>,
     events: UnboundedSender<AgentEvent>,
+    /// Set while `session/load` replays history the thread's transcript already shows.
+    replaying: AtomicBool,
 }
 
 impl Shared {
@@ -106,6 +111,7 @@ impl Shared {
             worktree,
             transcript: Mutex::new(Transcript::new()),
             events,
+            replaying: AtomicBool::new(false),
         }
     }
 
@@ -116,6 +122,7 @@ impl Shared {
 
     fn record(&self, update: SessionUpdate) {
         match entry_class(&update) {
+            Some(_) if self.replaying.load(Ordering::Acquire) => {}
             Some(class) => {
                 let placement = self
                     .transcript
@@ -143,6 +150,7 @@ pub async fn run_session(
         terminals: Terminals::new(setup.worktree.clone()),
         transcript: Mutex::new(Transcript::new()),
         events,
+        replaying: AtomicBool::new(false),
     });
     let result = connect_agent(&mut agent, Arc::clone(&shared), setup, inputs).await;
     let terminals_stopped = shared.terminals.stop_all().await;
@@ -239,12 +247,18 @@ async fn drive(
     setup: SessionSetup,
     mut inputs: UnboundedReceiver<AgentInput>,
 ) -> Result<(), agent_client_protocol::Error> {
-    let started = session::start_session(&connection, &setup).await?;
+    let started = session::start_or_resume_session(&connection, &setup, &shared.replaying).await?;
     let session_id = started.session_id;
     let mut options = started.options;
     shared.emit(AgentEvent::SessionStarted {
         session_id: session_id.clone(),
+        loaded: started.loaded,
     });
+    // A new session for a resumed thread is sent its transcript ahead of the first prompt.
+    let mut preface = setup
+        .resume
+        .filter(|_| !started.loaded)
+        .map(|resume| ContentBlock::from(resume.transcript));
     let (turn_sender, mut turn_ended) = unbounded_channel();
     let mut steering: Steering<Vec<ContentBlock>, ()> = Steering::new(());
     loop {
@@ -263,11 +277,12 @@ async fn drive(
                 SteeringInput::TurnEnded
             }
         };
-        let turn = Turn {
+        let mut turn = Turn {
             connection: &connection,
             shared: &shared,
             session_id: &session_id,
             turn_sender: &turn_sender,
+            preface: &mut preface,
         };
         turn.apply(steering.step(input))?;
     }
@@ -300,11 +315,12 @@ struct Turn<'session> {
     shared: &'session Shared,
     session_id: &'session SessionId,
     turn_sender: &'session UnboundedSender<Result<StopReason, String>>,
+    preface: &'session mut Option<ContentBlock>,
 }
 
 impl Turn<'_> {
     fn apply(
-        &self,
+        &mut self,
         effect: SteeringEffect<Vec<ContentBlock>>,
     ) -> Result<(), agent_client_protocol::Error> {
         match effect {
@@ -322,13 +338,20 @@ impl Turn<'_> {
 
     /// One `session/prompt` for every message sent together. Agents do not echo the prompt
     /// back, so it is recorded in the transcript here.
-    fn prompt(&self, messages: Vec<Vec<ContentBlock>>) -> Result<(), agent_client_protocol::Error> {
-        let blocks: Vec<ContentBlock> = messages.into_iter().flatten().collect();
+    fn prompt(
+        &mut self,
+        messages: Vec<Vec<ContentBlock>>,
+    ) -> Result<(), agent_client_protocol::Error> {
+        let mut blocks: Vec<ContentBlock> = messages.into_iter().flatten().collect();
         for block in &blocks {
             self.shared
                 .record(SessionUpdate::UserMessageChunk(ContentChunk::new(
                     block.clone(),
                 )));
+        }
+        // The thread view already shows the transcript, so the preface is sent unrecorded.
+        if let Some(preface) = self.preface.take() {
+            blocks.insert(0, preface);
         }
         let turn_sender = self.turn_sender.clone();
         self.connection

@@ -1,0 +1,126 @@
+/* F16 Goal swarm view: claims board and agent cards. Values are the --goal-view-*
+   tokens in reference.css; cards, segments and the feed reuse swarm.css and duty.css. */
+.msg-user .sw-from {
+  margin-top: var(--goal-view-from-margin-top);
+  font: var(--goal-view-from-font);
+  color: var(--swarm);
+}
+.goal-view .board-note {
+  font-size: var(--goal-view-board-note-font-size);
+  color: var(--muted);
+}
+.goal-view .board-note.error {
+  color: var(--err);
+}
+.gb {
+  display: flex;
+  flex-direction: column;
+  border: var(--goal-view-board-border);
+  border-radius: var(--goal-view-board-radius);
+  overflow: hidden;
+}
+.gb-r {
+  display: grid;
+  grid-template-columns: var(--goal-view-row-columns);
+  gap: var(--goal-view-row-gap);
+  align-items: center;
+  padding: var(--goal-view-row-padding);
+  font-size: var(--goal-view-row-font-size);
+  border-top: var(--goal-view-row-border-top);
+}
+.gb-r:first-child {
+  border-top: 0;
+}
+.gb-r .icon {
+  width: var(--goal-view-row-icon-size);
+  height: var(--goal-view-row-icon-size);
+  color: var(--muted);
+}
+.gb-r .ttl {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.gb-r .ref {
+  font: var(--goal-view-row-ref-font);
+  color: var(--muted);
+}
+.gb-r .who {
+  font: var(--goal-view-row-who-font);
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.gb-r .st {
+  font: var(--goal-view-row-state-font);
+  color: var(--text-2);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.gb-r .st.waiting {
+  color: var(--warn);
+}
+.gb-r .st.failed {
+  color: var(--err);
+}
+.gb-r .st.merged {
+  color: var(--ok);
+}
+.gb-r.open .ttl {
+  color: var(--text-2);
+}
+.gb-r.open .who {
+  font-weight: var(--goal-view-row-open-who-weight);
+  color: var(--muted);
+}
+.gb-r.merged .ttl {
+  color: var(--muted);
+  text-decoration: line-through;
+}
+.gb-r.merged .icon {
+  color: var(--ok);
+}
+.sw-card.gc .gc-n {
+  display: flex;
+  align-items: center;
+  gap: var(--goal-view-card-nick-gap);
+  font: var(--goal-view-card-nick-font);
+}
+.sw-card.gc .gc-n small {
+  margin-left: auto;
+  display: inline-flex;
+  align-items: center;
+  gap: var(--goal-view-card-model-gap);
+  font: var(--goal-view-card-model-font);
+  color: var(--muted);
+}
+.sw-card.gc .gc-n .icon {
+  width: var(--goal-view-card-icon-size);
+  height: var(--goal-view-card-icon-size);
+}
+.sw-card.gc .ttl {
+  font-size: var(--goal-view-card-title-font-size);
+  color: var(--text);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.sw-card.gc.choosing .ttl {
+  color: var(--muted);
+}
+.sc-doing.waiting {
+  color: var(--warn);
+}
+.sg.choosing {
+  background: var(--goal-view-segment-choosing);
+  animation: swarm-blink var(--goal-view-choosing-blink-duration) infinite;
+}
+.sw-legend .waits {
+  color: var(--warn);
+}
+.goal-view .ev .who {
+  color: var(--swarm);
+}
+.goal-view .ev.you .who {
+  color: var(--text);
+}

@@ -19,6 +19,29 @@ pub struct ThreadEntry {
     pub duty: Option<DutyRoleEntry>,
 }
 
+impl ThreadEntry {
+    /// A row under Swarms that opens the Swarm view and nests its members (F10, F16).
+    pub fn swarm_row(identifier: usize, title: String, metadata: String, agents: usize) -> Self {
+        Self {
+            policy: LayoutRow {
+                identifier,
+                group: crate::layout::ThreadGroup::Swarm,
+                hidden: false,
+                matches_search: true,
+                member_of: None,
+                expanded: false,
+                agent_count: agents,
+                paused: false,
+            },
+            title,
+            metadata,
+            view: NavigationView::Swarm,
+            detail: None,
+            duty: None,
+        }
+    }
+}
+
 #[cfg_attr(
     feature = "bindings",
     derive(serde::Serialize, serde::Deserialize, specta::Type)
@@ -42,6 +65,36 @@ impl RailItem {
     }
 }
 
+/// F8 task rows carry independent links for ownership and attribution.
+#[cfg_attr(
+    feature = "bindings",
+    derive(serde::Serialize, serde::Deserialize, specta::Type)
+)]
+#[derive(Clone, Debug)]
+pub struct TaskView {
+    pub identifier: String,
+    pub title: String,
+    pub state: String,
+    pub metadata: String,
+    pub thread_identifier: Option<String>,
+    pub attribution: Option<String>,
+    pub attribution_thread: Option<String>,
+}
+
+impl TaskView {
+    pub fn new(identifier: String, title: String, state: String) -> Self {
+        Self {
+            identifier,
+            title,
+            state,
+            metadata: String::new(),
+            thread_identifier: None,
+            attribution: None,
+            attribution_thread: None,
+        }
+    }
+}
+
 /// Feature owners publish their real data here; the shell invents no activity.
 #[derive(Clone, Default)]
 pub struct LayoutData {
@@ -50,7 +103,7 @@ pub struct LayoutData {
     pub project_name: String,
     pub threads: Vec<ThreadEntry>,
     pub projects: Vec<PaletteItem>,
-    pub tasks: Vec<RailItem>,
+    pub tasks: Vec<TaskView>,
     pub completed_task_count: usize,
     pub pull_requests: Vec<RailItem>,
     pub issues: Vec<RailItem>,
@@ -64,6 +117,8 @@ pub struct LayoutData {
     pub interviews: Vec<InterviewEntry>,
     /// Swarm rows and views, keyed by their sidebar identifier (F10).
     pub swarms: Vec<SwarmEntry>,
+    /// Goal swarm rows and views, keyed by their sidebar identifier (F16).
+    pub goal_swarms: Vec<crate::goal_swarm_view::GoalSwarmEntry>,
 }
 
 #[cfg_attr(
@@ -127,6 +182,8 @@ pub struct SidebarRow {
     pub number: Option<usize>,
     /// A swarm row's segmented progress bar, one segment per member (F10).
     pub segments: Vec<SwarmStage>,
+    /// A goal swarm row: the target icon instead of the swarm icon (F16).
+    pub goal: bool,
 }
 
 #[cfg_attr(
@@ -281,6 +338,12 @@ pub enum LayoutAction {
         #[cfg_attr(feature = "bindings", specta(type = String))]
         usize,
     ),
+    /// The goal swarm view's + Agents: the Goal swarm dialog adding agents on its prompt (F16).
+    AddGoalAgents(
+        #[cfg_attr(feature = "bindings", serde(with = "crate::ipc_number"))]
+        #[cfg_attr(feature = "bindings", specta(type = String))]
+        usize,
+    ),
     Keyboard(KeyboardInput),
     NumberHints(NumberHintEvent),
     ComposerText(String),
@@ -315,6 +378,8 @@ pub struct LayoutSnapshot {
     pub active_thread: Option<ThreadDetailSnapshot>,
     pub active_duty: Option<DutyViewSnapshot>,
     pub active_swarm: Option<SwarmViewSnapshot>,
+    /// The selected goal swarm's view (F16); its rows share the Swarm view.
+    pub active_goal_swarm: Option<crate::goal_swarm_view::GoalSwarmViewSnapshot>,
     pub default_model_pill: ModelPillView,
     pub search: String,
     pub groups: Vec<SidebarGroup>,
@@ -337,7 +402,7 @@ pub struct LayoutSnapshot {
     #[cfg_attr(feature = "bindings", serde(with = "crate::ipc_number"))]
     #[cfg_attr(feature = "bindings", specta(type = String))]
     pub slash_selection: usize,
-    pub tasks: Vec<RailItem>,
+    pub tasks: Vec<TaskView>,
     pub pull_requests: Vec<RailItem>,
     pub issues: Vec<RailItem>,
     pub worktree_label: String,

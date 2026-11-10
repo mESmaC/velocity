@@ -26,6 +26,7 @@
 
   function rowIcon(row: SidebarRow): string {
     if (row.group === 'Duty' && row.duty_role === 'pr_duty') return 'pr';
+    if (row.goal) return 'goal';
     return icons[row.group] ?? 'circle';
   }
 </script>

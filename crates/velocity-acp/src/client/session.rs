@@ -1,13 +1,14 @@
 //! Starting a session (§3.2 Start a thread) and answering permission requests (Rule 1).
 
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 use agent_client_protocol::Agent;
 use agent_client_protocol::schema::ProtocolVersion;
 use agent_client_protocol::v1::ConnectionTo;
 use agent_client_protocol::v1::schema::{
     AuthCapabilities, ClientCapabilities, FileSystemCapabilities, Implementation,
-    InitializeRequest, McpServer, NewSessionRequest, PermissionOptionKind,
+    InitializeRequest, LoadSessionRequest, McpServer, NewSessionRequest, PermissionOptionKind,
     RequestPermissionOutcome, RequestPermissionRequest, RequestPermissionResponse,
     SelectedPermissionOutcome, SessionConfigOption, SessionId, SessionModeId, SessionModeState,
     SetSessionModeRequest,
@@ -32,9 +33,37 @@ pub struct SessionSetup {
     /// The ids of the agent's session modes that skip its permission checks, as the provider
     /// layer classifies them.
     pub bypass_modes: Vec<String>,
+    /// Set when a parked thread resumes (SPEC.md §2.2): its earlier session and transcript.
+    pub resume: Option<SessionResume>,
     /// The model, effort and speed the session runs on (F15), set through the agent's config
-    /// options after `session/new`. `None` leaves the agent's own defaults.
+    /// options once the session starts. `None` leaves the agent's own defaults.
     pub run_settings: Option<RunSettings<String>>,
+}
+
+/// How a parked thread's agent picks up where it stopped: `session/load` of its earlier
+/// session where the agent supports it, else a new session that is sent the transcript.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct SessionResume {
+    pub session_id: Option<String>,
+    pub transcript: String,
+}
+
+impl SessionResume {
+    pub fn new(session_id: Option<String>, transcript: String) -> Self {
+        Self {
+            session_id,
+            transcript,
+        }
+    }
+}
+
+/// The session the agent runs, and whether it is the earlier one loaded again.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct StartedSession {
+    pub session_id: SessionId,
+    pub loaded: bool,
+    /// The agent's config options once the run settings were applied.
+    pub options: Vec<SessionConfigOption>,
 }
 
 impl SessionSetup {
@@ -44,6 +73,7 @@ impl SessionSetup {
             airc: None,
             shared_servers: Vec::new(),
             bypass_modes,
+            resume: None,
             run_settings: None,
         }
     }
@@ -55,18 +85,11 @@ impl SessionSetup {
     }
 }
 
-/// A started session and the config options it ended up with.
-pub(super) struct StartedSession {
-    pub session_id: SessionId,
-    pub options: Vec<SessionConfigOption>,
-}
-
-/// `initialize` → `session/new` → `session/set_mode` where it changes the mode → the run
-/// settings' config options.
-pub(super) async fn start_session(
+/// `initialize` → `session/new` → `session/set_mode` where it changes the mode.
+pub async fn start_session(
     connection: &ConnectionTo<Agent>,
     setup: &SessionSetup,
-) -> Result<StartedSession, agent_client_protocol::Error> {
+) -> Result<SessionId, agent_client_protocol::Error> {
     connection
         .send_request(initialize_request())
         .block_task()
@@ -77,21 +100,110 @@ pub(super) async fn start_session(
         )
         .block_task()
         .await?;
-    if let Some(mode) = bypass_mode(session.modes.as_ref(), &setup.bypass_modes) {
+    select_bypass_mode(
+        connection,
+        &session.session_id,
+        session.modes.as_ref(),
+        setup,
+    )
+    .await?;
+    Ok(session.session_id)
+}
+
+/// Like [`start_session`], but a resumed thread first tries `session/load` of its earlier
+/// session. `replaying` is set while the agent replays that session's history, which the
+/// thread's transcript already holds.
+pub async fn start_or_resume_session(
+    connection: &ConnectionTo<Agent>,
+    setup: &SessionSetup,
+    replaying: &AtomicBool,
+) -> Result<StartedSession, agent_client_protocol::Error> {
+    let initialized = connection
+        .send_request(initialize_request())
+        .block_task()
+        .await?;
+    let earlier = setup
+        .resume
+        .as_ref()
+        .and_then(|resume| resume.session_id.clone())
+        .filter(|_| initialized.agent_capabilities.load_session);
+    if let Some(earlier) = earlier {
+        let session_id = SessionId::new(earlier);
+        replaying.store(true, Ordering::Release);
+        let loaded = connection
+            .send_request(
+                LoadSessionRequest::new(session_id.clone(), setup.worktree.clone())
+                    .mcp_servers(session_servers(setup)),
+            )
+            .block_task()
+            .await;
+        replaying.store(false, Ordering::Release);
+        // A session the agent no longer has falls back to a new one with the transcript.
+        if let Ok(response) = loaded {
+            select_bypass_mode(connection, &session_id, response.modes.as_ref(), setup).await?;
+            let options =
+                configure(connection, &session_id, response.config_options, setup).await?;
+            return Ok(StartedSession {
+                session_id,
+                loaded: true,
+                options,
+            });
+        }
+    }
+    let session = connection
+        .send_request(
+            NewSessionRequest::new(setup.worktree.clone()).mcp_servers(session_servers(setup)),
+        )
+        .block_task()
+        .await?;
+    select_bypass_mode(
+        connection,
+        &session.session_id,
+        session.modes.as_ref(),
+        setup,
+    )
+    .await?;
+    let options = configure(
+        connection,
+        &session.session_id,
+        session.config_options,
+        setup,
+    )
+    .await?;
+    Ok(StartedSession {
+        session_id: session.session_id,
+        loaded: false,
+        options,
+    })
+}
+
+/// Applies the setup's run settings to the session's config options (F15).
+async fn configure(
+    connection: &ConnectionTo<Agent>,
+    session_id: &SessionId,
+    options: Option<Vec<SessionConfigOption>>,
+    setup: &SessionSetup,
+) -> Result<Vec<SessionConfigOption>, agent_client_protocol::Error> {
+    let options = options.unwrap_or_default();
+    match &setup.run_settings {
+        Some(settings) => config::apply_settings(connection, session_id, options, settings).await,
+        None => Ok(options),
+    }
+}
+
+async fn select_bypass_mode(
+    connection: &ConnectionTo<Agent>,
+    session_id: &SessionId,
+    modes: Option<&SessionModeState>,
+    setup: &SessionSetup,
+) -> Result<(), agent_client_protocol::Error> {
+    if let Some(mode) = bypass_mode(modes, &setup.bypass_modes) {
         connection
-            .send_request(SetSessionModeRequest::new(session.session_id.clone(), mode))
+            .send_request(SetSessionModeRequest::new(session_id.clone(), mode))
             .block_task()
             .await?;
     }
-    let mut options = session.config_options.unwrap_or_default();
-    if let Some(settings) = &setup.run_settings {
-        options =
-            config::apply_settings(connection, &session.session_id, options, settings).await?;
-    }
-    Ok(StartedSession {
-        session_id: session.session_id,
-        options,
-    })
+    Ok(())
 }
 
 pub(super) fn initialize_request() -> InitializeRequest {

@@ -1161,6 +1161,34 @@
   --goal-pool-count-font-weight: 600;
 }
 
+/* F16 goal swarm view: values copied from the reference's `goal swarm view: claims
+   board + agent cards` and `.msg-user .sw-from` declarations (main-window.html). */
+:root {
+  --goal-view-from-margin-top: 4px;
+  --goal-view-from-font: 10px var(--mono);
+  --goal-view-board-note-font-size: 11px;
+  --goal-view-board-border: 1px solid rgba(255, 255, 255, 0.08);
+  --goal-view-board-radius: 12px;
+  --goal-view-row-columns: 14px minmax(0, 1fr) 64px 76px minmax(0, 170px);
+  --goal-view-row-gap: 10px;
+  --goal-view-row-padding: 6px 12px;
+  --goal-view-row-font-size: 11.5px;
+  --goal-view-row-border-top: 1px solid rgba(255, 255, 255, 0.05);
+  --goal-view-row-icon-size: 12px;
+  --goal-view-row-ref-font: 10px var(--mono);
+  --goal-view-row-who-font: 600 11px var(--mono);
+  --goal-view-row-state-font: 10.5px var(--mono);
+  --goal-view-row-open-who-weight: 400;
+  --goal-view-card-nick-gap: 6px;
+  --goal-view-card-nick-font: 600 11.5px var(--mono);
+  --goal-view-card-model-gap: 4px;
+  --goal-view-card-model-font: 10px var(--sans);
+  --goal-view-card-icon-size: 11px;
+  --goal-view-card-title-font-size: 12px;
+  --goal-view-segment-choosing: rgba(255, 255, 255, 0.28);
+  --goal-view-choosing-blink-duration: 1.4s;
+}
+
 /* F10 swarm: values copied from the reference's `swarm` declarations (main-window.html).
    Italics there are dropped per AGENTS.md. */
 :root {
@@ -1363,4 +1391,11 @@
   --providers-menu-row-font-size: 10.5px;
   --providers-menu-why-font-size: 10px;
   --providers-menu-why-margin: 0 0 0 6px;
+}
+
+/* F8 Task List, reference .item .sub and .task.done .ttl. */
+:root {
+  --task-source-gap: 8px;
+  --task-done-decoration: #555;
+  --task-source-underline-offset: 2px;
 }

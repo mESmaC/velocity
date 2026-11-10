@@ -84,6 +84,8 @@ pub struct ThreadRuntimes {
     stopping: BTreeMap<ThreadKey, Vec<oneshot::Sender<()>>>,
     retired: BTreeSet<ThreadKey>,
     shutdown_failures: BTreeSet<ThreadKey>,
+    /// Threads whose session was ended for parking and not yet resumed (§2.2).
+    parked: BTreeSet<ThreadKey>,
     actions: BTreeMap<ThreadKey, Arc<tokio::sync::Mutex<()>>>,
 }
 
@@ -191,6 +193,67 @@ impl ThreadRuntimes {
         receiver
     }
 
+    /// Ends a running session to park the thread (SPEC.md §2.2). Unlike [Self::stop], the
+    /// thread is not retired and keeps its transcript and queued messages, so
+    /// [Self::resume_parked] can start its next session. `None` when no session is running.
+    pub fn park(&mut self, key: ThreadKey) -> Option<oneshot::Receiver<()>> {
+        if self.retired.contains(&key) || self.stopping.contains_key(&key) {
+            return None;
+        }
+        let thread = self.threads.get_mut(&key)?;
+        if thread.phase != SessionPhase::Running {
+            return None;
+        }
+        let _ = thread.inputs.send(AgentInput::Stop);
+        thread.phase = SessionPhase::Ended;
+        thread.steering = Steering::new(());
+        let (ended, receiver) = oneshot::channel();
+        self.stopping.insert(key, Vec::from([ended]));
+        self.parked.insert(key);
+        Some(receiver)
+    }
+
+    pub fn is_parked(&self, key: ThreadKey) -> bool {
+        self.parked.contains(&key)
+    }
+
+    /// Starts a parked thread's next session: `prompt` first, then the messages that were
+    /// queued when it parked, in order. After an app restart there is no live transcript,
+    /// so a new one starts in the worktree.
+    pub fn resume_parked(
+        &mut self,
+        key: ThreadKey,
+        worktree: &str,
+        prompt: &str,
+        follows_pull_request: bool,
+    ) -> Result<SessionInputs, SteerError> {
+        let live = self.is_live(key);
+        if live || self.retired.contains(&key) || self.stopping.contains_key(&key) {
+            return Err(SteerError::NoSession);
+        }
+        self.shutdown_failures.remove(&key);
+        let (inputs, receiver) = unbounded_channel();
+        let thread = self
+            .threads
+            .entry(key)
+            .or_insert_with(|| parked_runtime(worktree, follows_pull_request));
+        thread.transcript.new_session();
+        let mut steering = Steering::new(());
+        for message in
+            std::iter::once(prompt).chain(thread.transcript.queued().iter().map(String::as_str))
+        {
+            // The receiver is alive: it is returned below.
+            let _ = inputs.send(text_input(message));
+            steering.step(SteeringInput::Send(message.to_owned()));
+        }
+        thread.inputs = inputs;
+        thread.steering = steering;
+        thread.phase = SessionPhase::Running;
+        thread.log_tail.clear();
+        self.parked.remove(&key);
+        Ok(receiver)
+    }
+
     /// Resumes a saved PR thread in its existing checkout; no new worktree is created.
     pub fn resume_follow_through(
         &mut self,
@@ -220,7 +283,9 @@ impl ThreadRuntimes {
     ) -> Result<DeliveryStatus, SteerError> {
         let thread = self.threads.get_mut(&key).ok_or(SteerError::NoSession)?;
         if let Some(status) = thread.deliveries.status(identifier, message) {
-            if status == DeliveryStatus::Pending && thread.inputs.is_closed() {
+            // A parked thread re-sends what was pending when it resumes.
+            let parked = self.parked.contains(&key);
+            if status == DeliveryStatus::Pending && thread.inputs.is_closed() && !parked {
                 return Err(SteerError::NoSession);
             }
             return Ok(status);
@@ -244,6 +309,11 @@ impl ThreadRuntimes {
     /// A message for the thread's agent: sent now when it is idle, queued otherwise (Rule 1).
     pub fn steer(&mut self, key: ThreadKey, prompt: &str) -> Result<(), SteerError> {
         let thread = self.threads.get_mut(&key).ok_or(SteerError::NoSession)?;
+        // A parked agent gets the message right after its resume prompt (§2.2, Rule 1).
+        if self.parked.contains(&key) {
+            thread.transcript.queue(prompt);
+            return Ok(());
+        }
         thread
             .inputs
             .send(text_input(prompt))
@@ -318,6 +388,7 @@ impl ThreadRuntimes {
 
     pub fn stop(&mut self, key: ThreadKey) -> StopOutcome {
         self.retired.insert(key);
+        self.parked.remove(&key);
         if let Some(waiters) = self.stopping.get_mut(&key) {
             let (ended, receiver) = oneshot::channel();
             waiters.push(ended);
@@ -445,6 +516,23 @@ fn progress(thread: &ThreadRuntime) -> ThreadProgress {
         activity,
         added: u32::try_from(added).unwrap_or(u32::MAX),
         deleted: u32::try_from(deleted).unwrap_or(u32::MAX),
+    }
+}
+
+/// A parked thread with no live record, after an app restart.
+fn parked_runtime(worktree: &str, follows_pull_request: bool) -> ThreadRuntime {
+    let (inputs, _closed) = unbounded_channel();
+    ThreadRuntime {
+        phase: SessionPhase::Ended,
+        session_identifier: uuid::Uuid::new_v4().to_string(),
+        follows_pull_request,
+        deliveries: Deliveries::default(),
+        transcript: LiveTranscript::new(worktree),
+        inputs,
+        steering: Steering::new(()),
+        log_tail: VecDeque::new(),
+        agent_commands: None,
+        titling_model: None,
     }
 }
 

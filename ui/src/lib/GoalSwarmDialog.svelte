@@ -96,14 +96,23 @@
     try {
       await queue;
       if (!view || Boolean(view.launch_note)) return;
+      const addPrDutyAgents = addPrDuty && view.pr_duty_shortfall > 0;
+      // + Agents joins the swarm on its own prompt and keep-going choice (F16).
       onResult(
-        await goalSwarmCommands.launch({
-          project_identifier: view.project_identifier,
-          prompt,
-          mix: view.choices.rows,
-          keep_going: keepGoing,
-          add_pr_duty: addPrDuty && view.pr_duty_shortfall > 0,
-        }),
+        request.into === null
+          ? await goalSwarmCommands.launch({
+              project_identifier: view.project_identifier,
+              prompt,
+              mix: view.choices.rows,
+              keep_going: keepGoing,
+              add_pr_duty: addPrDutyAgents,
+            })
+          : await goalSwarmCommands.addAgents({
+              project_identifier: view.project_identifier,
+              swarm_identifier: Number(request.into),
+              mix: view.choices.rows,
+              add_pr_duty: addPrDutyAgents,
+            }),
       );
     } catch (reason) {
       report(reason);
@@ -135,8 +144,12 @@
     <div class="np-body">
       <label class="field">
         <span class="label">Prompt · every agent gets exactly this</span>
-        <textarea class="brief" rows="2" spellcheck="false" bind:value={prompt}
-        ></textarea>
+        <textarea
+          class="brief"
+          rows="2"
+          spellcheck="false"
+          disabled={request.into !== null}
+          bind:value={prompt}></textarea>
       </label>
 
       <div class="field">
@@ -311,11 +324,11 @@
             {#if view.pool.spare}<b class="sp">{view.pool.spare}</b>{/if}
           </div>{:else}<div class="gs-pool">{view?.pool_note ?? ''}</div>{/if}
         <div class="checks">
-          <label class="check">
-            <input type="checkbox" bind:checked={keepGoing} />
-            Keep going: after its PR merges, an agent claims the next unclaimed piece
-            instead of stopping
-          </label>
+          {#if request.into === null}<label class="check">
+              <input type="checkbox" bind:checked={keepGoing} />
+              Keep going: after its PR merges, an agent claims the next unclaimed
+              piece instead of stopping
+            </label>{/if}
           {#if view?.pr_duty_label && view.pr_duty_shortfall > 0}<label
               class="check"
             >

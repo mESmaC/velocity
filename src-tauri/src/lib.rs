@@ -18,6 +18,7 @@ mod interview;
 mod issue_panel;
 pub mod layout;
 mod new_project;
+mod parking;
 mod projects;
 mod providers;
 mod pull_request_panel;
@@ -27,6 +28,7 @@ mod state;
 mod swarm;
 mod swarm_rebase;
 pub mod sweeps;
+mod tasks;
 mod thread_menu;
 mod threads;
 mod window;
@@ -82,6 +84,7 @@ fn bindings() -> Builder<tauri::Wry> {
         goal_swarm::read_goal_swarm_pool,
         goal_swarm::launch_goal_swarm,
         goal_swarm::add_goal_agents,
+        goal_swarm::get_goal_swarm_board,
         issue_panel::get_issue_panel,
         issue_panel::open_project_issue,
         issue_panel::dispatch_issue,
@@ -94,6 +97,8 @@ fn bindings() -> Builder<tauri::Wry> {
         swarm::get_swarm_dialog,
         swarm::launch_swarm,
         swarm::add_to_swarm,
+        tasks::add_task,
+        tasks::list_tasks,
         thread_menu::get_thread_menu,
         thread_menu::run_thread_menu_action,
         thread_menu::delete_thread,

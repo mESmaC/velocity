@@ -7,6 +7,7 @@
   import ThreadView from './lib/ThreadView.svelte';
   import DutyView from './lib/DutyView.svelte';
   import SwarmView from './lib/SwarmView.svelte';
+  import GoalSwarmView from './lib/GoalSwarmView.svelte';
   import SwarmDialog from './lib/SwarmDialog.svelte';
   import GoalSwarmDialog from './lib/GoalSwarmDialog.svelte';
   import AircModal from './lib/AircModal.svelte';
@@ -292,6 +293,10 @@
             {layout}
             swarm={layout.active_swarm}
             {send}
+          />{:else if layout.view === 'Swarm' && layout.active_goal_swarm}<GoalSwarmView
+            {layout}
+            swarm={layout.active_goal_swarm}
+            {send}
           />{:else if layout.view === 'Settings' && layout.settings_tab === 'worktrees'}<WorktreeSettings
             {send}
           />{:else if layout.view === 'Settings' && layout.settings_tab === 'providers'}<ProvidersSettings
@@ -318,12 +323,12 @@
       submitRequests={swarmSubmits}
       onResult={receive}
     />{/key}{/if}
-{#if layout?.goal_dialog}<GoalSwarmDialog
-    request={layout.goal_dialog}
-    {send}
-    submitRequests={goalSubmits}
-    onResult={receive}
-  />{/if}
+{#if layout?.goal_dialog}{#key layout.goal_dialog.into}<GoalSwarmDialog
+      request={layout.goal_dialog}
+      {send}
+      submitRequests={goalSubmits}
+      onResult={receive}
+    />{/key}{/if}
 {#if layout?.airc_open && layout.project_identifier !== null}{#key layout.project_identifier}<AircModal
       project={layout.project_identifier}
       {send}

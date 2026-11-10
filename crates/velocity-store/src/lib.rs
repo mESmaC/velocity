@@ -6,6 +6,7 @@
 //! This crate owns atomic filesystem reads/writes, corrupt-snapshot quarantine,
 //! and serde/specta serialization.
 
+pub mod agent_tasks;
 pub mod airc_members;
 pub mod build_gate;
 pub mod claim_piece;
@@ -40,6 +41,7 @@ use velocity_core::state::{
 
 pub mod duty;
 pub mod goal_swarm_dialog;
+pub mod goal_swarm_view;
 pub mod goal_swarms;
 mod project_layout;
 pub mod projects;
@@ -47,6 +49,7 @@ pub mod provider_views;
 pub mod providers;
 pub mod swarm_dialog;
 pub mod swarms;
+pub mod task_list;
 pub mod threads;
 
 pub use duty::DutyRoleItem;
@@ -520,6 +523,10 @@ impl Default for Settings {
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, Type)]
 pub struct TaskItem {
+    /// AIRC request sequence, saved atomically with the task to prevent replay duplicates.
+    #[serde(default)]
+    #[specta(skip)]
+    pub agent_request: Option<u64>,
     pub id: u32,
     pub text: String,
     pub state: TaskState,
@@ -535,6 +542,7 @@ impl TaskItem {
             state,
             added_by,
             assigned_thread_id: None,
+            agent_request: None,
         }
     }
 
@@ -591,6 +599,9 @@ pub struct ThreadItem {
     pub airc_cursor: u64,
     #[serde(default)]
     pub dependency_wait: Option<String>,
+    /// The agent's ACP session id, which a parked thread loads again on resume (§2.2).
+    #[serde(default)]
+    pub agent_session: Option<String>,
     pub review_stage: Option<ReviewStage>,
     pub task_ids: Vec<u32>,
     #[serde(default)]
@@ -630,6 +641,7 @@ impl ThreadItem {
             follow_through: None,
             airc_cursor: 0,
             dependency_wait: None,
+            agent_session: None,
             review_stage: None,
             task_ids: Vec::new(),
             issue: None,
@@ -663,6 +675,7 @@ impl ThreadItem {
             follow_through: None,
             airc_cursor: 0,
             dependency_wait: None,
+            agent_session: None,
             review_stage: None,
             task_ids: Vec::new(),
             issue: None,
