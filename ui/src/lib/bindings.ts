@@ -36,17 +36,6 @@ export const commands = {
 	listPullRequests: (projectIdentifier: number) => __TAURI_INVOKE<PullRequest_Serialize[]>("list_pull_requests", { projectIdentifier }),
 	getPullRequest: (projectIdentifier: number, number: number) => __TAURI_INVOKE<PullRequestSnapshot_Serialize>("get_pull_request", { projectIdentifier, number }),
 	dispatchPullRequest: (projectIdentifier: number, operation: PullRequestOperation_Deserialize) => __TAURI_INVOKE<PullRequestReceipt>("dispatch_pull_request", { projectIdentifier, operation }),
-	/**
-	 *  The Goal swarm dialog for the user's choices with one edit applied; asked again after
-	 *  every edit, and after the pool is read.
-	 */
-	getGoalSwarmDialog: (query: GoalSwarmDialogQuery_Deserialize) => __TAURI_INVOKE<GoalSwarmDialog_Serialize>("get_goal_swarm_dialog", { query }),
-	/**
-	 *  Reads the active project's work pool for the pool line and the PR duty check. Issues
-	 *  come from GitHub and sections from SPEC.md, so the read runs off the UI thread; the
-	 *  dialog shows the previous read meanwhile.
-	 */
-	readGoalSwarmPool: () => __TAURI_INVOKE<null>("read_goal_swarm_pool"),
 	getIssuePanel: () => __TAURI_INVOKE<IssuePanelSnapshot_Serialize>("get_issue_panel"),
 	openProjectIssue: (projectIdentifier: number, number: number) => __TAURI_INVOKE<null>("open_project_issue", { projectIdentifier, number }),
 	dispatchIssue: (projectIdentifier: number, number: number, acceptRecommendation: boolean) => __TAURI_INVOKE<LayoutSnapshot_Serialize>("dispatch_issue", { projectIdentifier, number, acceptRecommendation }),
@@ -172,6 +161,13 @@ export type AircMessagePublished_Serialize = {
 
 export type CheckStatus = "passing" | "running" | "failing" | "unavailable";
 
+export type Checkout = {
+	repository: string,
+	worktree: string,
+	branch: string,
+	base: string,
+};
+
 export type Claim = {
 	member: string,
 	nick: string,
@@ -211,6 +207,14 @@ export type CreatedProject = {
 	identifier: number,
 	name: string,
 	repository_path: string,
+};
+
+export type DependencyWait = {
+	member: string,
+	nick: string,
+	holder: string,
+	holder_nick: string,
+	file: string,
 };
 
 export type DiffBlockView = DiffBlockView_Serialize | DiffBlockView_Deserialize;
@@ -385,6 +389,8 @@ export type Entry_Deserialize = {
 	/**  The PR head commit the event applies to (`approved` binds to it). */
 	head?: string | null,
 	claim?: Claim | null,
+	dependency?: DependencyWait | null,
+	checkout?: Checkout | null,
 };
 
 export type Entry_Serialize = {
@@ -404,6 +410,8 @@ export type Entry_Serialize = {
 	/**  The PR head commit the event applies to (`approved` binds to it). */
 	head?: string,
 	claim?: Claim,
+	dependency?: DependencyWait,
+	checkout?: Checkout,
 };
 
 export type ErrorCardView = {
@@ -459,128 +467,6 @@ export type FollowThrough_Serialize = {
 
 export type GitHubActor = {
 	login: string,
-};
-
-/**  The open Goal swarm dialog and the prompt it starts with (F16). */
-export type GoalDialogRequest = {
-	prompt: string,
-};
-
-export type GoalLimitLine = {
-	provider: ProviderKind,
-	text: string,
-	warn: boolean,
-};
-
-export type GoalMixEdit = { kind: "set_agents"; count: number } | { kind: "step_agents"; up: boolean } | { kind: "step_row"; index: number; up: boolean } | { kind: "set_model"; index: number; provider: ProviderKind } | { kind: "set_effort"; index: number; effort: EffortLevel } | { kind: "toggle_fast"; index: number } | { kind: "remove_row"; index: number } | { kind: "add_row" } | { kind: "even_split" };
-
-/**
- *  One mix row as the window holds it: a provider's model, its effort and speed, and how
- *  many agents run on it.
- */
-export type GoalMixRow = {
-	provider: ProviderKind,
-	effort: EffortLevel,
-	speed: SpeedMode,
-	count: number,
-};
-
-export type GoalMixRowView = {
-	provider: ProviderKind,
-	effort: EffortLevel,
-	/**  Fast is on and the model offers it. */
-	fast: boolean,
-	fast_available: boolean,
-	fast_title: string,
-	count: number,
-	rest: boolean,
-};
-
-/**  One block of the split bar above the rows, as wide as its share of the agents. */
-export type GoalMixSegment = {
-	provider: ProviderKind,
-	weight: number,
-	label: string,
-	title: string,
-};
-
-export type GoalModelOption = {
-	provider: ProviderKind,
-	provider_name: string,
-	model_name: string,
-};
-
-/**  The user's choices. The first row is "the rest". */
-export type GoalSwarmChoices = {
-	agents: number,
-	rows: GoalMixRow[],
-};
-
-export type GoalSwarmDialog = GoalSwarmDialog_Serialize | GoalSwarmDialog_Deserialize;
-
-/**  `choices: None` asks for the defaults: every agent on the default model. */
-export type GoalSwarmDialogQuery = GoalSwarmDialogQuery_Serialize | GoalSwarmDialogQuery_Deserialize;
-
-/**  `choices: None` asks for the defaults: every agent on the default model. */
-export type GoalSwarmDialogQuery_Deserialize = {
-	choices?: GoalSwarmChoices | null,
-	edit?: GoalMixEdit | null,
-};
-
-/**  `choices: None` asks for the defaults: every agent on the default model. */
-export type GoalSwarmDialogQuery_Serialize = {
-	choices: GoalSwarmChoices | null,
-	edit: GoalMixEdit | null,
-};
-
-export type GoalSwarmDialog_Deserialize = {
-	project_identifier: number,
-	/**  The project's AIRC channel, `#<project>`. */
-	channel: string,
-	worktree_root: string,
-	default_branch: string,
-	choices: GoalSwarmChoices,
-	quick_picks: number[],
-	worktrees_hint: string,
-	models: GoalModelOption[],
-	segments: GoalMixSegment[],
-	rows: GoalMixRowView[],
-	nick_preview: string,
-	limits: GoalLimitLine[],
-	pool?: PoolLine_Deserialize | null,
-	/**  Shown in place of the pool line while it is being read, or when reading it failed. */
-	pool_note?: string | null,
-	pr_duty_label?: string | null,
-	pr_duty_shortfall: number,
-	summary: string,
-	launch_label: string,
-	/**  Why Launch is unavailable, when it is. */
-	launch_note?: string | null,
-};
-
-export type GoalSwarmDialog_Serialize = {
-	project_identifier: number,
-	/**  The project's AIRC channel, `#<project>`. */
-	channel: string,
-	worktree_root: string,
-	default_branch: string,
-	choices: GoalSwarmChoices,
-	quick_picks: number[],
-	worktrees_hint: string,
-	models: GoalModelOption[],
-	segments: GoalMixSegment[],
-	rows: GoalMixRowView[],
-	nick_preview: string,
-	limits: GoalLimitLine[],
-	pool: PoolLine_Serialize | null,
-	/**  Shown in place of the pool line while it is being read, or when reading it failed. */
-	pool_note: string | null,
-	pr_duty_label: string | null,
-	pr_duty_shortfall: number,
-	summary: string,
-	launch_label: string,
-	/**  Why Launch is unavailable, when it is. */
-	launch_note: string | null,
 };
 
 export type InlineText = {
@@ -907,8 +793,6 @@ export type LayoutSnapshot_Deserialize = {
 	duty_dialog_role: DutyRole,
 	/**  The open Swarm dialog: its starting source, and the swarm + Items adds to (F10). */
 	swarm_dialog?: SwarmDialogRequest_Deserialize | null,
-	/**  The open Goal swarm dialog and the prompt it starts with (F16). */
-	goal_dialog?: GoalDialogRequest | null,
 	palette_query: string,
 	palette_results: PaletteItem_Deserialize[],
 	palette_selection: string,
@@ -955,8 +839,6 @@ export type LayoutSnapshot_Serialize = {
 	duty_dialog_role: DutyRole,
 	/**  The open Swarm dialog: its starting source, and the swarm + Items adds to (F10). */
 	swarm_dialog: SwarmDialogRequest_Serialize | null,
-	/**  The open Goal swarm dialog and the prompt it starts with (F16). */
-	goal_dialog: GoalDialogRequest | null,
 	palette_query: string,
 	palette_results: PaletteItem_Serialize[],
 	palette_selection: string,
@@ -1239,34 +1121,6 @@ export type PersistedState_Serialize = {
 	/**  Deleted rows must never let delayed agent or watcher events address a new thread. */
 	next_thread_identifiers: { [key in number]: number },
 	thread_started_at: { [key in number]: { [key in number]: string } },
-};
-
-/**
- *  "They choose from **N unclaimed pieces**: x Task List · y issues · z unbuilt SPEC.md
- *  sections.", in the three parts the dialog styles differently.
- */
-export type PoolLine = PoolLine_Serialize | PoolLine_Deserialize;
-
-/**
- *  "They choose from **N unclaimed pieces**: x Task List · y issues · z unbuilt SPEC.md
- *  sections.", in the three parts the dialog styles differently.
- */
-export type PoolLine_Deserialize = {
-	pieces: string,
-	sources: string,
-	/**  Set when there are more agents than pieces: how many will find nothing and leave. */
-	spare?: string | null,
-};
-
-/**
- *  "They choose from **N unclaimed pieces**: x Task List · y issues · z unbuilt SPEC.md
- *  sections.", in the three parts the dialog styles differently.
- */
-export type PoolLine_Serialize = {
-	pieces: string,
-	sources: string,
-	/**  Set when there are more agents than pieces: how many will find nothing and leave. */
-	spare: string | null,
 };
 
 export type PrDutyRuleSettings = {
@@ -2394,6 +2248,7 @@ export type ThreadItem_Deserialize = {
 	worktree_role?: WorktreeRole,
 	pull_request_number?: number | null,
 	follow_through?: FollowThrough_Deserialize | null,
+	dependency_wait?: string | null,
 	review_stage?: ReviewStage | null,
 	task_ids: number[],
 	issue?: ThreadIssue_Deserialize | null,
@@ -2422,6 +2277,7 @@ export type ThreadItem_Serialize = {
 	worktree_role: WorktreeRole,
 	pull_request_number: number | null,
 	follow_through: FollowThrough_Serialize | null,
+	dependency_wait: string | null,
 	review_stage: ReviewStage | null,
 	task_ids: number[],
 	issue: ThreadIssue_Serialize | null,

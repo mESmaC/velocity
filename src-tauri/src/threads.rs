@@ -601,7 +601,7 @@ fn fail(application: &AppHandle, key: ThreadKey, headline: &str, detail: &str) {
 }
 
 /// Rebuilds the window from saved state plus the live transcript and publishes it.
-fn refresh(
+pub(crate) fn refresh(
     application: &AppHandle,
     key: ThreadKey,
     select: bool,
