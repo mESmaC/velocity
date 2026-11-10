@@ -16,6 +16,7 @@ pub mod layout_state;
 pub mod layout_view;
 pub mod navigation;
 pub mod new_project;
+pub mod pr_review;
 pub mod projects;
 pub mod scout_sweep;
 pub mod state;
