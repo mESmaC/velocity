@@ -1255,7 +1255,7 @@ Each milestone ends with a working app. PR duty checks an item off when it lands
 
 **M11 · Proofs** (F17)
 - [ ] Lean toolchain and Mathlib cache in the warm pool (F5)
-- [ ] Proof checks in the worktree: `lake build`, no `sorry`/`admit`, axiom audit, statement lock and review reset
+- [x] Proof checks in the worktree: `lake build`, no `sorry`/`admit`, axiom audit, statement lock and review reset
 - [ ] Proof card on the PR, "Proved" on the PR track, `proved`/`statement`/`stress` events
 - [ ] Merge gate in PR duty; statement review; tiers updated (F7)
 - [ ] Scouts: assume-it-fails sweeps, evidence required, Stress and Proof gaps focus areas, stress runs against Lean reference models
