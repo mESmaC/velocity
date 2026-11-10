@@ -4,6 +4,7 @@
 #![forbid(unsafe_code)]
 
 pub mod deletion;
+pub mod dependencies;
 pub mod dispatch;
 pub mod follow_through;
 pub mod launch;

@@ -570,6 +570,8 @@ pub struct ThreadItem {
     #[serde(default)]
     #[specta(skip)]
     pub airc_cursor: u64,
+    #[serde(default)]
+    pub dependency_wait: Option<String>,
     pub review_stage: Option<ReviewStage>,
     pub task_ids: Vec<u32>,
     #[serde(default)]
@@ -605,6 +607,7 @@ impl ThreadItem {
             pull_request_number: None,
             follow_through: None,
             airc_cursor: 0,
+            dependency_wait: None,
             review_stage: None,
             task_ids: Vec::new(),
             issue: None,
@@ -636,6 +639,7 @@ impl ThreadItem {
             pull_request_number: None,
             follow_through: None,
             airc_cursor: 0,
+            dependency_wait: None,
             review_stage: None,
             task_ids: Vec::new(),
             issue: None,
