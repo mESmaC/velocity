@@ -11,6 +11,20 @@ pub enum WorkKey {
     Spec { section: String },
 }
 
+impl WorkKey {
+    /// The AIRC claim lock key for this piece (F14, F16). A goal swarm agent, a swarm
+    /// member and a dispatched thread working on the same item all claim this key, so
+    /// the first claim wins whichever path started it. An issue omits its repository:
+    /// each project's channel belongs to one repository.
+    pub fn claim_piece(&self) -> String {
+        match self {
+            Self::Task { identifier } => format!("task:{identifier}"),
+            Self::Issue { number, .. } => format!("issue:{number}"),
+            Self::Spec { section } => format!("spec:{section}"),
+        }
+    }
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[cfg_attr(feature = "bindings", derive(specta::Type))]
 pub struct WorkPiece {

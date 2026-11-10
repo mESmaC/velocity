@@ -9,7 +9,7 @@ mod storage;
 pub mod waits;
 
 pub use channel::{Channel, EVENT_TAGS, Entry, Event, Presence};
-pub use claims::{Claim, ClaimResult};
+pub use claims::{Claim, ClaimResult, piece_key};
 pub use delivery::{deliver_messages, message_for};
 pub use launch::{SERVER_NAME, SERVER_SWITCH, serve_stdio, server_arguments};
 pub use protocol::serve;

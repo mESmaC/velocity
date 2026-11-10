@@ -3,15 +3,31 @@ use std::path::Path;
 use tauri::{AppHandle, Manager};
 use velocity_acp::client::SessionSetup;
 use velocity_airc::{Channel, ClaimResult};
+use velocity_store::claim_piece::thread_claim_piece;
 use velocity_threads::ThreadKey;
 
+use crate::state::ManagedStateStore;
+use crate::threads::lock;
+
+/// Claims the saved thread's piece before its agent starts. The lock key is the thread's
+/// work item or branch (`thread_claim_piece`); the title is only the claim's display text.
 pub fn attach(
     application: &AppHandle,
     key: ThreadKey,
     setup: &SessionSetup,
-    task: &str,
     branch: &str,
 ) -> Result<(), String> {
+    let (piece, task) = {
+        let store = lock(
+            application.state::<ManagedStateStore>().inner(),
+            "persisted state",
+        )?;
+        let thread = store
+            .project(key.0)
+            .and_then(|project| project.threads.iter().find(|thread| thread.id == key.1))
+            .ok_or("The thread was removed before its claim")?;
+        (thread_claim_piece(thread, branch), thread.title.clone())
+    };
     let data = application
         .path()
         .app_data_dir()
@@ -45,7 +61,7 @@ pub fn attach(
         .join(&member, &setup.worktree.display().to_string())
         .map_err(|error| error.to_string())?;
     match channel
-        .claim(&member, task, branch, Vec::new())
+        .claim_piece(&member, &piece, &task, branch, Vec::new())
         .map_err(|error| error.to_string())?
     {
         ClaimResult::Granted { .. } => {}
@@ -89,7 +105,7 @@ pub fn release(application: &AppHandle, key: ThreadKey) -> Result<(), String> {
     for claim in channel.claims().map_err(|error| error.to_string())? {
         if claim.member == member {
             channel
-                .release(&member, &claim.task)
+                .release(&member, claim.key())
                 .map_err(|error| error.to_string())?;
         }
     }
