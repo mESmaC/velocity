@@ -30,6 +30,13 @@ pub struct Entry {
     pub dependency: Option<crate::waits::DependencyWait>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub checkout: Option<crate::waits::Checkout>,
+    #[serde(default)]
+    pub message_mode: Option<crate::MessageMode>,
+    #[serde(default)]
+    #[cfg_attr(feature = "bindings", specta(type = Option<u32>))]
+    pub acknowledged: Option<u64>,
+    #[serde(default)]
+    pub files: Vec<String>,
 }
 
 /// Event tags Velocity posts from what it observes (F14). Agents never type them.
@@ -73,6 +80,8 @@ pub struct Event {
     text: String,
     pull_request: Option<u32>,
     head: Option<String>,
+    recipients: Vec<String>,
+    files: Vec<String>,
 }
 
 impl Event {
@@ -83,12 +92,24 @@ impl Event {
             text: text.into(),
             pull_request: None,
             head: None,
+            recipients: Vec::new(),
+            files: Vec::new(),
         }
     }
 
     pub fn for_pull_request(mut self, number: u32, head: Option<&str>) -> Self {
         self.pull_request = Some(number);
         self.head = head.map(Into::into);
+        self
+    }
+
+    pub fn with_files(mut self, files: Vec<String>) -> Self {
+        self.files = files;
+        self
+    }
+
+    pub fn addressed_to(mut self, recipients: Vec<String>) -> Self {
+        self.recipients = recipients;
         self
     }
 
@@ -308,6 +329,8 @@ impl Channel {
         let mut record = entry(&entries, &event.tag, "velocity", &event.nick, &event.text);
         record.pull_request = event.pull_request;
         record.head = event.head;
+        record.to = event.recipients;
+        record.files = event.files;
         storage.append(&record)?;
         Ok(record)
     }
@@ -360,6 +383,9 @@ pub(crate) fn entry(entries: &[Entry], kind: &str, member: &str, nick: &str, tex
         claim: None,
         dependency: None,
         checkout: None,
+        message_mode: None,
+        acknowledged: None,
+        files: Vec::new(),
     }
 }
 

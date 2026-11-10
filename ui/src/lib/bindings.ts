@@ -15,6 +15,8 @@ export const commands = {
 	aircLedger: (projectIdentifier: number, ledger: string, after: number | null) => __TAURI_INVOKE<Entry_Serialize[]>("airc_ledger", { projectIdentifier, ledger, after }),
 	/**  The modal's current view, for the window to draw before the next `airc://modal`. */
 	getAircModal: (projectIdentifier: number) => __TAURI_INVOKE<AircModalView>("get_airc_modal", { projectIdentifier }),
+	/**  User-owned delivery mode, independent of the agent's tool permissions. */
+	setAircMessageMode: (projectIdentifier: number, nick: string, mode: MessageMode) => __TAURI_INVOKE<null>("set_airc_message_mode", { projectIdentifier, nick, mode }),
 	getWindowState: () => __TAURI_INVOKE<WindowStateChanged>("get_window_state"),
 	minimizeWindow: () => __TAURI_INVOKE<null>("minimize_window"),
 	toggleMaximizeWindow: () => __TAURI_INVOKE<null>("toggle_maximize_window"),
@@ -243,6 +245,7 @@ export type AircNickGroup = {
 };
 
 export type AircNickRow = {
+	message_mode: string,
 	nick: string,
 	tone: NickTone,
 	dot: NickDot,
@@ -523,6 +526,9 @@ export type Entry_Deserialize = {
 	claim?: Claim_Deserialize | null,
 	dependency?: DependencyWait | null,
 	checkout?: Checkout | null,
+	message_mode?: MessageMode | null,
+	acknowledged?: number | null,
+	files?: string[],
 };
 
 export type Entry_Serialize = {
@@ -544,6 +550,9 @@ export type Entry_Serialize = {
 	claim?: Claim_Serialize,
 	dependency?: DependencyWait,
 	checkout?: Checkout,
+	message_mode: MessageMode | null,
+	acknowledged: number | null,
+	files: string[],
 };
 
 export type ErrorCardView = {
@@ -1235,6 +1244,8 @@ export type LayoutStateChanged_Serialize = {
 };
 
 export type MergeMethod = "SQUASH" | "REBASE" | "MERGE";
+
+export type MessageMode = "Open" | "HeadsDown" | "Quarantined";
 
 export type ModelPillView = {
 	provider: ProviderColor,

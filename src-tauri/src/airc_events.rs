@@ -134,8 +134,17 @@ fn record_merged(
     head: &str,
 ) -> Result<(), String> {
     let channel = open_channel(application, project_identifier)?;
+    if channel
+        .events(0)
+        .map_err(|error| error.to_string())?
+        .iter()
+        .any(|entry| entry.kind == "merged" && entry.pull_request == Some(number))
+    {
+        return Ok(());
+    }
+    let files = merged_files(application, project_identifier, number)?;
     if let Some(entry) = channel
-        .post_pull_request_merged(nick, number, title, head)
+        .post_pull_request_merged_with_files(nick, number, title, head, files)
         .map_err(|error| error.to_string())?
     {
         AircEventPublished {
@@ -256,5 +265,18 @@ pub fn airc_ledger(
 ) -> Result<Vec<Entry>, String> {
     open_channel(&application, project_identifier)?
         .ledger(&ledger, cursor(after))
+        .map_err(|error| error.to_string())
+}
+
+fn merged_files(application: &AppHandle, project: u32, number: u32) -> Result<Vec<String>, String> {
+    let repository = lock(
+        application.state::<ManagedStateStore>().inner(),
+        "persisted state",
+    )?
+    .project(project)
+    .map(|project| project.repository_path.clone())
+    .ok_or("Unknown project")?;
+    velocity_github::PullRequestClient::discover(std::path::Path::new(&repository))
+        .and_then(|client| client.changed_files(number))
         .map_err(|error| error.to_string())
 }

@@ -86,7 +86,18 @@ impl Channel {
         title: &str,
         head: &str,
     ) -> Result<Option<Entry>, Error> {
-        let event = Event::pull_request_merged(owner_nick, number, title, head)?;
+        self.post_pull_request_merged_with_files(owner_nick, number, title, head, Vec::new())
+    }
+
+    pub fn post_pull_request_merged_with_files(
+        &self,
+        owner_nick: &str,
+        number: u32,
+        title: &str,
+        head: &str,
+        files: Vec<String>,
+    ) -> Result<Option<Entry>, Error> {
+        let event = Event::pull_request_merged(owner_nick, number, title, head)?.with_files(files);
         let existing = self.read(0)?;
         let already_merged = existing
             .iter()

@@ -1,4 +1,4 @@
-//! F14 message selection. Events remain on demand until targeted event delivery ships.
+//! F14 targeted step-boundary delivery and held-message acknowledgement.
 use crate::{Channel, Entry, Error};
 
 impl Channel {
@@ -27,14 +27,101 @@ pub fn deliver_messages(
     let mut cursor = after;
     for entry in channel.read(after)? {
         if let Some(message) = message_for(&entry, nick) {
-            let identifier = format!("airc:{}", entry.sequence);
-            if !deliver(&identifier, &message).map_err(Error::Invalid)? {
+            if !deliver(&format!("airc:{}", entry.sequence), &message).map_err(Error::Invalid)? {
                 break;
             }
         }
         cursor = entry.sequence;
     }
     Ok(cursor)
+}
+
+/// Held messages retain the cursor, while durable per-line acknowledgements let
+/// events and user comments pass them without being replayed after a restart.
+pub fn deliver_targeted(
+    channel: &Channel,
+    nick: &str,
+    after: u64,
+    idle: bool,
+    mut deliver: impl FnMut(&str, &str) -> Result<bool, String>,
+) -> Result<u64, Error> {
+    let entries = channel.read(0)?;
+    let mode = crate::mode_for(&entries, nick);
+    let acknowledged = entries
+        .iter()
+        .filter(|entry| entry.nick == nick)
+        .filter_map(|entry| entry.acknowledged)
+        .collect::<std::collections::BTreeSet<_>>();
+    let mut cursor = after;
+    let mut held = false;
+    for entry in entries.iter().filter(|entry| entry.sequence > after) {
+        if !acknowledged.contains(&entry.sequence) {
+            let message = routed(entry, nick, &entries, mode);
+            if let Some(message) = message {
+                if hold(entry, nick, &entries, mode, idle) {
+                    held = true;
+                    continue;
+                }
+                if !deliver(&format!("airc:{}", entry.sequence), &message)
+                    .map_err(Error::Invalid)?
+                {
+                    held = true;
+                    continue;
+                }
+                channel.acknowledge(nick, entry.sequence)?;
+            }
+        }
+        if !held {
+            cursor = entry.sequence;
+        }
+    }
+    Ok(cursor)
+}
+
+fn routed(
+    entry: &Entry,
+    nick: &str,
+    entries: &[Entry],
+    mode: crate::MessageMode,
+) -> Option<String> {
+    if crate::routing::event_for(entry, nick, entries) {
+        return Some(format!(
+            "via AIRC · event {} · #{}\n{}",
+            entry.kind, entry.sequence, entry.text
+        ));
+    }
+    if entry.nick != "you" {
+        let history = entries
+            .iter()
+            .take_while(|record| record.sequence < entry.sequence)
+            .cloned()
+            .collect::<Vec<_>>();
+        if mode == crate::MessageMode::Quarantined
+            || crate::mode_for(entries, &entry.nick) == crate::MessageMode::Quarantined
+            || crate::mode_for(&history, &entry.nick) == crate::MessageMode::Quarantined
+        {
+            return None;
+        }
+    }
+    message_for(entry, nick)
+}
+
+fn hold(
+    entry: &Entry,
+    nick: &str,
+    entries: &[Entry],
+    mode: crate::MessageMode,
+    idle: bool,
+) -> bool {
+    mode == crate::MessageMode::HeadsDown
+        && !idle
+        && entry.kind == "message"
+        && entry.nick != "you"
+        && !entries.iter().any(|later| {
+            later.sequence > entry.sequence
+                && later.nick == nick
+                && matches!(later.kind.as_str(), "PR" | "pushed" | "updated")
+        })
 }
 
 /// Only named messages and your broadcast comments reach an agent. A sender never
