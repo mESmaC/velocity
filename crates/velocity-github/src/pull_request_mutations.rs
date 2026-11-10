@@ -201,7 +201,8 @@ impl PullRequestClient {
         if approve {
             record.approve(number, head).map_err(|error| {
                 PullRequestError::Invalid(format!(
-                    "The approval comment is on #{number}, but the approval was not recorded,                      so the merge stays blocked: {error}"
+                    "The approval comment is on #{number}, but the approval was not recorded, \
+                     so the merge stays blocked: {error}"
                 ))
             })?;
         }

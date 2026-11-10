@@ -22,14 +22,17 @@
 <section class="thread-view" aria-label={thread.title}>
   <header class="thread-head">
     <h1>
-      {thread.title}
+      <span class="title-text">{thread.title}</span>
       {#if thread.titling}
         <span class="ttl-chip">titling · {thread.title_model_name}</span>
       {/if}
     </h1>
     <div class="meta">
       {#if thread.branch}
-        <span class="branch"><Icon name="branch" />{thread.branch}</span>
+        <span class="branch" title={thread.branch}
+          ><Icon name="branch" /><span class="label">{thread.branch}</span
+          ></span
+        >
       {/if}
       {#if thread.worktree_chip === 'Live'}
         <button
@@ -39,7 +42,9 @@
           onclick={() =>
             send({ Request: { OpenWorktreeInExplorer: thread.worktree_path } })}
         >
-          <Icon name="folder" />{thread.worktree_short_path}
+          <Icon name="folder" /><span class="label"
+            >{thread.worktree_short_path}</span
+          >
         </button>
       {:else if thread.worktree_chip === 'Deleted'}
         <span class="wt gone" title={thread.worktree_path}>
@@ -50,7 +55,6 @@
       <span class="del">−{thread.deleted}</span>
       {#if thread.elapsed_label}<span>{thread.elapsed_label}</span>{/if}
     </div>
-    <span class="spacer"></span>
     <div class="head-actions">
       {#if thread.has_diff_action}
         <button

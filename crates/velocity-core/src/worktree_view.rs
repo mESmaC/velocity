@@ -193,10 +193,14 @@ pub fn join_location(drive: &str, folder: &str) -> String {
     }
 }
 
-pub fn path_key(path: &str) -> String {
+/// `path` as one spelling: `/` as `\` and without the `\\?\` or `\\?\UNC\` prefix, case
+/// kept. Windows folders can be case-sensitive (`fsutil file setCaseSensitiveInfo`, and WSL
+/// sets it on folders it creates), where `Api` and `api` are two directories, so a
+/// canonical path's exact spelling is the only identity that never merges two (#53).
+pub fn path_spelling(path: &str) -> String {
     if cfg!(windows) {
         let normalized = path.replace('/', "\\");
-        let normalized = normalized
+        normalized
             .strip_prefix("\\\\?\\UNC\\")
             .map(|suffix| format!("\\\\{suffix}"))
             .unwrap_or_else(|| {
@@ -204,13 +208,22 @@ pub fn path_key(path: &str) -> String {
                     .strip_prefix("\\\\?\\")
                     .unwrap_or(&normalized)
                     .to_owned()
-            });
+            })
+    } else {
+        path.to_owned()
+    }
+}
+
+/// A comparison key for drive and location prefixes: `path_spelling` with ASCII case folded
+/// on Windows. Worktree identity uses `path_spelling` instead (#53).
+pub fn path_key(path: &str) -> String {
+    if cfg!(windows) {
         // Only ASCII folding is certain on every Windows volume. Beyond ASCII,
         // case equivalence comes from each volume's own upcase table, which no
         // Unicode mapping reproduces: folding more would merge distinct
         // directories. The inventory resolves real identity from the
         // filesystem instead (`WorktreeMeasurements::identities`).
-        normalized.to_ascii_lowercase()
+        path_spelling(path).to_ascii_lowercase()
     } else {
         path.to_owned()
     }
@@ -222,15 +235,18 @@ pub struct WorktreeMeasurements {
     /// Keyed by filesystem identity, so every spelling of one directory
     /// shares a single measurement.
     pub sizes: BTreeMap<String, WorktreeSize>,
-    /// `path_key` of a spelling to the identity of the directory it names.
+    /// `path_spelling` of a path to the identity of the directory it names.
     pub identities: BTreeMap<String, String>,
 }
 
 impl WorktreeMeasurements {
-    /// A path not yet resolved on disk falls back to its own `path_key`.
+    /// A path not yet resolved on disk falls back to its own spelling. Folding case here
+    /// would merge two worktrees a case-sensitive folder keeps apart (#53); two live owners
+    /// can only differ in case where the folder keeps them apart, since F5's guard refuses a
+    /// folder that already exists. Real aliases merge once the inventory resolves them.
     pub fn identity(&self, path: &str) -> String {
-        let key = path_key(path);
-        self.identities.get(&key).cloned().unwrap_or(key)
+        let spelling = path_spelling(path);
+        self.identities.get(&spelling).cloned().unwrap_or(spelling)
     }
 
     pub fn size(&self, path: &str) -> Option<&WorktreeSize> {
