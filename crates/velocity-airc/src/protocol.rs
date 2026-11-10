@@ -54,7 +54,7 @@ fn respond(
                 *initialized = true;
                 json!({"protocolVersion":"2025-11-25","capabilities":{"tools":{}},
                         "serverInfo":{"name":"velocity-airc","version":env!("CARGO_PKG_VERSION")},
-                        "instructions":format!("You joined this project's AIRC channel as {nick}. Read the feed before coordinating. Messages require named recipients and an intent.")})
+                        "instructions":format!("You joined this project's AIRC channel as {nick}. Read airc_claims before choosing work. Call airc_claim with the task, branch and every file BEFORE editing; on refusal choose other work. Extend your existing task claim to add files. Record airc_share or a dependency wait before editing an overlapping file. Messages require named recipients and an intent.")})
             }
             Err(error) => return Some(failure(id, -32603, &error.to_string())),
         },
@@ -87,6 +87,9 @@ fn call(channel: &Channel, member: &str, nick: &str, parameters: &Value) -> Resu
         .transpose()?
         .unwrap_or(0);
     match text(parameters, "name")? {
+        name @ ("airc_claims" | "airc_claim" | "airc_release" | "airc_share") => {
+            claim_call(channel, member, name, arguments)
+        }
         "join" => Ok(json!({"nick":channel.join(member, nick)?})),
         "leave" => {
             channel.leave(member)?;
@@ -166,6 +169,7 @@ fn tool_list() -> Vec<Value> {
         ),
     ];
     tools.extend(writing_tools());
+    tools.extend(claim_tools());
     tools
 }
 
@@ -219,4 +223,63 @@ fn text<'a>(value: &'a Value, key: &str) -> Result<&'a str, Error> {
 
 fn failure(id: Value, code: i32, message: &str) -> Value {
     json!({"jsonrpc":"2.0","id":id,"error":{"code":code,"message":message}})
+}
+
+fn claim_tools() -> Vec<Value> {
+    let string = json!({"type":"string","minLength":1});
+    vec![
+        tool(
+            "airc_claims",
+            "Read held piece and file claims",
+            json!({}),
+            &[],
+        ),
+        tool(
+            "airc_claim",
+            "Claim or extend your piece BEFORE editing. First claimant wins. Files are repository-relative; use ::registration for shared registration lists.",
+            json!({"task":string,"branch":string,"files":{"type":"array","items":string}}),
+            &["task", "branch", "files"],
+        ),
+        tool(
+            "airc_release",
+            "Release your own piece after it merges or is deleted",
+            json!({"task":string}),
+            &["task"],
+        ),
+        tool(
+            "airc_share",
+            "Record a share before editing an overlapping file",
+            json!({"holder":string,"file":string}),
+            &["holder", "file"],
+        ),
+    ]
+}
+
+fn claim_call(
+    channel: &Channel,
+    member: &str,
+    name: &str,
+    arguments: &Value,
+) -> Result<Value, Error> {
+    match name {
+        "airc_claims" => Ok(serde_json::to_value(channel.claims()?)?),
+        "airc_claim" => {
+            let files = serde_json::from_value(arguments["files"].clone())?;
+            Ok(serde_json::to_value(channel.claim(
+                member,
+                text(arguments, "task")?,
+                text(arguments, "branch")?,
+                files,
+            )?)?)
+        }
+        "airc_release" => {
+            channel.release(member, text(arguments, "task")?)?;
+            Ok(json!({"released":true}))
+        }
+        "airc_share" => {
+            channel.share(member, text(arguments, "holder")?, text(arguments, "file")?)?;
+            Ok(json!({"shared":true}))
+        }
+        _ => Err(Error::Invalid("Unknown claim tool".into())),
+    }
 }

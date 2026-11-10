@@ -5,6 +5,7 @@ use velocity_store::PersistedState;
 
 mod agents;
 pub mod airc_access;
+pub mod airc_claims;
 mod airc_delivery;
 mod airc_events;
 mod build_gate;
@@ -26,6 +27,7 @@ pub mod sweeps;
 mod thread_menu;
 mod threads;
 mod window;
+mod work_pool;
 mod worktree_settings;
 
 pub use layout::{apply_agent_event, record_agent_event};
@@ -52,6 +54,7 @@ fn bindings() -> Builder<tauri::Wry> {
         layout::dispatch_layout,
         projects::list_projects,
         projects::switch_project,
+        work_pool::get_work_pool,
         worktree_settings::list_worktrees,
         worktree_settings::set_worktree_settings,
         worktree_settings::preview_worktree_folder,

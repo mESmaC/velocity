@@ -17,6 +17,7 @@ crate-type = ["staticlib", "cdylib", "rlib"]
 tauri-build = { version = "2.7.4", features = [] }
 
 [dependencies]
+agent-client-protocol = "5.0.0"
 anyhow.workspace = true
 serde.workspace = true
 specta.workspace = true

@@ -13,8 +13,8 @@ use velocity_github::follow_through::FollowThrough;
 use velocity_store::swarm_dialog::{OpenIssues, SwarmDialogQuery};
 use velocity_store::swarms::{LaunchSwarmRequest, SwarmItem};
 use velocity_store::{
-    PersistedState, ProjectItem, ProjectLocationKind, ProviderKind, StateStore, TaskAttribution,
-    TaskItem, TaskState, ThreadState,
+    PersistedState, ProjectItem, ProviderKind, StateStore, TaskAttribution, TaskItem, TaskState,
+    ThreadState,
 };
 use velocity_threads::swarm::{plan_swarm_member, require_swarm_launch};
 
@@ -94,13 +94,7 @@ fn seed_repository(scratch: &Path) -> Outcome<PathBuf> {
 }
 
 fn task(id: u32, text: &str, state: TaskState) -> TaskItem {
-    TaskItem {
-        id,
-        text: text.into(),
-        state,
-        added_by: TaskAttribution::Spec,
-        assigned_thread_id: None,
-    }
+    TaskItem::new(id, text.into(), state, TaskAttribution::Spec)
 }
 
 fn seed_state(state: &Path, repository: &Path, worktrees: &Path) -> Outcome<()> {
@@ -108,28 +102,15 @@ fn seed_state(state: &Path, repository: &Path, worktrees: &Path) -> Outcome<()> 
     persisted.settings.worktrees.location_root = Some(worktrees.display().to_string());
     persisted.settings.worktrees.setup_command = String::new();
     persisted.settings.worktrees.copy_files = String::new();
-    persisted.projects.push(ProjectItem {
-        id: 1,
-        name: "Swarm example".into(),
-        location_kind: ProjectLocationKind::Local,
-        repository_path: repository.display().to_string(),
-        default_branch: "master".into(),
-        github_remote: None,
-        spec_path: "SPEC.md".into(),
-        spec_locked: true,
-        active_thread_id: None,
-        merged_today: 0,
-        tasks: vec![
-            task(1, "Add a CSV export to reports", TaskState::Todo),
-            task(2, "Fix the login timeout", TaskState::Todo),
-            task(3, "Write the changelog", TaskState::Todo),
-            task(4, "Set up CI", TaskState::Done),
-        ],
-        threads: Vec::new(),
-        pending_interview: None,
-        duty_roles: Vec::new(),
-        swarms: Vec::new(),
-    });
+    let mut project = ProjectItem::new(1, "Swarm example".into(), repository.display().to_string());
+    project.spec_locked = true;
+    project.tasks = vec![
+        task(1, "Add a CSV export to reports", TaskState::Todo),
+        task(2, "Fix the login timeout", TaskState::Todo),
+        task(3, "Write the changelog", TaskState::Todo),
+        task(4, "Set up CI", TaskState::Done),
+    ];
+    persisted.projects.push(project);
     std::fs::create_dir_all(state)?;
     std::fs::write(
         state.join("state.json"),

@@ -181,3 +181,4 @@ export * from './ipc/thread-menu';
 
 export * from './ipc/airc';
 export * from './ipc/airc-events';
+export * from './ipc/work-pool';

@@ -5457,6 +5457,7 @@ dependencies = [
  "agent-client-protocol",
  "libc",
  "process-wrap",
+ "serde_json",
  "thiserror 2.0.21",
  "tokio",
  "tokio-util",
@@ -5479,6 +5480,7 @@ dependencies = [
 name = "velocity-app"
 version = "0.1.0"
 dependencies = [
+ "agent-client-protocol",
  "anyhow",
  "serde",
  "specta",

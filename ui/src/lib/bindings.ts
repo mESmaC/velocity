@@ -23,6 +23,7 @@ export const commands = {
 	dispatchLayout: (action: LayoutAction_Deserialize) => __TAURI_INVOKE<LayoutSnapshot_Serialize>("dispatch_layout", { action }),
 	listProjects: () => __TAURI_INVOKE<ProjectList>("list_projects"),
 	switchProject: (identifier: number) => __TAURI_INVOKE<LayoutSnapshot_Serialize>("switch_project", { identifier }),
+	getWorkPool: (projectIdentifier: number) => __TAURI_INVOKE<WorkPool_Serialize>("get_work_pool", { projectIdentifier }),
 	listWorktrees: () => __TAURI_INVOKE<WorktreeSettingsView_Serialize>("list_worktrees"),
 	setWorktreeSettings: (edit: WorktreeSettingsEdit, projectIdentifier: number | null) => __TAURI_INVOKE<WorktreeSettingsView_Serialize>("set_worktree_settings", { edit, projectIdentifier }),
 	previewWorktreeFolder: (folder: string) => __TAURI_INVOKE<WorktreePathPreview>("preview_worktree_folder", { folder }),
@@ -159,6 +160,15 @@ export type AircMessagePublished_Serialize = {
 };
 
 export type CheckStatus = "passing" | "running" | "failing" | "unavailable";
+
+export type Claim = {
+	member: string,
+	nick: string,
+	task: string,
+	branch: string,
+	files: string[],
+	since: string,
+};
 
 export type CreatePullRequest = CreatePullRequest_Serialize | CreatePullRequest_Deserialize;
 
@@ -363,6 +373,7 @@ export type Entry_Deserialize = {
 	pull_request?: number | null,
 	/**  The PR head commit the event applies to (`approved` binds to it). */
 	head?: string | null,
+	claim?: Claim | null,
 };
 
 export type Entry_Serialize = {
@@ -381,6 +392,7 @@ export type Entry_Serialize = {
 	pull_request?: number,
 	/**  The PR head commit the event applies to (`approved` binds to it). */
 	head?: string,
+	claim?: Claim,
 };
 
 export type ErrorCardView = {
@@ -1112,6 +1124,8 @@ export type ProjectItem_Deserialize = {
 	github_remote?: string | null,
 	spec_path: string,
 	spec_locked: boolean,
+	/**  Completed F16 pieces retained after their merged thread history is deleted. */
+	built_spec_sections?: string[],
 	active_thread_id?: number | null,
 	merged_today: number,
 	tasks: TaskItem_Deserialize[],
@@ -1133,6 +1147,8 @@ export type ProjectItem_Serialize = {
 	github_remote: string | null,
 	spec_path: string,
 	spec_locked: boolean,
+	/**  Completed F16 pieces retained after their merged thread history is deleted. */
+	built_spec_sections: string[],
 	active_thread_id: number | null,
 	merged_today: number,
 	tasks: TaskItem_Serialize[],
@@ -2216,6 +2232,8 @@ export type ThreadItem_Deserialize = {
 	review_stage?: ReviewStage | null,
 	task_ids: number[],
 	issue?: ThreadIssue_Deserialize | null,
+	/**  F16 inventory identity; merged threads record built sections without editing SPEC.md. */
+	spec_section?: string | null,
 	additions: number,
 	deletions: number,
 	elapsed_seconds: number,
@@ -2242,6 +2260,8 @@ export type ThreadItem_Serialize = {
 	review_stage: ReviewStage | null,
 	task_ids: number[],
 	issue: ThreadIssue_Serialize | null,
+	/**  F16 inventory identity; merged threads record built sections without editing SPEC.md. */
+	spec_section: string | null,
 	additions: number,
 	deletions: number,
 	elapsed_seconds: number,
@@ -2403,6 +2423,42 @@ export type TranscriptModeView = "FullTranscript" | "CollapsedWithPrHistory" | "
 
 export type WindowStateChanged = {
 	maximized: boolean,
+};
+
+export type WorkKey = { kind: "task"; identifier: number } | { kind: "issue"; repository: string; number: number } | { kind: "spec"; section: string };
+
+export type WorkPiece = WorkPiece_Serialize | WorkPiece_Deserialize;
+
+export type WorkPiece_Deserialize = {
+	key: WorkKey,
+	title: string,
+	reference: string,
+	thread_identifier?: number | null,
+};
+
+export type WorkPiece_Serialize = {
+	key: WorkKey,
+	title: string,
+	reference: string,
+	thread_identifier: number | null,
+};
+
+export type WorkPool = WorkPool_Serialize | WorkPool_Deserialize;
+
+export type WorkPool_Deserialize = {
+	project_identifier: number,
+	pieces: WorkPiece_Deserialize[],
+	available_tasks: number,
+	available_issues: number,
+	available_sections: number,
+};
+
+export type WorkPool_Serialize = {
+	project_identifier: number,
+	pieces: WorkPiece_Serialize[],
+	available_tasks: number,
+	available_issues: number,
+	available_sections: number,
 };
 
 export type WorkedSummaryView = WorkedSummaryView_Serialize | WorkedSummaryView_Deserialize;

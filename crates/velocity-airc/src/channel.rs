@@ -24,6 +24,8 @@ pub struct Entry {
     /// The PR head commit the event applies to (`approved` binds to it).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub head: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub claim: Option<crate::claims::Claim>,
 }
 
 /// Event tags Velocity posts from what it observes (F14). Agents never type them.
@@ -115,7 +117,7 @@ pub struct Presence {
 }
 
 pub struct Channel {
-    directory: PathBuf,
+    pub(crate) directory: PathBuf,
 }
 
 impl Channel {
@@ -339,7 +341,7 @@ impl Channel {
     }
 }
 
-fn entry(entries: &[Entry], kind: &str, member: &str, nick: &str, text: &str) -> Entry {
+pub(crate) fn entry(entries: &[Entry], kind: &str, member: &str, nick: &str, text: &str) -> Entry {
     Entry {
         sequence: entries.last().map_or(1, |entry| entry.sequence + 1),
         time: chrono::Utc::now().to_rfc3339(),
@@ -351,6 +353,7 @@ fn entry(entries: &[Entry], kind: &str, member: &str, nick: &str, text: &str) ->
         intent: None,
         pull_request: None,
         head: None,
+        claim: None,
     }
 }
 

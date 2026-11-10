@@ -295,6 +295,7 @@ fn find_saved_thread(
 }
 
 fn remove_record(application: &AppHandle, key: ThreadKey) -> Result<(), String> {
+    crate::airc_claims::release(application, key)?;
     lock(
         application.state::<ManagedStateStore>().inner(),
         "persisted state",

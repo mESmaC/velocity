@@ -220,7 +220,8 @@ fn finish_merged(
     let key = (project.id, thread.id);
     match (hooks.stop)(application, key).and_then(|stopped| {
         if stopped {
-            cleanup(project, thread, application)
+            cleanup(project, thread, application)?;
+            crate::airc_claims::release(application, key)
         } else {
             Err("Waiting for the agent session to stop before removing its worktree".into())
         }
