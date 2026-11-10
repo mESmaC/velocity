@@ -1,9 +1,13 @@
 //! F14 project channels. Claims and step-boundary delivery are separate layers.
 mod channel;
+mod delivery;
+mod launch;
 mod protocol;
 mod storage;
 
 pub use channel::{Channel, Entry, Event, Presence};
+pub use delivery::{deliver_messages, message_for};
+pub use launch::{SERVER_NAME, SERVER_SWITCH, serve_stdio, server_arguments};
 pub use protocol::serve;
 
 #[derive(Debug, thiserror::Error)]
