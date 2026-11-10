@@ -1,5 +1,6 @@
 //! Backend-owned main-window state. No native effects or persistence live here.
 
+use crate::airc_modal::AircBadge;
 use crate::build_gate::{BuildKind, LaunchKind, launch_block_reason};
 use crate::duty::{self, DutyRole, DutyViewSnapshot};
 use crate::goal_swarm::GoalDialogRequest;
@@ -40,6 +41,11 @@ pub struct LayoutState {
     duty_dialog_role: DutyRole,
     swarm_dialog: Option<SwarmDialogRequest>,
     goal_dialog: Option<GoalDialogRequest>,
+    /// The AIRC modal (F14). Its contents arrive on `airc://modal`, not in this snapshot.
+    airc_open: bool,
+    /// Footer badges by project, from the channel; kept apart from `data`, which the store
+    /// rebuilds from `state.json`.
+    airc_badges: BTreeMap<u32, AircBadge>,
     form_open: bool,
     overlay_open: bool,
     composer_text: String,
@@ -74,6 +80,8 @@ impl Default for LayoutState {
             duty_dialog_role: DutyRole::PrDuty,
             swarm_dialog: None,
             goal_dialog: None,
+            airc_open: false,
+            airc_badges: BTreeMap::new(),
             form_open: false,
             overlay_open: false,
             composer_text: String::new(),
@@ -125,6 +133,8 @@ impl LayoutState {
         self.palette_query.clear();
         self.palette_selection = 0;
         self.duty_dialog_open = false;
+        self.goal_dialog = None;
+        self.airc_open = false;
         self.form_open = false;
         self.overlay_open = false;
         self.composer_text.clear();
@@ -332,6 +342,7 @@ impl LayoutState {
         self.duty_dialog_open = false;
         self.swarm_dialog = None;
         self.goal_dialog = None;
+        self.airc_open = false;
     }
 
     fn open_duty_dialog(&mut self, role: DutyRole) {
@@ -368,6 +379,36 @@ impl LayoutState {
         {
             self.open_swarm_dialog(entry.source, Some(identifier));
         }
+    }
+
+    /// `A` or the footer link: the modal replaces any other dialog, as in the reference.
+    fn open_airc(&mut self) {
+        self.close_overlays();
+        self.airc_open = true;
+    }
+
+    pub fn airc_open(&self) -> bool {
+        self.airc_open
+    }
+
+    /// Records a project's footer badge; returns whether the window needs a new snapshot.
+    pub fn set_airc_badge(&mut self, project: u32, badge: AircBadge) -> bool {
+        if self.airc_badges.get(&project) == Some(&badge) {
+            return false;
+        }
+        self.airc_badges.insert(project, badge);
+        let shown = self.data.project_identifier == Some(project);
+        if shown {
+            self.changed();
+        }
+        shown
+    }
+
+    fn airc_badge(&self) -> AircBadge {
+        self.data
+            .project_identifier
+            .and_then(|project| self.airc_badges.get(&project).copied())
+            .unwrap_or_default()
     }
 
     /// Views and dialogs register their context so shortcuts cannot escape an overlay.
@@ -494,8 +535,9 @@ impl LayoutState {
             issues: self.project_issues().to_vec(),
             worktree_label: self.worktree_label(),
             providers: self.data.providers.clone(),
-            airc_unread: self.data.airc_unread,
-            overlap_unread: self.data.overlap_unread,
+            airc_open: self.airc_open,
+            airc_unread: self.airc_badge().unread,
+            overlap_unread: self.airc_badge().alert,
             composer_text: self.composer_text.clone(),
             task_text: self.task_text.clone(),
             build_allowed: self.build_block_reason().is_none(),
@@ -874,6 +916,7 @@ impl LayoutState {
             }
             NavigationIntent::Swarm => self.open_swarm_dialog(SwarmSource::Tasks, None),
             NavigationIntent::Goal => self.open_goal_dialog(),
+            NavigationIntent::Airc => self.open_airc(),
             NavigationIntent::Settings => self.view = NavigationView::Settings,
             NavigationIntent::PrDuty => self.open_duty_dialog(DutyRole::PrDuty),
             NavigationIntent::Scouts => self.open_duty_dialog(DutyRole::Scouts),
@@ -920,7 +963,8 @@ impl LayoutState {
                 || self.new_project_open
                 || self.duty_dialog_open
                 || self.swarm_dialog.is_some()
-                || self.goal_dialog.is_some(),
+                || self.goal_dialog.is_some()
+                || self.airc_open,
             // Dialogs with a primary action accept Ctrl+Enter (F2, F7, F10, F16).
             form_open: self.form_open
                 || self.new_project_open

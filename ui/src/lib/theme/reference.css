@@ -1214,3 +1214,92 @@
   --swarm-blink-dim-opacity: 0.25;
   --swarm-blink-bright-opacity: 1;
 }
+
+:root {
+  /* F14 AIRC modal: reference winning declarations at 812–866, 930–941 and the
+     glass overrides at 960–964, 1065–1078; no italics (§6). */
+  --airc-scrim-background: rgba(0, 0, 0, 0.5);
+  --airc-scrim-backdrop-filter: blur(8px) saturate(1.3);
+  --airc-width: min(1020px, 94vw);
+  --airc-height: min(660px, 88vh);
+  --airc-border: 1px solid rgba(255, 255, 255, 0.13);
+  --airc-border-radius: 18px;
+  --airc-box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.12), 0 0 0 0.5px #000,
+    0 30px 90px rgba(0, 0, 0, 0.9);
+  --airc-header-gap: 10px;
+  --airc-header-padding: 12px 16px 8px;
+  --airc-title-font-size: 13.5px;
+  --airc-title-font-weight: 600;
+  --airc-title-letter-spacing: -0.01em;
+  --airc-title-color: #fff;
+  --airc-channel-font: 12px var(--mono);
+  --airc-topic-font-size: 11px;
+  --airc-label-font-size: 10.5px;
+  --airc-tabs-gap: 2px;
+  --airc-tabs-padding: 0 12px;
+  --airc-tab-padding: 6px 10px 7px;
+  --airc-tab-border: 2px solid transparent;
+  --airc-tab-font-size: 11.5px;
+  --airc-tab-count-margin: 5px;
+  --airc-tab-count-font: 10px var(--mono);
+  --airc-nicks-width: 230px;
+  --airc-main-padding: 8px 0 12px;
+  --airc-main-background: rgba(0, 0, 0, 0.3);
+  --airc-nicks-padding: 8px 10px;
+  --airc-nicks-background: rgba(255, 255, 255, 0.02);
+  --airc-line-columns: 42px 126px minmax(0, 1fr);
+  --airc-line-gap: 10px;
+  --airc-line-padding: 2px 16px;
+  --airc-line-font: 11.5px/1.6 var(--mono);
+  --airc-reference-weight: 500;
+  --airc-mention-background: #8fb4e812;
+  --airc-mention-shadow: inset 2px 0 0 var(--info);
+  --airc-tag-padding: 0 7px;
+  --airc-tag-radius: 999px;
+  --airc-tag-font: 600 9.5px/16px var(--mono);
+  --airc-tag-letter-spacing: 0.04em;
+  --airc-tag-background: rgba(255, 255, 255, 0.07);
+  --airc-tag-claim-background: rgba(255, 255, 255, 0.13);
+  --airc-tag-info-background: rgba(143, 180, 232, 0.13);
+  --airc-tag-positive-background: rgba(156, 204, 149, 0.13);
+  --airc-tag-warning-background: rgba(230, 182, 103, 0.13);
+  --airc-tag-danger-background: rgba(232, 128, 122, 0.13);
+  --airc-overlap-row-background: rgba(230, 182, 103, 0.06);
+  --airc-ledger-padding: 5px 16px;
+  --airc-ledger-font: 11.5px/1.55 var(--mono);
+  --airc-note-margin: 2px 16px 8px;
+  --airc-note-font-size: 11px;
+  --airc-claim-columns: 126px minmax(0, 1fr) 96px;
+  --airc-claim-gap: 4px 12px;
+  --airc-claim-padding: 7px 16px;
+  --airc-claim-font-size: 11.5px;
+  --airc-claim-nick-font: 500 11px var(--mono);
+  --airc-claim-state-font: 10px var(--mono);
+  --airc-claim-files-gap: 4px;
+  --airc-claim-file-padding: 1px 5px;
+  --airc-claim-file-radius: 3px;
+  --airc-claim-file-font: 10.5px var(--mono);
+  --airc-nick-heading-margin: 10px 0 4px;
+  --airc-nick-heading-font-size: 10.5px;
+  --airc-nick-columns: 8px minmax(0, 1fr);
+  --airc-nick-gap: 2px 7px;
+  --airc-nick-padding: 4px 5px;
+  --airc-nick-dot-size: 6px;
+  --airc-nick-font: 500 11px var(--mono);
+  --airc-nick-detail-font-size: 10px;
+  --airc-input-gap: 8px;
+  --airc-input-padding: 9px 14px;
+  --airc-input-font: 11.5px var(--mono);
+  /* Nick hues from the reference's NICKC list. */
+  --airc-nick-0: #d97757;
+  --airc-nick-1: #8fb4e8;
+  --airc-nick-2: #9ccc95;
+  --airc-nick-3: #e6b667;
+  --airc-nick-4: #b7a3e6;
+  --airc-nick-5: #7fd1c7;
+  --airc-nick-6: #e8807a;
+  --airc-nick-7: #f0a3c8;
+  --airc-nick-8: #a3d4f0;
+  --airc-nick-9: #d4c38f;
+}

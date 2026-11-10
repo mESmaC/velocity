@@ -8,6 +8,7 @@ pub mod airc_access;
 pub mod airc_claims;
 mod airc_delivery;
 mod airc_events;
+mod airc_modal;
 mod build_gate;
 pub mod duty;
 mod follow_through;
@@ -45,6 +46,7 @@ fn bindings() -> Builder<tauri::Wry> {
         airc_events::airc_events,
         airc_events::airc_messages,
         airc_events::airc_ledger,
+        airc_modal::get_airc_modal,
         window::get_window_state,
         window::minimize_window,
         window::toggle_maximize_window,
@@ -99,6 +101,7 @@ fn event_bindings(builder: Builder<tauri::Wry>) -> Builder<tauri::Wry> {
         .typ::<PersistedState>()
         .typ::<airc_events::AircEventPublished>()
         .typ::<airc_events::AircMessagePublished>()
+        .typ::<airc_modal::AircModalPublished>()
         .typ::<duty::DutyEventPublished>()
         .typ::<follow_through::PullRequestLifecycleEvent>()
         .typ::<window::WindowStateChanged>()
@@ -116,6 +119,7 @@ fn event_bindings(builder: Builder<tauri::Wry>) -> Builder<tauri::Wry> {
             "AIRC_MESSAGE_EVENT",
             airc_events::AircMessagePublished::NAME,
         )
+        .constant("AIRC_MODAL_EVENT", airc_modal::AircModalPublished::NAME)
         .constant("DUTY_EVENT", duty::DutyEventPublished::NAME)
         .constant("PROJECT_SELECTED_EVENT", projects::ProjectSelected::NAME)
         .constant("SWARM_EVENT", swarm::SwarmEventPublished::NAME)
@@ -160,6 +164,7 @@ pub fn run() -> anyhow::Result<()> {
     let bindings = bindings().events(collect_events![
         airc_events::AircEventPublished,
         airc_events::AircMessagePublished,
+        airc_modal::AircModalPublished,
         duty::DutyEventPublished,
         window::WindowStateChanged,
         layout::LayoutStateChanged,
@@ -179,6 +184,7 @@ pub fn run() -> anyhow::Result<()> {
         .manage(agents::ManagedAgents::default())
         .manage(goal_swarm::GoalSwarmPool::default())
         .manage(layout::MainLayout::default())
+        .manage(airc_modal::ManagedAircModal::default())
         .manage(threads::ManagedThreads::default())
         .manage(velocity_interview::Interviews::default())
         .manage(thread_menu::ManagedDeletions::default())
@@ -197,6 +203,7 @@ pub fn run() -> anyhow::Result<()> {
             reviews::initialize(application.handle())?;
             sweeps::initialize(application.handle())?;
             airc_delivery::initialize(application.handle());
+            airc_modal::initialize(application.handle());
             Ok(())
         })
         .on_window_event(|window, event| {
