@@ -33,6 +33,7 @@
     Codex: 'codex',
     Antigravity: 'antigravity',
     Kimi: 'kimi',
+    Custom: 'agents',
   };
 
   const eventClasses: Record<DutyEventKind, string> = {

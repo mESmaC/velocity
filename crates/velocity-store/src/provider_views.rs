@@ -8,7 +8,7 @@ use velocity_core::thread_view::project_model_pill;
 use velocity_core::thread_view_model::ModelPillView;
 
 use crate::project_layout::provider_color;
-use crate::providers::{PROVIDERS, ProviderLimit, provider_facts};
+use crate::providers::ProviderLimit;
 use crate::threads::ThreadError;
 use crate::{EffortLevel, ProviderKind, Settings, SpeedMode, StateStore, ThreadItem, ThreadState};
 
@@ -35,6 +35,8 @@ pub struct ProviderRuntime {
     pub phase: ProviderPhase,
     /// The ACP agent command, e.g. `claude-agent-acp · stdio`.
     pub command: String,
+    /// The same command as an editable line, e.g. `kimi acp`.
+    pub command_line: String,
     /// Whether the agent offers a sign-in method Velocity may use (never an API key).
     pub can_sign_in: bool,
     /// Why the last check or sign-in failed.
@@ -43,11 +45,12 @@ pub struct ProviderRuntime {
 
 impl ProviderRuntime {
     /// A provider whose agent hasn't answered yet.
-    pub fn new(provider: ProviderKind, command: String) -> Self {
+    pub fn new(provider: ProviderKind, command: String, command_line: String) -> Self {
         Self {
             provider,
             phase: ProviderPhase::Checking,
             command,
+            command_line,
             can_sign_in: false,
             detail: None,
         }
@@ -74,6 +77,12 @@ pub struct ProviderCardView {
     /// `runs Claude Code over ACP · OAuth`.
     pub runs: String,
     pub command: String,
+    /// The command as an editable line (F15: the command and its arguments can be edited).
+    pub command_line: String,
+    /// A built-in provider runs your command, not its own; Reset returns it.
+    pub command_edited: bool,
+    /// An ACP agent you added, which can be removed (F15 Custom ACP agents).
+    pub custom: bool,
     pub phase: ProviderPhase,
     pub status: String,
     pub sign_in_label: String,
@@ -181,7 +190,8 @@ impl ProviderContext<'_> {
 impl StateStore {
     pub fn providers_view(&self, context: &ProviderContext<'_>) -> ProvidersView {
         let settings = &self.state.settings;
-        let cards: Vec<ProviderCardView> = PROVIDERS
+        let cards: Vec<ProviderCardView> = settings
+            .all_providers()
             .into_iter()
             .map(|provider| self.provider_card(provider, context))
             .collect();
@@ -207,8 +217,8 @@ impl StateStore {
         );
         let (title_note, title_is_default, title_warning) = title_note(settings);
         ProvidersView {
+            signed_in_label: format!("{signed_in}/{}", cards.len()),
             cards,
-            signed_in_label: format!("{signed_in}/{}", PROVIDERS.len()),
             defaults,
             titles,
             title_note,
@@ -223,7 +233,7 @@ impl StateStore {
         context: &ProviderContext<'_>,
     ) -> ProviderCardView {
         let settings = &self.state.settings;
-        let facts = provider_facts(provider);
+        let facts = settings.provider_facts(provider);
         let phase = context.phase(settings, provider);
         let runtime = context.runtime(provider);
         let catalog = settings.provider_catalog(provider);
@@ -248,14 +258,23 @@ impl StateStore {
         );
         ProviderCardView {
             provider,
-            name: facts.name.into(),
-            runs: format!("runs {} over ACP · OAuth", facts.agent),
+            name: facts.name,
+            runs: match provider {
+                ProviderKind::Custom(_) => "runs over ACP · its own login".into(),
+                _ => format!("runs {} over ACP · OAuth", facts.agent),
+            },
             command: runtime
                 .map(|entry| entry.command.clone())
                 .unwrap_or_default(),
+            command_line: runtime
+                .map(|entry| entry.command_line.clone())
+                .unwrap_or_default(),
+            command_edited: !matches!(provider, ProviderKind::Custom(_))
+                && settings.agent_command(provider).is_some(),
+            custom: matches!(provider, ProviderKind::Custom(_)),
             phase,
             status,
-            sign_in_label: facts.sign_in_label.into(),
+            sign_in_label: facts.sign_in_label,
             can_sign_in: context.can_sign_in(provider),
             limit: (phase == ProviderPhase::SignedIn)
                 .then(|| limit_view(catalog.and_then(|entry| entry.limit.as_ref()), context.now)),
@@ -281,7 +300,7 @@ pub fn provider_usage(settings: &Settings) -> Vec<ProviderUsage> {
         .into_iter()
         .filter_map(|provider| {
             let catalog = settings.provider_catalog(provider)?;
-            let name = provider_facts(provider).name;
+            let name = settings.provider_name(provider);
             let (percent_used, label) = match &catalog.limit {
                 Some(limit) => (
                     limit.percent_used,
@@ -394,14 +413,14 @@ fn choice_view(
         .usable_providers()
         .into_iter()
         .flat_map(|candidate| {
-            let note = provider_facts(candidate).name;
+            let note = settings.provider_name(candidate);
             settings
                 .visible_models(candidate)
                 .into_iter()
                 .map(move |entry| ModelCardView {
                     provider: candidate,
                     model: entry.name.clone(),
-                    note: note.into(),
+                    note: note.clone(),
                     selected: candidate == provider && entry.name == model,
                 })
         })
@@ -418,12 +437,13 @@ fn choice_view(
 }
 
 fn sign_in_cards(settings: &Settings, context: &ProviderContext<'_>) -> Vec<SignInCardView> {
-    PROVIDERS
+    settings
+        .all_providers()
         .into_iter()
         .filter(|provider| !settings.provider_usable(*provider))
         .map(|provider| SignInCardView {
             provider,
-            name: provider_facts(provider).name.into(),
+            name: settings.provider_name(provider),
             note: context.signed_out_note(settings, provider).into(),
             can_sign_in: context.can_sign_in(provider),
         })
@@ -443,7 +463,7 @@ fn title_note(settings: &Settings) -> (String, bool, bool) {
             .first()
             .map(|provider| settings.provider_model(*provider))
             .unwrap_or_else(|| "no model".into());
-        let name = provider_facts(providers.title_provider).name;
+        let name = settings.provider_name(providers.title_provider);
         let note = format!("{name} isn't signed in · titles use {fallback} · Low until it is");
         return (note, is_default, true);
     }
@@ -549,7 +569,8 @@ impl StateStore {
                 providers.default_speed,
             ),
         };
-        let groups = PROVIDERS
+        let groups = settings
+            .all_providers()
             .into_iter()
             .map(|candidate| {
                 menu_group(
@@ -606,7 +627,7 @@ fn menu_group(
     (provider, model): (ProviderKind, &str),
     live_provider: Option<ProviderKind>,
 ) -> ModelMenuGroup {
-    let facts = provider_facts(candidate);
+    let facts = settings.provider_facts(candidate);
     let signed_in = settings.provider_usable(candidate);
     let note = if signed_in {
         let limit = settings
@@ -639,10 +660,10 @@ fn menu_group(
     };
     ModelMenuGroup {
         provider: candidate,
-        name: facts.name.into(),
+        name: facts.name,
         note,
         signed_in,
-        sign_in_label: facts.sign_in_label.into(),
+        sign_in_label: facts.sign_in_label,
         can_sign_in: context.can_sign_in(candidate),
         models,
     }

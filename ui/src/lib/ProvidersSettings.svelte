@@ -2,7 +2,12 @@
   import { onMount } from 'svelte';
   import Icon from './Icon.svelte';
   import SettingsNav from './SettingsNav.svelte';
-  import { providerCommands, onProviders } from './ipc';
+  import {
+    providerCommands,
+    onProviders,
+    providerIcon,
+    providerMark,
+  } from './ipc';
   import type {
     EffortLevel,
     LayoutAction,
@@ -28,12 +33,10 @@
     max: 'Max',
   };
   const speeds: SpeedMode[] = ['regular', 'fast'];
-  const providerIcons: Record<ProviderKind, string> = {
-    claude: 'claude',
-    codex: 'codex',
-    antigravity: 'antigravity',
-    kimi: 'kimi',
-  };
+  // The Add an ACP agent form: open, and what you typed so far.
+  let adding = $state(false);
+  let agentName = $state('');
+  let agentCommand = $state('');
 
   function report(reason: unknown) {
     error = reason instanceof Error ? reason.message : String(reason);
@@ -49,6 +52,45 @@
     run(providerCommands.signIn(provider));
   const signOut = (provider: ProviderKind) =>
     run(providerCommands.signOut(provider));
+  const setCommand = (provider: ProviderKind, command: string | null) =>
+    run(providerCommands.setCommand(provider, command));
+  const removeAgent = (provider: ProviderKind) =>
+    run(providerCommands.removeAgent(provider));
+
+  function addAgent() {
+    error = '';
+    providerCommands
+      .addAgent(agentName, agentCommand)
+      .then((next) => {
+        view = next;
+        adding = false;
+        agentName = '';
+        agentCommand = '';
+      })
+      .catch(report);
+  }
+
+  // Escape puts back the saved command and leaves the field without saving.
+  function commandKey(event: KeyboardEvent, saved: string) {
+    const field = event.currentTarget as HTMLInputElement;
+    if (event.key === 'Escape') {
+      field.value = saved;
+      field.blur();
+    } else if (event.key === 'Enter') {
+      field.blur();
+    }
+  }
+
+  function saveCommand(provider: ProviderCardView, text: string) {
+    if (text.trim() === provider.command_line) return;
+    setCommand(provider.provider, text);
+  }
+
+  function cancelAdding() {
+    adding = false;
+    agentName = '';
+    agentCommand = '';
+  }
 
   onMount(() => {
     let active = true;
@@ -74,9 +116,8 @@
 </script>
 
 {#snippet card(provider: ProviderCardView)}
-  <div class="pv" data-provider={provider.provider}>
-    <span class="pv-mark"><Icon name={providerIcons[provider.provider]} /></span
-    >
+  <div class="pv" data-provider={providerMark(provider.provider)}>
+    <span class="pv-mark"><Icon name={providerIcon(provider.provider)} /></span>
     <div class="pv-name">{provider.name} <span>{provider.runs}</span></div>
     <div class="pv-status">
       <i
@@ -102,8 +143,28 @@
           onclick={() => signIn(provider.provider)}
           >{provider.sign_in_label}</button
         >{/if}
+      {#if provider.custom}<button
+          class="worktree-button mini"
+          title="Remove this agent. Its threads keep their history."
+          onclick={() => removeAgent(provider.provider)}>Remove</button
+        >{/if}
     </div>
-    <div class="pv-command">ACP agent <code>{provider.command}</code></div>
+    <div class="pv-command">
+      ACP agent <label class="pv-command-input"
+        ><input
+          aria-label={`${provider.name} ACP agent command`}
+          value={provider.command_line}
+          spellcheck="false"
+          onkeydown={(event) => commandKey(event, provider.command_line)}
+          onchange={(event) => saveCommand(provider, event.currentTarget.value)}
+        /></label
+      ><span>· stdio</span>
+      {#if provider.command_edited}<button
+          class="worktree-button mini"
+          title="Return to the built-in command"
+          onclick={() => setCommand(provider.provider, null)}>Reset</button
+        >{/if}
+    </div>
     {#if provider.limit}<div class="pv-limit">
         <span class="pv-bar"
           ><i style={`width: ${provider.limit.percent_used}%`}></i></span
@@ -141,16 +202,20 @@
         class:on={model.selected}
         aria-pressed={model.selected}
         onclick={() => pick(model.provider, model.model)}
-        ><span class="pv-model-head" data-provider={model.provider}
-          ><Icon name={providerIcons[model.provider]} />{model.model}</span
+        ><span
+          class="pv-model-head"
+          data-provider={providerMark(model.provider)}
+          ><Icon name={providerIcon(model.provider)} />{model.model}</span
         ><span class="pv-model-note">{model.note}</span></button
       >{/each}
     {#each choices.sign_in as provider (provider.provider)}<button
         class="pv-model out"
         disabled={!provider.can_sign_in}
         onclick={() => signIn(provider.provider)}
-        ><span class="pv-model-head" data-provider={provider.provider}
-          ><Icon name={providerIcons[provider.provider]} />{provider.name}</span
+        ><span
+          class="pv-model-head"
+          data-provider={providerMark(provider.provider)}
+          ><Icon name={providerIcon(provider.provider)} />{provider.name}</span
         ><span class="pv-model-note">{provider.note}</span></button
       >{/each}
   </div>
@@ -211,6 +276,48 @@
                 provider,
               )}{/each}
           </div>
+          {#if adding}<form
+              class="pv-add"
+              onsubmit={(event) => {
+                event.preventDefault();
+                addAgent();
+              }}
+            >
+              <p class="worktree-description">
+                Any agent that speaks ACP over stdio, as in Zed. It gets its own
+                card, its models are read over ACP, and it runs unrestricted
+                with every tool. It inherits your environment, so there is no
+                field for a variable or a key.
+              </p>
+              <div class="pv-add-row">
+                <label class="worktree-input"
+                  ><span>Name</span><input
+                    aria-label="Agent name"
+                    bind:value={agentName}
+                    spellcheck="false"
+                  /></label
+                >
+                <label class="worktree-input pv-add-command"
+                  ><span>Command</span><input
+                    aria-label="Agent command and arguments"
+                    placeholder="gemini --experimental-acp"
+                    bind:value={agentCommand}
+                    spellcheck="false"
+                  /></label
+                >
+              </div>
+              <div class="pv-add-row">
+                <button class="worktree-button" type="submit">Add agent</button
+                ><button
+                  class="worktree-button mini"
+                  type="button"
+                  onclick={cancelAdding}>Cancel</button
+                >
+              </div>
+            </form>{:else}<button
+              class="worktree-button pv-add-open"
+              onclick={() => (adding = true)}>Add an ACP agent</button
+            >{/if}
         </section>
         <section>
           <h2>Default for new threads</h2>

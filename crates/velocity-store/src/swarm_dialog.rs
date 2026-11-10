@@ -34,6 +34,9 @@ pub struct SwarmDialogItem {
 #[derive(Clone, Debug, Serialize, Deserialize, Type)]
 pub struct SwarmModelCard {
     pub provider: ProviderKind,
+    /// The provider's name, including an ACP agent you added (F15).
+    #[serde(default)]
+    pub provider_name: String,
     pub model_name: String,
     pub selected: bool,
 }
@@ -124,6 +127,7 @@ impl StateStore {
             .into_iter()
             .map(|provider| SwarmModelCard {
                 provider,
+                provider_name: self.state.settings.provider_name(provider),
                 model_name: provider_model_name(&self.state.settings, provider),
                 selected: chosen.contains(&provider),
             })

@@ -1,7 +1,7 @@
 <script lang="ts">
   import { onMount } from 'svelte';
   import Icon from './Icon.svelte';
-  import { goalSwarmCommands } from './ipc';
+  import { goalSwarmCommands, providerIcon } from './ipc';
   import type {
     EffortLevel,
     GoalDialogRequest,
@@ -223,7 +223,7 @@
           </div>
           {#each view?.rows ?? [] as row, index (index)}
             <div class="gs-row">
-              <span class="pi"><Icon name={row.provider} /></span>
+              <span class="pi"><Icon name={providerIcon(row.provider)} /></span>
               <select
                 class="gs-sel"
                 aria-label="Model"
@@ -312,7 +312,7 @@
         <div class="gs-lim">
           {#each view?.limits ?? [] as limit (limit.provider)}
             <span class:warn={limit.warn}
-              ><Icon name={limit.provider} />{limit.text}</span
+              ><Icon name={providerIcon(limit.provider)} />{limit.text}</span
             >
           {/each}
         </div>

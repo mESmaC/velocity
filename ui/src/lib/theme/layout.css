@@ -388,6 +388,9 @@ kbd {
 [data-provider='Kimi'] > span {
   background: var(--kimi);
 }
+[data-provider='Custom'] > span {
+  background: var(--text-2);
+}
 .main-view {
   display: flex;
   flex-direction: column;

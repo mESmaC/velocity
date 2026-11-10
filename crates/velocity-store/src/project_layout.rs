@@ -222,6 +222,7 @@ pub(crate) fn provider_color(provider: ProviderKind) -> ProviderColor {
         ProviderKind::Codex => ProviderColor::Codex,
         ProviderKind::Antigravity => ProviderColor::Antigravity,
         ProviderKind::Kimi => ProviderColor::Kimi,
+        ProviderKind::Custom(_) => ProviderColor::Custom,
     }
 }
 

@@ -30,7 +30,21 @@ export const providerCommands = {
   edit: commands.setProviderSettings,
   menu: commands.getModelMenu,
   choose: commands.chooseModel,
+  // F15: edit an agent's command (null resets a built-in one), Add an ACP agent, remove one.
+  setCommand: commands.setProviderCommand,
+  addAgent: commands.addCustomAgent,
+  removeAgent: commands.removeCustomAgent,
 };
+
+/** The mark a provider's icon and colour use: a built-in provider's own, or the generic
+ *  agent mark for an ACP agent you added (F15 Custom ACP agents). */
+export function providerMark(provider: string): string {
+  return provider.startsWith('custom-') ? 'custom' : provider;
+}
+
+export function providerIcon(provider: string): string {
+  return provider.startsWith('custom-') ? 'agents' : provider;
+}
 
 export const onProviders = (
   callback: EventCallback<ProvidersChanged_Serialize>,

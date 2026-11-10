@@ -7,7 +7,6 @@
     LayoutAction,
     NewProjectDefaults,
     ProjectLocationRequest,
-    ProviderKind,
     RepositoryVisibility,
     SpeedMode,
   } from './ipc';
@@ -29,13 +28,6 @@
     ['regular', 'Regular'],
     ['fast', 'Fast'],
   ];
-  const providerNames: Record<ProviderKind, string> = {
-    claude: 'Anthropic',
-    codex: 'Codex',
-    antigravity: 'Antigravity',
-    kimi: 'Kimi',
-  };
-
   let dialog: HTMLDialogElement;
   let briefInput: HTMLElement;
   let defaults = $state<NewProjectDefaults | null>(null);
@@ -265,7 +257,7 @@
               class="model-card on"
               aria-pressed="true"
               ><span class="mh">{defaults.model_name}</span><span class="md"
-                >{providerNames[defaults.provider]}</span
+                >{defaults.provider_name}</span
               ></button
             >{:else if defaults}<p class="np-note">
               No provider is signed in yet. The interview uses the model you

@@ -20,6 +20,7 @@ pub mod layout;
 mod new_project;
 mod parking;
 mod projects;
+mod provider_agents;
 mod providers;
 mod pull_request_panel;
 pub mod reviews;
@@ -61,6 +62,9 @@ fn bindings() -> Builder<tauri::Wry> {
         layout::dispatch_layout,
         projects::list_projects,
         projects::switch_project,
+        provider_agents::set_provider_command,
+        provider_agents::add_custom_agent,
+        provider_agents::remove_custom_agent,
         providers::list_providers,
         providers::provider_sign_in,
         providers::provider_sign_out,

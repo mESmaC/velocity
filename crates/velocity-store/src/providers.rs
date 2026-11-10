@@ -100,6 +100,9 @@ pub enum ProviderUnavailable {
     SignedOut(String),
     #[error("No provider is signed in. Sign in to one in Settings → Providers")]
     NoneSignedIn,
+    /// An agent you added was removed while work still pointed at it.
+    #[error("That agent was removed from Settings → Providers. Pick another model")]
+    Removed,
 }
 
 /// A model you hid from the pickers by clicking its chip (F15 Models).
@@ -109,19 +112,19 @@ pub struct HiddenModel {
     pub model: String,
 }
 
-/// Static facts about a provider, for its card and sign-in rows.
+/// Facts about a provider, for its card and sign-in rows.
 pub struct ProviderFacts {
-    pub name: &'static str,
+    pub name: String,
     /// The agent it runs: "Claude Code".
-    pub agent: &'static str,
-    pub sign_in_label: &'static str,
+    pub agent: String,
+    pub sign_in_label: String,
     /// Where its OAuth page opens.
-    pub site: &'static str,
+    pub site: String,
     /// The model a member runs when nothing has been read from the agent yet.
-    pub fallback_model: &'static str,
+    pub fallback_model: String,
 }
 
-pub fn provider_facts(provider: ProviderKind) -> ProviderFacts {
+fn built_in_facts(provider: ProviderKind) -> Option<ProviderFacts> {
     let (name, agent, sign_in_label, site, fallback_model) = match provider {
         ProviderKind::Claude => (
             "Anthropic",
@@ -151,17 +154,195 @@ pub fn provider_facts(provider: ProviderKind) -> ProviderFacts {
             "kimi.com",
             "Kimi K2",
         ),
+        ProviderKind::Custom(_) => return None,
     };
+    Some(ProviderFacts {
+        name: name.into(),
+        agent: agent.into(),
+        sign_in_label: sign_in_label.into(),
+        site: site.into(),
+        fallback_model: fallback_model.into(),
+    })
+}
+
+/// A custom agent's card reads from what you entered: its name, and its own login in your
+/// browser when it offers one (F15 Custom ACP agents). It has no built-in model, so until
+/// its models are read the agent runs its own default.
+fn custom_facts(name: &str) -> ProviderFacts {
     ProviderFacts {
-        name,
-        agent,
-        sign_in_label,
-        site,
-        fallback_model,
+        name: name.into(),
+        agent: name.into(),
+        sign_in_label: "Sign in".into(),
+        site: "its sign-in page".into(),
+        fallback_model: String::new(),
     }
 }
 
+/// An ACP agent command: the program, a path or a bare name on `PATH`, and its arguments.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, Type)]
+pub struct AgentCommand {
+    pub program: String,
+    #[serde(default)]
+    pub arguments: Vec<String>,
+}
+
+impl AgentCommand {
+    pub fn new(program: String, arguments: Vec<String>) -> Self {
+        Self { program, arguments }
+    }
+
+    /// Reads `program arg arg` as typed in a card: words split on spaces, with double quotes
+    /// around a word that holds spaces, such as `"C:\Program Files\agent\agent.exe" acp`.
+    /// Backslashes are kept as typed, so Windows paths need no escaping. `None` when there
+    /// is no program.
+    pub fn parse(text: &str) -> Option<Self> {
+        let mut words = split_command_words(text).into_iter();
+        let program = words.next().filter(|program| !program.is_empty())?;
+        Some(Self::new(program, words.collect()))
+    }
+
+    /// The command as one line, quoting words with spaces so `parse` reads it back.
+    pub fn display(&self) -> String {
+        std::iter::once(&self.program)
+            .chain(&self.arguments)
+            .map(|word| {
+                if word.is_empty() || word.contains(char::is_whitespace) {
+                    format!("\"{word}\"")
+                } else {
+                    word.clone()
+                }
+            })
+            .collect::<Vec<_>>()
+            .join(" ")
+    }
+}
+
+fn split_command_words(text: &str) -> Vec<String> {
+    let mut words = Vec::new();
+    let mut word = String::new();
+    let mut quoted = false;
+    let mut started = false;
+    for character in text.chars() {
+        match character {
+            '"' => {
+                quoted = !quoted;
+                started = true;
+            }
+            _ if character.is_whitespace() && !quoted => {
+                if started {
+                    words.push(std::mem::take(&mut word));
+                    started = false;
+                }
+            }
+            _ => {
+                word.push(character);
+                started = true;
+            }
+        }
+    }
+    if started {
+        words.push(word);
+    }
+    words
+}
+
+/// Why a command or custom agent from Settings → Providers was refused.
+#[derive(Debug, thiserror::Error)]
+pub enum AgentCommandError {
+    #[error("Enter the command that starts the ACP agent")]
+    MissingCommand,
+    #[error("Name the agent")]
+    MissingName,
+    #[error("A provider named {0} already exists")]
+    NameTaken(String),
+    #[error("That agent was removed")]
+    UnknownAgent,
+    #[error("An agent you added has no built-in command to reset to")]
+    NoBuiltIn,
+    #[error(transparent)]
+    Store(#[from] StoreError),
+}
+
+fn parse_command(text: &str) -> Result<AgentCommand, AgentCommandError> {
+    AgentCommand::parse(text).ok_or(AgentCommandError::MissingCommand)
+}
+
+/// Your command for a built-in provider's agent, in place of the built-in one (F15).
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, Type)]
+pub struct ProviderCommand {
+    pub provider: ProviderKind,
+    pub command: AgentCommand,
+}
+
+/// An ACP agent you added (F15 Custom ACP agents). It holds no environment and no key: the
+/// agent inherits your environment, as every agent does.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, Type)]
+pub struct CustomAgent {
+    pub identifier: u32,
+    pub name: String,
+    pub command: AgentCommand,
+}
+
 impl Settings {
+    /// Every provider in card order: the four built in, then the agents you added (F15).
+    pub fn all_providers(&self) -> Vec<ProviderKind> {
+        PROVIDERS
+            .into_iter()
+            .chain(
+                self.providers
+                    .custom_agents
+                    .iter()
+                    .map(|agent| ProviderKind::Custom(agent.identifier)),
+            )
+            .collect()
+    }
+
+    pub fn custom_agent(&self, identifier: u32) -> Option<&CustomAgent> {
+        self.providers
+            .custom_agents
+            .iter()
+            .find(|agent| agent.identifier == identifier)
+    }
+
+    /// Whether `provider` is one of the four or an agent you still have. A removed custom
+    /// agent's threads keep its key, but no new work can start on it.
+    pub fn provider_exists(&self, provider: ProviderKind) -> bool {
+        match provider {
+            ProviderKind::Custom(identifier) => self.custom_agent(identifier).is_some(),
+            _ => true,
+        }
+    }
+
+    pub fn provider_facts(&self, provider: ProviderKind) -> ProviderFacts {
+        built_in_facts(provider).unwrap_or_else(|| match provider {
+            ProviderKind::Custom(identifier) => match self.custom_agent(identifier) {
+                Some(agent) => custom_facts(&agent.name),
+                None => custom_facts("Removed agent"),
+            },
+            _ => custom_facts("Agent"),
+        })
+    }
+
+    pub fn provider_name(&self, provider: ProviderKind) -> String {
+        self.provider_facts(provider).name
+    }
+
+    /// The command you set for `provider`'s agent: your edit of a built-in one, or a custom
+    /// agent's own. `None` means the built-in command.
+    pub fn agent_command(&self, provider: ProviderKind) -> Option<&AgentCommand> {
+        match provider {
+            ProviderKind::Custom(identifier) => {
+                self.custom_agent(identifier).map(|agent| &agent.command)
+            }
+            _ => self
+                .providers
+                .commands
+                .iter()
+                .find(|entry| entry.provider == provider)
+                .map(|entry| &entry.command),
+        }
+    }
+
     pub fn provider_catalog(&self, provider: ProviderKind) -> Option<&ProviderCatalog> {
         self.providers
             .catalog
@@ -173,7 +354,8 @@ impl Settings {
     /// signed out of it in Velocity. A provider never read yet counts as usable, so a fresh
     /// install launches as before until its agents have answered.
     pub fn provider_usable(&self, provider: ProviderKind) -> bool {
-        !self.providers.signed_out.contains(&provider)
+        self.provider_exists(provider)
+            && !self.providers.signed_out.contains(&provider)
             && self
                 .provider_catalog(provider)
                 .is_none_or(|entry| entry.signed_in)
@@ -181,7 +363,7 @@ impl Settings {
 
     /// The providers new work can use, in card order (F15 Everywhere a model is chosen).
     pub fn usable_providers(&self) -> Vec<ProviderKind> {
-        PROVIDERS
+        self.all_providers()
             .into_iter()
             .filter(|provider| self.provider_usable(*provider))
             .collect()
@@ -209,14 +391,14 @@ impl Settings {
     /// Refuses new work on `provider` once you signed out of it in Velocity, or its agent
     /// reported no login. Running sessions never come through here, so they keep going.
     pub fn ensure_new_work(&self, provider: ProviderKind) -> Result<(), ProviderUnavailable> {
-        if self.provider_usable(provider) {
+        if !self.provider_exists(provider) {
+            Err(ProviderUnavailable::Removed)
+        } else if self.provider_usable(provider) {
             Ok(())
         } else if self.usable_providers().is_empty() {
             Err(ProviderUnavailable::NoneSignedIn)
         } else {
-            Err(ProviderUnavailable::SignedOut(
-                provider_facts(provider).name.into(),
-            ))
+            Err(ProviderUnavailable::SignedOut(self.provider_name(provider)))
         }
     }
 
@@ -266,7 +448,7 @@ impl Settings {
                     .first()
                     .map(|model| model.name.clone())
             })
-            .unwrap_or_else(|| provider_facts(provider).fallback_model.into())
+            .unwrap_or_else(|| self.provider_facts(provider).fallback_model)
     }
 }
 
@@ -326,6 +508,113 @@ impl StateStore {
                 entry.plan = plan;
             }
         })
+    }
+
+    /// Sets the ACP agent command for `provider` from a card's command field, or with `None`
+    /// returns a built-in provider to its built-in command (F15 Reset). A custom agent always
+    /// has a command of its own, so Reset doesn't apply to it.
+    pub fn set_provider_command(
+        &mut self,
+        provider: ProviderKind,
+        command: Option<&str>,
+    ) -> Result<bool, AgentCommandError> {
+        let command = command.map(parse_command).transpose()?;
+        let mut settings = self.state.settings.clone();
+        let providers = &mut settings.providers;
+        match (provider, command) {
+            (ProviderKind::Custom(identifier), Some(command)) => {
+                let agent = providers
+                    .custom_agents
+                    .iter_mut()
+                    .find(|agent| agent.identifier == identifier)
+                    .ok_or(AgentCommandError::UnknownAgent)?;
+                agent.command = command;
+            }
+            (ProviderKind::Custom(_), None) => return Err(AgentCommandError::NoBuiltIn),
+            (_, command) => {
+                providers
+                    .commands
+                    .retain(|entry| entry.provider != provider);
+                if let Some(command) = command {
+                    providers
+                        .commands
+                        .push(ProviderCommand { provider, command });
+                }
+            }
+        }
+        Ok(self.replace_settings(settings)?)
+    }
+
+    /// Add an ACP agent (F15 Custom ACP agents): its own card after the four, read over ACP
+    /// like a built-in provider. Returns the new provider.
+    pub fn add_custom_agent(
+        &mut self,
+        name: &str,
+        command: &str,
+    ) -> Result<ProviderKind, AgentCommandError> {
+        let name = name.trim();
+        if name.is_empty() {
+            return Err(AgentCommandError::MissingName);
+        }
+        let command = parse_command(command)?;
+        let mut settings = self.state.settings.clone();
+        let agents = &mut settings.providers.custom_agents;
+        if agents
+            .iter()
+            .any(|agent| agent.name.eq_ignore_ascii_case(name))
+            || PROVIDERS.into_iter().any(|provider| {
+                built_in_facts(provider).is_some_and(|facts| facts.name.eq_ignore_ascii_case(name))
+            })
+        {
+            return Err(AgentCommandError::NameTaken(name.into()));
+        }
+        // Identifiers are never reused, so a removed agent's threads never point at a new one.
+        let identifier = settings.providers.next_custom_agent.max(
+            agents
+                .iter()
+                .map(|agent| agent.identifier.saturating_add(1))
+                .max()
+                .unwrap_or(1),
+        );
+        settings.providers.next_custom_agent = identifier.saturating_add(1);
+        settings.providers.custom_agents.push(CustomAgent {
+            identifier,
+            name: name.into(),
+            command,
+        });
+        self.replace_settings(settings)?;
+        Ok(ProviderKind::Custom(identifier))
+    }
+
+    /// Removes an agent you added, with what Velocity read from it. Its threads keep their
+    /// record; new work can't start on it. A default that pointed at it returns to the
+    /// built-in default.
+    pub fn remove_custom_agent(&mut self, identifier: u32) -> Result<bool, AgentCommandError> {
+        let provider = ProviderKind::Custom(identifier);
+        let mut settings = self.state.settings.clone();
+        let defaults = Settings::default().providers;
+        let providers = &mut settings.providers;
+        let before = providers.custom_agents.len();
+        providers
+            .custom_agents
+            .retain(|agent| agent.identifier != identifier);
+        if providers.custom_agents.len() == before {
+            return Err(AgentCommandError::UnknownAgent);
+        }
+        providers.catalog.retain(|entry| entry.provider != provider);
+        providers.signed_out.retain(|entry| *entry != provider);
+        providers
+            .hidden_models
+            .retain(|hidden| hidden.provider != provider);
+        if providers.default_provider == provider {
+            providers.default_provider = defaults.default_provider;
+            providers.default_model = defaults.default_model;
+        }
+        if providers.title_provider == provider {
+            providers.title_provider = defaults.title_provider;
+            providers.title_model = defaults.title_model;
+        }
+        Ok(self.replace_settings(settings)?)
     }
 
     /// Sign out (F15): new work can't use the provider; running agents keep their session.

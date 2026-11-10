@@ -1,7 +1,12 @@
 <script lang="ts">
   import { onMount } from 'svelte';
   import Icon from './Icon.svelte';
-  import { providerCommands, onProviders } from './ipc';
+  import {
+    providerCommands,
+    onProviders,
+    providerIcon,
+    providerMark,
+  } from './ipc';
   import type {
     EffortLevel,
     LayoutAction,
@@ -39,12 +44,6 @@
     max: 'Max',
   };
   const speeds: SpeedMode[] = ['regular', 'fast'];
-  const providerIcons: Record<ProviderKind, string> = {
-    claude: 'claude',
-    codex: 'codex',
-    antigravity: 'antigravity',
-    kimi: 'kimi',
-  };
 
   function report(reason: unknown) {
     error = reason instanceof Error ? reason.message : String(reason);
@@ -109,8 +108,8 @@
 <div class="model-menu" role="menu" bind:this={menu}>
   {#if view}
     {#each view.groups as group (group.provider)}
-      <div class="model-menu-head" data-provider={group.provider}>
-        <Icon name={providerIcons[group.provider]} />{group.name}<span
+      <div class="model-menu-head" data-provider={providerMark(group.provider)}>
+        <Icon name={providerIcon(group.provider)} />{group.name}<span
           >{group.note}</span
         >
       </div>

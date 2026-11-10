@@ -34,6 +34,7 @@
     Codex: 'codex',
     Antigravity: 'antigravity',
     Kimi: 'kimi',
+    Custom: 'agents',
   };
 
   let textarea: HTMLTextAreaElement | undefined = $state();

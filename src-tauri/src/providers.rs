@@ -1,8 +1,8 @@
 //! Providers (SPEC.md F15): the live sign-in state of each provider's agent, sign-in and
 //! sign-out, subscription limits, Settings → Providers and the composer's model menu.
 //!
-//! Each agent is asked at startup and after every sign-in; limits are read every five
-//! minutes. What the agents report is saved in the store's provider catalog, so pickers and
+//! Each agent is asked at startup, after every sign-in and whenever its command changes;
+//! limits are read every five minutes. What the agents report is saved in the store's provider catalog, so pickers and
 //! the footer meter are right at the next start before the agents answer again.
 
 use std::path::PathBuf;
@@ -12,18 +12,19 @@ use std::time::Duration;
 use tauri::async_runtime::JoinHandle;
 use tauri::{AppHandle, Manager};
 use tauri_specta::Event;
+use velocity_acp::client::AgentLaunch;
 use velocity_acp::client::{
     AgentProbe, ClientError, probe_agent, read_claude_usage, read_codex_usage, sign_in,
 };
-use velocity_acp::{LimitReading, SignInMethod, agent_command_label, choose_sign_in};
+use velocity_acp::{
+    LimitReading, SignInMethod, agent_command_label, agent_command_line, choose_sign_in,
+};
 use velocity_store::provider_views::{
     MenuTarget, ModelMenuChoice, ModelMenuView, ProviderContext, ProviderPhase, ProviderRuntime,
     ProvidersView,
 };
-use velocity_store::providers::{
-    PROVIDERS, ProviderEdit, ProviderLimit, ProviderModel, provider_facts, unix_now,
-};
-use velocity_store::{ProviderKind, StateStore};
+use velocity_store::providers::{ProviderEdit, ProviderLimit, ProviderModel, unix_now};
+use velocity_store::{ProviderKind, Settings, StateStore};
 use velocity_threads::{ThreadRuntimes, agent_launch, thread_run_settings};
 
 use crate::layout::MainLayout;
@@ -49,28 +50,70 @@ struct Slot {
     /// The sign-in method its agent offered that Velocity may use.
     method: Option<SignInMethod>,
     sign_in: Option<JoinHandle<()>>,
+    /// Bumped whenever the command changes, so a check of the old command can't record over
+    /// what the new one reports.
+    generation: u64,
 }
 
+/// Every provider's slot, in card order, kept in step with Settings → Providers.
+#[derive(Default)]
 pub struct ManagedProviders(Mutex<Vec<Slot>>);
 
-impl Default for ManagedProviders {
-    fn default() -> Self {
-        let slots = PROVIDERS
-            .into_iter()
-            .map(|provider| Slot {
-                runtime: ProviderRuntime::new(
-                    provider,
-                    agent_command_label(&agent_launch(provider).0),
-                ),
-                method: None,
-                sign_in: None,
-            })
-            .collect();
-        Self(Mutex::new(slots))
-    }
-}
-
 impl ManagedProviders {
+    /// Matches the slots to `settings`: a slot for every provider, built-in or added, with
+    /// its current command. A slot whose command changed goes back to Checking. Returns the
+    /// providers whose agent must be asked again.
+    fn sync(&self, settings: &Settings) -> Vec<ProviderKind> {
+        let Ok(mut slots) = self.0.lock() else {
+            return Vec::new();
+        };
+        let mut previous: Vec<Slot> = std::mem::take(&mut *slots);
+        let mut changed = Vec::new();
+        for provider in settings.all_providers() {
+            let launch = agent_launch(settings, provider)
+                .ok()
+                .map(|(launch, _)| launch);
+            let line = launch.as_ref().map(agent_command_line).unwrap_or_default();
+            let slot = match previous
+                .iter()
+                .position(|slot| slot.runtime.provider == provider)
+            {
+                Some(index) => previous.swap_remove(index),
+                None => new_slot(provider),
+            };
+            slots.push(refresh_slot(slot, launch.as_ref(), line, &mut changed));
+        }
+        // Removed agents: stop a sign-in still waiting on the browser.
+        for slot in previous {
+            if let Some(task) = slot.sign_in {
+                task.abort();
+            }
+        }
+        changed
+    }
+
+    fn generation(&self, provider: ProviderKind) -> Option<u64> {
+        self.with_slot(provider, |slot| slot.generation)
+    }
+
+    /// Runs `change` on the slot only while it still has `generation`'s command.
+    fn with_current_slot(
+        &self,
+        provider: ProviderKind,
+        generation: u64,
+        change: impl FnOnce(&mut Slot),
+    ) -> bool {
+        self.with_slot(provider, |slot| {
+            if slot.generation == generation {
+                change(slot);
+                true
+            } else {
+                false
+            }
+        })
+        .unwrap_or(false)
+    }
+
     fn with_slot<T>(
         &self,
         provider: ProviderKind,
@@ -95,13 +138,67 @@ impl ManagedProviders {
     }
 }
 
+fn new_slot(provider: ProviderKind) -> Slot {
+    Slot {
+        runtime: ProviderRuntime::new(provider, String::new(), String::new()),
+        method: None,
+        sign_in: None,
+        generation: 0,
+    }
+}
+
+fn refresh_slot(
+    mut slot: Slot,
+    launch: Option<&AgentLaunch>,
+    line: String,
+    changed: &mut Vec<ProviderKind>,
+) -> Slot {
+    if slot.runtime.command_line != line || slot.generation == 0 {
+        slot.generation += 1;
+        slot.runtime.command = launch.map(agent_command_label).unwrap_or_default();
+        slot.runtime.command_line = line;
+        slot.runtime.phase = ProviderPhase::Checking;
+        slot.runtime.can_sign_in = false;
+        slot.runtime.detail = None;
+        slot.method = None;
+        if let Some(task) = slot.sign_in.take() {
+            task.abort();
+        }
+        changed.push(slot.runtime.provider);
+    }
+    slot
+}
+
+/// Brings the slots in line with saved settings and asks every agent whose command changed.
+pub(crate) fn sync_and_check(application: &AppHandle) {
+    let settings = settings(application);
+    let changed = application.state::<ManagedProviders>().sync(&settings);
+    for provider in changed {
+        let handle = application.clone();
+        tauri::async_runtime::spawn(async move { check(&handle, provider).await });
+    }
+}
+
+fn settings(application: &AppHandle) -> Settings {
+    application
+        .state::<ManagedStateStore>()
+        .lock()
+        .map(|store| store.settings())
+        .unwrap_or_default()
+}
+
 pub fn initialize(application: &AppHandle) {
     let handle = application.clone();
     tauri::async_runtime::spawn(async move {
-        let checks = PROVIDERS.map(|provider| {
-            let handle = handle.clone();
-            tauri::async_runtime::spawn(async move { check(&handle, provider).await })
-        });
+        let settings = settings(&handle);
+        let changed = handle.state::<ManagedProviders>().sync(&settings);
+        let checks: Vec<_> = changed
+            .into_iter()
+            .map(|provider| {
+                let handle = handle.clone();
+                tauri::async_runtime::spawn(async move { check(&handle, provider).await })
+            })
+            .collect();
         for check in checks {
             let _ = check.await;
         }
@@ -114,39 +211,57 @@ pub fn initialize(application: &AppHandle) {
 
 /// Asks `provider`'s agent for its sign-in state and models, then its limit.
 async fn check(application: &AppHandle, provider: ProviderKind) {
-    let (launch, _) = agent_launch(provider);
+    let providers = application.state::<ManagedProviders>();
+    let Some(generation) = providers.generation(provider) else {
+        return;
+    };
+    let Ok((launch, _)) = agent_launch(&settings(application), provider) else {
+        return;
+    };
     let result = probe_agent(&launch, &working_directory(application), PROBE_DEADLINE).await;
     let probe = match result {
         Ok(probe) => probe,
         Err(error) => {
-            record_failure(application, provider, &error);
+            record_failure(application, (provider, generation), &error);
             publish(application, None);
             return;
         }
     };
-    record_probe(application, provider, &probe);
+    if !record_probe(application, (provider, generation), &probe) {
+        return;
+    }
     if probe.signed_in {
         read_limit(application, provider).await;
     }
     publish(application, None);
 }
 
-fn record_probe(application: &AppHandle, provider: ProviderKind, probe: &AgentProbe) {
+/// Records what the agent reported, unless its command changed meanwhile. Returns whether
+/// it was recorded.
+fn record_probe(
+    application: &AppHandle,
+    (provider, generation): (ProviderKind, u64),
+    probe: &AgentProbe,
+) -> bool {
     let method = choose_sign_in(&probe.sign_in_methods)
         .and_then(|index| probe.sign_in_methods.get(index))
         .cloned();
-    application
-        .state::<ManagedProviders>()
-        .with_slot(provider, |slot| {
-            slot.runtime.phase = if probe.signed_in {
-                ProviderPhase::SignedIn
-            } else {
-                ProviderPhase::SignedOut
-            };
-            slot.runtime.can_sign_in = method.is_some();
-            slot.runtime.detail = None;
-            slot.method = method;
-        });
+    let current =
+        application
+            .state::<ManagedProviders>()
+            .with_current_slot(provider, generation, |slot| {
+                slot.runtime.phase = if probe.signed_in {
+                    ProviderPhase::SignedIn
+                } else {
+                    ProviderPhase::SignedOut
+                };
+                slot.runtime.can_sign_in = method.is_some();
+                slot.runtime.detail = None;
+                slot.method = method;
+            });
+    if !current {
+        return false;
+    }
     let models = probe
         .models
         .iter()
@@ -155,23 +270,32 @@ fn record_probe(application: &AppHandle, provider: ProviderKind, probe: &AgentPr
     with_store(application, |store| {
         store.record_provider_probe(provider, probe.signed_in, models)
     });
+    true
 }
 
-fn record_failure(application: &AppHandle, provider: ProviderKind, error: &ClientError) {
+fn record_failure(
+    application: &AppHandle,
+    (provider, generation): (ProviderKind, u64),
+    error: &ClientError,
+) {
     let missing = matches!(
         error,
         ClientError::Spawn { source, .. } if source.kind() == std::io::ErrorKind::NotFound
     );
-    application
-        .state::<ManagedProviders>()
-        .with_slot(provider, |slot| {
-            slot.runtime.phase = if missing {
-                ProviderPhase::NotInstalled
-            } else {
-                ProviderPhase::Failed
-            };
-            slot.runtime.detail = (!missing).then(|| error.to_string());
-        });
+    let current =
+        application
+            .state::<ManagedProviders>()
+            .with_current_slot(provider, generation, |slot| {
+                slot.runtime.phase = if missing {
+                    ProviderPhase::NotInstalled
+                } else {
+                    ProviderPhase::Failed
+                };
+                slot.runtime.detail = (!missing).then(|| error.to_string());
+            });
+    if !current {
+        return;
+    }
     // An agent that can't start can't run work: its models leave the pickers.
     with_store(application, |store| {
         store.record_provider_probe(provider, false, Vec::new())
@@ -185,7 +309,7 @@ async fn read_limit(application: &AppHandle, provider: ProviderKind) {
     let reading = match provider {
         ProviderKind::Claude => read_claude_usage(&directory, LIMIT_DEADLINE).await,
         ProviderKind::Codex => read_codex_usage(&directory, LIMIT_DEADLINE).await,
-        ProviderKind::Antigravity | ProviderKind::Kimi => Ok(None),
+        ProviderKind::Antigravity | ProviderKind::Kimi | ProviderKind::Custom(_) => Ok(None),
     };
     let reading: Option<LimitReading> = reading.ok().flatten();
     let plan = reading.as_ref().and_then(|reading| reading.plan.clone());
@@ -204,7 +328,7 @@ async fn read_limit(application: &AppHandle, provider: ProviderKind) {
 }
 
 async fn refresh_limits(application: &AppHandle) {
-    for provider in PROVIDERS {
+    for provider in settings(application).all_providers() {
         let providers = application.state::<ManagedProviders>();
         if providers.phase(provider) == Some(ProviderPhase::SignedIn) {
             read_limit(application, provider).await;
@@ -263,7 +387,7 @@ fn publish(application: &AppHandle, toast: Option<String>) -> Option<ProvidersVi
     Some(view)
 }
 
-fn current_view(application: &AppHandle) -> Result<ProvidersView, String> {
+pub(crate) fn current_view(application: &AppHandle) -> Result<ProvidersView, String> {
     publish(application, None).ok_or_else(|| "Could not read provider state".into())
 }
 
@@ -296,7 +420,7 @@ pub fn provider_sign_in(
         .ok_or_else(|| {
             format!(
                 "{}'s agent offers no sign-in Velocity can use. Sign in with its own CLI, then reopen Providers.",
-                provider_facts(provider).name
+                settings(&application).provider_name(provider)
             )
         })?;
     let handle = application.clone();
@@ -310,13 +434,16 @@ pub fn provider_sign_in(
         slot.runtime.phase = ProviderPhase::Waiting;
         slot.runtime.detail = None;
     });
-    let site = provider_facts(provider).site;
+    let site = settings(&application).provider_facts(provider).site;
     let toast = format!("Opened {site} in your browser · finish signing in there");
     publish(&application, Some(toast)).ok_or_else(|| "Could not sign in".into())
 }
 
 async fn finish_sign_in(application: &AppHandle, provider: ProviderKind, method: SignInMethod) {
-    let (launch, _) = agent_launch(provider);
+    let settings = settings(application);
+    let Ok((launch, _)) = agent_launch(&settings, provider) else {
+        return;
+    };
     let directory = working_directory(application);
     let result = sign_in(&launch, &directory, &method, SIGN_IN_DEADLINE).await;
     let providers = application.state::<ManagedProviders>();
@@ -326,7 +453,7 @@ async fn finish_sign_in(application: &AppHandle, provider: ProviderKind, method:
             slot.runtime.phase = ProviderPhase::SignedOut;
             slot.runtime.detail = Some(error.to_string());
         });
-        let name = provider_facts(provider).name;
+        let name = settings.provider_name(provider);
         publish(
             application,
             Some(format!("{name} sign-in didn't finish: {error}")),
@@ -343,7 +470,7 @@ async fn finish_sign_in(application: &AppHandle, provider: ProviderKind, method:
 
 /// `Anthropic signed in · Opus 5.5, Sonnet 5.5 available`.
 fn signed_in_toast(application: &AppHandle, provider: ProviderKind) -> String {
-    let name = provider_facts(provider).name;
+    let name = settings(application).provider_name(provider);
     let store_state = application.state::<ManagedStateStore>();
     let models = store_state
         .lock()
@@ -382,7 +509,7 @@ pub fn provider_sign_out(
             task.is_some()
         })
         .unwrap_or(false);
-    let name = provider_facts(provider).name;
+    let name = settings(&application).provider_name(provider);
     if cancelled {
         return publish(
             &application,
@@ -519,7 +646,7 @@ fn choose_for_thread(
         {
             return Err(format!(
                 "A running thread stays on {}. Start a new thread to use {model}.",
-                provider_facts(thread.provider).name
+                store.settings().provider_name(thread.provider)
             ));
         }
         store

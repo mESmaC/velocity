@@ -152,6 +152,8 @@ pub enum ProviderColor {
     Codex,
     Antigravity,
     Kimi,
+    /// An ACP agent you added (F15 Custom ACP agents).
+    Custom,
 }
 
 #[cfg_attr(

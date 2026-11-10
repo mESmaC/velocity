@@ -27,6 +27,20 @@ export const commands = {
 	dispatchLayout: (action: LayoutAction_Deserialize) => __TAURI_INVOKE<LayoutSnapshot_Serialize>("dispatch_layout", { action }),
 	listProjects: () => __TAURI_INVOKE<ProjectList>("list_projects"),
 	switchProject: (identifier: number) => __TAURI_INVOKE<LayoutSnapshot_Serialize>("switch_project", { identifier }),
+	/**
+	 *  Sets `provider`'s ACP agent command from its card: the program and its arguments as one
+	 *  line. `None` resets a built-in provider to its built-in command. Running agents keep the
+	 *  command they started with; new work uses the new one.
+	 */
+	setProviderCommand: (provider: ProviderKind, command: string | null) => __TAURI_INVOKE<ProvidersView_Serialize>("set_provider_command", { provider, command }),
+	/**
+	 *  Add an ACP agent (F15 Custom ACP agents): a name, and the command with its arguments. It
+	 *  gets its own card and is read over ACP like a built-in provider. There is no field for an
+	 *  environment variable or a key; the agent inherits your environment.
+	 */
+	addCustomAgent: (name: string, command: string) => __TAURI_INVOKE<ProvidersView_Serialize>("add_custom_agent", { name, command }),
+	/**  Removes an agent you added. Its threads keep their record; new work can't start on it. */
+	removeCustomAgent: (provider: ProviderKind) => __TAURI_INVOKE<ProvidersView_Serialize>("remove_custom_agent", { provider }),
 	listProviders: () => __TAURI_INVOKE<ProvidersView_Serialize>("list_providers"),
 	/**
 	 *  Sign in with Claude / ChatGPT / Google / Kimi (F15): runs the agent's own login, which
@@ -53,7 +67,7 @@ export const commands = {
 	previewWorktreeFolder: (folder: string) => __TAURI_INVOKE<WorktreePathPreview>("preview_worktree_folder", { folder }),
 	browseWorktreeFolder: () => __TAURI_INVOKE<string | null>("browse_worktree_folder"),
 	pruneWorktrees: () => __TAURI_INVOKE<string>("prune_worktrees"),
-	getDutyDialogDefaults: () => __TAURI_INVOKE<DutyDialogDefaults>("get_duty_dialog_defaults"),
+	getDutyDialogDefaults: () => __TAURI_INVOKE<DutyDialogDefaults_Serialize>("get_duty_dialog_defaults"),
 	startDuty: (request: StartDutyRequest_Deserialize) => __TAURI_INVOKE<LayoutSnapshot_Serialize>("start_duty", { request }),
 	pauseDuty: (request: PauseDutyRequest_Deserialize) => __TAURI_INVOKE<LayoutSnapshot_Serialize>("pause_duty", { request }),
 	addDutyAgents: (request: StartDutyRequest_Deserialize) => __TAURI_INVOKE<LayoutSnapshot_Serialize>("add_duty_agents", { request }),
@@ -175,9 +189,24 @@ export type AddGoalAgentsRequest_Serialize = {
 
 export type AgentActivity = "thinking" | "executing" | "parked" | "stalled" | "at_limit" | "idle";
 
+/**  An ACP agent command: the program, a path or a bare name on `PATH`, and its arguments. */
+export type AgentCommand = AgentCommand_Serialize | AgentCommand_Deserialize;
+
 export type AgentCommandView = {
 	name: string,
 	description: string,
+};
+
+/**  An ACP agent command: the program, a path or a bare name on `PATH`, and its arguments. */
+export type AgentCommand_Deserialize = {
+	program: string,
+	arguments?: string[],
+};
+
+/**  An ACP agent command: the program, a path or a bare name on `PATH`, and its arguments. */
+export type AgentCommand_Serialize = {
+	program: string,
+	arguments: string[],
 };
 
 export type AgentFollowUp = {
@@ -386,6 +415,32 @@ export type CreatedProject = {
 	repository_path: string,
 };
 
+/**
+ *  An ACP agent you added (F15 Custom ACP agents). It holds no environment and no key: the
+ *  agent inherits your environment, as every agent does.
+ */
+export type CustomAgent = CustomAgent_Serialize | CustomAgent_Deserialize;
+
+/**
+ *  An ACP agent you added (F15 Custom ACP agents). It holds no environment and no key: the
+ *  agent inherits your environment, as every agent does.
+ */
+export type CustomAgent_Deserialize = {
+	identifier: number,
+	name: string,
+	command: AgentCommand_Deserialize,
+};
+
+/**
+ *  An ACP agent you added (F15 Custom ACP agents). It holds no environment and no key: the
+ *  agent inherits your environment, as every agent does.
+ */
+export type CustomAgent_Serialize = {
+	identifier: number,
+	name: string,
+	command: AgentCommand_Serialize,
+};
+
 export type DependencyWait = {
 	member: string,
 	nick: string,
@@ -456,8 +511,24 @@ export type DutyAgentItem = {
 	doing: string,
 };
 
-export type DutyDialogDefaults = {
+export type DutyDialogDefaults = DutyDialogDefaults_Serialize | DutyDialogDefaults_Deserialize;
+
+export type DutyDialogDefaults_Deserialize = {
 	provider: ProviderKind,
+	/**  The provider's name, including an ACP agent you added (F15). */
+	provider_name?: string,
+	model_name: string,
+	model_configured: boolean,
+	pr_duty_exists: boolean,
+	scouts_exists: boolean,
+	pr_rules: PrDutyRuleSettings,
+	scout_rules: ScoutRuleSettings,
+};
+
+export type DutyDialogDefaults_Serialize = {
+	provider: ProviderKind,
+	/**  The provider's name, including an ACP agent you added (F15). */
+	provider_name: string,
 	model_name: string,
 	model_configured: boolean,
 	pr_duty_exists: boolean,
@@ -1596,6 +1667,8 @@ export type NewProjectDefaults_Deserialize = {
 	folder: string,
 	clone_to: string,
 	provider: ProviderKind,
+	/**  The provider's name, including an ACP agent you added (F15). */
+	provider_name: string,
 	model_name?: string | null,
 	effort: EffortLevel,
 	speed: SpeedMode,
@@ -1605,6 +1678,8 @@ export type NewProjectDefaults_Serialize = {
 	folder: string,
 	clone_to: string,
 	provider: ProviderKind,
+	/**  The provider's name, including an ACP agent you added (F15). */
+	provider_name: string,
 	model_name: string | null,
 	effort: EffortLevel,
 	speed: SpeedMode,
@@ -2015,6 +2090,12 @@ export type ProviderCardView_Deserialize = {
 	/**  `runs Claude Code over ACP · OAuth`. */
 	runs: string,
 	command: string,
+	/**  The command as an editable line (F15: the command and its arguments can be edited). */
+	command_line: string,
+	/**  A built-in provider runs your command, not its own; Reset returns it. */
+	command_edited: boolean,
+	/**  An ACP agent you added, which can be removed (F15 Custom ACP agents). */
+	custom: boolean,
 	phase: ProviderPhase,
 	status: string,
 	sign_in_label: string,
@@ -2029,6 +2110,12 @@ export type ProviderCardView_Serialize = {
 	/**  `runs Claude Code over ACP · OAuth`. */
 	runs: string,
 	command: string,
+	/**  The command as an editable line (F15: the command and its arguments can be edited). */
+	command_line: string,
+	/**  A built-in provider runs your command, not its own; Reset returns it. */
+	command_edited: boolean,
+	/**  An ACP agent you added, which can be removed (F15 Custom ACP agents). */
+	custom: boolean,
 	phase: ProviderPhase,
 	status: string,
 	sign_in_label: string,
@@ -2058,7 +2145,24 @@ export type ProviderCatalog_Serialize = {
 	limit: ProviderLimit_Serialize | null,
 };
 
-export type ProviderColor = "Claude" | "Codex" | "Antigravity" | "Kimi";
+export type ProviderColor = "Claude" | "Codex" | "Antigravity" | "Kimi" | 
+/**  An ACP agent you added (F15 Custom ACP agents). */
+"Custom";
+
+/**  Your command for a built-in provider's agent, in place of the built-in one (F15). */
+export type ProviderCommand = ProviderCommand_Serialize | ProviderCommand_Deserialize;
+
+/**  Your command for a built-in provider's agent, in place of the built-in one (F15). */
+export type ProviderCommand_Deserialize = {
+	provider: ProviderKind,
+	command: AgentCommand_Deserialize,
+};
+
+/**  Your command for a built-in provider's agent, in place of the built-in one (F15). */
+export type ProviderCommand_Serialize = {
+	provider: ProviderKind,
+	command: AgentCommand_Serialize,
+};
 
 /**  A change from Settings → Providers or the home composer's model menu. */
 export type ProviderEdit = 
@@ -2077,7 +2181,7 @@ export type ProviderEdit =
 /**  Back to GPT-6 Luna · Low · Fast (F15 Thread titles). */
 "TitleReset";
 
-export type ProviderKind = "claude" | "codex" | "antigravity" | "kimi";
+export type ProviderKind = string;
 
 /**  The share of one subscription window used, as last read (F15 Limit sources). */
 export type ProviderLimit = ProviderLimit_Serialize | ProviderLimit_Deserialize;
@@ -2156,6 +2260,12 @@ export type ProviderSettings_Deserialize = {
 	signed_out?: ProviderKind[],
 	/**  Model chips you switched off (F15 Models). */
 	hidden_models?: HiddenModel[],
+	/**  Built-in providers whose ACP agent command you edited; Reset removes the entry (F15). */
+	commands?: ProviderCommand_Deserialize[],
+	/**  ACP agents you added beside the four (F15 Custom ACP agents), in card order. */
+	custom_agents?: CustomAgent_Deserialize[],
+	/**  The identifier the next added agent gets. Identifiers are never reused. */
+	next_custom_agent?: number,
 };
 
 export type ProviderSettings_Serialize = {
@@ -2177,6 +2287,12 @@ export type ProviderSettings_Serialize = {
 	signed_out: ProviderKind[],
 	/**  Model chips you switched off (F15 Models). */
 	hidden_models: HiddenModel[],
+	/**  Built-in providers whose ACP agent command you edited; Reset removes the entry (F15). */
+	commands: ProviderCommand_Serialize[],
+	/**  ACP agents you added beside the four (F15 Custom ACP agents), in card order. */
+	custom_agents: CustomAgent_Serialize[],
+	/**  The identifier the next added agent gets. Identifiers are never reused. */
+	next_custom_agent: number,
 };
 
 export type ProviderUsage = {
@@ -2963,7 +3079,7 @@ export type SwarmDialog_Deserialize = {
 	task_count: number,
 	issue_count: number,
 	items: SwarmDialogItem[],
-	models: SwarmModelCard[],
+	models: SwarmModelCard_Deserialize[],
 	split_label: string,
 	pr_duty_label?: string | null,
 	pr_duty_shortfall: number,
@@ -2980,7 +3096,7 @@ export type SwarmDialog_Serialize = {
 	task_count: number,
 	issue_count: number,
 	items: SwarmDialogItem[],
-	models: SwarmModelCard[],
+	models: SwarmModelCard_Serialize[],
 	split_label: string,
 	pr_duty_label: string | null,
 	pr_duty_shortfall: number,
@@ -3020,8 +3136,20 @@ export type SwarmMember = {
 	agent_number: number,
 };
 
-export type SwarmModelCard = {
+export type SwarmModelCard = SwarmModelCard_Serialize | SwarmModelCard_Deserialize;
+
+export type SwarmModelCard_Deserialize = {
 	provider: ProviderKind,
+	/**  The provider's name, including an ACP agent you added (F15). */
+	provider_name?: string,
+	model_name: string,
+	selected: boolean,
+};
+
+export type SwarmModelCard_Serialize = {
+	provider: ProviderKind,
+	/**  The provider's name, including an ACP agent you added (F15). */
+	provider_name: string,
 	model_name: string,
 	selected: boolean,
 };

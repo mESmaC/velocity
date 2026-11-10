@@ -132,6 +132,8 @@ fn provider_from_color(
         ProviderColor::Codex => ProviderKind::Codex,
         ProviderColor::Antigravity => ProviderKind::Antigravity,
         ProviderColor::Kimi => ProviderKind::Kimi,
+        // A colour doesn't say which agent you added; the record's own provider stands.
+        ProviderColor::Custom => fallback,
     }
     .into_with_fallback(fallback)
 }
@@ -152,6 +154,8 @@ const FEED_LIMIT: usize = 200;
 /// A project's Scouts as the sweep runner reads them.
 #[derive(Clone)]
 pub struct ScoutRoster {
+    /// Settings when the roster was read: each agent's ACP command comes from Providers.
+    pub settings: crate::Settings,
     pub project: ProjectItem,
     pub worktrees: velocity_core::worktree_settings::WorktreePreferences,
     pub paused: bool,
@@ -162,6 +166,8 @@ pub struct ScoutRoster {
 /// A project's PR duty as the review runner reads it.
 #[derive(Clone)]
 pub struct PrDutyRoster {
+    /// Settings when the roster was read: each agent's ACP command comes from Providers.
+    pub settings: crate::Settings,
     pub project: ProjectItem,
     pub worktrees: velocity_core::worktree_settings::WorktreePreferences,
     pub paused: bool,
@@ -172,6 +178,9 @@ pub struct PrDutyRoster {
 #[derive(Clone, Debug, Serialize, Deserialize, Type)]
 pub struct DutyDialogDefaults {
     pub provider: ProviderKind,
+    /// The provider's name, including an ACP agent you added (F15).
+    #[serde(default)]
+    pub provider_name: String,
     pub model_name: String,
     pub model_configured: bool,
     pub pr_duty_exists: bool,
@@ -233,6 +242,7 @@ impl StateStore {
         let existing_scouts = project.and_then(|proj| find_role(proj, DutyRole::Scouts));
         DutyDialogDefaults {
             provider,
+            provider_name: settings.provider_name(provider),
             model_name,
             model_configured,
             pr_duty_exists: existing_pr.is_some(),
@@ -357,6 +367,7 @@ impl StateStore {
             .filter_map(|project| {
                 let role = find_role(project, DutyRole::Scouts)?;
                 Some(ScoutRoster {
+                    settings: self.state.settings.clone(),
                     project: project.clone(),
                     worktrees: self.worktree_preferences(project),
                     paused: role.paused,
@@ -376,6 +387,7 @@ impl StateStore {
             .filter_map(|project| {
                 let role = find_role(project, DutyRole::PrDuty)?;
                 Some(PrDutyRoster {
+                    settings: self.state.settings.clone(),
                     project: project.clone(),
                     worktrees: self.worktree_preferences(project),
                     paused: role.paused,

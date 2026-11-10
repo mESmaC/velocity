@@ -13,6 +13,7 @@ use velocity_git::{
     WorktreeSetupRequest, local_branch_exists, resolve_project_worktree_root,
     resolve_worktree_directory,
 };
+use velocity_store::providers::ProviderUnavailable;
 use velocity_store::threads::NewThread;
 use velocity_store::{ProjectItem, ProviderKind, Settings};
 
@@ -141,7 +142,7 @@ pub(crate) fn plan_named_launch(
     // The thread runs where its record says: the default, or the first signed-in provider
     // when you signed out of the default. Nothing starts when every provider is signed out.
     settings.ensure_new_work(thread.provider)?;
-    let (agent, bypass_modes) = agent_launch(thread.provider);
+    let (agent, bypass_modes) = agent_launch(settings, thread.provider)?;
     let share_cache = worktrees.share_build_cache;
     Ok(LaunchPlan {
         project: project.id,
@@ -173,10 +174,18 @@ pub(crate) fn plan_named_launch(
 }
 
 /// The command for each provider's ACP agent (§3.2) and the ids of its session modes that
-/// skip permission checks (Rule 1).
-pub fn agent_launch(provider: ProviderKind) -> (AgentLaunch, Vec<String>) {
-    let agent = velocity_acp::provider_agent(crate::titles::provider(provider));
-    (agent.launch, agent.bypass_modes)
+/// skip permission checks (Rule 1): the built-in command, or the one you set in Settings →
+/// Providers, or the command of an agent you added (F15). An agent you removed has none.
+pub fn agent_launch(
+    settings: &Settings,
+    provider: ProviderKind,
+) -> Result<(AgentLaunch, Vec<String>), ProviderUnavailable> {
+    let command = settings
+        .agent_command(provider)
+        .map(|command| (PathBuf::from(&command.program), command.arguments.clone()));
+    velocity_acp::configured_agent(crate::titles::provider(provider), command)
+        .map(|agent| (agent.launch, agent.bypass_modes))
+        .ok_or(ProviderUnavailable::Removed)
 }
 
 /// Settings → Worktrees as the worktree setup steps read them (F5).
