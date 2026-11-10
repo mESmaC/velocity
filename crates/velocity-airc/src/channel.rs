@@ -1,10 +1,12 @@
-use crate::{Error, storage::Storage};
+﻿use crate::{Error, storage::Storage};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
-#[derive(Clone, Debug, Deserialize, Serialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Deserialize, Serialize)]
+#[cfg_attr(feature = "bindings", derive(specta::Type))]
 pub struct Entry {
+    #[cfg_attr(feature = "bindings", specta(type = u32))]
     pub sequence: u64,
     pub time: String,
     pub kind: String,
@@ -25,7 +27,7 @@ pub struct Entry {
 }
 
 /// Event tags Velocity posts from what it observes (F14). Agents never type them.
-const EVENT_TAGS: &[&str] = &[
+pub const EVENT_TAGS: &[&str] = &[
     "claim",
     "refused",
     "overlap",
@@ -41,6 +43,7 @@ const EVENT_TAGS: &[&str] = &[
     "issue",
     "task",
     "failed",
+    "discovery",
     "swarm",
     "left",
     "rebased",
@@ -57,6 +60,7 @@ const EVENT_TAGS: &[&str] = &[
 ];
 
 /// One event line: its type tag, the nick it is about, and what happened.
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Event {
     tag: String,
     nick: String,
@@ -80,6 +84,26 @@ impl Event {
         self.pull_request = Some(number);
         self.head = head.map(Into::into);
         self
+    }
+
+    pub fn tag(&self) -> &str {
+        &self.tag
+    }
+
+    pub fn nick(&self) -> &str {
+        &self.nick
+    }
+
+    pub fn text(&self) -> &str {
+        &self.text
+    }
+
+    pub fn pull_request(&self) -> Option<u32> {
+        self.pull_request
+    }
+
+    pub fn head(&self) -> Option<&str> {
+        self.head.as_deref()
     }
 }
 
@@ -137,6 +161,7 @@ impl Channel {
         })?;
         Ok(file)
     }
+
     pub fn read(&self, after: u64) -> Result<Vec<Entry>, Error> {
         Ok(Storage::open(&self.directory)?
             .read()?
@@ -223,6 +248,24 @@ impl Channel {
         self.post(member, ledger, text, Vec::new(), None)
     }
 
+    /// Velocity records a Past work ledger entry (for example on every merge, F14)
+    /// on behalf of `nick` without requiring `nick` to hold an active session.
+    pub fn record_past_work(&self, nick_name: &str, text: &str) -> Result<Entry, Error> {
+        require_text(nick_name)?;
+        require_text(text)?;
+        let storage = Storage::open(&self.directory)?;
+        let entries = storage.read()?;
+        let record = entry(
+            &entries,
+            "past_work",
+            "velocity",
+            &nick(nick_name, 16),
+            text,
+        );
+        storage.append(&record)?;
+        Ok(record)
+    }
+
     /// Velocity posts events on behalf of the nick they name; posting needs no
     /// channel membership because the poster is Velocity itself.
     pub fn post_event(&self, event: Event) -> Result<Entry, Error> {
@@ -306,7 +349,7 @@ fn presence(entries: &[Entry]) -> BTreeMap<String, Presence> {
     members
 }
 
-fn nick(value: &str, limit: usize) -> String {
+pub(crate) fn nick(value: &str, limit: usize) -> String {
     let leaf = value
         .rsplit(['/', '\\'])
         .find(|part| !part.is_empty())
@@ -337,7 +380,7 @@ fn nick(value: &str, limit: usize) -> String {
     result
 }
 
-fn require_text(text: &str) -> Result<(), Error> {
+pub(crate) fn require_text(text: &str) -> Result<(), Error> {
     if text.trim().is_empty() {
         return Err(Error::Invalid("Text cannot be empty".into()));
     }

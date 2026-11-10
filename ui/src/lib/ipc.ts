@@ -1,5 +1,6 @@
-import { listen, type EventCallback } from '@tauri-apps/api/event';
+﻿import { listen, type EventCallback } from '@tauri-apps/api/event';
 export * from './ipc/agents';
+export * from './ipc/airc-events';
 export * from './ipc/issues';
 import {
   commands,
@@ -166,7 +167,7 @@ export const onWindowState = (callback: EventCallback<WindowStateChanged>) =>
 
 export * from './ipc/follow-through';
 // Threads start and steer through the composer's layout intents (`start_thread`,
-// `send_message`); their lifecycle also goes out as these events (SPEC.md §3.1).
+// `send_message`); their lifecycle also goes out as these events (SPEC.md Â§3.1).
 export const onThreadStatus = (callback: EventCallback<ThreadStatusChanged>) =>
   listen(THREAD_STATUS_EVENT, callback);
 

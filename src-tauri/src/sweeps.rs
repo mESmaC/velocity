@@ -1,4 +1,4 @@
-//! Scout sweeps at the Tauri edge (`SPEC.md §4 F7`, `§7 M5`): starts the sweep runner, saves
+﻿//! Scout sweeps at the Tauri edge (`SPEC.md Â§4 F7`, `Â§7 M5`): starts the sweep runner, saves
 //! and publishes what it reports, and serves the scout MCP server when Velocity's own
 //! executable is started as one.
 
@@ -112,6 +112,8 @@ impl TauriSweepHost {
             return Ok(false);
         };
         if store.active_project().map(|item| item.id) != Some(project) {
+            drop(store);
+            crate::airc_events::record_scout_events(&self.0, project, &events);
             return Ok(true);
         }
         let mut layout = lock(self.0.state::<MainLayout>().inner(), "main-window state")?;
@@ -120,6 +122,9 @@ impl TauriSweepHost {
         let snapshot = layout.snapshot();
         // Publish under the locks so snapshots reach the window in order.
         crate::layout::publish(&self.0, &snapshot, None)?;
+        drop(layout);
+        drop(store);
+        crate::airc_events::record_scout_events(&self.0, project, &events);
         for event in events {
             DutyEventPublished {
                 role: DutyRole::Scouts,

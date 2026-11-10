@@ -1,10 +1,10 @@
-# SPEC.md · Velocity
+﻿# SPEC.md Â· Velocity
 
 Velocity is a desktop agentic IDE built for one goal: finish projects as fast as possible by running many coding agents in parallel, without interruptions. Built in Rust + Tauri.
 
 - **Status:** draft. Written from the design mockup (`design/main-window.html`) and the decisions recorded in it, 2026-11-07.
 - **Reference UI:** `design/main-window.html`. Open it in a browser; every feature below is mocked there with live simulated data.
-- **How to read this:** §1 holds the rules that override everything else. §4 describes each feature, ending in a list of acceptance criteria. §7 is the build order. §8 lists the questions still open: do not build anything that depends on them until they are answered.
+- **How to read this:** Â§1 holds the rules that override everything else. Â§4 describes each feature, ending in a list of acceptance criteria. Â§7 is the build order. Â§8 lists the questions still open: do not build anything that depends on them until they are answered.
 - **Marker:** items marked *(proposed)* came from the mockup and have not been confirmed yet. Everything else is decided.
 
 ---
@@ -13,7 +13,7 @@ Velocity is a desktop agentic IDE built for one goal: finish projects as fast as
 
 These hold for every feature. A feature that breaks one of them is wrong, whatever else this spec says.
 
-1. **Agents never wait for approval.** Every agent runs with full permissions (bypass / yolo / unrestricted) until it finishes. Every agent also has its full toolset: all of its provider's built-in tools, your MCP servers and skills, the shell, the network and GitHub (§3.2 Tool access). Velocity has no approval prompts, no plan-approval gates and no "needs you" states. Messages sent to a busy agent are queued and picked up at its next step. They never interrupt it.
+1. **Agents never wait for approval.** Every agent runs with full permissions (bypass / yolo / unrestricted) until it finishes. Every agent also has its full toolset: all of its provider's built-in tools, your MCP servers and skills, the shell, the network and GitHub (Â§3.2 Tool access). Velocity has no approval prompts, no plan-approval gates and no "needs you" states. Messages sent to a busy agent are queued and picked up at its next step. They never interrupt it.
 2. **The spec comes first.** Every new project starts with a spec interview. No build work starts until the spec is locked.
 3. **A task is finished when its PR is merged, not when the code is written.** An agent opens a PR, then watches it until it merges. It fixes CI and answers every review comment as it arrives.
 4. **Never merge without approval.** Only a PR duty agent that approved a PR merges it.
@@ -49,19 +49,19 @@ These hold for every feature. A feature that breaks one of them is wrong, whatev
 | State | Sidebar group | Meaning |
 |---|---|---|
 | `draft` | (top, unnamed) | New thread, not sent yet. |
-| `spec` | Spec interview | Interview in progress. Phases: `scan` → `ask` → `ready` → `locked`. |
+| `spec` | Spec interview | Interview in progress. Phases: `scan` â†’ `ask` â†’ `ready` â†’ `locked`. |
 | `working` | Running | Agent is working in its worktree. |
-| `review` | PR open · watching | PR is open; the agent watches it. Stages: `ci`, `review`, `fixing`, `approved`. |
+| `review` | PR open Â· watching | PR is open; the agent watches it. Stages: `ci`, `review`, `fixing`, `approved`. |
 | `error` | Failed | Agent stopped on an error. Its worktree is kept. |
-| `closed` | Closed · not merged | PR closed without merging. Its worktree is kept. |
+| `closed` | Closed Â· not merged | PR closed without merging. Its worktree is kept. |
 | `done` | Done | Spec locked (spec threads only). |
 | `merged` | Merged | PR merged and worktree deleted. The thread is finished. |
 
-The sidebar shows groups in this order: draft, On duty, Swarms, Spec interview, Running, PR open · watching, Failed, Closed · not merged, Done, Merged. Empty groups are hidden, except "On duty", which shows a "start one" button when empty.
+The sidebar shows groups in this order: draft, On duty, Swarms, Spec interview, Running, PR open Â· watching, Failed, Closed Â· not merged, Done, Merged. Empty groups are hidden, except "On duty", which shows a "start one" button when empty.
 
 ### 2.2 Agent activity
 
-A thread's state (§2.1) says where it is in its lifecycle. Its **activity** says what its agent is doing right now. The two are tracked separately, as Google Scion does. Velocity sets activity from the ACP stream (§3.2) and from AIRC (F14).
+A thread's state (Â§2.1) says where it is in its lifecycle. Its **activity** says what its agent is doing right now. The two are tracked separately, as Google Scion does. Velocity sets activity from the ACP stream (Â§3.2) and from AIRC (F14).
 
 | Activity | Meaning | Set by |
 |---|---|---|
@@ -80,19 +80,19 @@ A thread's state (§2.1) says where it is in its lifecycle. Its **activity** say
 3. Each step posts a `stalled` event.
 
 **Limits and claim release:**
-- **Per-agent caps:** max turns and max duration, set in Settings → Agents (F13). Off by default.
+- **Per-agent caps:** max turns and max duration, set in Settings â†’ Agents (F13). Off by default.
 - **Hitting a limit:** when an agent hits a cap or its provider's limit, its activity becomes `at limit`.
-- **Release after a grace period:** if an agent stays `at limit`, or its thread has failed (§2.1 `error`), for 10 minutes *(proposed default)*, Velocity releases its claims. It posts a `released` event and the piece goes back to the pool (F16). The worktree is still kept (F5).
+- **Release after a grace period:** if an agent stays `at limit`, or its thread has failed (Â§2.1 `error`), for 10 minutes *(proposed default)*, Velocity releases its claims. It posts a `released` event and the piece goes back to the pool (F16). The worktree is still kept (F5).
 - **Closed PRs:** a closed PR keeps its claims until you delete the thread. Closing is a decision someone made, so it isn't treated as a failure.
 
-**Sidebar and views:** `stalled` and `at limit` show in amber in the thread's sidebar meta and on its swarm or goal swarm card. `parked` shows "waiting for <nick> · #n".
+**Sidebar and views:** `stalled` and `at limit` show in amber in the thread's sidebar meta and on its swarm or goal swarm card. `parked` shows "waiting for <nick> Â· #n".
 
 ---
 
 ## 3. Architecture
 
 - **Shell:** Tauri v2, frameless window (`decorations: false`) with a custom title bar. Drag regions use `data-tauri-drag-region`; the window controls are custom.
-- **Frontend:** runs in the webview: Svelte 5 + TypeScript on Vite (no SvelteKit), built with pnpm. Command and event types are generated from Rust with `tauri-specta`. All visual values come from the reference UI: its `:root` is copied exactly, and missing values are copied from its winning CSS declarations into supplemental reference tokens (§6).
+- **Frontend:** runs in the webview: Svelte 5 + TypeScript on Vite (no SvelteKit), built with pnpm. Command and event types are generated from Rust with `tauri-specta`. All visual values come from the reference UI: its `:root` is copied exactly, and missing values are copied from its winning CSS declarations into supplemental reference tokens (Â§6).
 - **Backend (Rust)** owns:
   - agent processes
   - git and worktrees
@@ -101,7 +101,7 @@ A thread's state (§2.1) says where it is in its lifecycle. Its **activity** say
   - persisted state
 
   The frontend never runs a shell command. It calls Tauri commands and subscribes to events.
-- **Agent providers:** Anthropic (Claude Code), Codex, Antigravity and Kimi Code. Every provider signs in with OAuth on your own subscription, the way T3 Code does. Velocity talks to each provider's own agent over ACP (§3.2) and never asks for or stores an API key (F15). Each agent records its provider, model, effort (Low / Medium / High / Max) and speed (Regular / Fast, F15).
+- **Agent providers:** Anthropic (Claude Code), Codex, Antigravity and Kimi Code. Every provider signs in with OAuth on your own subscription, the way T3 Code does. Velocity talks to each provider's own agent over ACP (Â§3.2) and never asks for or stores an API key (F15). Each agent records its provider, model, effort (Low / Medium / High / Max) and speed (Regular / Fast, F15).
 - **GitHub:** issues, PRs, reviews, CI checks and merges.
 
 ### 3.1 IPC *(proposed names)*
@@ -127,9 +127,9 @@ A thread's state (§2.1) says where it is in its lifecycle. Its **activity** say
 | command | `get_settings`, `set_settings`, `list_worktrees`, `prune_worktrees` | settings |
 | command | `set_worktree_settings { edit, project_identifier }`, `preview_worktree_folder { folder }`, `browse_worktree_folder` | persist a worktree preference edit; preview the path for a folder still being typed, without saving it; select a location through the native folder picker |
 | command | `list_providers`, `provider_sign_in`, `provider_sign_out`, `provider_models` | providers (OAuth) |
-| command | `airc_events`, `airc_messages`, `airc_send`, `airc_claims`, `airc_claim`, `airc_release`, `airc_share`, `airc_wait`, `airc_ledger` | AIRC (agents get the same as MCP tools). `airc_claim` is atomic: it returns `granted`, or `refused { holder, since }` |
-| command | `dispatch_layout` with `Navigation(Answer(n))`, `Navigation(Lock)`, `Navigation(SpecFile)`, `Navigation(Grill)`, `SteerThread` on a spec thread, and `ToggleProofListEntry(index)` | spec interview (F3): answer `1`–`4` or in your own words, Lock spec & publish tasks, open SPEC.md, Keep grilling, and switch a proposed proof-list entry. The backend carries these out; the interview's phase, question, decisions and proof list arrive on `active_thread.interview` in `layout://state`. |
-| event | `thread://status`, `thread://step` | thread state and tool steps: `thread://status` carries a thread's state and activity (§2.1, §2.2) whenever either changes; `thread://step` carries the thread's newest transcript block after each agent update |
+| command | `airc_events { project_identifier, after }`, `airc_messages { project_identifier, after }`, `airc_send`, `airc_claims`, `airc_claim`, `airc_release`, `airc_share`, `airc_wait`, `airc_ledger { project_identifier, ledger, after }` | AIRC (agents get the same as MCP tools). `airc_events` returns only F14 event log entries (`EVENT_TAGS`, including `discovery` notices); `airc_messages` returns only agent messages and user comments; `airc_ledger` reads `discovery` or `past_work`. `airc_claim` is atomic: it returns `granted`, or `refused { holder, since }` |
+| command | `dispatch_layout` with `Navigation(Answer(n))`, `Navigation(Lock)`, `Navigation(SpecFile)`, `Navigation(Grill)`, `SteerThread` on a spec thread, and `ToggleProofListEntry(index)` | spec interview (F3): answer `1`â€“`4` or in your own words, Lock spec & publish tasks, open SPEC.md, Keep grilling, and switch a proposed proof-list entry. The backend carries these out; the interview's phase, question, decisions and proof list arrive on `active_thread.interview` in `layout://state`. |
+| event | `thread://status`, `thread://step` | thread state and tool steps: `thread://status` carries a thread's state and activity (Â§2.1, Â§2.2) whenever either changes; `thread://step` carries the thread's newest transcript block after each agent update |
 | event | `window://state` | native maximize/restore state, including changes made by the operating system |
 | event | `layout://state`, `layout://intent` | ordered main-window snapshots and typed navigation requests for feature owners; no shell commands cross IPC |
 | event | `project://selected` | persisted project selection and refreshed switcher rows, paired with the selected project's `layout://state` snapshot |
@@ -178,16 +178,16 @@ How Velocity's features map onto ACP:
 - **Built-in tools:** each provider's agent keeps its whole native toolset (shell, file read/write/edit, search, web search and fetch, subagents, todo/plan, and anything else it ships). Velocity never passes an allow-list or deny-list, and never starts an agent in a restricted or read-only mode.
 - **Your own config:** each agent is launched so it loads your user and project config as it would in a terminal: its MCP servers, skills, slash commands, hooks and instruction files (`CLAUDE.md`, `AGENTS.md`). Velocity doesn't launch agents in an isolated or empty config.
 - **Skills:** the project's enabled skill packs (F18) are linked into every agent's worktree, in the folder its provider reads, on top of your own skills.
-- **Shared MCP servers** (Settings → Agents): servers listed here are passed to every agent of every provider in `session/new`, so one list reaches all four providers. When a name is also in an agent's own config, the agent's own entry wins.
+- **Shared MCP servers** (Settings â†’ Agents): servers listed here are passed to every agent of every provider in `session/new`, so one list reaches all four providers. When a name is also in an agent's own config, the agent's own entry wins.
 - **AIRC:** always passed (F14).
-- **Shell, network, toolchains:** the shell runs as you, with your `PATH`, toolchains (cargo, lake, node, python…), credentials and network. There is no sandbox or container.
+- **Shell, network, toolchains:** the shell runs as you, with your `PATH`, toolchains (cargo, lake, node, pythonâ€¦), credentials and network. There is no sandbox or container.
 - **GitHub:** agents use your signed-in `gh` and git credentials to push, open PRs, review, comment and merge (merging stays PR duty's job, Rule 4).
 - **Worktree:** the working directory, not a jail. Agents can read anything on the machine, such as other repos, docs and caches. Their edits belong in their own worktree (AGENTS.md); edits elsewhere aren't blocked.
 - **Permissions:** answered allow-always as above (Rule 1).
 
 **Accept when:**
 - [ ] Every agent's tool list, as reported in its first `tool_call`s and available commands, matches the same agent run in a terminal with the same config, plus AIRC and the shared MCP servers.
-- [ ] A shared MCP server added in Settings → Agents is available to new agents of all four providers without per-provider setup.
+- [ ] A shared MCP server added in Settings â†’ Agents is available to new agents of all four providers without per-provider setup.
 - [ ] No role, including duty agents and spec interviews, runs with fewer tools than a thread.
 
 ### 3.3 Prior art: Scion
@@ -198,13 +198,13 @@ Two projects called Scion informed how agents collaborate in Velocity and how th
 
 | Idea | From | Where in Velocity |
 |---|---|---|
-| Each agent receives only what concerns it; messages carry `to` and `intent`; "Not in `to` → not for you" | Google | F14 targeted delivery |
+| Each agent receives only what concerns it; messages carry `to` and `intent`; "Not in `to` â†’ not for you" | Google | F14 targeted delivery |
 | Status notices always get through; agent messages respect per-agent modes (heads-down, quarantine) | Google | F14 |
 | No global merge lock: optimistic landing; the agent that owns a change fixes its conflicts | Anthropic | F6 landing |
 | Rebase only the agents a merge affects | Anthropic (claims are Velocity's own) | F6 landing |
 | One base clone, cheap worktrees per agent, shared cache | both | F5 warm pool |
-| Activity separate from lifecycle; stall detection; limits that release work | Google | §2.2 |
-| Event-driven wake of waiting agents (notification subscriptions); parking to free slots | Google | §2.2 |
+| Activity separate from lifecycle; stall detection; limits that release work | Google | Â§2.2 |
+| Event-driven wake of waiting agents (notification subscriptions); parking to free slots | Google | Â§2.2 |
 | Review intent, not lines; tiered review by risk | Anthropic | F7 |
 | Post-merge testing, and agents that watch one area of the system | Anthropic | F7 Main watcher |
 
@@ -217,7 +217,7 @@ Two projects called Scion informed how agents collaborate in Velocity and how th
 
 ## 4. Features
 
-### F1 · Main window
+### F1 Â· Main window
 
 The layout has three columns:
 - **left:** sidebar, 236 px
@@ -239,8 +239,8 @@ The layout has three columns:
 
 **Sidebar:**
 - search (`/`) and a new-thread button
-- the thread groups (§2.1)
-- a footer with settings, usage, updates, a live worktree count ("8 on D:", click → Settings · Worktrees) and a subscription-limit meter: one bar per signed-in provider, filled to the share of its limit used, coloured by provider (click → Settings · Providers). There is no dollar spend: every provider runs on a subscription.
+- the thread groups (Â§2.1)
+- a footer with settings, usage, updates, a live worktree count ("8 on D:", click â†’ Settings Â· Worktrees) and a subscription-limit meter: one bar per signed-in provider, filled to the share of its limit used, coloured by provider (click â†’ Settings Â· Providers). There is no dollar spend: every provider runs on a subscription.
 
 **Rail:** three panels: Task List, Open Pull Requests, Open Issues. Below them are footer links: AIRC (F14), with an unread badge that turns amber when an overlap is unread, and AGENTS.md.
 
@@ -250,7 +250,7 @@ The layout has three columns:
 |---|---|
 | Dispatch an issue | `I` |
 | Resume last thread | `R` |
-| Fan out ×3 | `F` |
+| Fan out Ã—3 | `F` |
 | Put an agent on PR duty | `V` |
 | Send scouts | `S` |
 | Swarm the Task List | `W` |
@@ -271,14 +271,14 @@ The layout has three columns:
 **Accept when:**
 - [ ] Window is frameless and can be dragged by the title bar. The custom window controls work.
 - [ ] Pulse updates live from events and hides zero counts.
-- [ ] Holding `Alt` shows numbers on threads, and `Alt+1`–`9` jumps to that thread.
-- [ ] Every keyboard shortcut in §5 works.
+- [ ] Holding `Alt` shows numbers on threads, and `Alt+1`â€“`9` jumps to that thread.
+- [ ] Every keyboard shortcut in Â§5 works.
 
-### F2 · New project
+### F2 Â· New project
 
 `Ctrl+Shift+N` opens a dialog with:
 - **Location:**
-  - **Local folder:** a path and Browse… (native picker via `tauri-plugin-dialog`). One option: "create the folder and run `git init` if needed".
+  - **Local folder:** a path and Browseâ€¦ (native picker via `tauri-plugin-dialog`). One option: "create the folder and run `git init` if needed".
   - **GitHub:** New repo or Existing repo; `github.com/<owner>/<name>`; Private or Public; and a "clone to" path.
 - **Model for the interview:** model cards plus effort and speed.
 - **What are you building?** A free-text brief.
@@ -288,13 +288,13 @@ The layout has three columns:
 - [ ] Create sets up the project (folder / `git init` / repo / clone), switches to it, and starts the spec interview thread straight away.
 - [ ] Esc cancels; nothing is created.
 
-### F3 · Spec interview
+### F3 Â· Spec interview
 
 1. **Scan:** the agent reads the folder or repo and lists what it found as tool steps. It works in the main checkout and gets **no worktree**.
    - The scan also suggests skill packs for the project (F18): UI UX Pro Max when it finds a UI, and Game dev skills when it finds a game engine. Suggestions are switched on unless you turn them off.
    - When UI UX Pro Max is on and the project has a UI, the interview asks the design questions it needs (product type, audience, mood) and generates the design system before the spec locks.
 2. **Ask:** one question at a time.
-   - Each question has a short "why it matters", up to 4 options (one marked *recommended*, answered with keys `1`–`4`), and a free-text answer box.
+   - Each question has a short "why it matters", up to 4 options (one marked *recommended*, answered with keys `1`â€“`4`), and a free-text answer box.
    - Each answer is recorded as a decision (key: value) and can add draft tasks to the Task List. Draft tasks show with a dashed icon.
    - The agent keeps asking until nothing is ambiguous.
 3. **Ready:** a spec card lists every decision.
@@ -302,48 +302,48 @@ The layout has three columns:
    - **Lock spec & publish tasks** (`L`): commits SPEC.md, turns the draft tasks into real tasks, and marks the thread done.
    - **SPEC.md** (`S`): opens the file.
    - **Keep grilling** (`G`): asks more questions.
-4. **How the agent reports structure:** the interview runs on any provider, so the prompt carries the whole protocol. The agent ends each reply with a fenced `velocity-interview` JSON block: the scan summary (first reply), the draft tasks the last answer adds, and either the next question (`key`, `text`, `why`, up to 4 options, one recommended) or `ready` with the proposed proof list. Velocity hides the block from the transcript. A reply without one leaves the question open for a free-text answer. Lock writes the edited proof list into SPEC.md's `## Proof list` section before committing. After a restart, an interview resumes on your next message from its saved decisions (§3.2 Resume after a restart).
+4. **How the agent reports structure:** the interview runs on any provider, so the prompt carries the whole protocol. The agent ends each reply with a fenced `velocity-interview` JSON block: the scan summary (first reply), the draft tasks the last answer adds, and either the next question (`key`, `text`, `why`, up to 4 options, one recommended) or `ready` with the proposed proof list. Velocity hides the block from the transcript. A reply without one leaves the question open for a free-text answer. Lock writes the edited proof list into SPEC.md's `## Proof list` section before committing. After a restart, an interview resumes on your next message from its saved decisions (Â§3.2 Resume after a restart).
 
 **Accept when:**
 - [ ] No build thread, swarm or dispatch can start on a project whose spec is unlocked. Swarm marks draft tasks "lock the spec first".
 - [ ] Locking commits SPEC.md and publishes the tasks.
-- [ ] The Task List counter shows `draft · N` before lock and `done/total` after.
+- [ ] The Task List counter shows `draft Â· N` before lock and `done/total` after.
 
-### F4 · Threads and composer
+### F4 Â· Threads and composer
 
 - **Sending from the home composer** starts a thread. It gets a worktree from `master`, a branch `vel/<slug>`, and starts at once.
-- **Thread titles:** the title model (Settings → Providers → Thread titles, F15) names the thread from your first message, as a short imperative title.
+- **Thread titles:** the title model (Settings â†’ Providers â†’ Thread titles, F15) names the thread from your first message, as a short imperative title.
   - Velocity asks for the title while it takes a worktree from the warm pool (F5). Both finish in under a second with the default model, so the branch and worktree are named from the title (`vel/<title-slug>`) before the agent starts.
-  - Until the title arrives, the sidebar shows the first words of your message, pulsing, and the header shows "titling · <model>".
+  - Until the title arrives, the sidebar shows the first words of your message, pulsing, and the header shows "titling Â· <model>".
   - If the title model fails or takes longer than 2 seconds, the slug of your message is kept.
   - Threads are titled once, from the first message. Later messages don't retitle them.
   - Swarm, goal swarm and dispatched threads take their item's title and don't call the title model.
 - **Thread header:**
   - title
   - branch
-  - worktree path (click → open in Explorer)
-  - +/− line counts and age
-  - Diff (`D`), Editor (`E`), and `PR #n ↗` once a PR exists
+  - worktree path (click â†’ open in Explorer)
+  - +/âˆ’ line counts and age
+  - Diff (`D`), Editor (`E`), and `PR #n â†—` once a PR exists
 - **Transcript:** user message, agent messages, tool steps (verb, argument, result, running indicator) and diffs.
 - **Composer:**
   - `Enter` sends, `Shift+Enter` adds a new line, `Esc` leaves the box.
-  - Model pill (provider, model, effort, and "· Fast" when Fast is on), attach, mic. The pill opens a menu grouped by provider: each signed-in provider with its models and limit used, each signed-out provider as a "Sign in with …" row, and effort and speed at the bottom. On a running thread, a new model or speed applies from the next message.
-  - A message sent while the agent is busy shows "queued · sends when the current step finishes".
+  - Model pill (provider, model, effort, and "Â· Fast" when Fast is on), attach, mic. The pill opens a menu grouped by provider: each signed-in provider with its models and limit used, each signed-out provider as a "Sign in with â€¦" row, and effort and speed at the bottom. On a running thread, a new model or speed applies from the next message.
+  - A message sent while the agent is busy shows "queued Â· sends when the current step finishes".
 - **Slash menu:** `/task`, `/fanout 3`, `/review`, `/compact`, `/model`.
-- **Skill menu:** typing `$` lists the project's enabled skills with a one-line description each, filtered as you type. Picking one inserts `$<skill>`, and the agent is told to load that skill for this message. The transcript shows each skill an agent loads as a tool step ("Skill · ui-ux-pro-max").
+- **Skill menu:** typing `$` lists the project's enabled skills with a one-line description each, filtered as you type. Picking one inserts `$<skill>`, and the agent is told to load that skill for this message. The transcript shows each skill an agent loads as a tool step ("Skill Â· ui-ux-pro-max").
 - **Fan out** (`F`): the same prompt goes to 3 models in 3 worktrees.
 
 **Accept when:**
 - [ ] Messages never interrupt a running agent; they are queued (Rule 1).
 - [ ] A finished task opens its own PR. There is no "Ship PR" button or `/ship` command.
 
-### F5 · Worktrees
+### F5 Â· Worktrees
 
 **Lifecycle (decided):**
 
 | When | What happens |
 |---|---|
-| A thread starts, or any agent starts a job (PR duty review, scout sweep, swarm member, dispatched issue) | Create a worktree from `master`. Its first transcript step is `Worktree · <path> · created from master`. |
+| A thread starts, or any agent starts a job (PR duty review, scout sweep, swarm member, dispatched issue) | Create a worktree from `master`. Its first transcript step is `Worktree Â· <path> Â· created from master`. |
 | Its PR merges | Delete the worktree. Delete the local branch too if that setting is on (default on). Log both as steps with the space freed. |
 | Its PR is closed without merging | **Keep** the worktree. No automatic expiry. |
 | The thread fails | **Keep** the worktree. |
@@ -354,10 +354,10 @@ A worktree's path is fixed when it is created. Changing the location setting aff
 
 **Path:** `<drive><folder>\<project>\<branch-without-vel/>`, e.g. `D:\velocity\worktrees\velocity\command-palette`. Duty jobs use `review-pr-<n>` and `<agent>-sweep`.
 
-**Settings → Worktrees:**
+**Settings â†’ Worktrees:**
 - **Location:**
   - a drive picker showing each drive's name, type, used bar and free space (slow drives get a warning)
-  - a folder field with Browse…
+  - a folder field with Browseâ€¦
   - a live path preview
   - a per-project override ("Use a different location for <project>")
   - a notice when the location changed while worktrees exist
@@ -368,7 +368,7 @@ A worktree's path is fixed when it is created. Changing the location setting aff
   - "share the Rust build cache between a project's worktrees" (default on)
 
   The agent starts only after setup finishes.
-- **Live worktrees:** one row per worktree: state dot, path, owner, size and state (working / PR #n / failed · kept / closed · kept / review / sweep). Just-deleted rows show briefly, crossed out. The header shows the count, total size and free space on the drive. **Prune orphans** runs `git worktree prune`. Clicking a row opens its thread.
+- **Live worktrees:** one row per worktree: state dot, path, owner, size and state (working / PR #n / failed Â· kept / closed Â· kept / review / sweep). Just-deleted rows show briefly, crossed out. The header shows the count, total size and free space on the drive. **Prune orphans** runs `git worktree prune`. Clicking a row opens its thread.
 
 **Warm pool (speed):**
 - **One base clone.** Velocity keeps one base clone per project, and every worktree is a `git worktree add` from it, so only the first worktree pays for a clone.
@@ -394,29 +394,29 @@ A worktree's path is fixed when it is created. Changing the location setting aff
 - [ ] Sharing the build cache uses one compiler cache shared by every worktree (sccache as `RUSTC_WRAPPER` for Rust) and a separate target folder per worktree *(proposed mechanism)*. A shared `CARGO_TARGET_DIR` is not used: cargo locks it, so agents would build one at a time.
 - [ ] Two agents' heavy builds never run at the same time, a landing check never waits behind a lower-priority build, and the footer shows the running build and the queue *(proposed)*.
 
-### F6 · PR follow-through
+### F6 Â· PR follow-through
 
-When the task is done, the agent opens a PR. The PR description links the Task List item or says `Fixes #n`. The thread moves to **PR open · watching**.
+When the task is done, the agent opens a PR. The PR description links the Task List item or says `Fixes #n`. The thread moves to **PR open Â· watching**.
 
 Draft claims keep the coding transcript until the PR is ready. The watcher follows the thread's same-repository branch and excludes historical PRs from earlier uses of that branch. New review work is saved before delivery and remains pending until its ACP prompt completes; after a restart it resumes in the retained worktree. The PR author's own progress replies remain in history without prompting another response. Merge cleanup and explicit deletion (F12) share the thread's lifecycle lock and wait for confirmed shutdown of its agent and owned terminals before removing the checkout.
 
-- **PR track** under the header: Task done → Proved → PR #n → CI → Review → Merged → Worktree deleted. A closed PR shows: … → Closed without merging → Worktree kept.
+- **PR track** under the header: Task done â†’ Proved â†’ PR #n â†’ CI â†’ Review â†’ Merged â†’ Worktree deleted. A closed PR shows: â€¦ â†’ Closed without merging â†’ Worktree kept.
 - **The transcript switches to the PR history:**
-  - the coding work, collapsed to one line ("N tool calls · N files · +a −d · proved" with a Show work button)
+  - the coding work, collapsed to one line ("N tool calls Â· N files Â· +a âˆ’d Â· proved" with a Show work button)
   - PR opened, then the **proof card** (F17), CI results and reviewer claims
-  - **review comments** as cards with file:line and open / ✓ resolved
+  - **review comments** as cards with file:line and open / âœ“ resolved
   - the fix steps (edit, prove, push, reply) and "re-requested review"
   - approval, then a merged card
 - **Agent behaviour:**
   - If the local checks or CI fail on its own change, fix and push.
   - Answer every review comment: either fix and push, or reply with the reason. Then resolve the thread and re-request review.
   - If the PR is closed without merging, report why in the thread.
-- **Status line:** "watching PR #n · <stage> · answers new comments as they arrive", or "addressing N open review comment(s)".
-- **Sidebar meta:** `#n` plus the stage label in the stage colour: checking / in review / addressing review / approved · merging.
+- **Status line:** "watching PR #n Â· <stage> Â· answers new comments as they arrive", or "addressing N open review comment(s)".
+- **Sidebar meta:** `#n` plus the stage label in the stage colour: checking / in review / addressing review / approved Â· merging.
 
 **Landing and rebases** (from Anthropic's Scion):
 - **No global merge queue or lock.** PR duty merges a PR as soon as it is approved and its local checks pass (F7), without waiting its turn behind other PRs.
-- **Targeted rebases.** When a PR merges, Velocity compares the merged change's files with each open agent's claimed files and edited files (§3.2).
+- **Targeted rebases.** When a PR merges, Velocity compares the merged change's files with each open agent's claimed files and edited files (Â§3.2).
   - Only agents with an overlap rebase straight away; each gets a `rebased` event.
   - Every other agent rebases once, at landing time, instead of after every merge.
   - Generated files and registration lists (AGENTS.md "Shared files", F14) never count as an overlap. Generated files are regenerated, and registration lists take both sides' additions.
@@ -441,9 +441,9 @@ Draft claims keep the coding transcript until the PR is ready. The watcher follo
 - [ ] A comment from a PR duty agent reaches the authoring thread automatically and is acted on without user input.
 - [ ] The thread is not finished until `pr://merged`.
 
-### F7 · Duty agents
+### F7 Â· Duty agents
 
-Long-running roles. They appear under **On duty**, with an agent count (×N) and a one-line summary. Start one from the home chips (`V`, `S`), the palette, or the + on the group. The start dialog sets role, number of agents (1–4), model and role-specific rules. Starting a role that already exists adds agents to it.
+Long-running roles. They appear under **On duty**, with an agent count (Ã—N) and a one-line summary. Start one from the home chips (`V`, `S`), the palette, or the + on the group. The start dialog sets role, number of agents (1â€“4), model and role-specific rules. Starting a role that already exists adds agents to it.
 
 **Duty view:**
 - **Rules:** chips. Hard rules are shown locked.
@@ -477,7 +477,7 @@ Long-running roles. They appear under **On duty**, with an agent count (×N) and
   - A `changes` event newer than the approval blocks the merge. PR duty mirrors each record on GitHub as a comment ("Approved at `<sha7>`") so people reading the PR see it.
   - On a repository whose branch protection requires a GitHub approval, the merge fails and Velocity posts a `failed` event. It never bypasses the rule (`--admin`).
 - **Review the intent, not each line.** The reviewer checks the PR against its claim, its Task List item, issue or SPEC.md section, and AGENTS.md. Style is left to linters.
-- **Severity bar** (locked). A finding blocks a merge only for: data loss or corruption, a crash or hang, a §1 rule violation, a security hole, a failing local check, or the main path of the claimed piece not doing what its SPEC.md section says.
+- **Severity bar** (locked). A finding blocks a merge only for: data loss or corruption, a crash or hang, a Â§1 rule violation, a security hole, a failing local check, or the main path of the claimed piece not doing what its SPEC.md section says.
   - Everything else (edge cases on rare inputs, display miscounts, naming, polish) is filed as an issue with its evidence, linked from an approving review, and goes back to the pool for scouts and other agents.
   - Every blocking finding goes in the first review. Later rounds review only the commits pushed since, and block only on findings in those commits or on new data loss or a crash.
   - When a reviewer is unsure whether a finding blocks, it does not block.
@@ -493,7 +493,7 @@ Long-running roles. They appear under **On duty**, with an agent count (×N) and
   - **Sensitive:** touches any path listed under "Sensitive paths" in AGENTS.md (e.g. migrations, worktree deletion, CI config, auth). Full review, plus the full stress suite before merge, plus a confidence proof at the strongest level the language allows (F17).
 
   The tier shows on the rail PR row. Every tier still needs an approving review, so "never merge without approval" holds.
-- **Landing ticks the plan.** When PR duty lands a PR for a §7-style checklist item, it ticks the item in the same branch update it makes before merging. Authors never tick it, so PRs don't all edit the same checklist lines.
+- **Landing ticks the plan.** When PR duty lands a PR for a Â§7-style checklist item, it ticks the item in the same branch update it makes before merging. Authors never tick it, so PRs don't all edit the same checklist lines.
 
 **Main watcher** *(role name proposed)*: a duty role that watches `master` after merges, modelled on Anthropic's "superfan" agents.
 - After each merge it runs every scout test and stress script (F17). Pre-merge CI is only build and lint, and the proofs are checked locally.
@@ -523,7 +523,7 @@ Long-running roles. They appear under **On duty**, with an agent count (×N) and
 - [ ] Pausing finishes in-flight reviews and claims nothing new.
 - [ ] Rail PR rows show the review state and the claiming agent.
 
-### F8 · Task List
+### F8 Â· Task List
 
 The project-scoped list in the top-right panel.
 - **States:** draft (before spec lock), todo, now (an agent is on it), done (its PR merged).
@@ -540,18 +540,18 @@ The project-scoped list in the top-right panel.
 - Tasks not created by the spec show who added them: "added by you", or "added by <thread>", which links to that thread.
 - Tasks added before the spec is locked are drafts.
 
-**Live state:** a task with an agent shows that agent's state (agent working / #n · in review / merged · #n), linked to its thread.
+**Live state:** a task with an agent shows that agent's state (agent working / #n Â· in review / merged Â· #n), linked to its thread.
 
 **Accept when:**
 - [ ] Re-rendering the list never takes focus from the add-task input.
 - [ ] New tasks scroll into view.
 
-> The full meaning of the Task List is still to be explained by the user (§8). Do not add task fields or behaviour beyond this section.
+> The full meaning of the Task List is still to be explained by the user (Â§8). Do not add task fields or behaviour beyond this section.
 
-### F9 · Issues and dispatch
+### F9 Â· Issues and dispatch
 
 - **The Issues panel** lists open GitHub issues: number, title, label and the scout that filed it.
-- **Questions** *(proposed)*: issues labelled `spec-question` are open SPEC.md §8 questions an agent ran into. They show as their own group at the top of the panel, sorted by how many pieces each one blocks. Each row shows the filer's recommended answer.
+- **Questions** *(proposed)*: issues labelled `spec-question` are open SPEC.md Â§8 questions an agent ran into. They show as their own group at the top of the panel, sorted by how many pieces each one blocks. Each row shows the filer's recommended answer.
   - **Accept** opens a one-line SPEC.md PR that records the answer as *(proposed)*. PR duty lands it as Trivial (F7), and the blocked pieces become claimable.
   - Agents never wait on a question: they file it and claim other work (Rule 1).
   - **Why:** unanswered questions, not code, were what kept most of a milestone unclaimable.
@@ -559,44 +559,44 @@ The project-scoped list in the top-right panel.
   - `I` opens the palette filtered to issues. Dispatched threads keep the issue title and use `vel/issue-<n>` (with a unique suffix when needed), without calling the title model. Their saved issue identity includes the repository; repeat dispatch opens the owning thread. Deleting that thread frees the issue after Undo expires (F12).
   - A question's recommended answer is read from a `Recommended answer:` or `Recommendation:` paragraph; its `Blocks:` bullet list supplies the blocked-item count. Questions without a recorded recommendation stay readable on GitHub. Accept starts the normal agent lifecycle with a prompt limited to the one-line proposed SPEC answer and its PR.
 
-### F10 · Swarm
+### F10 Â· Swarm
 
 One agent per open item, all started at the same time, each in its own worktree. Open it with the **Swarm** buttons on the Task List and Issues panels, `W`, the home chip, or the palette.
 
 **Swarm dialog:**
-- **Source:** Task List · N, Issues · N, or Both · N.
+- **Source:** Task List Â· N, Issues Â· N, or Both Â· N.
 - **Items:** checkboxes, all open items checked by default, with Select all/none. Items that already have an agent, and draft tasks, are shown but can't be selected.
-- **Models:** choose one or several. Several are assigned round-robin, and the split is shown ("3 on Opus · 3 on Sonnet · 3 on Codex").
+- **Models:** choose one or several. Several are assigned round-robin, and the split is shown ("3 on Opus Â· 3 on Sonnet Â· 3 on Codex").
 - **Rules:**
   - Each agent opens a PR and watches it until it merges (locked, from AGENTS.md).
   - Each agent gets its own worktree under the configured location (locked).
   - Rebase only when a merged PR touches your files, otherwise once at landing (locked, F6).
   - Close each issue when its PR merges (default on).
 - **PR duty capacity:** aim for about 1 reviewer per 3 open PRs. If PR duty is short, offer "Add N agents to PR duty"; if nobody is on PR duty, offer to start it. Without a reviewer, PRs wait as "needs a reviewer".
-- **Footer:** "N worktrees on D: · all start now". Launch with `Ctrl+Enter`.
+- **Footer:** "N worktrees on D: Â· all start now". Launch with `Ctrl+Enter`.
 
-**Swarm in the sidebar:** one row under **Swarms**, with ×N, a segmented progress bar (working / in PR / fixing / merged) and counts. Member threads are listed under it, indented, only while the swarm or one of its members is selected. They are not listed in the other groups.
+**Swarm in the sidebar:** one row under **Swarms**, with Ã—N, a segmented progress bar (working / in PR / fixing / merged) and counts. Member threads are listed under it, indented, only while the swarm or one of its members is selected. They are not listed in the other groups.
 
 **Swarm view:**
-- **Header:** N agents · N worktrees live · start time · merged/total. **+ Items** adds open items to this swarm.
+- **Header:** N agents Â· N worktrees live Â· start time Â· merged/total. **+ Items** adds open items to this swarm.
 - A big progress bar plus a legend.
 - **Agent cards:**
   - the item (task, or issue #n)
-  - a 5-dot track: work · PR · CI · review · merged
+  - a 5-dot track: work Â· PR Â· CI Â· review Â· merged
   - what it is doing now
-  - agent id, model and +/−
+  - agent id, model and +/âˆ’
 
   Click a card to open that agent's thread.
-- **Activity:** PR opened, changes requested, comment resolved, merged (task done / issue closed), "N affected agents rebased after #n", conflicts, stalls, and "Swarm finished · all N PRs merged".
+- **Activity:** PR opened, changes requested, comment resolved, merged (task done / issue closed), "N affected agents rebased after #n", conflicts, stalls, and "Swarm finished Â· all N PRs merged".
 - **Composer:** a message goes to every agent still working; each picks it up at its next step.
 
 **Merging a member** ticks its task done or closes its issue, removes the PR from the rail, deletes the worktree, and rebases only the members whose files it touched (F6).
 
 **Accept when:**
-- [ ] All selected agents start immediately, unless a provider concurrency cap is set (F15, off by default; §8 Q4).
+- [ ] All selected agents start immediately, unless a provider concurrency cap is set (F15, off by default; Â§8 Q4).
 - [ ] Deleting a member returns its task to todo, or frees its issue.
 
-### F11 · AGENTS.md editor
+### F11 Â· AGENTS.md editor
 
 Open it from the rail link or the palette. It reads and writes the repo's `AGENTS.md`.
 
@@ -609,11 +609,11 @@ Open it from the rail link or the palette. It reads and writes the repo's `AGENT
   - A fast model *(proposed: Haiku 5.5)* rewrites it as a direct rule, using the whole file as context (e.g. it reuses the commands from `## Commands`).
   - The edit lands at once, with no approval, and the cursor moves to a new bullet. You keep typing while it works.
   - It can:
-    - **tighten** ("You should probably keep functions under 60 lines." → "Keep functions under 60 lines. Split anything longer.")
-    - **expand** short notes ("no unwrap" → "Never call `unwrap()` or `expect()` outside tests.")
+    - **tighten** ("You should probably keep functions under 60 lines." â†’ "Keep functions under 60 lines. Split anything longer.")
+    - **expand** short notes ("no unwrap" â†’ "Never call `unwrap()` or `expect()` outside tests.")
     - **split** a bullet with two rules into two
   - If it cannot work out what a vague word means, it leaves the bullet flagged and says what is missing ("say what 'clean' means").
-  - Every rewritten bullet shows "was ~~original~~ · **Undo**" until you save.
+  - Every rewritten bullet shows "was ~~original~~ Â· **Undo**" until you save.
 - **Live lint while typing:** marks hedges (should probably, maybe, try to, where possible, as needed, consider), "should", and vague words (clean, good, nice, appropriate, reasonable, properly, etc.).
 - **Side panel:**
   - **Covers:** commands (build, proofs, lint); implementation first; proofs: proof list only, after the code; tests and docs: low priority; scope; PR: monitor until merged; PR: address every review comment; definition of done; hard "never" list. Each missing item has **Add**, which inserts editable bullets into the right section.
@@ -626,9 +626,9 @@ Open it from the rail link or the palette. It reads and writes the repo's `AGENT
   | `Enter` | submit |
   | `Shift+Enter` | new bullet, kept exactly as typed |
   | `Tab` / `Shift+Tab` | indent / outdent |
-  | `Alt+↑/↓` | move bullet |
+  | `Alt+â†‘/â†“` | move bullet |
   | `Backspace` on an empty bullet | delete it |
-  | `↑/↓` at the start/end of a bullet | move to the previous/next bullet |
+  | `â†‘/â†“` at the start/end of a bullet | move to the previous/next bullet |
   | `## Name` + `Enter` | new section |
   | `Ctrl+S` | save and commit |
 
@@ -647,16 +647,16 @@ Open it from the rail link or the palette. It reads and writes the repo's `AGENT
 - [ ] Saving commits AGENTS.md; agents pick it up on their next task.
 - [ ] Undo restores your exact original wording, including removing any split-off bullet.
 
-### F12 · Thread context menu and delete
+### F12 Â· Thread context menu and delete
 
 Right-clicking a thread in the sidebar opens a menu:
 - Open worktree in Explorer
 - Copy worktree path
 - Open PR #n on GitHub
-- **Delete …** (shown in red)
+- **Delete â€¦** (shown in red)
 
 The delete label depends on the thread:
-- **Delete thread and worktree**, with what it will do underneath: "stops the agent · closes PR #n · 247 MB freed"
+- **Delete thread and worktree**, with what it will do underneath: "stops the agent Â· closes PR #n Â· 247 MB freed"
 - **Delete swarm and its N worktrees** (swarm row)
 - **Delete thread** (merged threads, whose worktree is already gone, and spec threads)
 
@@ -674,11 +674,11 @@ Delete is **immediate, with no confirmation** (decided).
 - [ ] Undo within 5 s restores everything exactly.
 - [ ] After 5 s nothing remains on disk.
 
-### F13 · Settings
+### F13 Â· Settings
 
-Open with the footer gear, `Ctrl+,`, the palette, the footer worktree count (→ Worktrees) or the footer limit meter (→ Providers). Pages: **Worktrees** (F5), **Providers** (F15: sign-in, default model, effort and speed for new threads, and the thread title model), **Skills** (F18), **Agents** and **Proofs**. Proofs holds the project's proof list, the code-level translator for each language when an issue asks for one (Rust: Aeneas), and the stress-diff input count (F17). Agents holds the shared MCP servers passed to every agent (§3.2 Tool access), the per-agent caps (max turns, max duration; off by default), the stall timeout (5 min) and the claim-release grace period (10 min) from §2.2. The rest of the Agents page is unspecified. There is no Keys page: every provider signs in with OAuth.
+Open with the footer gear, `Ctrl+,`, the palette, the footer worktree count (â†’ Worktrees) or the footer limit meter (â†’ Providers). Pages: **Worktrees** (F5), **Providers** (F15: sign-in, default model, effort and speed for new threads, and the thread title model), **Skills** (F18), **Agents** and **Proofs**. Proofs holds the project's proof list, the code-level translator for each language when an issue asks for one (Rust: Aeneas), and the stress-diff input count (F17). Agents holds the shared MCP servers passed to every agent (Â§3.2 Tool access), the per-agent caps (max turns, max duration; off by default), the stall timeout (5 min) and the claim-release grace period (10 min) from Â§2.2. The rest of the Agents page is unspecified. There is no Keys page: every provider signs in with OAuth.
 
-### F14 · AIRC (claims, events, agent messages)
+### F14 Â· AIRC (claims, events, agent messages)
 
 One IRC-style channel per project, `#<project>`, shared by every agent in it: thread agents, swarm members, dispatched agents and duty agents. It exists so agents coordinate instead of working in an echo chamber: they see each other's work, catch feature overlap early, and sequence work that depends on another agent's PR. It is not meant to be a chat room. What fills it is **events**, which Velocity posts from what it observes. **Messages** between agents are allowed but are for the cases events can't express. Modelled on xros_chat (daily logs, nicks, presence, mentions, ledgers, MCP tools).
 
@@ -693,7 +693,7 @@ One IRC-style channel per project, `#<project>`, shared by every agent in it: th
 | `overlap` (amber row) | two working or PR-open agents claim the same file | Velocity's claim comparison |
 | `shares` | an agent will make a small change in another agent's file and rebase after it merges | `airc_share` |
 | `waits` / `unblocked` | an agent waits for another agent's PR, then rebases after it merges | `airc_wait`, `pr://merged` |
-| `PR` · `changes` · `pushed` · `approved` · `merged` | the PR lifecycle (F6, F7) | GitHub; `approved` is PR duty's approval record (F7) |
+| `PR` Â· `changes` Â· `pushed` Â· `approved` Â· `merged` | the PR lifecycle (F6, F7) | GitHub; `approved` is PR duty's approval record (F7) |
 | `order` | PR duty sets a merge order | PR duty |
 | `issue` | a scout or agent files an issue | GitHub |
 | `task` | a Task List item is added (by you or by an agent, F8) | Task List |
@@ -704,8 +704,8 @@ One IRC-style channel per project, `#<project>`, shared by every agent in it: th
 | `rebased` | a merge touched an agent's files and it rebased (F6) | Velocity |
 | `updated` | PR duty merged `master` into a PR's branch; names the PR and its new head (F6) | PR duty |
 | `conflict` | a PR's update onto `master` conflicts in a way only its author can resolve; names the files and the owning agent (F6) | PR duty |
-| `stalled` · `at limit` · `released` | activity changes and claim release (§2.2) | Velocity |
-| `broken` · `reverted` | `master` broke after a merge, and its fix or revert (F7) | Main watcher |
+| `stalled` Â· `at limit` Â· `released` | activity changes and claim release (Â§2.2) | Velocity |
+| `broken` Â· `reverted` | `master` broke after a merge, and its fix or revert (F7) | Main watcher |
 | `proved` | a design or confidence proof checks, with its level per language (F17) | Velocity |
 | `statement` | a theorem statement changed after review; the review resets (F17) | Velocity |
 | `stress` | a scout's or reviewer's stress script fails; the evidence for an issue or comment (F17) | scout, PR duty |
@@ -717,12 +717,12 @@ One IRC-style channel per project, `#<project>`, shared by every agent in it: th
   - **Registration lists** (the command, event and module lists every feature adds a line to) take shared claims, which never raise an overlap.
 
   Without this, every agent overlaps every other on the same few files, and targeted rebases (F6) turn into rebasing everyone.
-- **Record overlaps instead of discussing them.** When Velocity posts an overlap, the later agent records either a share (`airc_share`) or a wait (`airc_wait`) before it edits the shared file. In a wait, its thread shows "waiting for <nick> · #n · shares <file>" and makes no edits. When the PR merges, it rebases and an `unblocked` event is posted. If the PR is closed, fails or is deleted, the wait ends.
+- **Record overlaps instead of discussing them.** When Velocity posts an overlap, the later agent records either a share (`airc_share`) or a wait (`airc_wait`) before it edits the shared file. In a wait, its thread shows "waiting for <nick> Â· #n Â· shares <file>" and makes no edits. When the PR merges, it rebases and an `unblocked` event is posted. If the PR is closed, fails or is deleted, the wait ends.
 - **Message only when needed.** A message is for something events can't say: asking the file's owner for a change, a handoff note after a merge, or answering a mention. Agents never restate an event in a message.
-- **Address every message.** A message names its recipients (`to`) and its `intent`: `inform`, `request` or `question`. An agent never replies to an `inform`. It answers a `question`, and replies "done" or "declined, because …" to a `request`. Agents can't broadcast; only your comments go to every agent.
+- **Address every message.** A message names its recipients (`to`) and its `intent`: `inform`, `request` or `question`. An agent never replies to an `inform`. It answers a `question`, and replies "done" or "declined, because â€¦" to a `request`. Agents can't broadcast; only your comments go to every agent.
 - **Log discoveries** that other agents need (environment quirks, platform bugs) to the Discoveries ledger. Every merge is appended to Past work.
 
-**Targeted delivery** (from Google Scion's "Not in `to` → not for you"). At each step boundary, an agent receives only:
+**Targeted delivery** (from Google Scion's "Not in `to` â†’ not for you"). At each step boundary, an agent receives only:
 - events about its own claims, PR, waits and shares;
 - overlaps and refusals that name it;
 - merges whose files touch its claimed or edited files;
@@ -751,51 +751,51 @@ Nothing else is pushed to it. The full log stays readable on demand (`read_event
 
 **Storage:** daily log files and ledger files per project under the app data folder. Agents reach AIRC through MCP tools (`claim`, `release`, `share`, `wait`, `read_feed`, `read_events`, `send_message { to, intent, text }`, `read_messages`, `append_ledger`, `read_ledger`), which the agent runner gives every agent on every provider; the agent runner injects unread mentions at each step boundary.
 
-The M8 channel backend is `velocity-airc`: launch `velocity-airc <app-data> <project-id> <member-id> <worktree-leaf-or-duty-nick>` as an MCP stdio server. Initialization joins the channel; EOF leaves it. Project identities partition storage independently of display names. The project-id is the project's store identifier. Velocity posts events (the F14 tags) as `velocity` on behalf of the nick they name, without joining; an event about a PR also carries its number and head SHA, which the approval record (F7) reads. UTC daily JSONL logs and the Discoveries/Past work files share monotonically increasing sequence cursors; writes are serialized across processes and flushed before acknowledgement. Nicks are cut at word boundaries to 16 characters, with collision suffixes; `you` and `velocity` are reserved. Tools available at this stage are `join`, `leave`, `list_nicks`, `read_feed`, `read_events`, `read_messages`, `send_message`, `append_ledger`, and `read_ledger`. Claim tools, runtime injection, step-boundary delivery and the modal remain their later §7 items.
+The M8 channel backend is `velocity-airc`: launch `velocity-airc <app-data> <project-id> <member-id> <worktree-leaf-or-duty-nick>` as an MCP stdio server. Initialization joins the channel; EOF leaves it. Project identities partition storage independently of display names. The project-id is the project's store identifier. Velocity posts events (the F14 tags) as `velocity` on behalf of the nick they name, without joining; an event about a PR also carries its number and head SHA, which the approval record (F7) reads. UTC daily JSONL logs and the Discoveries/Past work files share monotonically increasing sequence cursors; writes are serialized across processes and flushed before acknowledgement. Nicks are cut at word boundaries to 16 characters, with collision suffixes; `you` and `velocity` are reserved. Tools available at this stage are `join`, `leave`, `list_nicks`, `read_feed`, `read_events`, `read_messages`, `send_message`, `append_ledger`, and `read_ledger`. Claim tools, runtime injection, step-boundary delivery and the modal remain their later Â§7 items.
 
 **Acceptance:**
 - Two agents that claim the same file get an overlap event within one step, and the later one records a share or a wait before it edits the file.
 - PR, review, merge, issue and Task List events appear without any agent posting them.
-- A normal run (claim → PR → merge with no conflicts) produces no messages.
+- A normal run (claim â†’ PR â†’ merge with no conflicts) produces no messages.
 - An agent is never sent an event or message unrelated to its claims, PR or waits unless it is in `to` or the line is your comment.
 - A heads-down agent receives no agent message until its next PR update or idle, and a quarantined agent's messages reach nobody.
 - A dependent agent makes no edits until its dependency merges, then rebases.
 - Every merge produces a `merged` event and a Past work entry.
 - Your `nick:` line reaches that agent's thread, and the agent replies in the channel.
 
-### F15 · Providers (OAuth)
+### F15 Â· Providers (OAuth)
 
-Four providers: **Anthropic** (Claude Code agent), **Codex** (Codex CLI agent), **Antigravity** and **Kimi Code** (Kimi CLI agent). Every one signs in with OAuth on your own subscription, the way T3 Code does. Velocity talks to each one's agent over ACP (§3.2) and uses that agent's own login. It never asks for, shows or stores an API key, and tokens stay in each provider's own credential store.
+Four providers: **Anthropic** (Claude Code agent), **Codex** (Codex CLI agent), **Antigravity** and **Kimi Code** (Kimi CLI agent). Every one signs in with OAuth on your own subscription, the way T3 Code does. Velocity talks to each one's agent over ACP (Â§3.2) and uses that agent's own login. It never asks for, shows or stores an API key, and tokens stay in each provider's own credential store.
 
-**Settings → Providers** has one card per provider:
-- Its mark, its name, "runs <agent> over ACP · OAuth", and the ACP agent command (e.g. `claude-code-acp · stdio`).
+**Settings â†’ Providers** has one card per provider:
+- Its mark, its name, "runs <agent> over ACP Â· OAuth", and the ACP agent command (e.g. `claude-code-acp Â· stdio`).
 - **Status:**
   - **Signed in** shows the plan and how many agents are on it.
-  - **Waiting** shows "Waiting for you to finish signing in at <site>…" with Cancel.
+  - **Waiting** shows "Waiting for you to finish signing in at <site>â€¦" with Cancel.
   - **Not signed in** means the provider's models are hidden from every picker.
 - **Sign in with Claude / ChatGPT / Google / Kimi:** opens the provider's OAuth page in your browser. When the login completes, the card flips to signed in by itself and a toast lists the models now available.
 - **Sign out:** agents already running on that provider keep their session until they finish. New work can't use it.
 - **Limit:** a bar showing the share of the current subscription window used (5-hour, daily, weekly, whatever the provider reports) and when it resets.
 - **Max agents at once** (off by default): a cap on concurrently running agents for this provider.
-  - Agents over the cap wait as "queued · <provider>" and start when a slot frees.
-  - Parked agents (§2.2) don't hold a slot, so waiting on another PR never blocks new work.
+  - Agents over the cap wait as "queued Â· <provider>" and start when a slot frees.
+  - Parked agents (Â§2.2) don't hold a slot, so waiting on another PR never blocks new work.
 - **Models:** chips that are read from the provider after sign-in. Clicking a chip hides that model from the pickers or shows it again.
 
 **Default for new threads:** one model card per available model, plus effort and speed. A new thread starts on it. Spec interviews, duty agents and swarms choose their models in their own dialogs.
 
 **Speed: Regular or Fast.**
-- **Where available.** Some models offer a fast mode, which answers sooner, as Claude Code's fast mode does for Opus. Velocity reads whether a model has one from its agent over ACP (§3.2) and offers Fast only there.
+- **Where available.** Some models offer a fast mode, which answers sooner, as Claude Code's fast mode does for Opus. Velocity reads whether a model has one from its agent over ACP (Â§3.2) and offers Fast only there.
 - **Where it's set:** everywhere effort is chosen. That covers the composer menu, the defaults above, the thread title model, the new-project interview model, and each goal swarm mix row (F16). The duty and swarm dialogs use the default speed.
 - **Models without a fast mode.** On those models the Speed control is greyed out and says "<model> has no fast mode". A thread set to Fast that switches to such a model runs at Regular, and goes back to Fast if it switches back.
-- **Shown:** the model pill and agent cards add "· Fast" when it is on.
+- **Shown:** the model pill and agent cards add "Â· Fast" when it is on.
 - **Limits:** if a provider reports that fast mode uses the subscription limit faster, the limit bar counts it that way (Q25).
 
 **Thread titles:**
-- **Default:** GPT-6 Luna · Low · Fast.
-- **Settings:** model cards (signed-in providers only), effort and speed, and a "Reset to GPT-6 Luna · Low · Fast" button when changed.
+- **Default:** GPT-6 Luna Â· Low Â· Fast.
+- **Settings:** model cards (signed-in providers only), effort and speed, and a "Reset to GPT-6 Luna Â· Low Â· Fast" button when changed.
 - **When its provider is signed out:** the section says so, and titles use the first signed-in model at Low until it signs in again.
 
-**Everywhere a model is chosen** (new project, duty dialog, swarm, goal swarm, composer menu, thread titles), only signed-in providers' models are listed. Each signed-out provider shows as a dashed "Sign in" card. Clicking it opens Settings → Providers and starts that provider's sign-in.
+**Everywhere a model is chosen** (new project, duty dialog, swarm, goal swarm, composer menu, thread titles), only signed-in providers' models are listed. Each signed-out provider shows as a dashed "Sign in" card. Clicking it opens Settings â†’ Providers and starts that provider's sign-in.
 
 **Acceptance:**
 - No screen anywhere accepts an API key.
@@ -804,10 +804,10 @@ Four providers: **Anthropic** (Claude Code agent), **Codex** (Codex CLI agent), 
 - A swarm can mix models from several providers, assigned round-robin.
 - A goal swarm runs exactly the count you set on each model.
 
-### F16 · Goal swarm
+### F16 Â· Goal swarm
 
 **What it is:**
-- Your T3 Code routine as one action. Today you open 5–20 threads by hand and paste the same prompt into each: read AGENTS.md and start dev, push a branch, open a PR, watch it, keep the worktree on a given drive, remove it after the merge.
+- Your T3 Code routine as one action. Today you open 5â€“20 threads by hand and paste the same prompt into each: read AGENTS.md and start dev, push a branch, open a PR, watch it, keep the worktree on a given drive, remove it after the merge.
 - A goal swarm starts all of those agents at once, with one prompt and the model mix you choose.
 - It differs from a Swarm (F10) in one way: nobody assigns work. Each agent decides what to build, and AIRC (F14) keeps two agents off the same piece.
 
@@ -819,7 +819,7 @@ Four providers: **Anthropic** (Claude Code agent), **Codex** (Codex CLI agent), 
   - join `#<project>` and claim work before editing, where the first claim wins;
   - prove a new feature's design in Lean before writing its code, and prove the code after (F17).
 
-  These replace the lifecycle half of the hand-written prompt. The worktree drive comes from Settings → Worktrees, not from the prompt.
+  These replace the lifecycle half of the hand-written prompt. The worktree drive comes from Settings â†’ Worktrees, not from the prompt.
 - **Agents:** a stepper from 1 to 30, with quick picks 3 / 5 / 10 / 20. All of them start at once.
 - **Mix:** one row per model.
   - Each row has a model picker (signed-in providers only, F15), effort (Low / Med / High / Max), a Fast toggle (greyed out when the model has no fast mode) and a count.
@@ -827,10 +827,10 @@ Four providers: **Anthropic** (Claude Code agent), **Codex** (Codex CLI agent), 
   - Raising another row takes one agent from the rest; if the rest is empty, it raises the total.
   - Buttons: **Add a model** and **Even split**.
   - A bar above the rows shows the split in provider colours.
-  - Next to the buttons is a preview of the nicks, for example `sol-1…6 · argon-1…2 · fable-1…2`.
+  - Next to the buttons is a preview of the nicks, for example `sol-1â€¦6 Â· argon-1â€¦2 Â· fable-1â€¦2`.
   - Example: 10 agents = 6 GPT-6.1 Sol High + 2 Gemini 4 Argon High + 2 Fable 5.1 High.
 - **Limits:** one line per provider in the mix: agent count, share of the window used, and the reset time when 60% or more is used (F15).
-- **Pool:** "They choose from N unclaimed pieces: x Task List · y issues · z unbuilt SPEC.md sections." If there are more agents than pieces, it says how many will find nothing and leave.
+- **Pool:** "They choose from N unclaimed pieces: x Task List Â· y issues Â· z unbuilt SPEC.md sections." If there are more agents than pieces, it says how many will find nothing and leave.
 - **Options:**
   - **Keep going** (off by default): after its PR merges, an agent claims the next unclaimed piece in a fresh worktree instead of stopping.
   - **PR duty capacity:** the same check as the Swarm dialog (one reviewer per 3 open PRs).
@@ -846,22 +846,22 @@ Four providers: **Anthropic** (Claude Code agent), **Codex** (Codex CLI agent), 
    - **Granted:** it renames its branch for the piece (`vel/<slug>`, or `vel/issue-<n>`), posts its claim with files, and continues.
    - **Refused** (another agent claimed the piece after this agent read the board): a `refused` event names the holder. The agent re-reads the board and claims the first open piece, which posts a `claim` event. No message is needed.
    - **Nothing left:** a `left` event is posted; the agent removes its worktree and leaves.
-4. From here it is an ordinary thread (F4–F6). It settles overlaps and dependency waits in AIRC (F14), opens a PR, watches it until PR duty merges it, and its worktree is deleted. Merging ticks the task, closes the issue, or records the SPEC.md section as built in the project's state. Velocity records it at landing; the agent's PR never edits SPEC.md to mark it, so PRs don't all touch SPEC.md.
+4. From here it is an ordinary thread (F4â€“F6). It settles overlaps and dependency waits in AIRC (F14), opens a PR, watches it until PR duty merges it, and its worktree is deleted. Merging ticks the task, closes the issue, or records the SPEC.md section as built in the project's state. Velocity records it at landing; the agent's PR never edits SPEC.md to mark it, so PRs don't all touch SPEC.md.
 5. With keep going on, the same nick goes back to step 2.
 
 Agents launched together read the board within seconds of each other, so several often want the same piece. The lock is what makes that safe. The losers pick again within one step instead of duplicating work.
 
-**Sidebar:** one row under Swarms, with a target icon, "Goal · <prompt>", ×<agents> and the segment bar. Its members nest under it like swarm members, and each member is titled by the piece it claimed.
+**Sidebar:** one row under Swarms, with a target icon, "Goal Â· <prompt>", Ã—<agents> and the segment bar. Its members nest under it like swarm members, and each member is titled by the piece it claimed.
 
 **Goal swarm view:**
-- **Header:** title, "<n> agents · one prompt", start time, PRs merged. Buttons: **AIRC** and **+ Agents** (more agents on the same prompt).
-- **Prompt bubble:** "goal swarm · the same prompt to all <n> · <mix>".
+- **Header:** title, "<n> agents Â· one prompt", start time, PRs merged. Buttons: **AIRC** and **+ Agents** (more agents on the same prompt).
+- **Prompt bubble:** "goal swarm Â· the same prompt to all <n> Â· <mix>".
 - **Segment bar:** one segment per agent (choosing, working, PR open, addressing review, merged, failed), plus "<n> waiting on another agent's PR".
 - **Claims board:** every piece in the pool, in three groups:
-  - claimed pieces first, with the holder's nick and state (working, "waits for <nick> · #n", "#n · in review", failed · claim held);
+  - claimed pieces first, with the holder's nick and state (working, "waits for <nick> Â· #n", "#n Â· in review", failed Â· claim held);
   - open pieces next;
   - pieces this swarm merged last, struck through, with "merged #n".
-- **Agents:** one card per agent showing nick, model, effort (and "Fast" when on), claimed piece, the claim → PR → CI → review → merged track, and what it is doing. Clicking a card opens that thread.
+- **Agents:** one card per agent showing nick, model, effort (and "Fast" when on), claimed piece, the claim â†’ PR â†’ CI â†’ review â†’ merged track, and what it is doing. Clicking a card opens that thread.
 - **Activity:** claims, refusals, PRs, waits, merges and leaves.
 - **Composer:** messages every agent in the swarm (read at its next step, Rule 1).
 
@@ -874,7 +874,7 @@ Agents launched together read the board within seconds of each other, so several
 
 ---
 
-### F17 · Proofs and adversarial testing
+### F17 Â· Proofs and adversarial testing
 
 **Why:** assume everything fails. Tests written by the agent that wrote the code cost CI money, slow the builder down, and check what the builder already believed. So the work is split:
 - **Builders prove.** Lean proves the design is right and the code matches it.
@@ -903,7 +903,7 @@ Velocity's own proof list:
 | Targeted rebases and landing | F6 | an affected agent isn't rebased, or a merge drops a change |
 | Worktree deletion | F5, F12 | a worktree with unpushed work, or another thread's, is deleted |
 | Goal swarm work choice | F16 | a piece is taken twice, or an agent leaves while a piece is unclaimed |
-| Stall detection and claim release | §2.2 | a live agent's claims are released, or a dead agent's never are |
+| Stall detection and claim release | Â§2.2 | a live agent's claims are released, or a dead agent's never are |
 
 **Implementation first.** Proofs never block building. The agent builds and runs the feature, then writes its proofs in the same PR. Implementation stays the larger part of every PR: proofs, tests and docs together are smaller than the code, and PR duty requests changes when they aren't.
 
@@ -921,18 +921,18 @@ Example, from Velocity itself (F6):
 
 ```lean
 -- proofs/TargetedRebase/Design.lean
-theorem correct : ∀ m bs, ConflictFreeAtLanding (targeted m bs)
-theorem cost_bound : ∀ m bs, rebases (targeted m bs) ≤ (bs.filter (touches m)).length
-theorem optimal : ∀ strat ∈ RebaseStrategies,
-    (∀ m bs, ConflictFreeAtLanding (strat m bs)) →
-    ∀ m bs, rebases (targeted m bs) ≤ rebases (strat m bs)
+theorem correct : âˆ€ m bs, ConflictFreeAtLanding (targeted m bs)
+theorem cost_bound : âˆ€ m bs, rebases (targeted m bs) â‰¤ (bs.filter (touches m)).length
+theorem optimal : âˆ€ strat âˆˆ RebaseStrategies,
+    (âˆ€ m bs, ConflictFreeAtLanding (strat m bs)) â†’
+    âˆ€ m bs, rebases (targeted m bs) â‰¤ rebases (strat m bs)
 ```
 
 **Confidence proof** (`proofs/<Feature>/Confidence.lean`, after the code): proves what was built matches the design. Each language in the change reaches the strongest level available to it:
 
 | Level | How | Available for |
 |---|---|---|
-| **code** (on request) | A translator turns the code into Lean, and the proof shows the translated code refines the design model. | Any language with a translator set for the project. Rust ships with Aeneas (its safe subset). More translators are added per language in Settings → Proofs (Q23). |
+| **code** (on request) | A translator turns the code into Lean, and the proof shows the translated code refines the design model. | Any language with a translator set for the project. Rust ships with Aeneas (its safe subset). More translators are added per language in Settings â†’ Proofs (Q23). |
 | **reference** (default) | The Lean model exports a compact fixture table, and one test checks the code against it. For larger input spaces, the model is compiled (Lean 4 compiles to C) and exported with `@[export]`. Scouts' stress scripts run the code and the model on the same inputs and diff the outputs. C and C++ link the model directly. Python, TypeScript and every other language call it through their FFI or a small process. | Every language |
 | **model** | Only the design is proven. The PR is flagged, and scouts treat it as a proof gap. | Every language |
 
@@ -962,7 +962,7 @@ theorem optimal : ∀ strat ∈ RebaseStrategies,
 - the proof folder, and "N theorems proved";
 - the four checks, each ticked: lake build; no sorry or admit; standard axioms; statements locked at review;
 - every theorem: Design or Confidence, its name and its statement;
-- the level reached per language, e.g. "Rust · reference · fixture table checked by one test", "TypeScript · reference · scouts diff 10,000 stress inputs against it".
+- the level reached per language, e.g. "Rust Â· reference Â· fixture table checked by one test", "TypeScript Â· reference Â· scouts diff 10,000 stress inputs against it".
 
 **Accept when:**
 - [ ] A building agent's PR adds tests only for critical contracts, and its implementation outweighs its proofs, tests and docs together.
@@ -975,7 +975,7 @@ theorem optimal : ∀ strat ∈ RebaseStrategies,
 - [ ] Per-PR GitHub CI runs only build and lint.
 - [ ] A PR whose local checks pass on the merge result merges while its GitHub CI run is still pending or red.
 
-### F18 · Skills
+### F18 Â· Skills
 
 **What it is:** first-class support for skill packs: installed once, kept on a pinned commit, switched on per project, and given to every agent of every provider. Four packs are built in. Any other repo that follows the Agent Skills standard can be added.
 
@@ -992,7 +992,7 @@ theorem optimal : ∀ strat ∈ RebaseStrategies,
 - **Windows:** packs are cloned with `core.symlinks=true` and their Python runs with `PYTHONUTF8=1`. claude-skills needs both, or its mirror folders check out as pointer files.
 - **Velocity's own installer:** Velocity installs packs itself instead of running each pack's installer (`npx skills add`, `uipro init`, `rea-agents setup`, Claude plugin marketplaces). One install then reaches all four providers, and nothing edits each agent's own config.
 
-**Per project** (Settings → Skills, scoped to the current project):
+**Per project** (Settings â†’ Skills, scoped to the current project):
 - A switch per pack, plus bundle chips for packs that have bundles: claude-skills by domain, and Game dev skills by engine, discipline, genre and workflow.
 - **Context budget:** a meter shows how many skills are on and roughly how many tokens of skill descriptions every agent loads at start. It turns amber above 150 skills. claude-skills defaults to Engineering only for this reason.
 - **Suggestions** from the project scan (F3), switched on automatically:
@@ -1000,7 +1000,7 @@ theorem optimal : ∀ strat ∈ RebaseStrategies,
   - Game dev skills (the router plus the detected engine's bundle) when an engine is found: `project.godot`, `*.uproject`, `ProjectSettings/`, or a Bevy, Phaser, PixiJS or three.js dependency.
 
   Velocity re-checks after every merge, so a project that gains a UI later gets the suggestion then.
-- **Requirements:** each card shows what the pack needs and whether it's found, e.g. "✓ Python 3.12", "· Ghidra optional · not found".
+- **Requirements:** each card shows what the pack needs and whether it's found, e.g. "âœ“ Python 3.12", "Â· Ghidra optional Â· not found".
 
 **Where agents find them:**
 
@@ -1012,7 +1012,7 @@ theorem optimal : ∀ strat ∈ RebaseStrategies,
 
 - **Linked** (default): each enabled skill is a directory junction (Windows) or symlink into the library, created in every worktree and in the main checkout the spec interview uses. Those paths are listed in the repo's `.git/info/exclude`, so they never reach a commit or a PR.
 - **Committed** (per project): the enabled skills are copied into the repo at the pinned commit, for collaborators who don't use Velocity. Updating the pin then goes through a PR like any other change.
-- **Skills you installed yourself** are left alone (§3.2 Tool access). Velocity's links sit next to them. If a name clashes, your own skill wins and the card says so.
+- **Skills you installed yourself** are left alone (Â§3.2 Tool access). Velocity's links sit next to them. If a name clashes, your own skill wins and the card says so.
 
 **Every role gets them:** threads, swarm and goal swarm members, PR duty, scouts, the main watcher and spec interviews all see the same enabled skills. Skills add knowledge; they never remove a tool.
 
@@ -1024,7 +1024,7 @@ theorem optimal : ∀ strat ∈ RebaseStrategies,
 - **claude-skills: Python tools.** Its scripts run with your Python 3 and need no installs. Agents call them from the linked skill folder.
 - **Game dev skills: router.** The router skill is always on with the pack. Engine bundles are exclusive (only the detected engine's bundle is suggested); disciplines, genres and workflows add on.
 - **REA: MCP server.**
-  - Turning REA on registers its MCP server in Velocity's shared MCP servers (§3.2), so every agent of every provider gets REA's tools with no per-agent setup. Its investigation skill is linked like any other.
+  - Turning REA on registers its MCP server in Velocity's shared MCP servers (Â§3.2), so every agent of every provider gets REA's tools with no per-agent setup. Its investigation skill is linked like any other.
   - Analysis runs locally, under your user, inside the agent's worktree.
   - The card says REA is for software you own or are authorized to examine, and that commercial engines (IDA, Hopper, JEB) need your own licences.
 
@@ -1044,7 +1044,7 @@ theorem optimal : ∀ strat ∈ RebaseStrategies,
 | `Ctrl+N` | anywhere | new thread |
 | `Ctrl+Shift+N` | anywhere | new project |
 | `Ctrl+,` | anywhere | settings |
-| `Alt` (hold) / `Alt+1–9` | anywhere | show thread numbers / jump to thread |
+| `Alt` (hold) / `Alt+1â€“9` | anywhere | show thread numbers / jump to thread |
 | `/` | not typing | search threads |
 | `T` | not typing | focus "Add a task" |
 | `W` | not typing | swarm dialog |
@@ -1053,7 +1053,7 @@ theorem optimal : ∀ strat ∈ RebaseStrategies,
 | `Esc` | anywhere | close overlay / menu |
 | `Ctrl+Enter` | dialogs | create / start / launch |
 | `I` `R` `F` `V` `S` | home view | dispatch, resume, fan out, PR duty, scouts |
-| `1–4`, `L` `S` `G` | spec interview | answer; lock, SPEC.md, keep grilling |
+| `1â€“4`, `L` `S` `G` | spec interview | answer; lock, SPEC.md, keep grilling |
 | `D`, `E` | thread | diff, editor |
 | `Ctrl+S` and the outliner keys | AGENTS.md | see F11 |
 
@@ -1068,14 +1068,14 @@ theorem optimal : ∀ strat ∈ RebaseStrategies,
     - The main column has no panel: content sits straight on black.
   - **Materials:**
     - Panes are smoked glass:
-      - a top-lit fill `rgba(255,255,255,.072)` → `.034` over black, plus a faint top-left sheen;
-      - a 1px specular rim, a 165° gradient from `rgba(255,255,255,.30)` at the top-left fading to `.04` and back to `.11` at the bottom-right;
+      - a top-lit fill `rgba(255,255,255,.072)` â†’ `.034` over black, plus a faint top-left sheen;
+      - a 1px specular rim, a 165Â° gradient from `rgba(255,255,255,.30)` at the top-left fading to `.04` and back to `.11` at the bottom-right;
       - a 1px inner top highlight.
     - The rim brightens on focus (the composer) and on hover (chips).
-    - Popovers, menus, dialogs and toasts are frosted glass: `rgba(44,44,48,.72)` → `rgba(26,26,28,.80)` with `blur(48px) saturate(1.9)` over the content beneath them. The scrim dims to `rgba(0,0,0,.5)` and blurs.
+    - Popovers, menus, dialogs and toasts are frosted glass: `rgba(44,44,48,.72)` â†’ `rgba(26,26,28,.80)` with `blur(48px) saturate(1.9)` over the content beneath them. The scrim dims to `rgba(0,0,0,.5)` and blurs.
     - Cards in the content area take a faint top-lit fill and a `rgba(255,255,255,.09)` hairline.
     - No drop shadows on panes, because they don't read on black.
-  - **Shape:** corner radii 6 / 10 / 14 px. Panes 14–16 px, the composer and dialogs 18 px, menus 12 px. Pills and toasts are fully round.
+  - **Shape:** corner radii 6 / 10 / 14 px. Panes 14â€“16 px, the composer and dialogs 18 px, menus 12 px. Pills and toasts are fully round.
   - **Controls:** the accent is graphite grey `#98989d`, used for selection, focus rings, checkboxes and the primary button.
     - Thread rows are source-list rows. The selection is a small top-lit glass lozenge, not an outlined box.
     - Segmented controls use a sliding raised segment, and buttons are subtle raised gradients.
@@ -1093,7 +1093,7 @@ theorem optimal : ∀ strat ∈ RebaseStrategies,
   | info `#8fb4e8` | spec / PR open |
   | duty `#b7a3e6` | duty agents |
   | swarm `#7fd1c7` | swarm |
-  | claude `#d97757` · codex `#e9e9e9` · agy `#8ab4f8` · kimi `#f08fb8` | provider marks (Anthropic, Codex, Antigravity, Kimi Code) |
+  | claude `#d97757` Â· codex `#e9e9e9` Â· agy `#8ab4f8` Â· kimi `#f08fb8` | provider marks (Anthropic, Codex, Antigravity, Kimi Code) |
 
 - Base tokens are copied exactly from the mockup's `:root` into `ui/src/lib/theme/tokens.css`. Values missing from `:root` are copied from the reference's winning CSS declarations into `ui/src/lib/theme/reference.css` (user-authorized in #12). Components use the token files; the reference is read-only. The Rust theme module mirrors the base tokens.
 - Fonts are bundled locally in the app. The mockup uses a CDN only for convenience.
@@ -1107,78 +1107,78 @@ Each milestone ends with a working app. PR duty checks an item off when it lands
 **Bootstrap prerequisite** (AGENTS.md Proofs, F17)
 - [x] Pinned Lake project, Lean 4, Mathlib, Charon and Aeneas, with documented setup and extraction commands
 
-**M1 · Shell**
+**M1 Â· Shell**
 - [x] Tauri v2 app, frameless window, title bar, drag regions, window controls (F1)
-- [x] Design tokens → theme module; bundled fonts
-- [x] Three-column layout, sidebar groups, rail panels, pulse, palette, keyboard map (F1, §5)
+- [x] Design tokens â†’ theme module; bundled fonts
+- [x] Three-column layout, sidebar groups, rail panels, pulse, palette, keyboard map (F1, Â§5)
 - [x] Persisted state: projects, threads, tasks, settings
 
-**M2 · Projects and spec**
+**M2 Â· Projects and spec**
 - [x] Project store and switcher (F1)
 - [x] New-project dialog: local (git init) and GitHub (new/existing, visibility, clone) (F2)
-- [x] Spec interview: scan, ask, ready, lock; SPEC.md written and committed; draft → published tasks (F3)
+- [x] Spec interview: scan, ask, ready, lock; SPEC.md written and committed; draft â†’ published tasks (F3)
 - [x] Gate: no build work on unlocked projects (Rule 2)
 
-**M3 · Threads and worktrees**
+**M3 Â· Threads and worktrees**
 - [x] Agent runner: providers, models, effort, speed (Regular / Fast where the agent offers it), full permissions, queued steering (Rule 1, F4, F15)
-- [x] Thread titles from the title model (default GPT-6 Luna · Low · Fast), in parallel with taking a worktree; branch named from the title (F4, F15)
-- [x] ACP client (`agent-client-protocol`): spawn per thread, `session/new` in the worktree with AIRC as an MCP server, updates → transcript, auto-allow permissions, cancel, queued prompts, `fs`/`terminal` rooted at the worktree but not confined to it, full tool access with your config loaded and shared MCP servers (§3.2)
-- [ ] ACP agents for Claude Code (`claude-code-acp`), Codex (`codex-acp`), Kimi Code (`kimi --acp`) and Antigravity, each using its own OAuth login through `authenticate`; Settings → Providers, model menu, limit meter (F15)
+- [x] Thread titles from the title model (default GPT-6 Luna Â· Low Â· Fast), in parallel with taking a worktree; branch named from the title (F4, F15)
+- [x] ACP client (`agent-client-protocol`): spawn per thread, `session/new` in the worktree with AIRC as an MCP server, updates â†’ transcript, auto-allow permissions, cancel, queued prompts, `fs`/`terminal` rooted at the worktree but not confined to it, full tool access with your config loaded and shared MCP servers (Â§3.2)
+- [ ] ACP agents for Claude Code (`claude-code-acp`), Codex (`codex-acp`), Kimi Code (`kimi --acp`) and Antigravity, each using its own OAuth login through `authenticate`; Settings â†’ Providers, model menu, limit meter (F15)
 - [x] Worktree manager: create / delete / prune, path scheme, setup step (copy files, run command, shared build cache) (F5)
 - [x] Thread view: transcript, tool steps, diffs, header with worktree path, composer, slash menu (F4)
-- [x] Settings → Worktrees, including the live list and the footer count (F5, F13)
+- [x] Settings â†’ Worktrees, including the live list and the footer count (F5, F13)
 
-**M4 · PR loop**
+**M4 Â· PR loop**
 - [x] GitHub integration: open PR, CI checks, reviews, comments, merge, close
   - [x] Live Open Pull Requests rail: real project PRs, CI, line counts, review state, reviewer claims and owning-thread navigation (F6/F7)
-- [x] PR follow-through: track, PR history, auto-response to review comments, merge → worktree delete (F6)
+- [x] PR follow-through: track, PR history, auto-response to review comments, merge â†’ worktree delete (F6)
 - [x] Closed-without-merge state with the worktree kept (F5, F6)
 - [x] Right-click menu and delete with 5 s undo (F12)
 
-**M5 · Duty agents**
+**M5 Â· Duty agents**
 - [ ] PR duty: claiming, review against SPEC.md, request changes, approve, merge; never merge unapproved; approval record bound to the head SHA; severity bar (Rule 4, F7, Q28)
 - [x] Scouts: sweeps, issue filing with repro, de-duplication (F7)
   - [x] GitHub issue inventory (open and closed), executed failure evidence, duplicate assessment, dispatch labels and scout attribution; runnable backend filing path
 - [x] Duty view, start dialog, pause/resume, add agents (F7)
 
-**M6 · Task List, issues, swarm**
+**M6 Â· Task List, issues, swarm**
 - [ ] Task List: states, add input, `T`, `/task`, palette, attribution, live agent state (F8)
 - [ ] Agent `task_add` tool, used only when asked (F8)
 - [x] Issues panel and single dispatch (F9)
 - [ ] Swarm: dialog, launch, PR duty capacity, sidebar row, view, broadcast, + Items, rebase on merge, task done / issue close (F10)
 
-**M7 · AGENTS.md**
+**M7 Â· AGENTS.md**
 - [x] Outliner editor with markdown round-trip (F11)
 - [ ] Live lint, coverage checks with Add (F11)
 - [x] Rewrite agent on Enter: tighten / expand / split / flag, with Undo (F11)
 - [x] Default AGENTS.md template with the PR, Task List and AIRC rules (F11)
 
-**M8 · AIRC**
+**M8 Â· AIRC**
 - [x] Channel per project: log files, nicks, join/leave, MCP tools for agents (F14)
 - [ ] Claims from each agent's first step; overlap detection and `velocity` lines (F14)
-- [ ] Dependency wait → rebase → continue in the agent runner (F14)
+- [ ] Dependency wait â†’ rebase â†’ continue in the agent runner (F14)
 - [ ] Mention delivery to threads at step boundaries; your comments (F14)
 - [ ] Event log posted by Velocity from claims, GitHub and the Task List; agent messages kept separate (F14)
 - [ ] Modal: Events (default), Claims, Messages, Discoveries, Past work, nick list, unread badge, `A` (F14)
 
-**M9 · Goal swarm**
+**M9 Â· Goal swarm**
 - [ ] Atomic claim lock: `airc_claim` / `airc_release`, refusal lines, held claims on failure (F14, F16)
 - [ ] AIRC MCP server injected into every provider's agent runtime (F14, F16)
 - [ ] Work pool: open Task List items, open issues, unbuilt SPEC.md sections (F16)
 - [ ] Dialog: prompt, count, model mix with "the rest", effort and speed per row, limits, pool size, PR duty capacity, keep going (F16)
-- [ ] Launch, choosing → claimed → normal lifecycle, leave when nothing is left, keep going (F16)
+- [ ] Launch, choosing â†’ claimed â†’ normal lifecycle, leave when nothing is left, keep going (F16)
 - [ ] Goal swarm view: claims board, one card per agent, activity; sidebar row (F16)
 
-**M10 · Throughput** (§3.3)
-- [ ] Agent activity, stall detection with nudge then restart, per-agent caps, claim release after the grace period (§2.2)
-- [ ] Parking: end the session on `airc_wait`, resume on the subscribed `merged` event; optional provider concurrency cap (§2.2, F15)
+**M10 Â· Throughput** (Â§3.3)
+- [ ] Agent activity, stall detection with nudge then restart, per-agent caps, claim release after the grace period (Â§2.2)
+- [ ] Parking: end the session on `airc_wait`, resume on the subscribed `merged` event; optional provider concurrency cap (Â§2.2, F15)
 - [ ] Targeted AIRC delivery, message envelope (`to`, `intent`), heads-down and quarantine modes (F14)
 - [ ] Targeted rebases, optimistic landing, conflicts sent back to the owning agent; rebuild the merge result whenever `master` moved; Shared files exempt from overlaps (F6, F14)
 - [ ] Warm worktree pool from one base clone, prebuilt at the tip of `master` with a shared compiler cache; worktree guards (F5)
 - [ ] PR duty tiered review and intent review; Sensitive paths in AGENTS.md (F7)
 - [ ] Main watcher duty role: post-merge suite, bisect, fix or revert PR (F7)
 
-**M11 · Proofs** (F17)
+**M11 Â· Proofs** (F17)
 - [ ] Lean toolchain and Mathlib cache in the warm pool (F5)
 - [ ] Proof checks in the worktree: `lake build`, no `sorry`/`admit`, axiom audit, statement lock and review reset
 - [ ] Proof card on the PR, "Proved" on the PR track, `proved`/`statement`/`stress` events
@@ -1187,9 +1187,9 @@ Each milestone ends with a working app. PR duty checks an item off when it lands
 - [ ] Levels per language: reference by default (fixture table plus one test; compiled Lean model through FFI for stress), code on request (Aeneas for Rust), model
 - [ ] AGENTS.md: Implementation first, Proofs, and Tests and docs sections; Covers check (F11)
 
-**M12 · Skills** (F18)
+**M12 Â· Skills** (F18)
 - [ ] Skill library: clone and pin packs, update with a diff, Windows symlink and UTF-8 handling
-- [ ] Settings → Skills: per-project switches, bundles, context budget, requirements, add any Agent Skills repo
+- [ ] Settings â†’ Skills: per-project switches, bundles, context budget, requirements, add any Agent Skills repo
 - [ ] Link enabled skills into every worktree and the spec checkout per provider folder; `.git/info/exclude`; committed mode
 - [ ] Built-in packs: UI UX Pro Max (design system and AGENTS.md rule), claude-skills (bundles), Game dev skills (router and engine detection), REA (shared MCP server)
 - [ ] Project scan suggestions (F3), re-checked after merges
@@ -1210,16 +1210,16 @@ Each milestone ends with a working app. PR duty checks an item off when it lands
 | Q7 | Decided: no. The spec interview writes SPEC.md only; AGENTS.md comes from F11. | F3, F11 |
 | Q8 | Does the AGENTS.md lint only advise, or also block (e.g. PR duty flags hedged wording in AGENTS.md changes)? | F11 |
 | Q10 | Ghost-text autocomplete while typing in AGENTS.md? (It would take Tab from indent.) | F11 |
-| Q11 | Decided: Svelte 5 + TypeScript on Vite, built with pnpm (§3). | M1 |
+| Q11 | Decided: Svelte 5 + TypeScript on Vite, built with pnpm (Â§3). | M1 |
 | Q12 | Should AIRC be one channel per project, or one shared channel across projects (as in xros_chat)? Built: per project. | F14 |
 | Q13 | Should agents be able to schedule jobs for each other through AIRC (xros_chat job queues)? | F14 |
-| Q14 | Which ACP agent does Antigravity use (an ACP mode of its own, or Gemini CLI's ACP mode on the same Google sign-in)? And how does each provider report its subscription limits, which ACP doesn't carry? | F15, §3.2 |
+| Q14 | Which ACP agent does Antigravity use (an ACP mode of its own, or Gemini CLI's ACP mode on the same Google sign-in)? And how does each provider report its subscription limits, which ACP doesn't carry? | F15, Â§3.2 |
 | Q15 | When a provider hits its subscription limit, should queued and new work move to another signed-in provider, or wait for the reset? | F15, F10, F16 |
 | Q16 | May goal swarm agents claim work outside the Task List, issues and SPEC.md (split a large item, or claim something they found)? Built: no. | F16 |
 | Q17 | When there are more agents than unclaimed pieces, should the extras leave (built), or pair up on existing pieces (tests, review)? | F16 |
 | Q18 | Should "keep going" be on by default? Built: off, which matches the prompt you use today (stop after the merge). | F16 |
-| Q19 | Should Velocity also accept any other ACP agent (a custom command and arguments, as Zed allows), or only the four providers? | F15, §3.2 |
-| Q20 | Defaults for the stall timeout (5 min) and the claim-release grace period (10 min)? Should a failed agent's pushed branch be offered to whoever claims the piece next? | §2.2 |
+| Q19 | Should Velocity also accept any other ACP agent (a custom command and arguments, as Zed allows), or only the four providers? | F15, Â§3.2 |
+| Q20 | Defaults for the stall timeout (5 min) and the claim-release grace period (10 min)? Should a failed agent's pushed branch be offered to whoever claims the piece next? | Â§2.2 |
 | Q21 | Decided: pre-merge GitHub CI is build and lint and only advisory, the local checks on the merge result decide the merge (F7), proofs are checked locally before merge, and tests and stress scripts run after the merge (F17). | F7, F17 |
 | Q22 | Name for the "Main watcher" duty role. | F7 |
 | Q23 | Which code-level translators should ship besides Aeneas for Rust (C, C++, Python and others)? Until one exists for a language, that language tops out at the reference level. | F17 |

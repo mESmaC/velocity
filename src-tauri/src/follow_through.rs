@@ -1,4 +1,4 @@
-//! Native scheduling and edges for F6. Decisions and durable cursors live in the crates.
+﻿//! Native scheduling and edges for F6. Decisions and durable cursors live in the crates.
 use std::path::Path;
 use std::thread;
 use std::time::Duration;
@@ -257,15 +257,15 @@ fn checkpoint(
 ) -> Result<(), String> {
     let store_state = application.state::<ManagedStateStore>();
     let mut store = store_state.lock().map_err(|error| error.to_string())?;
-    let before = store
+    let thread = store
         .state()
         .projects
         .iter()
         .find(|project| project.id == key.0)
         .and_then(|project| project.threads.iter().find(|thread| thread.id == key.1))
         .ok_or("The owning thread was removed while reading GitHub")?
-        .follow_through
         .clone();
+    let before = thread.follow_through.clone();
     if !store
         .save_follow_through(key.0, key.1, snapshot, watch.clone())
         .map_err(|error| error.to_string())?
@@ -279,6 +279,14 @@ fn checkpoint(
     crate::layout::publish(application, &state, None)?;
     drop(layout);
     drop(store);
+    crate::airc_events::record_pull_request_observation(
+        application,
+        key.0,
+        &thread,
+        before.as_ref(),
+        &watch,
+        snapshot,
+    );
     publish_lifecycle(
         application,
         key,
