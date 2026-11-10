@@ -17,6 +17,15 @@ pub struct AircEventPublished {
     pub entry: Entry,
 }
 
+impl AircEventPublished {
+    pub fn new(project_identifier: u32, entry: Entry) -> Self {
+        Self {
+            project_identifier,
+            entry,
+        }
+    }
+}
+
 #[derive(Clone, Debug, serde::Serialize, serde::Deserialize, specta::Type, SpectaEvent)]
 #[tauri_specta(event_name = "airc://message")]
 pub struct AircMessagePublished {

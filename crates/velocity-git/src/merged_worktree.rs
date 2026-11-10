@@ -82,6 +82,55 @@ pub fn remove_merged_worktree(
     Ok(())
 }
 
+/// Removes a goal swarm agent's untouched choosing worktree and provisional branch when
+/// nothing unclaimed remains in the pool (SPEC.md F5, F16). Fails closed if the path is
+/// the project's checkout, has tracked edits, or has commits ahead of `base_ref`.
+pub fn remove_untouched_worktree(
+    repository: &Path,
+    path: &Path,
+    branch: &str,
+    base_ref: &str,
+) -> Result<(), MergedWorktreeError> {
+    if !repository.is_absolute() || !path.is_absolute() {
+        return Err(MergedWorktreeError::Ownership(
+            "Worktree cleanup requires absolute Windows or Unix paths".into(),
+        ));
+    }
+    if path_identity(repository)? == path_identity(path)? {
+        return Err(MergedWorktreeError::Ownership(
+            "The project's checkout cannot be removed as a thread worktree".into(),
+        ));
+    }
+    let registered = registered_worktree(repository, path, branch)?;
+    if path.exists() {
+        verify_worktree(repository, path, branch)?;
+        let status = git(path, &["status", "--porcelain", "--untracked-files=no"])?;
+        if !status.is_empty() {
+            return Err(MergedWorktreeError::Ownership(
+                "The choosing worktree has tracked edits; keeping it".into(),
+            ));
+        }
+        let ahead = git(path, &["rev-list", "--count", &format!("{base_ref}..HEAD")])?;
+        if ahead != "0" {
+            return Err(MergedWorktreeError::Ownership(
+                "The choosing worktree has commits ahead of the base branch; keeping it".into(),
+            ));
+        }
+    }
+    if registered {
+        execute_git_command(repository, &GitCommand::RemoveWorktree(path.to_path_buf()))?;
+    }
+    if git(
+        repository,
+        &["show-ref", "--verify", &format!("refs/heads/{branch}")],
+    )
+    .is_ok()
+    {
+        let _ = git(repository, &["branch", "-d", branch]);
+    }
+    Ok(())
+}
+
 fn registered_worktree(
     repository: &Path,
     path: &Path,

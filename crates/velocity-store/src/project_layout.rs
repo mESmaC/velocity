@@ -258,6 +258,14 @@ pub(crate) fn thread_metadata(thread: &ThreadItem) -> String {
     if let Some(waiting) = &thread.dependency_wait {
         return waiting.clone();
     }
+    if thread.state == ThreadState::Working
+        && thread
+            .goal_member
+            .as_ref()
+            .is_some_and(|member| member.choosing)
+    {
+        return "choosing work".into();
+    }
     if thread.state == ThreadState::Review {
         let stage = match thread.review_stage {
             Some(ReviewStage::ContinuousIntegration) => "waiting on CI",

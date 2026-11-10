@@ -93,6 +93,69 @@ impl ThreadRuntimes {
         Arc::clone(self.actions.entry(key).or_default())
     }
 
+    /// Registers a goal swarm member in its choosing work phase before an ACP session
+    /// starts (SPEC.md F16). Steering messages sent meanwhile queue behind the claimed
+    /// piece's opening prompt once [Self::begin_claimed_session] runs.
+    pub fn start_choosing(&mut self, key: ThreadKey, worktree: &str) {
+        self.retired.remove(&key);
+        self.shutdown_failures.remove(&key);
+        let (inputs, _unused) = unbounded_channel();
+        let mut steering = Steering::new(());
+        steering.step(SteeringInput::Send(String::new()));
+        self.threads.insert(
+            key,
+            ThreadRuntime {
+                phase: SessionPhase::SettingUp,
+                session_identifier: uuid::Uuid::new_v4().to_string(),
+                follows_pull_request: false,
+                deliveries: Deliveries::default(),
+                transcript: LiveTranscript::new(worktree),
+                inputs,
+                steering,
+                log_tail: VecDeque::new(),
+                agent_commands: None,
+                titling_model: None,
+            },
+        );
+    }
+
+    /// Transitions a choosing goal swarm member to a live ACP session with opening_prompt
+    /// first in its input stream, or returns None if the thread was deleted meanwhile.
+    pub fn begin_claimed_session(
+        &mut self,
+        key: ThreadKey,
+        worktree: &str,
+        opening_prompt: &str,
+    ) -> Option<SessionInputs> {
+        let thread = self.threads.get_mut(&key)?;
+        if self.retired.contains(&key) || thread.phase == SessionPhase::Ended {
+            return None;
+        }
+        let (inputs, receiver) = unbounded_channel();
+        let _ = inputs.send(text_input(opening_prompt));
+        if let SteeringEffect::Prompt(queued) = thread.steering.step(SteeringInput::TurnEnded) {
+            for message in queued {
+                let _ = inputs.send(text_input(&message));
+            }
+        } else {
+            thread.steering = Steering::new(());
+            thread
+                .steering
+                .step(SteeringInput::Send(opening_prompt.to_owned()));
+        }
+        thread.inputs = inputs;
+        thread.phase = SessionPhase::Running;
+        thread.transcript.rename_worktree(worktree);
+        thread.transcript.worktree_ready();
+        Some(receiver)
+    }
+
+    /// Drops a choosing runtime entry when an agent leaves without starting a session (F16).
+    pub fn discard_choosing(&mut self, key: ThreadKey) {
+        self.threads.remove(&key);
+        self.stopping.remove(&key);
+    }
+
     /// Registers a starting thread with its first prompt already waiting, and returns the
     /// inputs its session reads once the worktree is ready. Messages sent meanwhile queue
     /// behind the first prompt in order.

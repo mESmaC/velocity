@@ -9,7 +9,12 @@ use velocity_core::thread_view_model::TranscriptBlock;
 use velocity_git::{TitledWorktree, WorktreeName};
 use velocity_github::follow_through::AgentFollowUp;
 use velocity_store::build_gate::{LaunchRequest, require_launch};
+use velocity_store::duty::clock_timestamp;
+use velocity_store::goal_swarms::GoalAgentSlot;
 use velocity_store::{AgentActivity, ThreadState};
+use velocity_threads::goal_swarm::{
+    ClaimPhaseOutcome, ClaimedGoalWork, GoalMemberPlan, choose_and_claim,
+};
 use velocity_threads::{
     DeliveryStatus, LaunchPlan, RunningSession, SessionInputs, StopOutcome, ThreadKey,
     ThreadProgress, ThreadRuntimes, agent_launch, plan_launch, resolve_title, spawn_session,
@@ -254,6 +259,25 @@ pub(crate) fn start_planned(
     Ok(snapshot)
 }
 
+/// Registers a goal swarm member in `choosing work` and spawns its worktree + AIRC claim
+/// lifecycle in the background (`SPEC.md` F16).
+pub(crate) fn start_goal_member(
+    application: &AppHandle,
+    plan: GoalMemberPlan,
+    thread: u32,
+) -> Result<(), String> {
+    let key = (plan.project_id, thread);
+    lock(
+        application.state::<ManagedThreads>().inner(),
+        "thread sessions",
+    )?
+    .start_choosing(key, &plan.thread.worktree_path);
+    emit_status(application, key);
+    let handle = application.clone();
+    tauri::async_runtime::spawn(async move { run_goal_member(handle, key, plan).await });
+    Ok(())
+}
+
 /// A message for a running thread: sent at once when idle, queued while busy (Rule 1).
 fn send_message(
     application: &AppHandle,
@@ -343,6 +367,160 @@ async fn run_thread(
     }
     let session = spawn_session(plan.agent, setup, inputs);
     pump(&application, key, session).await;
+}
+
+async fn run_goal_member(application: AppHandle, key: ThreadKey, plan: GoalMemberPlan) {
+    let (worktree_path, branch_name, failure) = setup_goal_worktree(&plan.worktree).await;
+    let path = worktree_path.display().to_string();
+    if !mark_choosing_worktree(&application, key, &path) {
+        return remove_deleted_worktree(plan.worktree.repository_root, worktree_path).await;
+    }
+    report(record_names(&application, key, &path, Some(&branch_name)));
+    if let Some(detail) = failure {
+        return fail(&application, key, "Could not set up the worktree", &detail);
+    }
+    report(refresh(&application, key, false));
+    match run_goal_choice(&application, key, &plan.slot, &worktree_path, &branch_name).await {
+        Ok(ClaimPhaseOutcome::Left { left_entry, .. }) => {
+            finish_goal_left(&application, key, left_entry);
+        }
+        Ok(ClaimPhaseOutcome::Claimed(claimed)) => {
+            finish_goal_claimed(&application, key, plan, worktree_path, &path, *claimed).await;
+        }
+        Err(error) => {
+            if !mark_choosing_worktree(&application, key, &path) {
+                let _ = crate::airc_claims::release(&application, key);
+                remove_deleted_worktree(plan.worktree.repository_root, worktree_path).await;
+            } else {
+                fail(&application, key, "Could not choose work", &error);
+            }
+        }
+    }
+}
+
+async fn setup_goal_worktree(
+    request: &velocity_git::WorktreeSetupRequest,
+) -> (PathBuf, String, Option<String>) {
+    let owned = request.clone();
+    match tauri::async_runtime::spawn_blocking(move || velocity_git::execute_worktree_setup(&owned))
+        .await
+    {
+        Ok(Ok(outcome)) => (
+            outcome.worktree_path,
+            outcome
+                .branch_name
+                .unwrap_or_else(|| request.branch_name.clone().unwrap_or_default()),
+            None,
+        ),
+        Ok(Err(error)) => (
+            request.worktree_path.clone(),
+            request.branch_name.clone().unwrap_or_default(),
+            Some(error.to_string()),
+        ),
+        Err(error) => (
+            request.worktree_path.clone(),
+            request.branch_name.clone().unwrap_or_default(),
+            Some(error.to_string()),
+        ),
+    }
+}
+
+fn mark_choosing_worktree(application: &AppHandle, key: ThreadKey, path: &str) -> bool {
+    lock(
+        application.state::<ManagedThreads>().inner(),
+        "thread sessions",
+    )
+    .map(|mut runtimes| {
+        runtimes.rename_worktree(key, path);
+        runtimes.is_live(key)
+    })
+    .unwrap_or(false)
+}
+
+async fn run_goal_choice(
+    application: &AppHandle,
+    key: ThreadKey,
+    slot: &GoalAgentSlot,
+    worktree_path: &std::path::Path,
+    branch_name: &str,
+) -> Result<ClaimPhaseOutcome, String> {
+    let handle = application.clone();
+    let slot = slot.clone();
+    let worktree = worktree_path.to_path_buf();
+    let branch = branch_name.to_owned();
+    tauri::async_runtime::spawn_blocking(move || {
+        let data = handle
+            .path()
+            .app_data_dir()
+            .map_err(|error| error.to_string())?;
+        let channel = velocity_airc::Channel::open(&data, &key.0.to_string())
+            .map_err(|error| error.to_string())?;
+        let store = handle.state::<ManagedStateStore>();
+        choose_and_claim(
+            store.inner(),
+            &channel,
+            key.0,
+            key.1,
+            &slot,
+            &worktree,
+            &branch,
+            &clock_timestamp(),
+        )
+        .map_err(|error| error.to_string())
+    })
+    .await
+    .map_err(|error| error.to_string())?
+}
+
+fn finish_goal_left(
+    application: &AppHandle,
+    key: ThreadKey,
+    left_entry: Option<Box<velocity_airc::Entry>>,
+) {
+    if let Ok(mut runtimes) = lock(
+        application.state::<ManagedThreads>().inner(),
+        "thread sessions",
+    ) {
+        runtimes.discard_choosing(key);
+    }
+    if let Some(entry) = left_entry {
+        report(
+            crate::airc_events::AircEventPublished::new(key.0, *entry)
+                .emit(application)
+                .map_err(|error| error.to_string()),
+        );
+    }
+    report(crate::airc_modal::refresh(application));
+    report(refresh(application, key, false).map(|_| ()));
+}
+
+async fn finish_goal_claimed(
+    application: &AppHandle,
+    key: ThreadKey,
+    plan: GoalMemberPlan,
+    worktree_path: PathBuf,
+    path: &str,
+    claimed: ClaimedGoalWork,
+) {
+    let inputs = lock(
+        application.state::<ManagedThreads>().inner(),
+        "thread sessions",
+    )
+    .ok()
+    .and_then(|mut runtimes| runtimes.begin_claimed_session(key, path, &claimed.prompt));
+    let Some(inputs) = inputs else {
+        let _ = crate::airc_claims::release(application, key);
+        remove_deleted_worktree(plan.worktree.repository_root, worktree_path).await;
+        return;
+    };
+    report(crate::airc_modal::refresh(application));
+    report(refresh(application, key, false));
+    emit_status(application, key);
+    let mut setup = SessionSetup::new(worktree_path, plan.bypass_modes);
+    setup.airc = crate::airc_access::managed(application)
+        .map(|airc| airc.thread(key.0, key.1, &setup.worktree));
+    let session = spawn_session(plan.agent, setup, inputs);
+    pump(application, key, session).await;
 }
 
 fn mark_worktree_ready(application: &AppHandle, key: ThreadKey, path: &str, failed: bool) -> bool {
@@ -594,6 +772,7 @@ fn fail(application: &AppHandle, key: ThreadKey, headline: &str, detail: &str) {
     report(saved.map(|_| ()));
     crate::airc_events::record_thread_failed(application, key.0, key.1, headline, detail);
     crate::swarm::record_member_failed(application, key, headline);
+    crate::goal_swarm::record_member_failed(application, key, headline);
     report(refresh(application, key, false).map(|_| ()));
     emit_status(application, key);
 }

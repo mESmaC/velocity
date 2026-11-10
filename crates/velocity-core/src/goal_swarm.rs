@@ -194,6 +194,38 @@ pub fn nick_preview(rows: &[(String, u32)], used: &BTreeMap<String, u32>) -> Str
     parts.join(" · ")
 }
 
+/// Hands out one project-scoped nick per agent (`sol-1`, `sol-2`, `argon-1`), following
+/// the exact numbering shown by [`nick_preview`].
+pub fn allocate_nicks(rows: &[(String, u32)], used: &BTreeMap<String, u32>) -> Vec<String> {
+    let mut seen = used.clone();
+    let mut nicks = Vec::new();
+    for (nick, count) in rows.iter().filter(|(_, count)| *count > 0) {
+        let last = seen.entry(nick.clone()).or_insert(0);
+        for _ in 0..*count {
+            *last = last.saturating_add(1);
+            nicks.push(format!("{nick}-{last}"));
+        }
+    }
+    nicks
+}
+
+/// Sidebar/header title for a goal swarm (Goal · <prompt>, SPEC.md F16).
+pub fn goal_swarm_title(prompt: &str) -> String {
+    let clean = prompt
+        .lines()
+        .map(str::trim)
+        .find(|line| !line.is_empty())
+        .unwrap_or(DEFAULT_PROMPT)
+        .trim_end_matches('.');
+    let clipped: String = clean.chars().take(42).collect();
+    let suffix = if clean.chars().count() > 42 {
+        "\u{2026}"
+    } else {
+        ""
+    };
+    format!("Goal \u{00b7} {clipped}{suffix}")
+}
+
 /// How much of a provider's subscription window is used, as the provider reports it (F15).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct LimitUsage {
@@ -228,6 +260,14 @@ pub struct PoolCounts {
 }
 
 impl PoolCounts {
+    pub fn new(tasks: u32, issues: u32, sections: u32) -> Self {
+        Self {
+            tasks,
+            issues,
+            sections,
+        }
+    }
+
     pub fn total(self) -> u32 {
         self.tasks
             .saturating_add(self.issues)
@@ -289,6 +329,44 @@ pub fn worktrees_hint(agents: u32, worktree_root: &str) -> String {
 
 pub fn launch_label(agents: u32) -> String {
     format!("Launch {agents} agent{}", plural(agents))
+}
+
+/// Activity feed tags for a goal swarm (SPEC.md F16: claims, refusals, PRs, waits,
+/// merges and leaves).
+#[cfg_attr(feature = "bindings", derive(specta::Type))]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum GoalEventKind {
+    You,
+    Claim,
+    Refused,
+    Opened,
+    Changes,
+    Wait,
+    Merged,
+    Left,
+    Failed,
+    Finished,
+}
+
+#[cfg_attr(feature = "bindings", derive(specta::Type))]
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct GoalFeedEvent {
+    pub timestamp: String,
+    pub actor: String,
+    pub kind: GoalEventKind,
+    pub message: String,
+}
+
+impl GoalFeedEvent {
+    pub fn new(timestamp: &str, actor: &str, kind: GoalEventKind, message: String) -> Self {
+        Self {
+            timestamp: timestamp.to_owned(),
+            actor: actor.to_owned(),
+            kind,
+            message,
+        }
+    }
 }
 
 fn plural(count: u32) -> &'static str {

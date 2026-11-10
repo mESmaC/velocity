@@ -22,6 +22,10 @@ pub enum ThreadError {
     UnknownTask(u32),
     #[error("Task {0} already has an agent or is still a draft")]
     TaskUnavailable(u32),
+    #[error("Spec section {0} is already claimed or built")]
+    SpecUnavailable(String),
+    #[error("{0}")]
+    InvalidLaunch(String),
     #[error(transparent)]
     Persistence(#[from] StoreError),
 }
@@ -239,7 +243,13 @@ pub(crate) fn highest_entry_identifier(project: &ProjectItem) -> u32 {
     let threads = project.threads.iter().map(|thread| thread.id);
     let duty = project.duty_roles.iter().map(|duty| duty.id);
     let swarms = project.swarms.iter().map(|swarm| swarm.id);
-    threads.chain(duty).chain(swarms).max().unwrap_or(0)
+    let goal_swarms = project.goal_swarms.iter().map(|swarm| swarm.id);
+    threads
+        .chain(duty)
+        .chain(swarms)
+        .chain(goal_swarms)
+        .max()
+        .unwrap_or(0)
 }
 
 fn thread_start_timestamp() -> String {

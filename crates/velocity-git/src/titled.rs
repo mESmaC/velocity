@@ -61,6 +61,18 @@ pub fn execute_titled_worktree_setup(
     }
 }
 
+/// Renames a worktree's branch in place while keeping its existing checkout folder (F16).
+pub fn rename_worktree_branch(
+    repository: &Path,
+    old_branch: &str,
+    new_branch: &str,
+) -> Result<(), WorktreeError> {
+    if old_branch != new_branch {
+        run_git_command(repository, ["branch", "-m", old_branch, new_branch])?;
+    }
+    Ok(())
+}
+
 /// Renames the branch, then moves the folder, and returns the request under its new names.
 /// A failed move renames the branch back, so the two never disagree.
 pub fn rename_worktree(

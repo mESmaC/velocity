@@ -93,6 +93,29 @@ pub struct WorktreeSetupRequest {
 }
 
 impl WorktreeSetupRequest {
+    #[allow(clippy::too_many_arguments)]
+    pub fn branched(
+        repository_root: PathBuf,
+        worktree_path: PathBuf,
+        branch_name: String,
+        base_ref: String,
+        settings: WorktreeSettings,
+        untracked_files: String,
+        setup_command: String,
+        shared_cargo_target_dir: PathBuf,
+    ) -> Self {
+        Self {
+            repository_root,
+            worktree_path,
+            branch_name: Some(branch_name),
+            base_ref,
+            settings,
+            untracked_files,
+            setup_command,
+            shared_cargo_target_dir,
+        }
+    }
+
     /// A worktree with no branch, checked out detached at `base_ref` (a scout's sweep).
     pub fn detached(
         repository_root: PathBuf,

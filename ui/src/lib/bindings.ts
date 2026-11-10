@@ -45,10 +45,13 @@ export const commands = {
 	getGoalSwarmDialog: (query: GoalSwarmDialogQuery_Deserialize) => __TAURI_INVOKE<GoalSwarmDialog_Serialize>("get_goal_swarm_dialog", { query }),
 	/**
 	 *  Reads the active project's work pool for the pool line and the PR duty check. Issues
-	 *  come from GitHub and sections from SPEC.md, so the read runs off the UI thread; the
-	 *  dialog shows the previous read meanwhile.
+	 *  come from GitHub and sections from `SPEC.md`, so the read runs off the UI thread.
 	 */
 	readGoalSwarmPool: () => __TAURI_INVOKE<null>("read_goal_swarm_pool"),
+	/**  Starts all N goal swarm agents at once on one prompt and the chosen model mix (F16). */
+	launchGoalSwarm: (request: LaunchGoalSwarmRequest_Deserialize) => __TAURI_INVOKE<LayoutSnapshot_Serialize>("launch_goal_swarm", { request }),
+	/**  `+ Agents`: starts more agents on an existing goal swarm's prompt (F16). */
+	addGoalAgents: (request: AddGoalAgentsRequest_Deserialize) => __TAURI_INVOKE<LayoutSnapshot_Serialize>("add_goal_agents", { request }),
 	getIssuePanel: () => __TAURI_INVOKE<IssuePanelSnapshot_Serialize>("get_issue_panel"),
 	openProjectIssue: (projectIdentifier: number, number: number) => __TAURI_INVOKE<null>("open_project_issue", { projectIdentifier, number }),
 	dispatchIssue: (projectIdentifier: number, number: number, acceptRecommendation: boolean) => __TAURI_INVOKE<LayoutSnapshot_Serialize>("dispatch_issue", { projectIdentifier, number, acceptRecommendation }),
@@ -122,6 +125,22 @@ export const WINDOW_STATE_EVENT = "window://state" as const;
 export const WORKTREE_INVENTORY_EVENT = "worktree://inventory" as const;
 
 /* Types */
+export type AddGoalAgentsRequest = AddGoalAgentsRequest_Serialize | AddGoalAgentsRequest_Deserialize;
+
+export type AddGoalAgentsRequest_Deserialize = {
+	project_identifier: number,
+	swarm_identifier: number,
+	mix: GoalMixRow[],
+	add_pr_duty?: boolean,
+};
+
+export type AddGoalAgentsRequest_Serialize = {
+	project_identifier: number,
+	swarm_identifier: number,
+	mix: GoalMixRow[],
+	add_pr_duty: boolean,
+};
+
 export type AgentActivity = "thinking" | "executing" | "parked" | "stalled" | "at_limit" | "idle";
 
 export type AgentCommandView = {
@@ -587,6 +606,19 @@ export type GoalDialogRequest = {
 	prompt: string,
 };
 
+/**
+ *  Activity feed tags for a goal swarm (SPEC.md F16: claims, refusals, PRs, waits,
+ *  merges and leaves).
+ */
+export type GoalEventKind = "you" | "claim" | "refused" | "opened" | "changes" | "wait" | "merged" | "left" | "failed" | "finished";
+
+export type GoalFeedEvent = {
+	timestamp: string,
+	actor: string,
+	kind: GoalEventKind,
+	message: string,
+};
+
 export type GoalLimitLine = {
 	provider: ProviderKind,
 	text: string,
@@ -702,6 +734,75 @@ export type GoalSwarmDialog_Serialize = {
 	launch_label: string,
 	/**  Why Launch is unavailable, when it is. */
 	launch_note: string | null,
+};
+
+/**  One agent slot in a saved goal swarm. */
+export type GoalSwarmMember = GoalSwarmMember_Serialize | GoalSwarmMember_Deserialize;
+
+/**  One agent slot in a saved goal swarm. */
+export type GoalSwarmMember_Deserialize = {
+	nick: string,
+	provider: ProviderKind,
+	model_name: string,
+	effort: EffortLevel,
+	speed: SpeedMode,
+	thread?: number | null,
+	left_reason?: string | null,
+	merged_threads?: number[],
+};
+
+/**  One agent slot in a saved goal swarm. */
+export type GoalSwarmMember_Serialize = {
+	nick: string,
+	provider: ProviderKind,
+	model_name: string,
+	effort: EffortLevel,
+	speed: SpeedMode,
+	thread: number | null,
+	left_reason: string | null,
+	merged_threads: number[],
+};
+
+/**  Persisted goal swarm record on `ProjectItem` (`SPEC.md` F16). */
+export type GoalSwarmRecord = GoalSwarmRecord_Serialize | GoalSwarmRecord_Deserialize;
+
+/**  Persisted goal swarm record on `ProjectItem` (`SPEC.md` F16). */
+export type GoalSwarmRecord_Deserialize = {
+	id: number,
+	prompt: string,
+	keep_going?: boolean,
+	started: string,
+	mix_summary?: string,
+	members?: GoalSwarmMember_Deserialize[],
+	feed?: GoalFeedEvent[],
+};
+
+/**  Persisted goal swarm record on `ProjectItem` (`SPEC.md` F16). */
+export type GoalSwarmRecord_Serialize = {
+	id: number,
+	prompt: string,
+	keep_going: boolean,
+	started: string,
+	mix_summary: string,
+	members: GoalSwarmMember_Serialize[],
+	feed: GoalFeedEvent[],
+};
+
+/**  Goal swarm membership stored on a `ThreadItem` (`SPEC.md` F16). */
+export type GoalThreadMember = GoalThreadMember_Serialize | GoalThreadMember_Deserialize;
+
+/**  Goal swarm membership stored on a `ThreadItem` (`SPEC.md` F16). */
+export type GoalThreadMember_Deserialize = {
+	swarm_id: number,
+	nick: string,
+	choosing?: boolean,
+};
+
+/**  Goal swarm membership stored on a `ThreadItem` (`SPEC.md` F16). */
+export type GoalThreadMember_Serialize = {
+	swarm_id: number,
+	nick: string,
+	choosing: boolean,
 };
 
 export type InlineText = {
@@ -933,6 +1034,24 @@ export type KeyboardInput = {
 };
 
 export type LaunchEligibility = "allowed" | "lock_spec_first" | "no_project";
+
+export type LaunchGoalSwarmRequest = LaunchGoalSwarmRequest_Serialize | LaunchGoalSwarmRequest_Deserialize;
+
+export type LaunchGoalSwarmRequest_Deserialize = {
+	project_identifier: number,
+	prompt: string,
+	mix: GoalMixRow[],
+	keep_going?: boolean,
+	add_pr_duty?: boolean,
+};
+
+export type LaunchGoalSwarmRequest_Serialize = {
+	project_identifier: number,
+	prompt: string,
+	mix: GoalMixRow[],
+	keep_going: boolean,
+	add_pr_duty: boolean,
+};
 
 export type LaunchRequest = "interview" | "thread" | "fan_out" | "task_swarm" | "issue_swarm" | "goal_swarm" | "issue_dispatch";
 
@@ -1429,6 +1548,8 @@ export type ProjectItem_Deserialize = {
 	duty_roles?: DutyRoleItem[],
 	/**  Swarms launched on this project, newest first (F10). */
 	swarms?: SwarmRecord_Deserialize[],
+	/**  Goal swarms launched on this project, newest first (F16). */
+	goal_swarms?: GoalSwarmRecord_Deserialize[],
 };
 
 export type ProjectItem_Serialize = {
@@ -1452,6 +1573,8 @@ export type ProjectItem_Serialize = {
 	duty_roles: DutyRoleItem[],
 	/**  Swarms launched on this project, newest first (F10). */
 	swarms: SwarmRecord_Serialize[],
+	/**  Goal swarms launched on this project, newest first (F16). */
+	goal_swarms: GoalSwarmRecord_Serialize[],
 };
 
 export type ProjectLabel = "local" | "github" | "speccing";
@@ -2539,6 +2662,8 @@ export type ThreadItem_Deserialize = {
 	model_supports_fast: boolean,
 	/**  Spec interview threads only (F3). */
 	interview?: InterviewRecord_Deserialize | null,
+	/**  Goal swarm membership and choosing-work phase (F16). */
+	goal_member?: GoalThreadMember_Deserialize | null,
 };
 
 export type ThreadItem_Serialize = {
@@ -2568,6 +2693,8 @@ export type ThreadItem_Serialize = {
 	model_supports_fast: boolean,
 	/**  Spec interview threads only (F3). */
 	interview: InterviewRecord_Serialize | null,
+	/**  Goal swarm membership and choosing-work phase (F16). */
+	goal_member: GoalThreadMember_Serialize | null,
 };
 
 export type ThreadMenuAction = "OpenWorktree" | "CopyWorktreePath" | "OpenPullRequest" | "Delete";

@@ -33,6 +33,14 @@ pub fn airc_members(project: &ProjectItem) -> Vec<AircMember> {
 fn thread_state(thread: &ThreadItem) -> Option<AircMemberState> {
     let number = thread.pull_request_number;
     Some(match thread.state {
+        ThreadState::Working
+            if thread
+                .goal_member
+                .as_ref()
+                .is_some_and(|member| member.choosing) =>
+        {
+            AircMemberState::Choosing
+        }
         ThreadState::Working => AircMemberState::Working {
             title: thread.title.clone(),
         },

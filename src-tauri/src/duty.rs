@@ -17,6 +17,12 @@ pub struct DutyEventPublished {
     pub event: DutyFeedEvent,
 }
 
+impl DutyEventPublished {
+    pub fn new(role: DutyRole, event: DutyFeedEvent) -> Self {
+        Self { role, event }
+    }
+}
+
 #[tauri::command]
 #[specta::specta]
 pub fn get_duty_dialog_defaults(

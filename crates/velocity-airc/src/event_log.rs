@@ -207,6 +207,31 @@ impl Event {
             &format!("failed · {} · its claim is held", one_line(reason)),
         ))
     }
+
+    /// swarm: you started a goal swarm · <n> agents · one prompt: "<prompt>" (F14, F16).
+    pub fn goal_swarm_started(agents: usize, prompt: &str) -> Result<Self, Error> {
+        require_text(prompt)?;
+        Ok(Self::new(
+            "swarm",
+            "you",
+            &format!(
+                "started a goal swarm · {agents} agent{} · one prompt: \"{}\"",
+                if agents == 1 { "" } else { "s" },
+                one_line(prompt)
+            ),
+        ))
+    }
+
+    /// left: <nick> left · <reason> when a goal swarm agent leaves with nothing unclaimed (F16).
+    pub fn agent_left(owner_nick: &str, reason: &str) -> Result<Self, Error> {
+        require_text(reason)?;
+        let actor = nick(owner_nick, 16);
+        Ok(Self::new(
+            "left",
+            &actor,
+            &format!("left · {}", one_line(reason)),
+        ))
+    }
 }
 
 fn matches_event(entry: &Entry, event: &Event) -> bool {
