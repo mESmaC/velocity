@@ -92,15 +92,15 @@ fn routed(
             entry.kind, entry.sequence, entry.text
         ));
     }
+    if entry.kind != "message" {
+        return None;
+    }
     if entry.nick != "you" {
-        let history = entries
-            .iter()
-            .take_while(|record| record.sequence < entry.sequence)
-            .cloned()
-            .collect::<Vec<_>>();
+        let history =
+            &entries[..entries.partition_point(|record| record.sequence < entry.sequence)];
         if mode == crate::MessageMode::Quarantined
             || crate::mode_for(entries, &entry.nick) == crate::MessageMode::Quarantined
-            || crate::mode_for(&history, &entry.nick) == crate::MessageMode::Quarantined
+            || crate::mode_for(history, &entry.nick) == crate::MessageMode::Quarantined
         {
             return None;
         }
