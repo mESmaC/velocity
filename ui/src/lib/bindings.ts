@@ -247,9 +247,32 @@ export type Checkout = {
 	base: string,
 };
 
-export type Claim = {
+export type Claim = Claim_Serialize | Claim_Deserialize;
+
+export type Claim_Deserialize = {
 	member: string,
 	nick: string,
+	/**
+	 *  The lock key: a work-pool identity (`task:<id>`, `issue:<n>`, `spec:<section>`),
+	 *  a build thread's `branch:<name>`, or the task text. Older records have none and
+	 *  lock on their task text.
+	 */
+	piece?: string,
+	task: string,
+	branch: string,
+	files: string[],
+	since: string,
+};
+
+export type Claim_Serialize = {
+	member: string,
+	nick: string,
+	/**
+	 *  The lock key: a work-pool identity (`task:<id>`, `issue:<n>`, `spec:<section>`),
+	 *  a build thread's `branch:<name>`, or the task text. Older records have none and
+	 *  lock on their task text.
+	 */
+	piece: string,
 	task: string,
 	branch: string,
 	files: string[],
@@ -467,7 +490,7 @@ export type Entry_Deserialize = {
 	pull_request?: number | null,
 	/**  The PR head commit the event applies to (`approved` binds to it). */
 	head?: string | null,
-	claim?: Claim | null,
+	claim?: Claim_Deserialize | null,
 	dependency?: DependencyWait | null,
 	checkout?: Checkout | null,
 };
@@ -488,7 +511,7 @@ export type Entry_Serialize = {
 	pull_request?: number,
 	/**  The PR head commit the event applies to (`approved` binds to it). */
 	head?: string,
-	claim?: Claim,
+	claim?: Claim_Serialize,
 	dependency?: DependencyWait,
 	checkout?: Checkout,
 };
