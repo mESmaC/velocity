@@ -1,4 +1,4 @@
-﻿//! Native scheduling and edges for F6. Decisions and durable cursors live in the crates.
+//! Native scheduling and edges for F6. Decisions and durable cursors live in the crates.
 use std::path::Path;
 use std::thread;
 use std::time::Duration;

@@ -1,4 +1,4 @@
-﻿//! Scout sweeps at the Tauri edge (`SPEC.md Â§4 F7`, `Â§7 M5`): starts the sweep runner, saves
+//! Scout sweeps at the Tauri edge (`SPEC.md §4 F7`, `§7 M5`): starts the sweep runner, saves
 //! and publishes what it reports, and serves the scout MCP server when Velocity's own
 //! executable is started as one.
 

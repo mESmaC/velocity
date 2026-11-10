@@ -1,4 +1,4 @@
-﻿use std::path::PathBuf;
+use std::path::PathBuf;
 use std::sync::{Mutex, MutexGuard};
 
 use tauri::{AppHandle, Manager};
@@ -157,7 +157,7 @@ pub(crate) fn lock<'guard, Value>(
         .map_err(|error| format!("Could not read {what}: {error}"))
 }
 
-/// `start_thread` and `send_message` (Â§3.1): the composer's thread intents.
+/// `start_thread` and `send_message` (§3.1): the composer's thread intents.
 pub fn handle_intent(
     application: &AppHandle,
     intent: &LayoutIntent,
@@ -210,7 +210,7 @@ fn start_thread(application: &AppHandle, prompt: &str) -> Result<LayoutSnapshot,
         let project = store
             .active_project()
             .ok_or("Select or create a project first")?;
-        // Settings â†’ Worktrees for the active project, which is the one the thread starts in.
+        // Settings → Worktrees for the active project, which is the one the thread starts in.
         let worktrees = store.worktree_context().preferences;
         let plan = plan_launch(project, &worktrees, &store.settings(), prompt)
             .map_err(|error| error.to_string())?;
@@ -532,7 +532,7 @@ async fn remove_deleted_worktree(repository: PathBuf, worktree: PathBuf) {
     report(removed);
 }
 
-/// The thread moves to `error` and keeps its worktree (Â§2.1, F5).
+/// The thread moves to `error` and keeps its worktree (§2.1, F5).
 fn fail(application: &AppHandle, key: ThreadKey, headline: &str, detail: &str) {
     if let Ok(mut runtimes) = lock(
         application.state::<ManagedThreads>().inner(),

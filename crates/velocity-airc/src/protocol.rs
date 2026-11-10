@@ -1,4 +1,4 @@
-﻿use crate::{Channel, Error};
+use crate::{Channel, Error};
 use serde_json::{Value, json};
 use std::io::{BufRead, Write};
 

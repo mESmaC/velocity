@@ -1,4 +1,4 @@
-﻿[package]
+[package]
 name = "velocity-airc"
 description = "Per-project AIRC channels and stdio MCP access"
 version.workspace = true

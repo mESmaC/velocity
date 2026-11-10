@@ -8,6 +8,8 @@ export const commands = {
 	editAgentsMd: (projectIdentifier: number, action: OutlineAction_Deserialize) => __TAURI_INVOKE<OutlineSnapshot_Serialize>("edit_agents_md", { projectIdentifier, action }),
 	writeAgentsMd: (projectIdentifier: number) => __TAURI_INVOKE<OutlineSnapshot_Serialize>("write_agents_md", { projectIdentifier }),
 	tightenRule: (projectIdentifier: number, identifier: number) => __TAURI_INVOKE<OutlineSnapshot_Serialize>("tighten_rule", { projectIdentifier, identifier }),
+	/**  Sending is independent of the later modal: the typed IPC is also usable headlessly. */
+	aircSend: (projectIdentifier: number, text: string) => __TAURI_INVOKE<null>("airc_send", { projectIdentifier, text }),
 	aircEvents: (projectIdentifier: number, after: number | null) => __TAURI_INVOKE<Entry_Serialize[]>("airc_events", { projectIdentifier, after }),
 	aircMessages: (projectIdentifier: number, after: number | null) => __TAURI_INVOKE<Entry_Serialize[]>("airc_messages", { projectIdentifier, after }),
 	aircLedger: (projectIdentifier: number, ledger: string, after: number | null) => __TAURI_INVOKE<Entry_Serialize[]>("airc_ledger", { projectIdentifier, ledger, after }),

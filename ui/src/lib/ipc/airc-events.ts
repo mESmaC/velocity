@@ -1,4 +1,4 @@
-﻿import { listen, type EventCallback } from '@tauri-apps/api/event';
+import { listen, type EventCallback } from '@tauri-apps/api/event';
 import {
   commands,
   AIRC_EVENT,
