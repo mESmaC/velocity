@@ -2,9 +2,13 @@ import { commands } from '../bindings';
 export type {
   OutlineAction_Deserialize as OutlineAction,
   OutlineSnapshot_Serialize as OutlineSnapshot,
-  OutlineLine,
+  OutlineLine_Serialize as OutlineLine,
+  InlineText_Serialize as InlineText,
   OutlineFocus,
-  RewriteView,
+  RewriteView_Serialize as RewriteView,
+  FlaggedRule,
+  CoverageItem,
+  LintKind,
 } from '../bindings';
 
 export const agentsCommands = {

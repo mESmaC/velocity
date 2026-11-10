@@ -327,6 +327,13 @@ export type Claim_Serialize = {
 	since: string,
 };
 
+export type CoverageItem = {
+	/**  Position in the Covers list; `OutlineAction::AddCoverage` names an item by it. */
+	item: number,
+	title: string,
+	covered: boolean,
+};
+
 export type CreatePullRequest = CreatePullRequest_Serialize | CreatePullRequest_Deserialize;
 
 export type CreatePullRequest_Deserialize = {
@@ -573,6 +580,15 @@ export type Entry_Serialize = {
 export type ErrorCardView = {
 	headline: string,
 	detail: string,
+};
+
+/**  A rule in the side panel's Flagged list, with its first flagged phrase. */
+export type FlaggedRule = {
+	identifier: number,
+	section: string,
+	kind: LintKind,
+	phrase: string,
+	message: string,
 };
 
 export type FollowThrough = FollowThrough_Serialize | FollowThrough_Deserialize;
@@ -973,9 +989,20 @@ export type GoalThreadMember_Serialize = {
 	choosing: boolean,
 };
 
-export type InlineText = {
+export type InlineText = InlineText_Serialize | InlineText_Deserialize;
+
+export type InlineText_Deserialize = {
 	text: string,
 	code: boolean,
+	/**  The live lint mark on this run of text. Code is never linted: `cargo clean` is a command. */
+	mark?: LintKind | null,
+};
+
+export type InlineText_Serialize = {
+	text: string,
+	code: boolean,
+	/**  The live lint mark on this run of text. Code is never linted: `cargo clean` is a command. */
+	mark: LintKind | null,
 };
 
 /**  One installed and pinned skill pack in Velocity's library (SPEC.md F18). */
@@ -1410,6 +1437,14 @@ export type LayoutStateChanged_Serialize = {
 	state: LayoutSnapshot_Serialize,
 };
 
+export type LintKind = 
+/**  Wording that makes a rule optional ("maybe", "try to", "where possible"). */
+"Hedge" | 
+/**  "Should", which agents read as optional. */
+"Modal" | 
+/**  A word with no standard an agent can check ("clean", "good"). */
+"Vague";
+
 export type MergeMethod = "SQUASH" | "REBASE" | "MERGE";
 
 export type MessageMode = "Open" | "HeadsDown" | "Quarantined";
@@ -1488,46 +1523,50 @@ export type OutlineAction = OutlineAction_Serialize | OutlineAction_Deserialize;
 export type OutlineAction_Deserialize = ({ Edit: {
 	identifier: number,
 	text: string,
-} }) & { AddRule?: never; DeleteEmpty?: never; Enter?: never; Indent?: never; Move?: never; Neighbor?: never; Undo?: never } | ({ Enter: {
+} }) & { AddCoverage?: never; AddRule?: never; DeleteEmpty?: never; Enter?: never; Indent?: never; Move?: never; Neighbor?: never; Undo?: never } | ({ Enter: {
 	identifier: number,
-} }) & { AddRule?: never; DeleteEmpty?: never; Edit?: never; Indent?: never; Move?: never; Neighbor?: never; Undo?: never } | ({ Indent: {
+} }) & { AddCoverage?: never; AddRule?: never; DeleteEmpty?: never; Edit?: never; Indent?: never; Move?: never; Neighbor?: never; Undo?: never } | ({ Indent: {
 	identifier: number,
 	nested: boolean,
-} }) & { AddRule?: never; DeleteEmpty?: never; Edit?: never; Enter?: never; Move?: never; Neighbor?: never; Undo?: never } | ({ Move: {
+} }) & { AddCoverage?: never; AddRule?: never; DeleteEmpty?: never; Edit?: never; Enter?: never; Move?: never; Neighbor?: never; Undo?: never } | ({ Move: {
 	identifier: number,
 	down: boolean,
-} }) & { AddRule?: never; DeleteEmpty?: never; Edit?: never; Enter?: never; Indent?: never; Neighbor?: never; Undo?: never } | ({ DeleteEmpty: {
+} }) & { AddCoverage?: never; AddRule?: never; DeleteEmpty?: never; Edit?: never; Enter?: never; Indent?: never; Neighbor?: never; Undo?: never } | ({ DeleteEmpty: {
 	identifier: number,
-} }) & { AddRule?: never; Edit?: never; Enter?: never; Indent?: never; Move?: never; Neighbor?: never; Undo?: never } | ({ Neighbor: {
+} }) & { AddCoverage?: never; AddRule?: never; Edit?: never; Enter?: never; Indent?: never; Move?: never; Neighbor?: never; Undo?: never } | ({ Neighbor: {
 	identifier: number,
 	down: boolean,
-} }) & { AddRule?: never; DeleteEmpty?: never; Edit?: never; Enter?: never; Indent?: never; Move?: never; Undo?: never } | ({ AddRule: {
+} }) & { AddCoverage?: never; AddRule?: never; DeleteEmpty?: never; Edit?: never; Enter?: never; Indent?: never; Move?: never; Undo?: never } | ({ AddRule: {
 	section?: number | null,
-} }) & { DeleteEmpty?: never; Edit?: never; Enter?: never; Indent?: never; Move?: never; Neighbor?: never; Undo?: never } | "AddSection" | ({ Undo: {
+} }) & { AddCoverage?: never; DeleteEmpty?: never; Edit?: never; Enter?: never; Indent?: never; Move?: never; Neighbor?: never; Undo?: never } | "AddSection" | ({ Undo: {
 	identifier: number,
-} }) & { AddRule?: never; DeleteEmpty?: never; Edit?: never; Enter?: never; Indent?: never; Move?: never; Neighbor?: never };
+} }) & { AddCoverage?: never; AddRule?: never; DeleteEmpty?: never; Edit?: never; Enter?: never; Indent?: never; Move?: never; Neighbor?: never } | ({ AddCoverage: {
+	item: number,
+} }) & { AddRule?: never; DeleteEmpty?: never; Edit?: never; Enter?: never; Indent?: never; Move?: never; Neighbor?: never; Undo?: never };
 
 export type OutlineAction_Serialize = ({ Edit: {
 	identifier: number,
 	text: string,
-} }) & { AddRule?: never; DeleteEmpty?: never; Enter?: never; Indent?: never; Move?: never; Neighbor?: never; Undo?: never } | ({ Enter: {
+} }) & { AddCoverage?: never; AddRule?: never; DeleteEmpty?: never; Enter?: never; Indent?: never; Move?: never; Neighbor?: never; Undo?: never } | ({ Enter: {
 	identifier: number,
-} }) & { AddRule?: never; DeleteEmpty?: never; Edit?: never; Indent?: never; Move?: never; Neighbor?: never; Undo?: never } | ({ Indent: {
+} }) & { AddCoverage?: never; AddRule?: never; DeleteEmpty?: never; Edit?: never; Indent?: never; Move?: never; Neighbor?: never; Undo?: never } | ({ Indent: {
 	identifier: number,
 	nested: boolean,
-} }) & { AddRule?: never; DeleteEmpty?: never; Edit?: never; Enter?: never; Move?: never; Neighbor?: never; Undo?: never } | ({ Move: {
+} }) & { AddCoverage?: never; AddRule?: never; DeleteEmpty?: never; Edit?: never; Enter?: never; Move?: never; Neighbor?: never; Undo?: never } | ({ Move: {
 	identifier: number,
 	down: boolean,
-} }) & { AddRule?: never; DeleteEmpty?: never; Edit?: never; Enter?: never; Indent?: never; Neighbor?: never; Undo?: never } | ({ DeleteEmpty: {
+} }) & { AddCoverage?: never; AddRule?: never; DeleteEmpty?: never; Edit?: never; Enter?: never; Indent?: never; Neighbor?: never; Undo?: never } | ({ DeleteEmpty: {
 	identifier: number,
-} }) & { AddRule?: never; Edit?: never; Enter?: never; Indent?: never; Move?: never; Neighbor?: never; Undo?: never } | ({ Neighbor: {
+} }) & { AddCoverage?: never; AddRule?: never; Edit?: never; Enter?: never; Indent?: never; Move?: never; Neighbor?: never; Undo?: never } | ({ Neighbor: {
 	identifier: number,
 	down: boolean,
-} }) & { AddRule?: never; DeleteEmpty?: never; Edit?: never; Enter?: never; Indent?: never; Move?: never; Undo?: never } | ({ AddRule: {
+} }) & { AddCoverage?: never; AddRule?: never; DeleteEmpty?: never; Edit?: never; Enter?: never; Indent?: never; Move?: never; Undo?: never } | ({ AddRule: {
 	section: number | null,
-} }) & { DeleteEmpty?: never; Edit?: never; Enter?: never; Indent?: never; Move?: never; Neighbor?: never; Undo?: never } | "AddSection" | ({ Undo: {
+} }) & { AddCoverage?: never; DeleteEmpty?: never; Edit?: never; Enter?: never; Indent?: never; Move?: never; Neighbor?: never; Undo?: never } | "AddSection" | ({ Undo: {
 	identifier: number,
-} }) & { AddRule?: never; DeleteEmpty?: never; Edit?: never; Enter?: never; Indent?: never; Move?: never; Neighbor?: never };
+} }) & { AddCoverage?: never; AddRule?: never; DeleteEmpty?: never; Edit?: never; Enter?: never; Indent?: never; Move?: never; Neighbor?: never } | ({ AddCoverage: {
+	item: number,
+} }) & { AddRule?: never; DeleteEmpty?: never; Edit?: never; Enter?: never; Indent?: never; Move?: never; Neighbor?: never; Undo?: never };
 
 export type OutlineFocus = {
 	identifier: number,
@@ -1536,12 +1575,26 @@ export type OutlineFocus = {
 
 export type OutlineKind = "Title" | "Section" | "Rule" | "Source";
 
-export type OutlineLine = {
+export type OutlineLine = OutlineLine_Serialize | OutlineLine_Deserialize;
+
+export type OutlineLine_Deserialize = {
 	identifier: number,
 	kind: OutlineKind,
 	text: string,
 	nested: boolean,
-	inline: InlineText[],
+	inline: InlineText_Deserialize[],
+	prefix: string,
+	ending: string,
+	continuation: string,
+	placeholder: boolean,
+};
+
+export type OutlineLine_Serialize = {
+	identifier: number,
+	kind: OutlineKind,
+	text: string,
+	nested: boolean,
+	inline: InlineText_Serialize[],
 	prefix: string,
 	ending: string,
 	continuation: string,
@@ -1552,12 +1605,12 @@ export type OutlineSection = OutlineSection_Serialize | OutlineSection_Deseriali
 
 export type OutlineSection_Deserialize = {
 	identifier?: number | null,
-	lines: OutlineLine[],
+	lines: OutlineLine_Deserialize[],
 };
 
 export type OutlineSection_Serialize = {
 	identifier: number | null,
-	lines: OutlineLine[],
+	lines: OutlineLine_Serialize[],
 };
 
 export type OutlineSnapshot = OutlineSnapshot_Serialize | OutlineSnapshot_Deserialize;
@@ -1569,6 +1622,8 @@ export type OutlineSnapshot_Deserialize = {
 	rule_count: number,
 	focus?: OutlineFocus | null,
 	rewrites: RewriteView_Deserialize[],
+	flagged: FlaggedRule[],
+	coverage: CoverageItem[],
 };
 
 export type OutlineSnapshot_Serialize = {
@@ -1578,6 +1633,8 @@ export type OutlineSnapshot_Serialize = {
 	rule_count: number,
 	focus: OutlineFocus | null,
 	rewrites: RewriteView_Serialize[],
+	flagged: FlaggedRule[],
+	coverage: CoverageItem[],
 };
 
 export type PaletteItem = PaletteItem_Serialize | PaletteItem_Deserialize;

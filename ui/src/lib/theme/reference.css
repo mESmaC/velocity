@@ -1000,6 +1000,36 @@
   --agents-rewrite-strike: #e8807a99;
 }
 
+/* F11 live lint: reference .b-text mark, .b-st, .lint, .lint-h, .cov and .lf rules (766–808). */
+:root {
+  --agents-mark-hedge: #e6b66726;
+  --agents-mark-modal: #e8807a22;
+  --agents-mark-vague: #8fb4e81f;
+  --agents-mark-border: 1px solid;
+  --agents-mark-radius: 2px;
+  --agents-state-gap: 5px;
+  --agents-state-hidden: 0;
+  --agents-state-shown: 1;
+  --agents-flag-width: 100%;
+  --agents-state-height: 21px;
+  --agents-state-font: 10px var(--mono);
+  --agents-note-weight: 500;
+  --agents-lint-head-gap: 8px;
+  --agents-lint-head-margin: 0 0 6px;
+  --agents-cover-gap: 7px;
+  --agents-cover-padding: 3px 0;
+  --agents-cover-size: 11px;
+  --agents-cover-mark-width: 12px;
+  --agents-cover-mark-weight: 600;
+  --agents-flag-padding: 7px 8px;
+  --agents-flag-margin: 0 0 5px;
+  --agents-flag-border: 1px solid var(--line-dim);
+  --agents-flag-gap: 7px;
+  --agents-flag-section-font: 10px var(--mono);
+  --agents-flag-phrase-font: 11px var(--mono);
+  --agents-flag-message-margin: 3px 0 0;
+}
+
 /* F7 Duty view and Start a duty agent dialog. Values come from
    design/main-window.html: 623-691 (duty view & modal), 1017-1046 (glass
    controls & cards) and 1062-1068 (event code & modal). Italics in the
