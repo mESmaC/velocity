@@ -177,7 +177,9 @@ pub fn handle_intent(
         LayoutIntent::StartPrompt(prompt) => start_thread(application, prompt).map(Some),
         LayoutIntent::SteerThread {
             identifier, prompt, ..
-        } => match crate::swarm::broadcast(application, *identifier, prompt) {
+        } => match crate::swarm::broadcast(application, *identifier, prompt)
+            .or_else(|| crate::goal_swarm::broadcast(application, *identifier, prompt))
+        {
             Some(result) => result.map(Some),
             None => send_message(application, *identifier, prompt).map(Some),
         },

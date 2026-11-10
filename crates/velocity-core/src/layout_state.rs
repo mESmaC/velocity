@@ -4,6 +4,7 @@ use crate::airc_modal::AircBadge;
 use crate::build_gate::{BuildKind, LaunchKind, launch_block_reason};
 use crate::duty::{self, DutyRole, DutyViewSnapshot};
 use crate::goal_swarm::GoalDialogRequest;
+use crate::goal_swarm_view::{self, GoalSwarmViewSnapshot};
 use crate::interview_view;
 use crate::layout::{self, ThreadGroup};
 use crate::layout_catalog::{self, GROUPS, PULSE};
@@ -394,6 +395,20 @@ impl LayoutState {
         }
     }
 
+    /// + Agents opens the Goal swarm dialog on that swarm's prompt, adding to it (F16).
+    fn add_goal_agents(&mut self, identifier: usize) {
+        if let Some(entry) = self
+            .data
+            .goal_swarms
+            .iter()
+            .find(|entry| entry.identifier == identifier)
+        {
+            let request = GoalDialogRequest::add_agents(&entry.prompt, identifier);
+            self.close_overlays();
+            self.goal_dialog = Some(request);
+        }
+    }
+
     /// `A` or the footer link: the modal replaces any other dialog, as in the reference.
     fn open_airc(&mut self) {
         self.close_overlays();
@@ -486,6 +501,10 @@ impl LayoutState {
                 self.add_swarm_items(identifier);
                 None
             }
+            LayoutAction::AddGoalAgents(identifier) => {
+                self.add_goal_agents(identifier);
+                None
+            }
             LayoutAction::Keyboard(input) => self.keyboard(input),
             LayoutAction::NumberHints(event) => {
                 self.show_numbers = navigation::update_number_hints(self.show_numbers, event);
@@ -527,6 +546,7 @@ impl LayoutState {
             active_thread: self.active_thread_snapshot(),
             active_duty: self.active_duty_snapshot(),
             active_swarm: self.active_swarm_snapshot(),
+            active_goal_swarm: self.active_goal_swarm_snapshot(),
             default_model_pill: self.default_model_pill(),
             search: self.search.clone(),
             groups: self.sidebar(),
@@ -720,6 +740,16 @@ impl LayoutState {
             .iter()
             .find(|entry| entry.identifier == identifier)?;
         Some(swarm::project_swarm_view(entry))
+    }
+
+    fn active_goal_swarm_snapshot(&self) -> Option<GoalSwarmViewSnapshot> {
+        let identifier = self.selected_thread?;
+        let entry = self
+            .data
+            .goal_swarms
+            .iter()
+            .find(|entry| entry.identifier == identifier)?;
+        Some(goal_swarm_view::project_goal_swarm_view(entry))
     }
 
     fn default_model_pill(&self) -> ModelPillView {
@@ -1130,14 +1160,31 @@ impl LayoutState {
             paused: entry.policy.paused,
             agents: entry.policy.agent_count,
             number: if *number <= 9 { Some(*number) } else { None },
-            segments: self
+            segments: self.row_segments(entry.policy.identifier),
+            goal: self
                 .data
-                .swarms
+                .goal_swarms
                 .iter()
-                .find(|swarm| swarm.identifier == entry.policy.identifier)
-                .map(|swarm| swarm::segments(&swarm.members))
-                .unwrap_or_default(),
+                .any(|goal| goal.identifier == entry.policy.identifier),
         }
+    }
+
+    /// A swarm or goal swarm row's segment bar, one segment per member or agent.
+    fn row_segments(&self, identifier: usize) -> Vec<swarm::SwarmStage> {
+        if let Some(goal) = self
+            .data
+            .goal_swarms
+            .iter()
+            .find(|goal| goal.identifier == identifier)
+        {
+            return goal_swarm_view::goal_segments(&goal.agents);
+        }
+        self.data
+            .swarms
+            .iter()
+            .find(|swarm| swarm.identifier == identifier)
+            .map(|swarm| swarm::segments(&swarm.members))
+            .unwrap_or_default()
     }
 
     fn pulse(&self) -> Vec<PulseCount> {

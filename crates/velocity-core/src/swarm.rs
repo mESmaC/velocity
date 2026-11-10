@@ -50,6 +50,8 @@ impl SwarmDialogRequest {
 #[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum SwarmStage {
+    /// A goal swarm agent reading the claims board before it claims a piece (F16).
+    Choosing,
     Working,
     PullRequest,
     Fixing,
@@ -68,6 +70,7 @@ impl SwarmStage {
 
     pub fn label(self) -> &'static str {
         match self {
+            Self::Choosing => "choosing work",
             Self::Working => "working",
             Self::PullRequest => "PR open",
             Self::Fixing => "addressing review",
@@ -249,7 +252,7 @@ pub fn member_track(member: &MemberProgress) -> Vec<TrackStep> {
 pub fn member_doing(member: &MemberProgress) -> String {
     let number = member.pull_request_number.unwrap_or_default();
     match member_stage(member.state, member.review_stage) {
-        SwarmStage::Working => member.activity_label.clone(),
+        SwarmStage::Choosing | SwarmStage::Working => member.activity_label.clone(),
         SwarmStage::Merged => format!("merged · PR #{number}"),
         SwarmStage::Failed if member.state == ThreadState::Closed => {
             format!("PR #{number} closed · worktree kept")
