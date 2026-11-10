@@ -184,3 +184,5 @@ export * from './ipc/airc';
 export * from './ipc/airc-events';
 export * from './ipc/airc-modal';
 export * from './ipc/work-pool';
+
+export * from './ipc/airc-routing';

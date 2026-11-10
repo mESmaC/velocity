@@ -2,6 +2,7 @@
   import { onMount, tick } from 'svelte';
   import {
     aircCommands,
+    aircRoutingCommands,
     aircModalCommands,
     onAircModal,
     pullRequestCommands,
@@ -13,6 +14,7 @@
     LayoutAction,
     LayoutSnapshot,
     NickTone,
+    MessageMode,
   } from './ipc';
   import './theme/airc.css';
 
@@ -100,6 +102,10 @@
   function mention(nick: string) {
     text = `${nick}: `;
     input.focus();
+  }
+
+  function setMode(nick: string, mode: MessageMode) {
+    void aircRoutingCommands.setMode(project, nick, mode).catch(report);
   }
 
   function comment() {
@@ -220,7 +226,19 @@
               onclick={() => mention(row.nick)}
               ><i class={row.dot}></i><b class={tone(row.tone)}>{row.nick}</b
               ><small>{row.detail}</small></button
-            >{/each}{/each}
+            >{#if row.dot !== 'Left'}
+              <select
+                aria-label="Message mode for {row.nick}"
+                value={row.message_mode}
+                onchange={(event) =>
+                  setMode(row.nick, event.currentTarget.value as MessageMode)}
+              >
+                <option value="Open">Open</option><option value="HeadsDown"
+                  >Heads-down</option
+                >
+                <option value="Quarantined">Quarantined</option>
+              </select>
+            {/if}{/each}{/each}
       </aside>
     </div>
     <form

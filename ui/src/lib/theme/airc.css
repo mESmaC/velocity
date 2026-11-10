@@ -361,3 +361,11 @@
   font-size: var(--airc-note-font-size);
   color: var(--err);
 }
+
+.airc-nicks select {
+  font: var(--airc-nick-font);
+  color: var(--text-2);
+  background: var(--surface-3);
+  border-color: var(--line-dim);
+  border-radius: var(--r-sm);
+}
