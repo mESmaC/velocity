@@ -562,6 +562,9 @@ pub struct ThreadItem {
     pub task_ids: Vec<u32>,
     #[serde(default)]
     pub issue: Option<issues::ThreadIssue>,
+    /// F16 inventory identity; merged threads record built sections without editing SPEC.md.
+    #[serde(default)]
+    pub spec_section: Option<String>,
     pub additions: u32,
     pub deletions: u32,
     pub elapsed_seconds: u32,
@@ -593,6 +596,7 @@ impl ThreadItem {
             review_stage: None,
             task_ids: Vec::new(),
             issue: None,
+            spec_section: None,
             additions: 0,
             deletions: 0,
             elapsed_seconds: 0,
@@ -623,6 +627,7 @@ impl ThreadItem {
             review_stage: None,
             task_ids: Vec::new(),
             issue: None,
+            spec_section: None,
             additions: 0,
             deletions: 0,
             elapsed_seconds: 0,
