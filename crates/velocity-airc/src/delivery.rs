@@ -93,7 +93,7 @@ fn routed(
             entry.sequence,
             if entry.kind == "merged" {
                 format!(
-                    "{}\nIf these files overlap your claim or edits, bring your branch up to date now without rewriting published history, regenerate generated files and run the required checks. Post a rebased event on success; resolve conflicts in your own worktree. Otherwise update once at landing.",
+                    "{}\nIf these files overlap your claim or edits, commit current edits and call airc_rebase now, then regenerate generated files and run the required checks. Velocity records the update outcome; resolve any conflicts in your own worktree. Otherwise update once at landing.",
                     entry.text
                 )
             } else {

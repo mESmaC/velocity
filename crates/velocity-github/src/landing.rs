@@ -13,11 +13,13 @@ pub(crate) struct LandingCheckpoint {
 
 impl PullRequestClient {
     pub(crate) fn base_head(&self, number: u32) -> Result<String, PullRequestError> {
-        let query = "query($owner:String!,$name:String!,$number:Int!) { repository(owner:$owner,name:$name) { pullRequest(number:$number) { baseRefOid } } }";
+        // GitHub may retain an older baseRefOid until it recalculates the PR.
+        // The branch target is the live base that the merge must be checked against.
+        let query = "query($owner:String!,$name:String!,$number:Int!) { repository(owner:$owner,name:$name) { pullRequest(number:$number) { baseRef { target { oid } } } } }";
         self.graphql_at(
             query,
             self.variables(number),
-            "/data/repository/pullRequest/baseRefOid",
+            "/data/repository/pullRequest/baseRef/target/oid",
         )
     }
 
@@ -48,10 +50,11 @@ impl PullRequestClient {
             }
         }
         let head = self.snapshot(number)?.pull_request.head_ref_oid;
+        let clean_update = self.clean_base_update(&before.head_ref_oid, &head, &base)?;
         let scope = previous.map_or(CheckScope::Full, |prior| {
             // An automatic clean base merge contains no new author work.
             check_scope(
-                prior.head == before.head_ref_oid,
+                prior.head == before.head_ref_oid && clean_update,
                 prior.base == base,
                 overlap,
             )
@@ -101,6 +104,26 @@ impl PullRequestClient {
             return Ok(());
         };
         record.updated(number, head)?;
+        let clean = self.clean_base_update(old, head, base)?;
+        if clean
+            && record
+                .approver(number, old)
+                .is_ok_and(|nick| nick == record.nick())
+        {
+            record.approve(number, head)?;
+        }
+        Ok(())
+    }
+
+    fn clean_base_update(
+        &self,
+        old: &str,
+        head: &str,
+        base: &str,
+    ) -> Result<bool, PullRequestError> {
+        if old == head {
+            return Ok(true);
+        }
         let commit: Value = self.command.api(
             "GET",
             &format!("repos/{}/commits/{head}", self.repository),
@@ -112,14 +135,7 @@ impl PullRequestClient {
                 && parents[0].get("sha").and_then(Value::as_str) == Some(old)
                 && parents[1].get("sha").and_then(Value::as_str) == Some(base)
         });
-        if clean
-            && record
-                .approver(number, old)
-                .is_ok_and(|nick| nick == record.nick())
-        {
-            record.approve(number, head)?;
-        }
-        Ok(())
+        Ok(clean)
     }
 
     fn base_overlap(&self, old: &str, new: &str, number: u32) -> Result<bool, PullRequestError> {
@@ -139,7 +155,10 @@ impl PullRequestClient {
         Ok(files.iter().any(|file| {
             file.get("filename")
                 .and_then(Value::as_str)
-                .is_some_and(|path| own.iter().any(|own| own == path))
+                .is_some_and(|path| {
+                    velocity_core::landing::contested_file(path)
+                        && own.iter().any(|own| own == path)
+                })
         }))
     }
 }

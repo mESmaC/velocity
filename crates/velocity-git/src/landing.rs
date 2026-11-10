@@ -79,14 +79,14 @@ fn regions(path: &Path, arguments: &[&str]) -> Result<Regions, GitError> {
             if let Some((_, file)) = header.rsplit_once(" b/") {
                 result.push((file.to_owned(), Vec::new()));
             }
-        } else if let Some(hunk) = line.strip_prefix("@@ -") {
-            if let Some(range) = hunk.split_whitespace().next() {
-                let (start, length) = range.split_once(',').unwrap_or((range, "1"));
-                if let (Ok(start), Ok(length), Some((_, regions))) =
-                    (start.parse(), length.parse(), result.last_mut())
-                {
-                    regions.push((start, length));
-                }
+        } else if let Some(hunk) = line.strip_prefix("@@ -")
+            && let Some(range) = hunk.split_whitespace().next()
+        {
+            let (start, length) = range.split_once(',').unwrap_or((range, "1"));
+            if let (Ok(start), Ok(length), Some((_, regions))) =
+                (start.parse(), length.parse(), result.last_mut())
+            {
+                regions.push((start, length));
             }
         }
     }

@@ -22,5 +22,31 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         needs_rebase(true, false, true),
         needs_rebase(true, false, false)
     );
+    if let (Some(worktree), Some(repository)) = (arguments.get(1), arguments.get(3)) {
+        rebase_demo(repository, worktree)?;
+    }
+    Ok(())
+}
+
+fn rebase_demo(repository: &str, worktree: &str) -> Result<(), Box<dyn std::error::Error>> {
+    let directory =
+        std::env::temp_dir().join(format!("velocity-rebase-demo-{}", std::process::id()));
+    let channel = velocity_airc::Channel::open(&directory, "demo")?;
+    channel.join("demo", "demo")?;
+    let branch = velocity_git::current_branch(std::path::Path::new(worktree))?;
+    channel.register_checkout(
+        "demo",
+        velocity_airc::waits::Checkout::new(
+            repository.into(),
+            worktree.into(),
+            branch,
+            "master".into(),
+        ),
+    )?;
+    let result = channel.rebase("demo");
+    for event in channel.events(0)? {
+        println!("{}: {}", event.kind, event.text);
+    }
+    result?;
     Ok(())
 }

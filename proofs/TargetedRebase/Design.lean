@@ -1,6 +1,5 @@
 module
 public import Mathlib.Data.Finset.Card
-public import Mathlib.Tactic
 public section
 namespace TargetedRebase
 -- SPEC.md F6/F14. Native edges supply overlap and exact head/base identities.

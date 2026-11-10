@@ -45,6 +45,12 @@ fn run(directory: &Path, arguments: &[&str]) -> Result<(), GitError> {
     Err(GitError::Failed {
         operation: "continue dependency",
         path: directory.into(),
-        stderr: String::from_utf8_lossy(&output.stderr).trim().into(),
+        stderr: format!(
+            "{}\n{}",
+            String::from_utf8_lossy(&output.stdout).trim(),
+            String::from_utf8_lossy(&output.stderr).trim()
+        )
+        .trim()
+        .into(),
     })
 }

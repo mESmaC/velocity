@@ -171,6 +171,6 @@ fn rebase_notice(number: u32, title: &str, base: &str, overlap: &[String]) -> St
         files.push_str(&format!(" and {} more", overlap.len() - SHOWN));
     }
     format!(
-        "PR #{number} from your swarm ({title}) just merged into {base} and touched files you changed: {files}. Bring your branch up to date with origin/{base} now, the way AGENTS.md says (rebase, or merge where force-pushing is not allowed), resolve any conflicts, re-run the checks and push."
+        "PR #{number} from your swarm ({title}) just merged into {base} and touched files you changed: {files}. Commit current edits and call airc_rebase to update with origin/{base} now without rewriting history, resolve any conflicts, re-run the checks and push."
     )
 }
