@@ -74,6 +74,7 @@ fn bindings() -> Builder<tauri::Wry> {
         goal_swarm::read_goal_swarm_pool,
         goal_swarm::launch_goal_swarm,
         goal_swarm::add_goal_agents,
+        goal_swarm::get_goal_swarm_board,
         issue_panel::get_issue_panel,
         issue_panel::open_project_issue,
         issue_panel::dispatch_issue,
