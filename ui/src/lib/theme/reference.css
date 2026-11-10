@@ -1331,3 +1331,10 @@
   --airc-nick-8: #a3d4f0;
   --airc-nick-9: #d4c38f;
 }
+
+/* F8 Task List, reference .item .sub and .task.done .ttl. */
+:root {
+  --task-source-gap: 8px;
+  --task-done-decoration: #555;
+  --task-source-underline-offset: 2px;
+}

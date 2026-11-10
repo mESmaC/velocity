@@ -63,15 +63,7 @@ pub(crate) fn read_model(state: &PersistedState) -> LayoutData {
                 })
             })
             .collect();
-        data.tasks = project
-            .tasks
-            .iter()
-            .map(|task| RailItem {
-                identifier: task.id as usize,
-                title: task.text.clone(),
-                metadata: task_label(task.state).into(),
-            })
-            .collect();
+        data.tasks = crate::task_list::task_views(project);
         data.completed_task_count = project
             .tasks
             .iter()
@@ -294,15 +286,6 @@ pub(crate) fn thread_metadata(thread: &ThreadItem) -> String {
         AgentActivity::Idle => "idle",
     }
     .into()
-}
-
-fn task_label(state: TaskState) -> &'static str {
-    match state {
-        TaskState::Draft => "draft",
-        TaskState::Todo => "todo",
-        TaskState::Now => "agent working",
-        TaskState::Done => "done",
-    }
 }
 
 fn pull_requests(project: &ProjectItem) -> Vec<RailItem> {
