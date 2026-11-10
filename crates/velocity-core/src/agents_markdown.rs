@@ -1,5 +1,7 @@
 //! Lossless line parsing for F11. Unrecognised Markdown stays editable only in its source file.
 
+use crate::agents_lint::{self, LintKind};
+
 #[cfg_attr(
     feature = "bindings",
     derive(serde::Serialize, serde::Deserialize, specta::Type)
@@ -20,6 +22,18 @@ pub enum OutlineKind {
 pub struct InlineText {
     pub text: String,
     pub code: bool,
+    /// The live lint mark on this run of text. Code is never linted: `cargo clean` is a command.
+    pub mark: Option<LintKind>,
+}
+
+impl InlineText {
+    fn plain(text: &str, mark: Option<LintKind>) -> Self {
+        Self {
+            text: text.into(),
+            code: false,
+            mark,
+        }
+    }
 }
 
 #[cfg_attr(
@@ -48,7 +62,7 @@ impl OutlineLine {
             kind,
             text: text.into(),
             nested,
-            inline: inline_text(text),
+            inline: inline_text(text, kind == OutlineKind::Rule),
             prefix: prefix.into(),
             ending: ending.into(),
             continuation: String::new(),
@@ -59,7 +73,7 @@ impl OutlineLine {
     pub(crate) fn replace(&mut self, text: String) {
         // A pasted multiline rule remains a single bullet rather than creating hidden structure.
         self.text = text.replace('\r', "").replace('\n', " ");
-        self.inline = inline_text(&self.text);
+        self.inline = inline_text(&self.text, self.kind == OutlineKind::Rule);
     }
 
     /// Ends this line's last physical line, continuation included, so a line placed after it
@@ -161,27 +175,43 @@ fn fence_marker(source: &str) -> Option<(char, usize)> {
     (matches!(character, '`' | '~') && count >= 3).then_some((character, count))
 }
 
-fn inline_text(text: &str) -> Vec<InlineText> {
+fn inline_text(text: &str, lint: bool) -> Vec<InlineText> {
     // Unmatched backticks stay visible. The frontend creates text nodes, never HTML.
+    // Concatenating the parts, with backticks around code, gives back `text` exactly.
     let mut parts = Vec::new();
     let mut remaining = text;
     while let Some((prefix, after)) = remaining.split_once('`') {
         let Some((code, tail)) = after.split_once('`') else {
             break;
         };
-        parts.push(InlineText {
-            text: prefix.into(),
-            code: false,
-        });
+        push_plain(&mut parts, prefix, lint);
         parts.push(InlineText {
             text: code.into(),
             code: true,
+            mark: None,
         });
         remaining = tail;
     }
-    parts.push(InlineText {
-        text: remaining.into(),
-        code: false,
-    });
+    push_plain(&mut parts, remaining, lint);
     parts
+}
+
+fn push_plain(parts: &mut Vec<InlineText>, text: &str, lint: bool) {
+    let mut at = 0;
+    if lint {
+        for issue in agents_lint::find_issues(text) {
+            if issue.start > at {
+                parts.push(InlineText::plain(&text[at..issue.start], None));
+            }
+            parts.push(InlineText::plain(
+                &text[issue.start..issue.end],
+                Some(issue.kind),
+            ));
+            at = issue.end;
+        }
+    }
+    // An empty plain part keeps a rule with no text renderable, as before.
+    if at < text.len() || at == 0 {
+        parts.push(InlineText::plain(&text[at..], None));
+    }
 }
