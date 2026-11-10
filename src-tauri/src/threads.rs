@@ -554,6 +554,7 @@ fn fail(application: &AppHandle, key: ThreadKey, headline: &str, detail: &str) {
             .map_err(|error| error.to_string())
     });
     report(saved.map(|_| ()));
+    crate::airc_events::record_thread_failed(application, key.0, key.1, headline, detail);
     report(refresh(application, key, false).map(|_| ()));
     emit_status(application, key);
 }
