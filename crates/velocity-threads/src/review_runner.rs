@@ -12,7 +12,7 @@ use std::time::Duration;
 use agent_client_protocol::v1::schema::ContentBlock;
 use tokio::sync::Notify;
 use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender, unbounded_channel};
-use velocity_acp::client::{AgentEvent, AgentInput};
+use velocity_acp::client::{AgentEvent, AgentInput, AircLaunch};
 use velocity_core::duty::{DutyAgentCard, DutyEventKind, DutyFeedEvent, DutyRoleEntry};
 use velocity_core::pr_review::{
     ReviewAssignment, ReviewBrief, ReviewCandidate, ReviewWork, assign_reviews, claim_message,
@@ -79,6 +79,8 @@ pub struct PrDutyReviews {
     executable: PathBuf,
     /// The app data folder: AIRC channels (the approval record) and review reports.
     app_data: PathBuf,
+    /// The project's AIRC channel, passed to every review's agent (F14).
+    airc: Option<AircLaunch>,
 }
 
 impl PrDutyReviews {
@@ -88,7 +90,14 @@ impl PrDutyReviews {
             wake: Arc::new(Notify::new()),
             executable,
             app_data,
+            airc: None,
         }
+    }
+
+    /// Gives every review's agent the project's AIRC channel under its PR duty nick (F14).
+    pub fn with_airc(mut self, airc: AircLaunch) -> Self {
+        self.airc = Some(airc);
+        self
     }
 
     /// Looks for PRs to claim now, e.g. after PR duty was started or resumed.
@@ -434,7 +443,12 @@ impl Review {
             app_data: &self.runner.app_data,
             report: &report,
         };
-        let setup = review_session(&prepared.plan, prepared.worktree.clone(), server);
+        let mut setup = review_session(&prepared.plan, prepared.worktree.clone(), server);
+        setup.airc = self
+            .runner
+            .airc
+            .as_ref()
+            .map(|airc| airc.duty(prepared.plan.project, &prepared.plan.nickname));
         let _ = self.input.send(text(&self.prompt(&prepared)));
         self.remember(&prepared.head);
         let session = crate::spawn_session(prepared.plan.agent.clone(), setup, inputs);

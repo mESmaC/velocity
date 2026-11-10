@@ -69,7 +69,8 @@ pub fn initialize(application: &AppHandle) -> anyhow::Result<()> {
         .path()
         .app_data_dir()
         .context("Could not resolve the application data directory")?;
-    let reviews = PrDutyReviews::new(executable, app_data);
+    let reviews = PrDutyReviews::new(executable, app_data)
+        .with_airc(crate::airc_access::launch(application)?);
     application.manage(reviews.clone());
     let host = TauriReviewHost(application.clone());
     tauri::async_runtime::spawn(reviews.run(host));
