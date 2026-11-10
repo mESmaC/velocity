@@ -18,6 +18,7 @@ pub mod lifecycle;
 pub mod manager;
 mod merged_worktree;
 pub mod path_scheme;
+mod ready_pool;
 mod repository;
 mod review;
 pub mod setup;
@@ -45,16 +46,21 @@ pub use path_scheme::{
     JobKind, LocationConfig, WorktreeLeaf, WorktreePath, can_allocate_leaf, effective_root,
     leaf_for_job, plan_worktree_path, same_leaf_id,
 };
+pub use ready_pool::{
+    FoundSlot, ReadyMark, ReadyTake, catch_up_ready_worktree, compiler_cache_env,
+    create_ready_worktree, prebuild_ready_worktree, ready_slot_path, remove_ready_worktree,
+    scan_ready_slots, take_ready_worktree,
+};
 pub use repository::{
     GitError, commit_file, current_branch, folder_is_occupied, initialize_repository, is_repository,
 };
-pub use review::{ReviewCheckout, prepare_review_worktree, remove_review_worktree};
+pub use review::{ReviewCheckout, prepare_review_worktree, remove_review_worktree, review_tier};
 pub use setup::{
     SetupAction, SetupPhase, WorktreeSettings, can_start_agent, default_settings,
     plan_setup_actions, resolve_cargo_target_dir,
 };
 pub use sweep::{prepare_sweep_worktree, resolve_commit, sweep_base};
 pub use titled::{
-    TitledWorktree, WorktreeName, execute_titled_worktree_setup, rename_worktree,
-    rename_worktree_branch,
+    TitledWorktree, WorktreeName, execute_pooled_worktree_setup, execute_titled_pooled_setup,
+    execute_titled_worktree_setup, rename_worktree, rename_worktree_branch,
 };

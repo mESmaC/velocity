@@ -5,9 +5,11 @@
   import { dutyCommands } from './ipc';
   import type {
     DutyEventKind,
+    DutyRole,
     DutyViewSnapshot,
     LayoutAction,
     LayoutSnapshot,
+    NavigationIntent,
     ProviderColor,
   } from './ipc';
 
@@ -69,12 +71,14 @@
     }
   }
 
+  const dialogIntents: Record<DutyRole, NavigationIntent> = {
+    pr_duty: 'PrDuty',
+    scouts: 'Scouts',
+    main_watcher: 'MainWatcher',
+  };
+
   function openDialog() {
-    send({
-      Request: {
-        Navigation: duty.role === 'pr_duty' ? 'PrDuty' : 'Scouts',
-      },
-    });
+    send({ Request: { Navigation: dialogIntents[duty.role] } });
   }
 </script>
 
@@ -86,6 +90,9 @@
       {#if duty.role === 'pr_duty'}
         <span>{duty.open_pull_request_count} open PRs</span>
         <span class="add">{duty.merged_today} merged today</span>
+      {:else if duty.role === 'main_watcher'}
+        <span>after every merge</span>
+        <span>{duty.issues_filed} flaky tests filed</span>
       {:else}
         <span>{duty.issues_filed} issues filed</span>
         <span>{duty.cadence_label}</span>

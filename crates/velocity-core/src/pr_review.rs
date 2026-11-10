@@ -5,6 +5,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use crate::duty::{DutyMergeMethod, PrDutyRuleSettings};
+use crate::review_tier::{ReviewTier, TierAssessment};
 use crate::scout_sweep::step_doing;
 
 /// Where Velocity's approval record (F7, Q28) leaves a PR's current head.
@@ -107,6 +108,8 @@ pub struct ReviewBrief<'a> {
     /// Files that conflict when the base is merged in; empty when it merged.
     pub conflicts: &'a [String],
     pub work: ReviewWork,
+    /// The PR's review tier (F7 Tiered review), read from its diff against the base.
+    pub tier: &'a TierAssessment,
     pub rules: &'a PrDutyRuleSettings,
     /// What you told PR duty from the Duty view's composer, if this review follows it.
     pub instruction: Option<&'a str>,
@@ -124,7 +127,7 @@ pub fn review_prompt(brief: &ReviewBrief) -> String {
         work_sentence(brief)
     );
     prompt.push_str(&checkout_paragraph(brief));
-    prompt.push_str(&review_steps(brief.rules));
+    prompt.push_str(&tier_steps(brief));
     prompt.push_str(SEVERITY_BAR);
     if brief.rules.re_review_on_new_commits {
         prompt.push_str("- If an earlier head of this PR was reviewed, review only the commits pushed since; block only on findings in them, or on new data loss or a crash. A merge of the base branch that PR duty pushed is not a new commit to review; only its conflict resolutions are.\n");
@@ -166,16 +169,55 @@ fn checkout_paragraph(brief: &ReviewBrief) -> String {
     )
 }
 
+/// F7 Tiered review: a trivial PR gets the checks and a claim check; a normal PR the full
+/// review; a sensitive PR the full review plus the stress suite and the strongest proof level.
+fn tier_steps(brief: &ReviewBrief) -> String {
+    match brief.tier.tier {
+        ReviewTier::Trivial => format!(
+            "\nTier: trivial. Velocity read its diff as docs, comments or formatting only. No proof is needed.\n- Read the PR with `pr_duty_pull_request` and confirm the change matches the piece its description claims. If you find a change that is not docs, comments or formatting, review it in full as a normal PR.\n{}- Approve once the local checks pass and the change matches its claim.\n",
+            local_checks_step(brief.rules)
+        ),
+        ReviewTier::Normal => format!(
+            "\nTier: normal. Full review.\n{}",
+            review_steps(brief.rules)
+        ),
+        ReviewTier::Sensitive => format!(
+            "\nTier: sensitive. It touches {}, listed under Sensitive paths in AGENTS.md. Full review, plus:\n- Run the project's full stress suite (its stress command in AGENTS.md) on the merge result before you merge. A failure blocks the merge.\n- Any proof-list feature it changes needs its confidence proof at the strongest level its language allows (SPEC.md F17). A weaker level blocks the merge.\n{}",
+            quoted_list(&brief.tier.sensitive_files),
+            review_steps(brief.rules)
+        ),
+    }
+}
+
+fn local_checks_step(rules: &PrDutyRuleSettings) -> &'static str {
+    if rules.ci_green_before_merge {
+        "- Run the project's local checks from AGENTS.md here, on the merge result. They decide, not GitHub CI: a pending, red or stale run never holds a PR up.\n"
+    } else {
+        ""
+    }
+}
+
+fn quoted_list(files: &[String]) -> String {
+    const SHOWN: usize = 8;
+    let mut list: Vec<String> = files
+        .iter()
+        .take(SHOWN)
+        .map(|file| format!("`{file}`"))
+        .collect();
+    if files.len() > SHOWN {
+        list.push(format!("{} more", files.len() - SHOWN));
+    }
+    list.join(", ")
+}
+
 fn review_steps(rules: &PrDutyRuleSettings) -> String {
     let mut steps = String::from(
-        "\nReview:\n- Read AGENTS.md and SPEC.md first and follow AGENTS.md's rules for PR duty. Read the PR with `pr_duty_pull_request`: its description names the piece it completes.\n- Review the intent, not each line: check the PR against its claim, its Task List item, issue or SPEC.md section, and AGENTS.md. Style is left to linters.\n",
+        "Review:\n- Read AGENTS.md and SPEC.md first and follow AGENTS.md's rules for PR duty. Read the PR with `pr_duty_pull_request`: its description names the piece it completes.\n- Review the intent, not each line: check the PR against its claim, its Task List item, issue or SPEC.md section, and AGENTS.md. Style is left to linters.\n",
     );
     if rules.check_diff_against_spec {
         steps.push_str("- Check the diff against SPEC.md: the main path of the claimed piece must do what its section says.\n");
     }
-    if rules.ci_green_before_merge {
-        steps.push_str("- Run the project's local checks from AGENTS.md here, on the merge result. They decide, not GitHub CI: a pending, red or stale run never holds a PR up.\n");
-    }
+    steps.push_str(local_checks_step(rules));
     steps.push_str("- If `proofs/` changes, run `lake build` and the axiom audit. Never merge unless the proofs check.\n");
     if rules.review_theorem_statements {
         steps.push_str("- Review every theorem statement, not the proofs: does it say what the SPEC.md section says, do its hypotheses exclude real inputs, is the cost model honest, and is the class of alternatives the one that matters?\n");

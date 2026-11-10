@@ -412,7 +412,9 @@ async fn run_thread(
 }
 
 async fn run_goal_member(application: AppHandle, key: ThreadKey, plan: GoalMemberPlan) {
-    let (worktree_path, branch_name, failure) = setup_goal_worktree(&plan.worktree).await;
+    let pools = crate::ready_pool::pools(&application);
+    let (worktree_path, branch_name, failure) =
+        setup_goal_worktree(pools, key.0, &plan.worktree).await;
     let path = worktree_path.display().to_string();
     if !mark_choosing_worktree(&application, key, &path) {
         return remove_deleted_worktree(plan.worktree.repository_root, worktree_path).await;
@@ -440,13 +442,21 @@ async fn run_goal_member(application: AppHandle, key: ThreadKey, plan: GoalMembe
     }
 }
 
+/// The agent's worktree, from the warm pool when it has one ready (F5).
 async fn setup_goal_worktree(
+    pools: Option<velocity_threads::ReadyPools>,
+    project: u32,
     request: &velocity_git::WorktreeSetupRequest,
 ) -> (PathBuf, String, Option<String>) {
     let owned = request.clone();
-    match tauri::async_runtime::spawn_blocking(move || velocity_git::execute_worktree_setup(&owned))
-        .await
-    {
+    let setup = move || {
+        let ticket = pools.and_then(|pools| pools.take(project));
+        velocity_git::execute_pooled_worktree_setup(
+            &owned,
+            ticket.as_ref().map(|ticket| &ticket.ready),
+        )
+    };
+    match tauri::async_runtime::spawn_blocking(setup).await {
         Ok(Ok(outcome)) => (
             outcome.worktree_path,
             outcome
@@ -586,7 +596,8 @@ fn mark_worktree_ready(application: &AppHandle, key: ThreadKey, path: &str, fail
 }
 
 /// Checks the worktree out while the title model answers; naming and setup wait for the
-/// title, at most F4's two seconds (`resolve_title` enforces the deadline).
+/// title, at most F4's two seconds (`resolve_title` enforces the deadline). The checkout is a
+/// ready worktree from the warm pool when it has one (F5).
 async fn take_worktree(
     application: &AppHandle,
     key: ThreadKey,
@@ -594,10 +605,16 @@ async fn take_worktree(
 ) -> Result<TitledWorktree, String> {
     let (name_sender, name_receiver) = std::sync::mpsc::channel();
     let request = plan.worktree.clone();
+    let pools = crate::ready_pool::pools(application);
+    let project = key.0;
     let worktree = tauri::async_runtime::spawn_blocking(move || {
-        velocity_git::execute_titled_worktree_setup(&request, || {
-            name_receiver.recv().ok().flatten()
-        })
+        // Held until the checkout is done: dropping it frees the slot for the next one.
+        let ticket = pools.and_then(|pools| pools.take(project));
+        velocity_git::execute_titled_pooled_setup(
+            &request,
+            ticket.as_ref().map(|ticket| &ticket.ready),
+            || name_receiver.recv().ok().flatten(),
+        )
     });
     let name = settle_title(application, key, plan).await;
     // Setup is waiting for this; if the checkout already failed, nobody is listening.

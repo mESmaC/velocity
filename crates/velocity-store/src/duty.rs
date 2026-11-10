@@ -175,6 +175,17 @@ pub struct PrDutyRoster {
     pub agents: Vec<DutyAgentItem>,
 }
 
+/// A project's Main watcher as the watch runner reads it.
+#[derive(Clone)]
+pub struct WatchRoster {
+    /// Settings when the roster was read: each agent's ACP command comes from Providers.
+    pub settings: crate::Settings,
+    pub project: ProjectItem,
+    pub worktrees: velocity_core::worktree_settings::WorktreePreferences,
+    pub paused: bool,
+    pub watchers: Vec<DutyAgentItem>,
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize, Type)]
 pub struct DutyDialogDefaults {
     pub provider: ProviderKind,
@@ -185,6 +196,7 @@ pub struct DutyDialogDefaults {
     pub model_configured: bool,
     pub pr_duty_exists: bool,
     pub scouts_exists: bool,
+    pub main_watcher_exists: bool,
     pub pr_rules: PrDutyRuleSettings,
     pub scout_rules: ScoutRuleSettings,
 }
@@ -247,6 +259,9 @@ impl StateStore {
             model_configured,
             pr_duty_exists: existing_pr.is_some(),
             scouts_exists: existing_scouts.is_some(),
+            main_watcher_exists: project
+                .and_then(|proj| find_role(proj, DutyRole::MainWatcher))
+                .is_some(),
             pr_rules: existing_pr
                 .map(|item| item.pr_rules.clone())
                 .unwrap_or_default(),
@@ -393,6 +408,25 @@ impl StateStore {
                     paused: role.paused,
                     rules: role.pr_rules.clone(),
                     agents: role.agents.clone(),
+                })
+            })
+            .collect()
+    }
+
+    /// Every project's Main watcher, for the watch runner (F7), paused ones included so their
+    /// cards still say so.
+    pub fn main_watch_rosters(&self) -> Vec<WatchRoster> {
+        self.state
+            .projects
+            .iter()
+            .filter_map(|project| {
+                let role = find_role(project, DutyRole::MainWatcher)?;
+                Some(WatchRoster {
+                    settings: self.state.settings.clone(),
+                    project: project.clone(),
+                    worktrees: self.worktree_preferences(project),
+                    paused: role.paused,
+                    watchers: role.agents.clone(),
                 })
             })
             .collect()

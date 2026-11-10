@@ -42,6 +42,13 @@
       'Assumes every part of the app is broken and sets out to prove it: writes the tests and stress scripts, and files each issue with the failing one attached.',
       'With several scouts, each takes a different area of the repo.',
     ],
+    [
+      'main_watcher',
+      'branch',
+      'Main watcher',
+      'Watches master after every merge: runs every test and stress script, bisects a break to the merge that caused it, and opens a fix or revert PR.',
+      'One watcher takes each merge. With several, a merge that lands mid-watch goes to the next one.',
+    ],
   ];
 
   const mergeMethods: [DutyMergeMethod, string][] = [
@@ -140,14 +147,14 @@
 
   function roleExists(): boolean {
     if (!defaults) return false;
-    return role === 'pr_duty'
-      ? defaults.pr_duty_exists
-      : defaults.scouts_exists;
+    if (role === 'pr_duty') return defaults.pr_duty_exists;
+    if (role === 'scouts') return defaults.scouts_exists;
+    return defaults.main_watcher_exists;
   }
 
-  function roleTitle(): string {
-    return role === 'pr_duty' ? 'PR duty' : 'Scouts';
-  }
+  const selectedRole = $derived(
+    roles.find(([value]) => value === role) ?? roles[0],
+  );
 
   async function submit() {
     if (submitting) return;
@@ -228,7 +235,7 @@
           </div>
         </div>
         <div class="hint">
-          {role === 'pr_duty' ? roles[0][4] : roles[1][4]}
+          {selectedRole[4]}
         </div>
       </div>
 
@@ -316,6 +323,28 @@
             </div>
           </div>
         </div>
+      {:else if role === 'main_watcher'}
+        <div class="field">
+          <span class="label">Rules</span>
+          <div class="checks">
+            <label class="check locked">
+              <input type="checkbox" checked disabled />
+              Never push to master: every fix or revert is a PR
+              <span class="lockt"><Icon name="lock" /> always on</span>
+            </label>
+            <label class="check locked">
+              <input type="checkbox" checked disabled />
+              After each merge: every test and stress script, then a bisect to the
+              merge that broke master
+              <span class="lockt"><Icon name="lock" /> always on</span>
+            </label>
+            <label class="check locked">
+              <input type="checkbox" checked disabled />
+              File each flaky test once, with failing evidence
+              <span class="lockt"><Icon name="lock" /> always on</span>
+            </label>
+          </div>
+        </div>
       {:else}
         <div class="field">
           <span class="label">Look for</span>
@@ -390,7 +419,9 @@
         disabled={submitting}
         onclick={submit}
       >
-        {roleExists() ? `Add ${agentCount} to ${roleTitle()}` : 'Start duty'}
+        {roleExists()
+          ? `Add ${agentCount} to ${selectedRole[2]}`
+          : 'Start duty'}
         <kbd>Ctrl</kbd><kbd>↵</kbd>
       </button>
     </div>

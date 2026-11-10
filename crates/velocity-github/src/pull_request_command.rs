@@ -47,6 +47,18 @@ impl PullRequestCommand {
         self.run(arguments, None)
     }
 
+    /// A command's plain-text output, such as `gh pr diff`.
+    pub fn text(&self, arguments: &[&str]) -> Result<String, PullRequestError> {
+        let output = self.spawn(arguments, false)?.wait_with_output()?;
+        if !output.status.success() {
+            return Err(PullRequestError::Command {
+                code: output.status.code(),
+                message: String::from_utf8_lossy(&output.stderr).trim().to_owned(),
+            });
+        }
+        Ok(String::from_utf8_lossy(&output.stdout).into_owned())
+    }
+
     pub fn api<T: DeserializeOwned>(
         &self,
         method: &str,

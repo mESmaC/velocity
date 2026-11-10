@@ -521,6 +521,7 @@ export type DutyDialogDefaults_Deserialize = {
 	model_configured: boolean,
 	pr_duty_exists: boolean,
 	scouts_exists: boolean,
+	main_watcher_exists: boolean,
 	pr_rules: PrDutyRuleSettings,
 	scout_rules: ScoutRuleSettings,
 };
@@ -533,6 +534,7 @@ export type DutyDialogDefaults_Serialize = {
 	model_configured: boolean,
 	pr_duty_exists: boolean,
 	scouts_exists: boolean,
+	main_watcher_exists: boolean,
 	pr_rules: PrDutyRuleSettings,
 	scout_rules: ScoutRuleSettings,
 };
@@ -560,7 +562,9 @@ export type DutyFeedItem = {
 
 export type DutyMergeMethod = "squash" | "rebase" | "merge_commit";
 
-export type DutyRole = "pr_duty" | "scouts";
+export type DutyRole = "pr_duty" | "scouts" | 
+/**  Watches the base branch after merges (F7 Main watcher; the role name is proposed, Q22). */
+"main_watcher";
 
 export type DutyRoleItem = {
 	id: number,
@@ -1655,9 +1659,9 @@ export type ModelPillView = {
 
 export type NavigationIntent = NavigationIntent_Serialize | NavigationIntent_Deserialize;
 
-export type NavigationIntent_Deserialize = "Palette" | "NewThread" | "NewProject" | "Settings" | "ShowNumbers" | ({ Jump: string }) & { Answer?: never } | "Search" | "Task" | "Swarm" | "Goal" | "Airc" | "Dismiss" | "Submit" | "Dispatch" | "Resume" | "Fanout" | "PrDuty" | "Scouts" | ({ Answer: string }) & { Jump?: never } | "Lock" | "SpecFile" | "Grill" | "Diff" | "Editor" | "SaveAgents";
+export type NavigationIntent_Deserialize = "Palette" | "NewThread" | "NewProject" | "Settings" | "ShowNumbers" | ({ Jump: string }) & { Answer?: never } | "Search" | "Task" | "Swarm" | "Goal" | "Airc" | "Dismiss" | "Submit" | "Dispatch" | "Resume" | "Fanout" | "PrDuty" | "Scouts" | "MainWatcher" | ({ Answer: string }) & { Jump?: never } | "Lock" | "SpecFile" | "Grill" | "Diff" | "Editor" | "SaveAgents";
 
-export type NavigationIntent_Serialize = "Palette" | "NewThread" | "NewProject" | "Settings" | "ShowNumbers" | ({ Jump: string }) & { Answer?: never } | "Search" | "Task" | "Swarm" | "Goal" | "Airc" | "Dismiss" | "Submit" | "Dispatch" | "Resume" | "Fanout" | "PrDuty" | "Scouts" | ({ Answer: string }) & { Jump?: never } | "Lock" | "SpecFile" | "Grill" | "Diff" | "Editor" | "SaveAgents";
+export type NavigationIntent_Serialize = "Palette" | "NewThread" | "NewProject" | "Settings" | "ShowNumbers" | ({ Jump: string }) & { Answer?: never } | "Search" | "Task" | "Swarm" | "Goal" | "Airc" | "Dismiss" | "Submit" | "Dispatch" | "Resume" | "Fanout" | "PrDuty" | "Scouts" | "MainWatcher" | ({ Answer: string }) & { Jump?: never } | "Lock" | "SpecFile" | "Grill" | "Diff" | "Editor" | "SaveAgents";
 
 export type NavigationView = "Home" | "Thread" | "Duty" | "Swarm" | "SpecScan" | "SpecAsk" | "SpecReady" | "SpecLocked" | "Agents" | "Settings" | "Other";
 
@@ -2502,6 +2506,8 @@ export type PullRequestPanelRow_Deserialize = {
 	review: ReviewStatus,
 	review_label: string,
 	reviewer?: string | null,
+	/**  PR duty's review tier (F7); absent until the PR's diff could be read. */
+	tier?: ReviewTier | null,
 	thread_identifier?: number | null,
 };
 
@@ -2516,6 +2522,8 @@ export type PullRequestPanelRow_Serialize = {
 	review: ReviewStatus,
 	review_label: string,
 	reviewer: string | null,
+	/**  PR duty's review tier (F7); absent until the PR's diff could be read. */
+	tier: ReviewTier | null,
 	thread_identifier: number | null,
 };
 
@@ -2708,6 +2716,20 @@ export type ReviewSide = "LEFT" | "RIGHT";
 export type ReviewStage = "continuous_integration" | "review" | "fixing" | "approved";
 
 export type ReviewStatus = "draft" | "checking" | "unclaimed" | "reviewing" | "changes_requested" | "approved";
+
+export type ReviewTier = 
+/**
+ *  Docs, comments or formatting: approved once the local checks pass and the change
+ *  matches its claim. No proof needed.
+ */
+"trivial" | 
+/**  Full review. */
+"normal" | 
+/**
+ *  Touches a sensitive path: full review, the full stress suite before merge, and a
+ *  confidence proof at the strongest level the language allows (F17).
+ */
+"sensitive";
 
 export type RewriteView = RewriteView_Serialize | RewriteView_Deserialize;
 
