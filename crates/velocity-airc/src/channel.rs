@@ -103,6 +103,13 @@ impl Event {
         self
     }
 
+    /// The commit the event is about when no PR names it, such as a `broken` merge pushed
+    /// straight to the base branch. Delivery routes `broken` events by this commit (F14).
+    pub fn at_commit(mut self, commit: &str) -> Self {
+        self.head = Some(commit.into());
+        self
+    }
+
     pub fn with_files(mut self, files: Vec<String>) -> Self {
         self.files = files;
         self

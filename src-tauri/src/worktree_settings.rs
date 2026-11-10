@@ -26,7 +26,9 @@ impl WorktreeSource for Source {
         let store = state
             .lock()
             .map_err(|error| InventoryError::State(error.to_string()))?;
-        Ok(store.worktree_context())
+        let context = store.worktree_context();
+        drop(store);
+        Ok(with_pool(&self.0, context))
     }
 
     fn paths(&self) -> Result<Vec<String>, InventoryError> {
@@ -34,8 +36,33 @@ impl WorktreeSource for Source {
         let store = state
             .lock()
             .map_err(|error| InventoryError::State(error.to_string()))?;
-        Ok(store.worktree_paths())
+        let mut paths = store.worktree_paths();
+        let projects: Vec<u32> = store
+            .state()
+            .projects
+            .iter()
+            .map(|project| project.id)
+            .collect();
+        drop(store);
+        for project in projects {
+            paths.extend(
+                crate::ready_pool::owners(&self.0, project)
+                    .into_iter()
+                    .map(|owner| owner.path),
+            );
+        }
+        Ok(paths)
     }
+}
+
+/// The project's warm pool worktrees are listed with its live worktrees (F5).
+fn with_pool(application: &AppHandle, mut context: WorktreeContext) -> WorktreeContext {
+    if let Some(project) = context.project_identifier {
+        context
+            .owners
+            .extend(crate::ready_pool::owners(application, project));
+    }
+    context
 }
 
 pub fn initialize(application: &AppHandle) -> anyhow::Result<()> {
@@ -81,12 +108,16 @@ pub fn on_window_event(window: &Window, event: &WindowEvent) {
 #[tauri::command]
 #[specta::specta]
 pub fn list_worktrees(
+    application: AppHandle,
     store: State<'_, ManagedStateStore>,
     runtime: State<'_, ManagedWorktrees>,
 ) -> Result<WorktreeSettingsView, String> {
-    let store = store.lock().map_err(|error| error.to_string())?;
+    let context = store
+        .lock()
+        .map_err(|error| error.to_string())?
+        .worktree_context();
     runtime
-        .snapshot(&store.worktree_context())
+        .snapshot(&with_pool(&application, context))
         .map_err(|error| error.to_string())
 }
 
@@ -120,10 +151,13 @@ fn save_worktree_settings(
             .location_changed()
             .map_err(|error| error.to_string())?;
     }
-    let view = runtime
-        .snapshot(&store.worktree_context())
-        .map_err(|error| error.to_string())?;
+    let context = store.worktree_context();
     drop(store);
+    let view = runtime
+        .snapshot(&with_pool(application, context))
+        .map_err(|error| error.to_string())?;
+    // "Keep N worktrees ready", the location or the files to copy may have changed.
+    crate::ready_pool::wake(application, project_identifier);
     publish(application, view.clone());
     Ok(view)
 }

@@ -18,11 +18,13 @@ mod goal_swarm;
 mod interview;
 mod issue_panel;
 pub mod layout;
+pub mod main_watch;
 mod new_project;
 mod parking;
 mod projects;
 mod providers;
 mod pull_request_panel;
+mod ready_pool;
 pub mod reviews;
 mod skills;
 mod state;
@@ -218,11 +220,13 @@ pub fn run() -> anyhow::Result<()> {
             follow_through::initialize(application.handle(), threads::follow_through_hooks());
             issue_panel::initialize(application.handle());
             worktree_settings::initialize(application.handle())?;
+            ready_pool::initialize(application.handle())?;
             pull_request_panel::initialize(application.handle());
             skills::initialize(application.handle())?;
             interview::start(application.handle());
             reviews::initialize(application.handle())?;
             sweeps::initialize(application.handle())?;
+            main_watch::initialize(application.handle())?;
             airc_delivery::initialize(application.handle());
             airc_modal::initialize(application.handle());
             Ok(())

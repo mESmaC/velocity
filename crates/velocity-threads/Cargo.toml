@@ -19,6 +19,7 @@ uuid = { version = "1", features = ["v4"] }
 velocity-acp = { path = "../velocity-acp" }
 velocity-airc = { path = "../velocity-airc" }
 velocity-core.workspace = true
+velocity-proofs.workspace = true
 velocity-git.workspace = true
 velocity-github.workspace = true
 velocity-store.workspace = true

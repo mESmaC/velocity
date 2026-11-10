@@ -191,7 +191,6 @@ export type AgentSettings_Deserialize = {
 	max_turns?: number | null,
 	max_duration_minutes?: number | null,
 	stall_timeout_minutes: number,
-	tool_timeout_minutes?: number,
 	claim_release_grace_minutes: number,
 };
 
@@ -199,7 +198,6 @@ export type AgentSettings_Serialize = {
 	max_turns: number | null,
 	max_duration_minutes: number | null,
 	stall_timeout_minutes: number,
-	tool_timeout_minutes: number,
 	claim_release_grace_minutes: number,
 };
 
@@ -464,6 +462,7 @@ export type DutyDialogDefaults = {
 	model_configured: boolean,
 	pr_duty_exists: boolean,
 	scouts_exists: boolean,
+	main_watcher_exists: boolean,
 	pr_rules: PrDutyRuleSettings,
 	scout_rules: ScoutRuleSettings,
 };
@@ -491,7 +490,9 @@ export type DutyFeedItem = {
 
 export type DutyMergeMethod = "squash" | "rebase" | "merge_commit";
 
-export type DutyRole = "pr_duty" | "scouts";
+export type DutyRole = "pr_duty" | "scouts" | 
+/**  Watches the base branch after merges (F7 Main watcher; the role name is proposed, Q22). */
+"main_watcher";
 
 export type DutyRoleItem = {
 	id: number,
@@ -1586,9 +1587,9 @@ export type ModelPillView = {
 
 export type NavigationIntent = NavigationIntent_Serialize | NavigationIntent_Deserialize;
 
-export type NavigationIntent_Deserialize = "Palette" | "NewThread" | "NewProject" | "Settings" | "ShowNumbers" | ({ Jump: string }) & { Answer?: never } | "Search" | "Task" | "Swarm" | "Goal" | "Airc" | "Dismiss" | "Submit" | "Dispatch" | "Resume" | "Fanout" | "PrDuty" | "Scouts" | ({ Answer: string }) & { Jump?: never } | "Lock" | "SpecFile" | "Grill" | "Diff" | "Editor" | "SaveAgents";
+export type NavigationIntent_Deserialize = "Palette" | "NewThread" | "NewProject" | "Settings" | "ShowNumbers" | ({ Jump: string }) & { Answer?: never } | "Search" | "Task" | "Swarm" | "Goal" | "Airc" | "Dismiss" | "Submit" | "Dispatch" | "Resume" | "Fanout" | "PrDuty" | "Scouts" | "MainWatcher" | ({ Answer: string }) & { Jump?: never } | "Lock" | "SpecFile" | "Grill" | "Diff" | "Editor" | "SaveAgents";
 
-export type NavigationIntent_Serialize = "Palette" | "NewThread" | "NewProject" | "Settings" | "ShowNumbers" | ({ Jump: string }) & { Answer?: never } | "Search" | "Task" | "Swarm" | "Goal" | "Airc" | "Dismiss" | "Submit" | "Dispatch" | "Resume" | "Fanout" | "PrDuty" | "Scouts" | ({ Answer: string }) & { Jump?: never } | "Lock" | "SpecFile" | "Grill" | "Diff" | "Editor" | "SaveAgents";
+export type NavigationIntent_Serialize = "Palette" | "NewThread" | "NewProject" | "Settings" | "ShowNumbers" | ({ Jump: string }) & { Answer?: never } | "Search" | "Task" | "Swarm" | "Goal" | "Airc" | "Dismiss" | "Submit" | "Dispatch" | "Resume" | "Fanout" | "PrDuty" | "Scouts" | "MainWatcher" | ({ Answer: string }) & { Jump?: never } | "Lock" | "SpecFile" | "Grill" | "Diff" | "Editor" | "SaveAgents";
 
 export type NavigationView = "Home" | "Thread" | "Duty" | "Swarm" | "SpecScan" | "SpecAsk" | "SpecReady" | "SpecLocked" | "Agents" | "Settings" | "Other";
 
@@ -2900,30 +2901,6 @@ export type StartDutyRequest_Serialize = {
 	scout_rules: ScoutRuleSettings | null,
 };
 
-export type Supervision = Supervision_Serialize | Supervision_Deserialize;
-
-export type Supervision_Deserialize = {
-	started?: number,
-	last_update?: number,
-	turns?: number,
-	nudged?: boolean,
-	unavailable_since?: number | null,
-	released?: boolean,
-	pushed_commit?: string | null,
-	retry_after?: number | null,
-};
-
-export type Supervision_Serialize = {
-	started: number,
-	last_update: number,
-	turns: number,
-	nudged: boolean,
-	unavailable_since: number | null,
-	released: boolean,
-	pushed_commit: string | null,
-	retry_after: number | null,
-};
-
 export type SwarmCard = SwarmCard_Serialize | SwarmCard_Deserialize;
 
 export type SwarmCard_Deserialize = {
@@ -3258,7 +3235,6 @@ export type ThreadIssue_Serialize = {
 export type ThreadItem = ThreadItem_Serialize | ThreadItem_Deserialize;
 
 export type ThreadItem_Deserialize = {
-	supervision?: Supervision_Deserialize,
 	id: number,
 	title: string,
 	state: ThreadState,
@@ -3292,7 +3268,6 @@ export type ThreadItem_Deserialize = {
 };
 
 export type ThreadItem_Serialize = {
-	supervision: Supervision_Serialize,
 	id: number,
 	title: string,
 	state: ThreadState,

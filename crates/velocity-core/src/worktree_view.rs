@@ -298,6 +298,8 @@ fn row_presentation(owner: &WorktreeOwner) -> (String, WorktreeRowTone) {
         WorktreeDisplayStatus::Closed => ("closed · kept".into(), WorktreeRowTone::Closed),
         WorktreeDisplayStatus::Review => ("review".into(), WorktreeRowTone::Duty),
         WorktreeDisplayStatus::Sweep => ("sweep".into(), WorktreeRowTone::Duty),
+        WorktreeDisplayStatus::Ready => ("ready".into(), WorktreeRowTone::Duty),
+        WorktreeDisplayStatus::Prebuilding => ("ready · building".into(), WorktreeRowTone::Duty),
         WorktreeDisplayStatus::Deleted => ("deleted · merged".into(), WorktreeRowTone::Deleted),
     }
 }
