@@ -2386,6 +2386,8 @@ export type PullRequestPanelRow_Deserialize = {
 	review: ReviewStatus,
 	review_label: string,
 	reviewer?: string | null,
+	/**  PR duty's review tier (F7); absent until the PR's diff could be read. */
+	tier?: ReviewTier | null,
 	thread_identifier?: number | null,
 };
 
@@ -2400,6 +2402,8 @@ export type PullRequestPanelRow_Serialize = {
 	review: ReviewStatus,
 	review_label: string,
 	reviewer: string | null,
+	/**  PR duty's review tier (F7); absent until the PR's diff could be read. */
+	tier: ReviewTier | null,
 	thread_identifier: number | null,
 };
 
@@ -2592,6 +2596,20 @@ export type ReviewSide = "LEFT" | "RIGHT";
 export type ReviewStage = "continuous_integration" | "review" | "fixing" | "approved";
 
 export type ReviewStatus = "draft" | "checking" | "unclaimed" | "reviewing" | "changes_requested" | "approved";
+
+export type ReviewTier = 
+/**
+ *  Docs, comments or formatting: approved once the local checks pass and the change
+ *  matches its claim. No proof needed.
+ */
+"trivial" | 
+/**  Full review. */
+"normal" | 
+/**
+ *  Touches a sensitive path: full review, the full stress suite before merge, and a
+ *  confidence proof at the strongest level the language allows (F17).
+ */
+"sensitive";
 
 export type RewriteView = RewriteView_Serialize | RewriteView_Deserialize;
 
