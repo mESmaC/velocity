@@ -171,7 +171,7 @@ pub fn agent_launch(provider: ProviderKind) -> Result<(AgentLaunch, Vec<String>)
     let (program, args, bypass): (&str, &[&str], &[&str]) = match provider {
         ProviderKind::Claude => ("claude-code-acp", &[], &["bypassPermissions"]),
         ProviderKind::Codex => ("codex-acp", &[], &["full-access"]),
-        ProviderKind::Kimi => ("kimi", &["--acp"], &[]),
+        ProviderKind::Kimi => ("kimi", &["acp"], &[]),
         ProviderKind::Antigravity => return Err(LaunchError::ProviderNotConfirmed("Antigravity")),
     };
     Ok((

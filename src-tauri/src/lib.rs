@@ -18,6 +18,7 @@ mod new_project;
 mod projects;
 mod pull_request_panel;
 pub mod reviews;
+mod skills;
 mod state;
 pub mod sweeps;
 mod thread_menu;
@@ -68,6 +69,10 @@ fn bindings() -> Builder<tauri::Wry> {
         issue_panel::dispatch_issue,
         pull_request_panel::get_pull_request_panel,
         pull_request_panel::open_project_pull_request,
+        skills::get_skill_library,
+        skills::install_skill_pack,
+        skills::check_skill_pack_update,
+        skills::confirm_skill_pack_update,
         thread_menu::get_thread_menu,
         thread_menu::run_thread_menu_action,
         thread_menu::delete_thread,
@@ -174,6 +179,7 @@ pub fn run() -> anyhow::Result<()> {
             issue_panel::initialize(application.handle());
             worktree_settings::initialize(application.handle())?;
             pull_request_panel::initialize(application.handle());
+            skills::initialize(application.handle())?;
             interview::start(application.handle());
             reviews::initialize(application.handle())?;
             sweeps::initialize(application.handle())?;

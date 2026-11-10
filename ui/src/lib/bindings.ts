@@ -40,6 +40,10 @@ export const commands = {
 	dispatchIssue: (projectIdentifier: number, number: number, acceptRecommendation: boolean) => __TAURI_INVOKE<LayoutSnapshot_Serialize>("dispatch_issue", { projectIdentifier, number, acceptRecommendation }),
 	getPullRequestPanel: () => __TAURI_INVOKE<PullRequestPanelSnapshot_Serialize>("get_pull_request_panel"),
 	openProjectPullRequest: (projectIdentifier: number, number: number) => __TAURI_INVOKE<LayoutSnapshot_Serialize | null>("open_project_pull_request", { projectIdentifier, number }),
+	getSkillLibrary: () => __TAURI_INVOKE<SkillLibrarySnapshot_Serialize>("get_skill_library"),
+	installSkillPack: (packOrRepo: string, sourceOverride: string | null, initialPin: string | null) => __TAURI_INVOKE<InstalledSkillPack_Serialize>("install_skill_pack", { packOrRepo, sourceOverride, initialPin }),
+	checkSkillPackUpdate: (packId: string) => __TAURI_INVOKE<SkillPackUpdatePreview_Serialize>("check_skill_pack_update", { packId }),
+	confirmSkillPackUpdate: (packId: string, candidateCommit: string) => __TAURI_INVOKE<InstalledSkillPack_Serialize>("confirm_skill_pack_update", { packId, candidateCommit }),
 	getThreadMenu: (threadIdentifier: number) => __TAURI_INVOKE<ThreadMenuView_Serialize | null>("get_thread_menu", { threadIdentifier }),
 	/**
 	 *  Open worktree in Explorer, Copy worktree path and Open PR on GitHub. Delete has its own
@@ -201,6 +205,29 @@ export type DiffLineRole = "Added" | "Deleted" | "Context" | "HunkHeader";
 export type DiffLineView = {
 	role: DiffLineRole,
 	text: string,
+};
+
+/**  One discovered skill folder (`SKILL.md` plus optional scripts, references and data, SPEC.md §2). */
+export type DiscoveredSkill = DiscoveredSkill_Serialize | DiscoveredSkill_Deserialize;
+
+/**  One discovered skill folder (`SKILL.md` plus optional scripts, references and data, SPEC.md §2). */
+export type DiscoveredSkill_Deserialize = {
+	name?: string,
+	description?: string,
+	/**  Relative directory inside the pack clone containing `SKILL.md` (`.` when at the root). */
+	relative_folder?: string,
+	has_scripts?: boolean,
+	has_data?: boolean,
+};
+
+/**  One discovered skill folder (`SKILL.md` plus optional scripts, references and data, SPEC.md §2). */
+export type DiscoveredSkill_Serialize = {
+	name: string,
+	description: string,
+	/**  Relative directory inside the pack clone containing `SKILL.md` (`.` when at the root). */
+	relative_folder: string,
+	has_scripts: boolean,
+	has_data: boolean,
 };
 
 export type DutyAgentCard = {
@@ -406,6 +433,41 @@ export type GitHubActor = {
 export type InlineText = {
 	text: string,
 	code: boolean,
+};
+
+/**  One installed and pinned skill pack in Velocity's library (SPEC.md F18). */
+export type InstalledSkillPack = InstalledSkillPack_Serialize | InstalledSkillPack_Deserialize;
+
+/**  One installed and pinned skill pack in Velocity's library (SPEC.md F18). */
+export type InstalledSkillPack_Deserialize = {
+	id?: string,
+	name?: string,
+	repository?: string,
+	source_url?: string,
+	built_in?: boolean,
+	pinned_commit?: string,
+	short_commit?: string,
+	clone_path?: string,
+	symlinks_enabled?: boolean,
+	skills?: DiscoveredSkill_Deserialize[],
+	/**  Candidate upstream commit found by `check_skill_pack_update`, waiting for user confirmation. */
+	pending_update?: SkillPackUpdatePreview_Deserialize | null,
+};
+
+/**  One installed and pinned skill pack in Velocity's library (SPEC.md F18). */
+export type InstalledSkillPack_Serialize = {
+	id: string,
+	name: string,
+	repository: string,
+	source_url: string,
+	built_in: boolean,
+	pinned_commit: string,
+	short_commit: string,
+	clone_path: string,
+	symlinks_enabled: boolean,
+	skills: DiscoveredSkill_Serialize[],
+	/**  Candidate upstream commit found by `check_skill_pack_update`, waiting for user confirmation. */
+	pending_update: SkillPackUpdatePreview_Serialize | null,
 };
 
 /**  An answer, recorded as `key: value` (F3 Ask). */
@@ -1605,6 +1667,145 @@ export type SidebarRow_Serialize = {
 	paused: boolean,
 	agents: string,
 	number: string | null,
+};
+
+/**
+ *  One bundle inside a skill pack (SPEC.md F18: claude-skills by domain, Game dev skills by
+ *  engine/discipline/genre/workflow).
+ */
+export type SkillBundleDefinition = SkillBundleDefinition_Serialize | SkillBundleDefinition_Deserialize;
+
+/**
+ *  One bundle inside a skill pack (SPEC.md F18: claude-skills by domain, Game dev skills by
+ *  engine/discipline/genre/workflow).
+ */
+export type SkillBundleDefinition_Deserialize = {
+	id?: string,
+	label?: string,
+	skill_count?: number,
+};
+
+/**
+ *  One bundle inside a skill pack (SPEC.md F18: claude-skills by domain, Game dev skills by
+ *  engine/discipline/genre/workflow).
+ */
+export type SkillBundleDefinition_Serialize = {
+	id: string,
+	label: string,
+	skill_count: number,
+};
+
+/**
+ *  Categories of files inside a skill pack whose diffs are surfaced before moving a pin (F18:
+ *  "shows the diff of `SKILL.md` files, scripts and data before moving the pin").
+ */
+export type SkillDiffCategory = "SkillMarkdown" | "Script" | "Data" | "Other";
+
+/**  Snapshot of the machine-wide skill library (built-in catalog + installed pinned packs). */
+export type SkillLibrarySnapshot = SkillLibrarySnapshot_Serialize | SkillLibrarySnapshot_Deserialize;
+
+/**  Snapshot of the machine-wide skill library (built-in catalog + installed pinned packs). */
+export type SkillLibrarySnapshot_Deserialize = {
+	library_root?: string,
+	catalog?: SkillPackCatalogEntry_Deserialize[],
+	installed?: InstalledSkillPack_Deserialize[],
+};
+
+/**  Snapshot of the machine-wide skill library (built-in catalog + installed pinned packs). */
+export type SkillLibrarySnapshot_Serialize = {
+	library_root: string,
+	catalog: SkillPackCatalogEntry_Serialize[],
+	installed: InstalledSkillPack_Serialize[],
+};
+
+/**  Static metadata for a built-in or user-added skill pack (SPEC.md F18). */
+export type SkillPackCatalogEntry = SkillPackCatalogEntry_Serialize | SkillPackCatalogEntry_Deserialize;
+
+/**  Static metadata for a built-in or user-added skill pack (SPEC.md F18). */
+export type SkillPackCatalogEntry_Deserialize = {
+	id?: string,
+	name?: string,
+	repository?: string,
+	license?: string,
+	kind_summary?: string,
+	description?: string,
+	built_in?: boolean,
+	requires_python?: boolean,
+	requires_node?: boolean,
+	bundles?: SkillBundleDefinition_Deserialize[],
+};
+
+/**  Static metadata for a built-in or user-added skill pack (SPEC.md F18). */
+export type SkillPackCatalogEntry_Serialize = {
+	id: string,
+	name: string,
+	repository: string,
+	license: string,
+	kind_summary: string,
+	description: string,
+	built_in: boolean,
+	requires_python: boolean,
+	requires_node: boolean,
+	bundles: SkillBundleDefinition_Serialize[],
+};
+
+/**  Diff of a single file between the pinned commit and a candidate upstream commit (SPEC.md F18). */
+export type SkillPackDiffFile = SkillPackDiffFile_Serialize | SkillPackDiffFile_Deserialize;
+
+/**  Diff of a single file between the pinned commit and a candidate upstream commit (SPEC.md F18). */
+export type SkillPackDiffFile_Deserialize = {
+	path?: string,
+	category?: SkillDiffCategory | null,
+	additions?: number,
+	deletions?: number,
+	patch?: string,
+};
+
+/**  Diff of a single file between the pinned commit and a candidate upstream commit (SPEC.md F18). */
+export type SkillPackDiffFile_Serialize = {
+	path: string,
+	category: SkillDiffCategory | null,
+	additions: number,
+	deletions: number,
+	patch: string,
+};
+
+/**
+ *  Reviewable diff between a pack's current pinned commit and a fetched candidate commit.
+ *  The pin never moves until the user confirms this exact `candidate_commit` (SPEC.md F18).
+ */
+export type SkillPackUpdatePreview = SkillPackUpdatePreview_Serialize | SkillPackUpdatePreview_Deserialize;
+
+/**
+ *  Reviewable diff between a pack's current pinned commit and a fetched candidate commit.
+ *  The pin never moves until the user confirms this exact `candidate_commit` (SPEC.md F18).
+ */
+export type SkillPackUpdatePreview_Deserialize = {
+	pack_id?: string,
+	current_commit?: string,
+	candidate_commit?: string,
+	up_to_date?: boolean,
+	skill_markdown_files_changed?: number,
+	script_files_changed?: number,
+	data_files_changed?: number,
+	files?: SkillPackDiffFile_Deserialize[],
+	unified_diff?: string,
+};
+
+/**
+ *  Reviewable diff between a pack's current pinned commit and a fetched candidate commit.
+ *  The pin never moves until the user confirms this exact `candidate_commit` (SPEC.md F18).
+ */
+export type SkillPackUpdatePreview_Serialize = {
+	pack_id: string,
+	current_commit: string,
+	candidate_commit: string,
+	up_to_date: boolean,
+	skill_markdown_files_changed: number,
+	script_files_changed: number,
+	data_files_changed: number,
+	files: SkillPackDiffFile_Serialize[],
+	unified_diff: string,
 };
 
 export type SlashCommandItem = {
