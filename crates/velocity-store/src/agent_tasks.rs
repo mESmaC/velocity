@@ -1,6 +1,6 @@
 //! F8: save an agent-requested task and its replay identity in one snapshot.
 use crate::threads::ThreadError;
-use crate::{StateStore, TaskAttribution, TaskItem, TaskState};
+use crate::{StateStore, TaskAttribution, TaskItem};
 
 impl StateStore {
     pub fn add_agent_task(
@@ -24,26 +24,12 @@ impl StateStore {
             return Ok(task.clone());
         }
         let attribution = agent_attribution(saved, member)?;
-        let title = title.trim();
-        if title.is_empty() {
-            return Err(ThreadError::InvalidLaunch("Task title is empty".into()));
-        }
-        let identifier = saved
-            .tasks
-            .iter()
-            .map(|task| task.id)
-            .max()
-            .unwrap_or(0)
-            .checked_add(1)
-            .ok_or(ThreadError::IdentifiersExhausted)?;
-        let state = if saved.spec_locked {
-            TaskState::Todo
-        } else {
-            TaskState::Draft
-        };
-        let mut task = TaskItem::new(identifier, title.into(), state, attribution);
+        let mut task = crate::task_list::append_task(saved, title, attribution)
+            .map_err(|error| ThreadError::InvalidLaunch(error.to_string()))?;
         task.agent_request = Some(sequence);
-        saved.tasks.push(task.clone());
+        if let Some(saved_task) = saved.tasks.last_mut() {
+            saved_task.agent_request = Some(sequence);
+        }
         self.commit(next)?;
         Ok(task)
     }

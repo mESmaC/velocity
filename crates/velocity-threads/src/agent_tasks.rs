@@ -2,11 +2,19 @@
 use velocity_airc::{Channel, Event};
 use velocity_store::{StateStore, threads::ThreadError};
 
+#[derive(Debug, thiserror::Error)]
+pub enum AgentTaskError {
+    #[error(transparent)]
+    Channel(#[from] velocity_airc::Error),
+    #[error(transparent)]
+    Persistence(#[from] velocity_store::StoreError),
+}
+
 pub fn ingest(
     store: &mut StateStore,
     project: u32,
     channel: &Channel,
-) -> Result<bool, Box<dyn std::error::Error>> {
+) -> Result<bool, AgentTaskError> {
     let mut changed = false;
     for request in channel.pending_tasks()? {
         match store.add_agent_task(project, &request.member, request.sequence, &request.text) {
