@@ -22,6 +22,8 @@ pub mod sweep;
 pub mod sweep_runner;
 pub mod titles;
 pub mod transcript_view;
+pub mod watch;
+pub mod watch_runner;
 pub mod work_pool;
 
 pub use deletion::{DeletionError, DeletionPlan, PendingDeletions, plan_deletion};
@@ -41,3 +43,5 @@ pub use sweep::{SCOUT_SERVER_SWITCH, SweepPlan, plan_sweep};
 pub use sweep_runner::{ScoutChange, ScoutSweeps, SweepHost};
 pub use titles::{TitlePlan, plan_title, resolve_title, thread_run_settings};
 pub use transcript_view::LiveTranscript;
+pub use watch::{WATCH_SERVER_SWITCH, WatchReports, plan_watch};
+pub use watch_runner::{MainWatches, WatchChange, WatchHost};

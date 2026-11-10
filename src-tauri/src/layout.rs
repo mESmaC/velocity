@@ -74,6 +74,7 @@ pub fn dispatch_layout(
     if let Some((role, event)) = outcome.duty_event {
         crate::reviews::instruct(window.app_handle(), role, &event.message);
         crate::sweeps::instruct(window.app_handle(), role, &event.message);
+        crate::main_watch::instruct(window.app_handle(), role, &event.message);
         crate::duty::publish_duty_event(&window, role, event)?;
     }
     if let Some((projects, selection)) = project_selection {

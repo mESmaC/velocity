@@ -121,6 +121,12 @@ impl ScoutServer {
         Ok(serde_json::to_value(&outcome)?)
     }
 
+    fn compare(&self, arguments: Value) -> Result<Value, ScoutIssueError> {
+        let comparison: crate::ReferenceComparison = serde_json::from_value(arguments)?;
+        let result = comparison.run(&self.client()?.directory)?;
+        Ok(serde_json::to_value(result)?)
+    }
+
     fn record(&self, outcome: &ScoutIssueOutcome) -> Result<(), ScoutIssueError> {
         let report = match outcome {
             ScoutIssueOutcome::Filed { issue } => ScoutReport::Filed {
@@ -141,10 +147,42 @@ impl ScoutServer {
     }
 }
 
+fn comparison_tool() -> Value {
+    json!({
+        "name": "scout_compare",
+        "description": "Run an implementation driver and a compiled Lean reference driver on identical UTF-8 stdin. Both must exit successfully; stdout is compared byte for byte. Use adapters to normalize output. On disagreement, preserve the input and write a failing script for scout_file; this tool does not file issues.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "implementation": driver_schema(),
+                "reference": driver_schema(),
+                "input": {"type": "string", "maxLength": 48000}
+            },
+            "required": ["implementation", "reference", "input"],
+            "additionalProperties": false
+        }
+    })
+}
+
+fn driver_schema() -> Value {
+    json!({
+        "type": "object",
+        "properties": {
+            "program": {"type": "string"},
+            "arguments": {"type": "array", "items": {"type": "string"}},
+            "script": {"type": "string", "description": "Driver path relative to the scout worktree"},
+            "script_arguments": {"type": "array", "items": {"type": "string"}}
+        },
+        "required": ["program", "script"],
+        "additionalProperties": false
+    })
+}
+
 fn tool_list() -> Vec<Value> {
     let string = json!({"type": "string"});
     let strings = json!({"type": "array", "items": {"type": "string"}});
     vec![
+        comparison_tool(),
         json!({
             "name": "scout_issues",
             "description": "Every open and closed issue in this repository, with full bodies, plus the repository's labels. Call it before filing and compare each finding with every issue.",
@@ -161,17 +199,7 @@ fn tool_list() -> Vec<Value> {
                     "labels": strings,
                     "duplicate_assessment": {"type": "string", "description": "How this differs from every similar open or closed issue."},
                     "duplicate_of": {"type": "integer", "description": "The existing issue this duplicates, if any; nothing is filed."},
-                    "reproduction": {
-                        "type": "object",
-                        "properties": {
-                            "program": {"type": "string", "description": "The interpreter, e.g. pwsh, python, cargo."},
-                            "arguments": strings,
-                            "script": {"type": "string", "description": "The failing script, relative to the worktree."},
-                            "script_arguments": strings,
-                        },
-                        "required": ["program", "script"],
-                        "additionalProperties": false,
-                    },
+                    "reproduction": driver_schema(),
                     "publish": {"type": "boolean"},
                 },
                 "required": ["title", "description", "labels", "duplicate_assessment", "reproduction", "publish"],
@@ -210,6 +238,7 @@ impl crate::mcp_stdio::ToolServer for ScoutServer {
         let result = match name {
             Some("scout_issues") => self.issues(),
             Some("scout_file") => self.file(arguments),
+            Some("scout_compare") => self.compare(arguments),
             _ => Err(ScoutIssueError::Invalid("Unknown scout tool".into())),
         };
         result.map_err(|error| error.to_string())
