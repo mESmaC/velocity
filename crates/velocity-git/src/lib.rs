@@ -19,6 +19,7 @@ pub mod path_scheme;
 mod repository;
 mod review;
 pub mod setup;
+mod short_checkout;
 mod sweep;
 mod titled;
 
