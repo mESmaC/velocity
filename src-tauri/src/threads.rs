@@ -71,7 +71,14 @@ fn resume_follow_through(
     )
     .map_err(|error| error.to_string())?;
     let (agent, bypass_modes) = agent_launch(thread.provider).map_err(|error| error.to_string())?;
-    let setup = SessionSetup::new(path.into(), bypass_modes);
+    let mut setup = SessionSetup::new(path.into(), bypass_modes);
+    crate::airc_claims::attach(
+        application,
+        key,
+        &mut setup,
+        &thread.title,
+        &thread.branch_name,
+    )?;
     let inputs = lock(
         application.state::<ManagedThreads>().inner(),
         "thread sessions",
@@ -296,19 +303,7 @@ async fn run_thread(
     };
     let path = worktree_path.display().to_string();
     // A thread deleted while its worktree was being created starts no agent (F12).
-    let wanted = lock(
-        application.state::<ManagedThreads>().inner(),
-        "thread sessions",
-    )
-    .map(|mut runtimes| {
-        runtimes.rename_worktree(key, &path);
-        if failure.is_some() {
-            runtimes.is_live(key)
-        } else {
-            runtimes.worktree_ready(key)
-        }
-    })
-    .unwrap_or(false);
+    let wanted = mark_worktree_ready(&application, key, &path, failure.is_some());
     if !wanted {
         return remove_deleted_worktree(plan.worktree.repository_root, worktree_path).await;
     }
@@ -332,12 +327,31 @@ async fn run_thread(
         return;
     }
     report(refresh(&application, key, false));
-    let session = spawn_session(
-        plan.agent,
-        SessionSetup::new(worktree_path, plan.bypass_modes),
-        inputs,
-    );
+    let mut setup = SessionSetup::new(worktree_path, plan.bypass_modes);
+    let branch = branch_name.as_deref().unwrap_or(&plan.thread.branch_name);
+    if let Err(error) =
+        crate::airc_claims::attach(&application, key, &mut setup, &plan.thread.title, branch)
+    {
+        return fail(&application, key, "Could not claim work", &error);
+    }
+    let session = spawn_session(plan.agent, setup, inputs);
     pump(&application, key, session).await;
+}
+
+fn mark_worktree_ready(application: &AppHandle, key: ThreadKey, path: &str, failed: bool) -> bool {
+    lock(
+        application.state::<ManagedThreads>().inner(),
+        "thread sessions",
+    )
+    .map(|mut runtimes| {
+        runtimes.rename_worktree(key, path);
+        if failed {
+            runtimes.is_live(key)
+        } else {
+            runtimes.worktree_ready(key)
+        }
+    })
+    .unwrap_or(false)
 }
 
 /// Checks the worktree out while the title model answers; naming and setup wait for the
@@ -431,10 +445,27 @@ fn setup_no_longer_wanted(application: &AppHandle, key: ThreadKey) -> bool {
 /// published once, so the window gets one snapshot per burst rather than one per token.
 async fn pump(application: &AppHandle, key: ThreadKey, mut session: RunningSession) {
     let shutdown = session.shutdown.clone();
+    let worktree = lock(
+        application.state::<ManagedStateStore>().inner(),
+        "persisted state",
+    )
+    .ok()
+    .and_then(|store| store.follow_through_thread(key.0, key.1).ok())
+    .and_then(|(_, thread)| thread.worktree_path.map(PathBuf::from));
     while let Some(event) = session.events.recv().await {
         let mut batch = Vec::from([event]);
         while let Ok(next) = session.events.try_recv() {
             batch.push(next);
+        }
+        if let Some(worktree) = &worktree {
+            for event in &batch {
+                report(crate::airc_claims::observe(
+                    application,
+                    key,
+                    worktree,
+                    event,
+                ));
+            }
         }
         report(apply_batch(application, key, &batch));
     }

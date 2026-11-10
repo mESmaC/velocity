@@ -17,6 +17,7 @@ crate-type = ["staticlib", "cdylib", "rlib"]
 tauri-build = { version = "2.7.4", features = [] }
 
 [dependencies]
+agent-client-protocol = "5.0.0"
 anyhow.workspace = true
 serde.workspace = true
 specta.workspace = true
@@ -29,6 +30,7 @@ tauri-specta.workspace = true
 tokio.workspace = true
 velocity-git.workspace = true
 velocity-acp = { path = "../crates/velocity-acp" }
+velocity-airc.workspace = true
 velocity-core = { workspace = true, features = ["bindings"] }
 velocity-new-project.workspace = true
 velocity-store.workspace = true

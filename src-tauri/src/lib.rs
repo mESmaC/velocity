@@ -4,6 +4,7 @@ use tauri_specta::{Builder, Event, collect_commands, collect_events};
 use velocity_store::PersistedState;
 
 mod agents;
+pub mod airc_claims;
 mod build_gate;
 pub mod duty;
 mod follow_through;

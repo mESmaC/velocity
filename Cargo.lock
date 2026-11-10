@@ -5477,6 +5477,7 @@ dependencies = [
 name = "velocity-app"
 version = "0.1.0"
 dependencies = [
+ "agent-client-protocol",
  "anyhow",
  "serde",
  "specta",
@@ -5489,6 +5490,7 @@ dependencies = [
  "tauri-specta",
  "tokio",
  "velocity-acp",
+ "velocity-airc",
  "velocity-core",
  "velocity-git",
  "velocity-github",

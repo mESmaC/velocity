@@ -5,5 +5,8 @@ fn main() -> anyhow::Result<()> {
     if velocity_app_lib::sweeps::serve_scout_server()? {
         return Ok(());
     }
+    if velocity_app_lib::airc_claims::serve()? {
+        return Ok(());
+    }
     velocity_app_lib::run()
 }
