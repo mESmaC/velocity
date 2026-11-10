@@ -15,10 +15,10 @@ jiff = "0.2"
 serde.workspace = true
 serde_json.workspace = true
 specta.workspace = true
+tempfile = "3.27"
 thiserror.workspace = true
 velocity-airc.workspace = true
 velocity-core = { workspace = true, features = ["bindings"] }
 
 [target.'cfg(windows)'.dependencies]
 junction = "=2.1.0"
-tempfile = "3.27"
