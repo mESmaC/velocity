@@ -18,7 +18,7 @@ pub struct ProviderAgent {
 /// The ACP agent for `provider`, or `None` while its agent is undecided (Antigravity, Q14).
 pub fn provider_agent(provider: Provider) -> Option<ProviderAgent> {
     let (program, args, bypass_modes): (&str, &[&str], &[&str]) = match provider {
-        Provider::Anthropic => ("claude-code-acp", &[], &["bypassPermissions"]),
+        Provider::Anthropic => ("claude-agent-acp", &[], &["bypassPermissions"]),
         Provider::Codex => ("codex-acp", &[], &[]),
         Provider::KimiCode => ("kimi", &["acp"], &[]),
         Provider::Antigravity => return None,

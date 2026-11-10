@@ -8,7 +8,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let runtime = tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()?;
-    let launch = AgentLaunch::new("claude-code-acp".into());
+    let launch = AgentLaunch::new("claude-agent-acp".into());
     let setup = SessionSetup::new(directory.into(), vec!["bypassPermissions".into()]);
     let response = runtime.block_on(velocity_acp::client::rewrite::rewrite(
         launch, setup, prompt,
