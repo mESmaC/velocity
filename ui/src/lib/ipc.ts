@@ -178,3 +178,4 @@ export * from './ipc/duty';
 export * from './ipc/thread-menu';
 
 export * from './ipc/airc';
+export * from './ipc/airc-events';
