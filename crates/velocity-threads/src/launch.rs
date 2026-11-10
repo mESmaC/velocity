@@ -27,6 +27,8 @@ pub(crate) const SHARED_TARGET_FOLDER: &str = ".cargo-target";
 pub enum LaunchError {
     #[error("{0} has no confirmed ACP agent yet (SPEC.md Q14)")]
     ProviderNotConfirmed(&'static str),
+    #[error("every branch name for \"vel/{0}\" is already taken in this project")]
+    NamesExhausted(String),
     #[error(transparent)]
     Worktree(#[from] WorktreeError),
 }
@@ -83,7 +85,7 @@ pub fn title_worktree_name(
             &location,
             candidate,
         )
-    });
+    })?;
     let worktree_path = location.worktree(&slug).ok()??;
     Some(WorktreeName {
         worktree_path,
@@ -123,7 +125,8 @@ pub(crate) fn plan_named_launch(
     let repository = PathBuf::from(&project.repository_path);
     let slug = unique_slug(requested_slug, |candidate| {
         slug_taken(project, &repository, &location, candidate)
-    });
+    })
+    .ok_or_else(|| LaunchError::NamesExhausted(requested_slug.to_owned()))?;
     let worktree_path = location
         .worktree(&slug)?
         .ok_or(WorktreeError::EmptyLeafName)?;
