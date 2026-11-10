@@ -1,0 +1,229 @@
+/* F16 Goal swarm dialog. Values are the --goal-* tokens in reference.css; the dialog
+   reuses the new-project and duty dialog rules. */
+.np.gs {
+  width: var(--goal-dialog-width);
+}
+.np.gs .np-body {
+  max-height: var(--goal-dialog-body-max-height);
+  overflow-y: auto;
+}
+.np.gs .np-h h2 {
+  display: inline-flex;
+  align-items: center;
+}
+.np.gs .np-h h2 .icon {
+  width: var(--goal-dialog-icon-size);
+  height: var(--goal-dialog-icon-size);
+  margin-right: var(--goal-dialog-icon-margin-right);
+  color: var(--swarm);
+}
+.np.gs textarea.brief {
+  min-height: var(--goal-brief-min-height);
+  font-size: var(--goal-brief-font-size);
+}
+.gs-n {
+  display: flex;
+  align-items: center;
+  gap: var(--goal-count-gap);
+}
+.gs-step {
+  display: inline-flex;
+  align-items: center;
+  height: var(--goal-stepper-height);
+  border: var(--goal-stepper-border);
+  border-radius: var(--goal-stepper-border-radius);
+  background: var(--goal-stepper-background);
+  overflow: hidden;
+}
+.gs-step button {
+  width: var(--goal-stepper-button-width);
+  height: var(--goal-stepper-button-height);
+  color: var(--text-2);
+  font-size: var(--goal-stepper-button-font-size);
+}
+.gs-step button:hover {
+  background: var(--goal-stepper-button-hover-background);
+  color: var(--text);
+}
+.gs-step b {
+  min-width: var(--goal-stepper-count-min-width);
+  text-align: center;
+  font: var(--goal-stepper-count-font);
+}
+.gs-step.lg {
+  height: var(--goal-stepper-large-height);
+  border-radius: var(--goal-stepper-large-border-radius);
+}
+.gs-step.lg button {
+  width: var(--goal-stepper-large-button-width);
+  height: var(--goal-stepper-large-button-height);
+  font-size: var(--goal-stepper-large-button-font-size);
+}
+.gs-step.lg b {
+  min-width: var(--goal-stepper-large-count-min-width);
+  font-size: var(--goal-stepper-large-count-font-size);
+}
+.gs-quick {
+  display: inline-flex;
+  gap: var(--goal-quick-gap);
+}
+.gs-quick button {
+  height: var(--goal-quick-button-height);
+  padding: var(--goal-quick-button-padding);
+  border: var(--goal-quick-button-border);
+  border-radius: var(--goal-quick-button-border-radius);
+  font: var(--goal-quick-button-font);
+  color: var(--text-2);
+}
+.gs-quick button:hover,
+.gs-quick button.on {
+  background: var(--goal-quick-button-on-background);
+  color: var(--text);
+}
+.gs-mix {
+  display: flex;
+  flex-direction: column;
+  gap: var(--goal-mix-gap);
+  padding: var(--goal-mix-padding);
+  border: var(--goal-mix-border);
+  border-radius: var(--goal-mix-border-radius);
+  background: var(--goal-mix-background);
+}
+.gs-bar {
+  display: flex;
+  gap: var(--goal-bar-gap);
+  height: var(--goal-bar-height);
+  margin-bottom: var(--goal-bar-margin-bottom);
+}
+.gs-bar span {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 0;
+  overflow: hidden;
+  white-space: nowrap;
+  border-radius: var(--goal-bar-segment-border-radius);
+  font: var(--goal-bar-segment-font);
+  color: var(--goal-bar-segment-color);
+  background: var(--goal-bar-segment-sheen), var(--provider-color);
+}
+.gs-bar .claude {
+  --provider-color: var(--claude);
+}
+.gs-bar .codex {
+  --provider-color: var(--codex);
+}
+.gs-bar .antigravity {
+  --provider-color: var(--agy);
+}
+.gs-bar .kimi {
+  --provider-color: var(--kimi);
+}
+.gs-row {
+  display: grid;
+  grid-template-columns: var(--goal-row-columns);
+  gap: var(--goal-row-gap);
+  align-items: center;
+  padding: var(--goal-row-padding);
+}
+.gs-row .pi {
+  display: flex;
+}
+.gs-sel {
+  height: var(--goal-select-height);
+  min-width: 0;
+  padding: var(--goal-select-padding);
+  border: var(--goal-select-border);
+  border-radius: var(--goal-select-border-radius);
+  background: var(--goal-select-background);
+  color: var(--text);
+  font: var(--goal-select-font);
+  outline: 0;
+}
+.gs-sel:focus {
+  border-color: var(--goal-select-focus-border-color);
+}
+.gs-sel option,
+.gs-sel optgroup {
+  background: var(--goal-select-option-background);
+  color: var(--text);
+}
+.gs-row .seg.dis {
+  opacity: var(--goal-segment-disabled-opacity);
+}
+.gs-row .seg.dis button {
+  cursor: not-allowed;
+}
+/* The bolt is the reference's one filled icon. */
+.gs-row .seg .icon {
+  width: var(--goal-bolt-size);
+  height: var(--goal-bolt-size);
+  margin-right: var(--goal-bolt-margin-right);
+  fill: currentColor;
+  stroke: none;
+}
+.gs-row .tag {
+  font: var(--goal-row-tag-font);
+  color: var(--muted);
+  text-align: right;
+  white-space: nowrap;
+}
+.gs-row .x {
+  width: var(--goal-row-remove-size);
+  height: var(--goal-row-remove-size);
+  border-radius: var(--goal-row-remove-border-radius);
+  color: var(--muted);
+}
+.gs-row .x:hover {
+  background: var(--goal-row-remove-hover-background);
+  color: var(--text);
+}
+.gs-tools {
+  display: flex;
+  align-items: center;
+  gap: var(--goal-tools-gap);
+  padding-top: var(--goal-tools-padding-top);
+}
+.gs-tools .mini {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--goal-tools-mini-gap);
+}
+.gs-tools .mini .icon {
+  width: var(--goal-tools-mini-icon-size);
+  height: var(--goal-tools-mini-icon-size);
+}
+.gs-tools .hint {
+  margin-left: auto;
+  font-family: var(--mono);
+}
+.gs-lim {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--goal-limits-gap);
+  font-size: var(--goal-limits-font-size);
+  color: var(--muted);
+}
+.gs-lim span {
+  display: inline-flex;
+  gap: var(--goal-limits-item-gap);
+  align-items: center;
+}
+.gs-lim .icon {
+  width: var(--goal-limits-icon-size);
+  height: var(--goal-limits-icon-size);
+}
+.gs-lim .warn {
+  color: var(--warn);
+}
+.gs-pool {
+  font-size: var(--goal-pool-font-size);
+  color: var(--text-2);
+}
+.gs-pool b {
+  color: var(--text);
+  font-weight: var(--goal-pool-count-font-weight);
+}
+.gs-pool.warn b.sp {
+  color: var(--warn);
+}

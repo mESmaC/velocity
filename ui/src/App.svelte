@@ -8,6 +8,7 @@
   import DutyView from './lib/DutyView.svelte';
   import SwarmView from './lib/SwarmView.svelte';
   import SwarmDialog from './lib/SwarmDialog.svelte';
+  import GoalSwarmDialog from './lib/GoalSwarmDialog.svelte';
   import AircModal from './lib/AircModal.svelte';
   import SpecInterview from './lib/SpecInterview.svelte';
   import AgentsEditor from './lib/AgentsEditor.svelte';
@@ -309,6 +310,10 @@
       submitRequests={swarmSubmits}
       onResult={receive}
     />{/key}{/if}
+{#if layout?.goal_dialog}<GoalSwarmDialog
+    request={layout.goal_dialog}
+    {send}
+  />{/if}
 {#if layout?.airc_open && layout.project_identifier !== null}{#key layout.project_identifier}<AircModal
       project={layout.project_identifier}
       {send}

@@ -316,6 +316,8 @@ pub struct LayoutSnapshot {
     pub duty_dialog_role: DutyRole,
     /// The open Swarm dialog: its starting source, and the swarm + Items adds to (F10).
     pub swarm_dialog: Option<SwarmDialogRequest>,
+    /// The open Goal swarm dialog and the prompt it starts with (F16).
+    pub goal_dialog: Option<crate::goal_swarm::GoalDialogRequest>,
     pub palette_query: String,
     pub palette_results: Vec<PaletteItem>,
     #[cfg_attr(feature = "bindings", serde(with = "crate::ipc_number"))]

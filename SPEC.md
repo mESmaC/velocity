@@ -121,6 +121,7 @@ A thread's state (§2.1) says where it is in its lifecycle. Its **activity** say
 | command | `get_issue_panel`, `open_project_issue { project_identifier, number }`, `dispatch_issue { project_identifier, number, accept_recommendation }` | Active-project issue rail (F9). Native refresh reads open issues, labels, scout attribution and spec-question recommendations. Opening an assigned issue selects its thread; otherwise it opens GitHub. Dispatch re-reads the issue, checks the saved spec lock and atomically records issue ownership before starting the ordinary worktree/ACP lifecycle. Accept scopes that thread to the recommended one-line proposed SPEC.md answer. |
 | command | `get_swarm_dialog { query }`, `launch_swarm { request }`, `add_to_swarm { request }` | Swarm (F10). `get_swarm_dialog` draws the dialog in Rust from the user's choices: source counts, open items (taken items and draft tasks shown but unselectable), launchable models with the round-robin split, the PR duty capacity offer and the footer. `launch_swarm` checks the launch gate afresh, records the swarm on the project in `state.json`, then for each item atomically adds a member thread on `vel/<task-slug>` or `vel/issue-<n>` (a task becomes Now with its thread) and starts its worktree and ACP agent; `add_to_swarm` does the same into an existing swarm. Optionally starts or tops up PR duty. Members are ordinary threads: a member's merge marks its task done, and the other members whose changed files overlap the merged PR's files get a queued rebase notice. A message from the swarm composer is queued to every working or in-review member. |
 | command | `get_work_pool { project_identifier }` | F16 read-only work inventory: open tasks, open GitHub issues and unfinished spec entries, with saved thread owners and separate available counts. The native adapter reads sources off the UI thread; source errors fail the snapshot. |
+| command | `get_goal_swarm_dialog { query }`, `read_goal_swarm_pool` | Goal swarm dialog (F16). `get_goal_swarm_dialog` draws the dialog in Rust from the user's choices with one edit applied: the agent count (1–30), the mix rows with "the rest", the split bar, the nick preview, one limits line per provider, the pool line and the PR duty capacity offer. `read_goal_swarm_pool` reads the active project's work pool off the UI thread for the pool line and the capacity check; the dialog shows the previous read meanwhile. |
 | command | `launch_goal_swarm { prompt, mix: [{ model, effort, speed, count }], keep_going }`, `add_goal_agents` | goal swarm |
 | command | `add_task`, `list_tasks` | Task List |
 | command | `read_agents_md`, `write_agents_md`, `tighten_rule { project_identifier, identifier }` | AGENTS.md. F11 rewrites use the normal unrestricted Claude ACP client in the project checkout, with the Haiku model selected through the Claude SDK launch environment and whole-file context. Late results are discarded after edits, Undo or save; invalid responses and failures retain the original rule with an explanation. |
@@ -851,6 +852,12 @@ Four providers: **Anthropic** (Claude Code agent), **Codex** (Codex CLI agent), 
   - **PR duty capacity:** the same check as the Swarm dialog (one reviewer per 3 open PRs).
 - **Launch N agents** (`Ctrl+Enter`).
 
+**Dialog state.** The window holds only the choices (the agent count and the mix rows) and sends them back with one edit. Rust applies the edit, restores the "rest" rule and draws the dialog again.
+- **Models:** until Settings → Providers lists each provider's models (F15), the picker offers one model per launchable provider, as the Swarm dialog does. Fast stays selectable; a session on a model without a fast mode runs at Regular.
+- **Nicks:** a model's short name is the last plain word of its name, in lower case (`sol`, `argon`, `fable`). The preview numbers on from the highest number that name has used in the project.
+- **Limits:** a line carries its provider's agent count, and adds the share used and the reset time once the provider reports them (Q14).
+- **Pool and PR duty:** both use the work pool read when the dialog opens. PR duty is sized for the PRs the launch can open: the smaller of the agent count and the unclaimed pieces, plus the PRs already open.
+
 **What each agent does:**
 1. Gets a nick such as `sol-3` and a worktree named after it, then reads AGENTS.md and SPEC.md. State: **choosing work**.
 2. Reads the AIRC claims board and picks an unclaimed piece. The pool is:
@@ -1182,7 +1189,7 @@ Each milestone ends with a working app. PR duty checks an item off when it lands
 - [x] Atomic claim lock: `airc_claim` / `airc_release`, refusal lines, held claims on failure (F14, F16)
 - [x] AIRC MCP server injected into every provider's agent runtime (F14, F16)
 - [x] Work pool: open Task List items, open issues, unbuilt SPEC.md sections (F16)
-- [ ] Dialog: prompt, count, model mix with "the rest", effort and speed per row, limits, pool size, PR duty capacity, keep going (F16)
+- [x] Dialog: prompt, count, model mix with "the rest", effort and speed per row, limits, pool size, PR duty capacity, keep going (F16)
 - [ ] Launch, choosing → claimed → normal lifecycle, leave when nothing is left, keep going (F16)
 - [ ] Goal swarm view: claims board, one card per agent, activity; sidebar row (F16)
 

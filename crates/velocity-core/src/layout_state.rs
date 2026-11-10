@@ -3,6 +3,7 @@
 use crate::airc_modal::AircBadge;
 use crate::build_gate::{BuildKind, LaunchKind, launch_block_reason};
 use crate::duty::{self, DutyRole, DutyViewSnapshot};
+use crate::goal_swarm::GoalDialogRequest;
 use crate::interview_view;
 use crate::layout::{self, ThreadGroup};
 use crate::layout_catalog::{self, GROUPS, PULSE};
@@ -39,6 +40,7 @@ pub struct LayoutState {
     duty_dialog_open: bool,
     duty_dialog_role: DutyRole,
     swarm_dialog: Option<SwarmDialogRequest>,
+    goal_dialog: Option<GoalDialogRequest>,
     /// The AIRC modal (F14). Its contents arrive on `airc://modal`, not in this snapshot.
     airc_open: bool,
     /// Footer badges by project, from the channel; kept apart from `data`, which the store
@@ -77,6 +79,7 @@ impl Default for LayoutState {
             duty_dialog_open: false,
             duty_dialog_role: DutyRole::PrDuty,
             swarm_dialog: None,
+            goal_dialog: None,
             airc_open: false,
             airc_badges: BTreeMap::new(),
             form_open: false,
@@ -130,6 +133,7 @@ impl LayoutState {
         self.palette_query.clear();
         self.palette_selection = 0;
         self.duty_dialog_open = false;
+        self.goal_dialog = None;
         self.airc_open = false;
         self.form_open = false;
         self.overlay_open = false;
@@ -331,11 +335,38 @@ impl LayoutState {
         self.changed();
     }
 
-    fn open_swarm_dialog(&mut self, source: SwarmSource, into: Option<usize>) {
+    /// One overlay at a time: opening a dialog closes the palette and every other dialog.
+    fn close_overlays(&mut self) {
         self.palette_open = false;
         self.new_project_open = false;
         self.duty_dialog_open = false;
+        self.swarm_dialog = None;
+        self.goal_dialog = None;
+        self.airc_open = false;
+    }
+
+    fn open_duty_dialog(&mut self, role: DutyRole) {
+        self.close_overlays();
+        self.duty_dialog_role = role;
+        self.duty_dialog_open = true;
+    }
+
+    fn open_swarm_dialog(&mut self, source: SwarmSource, into: Option<usize>) {
+        self.close_overlays();
         self.swarm_dialog = Some(SwarmDialogRequest::new(source, into));
+    }
+
+    /// `G`, the starter chip or the palette: the Goal swarm dialog, its prompt prefilled
+    /// with what was typed in the empty composer (F16).
+    fn open_goal_dialog(&mut self) {
+        let typed = if matches!(self.view, NavigationView::Home) {
+            self.composer_text.as_str()
+        } else {
+            ""
+        };
+        let request = GoalDialogRequest::new(typed);
+        self.close_overlays();
+        self.goal_dialog = Some(request);
     }
 
     /// + Items opens the dialog on the swarm's own source, adding to it (F10).
@@ -352,10 +383,7 @@ impl LayoutState {
 
     /// `A` or the footer link: the modal replaces any other dialog, as in the reference.
     fn open_airc(&mut self) {
-        self.palette_open = false;
-        self.new_project_open = false;
-        self.duty_dialog_open = false;
-        self.swarm_dialog = None;
+        self.close_overlays();
         self.airc_open = true;
     }
 
@@ -496,6 +524,7 @@ impl LayoutState {
             duty_dialog_open: self.duty_dialog_open,
             duty_dialog_role: self.duty_dialog_role,
             swarm_dialog: self.swarm_dialog,
+            goal_dialog: self.goal_dialog.clone(),
             palette_query: self.palette_query.clone(),
             palette_results: self.palette_results(),
             palette_selection: self.palette_selection,
@@ -880,39 +909,17 @@ impl LayoutState {
                 self.palette_selection = 0;
                 return None;
             }
-            NavigationIntent::Dismiss => {
-                self.airc_open = false;
-                self.palette_open = false;
-                self.new_project_open = false;
-                self.duty_dialog_open = false;
-                self.swarm_dialog = None;
-            }
+            NavigationIntent::Dismiss => self.close_overlays(),
             NavigationIntent::NewProject => {
-                self.airc_open = false;
-                self.palette_open = false;
-                self.duty_dialog_open = false;
-                self.swarm_dialog = None;
+                self.close_overlays();
                 self.new_project_open = true;
             }
             NavigationIntent::Swarm => self.open_swarm_dialog(SwarmSource::Tasks, None),
+            NavigationIntent::Goal => self.open_goal_dialog(),
             NavigationIntent::Airc => self.open_airc(),
             NavigationIntent::Settings => self.view = NavigationView::Settings,
-            NavigationIntent::PrDuty => {
-                self.airc_open = false;
-                self.palette_open = false;
-                self.new_project_open = false;
-                self.swarm_dialog = None;
-                self.duty_dialog_role = DutyRole::PrDuty;
-                self.duty_dialog_open = true;
-            }
-            NavigationIntent::Scouts => {
-                self.airc_open = false;
-                self.palette_open = false;
-                self.new_project_open = false;
-                self.swarm_dialog = None;
-                self.duty_dialog_role = DutyRole::Scouts;
-                self.duty_dialog_open = true;
-            }
+            NavigationIntent::PrDuty => self.open_duty_dialog(DutyRole::PrDuty),
+            NavigationIntent::Scouts => self.open_duty_dialog(DutyRole::Scouts),
             NavigationIntent::ShowNumbers => self.show_numbers = true,
             NavigationIntent::Jump(number) => {
                 let visible: Vec<_> = self
@@ -956,12 +963,14 @@ impl LayoutState {
                 || self.new_project_open
                 || self.duty_dialog_open
                 || self.swarm_dialog.is_some()
+                || self.goal_dialog.is_some()
                 || self.airc_open,
-            // Dialogs with a primary action accept Ctrl+Enter (F2, F7, F10).
+            // Dialogs with a primary action accept Ctrl+Enter (F2, F7, F10, F16).
             form_open: self.form_open
                 || self.new_project_open
                 || self.duty_dialog_open
-                || self.swarm_dialog.is_some(),
+                || self.swarm_dialog.is_some()
+                || self.goal_dialog.is_some(),
         };
         let stroke = KeyStroke {
             key: shortcut_key(&input),
