@@ -255,16 +255,18 @@ fn thread_group(state: ThreadState) -> ThreadGroup {
 }
 
 pub(crate) fn thread_metadata(thread: &ThreadItem) -> String {
-    if matches!(
-        thread.activity,
-        AgentActivity::Stalled | AgentActivity::AtLimit
-    ) {
-        return if thread.activity == AgentActivity::Stalled {
-            "stalled"
-        } else {
-            "at limit"
-        }
-        .into();
+    if thread.activity == AgentActivity::Stalled {
+        return "stalled".into();
+    }
+    if thread.activity == AgentActivity::AtLimit {
+        return thread.supervision.retry_after.map_or_else(
+            || "at limit".into(),
+            |reset| {
+                let hour = (reset % 86_400) / 3_600;
+                let minute = (reset % 3_600) / 60;
+                format!("at limit - retry {hour:02}:{minute:02} UTC")
+            },
+        );
     }
     if let Some(waiting) = &thread.dependency_wait {
         return waiting.clone();

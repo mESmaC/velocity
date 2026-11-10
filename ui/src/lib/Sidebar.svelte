@@ -101,7 +101,7 @@
               {#if row.metadata}<span
                   class="t-meta"
                   style:color={row.metadata === 'stalled' ||
-                  row.metadata === 'at limit'
+                  row.metadata.startsWith('at limit')
                     ? 'var(--warn)'
                     : undefined}>{row.metadata}</span
                 >{/if}

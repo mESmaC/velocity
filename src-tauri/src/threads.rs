@@ -68,6 +68,9 @@ fn resume_follow_through(
     )?
     .follow_through_thread(key.0, key.1)
     .map_err(|error| error.to_string())?;
+    if thread.activity == AgentActivity::AtLimit {
+        return Ok(DeliveryStatus::Pending);
+    }
     let path = thread.worktree_path.as_deref().ok_or("Missing worktree")?;
     velocity_git::verify_thread_worktree(
         std::path::Path::new(&project.repository_path),
