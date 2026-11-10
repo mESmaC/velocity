@@ -127,8 +127,9 @@ A thread's state (§2.1) says where it is in its lifecycle. Its **activity** say
 | command | `get_settings`, `set_settings`, `list_worktrees`, `prune_worktrees` | settings |
 | command | `set_worktree_settings { edit, project_identifier }`, `preview_worktree_folder { folder }`, `browse_worktree_folder` | persist a worktree preference edit; preview the path for a folder still being typed, without saving it; select a location through the native folder picker |
 | command | `list_providers`, `provider_sign_in`, `provider_sign_out`, `provider_models` | providers (OAuth) |
+| command | `get_skill_library`, `install_skill_pack`, `check_skill_pack_update`, `confirm_skill_pack_update` | skill pack library (F18): built-in and custom Agent Skills packs cloned with `core.symlinks=true`, pinned to a commit in `skills-library.json`, update diff preview of `SKILL.md` files, scripts and data, and explicit pin confirmation |
 | command | `airc_send { project_identifier, text }` | Your F14 comment in a registered project channel. An exact `nick:` prefix targets that member; an unknown nick is rejected. Other comments broadcast to active thread members. Delivery uses ordinary queued steering and never cancels a running turn. |
-| command | `airc_events`, `airc_messages`, `airc_send`, `airc_claims`, `airc_claim`, `airc_release`, `airc_share`, `airc_wait`, `airc_ledger` | AIRC (agents get the same as MCP tools). `airc_claim` is atomic: it returns `granted`, or `refused { holder, since }` |
+| command | `airc_events { project_identifier, after }`, `airc_messages { project_identifier, after }`, `airc_send`, `airc_claims`, `airc_claim`, `airc_release`, `airc_share`, `airc_wait`, `airc_ledger { project_identifier, ledger, after }` | AIRC (agents get the same as MCP tools). `airc_events` returns only F14 event log entries (`EVENT_TAGS`, including `discovery` notices); `airc_messages` returns only agent messages and user comments; `airc_ledger` reads `discovery` or `past_work`. `airc_claim` is atomic: it returns `granted`, or `refused { holder, since }` |
 | command | `dispatch_layout` with `Navigation(Answer(n))`, `Navigation(Lock)`, `Navigation(SpecFile)`, `Navigation(Grill)`, `SteerThread` on a spec thread, and `ToggleProofListEntry(index)` | spec interview (F3): answer `1`–`4` or in your own words, Lock spec & publish tasks, open SPEC.md, Keep grilling, and switch a proposed proof-list entry. The backend carries these out; the interview's phase, question, decisions and proof list arrive on `active_thread.interview` in `layout://state`. |
 | event | `thread://status`, `thread://step` | thread state and tool steps: `thread://status` carries a thread's state and activity (§2.1, §2.2) whenever either changes; `thread://step` carries the thread's newest transcript block after each agent update |
 | event | `window://state` | native maximize/restore state, including changes made by the operating system |
@@ -1169,7 +1170,7 @@ Each milestone ends with a working app. PR duty checks an item off when it lands
 - [ ] Claims from each agent's first step; overlap detection and `velocity` lines (F14)
 - [ ] Dependency wait → rebase → continue in the agent runner (F14)
 - [x] Mention delivery to threads at step boundaries; your comments (F14)
-- [ ] Event log posted by Velocity from claims, GitHub and the Task List; agent messages kept separate (F14)
+- [x] Event log posted by Velocity from claims, GitHub and the Task List; agent messages kept separate (F14)
 - [ ] Modal: Events (default), Claims, Messages, Discoveries, Past work, nick list, unread badge, `A` (F14)
 
 **M9 · Goal swarm**
@@ -1199,7 +1200,7 @@ Each milestone ends with a working app. PR duty checks an item off when it lands
 - [ ] AGENTS.md: Implementation first, Proofs, and Tests and docs sections; Covers check (F11)
 
 **M12 · Skills** (F18)
-- [ ] Skill library: clone and pin packs, update with a diff, Windows symlink and UTF-8 handling
+- [x] Skill library: clone and pin packs, update with a diff, Windows symlink and UTF-8 handling
 - [ ] Settings → Skills: per-project switches, bundles, context budget, requirements, add any Agent Skills repo
 - [ ] Link enabled skills into every worktree and the spec checkout per provider folder; `.git/info/exclude`; committed mode
 - [ ] Built-in packs: UI UX Pro Max (design system and AGENTS.md rule), claude-skills (bundles), Game dev skills (router and engine detection), REA (shared MCP server)
