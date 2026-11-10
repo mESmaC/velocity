@@ -1167,7 +1167,7 @@ Each milestone ends with a working app. PR duty checks an item off when it lands
 
 **M8 · AIRC**
 - [x] Channel per project: log files, nicks, join/leave, MCP tools for agents (F14)
-- [ ] Claims from each agent's first step; overlap detection and `velocity` lines (F14)
+- [x] Claims from each agent's first step; overlap detection and `velocity` lines (F14)
 - [ ] Dependency wait → rebase → continue in the agent runner (F14)
 - [x] Mention delivery to threads at step boundaries; your comments (F14)
 - [x] Event log posted by Velocity from claims, GitHub and the Task List; agent messages kept separate (F14)
