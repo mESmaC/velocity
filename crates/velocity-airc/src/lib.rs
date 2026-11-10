@@ -5,6 +5,7 @@ mod delivery;
 mod event_log;
 mod launch;
 mod protocol;
+mod rebase;
 mod routing;
 mod storage;
 mod tasks;

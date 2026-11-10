@@ -442,6 +442,9 @@ Draft claims keep the coding transcript until the PR is ready. The watcher follo
 - **Sidebar meta:** `#n` plus the stage label in the stage colour: checking / in review / addressing review / approved · merging.
 
 **Landing and rebases** (from Anthropic's Scion):
+
+The PR duty MCP server exposes `pr_duty_prepare_landing` and `pr_duty_checked`. Prepare updates the PR branch through GitHub with an expected head and returns its exact head/base and required checks: full initially or on author/overlapping changes, build and lint for an unrelated moved base. The reviewer fetches that head, regenerates artifacts, runs those checks and records success with checked. Merge refuses a missing receipt or moved base. Only an exact two-parent base update carries the reviewer's approval. Updates and update failures post `updated`/`conflict` events. Merge notices target claimed paths and edited regions within three lines, excluding generated artifacts and scoped registration claims. At its next step the affected agent commits current edits and calls `airc_rebase`; Velocity updates only its registered checkout without rewriting history and posts `rebased` or `conflict`.
+
 - **No global merge queue or lock.** PR duty merges a PR as soon as it is approved and its local checks pass (F7), without waiting its turn behind other PRs.
 - **Targeted rebases.** When a PR merges, Velocity compares the merged change's files with each open agent's claimed files and edited files (§3.2).
   - Only agents with an overlap rebase straight away; each gets a `rebased` event.
@@ -559,6 +562,7 @@ Long-running roles. They appear under **On duty**, with an agent count (×N) and
   - A sweep is one agent turn in the scout's own `<scout>-sweep` worktree (F5), a detached checkout of the base branch's tip, reset before each sweep. Its card shows the agent's current step; the feed gets the sweep's start and end and each filing.
   - Scouts file only through Velocity's scout MCP tools: `scout_issues` (every open and closed issue, which the scout compares its finding against) and `scout_file` (runs the reproduction, which must fail, attaches the script and its output, refuses duplicates, and signs the issue with the scout's name).
   - A message from the Scouts composer goes to every running sweep as its next message; idle scouts start a sweep that follows it.
+  - `scout_compare` runs implementation and compiled Lean reference driver scripts in the scout checkout, with identical UTF-8 cases on stdin (up to 48000 bytes). Both drivers must exit successfully; stdout is compared byte for byte, so adapters normalize output. It returns both outputs and diagnostics. A missing toolchain or failed driver is an execution error, never a model disagreement. Scouts preserve disagreeing inputs in a failing script and use `scout_file` to attach executed evidence and check duplicates. This backend-only tool never accepts commands from the frontend.
 - Issues they file show their name in the Issues panel.
 
 **Accept when:**
@@ -1259,7 +1263,7 @@ Each milestone ends with a working app. PR duty checks an item off when it lands
 - [ ] Agent activity, stall detection with nudge then restart, per-agent caps, claim release after the grace period (§2.2)
 - [x] Parking: end the session on `airc_wait`, resume on the subscribed `merged` event; optional provider concurrency cap (§2.2, F15)
 - [x] Targeted AIRC delivery, message envelope (`to`, `intent`), heads-down and quarantine modes (F14)
-- [ ] Targeted rebases, optimistic landing, conflicts sent back to the owning agent; rebuild the merge result whenever `master` moved; Shared files exempt from overlaps (F6, F14)
+- [x] Targeted rebases, optimistic landing, conflicts sent back to the owning agent; rebuild the merge result whenever `master` moved; Shared files exempt from overlaps (F6, F14)
 - [x] Warm worktree pool from one base clone, prebuilt at the tip of `master` with a shared compiler cache; worktree guards (F5)
 - [x] PR duty tiered review and intent review; Sensitive paths in AGENTS.md (F7)
 - [x] Main watcher duty role: post-merge suite, bisect, fix or revert PR (F7)
@@ -1269,7 +1273,7 @@ Each milestone ends with a working app. PR duty checks an item off when it lands
 - [x] Proof checks in the worktree: `lake build`, no `sorry`/`admit`, axiom audit, statement lock and review reset
 - [ ] Proof card on the PR, "Proved" on the PR track, `proved`/`statement`/`stress` events
 - [ ] Merge gate in PR duty; statement review; tiers updated (F7)
-- [ ] Scouts: assume-it-fails sweeps, evidence required, Stress and Proof gaps focus areas, stress runs against Lean reference models
+- [x] Scouts: assume-it-fails sweeps, evidence required, Stress and Proof gaps focus areas, stress runs against Lean reference models
 - [ ] Levels per language: reference by default (fixture table plus one test; compiled Lean model through FFI for stress), code on request (Aeneas for Rust), model
 - [ ] AGENTS.md: Implementation first, Proofs, and Tests and docs sections; Covers check (F11)
 

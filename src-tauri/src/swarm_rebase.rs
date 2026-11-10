@@ -3,7 +3,7 @@
 //! its branch up to date. Members the merge doesn't touch rebase once at landing.
 
 use std::collections::BTreeSet;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 
 use tauri::{AppHandle, Manager};
 use velocity_core::swarm::{SwarmEventKind, SwarmFeedEvent};
@@ -34,14 +34,27 @@ pub(crate) fn notify_affected(
     let Some(check) = affected_check(application, project, swarm, merged)? else {
         return Ok(());
     };
-    let merged_files: BTreeSet<String> = PullRequestClient::discover(&check.repository)
-        .and_then(|client| client.changed_files(number))
-        .map_err(|error| error.to_string())?
-        .into_iter()
-        .collect();
+    let (merged_head, merged_files, claims) =
+        merge_evidence(application, project, number, &check.repository)?;
     let mut affected = 0;
     for (thread, nick, worktree) in &check.members {
-        let overlap = overlapping_files(worktree, &check.base, &merged_files);
+        let mut overlap = velocity_git::landing::edited_overlap(worktree, &merged_head)
+            .map_err(|error| error.to_string())?;
+        for claim in claims
+            .iter()
+            .filter(|claim| claim.member == format!("thread-{thread}"))
+        {
+            overlap.extend(
+                claim
+                    .files
+                    .iter()
+                    .filter(|file| {
+                        velocity_git::landing::contested_path(file) && merged_files.contains(*file)
+                    })
+                    .cloned(),
+            );
+        }
+        let overlap: Vec<String> = overlap.into_iter().collect();
         if overlap.is_empty() {
             continue;
         }
@@ -61,6 +74,36 @@ pub(crate) fn notify_affected(
         report(crate::swarm::post_event(application, project, swarm, event));
     }
     Ok(())
+}
+
+type MergeEvidence = (String, BTreeSet<String>, Vec<velocity_airc::Claim>);
+fn merge_evidence(
+    application: &AppHandle,
+    project: u32,
+    number: u32,
+    repository: &std::path::Path,
+) -> Result<MergeEvidence, String> {
+    let client = PullRequestClient::discover(repository).map_err(|error| error.to_string())?;
+    let merged_head = client
+        .snapshot(number)
+        .map_err(|error| error.to_string())?
+        .pull_request
+        .head_ref_oid;
+    let merged_files: BTreeSet<String> = client
+        .changed_files(number)
+        .map_err(|error| error.to_string())?
+        .into_iter()
+        .collect();
+    let channel = velocity_airc::Channel::open(
+        &application
+            .path()
+            .app_data_dir()
+            .map_err(|error| error.to_string())?,
+        &project.to_string(),
+    )
+    .map_err(|error| error.to_string())?;
+    let claims = channel.claims().map_err(|error| error.to_string())?;
+    Ok((merged_head, merged_files, claims))
 }
 
 /// The other live members with a worktree, when the swarm rebases on merge.
@@ -116,16 +159,6 @@ fn affected_check(
     }))
 }
 
-fn overlapping_files(worktree: &Path, base: &str, merged: &BTreeSet<String>) -> Vec<String> {
-    match velocity_git::worktree_changed_files(worktree, base) {
-        Ok(changed) => changed.intersection(merged).cloned().collect(),
-        Err(error) => {
-            eprintln!("Swarm rebase check for {}: {error}", worktree.display());
-            Vec::new()
-        }
-    }
-}
-
 fn rebase_notice(number: u32, title: &str, base: &str, overlap: &[String]) -> String {
     const SHOWN: usize = 8;
     let mut files = overlap
@@ -138,6 +171,6 @@ fn rebase_notice(number: u32, title: &str, base: &str, overlap: &[String]) -> St
         files.push_str(&format!(" and {} more", overlap.len() - SHOWN));
     }
     format!(
-        "PR #{number} from your swarm ({title}) just merged into {base} and touched files you changed: {files}. Bring your branch up to date with origin/{base} now, the way AGENTS.md says (rebase, or merge where force-pushing is not allowed), resolve any conflicts, re-run the checks and push."
+        "PR #{number} from your swarm ({title}) just merged into {base} and touched files you changed: {files}. Commit current edits and call airc_rebase to update with origin/{base} now without rewriting history, resolve any conflicts, re-run the checks and push."
     )
 }

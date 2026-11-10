@@ -14,10 +14,11 @@ package velocity where
 
 @[default_target]
 lean_lib Velocity where
-  roots := #[`Velocity, `WorktreeManager, `GoalSwarmWorkChoice, `ClaimLock]
+  roots := #[`Velocity, `WorktreeManager, `GoalSwarmWorkChoice, `ClaimLock, `TargetedRebase]
   globs := #[
     .one `Velocity,
     .submodules `WorktreeManager,
     .submodules `GoalSwarmWorkChoice,
-    .submodules `ClaimLock
+    .submodules `ClaimLock,
+    .submodules `TargetedRebase
   ]

@@ -148,7 +148,7 @@ fn sweep_steps(rules: &ScoutRuleSettings) -> String {
         "\nSweep:\n- Read AGENTS.md and SPEC.md first; follow AGENTS.md's rules for scouts.\n- Run the project's checks and lint, and the existing tests and stress scripts.\n",
     );
     if rules.run_stress_against_models {
-        steps.push_str("- Run the stress scripts against the Lean reference models in `proofs/` where they exist, and report every disagreement.\n");
+        steps.push_str("- Build the Lean reference models in `proofs/` where they exist. Use `scout_compare` with implementation and compiled-model driver scripts, feeding identical generated cases through stdin. Both must succeed; normalize their stdout in the adapters. Preserve every disagreeing input in a failing reproduction script and file it through `scout_file`. Missing models or toolchain failures are proof gaps, not output disagreements.\n");
     }
     steps.push_str("- Write new tests and stress scripts that expose failures. Keep each failing script in the worktree; it is your evidence.\n");
     for area in &rules.focus_areas {
@@ -164,7 +164,7 @@ fn focus_guide(area: ScoutFocusArea) -> &'static str {
             "load, concurrency, malformed input, resource exhaustion, crash and restart."
         }
         ScoutFocusArea::ProofGaps => {
-            "features with no proof, statements weaker than SPEC.md, hypotheses that exclude real inputs."
+            "features with no proof, statements weaker than SPEC.md, hypotheses that exclude real inputs, and languages stuck at model level when reference comparison is available."
         }
         ScoutFocusArea::SpecDrift => "behaviour that differs from what SPEC.md says.",
         ScoutFocusArea::Performance => "slow paths, unbounded growth and wasted work.",
