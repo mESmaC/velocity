@@ -7,6 +7,7 @@ members = [
     "crates/velocity-github",
     "crates/velocity-interview",
     "crates/velocity-new-project",
+    "crates/velocity-skills",
     "crates/velocity-store",
     "crates/velocity-threads",
     "src-tauri",
@@ -38,6 +39,7 @@ velocity-git = { path = "crates/velocity-git" }
 velocity-github = { path = "crates/velocity-github" }
 velocity-interview = { path = "crates/velocity-interview" }
 velocity-new-project = { path = "crates/velocity-new-project" }
+velocity-skills = { path = "crates/velocity-skills" }
 velocity-store = { path = "crates/velocity-store" }
 velocity-threads = { path = "crates/velocity-threads" }
 
