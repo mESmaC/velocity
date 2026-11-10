@@ -1,0 +1,363 @@
+/* F14 AIRC modal rules. Their values are the --airc-* tokens in reference.css. */
+.airc-dialog {
+  position: fixed;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  max-width: none;
+  max-height: none;
+  margin: 0;
+  padding: 0;
+  border: 0;
+  background: none;
+  color: var(--text);
+}
+.airc-dialog[open] {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+.airc-dialog::backdrop {
+  background: var(--airc-scrim-background);
+  backdrop-filter: var(--airc-scrim-backdrop-filter);
+}
+.airc {
+  display: grid;
+  grid-template-rows: auto auto minmax(0, 1fr) auto;
+  width: var(--airc-width);
+  height: var(--airc-height);
+  border: var(--airc-border);
+  border-radius: var(--airc-border-radius);
+  background: var(--glass-pop);
+  box-shadow: var(--airc-box-shadow);
+  backdrop-filter: var(--blur-pop);
+  overflow: hidden;
+}
+.airc-h {
+  display: flex;
+  align-items: baseline;
+  gap: var(--airc-header-gap);
+  padding: var(--airc-header-padding);
+}
+.airc-h h2 {
+  margin: 0;
+  font-size: var(--airc-title-font-size);
+  font-weight: var(--airc-title-font-weight);
+  letter-spacing: var(--airc-title-letter-spacing);
+  color: var(--airc-title-color);
+}
+.airc-h .chan {
+  font: var(--airc-channel-font);
+  color: var(--text);
+}
+.airc-h .topic {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: var(--airc-topic-font-size);
+  color: var(--muted);
+}
+.airc-h .label {
+  font-size: var(--airc-label-font-size);
+  color: var(--text-2);
+}
+.airc-tabs {
+  display: flex;
+  gap: var(--airc-tabs-gap);
+  padding: var(--airc-tabs-padding);
+  border-bottom: 1px solid var(--line-dim);
+}
+.airc-tabs button {
+  padding: var(--airc-tab-padding);
+  border-bottom: var(--airc-tab-border);
+  font-size: var(--airc-tab-font-size);
+  color: var(--muted);
+}
+.airc-tabs button:hover {
+  color: var(--text-2);
+}
+.airc-tabs button.on {
+  border-bottom-color: var(--text);
+  color: var(--text);
+}
+.airc-tabs button span {
+  margin-left: var(--airc-tab-count-margin);
+  font: var(--airc-tab-count-font);
+  color: var(--muted);
+}
+.airc-tabs button span.warn {
+  color: var(--warn);
+}
+.airc-body {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) var(--airc-nicks-width);
+  min-height: 0;
+}
+.airc-main {
+  min-height: 0;
+  overflow-y: auto;
+  padding: var(--airc-main-padding);
+  background: var(--airc-main-background);
+}
+.airc-nicks {
+  min-height: 0;
+  overflow-y: auto;
+  padding: var(--airc-nicks-padding);
+  border-left: 1px solid var(--line-dim);
+  background: var(--airc-nicks-background);
+}
+.al,
+.lg {
+  display: grid;
+  grid-template-columns: var(--airc-line-columns);
+  gap: var(--airc-line-gap);
+  padding: var(--airc-line-padding);
+  font: var(--airc-line-font);
+  user-select: text;
+}
+.lg {
+  padding: var(--airc-ledger-padding);
+  border-top: 1px solid var(--line-dim);
+  font: var(--airc-ledger-font);
+}
+.al:hover {
+  background: var(--surface-2);
+}
+.al .ts,
+.lg .ts {
+  color: var(--muted);
+}
+.al .n,
+.lg .n {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  text-align: right;
+}
+.al .x,
+.lg .x {
+  color: var(--text);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+.al.ev .x,
+.al.you .x {
+  color: var(--text-2);
+}
+.ref {
+  padding: 0;
+  font: inherit;
+  font-weight: var(--airc-reference-weight);
+  color: var(--info);
+}
+.ref:hover {
+  text-decoration: underline;
+}
+.al.ment {
+  background: var(--airc-mention-background);
+  box-shadow: var(--airc-mention-shadow);
+}
+.al .etag {
+  display: inline-block;
+  padding: var(--airc-tag-padding);
+  border-radius: var(--airc-tag-radius);
+  font: var(--airc-tag-font);
+  letter-spacing: var(--airc-tag-letter-spacing);
+  text-transform: uppercase;
+  color: var(--text-2);
+  background: var(--airc-tag-background);
+}
+.al.tone-Claim .etag {
+  color: var(--text);
+  background: var(--airc-tag-claim-background);
+}
+.al.tone-Info .etag {
+  color: var(--info);
+  background: var(--airc-tag-info-background);
+}
+.al.tone-Positive .etag {
+  color: var(--ok);
+  background: var(--airc-tag-positive-background);
+}
+.al.tone-Warning .etag {
+  color: var(--warn);
+  background: var(--airc-tag-warning-background);
+}
+.al.tone-Danger .etag {
+  color: var(--err);
+  background: var(--airc-tag-danger-background);
+}
+.al.tone-Muted .etag {
+  color: var(--muted);
+}
+.al.overlap {
+  background: var(--airc-overlap-row-background);
+}
+.nick-You {
+  color: var(--text);
+}
+.nick-Velocity {
+  color: var(--warn);
+}
+.nick-0 {
+  color: var(--airc-nick-0);
+}
+.nick-1 {
+  color: var(--airc-nick-1);
+}
+.nick-2 {
+  color: var(--airc-nick-2);
+}
+.nick-3 {
+  color: var(--airc-nick-3);
+}
+.nick-4 {
+  color: var(--airc-nick-4);
+}
+.nick-5 {
+  color: var(--airc-nick-5);
+}
+.nick-6 {
+  color: var(--airc-nick-6);
+}
+.nick-7 {
+  color: var(--airc-nick-7);
+}
+.nick-8 {
+  color: var(--airc-nick-8);
+}
+.nick-9 {
+  color: var(--airc-nick-9);
+}
+.cl-note {
+  margin: var(--airc-note-margin);
+  font-size: var(--airc-note-font-size);
+  color: var(--muted);
+}
+.cl-note.warn {
+  color: var(--warn);
+}
+.cl {
+  display: grid;
+  grid-template-columns: var(--airc-claim-columns);
+  gap: var(--airc-claim-gap);
+  padding: var(--airc-claim-padding);
+  border-top: 1px solid var(--line-dim);
+  font-size: var(--airc-claim-font-size);
+}
+.cl .n {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font: var(--airc-claim-nick-font);
+}
+.cl .tk {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--text);
+}
+.cl .st {
+  font: var(--airc-claim-state-font);
+  color: var(--muted);
+  text-align: right;
+}
+.cl .fs {
+  grid-column: 2 / 4;
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--airc-claim-files-gap);
+}
+.cl .fs code {
+  padding: var(--airc-claim-file-padding);
+  border: 1px solid var(--line-dim);
+  border-radius: var(--airc-claim-file-radius);
+  font: var(--airc-claim-file-font);
+  color: var(--text-2);
+}
+.cl .fs code.ov {
+  border-color: var(--warn);
+  color: var(--warn);
+}
+.nk-h {
+  margin: var(--airc-nick-heading-margin);
+  font-size: var(--airc-nick-heading-font-size);
+  color: var(--muted);
+}
+.nk-h:first-child {
+  margin-top: 0;
+}
+.nk {
+  display: grid;
+  grid-template-columns: var(--airc-nick-columns);
+  gap: var(--airc-nick-gap);
+  align-items: center;
+  width: 100%;
+  padding: var(--airc-nick-padding);
+  border-radius: var(--r-sm);
+  text-align: left;
+}
+.nk:hover {
+  background: var(--surface-3);
+}
+.nk i {
+  width: var(--airc-nick-dot-size);
+  height: var(--airc-nick-dot-size);
+  border-radius: 50%;
+  background: var(--ok);
+}
+.nk i.Idle {
+  background: var(--muted);
+}
+.nk i.Hold {
+  background: var(--warn);
+}
+.nk i.Left {
+  background: transparent;
+  border: 1px solid var(--muted);
+}
+.nk b {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font: var(--airc-nick-font);
+}
+.nk small {
+  grid-column: 2;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: var(--airc-nick-detail-font-size);
+  color: var(--muted);
+}
+.airc-in {
+  display: flex;
+  align-items: center;
+  gap: var(--airc-input-gap);
+  padding: var(--airc-input-padding);
+  border-top: 1px solid var(--line-dim);
+}
+.airc-in .me {
+  font: var(--airc-input-font);
+  color: var(--text-2);
+}
+.airc-in input {
+  flex: 1;
+  min-width: 0;
+  padding: 0;
+  border: 0;
+  outline: 0;
+  background: none;
+  font: var(--airc-input-font);
+  color: var(--text);
+}
+.airc-in input::placeholder {
+  color: var(--muted);
+  font-family: var(--sans);
+}
+.airc-in .error {
+  font-size: var(--airc-note-font-size);
+  color: var(--err);
+}

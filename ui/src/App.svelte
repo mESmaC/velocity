@@ -8,6 +8,7 @@
   import DutyView from './lib/DutyView.svelte';
   import SwarmView from './lib/SwarmView.svelte';
   import SwarmDialog from './lib/SwarmDialog.svelte';
+  import AircModal from './lib/AircModal.svelte';
   import SpecInterview from './lib/SpecInterview.svelte';
   import AgentsEditor from './lib/AgentsEditor.svelte';
   import CommandPalette from './lib/CommandPalette.svelte';
@@ -306,6 +307,11 @@
       request={layout.swarm_dialog}
       {send}
       submitRequests={swarmSubmits}
+      onResult={receive}
+    />{/key}{/if}
+{#if layout?.airc_open && layout.project_identifier !== null}{#key layout.project_identifier}<AircModal
+      project={layout.project_identifier}
+      {send}
       onResult={receive}
     />{/key}{/if}
 {#if threadMenu}<ThreadMenu
