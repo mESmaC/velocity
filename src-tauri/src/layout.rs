@@ -68,6 +68,7 @@ pub fn dispatch_layout(
         .filter(|intent| !crate::issue_panel::handle_intent(window.app_handle(), intent));
     publish(&window, &snapshot, intent.clone())?;
     if let Some((role, event)) = outcome.duty_event {
+        crate::reviews::instruct(window.app_handle(), role, &event.message);
         crate::sweeps::instruct(window.app_handle(), role, &event.message);
         crate::duty::publish_duty_event(&window, role, event)?;
     }

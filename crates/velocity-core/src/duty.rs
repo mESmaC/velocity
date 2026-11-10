@@ -218,6 +218,11 @@ pub struct DutyAgentCard {
     #[cfg_attr(feature = "bindings", serde(skip))]
     #[cfg_attr(feature = "bindings", specta(skip))]
     pub sweep: Option<crate::scout_sweep::SweepRecord>,
+    /// A PR duty agent's kept `review-pr-<n>` worktrees. Saved state only, so Settings →
+    /// Worktrees lists them as PR duty's.
+    #[cfg_attr(feature = "bindings", serde(skip))]
+    #[cfg_attr(feature = "bindings", specta(skip))]
+    pub review_worktrees: Vec<String>,
 }
 
 #[cfg_attr(feature = "bindings", derive(specta::Type))]
@@ -519,6 +524,7 @@ pub fn build_duty_agents(
                 busy: false,
                 doing: doing.clone(),
                 sweep: None,
+                review_worktrees: Vec::new(),
             }
         })
         .collect()

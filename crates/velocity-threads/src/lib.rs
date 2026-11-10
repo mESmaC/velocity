@@ -8,6 +8,8 @@ pub mod dispatch;
 pub mod follow_through;
 pub mod launch;
 pub mod naming;
+pub mod review;
+pub mod review_runner;
 pub mod runtime;
 pub mod sweep;
 pub mod sweep_runner;
@@ -20,6 +22,8 @@ pub use follow_through::DeliveryStatus;
 pub use launch::{
     LaunchError, LaunchPlan, WorktreeNaming, agent_launch, plan_launch, title_worktree_name,
 };
+pub use review::{PR_DUTY_SERVER_SWITCH, ReviewPlan, plan_review};
+pub use review_runner::{PrDutyReviews, ReviewChange, ReviewHost};
 pub use runtime::{
     RunningSession, SessionInputs, SteerError, StopOutcome, ThreadKey, ThreadProgress,
     ThreadRuntimes, spawn_session,
