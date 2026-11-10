@@ -1010,6 +1010,13 @@ theorem optimal : ∀ strat ∈ RebaseStrategies,
 - **Statement lock.** When PR duty approves, Velocity hashes every theorem statement. If a statement changes afterwards, the approval is withdrawn, the review restarts and a `statement` event is posted. Weakening a statement until its proof goes through is the cheat this catches.
 - The design proof names the SPEC.md section it covers.
 
+How the checks run *(proposed)*:
+- **Where and when.** Every PR duty review of a new head runs them in the `review-pr-<n>` worktree (the PR merged onto the base branch), before the agent's turn starts. A push is a new head, so the checks run again on every push. The results open the review's prompt; a failure is named there for PR duty to request changes on.
+- **Which files.** The `.lean` files the PR adds or modifies under `proofs/` (from the merge base to the head). A PR that changes none skips the checks.
+- **Build.** A project on Mathlib runs `lake exe cache get` first, so no worktree compiles Mathlib from source. Then `lake build`.
+- **Axiom audit.** `#print axioms` in a file covers only what its author chose to print, so Velocity elaborates its own audit file with `lake lean`: it imports the changed modules and lists the axioms of every declaration they define.
+- **Statement lock.** Approving through the PR duty MCP server hashes every `theorem` statement under `proofs/` at the approved head (read from git, not the checkout; comments and whitespace don't count) and keeps the hashes in the app data folder per PR. The approval is refused if the statements can't be read. When a later head changes or removes a locked statement, the `statement` event clears that approval in the approval record (as a `changes` event does), and the review's prompt restarts it as a full review of every theorem statement rather than a later round.
+
 **Merge gate:**
 - PR duty can't merge until the proofs check (locked, F7).
 - A missing design proof on a proof-list feature blocks the merge.

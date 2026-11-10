@@ -1,0 +1,16 @@
+[package]
+name = "velocity-proofs"
+description = "Velocity's proof checks: lake build, sorry/admit, the axiom audit and the statement lock"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish = false
+
+[lints]
+workspace = true
+
+[dependencies]
+serde.workspace = true
+serde_json.workspace = true
+sha2 = "0.10"
+thiserror.workspace = true

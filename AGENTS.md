@@ -41,6 +41,7 @@ Your job is working functionality. Proofs, tests and docs support it; they never
 - `crates/velocity-github/`: GitHub through `gh`.
 - `crates/velocity-threads/`: starting build threads from the composer (F4): the thread's name and worktree plan, its live agent session, and the transcript the thread view shows.
 - `crates/velocity-new-project/`: Create in the New project dialog (F2): resolves the request and runs the planned git, `gh` and store steps.
+- `crates/velocity-proofs/`: the proof checks (F17): `lake build`, the `sorry`/`admit` scan, the axiom audit, the design proof's SPEC.md section, and the statement lock PR duty's approvals take.
 - `crates/velocity-skills/`: the machine-wide skill pack library (F18): clones and pins packs with `core.symlinks=true`, previews update diffs of `SKILL.md` files, scripts and data before moving a pin, and runs pack Python tools with `PYTHONUTF8=1`.
 - `crates/velocity-interview/`: the spec interview (F3): runs the spec agent in the main checkout, parses its questions, records decisions and draft tasks, and locks the spec.
 - `ui/`: the frontend: Svelte 5, TypeScript and Vite, built with pnpm.
