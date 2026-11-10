@@ -39,6 +39,8 @@ use velocity_core::state::{
 pub mod duty;
 mod project_layout;
 pub mod projects;
+pub mod swarm_dialog;
+pub mod swarms;
 pub mod threads;
 
 pub use duty::DutyRoleItem;
@@ -507,6 +509,16 @@ pub struct TaskItem {
 }
 
 impl TaskItem {
+    pub fn new(id: u32, text: String, state: TaskState, added_by: TaskAttribution) -> Self {
+        Self {
+            id,
+            text,
+            state,
+            added_by,
+            assigned_thread_id: None,
+        }
+    }
+
     pub fn normalize(mut self, spec_locked: bool) -> Self {
         let normalized = core_state::normalize_task_record(
             spec_locked,
@@ -718,6 +730,9 @@ pub struct ProjectItem {
     /// Duty roles started on this project (F7).
     #[serde(default)]
     pub duty_roles: Vec<DutyRoleItem>,
+    /// Swarms launched on this project, newest first (F10).
+    #[serde(default)]
+    pub swarms: Vec<swarms::SwarmRecord>,
 }
 
 /// The New project dialog's interview choices, kept until the spec interview
@@ -749,6 +764,7 @@ impl ProjectItem {
             threads: Vec::new(),
             pending_interview: None,
             duty_roles: Vec::new(),
+            swarms: Vec::new(),
         }
     }
 

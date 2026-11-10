@@ -203,6 +203,7 @@ impl StateStore {
                     .iter()
                     .any(|thread| thread.id == *identifier)
                     || project.duty_roles.iter().any(|duty| duty.id == *identifier)
+                    || project.swarms.iter().any(|swarm| swarm.id == *identifier)
             });
         if project.active_thread_id == selected {
             return Ok(());

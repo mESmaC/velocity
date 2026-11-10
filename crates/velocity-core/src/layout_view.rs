@@ -4,6 +4,7 @@ use crate::duty::{DutyRole, DutyRoleEntry, DutyViewSnapshot};
 use crate::interview_view::InterviewEntry;
 use crate::layout::{LayoutRow, PulseKind, ThreadGroup};
 use crate::navigation::{NavigationIntent, NavigationView, NumberHintEvent};
+use crate::swarm::{SwarmDialogRequest, SwarmEntry, SwarmStage, SwarmViewSnapshot};
 use crate::thread_view_model::{
     AgentCommandView, ModelPillView, SlashCommandItem, ThreadDetailEntry, ThreadDetailSnapshot,
 };
@@ -63,6 +64,8 @@ pub struct LayoutData {
     pub agent_commands: Vec<AgentCommandView>,
     /// Spec interview read models, keyed by thread (F3).
     pub interviews: Vec<InterviewEntry>,
+    /// Swarm rows and views, keyed by their sidebar identifier (F10).
+    pub swarms: Vec<SwarmEntry>,
 }
 
 #[cfg_attr(
@@ -114,6 +117,8 @@ pub struct SidebarRow {
     #[cfg_attr(feature = "bindings", serde(with = "crate::ipc_number::optional"))]
     #[cfg_attr(feature = "bindings", specta(type = Option<String>))]
     pub number: Option<usize>,
+    /// A swarm row's segmented progress bar, one segment per member (F10).
+    pub segments: Vec<SwarmStage>,
 }
 
 #[cfg_attr(
@@ -262,6 +267,12 @@ pub enum LayoutAction {
         #[cfg_attr(feature = "bindings", specta(type = String))]
         usize,
     ),
+    /// The swarm view's + Items: the Swarm dialog adding open items to that swarm (F10).
+    AddSwarmItems(
+        #[cfg_attr(feature = "bindings", serde(with = "crate::ipc_number"))]
+        #[cfg_attr(feature = "bindings", specta(type = String))]
+        usize,
+    ),
     Keyboard(KeyboardInput),
     NumberHints(NumberHintEvent),
     ComposerText(String),
@@ -295,6 +306,7 @@ pub struct LayoutSnapshot {
     pub selected_thread: Option<usize>,
     pub active_thread: Option<ThreadDetailSnapshot>,
     pub active_duty: Option<DutyViewSnapshot>,
+    pub active_swarm: Option<SwarmViewSnapshot>,
     pub default_model_pill: ModelPillView,
     pub search: String,
     pub groups: Vec<SidebarGroup>,
@@ -304,6 +316,8 @@ pub struct LayoutSnapshot {
     pub new_project_open: bool,
     pub duty_dialog_open: bool,
     pub duty_dialog_role: DutyRole,
+    /// The open Swarm dialog: its starting source, and the swarm + Items adds to (F10).
+    pub swarm_dialog: Option<SwarmDialogRequest>,
     pub palette_query: String,
     pub palette_results: Vec<PaletteItem>,
     #[cfg_attr(feature = "bindings", serde(with = "crate::ipc_number"))]

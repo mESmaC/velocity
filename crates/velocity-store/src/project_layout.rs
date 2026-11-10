@@ -43,12 +43,9 @@ pub(crate) fn read_model(state: &PersistedState) -> LayoutData {
             .iter()
             .map(|duty| duty_entry(duty, merged_today))
             .collect();
-        entries.extend(
-            project
-                .threads
-                .iter()
-                .map(|thread| thread_entry(thread, task_count)),
-        );
+        data.swarms = crate::swarms::swarm_entries(project);
+        entries.extend(data.swarms.iter().map(crate::swarms::swarm_row));
+        entries.extend(thread_entries(project, task_count));
         data.threads = entries;
         data.interviews = project
             .threads
@@ -80,6 +77,24 @@ pub(crate) fn read_model(state: &PersistedState) -> LayoutData {
             footer_summary(&project_owners(project), &fallback_root(project, state));
     }
     data
+}
+
+/// Thread rows. Swarm members are listed under their swarm in agent order (a1, a2, …),
+/// not in the other groups (F10); other threads keep newest first.
+fn thread_entries(project: &ProjectItem, task_count: usize) -> Vec<ThreadEntry> {
+    let mut threads: Vec<_> = project
+        .threads
+        .iter()
+        .map(|thread| {
+            let membership = crate::swarms::thread_swarm(project, thread.id)
+                .map(|(swarm, agent)| (swarm.id, agent));
+            let mut entry = thread_entry(thread, task_count);
+            entry.policy.member_of = membership.map(|(swarm, _)| swarm as usize);
+            (membership, entry)
+        })
+        .collect();
+    threads.sort_by_key(|(membership, _)| *membership);
+    threads.into_iter().map(|(_, entry)| entry).collect()
 }
 
 fn project_palette(state: &PersistedState) -> Vec<PaletteItem> {
@@ -239,7 +254,7 @@ fn thread_group(state: ThreadState) -> ThreadGroup {
     }
 }
 
-fn thread_metadata(thread: &ThreadItem) -> String {
+pub(crate) fn thread_metadata(thread: &ThreadItem) -> String {
     if thread.state == ThreadState::Review {
         let stage = match thread.review_stage {
             Some(ReviewStage::ContinuousIntegration) => "waiting on CI",

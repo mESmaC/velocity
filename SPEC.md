@@ -119,7 +119,7 @@ A thread's state (§2.1) says where it is in its lifecycle. Its **activity** say
 | command | `get_launch_eligibility { request }` | UI eligibility for the active project, read from the backend state. No project/lock flag is accepted from the frontend. Launch handlers check the guard afresh before worktree or agent effects (Rule 2, F3). |
 | command | `get_duty_dialog_defaults { project_id }`, `start_duty { request }`, `pause_duty { request }`, `add_duty_agents { request }` | Duty view, start dialog defaults, start/pause/resume and add-agents lifecycle, persisted on the project in `state.json` and broadcast over `duty://event` (F7) |
 | command | `get_issue_panel`, `open_project_issue { project_identifier, number }`, `dispatch_issue { project_identifier, number, accept_recommendation }` | Active-project issue rail (F9). Native refresh reads open issues, labels, scout attribution and spec-question recommendations. Opening an assigned issue selects its thread; otherwise it opens GitHub. Dispatch re-reads the issue, checks the saved spec lock and atomically records issue ownership before starting the ordinary worktree/ACP lifecycle. Accept scopes that thread to the recommended one-line proposed SPEC.md answer. |
-| command | `launch_swarm`, `add_to_swarm` | swarm |
+| command | `get_swarm_dialog { query }`, `launch_swarm { request }`, `add_to_swarm { request }` | Swarm (F10). `get_swarm_dialog` draws the dialog in Rust from the user's choices: source counts, open items (taken items and draft tasks shown but unselectable), launchable models with the round-robin split, the PR duty capacity offer and the footer. `launch_swarm` checks the launch gate afresh, records the swarm on the project in `state.json`, then for each item atomically adds a member thread on `vel/<task-slug>` or `vel/issue-<n>` (a task becomes Now with its thread) and starts its worktree and ACP agent; `add_to_swarm` does the same into an existing swarm. Optionally starts or tops up PR duty. Members are ordinary threads: a member's merge marks its task done, and the other members whose changed files overlap the merged PR's files get a queued rebase notice. A message from the swarm composer is queued to every working or in-review member. |
 | command | `get_work_pool { project_identifier }` | F16 read-only work inventory: open tasks, open GitHub issues and unfinished spec entries, with saved thread owners and separate available counts. The native adapter reads sources off the UI thread; source errors fail the snapshot. |
 | command | `launch_goal_swarm { prompt, mix: [{ model, effort, speed, count }], keep_going }`, `add_goal_agents` | goal swarm |
 | command | `add_task`, `list_tasks` | Task List |
@@ -138,7 +138,7 @@ A thread's state (§2.1) says where it is in its lifecycle. Its **activity** say
 | event | `project://selected` | persisted project selection and refreshed switcher rows, paired with the selected project's `layout://state` snapshot |
 | event | `pr://opened`, `pr://ci`, `pr://review`, `pr://merged`, `pr://closed` | F6 lifecycle snapshots: project/thread identifiers, PR number, stage and worktree-deleted status. `pr://merged` follows successful worktree cleanup; the layout carries the history and review cards. |
 | event | `pr://panel` | Ordered active-project PR panel snapshots, refreshed natively after project selection and at 30-second intervals. Loading and failed refreshes are explicit; failed refreshes retain the last rows with the error. The UI never polls GitHub. |
-| event | `duty://event`, `swarm://event` | activity feeds |
+| event | `duty://event`, `swarm://event` | activity feeds. `swarm://event` carries the project and swarm identifiers and one feed line (time, actor, kind, message); the swarm view itself arrives on `layout://state` as `active_swarm`. |
 | event | `issue://panel` | Ordered active-project issue snapshots, refreshed natively on project selection and every 30 seconds, with owning-thread state updated from saved changes. Failed refreshes retain the previous rows with the error. |
 | event | `worktree://created`, `worktree://deleted` | worktree lifecycle |
 | event | `worktree://inventory` | cached live worktree rows, sizes, drive capacity and settings; metadata measurements run outside the UI thread |
@@ -1160,7 +1160,7 @@ Each milestone ends with a working app. PR duty checks an item off when it lands
 - [ ] Task List: states, add input, `T`, `/task`, palette, attribution, live agent state (F8)
 - [ ] Agent `task_add` tool, used only when asked (F8)
 - [x] Issues panel and single dispatch (F9)
-- [ ] Swarm: dialog, launch, PR duty capacity, sidebar row, view, broadcast, + Items, rebase on merge, task done / issue close (F10)
+- [x] Swarm: dialog, launch, PR duty capacity, sidebar row, view, broadcast, + Items, rebase on merge, task done / issue close (F10)
 
 **M7 · AGENTS.md**
 - [x] Outliner editor with markdown round-trip (F11)

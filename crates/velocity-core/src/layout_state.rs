@@ -9,6 +9,7 @@ use crate::layout_view::*;
 use crate::navigation::{
     self, KeyStroke, NavigationIntent, NavigationView, ShortcutContext, ShortcutKey,
 };
+use crate::swarm::{self, SwarmDialogRequest, SwarmSource, SwarmViewSnapshot};
 use crate::thread_view::{self, ComposerSubmitEffect};
 use crate::thread_view_model::{
     self, AgentCommandView, LiveThreadView, ModelPillView, SlashCommandItem, ThreadDetailSnapshot,
@@ -36,6 +37,7 @@ pub struct LayoutState {
     new_project_open: bool,
     duty_dialog_open: bool,
     duty_dialog_role: DutyRole,
+    swarm_dialog: Option<SwarmDialogRequest>,
     form_open: bool,
     overlay_open: bool,
     composer_text: String,
@@ -68,6 +70,7 @@ impl Default for LayoutState {
             new_project_open: false,
             duty_dialog_open: false,
             duty_dialog_role: DutyRole::PrDuty,
+            swarm_dialog: None,
             form_open: false,
             overlay_open: false,
             composer_text: String::new(),
@@ -260,6 +263,7 @@ impl LayoutState {
             self.view,
             NavigationView::Thread
                 | NavigationView::Duty
+                | NavigationView::Swarm
                 | NavigationView::SpecScan
                 | NavigationView::SpecAsk
                 | NavigationView::SpecReady
@@ -308,6 +312,33 @@ impl LayoutState {
         self.duty_dialog_open = false;
         self.open_thread(identifier);
         self.changed();
+    }
+
+    /// Launching a swarm, or adding items to one, closes the Swarm dialog and selects the
+    /// swarm (F10).
+    pub fn close_swarm_dialog_and_select(&mut self, identifier: usize) {
+        self.swarm_dialog = None;
+        self.open_thread(identifier);
+        self.changed();
+    }
+
+    fn open_swarm_dialog(&mut self, source: SwarmSource, into: Option<usize>) {
+        self.palette_open = false;
+        self.new_project_open = false;
+        self.duty_dialog_open = false;
+        self.swarm_dialog = Some(SwarmDialogRequest::new(source, into));
+    }
+
+    /// + Items opens the dialog on the swarm's own source, adding to it (F10).
+    fn add_swarm_items(&mut self, identifier: usize) {
+        if let Some(entry) = self
+            .data
+            .swarms
+            .iter()
+            .find(|entry| entry.identifier == identifier)
+        {
+            self.open_swarm_dialog(entry.source, Some(identifier));
+        }
     }
 
     /// Views and dialogs register their context so shortcuts cannot escape an overlay.
@@ -368,6 +399,10 @@ impl LayoutState {
                 self.open_swarm(identifier);
                 None
             }
+            LayoutAction::AddSwarmItems(identifier) => {
+                self.add_swarm_items(identifier);
+                None
+            }
             LayoutAction::Keyboard(input) => self.keyboard(input),
             LayoutAction::NumberHints(event) => {
                 self.show_numbers = navigation::update_number_hints(self.show_numbers, event);
@@ -408,6 +443,7 @@ impl LayoutState {
             selected_thread: self.selected_thread,
             active_thread: self.active_thread_snapshot(),
             active_duty: self.active_duty_snapshot(),
+            active_swarm: self.active_swarm_snapshot(),
             default_model_pill: self.default_model_pill(),
             search: self.search.clone(),
             groups: self.sidebar(),
@@ -417,6 +453,7 @@ impl LayoutState {
             new_project_open: self.new_project_open,
             duty_dialog_open: self.duty_dialog_open,
             duty_dialog_role: self.duty_dialog_role,
+            swarm_dialog: self.swarm_dialog,
             palette_query: self.palette_query.clone(),
             palette_results: self.palette_results(),
             palette_selection: self.palette_selection,
@@ -590,6 +627,16 @@ impl LayoutState {
         ))
     }
 
+    fn active_swarm_snapshot(&self) -> Option<SwarmViewSnapshot> {
+        let identifier = self.selected_thread?;
+        let entry = self
+            .data
+            .swarms
+            .iter()
+            .find(|entry| entry.identifier == identifier)?;
+        Some(swarm::project_swarm_view(entry))
+    }
+
     fn default_model_pill(&self) -> ModelPillView {
         if let Some(pill) = &self.data.default_model_pill {
             return pill.clone();
@@ -759,6 +806,10 @@ impl LayoutState {
         if let LayoutIntent::Navigation(navigation) = intent {
             return self.navigate(navigation);
         }
+        if let LayoutIntent::SwarmIssues = intent {
+            self.open_swarm_dialog(SwarmSource::Issues, None);
+            return None;
+        }
         if let LayoutIntent::SettingsTab(tab) = &intent
             && tab == "agents"
         {
@@ -790,22 +841,27 @@ impl LayoutState {
                 self.palette_open = false;
                 self.new_project_open = false;
                 self.duty_dialog_open = false;
+                self.swarm_dialog = None;
             }
             NavigationIntent::NewProject => {
                 self.palette_open = false;
                 self.duty_dialog_open = false;
+                self.swarm_dialog = None;
                 self.new_project_open = true;
             }
+            NavigationIntent::Swarm => self.open_swarm_dialog(SwarmSource::Tasks, None),
             NavigationIntent::Settings => self.view = NavigationView::Settings,
             NavigationIntent::PrDuty => {
                 self.palette_open = false;
                 self.new_project_open = false;
+                self.swarm_dialog = None;
                 self.duty_dialog_role = DutyRole::PrDuty;
                 self.duty_dialog_open = true;
             }
             NavigationIntent::Scouts => {
                 self.palette_open = false;
                 self.new_project_open = false;
+                self.swarm_dialog = None;
                 self.duty_dialog_role = DutyRole::Scouts;
                 self.duty_dialog_open = true;
             }
@@ -850,9 +906,13 @@ impl LayoutState {
             overlay_open: self.overlay_open
                 || self.palette_open
                 || self.new_project_open
-                || self.duty_dialog_open,
-            // Dialogs with a primary action accept Ctrl+Enter (F2, F7).
-            form_open: self.form_open || self.new_project_open || self.duty_dialog_open,
+                || self.duty_dialog_open
+                || self.swarm_dialog.is_some(),
+            // Dialogs with a primary action accept Ctrl+Enter (F2, F7, F10).
+            form_open: self.form_open
+                || self.new_project_open
+                || self.duty_dialog_open
+                || self.swarm_dialog.is_some(),
         };
         let stroke = KeyStroke {
             key: shortcut_key(&input),
@@ -999,6 +1059,13 @@ impl LayoutState {
             paused: entry.policy.paused,
             agents: entry.policy.agent_count,
             number: if *number <= 9 { Some(*number) } else { None },
+            segments: self
+                .data
+                .swarms
+                .iter()
+                .find(|swarm| swarm.identifier == entry.policy.identifier)
+                .map(|swarm| swarm::segments(&swarm.members))
+                .unwrap_or_default(),
         }
     }
 

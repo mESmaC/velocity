@@ -18,6 +18,10 @@ pub enum ThreadError {
     UnknownThread { project: u32, thread: u32 },
     #[error("Issue #{number} already belongs to thread {thread}")]
     IssueAssigned { number: u32, thread: u32 },
+    #[error("Task {0} is not on this project's Task List")]
+    UnknownTask(u32),
+    #[error("Task {0} already has an agent or is still a draft")]
+    TaskUnavailable(u32),
     #[error(transparent)]
     Persistence(#[from] StoreError),
 }
@@ -90,58 +94,12 @@ impl StateStore {
         issue: Option<crate::issues::ThreadIssue>,
     ) -> Result<u32, ThreadError> {
         let mut next = self.state.clone();
-        let item = next
-            .projects
-            .iter_mut()
-            .find(|item| item.id == project)
-            .ok_or(ThreadError::UnknownProject(project))?;
-        if let Some(issue) = &issue
-            && let Some(existing) = crate::issues::issue_thread(item, issue)
-        {
-            return Err(ThreadError::IssueAssigned {
-                number: issue.number,
-                thread: existing.id,
-            });
-        }
-        let highest_thread = item
-            .threads
-            .iter()
-            .map(|existing| existing.id)
-            .max()
-            .unwrap_or(0);
-        // Duty roles share the project's entry identifiers with threads (F7), and a deleted
-        // thread's identifier is never handed out again (#65).
-        let highest_duty = item
-            .duty_roles
-            .iter()
-            .map(|duty| duty.id)
-            .max()
-            .unwrap_or(0);
-        let identifier = highest_thread
-            .max(highest_duty)
-            .checked_add(1)
-            .ok_or(ThreadError::IdentifiersExhausted)?
-            .max(*next.next_thread_identifiers.get(&project).unwrap_or(&1));
-        next.next_thread_identifiers.insert(
-            project,
-            identifier
-                .checked_add(1)
-                .ok_or(ThreadError::IdentifiersExhausted)?,
-        );
-        next.thread_started_at
-            .entry(project)
-            .or_default()
-            .insert(identifier, thread_start_timestamp());
-        let mut record = ThreadItem::for_build(thread, identifier);
-        record.issue = issue;
-        // Newest first, as the reference's sidebar lists new threads at the top of their group.
-        item.threads.insert(0, record);
-        item.active_thread_id = Some(identifier);
+        let identifier = insert_thread(&mut next, project, thread, issue)?;
         self.commit(next)?;
         Ok(identifier)
     }
 
-    fn commit(&mut self, mut next: crate::PersistedState) -> Result<(), StoreError> {
+    pub(crate) fn commit(&mut self, mut next: crate::PersistedState) -> Result<(), StoreError> {
         next.revision = self.state.revision.wrapping_add(1);
         crate::write_atomic_snapshot(&self.directory, &next)?;
         self.disk_revision = next.revision;
@@ -214,6 +172,74 @@ impl StateStore {
         self.commit(next)?;
         Ok(removed)
     }
+}
+
+/// Records a `working` thread in `next` and makes it the project's active thread.
+pub(crate) fn insert_thread(
+    next: &mut crate::PersistedState,
+    project: u32,
+    thread: NewThread,
+    issue: Option<crate::issues::ThreadIssue>,
+) -> Result<u32, ThreadError> {
+    if let Some(issue) = &issue
+        && let Some(existing) = next
+            .projects
+            .iter()
+            .find(|item| item.id == project)
+            .and_then(|item| crate::issues::issue_thread(item, issue))
+    {
+        return Err(ThreadError::IssueAssigned {
+            number: issue.number,
+            thread: existing.id,
+        });
+    }
+    let identifier = next_entry_identifier(next, project)?;
+    next.thread_started_at
+        .entry(project)
+        .or_default()
+        .insert(identifier, thread_start_timestamp());
+    let item = next
+        .projects
+        .iter_mut()
+        .find(|item| item.id == project)
+        .ok_or(ThreadError::UnknownProject(project))?;
+    let mut record = ThreadItem::for_build(thread, identifier);
+    record.issue = issue;
+    // Newest first, as the reference's sidebar lists new threads at the top of their group.
+    item.threads.insert(0, record);
+    item.active_thread_id = Some(identifier);
+    Ok(identifier)
+}
+
+/// The next sidebar identifier for `project`. Threads, duty roles and swarms share one
+/// space (F7, F10), and a deleted thread's identifier is never handed out again (#65).
+pub(crate) fn next_entry_identifier(
+    next: &mut crate::PersistedState,
+    project: u32,
+) -> Result<u32, ThreadError> {
+    let item = next
+        .projects
+        .iter()
+        .find(|item| item.id == project)
+        .ok_or(ThreadError::UnknownProject(project))?;
+    let identifier = highest_entry_identifier(item)
+        .checked_add(1)
+        .ok_or(ThreadError::IdentifiersExhausted)?
+        .max(*next.next_thread_identifiers.get(&project).unwrap_or(&1));
+    next.next_thread_identifiers.insert(
+        project,
+        identifier
+            .checked_add(1)
+            .ok_or(ThreadError::IdentifiersExhausted)?,
+    );
+    Ok(identifier)
+}
+
+pub(crate) fn highest_entry_identifier(project: &ProjectItem) -> u32 {
+    let threads = project.threads.iter().map(|thread| thread.id);
+    let duty = project.duty_roles.iter().map(|duty| duty.id);
+    let swarms = project.swarms.iter().map(|swarm| swarm.id);
+    threads.chain(duty).chain(swarms).max().unwrap_or(0)
 }
 
 fn thread_start_timestamp() -> String {

@@ -190,6 +190,20 @@ pub struct StartDutyRequest {
     pub scout_rules: Option<ScoutRuleSettings>,
 }
 
+impl StartDutyRequest {
+    /// Add `agent_count` PR duty agents on the default model, keeping the role's rules.
+    pub fn pr_duty(agent_count: u8) -> Self {
+        Self {
+            role: DutyRole::PrDuty,
+            agent_count,
+            provider: None,
+            model_name: None,
+            pr_rules: None,
+            scout_rules: None,
+        }
+    }
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize, Type)]
 pub struct PauseDutyRequest {
     pub role: Option<DutyRole>,
@@ -451,19 +465,9 @@ fn resolve_duty_index(
 }
 
 fn next_project_entry_id(project: &ProjectItem) -> u32 {
-    let highest_thread = project
-        .threads
-        .iter()
-        .map(|thread| thread.id)
-        .max()
-        .unwrap_or(0);
-    let highest_duty = project
-        .duty_roles
-        .iter()
-        .map(|duty| duty.id)
-        .max()
-        .unwrap_or(0);
-    highest_thread.max(highest_duty).saturating_add(1).max(1)
+    crate::threads::highest_entry_identifier(project)
+        .saturating_add(1)
+        .max(1)
 }
 
 fn apply_start_or_add(
@@ -520,7 +524,7 @@ fn apply_start_or_add(
     }
 }
 
-fn default_provider_model(provider: ProviderKind) -> &'static str {
+pub(crate) fn default_provider_model(provider: ProviderKind) -> &'static str {
     match provider {
         ProviderKind::Claude => "Opus 5.5",
         ProviderKind::Codex => "GPT-5.5 Codex",

@@ -45,6 +45,12 @@ export const commands = {
 	installSkillPack: (packOrRepo: string, sourceOverride: string | null, initialPin: string | null) => __TAURI_INVOKE<InstalledSkillPack_Serialize>("install_skill_pack", { packOrRepo, sourceOverride, initialPin }),
 	checkSkillPackUpdate: (packId: string) => __TAURI_INVOKE<SkillPackUpdatePreview_Serialize>("check_skill_pack_update", { packId }),
 	confirmSkillPackUpdate: (packId: string, candidateCommit: string) => __TAURI_INVOKE<InstalledSkillPack_Serialize>("confirm_skill_pack_update", { packId, candidateCommit }),
+	/**  The Swarm dialog for the user's current choices; asked again whenever one changes. */
+	getSwarmDialog: (query: SwarmDialogQuery_Deserialize) => __TAURI_INVOKE<SwarmDialog_Serialize>("get_swarm_dialog", { query }),
+	/**  Starts one agent per selected item, all at once, each in its own worktree (F10). */
+	launchSwarm: (request: LaunchSwarmRequest_Deserialize) => __TAURI_INVOKE<LayoutSnapshot_Serialize>("launch_swarm", { request }),
+	/**  + Items: the same launch, adding members to an existing swarm. */
+	addToSwarm: (request: LaunchSwarmRequest_Deserialize) => __TAURI_INVOKE<LayoutSnapshot_Serialize>("add_to_swarm", { request }),
 	getThreadMenu: (threadIdentifier: number) => __TAURI_INVOKE<ThreadMenuView_Serialize | null>("get_thread_menu", { threadIdentifier }),
 	/**
 	 *  Open worktree in Explorer, Copy worktree path and Open PR on GitHub. Delete has its own
@@ -89,6 +95,8 @@ export const PR_OPENED_EVENT = "pr://opened" as const;
 export const PR_REVIEW_EVENT = "pr://review" as const;
 
 export const PULL_REQUEST_PANEL_EVENT = "pr://panel" as const;
+
+export const SWARM_EVENT = "swarm://event" as const;
 
 export const THREAD_STATUS_EVENT = "thread://status" as const;
 
@@ -674,11 +682,46 @@ export type LaunchEligibility = "allowed" | "lock_spec_first" | "no_project";
 
 export type LaunchRequest = "interview" | "thread" | "fan_out" | "task_swarm" | "issue_swarm" | "goal_swarm" | "issue_dispatch";
 
+/**  Launch, or + Items into an existing swarm (`into`), from the Swarm dialog (F10). */
+export type LaunchSwarmRequest = LaunchSwarmRequest_Serialize | LaunchSwarmRequest_Deserialize;
+
+/**  Launch, or + Items into an existing swarm (`into`), from the Swarm dialog (F10). */
+export type LaunchSwarmRequest_Deserialize = {
+	project_identifier: number,
+	source: SwarmSource,
+	items: SwarmItem[],
+	/**  Providers assigned round-robin, in item order. */
+	providers: ProviderKind[],
+	close_issues: boolean,
+	rebase_on_merge: boolean,
+	/**  Start PR duty, or add the agents it is short of (one reviewer per 3 open PRs). */
+	add_pr_duty: boolean,
+	into?: number | null,
+};
+
+/**  Launch, or + Items into an existing swarm (`into`), from the Swarm dialog (F10). */
+export type LaunchSwarmRequest_Serialize = {
+	project_identifier: number,
+	source: SwarmSource,
+	items: SwarmItem[],
+	/**  Providers assigned round-robin, in item order. */
+	providers: ProviderKind[],
+	close_issues: boolean,
+	rebase_on_merge: boolean,
+	/**  Start PR duty, or add the agents it is short of (one reviewer per 3 open PRs). */
+	add_pr_duty: boolean,
+	into: number | null,
+};
+
 export type LayoutAction = LayoutAction_Serialize | LayoutAction_Deserialize;
 
-export type LayoutAction_Deserialize = ({ Request: LayoutIntent_Deserialize }) & { ComposerText?: never; Keyboard?: never; NumberHints?: never; OpenThread?: never; PaletteSearch?: never; PaletteSelect?: never; SidebarSearch?: never; SlashSelect?: never; TaskText?: never; ToggleSwarm?: never } | ({ SidebarSearch: string }) & { ComposerText?: never; Keyboard?: never; NumberHints?: never; OpenThread?: never; PaletteSearch?: never; PaletteSelect?: never; Request?: never; SlashSelect?: never; TaskText?: never; ToggleSwarm?: never } | ({ PaletteSearch: string }) & { ComposerText?: never; Keyboard?: never; NumberHints?: never; OpenThread?: never; PaletteSelect?: never; Request?: never; SidebarSearch?: never; SlashSelect?: never; TaskText?: never; ToggleSwarm?: never } | ({ PaletteSelect: string }) & { ComposerText?: never; Keyboard?: never; NumberHints?: never; OpenThread?: never; PaletteSearch?: never; Request?: never; SidebarSearch?: never; SlashSelect?: never; TaskText?: never; ToggleSwarm?: never } | "PaletteNext" | "PalettePrevious" | "PaletteAccept" | ({ OpenThread: string }) & { ComposerText?: never; Keyboard?: never; NumberHints?: never; PaletteSearch?: never; PaletteSelect?: never; Request?: never; SidebarSearch?: never; SlashSelect?: never; TaskText?: never; ToggleSwarm?: never } | ({ ToggleSwarm: string }) & { ComposerText?: never; Keyboard?: never; NumberHints?: never; OpenThread?: never; PaletteSearch?: never; PaletteSelect?: never; Request?: never; SidebarSearch?: never; SlashSelect?: never; TaskText?: never } | ({ Keyboard: KeyboardInput }) & { ComposerText?: never; NumberHints?: never; OpenThread?: never; PaletteSearch?: never; PaletteSelect?: never; Request?: never; SidebarSearch?: never; SlashSelect?: never; TaskText?: never; ToggleSwarm?: never } | ({ NumberHints: NumberHintEvent }) & { ComposerText?: never; Keyboard?: never; OpenThread?: never; PaletteSearch?: never; PaletteSelect?: never; Request?: never; SidebarSearch?: never; SlashSelect?: never; TaskText?: never; ToggleSwarm?: never } | ({ ComposerText: string }) & { Keyboard?: never; NumberHints?: never; OpenThread?: never; PaletteSearch?: never; PaletteSelect?: never; Request?: never; SidebarSearch?: never; SlashSelect?: never; TaskText?: never; ToggleSwarm?: never } | ({ SlashSelect: string }) & { ComposerText?: never; Keyboard?: never; NumberHints?: never; OpenThread?: never; PaletteSearch?: never; PaletteSelect?: never; Request?: never; SidebarSearch?: never; TaskText?: never; ToggleSwarm?: never } | "SlashNext" | "SlashPrevious" | "SlashComplete" | "ToggleShowWork" | ({ TaskText: string }) & { ComposerText?: never; Keyboard?: never; NumberHints?: never; OpenThread?: never; PaletteSearch?: never; PaletteSelect?: never; Request?: never; SidebarSearch?: never; SlashSelect?: never; ToggleSwarm?: never } | "SubmitComposer" | "SubmitTask";
+export type LayoutAction_Deserialize = ({ Request: LayoutIntent_Deserialize }) & { AddSwarmItems?: never; ComposerText?: never; Keyboard?: never; NumberHints?: never; OpenThread?: never; PaletteSearch?: never; PaletteSelect?: never; SidebarSearch?: never; SlashSelect?: never; TaskText?: never; ToggleSwarm?: never } | ({ SidebarSearch: string }) & { AddSwarmItems?: never; ComposerText?: never; Keyboard?: never; NumberHints?: never; OpenThread?: never; PaletteSearch?: never; PaletteSelect?: never; Request?: never; SlashSelect?: never; TaskText?: never; ToggleSwarm?: never } | ({ PaletteSearch: string }) & { AddSwarmItems?: never; ComposerText?: never; Keyboard?: never; NumberHints?: never; OpenThread?: never; PaletteSelect?: never; Request?: never; SidebarSearch?: never; SlashSelect?: never; TaskText?: never; ToggleSwarm?: never } | ({ PaletteSelect: string }) & { AddSwarmItems?: never; ComposerText?: never; Keyboard?: never; NumberHints?: never; OpenThread?: never; PaletteSearch?: never; Request?: never; SidebarSearch?: never; SlashSelect?: never; TaskText?: never; ToggleSwarm?: never } | "PaletteNext" | "PalettePrevious" | "PaletteAccept" | ({ OpenThread: string }) & { AddSwarmItems?: never; ComposerText?: never; Keyboard?: never; NumberHints?: never; PaletteSearch?: never; PaletteSelect?: never; Request?: never; SidebarSearch?: never; SlashSelect?: never; TaskText?: never; ToggleSwarm?: never } | ({ ToggleSwarm: string }) & { AddSwarmItems?: never; ComposerText?: never; Keyboard?: never; NumberHints?: never; OpenThread?: never; PaletteSearch?: never; PaletteSelect?: never; Request?: never; SidebarSearch?: never; SlashSelect?: never; TaskText?: never } | 
+/**  The swarm view's + Items: the Swarm dialog adding open items to that swarm (F10). */
+({ AddSwarmItems: string }) & { ComposerText?: never; Keyboard?: never; NumberHints?: never; OpenThread?: never; PaletteSearch?: never; PaletteSelect?: never; Request?: never; SidebarSearch?: never; SlashSelect?: never; TaskText?: never; ToggleSwarm?: never } | ({ Keyboard: KeyboardInput }) & { AddSwarmItems?: never; ComposerText?: never; NumberHints?: never; OpenThread?: never; PaletteSearch?: never; PaletteSelect?: never; Request?: never; SidebarSearch?: never; SlashSelect?: never; TaskText?: never; ToggleSwarm?: never } | ({ NumberHints: NumberHintEvent }) & { AddSwarmItems?: never; ComposerText?: never; Keyboard?: never; OpenThread?: never; PaletteSearch?: never; PaletteSelect?: never; Request?: never; SidebarSearch?: never; SlashSelect?: never; TaskText?: never; ToggleSwarm?: never } | ({ ComposerText: string }) & { AddSwarmItems?: never; Keyboard?: never; NumberHints?: never; OpenThread?: never; PaletteSearch?: never; PaletteSelect?: never; Request?: never; SidebarSearch?: never; SlashSelect?: never; TaskText?: never; ToggleSwarm?: never } | ({ SlashSelect: string }) & { AddSwarmItems?: never; ComposerText?: never; Keyboard?: never; NumberHints?: never; OpenThread?: never; PaletteSearch?: never; PaletteSelect?: never; Request?: never; SidebarSearch?: never; TaskText?: never; ToggleSwarm?: never } | "SlashNext" | "SlashPrevious" | "SlashComplete" | "ToggleShowWork" | ({ TaskText: string }) & { AddSwarmItems?: never; ComposerText?: never; Keyboard?: never; NumberHints?: never; OpenThread?: never; PaletteSearch?: never; PaletteSelect?: never; Request?: never; SidebarSearch?: never; SlashSelect?: never; ToggleSwarm?: never } | "SubmitComposer" | "SubmitTask";
 
-export type LayoutAction_Serialize = ({ Request: LayoutIntent_Serialize }) & { ComposerText?: never; Keyboard?: never; NumberHints?: never; OpenThread?: never; PaletteSearch?: never; PaletteSelect?: never; SidebarSearch?: never; SlashSelect?: never; TaskText?: never; ToggleSwarm?: never } | ({ SidebarSearch: string }) & { ComposerText?: never; Keyboard?: never; NumberHints?: never; OpenThread?: never; PaletteSearch?: never; PaletteSelect?: never; Request?: never; SlashSelect?: never; TaskText?: never; ToggleSwarm?: never } | ({ PaletteSearch: string }) & { ComposerText?: never; Keyboard?: never; NumberHints?: never; OpenThread?: never; PaletteSelect?: never; Request?: never; SidebarSearch?: never; SlashSelect?: never; TaskText?: never; ToggleSwarm?: never } | ({ PaletteSelect: string }) & { ComposerText?: never; Keyboard?: never; NumberHints?: never; OpenThread?: never; PaletteSearch?: never; Request?: never; SidebarSearch?: never; SlashSelect?: never; TaskText?: never; ToggleSwarm?: never } | "PaletteNext" | "PalettePrevious" | "PaletteAccept" | ({ OpenThread: string }) & { ComposerText?: never; Keyboard?: never; NumberHints?: never; PaletteSearch?: never; PaletteSelect?: never; Request?: never; SidebarSearch?: never; SlashSelect?: never; TaskText?: never; ToggleSwarm?: never } | ({ ToggleSwarm: string }) & { ComposerText?: never; Keyboard?: never; NumberHints?: never; OpenThread?: never; PaletteSearch?: never; PaletteSelect?: never; Request?: never; SidebarSearch?: never; SlashSelect?: never; TaskText?: never } | ({ Keyboard: KeyboardInput }) & { ComposerText?: never; NumberHints?: never; OpenThread?: never; PaletteSearch?: never; PaletteSelect?: never; Request?: never; SidebarSearch?: never; SlashSelect?: never; TaskText?: never; ToggleSwarm?: never } | ({ NumberHints: NumberHintEvent }) & { ComposerText?: never; Keyboard?: never; OpenThread?: never; PaletteSearch?: never; PaletteSelect?: never; Request?: never; SidebarSearch?: never; SlashSelect?: never; TaskText?: never; ToggleSwarm?: never } | ({ ComposerText: string }) & { Keyboard?: never; NumberHints?: never; OpenThread?: never; PaletteSearch?: never; PaletteSelect?: never; Request?: never; SidebarSearch?: never; SlashSelect?: never; TaskText?: never; ToggleSwarm?: never } | ({ SlashSelect: string }) & { ComposerText?: never; Keyboard?: never; NumberHints?: never; OpenThread?: never; PaletteSearch?: never; PaletteSelect?: never; Request?: never; SidebarSearch?: never; TaskText?: never; ToggleSwarm?: never } | "SlashNext" | "SlashPrevious" | "SlashComplete" | "ToggleShowWork" | ({ TaskText: string }) & { ComposerText?: never; Keyboard?: never; NumberHints?: never; OpenThread?: never; PaletteSearch?: never; PaletteSelect?: never; Request?: never; SidebarSearch?: never; SlashSelect?: never; ToggleSwarm?: never } | "SubmitComposer" | "SubmitTask";
+export type LayoutAction_Serialize = ({ Request: LayoutIntent_Serialize }) & { AddSwarmItems?: never; ComposerText?: never; Keyboard?: never; NumberHints?: never; OpenThread?: never; PaletteSearch?: never; PaletteSelect?: never; SidebarSearch?: never; SlashSelect?: never; TaskText?: never; ToggleSwarm?: never } | ({ SidebarSearch: string }) & { AddSwarmItems?: never; ComposerText?: never; Keyboard?: never; NumberHints?: never; OpenThread?: never; PaletteSearch?: never; PaletteSelect?: never; Request?: never; SlashSelect?: never; TaskText?: never; ToggleSwarm?: never } | ({ PaletteSearch: string }) & { AddSwarmItems?: never; ComposerText?: never; Keyboard?: never; NumberHints?: never; OpenThread?: never; PaletteSelect?: never; Request?: never; SidebarSearch?: never; SlashSelect?: never; TaskText?: never; ToggleSwarm?: never } | ({ PaletteSelect: string }) & { AddSwarmItems?: never; ComposerText?: never; Keyboard?: never; NumberHints?: never; OpenThread?: never; PaletteSearch?: never; Request?: never; SidebarSearch?: never; SlashSelect?: never; TaskText?: never; ToggleSwarm?: never } | "PaletteNext" | "PalettePrevious" | "PaletteAccept" | ({ OpenThread: string }) & { AddSwarmItems?: never; ComposerText?: never; Keyboard?: never; NumberHints?: never; PaletteSearch?: never; PaletteSelect?: never; Request?: never; SidebarSearch?: never; SlashSelect?: never; TaskText?: never; ToggleSwarm?: never } | ({ ToggleSwarm: string }) & { AddSwarmItems?: never; ComposerText?: never; Keyboard?: never; NumberHints?: never; OpenThread?: never; PaletteSearch?: never; PaletteSelect?: never; Request?: never; SidebarSearch?: never; SlashSelect?: never; TaskText?: never } | 
+/**  The swarm view's + Items: the Swarm dialog adding open items to that swarm (F10). */
+({ AddSwarmItems: string }) & { ComposerText?: never; Keyboard?: never; NumberHints?: never; OpenThread?: never; PaletteSearch?: never; PaletteSelect?: never; Request?: never; SidebarSearch?: never; SlashSelect?: never; TaskText?: never; ToggleSwarm?: never } | ({ Keyboard: KeyboardInput }) & { AddSwarmItems?: never; ComposerText?: never; NumberHints?: never; OpenThread?: never; PaletteSearch?: never; PaletteSelect?: never; Request?: never; SidebarSearch?: never; SlashSelect?: never; TaskText?: never; ToggleSwarm?: never } | ({ NumberHints: NumberHintEvent }) & { AddSwarmItems?: never; ComposerText?: never; Keyboard?: never; OpenThread?: never; PaletteSearch?: never; PaletteSelect?: never; Request?: never; SidebarSearch?: never; SlashSelect?: never; TaskText?: never; ToggleSwarm?: never } | ({ ComposerText: string }) & { AddSwarmItems?: never; Keyboard?: never; NumberHints?: never; OpenThread?: never; PaletteSearch?: never; PaletteSelect?: never; Request?: never; SidebarSearch?: never; SlashSelect?: never; TaskText?: never; ToggleSwarm?: never } | ({ SlashSelect: string }) & { AddSwarmItems?: never; ComposerText?: never; Keyboard?: never; NumberHints?: never; OpenThread?: never; PaletteSearch?: never; PaletteSelect?: never; Request?: never; SidebarSearch?: never; TaskText?: never; ToggleSwarm?: never } | "SlashNext" | "SlashPrevious" | "SlashComplete" | "ToggleShowWork" | ({ TaskText: string }) & { AddSwarmItems?: never; ComposerText?: never; Keyboard?: never; NumberHints?: never; OpenThread?: never; PaletteSearch?: never; PaletteSelect?: never; Request?: never; SidebarSearch?: never; SlashSelect?: never; ToggleSwarm?: never } | "SubmitComposer" | "SubmitTask";
 
 export type LayoutIntent = LayoutIntent_Serialize | LayoutIntent_Deserialize;
 
@@ -719,6 +762,7 @@ export type LayoutSnapshot_Deserialize = {
 	selected_thread: string | null,
 	active_thread?: ThreadDetailSnapshot_Deserialize | null,
 	active_duty?: DutyViewSnapshot_Deserialize | null,
+	active_swarm?: SwarmViewSnapshot_Deserialize | null,
 	default_model_pill: ModelPillView,
 	search: string,
 	groups: SidebarGroup_Deserialize[],
@@ -728,6 +772,8 @@ export type LayoutSnapshot_Deserialize = {
 	new_project_open: boolean,
 	duty_dialog_open: boolean,
 	duty_dialog_role: DutyRole,
+	/**  The open Swarm dialog: its starting source, and the swarm + Items adds to (F10). */
+	swarm_dialog?: SwarmDialogRequest_Deserialize | null,
 	palette_query: string,
 	palette_results: PaletteItem_Deserialize[],
 	palette_selection: string,
@@ -762,6 +808,7 @@ export type LayoutSnapshot_Serialize = {
 	selected_thread: string | null,
 	active_thread: ThreadDetailSnapshot_Serialize | null,
 	active_duty: DutyViewSnapshot_Serialize | null,
+	active_swarm: SwarmViewSnapshot_Serialize | null,
 	default_model_pill: ModelPillView,
 	search: string,
 	groups: SidebarGroup_Serialize[],
@@ -771,6 +818,8 @@ export type LayoutSnapshot_Serialize = {
 	new_project_open: boolean,
 	duty_dialog_open: boolean,
 	duty_dialog_role: DutyRole,
+	/**  The open Swarm dialog: its starting source, and the swarm + Items adds to (F10). */
+	swarm_dialog: SwarmDialogRequest_Serialize | null,
 	palette_query: string,
 	palette_results: PaletteItem_Serialize[],
 	palette_selection: string,
@@ -823,7 +872,7 @@ export type NavigationIntent_Deserialize = "Palette" | "NewThread" | "NewProject
 
 export type NavigationIntent_Serialize = "Palette" | "NewThread" | "NewProject" | "Settings" | "ShowNumbers" | ({ Jump: string }) & { Answer?: never } | "Search" | "Task" | "Swarm" | "Goal" | "Airc" | "Dismiss" | "Submit" | "Dispatch" | "Resume" | "Fanout" | "PrDuty" | "Scouts" | ({ Answer: string }) & { Jump?: never } | "Lock" | "SpecFile" | "Grill" | "Diff" | "Editor" | "SaveAgents";
 
-export type NavigationView = "Home" | "Thread" | "Duty" | "SpecScan" | "SpecAsk" | "SpecReady" | "SpecLocked" | "Agents" | "Settings" | "Other";
+export type NavigationView = "Home" | "Thread" | "Duty" | "Swarm" | "SpecScan" | "SpecAsk" | "SpecReady" | "SpecLocked" | "Agents" | "Settings" | "Other";
 
 export type NewProjectDefaults = NewProjectDefaults_Serialize | NewProjectDefaults_Deserialize;
 
@@ -1085,6 +1134,8 @@ export type ProjectItem_Deserialize = {
 	pending_interview?: PendingInterview_Deserialize | null,
 	/**  Duty roles started on this project (F7). */
 	duty_roles?: DutyRoleItem[],
+	/**  Swarms launched on this project, newest first (F10). */
+	swarms?: SwarmRecord_Deserialize[],
 };
 
 export type ProjectItem_Serialize = {
@@ -1106,6 +1157,8 @@ export type ProjectItem_Serialize = {
 	pending_interview: PendingInterview_Serialize | null,
 	/**  Duty roles started on this project (F7). */
 	duty_roles: DutyRoleItem[],
+	/**  Swarms launched on this project, newest first (F10). */
+	swarms: SwarmRecord_Serialize[],
 };
 
 export type ProjectLabel = "local" | "github" | "speccing";
@@ -1664,6 +1717,8 @@ export type SidebarRow_Deserialize = {
 	paused: boolean,
 	agents: string,
 	number: string | null,
+	/**  A swarm row's segmented progress bar, one segment per member (F10). */
+	segments: SwarmStage[],
 };
 
 export type SidebarRow_Serialize = {
@@ -1683,6 +1738,8 @@ export type SidebarRow_Serialize = {
 	paused: boolean,
 	agents: string,
 	number: string | null,
+	/**  A swarm row's segmented progress bar, one segment per member (F10). */
+	segments: SwarmStage[],
 };
 
 /**
@@ -1854,6 +1911,214 @@ export type StartDutyRequest_Serialize = {
 	model_name: string | null,
 	pr_rules: PrDutyRuleSettings | null,
 	scout_rules: ScoutRuleSettings | null,
+};
+
+export type SwarmCard = SwarmCard_Serialize | SwarmCard_Deserialize;
+
+export type SwarmCard_Deserialize = {
+	identifier: string,
+	title: string,
+	reference: string,
+	issue: boolean,
+	stage: SwarmStage,
+	track: TrackStep[],
+	doing: string,
+	provider: ProviderColor,
+	agent_label: string,
+	added: number,
+	deleted: number,
+};
+
+export type SwarmCard_Serialize = {
+	identifier: string,
+	title: string,
+	reference: string,
+	issue: boolean,
+	stage: SwarmStage,
+	track: TrackStep[],
+	doing: string,
+	provider: ProviderColor,
+	agent_label: string,
+	added: number,
+	deleted: number,
+};
+
+export type SwarmDialog = SwarmDialog_Serialize | SwarmDialog_Deserialize;
+
+export type SwarmDialogItem = {
+	item: SwarmItem,
+	title: string,
+	issue: boolean,
+	/**  `task` or `#n`, or why it can't be picked: "has an agent", "lock the spec first". */
+	note: string,
+	selectable: boolean,
+	selected: boolean,
+};
+
+/**  What the user has chosen so far. `None` items means the default: every open item. */
+export type SwarmDialogQuery = SwarmDialogQuery_Serialize | SwarmDialogQuery_Deserialize;
+
+/**  What the user has chosen so far. `None` items means the default: every open item. */
+export type SwarmDialogQuery_Deserialize = {
+	source: SwarmSource,
+	items?: SwarmItem[] | null,
+	providers: ProviderKind[],
+	into?: number | null,
+};
+
+/**  What the user has chosen so far. `None` items means the default: every open item. */
+export type SwarmDialogQuery_Serialize = {
+	source: SwarmSource,
+	items: SwarmItem[] | null,
+	providers: ProviderKind[],
+	into: number | null,
+};
+
+/**  The open Swarm dialog: which source it starts on, and the swarm + Items adds to. */
+export type SwarmDialogRequest = SwarmDialogRequest_Serialize | SwarmDialogRequest_Deserialize;
+
+/**  The open Swarm dialog: which source it starts on, and the swarm + Items adds to. */
+export type SwarmDialogRequest_Deserialize = {
+	source: SwarmSource,
+	into: string | null,
+};
+
+/**  The open Swarm dialog: which source it starts on, and the swarm + Items adds to. */
+export type SwarmDialogRequest_Serialize = {
+	source: SwarmSource,
+	into: string | null,
+};
+
+export type SwarmDialog_Deserialize = {
+	project_identifier: number,
+	source: SwarmSource,
+	into?: number | null,
+	task_count: number,
+	issue_count: number,
+	items: SwarmDialogItem[],
+	models: SwarmModelCard[],
+	split_label: string,
+	pr_duty_label?: string | null,
+	pr_duty_shortfall: number,
+	worktree_root: string,
+	summary: string,
+	launch_label: string,
+	issues_note?: string | null,
+};
+
+export type SwarmDialog_Serialize = {
+	project_identifier: number,
+	source: SwarmSource,
+	into: number | null,
+	task_count: number,
+	issue_count: number,
+	items: SwarmDialogItem[],
+	models: SwarmModelCard[],
+	split_label: string,
+	pr_duty_label: string | null,
+	pr_duty_shortfall: number,
+	worktree_root: string,
+	summary: string,
+	launch_label: string,
+	issues_note: string | null,
+};
+
+export type SwarmEventKind = "you" | "opened" | "changes" | "merged" | "rebase" | "failed" | "finished";
+
+export type SwarmEventPublished = {
+	project_identifier: number,
+	swarm_identifier: number,
+	event: SwarmFeedEvent,
+};
+
+export type SwarmFeedEvent = {
+	timestamp: string,
+	actor: string,
+	kind: SwarmEventKind,
+	message: string,
+};
+
+/**  One open item a swarm member works on. */
+export type SwarmItem = { kind: "task"; number: number } | { kind: "issue"; number: number };
+
+export type SwarmLegendItem = {
+	stage: SwarmStage,
+	count: number,
+	label: string,
+};
+
+export type SwarmMember = {
+	thread: number,
+	/**  The card's `a<n>` agent id, counted per swarm. */
+	agent_number: number,
+};
+
+export type SwarmModelCard = {
+	provider: ProviderKind,
+	model_name: string,
+	selected: boolean,
+};
+
+export type SwarmRecord = SwarmRecord_Serialize | SwarmRecord_Deserialize;
+
+export type SwarmRecord_Deserialize = {
+	id: number,
+	source: SwarmSource,
+	/**  `HH:MM` the swarm launched. */
+	started: string,
+	/**  Close each issue when its PR merges (default on). */
+	close_issues?: boolean,
+	/**  Rebase members whose files a merged member PR touched (F6). */
+	rebase_on_merge?: boolean,
+	members?: SwarmMember[],
+	feed?: SwarmFeedEvent[],
+};
+
+export type SwarmRecord_Serialize = {
+	id: number,
+	source: SwarmSource,
+	/**  `HH:MM` the swarm launched. */
+	started: string,
+	/**  Close each issue when its PR merges (default on). */
+	close_issues: boolean,
+	/**  Rebase members whose files a merged member PR touched (F6). */
+	rebase_on_merge: boolean,
+	members: SwarmMember[],
+	feed: SwarmFeedEvent[],
+};
+
+/**  Where a swarm takes its items from (F10 Source). */
+export type SwarmSource = "tasks" | "issues" | "both";
+
+/**  Where one member is in its lifecycle: the segment colours of the progress bars. */
+export type SwarmStage = "working" | "pull_request" | "fixing" | "merged" | "failed";
+
+export type SwarmViewSnapshot = SwarmViewSnapshot_Serialize | SwarmViewSnapshot_Deserialize;
+
+export type SwarmViewSnapshot_Deserialize = {
+	identifier: string,
+	title: string,
+	agents_label: string,
+	started_label: string,
+	merged_label?: string | null,
+	segments: SwarmStage[],
+	legend: SwarmLegendItem[],
+	cards: SwarmCard_Deserialize[],
+	feed: SwarmFeedEvent[],
+	composer_placeholder: string,
+};
+
+export type SwarmViewSnapshot_Serialize = {
+	identifier: string,
+	title: string,
+	agents_label: string,
+	started_label: string,
+	merged_label: string | null,
+	segments: SwarmStage[],
+	legend: SwarmLegendItem[],
+	cards: SwarmCard_Serialize[],
+	feed: SwarmFeedEvent[],
+	composer_placeholder: string,
 };
 
 export type TaskAttribution = { kind: "spec" } | { kind: "user" } | { kind: "thread"; thread_id: number };
@@ -2104,6 +2369,9 @@ export type ToolStepRow = {
 	argument: string,
 	result_text: string,
 };
+
+/**  One dot of a card's work · PR · CI · review · merged track. */
+export type TrackStep = "todo" | "running" | "done" | "failed";
 
 export type TranscriptBlock = TranscriptBlock_Serialize | TranscriptBlock_Deserialize;
 

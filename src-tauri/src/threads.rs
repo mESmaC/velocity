@@ -172,7 +172,10 @@ pub fn handle_intent(
         LayoutIntent::StartPrompt(prompt) => start_thread(application, prompt).map(Some),
         LayoutIntent::SteerThread {
             identifier, prompt, ..
-        } => send_message(application, *identifier, prompt).map(Some),
+        } => match crate::swarm::broadcast(application, *identifier, prompt) {
+            Some(result) => result.map(Some),
+            None => send_message(application, *identifier, prompt).map(Some),
+        },
         _ => Ok(None),
     }
 }
@@ -265,7 +268,15 @@ fn send_message(
     .map(|project| project.id)
     .ok_or("Select or create a project first")?;
     let thread = u32::try_from(identifier).map_err(|error| error.to_string())?;
-    let key = (project, thread);
+    steer(application, (project, thread), prompt)
+}
+
+/// Queues `prompt` for one thread's agent; swarm broadcasts and rebase notices use it too.
+pub(crate) fn steer(
+    application: &AppHandle,
+    key: ThreadKey,
+    prompt: &str,
+) -> Result<LayoutSnapshot, String> {
     lock(
         application.state::<ManagedThreads>().inner(),
         "thread sessions",
@@ -584,6 +595,7 @@ fn fail(application: &AppHandle, key: ThreadKey, headline: &str, detail: &str) {
     });
     report(saved.map(|_| ()));
     crate::airc_events::record_thread_failed(application, key.0, key.1, headline, detail);
+    crate::swarm::record_member_failed(application, key, headline);
     report(refresh(application, key, false).map(|_| ()));
     emit_status(application, key);
 }

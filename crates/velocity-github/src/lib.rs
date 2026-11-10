@@ -12,6 +12,7 @@ mod issue_types;
 mod issues;
 mod mcp_stdio;
 mod pull_request_command;
+mod pull_request_files;
 mod pull_request_mutations;
 mod pull_request_panel;
 mod pull_request_queries;

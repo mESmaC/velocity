@@ -2,6 +2,7 @@ import { listen, type EventCallback } from '@tauri-apps/api/event';
 export * from './ipc/agents';
 export * from './ipc/issues';
 export * from './ipc/skills';
+export * from './ipc/swarm';
 import {
   commands,
   WINDOW_STATE_EVENT,

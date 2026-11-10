@@ -6,6 +6,8 @@
   import Home from './lib/Home.svelte';
   import ThreadView from './lib/ThreadView.svelte';
   import DutyView from './lib/DutyView.svelte';
+  import SwarmView from './lib/SwarmView.svelte';
+  import SwarmDialog from './lib/SwarmDialog.svelte';
   import SpecInterview from './lib/SpecInterview.svelte';
   import AgentsEditor from './lib/AgentsEditor.svelte';
   import CommandPalette from './lib/CommandPalette.svelte';
@@ -39,6 +41,7 @@
   let pending = 0;
   let newProjectSubmits = $state(0);
   let dutySubmits = $state(0);
+  let swarmSubmits = $state(0);
   let agentsSaves = $state(0);
   let queue = Promise.resolve();
   const intents: LayoutIntent[] = [];
@@ -97,6 +100,10 @@
     }
     if (navigation === 'Submit' && layout?.duty_dialog_open) {
       dutySubmits += 1;
+      return;
+    }
+    if (navigation === 'Submit' && layout?.swarm_dialog) {
+      swarmSubmits += 1;
       return;
     }
     const target =
@@ -273,6 +280,10 @@
             {send}
             onResult={receive}
             onError={report}
+          />{:else if layout.view === 'Swarm' && layout.active_swarm}<SwarmView
+            {layout}
+            swarm={layout.active_swarm}
+            {send}
           />{:else if layout.view === 'Settings' && layout.settings_tab === 'worktrees'}<WorktreeSettings
             {send}
           />{/if}
@@ -291,6 +302,12 @@
     submitRequests={dutySubmits}
     onResult={receive}
   />{/if}
+{#if layout?.swarm_dialog}{#key `${layout.swarm_dialog.source}-${layout.swarm_dialog.into}`}<SwarmDialog
+      request={layout.swarm_dialog}
+      {send}
+      submitRequests={swarmSubmits}
+      onResult={receive}
+    />{/key}{/if}
 {#if threadMenu}<ThreadMenu
     menu={threadMenu.view}
     x={threadMenu.x}

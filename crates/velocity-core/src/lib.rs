@@ -20,6 +20,7 @@ pub mod pr_review;
 pub mod projects;
 pub mod scout_sweep;
 pub mod state;
+pub mod swarm;
 pub mod theme;
 pub mod thread_menu;
 pub mod thread_titles;

@@ -1081,3 +1081,57 @@
   --duty-hint-font-size: 10.5px;
   --duty-sub-row-margin-top: 4px;
 }
+
+/* F10 swarm: values copied from the reference's `swarm` declarations (main-window.html).
+   Italics there are dropped per AGENTS.md. */
+:root {
+  --swarm-dialog-width: min(600px, 92vw);
+  --swarm-dialog-icon-size: 14px;
+  --swarm-dialog-icon-margin-right: 4px;
+  --swarm-items-max-height: 188px;
+  --swarm-items-padding: 3px;
+  --swarm-items-border: 1px solid var(--line-dim);
+  --swarm-item-columns: 14px 14px minmax(0, 1fr) auto;
+  --swarm-item-gap: 7px;
+  --swarm-item-padding: 4px 6px;
+  --swarm-item-font-size: 11.5px;
+  --swarm-item-accent: #ddd;
+  --swarm-item-ref-font: 10px var(--mono);
+  --swarm-item-disabled-opacity: 0.45;
+  --swarm-mini-gap: 2px;
+  --swarm-mini-margin: 2px 0 1px;
+  --swarm-segment-height: 3px;
+  --swarm-segment-radius: 2px;
+  --swarm-segment-background: #3a3a3a;
+  --swarm-segment-working: #777;
+  --swarm-summary-gap: 8px;
+  --swarm-big-gap: 3px;
+  --swarm-big-height: 8px;
+  --swarm-legend-gap: 14px;
+  --swarm-legend-font-size: 11px;
+  --swarm-legend-item-gap: 6px;
+  --swarm-legend-swatch-size: 8px;
+  --swarm-grid-columns: repeat(auto-fill, minmax(214px, 1fr));
+  --swarm-grid-gap: 6px;
+  --swarm-card-gap: 7px;
+  --swarm-card-padding: 9px 10px;
+  --swarm-card-border: 1px solid var(--line-mid);
+  --swarm-card-merged-border-color: #2f4a2c;
+  --swarm-card-fixing-border-color: #5c4a28;
+  --swarm-card-heading-gap: 6px;
+  --swarm-card-heading-font-size: 11.5px;
+  --swarm-card-ref-font: 10px var(--mono);
+  --swarm-track-dot-size: 7px;
+  --swarm-track-dot-border: 1.5px solid var(--line-mid);
+  --swarm-track-dot-radius: 50%;
+  --swarm-track-line-height: 1px;
+  --swarm-doing-gap: 5px;
+  --swarm-doing-font-size: 10.5px;
+  --swarm-footer-gap: 7px;
+  --swarm-footer-font: 10px var(--mono);
+  --swarm-footer-icon-size: 11px;
+  --swarm-blink-duration: 1.4s;
+  --swarm-big-blink-duration: 1.8s;
+  --swarm-blink-dim-opacity: 0.25;
+  --swarm-blink-bright-opacity: 1;
+}

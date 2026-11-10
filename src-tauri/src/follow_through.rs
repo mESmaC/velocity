@@ -288,6 +288,13 @@ fn checkpoint(
         &watch,
         snapshot,
     );
+    crate::swarm::record_pull_request_observation(
+        application,
+        key.0,
+        &thread,
+        before.as_ref(),
+        &watch,
+    );
     publish_lifecycle(
         application,
         key,

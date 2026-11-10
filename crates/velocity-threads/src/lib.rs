@@ -11,6 +11,7 @@ pub mod naming;
 pub mod review;
 pub mod review_runner;
 pub mod runtime;
+pub mod swarm;
 pub mod sweep;
 pub mod sweep_runner;
 pub mod titles;

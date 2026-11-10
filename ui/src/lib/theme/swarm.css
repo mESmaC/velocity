@@ -1,0 +1,238 @@
+/* F10 Swarm dialog, view and sidebar bar. Values are the --swarm-* tokens in
+   reference.css; the dialog and feed reuse the duty and new-project rules. */
+.np.sw {
+  width: var(--swarm-dialog-width);
+}
+.np.sw .np-h h2 {
+  display: inline-flex;
+  align-items: center;
+}
+.np.sw .np-h h2 .icon {
+  width: var(--swarm-dialog-icon-size);
+  height: var(--swarm-dialog-icon-size);
+  margin-right: var(--swarm-dialog-icon-margin-right);
+  color: var(--swarm);
+}
+.sw-items {
+  max-height: var(--swarm-items-max-height);
+  overflow-y: auto;
+  padding: var(--swarm-items-padding);
+  border: var(--swarm-items-border);
+  border-radius: var(--r-sm);
+}
+.sw-it {
+  display: grid;
+  grid-template-columns: var(--swarm-item-columns);
+  gap: var(--swarm-item-gap);
+  align-items: center;
+  padding: var(--swarm-item-padding);
+  border-radius: var(--r-sm);
+  font-size: var(--swarm-item-font-size);
+  color: var(--text-2);
+  cursor: pointer;
+}
+.sw-it:hover {
+  background: var(--surface-2);
+  color: var(--text);
+}
+.sw-it input {
+  margin: 0;
+  accent-color: var(--swarm-item-accent);
+}
+.sw-it .ttl,
+.sw-card .ttl,
+.sc-doing .doing-text {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.sw-it .ref {
+  font: var(--swarm-item-ref-font);
+  color: var(--muted);
+}
+.sw-it.dis {
+  opacity: var(--swarm-item-disabled-opacity);
+  cursor: default;
+}
+.sw-empty {
+  padding: var(--swarm-item-padding);
+  font-size: var(--swarm-item-font-size);
+  color: var(--muted);
+}
+.sw-mini {
+  grid-column: 2 / -1;
+  display: flex;
+  gap: var(--swarm-mini-gap);
+  margin: var(--swarm-mini-margin);
+}
+.sg {
+  display: block;
+  flex: 1;
+  height: var(--swarm-segment-height);
+  border-radius: var(--swarm-segment-radius);
+  background: var(--swarm-segment-background);
+}
+.sg.working {
+  background: var(--swarm-segment-working);
+}
+.sg.pull_request {
+  background: var(--info);
+}
+.sg.fixing {
+  background: var(--warn);
+}
+.sg.merged {
+  background: var(--ok);
+}
+.sg.failed {
+  background: var(--err);
+}
+.sw-sum {
+  display: flex;
+  flex-direction: column;
+  gap: var(--swarm-summary-gap);
+}
+.sw-big {
+  display: flex;
+  gap: var(--swarm-big-gap);
+}
+.sw-big .sg {
+  height: var(--swarm-big-height);
+}
+.sw-big .sg.working {
+  animation: swarm-blink var(--swarm-big-blink-duration) infinite;
+}
+.sw-legend {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--swarm-legend-gap);
+  font-size: var(--swarm-legend-font-size);
+  color: var(--text-2);
+}
+.sw-legend span {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--swarm-legend-item-gap);
+}
+.sw-legend .sg {
+  flex: none;
+  width: var(--swarm-legend-swatch-size);
+  height: var(--swarm-legend-swatch-size);
+}
+.sw-grid {
+  display: grid;
+  grid-template-columns: var(--swarm-grid-columns);
+  gap: var(--swarm-grid-gap);
+}
+.sw-card {
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: var(--swarm-card-gap);
+  padding: var(--swarm-card-padding);
+  text-align: left;
+  border: var(--swarm-card-border);
+  border-radius: var(--r-md);
+  background: var(--surface);
+}
+.sw-card:hover {
+  border-color: var(--line);
+  background: var(--surface-2);
+}
+.sw-card.merged {
+  border-color: var(--swarm-card-merged-border-color);
+}
+.sw-card.fixing {
+  border-color: var(--swarm-card-fixing-border-color);
+}
+.sc-h {
+  display: flex;
+  align-items: center;
+  gap: var(--swarm-card-heading-gap);
+  min-width: 0;
+  font-size: var(--swarm-card-heading-font-size);
+}
+.sc-h .ttl {
+  flex: 1;
+  color: var(--text);
+}
+.sc-h .ref {
+  flex: none;
+  font: var(--swarm-card-ref-font);
+  color: var(--muted);
+}
+.sc-track {
+  display: flex;
+  align-items: center;
+}
+.sc-track i {
+  flex: none;
+  width: var(--swarm-track-dot-size);
+  height: var(--swarm-track-dot-size);
+  border-radius: var(--swarm-track-dot-radius);
+  border: var(--swarm-track-dot-border);
+}
+.sc-track b {
+  flex: 1;
+  height: var(--swarm-track-line-height);
+  background: var(--line-dim);
+}
+.sc-track i.done {
+  background: var(--ok);
+  border-color: var(--ok);
+}
+.sc-track i.running {
+  background: var(--warn);
+  border-color: var(--warn);
+  animation: swarm-blink var(--swarm-blink-duration) infinite;
+}
+.sc-track i.failed {
+  background: var(--err);
+  border-color: var(--err);
+}
+.sc-doing {
+  display: flex;
+  align-items: center;
+  gap: var(--swarm-doing-gap);
+  min-width: 0;
+  font-size: var(--swarm-doing-font-size);
+  color: var(--text-2);
+}
+.sc-doing.merged {
+  color: var(--ok);
+}
+.sc-doing.fixing {
+  color: var(--warn);
+}
+.sc-doing.failed {
+  color: var(--err);
+}
+.sc-f {
+  display: flex;
+  align-items: center;
+  gap: var(--swarm-footer-gap);
+  font: var(--swarm-footer-font);
+  color: var(--muted);
+  white-space: nowrap;
+}
+.sc-f .icon {
+  width: var(--swarm-footer-icon-size);
+  height: var(--swarm-footer-icon-size);
+}
+.swarm-view .ev .who {
+  color: var(--swarm);
+}
+.swarm-view .ev.you .who {
+  color: var(--text);
+}
+@keyframes swarm-blink {
+  0%,
+  80%,
+  100% {
+    opacity: var(--swarm-blink-dim-opacity);
+  }
+  40% {
+    opacity: var(--swarm-blink-bright-opacity);
+  }
+}
