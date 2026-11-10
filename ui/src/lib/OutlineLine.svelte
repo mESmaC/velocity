@@ -1,5 +1,40 @@
+<script lang="ts" module>
+  /** Puts the caret `offset` characters into `node`, across lint marks and code. */
+  export function placeCaret(node: HTMLElement, offset: number) {
+    const selection = document.getSelection();
+    if (!selection) return;
+    const range = document.createRange();
+    const walker = document.createTreeWalker(
+      node,
+      globalThis.NodeFilter.SHOW_TEXT,
+    );
+    let remaining = offset;
+    for (let text = walker.nextNode(); text; text = walker.nextNode()) {
+      const length = text.textContent?.length ?? 0;
+      if (remaining <= length) {
+        range.setStart(text, remaining);
+        range.collapse(true);
+        selection.removeAllRanges();
+        selection.addRange(range);
+        return;
+      }
+      remaining -= length;
+    }
+    range.selectNodeContents(node);
+    range.collapse(false);
+    selection.removeAllRanges();
+    selection.addRange(range);
+  }
+</script>
+
 <script lang="ts">
-  import type { OutlineAction, OutlineLine, RewriteView } from './ipc';
+  import type {
+    InlineText,
+    LintKind,
+    OutlineAction,
+    OutlineLine,
+    RewriteView,
+  } from './ipc';
 
   let {
     line,
@@ -7,12 +42,14 @@
     submit,
     rewrite,
     pending,
+    flagged,
   }: {
     line: OutlineLine;
     send: (action: OutlineAction, caret?: number) => void;
     submit: (identifier: number) => void;
     rewrite: RewriteView | undefined;
     pending: boolean;
+    flagged: boolean;
   } = $props();
 
   let changed = false;
@@ -21,32 +58,38 @@
     changed = false;
   }
 
-  // Keep the browser's live text node while typing; acknowledgements never replace the caret.
+  // While typing, the browser's own edit stands: a snapshot repaints the lint marks only when
+  // it already holds the typed text, and keeps the caret where it was.
   function editable(node: HTMLElement, value: OutlineLine) {
     let current = value;
+    let composing = false;
     function render() {
-      if (document.activeElement === node) return;
+      const focused = document.activeElement === node;
+      if (focused && (composing || node.textContent !== current.text)) return;
+      const offset = focused ? caretOffset(node) : 0;
       node.replaceChildren();
-      if (current.kind !== 'Rule') {
-        node.textContent = current.text;
-        return;
-      }
-      renderInline(node, current);
+      if (current.kind !== 'Rule') node.textContent = current.text;
+      else renderInline(node, current.inline, focused);
+      if (focused) placeCaret(node, offset);
     }
+    // Backticks show only while editing, so the text changes length on focus and blur.
     const focus = () => {
-      const selection = document.getSelection();
       const offset = caretOffset(node);
-      node.textContent = current.text;
-      if (node.firstChild && selection) {
-        const range = document.createRange();
-        range.setStart(node.firstChild, Math.min(offset, current.text.length));
-        range.collapse(true);
-        selection.removeAllRanges();
-        selection.addRange(range);
-      }
+      node.replaceChildren();
+      if (current.kind !== 'Rule') node.textContent = current.text;
+      else renderInline(node, current.inline, true);
+      placeCaret(node, offset);
+    };
+    const compositionStart = () => {
+      composing = true;
+    };
+    const compositionEnd = () => {
+      composing = false;
     };
     node.addEventListener('focus', focus);
     node.addEventListener('blur', render);
+    node.addEventListener('compositionstart', compositionStart);
+    node.addEventListener('compositionend', compositionEnd);
     render();
     return {
       update(value: OutlineLine) {
@@ -56,23 +99,44 @@
       destroy() {
         node.removeEventListener('focus', focus);
         node.removeEventListener('blur', render);
+        node.removeEventListener('compositionstart', compositionStart);
+        node.removeEventListener('compositionend', compositionEnd);
       },
     };
   }
 
-  function renderInline(node: HTMLElement, value: OutlineLine) {
-    for (const part of value.inline) {
-      if (!part.code) node.append(document.createTextNode(part.text));
-      else {
-        const code = document.createElement('code');
-        const opening = document.createElement('span');
-        opening.className = 'agents-tick';
-        opening.textContent = '`';
-        const closing = opening.cloneNode(true);
-        code.append(opening, document.createTextNode(part.text), closing);
-        node.append(code);
-      }
+  const markClass: Record<LintKind, string> = {
+    Hedge: 'hedge',
+    Modal: 'modal',
+    Vague: 'vague',
+  };
+
+  function renderInline(
+    node: HTMLElement,
+    parts: InlineText[],
+    editing: boolean,
+  ) {
+    for (const part of parts) {
+      if (part.code) node.append(code(part.text, editing));
+      else if (part.mark) {
+        const mark = document.createElement('mark');
+        mark.className = markClass[part.mark];
+        mark.textContent = part.text;
+        node.append(mark);
+      } else node.append(document.createTextNode(part.text));
     }
+  }
+
+  function code(text: string, editing: boolean) {
+    // Editing shows the exact source, so caret offsets match the rule's text.
+    if (editing) return document.createTextNode(`\`${text}\``);
+    const element = document.createElement('code');
+    const opening = document.createElement('span');
+    opening.className = 'agents-tick';
+    opening.textContent = '`';
+    const closing = opening.cloneNode(true);
+    element.append(opening, document.createTextNode(text), closing);
+    return element;
   }
 
   function caretOffset(node: HTMLElement) {
@@ -159,6 +223,17 @@
       }}
       onkeydown={keydown}
     ></div>
+    {#if line.kind === 'Rule' && flagged && !pending}<span class="agents-state"
+        ><button
+          class="mini"
+          title="Send to Haiku"
+          onmousedown={(event) => event.preventDefault()}
+          onclick={() => {
+            changed = false;
+            submit(line.identifier);
+          }}>Tighten ↵</button
+        ></span
+      >{/if}
   </div>
   {#if pending || rewrite?.note || rewrite?.original != null}
     <div
@@ -166,7 +241,7 @@
       class:flagged={Boolean(rewrite?.note)}
       role="status"
     >
-      {#if pending}<span>Haiku � rewriting</span>{/if}
+      {#if pending}<span>Haiku · rewriting</span>{/if}
       {#if rewrite?.note}<span>{rewrite.note}</span>{/if}
       {#if rewrite?.original != null}<span>was <s>{rewrite.original}</s></span>
         <button
