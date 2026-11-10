@@ -5,6 +5,7 @@
 //! (`paths`), how much terminal output is kept (`terminal_output`) and where an update goes in
 //! the transcript (`transcript`).
 
+mod airc;
 mod error;
 mod files;
 mod handlers;
@@ -31,6 +32,7 @@ use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender, unbounded_channel};
 use tokio::sync::oneshot;
 use tokio_util::compat::{TokioAsyncReadCompatExt, TokioAsyncWriteCompatExt};
 
+pub use airc::AircLaunch;
 pub use error::ClientError;
 pub use files::resolve_in_worktree;
 pub use process::AgentLaunch;

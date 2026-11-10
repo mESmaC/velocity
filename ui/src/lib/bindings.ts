@@ -8,6 +8,11 @@ export const commands = {
 	editAgentsMd: (projectIdentifier: number, action: OutlineAction_Deserialize) => __TAURI_INVOKE<OutlineSnapshot_Serialize>("edit_agents_md", { projectIdentifier, action }),
 	writeAgentsMd: (projectIdentifier: number) => __TAURI_INVOKE<OutlineSnapshot_Serialize>("write_agents_md", { projectIdentifier }),
 	tightenRule: (projectIdentifier: number, identifier: number) => __TAURI_INVOKE<OutlineSnapshot_Serialize>("tighten_rule", { projectIdentifier, identifier }),
+	/**  Sending is independent of the later modal: the typed IPC is also usable headlessly. */
+	aircSend: (projectIdentifier: number, text: string) => __TAURI_INVOKE<null>("airc_send", { projectIdentifier, text }),
+	aircEvents: (projectIdentifier: number, after: number | null) => __TAURI_INVOKE<Entry_Serialize[]>("airc_events", { projectIdentifier, after }),
+	aircMessages: (projectIdentifier: number, after: number | null) => __TAURI_INVOKE<Entry_Serialize[]>("airc_messages", { projectIdentifier, after }),
+	aircLedger: (projectIdentifier: number, ledger: string, after: number | null) => __TAURI_INVOKE<Entry_Serialize[]>("airc_ledger", { projectIdentifier, ledger, after }),
 	getWindowState: () => __TAURI_INVOKE<WindowStateChanged>("get_window_state"),
 	minimizeWindow: () => __TAURI_INVOKE<null>("minimize_window"),
 	toggleMaximizeWindow: () => __TAURI_INVOKE<null>("toggle_maximize_window"),
@@ -54,6 +59,10 @@ export const commands = {
 };
 
 /* Constants */
+export const AIRC_EVENT = "airc://event" as const;
+
+export const AIRC_MESSAGE_EVENT = "airc://message" as const;
+
 export const DUTY_EVENT = "duty://event" as const;
 
 export const ISSUE_PANEL_EVENT = "issue://panel" as const;
@@ -111,6 +120,30 @@ export type AgentSettings_Serialize = {
 	max_duration_minutes: number | null,
 	stall_timeout_minutes: number,
 	claim_release_grace_minutes: number,
+};
+
+export type AircEventPublished = AircEventPublished_Serialize | AircEventPublished_Deserialize;
+
+export type AircEventPublished_Deserialize = {
+	project_identifier: number,
+	entry: Entry_Deserialize,
+};
+
+export type AircEventPublished_Serialize = {
+	project_identifier: number,
+	entry: Entry_Serialize,
+};
+
+export type AircMessagePublished = AircMessagePublished_Serialize | AircMessagePublished_Deserialize;
+
+export type AircMessagePublished_Deserialize = {
+	project_identifier: number,
+	entry: Entry_Deserialize,
+};
+
+export type AircMessagePublished_Serialize = {
+	project_identifier: number,
+	entry: Entry_Serialize,
 };
 
 export type CheckStatus = "passing" | "running" | "failing" | "unavailable";
@@ -276,6 +309,44 @@ export type DutyViewSnapshot_Serialize = {
 };
 
 export type EffortLevel = "low" | "medium" | "high" | "max";
+
+export type Entry = Entry_Serialize | Entry_Deserialize;
+
+export type Entry_Deserialize = {
+	sequence: number,
+	time: string,
+	kind: string,
+	nick: string,
+	member: string,
+	text: string,
+	to?: string[],
+	intent?: string | null,
+	/**
+	 *  The PR an event is about, so readers such as the approval record (F7)
+	 *  never parse it back out of the display text.
+	 */
+	pull_request?: number | null,
+	/**  The PR head commit the event applies to (`approved` binds to it). */
+	head?: string | null,
+};
+
+export type Entry_Serialize = {
+	sequence: number,
+	time: string,
+	kind: string,
+	nick: string,
+	member: string,
+	text: string,
+	to: string[],
+	intent: string | null,
+	/**
+	 *  The PR an event is about, so readers such as the approval record (F7)
+	 *  never parse it back out of the display text.
+	 */
+	pull_request?: number,
+	/**  The PR head commit the event applies to (`approved` binds to it). */
+	head?: string,
+};
 
 export type ErrorCardView = {
 	headline: string,

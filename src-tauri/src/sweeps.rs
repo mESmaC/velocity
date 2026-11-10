@@ -51,7 +51,8 @@ pub fn initialize(application: &AppHandle) -> anyhow::Result<()> {
         .context("Could not resolve the application data directory")?
         .join("scout-reports");
     std::fs::create_dir_all(&reports).context("Could not create the scout report folder")?;
-    let sweeps = ScoutSweeps::new(executable, reports);
+    let sweeps =
+        ScoutSweeps::new(executable, reports).with_airc(crate::airc_access::launch(application)?);
     application.manage(sweeps.clone());
     let host = TauriSweepHost(application.clone());
     tauri::async_runtime::spawn(sweeps.run(host));
@@ -112,6 +113,8 @@ impl TauriSweepHost {
             return Ok(false);
         };
         if store.active_project().map(|item| item.id) != Some(project) {
+            drop(store);
+            crate::airc_events::record_scout_events(&self.0, project, &events);
             return Ok(true);
         }
         let mut layout = lock(self.0.state::<MainLayout>().inner(), "main-window state")?;
@@ -120,6 +123,9 @@ impl TauriSweepHost {
         let snapshot = layout.snapshot();
         // Publish under the locks so snapshots reach the window in order.
         crate::layout::publish(&self.0, &snapshot, None)?;
+        drop(layout);
+        drop(store);
+        crate::airc_events::record_scout_events(&self.0, project, &events);
         for event in events {
             DutyEventPublished {
                 role: DutyRole::Scouts,

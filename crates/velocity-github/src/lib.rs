@@ -5,10 +5,12 @@
 mod approval;
 mod branch_pull_requests;
 mod command;
+mod duty_server;
 pub mod follow_through;
 mod issue_panel;
 mod issue_types;
 mod issues;
+mod mcp_stdio;
 mod pull_request_command;
 mod pull_request_mutations;
 mod pull_request_panel;
@@ -22,7 +24,8 @@ mod scout_evidence;
 mod scout_issues;
 mod scout_server;
 
-pub use approval::ReviewRecord;
+pub use approval::{ReviewRecord, review_standing};
+pub use duty_server::{PrDutyReport, PrDutyServer, read_pr_duty_reports};
 pub use issue_panel::{IssuePanelRow, IssuePanelSnapshot, SpecQuestion};
 pub use issue_types::*;
 pub use issues::IssueClient;
