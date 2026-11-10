@@ -298,6 +298,8 @@ fn spawn_goal_slots(
 ) -> (usize, Vec<String>) {
     let mut started = 0;
     let mut refused = Vec::new();
+    // Agents take ready worktrees one by one instead of all checking out at once (F5).
+    crate::ready_pool::reserve(application, project_id, slots.len());
     for slot in slots {
         match spawn_goal_slot(application, project_id, &slot) {
             Ok(_) => started += 1,

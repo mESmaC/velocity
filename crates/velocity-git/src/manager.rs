@@ -1,5 +1,5 @@
-//! Concrete Windows path resolution, untracked file copying, shared `CARGO_TARGET_DIR`
-//! setup, and `git worktree` command execution at the I/O edge (SPEC.md F5).
+//! Concrete Windows path resolution, untracked file copying, the shared compiler cache for
+//! setup commands, and `git worktree` command execution at the I/O edge (SPEC.md F5).
 
 use std::ffi::{OsStr, OsString};
 use std::fs;
@@ -61,6 +61,11 @@ pub enum WorktreeError {
     },
     #[error("failed to create directory `{path}`: {source}")]
     CreateDirectory {
+        path: PathBuf,
+        source: std::io::Error,
+    },
+    #[error("failed to write `{path}`: {source}")]
+    WriteFile {
         path: PathBuf,
         source: std::io::Error,
     },
@@ -345,8 +350,12 @@ where
     command
         .current_dir(working_directory)
         .args(&collected_arguments);
-    if let Some(target_directory) = cargo_target_dir {
-        command.env("CARGO_TARGET_DIR", target_directory);
+    // Sharing the build cache means one compiler cache and a target folder per worktree
+    // (F5): a shared `CARGO_TARGET_DIR` is locked by cargo, so agents would build one at a time.
+    if cargo_target_dir.is_some() {
+        command
+            .envs(crate::ready_pool::compiler_cache_env())
+            .env_remove("CARGO_TARGET_DIR");
     }
     let output = command
         .output()
