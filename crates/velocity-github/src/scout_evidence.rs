@@ -97,7 +97,7 @@ fn read_source(path: &Path) -> Result<String, ScoutIssueError> {
     Ok(source)
 }
 
-fn capture(command: &mut Command) -> io::Result<Output> {
+pub(crate) fn capture(command: &mut Command) -> io::Result<Output> {
     let mut child = command
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
@@ -159,7 +159,7 @@ fn invalid_utf8(error: std::string::FromUtf8Error) -> io::Error {
     io::Error::new(io::ErrorKind::InvalidData, error)
 }
 
-fn hide_console(command: &mut Command) {
+pub(crate) fn hide_console(command: &mut Command) {
     #[cfg(windows)]
     {
         use std::os::windows::process::CommandExt;
