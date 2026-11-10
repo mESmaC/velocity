@@ -5618,6 +5618,7 @@ dependencies = [
  "thiserror 2.0.21",
  "velocity-airc",
  "velocity-core",
+ "velocity-proofs",
 ]
 
 [[package]]
@@ -5646,6 +5647,16 @@ dependencies = [
  "velocity-git",
  "velocity-github",
  "velocity-store",
+]
+
+[[package]]
+name = "velocity-proofs"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "serde_json",
+ "sha2 0.10.9",
+ "thiserror 2.0.21",
 ]
 
 [[package]]
@@ -5686,6 +5697,7 @@ dependencies = [
  "velocity-core",
  "velocity-git",
  "velocity-github",
+ "velocity-proofs",
  "velocity-store",
 ]
 

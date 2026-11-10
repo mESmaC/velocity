@@ -111,7 +111,8 @@ pub(crate) fn approved_reviewer(
     {
         match entry.kind.as_str() {
             "approved" => approval = Some(entry),
-            "changes" => approval = None,
+            // A changed theorem statement withdraws the approval like a change request (F17).
+            "changes" | "statement" => approval = None,
             _ => {}
         }
     }
@@ -169,6 +170,7 @@ pub fn review_standing(entries: &[Entry], number: u32, head: &str) -> ReviewStan
                 approval = None;
                 changes_at_head = at_head;
             }
+            "statement" => approval = None,
             "failed" if approval.is_some() && at_head => merge_failed = true,
             _ => {}
         }
@@ -206,5 +208,41 @@ impl ReviewRecord {
     pub fn release(&self, number: u32) -> Result<(), PullRequestError> {
         let text = format!("released #{number}");
         self.post("released", number, None, &text)
+    }
+
+    /// Posts a `statement` event (F17 statement lock): the theorem statements `changed` were
+    /// locked when PR `number` was approved and differ at `head`. The event withdraws that
+    /// approval in both folds above, so the review restarts. Posted once per head; `false`
+    /// when this head already has one.
+    pub fn withdraw_for_statements(
+        &self,
+        number: u32,
+        head: &str,
+        locked_head: &str,
+        changed: &[String],
+    ) -> Result<bool, PullRequestError> {
+        let posted = self.channel.read(0)?.iter().any(|entry| {
+            entry.kind == "statement"
+                && entry.pull_request == Some(number)
+                && entry.head.as_deref() == Some(head)
+        });
+        if posted {
+            return Ok(false);
+        }
+        let shown: Vec<&str> = changed.iter().take(5).map(String::as_str).collect();
+        let more = changed.len().saturating_sub(shown.len());
+        let more = if more > 0 {
+            format!(" and {more} more")
+        } else {
+            String::new()
+        };
+        let text = format!(
+            "#{number} at {} changes theorem statements locked at approval ({}): {}{more}; approval withdrawn, review restarts",
+            short_head(head),
+            short_head(locked_head),
+            shown.join(", ")
+        );
+        self.post("statement", number, Some(head), &text)?;
+        Ok(true)
     }
 }
