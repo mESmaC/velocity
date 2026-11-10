@@ -191,7 +191,7 @@ fn tool_list() -> Vec<Value> {
     ];
     tools.extend(writing_tools());
     tools.extend(claim_tools());
-    tools.push(tool("airc_wait", "Wait for a file holder. This call stays pending until its dependency ends; do not edit meanwhile. On merge Velocity updates your branch before returning; resolve any reported conflict before continuing.", json!({"holder":{"type":"string"},"file":{"type":"string"}}), &["holder", "file"]));
+    tools.push(tool("airc_wait", "Wait for a file holder. This call stays pending until its dependency ends; do not edit meanwhile. Velocity may park you while you wait: it ends your session to free a provider slot and resumes it when the dependency ends, with the outcome as your next message. On merge Velocity updates your branch before you continue; resolve any reported conflict before continuing.", json!({"holder":{"type":"string"},"file":{"type":"string"}}), &["holder", "file"]));
     tools
 }
 

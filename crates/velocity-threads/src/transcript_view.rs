@@ -85,6 +85,18 @@ impl LiveTranscript {
         }));
     }
 
+    /// A parked thread's next session (§2.2): its ACP entries are numbered from zero again,
+    /// while everything shown so far stays.
+    pub fn new_session(&mut self) {
+        self.acp_entries.clear();
+        self.worktree_ready();
+    }
+
+    /// Messages still waiting for the agent, oldest first.
+    pub fn queued(&self) -> &[String] {
+        &self.queued
+    }
+
     /// A message waiting for the agent's current turn to end.
     pub fn queue(&mut self, message: &str) {
         self.queued.push(message.to_owned());

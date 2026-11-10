@@ -2826,6 +2826,8 @@ export type ThreadItem_Deserialize = {
 	pull_request_number?: number | null,
 	follow_through?: FollowThrough_Deserialize | null,
 	dependency_wait?: string | null,
+	/**  The agent's ACP session id, which a parked thread loads again on resume (§2.2). */
+	agent_session?: string | null,
 	review_stage?: ReviewStage | null,
 	task_ids: number[],
 	issue?: ThreadIssue_Deserialize | null,
@@ -2857,6 +2859,8 @@ export type ThreadItem_Serialize = {
 	pull_request_number: number | null,
 	follow_through: FollowThrough_Serialize | null,
 	dependency_wait: string | null,
+	/**  The agent's ACP session id, which a parked thread loads again on resume (§2.2). */
+	agent_session: string | null,
 	review_stage: ReviewStage | null,
 	task_ids: number[],
 	issue: ThreadIssue_Serialize | null,

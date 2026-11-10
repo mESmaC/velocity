@@ -303,13 +303,20 @@ pub(crate) fn steer(
     key: ThreadKey,
     prompt: &str,
 ) -> Result<LayoutSnapshot, String> {
-    lock(
-        application.state::<ManagedThreads>().inner(),
-        "thread sessions",
-    )?
-    .steer(key, prompt)
-    .map_err(|error| error.to_string())?;
-    save_activity(application, key, AgentActivity::Thinking, None)?;
+    let parked = {
+        let mut runtimes = lock(
+            application.state::<ManagedThreads>().inner(),
+            "thread sessions",
+        )?;
+        runtimes
+            .steer(key, prompt)
+            .map_err(|error| error.to_string())?;
+        runtimes.is_parked(key)
+    };
+    // A parked thread holds the message for its resume and stays parked (§2.2).
+    if !parked {
+        save_activity(application, key, AgentActivity::Thinking, None)?;
+    }
     let snapshot = refresh(application, key, false)?;
     emit_status(application, key);
     Ok(snapshot)
@@ -630,7 +637,7 @@ fn setup_no_longer_wanted(application: &AppHandle, key: ThreadKey) -> bool {
 
 /// Applies agent events as they arrive. A burst of streamed chunks is applied together and
 /// published once, so the window gets one snapshot per burst rather than one per token.
-async fn pump(application: &AppHandle, key: ThreadKey, mut session: RunningSession) {
+pub(crate) async fn pump(application: &AppHandle, key: ThreadKey, mut session: RunningSession) {
     let shutdown = session.shutdown.clone();
     let mut mutations = velocity_acp::tool_mutations::ToolMutations::default();
     let worktree = lock(
@@ -645,6 +652,7 @@ async fn pump(application: &AppHandle, key: ThreadKey, mut session: RunningSessi
         while let Ok(next) = session.events.try_recv() {
             batch.push(next);
         }
+        report(save_agent_session(application, key, &batch));
         if let Some(worktree) = &worktree {
             for event in &batch {
                 report(crate::airc_claims::observe(
@@ -714,8 +722,29 @@ fn apply_batch(
     Ok(())
 }
 
+/// Keeps the agent's ACP session id, which a parked thread loads again on resume (§2.2).
+fn save_agent_session(
+    application: &AppHandle,
+    key: ThreadKey,
+    batch: &[AgentEvent],
+) -> Result<(), String> {
+    let Some(session) = batch.iter().rev().find_map(|event| match event {
+        AgentEvent::SessionStarted { session_id, .. } => Some(session_id.0.to_string()),
+        _ => None,
+    }) else {
+        return Ok(());
+    };
+    lock(
+        application.state::<ManagedStateStore>().inner(),
+        "persisted state",
+    )?
+    .update_thread(key.0, key.1, |thread| thread.agent_session = Some(session))
+    .map(|_| ())
+    .map_err(|error| error.to_string())
+}
+
 /// Saves the thread's activity, and its line counts when given; `true` when anything changed.
-fn save_activity(
+pub(crate) fn save_activity(
     application: &AppHandle,
     key: ThreadKey,
     activity: AgentActivity,
@@ -752,7 +781,7 @@ async fn remove_deleted_worktree(repository: PathBuf, worktree: PathBuf) {
 }
 
 /// The thread moves to `error` and keeps its worktree (§2.1, F5).
-fn fail(application: &AppHandle, key: ThreadKey, headline: &str, detail: &str) {
+pub(crate) fn fail(application: &AppHandle, key: ThreadKey, headline: &str, detail: &str) {
     if let Ok(mut runtimes) = lock(
         application.state::<ManagedThreads>().inner(),
         "thread sessions",
@@ -816,7 +845,7 @@ pub(crate) fn refresh(
     Ok(snapshot)
 }
 
-fn emit_status(application: &AppHandle, key: ThreadKey) {
+pub(crate) fn emit_status(application: &AppHandle, key: ThreadKey) {
     let Ok(store) = lock(
         application.state::<ManagedStateStore>().inner(),
         "persisted state",

@@ -37,6 +37,7 @@ fn cycle(application: &AppHandle) -> Result<(), String> {
     .clone();
     for project in projects {
         update_waits(application, &project)?;
+        crate::parking::cycle(application, &project, &channel(application, project.id)?);
         for thread in &project.threads {
             if let Err(error) = deliver(application, &project, thread) {
                 eprintln!("Velocity AIRC thread {}: {error}", thread.id);
