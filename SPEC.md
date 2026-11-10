@@ -1169,7 +1169,7 @@ Each milestone ends with a working app. PR duty checks an item off when it lands
 - [ ] Claims from each agent's first step; overlap detection and `velocity` lines (F14)
 - [ ] Dependency wait → rebase → continue in the agent runner (F14)
 - [x] Mention delivery to threads at step boundaries; your comments (F14)
-- [ ] Event log posted by Velocity from claims, GitHub and the Task List; agent messages kept separate (F14)
+- [x] Event log posted by Velocity from claims, GitHub and the Task List; agent messages kept separate (F14)
 - [ ] Modal: Events (default), Claims, Messages, Discoveries, Past work, nick list, unread badge, `A` (F14)
 
 **M9 · Goal swarm**
