@@ -40,6 +40,15 @@ pub struct PrDutyServer {
     number: u32,
     method: MergeMethod,
     report: Option<PathBuf>,
+    statement_lock: Option<StatementLockPlace>,
+}
+
+/// Where an approval's statement lock is read and kept (F17): the review worktree, whose git
+/// has the approved head, and the app data folder of the project's approval record.
+struct StatementLockPlace {
+    worktree: PathBuf,
+    app_data: PathBuf,
+    project: String,
 }
 
 #[derive(Deserialize)]
@@ -78,7 +87,23 @@ impl PrDutyServer {
             number,
             method,
             report,
+            statement_lock: None,
         }
+    }
+
+    /// Locks every theorem statement at the head each approval names (F17 statement lock).
+    pub fn with_statement_lock(
+        mut self,
+        worktree: PathBuf,
+        app_data: PathBuf,
+        project: String,
+    ) -> Self {
+        self.statement_lock = Some(StatementLockPlace {
+            worktree,
+            app_data,
+            project,
+        });
+        self
     }
 
     /// Answers JSON-RPC requests, one per line, until the agent closes the connection.
@@ -103,6 +128,20 @@ impl PrDutyServer {
             ReviewChoice::RequestChanges => ReviewAction::RequestChanges,
             ReviewChoice::Comment => ReviewAction::Comment,
         };
+        // Read before approving, so an approval never stands without its lock.
+        let lock = match (arguments.action, &self.statement_lock) {
+            (ReviewChoice::Approve, Some(place)) => Some(
+                velocity_proofs::statements_at(&place.worktree, &arguments.head).map_err(
+                    |error| {
+                        PullRequestError::Invalid(format!(
+                            "Could not lock the theorem statements at {}: {error}",
+                            arguments.head
+                        ))
+                    },
+                )?,
+            ),
+            _ => None,
+        };
         let receipt = self.client()?.execute(PullRequestOperation::Review {
             number: self.number,
             expected_head: arguments.head.clone(),
@@ -110,6 +149,19 @@ impl PrDutyServer {
             body: arguments.reason,
             comments: arguments.comments,
         })?;
+        if let (Some(lock), Some(place)) = (lock, &self.statement_lock) {
+            velocity_proofs::save_statement_lock(
+                &place.app_data,
+                &place.project,
+                self.number,
+                &lock,
+            )
+            .map_err(|error| {
+                PullRequestError::Invalid(format!(
+                    "Approved, but the statement lock could not be saved: {error}"
+                ))
+            })?;
+        }
         let (number, head) = (self.number, arguments.head);
         self.record(&match arguments.action {
             ReviewChoice::Approve => PrDutyReport::Approved { number, head },

@@ -63,7 +63,7 @@ pub fn plan_duty_checkout(
         preferences.setup_command.clone(),
         shared_target.clone(),
     );
-    let (agent, bypass_modes) = agent_launch(agent_item.provider)?;
+    let (agent, bypass_modes) = agent_launch(agent_item.provider);
     Ok(SweepPlan {
         project: project.id,
         nickname: agent_item.nickname.clone(),

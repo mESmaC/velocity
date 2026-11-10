@@ -41,6 +41,7 @@ Your job is working functionality. Proofs, tests and docs support it; they never
 - `crates/velocity-github/`: GitHub through `gh`.
 - `crates/velocity-threads/`: starting build threads from the composer (F4): the thread's name and worktree plan, its live agent session, and the transcript the thread view shows.
 - `crates/velocity-new-project/`: Create in the New project dialog (F2): resolves the request and runs the planned git, `gh` and store steps.
+- `crates/velocity-proofs/`: the proof checks (F17): `lake build`, the `sorry`/`admit` scan, the axiom audit, the design proof's SPEC.md section, and the statement lock PR duty's approvals take.
 - `crates/velocity-skills/`: the machine-wide skill pack library (F18): clones and pins packs with `core.symlinks=true`, previews update diffs of `SKILL.md` files, scripts and data before moving a pin, and runs pack Python tools with `PYTHONUTF8=1`.
 - `crates/velocity-interview/`: the spec interview (F3): runs the spec agent in the main checkout, parses its questions, records decisions and draft tasks, and locks the spec.
 - `ui/`: the frontend: Svelte 5, TypeScript and Vite, built with pnpm.
@@ -150,6 +151,15 @@ Most merge conflicts come from a few files every feature touches. Keep your edit
 - **SPEC.md §7:** never tick a checkbox in your PR. PR duty ticks it when it lands the PR.
 - **Overlapping fixes, first come, first served:** when two open PRs fix the same root problem or add the same helper, the one that lands first wins. The later PR drops its own version and switches to `master`'s in the commit that merges `master` in. Never land two implementations of one thing, and never hold a PR back so another can land its version first.
 - **Silent conflicts:** after merging `master`, a build error in code neither side edited (a struct gained a field, a function was renamed) is a merge conflict. Fix it in the merge commit.
+
+## Sensitive paths
+PR duty tiers every PR (SPEC.md F7 Tiered review). A PR that touches a path listed here is sensitive: full review, `cargo run -p stress -- --all` on the merge result before merge, and a confidence proof at the strongest level its language allows for any proof-list feature it changes. A PR that changes only docs, comments or formatting is trivial: approve it once `scripts/check.ps1` passes and the change matches its claim. Every other PR gets the full review. Every tier needs an approving review.
+- `crates/velocity-store/`: saved state; a mistake loses `state.json`.
+- `crates/velocity-git/src/lifecycle.rs`, `crates/velocity-git/src/merged_worktree.rs`, `crates/velocity-git/src/review.rs`: worktree deletion.
+- `crates/velocity-airc/src/claims.rs`: the claim lock.
+- `crates/velocity-github/src/approval.rs`: the approval record that gates merges (Rule 4).
+- `.github/workflows/`, `scripts/check.ps1`: CI config and the local checks.
+- `scripts/Get-PrDutyToken.ps1`: PR duty's GitHub App credentials.
 
 ## Pull requests
 - One piece, one branch, one PR, against `master`.

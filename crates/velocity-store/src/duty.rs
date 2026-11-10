@@ -228,16 +228,16 @@ pub struct DutyMutationOutcome {
 
 impl StateStore {
     pub fn duty_dialog_defaults(&self) -> DutyDialogDefaults {
-        let provider = self.state.settings.providers.default_provider;
-        let configured = self
-            .state
-            .settings
-            .providers
-            .default_model
-            .clone()
-            .filter(|name| !name.trim().is_empty());
-        let model_configured = configured.is_some();
-        let model_name = configured.unwrap_or_else(|| default_provider_model(provider).into());
+        let settings = &self.state.settings;
+        // A signed-out default gives way to the first signed-in provider (F15 Sign out).
+        let provider = settings.new_work_choice();
+        let model_configured = provider == settings.providers.default_provider
+            && settings
+                .providers
+                .default_model
+                .as_ref()
+                .is_some_and(|name| !name.trim().is_empty());
+        let model_name = settings.provider_model(provider);
         let project = active_project(&self.state);
         let existing_pr = project.and_then(|proj| find_role(proj, DutyRole::PrDuty));
         let existing_scouts = project.and_then(|proj| find_role(proj, DutyRole::Scouts));
@@ -269,6 +269,7 @@ impl StateStore {
         let defaults = self.duty_dialog_defaults();
         let project = active_project_mut(&mut next)?;
         let provider = request.provider.unwrap_or(defaults.provider);
+        self.state.settings.ensure_new_work(provider)?;
         let model_name = request
             .model_name
             .clone()
@@ -552,15 +553,6 @@ fn apply_start_or_add(
             .duty_roles
             .push(DutyRoleItem::from_core(core_entry, provider));
         (id, event)
-    }
-}
-
-pub(crate) fn default_provider_model(provider: ProviderKind) -> &'static str {
-    match provider {
-        ProviderKind::Claude => "Opus 5.5",
-        ProviderKind::Codex => "GPT-5.5 Codex",
-        ProviderKind::Antigravity => "Gemini 3 Pro",
-        ProviderKind::Kimi => "Kimi K2",
     }
 }
 

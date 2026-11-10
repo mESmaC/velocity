@@ -135,6 +135,7 @@
       id="thread-composer"
       placeholder={thread.composer_placeholder}
       modelPill={thread.model_pill}
+      threadIdentifier={Number(thread.identifier)}
     />
   </div>
 </section>

@@ -41,8 +41,16 @@ pub fn create_project(
     publish: impl FnOnce(Publication) -> Result<(), String>,
 ) -> Result<CreatedProject, NewProjectError> {
     let resolved = resolve(&request.location)?;
-    let already_a_project =
-        lock(store, "Persisted state store")?.has_project_at(&resolved.path_text());
+    let (already_a_project, settings) = {
+        let store = lock(store, "Persisted state store")?;
+        (
+            store.has_project_at(&resolved.path_text()),
+            store.settings(),
+        )
+    };
+    // The interview runs on the provider new work starts on: refuse before anything is
+    // created when you are signed out of every provider (F15 Sign out).
+    settings.ensure_new_work(settings.new_work_choice())?;
     let observation = observe(&resolved, already_a_project)?;
     let steps = plan_new_project(resolved.location, observation)
         .map_err(|refusal| NewProjectError::Refused(refusal_message(refusal, &resolved)))?;

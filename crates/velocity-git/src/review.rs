@@ -5,6 +5,9 @@
 
 use std::path::{Path, PathBuf};
 
+use velocity_core::review_diff::summarize_diff;
+use velocity_core::review_tier::{TierAssessment, assess_tier, sensitive_paths};
+
 use crate::command::git;
 use crate::manager::{WorktreeError, WorktreeSetupRequest, run_git_command};
 use crate::sweep::{prepare_sweep_worktree, resolve_commit};
@@ -89,6 +92,59 @@ fn unmerged_files(path: &Path) -> Vec<String> {
         .filter(|line| !line.is_empty())
         .map(str::to_owned)
         .collect()
+}
+
+/// The review's tier (F7 Tiered review): the PR's own changes (head against its merge base
+/// with the base commit) checked against the Sensitive paths of the base commit's AGENTS.md.
+/// The base's AGENTS.md, not the PR's, so a PR cannot lower its own tier by editing the list.
+pub fn review_tier(
+    worktree: &Path,
+    base_commit: &str,
+    head: &str,
+) -> Result<TierAssessment, WorktreeError> {
+    let range = format!("{base_commit}...{head}");
+    let diff = git_output(
+        worktree,
+        &[
+            "-c",
+            "core.quotepath=false",
+            "diff",
+            "--no-color",
+            "--no-ext-diff",
+            "--no-textconv",
+            "--find-renames",
+            &range,
+        ],
+    )?;
+    let agents = git_output(worktree, &["show", &format!("{base_commit}:AGENTS.md")])
+        // A base without AGENTS.md lists no sensitive paths.
+        .unwrap_or_default();
+    Ok(assess_tier(
+        &summarize_diff(&diff),
+        &sensitive_paths(&agents),
+    ))
+}
+
+fn git_output(path: &Path, arguments: &[&str]) -> Result<String, WorktreeError> {
+    let output = git()
+        .current_dir(path)
+        .args(arguments)
+        .output()
+        .map_err(|error| WorktreeError::CommandFailed {
+            command: format!("git {}", arguments.join(" ")),
+            working_directory: path.to_path_buf(),
+            status: "not started".into(),
+            stderr: error.to_string(),
+        })?;
+    if !output.status.success() {
+        return Err(WorktreeError::CommandFailed {
+            command: format!("git {}", arguments.join(" ")),
+            working_directory: path.to_path_buf(),
+            status: output.status.to_string(),
+            stderr: String::from_utf8_lossy(&output.stderr).trim().to_owned(),
+        });
+    }
+    Ok(String::from_utf8_lossy(&output.stdout).into_owned())
 }
 
 /// Removes a review worktree once its PR merged (Rule 5). Never removes the project checkout.

@@ -51,17 +51,16 @@ impl NewThread {
         worktree_path: String,
         settings: &crate::Settings,
     ) -> Self {
+        // A signed-out default gives way to the first signed-in provider (F15 Sign out).
+        let provider = settings.new_work_choice();
+        let model_name = settings.provider_model(provider);
         Self {
             title,
             branch_name,
             worktree_path,
-            provider: settings.providers.default_provider,
-            model_name: settings
-                .providers
-                .default_model
-                .clone()
-                .unwrap_or_else(|| "agent default".into()),
-            model_supports_fast: false,
+            provider,
+            model_supports_fast: settings.model_has_fast_mode(provider, &model_name),
+            model_name,
             effort: settings.providers.default_effort,
             preferred_speed: settings.providers.default_speed,
         }

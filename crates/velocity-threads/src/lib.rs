@@ -12,6 +12,7 @@ pub mod goal_swarm;
 pub mod launch;
 pub mod naming;
 pub mod parking;
+pub mod proof_checks;
 pub mod review;
 pub mod review_runner;
 pub mod runtime;
@@ -38,7 +39,7 @@ pub use runtime::{
 };
 pub use sweep::{SCOUT_SERVER_SWITCH, SweepPlan, plan_sweep};
 pub use sweep_runner::{ScoutChange, ScoutSweeps, SweepHost};
-pub use titles::{TitlePlan, plan_title, resolve_title};
+pub use titles::{TitlePlan, plan_title, resolve_title, thread_run_settings};
 pub use transcript_view::LiveTranscript;
 pub use watch::{WATCH_SERVER_SWITCH, WatchReports, plan_watch};
 pub use watch_runner::{MainWatches, WatchChange, WatchHost};

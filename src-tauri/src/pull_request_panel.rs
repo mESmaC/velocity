@@ -7,6 +7,7 @@ use tauri_specta::Event;
 use velocity_core::layout_view::{LayoutAction, LayoutSnapshot};
 use velocity_github::{
     PullRequestClient, PullRequestPanelRow, PullRequestPanelSnapshot, PullRequestThread,
+    ReviewTierCache,
 };
 use velocity_store::ProjectItem;
 
@@ -126,13 +127,17 @@ pub fn initialize(application: &AppHandle) {
 fn monitor(application: AppHandle) {
     let mut previous = None;
     let mut refreshed = None::<Instant>;
+    let mut tiers = ReviewTierCache::default();
     loop {
         let store = application.state::<ManagedStateStore>();
         if let Ok(project) = selected_project(&store) {
             let changed = previous != project;
             if changed || refreshed.is_none_or(|time| time.elapsed() >= Duration::from_secs(30)) {
                 previous = project.clone();
-                if let Err(error) = refresh(&application, project) {
+                if changed {
+                    tiers = ReviewTierCache::default();
+                }
+                if let Err(error) = refresh(&application, project, &mut tiers) {
                     eprintln!("Could not refresh pull requests: {error}");
                 }
                 refreshed = Some(Instant::now());
@@ -142,7 +147,11 @@ fn monitor(application: AppHandle) {
     }
 }
 
-fn refresh(application: &AppHandle, project: Option<ProjectContext>) -> Result<(), String> {
+fn refresh(
+    application: &AppHandle,
+    project: Option<ProjectContext>,
+    tiers: &mut ReviewTierCache,
+) -> Result<(), String> {
     let panel = application.state::<PullRequestPanel>();
     {
         let mut panel = panel.lock().map_err(|error| error.to_string())?;
@@ -156,8 +165,11 @@ fn refresh(application: &AppHandle, project: Option<ProjectContext>) -> Result<(
     let Some(project) = project else {
         return Ok(());
     };
+    // The checkout's AGENTS.md lists the Sensitive paths the rail tiers against (F7); a
+    // project without one has none.
+    let agents = std::fs::read_to_string(project.directory.join("AGENTS.md")).unwrap_or_default();
     let result = PullRequestClient::discover(&project.directory)
-        .and_then(|client| client.panel())
+        .and_then(|client| client.tiered_panel(tiers, &agents))
         .map_err(|error| error.to_string());
     #[cfg(debug_assertions)]
     if let Ok(rows) = &result {

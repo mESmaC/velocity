@@ -18,6 +18,7 @@ use velocity_core::pr_review::{
     ReviewAssignment, ReviewBrief, ReviewCandidate, ReviewWork, assign_reviews, claim_message,
     review_doing, review_finished_message, review_idle_doing, review_prompt, short_commit,
 };
+use velocity_core::review_tier::TierAssessment;
 use velocity_github::{
     PrDutyReport, PullRequestClient, PullRequestOperation, PullRequestState, ReviewRecord,
     read_pr_duty_reports,
@@ -25,6 +26,7 @@ use velocity_github::{
 use velocity_store::duty::PrDutyRoster;
 
 use crate::RunningSession;
+use crate::proof_checks::{ProofCheckTarget, check_before_review};
 use crate::review::{ReviewPlan, ReviewServer, plan_review, review_session};
 use crate::sweep::sweep_doing;
 
@@ -312,6 +314,7 @@ struct Prepared {
     head: String,
     base_commit: String,
     conflicts: Vec<String>,
+    tier: TierAssessment,
 }
 
 /// One agent's review of one PR, from its claim to its release.
@@ -341,7 +344,14 @@ impl Review {
         let outcome = match self.prepare().await {
             Ok(prepared) => {
                 keep_worktree(host, &self.key, &prepared.worktree, true);
-                self.review(host, prepared, inputs).await
+                set_card(
+                    host,
+                    &self.key,
+                    true,
+                    review_doing(number, "checking proofs"),
+                );
+                let proofs = self.check_proofs(&prepared).await;
+                self.review(host, prepared, &proofs, inputs).await
             }
             Err(failure) => Outcome {
                 failure: Some(failure),
@@ -410,22 +420,51 @@ impl Review {
                 .map_err(|error| error.to_string())?;
             let checkout = velocity_git::prepare_review_worktree(&plan.worktree, number)
                 .map_err(|error| error.to_string())?;
+            let tier =
+                velocity_git::review_tier(&checkout.path, &checkout.base_commit, &checkout.head)
+                    .map_err(|error| format!("Could not read the PR's diff: {error}"))?;
             Ok(Prepared {
                 plan,
                 worktree: checkout.path,
                 head: checkout.head,
                 base_commit: checkout.base_commit,
                 conflicts: checkout.conflicts,
+                tier,
             })
         })
         .await
         .map_err(|error| error.to_string())?
     }
 
+    /// Runs the proof checks and the statement lock on the prepared worktree (F17), before the
+    /// agent sees the PR. Returns what its prompt adds.
+    async fn check_proofs(&self, prepared: &Prepared) -> String {
+        let app_data = self.runner.app_data.clone();
+        let project = self.roster.project.id.to_string();
+        let nickname = self.key.1.clone();
+        let number = self.candidate.number;
+        let worktree = prepared.worktree.clone();
+        let (base_commit, head) = (prepared.base_commit.clone(), prepared.head.clone());
+        tokio::task::spawn_blocking(move || {
+            check_before_review(&ProofCheckTarget {
+                app_data: &app_data,
+                project: &project,
+                nickname: &nickname,
+                number,
+                worktree: &worktree,
+                base_commit: &base_commit,
+                head: &head,
+            })
+        })
+        .await
+        .unwrap_or_else(|error| format!("\nProof checks stopped unexpectedly ({error}).\n"))
+    }
+
     async fn review<Host: ReviewHost>(
         &self,
         host: &Host,
         prepared: Prepared,
+        proofs: &str,
         inputs: UnboundedReceiver<AgentInput>,
     ) -> Outcome {
         let report = self
@@ -449,7 +488,9 @@ impl Review {
             .airc
             .as_ref()
             .map(|airc| airc.duty(prepared.plan.project, &prepared.plan.nickname));
-        let _ = self.input.send(text(&self.prompt(&prepared)));
+        let _ = self
+            .input
+            .send(text(&format!("{}{proofs}", self.prompt(&prepared))));
         self.remember(&prepared.head);
         let session = crate::spawn_session(prepared.plan.agent.clone(), setup, inputs);
         let outcome = self.follow(host, session, &report).await;
@@ -490,6 +531,7 @@ impl Review {
             base_commit: &prepared.base_commit,
             conflicts: &prepared.conflicts,
             work: self.work,
+            tier: &prepared.tier,
             rules: &self.roster.rules,
             instruction: self.instruction.as_deref(),
         })

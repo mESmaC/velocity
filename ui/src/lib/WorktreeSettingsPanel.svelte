@@ -6,6 +6,7 @@
     WorktreePathPreview,
   } from './ipc';
   import './theme/worktrees.css';
+  import SettingsNav from './SettingsNav.svelte';
 
   let {
     view,
@@ -46,13 +47,7 @@
     <span>applies to every project</span>
   </header>
   <div class="worktree-settings-body">
-    <nav class="worktree-settings-nav" aria-label="Settings pages">
-      <button class="on" aria-current="page">Worktrees</button>
-      <button disabled>Providers</button>
-      <button disabled>Skills</button>
-      <button disabled>Agents <span>later</span></button>
-      <button disabled>Proofs</button>
-    </nav>
+    <SettingsNav current="worktrees" {send} />
     <div class="worktree-settings-main">
       {#if view}
         <section>
