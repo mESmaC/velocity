@@ -172,7 +172,7 @@ pub(crate) fn plan_named_launch(
 /// skip permission checks (Rule 1). Antigravity's agent is still open (Q14).
 pub fn agent_launch(provider: ProviderKind) -> Result<(AgentLaunch, Vec<String>), LaunchError> {
     let (program, args, bypass): (&str, &[&str], &[&str]) = match provider {
-        ProviderKind::Claude => ("claude-code-acp", &[], &["bypassPermissions"]),
+        ProviderKind::Claude => ("claude-agent-acp", &[], &["bypassPermissions"]),
         ProviderKind::Codex => ("codex-acp", &[], &["full-access"]),
         ProviderKind::Kimi => ("kimi", &["acp"], &[]),
         ProviderKind::Antigravity => return Err(LaunchError::ProviderNotConfirmed("Antigravity")),

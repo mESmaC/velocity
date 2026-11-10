@@ -119,7 +119,7 @@ fn rewrite_rule(
         .enable_all()
         .build()
         .map_err(|error| error.to_string())?;
-    let launch = velocity_acp::client::AgentLaunch::new("claude-code-acp".into());
+    let launch = velocity_acp::client::AgentLaunch::new("claude-agent-acp".into());
     let setup =
         velocity_acp::client::SessionSetup::new(directory.into(), vec!["bypassPermissions".into()]);
     let response = runtime
