@@ -23,6 +23,7 @@ mod repository;
 mod scout_directory;
 mod scout_evidence;
 mod scout_issues;
+mod scout_reference;
 mod scout_server;
 mod watch_server;
 
@@ -43,5 +44,6 @@ pub use repository::{
 };
 pub use scout_evidence::Reproduction;
 pub use scout_issues::{ScoutFinding, ScoutIssueError, ScoutIssueOutcome};
+pub use scout_reference::{ReferenceComparison, ReferenceComparisonResult};
 pub use scout_server::{ScoutReport, ScoutServer, read_scout_reports};
 pub use watch_server::{WatchReport, WatchServer, WatchTarget, read_watch_reports};

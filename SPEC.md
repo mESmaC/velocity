@@ -558,6 +558,7 @@ Long-running roles. They appear under **On duty**, with an agent count (×N) and
   - A sweep is one agent turn in the scout's own `<scout>-sweep` worktree (F5), a detached checkout of the base branch's tip, reset before each sweep. Its card shows the agent's current step; the feed gets the sweep's start and end and each filing.
   - Scouts file only through Velocity's scout MCP tools: `scout_issues` (every open and closed issue, which the scout compares its finding against) and `scout_file` (runs the reproduction, which must fail, attaches the script and its output, refuses duplicates, and signs the issue with the scout's name).
   - A message from the Scouts composer goes to every running sweep as its next message; idle scouts start a sweep that follows it.
+  - `scout_compare` runs implementation and compiled Lean reference driver scripts in the scout checkout, with identical UTF-8 cases on stdin (up to 48000 bytes). Both drivers must exit successfully; stdout is compared byte for byte, so adapters normalize output. It returns both outputs and diagnostics. A missing toolchain or failed driver is an execution error, never a model disagreement. Scouts preserve disagreeing inputs in a failing script and use `scout_file` to attach executed evidence and check duplicates. This backend-only tool never accepts commands from the frontend.
 - Issues they file show their name in the Issues panel.
 
 **Accept when:**
@@ -1268,7 +1269,7 @@ Each milestone ends with a working app. PR duty checks an item off when it lands
 - [x] Proof checks in the worktree: `lake build`, no `sorry`/`admit`, axiom audit, statement lock and review reset
 - [ ] Proof card on the PR, "Proved" on the PR track, `proved`/`statement`/`stress` events
 - [ ] Merge gate in PR duty; statement review; tiers updated (F7)
-- [ ] Scouts: assume-it-fails sweeps, evidence required, Stress and Proof gaps focus areas, stress runs against Lean reference models
+- [x] Scouts: assume-it-fails sweeps, evidence required, Stress and Proof gaps focus areas, stress runs against Lean reference models
 - [ ] Levels per language: reference by default (fixture table plus one test; compiled Lean model through FFI for stress), code on request (Aeneas for Rust), model
 - [ ] AGENTS.md: Implementation first, Proofs, and Tests and docs sections; Covers check (F11)
 
