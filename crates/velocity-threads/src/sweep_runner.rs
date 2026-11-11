@@ -322,6 +322,7 @@ impl Sweep {
             reason: &self.start.reason,
             base_branch: &plan.base_branch,
             instruction: self.start.instruction.as_deref(),
+            stress_diff_input_count: self.roster.settings.proofs.stress_diff_input_count,
         })
     }
 

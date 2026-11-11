@@ -90,6 +90,9 @@ pub struct SweepBrief<'a> {
     pub base_branch: &'a str,
     /// What you told the scouts from the Duty view's composer, if this sweep follows it.
     pub instruction: Option<&'a str>,
+    /// How many generated inputs to diff per feature against its Lean model (Settings →
+    /// Proofs, F13, F17).
+    pub stress_diff_input_count: u32,
 }
 
 /// The sweep's prompt: the scout rules of F7, with the locked rules enforced by the
@@ -114,7 +117,7 @@ pub fn sweep_prompt(brief: &SweepBrief) -> String {
             brief.scout_index + 1
         ));
     }
-    prompt.push_str(&sweep_steps(brief.rules));
+    prompt.push_str(&sweep_steps(brief.rules, brief.stress_diff_input_count));
     prompt.push_str(&filing_rules(brief.rules));
     if let Some(instruction) = brief.instruction {
         prompt.push_str(&format!("\nThe user asks the scouts: {instruction}\n"));
@@ -143,12 +146,15 @@ fn reason_sentence(reason: &SweepReason, base_branch: &str) -> String {
     }
 }
 
-fn sweep_steps(rules: &ScoutRuleSettings) -> String {
+fn sweep_steps(rules: &ScoutRuleSettings, stress_diff_input_count: u32) -> String {
     let mut steps = String::from(
         "\nSweep:\n- Read AGENTS.md and SPEC.md first; follow AGENTS.md's rules for scouts.\n- Run the project's checks and lint, and the existing tests and stress scripts.\n",
     );
     if rules.run_stress_against_models {
         steps.push_str("- Build the Lean reference models in `proofs/` where they exist. Use `scout_compare` with implementation and compiled-model driver scripts, feeding identical generated cases through stdin. Both must succeed; normalize their stdout in the adapters. Preserve every disagreeing input in a failing reproduction script and file it through `scout_file`. Missing models or toolchain failures are proof gaps, not output disagreements.\n");
+        steps.push_str(&format!(
+            "- Diff at least {stress_diff_input_count} generated inputs for each feature that has a compiled model, split across as many `scout_compare` calls as its input size limit needs.\n"
+        ));
     }
     steps.push_str("- Write new tests and stress scripts that expose failures. Keep each failing script in the worktree; it is your evidence.\n");
     for area in &rules.focus_areas {
