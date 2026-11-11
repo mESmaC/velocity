@@ -59,7 +59,7 @@ pub fn remove_merged_worktree(
     }
     let registered = registered_worktree(repository, path, branch)?;
     if path.exists() {
-        verify_worktree(repository, path, branch)?;
+        verify_deletion(repository, path, branch, true, false)?;
     }
     let mut lifecycle = WorktreeRecord::new(path, branch);
     for command in lifecycle.step(LifecycleEvent::PrMerged(delete_branch)) {
@@ -238,4 +238,27 @@ fn git(directory: &Path, arguments: &[&str]) -> Result<String, MergedWorktreeErr
         ));
     }
     Ok(String::from_utf8_lossy(&output.stdout).trim().into())
+}
+
+/// Fail closed when git cannot establish ownership or remote reachability. Callers stop
+/// the owning agent first so it cannot write between this check and removal.
+pub fn verify_deletion(
+    repository: &Path,
+    path: &Path,
+    branch: &str,
+    merged: bool,
+    thread_deleted: bool,
+) -> Result<(), MergedWorktreeError> {
+    verify_thread_worktree(repository, path, branch)?;
+    // All remote refs matter: a pushed topic branch may already have been deleted
+    // after a squash merge, while its commits remain reachable from another remote ref.
+    let unpushed = !git(path, &["rev-list", "HEAD", "--not", "--remotes"])?.is_empty()
+        || !git(path, &["status", "--porcelain", "--untracked-files=normal"])?.is_empty();
+    if !crate::deletion_allowed(merged, thread_deleted, true, unpushed) {
+        return Err(MergedWorktreeError::Ownership(
+            "The worktree has uncommitted or unpushed work, or no deletion event; keeping it"
+                .into(),
+        ));
+    }
+    Ok(())
 }
