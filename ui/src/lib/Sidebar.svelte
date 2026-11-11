@@ -1,5 +1,6 @@
 <script lang="ts">
   import Icon from './Icon.svelte';
+  import UsagePanel from './UsagePanel.svelte';
   import type { LayoutAction, LayoutSnapshot, SidebarRow } from './ipc';
   import './theme/swarm.css';
   let {
@@ -31,6 +32,9 @@
     if (row.goal) return 'goal';
     return icons[row.group] ?? 'circle';
   }
+
+  // Like the model menu, the open state is the popover's own; its rows come from Rust.
+  let usageOpen = $state(false);
 </script>
 
 <aside class="sidebar" aria-label="Threads">
@@ -132,10 +136,11 @@
       ><Icon name="settings" /></button
     >
     <button
-      class="icon-btn"
+      class="icon-btn usage-trigger"
       title="Usage"
       aria-label="Usage"
-      onclick={() => send({ Request: 'Usage' })}><Icon name="usage" /></button
+      aria-expanded={usageOpen}
+      onclick={() => (usageOpen = !usageOpen)}><Icon name="usage" /></button
     >
     <button
       class="icon-btn"
@@ -152,10 +157,11 @@
       ><Icon name="folder" />{layout.worktree_label}</button
     >
     {#if layout.providers.length}<button
-        class="provider-limits"
-        title="Subscription limits · Settings · Providers"
+        class="provider-limits usage-trigger"
+        title="Subscription limits"
         aria-label="Provider subscription limits"
-        onclick={() => send({ Request: { SettingsTab: 'providers' } })}
+        aria-expanded={usageOpen}
+        onclick={() => (usageOpen = !usageOpen)}
       >
         {#each layout.providers as provider (provider.provider)}<span
             class="provider-meter"
@@ -165,5 +171,10 @@
             ></span></span
           >{/each}
       </button>{/if}
+    {#if usageOpen}<UsagePanel
+        providers={layout.providers}
+        {send}
+        close={() => (usageOpen = false)}
+      />{/if}
   </footer>
 </aside>

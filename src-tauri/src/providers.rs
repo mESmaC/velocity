@@ -27,7 +27,9 @@ use velocity_store::provider_views::{
     MenuTarget, ModelMenuChoice, ModelMenuView, ProviderContext, ProviderPhase, ProviderRuntime,
     ProvidersView,
 };
-use velocity_store::providers::{ProviderEdit, ProviderLimit, ProviderModel, unix_now};
+use velocity_store::providers::{
+    LimitWindow, ProviderEdit, ProviderLimit, ProviderModel, unix_now,
+};
 use velocity_store::{ProviderKind, Settings, StateStore};
 use velocity_threads::{ThreadRuntimes, agent_launch, thread_run_settings};
 
@@ -383,25 +385,50 @@ async fn read_limit(application: &AppHandle, provider: ProviderKind) {
     let reading: Option<LimitReading> = reading.ok().flatten();
     providers.with_slot(provider, |slot| {
         if revision == Some((slot.generation, slot.limit_revision)) {
-            record_limit(application, provider, reading);
+            record_limit(application, provider, reading, false);
         }
     });
 }
 
-fn record_limit(application: &AppHandle, provider: ProviderKind, reading: Option<LimitReading>) {
+/// Saves a reading. A full read replaces every window; a live event (`live`) names only some
+/// of them, so the others keep their last read.
+fn record_limit(
+    application: &AppHandle,
+    provider: ProviderKind,
+    reading: Option<LimitReading>,
+    live: bool,
+) {
     let plan = reading.as_ref().and_then(|reading| reading.plan.clone());
-    let limit = reading.map(|reading| {
-        ProviderLimit::new(
-            reading.percent_used,
-            reading.window,
-            reading
-                .resets_at
-                .and_then(|seconds| u32::try_from(seconds).ok()),
-        )
-    });
+    let limit = reading.map(saved_limit);
     with_store(application, |store| {
-        store.record_provider_limit(provider, limit, plan)
+        if live {
+            store.record_live_provider_limit(provider, limit, plan)
+        } else {
+            store.record_provider_limit(provider, limit, plan)
+        }
     });
+}
+
+fn saved_limit(reading: LimitReading) -> ProviderLimit {
+    let seconds = |at: Option<i64>| at.and_then(|seconds| u32::try_from(seconds).ok());
+    let windows = reading
+        .windows
+        .into_iter()
+        .map(|window| {
+            LimitWindow::new(
+                window.percent_used,
+                window.window,
+                u32::try_from(window.minutes).unwrap_or(0),
+                seconds(window.resets_at),
+            )
+        })
+        .collect();
+    ProviderLimit::new(
+        reading.percent_used,
+        reading.window,
+        seconds(reading.resets_at),
+    )
+    .with_windows(windows)
 }
 
 fn watch_live_limits(application: &AppHandle) {
@@ -420,7 +447,7 @@ fn watch_live_limits(application: &AppHandle) {
                         .state::<ManagedProviders>()
                         .with_slot(provider, |slot| {
                             slot.limit_revision = slot.limit_revision.wrapping_add(1);
-                            record_limit(&handle, provider, reading);
+                            record_limit(&handle, provider, reading, true);
                         });
                     publish(&handle, None);
                 }

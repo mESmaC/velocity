@@ -286,7 +286,7 @@ There are two views of the same work, switched from the title bar or with `B`:
 **Sidebar:**
 - search (`/`) and a new-thread button
 - the thread groups (§2.1)
-- a footer with settings, usage, updates, a live worktree count ("8 on D:", click → Settings · Worktrees) and a subscription-limit meter: one bar per signed-in provider, filled to the share of its limit used, coloured by provider (click → Settings · Providers). There is no dollar spend: every provider runs on a subscription.
+- a footer with settings, usage, updates, a live worktree count ("8 on D:", click → Settings · Worktrees) and a subscription-limit meter: one bar per signed-in provider, filled to the share of its limit used, coloured by provider. The usage button and the meter both open the usage panel (F15 Usage panel). There is no dollar spend: every provider runs on a subscription.
 
 **Rail:** three panels: Task List, Open Pull Requests, Open Issues. Below them are footer links: AIRC (F14), with an unread badge that turns amber when an overlap is unread, and AGENTS.md.
 
@@ -769,7 +769,7 @@ Delete is **immediate, with no confirmation** (decided).
 
 ### F13 · Settings
 
-Open with the footer gear, `Ctrl+,`, the palette, the footer worktree count (→ Worktrees) or the footer limit meter (→ Providers). Pages: **Worktrees** (F5), **Providers** (F15: sign-in, default model, effort and speed for new threads, and the thread title model), **Skills** (F18), **Agents** and **Proofs**. Proofs holds the project's proof list, the code-level translator for each language when an issue asks for one (Rust: Aeneas), and the stress-diff input count (F17). Agents holds the shared MCP servers passed to every agent (§3.2 Tool access), the per-agent caps (max turns, max duration; off by default), the stall timeout (5 min, and 30 min for a running tool call) and the claim-release grace period (10 min) from §2.2. The rest of the Agents page is unspecified. There is no Keys page: every provider signs in with OAuth.
+Open with the footer gear, `Ctrl+,`, the palette, the footer worktree count (→ Worktrees) or the usage panel's Settings · Providers link (F15 Usage panel). Pages: **Worktrees** (F5), **Providers** (F15: sign-in, default model, effort and speed for new threads, and the thread title model), **Skills** (F18), **Agents** and **Proofs**. Proofs holds the project's proof list, the code-level translator for each language when an issue asks for one (Rust: Aeneas), and the stress-diff input count (F17). Agents holds the shared MCP servers passed to every agent (§3.2 Tool access), the per-agent caps (max turns, max duration; off by default), the stall timeout (5 min, and 30 min for a running tool call) and the claim-release grace period (10 min) from §2.2. The rest of the Agents page is unspecified. There is no Keys page: every provider signs in with OAuth.
 
 ### F14 · AIRC (claims, events, agent messages)
 
@@ -916,6 +916,15 @@ Four providers: **Anthropic** (Claude Code agent), **Codex** (Codex CLI agent), 
 - A provider with no source, or whose read fails, shows "limit not reported". Nothing else depends on the bar.
 - Live Claude rate-limit metadata and Codex app-server notifications update the same saved meter immediately. Codex's Node ACP adapter is launched with a bundled preloader that observes its app-server output without changing the RPC stream or the installed adapter. Five-minute reads remain the fallback; a read started before a live update cannot replace that newer report. Reports contain only subscription windows, never context-token usage.
 - `at limit` (§2.2) never comes from the bar. It is set when an agent's turn fails with its provider's usage-limit error, which carries the reset time when the provider gives one.
+- Every window a report carries is saved with the reading (Claude's 5-hour and weekly, and its per-model weekly windows; Codex's primary and secondary). The fullest one is the headline that the meter, the cards and the pickers show. A live event names only its own window, so the other saved windows keep their last read until the next full read.
+
+**Usage panel.** The footer usage button and the limit meter open a panel above the footer, laid out like T3 Code's usage limits. Rust draws its rows; it updates while open whenever a limit changes (`layout://state`).
+- **Title:** "Usage limits".
+- **A section per signed-in provider,** in card order: its icon, name and plan (`Max`, `Pro`).
+- **A row per subscription window,** shortest first: the window (`5-hour`, `Weekly`) and "resets in 1d 10h" on one line, then a bar of the share left in the provider's colour and "61% left". The tooltip adds the share used and, when the provider gives the window's length and reset time, the share of the window's time left: where even spending would put the bar.
+- **A provider with no window to show** (no source, or a failed read) says "No limits reported." With no provider signed in, the panel says "No provider is signed in."
+- **Settings · Providers** at the bottom opens that page.
+- Clicking outside the panel, clicking its button again, or Esc closes it. It stays inside the window down to the minimum size, scrolling when it is taller than 60% of the window.
 
 **Custom ACP agents** (decided, Q19). The four providers are built first. After them, **Add an ACP agent** takes a name, a command and its arguments, as Zed does.
 - The agent gets its own card and works like a built-in provider everywhere a model is chosen. Its models and fast mode are read over ACP, and it runs unrestricted with every tool (Rule 1, §3.2).
