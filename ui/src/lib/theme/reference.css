@@ -57,6 +57,9 @@
   --agents-notice-size: 11px;
   /* Reference .item .sub gap, shared by each rail item's metadata. */
   --issue-meta-gap: 8px;
+  /* #209: an expanded issue's details start under its title: the reference .item's
+     6px left padding, 14px icon column and 7px gap. */
+  --issue-detail-indent: 27px;
   /* F5/F13: Settings and Worktrees, reference rules 227–233, 373–411,
      482–489, 683–687, 740 and their final overrides at 1000–1050. */
   --worktrees-scrollbar-size: 8px;
@@ -1297,7 +1300,12 @@
   --swarm-legend-font-size: 11px;
   --swarm-legend-item-gap: 6px;
   --swarm-legend-swatch-size: 8px;
-  --swarm-grid-columns: repeat(auto-fill, minmax(214px, 1fr));
+  /* #209: min() lets the one column narrow below 214px at the 720px minimum window
+     instead of overflowing sideways; wider views get the reference's columns. */
+  --swarm-grid-columns: repeat(auto-fill, minmax(min(214px, 100%), 1fr));
+  /* #209: the user asked for a swarm's cards to fill the view, so the swarm transcript
+     drops the reference's 720px reading column; the dock composer keeps it. */
+  --swarm-transcript-inner-max-width: none;
   --swarm-grid-gap: 6px;
   --swarm-card-gap: 7px;
   --swarm-card-padding: 9px 10px;

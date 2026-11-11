@@ -1,5 +1,4 @@
 <script lang="ts">
-  import { tick } from 'svelte';
   import Composer from './Composer.svelte';
   import Icon from './Icon.svelte';
   import { goalSwarmCommands } from './ipc';
@@ -27,7 +26,6 @@
     send: (action: LayoutAction) => void;
   } = $props();
 
-  let transcriptElement: HTMLElement | null = null;
   let board = $state<GoalClaimsBoard | null>(null);
   let boardError = $state('');
   // Answers can arrive out of order; only the newest read is shown.
@@ -84,14 +82,6 @@
         boardError = reason instanceof Error ? reason.message : String(reason);
       });
   });
-
-  $effect(() => {
-    void swarm.feed.length;
-    void tick().then(() => {
-      if (transcriptElement)
-        transcriptElement.scrollTop = transcriptElement.scrollHeight;
-    });
-  });
 </script>
 
 <section
@@ -126,7 +116,7 @@
     </div>
   </header>
 
-  <div class="transcript" bind:this={transcriptElement} aria-live="polite">
+  <div class="transcript" aria-live="polite">
     <div class="transcript-inner">
       <div class="msg-user">
         {swarm.prompt}
@@ -232,7 +222,7 @@
     </div>
   </div>
 
-  <div class="composer-dock">
+  <div class="dock">
     <Composer
       {layout}
       {send}

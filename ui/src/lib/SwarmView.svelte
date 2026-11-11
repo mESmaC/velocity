@@ -1,5 +1,4 @@
 <script lang="ts">
-  import { tick } from 'svelte';
   import Composer from './Composer.svelte';
   import Icon from './Icon.svelte';
   import type {
@@ -21,8 +20,6 @@
     send: (action: LayoutAction) => void;
   } = $props();
 
-  let transcriptElement: HTMLElement | null = null;
-
   const providerIcons: Record<ProviderColor, string> = {
     Claude: 'claude',
     Codex: 'codex',
@@ -41,14 +38,6 @@
     failed: 'changes',
     finished: 'merge',
   };
-
-  $effect(() => {
-    void swarm.feed.length;
-    void tick().then(() => {
-      if (transcriptElement)
-        transcriptElement.scrollTop = transcriptElement.scrollHeight;
-    });
-  });
 </script>
 
 <section class="thread-view duty-view swarm-view" aria-label={swarm.title}>
@@ -72,7 +61,7 @@
     </div>
   </header>
 
-  <div class="transcript" bind:this={transcriptElement} aria-live="polite">
+  <div class="transcript" aria-live="polite">
     <div class="transcript-inner">
       <div class="sw-sum">
         <div class="sw-big" aria-label="Swarm progress">
@@ -145,7 +134,7 @@
     </div>
   </div>
 
-  <div class="composer-dock">
+  <div class="dock">
     <Composer
       {layout}
       {send}
