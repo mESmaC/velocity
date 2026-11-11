@@ -23,7 +23,7 @@ $source = @'
 use serde_json::json;
 use velocity_core::worktree_settings::WorktreePreferences;
 use velocity_store::{ProjectItem, Settings};
-use velocity_threads::plan_launch;
+use velocity_threads::plan_launch_with_preferences as plan_launch;
 
 fn project(repository: &str) -> Result<ProjectItem, serde_json::Error> {
     let threads = (1..=999).map(|identifier| {
