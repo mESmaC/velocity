@@ -41,6 +41,11 @@ impl IssueClient {
             .map_err(|error| PullRequestError::Invalid(error.to_string()))?;
         Ok(repository.find_remote("origin").is_ok())
     }
+    /// See `PullRequestClient::is_current`.
+    pub fn is_current(&self, directory: &Path) -> bool {
+        self.transport.is_current(directory)
+    }
+
     pub fn repository(&self) -> &str {
         &self.transport.repository
     }

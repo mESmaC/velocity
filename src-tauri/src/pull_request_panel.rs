@@ -139,8 +139,8 @@ impl PanelReader {
         agents: &str,
     ) -> Result<Vec<PullRequestPanelRow>, String> {
         let client = match self.client.take() {
-            Some(client) => client,
-            None => PullRequestClient::discover(directory).map_err(|error| error.to_string())?,
+            Some(client) if client.is_current(directory) => client,
+            _ => PullRequestClient::discover(directory).map_err(|error| error.to_string())?,
         };
         let rows = client
             .tiered_panel(&mut self.cache, agents)

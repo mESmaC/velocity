@@ -1,5 +1,6 @@
 <script lang="ts">
   import { onMount } from 'svelte';
+  import { pop } from './motion';
   import Icon from './Icon.svelte';
   import ProviderSignInCards from './ProviderSignInCards.svelte';
   import { providerIcon, swarmCommands } from './ipc';
@@ -152,6 +153,7 @@
 
 <dialog
   bind:this={dialogElement}
+  in:pop|global
   class="duty-dialog swarm-dialog"
   aria-labelledby="swarm-dialog-title"
   oncancel={(event) => {

@@ -316,16 +316,15 @@ impl PullRequestClient {
 
     /// Only an explicit row click opens a browser; refreshes never do.
     pub fn open_in_browser(&self, number: u32) -> Result<(), PullRequestError> {
-        let output = crate::command::gh()
-            .args([
-                "pr",
-                "view",
-                &number.to_string(),
-                "--repo",
-                &self.repository,
-                "--web",
-            ])
-            .output()?;
+        let output = crate::command::gh(&[
+            "pr",
+            "view",
+            &number.to_string(),
+            "--repo",
+            &self.repository,
+            "--web",
+        ])
+        .output()?;
         if !output.status.success() {
             return Err(PullRequestError::Command {
                 code: output.status.code(),

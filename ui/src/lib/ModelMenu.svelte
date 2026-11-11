@@ -1,6 +1,7 @@
 <script lang="ts">
   import { onMount, tick } from 'svelte';
   import Icon from './Icon.svelte';
+  import { pop } from './motion';
   import {
     providerCommands,
     onProviders,
@@ -156,6 +157,8 @@
   bind:this={menu}
   style:max-height={maxHeight === null ? undefined : `${maxHeight}px`}
   style:max-width={maxWidth === null ? undefined : `${maxWidth}px`}
+  in:pop
+  out:pop
 >
   {#if view}
     <div class="model-menu-list" bind:this={list}>

@@ -84,7 +84,8 @@ pub fn initialize(application: &AppHandle, hooks: Hooks) {
 }
 
 /// Each project's GitHub client, with the checkout it was read from. Reading the repository's
-/// identity is a GitHub request, so it happens once rather than on every pass.
+/// identity is a GitHub request, so it is kept between passes and read again only when the
+/// checkout or its `origin` changes, or the identity is half an hour old (#229).
 type Clients = BTreeMap<u32, (String, PullRequestClient)>;
 
 /// One project's GitHub reads for this pass, shared by all of its threads.
@@ -166,9 +167,10 @@ fn project_client<'a>(
     clients: &'a mut Clients,
     project: &ProjectItem,
 ) -> Option<&'a PullRequestClient> {
-    let current = clients
-        .get(&project.id)
-        .is_some_and(|(checkout, _)| *checkout == project.repository_path);
+    let current = clients.get(&project.id).is_some_and(|(checkout, client)| {
+        *checkout == project.repository_path
+            && client.is_current(Path::new(&project.repository_path))
+    });
     if !current {
         match PullRequestClient::discover(Path::new(&project.repository_path)) {
             Ok(client) => {
@@ -275,6 +277,8 @@ fn owning_snapshot(
     };
     let snapshot = client.snapshot(number).map_err(|error| error.to_string())?;
     if !client.owns_branch(&snapshot.pull_request, &thread.branch_name) {
+        // Not read again until the list shows the PR changed (#229).
+        cache.mismatched(key, number, fingerprint);
         return Err("The PR head does not match this thread's immutable branch".into());
     }
     let followed = watch.should_follow(&snapshot.pull_request);

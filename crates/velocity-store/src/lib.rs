@@ -1011,15 +1011,31 @@ impl PersistedState {
     }
 }
 
-/// Convert an absolute Windows path to extended-length (`\\?\`) syntax so paths
-/// with spaces, drive letters, and > 260 characters work reliably.
+/// Convert a Windows path to extended-length (`\\?\`) syntax so paths with
+/// spaces, drive letters, and > 260 characters work reliably.
+///
+/// Windows passes an extended-length path to the file system untouched: it does
+/// not turn `/` into `\` or resolve `.` and `..` (#215). So the path is first
+/// made absolute and normalised the way Win32 would for the plain spelling,
+/// which keeps every path that worked before pointing at the same file. Paths
+/// already in `\\?\` form and `\\.\` device paths are left alone. This is the
+/// one place in the workspace that builds a `\\?\` path.
 pub fn extended_windows_path(path: &Path) -> PathBuf {
-    if !cfg!(windows) || !path.is_absolute() {
+    if !cfg!(windows) {
         return path.to_path_buf();
     }
-    let display = path.to_string_lossy();
-    if display.starts_with(r"\\?\") {
+    // `std::path::absolute` calls GetFullPathNameW on Windows: it joins a
+    // relative path onto the current directory, turns `/` into `\` and drops
+    // `.` and `..`, exactly what the plain path would have meant. It returns a
+    // `\\?\` path unchanged.
+    let Ok(normalised) = std::path::absolute(path) else {
         return path.to_path_buf();
+    };
+    let display = normalised.to_string_lossy().into_owned();
+    // `\\?\` and `\\.\` paths already bypass Win32 normalisation; prefixing
+    // them again would name a different file.
+    if display.starts_with(r"\\?\") || display.starts_with(r"\\.\") {
+        return normalised;
     }
     if let Some(network_suffix) = display.strip_prefix(r"\\") {
         return PathBuf::from(format!(r"\\?\UNC\{network_suffix}"));
