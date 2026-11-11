@@ -50,14 +50,14 @@ pub fn initialize(application: &AppHandle) {
 /// Reads the channel now; opening the modal and sending a comment call this so neither
 /// waits for the next tick.
 pub(crate) fn refresh(application: &AppHandle) -> Result<(), String> {
-    let Some(active) = read_active(application)? else {
-        return Ok(());
-    };
     let open = lock(
         application.state::<MainLayout>().inner(),
         "main-window state",
     )?
     .airc_open();
+    let Some(active) = read_active(application, !open)? else {
+        return Ok(());
+    };
     let mut seen = active.seen;
     let latest = latest_sequence(&active.input.records);
     if open && latest > seen {
@@ -103,13 +103,16 @@ pub fn get_airc_modal(
     application: AppHandle,
     project_identifier: u32,
 ) -> Result<AircModalView, String> {
-    let active = read_active(&application)?
+    let active = read_active(&application, false)?
         .filter(|active| active.project == project_identifier)
         .ok_or("That project is not the active project")?;
     Ok(modal_view(&active.input))
 }
 
-fn read_active(application: &AppHandle) -> Result<Option<ActiveChannel>, String> {
+fn read_active(
+    application: &AppHandle,
+    unread_only: bool,
+) -> Result<Option<ActiveChannel>, String> {
     let (project, name, seen, members) = {
         let store = lock(
             application.state::<ManagedStateStore>().inner(),
@@ -135,10 +138,18 @@ fn read_active(application: &AppHandle) -> Result<Option<ActiveChannel>, String>
         .map_err(|error| error.to_string())?;
     let channel =
         Channel::open(&directory, &project.to_string()).map_err(|error| error.to_string())?;
-    let entries = channel.read(0).map_err(|error| error.to_string())?;
-    let waits = channel
-        .dependency_waits()
+    let entries = channel
+        .read(if unread_only { seen } else { 0 })
         .map_err(|error| error.to_string())?;
+    // The closed-modal badge needs only unseen entries; dependency waits are for the
+    // full Claims view.
+    let waits = if unread_only {
+        Vec::new()
+    } else {
+        channel
+            .dependency_waits()
+            .map_err(|error| error.to_string())?
+    };
     let claims = claim_records(&entries, &waits);
     let input = AircModalInput::new(name, entries.iter().map(record).collect(), claims, members);
     Ok(Some(ActiveChannel {
@@ -206,7 +217,7 @@ pub fn set_airc_message_mode(
     nick: String,
     mode: velocity_airc::MessageMode,
 ) -> Result<(), String> {
-    read_active(&application)?
+    read_active(&application, false)?
         .filter(|active| active.project == project_identifier)
         .ok_or("That project is not the active project")?;
     let directory = application

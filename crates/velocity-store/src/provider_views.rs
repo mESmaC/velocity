@@ -89,6 +89,7 @@ pub struct ProviderCardView {
     pub can_sign_in: bool,
     pub limit: Option<LimitView>,
     pub models: Vec<ModelChipView>,
+    pub max_agents: Option<u32>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, Type)]
@@ -279,6 +280,7 @@ impl StateStore {
             limit: (phase == ProviderPhase::SignedIn)
                 .then(|| limit_view(catalog.and_then(|entry| entry.limit.as_ref()), context.now)),
             models,
+            max_agents: settings.provider_maximum(provider),
         }
     }
 
@@ -288,7 +290,15 @@ impl StateStore {
             .projects
             .iter()
             .flat_map(|project| project.threads.iter())
-            .filter(|thread| thread.provider == provider && thread.state == ThreadState::Working)
+            .filter(|thread| {
+                thread.provider == provider
+                    && matches!(thread.state, ThreadState::Working | ThreadState::Review)
+                    && !thread.provider_queued
+                    && !matches!(
+                        thread.activity,
+                        crate::AgentActivity::Parked | crate::AgentActivity::Idle
+                    )
+            })
             .count()
     }
 }

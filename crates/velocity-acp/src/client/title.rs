@@ -56,7 +56,7 @@ impl TitleRequest {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct TitleReply {
     pub text: String,
-    /// From starting the agent to the prompt's answer, before the agent is stopped: stopping
+    /// From requesting the title to its answer, including provider queue time: stopping
     /// a process tree takes a few hundred milliseconds that the deadline must not count.
     pub elapsed: Duration,
 }
@@ -66,6 +66,12 @@ pub struct TitleReply {
 /// Call it inside a Tokio runtime: stopping the agent runs as a task of its own.
 pub async fn request_title(request: TitleRequest) -> Result<TitleReply, ClientError> {
     let started = Instant::now();
+    let permit = tokio::time::timeout(
+        request.deadline,
+        crate::concurrency::acquire(request.settings.provider, || {}),
+    )
+    .await
+    .map_err(|_| ClientError::TimedOut(request.deadline))?;
     let mut agent = process::spawn_agent(&request.launch, &request.working_directory)?;
     let stdin = agent
         .stdin()
@@ -81,7 +87,7 @@ pub async fn request_title(request: TitleRequest) -> Result<TitleReply, ClientEr
     }
     let shared = Arc::new(Shared::new(request.working_directory.clone(), events));
     let transport = ByteStreams::new(stdin.compat_write(), stdout.compat());
-    let deadline = request.deadline;
+    let deadline = request.deadline.saturating_sub(started.elapsed());
     let session = handlers::register(Client.v1(), &shared)
         .connect_with(transport, async move |connection: ConnectionTo<Agent>| {
             title_turn(&connection, &request).await
@@ -95,6 +101,7 @@ pub async fn request_title(request: TitleRequest) -> Result<TitleReply, ClientEr
         // Nothing waits on the title agent any more; a failed stop leaves the job object,
         // which ends the tree when its handle drops.
         let _ = process::stop_agent(&mut agent).await;
+        drop(permit);
     });
     outcome.map_err(|_| ClientError::TimedOut(deadline))??;
     Ok(TitleReply {
