@@ -32,16 +32,26 @@ fn verify_checkout(worktree: &Path, head: &str) -> Result<(), PullRequestError> 
             "Proof gate: check out the prepared head in the review worktree first".into(),
         ));
     }
+    // Windows generators may write LF into a CRLF checkout. Git's stat cache can mark
+    // that dirty even though normalization leaves the committed content unchanged.
+    git(
+        worktree,
+        &["diff", "--ignore-cr-at-eol", "--exit-code", "HEAD", "--"],
+    )
+    .map_err(|_| {
+        PullRequestError::Invalid(
+            "Proof gate: commit or remove review worktree content changes before checking".into(),
+        )
+    })?;
     // Untracked Lean can shadow an import too; ignored Lake build products are excluded.
     if !git(
         worktree,
-        &["status", "--porcelain", "--untracked-files=all"],
+        &["ls-files", "--others", "--exclude-standard", "-z"],
     )?
-    .trim()
     .is_empty()
     {
         return Err(PullRequestError::Invalid(
-            "Proof gate: commit or remove review worktree changes before checking".into(),
+            "Proof gate: commit or remove untracked review worktree files before checking".into(),
         ));
     }
     Ok(())
