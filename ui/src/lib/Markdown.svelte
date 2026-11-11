@@ -44,6 +44,10 @@
         ALLOW_ARIA_ATTR: false,
       },
     );
+    // RETURN_DOM yields the sanitized body element; anything else means nothing to show.
+    if (!(content instanceof HTMLElement)) {
+      return '';
+    }
     // A transcript link must never navigate the IDE's own window away.
     for (const link of content.querySelectorAll('a')) {
       link.setAttribute('target', '_blank');
