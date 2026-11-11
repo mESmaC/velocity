@@ -29,10 +29,17 @@ impl DiffSummary {
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 struct FileChange {
     paths: Vec<String>,
-    removed: Vec<String>,
-    added: Vec<String>,
+    hunks: Vec<HunkChange>,
     /// A change the line lists cannot show: binary content, a rename or a mode change.
     opaque: bool,
+}
+
+/// Context belongs to both sides: dropping it hides reordered statements. Each hunk is
+/// compared separately so a removal cannot cancel an addition elsewhere in the file.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+struct HunkChange {
+    removed: Vec<String>,
+    added: Vec<String>,
 }
 
 /// Reads `git diff` / `gh pr diff` output.
@@ -65,6 +72,9 @@ fn parse_files(diff: &str) -> Vec<FileChange> {
             }
         } else if let Some(range) = line.strip_prefix("@@ ") {
             hunk = hunk_size(range);
+            if let Some(file) = files.last_mut() {
+                file.hunks.push(HunkChange::default());
+            }
         } else {
             header_line(files.last_mut(), line);
         }
@@ -78,20 +88,25 @@ fn hunk_line(
     line: &str,
     (old, new): (usize, usize),
 ) -> (usize, usize) {
-    let Some(file) = file else {
+    let Some(hunk) = file.and_then(|file| file.hunks.last_mut()) else {
         return (0, 0);
     };
     match line.as_bytes().first() {
         Some(b'-') => {
-            file.removed.push(line[1..].to_owned());
+            hunk.removed.push(line[1..].to_owned());
             (old.saturating_sub(1), new)
         }
         Some(b'+') => {
-            file.added.push(line[1..].to_owned());
+            hunk.added.push(line[1..].to_owned());
             (old, new.saturating_sub(1))
         }
         // "\ No newline at end of file" belongs to the line before it.
         Some(b'\\') => (old, new),
+        Some(b' ') => {
+            hunk.removed.push(line[1..].to_owned());
+            hunk.added.push(line[1..].to_owned());
+            (old.saturating_sub(1), new.saturating_sub(1))
+        }
         _ => (old.saturating_sub(1), new.saturating_sub(1)),
     }
 }
@@ -287,14 +302,14 @@ fn is_cosmetic(file: &FileChange) -> bool {
     let Some(Some(syntax)) = syntaxes.next() else {
         return false;
     };
-    let code = |lines: &[String]| -> Vec<String> {
-        lines
-            .iter()
-            .filter(|line| !line.trim().is_empty() && !is_comment(syntax, line))
-            .cloned()
-            .collect()
-    };
-    let (removed, added) = (code(&file.removed), code(&file.added));
+    file.hunks.iter().all(|hunk| is_cosmetic_hunk(syntax, hunk))
+}
+
+fn is_cosmetic_hunk(syntax: &Syntax, hunk: &HunkChange) -> bool {
+    let (removed, added) = (
+        code_lines(syntax, &hunk.removed),
+        code_lines(syntax, &hunk.added),
+    );
     if syntax.free_form {
         significant_text(&removed) == significant_text(&added)
     } else {
@@ -308,24 +323,73 @@ fn is_cosmetic(file: &FileChange) -> bool {
     }
 }
 
-/// A whole-line comment. A line that opens a block comment and has code after its close is
-/// code; a block comment's inner lines count only when they start with `*` (C style).
-fn is_comment(syntax: &Syntax, line: &str) -> bool {
-    let line = line.trim();
+/// A block is removable only when its whole extent appears in this side of the hunk.
+/// Keeping incomplete blocks prevents a delimiter outside the available context from
+/// hiding a change to live code. Context is scanned too, so wrapping live code in a
+/// complete comment still changes the resulting code sequence.
+fn code_lines(syntax: &Syntax, lines: &[String]) -> Vec<String> {
+    let mut code = Vec::new();
+    let mut position = 0;
+    while position < lines.len() {
+        let line = lines[position].trim();
+        if line.is_empty() || is_line_comment(syntax, line) {
+            position += 1;
+            continue;
+        }
+        let end = syntax.block_comments.iter().find_map(|(open, close)| {
+            line.strip_prefix(open)
+                .and_then(|rest| block_end(lines, position, rest, open, close))
+        });
+        match end {
+            Some(end) => position = end + 1,
+            None => {
+                code.push(lines[position].clone());
+                position += 1;
+            }
+        }
+    }
+    code
+}
+
+fn is_line_comment(syntax: &Syntax, line: &str) -> bool {
+    // PowerShell's block closer starts with its line-comment prefix. Without a
+    // matching opener in this hunk it may expose live code beyond the context.
     if syntax
+        .block_comments
+        .iter()
+        .any(|(_, close)| line.starts_with(close))
+    {
+        return false;
+    }
+    syntax
         .line_comments
         .iter()
         .any(|prefix| line.starts_with(prefix))
-    {
-        return true;
-    }
-    for (open, close) in syntax.block_comments {
-        if let Some(rest) = line.strip_prefix(open) {
-            return !rest.contains(close) || line.ends_with(close);
+}
+
+/// A nested opener is ambiguous across the supported languages (Rust and Lean nest,
+/// C and JavaScript do not). Leave those blocks as code rather than guessing a close.
+/// Code after a close must likewise remain significant.
+fn block_end(
+    lines: &[String],
+    start: usize,
+    first: &str,
+    open: &str,
+    close: &str,
+) -> Option<usize> {
+    for (position, line) in lines.iter().enumerate().skip(start) {
+        let content = if position == start { first } else { line };
+        let closing = content.find(close);
+        if let Some(nested) = content.find(open)
+            && closing.is_none_or(|closing| nested < closing)
+        {
+            return None;
+        }
+        if let Some((_, after)) = content.split_once(close) {
+            return after.trim().is_empty().then_some(position);
         }
     }
-    let c_style = syntax.block_comments.contains(&("/*", "*/"));
-    c_style && (line == "*" || line.starts_with("* ") || line.starts_with("*/"))
+    None
 }
 
 /// The lines' text with insignificant whitespace removed: whitespace inside quotes stays,
