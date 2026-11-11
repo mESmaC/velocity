@@ -136,23 +136,44 @@ fn read_active(
         .path()
         .app_data_dir()
         .map_err(|error| error.to_string())?;
-    let entries = Channel::open(&directory, &project.to_string())
-        .and_then(|channel| channel.read(if unread_only { seen } else { 0 }))
+    let channel =
+        Channel::open(&directory, &project.to_string()).map_err(|error| error.to_string())?;
+    let entries = channel
+        .read(if unread_only { seen } else { 0 })
         .map_err(|error| error.to_string())?;
-    let claims = velocity_airc::claims::claims(&entries)
-        .into_iter()
-        .map(|claim| AircClaimRecord::new(&claim.member, &claim.nick, &claim.task, claim.files))
-        .collect();
+    // The closed-modal badge needs only unseen entries; dependency waits are for the
+    // full Claims view.
+    let waits = if unread_only {
+        Vec::new()
+    } else {
+        channel
+            .dependency_waits()
+            .map_err(|error| error.to_string())?
+    };
+    let claims = claim_records(&entries, &waits);
+    let input = AircModalInput::new(name, entries.iter().map(record).collect(), claims, members);
     Ok(Some(ActiveChannel {
         project,
         seen,
-        input: AircModalInput {
-            channel: name,
-            records: entries.iter().map(record).collect(),
-            claims,
-            members,
-        },
+        input,
     }))
+}
+
+fn claim_records(
+    entries: &[Entry],
+    waits: &[velocity_airc::waits::DependencyWait],
+) -> Vec<AircClaimRecord> {
+    velocity_airc::claims::claims(entries)
+        .into_iter()
+        .map(|claim| {
+            let waiting = waits.iter().find(|wait| wait.member == claim.member);
+            let record = AircClaimRecord::new(&claim.member, &claim.nick, &claim.task, claim.files);
+            match waiting {
+                Some(wait) => record.with_dependency(&wait.holder, &wait.holder_nick, &wait.file),
+                None => record,
+            }
+        })
+        .collect()
 }
 
 fn record(entry: &Entry) -> AircRecord {

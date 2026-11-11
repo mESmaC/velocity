@@ -1387,6 +1387,7 @@
   --airc-claim-file-padding: 1px 5px;
   --airc-claim-file-radius: 3px;
   --airc-claim-file-font: 10.5px var(--mono);
+  --airc-claim-dependency-font-size: 10.5px;
   --airc-nick-heading-margin: 10px 0 4px;
   --airc-nick-heading-font-size: 10.5px;
   --airc-nick-columns: 8px minmax(0, 1fr);
