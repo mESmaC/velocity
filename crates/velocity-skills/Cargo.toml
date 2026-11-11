@@ -6,13 +6,14 @@ rust-version.workspace = true
 publish = false
 
 [features]
-bindings = ["dep:specta"]
+bindings = ["dep:specta", "velocity-core/bindings"]
 
 [dependencies]
 serde.workspace = true
 serde_json.workspace = true
 specta = { workspace = true, optional = true }
 thiserror.workspace = true
+velocity-core = { path = "../velocity-core" }
 
 [lints]
 workspace = true
