@@ -4,7 +4,8 @@
 //!
 //! Two background threads share the pool. The checkout worker fetches the tip, makes,
 //! removes and catches slots up one at a time, so swarm launches never race each other on
-//! setup. The prebuild worker builds one slot at a time below normal priority. A take marks
+//! setup. The prebuild worker builds one slot at a time below normal priority: Lean
+//! toolchain and Mathlib's cache for Lake projects, then the Cargo build. A take marks
 //! its slot taken under the pool's lock, so two threads never get the same worktree.
 
 use std::collections::BTreeMap;
@@ -305,7 +306,12 @@ impl ReadyPools {
             match self.next_prebuild() {
                 Some((project, index, base)) => {
                     let slot = ready_slot_path(&project.project_root, index);
-                    if let Err(error) = prebuild_ready_worktree(&slot) {
+                    let prebuilt = prebuild_ready_worktree(
+                        &project.repository_root,
+                        &slot,
+                        project.share_build_cache,
+                    );
+                    if let Err(error) = prebuilt {
                         eprintln!("Velocity warm pool prebuild of {}: {error}", slot.display());
                     }
                     let mut pools = self.lock();
@@ -482,10 +488,9 @@ impl ReadyPools {
     fn next_prebuild(&self) -> Option<(PoolProject, u32, String)> {
         let mut pools = self.lock();
         pools.values_mut().find_map(|pool| {
+            // Runs with the Rust build cache off too: Lean setup (toolchain and Mathlib's
+            // cache) is part of every prebuild, and only the Cargo build follows the setting.
             let project = pool.project.clone()?;
-            if !project.share_build_cache {
-                return None;
-            }
             let index = prebuild_work(&pool.slots, project.standing)?;
             let base = pool.slots.iter().find_map(|slot| match &slot.state {
                 SlotState::Ready { base, .. } if slot.index == index => Some(base.clone()),
