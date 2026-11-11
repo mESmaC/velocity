@@ -3,11 +3,13 @@
 use std::path::{Path, PathBuf};
 use std::process::{ExitStatus, Stdio};
 
+use agent_client_protocol::v1::schema::McpServer;
 use process_wrap::tokio::{ChildWrapper, CommandWrap, KillOnDrop};
 use tokio::process::Command;
 
 use super::ClientError;
 use super::program_path::find_program;
+use crate::Provider;
 
 /// The command that runs one provider's ACP agent. This is the only provider-specific part
 /// of a session (§3.2 Provider code).
@@ -20,6 +22,13 @@ pub struct AgentLaunch {
     /// Added to Velocity's own environment, which the agent inherits whole: your `PATH`,
     /// toolchains, credentials and config (§3.2 Tool access).
     pub env: Vec<(String, String)>,
+    /// Settings → Agents → shared MCP servers (§3.2 Tool access), filled by whoever builds
+    /// the launch from settings. `run_session` passes them in `session/new`, after Velocity's
+    /// own servers and minus the names the agent's own config already has.
+    pub shared_servers: Vec<McpServer>,
+    /// The built-in provider whose config files the agent loads, so a shared server whose
+    /// name is also in them is left to the agent's own entry. `None` for an agent you added.
+    pub own_config: Option<Provider>,
 }
 
 impl AgentLaunch {
@@ -28,6 +37,8 @@ impl AgentLaunch {
             program,
             args: Vec::new(),
             env: Vec::new(),
+            shared_servers: Vec::new(),
+            own_config: None,
         }
     }
 }

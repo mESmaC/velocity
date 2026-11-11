@@ -99,6 +99,11 @@ export const commands = {
 	dispatchIssue: (projectIdentifier: number, number: number, acceptRecommendation: boolean) => __TAURI_INVOKE<LayoutSnapshot_Serialize>("dispatch_issue", { projectIdentifier, number, acceptRecommendation }),
 	getPullRequestPanel: () => __TAURI_INVOKE<PullRequestPanelSnapshot_Serialize>("get_pull_request_panel"),
 	openProjectPullRequest: (projectIdentifier: number, number: number) => __TAURI_INVOKE<LayoutSnapshot_Serialize | null>("open_project_pull_request", { projectIdentifier, number }),
+	/**
+	 *  Adds or removes a shared server. New agents of every provider get the saved list; agents
+	 *  already running keep the servers they started with.
+	 */
+	editSharedMcpServers: (edit: SharedMcpServerEdit) => __TAURI_INVOKE<SharedMcpServer[]>("edit_shared_mcp_servers", { edit }),
 	getSkillLibrary: () => __TAURI_INVOKE<SkillLibrarySnapshot_Serialize>("get_skill_library"),
 	getSkillSettings: (projectIdentifier: number) => __TAURI_INVOKE<SkillsSettingsView_Serialize>("get_skill_settings", { projectIdentifier }),
 	setSkillSettings: (projectIdentifier: number, edit: SkillSettingsEdit) => __TAURI_INVOKE<SkillsSettingsView_Serialize>("set_skill_settings", { projectIdentifier, edit }),
@@ -224,6 +229,8 @@ export type AgentSettings_Deserialize = {
 	stall_timeout_minutes: number,
 	tool_timeout_minutes?: number,
 	claim_release_grace_minutes: number,
+	/**  Settings → Agents → shared MCP servers, passed to every agent (§3.2 Tool access). */
+	shared_mcp_servers?: SharedMcpServer[],
 };
 
 export type AgentSettings_Serialize = {
@@ -232,6 +239,8 @@ export type AgentSettings_Serialize = {
 	stall_timeout_minutes: number,
 	tool_timeout_minutes: number,
 	claim_release_grace_minutes: number,
+	/**  Settings → Agents → shared MCP servers, passed to every agent (§3.2 Tool access). */
+	shared_mcp_servers: SharedMcpServer[],
 };
 
 export type AircClaimFile = {
@@ -2171,24 +2180,10 @@ export type ProjectSkills = ProjectSkills_Serialize | ProjectSkills_Deserialize;
 
 export type ProjectSkills_Deserialize = {
 	packs?: { [key in string]: PackSelection_Deserialize },
-	/**  What the latest project scan suggested (F3, F18 Suggestions); the cards show why. */
-	suggestions?: SkillSuggestion_Deserialize[],
-	/**
-	 *  Suggestions you turned off, as `pack` or `pack/bundle`. A re-check after a merge
-	 *  never turns these back on ("switched on unless you turn them off").
-	 */
-	declined?: string[],
 };
 
 export type ProjectSkills_Serialize = {
 	packs: { [key in string]: PackSelection_Serialize },
-	/**  What the latest project scan suggested (F3, F18 Suggestions); the cards show why. */
-	suggestions: SkillSuggestion_Serialize[],
-	/**
-	 *  Suggestions you turned off, as `pack` or `pack/bundle`. A re-check after a merge
-	 *  never turns these back on ("switched on unless you turn them off").
-	 */
-	declined: string[],
 };
 
 /**  The proof card for one PR head. */
@@ -2987,6 +2982,32 @@ export type Settings_Serialize = {
 	proofs: ProofSettings,
 };
 
+/**  One shared MCP server, in the order Settings → Agents lists it. */
+export type SharedMcpServer = {
+	name: string,
+	transport: SharedMcpTransport,
+};
+
+/**  A change from Settings → Agents. */
+export type SharedMcpServerEdit = 
+/**
+ *  `target` is typed in one field: an `http://` or `https://` URL, or a command line read
+ *  like a provider's command (double quotes around a word with spaces).
+ */
+({ Add: {
+	name: string,
+	target: string,
+} }) & { Remove?: never } | ({ Remove: {
+	name: string,
+} }) & { Add?: never };
+
+/**  How an agent reaches a shared server. */
+export type SharedMcpTransport = 
+/**  A stdio server the agent starts, with your `PATH` and environment (§3.2 Tool access). */
+{ kind: "command"; program: string; arguments: string[] } | 
+/**  A streamable HTTP server. Agents that don't speak MCP over HTTP aren't sent it. */
+{ kind: "url"; url: string };
+
 export type SidebarGroup = SidebarGroup_Serialize | SidebarGroup_Deserialize;
 
 export type SidebarGroup_Deserialize = {
@@ -3117,10 +3138,6 @@ export type SkillPackCard_Deserialize = {
 	selection: PackSelection_Deserialize,
 	enabled_count: number,
 	requirements: string[],
-	/**  `suggested · UI found` when the project scan suggested this pack (F3, F18), else empty. */
-	suggestion_badge: string,
-	/**  What the scan found, or what would make it suggest the pack; empty for other packs. */
-	detection: string,
 };
 
 export type SkillPackCard_Serialize = {
@@ -3130,10 +3147,6 @@ export type SkillPackCard_Serialize = {
 	selection: PackSelection_Serialize,
 	enabled_count: number,
 	requirements: string[],
-	/**  `suggested · UI found` when the project scan suggested this pack (F3, F18), else empty. */
-	suggestion_badge: string,
-	/**  What the scan found, or what would make it suggest the pack; empty for other packs. */
-	detection: string,
 };
 
 /**  Static metadata for a built-in or user-added skill pack (SPEC.md F18). */
@@ -3234,34 +3247,6 @@ export type SkillSettingsEdit = ({ Pack: {
 	bundle: string,
 	enabled: boolean,
 } }) & { Pack?: never };
-
-/**
- *  One pack the project scan found a reason for, with the bundles that reason implies
- *  (the Game dev router plus only the detected engine's bundle).
- */
-export type SkillSuggestion = SkillSuggestion_Serialize | SkillSuggestion_Deserialize;
-
-/**
- *  One pack the project scan found a reason for, with the bundles that reason implies
- *  (the Game dev router plus only the detected engine's bundle).
- */
-export type SkillSuggestion_Deserialize = {
-	pack?: string,
-	bundles?: string[],
-	/**  What the scan found, e.g. `UI found: ui/ (Svelte + Tailwind)`. */
-	reason?: string,
-};
-
-/**
- *  One pack the project scan found a reason for, with the bundles that reason implies
- *  (the Game dev router plus only the detected engine's bundle).
- */
-export type SkillSuggestion_Serialize = {
-	pack: string,
-	bundles: string[],
-	/**  What the scan found, e.g. `UI found: ui/ (Svelte + Tailwind)`. */
-	reason: string,
-};
 
 export type SkillsSettingsView = SkillsSettingsView_Serialize | SkillsSettingsView_Deserialize;
 

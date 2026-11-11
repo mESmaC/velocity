@@ -11,6 +11,7 @@ mod error;
 mod files;
 mod handlers;
 mod limits;
+mod own_config;
 mod probe;
 mod process;
 mod program_path;
@@ -144,6 +145,13 @@ pub async fn run_session(
     inputs: UnboundedReceiver<AgentInput>,
     events: UnboundedSender<AgentEvent>,
 ) -> Result<(), ClientError> {
+    let mut setup = setup;
+    // Velocity's own servers come first in the setup, so a clash keeps them (session_servers).
+    setup.shared_servers.extend(own_config::without_own_servers(
+        &launch.shared_servers,
+        launch.own_config,
+        &setup.worktree,
+    ));
     let mut agent = process::spawn_agent(&launch, &setup.worktree)?;
     let shared = Arc::new(Shared {
         worktree: setup.worktree.clone(),

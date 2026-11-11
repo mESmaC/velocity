@@ -177,6 +177,7 @@ pub(crate) fn plan_named_launch(
 /// The command for each provider's ACP agent (§3.2) and the ids of its session modes that
 /// skip permission checks (Rule 1): the built-in command, or the one you set in Settings →
 /// Providers, or the command of an agent you added (F15). An agent you removed has none.
+/// The launch carries Settings → Agents' shared MCP servers (§3.2 Tool access).
 pub fn agent_launch(
     settings: &Settings,
     provider: ProviderKind,
@@ -185,7 +186,11 @@ pub fn agent_launch(
         .agent_command(provider)
         .map(|command| (PathBuf::from(&command.program), command.arguments.clone()));
     velocity_acp::configured_agent(crate::titles::provider(provider), command)
-        .map(|agent| (agent.launch, agent.bypass_modes))
+        .map(|mut agent| {
+            // Every role's agent comes from here, so every one gets the shared servers.
+            agent.launch.shared_servers = crate::shared_mcp::shared_mcp_servers(settings);
+            (agent.launch, agent.bypass_modes)
+        })
         .ok_or(ProviderUnavailable::Removed)
 }
 
