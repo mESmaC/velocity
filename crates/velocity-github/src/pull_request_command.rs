@@ -4,6 +4,7 @@ use std::io::Write;
 use std::panic::Location;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Stdio};
+use std::time::{Duration, Instant};
 use thiserror::Error;
 
 #[derive(Debug, Error)]
@@ -26,6 +27,10 @@ pub(crate) struct PullRequestCommand {
     directory: PathBuf,
     /// Where this client was created, so each `gh` call is counted against its feature.
     caller: &'static Location<'static>,
+    /// The checkout's `origin` when the client was created, and when that was: a cached client
+    /// is current only while both still hold (#229).
+    origin: String,
+    created_at: Instant,
 }
 
 impl PullRequestCommand {
@@ -44,9 +49,21 @@ impl PullRequestCommand {
             Self {
                 directory: root.to_path_buf(),
                 caller,
+                origin: repository.clone(),
+                created_at: Instant::now(),
             },
             repository,
         ))
+    }
+
+    /// Whether `directory`'s `origin` is still the one this client was created for, and the
+    /// client is younger than `lifetime`. Reading the origin is local Git config, no request.
+    pub fn is_current(&self, directory: &Path, lifetime: Duration) -> bool {
+        self.created_at.elapsed() < lifetime
+            && std::fs::canonicalize(directory)
+                .ok()
+                .and_then(|directory| origin_url(&directory).ok())
+                .is_some_and(|origin| origin == self.origin)
     }
 
     pub fn read<T: DeserializeOwned>(&self, arguments: &[&str]) -> Result<T, PullRequestError> {

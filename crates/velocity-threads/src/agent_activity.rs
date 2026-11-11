@@ -1,7 +1,7 @@
 //! Supervision state machine for SPEC.md §2.2, separate from the native timer.
 use velocity_acp::client::AgentEvent;
 use velocity_core::agent_activity::{Availability, StallAction, stall_action};
-use velocity_store::{AgentActivity, AgentSettings, ThreadItem, ThreadState};
+use velocity_store::{AgentActivity, AgentSettings, ProjectItem, ThreadItem, ThreadState};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Action {
@@ -77,6 +77,21 @@ pub fn observe(thread: &mut ThreadItem, event: &AgentEvent, now: u64) {
     if matches!(event, AgentEvent::TurnEnded(_)) {
         checkpoint.turns = checkpoint.turns.saturating_add(1);
     }
+}
+
+/// The thread the supervisor decides for. Unlike follow-through it never requires a
+/// worktree: setup can fail before one exists, and §2.2 still releases that thread's
+/// claims once grace expires (#212). Restart and resume check the worktree themselves.
+pub fn supervised_thread(project: &ProjectItem, thread: u32) -> Result<ThreadItem, &'static str> {
+    if !project.spec_locked {
+        return Err("This project's spec must be locked before its agent starts");
+    }
+    project
+        .threads
+        .iter()
+        .find(|item| item.id == thread)
+        .cloned()
+        .ok_or("Missing supervision thread")
 }
 
 pub fn decide(
@@ -240,6 +255,9 @@ pub fn release_claims(
             "Grace period expired; optional prior work on {} at {commit}",
             thread.branch_name
         ),
+        None if thread.worktree_path.is_none() => {
+            "Grace period expired; setup left no worktree".into()
+        }
         None => "Grace period expired; worktree kept".into(),
     };
     for claim in channel
@@ -288,9 +306,9 @@ fn provider_retry_after(error: &str, now: u64) -> u64 {
 
 #[cfg(test)]
 mod trace_fixtures {
-    use super::{Action, checkpoint_unavailable, decide};
+    use super::{Action, checkpoint_unavailable, decide, supervised_thread};
     use velocity_core::agent_activity::{StallAction, stall_action};
-    use velocity_store::{AgentActivity, Settings, ThreadItem, ThreadState};
+    use velocity_store::{AgentActivity, ProjectItem, Settings, ThreadItem, ThreadState};
 
     // Recovery must reset grace, PRs must protect claims, and a completed release
     // must not repeat. Exercise the actual supervisor, not just deadline guards.
@@ -321,7 +339,21 @@ mod trace_fixtures {
                 thread.supervision.unavailable_since, expected_since,
                 "{line}"
             );
-            let action = decide(&thread, &settings, now, true, fields[3] == "queue");
+            // The "setup" trace failed before a worktree or session existed (#212):
+            // decide through the supervisor's own lookup, as the native timer does.
+            let setup_failed = trace == "setup";
+            thread.worktree_path = (!setup_failed).then(|| r"C:elocity-wtixture".into());
+            let mut project = ProjectItem::new(1, "Fixture".into(), r"C:ixture".into());
+            project.spec_locked = true;
+            project.threads.push(thread.clone());
+            let supervised = supervised_thread(&project, thread.id)?;
+            let action = decide(
+                &supervised,
+                &settings,
+                now,
+                !setup_failed,
+                fields[3] == "queue",
+            );
             assert_eq!(
                 action == Action::Release,
                 fields[6].parse::<bool>()?,

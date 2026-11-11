@@ -188,6 +188,7 @@ fn refresh_slot(
         slot.runtime.phase = ProviderPhase::Checking;
         slot.runtime.can_sign_in = false;
         slot.runtime.detail = None;
+        slot.runtime.install_failure = None;
         slot.method = None;
         // A new command is a different program: its sign-in and install no longer apply.
         for task in [slot.sign_in.take(), slot.install.take()]
@@ -313,6 +314,8 @@ fn record_probe(
                 };
                 slot.runtime.can_sign_in = method.is_some();
                 slot.runtime.detail = None;
+                // Found: an earlier install failure no longer says anything about it.
+                slot.runtime.install_failure = None;
                 slot.method = method;
             });
     if !current {
@@ -351,6 +354,11 @@ fn record_failure(
                     ProviderPhase::Failed
                 };
                 slot.runtime.detail = (!missing).then(|| error.to_string());
+                // A missing agent keeps its last install's failure on the card (#238); an
+                // agent that started was found, so that failure no longer applies.
+                if !missing {
+                    slot.runtime.install_failure = None;
+                }
                 slot.runtime.install_command = install_command;
             });
     if !current {
@@ -645,6 +653,7 @@ pub fn provider_sign_out(
                 task.abort();
                 slot.runtime.phase = ProviderPhase::NotInstalled;
                 slot.runtime.detail = None;
+                slot.runtime.install_failure = None;
             }
             task.is_some()
         })

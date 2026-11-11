@@ -271,16 +271,15 @@ impl IssueClient {
     }
 
     pub fn open_in_browser(&self, number: u32) -> Result<(), PullRequestError> {
-        let output = crate::command::gh()
-            .args([
-                "issue",
-                "view",
-                &number.to_string(),
-                "--repo",
-                &self.transport.repository,
-                "--web",
-            ])
-            .output()?;
+        let output = crate::command::gh(&[
+            "issue",
+            "view",
+            &number.to_string(),
+            "--repo",
+            &self.transport.repository,
+            "--web",
+        ])
+        .output()?;
         if !output.status.success() {
             return Err(PullRequestError::Command {
                 code: output.status.code(),

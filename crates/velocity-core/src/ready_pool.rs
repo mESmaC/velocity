@@ -141,7 +141,23 @@ fn is_prose_or_metadata(path: &str) -> bool {
     let prose_extension = name
         .rsplit_once('.')
         .is_some_and(|(_, extension)| matches!(extension, "md" | "markdown" | "rst" | "adoc"));
-    prose_extension || name.starts_with("license") || name.starts_with("notice")
+    prose_extension || is_license_or_notice(name)
+}
+
+/// A license or notice file: `license` or `notice`, optionally followed by `-` or `_` and a
+/// qualifier (`LICENSE-MIT`), with no extension or a prose one (`NOTICE.txt`). A name that
+/// only starts with the word (`NoticeBanner.svelte`, `license.rs`, `licenses.json`) is
+/// source and counts as a build input. `name` is lowercase.
+fn is_license_or_notice(name: &str) -> bool {
+    let stem = match name.rsplit_once('.') {
+        Some((stem, "txt" | "md" | "markdown" | "rst" | "adoc")) => stem,
+        Some(_) => return false,
+        None => name,
+    };
+    ["license", "notice"].iter().any(|word| {
+        stem.strip_prefix(word)
+            .is_some_and(|rest| rest.is_empty() || rest.starts_with('-') || rest.starts_with('_'))
+    })
 }
 
 /// The folder name of slot `index`. Thread slugs never start with a dot, so a slot can't
