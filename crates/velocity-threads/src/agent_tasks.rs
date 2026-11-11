@@ -19,11 +19,7 @@ pub fn ingest(
     for request in channel.pending_tasks()? {
         match store.add_agent_task(project, &request.member, request.sequence, &request.text) {
             Ok(task) => {
-                channel.post_event_once(Event::new(
-                    "task",
-                    &request.nick,
-                    &format!("added task #{} · {}", task.id, task.text),
-                ))?;
+                channel.post_event_once(Event::task_saved(&request.nick, task.id, &task.text)?)?;
                 channel.finish_task(&request, &format!("saved task #{}", task.id))?;
                 changed = true;
             }
