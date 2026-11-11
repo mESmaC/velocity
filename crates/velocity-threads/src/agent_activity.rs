@@ -1,6 +1,6 @@
 //! Supervision state machine for SPEC.md §2.2, separate from the native timer.
 use velocity_acp::client::AgentEvent;
-use velocity_core::agent_activity::{StallAction, release_due, stall_action};
+use velocity_core::agent_activity::{Availability, StallAction, stall_action};
 use velocity_store::{AgentActivity, AgentSettings, ThreadItem, ThreadState};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -13,7 +13,49 @@ pub enum Action {
     Resume,
 }
 
+/// Live ACP silence clock. Only durable transitions request a store checkpoint.
+#[derive(Default)]
+pub struct Heartbeat {
+    last_update: Option<u64>,
+    nudged: bool,
+}
+
+impl Heartbeat {
+    pub fn last_update(&self) -> Option<u64> {
+        self.last_update
+    }
+
+    pub fn observe(&mut self, batch: &[AgentEvent], now: u64) -> bool {
+        let active = batch.is_empty()
+            || batch
+                .iter()
+                .any(|event| !matches!(event, AgentEvent::Log(_) | AgentEvent::Queued));
+        let checkpoint = batch.is_empty()
+            || batch
+                .iter()
+                .any(|event| matches!(event, AgentEvent::TurnEnded(_)))
+            || (active && self.nudged);
+        if active {
+            self.last_update = Some(now);
+            self.nudged = false;
+        }
+        checkpoint
+    }
+
+    pub fn nudge(&mut self, now: u64) {
+        self.last_update = Some(now);
+        self.nudged = true;
+    }
+}
+
 pub fn observe(thread: &mut ThreadItem, event: &AgentEvent, now: u64) {
+    if let AgentEvent::ProviderQueued(queued, _) = event {
+        // Provider queue time is not time spent running this agent.
+        if thread.provider_queued && !queued {
+            thread.supervision.started = now;
+        }
+        thread.provider_queued = *queued;
+    }
     let checkpoint = &mut thread.supervision;
     if checkpoint.started == 0 {
         checkpoint.started = now;
@@ -47,11 +89,12 @@ pub fn decide(
     let checkpoint = &thread.supervision;
     let unavailable =
         thread.state == ThreadState::Error || thread.activity == AgentActivity::AtLimit;
-    if release_due(
-        now.saturating_sub(checkpoint.unavailable_since.unwrap_or(now)),
+    if availability(thread).release_due(
+        checkpoint.unavailable_since,
+        now,
         u64::from(settings.claim_release_grace_minutes) * 60,
-        unavailable && !checkpoint.released,
         thread.pull_request_number.is_some() || thread.state == ThreadState::Closed,
+        checkpoint.released,
     ) {
         return Action::Release;
     }
@@ -64,7 +107,7 @@ pub fn decide(
             return Action::Resume;
         }
     }
-    if !live || thread.activity == AgentActivity::Parked || unavailable {
+    if !live || thread.provider_queued || thread.activity == AgentActivity::Parked || unavailable {
         return Action::Nothing;
     }
     if capped(thread, settings, now) {
@@ -146,14 +189,19 @@ pub fn begin(thread: &mut ThreadItem, now: u64) {
         thread.supervision.started = now;
     }
     thread.supervision.last_update = now;
+    thread.supervision.nudged = false;
+}
+
+fn availability(thread: &ThreadItem) -> Availability {
+    Availability::from_status(
+        thread.state == ThreadState::Error,
+        thread.activity == AgentActivity::AtLimit,
+    )
 }
 
 pub fn checkpoint_unavailable(thread: &mut ThreadItem, now: u64) {
-    if thread.state == ThreadState::Error || thread.activity == AgentActivity::AtLimit {
-        thread.supervision.unavailable_since.get_or_insert(now);
-    } else {
-        thread.supervision.unavailable_since = None;
-    }
+    thread.supervision.unavailable_since =
+        availability(thread).checkpoint(thread.supervision.unavailable_since, now);
 }
 
 pub fn release_claims(
@@ -211,4 +259,90 @@ fn provider_retry_after(error: &str, now: u64) -> u64 {
         }
     }
     now.saturating_add(15 * 60)
+}
+
+#[cfg(test)]
+mod trace_fixtures {
+    use super::{Action, checkpoint_unavailable, decide};
+    use velocity_core::agent_activity::{StallAction, stall_action};
+    use velocity_store::{AgentActivity, Settings, ThreadItem, ThreadState};
+
+    // Recovery must reset grace, PRs must protect claims, and a completed release
+    // must not repeat. Exercise the actual supervisor, not just deadline guards.
+    #[test]
+    fn lean_supervision_trace() -> Result<(), Box<dyn std::error::Error>> {
+        let settings = Settings::default().agents;
+        let mut thread = ThreadItem::new(1, "Fixture".into());
+        let mut trace = "";
+        for line in include_str!("../../../proofs/fixtures/agent-activity.tsv").lines() {
+            let fields: Vec<_> = line.split('\t').collect();
+            if fields[0] == "stall" {
+                check_stall(&fields)?;
+                continue;
+            }
+            if trace != fields[1] {
+                trace = fields[1];
+                thread = ThreadItem::new(1, "Fixture".into());
+            }
+            let now = fields[2].parse()?;
+            apply_status(&mut thread, fields[3]);
+            thread.pull_request_number = fields[4].parse::<bool>()?.then_some(1);
+            checkpoint_unavailable(&mut thread, now);
+            let expected_since = match fields[5] {
+                "none" => None,
+                value => Some(value.parse()?),
+            };
+            assert_eq!(
+                thread.supervision.unavailable_since, expected_since,
+                "{line}"
+            );
+            let action = decide(&thread, &settings, now, true, fields[3] == "queue");
+            assert_eq!(
+                action == Action::Release,
+                fields[6].parse::<bool>()?,
+                "{line}"
+            );
+            if action == Action::Release {
+                thread.supervision.released = true;
+            }
+            assert_eq!(
+                thread.supervision.released,
+                fields[7].parse::<bool>()?,
+                "{line}"
+            );
+        }
+        Ok(())
+    }
+
+    fn apply_status(thread: &mut ThreadItem, status: &str) {
+        thread.state = match status {
+            "failed" => ThreadState::Error,
+            "closed" => ThreadState::Closed,
+            _ => ThreadState::Working,
+        };
+        thread.activity = match status {
+            "limit" => AgentActivity::AtLimit,
+            "parked" => AgentActivity::Parked,
+            _ => AgentActivity::Thinking,
+        };
+    }
+
+    fn check_stall(fields: &[&str]) -> Result<(), Box<dyn std::error::Error>> {
+        let expected = match fields[5] {
+            "nothing" => StallAction::Nothing,
+            "nudge" => StallAction::Nudge,
+            "restart" => StallAction::Restart,
+            _ => return Err("Invalid stall fixture".into()),
+        };
+        assert_eq!(
+            stall_action(
+                fields[1].parse()?,
+                fields[2].parse()?,
+                fields[3].parse()?,
+                fields[4].parse()?
+            ),
+            expected
+        );
+        Ok(())
+    }
 }

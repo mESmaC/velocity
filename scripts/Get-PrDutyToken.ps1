@@ -35,7 +35,8 @@ $cacheFolder = Join-Path $env:LOCALAPPDATA 'velocity'
 $cachePath = Join-Path $cacheFolder "pr-duty-token-$InstallationId.json"
 if (Test-Path -LiteralPath $cachePath) {
     $cached = Get-Content -Raw -LiteralPath $cachePath | ConvertFrom-Json
-    if ([DateTimeOffset]::Parse($cached.expires_at) -gt [DateTimeOffset]::UtcNow.AddMinutes(10)) {
+    # ConvertFrom-Json returns a UTC DateTime; parsing its string loses the zone.
+    if ([DateTimeOffset]$cached.expires_at -gt [DateTimeOffset]::UtcNow.AddMinutes(10)) {
         return $cached.token
     }
 }

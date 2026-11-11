@@ -113,3 +113,6 @@ button:focus-visible {
 ::-webkit-scrollbar-button {
   display: none;
 }
+::-webkit-scrollbar-corner {
+  background: var(--worktrees-transparent);
+}

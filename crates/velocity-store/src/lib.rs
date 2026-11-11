@@ -465,6 +465,9 @@ pub struct WorktreeSettings {
     pub copy_files: String,
     #[serde(default = "worktree_settings::default_setup_command")]
     pub setup_command: String,
+    /// Per-project commands, including an explicit empty command to skip setup.
+    #[serde(default)]
+    pub project_setup_commands: BTreeMap<u32, String>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, Type)]
@@ -486,6 +489,8 @@ pub struct ProviderSettings {
     /// Providers you signed out of in Velocity: new work can't use them (F15 Sign out).
     #[serde(default)]
     pub signed_out: Vec<ProviderKind>,
+    #[serde(default)]
+    pub concurrency: Vec<providers::ProviderConcurrency>,
     /// Model chips you switched off (F15 Models).
     #[serde(default)]
     pub hidden_models: Vec<providers::HiddenModel>,
@@ -572,6 +577,7 @@ impl Settings {
                 project_roots: BTreeMap::new(),
                 copy_files: worktree_settings::default_copy_files(),
                 setup_command: worktree_settings::default_setup_command(),
+                project_setup_commands: BTreeMap::new(),
             },
             providers: ProviderSettings {
                 default_provider: core_settings.providers.default_provider.into(),
@@ -584,6 +590,7 @@ impl Settings {
                 title_speed: core_settings.providers.title_speed.into(),
                 catalog: Vec::new(),
                 signed_out: Vec::new(),
+                concurrency: Vec::new(),
                 hidden_models: Vec::new(),
                 commands: Vec::new(),
                 custom_agents: Vec::new(),
@@ -695,7 +702,9 @@ pub struct ThreadItem {
     /// The agent's ACP session id, which a parked thread loads again on resume (§2.2).
     #[serde(default)]
     pub agent_session: Option<String>,
-    /// Conversation retained across process restarts (?3.2).
+    #[serde(default)]
+    pub provider_queued: bool,
+    /// Conversation retained across process restarts (§3.2).
     #[serde(default)]
     pub transcript: Vec<velocity_core::thread_view_model::TranscriptBlock>,
     pub review_stage: Option<ReviewStage>,
@@ -738,6 +747,7 @@ impl ThreadItem {
             airc_cursor: 0,
             dependency_wait: None,
             agent_session: None,
+            provider_queued: false,
             transcript: Vec::new(),
             supervision: Default::default(),
             review_stage: None,
@@ -774,6 +784,7 @@ impl ThreadItem {
             airc_cursor: 0,
             dependency_wait: None,
             agent_session: None,
+            provider_queued: false,
             transcript: Vec::new(),
             supervision: Default::default(),
             review_stage: None,
@@ -1174,10 +1185,22 @@ impl StateStore {
     }
 
     pub fn settings(&self) -> Settings {
-        self.state.settings.clone()
+        let mut settings = self.state.settings.clone();
+        // A detached snapshot must retain the same default root as this store's preview.
+        settings
+            .worktrees
+            .location_root
+            .get_or_insert_with(|| worktree_settings::default_worktree_root(&self.directory));
+        settings
     }
 
-    pub fn set_settings(&mut self, next_settings: Settings) -> Result<Settings, StoreError> {
+    pub fn set_settings(&mut self, mut next_settings: Settings) -> Result<Settings, StoreError> {
+        // Keep the implicit default implicit on disk after editing a resolved snapshot.
+        if next_settings.worktrees.location_root.as_deref()
+            == Some(worktree_settings::default_worktree_root(&self.directory).as_str())
+        {
+            next_settings.worktrees.location_root = None;
+        }
         let agents = &next_settings.agents;
         if agents.stall_timeout_minutes == 0
             || agents.tool_timeout_minutes == 0
@@ -1193,7 +1216,7 @@ impl StateStore {
             self.state.apply_settings(next_settings);
         }
         self.save_if_changed()?;
-        Ok(self.state.settings.clone())
+        Ok(self.settings())
     }
 
     pub fn save_if_changed(&mut self) -> Result<bool, StoreError> {

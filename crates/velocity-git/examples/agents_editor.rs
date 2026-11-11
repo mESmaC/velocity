@@ -1,6 +1,6 @@
 //! Headless F11 entry point: `cargo run -p velocity-git --example agents_editor -- <checkout>`.
 //! Commands: list, markdown, edit <id> <text>, enter/indent/outdent/up/down/delete <id>,
-//! rule [section-id], section, save, quit. Edits stay in memory until Save.
+//! rule [section-id], section, reload, save, quit. Edits stay in memory until Save.
 
 use std::error::Error;
 use std::io::{self, BufRead};
@@ -24,6 +24,10 @@ fn main() -> Result<(), Box<dyn Error>> {
             "quit" => break,
             "list" => show(&snapshot),
             "markdown" => print!("{}", snapshot.markdown),
+            "reload" => {
+                snapshot = documents.reload(&directory)?;
+                show(&snapshot);
+            }
             "save" => match documents.save(&directory) {
                 Ok(saved) => {
                     snapshot = saved;

@@ -4,10 +4,12 @@ pub mod claims;
 mod delivery;
 mod event_log;
 mod launch;
+mod presence;
 mod protocol;
 mod rebase;
 mod routing;
 mod storage;
+mod tail;
 mod tasks;
 pub mod waits;
 

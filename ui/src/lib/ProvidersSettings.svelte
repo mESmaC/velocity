@@ -170,6 +170,33 @@
           ><i style={`width: ${provider.limit.percent_used}%`}></i></span
         >{provider.limit.label}
       </div>{/if}
+    <div class="pv-command">
+      <label class="pv-command-input"
+        >Max agents at once
+        <input
+          type="number"
+          min="1"
+          max="4294967295"
+          step="1"
+          aria-label={provider.name + ' Max agents at once'}
+          placeholder="Off"
+          value={provider.max_agents ?? ''}
+          onkeydown={(event) =>
+            commandKey(event, String(provider.max_agents ?? ''))}
+          onchange={(event) => {
+            const field = event.currentTarget;
+            if (field.value !== '' && !field.reportValidity()) return;
+            edit({
+              MaxAgents: {
+                provider: provider.provider,
+                maximum: field.value === '' ? null : field.valueAsNumber,
+              },
+            });
+          }}
+        />
+      </label>
+      <span>Off when empty</span>
+    </div>
     {#if provider.models.length}<div class="pv-models">
         <span>Models</span>
         {#each provider.models as chip (chip.model)}<button
