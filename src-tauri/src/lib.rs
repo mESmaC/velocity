@@ -42,8 +42,6 @@ mod window;
 mod work_pool;
 mod worktree_settings;
 
-pub use layout::{apply_agent_event, record_agent_event};
-
 fn bindings() -> Builder<tauri::Wry> {
     // Export event payloads/names without the generator's `any`-typed helpers;
     // ipc.ts supplies typed listeners, while run() registers native emitters.

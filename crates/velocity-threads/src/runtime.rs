@@ -255,6 +255,8 @@ impl ThreadRuntimes {
         thread.steering = steering;
         thread.phase = SessionPhase::Running;
         thread.log_tail.clear();
+        // Commands belong to the new session; it may advertise a different set or none.
+        thread.agent_commands = Some(Vec::new());
         self.parked.remove(&key);
         Ok(receiver)
     }
