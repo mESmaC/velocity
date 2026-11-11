@@ -464,6 +464,8 @@ When the task is done, the agent opens a PR. The PR description links the Task L
 
 Draft claims keep the coding transcript until the PR is ready. The watcher follows the thread's same-repository branch and excludes historical PRs from earlier uses of that branch. New review work is saved before delivery and remains pending until its ACP prompt completes; after a restart it resumes in the retained worktree. The PR author's own progress replies remain in history without prompting another response. Merge cleanup and explicit deletion (F12) share the thread's lifecycle lock and wait for confirmed shutdown of its agent and owned terminals before removing the checkout.
 
+The watcher reads GitHub every 15 seconds, with one query per project that lists the open PRs and the most recently closed or merged ones. The query also reads the fields that show a change: the update time; the comment, review and thread counts; each thread's resolved state; and the head's checks. A PR is read in full only when those fields moved since its last full read, when Velocity has not read it since starting, and every 30 minutes while it is open, which catches an edited inline review comment. A thread whose PR it does not follow, such as a draft claim, costs no request. Every `gh` call is counted by the code that made it, and the totals are written to `github-requests.log` in the app data folder each minute.
+
 - **PR track** under the header: Task done → Proved → PR #n → CI → Review → Merged → Worktree deleted. A closed PR shows: … → Closed without merging → Worktree kept.
 - **The transcript switches to the PR history:**
   - the coding work, collapsed to one line ("N tool calls · N files · +a −d · proved" with a Show work button)
