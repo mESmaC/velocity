@@ -1659,21 +1659,37 @@ export type LayoutIntentRequested_Serialize = {
 	intent: LayoutIntent_Serialize,
 };
 
-export type LayoutIntent_Deserialize = ({ Navigation: NavigationIntent_Deserialize }) & { AddTask?: never; DispatchIssue?: never; OpenIssue?: never; OpenPullRequest?: never; OpenTask?: never; OpenWorktreeInExplorer?: never; SettingsTab?: never; StartPrompt?: never; SteerThread?: never; SwitchProject?: never; ToggleProofListEntry?: never } | ({ SwitchProject: string }) & { AddTask?: never; DispatchIssue?: never; Navigation?: never; OpenIssue?: never; OpenPullRequest?: never; OpenTask?: never; OpenWorktreeInExplorer?: never; SettingsTab?: never; StartPrompt?: never; SteerThread?: never; ToggleProofListEntry?: never } | ({ DispatchIssue: string }) & { AddTask?: never; Navigation?: never; OpenIssue?: never; OpenPullRequest?: never; OpenTask?: never; OpenWorktreeInExplorer?: never; SettingsTab?: never; StartPrompt?: never; SteerThread?: never; SwitchProject?: never; ToggleProofListEntry?: never } | "SwarmIssues" | ({ OpenTask: string }) & { AddTask?: never; DispatchIssue?: never; Navigation?: never; OpenIssue?: never; OpenPullRequest?: never; OpenWorktreeInExplorer?: never; SettingsTab?: never; StartPrompt?: never; SteerThread?: never; SwitchProject?: never; ToggleProofListEntry?: never } | ({ OpenPullRequest: string }) & { AddTask?: never; DispatchIssue?: never; Navigation?: never; OpenIssue?: never; OpenTask?: never; OpenWorktreeInExplorer?: never; SettingsTab?: never; StartPrompt?: never; SteerThread?: never; SwitchProject?: never; ToggleProofListEntry?: never } | ({ OpenIssue: string }) & { AddTask?: never; DispatchIssue?: never; Navigation?: never; OpenPullRequest?: never; OpenTask?: never; OpenWorktreeInExplorer?: never; SettingsTab?: never; StartPrompt?: never; SteerThread?: never; SwitchProject?: never; ToggleProofListEntry?: never } | ({ OpenWorktreeInExplorer: string }) & { AddTask?: never; DispatchIssue?: never; Navigation?: never; OpenIssue?: never; OpenPullRequest?: never; OpenTask?: never; SettingsTab?: never; StartPrompt?: never; SteerThread?: never; SwitchProject?: never; ToggleProofListEntry?: never } | ({ SettingsTab: string }) & { AddTask?: never; DispatchIssue?: never; Navigation?: never; OpenIssue?: never; OpenPullRequest?: never; OpenTask?: never; OpenWorktreeInExplorer?: never; StartPrompt?: never; SteerThread?: never; SwitchProject?: never; ToggleProofListEntry?: never } | "Usage" | "Updates" | ({ StartPrompt: string }) & { AddTask?: never; DispatchIssue?: never; Navigation?: never; OpenIssue?: never; OpenPullRequest?: never; OpenTask?: never; OpenWorktreeInExplorer?: never; SettingsTab?: never; SteerThread?: never; SwitchProject?: never; ToggleProofListEntry?: never } | ({ SteerThread: {
+export type LayoutIntent_Deserialize = ({ Navigation: NavigationIntent_Deserialize }) & { AddTask?: never; DispatchIssue?: never; OpenIssue?: never; OpenPullRequest?: never; OpenTask?: never; OpenWorktreeInExplorer?: never; RemoveQueuedMessage?: never; SettingsTab?: never; StartPrompt?: never; SteerThread?: never; SwitchProject?: never; ToggleProofListEntry?: never } | ({ SwitchProject: string }) & { AddTask?: never; DispatchIssue?: never; Navigation?: never; OpenIssue?: never; OpenPullRequest?: never; OpenTask?: never; OpenWorktreeInExplorer?: never; RemoveQueuedMessage?: never; SettingsTab?: never; StartPrompt?: never; SteerThread?: never; ToggleProofListEntry?: never } | ({ DispatchIssue: string }) & { AddTask?: never; Navigation?: never; OpenIssue?: never; OpenPullRequest?: never; OpenTask?: never; OpenWorktreeInExplorer?: never; RemoveQueuedMessage?: never; SettingsTab?: never; StartPrompt?: never; SteerThread?: never; SwitchProject?: never; ToggleProofListEntry?: never } | "SwarmIssues" | ({ OpenTask: string }) & { AddTask?: never; DispatchIssue?: never; Navigation?: never; OpenIssue?: never; OpenPullRequest?: never; OpenWorktreeInExplorer?: never; RemoveQueuedMessage?: never; SettingsTab?: never; StartPrompt?: never; SteerThread?: never; SwitchProject?: never; ToggleProofListEntry?: never } | ({ OpenPullRequest: string }) & { AddTask?: never; DispatchIssue?: never; Navigation?: never; OpenIssue?: never; OpenTask?: never; OpenWorktreeInExplorer?: never; RemoveQueuedMessage?: never; SettingsTab?: never; StartPrompt?: never; SteerThread?: never; SwitchProject?: never; ToggleProofListEntry?: never } | ({ OpenIssue: string }) & { AddTask?: never; DispatchIssue?: never; Navigation?: never; OpenPullRequest?: never; OpenTask?: never; OpenWorktreeInExplorer?: never; RemoveQueuedMessage?: never; SettingsTab?: never; StartPrompt?: never; SteerThread?: never; SwitchProject?: never; ToggleProofListEntry?: never } | ({ OpenWorktreeInExplorer: string }) & { AddTask?: never; DispatchIssue?: never; Navigation?: never; OpenIssue?: never; OpenPullRequest?: never; OpenTask?: never; RemoveQueuedMessage?: never; SettingsTab?: never; StartPrompt?: never; SteerThread?: never; SwitchProject?: never; ToggleProofListEntry?: never } | ({ SettingsTab: string }) & { AddTask?: never; DispatchIssue?: never; Navigation?: never; OpenIssue?: never; OpenPullRequest?: never; OpenTask?: never; OpenWorktreeInExplorer?: never; RemoveQueuedMessage?: never; StartPrompt?: never; SteerThread?: never; SwitchProject?: never; ToggleProofListEntry?: never } | "Usage" | "Updates" | ({ StartPrompt: string }) & { AddTask?: never; DispatchIssue?: never; Navigation?: never; OpenIssue?: never; OpenPullRequest?: never; OpenTask?: never; OpenWorktreeInExplorer?: never; RemoveQueuedMessage?: never; SettingsTab?: never; SteerThread?: never; SwitchProject?: never; ToggleProofListEntry?: never } | ({ SteerThread: {
 	identifier: string,
 	prompt: string,
 	queued: boolean,
-} }) & { AddTask?: never; DispatchIssue?: never; Navigation?: never; OpenIssue?: never; OpenPullRequest?: never; OpenTask?: never; OpenWorktreeInExplorer?: never; SettingsTab?: never; StartPrompt?: never; SwitchProject?: never; ToggleProofListEntry?: never } | ({ AddTask: string }) & { DispatchIssue?: never; Navigation?: never; OpenIssue?: never; OpenPullRequest?: never; OpenTask?: never; OpenWorktreeInExplorer?: never; SettingsTab?: never; StartPrompt?: never; SteerThread?: never; SwitchProject?: never; ToggleProofListEntry?: never } | 
+} }) & { AddTask?: never; DispatchIssue?: never; Navigation?: never; OpenIssue?: never; OpenPullRequest?: never; OpenTask?: never; OpenWorktreeInExplorer?: never; RemoveQueuedMessage?: never; SettingsTab?: never; StartPrompt?: never; SwitchProject?: never; ToggleProofListEntry?: never } | 
+/**
+ *  Withdraws a message you queued that the agent has not read yet (F4). `index` counts
+ *  the thread's queued rows, oldest first.
+ */
+({ RemoveQueuedMessage: {
+	identifier: string,
+	index: string,
+} }) & { AddTask?: never; DispatchIssue?: never; Navigation?: never; OpenIssue?: never; OpenPullRequest?: never; OpenTask?: never; OpenWorktreeInExplorer?: never; SettingsTab?: never; StartPrompt?: never; SteerThread?: never; SwitchProject?: never; ToggleProofListEntry?: never } | ({ AddTask: string }) & { DispatchIssue?: never; Navigation?: never; OpenIssue?: never; OpenPullRequest?: never; OpenTask?: never; OpenWorktreeInExplorer?: never; RemoveQueuedMessage?: never; SettingsTab?: never; StartPrompt?: never; SteerThread?: never; SwitchProject?: never; ToggleProofListEntry?: never } | 
 /**  Ready card: include or leave out one proposed proof-list entry (F3, F17). */
-({ ToggleProofListEntry: string }) & { AddTask?: never; DispatchIssue?: never; Navigation?: never; OpenIssue?: never; OpenPullRequest?: never; OpenTask?: never; OpenWorktreeInExplorer?: never; SettingsTab?: never; StartPrompt?: never; SteerThread?: never; SwitchProject?: never };
+({ ToggleProofListEntry: string }) & { AddTask?: never; DispatchIssue?: never; Navigation?: never; OpenIssue?: never; OpenPullRequest?: never; OpenTask?: never; OpenWorktreeInExplorer?: never; RemoveQueuedMessage?: never; SettingsTab?: never; StartPrompt?: never; SteerThread?: never; SwitchProject?: never };
 
-export type LayoutIntent_Serialize = ({ Navigation: NavigationIntent_Serialize }) & { AddTask?: never; DispatchIssue?: never; OpenIssue?: never; OpenPullRequest?: never; OpenTask?: never; OpenWorktreeInExplorer?: never; SettingsTab?: never; StartPrompt?: never; SteerThread?: never; SwitchProject?: never; ToggleProofListEntry?: never } | ({ SwitchProject: string }) & { AddTask?: never; DispatchIssue?: never; Navigation?: never; OpenIssue?: never; OpenPullRequest?: never; OpenTask?: never; OpenWorktreeInExplorer?: never; SettingsTab?: never; StartPrompt?: never; SteerThread?: never; ToggleProofListEntry?: never } | ({ DispatchIssue: string }) & { AddTask?: never; Navigation?: never; OpenIssue?: never; OpenPullRequest?: never; OpenTask?: never; OpenWorktreeInExplorer?: never; SettingsTab?: never; StartPrompt?: never; SteerThread?: never; SwitchProject?: never; ToggleProofListEntry?: never } | "SwarmIssues" | ({ OpenTask: string }) & { AddTask?: never; DispatchIssue?: never; Navigation?: never; OpenIssue?: never; OpenPullRequest?: never; OpenWorktreeInExplorer?: never; SettingsTab?: never; StartPrompt?: never; SteerThread?: never; SwitchProject?: never; ToggleProofListEntry?: never } | ({ OpenPullRequest: string }) & { AddTask?: never; DispatchIssue?: never; Navigation?: never; OpenIssue?: never; OpenTask?: never; OpenWorktreeInExplorer?: never; SettingsTab?: never; StartPrompt?: never; SteerThread?: never; SwitchProject?: never; ToggleProofListEntry?: never } | ({ OpenIssue: string }) & { AddTask?: never; DispatchIssue?: never; Navigation?: never; OpenPullRequest?: never; OpenTask?: never; OpenWorktreeInExplorer?: never; SettingsTab?: never; StartPrompt?: never; SteerThread?: never; SwitchProject?: never; ToggleProofListEntry?: never } | ({ OpenWorktreeInExplorer: string }) & { AddTask?: never; DispatchIssue?: never; Navigation?: never; OpenIssue?: never; OpenPullRequest?: never; OpenTask?: never; SettingsTab?: never; StartPrompt?: never; SteerThread?: never; SwitchProject?: never; ToggleProofListEntry?: never } | ({ SettingsTab: string }) & { AddTask?: never; DispatchIssue?: never; Navigation?: never; OpenIssue?: never; OpenPullRequest?: never; OpenTask?: never; OpenWorktreeInExplorer?: never; StartPrompt?: never; SteerThread?: never; SwitchProject?: never; ToggleProofListEntry?: never } | "Usage" | "Updates" | ({ StartPrompt: string }) & { AddTask?: never; DispatchIssue?: never; Navigation?: never; OpenIssue?: never; OpenPullRequest?: never; OpenTask?: never; OpenWorktreeInExplorer?: never; SettingsTab?: never; SteerThread?: never; SwitchProject?: never; ToggleProofListEntry?: never } | ({ SteerThread: {
+export type LayoutIntent_Serialize = ({ Navigation: NavigationIntent_Serialize }) & { AddTask?: never; DispatchIssue?: never; OpenIssue?: never; OpenPullRequest?: never; OpenTask?: never; OpenWorktreeInExplorer?: never; RemoveQueuedMessage?: never; SettingsTab?: never; StartPrompt?: never; SteerThread?: never; SwitchProject?: never; ToggleProofListEntry?: never } | ({ SwitchProject: string }) & { AddTask?: never; DispatchIssue?: never; Navigation?: never; OpenIssue?: never; OpenPullRequest?: never; OpenTask?: never; OpenWorktreeInExplorer?: never; RemoveQueuedMessage?: never; SettingsTab?: never; StartPrompt?: never; SteerThread?: never; ToggleProofListEntry?: never } | ({ DispatchIssue: string }) & { AddTask?: never; Navigation?: never; OpenIssue?: never; OpenPullRequest?: never; OpenTask?: never; OpenWorktreeInExplorer?: never; RemoveQueuedMessage?: never; SettingsTab?: never; StartPrompt?: never; SteerThread?: never; SwitchProject?: never; ToggleProofListEntry?: never } | "SwarmIssues" | ({ OpenTask: string }) & { AddTask?: never; DispatchIssue?: never; Navigation?: never; OpenIssue?: never; OpenPullRequest?: never; OpenWorktreeInExplorer?: never; RemoveQueuedMessage?: never; SettingsTab?: never; StartPrompt?: never; SteerThread?: never; SwitchProject?: never; ToggleProofListEntry?: never } | ({ OpenPullRequest: string }) & { AddTask?: never; DispatchIssue?: never; Navigation?: never; OpenIssue?: never; OpenTask?: never; OpenWorktreeInExplorer?: never; RemoveQueuedMessage?: never; SettingsTab?: never; StartPrompt?: never; SteerThread?: never; SwitchProject?: never; ToggleProofListEntry?: never } | ({ OpenIssue: string }) & { AddTask?: never; DispatchIssue?: never; Navigation?: never; OpenPullRequest?: never; OpenTask?: never; OpenWorktreeInExplorer?: never; RemoveQueuedMessage?: never; SettingsTab?: never; StartPrompt?: never; SteerThread?: never; SwitchProject?: never; ToggleProofListEntry?: never } | ({ OpenWorktreeInExplorer: string }) & { AddTask?: never; DispatchIssue?: never; Navigation?: never; OpenIssue?: never; OpenPullRequest?: never; OpenTask?: never; RemoveQueuedMessage?: never; SettingsTab?: never; StartPrompt?: never; SteerThread?: never; SwitchProject?: never; ToggleProofListEntry?: never } | ({ SettingsTab: string }) & { AddTask?: never; DispatchIssue?: never; Navigation?: never; OpenIssue?: never; OpenPullRequest?: never; OpenTask?: never; OpenWorktreeInExplorer?: never; RemoveQueuedMessage?: never; StartPrompt?: never; SteerThread?: never; SwitchProject?: never; ToggleProofListEntry?: never } | "Usage" | "Updates" | ({ StartPrompt: string }) & { AddTask?: never; DispatchIssue?: never; Navigation?: never; OpenIssue?: never; OpenPullRequest?: never; OpenTask?: never; OpenWorktreeInExplorer?: never; RemoveQueuedMessage?: never; SettingsTab?: never; SteerThread?: never; SwitchProject?: never; ToggleProofListEntry?: never } | ({ SteerThread: {
 	identifier: string,
 	prompt: string,
 	queued: boolean,
-} }) & { AddTask?: never; DispatchIssue?: never; Navigation?: never; OpenIssue?: never; OpenPullRequest?: never; OpenTask?: never; OpenWorktreeInExplorer?: never; SettingsTab?: never; StartPrompt?: never; SwitchProject?: never; ToggleProofListEntry?: never } | ({ AddTask: string }) & { DispatchIssue?: never; Navigation?: never; OpenIssue?: never; OpenPullRequest?: never; OpenTask?: never; OpenWorktreeInExplorer?: never; SettingsTab?: never; StartPrompt?: never; SteerThread?: never; SwitchProject?: never; ToggleProofListEntry?: never } | 
+} }) & { AddTask?: never; DispatchIssue?: never; Navigation?: never; OpenIssue?: never; OpenPullRequest?: never; OpenTask?: never; OpenWorktreeInExplorer?: never; RemoveQueuedMessage?: never; SettingsTab?: never; StartPrompt?: never; SwitchProject?: never; ToggleProofListEntry?: never } | 
+/**
+ *  Withdraws a message you queued that the agent has not read yet (F4). `index` counts
+ *  the thread's queued rows, oldest first.
+ */
+({ RemoveQueuedMessage: {
+	identifier: string,
+	index: string,
+} }) & { AddTask?: never; DispatchIssue?: never; Navigation?: never; OpenIssue?: never; OpenPullRequest?: never; OpenTask?: never; OpenWorktreeInExplorer?: never; SettingsTab?: never; StartPrompt?: never; SteerThread?: never; SwitchProject?: never; ToggleProofListEntry?: never } | ({ AddTask: string }) & { DispatchIssue?: never; Navigation?: never; OpenIssue?: never; OpenPullRequest?: never; OpenTask?: never; OpenWorktreeInExplorer?: never; RemoveQueuedMessage?: never; SettingsTab?: never; StartPrompt?: never; SteerThread?: never; SwitchProject?: never; ToggleProofListEntry?: never } | 
 /**  Ready card: include or leave out one proposed proof-list entry (F3, F17). */
-({ ToggleProofListEntry: string }) & { AddTask?: never; DispatchIssue?: never; Navigation?: never; OpenIssue?: never; OpenPullRequest?: never; OpenTask?: never; OpenWorktreeInExplorer?: never; SettingsTab?: never; StartPrompt?: never; SteerThread?: never; SwitchProject?: never };
+({ ToggleProofListEntry: string }) & { AddTask?: never; DispatchIssue?: never; Navigation?: never; OpenIssue?: never; OpenPullRequest?: never; OpenTask?: never; OpenWorktreeInExplorer?: never; RemoveQueuedMessage?: never; SettingsTab?: never; StartPrompt?: never; SteerThread?: never; SwitchProject?: never };
 
 export type LayoutSnapshot = LayoutSnapshot_Serialize | LayoutSnapshot_Deserialize;
 
@@ -4346,46 +4362,62 @@ export type TranscriptBlock = TranscriptBlock_Serialize | TranscriptBlock_Deseri
 export type TranscriptBlock_Deserialize = ({ UserMessage: {
 	text: string,
 	queued: boolean,
-} }) & { AgentMessage?: never; Decision?: never; Diff?: never; ErrorCard?: never; StatusLine?: never; ToolGroup?: never } | ({ AgentMessage: {
+} }) & { AgentMessage?: never; Decision?: never; Diff?: never; ErrorCard?: never; Notice?: never; StatusLine?: never; ToolGroup?: never } | ({ AgentMessage: {
 	paragraphs: string[],
-} }) & { Decision?: never; Diff?: never; ErrorCard?: never; StatusLine?: never; ToolGroup?: never; UserMessage?: never } | ({ ToolGroup: {
+} }) & { Decision?: never; Diff?: never; ErrorCard?: never; Notice?: never; StatusLine?: never; ToolGroup?: never; UserMessage?: never } | ({ ToolGroup: {
 	steps: ToolStepRow[],
-} }) & { AgentMessage?: never; Decision?: never; Diff?: never; ErrorCard?: never; StatusLine?: never; UserMessage?: never } | ({ Diff: {
+} }) & { AgentMessage?: never; Decision?: never; Diff?: never; ErrorCard?: never; Notice?: never; StatusLine?: never; UserMessage?: never } | ({ Diff: {
 	block: DiffBlockView_Deserialize,
-} }) & { AgentMessage?: never; Decision?: never; ErrorCard?: never; StatusLine?: never; ToolGroup?: never; UserMessage?: never } | ({ StatusLine: {
+} }) & { AgentMessage?: never; Decision?: never; ErrorCard?: never; Notice?: never; StatusLine?: never; ToolGroup?: never; UserMessage?: never } | ({ StatusLine: {
 	running: boolean,
 	text: string,
-} }) & { AgentMessage?: never; Decision?: never; Diff?: never; ErrorCard?: never; ToolGroup?: never; UserMessage?: never } | ({ ErrorCard: {
+} }) & { AgentMessage?: never; Decision?: never; Diff?: never; ErrorCard?: never; Notice?: never; ToolGroup?: never; UserMessage?: never } | ({ ErrorCard: {
 	card: ErrorCardView,
-} }) & { AgentMessage?: never; Decision?: never; Diff?: never; StatusLine?: never; ToolGroup?: never; UserMessage?: never } | 
+} }) & { AgentMessage?: never; Decision?: never; Diff?: never; Notice?: never; StatusLine?: never; ToolGroup?: never; UserMessage?: never } | 
 /**  A spec interview answer recorded as a decision (F3). */
 ({ Decision: {
 	question: string,
 	key: string,
 	value: string,
-} }) & { AgentMessage?: never; Diff?: never; ErrorCard?: never; StatusLine?: never; ToolGroup?: never; UserMessage?: never };
+} }) & { AgentMessage?: never; Diff?: never; ErrorCard?: never; Notice?: never; StatusLine?: never; ToolGroup?: never; UserMessage?: never } | 
+/**
+ *  A line Velocity delivered to the agent (an F14 "via AIRC" message or event, a PR
+ *  follow-through notice), shown once the agent read it. It is never a user message
+ *  and never sits in the composer queue (#231).
+ */
+({ Notice: {
+	text: string,
+} }) & { AgentMessage?: never; Decision?: never; Diff?: never; ErrorCard?: never; StatusLine?: never; ToolGroup?: never; UserMessage?: never };
 
 export type TranscriptBlock_Serialize = ({ UserMessage: {
 	text: string,
 	queued: boolean,
-} }) & { AgentMessage?: never; Decision?: never; Diff?: never; ErrorCard?: never; StatusLine?: never; ToolGroup?: never } | ({ AgentMessage: {
+} }) & { AgentMessage?: never; Decision?: never; Diff?: never; ErrorCard?: never; Notice?: never; StatusLine?: never; ToolGroup?: never } | ({ AgentMessage: {
 	paragraphs: string[],
-} }) & { Decision?: never; Diff?: never; ErrorCard?: never; StatusLine?: never; ToolGroup?: never; UserMessage?: never } | ({ ToolGroup: {
+} }) & { Decision?: never; Diff?: never; ErrorCard?: never; Notice?: never; StatusLine?: never; ToolGroup?: never; UserMessage?: never } | ({ ToolGroup: {
 	steps: ToolStepRow[],
-} }) & { AgentMessage?: never; Decision?: never; Diff?: never; ErrorCard?: never; StatusLine?: never; UserMessage?: never } | ({ Diff: {
+} }) & { AgentMessage?: never; Decision?: never; Diff?: never; ErrorCard?: never; Notice?: never; StatusLine?: never; UserMessage?: never } | ({ Diff: {
 	block: DiffBlockView_Serialize,
-} }) & { AgentMessage?: never; Decision?: never; ErrorCard?: never; StatusLine?: never; ToolGroup?: never; UserMessage?: never } | ({ StatusLine: {
+} }) & { AgentMessage?: never; Decision?: never; ErrorCard?: never; Notice?: never; StatusLine?: never; ToolGroup?: never; UserMessage?: never } | ({ StatusLine: {
 	running: boolean,
 	text: string,
-} }) & { AgentMessage?: never; Decision?: never; Diff?: never; ErrorCard?: never; ToolGroup?: never; UserMessage?: never } | ({ ErrorCard: {
+} }) & { AgentMessage?: never; Decision?: never; Diff?: never; ErrorCard?: never; Notice?: never; ToolGroup?: never; UserMessage?: never } | ({ ErrorCard: {
 	card: ErrorCardView,
-} }) & { AgentMessage?: never; Decision?: never; Diff?: never; StatusLine?: never; ToolGroup?: never; UserMessage?: never } | 
+} }) & { AgentMessage?: never; Decision?: never; Diff?: never; Notice?: never; StatusLine?: never; ToolGroup?: never; UserMessage?: never } | 
 /**  A spec interview answer recorded as a decision (F3). */
 ({ Decision: {
 	question: string,
 	key: string,
 	value: string,
-} }) & { AgentMessage?: never; Diff?: never; ErrorCard?: never; StatusLine?: never; ToolGroup?: never; UserMessage?: never };
+} }) & { AgentMessage?: never; Diff?: never; ErrorCard?: never; Notice?: never; StatusLine?: never; ToolGroup?: never; UserMessage?: never } | 
+/**
+ *  A line Velocity delivered to the agent (an F14 "via AIRC" message or event, a PR
+ *  follow-through notice), shown once the agent read it. It is never a user message
+ *  and never sits in the composer queue (#231).
+ */
+({ Notice: {
+	text: string,
+} }) & { AgentMessage?: never; Decision?: never; Diff?: never; ErrorCard?: never; StatusLine?: never; ToolGroup?: never; UserMessage?: never };
 
 export type TranscriptModeView = "FullTranscript" | "CollapsedWithPrHistory" | "ExpandedWithPrHistory";
 
