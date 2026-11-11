@@ -60,6 +60,31 @@ struct ReviewArguments {
     reason: String,
     #[serde(default)]
     comments: Vec<NewReviewComment>,
+    #[serde(default)]
+    proof_review: Option<ProofReview>,
+}
+
+/// The semantic checks remain the reviewing agent's job, and are recorded in its review.
+#[derive(Deserialize)]
+struct ProofReview {
+    scope: String,
+    statements: String,
+    confidence: String,
+}
+
+impl ProofReview {
+    fn evidence(&self) -> Result<String, PullRequestError> {
+        if [&self.scope, &self.statements, &self.confidence]
+            .iter()
+            .any(|reason| reason.trim().is_empty())
+        {
+            return Err(PullRequestError::Invalid("Explain proof scope, statement review and confidence level (or why each is inapplicable)".into()));
+        }
+        Ok(format!(
+            "\n\nProof review:\n- Scope: {}\n- Statements: {}\n- Confidence: {}",
+            self.scope, self.statements, self.confidence
+        ))
+    }
 }
 
 #[derive(Clone, Copy, Deserialize)]
@@ -132,40 +157,29 @@ impl PrDutyServer {
             ReviewChoice::RequestChanges => ReviewAction::RequestChanges,
             ReviewChoice::Comment => ReviewAction::Comment,
         };
-        // Read before approving, so an approval never stands without its lock.
-        let lock = match (arguments.action, &self.statement_lock) {
-            (ReviewChoice::Approve, Some(place)) => Some(
-                velocity_proofs::statements_at(&place.worktree, &arguments.head).map_err(
-                    |error| {
-                        PullRequestError::Invalid(format!(
-                            "Could not lock the theorem statements at {}: {error}",
-                            arguments.head
-                        ))
-                    },
-                )?,
-            ),
-            _ => None,
-        };
+        let mut reason = arguments.reason;
+        if matches!(arguments.action, ReviewChoice::Approve) {
+            reason.push_str(
+                &arguments
+                    .proof_review
+                    .as_ref()
+                    .ok_or_else(|| {
+                        PullRequestError::Invalid(
+                            "Approval requires proof_review: scope, statements, confidence".into(),
+                        )
+                    })?
+                    .evidence()?,
+            );
+            self.validate_proofs(&arguments.head)?;
+            self.save_approval_lock(&arguments.head)?;
+        }
         let receipt = self.client()?.execute(PullRequestOperation::Review {
             number: self.number,
             expected_head: arguments.head.clone(),
             action,
-            body: arguments.reason,
+            body: reason,
             comments: arguments.comments,
         })?;
-        if let (Some(lock), Some(place)) = (lock, &self.statement_lock) {
-            velocity_proofs::save_statement_lock(
-                &place.app_data,
-                &place.project,
-                self.number,
-                &lock,
-            )
-            .map_err(|error| {
-                PullRequestError::Invalid(format!(
-                    "Approved, but the statement lock could not be saved: {error}"
-                ))
-            })?;
-        }
         let (number, head) = (self.number, arguments.head);
         self.record(&match arguments.action {
             ReviewChoice::Approve => PrDutyReport::Approved { number, head },
@@ -173,6 +187,21 @@ impl PrDutyServer {
             ReviewChoice::Comment => PrDutyReport::Commented { number },
         });
         Ok(serde_json::to_value(receipt)?)
+    }
+
+    fn save_approval_lock(&self, head: &str) -> Result<(), PullRequestError> {
+        let place = self
+            .statement_lock
+            .as_ref()
+            .ok_or_else(|| PullRequestError::Invalid("Missing statement lock location".into()))?;
+        // Persist before publishing: a failed write must never leave a new approval standing.
+        let lock = velocity_proofs::statements_at(&place.worktree, head).map_err(|error| {
+            PullRequestError::Invalid(format!("Could not read theorem statements: {error}"))
+        })?;
+        velocity_proofs::save_statement_lock(&place.app_data, &place.project, self.number, &lock)
+            .map_err(|error| {
+                PullRequestError::Invalid(format!("Could not save statement lock: {error}"))
+            })
     }
 
     fn prepare_landing(&mut self) -> Result<Value, PullRequestError> {
@@ -203,6 +232,10 @@ impl PrDutyServer {
                 "Head or base moved: prepare and check again".into(),
             ));
         }
+        let place = self.statement_lock.as_ref().ok_or_else(|| {
+            PullRequestError::Invalid("Proof gate requires a registered review worktree".into())
+        })?;
+        crate::check_proof_gate(&place.worktree, base, head)?;
         self.checked = Some(prepared.clone());
         Ok(json!({"checked": true, "head": head, "base": base}))
     }
@@ -221,6 +254,8 @@ impl PrDutyServer {
                 "The merge result changed: prepare landing and rebuild it".into(),
             ));
         }
+        self.validate_proofs(&arguments.head)?;
+        self.validate_statement_lock(&arguments.head)?;
         let merged = self.client()?.execute(PullRequestOperation::Merge {
             number: self.number,
             expected_head: arguments.head,
@@ -242,6 +277,46 @@ impl PrDutyServer {
                 Err(error)
             }
         }
+    }
+
+    fn validate_proofs(&self, head: &str) -> Result<(), PullRequestError> {
+        let checked = self
+            .checked
+            .as_ref()
+            .filter(|checked| checked.head == head)
+            .ok_or_else(|| {
+                PullRequestError::Invalid(
+                    "Prepare landing and run pr_duty_checked before approving or merging".into(),
+                )
+            })?;
+        if self.client()?.base_head(self.number)? != checked.base {
+            return Err(PullRequestError::Invalid(
+                "Base moved: prepare landing and check again".into(),
+            ));
+        }
+        let place = self.statement_lock.as_ref().ok_or_else(|| {
+            PullRequestError::Invalid("Proof gate requires a registered review worktree".into())
+        })?;
+        crate::check_proof_gate(&place.worktree, &checked.base, head)
+    }
+
+    fn validate_statement_lock(&self, head: &str) -> Result<(), PullRequestError> {
+        let place = self
+            .statement_lock
+            .as_ref()
+            .ok_or_else(|| PullRequestError::Invalid("Missing statement lock location".into()))?;
+        let result = (|| {
+            let lock =
+                velocity_proofs::load_statement_lock(&place.app_data, &place.project, self.number)?;
+            let current = velocity_proofs::statements_at(&place.worktree, head)?;
+            Ok::<_, velocity_proofs::ProofCheckError>(
+                lock.is_some_and(|lock| lock.changed_in(&current).is_empty()),
+            )
+        })();
+        if !matches!(result, Ok(true)) {
+            return Err(PullRequestError::Invalid("Statement lock missing, unreadable or changed: review and approve this head afresh".into()));
+        }
+        Ok(())
     }
 
     /// The feed is a convenience; a report that can't be written never undoes a decision.
@@ -316,6 +391,13 @@ fn review_tool(number: u32, string: &Value, head: &Value) -> Value {
                 "action": {"type": "string", "enum": ["approve", "request_changes", "comment"]},
                 "head": head,
                 "reason": string,
+                "proof_review": {
+                    "type": "object",
+                    "description": "Required for approve. Explain scope against the project proof list (missing required design proofs or off-list Lean block approval); statement correctness, hypotheses, cost model and alternatives; confidence level and tier requirements. Explain inapplicability for ordinary changes. Never approve unmet requirements.",
+                    "properties": {"scope": string, "statements": string, "confidence": string},
+                    "required": ["scope", "statements", "confidence"],
+                    "additionalProperties": false
+                },
                 "comments": {
                     "type": "array",
                     "description": "Inline comments on the diff.",
