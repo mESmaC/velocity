@@ -1,5 +1,6 @@
 <script lang="ts">
   import type { LayoutAction, SlashCommandItem } from './ipc';
+  import { pop } from './motion';
   let {
     items,
     selected,
@@ -16,7 +17,7 @@
 </script>
 
 {#if items.length > 0}
-  <div class="slash-menu" role="listbox" aria-label={label}>
+  <div class="slash-menu" role="listbox" aria-label={label} in:pop out:pop>
     {#each items as item, index (item.command)}
       <button
         type="button"

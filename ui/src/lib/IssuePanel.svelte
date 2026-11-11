@@ -1,6 +1,7 @@
 <script lang="ts">
   import { onMount } from 'svelte';
   import Icon from './Icon.svelte';
+  import { rise } from './motion';
   import {
     issueCommands,
     onIssuePanel,
@@ -141,6 +142,7 @@
         class="issue-row"
         class:taken={row.thread_identifier !== null}
         class:expanded
+        in:rise
       >
         <button
           class="item issue-item"
@@ -181,7 +183,7 @@
           >
         {/if}
         {#if expanded}
-          <div class="issue-detail" id="issue-detail-{row.number}">
+          <div class="issue-detail" id="issue-detail-{row.number}" in:rise>
             {#if row.question}
               <p class="issue-summary">
                 {row.question.recommendation ||
