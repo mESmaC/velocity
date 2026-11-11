@@ -4015,6 +4015,8 @@ export type ThreadItem_Deserialize = {
 	dependency_wait?: string | null,
 	/**  The agent's ACP session id, which a parked thread loads again on resume (§2.2). */
 	agent_session?: string | null,
+	/**  Conversation retained across process restarts (?3.2). */
+	transcript?: TranscriptBlock_Deserialize[],
 	review_stage?: ReviewStage | null,
 	task_ids: number[],
 	issue?: ThreadIssue_Deserialize | null,
@@ -4049,6 +4051,8 @@ export type ThreadItem_Serialize = {
 	dependency_wait: string | null,
 	/**  The agent's ACP session id, which a parked thread loads again on resume (§2.2). */
 	agent_session: string | null,
+	/**  Conversation retained across process restarts (?3.2). */
+	transcript: TranscriptBlock_Serialize[],
 	review_stage: ReviewStage | null,
 	task_ids: number[],
 	issue: ThreadIssue_Serialize | null,
