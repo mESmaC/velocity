@@ -76,7 +76,13 @@ pub(crate) fn set_up(
     for step in steps {
         run_step(step, resolved, &interview, &mut pending)?;
     }
-    if velocity_git::agents_template::install_default_agents(&resolved.path, &resolved.name)? {
+    let installed =
+        velocity_git::agents_template::install_default_agents(&resolved.path, &resolved.name)?;
+    // A failed commit leaves the template on disk. Retry it before registration so
+    // new worktrees inherit the instructions, without adopting a user's custom file.
+    if installed
+        || velocity_git::agents_template::is_default_agents(&resolved.path, &resolved.name)?
+    {
         velocity_git::agents_file::commit_agents(&resolved.path)?;
     }
     let identifier = finish(resolved, pending, store, layout, publish)?;
