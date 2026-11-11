@@ -381,7 +381,7 @@ There are two views of the same work, switched from the title bar or with `B`:
   - worktree path (click → open in Explorer)
   - +/− line counts and age
   - Diff (`D`), Editor (`E`), and `PR #n ↗` once a PR exists
-- **Transcript:** user message, agent messages, tool steps (verb, argument, result, running indicator) and diffs.
+- **Transcript:** user message, agent messages, tool steps (verb, argument, result, running indicator) and diffs. User and agent messages render sanitized GitHub-flavoured markdown (headings, lists, links, tables and fenced code), with emphasis shown upright. Threads and spec interviews open at the latest content and follow streamed output and new question cards while at the bottom; scrolling up suspends following until the reader returns to the bottom. Scrollbars use the reference's slim glass thumb.
 - **Composer:**
   - `Enter` sends, `Shift+Enter` adds a new line, `Esc` leaves the box.
   - Model pill (provider, model, effort, and "· Fast" when Fast is on), attach, mic. The pill opens a menu grouped by provider: each signed-in provider with its models and limit used, each signed-out provider as a "Sign in with …" row, and effort and speed at the bottom. On a running thread, a new model or speed applies from the next message.
