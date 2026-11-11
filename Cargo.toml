@@ -12,6 +12,7 @@ members = [
     "crates/velocity-store",
     "crates/velocity-threads",
     "src-tauri",
+    "stress",
 ]
 resolver = "3"
 
