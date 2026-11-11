@@ -203,10 +203,10 @@ fn resume_inputs(
             .view(key)
             .map(|view| view.blocks)
             .unwrap_or_default();
-        setup.resume = Some(SessionResume::new(
-            thread.agent_session.clone(),
-            transcript_context(&blocks),
-        ));
+        setup.resume = Some(
+            SessionResume::new(thread.agent_session.clone(), transcript_context(&blocks))
+                .with_history_replay(blocks.is_empty()),
+        );
         runtimes
             .resume_parked(key, path, prompt, thread.state == ThreadState::Review)
             .map_err(|error| error.to_string())?

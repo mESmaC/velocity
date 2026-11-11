@@ -111,10 +111,13 @@ fn resume_follow_through(
         .with_run_settings(velocity_threads::thread_run_settings(&thread));
     setup.airc = crate::airc_access::managed(application)
         .map(|airc| airc.thread(key.0, key.1, std::path::Path::new(path)));
-    setup.resume = Some(velocity_acp::client::SessionResume::new(
-        thread.agent_session.clone(),
-        velocity_threads::parking::transcript_context(&thread.transcript),
-    ));
+    setup.resume = Some(
+        velocity_acp::client::SessionResume::new(
+            thread.agent_session.clone(),
+            velocity_threads::parking::transcript_context(&thread.transcript),
+        )
+        .with_history_replay(thread.transcript.is_empty()),
+    );
     crate::airc_claims::attach(application, key, &setup, &thread.branch_name)?;
     let inputs = lock(
         application.state::<ManagedThreads>().inner(),
