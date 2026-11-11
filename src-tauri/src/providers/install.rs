@@ -56,33 +56,36 @@ pub fn install_provider(
         )
     })?;
     let providers = application.state::<ManagedProviders>();
-    let generation = providers
-        .with_slot(provider, |slot| {
-            (slot.runtime.phase == ProviderPhase::NotInstalled).then(|| {
-                slot.runtime.phase = ProviderPhase::Installing;
-                slot.runtime.detail = None;
-                slot.generation
-            })
-        })
-        .flatten();
-    // Already installing, or found meanwhile: the card shows where it stands.
-    let Some(generation) = generation else {
-        return current_view(&application);
-    };
     let command = steps
         .iter()
         .map(InstallStep::command_line)
         .collect::<Vec<_>>()
         .join(" && ");
     let handle = application.clone();
-    let task = tauri::async_runtime::spawn(async move {
-        finish_install(&handle, (provider, generation), steps).await;
-    });
-    providers.with_slot(provider, |slot| {
-        if let Some(previous) = slot.install.replace(task) {
-            previous.abort();
-        }
-    });
+    // The task is started and recorded under the slot's lock. It clears `install` through
+    // the same lock when it ends, so it can't end first and leave a finished task behind
+    // that the next Sign out would take for an install to cancel.
+    let started = providers
+        .with_slot(provider, |slot| {
+            if slot.runtime.phase != ProviderPhase::NotInstalled {
+                return false;
+            }
+            slot.runtime.phase = ProviderPhase::Installing;
+            slot.runtime.detail = None;
+            let generation = slot.generation;
+            let task = tauri::async_runtime::spawn(async move {
+                finish_install(&handle, (provider, generation), steps).await;
+            });
+            if let Some(previous) = slot.install.replace(task) {
+                previous.abort();
+            }
+            true
+        })
+        .unwrap_or(false);
+    // Already installing, or found meanwhile: the card shows where it stands.
+    if !started {
+        return current_view(&application);
+    }
     let toast = format!("Installing {name}'s agent · {command}");
     publish(&application, Some(toast)).ok_or_else(|| "Could not install".into())
 }
