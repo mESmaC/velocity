@@ -137,6 +137,17 @@
       });
   }
 
+  function reload() {
+    notice = '';
+    queue = queue
+      .then(async () => {
+        error = '';
+        await receive(await agentsCommands.reload(project));
+        if (active) showNotice('Draft discarded · loaded AGENTS.md from disk');
+      })
+      .catch(report);
+  }
+
   $effect(() => {
     if (lastSave === undefined) {
       lastSave = saveRequests;
@@ -174,6 +185,12 @@
     </div>
     <span class="spacer"></span>
     <div class="head-actions">
+      <button
+        class="btn"
+        disabled={!documentState || saving}
+        title="Discard unsaved edits and load the current file from disk"
+        onclick={reload}>Discard draft and reload</button
+      >
       <button
         class="btn"
         class:on={markdown}
