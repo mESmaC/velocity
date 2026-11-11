@@ -1,6 +1,7 @@
 <script lang="ts">
   import { onMount } from 'svelte';
   import Icon from './Icon.svelte';
+  import ProviderSignInCards from './ProviderSignInCards.svelte';
   import { newProjectCommands } from './ipc';
   import type {
     EffortLevel,
@@ -263,6 +264,7 @@
               No provider is signed in yet. The interview uses the model you
               choose in Settings · Providers once one is.
             </p>{/if}
+          <ProviderSignInCards {send} {report} />
         </div>
       </div>
       <label class="field">

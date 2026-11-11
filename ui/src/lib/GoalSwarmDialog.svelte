@@ -1,6 +1,7 @@
 <script lang="ts">
   import { onMount } from 'svelte';
   import Icon from './Icon.svelte';
+  import ProviderSignInCards from './ProviderSignInCards.svelte';
   import { goalSwarmCommands, providerIcon } from './ipc';
   import type {
     EffortLevel,
@@ -315,6 +316,13 @@
               ><Icon name={providerIcon(limit.provider)} />{limit.text}</span
             >
           {/each}
+        </div>
+        <div
+          class="models"
+          role="group"
+          aria-label="Sign in to another provider"
+        >
+          <ProviderSignInCards {send} {report} />
         </div>
       </div>
 
