@@ -65,6 +65,12 @@ pub struct TitleReply {
 /// the reply arrives or the deadline passes, so a slow model never outlives its request.
 /// Call it inside a Tokio runtime: stopping the agent runs as a task of its own.
 pub async fn request_title(request: TitleRequest) -> Result<TitleReply, ClientError> {
+    let permit = tokio::time::timeout(
+        request.deadline,
+        crate::concurrency::acquire(request.settings.provider, || {}),
+    )
+    .await
+    .map_err(|_| ClientError::TimedOut(request.deadline))?;
     let started = Instant::now();
     let mut agent = process::spawn_agent(&request.launch, &request.working_directory)?;
     let stdin = agent
@@ -95,6 +101,7 @@ pub async fn request_title(request: TitleRequest) -> Result<TitleReply, ClientEr
         // Nothing waits on the title agent any more; a failed stop leaves the job object,
         // which ends the tree when its handle drops.
         let _ = process::stop_agent(&mut agent).await;
+        drop(permit);
     });
     outcome.map_err(|_| ClientError::TimedOut(deadline))??;
     Ok(TitleReply {

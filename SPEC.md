@@ -872,6 +872,7 @@ Four providers: **Anthropic** (Claude Code agent), **Codex** (Codex CLI agent), 
 - **Max agents at once** (off by default): a cap on concurrently running agents for this provider.
   - Agents over the cap wait as "queued · <provider>" and start when a slot frees.
   - Parked agents (§2.2) don't hold a slot, so waiting on another PR never blocks new work.
+  - The card accepts a positive whole number; empty means off. Caps apply across projects and roles, including resumed sessions. Queued agents start in provider queue order. Raising or clearing a cap wakes the queue immediately; lowering it lets running agents finish before admitting more.
 - **Models:** chips that are read from the provider after sign-in. Clicking a chip hides that model from the pickers or shows it again.
 
 **Default for new threads:** one model card per available model, plus effort and speed. A new thread starts on it. Spec interviews, duty agents and swarms choose their models in their own dialogs.

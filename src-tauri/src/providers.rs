@@ -187,7 +187,23 @@ fn settings(application: &AppHandle) -> Settings {
         .unwrap_or_default()
 }
 
+fn configure_concurrency(application: &AppHandle) {
+    let limits = settings(application)
+        .providers
+        .concurrency
+        .iter()
+        .map(|entry| {
+            (
+                velocity_threads::titles::provider(entry.provider),
+                entry.maximum,
+            )
+        })
+        .collect::<Vec<_>>();
+    velocity_acp::concurrency::configure(&limits);
+}
+
 pub fn initialize(application: &AppHandle) {
+    configure_concurrency(application);
     let handle = application.clone();
     tauri::async_runtime::spawn(async move {
         let settings = settings(&handle);
@@ -563,6 +579,7 @@ pub fn set_provider_settings(
             .edit_providers(edit)
             .map_err(|error| error.to_string())?;
     }
+    configure_concurrency(&application);
     current_view(&application)
 }
 
