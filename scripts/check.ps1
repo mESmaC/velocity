@@ -16,7 +16,8 @@ cannot affect the Rust build never enters it:
   the UI's bindings.
 - Proofs (lake build, axiom audit): proofs/.
 A docs-only change (SPEC.md, AGENTS.md, README, stress scripts) runs nothing.
-A change to this script or the build queue, or -Full, runs everything.
+A path the script does not recognise, such as this script, the build queue or a
+new folder, runs everything. So does -Full.
 
 .EXAMPLE
 pwsh -NoProfile -File scripts/check.ps1
@@ -76,13 +77,28 @@ function Test-Changed([string[]]$Patterns) {
     return $false
 }
 
-$runAll = $Full -or (Test-Changed @('scripts/check.ps1', 'scripts/build-queue.ps1'))
-$rustChanged = $runAll -or (Test-Changed @(
-        'crates/*', 'src-tauri/*', 'stress/Cargo.toml', 'stress/src/*',
-        'Cargo.toml', 'Cargo.lock', 'rust-toolchain.toml', '.cargo/*', 'rustfmt.toml', 'clippy.toml',
-        # Read by include_str!/include_bytes!, or generated from Rust.
-        'proofs/fixtures/*', 'ui/src/lib/theme/tokens.css', 'ui/src/lib/bindings.ts'
-    ))
+$rustPatterns = @(
+    'crates/*', 'src-tauri/*', 'stress/Cargo.toml', 'stress/src/*',
+    'Cargo.toml', 'Cargo.lock', 'rust-toolchain.toml', '.cargo/*', 'rustfmt.toml', 'clippy.toml',
+    # Read by include_str!/include_bytes!, or generated from Rust.
+    'proofs/fixtures/*', 'ui/src/lib/theme/tokens.css', 'ui/src/lib/bindings.ts'
+)
+# Paths no check reads: docs, the read-only reference UI, the icon source, CI (which
+# never holds up a PR) and stress scripts, which the stress runner compiles itself.
+$uncheckedPatterns = @('*.md', 'design/*', 'assets/*', '.github/*', '.gitignore', 'stress/*')
+# A path on none of the lists runs everything, this script and the build queue
+# included. A new folder or root file is then checked until someone decides that
+# no check can depend on it; skipping it by default would let a broken build land.
+$knownPatterns = $rustPatterns + $uncheckedPatterns + @('ui/*', 'proofs/*')
+$unrecognisedPaths = @(@($changedPaths) | Where-Object {
+        $path = $_
+        $path -and -not ($knownPatterns | Where-Object { $path -like $_ })
+    })
+if ($unrecognisedPaths.Count -gt 0) {
+    Write-Host "==> Unrecognised paths, running every check: $($unrecognisedPaths -join ', ')" -ForegroundColor Cyan
+}
+$runAll = $Full -or $unrecognisedPaths.Count -gt 0
+$rustChanged = $runAll -or (Test-Changed $rustPatterns)
 $uiChanged = $rustChanged -or (Test-Changed @('ui/*'))
 $proofsChanged = $runAll -or (Test-Changed @('proofs/*'))
 
