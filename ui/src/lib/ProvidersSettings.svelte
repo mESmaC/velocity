@@ -50,6 +50,8 @@
   const edit = (change: ProviderEdit) => run(providerCommands.edit(change));
   const signIn = (provider: ProviderKind) =>
     run(providerCommands.signIn(provider));
+  const install = (provider: ProviderKind) =>
+    run(providerCommands.install(provider));
   const signOut = (provider: ProviderKind) =>
     run(providerCommands.signOut(provider));
   const setCommand = (provider: ProviderKind, command: string | null) =>
@@ -124,17 +126,22 @@
         class:off={provider.phase !== 'SignedIn' &&
           provider.phase !== 'Waiting'}
         class:wait={provider.phase === 'Waiting' ||
-          provider.phase === 'Checking'}
+          provider.phase === 'Checking' ||
+          provider.phase === 'Installing'}
       ></i>{provider.status}
     </div>
     <div class="pv-actions">
       {#if provider.phase === 'SignedIn'}<button
           class="worktree-button mini"
           onclick={() => signOut(provider.provider)}>Sign out</button
-        >{:else if provider.phase === 'Waiting'}<button
+        >{:else if provider.phase === 'Waiting' || provider.phase === 'Installing'}<button
           class="worktree-button mini"
           onclick={() => signOut(provider.provider)}>Cancel</button
-        >{:else if provider.phase !== 'Checking' && provider.phase !== 'NotInstalled'}<button
+        >{:else if provider.phase === 'NotInstalled'}{#if provider.install_command}<button
+            class="worktree-button"
+            title={`Runs ${provider.install_command}`}
+            onclick={() => install(provider.provider)}>Install</button
+          >{/if}{:else if provider.phase !== 'Checking'}<button
           class="worktree-button"
           disabled={!provider.can_sign_in}
           title={provider.can_sign_in

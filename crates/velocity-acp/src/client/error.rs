@@ -23,6 +23,8 @@ pub enum ClientError {
     TimedOut(std::time::Duration),
     #[error("sign-in failed: {0}")]
     SignIn(String),
+    #[error("install failed: {0}")]
+    Install(String),
     #[error("could not read the usage report: {0}")]
     Usage(String),
     #[error("ACP: {0}")]

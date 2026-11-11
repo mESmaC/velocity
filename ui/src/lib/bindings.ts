@@ -45,12 +45,17 @@ export const commands = {
 	removeCustomAgent: (provider: ProviderKind) => __TAURI_INVOKE<ProvidersView_Serialize>("remove_custom_agent", { provider }),
 	listProviders: () => __TAURI_INVOKE<ProvidersView_Serialize>("list_providers"),
 	/**
+	 *  Install (F15): runs the provider's own package install with no console window. The card
+	 *  shows Installing with Cancel until it finishes, then checks the agent again.
+	 */
+	installProvider: (provider: ProviderKind) => __TAURI_INVOKE<ProvidersView_Serialize>("install_provider", { provider }),
+	/**
 	 *  Sign in with Claude / ChatGPT / Google / Kimi (F15): runs the agent's own login, which
 	 *  opens the provider's OAuth page in your browser. The card waits until it finishes.
 	 */
 	providerSignIn: (provider: ProviderKind) => __TAURI_INVOKE<ProvidersView_Serialize>("provider_sign_in", { provider }),
 	/**
-	 *  Sign out (F15), or Cancel while waiting for the browser. Agents already running on the
+	 *  Sign out (F15), or Cancel while waiting for the browser or an install. Agents already running on the
 	 *  provider keep their session until they finish; new work can't use it.
 	 */
 	providerSignOut: (provider: ProviderKind) => __TAURI_INVOKE<ProvidersView_Serialize>("provider_sign_out", { provider }),
@@ -2537,6 +2542,8 @@ export type ProviderCardView_Deserialize = {
 	status: string,
 	sign_in_label: string,
 	can_sign_in: boolean,
+	/**  What Install runs while its agent isn't installed (F15 Install); `None` hides Install. */
+	install_command?: string | null,
 	limit?: LimitView | null,
 	models: ModelChipView[],
 	max_agents?: number | null,
@@ -2558,6 +2565,8 @@ export type ProviderCardView_Serialize = {
 	status: string,
 	sign_in_label: string,
 	can_sign_in: boolean,
+	/**  What Install runs while its agent isn't installed (F15 Install); `None` hides Install. */
+	install_command: string | null,
 	limit: LimitView | null,
 	models: ModelChipView[],
 	max_agents: number | null,
@@ -2704,7 +2713,9 @@ export type ProviderPhase =
 /**  Its agent is being asked. */
 "Checking" | 
 /**  Its agent's command isn't on `PATH`. */
-"NotInstalled" | "SignedOut" | 
+"NotInstalled" | 
+/**  Velocity is installing its agent (F15 Install). */
+"Installing" | "SignedOut" | 
 /**  Waiting for you to finish signing in in the browser. */
 "Waiting" | "SignedIn" | 
 /**  The agent started but couldn't be read. */

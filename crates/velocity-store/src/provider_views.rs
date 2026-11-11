@@ -20,6 +20,8 @@ pub enum ProviderPhase {
     Checking,
     /// Its agent's command isn't on `PATH`.
     NotInstalled,
+    /// Velocity is installing its agent (F15 Install).
+    Installing,
     SignedOut,
     /// Waiting for you to finish signing in in the browser.
     Waiting,
@@ -39,8 +41,11 @@ pub struct ProviderRuntime {
     pub command_line: String,
     /// Whether the agent offers a sign-in method Velocity may use (never an API key).
     pub can_sign_in: bool,
-    /// Why the last check or sign-in failed.
+    /// Why the last check, sign-in or install failed.
     pub detail: Option<String>,
+    /// What Install runs, e.g. `npm install --global @agentclientprotocol/claude-agent-acp`.
+    /// `None` when Velocity can't install it: an agent you added, or a command you changed.
+    pub install_command: Option<String>,
 }
 
 impl ProviderRuntime {
@@ -53,6 +58,7 @@ impl ProviderRuntime {
             command_line,
             can_sign_in: false,
             detail: None,
+            install_command: None,
         }
     }
 }
@@ -87,6 +93,8 @@ pub struct ProviderCardView {
     pub status: String,
     pub sign_in_label: String,
     pub can_sign_in: bool,
+    /// What Install runs while its agent isn't installed (F15 Install); `None` hides Install.
+    pub install_command: Option<String>,
     pub limit: Option<LimitView>,
     pub models: Vec<ModelChipView>,
     pub max_agents: Option<u32>,
@@ -182,6 +190,7 @@ impl ProviderContext<'_> {
             ProviderPhase::Waiting => "finishing sign-in…",
             ProviderPhase::Checking => "checking…",
             ProviderPhase::NotInstalled => "not installed",
+            ProviderPhase::Installing => "installing…",
             _ if !self.can_sign_in(provider) => "no sign-in available",
             _ => "not signed in · Sign in",
         }
@@ -277,6 +286,9 @@ impl StateStore {
             status,
             sign_in_label: facts.sign_in_label,
             can_sign_in: context.can_sign_in(provider),
+            install_command: runtime
+                .filter(|_| phase == ProviderPhase::NotInstalled)
+                .and_then(|entry| entry.install_command.clone()),
             limit: (phase == ProviderPhase::SignedIn)
                 .then(|| limit_view(catalog.and_then(|entry| entry.limit.as_ref()), context.now)),
             models,
@@ -352,7 +364,17 @@ fn status_text(
         ProviderPhase::Checking => "Checking…".into(),
         ProviderPhase::NotInstalled => runtime.map_or_else(
             || "Its agent isn't installed".into(),
-            |entry| format!("{} isn't installed", command_program(&entry.command)),
+            |entry| {
+                let missing = format!("{} isn't installed", command_program(&entry.command));
+                match &entry.detail {
+                    Some(detail) => format!("{missing} · {detail}"),
+                    None => missing,
+                }
+            },
+        ),
+        ProviderPhase::Installing => runtime.map_or_else(
+            || "Installing its agent…".into(),
+            |entry| format!("Installing {}…", command_program(&entry.command)),
         ),
         ProviderPhase::SignedOut => {
             "Not signed in · its models are hidden from every picker".into()
@@ -651,6 +673,7 @@ fn menu_group(
         match context.phase(settings, candidate) {
             ProviderPhase::Waiting => "signing in…".into(),
             ProviderPhase::NotInstalled => "not installed".into(),
+            ProviderPhase::Installing => "installing…".into(),
             _ => "signed out".into(),
         }
     };

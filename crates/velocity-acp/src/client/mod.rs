@@ -11,6 +11,7 @@ mod config;
 mod error;
 mod files;
 mod handlers;
+mod install;
 mod limits;
 mod live_limits;
 mod own_config;
@@ -45,10 +46,12 @@ pub use airc::AircLaunch;
 pub use antigravity_limits::read_antigravity_usage;
 pub use error::ClientError;
 pub use files::resolve_in_worktree;
+pub use install::install_agent;
 pub use limits::{read_claude_usage, read_codex_usage};
 pub use live_limits::subscribe_limits;
 pub use probe::{AgentProbe, ProbedModel, probe_agent};
 pub use process::AgentLaunch;
+pub use program_path::program_found;
 pub use session::{
     SessionResume, SessionSetup, StartedSession, answer_permission, session_servers,
 };

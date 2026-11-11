@@ -16,6 +16,7 @@ pub mod antigravity_limits;
 pub mod auth;
 pub mod client;
 pub mod concurrency;
+pub mod install;
 pub mod paths;
 pub mod permissions;
 pub mod providers;
@@ -30,6 +31,7 @@ pub mod usage_limits;
 
 pub use auth::{SignInKind, SignInMethod, choose_sign_in};
 pub use client::{AgentSlashCommand, available_commands};
+pub use install::{InstallPlatform, InstallStep, install_steps};
 pub use paths::{PathShape, resolve_path};
 pub use permissions::{PermissionKind, SessionModeKind, choose_permission, choose_session_mode};
 pub use providers::{

@@ -8,7 +8,7 @@ use process_wrap::tokio::{ChildWrapper, CommandWrap, KillOnDrop};
 use tokio::process::Command;
 
 use super::ClientError;
-use super::program_path::find_program;
+use super::program_path::{find_program, search_path};
 use crate::Provider;
 
 /// The command that runs one provider's ACP agent. This is the only provider-specific part
@@ -70,6 +70,7 @@ pub fn spawn_agent(launch: &AgentLaunch, worktree: &Path) -> Result<AgentProcess
 /// No resource or security limits are applied to the agent or its tools.
 pub fn spawn_owned_command(mut command: Command) -> std::io::Result<AgentProcess> {
     hide_console_window(&mut command);
+    extend_search_path(&mut command);
     let mut command = CommandWrap::from(command);
     command.wrap(KillOnDrop);
     #[cfg(windows)]
@@ -101,6 +102,22 @@ pub async fn stop_owned_process(agent: &mut AgentProcess) -> std::io::Result<Exi
 
 pub async fn stop_agent(agent: &mut AgentProcess) -> std::io::Result<()> {
     stop_owned_process(agent).await.map(|_| ())
+}
+
+/// Gives the process the folders installed since Velocity started (`search_path`), so an
+/// agent installed meanwhile finds its own runtime, such as a new `node`. A command that sets
+/// its own `PATH` keeps it.
+fn extend_search_path(command: &mut Command) {
+    let sets_path = command
+        .as_std()
+        .get_envs()
+        .any(|(name, _)| name.eq_ignore_ascii_case("PATH"));
+    if sets_path {
+        return;
+    }
+    if let Some(path) = search_path() {
+        command.env("PATH", path);
+    }
 }
 
 /// Velocity is a windowed app: without this flag every agent and terminal command would

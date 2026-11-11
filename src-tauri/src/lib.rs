@@ -73,6 +73,7 @@ fn bindings() -> Builder<tauri::Wry> {
         provider_agents::add_custom_agent,
         provider_agents::remove_custom_agent,
         providers::list_providers,
+        providers::install::install_provider,
         providers::provider_sign_in,
         providers::provider_sign_out,
         providers::set_provider_settings,
