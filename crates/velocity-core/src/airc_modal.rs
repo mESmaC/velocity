@@ -61,6 +61,7 @@ pub struct AircClaimRecord {
     nick: String,
     task: String,
     files: Vec<String>,
+    dependency: Option<(String, String, String)>,
 }
 
 impl AircClaimRecord {
@@ -70,7 +71,13 @@ impl AircClaimRecord {
             nick: nick.into(),
             task: task.into(),
             files,
+            dependency: None,
         }
+    }
+
+    pub fn with_dependency(mut self, holder: &str, nick: &str, file: &str) -> Self {
+        self.dependency = Some((holder.into(), nick.into(), file.into()));
+        self
     }
 }
 
@@ -123,6 +130,22 @@ pub struct AircModalInput {
     pub records: Vec<AircRecord>,
     pub claims: Vec<AircClaimRecord>,
     pub members: Vec<AircMember>,
+}
+
+impl AircModalInput {
+    pub fn new(
+        channel: String,
+        records: Vec<AircRecord>,
+        claims: Vec<AircClaimRecord>,
+        members: Vec<AircMember>,
+    ) -> Self {
+        Self {
+            channel,
+            records,
+            claims,
+            members,
+        }
+    }
 }
 
 #[cfg_attr(
@@ -221,6 +244,7 @@ pub struct AircClaimRow {
     pub task: String,
     pub state: String,
     pub files: Vec<AircClaimFile>,
+    pub dependency: Option<String>,
 }
 
 #[cfg_attr(
@@ -603,6 +627,7 @@ fn claim_rows(input: &AircModalInput) -> (Vec<AircClaimRow>, usize) {
         .map(|claim| {
             let (state, number) = claim_state(states.get(claim.member.as_str()).copied());
             AircClaimRow {
+                dependency: dependency_label(claim, &states),
                 nick: claim.nick.clone(),
                 nick_tone: nick_tone(&claim.nick),
                 task: claim.task.clone(),
@@ -623,6 +648,20 @@ fn claim_rows(input: &AircModalInput) -> (Vec<AircClaimRow>, usize) {
         })
         .collect();
     (rows, overlapping.len())
+}
+
+fn dependency_label(
+    claim: &AircClaimRecord,
+    states: &BTreeMap<&str, &AircMemberState>,
+) -> Option<String> {
+    let (holder, nick, file) = claim.dependency.as_ref()?;
+    let (_, number) = claim_state(states.get(holder.as_str()).copied());
+    let pull_request = number
+        .map(|number| format!(" (#{number})"))
+        .unwrap_or_default();
+    Some(format!(
+        "waits for {nick}{pull_request} to merge · shares {file}"
+    ))
 }
 
 const GROUPS: [&str; 6] = [
