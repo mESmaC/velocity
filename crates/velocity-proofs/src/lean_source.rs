@@ -96,6 +96,25 @@ fn names_numbered_section(line: &str) -> bool {
     false
 }
 
+// #150: a valid section reference must not block PR duty's proof gate.
+#[cfg(test)]
+#[test]
+fn numbered_spec_references_pass_the_design_proof_gate() {
+    for reference in [
+        "section 2.2: stall escalation",
+        "section 2",
+        "section 2.2.1.",
+    ] {
+        assert!(names_spec_section(&format!("-- SPEC.md {reference}")));
+    }
+    for reference in ["section", "section two", "section 2..2", "section 2.2x"] {
+        assert!(!names_spec_section(&format!("-- SPEC.md {reference}")));
+    }
+    assert!(names_spec_section("-- SPEC.md §2.2"));
+    assert!(names_spec_section("-- SPEC.md F14"));
+    assert!(!names_spec_section("-- section 2.2"));
+}
+
 /// Every `theorem` in the file, with its statement.
 pub fn theorem_statements(file: &ProofFile) -> Vec<TheoremStatement> {
     let code = code_only(&file.text);
