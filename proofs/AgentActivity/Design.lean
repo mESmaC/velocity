@@ -136,12 +136,15 @@ theorem optimal (history : List Observation) (observation : Observation) (start 
     (unavailableNow : unavailable observation = true)
     (unprotectedNow : claimProtected observation = false)
     (deadline : observation.time = start + grace)
+    (held : everDue history grace = false)
     (alternative : Nat → Bool)
     (safe : ∀ elapsed, elapsed < grace → alternative elapsed = false)
     (elapsed : Nat) (releases : alternative elapsed = true) :
-    due (observation :: history) grace = true ∧ observation.time - start ≤ elapsed := by
+    (run (observation :: history) grace).commands = (run history grace).commands + 1 ∧
+    observation.time - start ≤ elapsed := by
   constructor
-  · simp [due, releaseDue, interval, unavailableNow, unprotectedNow, deadline]
+  · apply (correct history observation grace).2.2.1.mpr
+    exact ⟨by simp [due, releaseDue, interval, unavailableNow, unprotectedNow, deadline], held⟩
   · have lower : grace ≤ elapsed := by
       by_contra early
       have := safe elapsed (Nat.lt_of_not_ge early)
