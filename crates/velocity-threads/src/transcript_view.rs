@@ -48,6 +48,7 @@ enum EntryView {
 #[derive(Clone, Debug)]
 pub struct LiveTranscript {
     worktree: String,
+    history: Vec<TranscriptBlock>,
     entries: Vec<EntryView>,
     /// `acp_entries[i]` is where ACP transcript entry `i` sits in `entries`.
     acp_entries: Vec<usize>,
@@ -59,10 +60,30 @@ impl LiveTranscript {
     pub fn new(worktree: &str) -> Self {
         LiveTranscript {
             worktree: worktree.to_owned(),
+            history: Vec::new(),
             entries: Vec::from([EntryView::Setup(setup_step(worktree, true))]),
             acp_entries: Vec::new(),
             queued: Vec::new(),
         }
+    }
+
+    /// Saved blocks precede the next session's independently numbered ACP entries.
+    pub fn restore(worktree: &str, mut blocks: Vec<TranscriptBlock>) -> Self {
+        let mut transcript = Self::new(worktree);
+        transcript.entries.clear();
+        for block in &mut blocks {
+            if let TranscriptBlock::ToolGroup { steps } = block {
+                for step in steps {
+                    step.running = false;
+                }
+            }
+            if let TranscriptBlock::UserMessage { text, queued: true } = block {
+                transcript.queued.push(text.clone());
+            }
+        }
+        blocks.retain(|block| !matches!(block, TranscriptBlock::UserMessage { queued: true, .. }));
+        transcript.history = blocks;
+        transcript
     }
 
     /// The worktree took the title's name while setup was still running (F4).
@@ -142,6 +163,13 @@ impl LiveTranscript {
 
     /// `+added −deleted` across every edit the agent made, for the thread header (F4).
     pub fn line_counts(&self) -> (usize, usize) {
+        let saved = self
+            .history
+            .iter()
+            .fold((0, 0), |(added, deleted), block| match block {
+                TranscriptBlock::Diff { block } => (added + block.added, deleted + block.deleted),
+                _ => (added, deleted),
+            });
         self.entries
             .iter()
             .filter_map(|entry| match entry {
@@ -149,13 +177,13 @@ impl LiveTranscript {
                 _ => None,
             })
             .flatten()
-            .fold((0, 0), |(added, deleted), diff| {
+            .fold(saved, |(added, deleted), diff| {
                 (added + diff.added, deleted + diff.deleted)
             })
     }
 
     pub fn blocks(&self) -> Vec<TranscriptBlock> {
-        let mut blocks = Vec::new();
+        let mut blocks = self.history.clone();
         let mut steps = Vec::new();
         for entry in &self.entries {
             match entry {
@@ -186,12 +214,25 @@ impl LiveTranscript {
 
     /// Agent calls only: the worktree setup row is not a provider tool call.
     pub fn tool_steps(&self) -> Vec<ToolStepRow> {
-        self.entries
+        let saved = self
+            .history
             .iter()
-            .filter_map(|entry| match entry {
-                EntryView::Tool(tool) => Some(tool_step(tool)),
+            .filter_map(|block| match block {
+                TranscriptBlock::ToolGroup { steps } => Some(
+                    steps
+                        .iter()
+                        .filter(|step| step.verb != "Worktree")
+                        .cloned()
+                        .collect::<Vec<_>>(),
+                ),
                 _ => None,
             })
+            .flatten();
+        saved
+            .chain(self.entries.iter().filter_map(|entry| match entry {
+                EntryView::Tool(tool) => Some(tool_step(tool)),
+                _ => None,
+            }))
             .collect()
     }
 }

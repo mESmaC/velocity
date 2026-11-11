@@ -85,7 +85,7 @@ pub fn transcript_context(blocks: &[TranscriptBlock]) -> String {
     let joined = lines.join("\n");
     let transcript = newest_characters(&joined, TRANSCRIPT_CONTEXT_CHARACTERS);
     format!(
-        "This continues an earlier session of yours in this worktree. Velocity ended it while you waited on another agent's PR (parking). Its transcript, newest last:\n\n{transcript}\n\n---\n"
+        "This continues an earlier session of yours in this worktree. Its transcript, newest last:\n\n{transcript}\n\n---\n"
     )
 }
 

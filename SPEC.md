@@ -50,7 +50,7 @@ These hold for every feature. A feature that breaks one of them is wrong, whatev
 |---|---|---|
 | `draft` | (top, unnamed) | New thread, not sent yet. |
 | `spec` | Spec interview | Interview in progress. Phases: `scan` → `ask` → `ready` → `locked`. |
-| `working` | Running | Agent is working in its worktree. |
+| `working` | Running; Done when idle | Agent works in its worktree; an idle conversation can resume on the next message (?3.2). |
 | `review` | PR open · watching | PR is open; the agent watches it. Stages: `ci`, `review`, `fixing`, `approved`. |
 | `error` | Failed | Agent stopped on an error. Its worktree is kept. |
 | `closed` | Closed · not merged | PR closed without merging. Its worktree is kept. |
@@ -201,7 +201,7 @@ How Velocity's features map onto ACP:
 | Unrestricted agents, no approval UI (Rule 1) | Velocity answers every `session/request_permission` at once with the agent's allow-always option. Where an agent offers a bypass mode, `session/set_mode` selects it when the session starts. Permission requests are never shown to you. |
 | Model, effort and speed | The agent's session model and config options where it exposes them, otherwise launch arguments. Whether a model has a fast mode is read from the agent's config options, not hard-coded. |
 | File edits and claims (F14) | Velocity advertises the `fs` and `terminal` client capabilities, with relative paths resolved against the thread's worktree. They are not confined to it (Tool access). Edits and tool-call file locations feed the diff view and the claim checker. If an agent edits a file it hasn't claimed, the file is added to its claim, an overlap check runs, and a `claim` event is posted. |
-| Resume after a restart | `session/load`, where the agent supports it. Otherwise the thread restarts from its transcript. |
+| Resume after a restart | The transcript and ACP session id are saved in `state.json` and visible on reopening. Sending the next message resumes with `session/load`, where the agent supports it, otherwise a new session receives the earlier transcript. Replayed history is not duplicated when a local transcript exists; older records with only a session id recover the provider?s replayed history when available. Saved process activity resets to idle (except parked and at-limit recovery); an idle working thread appears under Done and is not counted as running. It returns to Running on the next message; its worktree and PR watcher stay. |
 | Subscription limits (F15) | Not part of ACP. They are read per provider (F15 Limit sources). |
 
 **Tool access.** Every agent gets every tool, whatever its role: threads, swarm and goal swarm members, PR duty, scouts, the main watcher and spec interviews. Velocity adds tools and never removes any.
