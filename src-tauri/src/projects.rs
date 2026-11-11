@@ -54,6 +54,11 @@ pub fn switch_project(
     drop(store);
     crate::layout::publish(&window, &snapshot, None)?;
     publish_selection(&window, projects, selection)?;
+    crate::skills::recheck_suggestions(
+        window.app_handle(),
+        identifier,
+        crate::skills::SuggestionCheck::Opened,
+    );
     Ok(snapshot)
 }
 

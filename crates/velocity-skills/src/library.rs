@@ -9,9 +9,11 @@ use std::process::Command;
 use serde::{Deserialize, Serialize};
 
 use crate::SkillLibraryError;
+use crate::bundles::{SkillPackBundleCounts, bundle_skill_counts};
 use crate::catalog::{SkillPackCatalogEntry, built_in_catalog, resolve_pack_source};
 use crate::manifest::{
     DiscoveredSkill, SkillDiffCategory, classify_pack_path, discover_pack_skills,
+    mark_mirrored_skills,
 };
 
 const REGISTRY_FILE_NAME: &str = "skills-library.json";
@@ -97,6 +99,9 @@ pub struct SkillLibrarySnapshot {
     pub catalog: Vec<SkillPackCatalogEntry>,
     #[serde(default)]
     pub installed: Vec<InstalledSkillPack>,
+    /// Real skill counts per bundle of each installed built-in pack, at its pinned commit.
+    #[serde(default)]
+    pub bundle_counts: Vec<SkillPackBundleCounts>,
 }
 
 /// Output of running a Python tool inside an installed skill pack with `PYTHONUTF8=1`.
@@ -152,11 +157,27 @@ impl SkillLibrary {
                 ));
             }
         }
+        let bundle_counts = registry
+            .installed
+            .iter()
+            .map(bundle_skill_counts)
+            .filter(|counts| !counts.bundles.is_empty())
+            .collect();
         Ok(SkillLibrarySnapshot {
             library_root: self.root.display().to_string(),
             catalog,
             installed: registry.installed,
+            bundle_counts,
         })
+    }
+
+    /// One installed pack from the registry.
+    pub fn installed_pack(&self, pack_id: &str) -> Result<InstalledSkillPack, SkillLibraryError> {
+        self.load_registry()?
+            .installed
+            .into_iter()
+            .find(|item| item.id == pack_id)
+            .ok_or_else(|| SkillLibraryError::PackNotInstalled(pack_id.to_owned()))
     }
 
     /// Clones a skill pack into the library with `core.symlinks=true` and `core.longpaths=true`
@@ -178,7 +199,7 @@ impl SkillLibrary {
         clone_pack_with_symlinks(&self.root, &remote_url, &clone_dir)?;
         let pinned_commit = checkout_pinned_commit(&clone_dir, initial_pin)?;
         let symlinks_enabled = read_symlinks_config(&clone_dir);
-        let skills = discover_pack_skills(&clone_dir, &catalog_entry.name)?;
+        let skills = discover_skills(&clone_dir, &catalog_entry.name)?;
         let installed = InstalledSkillPack {
             id: catalog_entry.id,
             name: catalog_entry.name,
@@ -248,7 +269,7 @@ impl SkillLibrary {
         let pinned_commit = checkout_pinned_commit(&clone_dir, Some(&pending.candidate_commit))?;
         pack.pinned_commit = pinned_commit.clone();
         pack.short_commit = short_sha(&pinned_commit);
-        pack.skills = discover_pack_skills(&clone_dir, &pack.name)?;
+        pack.skills = discover_skills(&clone_dir, &pack.name)?;
         pack.pending_update = None;
         let updated = pack.clone();
         self.save_registry(&registry)?;
@@ -592,6 +613,27 @@ fn commits_match(candidate: &str, provided: &str) -> bool {
                     .starts_with(&provided.to_ascii_lowercase())))
 }
 
+fn discover_skills(
+    clone_dir: &Path,
+    name: &str,
+) -> Result<Vec<DiscoveredSkill>, SkillLibraryError> {
+    let mut skills = discover_pack_skills(clone_dir, name)?;
+    mark_mirrored_skills(&mut skills, &tracked_links(clone_dir)?);
+    Ok(skills)
+}
+
+/// Paths the pinned commit tracks as symbolic links (mode `120000`). They stay links in the
+/// index even where Windows checked them out as folders or junctions.
+fn tracked_links(clone_dir: &Path) -> Result<Vec<String>, SkillLibraryError> {
+    // `-z` keeps non-ASCII paths unquoted.
+    let listing = run_git(clone_dir, ["ls-files", "-s", "-z"])?;
+    Ok(listing
+        .split('\0')
+        .filter(|line| line.starts_with("120000 "))
+        .filter_map(|line| line.split_once('\t').map(|(_, path)| path.to_owned()))
+        .collect())
+}
+
 fn short_sha(commit: &str) -> String {
     commit.chars().take(7).collect()
 }
@@ -601,7 +643,7 @@ fn strip_verbatim_prefix(path: &Path) -> String {
     raw.strip_prefix(r"\\?\").unwrap_or(&raw).to_owned()
 }
 
-fn run_git<I, S>(working_dir: &Path, arguments: I) -> Result<String, SkillLibraryError>
+pub(crate) fn run_git<I, S>(working_dir: &Path, arguments: I) -> Result<String, SkillLibraryError>
 where
     I: IntoIterator<Item = S>,
     S: AsRef<OsStr>,

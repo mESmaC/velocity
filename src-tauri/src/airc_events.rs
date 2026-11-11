@@ -117,6 +117,12 @@ pub(crate) fn record_pull_request_observation(
     if after.stage == "merged" && after.worktree_deleted {
         // `master` moved: ready worktrees catch up and rebuild at the new tip (F5).
         crate::ready_pool::wake(application, Some(project_identifier));
+        // A project that gains a UI or an engine gets its skill suggestion now (F18).
+        crate::skills::recheck_suggestions(
+            application,
+            project_identifier,
+            crate::skills::SuggestionCheck::Merged,
+        );
         report(record_merged(
             application,
             project_identifier,

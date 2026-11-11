@@ -3,6 +3,7 @@
   import {
     skillSettingsCommands,
     skillLibraryCommands,
+    skillPackCommands,
     type SkillsSettingsView,
     type SkillSettingsEdit,
     type SkillPackUpdatePreview,
@@ -73,6 +74,14 @@
       await refresh(identifier);
     });
   }
+  function generate(regenerate: boolean) {
+    const identifier = projectIdentifier;
+    if (identifier === null) return;
+    void run(async () => {
+      await skillPackCommands.generateDesignSystem(identifier, regenerate);
+      await refresh(identifier);
+    });
+  }
   function check(identifier: string) {
     void run(async () => {
       const result = await skillLibraryCommands.checkUpdate(identifier);
@@ -126,9 +135,10 @@
             {#each view.cards as card (card.catalog.id)}
               <div class="sk" class:on={card.selection.enabled}>
                 <div class="top">
-                  <b>{card.catalog.name}</b><span class="kind"
-                    >{card.catalog.kind_summary}</span
-                  >
+                  <b>{card.catalog.name}</b>
+                  {#if card.suggestion_badge}<span class="sugg"
+                      >{card.suggestion_badge}</span
+                    >{/if}<span class="kind">{card.catalog.kind_summary}</span>
                   <span class="repo"
                     >{card.catalog.repository} · {card.catalog.license}</span
                   >
@@ -170,7 +180,9 @@
                                 bundle.id,
                               ),
                             },
-                          })}>{bundle.label}</button
+                          })}
+                        >{bundle.label}<small>{bundle.skill_count}</small
+                        ></button
                       >
                     {/each}
                   </div>
@@ -185,7 +197,32 @@
                       >{requirement}</span
                     >{/each}
                   <span>{card.enabled_count} skills on</span>
+                  {#if card.detection}<span>{card.detection}</span>{/if}
                 </div>
+                {#if card.details.design_system}
+                  {@const design = card.details.design_system}
+                  <div class="row">
+                    Design system <code>{design.master_path}</code>
+                    <span>{design.summary}</span>
+                    <button
+                      class="mini"
+                      disabled={busy}
+                      onclick={() => generate(design.exists)}
+                      >{design.exists ? 'Regenerate' : 'Generate'}</button
+                    >
+                  </div>
+                {/if}
+                {#if card.details.shared_server}
+                  <div class="row">
+                    Shared MCP server <code
+                      >{card.details.shared_server.name}</code
+                    >
+                    <span
+                      >passed to every agent of every provider (§3.2 Tool
+                      access) · IDA, Hopper and JEB need your own licences</span
+                    >
+                  </div>
+                {/if}
                 <div class="row">
                   {#if card.installed}<button
                       disabled={busy}
