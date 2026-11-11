@@ -111,6 +111,11 @@ export const commands = {
 	installSkillPack: (packOrRepo: string, sourceOverride: string | null, initialPin: string | null) => __TAURI_INVOKE<InstalledSkillPack_Serialize>("install_skill_pack", { packOrRepo, sourceOverride, initialPin }),
 	checkSkillPackUpdate: (packId: string) => __TAURI_INVOKE<SkillPackUpdatePreview_Serialize>("check_skill_pack_update", { packId }),
 	confirmSkillPackUpdate: (packId: string, candidateCommit: string) => __TAURI_INVOKE<InstalledSkillPack_Serialize>("confirm_skill_pack_update", { packId, candidateCommit }),
+	/**
+	 *  Generate (or, with `regenerate`, Regenerate) the project's design system, add the AGENTS.md
+	 *  rule and commit both in the main checkout (F18).
+	 */
+	generateDesignSystem: (projectIdentifier: number, regenerate: boolean) => __TAURI_INVOKE<DesignSystemStatus_Serialize>("generate_design_system", { projectIdentifier, regenerate }),
 	/**  The Swarm dialog for the user's current choices; asked again whenever one changes. */
 	getSwarmDialog: (query: SwarmDialogQuery_Deserialize) => __TAURI_INVOKE<SwarmDialog_Serialize>("get_swarm_dialog", { query }),
 	/**  Starts one agent per selected item, all at once, each in its own worktree (F10). */
@@ -534,6 +539,41 @@ export type DesignProofEntry = {
 	levels: ProofLevel[],
 };
 
+/**  Where a project's design system lives and whether it has been generated. */
+export type DesignSystemStatus = DesignSystemStatus_Serialize | DesignSystemStatus_Deserialize;
+
+/**  Where a project's design system lives and whether it has been generated. */
+export type DesignSystemStatus_Deserialize = {
+	/**  `design-system/<project>/MASTER.md`, relative to the checkout. */
+	master_path?: string,
+	exists?: boolean,
+	/**  When MASTER.md was last written, in Unix seconds. */
+	generated_at?: number | null,
+	/**  True when AGENTS.md carries the design system rule. */
+	rule_in_agents?: boolean,
+	/**
+	 *  The card's line: `generated 5 min ago · agents read it before UI work`, or
+	 *  `not generated yet`.
+	 */
+	summary?: string,
+};
+
+/**  Where a project's design system lives and whether it has been generated. */
+export type DesignSystemStatus_Serialize = {
+	/**  `design-system/<project>/MASTER.md`, relative to the checkout. */
+	master_path: string,
+	exists: boolean,
+	/**  When MASTER.md was last written, in Unix seconds. */
+	generated_at: number | null,
+	/**  True when AGENTS.md carries the design system rule. */
+	rule_in_agents: boolean,
+	/**
+	 *  The card's line: `generated 5 min ago · agents read it before UI work`, or
+	 *  `not generated yet`.
+	 */
+	summary: string,
+};
+
 export type DiffBlockView = DiffBlockView_Serialize | DiffBlockView_Deserialize;
 
 export type DiffBlockView_Deserialize = {
@@ -568,6 +608,12 @@ export type DiscoveredSkill_Deserialize = {
 	relative_folder?: string,
 	has_scripts?: boolean,
 	has_data?: boolean,
+	/**
+	 *  True when the folder is reached through a link the pack tracks in git (a `120000`
+	 *  entry): a mirror of a skill that lives elsewhere in the pack, such as claude-skills'
+	 *  `vendor/` and per-agent folders. Mirrors never count twice in a bundle.
+	 */
+	mirror?: boolean,
 };
 
 /**  One discovered skill folder (`SKILL.md` plus optional scripts, references and data, SPEC.md §2). */
@@ -578,6 +624,12 @@ export type DiscoveredSkill_Serialize = {
 	relative_folder: string,
 	has_scripts: boolean,
 	has_data: boolean,
+	/**
+	 *  True when the folder is reached through a link the pack tracks in git (a `120000`
+	 *  entry): a mirror of a skill that lives elsewhere in the pack, such as claude-skills'
+	 *  `vendor/` and per-agent folders. Mirrors never count twice in a bundle.
+	 */
+	mirror: boolean,
 };
 
 export type DutyAgentCard = {
@@ -3175,6 +3227,21 @@ export type SignInCardView = {
 	can_sign_in: boolean,
 };
 
+/**  How many skills one bundle of an installed pack holds at its pinned commit. */
+export type SkillBundleCount = SkillBundleCount_Serialize | SkillBundleCount_Deserialize;
+
+/**  How many skills one bundle of an installed pack holds at its pinned commit. */
+export type SkillBundleCount_Deserialize = {
+	bundle_id?: string,
+	skill_count?: number,
+};
+
+/**  How many skills one bundle of an installed pack holds at its pinned commit. */
+export type SkillBundleCount_Serialize = {
+	bundle_id: string,
+	skill_count: number,
+};
+
 /**
  *  One bundle inside a skill pack (SPEC.md F18: claude-skills by domain, Game dev skills by
  *  engine/discipline/genre/workflow).
@@ -3215,6 +3282,8 @@ export type SkillLibrarySnapshot_Deserialize = {
 	library_root?: string,
 	catalog?: SkillPackCatalogEntry_Deserialize[],
 	installed?: InstalledSkillPack_Deserialize[],
+	/**  Real skill counts per bundle of each installed built-in pack, at its pinned commit. */
+	bundle_counts?: SkillPackBundleCounts_Deserialize[],
 };
 
 /**  Snapshot of the machine-wide skill library (built-in catalog + installed pinned packs). */
@@ -3222,6 +3291,40 @@ export type SkillLibrarySnapshot_Serialize = {
 	library_root: string,
 	catalog: SkillPackCatalogEntry_Serialize[],
 	installed: InstalledSkillPack_Serialize[],
+	/**  Real skill counts per bundle of each installed built-in pack, at its pinned commit. */
+	bundle_counts: SkillPackBundleCounts_Serialize[],
+};
+
+/**  A stdio MCP server a skill pack contributes to the shared MCP servers. */
+export type SkillMcpServer = SkillMcpServer_Serialize | SkillMcpServer_Deserialize;
+
+/**  A stdio MCP server a skill pack contributes to the shared MCP servers. */
+export type SkillMcpServer_Deserialize = {
+	name?: string,
+	command?: string,
+	arguments?: string[],
+};
+
+/**  A stdio MCP server a skill pack contributes to the shared MCP servers. */
+export type SkillMcpServer_Serialize = {
+	name: string,
+	command: string,
+	arguments: string[],
+};
+
+/**  The real bundle counts of one installed pack, for its card's chips. */
+export type SkillPackBundleCounts = SkillPackBundleCounts_Serialize | SkillPackBundleCounts_Deserialize;
+
+/**  The real bundle counts of one installed pack, for its card's chips. */
+export type SkillPackBundleCounts_Deserialize = {
+	pack_id?: string,
+	bundles?: SkillBundleCount_Deserialize[],
+};
+
+/**  The real bundle counts of one installed pack, for its card's chips. */
+export type SkillPackBundleCounts_Serialize = {
+	pack_id: string,
+	bundles: SkillBundleCount_Serialize[],
 };
 
 export type SkillPackCard = SkillPackCard_Serialize | SkillPackCard_Deserialize;
@@ -3233,6 +3336,7 @@ export type SkillPackCard_Deserialize = {
 	selection: PackSelection_Deserialize,
 	enabled_count: number,
 	requirements: string[],
+	details?: SkillPackDetails_Deserialize,
 	/**  `suggested · UI found` when the project scan suggested this pack (F3, F18), else empty. */
 	suggestion_badge: string,
 	/**  What the scan found, or what would make it suggest the pack; empty for other packs. */
@@ -3246,6 +3350,7 @@ export type SkillPackCard_Serialize = {
 	selection: PackSelection_Serialize,
 	enabled_count: number,
 	requirements: string[],
+	details: SkillPackDetails_Serialize,
 	/**  `suggested · UI found` when the project scan suggested this pack (F3, F18), else empty. */
 	suggestion_badge: string,
 	/**  What the scan found, or what would make it suggest the pack; empty for other packs. */
@@ -3281,6 +3386,25 @@ export type SkillPackCatalogEntry_Serialize = {
 	requires_python: boolean,
 	requires_node: boolean,
 	bundles: SkillBundleDefinition_Serialize[],
+};
+
+/**  The pack-specific rows of one card. Every field is empty for packs without one. */
+export type SkillPackDetails = SkillPackDetails_Serialize | SkillPackDetails_Deserialize;
+
+/**  The pack-specific rows of one card. Every field is empty for packs without one. */
+export type SkillPackDetails_Deserialize = {
+	/**  UI UX Pro Max, while on: the design system and its Generate / Regenerate row. */
+	design_system?: DesignSystemStatus_Deserialize | null,
+	/**  REA, while on and installed: the MCP server every new agent gets. */
+	shared_server?: SkillMcpServer_Deserialize | null,
+};
+
+/**  The pack-specific rows of one card. Every field is empty for packs without one. */
+export type SkillPackDetails_Serialize = {
+	/**  UI UX Pro Max, while on: the design system and its Generate / Regenerate row. */
+	design_system: DesignSystemStatus_Serialize | null,
+	/**  REA, while on and installed: the MCP server every new agent gets. */
+	shared_server: SkillMcpServer_Serialize | null,
 };
 
 /**  Diff of a single file between the pinned commit and a candidate upstream commit (SPEC.md F18). */
