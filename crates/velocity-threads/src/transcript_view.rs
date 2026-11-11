@@ -38,6 +38,8 @@ struct ToolView {
 enum EntryView {
     Setup(ToolStepRow),
     User(String),
+    /// A line Velocity delivered to the agent (#231), not something you typed.
+    Notice(String),
     Agent(String),
     Tool(Box<ToolView>),
     Error(ErrorCardView),
@@ -126,6 +128,28 @@ impl LiveTranscript {
         self.queued.push(message.to_owned());
     }
 
+    /// Withdraws a message you queued before the agent's turn ended. The first `sent`
+    /// messages already went to the agent and can no longer be withdrawn.
+    pub fn remove_queued(&mut self, index: usize, sent: usize) -> bool {
+        if index < sent || index >= self.queued.len() {
+            return false;
+        }
+        self.queued.remove(index);
+        true
+    }
+
+    /// A prompt chunk that carried a Velocity delivery rather than your message. It gets
+    /// its own row even when ACP files it under the same entry as your message.
+    pub fn record_notice(&mut self, placement: Placement, update: &SessionUpdate) {
+        let SessionUpdate::UserMessageChunk(chunk) = update else {
+            return self.record(placement, update);
+        };
+        if let Placement::Added(_) = placement {
+            self.acp_entries.push(self.entries.len());
+        }
+        self.entries.push(EntryView::Notice(chunk_text(chunk)));
+    }
+
     /// Files one update where the ACP client placed it.
     pub fn record(&mut self, placement: Placement, update: &SessionUpdate) {
         match placement {
@@ -136,11 +160,16 @@ impl LiveTranscript {
                 self.entries.push(entry);
             }
             Placement::Appended(index) => {
-                if let Some(entry) = self
-                    .acp_entries
-                    .get(index)
-                    .and_then(|position| self.entries.get_mut(*position))
+                let Some(position) = self.acp_entries.get(index).copied() else {
+                    return;
+                };
+                // Your message after a notice in one prompt starts its own row.
+                if let (Some(EntryView::Notice(_)), SessionUpdate::UserMessageChunk(chunk)) =
+                    (self.entries.get(position), update)
                 {
+                    self.acp_entries[index] = self.entries.len();
+                    self.entries.push(EntryView::User(chunk_text(chunk)));
+                } else if let Some(entry) = self.entries.get_mut(position) {
                     merge(entry, update, &self.worktree);
                 }
             }
@@ -264,6 +293,7 @@ fn message_block(entry: &EntryView) -> Option<TranscriptBlock> {
             text: text.clone(),
             queued: false,
         }),
+        EntryView::Notice(text) => Some(TranscriptBlock::Notice { text: text.clone() }),
         EntryView::Agent(text) => Some(TranscriptBlock::AgentMessage {
             paragraphs: paragraphs(text),
         }),

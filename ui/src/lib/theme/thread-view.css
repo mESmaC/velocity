@@ -344,6 +344,18 @@
   color: var(--muted);
   margin-top: var(--thread-queued-margin-top);
 }
+/* #231: a queued message you sent can be withdrawn before the agent reads it. */
+.queued-remove {
+  padding: 0;
+  border: 0;
+  background: none;
+  font: inherit;
+  color: var(--text-2);
+  cursor: pointer;
+}
+.queued-remove:hover {
+  color: var(--text);
+}
 .working-dots {
   display: inline-flex;
   gap: var(--thread-working-dots-gap);

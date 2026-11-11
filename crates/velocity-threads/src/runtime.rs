@@ -71,6 +71,8 @@ struct ThreadRuntime {
     /// Client transcript chunks acknowledge inputs in FIFO order. Opening prompts are
     /// invisible here; steering stays visible until its own acknowledgement arrives.
     pending_inputs: VecDeque<PendingInput>,
+    /// Velocity's deliveries for a parked thread, sent after its resume prompt (#231).
+    held_notices: Vec<String>,
     busy: bool,
     log_tail: VecDeque<String>,
     agent_commands: Option<Vec<AgentCommandView>>,
@@ -82,7 +84,10 @@ struct ThreadRuntime {
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum PendingInput {
     Opening,
+    /// A message you sent; its queued row leaves when the agent reads it.
     Steering,
+    /// A line Velocity delivered (AIRC, PR follow-through): shown as a notice, never queued.
+    Notice,
 }
 
 #[derive(Default)]
@@ -155,6 +160,7 @@ impl ThreadRuntimes {
                 transcript: LiveTranscript::new(worktree),
                 inputs,
                 pending_inputs: VecDeque::new(),
+                held_notices: Vec::new(),
                 busy: true,
                 log_tail: VecDeque::new(),
                 agent_commands: None,
@@ -220,6 +226,7 @@ impl ThreadRuntimes {
                 transcript: LiveTranscript::new(worktree),
                 inputs,
                 pending_inputs: VecDeque::from([PendingInput::Opening]),
+                held_notices: Vec::new(),
                 busy: true,
                 log_tail: VecDeque::new(),
                 agent_commands: None,
@@ -253,7 +260,35 @@ impl ThreadRuntimes {
 
     /// Recovery nudges must reach a silent busy session, rather than waiting behind it.
     pub fn nudge(&mut self, key: ThreadKey, message: &str) -> Result<(), SteerError> {
-        self.steer(key, message)
+        self.notify(key, message)
+    }
+
+    /// A line from Velocity, not from you: the agent reads it at its next step, and the
+    /// thread shows it as a notice once read. It never joins your composer queue, so it
+    /// never leaves a row there you cannot clear (#231).
+    fn notify(&mut self, key: ThreadKey, message: &str) -> Result<(), SteerError> {
+        let parked = self.parked.contains(&key);
+        let thread = self.threads.get_mut(&key).ok_or(SteerError::NoSession)?;
+        if parked {
+            thread.held_notices.push(message.to_owned());
+            return Ok(());
+        }
+        thread
+            .inputs
+            .send(text_input(message))
+            .map_err(|_| SteerError::NoSession)?;
+        thread.pending_inputs.push_back(PendingInput::Notice);
+        Ok(())
+    }
+
+    /// Withdraws a message you queued that the agent has not read yet (F4). `index` counts
+    /// the thread's queued rows, oldest first.
+    pub fn remove_queued(&mut self, key: ThreadKey, index: usize) -> bool {
+        let Some(thread) = self.threads.get_mut(&key) else {
+            return false;
+        };
+        let sent = sent_count(thread);
+        thread.transcript.remove_queued(index, sent)
     }
 
     pub fn is_parked(&self, key: ThreadKey) -> bool {
@@ -294,6 +329,10 @@ impl ThreadRuntimes {
                 .iter()
                 .map(|_| PendingInput::Steering),
         );
+        for notice in std::mem::take(&mut thread.held_notices) {
+            let _ = inputs.send(text_input(&notice));
+            thread.pending_inputs.push_back(PendingInput::Notice);
+        }
         thread.inputs = inputs;
         thread.busy = true;
         thread.phase = SessionPhase::Running;
@@ -340,7 +379,7 @@ impl ThreadRuntimes {
             }
             return Ok(status);
         }
-        self.steer(key, message)?;
+        self.notify(key, message)?;
         if let Some(thread) = self.threads.get_mut(&key) {
             thread.deliveries.stage(identifier, message);
         }
@@ -357,10 +396,19 @@ impl ThreadRuntimes {
     }
 
     /// A message for the thread's agent: sent now when it is idle, queued otherwise (Rule 1).
+    /// A queued message stays here, not in the agent's input, until the turn ends, so you
+    /// can still withdraw it ([Self::remove_queued]).
     pub fn steer(&mut self, key: ThreadKey, prompt: &str) -> Result<(), SteerError> {
         let thread = self.threads.get_mut(&key).ok_or(SteerError::NoSession)?;
         // A parked agent gets the message right after its resume prompt (§2.2, Rule 1).
         if self.parked.contains(&key) {
+            thread.transcript.queue(prompt);
+            return Ok(());
+        }
+        if thread.busy && thread.phase == SessionPhase::Running {
+            if thread.inputs.is_closed() {
+                return Err(SteerError::NoSession);
+            }
             thread.transcript.queue(prompt);
             return Ok(());
         }
@@ -500,8 +548,13 @@ impl ThreadRuntimes {
             AgentEvent::Transcript { placement, update } => {
                 if matches!(update, SessionUpdate::UserMessageChunk(_)) {
                     thread.busy = true;
-                    if thread.pending_inputs.pop_front() == Some(PendingInput::Steering) {
-                        thread.transcript.sent_queued(1);
+                    match thread.pending_inputs.pop_front() {
+                        Some(PendingInput::Steering) => thread.transcript.sent_queued(1),
+                        Some(PendingInput::Notice) => {
+                            thread.transcript.record_notice(*placement, update);
+                            return Some(progress(thread));
+                        }
+                        Some(PendingInput::Opening) | None => {}
                     }
                 }
                 thread.transcript.record(*placement, update);
@@ -529,6 +582,7 @@ impl ThreadRuntimes {
                 // A delayed turn end cannot acknowledge inputs sent after that turn.
                 // Only the client's prompt chunks above remove queued rows.
                 thread.busy = false;
+                send_held(thread);
             }
             AgentEvent::Log(line) => {
                 thread.log_tail.push_back(line.clone());
@@ -585,12 +639,45 @@ fn parked_runtime(worktree: &str, follows_pull_request: bool) -> ThreadRuntime {
         transcript: LiveTranscript::new(worktree),
         inputs,
         pending_inputs: VecDeque::new(),
+        held_notices: Vec::new(),
         busy: false,
         log_tail: VecDeque::new(),
         agent_commands: None,
         titling_model: None,
         heartbeat: crate::agent_activity::Heartbeat::default(),
     }
+}
+
+/// Your queued messages already handed to the agent: they wait only for its echo.
+fn sent_count(thread: &ThreadRuntime) -> usize {
+    thread
+        .pending_inputs
+        .iter()
+        .filter(|input| **input == PendingInput::Steering)
+        .count()
+}
+
+/// The turn ended: the messages you queued while it ran go to the agent now, together,
+/// as its next prompt (Rule 1).
+fn send_held(thread: &mut ThreadRuntime) {
+    if thread.phase != SessionPhase::Running {
+        return;
+    }
+    let sent = sent_count(thread);
+    let held = thread
+        .transcript
+        .queued()
+        .iter()
+        .skip(sent)
+        .map(|message| ContentBlock::from(message.clone()))
+        .collect::<Vec<_>>();
+    let count = held.len();
+    if count == 0 || thread.inputs.send(AgentInput::Send(held)).is_err() {
+        return;
+    }
+    thread
+        .pending_inputs
+        .extend(std::iter::repeat_n(PendingInput::Steering, count));
 }
 
 fn text_input(prompt: &str) -> AgentInput {

@@ -72,6 +72,7 @@ fn describe(block: &TranscriptBlock) -> String {
         TranscriptBlock::AgentMessage { paragraphs } => {
             format!("agent: {}", paragraphs.join(" / "))
         }
+        TranscriptBlock::Notice { text } => format!("from Velocity: {text}"),
         TranscriptBlock::ToolGroup { steps } => steps
             .iter()
             .map(|step| {

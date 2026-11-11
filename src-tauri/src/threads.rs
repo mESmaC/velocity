@@ -222,6 +222,9 @@ pub fn handle_intent(
             Some(result) => result.map(Some),
             None => send_message(application, *identifier, prompt).map(Some),
         },
+        LayoutIntent::RemoveQueuedMessage { identifier, index } => {
+            remove_queued_message(application, *identifier, *index).map(Some)
+        }
         _ => Ok(None),
     }
 }
@@ -334,6 +337,43 @@ fn send_message(
     .ok_or("Select or create a project first")?;
     let thread = u32::try_from(identifier).map_err(|error| error.to_string())?;
     steer(application, (project, thread), prompt)
+}
+
+/// Withdraws a message you queued that the agent has not read yet (F4, #231). The saved
+/// transcript drops it too, so it does not come back after a restart.
+fn remove_queued_message(
+    application: &AppHandle,
+    identifier: usize,
+    index: usize,
+) -> Result<LayoutSnapshot, String> {
+    let (project, activity) = {
+        let store = lock(
+            application.state::<ManagedStateStore>().inner(),
+            "persisted state",
+        )?;
+        let project = store.active_project().ok_or("Select a project first")?;
+        let activity = project
+            .threads
+            .iter()
+            .find(|thread| usize::try_from(thread.id).ok() == Some(identifier))
+            .map(|thread| thread.activity)
+            .ok_or("Unknown thread")?;
+        (project.id, activity)
+    };
+    let key = (
+        project,
+        u32::try_from(identifier).map_err(|error| error.to_string())?,
+    );
+    let removed = lock(
+        application.state::<ManagedThreads>().inner(),
+        "thread sessions",
+    )?
+    .remove_queued(key, index);
+    if !removed {
+        return Err("The agent has already read that message".into());
+    }
+    save_activity(application, key, activity, None)?;
+    refresh(application, key, false)
 }
 
 /// Queues `prompt` for one thread's agent; swarm broadcasts and rebase notices use it too.

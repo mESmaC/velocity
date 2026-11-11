@@ -166,6 +166,12 @@ pub enum TranscriptBlock {
         key: String,
         value: String,
     },
+    /// A line Velocity delivered to the agent (an F14 "via AIRC" message or event, a PR
+    /// follow-through notice), shown once the agent read it. It is never a user message
+    /// and never sits in the composer queue (#231).
+    Notice {
+        text: String,
+    },
 }
 
 #[cfg_attr(

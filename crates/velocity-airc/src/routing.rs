@@ -72,46 +72,58 @@ impl Channel {
     }
 }
 
-/// Explicit recipients win; status notices also follow their named claim and waits.
+/// Only the event lines an agent must act on are pushed to it (#231). Its own events
+/// (claims, PR, pushes, waits, rebases) are never sent back: it caused them, and the
+/// tool call that did already returned the result. Routine lines about its PR from
+/// others (PR duty's review claim and release, approvals) stay in the log for
+/// `read_events`. `broken` follows [broken_for].
 pub(crate) fn event_for(entry: &Entry, nick: &str, entries: &[Entry]) -> bool {
     if !entry.is_event() {
         return false;
     }
-    if entry.to.iter().any(|recipient| recipient == nick) || entry.nick == nick {
+    if entry.to.iter().any(|recipient| recipient == nick) {
         return true;
     }
-    if entry
-        .dependency
-        .as_ref()
-        .is_some_and(|wait| wait.nick == nick || wait.holder_nick == nick)
-    {
-        return true;
+    match entry.kind.as_str() {
+        // Both named agents must settle an overlap; the later one records a share or wait.
+        "overlap" => names(entry, nick),
+        // The holder learns another agent will change its file; the sharer already knows.
+        "shares" => entry.nick != nick && names(entry, nick),
+        "changes" | "conflict" | "updated" => {
+            entry.nick != nick
+                && owns_pull_request(entry, nick, entries, &own_claims(entries, nick))
+        }
+        "merged" => {
+            let own = own_claims(entries, nick);
+            if entry.nick == nick || owns_pull_request(entry, nick, entries, &own) {
+                return false;
+            }
+            let claimed = own.iter().any(|claim| {
+                claim.files.iter().any(|file| {
+                    velocity_git::landing::contested_path(file) && entry.files.contains(file)
+                })
+            });
+            claimed || edited_merge(entry, nick, entries)
+        }
+        _ => false,
     }
-    // Generated overlap/share notices name whole nicks, never substring matches.
-    if matches!(entry.kind.as_str(), "overlap" | "shares" | "refused") {
-        return entry
-            .text
-            .split(|character: char| {
-                !character.is_alphanumeric() && character != '-' && character != '_'
-            })
-            .any(|word| word == nick);
-    }
-    let own = crate::claims::claims(entries)
+}
+
+/// Generated overlap/share notices name whole nicks, never substring matches.
+fn names(entry: &Entry, nick: &str) -> bool {
+    entry
+        .text
+        .split(|character: char| {
+            !character.is_alphanumeric() && character != '-' && character != '_'
+        })
+        .any(|word| word == nick)
+}
+
+fn own_claims(entries: &[Entry], nick: &str) -> Vec<crate::Claim> {
+    crate::claims::claims(entries)
         .into_iter()
         .filter(|claim| claim.nick == nick)
-        .collect::<Vec<_>>();
-    if owns_pull_request(entry, nick, entries, &own) {
-        return true;
-    }
-    if entry.kind == "merged" {
-        let claimed = own.iter().any(|claim| {
-            claim.files.iter().any(|file| {
-                velocity_git::landing::contested_path(file) && entry.files.contains(file)
-            })
-        });
-        return claimed || edited_merge(entry, nick, entries);
-    }
-    false
+        .collect()
 }
 
 fn owns_pull_request(

@@ -256,6 +256,16 @@ pub enum LayoutIntent {
         prompt: String,
         queued: bool,
     },
+    /// Withdraws a message you queued that the agent has not read yet (F4). `index` counts
+    /// the thread's queued rows, oldest first.
+    RemoveQueuedMessage {
+        #[cfg_attr(feature = "bindings", serde(with = "crate::ipc_number"))]
+        #[cfg_attr(feature = "bindings", specta(type = String))]
+        identifier: usize,
+        #[cfg_attr(feature = "bindings", serde(with = "crate::ipc_number"))]
+        #[cfg_attr(feature = "bindings", specta(type = String))]
+        index: usize,
+    },
     AddTask(String),
     /// Ready card: include or leave out one proposed proof-list entry (F3, F17).
     ToggleProofListEntry(

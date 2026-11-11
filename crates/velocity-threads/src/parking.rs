@@ -79,6 +79,7 @@ pub fn transcript_context(blocks: &[TranscriptBlock]) -> String {
             TranscriptBlock::ErrorCard { card } => {
                 lines.push(format!("[error] {}: {}", card.headline, card.detail));
             }
+            TranscriptBlock::Notice { text } => lines.push(format!("[from Velocity]\n{text}")),
             _ => {}
         }
     }
