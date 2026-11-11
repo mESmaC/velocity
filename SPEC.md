@@ -1052,6 +1052,10 @@ How the checks run *(proposed)*:
 - Lean for a feature off the list, or a theorem about a single behaviour, gets changes requested.
 - A confidence proof at the model level for a language that has a stronger level available is flagged on the proof card and left to the reviewer. Sensitive paths need the strongest level (F7).
 
+- PR duty's MCP approval requires nonempty `proof_review` explanations of proof-list scope, theorem-statement review and confidence level (including why a check is inapplicable). Those explanations are mirrored with the review. Missing design proofs, off-list Lean and unmet tier requirements require changes; applicability and semantic correctness are judged by the reviewer.
+- `pr_duty_checked`, approval and merge run the executable proof gate in the registered review worktree at the prepared head/base. The checkout must match the committed content at that exact head, ignoring CRLF/LF-only differences from Windows generators; content changes and untracked files are refused. Failed builds, placeholders, disallowed axioms, unnamed spec sections and changed modules absent from the Lake build refuse the operation. An ordinary PR with no changed Lean skips Lake. An unreadable check result fails closed.
+- The statement lock is saved before publishing an approval. Merge also requires a readable lock with no changed or removed locked statement. A moved base requires preparation and checks again; GitHub CI remains advisory.
+
 **Where it runs:**
 - Proofs and stress scripts run locally, in each agent's worktree, on the machine that already runs the agents.
 - GitHub CI runs build and lint only, and is advisory: it never blocks a merge (F7).
@@ -1282,7 +1286,7 @@ Each milestone ends with a working app. PR duty checks an item off when it lands
 - [x] Lean toolchain and Mathlib cache in the warm pool (F5)
 - [x] Proof checks in the worktree: `lake build`, no `sorry`/`admit`, axiom audit, statement lock and review reset
 - [ ] Proof card on the PR, "Proved" on the PR track, `proved`/`statement`/`stress` events
-- [ ] Merge gate in PR duty; statement review; tiers updated (F7)
+- [x] Merge gate in PR duty; statement review; tiers updated (F7)
 - [x] Scouts: assume-it-fails sweeps, evidence required, Stress and Proof gaps focus areas, stress runs against Lean reference models
 - [x] Levels per language: reference by default (fixture table plus one test; compiled Lean model through FFI for stress), code on request (Aeneas for Rust), model
 - [ ] AGENTS.md: Implementation first, Proofs, and Tests and docs sections; Covers check (F11)
