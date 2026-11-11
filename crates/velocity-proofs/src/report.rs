@@ -3,6 +3,7 @@
 
 use crate::axioms::{ALLOWED_AXIOMS, AxiomAudit};
 use crate::lean_source::Placeholder;
+use crate::levels::FeatureLevels;
 
 /// How one check went.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -27,6 +28,9 @@ pub struct ProofCheckReport {
     pub axioms: CheckStep<AxiomAudit>,
     /// Changed `Design.lean` files that never name the SPEC.md section they cover.
     pub unnamed_sections: Vec<String>,
+    /// The level each language reaches for every proof-list feature the PR touches (F17
+    /// Confidence proof). A model-only level is flagged for the reviewer, never failed.
+    pub levels: Vec<FeatureLevels>,
 }
 
 impl ProofCheckReport {
@@ -39,6 +43,7 @@ impl ProofCheckReport {
             placeholders: Vec::new(),
             axioms: CheckStep::Skipped,
             unnamed_sections: Vec::new(),
+            levels: Vec::new(),
         }
     }
 
@@ -55,10 +60,11 @@ impl ProofCheckReport {
             && self.unnamed_sections.is_empty()
     }
 
-    /// The four checks as lines for PR duty's prompt, or `None` when no proof file changed.
+    /// The four checks and the proof levels as lines for PR duty's prompt, or `None` when the
+    /// PR touches no proof file and no proof-list feature.
     pub fn summary(&self) -> Option<String> {
         if self.changed.is_empty() {
-            return None;
+            return self.levels_summary();
         }
         let verdict = if self.passed() {
             "every check passed"
@@ -83,6 +89,46 @@ impl ProofCheckReport {
                 self.section_line()
             ),
         ];
+        let mut summary = lines.join("\n");
+        if let Some(levels) = self.levels_summary() {
+            summary.push('\n');
+            summary.push_str(&levels);
+        }
+        Some(summary)
+    }
+
+    /// One line per feature and language: the level reached, the strongest available, and
+    /// the evidence. Model-only levels are flagged; they never fail the checks.
+    fn levels_summary(&self) -> Option<String> {
+        if self.levels.is_empty() {
+            return None;
+        }
+        let mut lines = Vec::from([
+            "Proof levels (a model-only level where a stronger one is available is FLAGGED: point it out and decide, it does not fail the checks; a PR touching a Sensitive path needs the strongest level):".to_owned(),
+        ]);
+        for feature in &self.levels {
+            for entry in &feature.languages {
+                let language = entry.language.unwrap_or("any language");
+                let mut line = format!(
+                    "- {} · {language} · {}: {}",
+                    feature.feature,
+                    entry.level.name(),
+                    entry.evidence
+                );
+                if entry.flagged() {
+                    line.push_str(&format!(
+                        ". FLAGGED: {} is available",
+                        entry.strongest.name()
+                    ));
+                } else if entry.below_strongest() {
+                    line.push_str(&format!(
+                        ". Strongest available: {}, on request",
+                        entry.strongest.name()
+                    ));
+                }
+                lines.push(line);
+            }
+        }
         Some(lines.join("\n"))
     }
 
