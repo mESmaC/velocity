@@ -27,6 +27,38 @@ pub struct ThreadMenuView {
     pub project_identifier: u32,
     pub thread_identifier: u32,
     pub entries: Vec<ThreadMenuEntry>,
+    pub message_mode: Option<ThreadMessageMode>,
+}
+
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize, specta::Type)]
+pub struct ThreadMessageMode {
+    pub nick: String,
+    pub mode: velocity_airc::MessageMode,
+}
+
+fn thread_message_mode(
+    application: &AppHandle,
+    project: u32,
+    thread: u32,
+) -> Result<Option<ThreadMessageMode>, String> {
+    let directory = application
+        .path()
+        .app_data_dir()
+        .map_err(|error| error.to_string())?;
+    let entries = velocity_airc::Channel::open(&directory, &project.to_string())
+        .and_then(|channel| channel.read(0))
+        .map_err(|error| error.to_string())?;
+    // Nicks may be shortened or collision-suffixed: use the stable member identity.
+    let member = format!("thread-{thread}");
+    Ok(entries
+        .iter()
+        .rev()
+        .find(|entry| entry.member == member && matches!(entry.kind.as_str(), "join" | "leave"))
+        .filter(|entry| entry.kind == "join")
+        .map(|entry| ThreadMessageMode {
+            nick: entry.nick.clone(),
+            mode: velocity_airc::mode_for(&entries, &entry.nick),
+        }))
 }
 
 /// The saved thread and its project's checkout, checked against the selected project.
@@ -85,6 +117,7 @@ pub async fn get_thread_menu(
     })
     .await
     .map_err(|error| error.to_string())?;
+    let message_mode = thread_message_mode(&application, project_identifier, thread_identifier)?;
     let facts = ThreadMenuFacts {
         worktree_path: thread.worktree_path,
         pull_request_number: thread.pull_request_number,
@@ -96,6 +129,7 @@ pub async fn get_thread_menu(
         project_identifier,
         thread_identifier,
         entries,
+        message_mode,
     }))
 }
 
