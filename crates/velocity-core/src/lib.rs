@@ -33,6 +33,7 @@ pub mod ready_pool;
 pub mod review_diff;
 pub mod review_tier;
 pub mod scout_sweep;
+pub mod skill_menu;
 pub mod state;
 pub mod swarm;
 pub mod theme;

@@ -9,10 +9,14 @@
     selected: string;
     send: (action: LayoutAction) => void;
   } = $props();
+  // The same menu lists `$` skills when the composer is typing one (F4).
+  const label = $derived(
+    items[0]?.command.startsWith('$') ? 'Skills' : 'Slash commands',
+  );
 </script>
 
 {#if items.length > 0}
-  <div class="slash-menu" role="listbox" aria-label="Slash commands">
+  <div class="slash-menu" role="listbox" aria-label={label}>
     {#each items as item, index (item.command)}
       <button
         type="button"
