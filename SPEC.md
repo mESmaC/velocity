@@ -665,6 +665,7 @@ Open it from the rail link or the palette. It reads and writes the repo's `AGENT
     - **split** a bullet with two rules into two
   - If it cannot work out what a vague word means, it leaves the bullet flagged and says what is missing ("say what 'clean' means").
   - Every rewritten bullet shows "was ~~original~~ · **Undo**" until you save.
+- **Instruction sections:** the new-project template and Covers **Add** share the complete Implementation first, Proofs, and Tests and docs bullets, including F17's theorem limits and fixture rules. Covers retains the reference's heading checks; adding a topic already covered leaves the draft unchanged. These are editable instructions, not approval gates.
 - **Live lint while typing:** marks hedges (should probably, maybe, try to, where possible, as needed, consider), "should", and vague words (clean, good, nice, appropriate, reasonable, properly, etc.).
   - **The lint advises; it never blocks** (decided, Q8). It marks the words and lists them under Flagged. It never stops typing, saving or committing.
   - **AGENTS.md changes in a PR:** when a line the PR changed in AGENTS.md trips the lint, PR duty rewrites that line as a direct rule in the branch update it makes before merging (the same tighten rewrite as Enter), and says so in its review. It never requests changes for wording alone. A vague word it can't resolve becomes an issue (F7 severity bar).
@@ -1289,7 +1290,7 @@ Each milestone ends with a working app. PR duty checks an item off when it lands
 - [x] Merge gate in PR duty; statement review; tiers updated (F7)
 - [x] Scouts: assume-it-fails sweeps, evidence required, Stress and Proof gaps focus areas, stress runs against Lean reference models
 - [x] Levels per language: reference by default (fixture table plus one test; compiled Lean model through FFI for stress), code on request (Aeneas for Rust), model
-- [ ] AGENTS.md: Implementation first, Proofs, and Tests and docs sections; Covers check (F11)
+- [x] AGENTS.md: Implementation first, Proofs, and Tests and docs sections; Covers check (F11)
 
 **M12 · Skills** (F18)
 - [x] Skill library: clone and pin packs, update with a diff, Windows symlink and UTF-8 handling
