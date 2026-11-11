@@ -75,23 +75,7 @@ impl StateStore {
     /// Settings → Worktrees as they apply to `project`, active or not (F5), so background
     /// work such as a scout sweep lands where the settings page says it does.
     pub fn worktree_preferences(&self, project: &ProjectItem) -> WorktreePreferences {
-        let settings = &self.state.settings.worktrees;
-        WorktreePreferences {
-            root: settings
-                .location_root
-                .clone()
-                .unwrap_or_else(|| default_worktree_root(&self.directory)),
-            project_override: settings.project_roots.get(&project.id).cloned(),
-            delete_local_branch: settings.delete_local_branch_on_merge,
-            share_build_cache: settings.share_rust_build_cache,
-            copy_files: settings.copy_files.clone(),
-            setup_command: settings
-                .project_setup_commands
-                .get(&project.id)
-                .cloned()
-                .unwrap_or_else(|| legacy_setup_command(settings)),
-            ready_count: settings.warm_pool_count,
-        }
+        project_preferences(project, &self.state.settings, &self.directory)
     }
 
     pub fn worktree_paths(&self) -> Vec<String> {
@@ -156,8 +140,33 @@ impl StateStore {
     }
 }
 
+/// Resolve saved setup fields and the root once for native and compatibility planners.
+pub fn project_preferences(
+    project: &ProjectItem,
+    settings: &super::Settings,
+    state_directory: &Path,
+) -> WorktreePreferences {
+    let settings = &settings.worktrees;
+    WorktreePreferences {
+        root: settings
+            .location_root
+            .clone()
+            .unwrap_or_else(|| default_worktree_root(state_directory)),
+        project_override: settings.project_roots.get(&project.id).cloned(),
+        delete_local_branch: settings.delete_local_branch_on_merge,
+        share_build_cache: settings.share_rust_build_cache,
+        copy_files: settings.copy_files.clone(),
+        setup_command: settings
+            .project_setup_commands
+            .get(&project.id)
+            .cloned()
+            .unwrap_or_else(|| legacy_setup_command(settings)),
+        ready_count: settings.warm_pool_count,
+    }
+}
+
 // Store I/O keeps extended paths; the settings planner needs a normal drive/share prefix.
-fn default_worktree_root(directory: &Path) -> String {
+pub(crate) fn default_worktree_root(directory: &Path) -> String {
     let root = directory.join("worktrees").to_string_lossy().into_owned();
     if let Some(share) = root.strip_prefix(r"\\?\UNC\") {
         return format!(r"\\{share}");

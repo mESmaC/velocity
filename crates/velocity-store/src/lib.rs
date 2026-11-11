@@ -1180,10 +1180,22 @@ impl StateStore {
     }
 
     pub fn settings(&self) -> Settings {
-        self.state.settings.clone()
+        let mut settings = self.state.settings.clone();
+        // A detached snapshot must retain the same default root as this store's preview.
+        settings
+            .worktrees
+            .location_root
+            .get_or_insert_with(|| worktree_settings::default_worktree_root(&self.directory));
+        settings
     }
 
-    pub fn set_settings(&mut self, next_settings: Settings) -> Result<Settings, StoreError> {
+    pub fn set_settings(&mut self, mut next_settings: Settings) -> Result<Settings, StoreError> {
+        // Keep the implicit default implicit on disk after editing a resolved snapshot.
+        if next_settings.worktrees.location_root.as_deref()
+            == Some(worktree_settings::default_worktree_root(&self.directory).as_str())
+        {
+            next_settings.worktrees.location_root = None;
+        }
         let agents = &next_settings.agents;
         if agents.stall_timeout_minutes == 0
             || agents.tool_timeout_minutes == 0
@@ -1199,7 +1211,7 @@ impl StateStore {
             self.state.apply_settings(next_settings);
         }
         self.save_if_changed()?;
-        Ok(self.state.settings.clone())
+        Ok(self.settings())
     }
 
     pub fn save_if_changed(&mut self) -> Result<bool, StoreError> {
