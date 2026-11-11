@@ -465,6 +465,9 @@ pub struct WorktreeSettings {
     pub copy_files: String,
     #[serde(default = "worktree_settings::default_setup_command")]
     pub setup_command: String,
+    /// Per-project commands, including an explicit empty command to skip setup.
+    #[serde(default)]
+    pub project_setup_commands: BTreeMap<u32, String>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, Type)]
@@ -572,6 +575,7 @@ impl Settings {
                 project_roots: BTreeMap::new(),
                 copy_files: worktree_settings::default_copy_files(),
                 setup_command: worktree_settings::default_setup_command(),
+                project_setup_commands: BTreeMap::new(),
             },
             providers: ProviderSettings {
                 default_provider: core_settings.providers.default_provider.into(),

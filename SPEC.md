@@ -421,7 +421,7 @@ A worktree's path is fixed when it is created. Changing the location setting aff
 - **Lifecycle:** the two always-on rules shown locked; "delete the local branch too"; a read-only explanation of the closed, failed and spec rules.
 - **New worktree setup:**
   - untracked files to copy (default `.env, .env.local`)
-  - a command to run after creation (default `pnpm -C ui install`)
+  - a command to run after creation, saved per project (empty by default; Velocity itself can use `pnpm -C ui install`). Clearing it skips the command. Older saved global commands remain a fallback, except the former built-in `pnpm -C ui install` default, which is ignored until explicitly set for a project.
   - "share the Rust build cache between a project's worktrees" (default on): agents, setup commands and the pool's prebuilds get `RUSTC_WRAPPER=sccache` when sccache is installed and no wrapper is set, and each worktree builds in its own `target` folder
 
   The agent starts only after setup finishes.
