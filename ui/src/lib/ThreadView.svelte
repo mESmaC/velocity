@@ -3,6 +3,7 @@
   import Icon from './Icon.svelte';
   import PullRequestHistory from './PullRequestHistory.svelte';
   import TranscriptBlocks from './TranscriptBlocks.svelte';
+  import { followTranscript } from './follow-transcript';
   import type {
     LayoutAction,
     LayoutSnapshot,
@@ -97,7 +98,7 @@
       track
     />{/if}
 
-  <div class="transcript">
+  <div class="transcript" use:followTranscript={thread.identifier}>
     <div class="transcript-inner">
       {#if thread.worked_summary && thread.transcript_mode !== 'FullTranscript'}
         <div class="worked">

@@ -1653,3 +1653,12 @@
   --skills-chip-81: var(--text);
   --skills-chip-82: none;
 }
+
+/* Markdown follows the reference transcript's grouped-text inset (.tools,
+   12px), tool-card padding (6px 12px) and quiet card border. */
+:root {
+  --markdown-list-padding: 12px;
+  --markdown-quote-padding: 12px;
+  --markdown-quote-border: 1px solid rgba(255, 255, 255, 0.09);
+  --markdown-code-padding: 6px 12px;
+}

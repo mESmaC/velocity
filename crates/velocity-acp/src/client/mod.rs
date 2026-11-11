@@ -90,6 +90,8 @@ pub enum AgentEvent {
     SessionUpdate(SessionUpdate),
     /// A message waits: "queued · sends when the current step finishes".
     Queued,
+    /// Waiting for, or admitted to, a provider concurrency slot (F15).
+    ProviderQueued(bool, String),
     /// A turn ended: why, or the error the prompt failed with.
     TurnEnded(Result<StopReason, String>),
     /// The agent wrote a file through `fs/write_text_file` (for the diff view and claims).
@@ -155,6 +157,34 @@ pub fn launch_shared_servers(launch: &AgentLaunch, worktree: &std::path::Path) -
 /// the worktree, starts the session, then feeds it the thread's messages.
 pub async fn run_session(
     mut launch: AgentLaunch,
+    setup: SessionSetup,
+    inputs: UnboundedReceiver<AgentInput>,
+    events: UnboundedSender<AgentEvent>,
+) -> Result<(), ClientError> {
+    let (inputs, stopped) = forward_inputs(inputs);
+    let provider = launch.concurrency_provider.or_else(|| {
+        setup
+            .run_settings
+            .as_ref()
+            .map(|settings| settings.provider)
+    });
+    let _permit = if let Some(provider) = provider {
+        let permit = tokio::select! {
+            permit = crate::concurrency::acquire(provider, || {
+                let _ = events.send(AgentEvent::ProviderQueued(true, provider.label()));
+            }) => permit,
+            _ = stopped => return Ok(()),
+        };
+        let _ = events.send(AgentEvent::ProviderQueued(false, provider.label()));
+        Some(permit)
+    } else {
+        None
+    };
+    run_admitted_session(launch, setup, inputs, events).await
+}
+
+async fn run_admitted_session(
+    launch: AgentLaunch,
     setup: SessionSetup,
     inputs: UnboundedReceiver<AgentInput>,
     events: UnboundedSender<AgentEvent>,
@@ -225,7 +255,8 @@ fn forward_inputs(
     let (stop, stopped) = oneshot::channel();
     tokio::spawn(async move {
         while let Some(input) = inputs.recv().await {
-            if matches!(input, AgentInput::Stop) || forwarded.send(input).is_err() {
+            let stopping = matches!(input, AgentInput::Stop);
+            if forwarded.send(input).is_err() || stopping {
                 break;
             }
         }

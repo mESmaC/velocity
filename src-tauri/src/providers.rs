@@ -190,7 +190,30 @@ fn settings(application: &AppHandle) -> Settings {
         .unwrap_or_default()
 }
 
+fn configure_concurrency(application: &AppHandle) {
+    let state = application.state::<ManagedStateStore>();
+    let Ok(store) = state.lock() else {
+        return;
+    };
+    // Keep settings edits serialized through applying the live cap as well as saving it.
+    let limits = store
+        .settings()
+        .providers
+        .concurrency
+        .iter()
+        .map(|entry| {
+            (
+                velocity_threads::titles::provider(entry.provider),
+                entry.maximum,
+            )
+        })
+        .collect::<Vec<_>>();
+    velocity_acp::concurrency::configure(&limits);
+    drop(store);
+}
+
 pub fn initialize(application: &AppHandle) {
+    configure_concurrency(application);
     watch_live_limits(application);
     let handle = application.clone();
     tauri::async_runtime::spawn(async move {
@@ -604,6 +627,7 @@ pub fn set_provider_settings(
             .edit_providers(edit)
             .map_err(|error| error.to_string())?;
     }
+    configure_concurrency(&application);
     current_view(&application)
 }
 
