@@ -16,6 +16,18 @@ pub struct LimitReading {
     pub plan: Option<String>,
 }
 
+impl LimitReading {
+    /// A quota window from a report that does not include subscription plan details.
+    pub fn new(percent_used: u8, window: String, resets_at: Option<i64>) -> Self {
+        Self {
+            percent_used,
+            window,
+            resets_at,
+            plan: None,
+        }
+    }
+}
+
 const FIVE_HOURS: i64 = 5 * 60;
 const ONE_DAY: i64 = 24 * 60;
 const ONE_WEEK: i64 = 7 * ONE_DAY;

@@ -49,21 +49,20 @@ fn quota_reading(quota: &Value, window: Option<&str>) -> Option<LimitReading> {
     if !remaining.is_finite() {
         return None;
     }
-    Some(LimitReading {
-        percent_used: ((1.0 - remaining.clamp(0.0, 1.0)) * 100.0).round() as u8,
-        window: match window {
+    Some(LimitReading::new(
+        ((1.0 - remaining.clamp(0.0, 1.0)) * 100.0).round() as u8,
+        match window {
             Some("5h") => "5-hour",
             Some("weekly") => "weekly",
             Some(window) => window,
             None => "reported quota",
         }
         .into(),
-        resets_at: quota
+        quota
             .get("resetTime")
             .and_then(Value::as_str)
             .and_then(unix_seconds),
-        plan: None,
-    })
+    ))
 }
 
 fn fullest(readings: impl Iterator<Item = LimitReading>) -> Option<LimitReading> {
