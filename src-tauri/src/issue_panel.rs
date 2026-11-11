@@ -47,6 +47,25 @@ pub fn get_issue_panel(
     Ok(panel.clone())
 }
 
+/// Expands or collapses one issue row in the rail (#209) and broadcasts the new snapshot.
+#[tauri::command]
+#[specta::specta]
+pub fn toggle_issue_expanded(
+    application: AppHandle,
+    panel: State<'_, IssuePanel>,
+    number: u32,
+) -> Result<IssuePanelSnapshot, String> {
+    let mut panel = lock(panel.inner(), "issues")?;
+    if panel.toggle_expanded(number) {
+        IssuePanelChanged {
+            panel: panel.clone(),
+        }
+        .emit(&application)
+        .map_err(|error| error.to_string())?;
+    }
+    Ok(panel.clone())
+}
+
 #[tauri::command]
 #[specta::specta]
 pub async fn dispatch_issue(

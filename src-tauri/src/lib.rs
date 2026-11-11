@@ -100,6 +100,7 @@ fn bindings() -> Builder<tauri::Wry> {
         issue_panel::get_issue_panel,
         issue_panel::open_project_issue,
         issue_panel::dispatch_issue,
+        issue_panel::toggle_issue_expanded,
         pull_request_panel::get_pull_request_panel,
         pull_request_panel::open_project_pull_request,
         shared_mcp::edit_shared_mcp_servers,
