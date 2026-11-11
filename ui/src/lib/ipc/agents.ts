@@ -13,6 +13,7 @@ export type {
 
 export const agentsCommands = {
   read: commands.readAgentsMd,
+  reload: commands.reloadAgentsMd,
   edit: commands.editAgentsMd,
   save: commands.writeAgentsMd,
   tighten: commands.tightenRule,
