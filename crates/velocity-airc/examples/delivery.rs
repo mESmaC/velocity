@@ -89,13 +89,12 @@ fn check_mistyped_nicks(channel: &Channel) -> Result<(), Box<dyn std::error::Err
     ] {
         let before = channel.read(0)?.len();
         let expected = format!("Unknown nick `{prefix}`. Did you mean `{suggestion}`?");
-        match channel.comment(&format!("{prefix}: do not broadcast")) {
-            Err(error) if error.to_string() == expected => {}
-            _ => {
-                return Err(
-                    format!("mistyped nick {prefix} was not refused with suggestion").into(),
-                );
-            }
+        let error = channel
+            .comment(&format!("{prefix}: do not broadcast"))
+            .err()
+            .ok_or("mistyped nick broadcast")?;
+        if error.to_string() != expected {
+            return Err("mistyped nick suggestion incorrect".into());
         }
         if channel.read(0)?.len() != before {
             return Err("refused comment was recorded".into());
