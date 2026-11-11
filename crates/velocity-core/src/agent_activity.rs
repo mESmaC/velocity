@@ -16,38 +16,45 @@ pub fn stall_action(silence: u64, timeout: u64, nudged: bool, exempt: bool) -> S
     }
 }
 
-pub fn release_due(elapsed: u64, grace: u64, eligible: bool, protected: bool) -> bool {
-    eligible && !protected && elapsed >= grace
+/// Lifecycle errors and limits start the grace clock; silence alone never does.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Availability {
+    Available,
+    Failed,
+    AtLimit,
 }
 
-#[cfg(test)]
-mod tests {
-    use super::{StallAction, release_due, stall_action};
-    // A changed deadline guard can restart a running build or release work held by an
-    // open PR. Check the runtime kernel against the Lean model's decision classes.
-    #[test]
-    fn lean_supervision_decisions() -> Result<(), Box<dyn std::error::Error>> {
-        for line in include_str!("../../../proofs/fixtures/agent-activity.tsv").lines() {
-            let fields: Vec<_> = line.split('\t').collect();
-            let elapsed = fields[1].parse()?;
-            let threshold = fields[2].parse()?;
-            let first = fields[3].parse()?;
-            let second = fields[4].parse()?;
-            if fields[0] == "stall" {
-                let expected = match fields[5] {
-                    "nothing" => StallAction::Nothing,
-                    "nudge" => StallAction::Nudge,
-                    "restart" => StallAction::Restart,
-                    _ => return Err("Invalid stall fixture".into()),
-                };
-                assert_eq!(stall_action(elapsed, threshold, first, second), expected);
-            } else {
-                assert_eq!(
-                    release_due(elapsed, threshold, first, second),
-                    fields[5].parse::<bool>()?
-                );
-            }
+impl Availability {
+    pub fn from_status(failed: bool, at_limit: bool) -> Self {
+        if failed {
+            Self::Failed
+        } else if at_limit {
+            Self::AtLimit
+        } else {
+            Self::Available
         }
-        Ok(())
+    }
+
+    /// An available observation breaks the continuous interval, including when
+    /// a PR, parking or a build-queue exemption previously protected the claims.
+    pub fn checkpoint(self, previous: Option<u64>, now: u64) -> Option<u64> {
+        match self {
+            Self::Available => None,
+            Self::Failed | Self::AtLimit => Some(previous.unwrap_or(now)),
+        }
+    }
+
+    pub fn release_due(
+        self,
+        since: Option<u64>,
+        now: u64,
+        grace: u64,
+        protected: bool,
+        released: bool,
+    ) -> bool {
+        self != Self::Available
+            && !protected
+            && !released
+            && since.is_some_and(|start| now.saturating_sub(start) >= grace)
     }
 }

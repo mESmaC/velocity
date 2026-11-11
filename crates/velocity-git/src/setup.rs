@@ -1,8 +1,8 @@
 //! New worktree setup and shared Rust build cache (SPEC.md F5).
 //!
 //! When a worktree is created, Velocity copies configured untracked files (default
-//! `.env, .env.local`), runs the post-creation setup command (default
-//! `pnpm -C ui install`), and shares the Rust build cache across the project's worktrees
+//! `.env, .env.local`), runs the project's optional post-creation setup command (empty
+//! by default), and shares the Rust build cache across the project's worktrees
 //! using one `CARGO_TARGET_DIR` per project. The agent starts only after setup finishes.
 
 /// Worktree lifecycle and setup settings (F5).

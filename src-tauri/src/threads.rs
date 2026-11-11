@@ -17,8 +17,8 @@ use velocity_threads::goal_swarm::{
 };
 use velocity_threads::{
     DeliveryStatus, LaunchPlan, RunningSession, SessionInputs, StopOutcome, ThreadKey,
-    ThreadProgress, ThreadRuntimes, agent_launch, plan_launch, resolve_title, spawn_session,
-    title_worktree_name,
+    ThreadProgress, ThreadRuntimes, agent_launch, plan_launch_with_preferences, resolve_title,
+    spawn_session, title_worktree_name,
 };
 
 use crate::layout::MainLayout;
@@ -257,7 +257,7 @@ fn start_thread(application: &AppHandle, prompt: &str) -> Result<LayoutSnapshot,
             .ok_or("Select or create a project first")?;
         // Settings → Worktrees for the active project, which is the one the thread starts in.
         let worktrees = store.worktree_context().preferences;
-        let plan = plan_launch(project, &worktrees, &store.settings(), prompt)
+        let plan = plan_launch_with_preferences(project, &worktrees, &store.settings(), prompt)
             .map_err(|error| error.to_string())?;
         let thread = store
             .add_thread(plan.project, plan.thread.clone())
