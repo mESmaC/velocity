@@ -121,7 +121,7 @@ The native supervisor checks live build threads once a second. Its defaulted che
 | Kind | Name | Purpose |
 |---|---|---|
 | command | `get_window_state`, `minimize_window`, `toggle_maximize_window`, `close_window` | native main-window state and custom title-bar controls |
-| command | `get_layout_state`, `dispatch_layout { action }` | backend-owned main-window projection, search, palette selection, Alt hints, contextual keyboard dispatch and navigation requests. Build intents are gated from the persisted active project's spec lock before publication; snapshots carry launch eligibility, rejection notices and draft-task hints. |
+| command | `get_layout_state`, `dispatch_layout { action }` | `Navigation(Board)` shows the Board or leaves it, and `Navigation(Focus)` returns to the selected thread or Home; the snapshot's `board` lists the lanes and cards. Backend-owned main-window projection, search, palette selection, Alt hints, contextual keyboard dispatch and navigation requests. Build intents are gated from the persisted active project's spec lock before publication; snapshots carry launch eligibility, rejection notices and draft-task hints. |
 | command | `list_projects`, `create_project`, `switch_project` | projects |
 | command | `get_new_project_defaults`, `pick_project_folder`, `create_project { request }` | New project dialog (F2): default folders, interview effort, speed and model from Settings; the native folder picker; Create, which refuses before anything runs or sets the project up, registers it, switches to it and records its spec interview |
 | command | `list_threads`, `start_thread`, `send_message`, `delete_thread` | threads. `start_thread` and `send_message` are the composer's `StartPrompt` and `SteerThread` intents from `dispatch_layout`: the backend checks the launch gate afresh, records a `working` thread, creates its worktree on `vel/<slug>` (the message slug until thread titles land), starts the provider's ACP agent there and streams its transcript into `layout://state`. Messages to a busy agent are queued (Rule 1). |
@@ -244,14 +244,17 @@ Two projects called Scion informed how agents collaborate in Velocity and how th
 
 ### F1 · Main window
 
-The layout has three columns:
-- **left:** sidebar, 236 px
-- **middle:** the main view
-- **right:** a rail, 236 px
+There are two views of the same work, switched from the title bar or with `B`:
+- **Focus:** one thread in depth, in three columns:
+  - **left:** sidebar, 236 px
+  - **middle:** the main view
+  - **right:** a rail, 236 px
+- **Board:** every thread at once, as cards in lanes, in place of all three columns (see Board below).
 
 **Title bar:**
 - **Brand and project switcher:** a dropdown listing every project. Each entry shows whether it is local or on GitHub, or "speccing" if its spec isn't locked yet.
   - Switching restores that project's saved active thread, sidebar and rail context, clears transient search and input, and closes the dropdown. The last active project and each project's active thread survive restart. Unknown project IDs leave the current selection unchanged.
+- **View switch:** a Focus | Board segmented control, shown once a project is open.
 - **Pulse:** live counts, each shown only when it is non-zero:
   - on duty
   - in spec
@@ -261,6 +264,18 @@ The layout has three columns:
   - merged today
 - A `Ctrl K` button that opens the palette.
 - The window controls.
+
+**Board:**
+- Lanes read left to right as a pipeline. Each has a title, a count and its cards:
+  - **Up next:** tasks nobody has started (todo or draft), then open issues. It is drawn as a dashed outline, because this work isn't in the pipeline yet, and it has a Swarm button when it holds anything.
+  - **Running:** swarms, spec interviews, working threads and failed threads. A failed card is tinted red.
+  - **In review:** threads whose PR is open.
+  - **Finished:** threads that merged, are done, or closed without merging.
+  - **On duty:** duty agents, in a last lane shown only when any exist. They are not work items.
+- The four pipeline lanes always show, with a one-line note when empty, so the pipeline keeps its shape.
+- A thread card shows the thread's state icon and colour, its title and the same meta line as its sidebar row. The selected thread's card has the accent selection.
+- Clicking a thread card opens that thread and returns to Focus. Task and issue cards are not clickable yet.
+- The lanes are computed in Rust from the sidebar groups, the Task List and the issue list, so the Board never disagrees with the Focus view.
 
 **Sidebar:**
 - search (`/`) and a new-thread button
@@ -1161,6 +1176,7 @@ How the card is made *(proposed)*:
 | `W` | not typing | swarm dialog |
 | `G` | not typing, outside a spec interview | goal swarm dialog |
 | `A` | not typing | AIRC |
+| `B` | not typing | show the Board, or return to Focus |
 | `Esc` | anywhere | close overlay / menu |
 | `Ctrl+Enter` | dialogs | create / start / launch |
 | `I` `R` `F` `V` `S` | home view | dispatch, resume, fan out, PR duty, scouts |

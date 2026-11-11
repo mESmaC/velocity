@@ -1493,3 +1493,52 @@
   --glass-tool-running-padding: 4px 6px;
   --glass-tool-running-border-radius: 9px;
 }
+
+/* Board (F1), from the "board" rules that close the stylesheet in
+   design/main-window.html: the Focus | Board switch, the lanes and their cards. */
+:root {
+  --board-switch-gap: 2px;
+  --board-switch-padding: 2px;
+  --board-switch-border-radius: 999px;
+  --board-switch-button-height: 20px;
+  --board-switch-button-padding: 0 12px;
+  --board-switch-font-size: 11px;
+  --board-switch-font-weight: 500;
+  --board-switch-on-background: rgba(255, 255, 255, 0.17);
+  --board-switch-on-box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.22);
+  --board-titlebar-gap: 10px;
+  --board-workspace-grid-template-columns: minmax(0, 1fr);
+  --board-gap: 12px;
+  --board-padding: 2px 12px 12px;
+  --board-lane-flex: 1 1 0;
+  --board-lane-min-width: 220px;
+  --board-lane-gap: 8px;
+  --board-lane-padding: 12px;
+  --board-lane-border-radius: 22px;
+  --board-lane-up-next-border: 1px dashed rgba(255, 255, 255, 0.18);
+  --board-lane-head-gap: 8px;
+  --board-lane-head-padding: 2px 4px 4px;
+  --board-lane-title-font-size: 13px;
+  --board-lane-title-font-weight: 600;
+  --board-lane-dot-size: 8px;
+  --board-lane-count-font: 10.5px var(--mono);
+  --board-lane-empty-padding: 8px 4px;
+  --board-lane-empty-font-size: 11.5px;
+  --board-card-width: 100%;
+  --board-card-grid-template-columns: 14px minmax(0, 1fr);
+  --board-card-column-gap: 8px;
+  --board-card-row-gap: 4px;
+  --board-card-padding: 11px 13px;
+  --board-card-border: 1px solid rgba(255, 255, 255, 0.09);
+  --board-card-border-radius: 16px;
+  --board-card-background: rgba(0, 0, 0, 0.34);
+  --board-card-hover-border-color: rgba(255, 255, 255, 0.18);
+  --board-card-hover-background: rgba(255, 255, 255, 0.05);
+  --board-card-paused-opacity: 0.6;
+  --board-card-title-font-size: 12.5px;
+  --board-card-title-font-weight: 500;
+  --board-card-meta-grid-column: 2;
+  --board-card-meta-font: 10.5px var(--mono);
+  --board-card-error-border-color: rgba(255, 115, 105, 0.36);
+  --board-card-error-background: rgba(255, 115, 105, 0.1);
+}

@@ -179,6 +179,7 @@ export const onThreadStep = (
   callback: EventCallback<ThreadStepRecorded_Serialize>,
 ) => listen(THREAD_STEP_EVENT, callback);
 
+export * from './ipc/board';
 export * from './ipc/duty';
 export * from './ipc/thread-menu';
 

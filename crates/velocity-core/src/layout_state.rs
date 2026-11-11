@@ -571,6 +571,9 @@ impl LayoutState {
 
     pub fn snapshot(&self) -> LayoutSnapshot {
         let slash_items = self.current_slash_items();
+        let groups = self.sidebar();
+        let tasks = self.tasks();
+        let issues = self.project_issues().to_vec();
         let slash_selection = if slash_items.is_empty() {
             0
         } else {
@@ -589,7 +592,8 @@ impl LayoutState {
             active_goal_swarm: self.active_goal_swarm_snapshot(),
             default_model_pill: self.default_model_pill(),
             search: self.search.clone(),
-            groups: self.sidebar(),
+            board: crate::board::board_lanes(&groups, &tasks, &issues),
+            groups,
             pulse: self.pulse(),
             show_numbers: self.show_numbers,
             palette_open: self.palette_open,
@@ -603,9 +607,9 @@ impl LayoutState {
             palette_selection: self.palette_selection,
             slash_items,
             slash_selection,
-            tasks: self.tasks(),
+            tasks,
             pull_requests: self.data.pull_requests.clone(),
-            issues: self.project_issues().to_vec(),
+            issues,
             worktree_label: self.worktree_label(),
             providers: self.data.providers.clone(),
             airc_open: self.airc_open,
@@ -1013,9 +1017,25 @@ impl LayoutState {
                 self.selected_thread = None;
                 self.view = NavigationView::Home;
             }
+            NavigationIntent::Board if !matches!(self.view, NavigationView::Board) => {
+                self.view = NavigationView::Board;
+            }
+            NavigationIntent::Board | NavigationIntent::Focus => self.leave_board(),
             _ => {}
         }
         Some(LayoutIntent::Navigation(intent))
+    }
+
+    /// Back from the Board to the Focus view: the selected thread's own view, or Home when
+    /// nothing is selected or the thread has gone.
+    fn leave_board(&mut self) {
+        let selected = self.selected_thread;
+        self.view = self
+            .data
+            .threads
+            .iter()
+            .find(|thread| Some(thread.policy.identifier) == selected && !thread.policy.hidden)
+            .map_or(NavigationView::Home, |thread| thread.view);
     }
 
     fn keyboard(&mut self, input: KeyboardInput) -> Option<LayoutIntent> {
@@ -1333,6 +1353,7 @@ fn shortcut_key(input: &KeyboardInput) -> ShortcutKey {
         "l" => L,
         "d" => D,
         "e" => E,
+        "b" => B,
         _ => Other,
     }
 }

@@ -8,6 +8,8 @@
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum NavigationView {
     Home,
+    /// Every thread as a card in pipeline lanes, in place of the sidebar and one thread.
+    Board,
     Thread,
     Duty,
     Swarm,
@@ -60,6 +62,10 @@ pub enum NavigationIntent {
     Diff,
     Editor,
     SaveAgents,
+    /// `B`: show the Board, or leave it for the Focus view when it is already showing.
+    Board,
+    /// Leave the Board for the Focus view: the selected thread, or Home.
+    Focus,
 }
 
 #[cfg_attr(
@@ -87,6 +93,7 @@ pub enum ShortcutKey {
     L,
     D,
     E,
+    B,
     Digit(
         #[cfg_attr(feature = "bindings", serde(with = "crate::ipc_number"))]
         #[cfg_attr(feature = "bindings", specta(type = String))]
@@ -164,6 +171,7 @@ pub fn bare_key_intent(view: NavigationView, key: ShortcutKey) -> Option<Navigat
         Key::L => Some(Intent::Lock),
         Key::D => Some(Intent::Diff),
         Key::E => Some(Intent::Editor),
+        Key::B => Some(Intent::Board),
         Key::Digit(number) => Some(Intent::Answer(number)),
         _ => None,
     }
@@ -209,7 +217,9 @@ pub fn route_bare_intent(
 ) -> Option<NavigationIntent> {
     use NavigationIntent as Intent;
     match intent {
-        Intent::Search | Intent::Task | Intent::Swarm | Intent::Airc => Some(intent),
+        Intent::Search | Intent::Task | Intent::Swarm | Intent::Airc | Intent::Board => {
+            Some(intent)
+        }
         Intent::Goal => match view {
             NavigationView::SpecScan
             | NavigationView::SpecAsk
