@@ -1187,23 +1187,24 @@ How the card is made *(proposed)*:
     - Cards in the content area take a faint top-lit fill and a `rgba(255,255,255,.09)` hairline.
     - No drop shadows on panes, because they don't read on black.
   - **Shape:** corner radii 6 / 10 / 14 px. Panes 14–16 px, the composer and dialogs 18 px, menus 12 px. Pills and toasts are fully round.
-  - **Controls:** the accent is graphite grey `#98989d`, used for selection, focus rings, checkboxes and the primary button.
-    - Thread rows are source-list rows. The selection is a small top-lit glass lozenge, not an outlined box.
+  - **Controls:** the accent is ion blue `#6a8dff`, used for the selected thread, focus rings, checkboxes, the primary button, the send button and anything running. `--accent-soft` (16%) fills and `--accent-line` (46%) rims are its two tints.
+    - Thread rows are source-list rows. The selection is a small accent-tinted lozenge with an accent rim, not an outlined box.
     - Segmented controls use a sliding raised segment, and buttons are subtle raised gradients.
-    - The send button is a white filled circle, and shortcuts are keycaps.
+    - The send button is an accent filled circle with a black arrow, and shortcuts are keycaps.
   - **Type:** SF Pro / system UI, falling back to Inter (bundled), with SF Mono falling back to JetBrains Mono for code and meta.
     - There are no italics anywhere, including placeholders.
-    - Hierarchy comes from weight and the label greys: titles `#fff`, primary `#f5f5f7`, secondary 62%, tertiary 36%.
-- **State colours:**
+    - Hierarchy comes from weight and the label greys: titles `#fff`, primary `#f5f5f7`, secondary `#b4b4bd`, tertiary `#8a8a91`. The tertiary grey still passes 4.5:1 on black.
+- **State colours:** panes stay neutral. Colour marks three things only: the selection and primary action (the accent), the state a thread is in, and the provider that runs it. A state's colour appears on its title-bar count (a tinted pill), its sidebar group label and its row icon.
 
   | Colour | Use |
   |---|---|
-  | ok `#9ccc95` | merged / done |
-  | warn `#e6b667` | CI / fixing |
-  | err `#e8807a` | failed / changes requested |
-  | info `#8fb4e8` | spec / PR open |
-  | duty `#b7a3e6` | duty agents |
-  | swarm `#7fd1c7` | swarm |
+  | ok `#5fd08a` | merged / done |
+  | warn `#f0b651` | PR open · watching / CI / fixing |
+  | err `#ff7369` | failed / changes requested |
+  | accent `#6a8dff` | running |
+  | info `#8fb4e8` | spec |
+  | duty `#b79cff` | duty agents |
+  | swarm `#5fd4c4` | swarm |
   | claude `#d97757` · codex `#e9e9e9` · agy `#8ab4f8` · kimi `#f08fb8` | provider marks (Anthropic, Codex, Antigravity, Kimi Code) |
 
 - Base tokens are copied exactly from the mockup's `:root` into `ui/src/lib/theme/tokens.css`. Values missing from `:root` are copied from the reference's winning CSS declarations into `ui/src/lib/theme/reference.css` (user-authorized in #12). Components use the token files; the reference is read-only. The Rust theme module mirrors the base tokens.

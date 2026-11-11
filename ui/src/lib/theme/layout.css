@@ -101,8 +101,18 @@ kbd {
 .pulse [data-kind='Spec'] {
   color: var(--info);
 }
+.pulse [data-kind='Running'] {
+  color: var(--accent);
+}
 .pulse [data-kind='Watching'] {
-  color: var(--text);
+  color: var(--warn);
+}
+/* Each count is a pill tinted with its own state colour. */
+.pulse > span {
+  height: var(--colour-pulse-pill-height);
+  padding: var(--colour-pulse-pill-padding);
+  border-radius: var(--colour-pulse-pill-border-radius);
+  background: var(--colour-pulse-pill-background);
 }
 .pulse [data-kind='Failed'] {
   color: var(--err);
@@ -191,6 +201,32 @@ kbd {
   letter-spacing: var(--layout-group-h-letter-spacing);
   color: var(--muted);
 }
+/* A group's label carries its state colour; its count stays quiet. */
+.group-h[data-group='Duty'] {
+  color: var(--duty);
+}
+.group-h[data-group='Swarm'] {
+  color: var(--swarm);
+}
+.group-h[data-group='Spec'] {
+  color: var(--info);
+}
+.group-h[data-group='Working'] {
+  color: var(--accent);
+}
+.group-h[data-group='Review'] {
+  color: var(--warn);
+}
+.group-h[data-group='Error'] {
+  color: var(--err);
+}
+.group-h[data-group='Done'],
+.group-h[data-group='Merged'] {
+  color: var(--ok);
+}
+.group-h > span:last-child {
+  color: var(--muted);
+}
 .thread-groups section:first-child .group-h {
   margin-top: var(
     --layout-thread-groups-section-first-child-group-h-margin-top
@@ -264,6 +300,12 @@ kbd {
 }
 .thread[data-status='Draft'] .t-title {
   font-weight: var(--layout-thread-data-status-draft-t-title-font-weight);
+}
+.thread[data-status='Working'] .status-icon {
+  color: var(--accent);
+}
+.thread[data-status='Review'] .status-icon {
+  color: var(--warn);
 }
 .thread[data-status='Working'] .t-title,
 .thread.active .t-title {
@@ -464,7 +506,7 @@ kbd {
   box-shadow: var(--layout-send-box-shadow);
 }
 .send:hover {
-  background: var(--reference-brand-color);
+  background: var(--accent-hi);
 }
 .starters {
   width: var(--layout-starters-width);
@@ -549,6 +591,11 @@ kbd {
   background: var(--layout-swarm-button-dispatch-background);
   font-size: var(--layout-swarm-button-dispatch-font-size);
   color: var(--text-2);
+}
+.swarm-button {
+  border-color: var(--colour-swarm-button-border-color);
+  background: var(--colour-swarm-button-background);
+  color: var(--swarm);
 }
 .panel-body {
   flex: var(--layout-panel-body-flex);
@@ -670,9 +717,9 @@ kbd {
   margin-left: var(--layout-badge-margin-left);
   padding: var(--layout-badge-padding);
   border-radius: var(--layout-badge-border-radius);
-  background: var(--surface-3);
+  background: var(--accent);
   font: var(--layout-badge-font);
-  color: var(--text);
+  color: var(--bg);
   text-align: center;
 }
 .badge.alert {

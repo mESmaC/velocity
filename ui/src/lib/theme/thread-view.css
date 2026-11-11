@@ -63,7 +63,10 @@
   display: inline-flex;
   align-items: center;
   gap: var(--thread-meta-item-gap);
-  color: var(--text-2);
+  padding: var(--colour-branch-padding);
+  border-radius: var(--colour-branch-border-radius);
+  background: var(--accent-soft);
+  color: var(--accent);
 }
 .thread-head .meta .wt {
   display: inline-flex;
@@ -321,7 +324,7 @@
   width: var(--thread-working-dot-size);
   height: var(--thread-working-dot-size);
   border-radius: var(--layout-pulse-dot-border-radius);
-  background: var(--text-2);
+  background: var(--accent);
 }
 .dock {
   padding: var(--thread-dock-padding);
