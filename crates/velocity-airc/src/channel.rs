@@ -245,7 +245,7 @@ impl Channel {
         Ok(())
     }
 
-    /// Your comments may broadcast; `nick:` resolves exactly and never silently broadcasts.
+    /// Exact nicks target one member; likely mistyped nicks never silently broadcast.
     pub fn comment(&self, text: &str) -> Result<Entry, Error> {
         require_text(text)?;
         let storage = Storage::open(&self.directory)?;
@@ -260,8 +260,10 @@ impl Channel {
                 require_text(body)?;
                 record.to.push(nickname.into());
                 record.text = body.trim().into();
-            } else if !nickname.contains(char::is_whitespace) {
-                return Err(Error::Invalid(format!("Unknown AIRC nick: {nickname}")));
+            } else if let Some(suggestion) = crate::comment::mistyped_nick(nickname, &entries) {
+                return Err(Error::Invalid(format!(
+                    "Unknown nick `{nickname}`. Did you mean `{suggestion}`?"
+                )));
             }
         }
         record.intent = Some("comment".into());

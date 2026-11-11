@@ -10,10 +10,34 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     channel.message("second", vec![first.clone()], "question", "Which files?")?;
     channel.comment(&format!("{first}: Keep the saved record"))?;
     channel.comment("Please record progress")?;
+    for text in [
+        "Reminder: run the stress scripts",
+        "FYI: master is broken",
+        "https://example.com/doc",
+    ] {
+        let record = channel.comment(text)?;
+        if !record.to.is_empty() || record.text != text {
+            return Err("ordinary colon prefix did not broadcast as written".into());
+        }
+    }
+    check_delivery(&channel, &folder, &first, &second)?;
+    check_mistyped_nicks(&channel)?;
+    println!("Headless delivery passed: pending replay, acknowledgement, targeting and broadcast.");
+    // Keep the temporary log available as evidence; no user files are touched.
+    println!("Channel evidence: {}", folder.display());
+    Ok(())
+}
+
+fn check_delivery(
+    channel: &Channel,
+    folder: &std::path::Path,
+    first: &str,
+    second: &str,
+) -> Result<(), Box<dyn std::error::Error>> {
     let mut pending = Vec::new();
     let cursor = deliver_messages(
-        &channel,
-        &first,
+        channel,
+        first,
         channel.delivery_cursor("first", 0)?,
         |identifier, message| {
             pending.push((identifier.to_owned(), message.to_owned()));
@@ -23,37 +47,58 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     if pending.len() != 1 {
         return Err("pending delivery was skipped".into());
     }
-    let reopened = Channel::open(&folder, "headless")?;
+    let reopened = Channel::open(folder, "headless")?;
     let mut completed = Vec::new();
-    let acknowledged = deliver_messages(&reopened, &first, cursor, |identifier, message| {
+    let acknowledged = deliver_messages(&reopened, first, cursor, |identifier, message| {
         println!("{identifier}: {message}");
         completed.push(identifier.to_owned());
         Ok(true)
     })?;
-    if completed.len() != 3 || completed.first() != pending.first().map(|item| &item.0) {
+    if completed.len() != 6 || completed.first() != pending.first().map(|item| &item.0) {
         return Err("restart lost or misrouted a message".into());
     }
-    deliver_messages(&channel, &first, acknowledged, |_, _| {
+    deliver_messages(channel, first, acknowledged, |_, _| {
         Err("replayed acknowledged line".into())
     })?;
     let mut others = 0;
     deliver_messages(
-        &channel,
-        &second,
+        channel,
+        second,
         channel.delivery_cursor("second", 0)?,
         |_, _| {
             others += 1;
             Ok(true)
         },
     )?;
-    if others != 1 {
+    if others != 4 {
         return Err("targeted message reached another agent".into());
     }
-    if channel.comment("unknown: do not broadcast").is_ok() {
-        return Err("unknown recipient broadcast".into());
+    Ok(())
+}
+
+// #93: ordinary broadcasts must work without leaking comments intended for one agent.
+fn check_mistyped_nicks(channel: &Channel) -> Result<(), Box<dyn std::error::Error>> {
+    channel.join("departed", "old-nickname")?;
+    channel.leave("departed")?;
+    channel.join("departed", "replacement")?;
+    for (prefix, suggestion) in [
+        ("edito", "editor"),
+        ("EDITOR", "editor"),
+        ("edixxr", "editor"),
+        ("old-nickname", "old-nickname"),
+    ] {
+        let before = channel.read(0)?.len();
+        let expected = format!("Unknown nick `{prefix}`. Did you mean `{suggestion}`?");
+        let error = channel
+            .comment(&format!("{prefix}: do not broadcast"))
+            .err()
+            .ok_or("mistyped nick broadcast")?;
+        if error.to_string() != expected {
+            return Err("mistyped nick suggestion incorrect".into());
+        }
+        if channel.read(0)?.len() != before {
+            return Err("refused comment was recorded".into());
+        }
     }
-    println!("Headless delivery passed: pending replay, acknowledgement, targeting and broadcast.");
-    // Keep the temporary log available as evidence; no user files are touched.
-    println!("Channel evidence: {}", folder.display());
     Ok(())
 }
