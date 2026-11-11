@@ -1143,7 +1143,7 @@ How the card is made *(proposed)*:
   - Game dev skills (the router plus the detected engine's bundle) when an engine is found: `project.godot`, `*.uproject`, `ProjectSettings/`, or a Bevy, Phaser, PixiJS or three.js dependency.
 
   Velocity re-checks after every merge, so a project that gains a UI later gets the suggestion then.
-- **Requirements:** each card shows what the pack needs and whether it's found, e.g. "✓ Python 3.12", "· Ghidra optional · not found".
+- **Requirements:** each card shows what the pack needs and whether it's found, e.g. "✓ Python 3.12", "· Ghidra optional · not found". Detection is cached for the app session, so switches and bundle clicks reuse the results; restart Velocity to detect newly installed tools. Optional tools are found by their launcher names on PATH, including Windows PATHEXT launchers such as `ghidraRun.bat` and `idat64.exe`/`ida64.exe`.
 
 **Where agents find them:**
 
