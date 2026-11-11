@@ -8,6 +8,9 @@ use std::path::{Path, PathBuf};
 pub struct Entry {
     #[cfg_attr(feature = "bindings", specta(type = u32))]
     pub sequence: u64,
+    /// Only stdio joins are leased to an OS session lock; native runner joins persist.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub session: Option<bool>,
     pub time: String,
     pub kind: String,
     pub nick: String,
@@ -171,30 +174,6 @@ impl Channel {
         Ok(Self { directory })
     }
 
-    pub(crate) fn connect(&self, member: &str) -> Result<std::fs::File, Error> {
-        require_text(member)?;
-        let key: String = member
-            .as_bytes()
-            .iter()
-            .map(|byte| format!("{byte:02x}"))
-            .collect();
-        let mut directory = self.directory.join("sessions");
-        for chunk in key.as_bytes().chunks(120) {
-            directory.push(String::from_utf8_lossy(chunk).as_ref());
-        }
-        std::fs::create_dir_all(&directory)?;
-        let file = std::fs::OpenOptions::new()
-            .create(true)
-            .truncate(false)
-            .write(true)
-            .open(directory.join("session.lock"))?;
-        file.try_lock().map_err(|error| {
-            Error::Invalid(format!(
-                "Member already connected or session lock failed: {error}"
-            ))
-        })?;
-        Ok(file)
-    }
     pub fn read(&self, after: u64) -> Result<Vec<Entry>, Error> {
         Ok(Storage::open(&self.directory)?
             .read()?
@@ -204,44 +183,51 @@ impl Channel {
     }
 
     pub fn presence(&self) -> Result<Vec<Presence>, Error> {
-        Ok(presence(&Storage::open(&self.directory)?.read()?)
-            .into_values()
-            .collect())
+        Ok(
+            presence(&self.read_presence_log(&Storage::open(&self.directory)?)?)
+                .into_values()
+                .collect(),
+        )
     }
 
     pub fn join(&self, member: &str, requested_nick: &str) -> Result<String, Error> {
+        self.join_with_session(member, requested_nick, false)
+    }
+
+    pub(crate) fn join_with_session(
+        &self,
+        member: &str,
+        requested_nick: &str,
+        session: bool,
+    ) -> Result<String, Error> {
         require_text(member)?;
         let storage = Storage::open(&self.directory)?;
-        let entries = storage.read()?;
+        let entries = self.read_presence_log(&storage)?;
         let members = presence(&entries);
         if let Some(previous) = members.get(member).filter(|member| member.joined) {
+            if session {
+                let mut record = entry(
+                    &entries,
+                    "join",
+                    member,
+                    &previous.nick,
+                    "joined the channel",
+                );
+                record.session = Some(true);
+                storage.append(&record)?;
+            }
             return Ok(previous.nick.clone());
         }
-        let base = nick(requested_nick, 16);
-        let mut candidate = base.clone();
-        let mut suffix = 1_u64;
-        while candidate == "you"
-            || candidate == "velocity"
-            || members
-                .values()
-                .any(|member| member.joined && member.nick == candidate)
-        {
-            let ending = format!("-{suffix}");
-            candidate = format!(
-                "{}{}",
-                nick(&base, 16_usize.saturating_sub(ending.len())),
-                ending
-            );
-            suffix += 1;
-        }
-        let entry = entry(&entries, "join", member, &candidate, "joined the channel");
-        storage.append(&entry)?;
+        let candidate = available_nick(requested_nick, &members);
+        let mut record = entry(&entries, "join", member, &candidate, "joined the channel");
+        record.session = Some(session);
+        storage.append(&record)?;
         Ok(candidate)
     }
 
     pub fn leave(&self, member: &str) -> Result<(), Error> {
         let storage = Storage::open(&self.directory)?;
-        let entries = storage.read()?;
+        let entries = self.read_presence_log(&storage)?;
         if let Some(active) = presence(&entries)
             .get(member)
             .filter(|member| member.joined)
@@ -261,7 +247,7 @@ impl Channel {
     pub fn comment(&self, text: &str) -> Result<Entry, Error> {
         require_text(text)?;
         let storage = Storage::open(&self.directory)?;
-        let entries = storage.read()?;
+        let entries = self.read_presence_log(&storage)?;
         let mut record = entry(&entries, "message", "you", "you", text);
         if let Some((nickname, body)) = text.split_once(':') {
             let nickname = nickname.trim();
@@ -311,7 +297,7 @@ impl Channel {
         require_text(nick_name)?;
         require_text(text)?;
         let storage = Storage::open(&self.directory)?;
-        let entries = storage.read()?;
+        let entries = self.read_presence_log(&storage)?;
         let record = entry(
             &entries,
             "past_work",
@@ -332,7 +318,7 @@ impl Channel {
         require_text(&event.nick)?;
         require_text(&event.text)?;
         let storage = Storage::open(&self.directory)?;
-        let entries = storage.read()?;
+        let entries = self.read_presence_log(&storage)?;
         let mut record = entry(&entries, &event.tag, "velocity", &event.nick, &event.text);
         record.pull_request = event.pull_request;
         record.head = event.head;
@@ -352,7 +338,7 @@ impl Channel {
     ) -> Result<(), Error> {
         require_text(text)?;
         let storage = Storage::open(&self.directory)?;
-        let entries = storage.read()?;
+        let entries = self.read_presence_log(&storage)?;
         let members = presence(&entries);
         let active = members
             .get(member)
@@ -377,6 +363,7 @@ impl Channel {
 
 pub(crate) fn entry(entries: &[Entry], kind: &str, member: &str, nick: &str, text: &str) -> Entry {
     Entry {
+        session: None,
         sequence: entries.last().map_or(1, |entry| entry.sequence + 1),
         time: chrono::Utc::now().to_rfc3339(),
         kind: kind.into(),
@@ -450,4 +437,25 @@ pub(crate) fn require_text(text: &str) -> Result<(), Error> {
         return Err(Error::Invalid("Text cannot be empty".into()));
     }
     Ok(())
+}
+
+fn available_nick(requested: &str, members: &BTreeMap<String, Presence>) -> String {
+    let base = nick(requested, 16);
+    let mut candidate = base.clone();
+    let mut suffix = 1_u64;
+    while candidate == "you"
+        || candidate == "velocity"
+        || members
+            .values()
+            .any(|member| member.joined && member.nick == candidate)
+    {
+        let ending = format!("-{suffix}");
+        candidate = format!(
+            "{}{}",
+            nick(&base, 16_usize.saturating_sub(ending.len())),
+            ending
+        );
+        suffix += 1;
+    }
+    candidate
 }
