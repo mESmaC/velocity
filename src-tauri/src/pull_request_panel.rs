@@ -6,8 +6,8 @@ use tauri::{AppHandle, Manager, State, Window};
 use tauri_specta::Event;
 use velocity_core::layout_view::{LayoutAction, LayoutSnapshot};
 use velocity_github::{
-    PullRequestClient, PullRequestPanelRow, PullRequestPanelSnapshot, PullRequestThread,
-    ReviewTierCache,
+    PullRequestClient, PullRequestPanelCache, PullRequestPanelRow, PullRequestPanelSnapshot,
+    PullRequestThread,
 };
 use velocity_store::ProjectItem;
 
@@ -124,10 +124,37 @@ pub fn initialize(application: &AppHandle) {
     std::thread::spawn(move || monitor(application));
 }
 
+/// The selected project's GitHub client and what the panel read beyond the list query. Kept
+/// between refreshes: reading the repository's identity is a GitHub request (#228).
+#[derive(Default)]
+struct PanelReader {
+    client: Option<PullRequestClient>,
+    cache: PullRequestPanelCache,
+}
+
+impl PanelReader {
+    fn read(
+        &mut self,
+        directory: &std::path::Path,
+        agents: &str,
+    ) -> Result<Vec<PullRequestPanelRow>, String> {
+        let client = match self.client.take() {
+            Some(client) => client,
+            None => PullRequestClient::discover(directory).map_err(|error| error.to_string())?,
+        };
+        let rows = client
+            .tiered_panel(&mut self.cache, agents)
+            .map_err(|error| error.to_string())?;
+        // A failed read drops the client, so a changed remote or sign-in is discovered afresh.
+        self.client = Some(client);
+        Ok(rows)
+    }
+}
+
 fn monitor(application: AppHandle) {
     let mut previous = None;
     let mut refreshed = None::<Instant>;
-    let mut tiers = ReviewTierCache::default();
+    let mut reader = PanelReader::default();
     loop {
         let store = application.state::<ManagedStateStore>();
         if let Ok(project) = selected_project(&store) {
@@ -135,9 +162,9 @@ fn monitor(application: AppHandle) {
             if changed || refreshed.is_none_or(|time| time.elapsed() >= Duration::from_secs(30)) {
                 previous = project.clone();
                 if changed {
-                    tiers = ReviewTierCache::default();
+                    reader = PanelReader::default();
                 }
-                if let Err(error) = refresh(&application, project, &mut tiers) {
+                if let Err(error) = refresh(&application, project, &mut reader) {
                     eprintln!("Could not refresh pull requests: {error}");
                 }
                 refreshed = Some(Instant::now());
@@ -150,7 +177,7 @@ fn monitor(application: AppHandle) {
 fn refresh(
     application: &AppHandle,
     project: Option<ProjectContext>,
-    tiers: &mut ReviewTierCache,
+    reader: &mut PanelReader,
 ) -> Result<(), String> {
     let panel = application.state::<PullRequestPanel>();
     {
@@ -168,9 +195,7 @@ fn refresh(
     // The checkout's AGENTS.md lists the Sensitive paths the rail tiers against (F7); a
     // project without one has none.
     let agents = std::fs::read_to_string(project.directory.join("AGENTS.md")).unwrap_or_default();
-    let result = PullRequestClient::discover(&project.directory)
-        .and_then(|client| client.tiered_panel(tiers, &agents))
-        .map_err(|error| error.to_string());
+    let result = reader.read(&project.directory, &agents);
     #[cfg(debug_assertions)]
     if let Ok(rows) = &result {
         eprintln!(
