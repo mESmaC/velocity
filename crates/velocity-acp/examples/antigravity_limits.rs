@@ -11,7 +11,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         println!("{reading:?}");
         return Ok(());
     }
-    let launch = velocity_acp::provider_agent(velocity_acp::Provider::Antigravity).launch;
+    let launch = velocity_acp::provider_agent(velocity_acp::Provider::Antigravity)
+        .ok_or("Antigravity has no built-in agent command")?
+        .launch;
     let reading = velocity_acp::client::read_antigravity_usage(
         &launch,
         &std::env::current_dir()?,
