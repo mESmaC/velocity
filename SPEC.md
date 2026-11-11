@@ -566,7 +566,7 @@ Long-running roles. They appear under **On duty**, with an agent count (×N) and
 - **Tiered review** *(proposed)*. Velocity tiers each PR from its diff:
   - **Trivial:** docs, comments or formatting. No proof needed. Approved once the local checks pass and the change matches its claim.
   - **Normal:** everything else. Full review.
-  - **Sensitive:** touches any path listed under "Sensitive paths" in AGENTS.md (e.g. migrations, worktree deletion, CI config, auth). Full review, plus the full stress suite before merge, plus a confidence proof at the strongest level the language allows (F17).
+  - **Sensitive:** touches any path listed under "Sensitive paths" in AGENTS.md (e.g. migrations, worktree deletion, CI config, auth). Full review, plus the full stress suite before merge, plus a confidence proof at the reference level for each proof-list feature it changes: a fixture table exported from the Lean model plus one test that checks the code against it. The code level is required only when an issue asks for a translation (F17, #142).
 
   - **Reading the diff:** a change counts as docs, comments or formatting only when Velocity can show it: docs files, whole-line comments, and whitespace that never joins two tokens or sits inside a string. Anything else (an unknown file type, a binary, a rename, a mode change) makes the PR normal.
   - **Sensitive paths:** each bullet of the AGENTS.md section lists paths, folders or globs as inline code (`*` within a folder, `**` across folders). A review reads the list from the base branch's AGENTS.md, so a PR can't lower its own tier.
@@ -1114,7 +1114,7 @@ How the checks run *(proposed)*:
 - PR duty can't merge until the proofs check (locked, F7).
 - A missing design proof on a proof-list feature blocks the merge.
 - Lean for a feature off the list, or a theorem about a single behaviour, gets changes requested.
-- A confidence proof at the model level for a language that has a stronger level available is flagged on the proof card and left to the reviewer. Sensitive paths need the strongest level (F7).
+- A confidence proof at the model level for a language that has a stronger level available is flagged on the proof card and left to the reviewer. Sensitive paths need the reference level: a fixture table exported from the Lean model plus one test that checks the code against it. The code level (Rust: an Aeneas translation) is required only when an issue asks for one (F7, #142).
 
 - PR duty's MCP approval requires nonempty `proof_review` explanations of proof-list scope, theorem-statement review and confidence level (including why a check is inapplicable). Those explanations are mirrored with the review. Missing design proofs, off-list Lean and unmet tier requirements require changes; applicability and semantic correctness are judged by the reviewer.
 - `pr_duty_checked`, approval and merge run the executable proof gate in the registered review worktree at the prepared head/base. The checkout must match the committed content at that exact head, ignoring CRLF/LF-only differences from Windows generators; content changes and untracked files are refused. Failed builds, placeholders, disallowed axioms, unnamed spec sections and changed modules absent from the Lake build refuse the operation. An ordinary PR with no changed Lean skips Lake. An unreadable check result fails closed.
@@ -1183,7 +1183,9 @@ How the card is made *(proposed)*:
 |---|---|
 | Claude Code | `.claude/skills/` |
 | Codex, Antigravity | `.agents/skills/` |
-| Kimi Code | `.kimi-code/skills/` (to confirm, Q26) |
+| Kimi Code | both `.kimi-code/skills/` and `.agents/skills/` (unverified, Q26) |
+
+The provider-to-folder mapping is a data table in `velocity-skills`, not code, so a later correction changes one row. Kimi Code's folder is unverified, so Velocity links into both folders: the links are junctions listed in `.git/info/exclude`, so the second folder costs nothing and never reaches a commit. When Kimi's folder is confirmed, the extra row is dropped, and Velocity removes its own links and exclude lines from a folder no provider uses any more.
 
 - **Linked** (default): each enabled skill is a directory junction (Windows) or symlink into the library, created in every worktree and in the main checkout the spec interview uses. Those paths are listed in the repo's `.git/info/exclude`, so they never reach a commit or a PR.
 - **Committed** (per project): the enabled skills are copied into the repo at the pinned commit, for collaborators who don't use Velocity. Updating the pin then goes through a PR like any other change.
@@ -1405,6 +1407,6 @@ Each milestone ends with a working app. PR duty checks an item off when it lands
 | Q23 | Which code-level translators should ship besides Aeneas for Rust (C, C++, Python and others)? Until one exists for a language, that language tops out at the reference level. | F17 |
 | Q24 | Decided: no. The spec interview only proposes the proof list; each building agent writes its design proof after the code (Rule 8). | F3, F17 |
 | Q25 | Decided: yes, a little faster. Providers count it inside their ordinary usage, with no category of its own (F15). | F15 |
-| Q26 | Which folder does Kimi Code read skills from inside a project (`.kimi-code/skills/`, `.agents/skills/` or another)? And does Antigravity read `.agents/skills/` as the gamedev and UI UX Pro Max docs say? | F18 |
+| Q26 | Decided: Claude Code reads `.claude/skills/`; Codex and Antigravity read `.agents/skills/`, the Agent Skills standard folder both packs' docs name. Kimi Code's folder is unverified, so Velocity links into both `.kimi-code/skills/` and `.agents/skills/` until it is confirmed, then drops the extra row. The mapping is a data table in `velocity-skills`, so a correction changes one row (F18, #161). | F18 |
 | Q27 | Should "Add a skill pack" also search the skills.sh registry, or take only GitHub repos? | F18 |
 | Q28 | Decided: Velocity's own approval record bound to the head SHA, mirrored on GitHub as an "Approved at `<sha7>`" comment with a short reason; the approving reviewer then squash merges (F7, #42). Velocity's own repository uses the PR duty GitHub App (AGENTS.md). | M4 approve/merge, F7 |
