@@ -231,13 +231,14 @@ fn message_block(entry: &EntryView) -> Option<TranscriptBlock> {
     }
 }
 
-/// Blank lines separate paragraphs; single line breaks stay inside one.
+/// Preserve markdown verbatim: trimming split paragraphs corrupts indented code
+/// after blank lines inside fences and nested lists.
 fn paragraphs(text: &str) -> Vec<String> {
-    text.split("\n\n")
-        .map(str::trim)
-        .filter(|paragraph| !paragraph.is_empty())
-        .map(str::to_owned)
-        .collect()
+    if text.trim().is_empty() {
+        Vec::new()
+    } else {
+        vec![text.to_owned()]
+    }
 }
 
 fn new_entry(update: &SessionUpdate, worktree: &str) -> EntryView {
