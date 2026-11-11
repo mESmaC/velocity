@@ -72,6 +72,7 @@ impl IssueClient {
         self.decode_issue(issue)
     }
 
+    #[track_caller]
     pub fn discover(directory: &Path) -> Result<Self, PullRequestError> {
         Ok(Self {
             transport: PullRequestClient::discover(directory)?,
