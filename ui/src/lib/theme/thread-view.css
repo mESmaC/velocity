@@ -534,3 +534,104 @@
   font-size: var(--pr-kept-font-size);
   color: var(--muted);
 }
+.proof {
+  border: var(--proof-border);
+  border-left: var(--proof-border-left);
+  border-radius: var(--proof-radius);
+}
+.proof.failed {
+  border-left-color: var(--err);
+}
+.proof .ph {
+  display: flex;
+  align-items: center;
+  gap: var(--proof-head-gap);
+  padding: var(--proof-head-padding);
+  border-bottom: var(--proof-head-border);
+  font-size: var(--proof-head-font-size);
+  color: var(--text);
+}
+.proof .ph .q {
+  font: var(--proof-mark-font);
+  color: var(--ok);
+}
+.proof .ph .st {
+  margin-left: auto;
+  font-size: var(--proof-count-font-size);
+  color: var(--ok);
+}
+.proof.failed .ph .q,
+.proof.failed .ph .st {
+  color: var(--err);
+}
+.proof .chk {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--proof-checks-gap);
+  padding: var(--proof-checks-padding);
+  font: var(--proof-checks-font);
+  color: var(--muted);
+}
+.proof .chk .mark {
+  color: var(--ok);
+}
+.proof .chk .Failed .mark {
+  color: var(--err);
+}
+.proof .chk .Pending .mark {
+  color: var(--warn);
+}
+.proof .thm,
+.proof .lv {
+  display: grid;
+  grid-template-columns: var(--proof-rows-columns);
+  font-size: var(--proof-rows-font-size);
+}
+.proof .thm {
+  gap: var(--proof-theorems-gap);
+  padding: var(--proof-theorems-padding);
+}
+.proof .lv {
+  gap: var(--proof-levels-gap);
+  padding: var(--proof-levels-padding);
+  border-top: var(--proof-levels-border);
+  color: var(--text-2);
+}
+.proof .k {
+  color: var(--muted);
+  font-size: var(--proof-key-font-size);
+  text-transform: var(--proof-key-transform);
+  letter-spacing: var(--proof-key-letter-spacing);
+}
+.proof .thm .k {
+  padding-top: var(--proof-theorem-key-padding-top);
+}
+.proof .lv .k {
+  padding-top: var(--proof-level-key-padding-top);
+}
+.proof .thm code {
+  font: var(--proof-theorem-font);
+  color: var(--text-2);
+  white-space: var(--proof-theorem-white-space);
+}
+.proof .thm code b {
+  color: var(--text);
+  font-weight: var(--proof-theorem-name-weight);
+}
+.proof .lv .Code {
+  color: var(--ok);
+}
+.proof .lv .Reference {
+  color: var(--info);
+}
+.proof .lv .flagged {
+  color: var(--warn);
+}
+.proof .failure {
+  grid-column: 1 / -1;
+  margin: 0;
+  padding: var(--proof-theorems-padding);
+  font: var(--proof-checks-font);
+  color: var(--err);
+  white-space: var(--proof-theorem-white-space);
+}

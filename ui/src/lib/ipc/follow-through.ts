@@ -9,6 +9,7 @@ import {
 } from '../bindings';
 
 export type {
+  ProofCard,
   PullRequestHistoryView,
   PullRequestLifecycleEvent,
 } from '../bindings';

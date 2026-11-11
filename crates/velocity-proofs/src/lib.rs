@@ -1,9 +1,11 @@
 //! Velocity's proof checks (SPEC.md F17 "What Velocity checks"), run in a PR's worktree before
 //! PR duty reviews it and again on every push: `lake build`, no `sorry` or `admit`, the axiom
 //! audit, a named SPEC.md section in every design proof, and the statement lock that withdraws
-//! an approval when a theorem statement changes after it.
+//! an approval when a theorem statement changes after it. The proof card on a PR (F17) is built
+//! from the same checks.
 
 mod axioms;
+mod card;
 mod check;
 mod lean_source;
 mod lock_store;
@@ -13,7 +15,8 @@ mod statement_lock;
 pub use axioms::{
     ALLOWED_AXIOMS, AxiomAudit, DisallowedAxiom, audit_script, module_name, parse_audit,
 };
-pub use check::{check_worktree, statements_at};
+pub use card::{CardInput, FixtureTable, LockState, build_card, language_of};
+pub use check::{base_reference, check_worktree, checkout_at, proof_card, statements_at};
 pub use lean_source::{
     Placeholder, ProofFile, TheoremStatement, names_spec_section, placeholders, theorem_statements,
 };

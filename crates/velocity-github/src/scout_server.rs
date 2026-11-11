@@ -20,8 +20,28 @@ use crate::{IssueClient, IssueReviewToken, ScoutFinding, ScoutIssueError, ScoutI
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "outcome", rename_all = "snake_case")]
 pub enum ScoutReport {
-    Filed { number: u32, title: String },
-    Duplicate { number: u32, title: String },
+    Filed {
+        number: u32,
+        title: String,
+        /// The failing script attached as evidence, relative to the scout's checkout, which
+        /// Velocity posts as a `stress` event (F14, F17).
+        #[serde(default)]
+        evidence: String,
+    },
+    Duplicate {
+        number: u32,
+        title: String,
+    },
+}
+
+/// What a filed issue's feed line says. The evidence path follows the colon, so the event
+/// log can name the failing script.
+pub fn filed_message(number: u32, title: &str, evidence: &str) -> String {
+    if evidence.is_empty() {
+        format!("Filed #{number} {title} · failing evidence attached")
+    } else {
+        format!("Filed #{number} {title} · failing evidence attached: {evidence}")
+    }
 }
 
 /// One scout's connection: its checkout's issues, its nick and its report file.
@@ -116,7 +136,12 @@ impl ScoutServer {
                 other => other,
             })?;
         if publish {
-            self.record(&outcome)?;
+            let evidence = finding
+                .reproduction
+                .script
+                .to_string_lossy()
+                .replace('\\', "/");
+            self.record(&outcome, &evidence)?;
         }
         Ok(serde_json::to_value(&outcome)?)
     }
@@ -127,11 +152,12 @@ impl ScoutServer {
         Ok(serde_json::to_value(result)?)
     }
 
-    fn record(&self, outcome: &ScoutIssueOutcome) -> Result<(), ScoutIssueError> {
+    fn record(&self, outcome: &ScoutIssueOutcome, evidence: &str) -> Result<(), ScoutIssueError> {
         let report = match outcome {
             ScoutIssueOutcome::Filed { issue } => ScoutReport::Filed {
                 number: issue.number,
                 title: issue.title.clone(),
+                evidence: evidence.to_owned(),
             },
             ScoutIssueOutcome::Duplicate { issue, .. } => ScoutReport::Duplicate {
                 number: issue.number,

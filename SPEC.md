@@ -1055,6 +1055,13 @@ How the checks run *(proposed)*:
 - every theorem: Design or Confidence, its name and its statement;
 - the level reached per language, e.g. "Rust · reference · fixture table checked by one test", "TypeScript · reference · scouts diff 10,000 stress inputs against it".
 
+How the card is made *(proposed)*:
+- **Where and when.** For each new head of a thread's open PR, Velocity runs the checks above in the background in the thread's own worktree, once that worktree is checked out at exactly the head with no edits under `proofs/` (otherwise the next observation retries). The card sits under "PR opened" in the PR history; a PR that changes no proof file or fixture table has no card.
+- **Track.** The "Proved" step runs while the head is unchecked, is done when the checks pass and fails when one fails. It reads "No proofs" when the PR changes nothing to prove. A pass ticks "· proved" on the collapsed work line and posts a `proved` event naming the proof folders, the theorem count and each language's level.
+- **Statement lock check.** Pending until PR duty approves that exact head, then ticked.
+- **Levels.** One row per language among the PR's changed code files outside `proofs/` and `stress/`: **code** for Rust when the PR changes an Aeneas translation, **reference** when a file in that language names a fixture table the PR adds or changes, otherwise **model**, flagged because the reference level is available to every language.
+- **`stress` events.** Each issue a scout files posts a `stress` event naming its evidence script.
+
 **Accept when:**
 - [ ] A building agent's PR adds tests only for critical contracts, and its implementation outweighs its proofs, tests and docs together.
 - [ ] A proof-list feature's PR can't merge without a design proof that checks.
