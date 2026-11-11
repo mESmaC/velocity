@@ -7,13 +7,12 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, OnceLock};
 use std::time::SystemTime;
 
-#[derive(Clone, Default)]
+#[derive(Default)]
 struct LogTail {
     length: u64,
     committed: u64,
     created: Option<SystemTime>,
     modified: Option<SystemTime>,
-    entries: Vec<Entry>,
 }
 
 #[derive(Default)]
@@ -53,29 +52,49 @@ impl ChannelTail {
                 paths.insert(item.path(), item.metadata()?);
             }
         }
-        let mut changed = self.logs.keys().any(|path| !paths.contains_key(path));
-        // Stage changed logs: a malformed record must not advance any cursor.
+        let rebuild = self.logs.iter().any(|(path, log)| {
+            paths
+                .get(path)
+                .is_none_or(|metadata| log.replaced(metadata))
+        });
+        if rebuild {
+            // Stage recovery too: malformed replacements must not publish a partial view.
+            let mut replacement = Self::default();
+            let entries = replacement.update(&paths)?;
+            *self = replacement;
+            return Ok(entries);
+        }
+        self.update(&paths)
+    }
+
+    fn update(&mut self, paths: &BTreeMap<PathBuf, Metadata>) -> Result<Arc<Vec<Entry>>, Error> {
         let mut updates = Vec::new();
-        for (path, metadata) in &paths {
+        let mut appended = Vec::new();
+        for (path, metadata) in paths {
             let previous = self.logs.get(path);
             if previous.is_some_and(|log| log.unchanged(metadata)) {
                 continue;
             }
-            let mut log = previous.cloned().unwrap_or_default();
-            log.refresh(path, metadata)?;
+            let (log, entries) = previous
+                .unwrap_or(&LogTail::default())
+                .read(path, metadata)?;
             updates.push((path.clone(), log));
-            changed = true;
+            appended.extend(entries);
         }
-        if changed {
-            self.logs.retain(|path, _| paths.contains_key(path));
-            self.logs.extend(updates);
-            let mut entries: Vec<_> = self
-                .logs
-                .values()
-                .flat_map(|log| log.entries.iter().cloned())
-                .collect();
-            entries.sort_by_key(|entry| entry.sequence);
-            self.entries = Arc::new(entries);
+        // No cursor advances unless every changed file parsed successfully.
+        self.logs.extend(updates);
+        if !appended.is_empty() {
+            appended.sort_by_key(|entry| entry.sequence);
+            let out_of_order = self
+                .entries
+                .last()
+                .zip(appended.first())
+                .is_some_and(|(last, first)| last.sequence >= first.sequence);
+            let entries = Arc::make_mut(&mut self.entries);
+            entries.extend(appended);
+            if out_of_order {
+                entries.sort_by_key(|entry| entry.sequence);
+            }
         }
         Ok(self.entries.clone())
     }
@@ -88,14 +107,13 @@ impl LogTail {
             && self.modified == metadata.modified().ok()
     }
 
-    fn refresh(&mut self, path: &Path, metadata: &Metadata) -> Result<(), Error> {
-        // Normal logs only append. Rebuild a replaced, truncated or rewritten file.
-        if metadata.len() < self.length
+    fn replaced(&self, metadata: &Metadata) -> bool {
+        metadata.len() < self.length
             || self.created != metadata.created().ok()
             || (metadata.len() == self.length && self.modified != metadata.modified().ok())
-        {
-            *self = Self::default();
-        }
+    }
+
+    fn read(&self, path: &Path, metadata: &Metadata) -> Result<(Self, Vec<Entry>), Error> {
         let mut file = std::fs::File::open(path)?;
         file.seek(SeekFrom::Start(self.committed))?;
         let mut bytes = Vec::new();
@@ -104,16 +122,17 @@ impl LogTail {
             .iter()
             .rposition(|byte| *byte == b'\n')
             .map_or(0, |index| index + 1);
-        let appended = bytes[..length]
+        let entries = bytes[..length]
             .split(|byte| *byte == b'\n')
             .filter(|line| !line.is_empty())
             .map(serde_json::from_slice)
             .collect::<Result<Vec<Entry>, _>>()?;
-        self.entries.extend(appended);
-        self.committed += length as u64;
-        self.length = metadata.len();
-        self.created = metadata.created().ok();
-        self.modified = metadata.modified().ok();
-        Ok(())
+        let log = Self {
+            committed: self.committed + length as u64,
+            length: metadata.len(),
+            created: metadata.created().ok(),
+            modified: metadata.modified().ok(),
+        };
+        Ok((log, entries))
     }
 }
