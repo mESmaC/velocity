@@ -158,7 +158,7 @@ pub fn launch_shared_servers(launch: &AgentLaunch, worktree: &std::path::Path) -
 /// Runs one thread's agent until the thread stops it or the agent exits: spawns the agent in
 /// the worktree, starts the session, then feeds it the thread's messages.
 pub async fn run_session(
-    mut launch: AgentLaunch,
+    launch: AgentLaunch,
     setup: SessionSetup,
     inputs: UnboundedReceiver<AgentInput>,
     events: UnboundedSender<AgentEvent>,
@@ -186,7 +186,7 @@ pub async fn run_session(
 }
 
 async fn run_admitted_session(
-    launch: AgentLaunch,
+    mut launch: AgentLaunch,
     setup: SessionSetup,
     inputs: UnboundedReceiver<AgentInput>,
     events: UnboundedSender<AgentEvent>,
