@@ -9,12 +9,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let reviewer = channel.join("duty-pr-1", "pr-1")?;
 
     // 1. Velocity posts claim, Task List, GitHub PR lifecycle, scout issue and failure events.
-    channel.post_event_once(Event::claimed(
-        &builder,
+    channel.claim(
+        "thread-1",
         "Event log posted by Velocity",
-        &["crates/velocity-airc/src/event_log.rs"],
-    )?)?;
-    channel.post_event_once(Event::task_added("you", "Wire AIRC event log")?)?;
+        "vel/event-log",
+        vec!["crates/velocity-airc/src/event_log.rs".into()],
+    )?;
+    channel.post_event_once(Event::task_saved("you", 1, "Wire AIRC event log")?)?;
     channel.post_event_once(Event::pull_request_opened(
         &builder,
         89,

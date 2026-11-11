@@ -34,6 +34,7 @@ pub fn provider_agent(provider: Provider) -> Option<ProviderAgent> {
     let mut launch = AgentLaunch::new(PathBuf::from(program));
     launch.args = args.iter().map(|argument| (*argument).to_owned()).collect();
     launch.own_config = Some(provider);
+    launch.concurrency_provider = Some(provider);
     Some(ProviderAgent {
         launch,
         bypass_modes: bypass_modes.iter().map(|mode| (*mode).to_owned()).collect(),
@@ -67,6 +68,10 @@ pub fn configured_agent(
         }),
         (None, None) => None,
     }
+    .map(|mut agent| {
+        agent.launch.concurrency_provider = Some(provider);
+        agent
+    })
 }
 
 /// The command as the Providers card shows it, e.g. `claude-agent-acp · stdio` (F15).

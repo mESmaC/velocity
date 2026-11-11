@@ -24,16 +24,25 @@ pub fn observe(
     key: ThreadKey,
     batch: &[AgentEvent],
 ) -> Result<(), String> {
+    let timestamp = now();
+    // Keep the runtime lock through checkpointing so a nudge cannot race its reset.
+    let mut runtimes = lock(
+        application.state::<ManagedThreads>().inner(),
+        "thread sessions",
+    )?;
+    if !runtimes.observe_supervision(key, batch, timestamp) {
+        return Ok(());
+    }
     lock(
         application.state::<ManagedStateStore>().inner(),
         "persisted state",
     )?
     .update_thread(key.0, key.1, |thread| {
         if batch.is_empty() {
-            velocity_threads::agent_activity::begin(thread, now());
+            velocity_threads::agent_activity::begin(thread, timestamp);
         }
         for event in batch {
-            velocity_threads::agent_activity::observe(thread, event, now());
+            velocity_threads::agent_activity::observe(thread, event, timestamp);
         }
     })
     .map(|_| ())
@@ -79,7 +88,7 @@ fn step(
     {
         return Ok(());
     }
-    let (live, build) = {
+    let (live, build, heartbeat) = {
         let runtimes = lock(
             application.state::<ManagedThreads>().inner(),
             "thread sessions",
@@ -89,15 +98,19 @@ fn step(
             runtimes
                 .view(key)
                 .is_some_and(|view| velocity_threads::agent_activity::in_build_queue(&view.blocks)),
+            runtimes.heartbeat(key),
         )
     };
     checkpoint_unavailable(application, key)?;
-    let (_, current) = lock(
+    let (_, mut current) = lock(
         application.state::<ManagedStateStore>().inner(),
         "persisted state",
     )?
     .follow_through_thread(key.0, key.1)
     .map_err(|error| error.to_string())?;
+    if let Some(heartbeat) = heartbeat {
+        current.supervision.last_update = current.supervision.last_update.max(heartbeat);
+    }
     execute(
         application,
         key,
@@ -132,15 +145,25 @@ fn execute(
 }
 
 fn checkpoint_unavailable(application: &AppHandle, key: ThreadKey) -> Result<(), String> {
-    lock(
+    let mut store = lock(
         application.state::<ManagedStateStore>().inner(),
         "persisted state",
-    )?
-    .update_thread(key.0, key.1, |thread| {
-        velocity_threads::agent_activity::checkpoint_unavailable(thread, now());
-    })
-    .map(|_| ())
-    .map_err(|error| error.to_string())
+    )?;
+    let current = store
+        .project(key.0)
+        .and_then(|project| project.threads.iter().find(|thread| thread.id == key.1))
+        .ok_or("Missing supervision thread")?;
+    let mut next = current.clone();
+    velocity_threads::agent_activity::checkpoint_unavailable(&mut next, now());
+    if current.supervision.unavailable_since == next.supervision.unavailable_since {
+        return Ok(());
+    }
+    store
+        .update_thread(key.0, key.1, |thread| {
+            velocity_threads::agent_activity::checkpoint_unavailable(thread, now());
+        })
+        .map(|_| ())
+        .map_err(|error| error.to_string())
 }
 
 fn post(channel: &Channel, key: ThreadKey, tag: &str, text: &str) -> Result<(), String> {
@@ -159,15 +182,16 @@ fn post(channel: &Channel, key: ThreadKey, tag: &str, text: &str) -> Result<(), 
 }
 
 fn nudge(application: &AppHandle, key: ThreadKey, channel: &Channel) -> Result<(), String> {
-    lock(
+    let mut runtimes = lock(
         application.state::<ManagedThreads>().inner(),
         "thread sessions",
-    )?
-    .nudge(
-        key,
-        "No output for the stall timeout. Continue, or say what is blocking you.",
-    )
-    .map_err(|error| error.to_string())?;
+    )?;
+    runtimes
+        .nudge(
+            key,
+            "No output for the stall timeout. Continue, or say what is blocking you.",
+        )
+        .map_err(|error| error.to_string())?;
     lock(
         application.state::<ManagedStateStore>().inner(),
         "persisted state",
@@ -178,6 +202,8 @@ fn nudge(application: &AppHandle, key: ThreadKey, channel: &Channel) -> Result<(
         thread.activity = AgentActivity::Stalled;
     })
     .map_err(|error| error.to_string())?;
+    runtimes.nudge_supervision(key, now());
+    drop(runtimes);
     post(channel, key, "stalled", "No output; sent a recovery prompt")?;
     publish(application, key)
 }

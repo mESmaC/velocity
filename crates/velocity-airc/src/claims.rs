@@ -131,13 +131,6 @@ impl Channel {
                 since: holder.since.clone(),
             });
         }
-        let mut record = entry(
-            &entries,
-            "claim",
-            "velocity",
-            &nick,
-            &format!("{task} on {branch}"),
-        );
         let identity = ClaimIdentity {
             member,
             nick,
@@ -145,8 +138,7 @@ impl Channel {
             task,
             branch,
         };
-        let claim = build_claim(identity, files, previous, &record.time);
-        record.claim = Some(claim.clone());
+        let (record, claim) = claim_record(&entries, identity, files, previous)?;
         if previous == Some(&claim) {
             return Ok(ClaimResult::Granted { claim });
         }
@@ -310,6 +302,27 @@ struct ClaimIdentity<'a> {
     piece: String,
     task: &'a str,
     branch: &'a str,
+}
+
+fn claim_record(
+    entries: &[Entry],
+    identity: ClaimIdentity<'_>,
+    files: Vec<String>,
+    previous: Option<&Claim>,
+) -> Result<(Entry, Claim), Error> {
+    let mut record = entry(entries, "claim", "velocity", &identity.nick, "");
+    let claim = build_claim(identity, files, previous, &record.time);
+    // The durable claim is also the event: keep its atomic write and metadata
+    // rather than appending a second claim line from the native observer.
+    record.text = crate::Event::claimed(
+        &claim.nick,
+        &claim.task,
+        &claim.files.iter().map(String::as_str).collect::<Vec<_>>(),
+    )?
+    .text()
+    .to_owned();
+    record.claim = Some(claim.clone());
+    Ok((record, claim))
 }
 
 fn build_claim(

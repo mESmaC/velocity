@@ -460,17 +460,11 @@ pub fn duty_sidebar_summary(entry: &DutyRoleEntry, merged_today: usize) -> Strin
     }
 }
 
-pub fn initial_agent_doing(role: DutyRole, has_open_pull_requests: bool) -> String {
+pub fn initial_agent_doing(role: DutyRole, _has_open_pull_requests: bool) -> String {
     match role {
-        DutyRole::PrDuty => {
-            if has_open_pull_requests {
-                "claiming the next unclaimed PR".into()
-            } else {
-                "idle · watching for new PRs".into()
-            }
-        }
-        // The sweep runner replaces this as soon as it starts the scout's sweep.
-        DutyRole::Scouts => "waiting to start".into(),
+        // Open PRs describe available work, not whether a runner has started.
+        // Only the runners can report claiming, watching or sweeping.
+        DutyRole::PrDuty | DutyRole::Scouts => "waiting to start".into(),
         // The watch runner replaces this as soon as a watcher takes the base branch's tip.
         DutyRole::MainWatcher => "waiting for the first watch".into(),
     }
