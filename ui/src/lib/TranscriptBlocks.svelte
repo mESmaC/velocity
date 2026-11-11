@@ -30,7 +30,9 @@
     <div class="msg-user"><Markdown text={block.UserMessage.text} /></div>
     {#if block.UserMessage.queued}
       <div class="queued">
-        queued · sends when the current step finishes{#if removeQueued}{' · '}<button
+        queued · sends when the current step finishes{#if removeQueued}<span>
+            ·
+          </span><button
             type="button"
             class="queued-remove"
             title="Remove this message before the agent reads it"
