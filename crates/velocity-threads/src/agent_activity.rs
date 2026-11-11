@@ -219,7 +219,7 @@ fn provider_retry_after(error: &str, now: u64) -> u64 {
 }
 
 #[cfg(test)]
-mod tests {
+mod trace_fixtures {
     use super::{Action, checkpoint_unavailable, decide};
     use velocity_core::agent_activity::{StallAction, stall_action};
     use velocity_store::{AgentActivity, Settings, ThreadItem, ThreadState};

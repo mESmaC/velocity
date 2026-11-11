@@ -85,19 +85,33 @@ lemma trace_invariant (history : List Observation) (grace : Nat) :
         if everDue history grace || due (observation :: history) grace then 1 else 0
     cases prior : everDue history grace <;> cases deadline : due (observation :: history) grace <;>
       simp_all [checkpoint, intervalStart]
+-- Read continuity directly from the trace: take the uninterrupted unavailable
+-- suffix, then select its oldest observation (traces are newest first).
+def suffixStart (history : List Observation) : Option Nat :=
+  ((history.takeWhile unavailable).map Observation.time).getLast?
+
+lemma suffix_start (history : List Observation) : intervalStart history = suffixStart history := by
+  induction history with
+  | nil => simp [intervalStart, suffixStart]
+  | cons observation history induction =>
+    cases available : unavailable observation <;>
+      simp [intervalStart, suffixStart, available,
+        List.getLast?_cons, induction]
+
 -- Safety and liveness over every finite trace, including recovery and PR changes:
 -- the current tick releases iff it is due and no earlier tick released. A live
 -- current observation can never be due; a dead unprotected interval releases
 -- on its first observed deadline. No assumption excludes failed/limited traces.
 theorem correct (history : List Observation) (observation : Observation) (grace : Nat) :
-    (run (observation :: history) grace).since = intervalStart (observation :: history) ∧
+    (run (observation :: history) grace).since = suffixStart (observation :: history) ∧
     (run (observation :: history) grace).released = everDue (observation :: history) grace ∧
     ((run (observation :: history) grace).commands = (run history grace).commands + 1 ↔
       due (observation :: history) grace = true ∧ everDue history grace = false) ∧
     (due (observation :: history) grace = true ↔
       unavailable observation = true ∧ claimProtected observation = false ∧
-      ∃ start, intervalStart (observation :: history) = some start ∧
+      ∃ start, suffixStart (observation :: history) = some start ∧
         grace ≤ observation.time - start) := by
+  rw [← suffix_start]
   have prior := trace_invariant history grace
   have current := trace_invariant (observation :: history) grace
   refine ⟨current.1, current.2.1, ?_, ?_⟩
