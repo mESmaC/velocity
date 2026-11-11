@@ -6,6 +6,7 @@
 //! the transcript (`transcript`).
 
 mod airc;
+mod antigravity_limits;
 mod config;
 mod error;
 mod files;
@@ -41,6 +42,7 @@ use tokio::sync::oneshot;
 use tokio_util::compat::{TokioAsyncReadCompatExt, TokioAsyncWriteCompatExt};
 
 pub use airc::AircLaunch;
+pub use antigravity_limits::read_antigravity_usage;
 pub use error::ClientError;
 pub use files::resolve_in_worktree;
 pub use limits::{read_claude_usage, read_codex_usage};
