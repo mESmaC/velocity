@@ -28,10 +28,41 @@ fn main() -> std::io::Result<()> {
     let path = std::env::args()
         .nth(1)
         .unwrap_or_else(|| "AGENTS.md".into());
-    let mut editor = AgentsEditor::new(std::fs::read_to_string(path)?);
+    let source = match path.as_str() {
+        "--empty" => String::new(),
+        "--template" => velocity_core::agents_template::default_agents_markdown("Covers demo"),
+        _ => std::fs::read_to_string(path)?,
+    };
+    let mut editor = AgentsEditor::new(source);
     let snapshot = editor.snapshot(None);
     report("as read", &snapshot);
 
+    demonstrate_lint(&mut editor);
+    let missing: Vec<u32> = editor
+        .snapshot(None)
+        .coverage
+        .iter()
+        .filter(|item| !item.covered)
+        .map(|item| item.item)
+        .collect();
+    for item in missing {
+        editor.apply(OutlineAction::AddCoverage { item });
+    }
+    let snapshot = editor.snapshot(None);
+    report("after Add on every missing topic", &snapshot);
+    for item in snapshot.coverage.iter().filter(|item| item.covered) {
+        editor.apply(OutlineAction::AddCoverage { item: item.item });
+    }
+    if editor.markdown() != snapshot.markdown {
+        return Err(std::io::Error::other("Repeated Add changed covered topics"));
+    }
+    // The whole file after Add; pipe it through `od -c` to check a CRLF file keeps CRLF.
+    print!("{}", snapshot.markdown);
+    Ok(())
+}
+
+fn demonstrate_lint(editor: &mut AgentsEditor) {
+    let snapshot = editor.snapshot(None);
     let rule = snapshot
         .sections
         .iter()
@@ -55,19 +86,4 @@ fn main() -> std::io::Result<()> {
             );
         }
     }
-    let missing: Vec<u32> = editor
-        .snapshot(None)
-        .coverage
-        .iter()
-        .filter(|item| !item.covered)
-        .map(|item| item.item)
-        .collect();
-    for item in missing {
-        editor.apply(OutlineAction::AddCoverage { item });
-    }
-    let snapshot = editor.snapshot(None);
-    report("after Add on every missing topic", &snapshot);
-    // The whole file after Add; pipe it through `od -c` to check a CRLF file keeps CRLF.
-    print!("{}", snapshot.markdown);
-    Ok(())
 }
