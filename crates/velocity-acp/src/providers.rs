@@ -31,12 +31,11 @@ pub fn provider_agent(provider: Provider) -> Option<ProviderAgent> {
         Provider::Antigravity => ("agy", &["acp"], &["yolo"]),
         Provider::Custom(_) => return None,
     };
+    let mut launch = AgentLaunch::new(PathBuf::from(program));
+    launch.args = args.iter().map(|argument| (*argument).to_owned()).collect();
+    launch.own_config = Some(provider);
     Some(ProviderAgent {
-        launch: AgentLaunch {
-            program: PathBuf::from(program),
-            args: args.iter().map(|argument| (*argument).to_owned()).collect(),
-            env: Vec::new(),
-        },
+        launch,
         bypass_modes: bypass_modes.iter().map(|mode| (*mode).to_owned()).collect(),
     })
 }
@@ -58,9 +57,8 @@ pub fn configured_agent(
         (Some(agent), None) => Some(agent),
         (None, Some((program, args))) => Some(ProviderAgent {
             launch: AgentLaunch {
-                program,
                 args,
-                env: Vec::new(),
+                ..AgentLaunch::new(program)
             },
             bypass_modes: KNOWN_BYPASS_MODES
                 .iter()

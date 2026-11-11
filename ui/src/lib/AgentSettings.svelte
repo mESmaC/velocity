@@ -1,6 +1,7 @@
 <script lang="ts">
   import { onMount } from 'svelte';
   import SettingsNav from './SettingsNav.svelte';
+  import SharedMcpServers from './SharedMcpServers.svelte';
   import './theme/worktrees.css';
   import {
     readAgentSettings,
@@ -123,6 +124,7 @@
             {error}
           </p>{/if}
       </section>
+      <SharedMcpServers />
     </div>
   </div>
 </section>

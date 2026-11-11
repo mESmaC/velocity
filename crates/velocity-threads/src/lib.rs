@@ -18,6 +18,7 @@ pub mod ready_pool;
 pub mod review;
 pub mod review_runner;
 pub mod runtime;
+pub mod shared_mcp;
 pub mod swarm;
 pub mod sweep;
 pub mod sweep_runner;
@@ -40,6 +41,7 @@ pub use runtime::{
     RunningSession, SessionInputs, SteerError, StopOutcome, ThreadKey, ThreadProgress,
     ThreadRuntimes, spawn_session,
 };
+pub use shared_mcp::shared_mcp_servers;
 pub use sweep::{SCOUT_SERVER_SWITCH, SweepPlan, plan_sweep};
 pub use sweep_runner::{ScoutChange, ScoutSweeps, SweepHost};
 pub use titles::{TitlePlan, plan_title, resolve_title, thread_run_settings};
