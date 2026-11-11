@@ -352,6 +352,15 @@ fn code_lines(syntax: &Syntax, lines: &[String]) -> Vec<String> {
 }
 
 fn is_line_comment(syntax: &Syntax, line: &str) -> bool {
+    // PowerShell's block closer starts with its line-comment prefix. Without a
+    // matching opener in this hunk it may expose live code beyond the context.
+    if syntax
+        .block_comments
+        .iter()
+        .any(|(_, close)| line.starts_with(close))
+    {
+        return false;
+    }
     syntax
         .line_comments
         .iter()
