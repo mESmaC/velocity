@@ -26,7 +26,10 @@ export type {
 export const providerCommands = {
   list: commands.listProviders,
   signIn: commands.providerSignIn,
+  // Sign out, and Cancel while signing in or installing.
   signOut: commands.providerSignOut,
+  // F15 Install: puts a built-in provider's missing agent on PATH.
+  install: commands.installProvider,
   edit: commands.setProviderSettings,
   menu: commands.getModelMenu,
   choose: commands.chooseModel,

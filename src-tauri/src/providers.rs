@@ -6,6 +6,8 @@
 //! limits are read every five minutes. What the agents report is saved in the store's provider catalog, so pickers and
 //! the footer meter are right at the next start before the agents answer again.
 
+pub(crate) mod install;
+
 use std::path::PathBuf;
 use std::sync::Mutex;
 use std::time::Duration;
@@ -52,6 +54,8 @@ struct Slot {
     /// The sign-in method its agent offered that Velocity may use.
     method: Option<SignInMethod>,
     sign_in: Option<JoinHandle<()>>,
+    /// Install running for its agent (F15 Install).
+    install: Option<JoinHandle<()>>,
     /// Bumped whenever the command changes, so a check of the old command can't record over
     /// what the new one reports.
     generation: u64,
@@ -89,7 +93,7 @@ impl ManagedProviders {
         }
         // Removed agents: stop a sign-in still waiting on the browser.
         for slot in previous {
-            if let Some(task) = slot.sign_in {
+            for task in [slot.sign_in, slot.install].into_iter().flatten() {
                 task.abort();
             }
         }
@@ -163,6 +167,7 @@ fn new_slot(provider: ProviderKind) -> Slot {
         runtime: ProviderRuntime::new(provider, String::new(), String::new()),
         method: None,
         sign_in: None,
+        install: None,
         generation: 0,
         limit_revision: 0,
     }
@@ -182,7 +187,11 @@ fn refresh_slot(
         slot.runtime.can_sign_in = false;
         slot.runtime.detail = None;
         slot.method = None;
-        if let Some(task) = slot.sign_in.take() {
+        // A new command is a different program: its sign-in and install no longer apply.
+        for task in [slot.sign_in.take(), slot.install.take()]
+            .into_iter()
+            .flatten()
+        {
             task.abort();
         }
         changed.push(slot.runtime.provider);
@@ -327,6 +336,9 @@ fn record_failure(
         error,
         ClientError::Spawn { source, .. } if source.kind() == std::io::ErrorKind::NotFound
     );
+    let install_command = missing
+        .then(|| install::install_command(&settings(application), provider))
+        .flatten();
     let current =
         application
             .state::<ManagedProviders>()
@@ -337,6 +349,7 @@ fn record_failure(
                     ProviderPhase::Failed
                 };
                 slot.runtime.detail = (!missing).then(|| error.to_string());
+                slot.runtime.install_command = install_command;
             });
     if !current {
         return;
@@ -587,7 +600,7 @@ fn signed_in_toast(application: &AppHandle, provider: ProviderKind) -> String {
     }
 }
 
-/// Sign out (F15), or Cancel while waiting for the browser. Agents already running on the
+/// Sign out (F15), or Cancel while waiting for the browser or an install. Agents already running on the
 /// provider keep their session until they finish; new work can't use it.
 #[tauri::command]
 #[specta::specta]
@@ -596,6 +609,23 @@ pub fn provider_sign_out(
     provider: ProviderKind,
 ) -> Result<ProvidersView, String> {
     let providers = application.state::<ManagedProviders>();
+    let name = settings(&application).provider_name(provider);
+    // Cancel while installing stops the install and everything it started (F15 Install).
+    let installing = providers
+        .with_slot(provider, |slot| {
+            let task = slot.install.take();
+            if let Some(task) = &task {
+                task.abort();
+                slot.runtime.phase = ProviderPhase::NotInstalled;
+                slot.runtime.detail = None;
+            }
+            task.is_some()
+        })
+        .unwrap_or(false);
+    if installing {
+        let toast = format!("Cancelled installing {name}'s agent");
+        return publish(&application, Some(toast)).ok_or_else(|| "Could not cancel".into());
+    }
     let cancelled = providers
         .with_slot(provider, |slot| {
             let task = slot.sign_in.take();
@@ -606,7 +636,6 @@ pub fn provider_sign_out(
             task.is_some()
         })
         .unwrap_or(false);
-    let name = settings(&application).provider_name(provider);
     if cancelled {
         return publish(
             &application,
