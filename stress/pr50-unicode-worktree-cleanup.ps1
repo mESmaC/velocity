@@ -1,5 +1,8 @@
 # Risk: F6 cleanup must identify an owned worktree without conflating distinct
 # Windows directory names. All destructive calls target this isolated fixture.
+# Updated for #230: since #177 (b829fb6) cleanup keeps any worktree with uncommitted or
+# unpushed work, so each fixture worktree now commits its sentinel and pushes its branch
+# to a local bare remote, the state a merged PR's worktree is in. Assertions unchanged.
 $ErrorActionPreference = 'Stop'
 $repositoryRoot = [IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..'))
 $harnessRoot = Join-Path $repositoryRoot '.tools\pr50-unicode-worktree-cleanup'
@@ -29,9 +32,14 @@ fn report(name: &str, passed: bool, detail: impl std::fmt::Display) -> usize {
     usize::from(!passed)
 }
 
+const IDENTITY: [&str; 4] = ["-c", "user.name=PR Duty", "-c", "user.email=pr-duty@example.invalid"];
+
 fn add(repository: &Path, path: &Path, branch: &str) {
     git(repository, &["worktree", "add", "-b", branch, path.to_str().expect("fixture path"), "master"]);
     fs::write(path.join("sentinel"), branch).expect("isolated sentinel");
+    git(path, &["add", "sentinel"]);
+    git(path, &[&IDENTITY[..], &["commit", "-m", "sentinel"]].concat());
+    git(path, &["push", "origin", branch]);
 }
 
 fn main() {
@@ -40,8 +48,11 @@ fn main() {
     let repository = root.join("repository");
     fs::create_dir_all(&repository).expect("fixture repository");
     git(&repository, &["init", "--initial-branch", "master"]);
-    git(&repository, &["-c", "user.name=PR Duty", "-c", "user.email=pr-duty@example.invalid",
-        "commit", "--allow-empty", "-m", "isolated cleanup fixture"]);
+    git(&repository, &[&IDENTITY[..], &["commit", "--allow-empty", "-m", "isolated cleanup fixture"]].concat());
+    let remote = root.join("remote.git");
+    git(&root, &["init", "--bare", remote.to_str().expect("remote path")]);
+    git(&repository, &["remote", "add", "origin", remote.to_str().expect("remote path")]);
+    git(&repository, &["push", "origin", "master"]);
     let first = root.join("case-\u{10400}").join("worktree with spaces");
     let second = root.join("case-\u{10428}").join("worktree with spaces");
     let ordinary = root.join("ordinary worktree");

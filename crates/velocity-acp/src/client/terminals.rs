@@ -17,7 +17,7 @@ use tokio::task::JoinHandle;
 
 use super::ClientError;
 use super::files::resolve_in_worktree;
-use super::process::{AgentProcess, spawn_owned_command, stop_owned_process};
+use super::process::{AgentProcess, hidden_command, spawn_owned_command, stop_owned_process};
 #[cfg(windows)]
 use super::program_path::find_program;
 use crate::retained_output_start;
@@ -208,12 +208,12 @@ impl Terminals {
 fn shell_command(command: &str, args: &[String]) -> Command {
     if args.is_empty() {
         let shell = std::env::var_os("ComSpec").unwrap_or_else(|| "cmd.exe".into());
-        let mut built = Command::new(shell);
+        let mut built = hidden_command(shell);
         // `/S /C "…"`: cmd strips the outer quotes and runs the line exactly as written.
         built.raw_arg(format!("/D /S /C \"{command}\""));
         built
     } else {
-        let mut built = Command::new(find_program(command.as_ref()));
+        let mut built = hidden_command(find_program(command.as_ref()));
         built.args(args);
         built
     }
@@ -223,11 +223,11 @@ fn shell_command(command: &str, args: &[String]) -> Command {
 fn shell_command(command: &str, args: &[String]) -> Command {
     if args.is_empty() {
         let shell = std::env::var_os("SHELL").unwrap_or_else(|| "/bin/sh".into());
-        let mut built = Command::new(shell);
+        let mut built = hidden_command(shell);
         built.arg("-c").arg(command);
         built
     } else {
-        let mut built = Command::new(command);
+        let mut built = hidden_command(command);
         built.args(args);
         built
     }

@@ -8,21 +8,15 @@ use velocity_core::layout_view::{LayoutAction, LayoutData, ThreadEntry};
 use velocity_core::navigation::NavigationView;
 
 fn entry(identifier: usize, group: ThreadGroup, parent: Option<usize>) -> ThreadEntry {
-    ThreadEntry {
-        policy: LayoutRow {
-            identifier,
-            group,
-            hidden: false,
-            matches_search: true,
+    ThreadEntry::new(
+        LayoutRow {
             member_of: parent,
-            expanded: false,
-            agent_count: 0,
-            paused: false,
+            ..LayoutRow::new(identifier, group)
         },
-        title: format!("Thread {identifier}"),
-        metadata: String::new(),
-        view: NavigationView::Thread,
-    }
+        format!("Thread {identifier}"),
+        String::new(),
+        NavigationView::Thread,
+    )
 }
 
 fn check(state: &LayoutState, expected: usize, context: &str) -> usize {

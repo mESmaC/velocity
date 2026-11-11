@@ -8,25 +8,32 @@ use velocity_core::thread_view::ThreadLifecycle;
 use velocity_core::thread_view_model::{AgentCommandView, ThreadDetailEntry};
 
 fn command(name: &str) -> AgentCommandView {
-    AgentCommandView { name: name.into(), description: format!("Agent command {name}") }
+    AgentCommandView::new(name.into(), format!("Agent command {name}"))
 }
 
 fn thread(identifier: usize, commands: Vec<AgentCommandView>) -> ThreadEntry {
     let detail = ThreadDetailEntry {
-        identifier, title: format!("Thread {identifier}"), titling: false,
-        title_model_name: String::new(), branch: format!("vel/thread-{identifier}"),
-        worktree_path: format!(r"X:\fixture with spaces\thread-{identifier}"),
-        lifecycle: ThreadLifecycle::Working, added: 0, deleted: 0,
-        elapsed_label: "0s".into(), pull_request_number: None, agent_busy: false,
-        show_work: false, worked_summary: None, blocks: Vec::new(), agent_commands: commands,
-        provider: ProviderColor::Codex, model_name: "fixture".into(), effort_label: "High".into(),
-        requested_fast: false, model_has_fast_mode: false,
+        elapsed_label: "0s".into(),
+        agent_commands: commands,
+        model_name: "fixture".into(),
+        effort_label: "High".into(),
+        ..ThreadDetailEntry::new(
+            identifier,
+            format!("Thread {identifier}"),
+            format!("vel/thread-{identifier}"),
+            format!(r"X:\fixture with spaces\thread-{identifier}"),
+            ThreadLifecycle::Working,
+            ProviderColor::Codex,
+        )
     };
     ThreadEntry {
-        policy: LayoutRow { identifier, group: ThreadGroup::Working, hidden: false,
-            matches_search: true, member_of: None, expanded: false, agent_count: 1, paused: false },
-        title: detail.title.clone(), metadata: String::new(), view: NavigationView::Thread,
-        detail: Some(detail),
+        detail: Some(detail.clone()),
+        ..ThreadEntry::new(
+            LayoutRow { agent_count: 1, ..LayoutRow::new(identifier, ThreadGroup::Working) },
+            detail.title,
+            String::new(),
+            NavigationView::Thread,
+        )
     }
 }
 

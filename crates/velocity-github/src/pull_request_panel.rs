@@ -123,11 +123,24 @@ impl PullRequestPanelSnapshot {
     }
 }
 
-/// Each open PR's diff summary at the head it was read at, so a refresh reads a PR's diff
-/// again only after its head moves.
+/// What the panel read about each open PR beyond the list query, kept between refreshes so
+/// a refresh costs the same few requests however many PRs are open (#228):
+/// - each PR's diff summary at the head it was read at, read again only after the head moves;
+/// - each PR's reviewer claim, read from its comments again only after the PR's `updatedAt`
+///   or comment count moves. Posting or editing a comment moves `updatedAt`, and deleting one
+///   changes the count, so a claim, a takeover or a removed claim reaches the rail on the next
+///   refresh.
 #[derive(Debug, Default)]
-pub struct ReviewTierCache {
+pub struct PullRequestPanelCache {
     summaries: BTreeMap<u32, (String, DiffSummary)>,
+    reviewers: BTreeMap<u32, (ClaimFingerprint, Option<String>)>,
+}
+
+/// The listed fields that move when a PR's conversation comments change.
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct ClaimFingerprint {
+    updated_at: String,
+    comments: u32,
 }
 
 #[derive(Deserialize)]
@@ -137,6 +150,13 @@ struct PanelEntry {
     #[serde(rename = "headRepository")]
     head_repository: Option<HeadRepository>,
     commits: CommitConnection,
+    comments: CommentCount,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct CommentCount {
+    total_count: u32,
 }
 
 #[derive(Deserialize)]
@@ -167,35 +187,32 @@ struct CheckRollup {
 }
 
 impl PullRequestClient {
-    pub fn panel(&self) -> Result<Vec<PullRequestPanelRow>, PullRequestError> {
-        self.panel_entries()?
-            .into_iter()
-            .map(|entry| self.panel_row(entry))
-            .collect()
-    }
-
     /// The panel with each row's review tier (F7 Tiered review), read from the PR's diff and
     /// the Sensitive paths in `agents_markdown`. A diff that cannot be read leaves that row
-    /// without a tier and is tried again on the next refresh.
+    /// without a tier and is tried again on the next refresh. Keep `cache` between refreshes:
+    /// with it, a refresh where no PR changed is one request.
     pub fn tiered_panel(
         &self,
-        cache: &mut ReviewTierCache,
+        cache: &mut PullRequestPanelCache,
         agents_markdown: &str,
     ) -> Result<Vec<PullRequestPanelRow>, PullRequestError> {
         let entries = self.panel_entries()?;
         let sensitive = sensitive_paths(agents_markdown);
-        cache.summaries.retain(|number, _| {
+        let listed = |number: &u32| {
             entries
                 .iter()
                 .any(|entry| entry.pull_request.number == *number)
-        });
+        };
+        cache.summaries.retain(|number, _| listed(number));
+        cache.reviewers.retain(|number, _| listed(number));
         let mut rows = Vec::with_capacity(entries.len());
         for entry in entries {
             let (number, head) = (
                 entry.pull_request.number,
                 entry.pull_request.head_ref_oid.clone(),
             );
-            let mut row = self.panel_row(entry)?;
+            let reviewer = self.cached_reviewer(cache, &entry)?;
+            let mut row = self.panel_row(entry, reviewer);
             row.tier = self
                 .cached_summary(cache, number, head)
                 .map(|summary| assess_tier(summary, &sensitive).tier);
@@ -204,9 +221,38 @@ impl PullRequestClient {
         Ok(rows)
     }
 
+    /// The PR's reviewer claim, from its comments only when they may have changed.
+    fn cached_reviewer(
+        &self,
+        cache: &mut PullRequestPanelCache,
+        entry: &PanelEntry,
+    ) -> Result<Option<String>, PullRequestError> {
+        let number = entry.pull_request.number;
+        let fingerprint = ClaimFingerprint {
+            updated_at: entry.pull_request.updated_at.clone(),
+            comments: entry.comments.total_count,
+        };
+        if let Some((read_at, reviewer)) = cache.reviewers.get(&number)
+            && *read_at == fingerprint
+        {
+            return Ok(reviewer.clone());
+        }
+        // Honor the repository's explicit claim comment. Read all pages so a busy
+        // discussion cannot hide its reviewer. The fingerprint is from the list, read before
+        // the comments, so a comment posted in between is read again next refresh.
+        let reviewer = self
+            .comments(number)?
+            .into_iter()
+            .find_map(|comment| claim_reviewer(&comment.body, comment.author));
+        cache
+            .reviewers
+            .insert(number, (fingerprint, reviewer.clone()));
+        Ok(reviewer)
+    }
+
     fn cached_summary<'cache>(
         &self,
-        cache: &'cache mut ReviewTierCache,
+        cache: &'cache mut PullRequestPanelCache,
         number: u32,
         head: String,
     ) -> Option<&'cache DiffSummary> {
@@ -230,6 +276,7 @@ impl PullRequestClient {
                   nodes {{ {FIELDS}
                     headRepository {{ nameWithOwner }}
                     commits(last:1) {{ nodes {{ commit {{ statusCheckRollup {{ state }} }} }} }}
+                    comments {{ totalCount }}
                   }} pageInfo {{ hasNextPage endCursor }}
                 }}
               }}
@@ -238,13 +285,7 @@ impl PullRequestClient {
         self.connection(&query, self.variables(0), "/data/repository/pullRequests")
     }
 
-    fn panel_row(&self, entry: PanelEntry) -> Result<PullRequestPanelRow, PullRequestError> {
-        // Honor the repository's explicit claim comment. Read all pages so a busy
-        // discussion cannot hide its reviewer.
-        let reviewer = self
-            .comments(entry.pull_request.number)?
-            .into_iter()
-            .find_map(|comment| claim_reviewer(&comment.body, comment.author));
+    fn panel_row(&self, entry: PanelEntry, reviewer: Option<String>) -> PullRequestPanelRow {
         let checks = entry
             .commits
             .nodes
@@ -253,7 +294,7 @@ impl PullRequestClient {
             .map(|rollup| check_status(&rollup.state))
             .unwrap_or(CheckStatus::Unavailable);
         let review = review_status(&entry.pull_request, reviewer.is_some(), checks);
-        Ok(PullRequestPanelRow {
+        PullRequestPanelRow {
             number: entry.pull_request.number,
             title: entry.pull_request.title,
             head_branch: entry.pull_request.head_ref_name,
@@ -270,7 +311,7 @@ impl PullRequestClient {
             reviewer,
             tier: None,
             thread_identifier: None,
-        })
+        }
     }
 
     /// Only an explicit row click opens a browser; refreshes never do.

@@ -41,6 +41,12 @@ pub struct AgentCommandView {
     pub description: String,
 }
 
+impl AgentCommandView {
+    pub fn new(name: String, description: String) -> Self {
+        Self { name, description }
+    }
+}
+
 #[cfg_attr(
     feature = "bindings",
     derive(serde::Serialize, serde::Deserialize, specta::Type)
@@ -368,6 +374,43 @@ pub struct ThreadDetailEntry {
     pub effort_label: String,
     pub requested_fast: bool,
     pub model_has_fast_mode: bool,
+}
+
+impl ThreadDetailEntry {
+    /// An idle thread with an empty transcript and no agent commands.
+    pub fn new(
+        identifier: usize,
+        title: String,
+        branch: String,
+        worktree_path: String,
+        lifecycle: ThreadLifecycle,
+        provider: ProviderColor,
+    ) -> Self {
+        Self {
+            identifier,
+            title,
+            titling: false,
+            title_model_name: String::new(),
+            branch,
+            worktree_path,
+            lifecycle,
+            added: 0,
+            deleted: 0,
+            elapsed_label: String::new(),
+            pull_request_number: None,
+            agent_busy: false,
+            show_work: false,
+            worked_summary: None,
+            pull_request_history: None,
+            blocks: Vec::new(),
+            agent_commands: Vec::new(),
+            provider,
+            model_name: String::new(),
+            effort_label: String::new(),
+            requested_fast: false,
+            model_has_fast_mode: false,
+        }
+    }
 }
 
 /// Classifies a composer string into the verified `SlashPrefix` domain.

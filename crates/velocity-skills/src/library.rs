@@ -4,7 +4,6 @@
 use std::ffi::OsStr;
 use std::fs;
 use std::path::{Path, PathBuf};
-use std::process::Command;
 
 use serde::{Deserialize, Serialize};
 
@@ -476,7 +475,7 @@ fn create_directory_link(link_path: &Path, target_dir: &Path) -> Result<(), Skil
             stderr: "the pack path contains a character cmd.exe cannot take literally".into(),
         });
     }
-    let output = Command::new("cmd")
+    let output = crate::process::hidden_command("cmd")
         .args(["/C", "mklink", "/J"])
         .raw_arg(format!("\"{link_str}\""))
         .raw_arg(format!("\"{target_str}\""))
@@ -652,7 +651,7 @@ where
         .into_iter()
         .map(|arg| arg.as_ref().to_string_lossy().into_owned())
         .collect();
-    let output = Command::new("git")
+    let output = crate::process::hidden_command("git")
         .current_dir(working_dir)
         .args(["-c", "core.longpaths=true"])
         .args(&args)
@@ -678,7 +677,7 @@ pub fn run_python_utf8(
 ) -> Result<SkillPythonOutput, SkillLibraryError> {
     let script_str = strip_verbatim_prefix(script_path);
     for candidate in ["python", "python3", "py"] {
-        let mut command = Command::new(candidate);
+        let mut command = crate::process::hidden_command(candidate);
         command
             .current_dir(working_dir)
             .env("PYTHONUTF8", "1")

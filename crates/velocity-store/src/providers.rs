@@ -54,6 +54,11 @@ pub struct ProviderLimit {
     /// When the window resets, in Unix seconds.
     #[serde(default)]
     pub resets_at: Option<u32>,
+    /// Every window the provider reported, shortest first, for the footer usage panel. Empty
+    /// for a source that names only the headline window, and in a `state.json` saved before
+    /// windows were kept: the panel then shows the headline alone.
+    #[serde(default)]
+    pub windows: Vec<LimitWindow>,
 }
 
 impl ProviderLimit {
@@ -61,6 +66,60 @@ impl ProviderLimit {
         Self {
             percent_used,
             window,
+            resets_at,
+            windows: Vec::new(),
+        }
+    }
+
+    pub fn with_windows(mut self, windows: Vec<LimitWindow>) -> Self {
+        self.windows = windows;
+        self
+    }
+
+    /// A live rate-limit event names only the window it is about. Keeps the earlier read's
+    /// other windows (the weekly one when a 5-hour event arrives), so the panel doesn't lose
+    /// them until the next full read, and makes the fullest window the headline again.
+    pub fn merged_into(self, previous: Option<&ProviderLimit>) -> ProviderLimit {
+        let Some(previous) = previous.filter(|_| !self.windows.is_empty()) else {
+            return self;
+        };
+        let mut windows = previous.windows.clone();
+        for window in &self.windows {
+            windows.retain(|kept| kept.window != window.window);
+            windows.push(window.clone());
+        }
+        windows.sort_by_key(|window| window.minutes);
+        match windows.iter().max_by_key(|window| window.percent_used) {
+            Some(fullest) => ProviderLimit::new(
+                fullest.percent_used,
+                fullest.window.clone(),
+                fullest.resets_at,
+            )
+            .with_windows(windows),
+            None => self,
+        }
+    }
+}
+
+/// One subscription window as last read (F15 Limit sources).
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, Type)]
+pub struct LimitWindow {
+    pub percent_used: u8,
+    /// `5-hour`, `weekly`, `weekly · Opus`.
+    pub window: String,
+    /// The window's length, for the pace mark: where even spending would be.
+    #[serde(default)]
+    pub minutes: u32,
+    #[serde(default)]
+    pub resets_at: Option<u32>,
+}
+
+impl LimitWindow {
+    pub fn new(percent_used: u8, window: String, minutes: u32, resets_at: Option<u32>) -> Self {
+        Self {
+            percent_used,
+            window,
+            minutes,
             resets_at,
         }
     }
@@ -525,6 +584,22 @@ impl StateStore {
     ) -> Result<bool, StoreError> {
         self.update_catalog(provider, |entry| {
             entry.limit = limit;
+            if plan.is_some() {
+                entry.plan = plan;
+            }
+        })
+    }
+
+    /// Records a live rate-limit event, which names only some windows: the others keep their
+    /// last read (F15 Limit sources).
+    pub fn record_live_provider_limit(
+        &mut self,
+        provider: ProviderKind,
+        limit: Option<ProviderLimit>,
+        plan: Option<String>,
+    ) -> Result<bool, StoreError> {
+        self.update_catalog(provider, |entry| {
+            entry.limit = limit.map(|limit| limit.merged_into(entry.limit.as_ref()));
             if plan.is_some() {
                 entry.plan = plan;
             }

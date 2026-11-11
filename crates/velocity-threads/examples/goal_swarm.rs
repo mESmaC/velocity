@@ -3,6 +3,9 @@
 //! Run through the build queue:
 //! `pwsh -NoProfile -File scripts/build-queue.ps1 cargo run -p velocity-threads --example goal_swarm`
 
+// A console example: its children share its console, so no hidden_command (#232).
+#![allow(clippy::disallowed_methods)]
+
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::{Barrier, Mutex};

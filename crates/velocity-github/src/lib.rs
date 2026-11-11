@@ -34,14 +34,14 @@ mod watch_server;
 
 pub use approval::{ReviewRecord, review_standing};
 pub use duty_server::{PrDutyReport, PrDutyServer, read_pr_duty_reports};
-pub use issue_panel::{IssuePanelRow, IssuePanelSnapshot, SpecQuestion};
+pub use issue_panel::{IssuePanelCache, IssuePanelRow, IssuePanelSnapshot, SpecQuestion};
 pub use issue_types::*;
 pub use issues::IssueClient;
 pub use proof_gate::check_proof_gate;
 pub use pull_request_command::PullRequestError;
 pub use pull_request_panel::{
-    CheckStatus, PullRequestPanelRow, PullRequestPanelSnapshot, PullRequestThread, ReviewStatus,
-    ReviewTierCache,
+    CheckStatus, PullRequestPanelCache, PullRequestPanelRow, PullRequestPanelSnapshot,
+    PullRequestThread, ReviewStatus,
 };
 pub use pull_request_types::*;
 pub use pull_requests::PullRequestClient;

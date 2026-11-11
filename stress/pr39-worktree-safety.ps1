@@ -3,6 +3,8 @@ param([string]$TargetDirectory = $env:CARGO_TARGET_DIR)
 # Risk: worktree creation failures must report long paths and preserve branches owned by others.
 # The shim injects one deterministic concurrent branch creation, then delegates to real Git.
 # All repositories, branches and worktrees used here are fresh fixtures under this checkout.
+# Updated for #230: requests are built through velocity-git's constructors, and the long-path
+# helper no longer depends on the checkout path's length.
 $ErrorActionPreference = 'Stop'
 $repositoryRoot = [IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..'))
 if (-not $TargetDirectory) { $TargetDirectory = Join-Path $repositoryRoot '.tools\pr39-cargo-target' }
@@ -38,7 +40,7 @@ fn main() {
 $harnessSource = @'
 use std::{env, ffi::OsString, fs, path::{Path, PathBuf}, process::{Command, Output, exit}};
 use velocity_git::{WorktreeError, WorktreeSettings, WorktreeSetupRequest,
-    execute_worktree_setup, execute_git_command, GitCommand};
+    execute_worktree_setup, execute_git_command, GitCommand, default_settings};
 
 fn git(real_git: &str, repository: &Path, arguments: &[&str]) -> Output {
     Command::new(real_git).current_dir(repository).args(arguments).output().expect("Git spawn")
@@ -61,19 +63,22 @@ fn initialize(real_git: &str, root: &Path) -> PathBuf {
 }
 
 fn request(repository: &Path, worktree: PathBuf, branch: Option<String>) -> WorktreeSetupRequest {
-    WorktreeSetupRequest {
-        repository_root: repository.to_owned(), worktree_path: worktree,
-        branch_name: branch, base_ref: "master".into(),
-        settings: WorktreeSettings { delete_branch_on_merge: true, share_build_cache: false,
-            copy_untracked_files: false, run_setup_command: false },
-        untracked_files: String::new(), setup_command: String::new(),
-        shared_cargo_target_dir: repository.join("unused-build-cache"),
+    let settings = WorktreeSettings { delete_branch_on_merge: true, share_build_cache: false,
+        copy_untracked_files: false, run_setup_command: false, ..default_settings() };
+    let cache = repository.join("unused-build-cache");
+    match branch {
+        Some(branch) => WorktreeSetupRequest::branched(repository.to_owned(), worktree, branch,
+            "master".into(), settings, String::new(), String::new(), cache),
+        None => WorktreeSetupRequest::detached(repository.to_owned(), worktree, "master".into(),
+            settings, String::new(), String::new(), cache),
     }
 }
 
 fn path_with_length(root: &Path, length: usize) -> PathBuf {
     let mut path = root.to_owned();
-    while length - path.to_string_lossy().chars().count() > 41 {
+    // Stop while at least two characters remain, so the last component is never empty
+    // whatever the checkout path's length (#230).
+    while length - path.to_string_lossy().chars().count() > 42 {
         path.push("x".repeat(40));
     }
     let remaining = length - path.to_string_lossy().chars().count();

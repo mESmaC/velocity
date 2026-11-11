@@ -9,6 +9,9 @@
 //! 5. Verifies `check_for_updates` shows the diff without moving the pin, rejects unconfirmed or
 //!    mismatched commits, and `confirm_update` moves the pin only when confirmed.
 
+// A console example: its children share its console, so no hidden_command (#232).
+#![allow(clippy::disallowed_methods)]
+
 use std::fs;
 use std::path::Path;
 use std::process::Command;
