@@ -5,7 +5,7 @@ const { syncBuiltinESMExports } = require('node:module');
 const originalSpawn = childProcess.spawn;
 childProcess.spawn = function (...arguments_) {
   const child = originalSpawn.apply(this, arguments_);
-  if (!arguments_[1]?.includes('app-server') || !child.stdout) return child;
+  if (!Array.isArray(arguments_[1]) || !arguments_[1].includes('app-server') || !child.stdout) return child;
   let pending = '';
   let dropping = false;
   child.stdout.on('data', (chunk) => {

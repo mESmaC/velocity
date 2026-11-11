@@ -10,6 +10,9 @@ if (process.argv.includes('--fixture')) {
   process.stdout.write(output.slice(0, 75));
   setTimeout(() => process.stdout.write(output.slice(75)), 10);
 } else if (process.argv.includes('--worker')) {
+  // Node tools also use spawn(program, options), with no argument array.
+  const empty = spawn(process.execPath, { stdio: ['pipe', 'ignore', 'ignore'] });
+  empty.stdin.end();
   const child = spawn(process.execPath, [__filename, '--fixture', 'app-server']);
   child.stdout.pipe(process.stdout);
   child.on('exit', code => { process.exitCode = code; });
