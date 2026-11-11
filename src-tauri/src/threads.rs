@@ -387,7 +387,20 @@ fn resume_message(
     if thread.activity == AgentActivity::AtLimit {
         return Err("This agent will resume when its limit resets".into());
     }
+    let has_queued = thread
+        .transcript
+        .iter()
+        .any(|block| matches!(block, TranscriptBlock::UserMessage { queued: true, .. }));
     drop(store);
+    if has_queued {
+        // Resume ahead of the old queue; the new message must follow those earlier sends.
+        crate::parking::resume(
+            application,
+            key,
+            "Velocity restarted. Continue the earlier session.",
+        )?;
+        return steer(application, key, prompt);
+    }
     crate::parking::resume(application, key, prompt)?;
     refresh(application, key, false)
 }
