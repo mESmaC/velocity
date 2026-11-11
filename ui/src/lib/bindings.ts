@@ -4385,6 +4385,8 @@ export type WorktreeSettings_Deserialize = {
 	project_roots?: { [key in number]: string },
 	copy_files?: string,
 	setup_command?: string,
+	/**  Per-project commands, including an explicit empty command to skip setup. */
+	project_setup_commands?: { [key in number]: string },
 };
 
 export type WorktreeSettings_Serialize = {
@@ -4395,4 +4397,6 @@ export type WorktreeSettings_Serialize = {
 	project_roots: { [key in number]: string },
 	copy_files: string,
 	setup_command: string,
+	/**  Per-project commands, including an explicit empty command to skip setup. */
+	project_setup_commands: { [key in number]: string },
 };
