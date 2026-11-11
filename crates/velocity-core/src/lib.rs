@@ -34,6 +34,7 @@ pub mod review_diff;
 pub mod review_tier;
 pub mod scout_sweep;
 pub mod skill_menu;
+pub mod skills;
 pub mod state;
 pub mod swarm;
 pub mod theme;
