@@ -332,6 +332,65 @@ export type AircTabView = {
 /**  The type tag's colour family (F14: blue, green, amber, red). */
 export type AircTone = "Neutral" | "Claim" | "Info" | "Positive" | "Warning" | "Danger" | "Muted";
 
+export type BoardCard = BoardCard_Serialize | BoardCard_Deserialize;
+
+export type BoardCardKind = "Task" | "Issue" | "Thread";
+
+export type BoardCard_Deserialize = {
+	kind: BoardCardKind,
+	/**  The thread a click opens. A task or an issue has none. */
+	thread: string | null,
+	title: string,
+	metadata: string,
+	/**  The thread's sidebar group, which sets the card's state colour. */
+	group?: ThreadGroup | null,
+	/**  The thread is the selected one. */
+	active: boolean,
+	paused: boolean,
+};
+
+export type BoardCard_Serialize = {
+	kind: BoardCardKind,
+	/**  The thread a click opens. A task or an issue has none. */
+	thread: string | null,
+	title: string,
+	metadata: string,
+	/**  The thread's sidebar group, which sets the card's state colour. */
+	group: ThreadGroup | null,
+	/**  The thread is the selected one. */
+	active: boolean,
+	paused: boolean,
+};
+
+export type BoardLane = BoardLane_Serialize | BoardLane_Deserialize;
+
+/**  One lane of the board, in pipeline order. */
+export type BoardLaneKind = 
+/**  Tasks and issues no thread works on yet. */
+"UpNext" | 
+/**  Threads with an agent at work, and the ones that failed. */
+"Running" | 
+/**  Threads whose PR is open. */
+"InReview" | 
+/**  Threads that finished: merged, done, or closed without merging. */
+"Finished" | 
+/**  Duty agents. They are not work items, so they get their own lane at the end. */
+"OnDuty";
+
+export type BoardLane_Deserialize = {
+	kind: BoardLaneKind,
+	title: string,
+	count: string,
+	cards: BoardCard_Deserialize[],
+};
+
+export type BoardLane_Serialize = {
+	kind: BoardLaneKind,
+	title: string,
+	count: string,
+	cards: BoardCard_Serialize[],
+};
+
 export type BoardPieceKind = "task" | "issue" | "spec";
 
 /**  How a board row is styled: the holder's state, open, or merged. */
@@ -1445,6 +1504,11 @@ export type LayoutSnapshot_Deserialize = {
 	default_model_pill: ModelPillView,
 	search: string,
 	groups: SidebarGroup_Deserialize[],
+	/**
+	 *  The Board view's lanes (F1). They mirror `groups`, `tasks` and `issues`, so they are
+	 *  always current, whichever view is showing.
+	 */
+	board: BoardLane_Deserialize[],
 	pulse: PulseCount_Deserialize[],
 	show_numbers: boolean,
 	palette_open: boolean,
@@ -1496,6 +1560,11 @@ export type LayoutSnapshot_Serialize = {
 	default_model_pill: ModelPillView,
 	search: string,
 	groups: SidebarGroup_Serialize[],
+	/**
+	 *  The Board view's lanes (F1). They mirror `groups`, `tasks` and `issues`, so they are
+	 *  always current, whichever view is showing.
+	 */
+	board: BoardLane_Serialize[],
 	pulse: PulseCount_Serialize[],
 	show_numbers: boolean,
 	palette_open: boolean,
@@ -1663,11 +1732,21 @@ export type ModelPillView = {
 
 export type NavigationIntent = NavigationIntent_Serialize | NavigationIntent_Deserialize;
 
-export type NavigationIntent_Deserialize = "Palette" | "NewThread" | "NewProject" | "Settings" | "ShowNumbers" | ({ Jump: string }) & { Answer?: never } | "Search" | "Task" | "Swarm" | "Goal" | "Airc" | "Dismiss" | "Submit" | "Dispatch" | "Resume" | "Fanout" | "PrDuty" | "Scouts" | "MainWatcher" | ({ Answer: string }) & { Jump?: never } | "Lock" | "SpecFile" | "Grill" | "Diff" | "Editor" | "SaveAgents";
+export type NavigationIntent_Deserialize = "Palette" | "NewThread" | "NewProject" | "Settings" | "ShowNumbers" | ({ Jump: string }) & { Answer?: never } | "Search" | "Task" | "Swarm" | "Goal" | "Airc" | "Dismiss" | "Submit" | "Dispatch" | "Resume" | "Fanout" | "PrDuty" | "Scouts" | "MainWatcher" | ({ Answer: string }) & { Jump?: never } | "Lock" | "SpecFile" | "Grill" | "Diff" | "Editor" | "SaveAgents" | 
+/**  `B`: show the Board, or leave it for the Focus view when it is already showing. */
+"Board" | 
+/**  Leave the Board for the Focus view: the selected thread, or Home. */
+"Focus";
 
-export type NavigationIntent_Serialize = "Palette" | "NewThread" | "NewProject" | "Settings" | "ShowNumbers" | ({ Jump: string }) & { Answer?: never } | "Search" | "Task" | "Swarm" | "Goal" | "Airc" | "Dismiss" | "Submit" | "Dispatch" | "Resume" | "Fanout" | "PrDuty" | "Scouts" | "MainWatcher" | ({ Answer: string }) & { Jump?: never } | "Lock" | "SpecFile" | "Grill" | "Diff" | "Editor" | "SaveAgents";
+export type NavigationIntent_Serialize = "Palette" | "NewThread" | "NewProject" | "Settings" | "ShowNumbers" | ({ Jump: string }) & { Answer?: never } | "Search" | "Task" | "Swarm" | "Goal" | "Airc" | "Dismiss" | "Submit" | "Dispatch" | "Resume" | "Fanout" | "PrDuty" | "Scouts" | "MainWatcher" | ({ Answer: string }) & { Jump?: never } | "Lock" | "SpecFile" | "Grill" | "Diff" | "Editor" | "SaveAgents" | 
+/**  `B`: show the Board, or leave it for the Focus view when it is already showing. */
+"Board" | 
+/**  Leave the Board for the Focus view: the selected thread, or Home. */
+"Focus";
 
-export type NavigationView = "Home" | "Thread" | "Duty" | "Swarm" | "SpecScan" | "SpecAsk" | "SpecReady" | "SpecLocked" | "Agents" | "Settings" | "Other";
+export type NavigationView = "Home" | 
+/**  Every thread as a card in pipeline lanes, in place of the sidebar and one thread. */
+"Board" | "Thread" | "Duty" | "Swarm" | "SpecScan" | "SpecAsk" | "SpecReady" | "SpecLocked" | "Agents" | "Settings" | "Other";
 
 export type NewProjectDefaults = NewProjectDefaults_Serialize | NewProjectDefaults_Deserialize;
 

@@ -59,6 +59,28 @@
     />
   </div>
   <div class="titlebar-space" data-tauri-drag-region>
+    {#if layout && layout.project_identifier !== null}<div
+        class="view-switch"
+        role="group"
+        aria-label="View"
+      >
+        <button
+          class:on={layout.view !== 'Board'}
+          aria-pressed={layout.view !== 'Board'}
+          title="Focus: one agent in depth"
+          onclick={() => send({ Request: { Navigation: 'Focus' } })}
+          >Focus</button
+        >
+        <button
+          class:on={layout.view === 'Board'}
+          aria-pressed={layout.view === 'Board'}
+          title="Board: every agent at once (B)"
+          onclick={() => {
+            if (layout.view !== 'Board')
+              send({ Request: { Navigation: 'Board' } });
+          }}>Board</button
+        >
+      </div>{/if}
     <div class="pulse" aria-label="Project pulse">
       {#each layout?.pulse ?? [] as count (count.kind)}<span
           data-kind={count.kind}

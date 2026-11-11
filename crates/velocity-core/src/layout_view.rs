@@ -385,6 +385,9 @@ pub struct LayoutSnapshot {
     pub default_model_pill: ModelPillView,
     pub search: String,
     pub groups: Vec<SidebarGroup>,
+    /// The Board view's lanes (F1). They mirror `groups`, `tasks` and `issues`, so they are
+    /// always current, whichever view is showing.
+    pub board: Vec<crate::board::BoardLane>,
     pub pulse: Vec<PulseCount>,
     pub show_numbers: bool,
     pub palette_open: bool,

@@ -1134,6 +1134,53 @@ kbd { padding: 2px 4px; border: 0; border-radius: 4px; background: rgba(255, 255
 .tool.running .verb, .tool.running .res { color: var(--accent); }
 .tool .verb { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .msg-user { border-radius: 20px 20px 6px 20px; }
+
+/* ───────────────────────── board ─────────────────────────
+   A second way to look at the same work: every thread as a card in lanes that read left
+   to right, from work nobody has started to work that finished. B or the title-bar
+   switch shows it in place of the sidebar, the thread and the rail; opening a card
+   returns to the Focus view on that thread. */
+.titlebar { gap: 10px; }
+.view-switch { display: flex; gap: 2px; padding: 2px; border: 1px solid var(--pane-edge); border-radius: 999px; background: var(--sheen), var(--pane); backdrop-filter: var(--blur-pane); -webkit-backdrop-filter: var(--blur-pane); }
+.view-switch button { height: 20px; padding: 0 12px; border-radius: 999px; font-size: 11px; font-weight: 500; color: var(--text-2); }
+.view-switch button:hover { color: var(--text); }
+.view-switch button.on { background: rgba(255, 255, 255, .17); box-shadow: inset 0 1px 0 rgba(255, 255, 255, .22); color: var(--text); }
+.board { display: none; grid-row: 2; grid-column: 1 / -1; gap: 12px; min-width: 0; min-height: 0; padding: 2px 12px 12px; overflow-x: auto; }
+.app.board-mode .board { display: flex; }
+.app.board-mode .sidebar, .app.board-mode .main, .app.board-mode .rail { display: none; }
+.lane { flex: 1 1 0; min-width: 220px; min-height: 0; display: flex; flex-direction: column; gap: 8px; padding: 12px; border: 1px solid var(--pane-edge); border-radius: 22px;
+        background: var(--sheen), var(--pane); box-shadow: var(--pane-lift); backdrop-filter: var(--blur-pane); -webkit-backdrop-filter: var(--blur-pane); }
+/* work nobody has started is an outline, not a pane: it isn't in the pipeline yet */
+.lane[data-lane="up-next"] { border: 1px dashed rgba(255, 255, 255, .18); background: transparent; box-shadow: none; backdrop-filter: none; -webkit-backdrop-filter: none; }
+.lane-h { display: flex; align-items: center; gap: 8px; padding: 2px 4px 4px; }
+.lane-h h2 { flex: 1; margin: 0; font-size: 13px; font-weight: 600; }
+.lane-dot { width: 8px; height: 8px; border-radius: 50%; background: var(--muted); }
+.lane-count { font: 10.5px var(--mono); color: var(--muted); }
+.lane[data-lane="running"] .lane-dot { background: var(--accent); }
+.lane[data-lane="running"] .lane-count { color: var(--accent); }
+.lane[data-lane="in-review"] .lane-dot { background: var(--warn); }
+.lane[data-lane="in-review"] .lane-count { color: var(--warn); }
+.lane[data-lane="finished"] .lane-dot { background: var(--ok); }
+.lane[data-lane="finished"] .lane-count { color: var(--ok); }
+.lane[data-lane="on-duty"] .lane-dot { background: var(--duty); }
+.lane[data-lane="on-duty"] .lane-count { color: var(--duty); }
+.lane-cards { display: flex; flex-direction: column; gap: 8px; min-height: 0; overflow-y: auto; }
+.lane-empty { margin: 0; padding: 8px 4px; font-size: 11.5px; color: var(--muted); }
+.card { width: 100%; display: grid; grid-template-columns: 14px minmax(0, 1fr); column-gap: 8px; row-gap: 4px; align-items: center; padding: 11px 13px;
+        border: 1px solid rgba(255, 255, 255, .09); border-radius: 16px; background: rgba(0, 0, 0, .34); text-align: left; }
+button.card:hover { border-color: rgba(255, 255, 255, .18); background: rgba(255, 255, 255, .05); }
+.card.active { border-color: var(--accent-line); background: var(--accent-soft); }
+.card.paused { opacity: .6; }
+.card-title { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 12.5px; font-weight: 500; color: var(--text); }
+.card-meta { grid-column: 2; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font: 10.5px var(--mono); color: var(--muted); }
+.card > svg { color: var(--muted); }
+.card[data-status="working"] > svg, .card[data-status="spec"] > svg { color: var(--accent); }
+.card[data-status="swarm"] > svg { color: var(--swarm); }
+.card[data-status="review"] > svg { color: var(--warn); }
+.card[data-status="done"] > svg, .card[data-status="merged"] > svg { color: var(--ok); }
+.card[data-status="duty"] > svg { color: var(--duty); }
+.card[data-status="error"] { border-color: rgba(255, 115, 105, .36); background: rgba(255, 115, 105, .1); }
+.card[data-status="error"] > svg, .card[data-status="error"] .card-meta { color: var(--err); }
 </style>
 </head>
 <body>
@@ -1146,6 +1193,7 @@ kbd { padding: 2px 4px; border: 0; border-radius: 4px; background: rgba(255, 255
     <div class="proj-menu" id="projMenu"></div>
   </div>
   <div class="titlebar" data-tauri-drag-region>
+    <div class="view-switch" id="viewSwitch" role="group" aria-label="View"><button data-view="focus" class="on" title="Focus: one agent in depth">Focus</button><button data-view="board" title="Board: every agent at once (B)">Board</button></div>
     <div class="pulse" id="pulse"></div>
   </div>
   <div class="win-controls">
@@ -1273,6 +1321,9 @@ kbd { padding: 2px 4px; border: 0; border-radius: 4px; background: rgba(255, 255
   </main>
 
   <!-- ═════════ right rail ═════════ -->
+  <!-- ═════════ board: every thread as a card, in place of the three columns ═════════ -->
+  <section class="board" id="board" aria-label="Board"></section>
+
   <aside class="rail">
     <section class="panel">
       <div class="panel-h"><span class="label">Task List</span><span class="right"><span class="count" id="taskCount"></span><button class="sw-btn" data-swarm="tasks" title="One agent per open task, all at once (W)">Swarm</button><button class="grp-add" id="taskPlus" title="Add a task (T)"></button></span></div>
@@ -1601,6 +1652,42 @@ function renderThreads() {
   }
   $('#threads').innerHTML = html;
   renderPulse();
+  if ($('#app').classList.contains('board-mode')) renderBoard();
+}
+
+/* ───────────── render: board (every thread as a card in pipeline lanes) ───────────── */
+const LANES = [
+  { key:'up-next',   label:'Up next',   empty:'No tasks or issues are waiting.' },
+  { key:'running',   label:'Running',   empty:'No agents are running.',     statuses:['swarm', 'spec', 'working', 'error'] },
+  { key:'in-review', label:'In review', empty:'No pull requests are open.', statuses:['review'] },
+  { key:'finished',  label:'Finished',  empty:'Nothing has finished yet.',  statuses:['closed', 'done', 'merged'] },
+  { key:'on-duty',   label:'On duty',   statuses:['duty'] },   // duty agents are not work items: their own lane, only when any exist
+];
+function boardCard(t) {
+  const meta = t.duty ? (t.paused ? 'paused' : dutySummary(t)) : t.spec ? specLabel(t)
+    : t.pr ? `#${t.pr} · ${t.status === 'merged' ? 'merged' : t.status === 'closed' ? 'closed' : STAGE[t.stage].label}`
+    : t.branch ? `${t.time} · +${t.add} −${t.del}` : '';
+  const icon = t.isSwarm ? (t.goal ? I.goal : I.swarm) : t.duty ? I[t.role] : I[t.status];
+  return `<button class="card ${state.active === t.id ? 'active' : ''} ${t.paused ? 'paused' : ''}" data-status="${t.status}" data-id="${t.id}">${icon}<span class="card-title">${esc(t.title)}</span>${meta ? `<span class="card-meta">${esc(meta)}</span>` : ''}</button>`;
+}
+const workCard = (icon, title, meta) => `<article class="card work">${icon}<span class="card-title">${esc(title)}</span><span class="card-meta">${esc(meta)}</span></article>`;
+function renderBoard() {
+  const threads = state.threads.filter(t => !t.hidden && !t.of);
+  $('#board').innerHTML = LANES.map(lane => {
+    // Up next is the work no thread has taken: tasks not started, then open issues.
+    const cards = lane.statuses ? threads.filter(t => lane.statuses.includes(t.status)).map(boardCard)
+      : [...state.tasks.filter(x => x.s !== 'done' && x.s !== 'now' && !x.thread).map(x => workCard(I.circle, x.t, 'task')),
+         ...state.issues.filter(i => !i.thread).map(i => workCard(I.issue, i.title, `issue · #${i.n}`))];
+    if (lane.key === 'on-duty' && !cards.length) return '';
+    return `<section class="lane" data-lane="${lane.key}"><header class="lane-h"><span class="lane-dot"></span><h2>${lane.label}</h2><span class="lane-count">${cards.length}</span>${
+      lane.key === 'up-next' && cards.length ? `<button class="sw-btn" data-board-swarm>${I.swarm}Swarm</button>` : ''}</header>
+      <div class="lane-cards">${cards.join('') || `<p class="lane-empty">${lane.empty}</p>`}</div></section>`;
+  }).join('');
+}
+function setBoard(on) {
+  $('#app').classList.toggle('board-mode', on);
+  document.querySelectorAll('#viewSwitch button').forEach(b => b.classList.toggle('on', (b.dataset.view === 'board') === on));
+  if (on) renderBoard();
 }
 function threadHTML(t, key) {
   if (t.isSwarm) {
@@ -1827,6 +1914,11 @@ function toastAct(msg, label, fn, ms = 5000) {
   clearTimeout(t._h); t._h = setTimeout(() => t.classList.remove('on', 'act'), ms);
 }
 
+$('#viewSwitch').addEventListener('click', e => { const b = e.target.closest('button'); if (b) setBoard(b.dataset.view === 'board'); });
+$('#board').addEventListener('click', e => {
+  if (e.target.closest('[data-board-swarm]')) return openSwarm('tasks');
+  const card = e.target.closest('button.card'); if (card) { setBoard(false); select(card.dataset.id); }   // opening a card returns to Focus
+});
 $('#threads').addEventListener('click', e => {
   if (e.target.closest('[data-duty-new]')) return openDuty('pr');
   const b = e.target.closest('.thread'); if (b) select(b.dataset.id);
@@ -1999,6 +2091,7 @@ document.addEventListener('keydown', e => {
   if (k === 't' && !document.activeElement.isContentEditable) { e.preventDefault(); $('#taskInput').focus(); return; }
   if (k === 'w' && !document.activeElement.isContentEditable) { e.preventDefault(); openSwarm('tasks'); return; }
   if (k === 'a' && !document.activeElement.isContentEditable) { e.preventDefault(); openAirc(); return; }
+  if (k === 'b' && !document.activeElement.isContentEditable) { e.preventDefault(); setBoard(!$('#app').classList.contains('board-mode')); return; }
   if (state.active === 'settings') return;
   if (inDoc) return;
   const t = activeThread();

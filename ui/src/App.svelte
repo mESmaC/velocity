@@ -1,6 +1,7 @@
 <script lang="ts">
   import { onMount, tick } from 'svelte';
   import TitleBar from './lib/TitleBar.svelte';
+  import Board from './lib/Board.svelte';
   import Sidebar from './lib/Sidebar.svelte';
   import Rail from './lib/Rail.svelte';
   import Home from './lib/Home.svelte';
@@ -36,6 +37,7 @@
     ThreadMenuView,
   } from './lib/ipc';
   import './lib/theme/layout.css';
+  import './lib/theme/board.css';
   import './lib/theme/thread-view.css';
   import './lib/theme/duty.css';
   import './lib/theme/spec-interview.css';
@@ -71,6 +73,7 @@
     'l',
     'd',
     'e',
+    'b',
     'arrowdown',
     'arrowup',
   ]);
@@ -264,49 +267,51 @@
 
 <div class="app-shell">
   <TitleBar {layout} {send} {switchProject} />
-  {#if layout}<div class="workspace">
-      <Sidebar {layout} {send} openMenu={openThreadMenu} />
-      <main class="main-view" aria-label="Velocity workspace">
-        {#if layout.view === 'Agents' && layout.project_identifier !== null}
-          {#key layout.project_identifier}<AgentsEditor
-              project={layout.project_identifier}
-              saveRequests={agentsSaves}
-            />{/key}
-        {:else if layout.view === 'Home'}<Home
-            {layout}
-            {send}
-          />{:else if layout.active_thread?.interview}<SpecInterview
-            {layout}
-            thread={layout.active_thread}
-            interview={layout.active_thread.interview}
-            {send}
-          />{:else if layout.view === 'Thread' && layout.active_thread}<ThreadView
-            {layout}
-            thread={layout.active_thread}
-            {send}
-          />{:else if layout.view === 'Duty' && layout.active_duty}<DutyView
-            {layout}
-            duty={layout.active_duty}
-            {send}
-            onResult={receive}
-            onError={report}
-          />{:else if layout.view === 'Swarm' && layout.active_swarm}<SwarmView
-            {layout}
-            swarm={layout.active_swarm}
-            {send}
-          />{:else if layout.view === 'Swarm' && layout.active_goal_swarm}<GoalSwarmView
-            {layout}
-            swarm={layout.active_goal_swarm}
-            {send}
-          />{:else if layout.view === 'Settings' && layout.settings_tab === 'worktrees'}<WorktreeSettings
-            {send}
-          />{:else if layout.view === 'Settings' && layout.settings_tab === 'providers'}<ProvidersSettings
-            {send}
-          />{:else if layout.view === 'Settings' && layout.settings_tab === 'agent-settings'}<AgentSettings
-            {send}
-          />{/if}
-      </main>
-      <Rail {layout} {send} />
+  {#if layout}<div class="workspace" class:board-mode={layout.view === 'Board'}>
+      <!-- The Board replaces the sidebar, one thread and the rail with every thread at once. -->
+      {#if layout.view === 'Board'}<Board {layout} {send} />{:else}
+        <Sidebar {layout} {send} openMenu={openThreadMenu} />
+        <main class="main-view" aria-label="Velocity workspace">
+          {#if layout.view === 'Agents' && layout.project_identifier !== null}
+            {#key layout.project_identifier}<AgentsEditor
+                project={layout.project_identifier}
+                saveRequests={agentsSaves}
+              />{/key}
+          {:else if layout.view === 'Home'}<Home
+              {layout}
+              {send}
+            />{:else if layout.active_thread?.interview}<SpecInterview
+              {layout}
+              thread={layout.active_thread}
+              interview={layout.active_thread.interview}
+              {send}
+            />{:else if layout.view === 'Thread' && layout.active_thread}<ThreadView
+              {layout}
+              thread={layout.active_thread}
+              {send}
+            />{:else if layout.view === 'Duty' && layout.active_duty}<DutyView
+              {layout}
+              duty={layout.active_duty}
+              {send}
+              onResult={receive}
+              onError={report}
+            />{:else if layout.view === 'Swarm' && layout.active_swarm}<SwarmView
+              {layout}
+              swarm={layout.active_swarm}
+              {send}
+            />{:else if layout.view === 'Swarm' && layout.active_goal_swarm}<GoalSwarmView
+              {layout}
+              swarm={layout.active_goal_swarm}
+              {send}
+            />{:else if layout.view === 'Settings' && layout.settings_tab === 'worktrees'}<WorktreeSettings
+              {send}
+            />{:else if layout.view === 'Settings' && layout.settings_tab === 'providers'}<ProvidersSettings
+              {send}
+            />{:else if layout.view === 'Settings' && layout.settings_tab === 'agent-settings'}<AgentSettings
+              {send}
+            />{/if}
+        </main>
+        <Rail {layout} {send} />{/if}
     </div>{:else}<p class="empty" role="status">Opening workspace…</p>{/if}
 </div>
 {#if layout?.palette_open}<CommandPalette {layout} {send} />{/if}

@@ -1,0 +1,195 @@
+/* The Board view (F1): pipeline lanes of glass, one card per piece of work. Values come
+   from the "board" rules in design/main-window.html through reference.css. */
+
+/* The Focus | Board switch in the title bar. */
+.view-switch {
+  display: flex;
+  gap: var(--board-switch-gap);
+  padding: var(--board-switch-padding);
+  border: 1px solid var(--pane-edge);
+  border-radius: var(--board-switch-border-radius);
+  background: var(--sheen), var(--pane);
+  backdrop-filter: var(--blur-pane);
+}
+.view-switch button {
+  height: var(--board-switch-button-height);
+  padding: var(--board-switch-button-padding);
+  border-radius: var(--board-switch-border-radius);
+  font-size: var(--board-switch-font-size);
+  font-weight: var(--board-switch-font-weight);
+  color: var(--text-2);
+}
+.view-switch button:hover {
+  color: var(--text);
+}
+.view-switch button.on {
+  background: var(--board-switch-on-background);
+  box-shadow: var(--board-switch-on-box-shadow);
+  color: var(--text);
+}
+.titlebar-space {
+  gap: var(--board-titlebar-gap);
+}
+
+/* On the Board the lanes take the whole window: no sidebar, no rail. */
+.workspace.board-mode {
+  grid-template-columns: var(--board-workspace-grid-template-columns);
+}
+.board {
+  display: flex;
+  gap: var(--board-gap);
+  min-width: 0;
+  min-height: 0;
+  padding: var(--board-padding);
+  overflow-x: auto;
+}
+.lane {
+  flex: var(--board-lane-flex);
+  min-width: var(--board-lane-min-width);
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  gap: var(--board-lane-gap);
+  padding: var(--board-lane-padding);
+  border: 1px solid var(--pane-edge);
+  border-radius: var(--board-lane-border-radius);
+  background: var(--sheen), var(--pane);
+  box-shadow: var(--pane-lift);
+  backdrop-filter: var(--blur-pane);
+}
+/* Work nobody has started is an outline, not a pane: it isn't in the pipeline yet. */
+.lane[data-lane='UpNext'] {
+  border: var(--board-lane-up-next-border);
+  background: transparent;
+  box-shadow: none;
+  backdrop-filter: none;
+}
+.lane-h {
+  display: flex;
+  align-items: center;
+  gap: var(--board-lane-head-gap);
+  padding: var(--board-lane-head-padding);
+}
+.lane-h h2 {
+  flex: var(--layout-spacer-flex);
+  margin: 0;
+  font-size: var(--board-lane-title-font-size);
+  font-weight: var(--board-lane-title-font-weight);
+}
+.lane-dot {
+  width: var(--board-lane-dot-size);
+  height: var(--board-lane-dot-size);
+  border-radius: var(--layout-pulse-dot-border-radius);
+  background: var(--muted);
+}
+.lane-count {
+  font: var(--board-lane-count-font);
+  color: var(--muted);
+}
+.lane[data-lane='Running'] .lane-dot {
+  background: var(--accent);
+}
+.lane[data-lane='Running'] .lane-count {
+  color: var(--accent);
+}
+.lane[data-lane='InReview'] .lane-dot {
+  background: var(--warn);
+}
+.lane[data-lane='InReview'] .lane-count {
+  color: var(--warn);
+}
+.lane[data-lane='Finished'] .lane-dot {
+  background: var(--ok);
+}
+.lane[data-lane='Finished'] .lane-count {
+  color: var(--ok);
+}
+.lane[data-lane='OnDuty'] .lane-dot {
+  background: var(--duty);
+}
+.lane[data-lane='OnDuty'] .lane-count {
+  color: var(--duty);
+}
+.lane-cards {
+  display: flex;
+  flex-direction: column;
+  gap: var(--board-lane-gap);
+  min-height: 0;
+  overflow-y: auto;
+}
+.lane-empty {
+  margin: 0;
+  padding: var(--board-lane-empty-padding);
+  font-size: var(--board-lane-empty-font-size);
+  color: var(--muted);
+}
+.card {
+  width: var(--board-card-width);
+  display: grid;
+  grid-template-columns: var(--board-card-grid-template-columns);
+  column-gap: var(--board-card-column-gap);
+  row-gap: var(--board-card-row-gap);
+  align-items: center;
+  padding: var(--board-card-padding);
+  border: var(--board-card-border);
+  border-radius: var(--board-card-border-radius);
+  background: var(--board-card-background);
+  text-align: left;
+}
+button.card:hover {
+  border-color: var(--board-card-hover-border-color);
+  background: var(--board-card-hover-background);
+}
+.card.active {
+  border-color: var(--accent-line);
+  background: var(--accent-soft);
+}
+.card.paused {
+  opacity: var(--board-card-paused-opacity);
+}
+.card-title {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: var(--board-card-title-font-size);
+  font-weight: var(--board-card-title-font-weight);
+  color: var(--text);
+}
+.card-meta {
+  grid-column: var(--board-card-meta-grid-column);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font: var(--board-card-meta-font);
+  color: var(--muted);
+}
+.card .status-icon {
+  display: grid;
+  place-items: center;
+  color: var(--muted);
+}
+.card[data-status='Working'] .status-icon,
+.card[data-status='Spec'] .status-icon {
+  color: var(--accent);
+}
+.card[data-status='Swarm'] .status-icon {
+  color: var(--swarm);
+}
+.card[data-status='Review'] .status-icon {
+  color: var(--warn);
+}
+.card[data-status='Done'] .status-icon,
+.card[data-status='Merged'] .status-icon {
+  color: var(--ok);
+}
+.card[data-status='Duty'] .status-icon {
+  color: var(--duty);
+}
+.card[data-status='Error'] {
+  border-color: var(--board-card-error-border-color);
+  background: var(--board-card-error-background);
+}
+.card[data-status='Error'] .status-icon,
+.card[data-status='Error'] .card-meta {
+  color: var(--err);
+}
