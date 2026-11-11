@@ -8,6 +8,9 @@
 //! the pool would point back into the pool folder once the worktree moves. Cargo's `target`
 //! folder has no such paths and stays fresh across the move, so the prebuild is kept.
 //!
+//! Lean projects get their pinned toolchain and Mathlib's prebuilt files in the same step
+//! (see [`crate::lean_setup`]).
+//!
 //! Each slot records its base commit and whether its prebuild finished in a `velocity-ready`
 //! file in its git admin folder, outside the checkout, so agents never see it and a restart
 //! can tell a finished slot from one interrupted mid-setup.
@@ -19,6 +22,7 @@ use std::process::Command;
 use velocity_core::ready_pool::{slot_folder, slot_index};
 
 use crate::command::git;
+use crate::lean_setup::prepare_lean;
 use crate::manager::{
     WorktreeError, WorktreeSetupRequest, copy_configured_untracked_files,
     parse_untracked_file_list, run_git_command, validate_worktree_path_length,
@@ -118,22 +122,46 @@ pub fn catch_up_ready_worktree(slot: &Path, tip: &str) -> Result<(), WorktreeErr
     write_mark(slot, tip, false)
 }
 
-/// Builds the slot at its base so an agent's first build compiles only what it changes:
-/// `cargo build --workspace` when the checkout is a Cargo project, in the slot's own `target`
-/// folder, with the shared compiler cache, below normal priority so agents' own builds go
-/// first. The slot is marked built either way: a build that fails at the tip of `master`
-/// fails for the agent too, and retrying it would only keep the machine busy.
-pub fn prebuild_ready_worktree(slot: &Path) -> Result<(), WorktreeError> {
+/// Prepares the slot at its base so an agent's first build compiles only what it changes.
+/// Every Lake project in it gets its pinned Lean toolchain and Mathlib's prebuilt files
+/// (F5 Warm pool → Lean), with packages seeded from the repository's other checkouts. With
+/// `build_cargo` ("share the Rust build cache"), a Cargo project then runs
+/// `cargo build --workspace` in the slot's own `target` folder with the shared compiler
+/// cache. Both run below normal priority so agents' own builds go first. The slot is marked
+/// built either way: a step that fails at the tip of `master` fails for the agent too, and
+/// retrying it would only keep the machine busy.
+pub fn prebuild_ready_worktree(
+    repository_root: &Path,
+    slot: &Path,
+    build_cargo: bool,
+) -> Result<(), WorktreeError> {
     let base = read_mark(slot)
         .map(|mark| mark.base)
         .ok_or_else(|| unmarked(slot))?;
-    let built = if slot.join("Cargo.toml").is_file() {
+    let lean = prepare_lean(slot, &package_sources(repository_root, slot));
+    let built = if build_cargo && slot.join("Cargo.toml").is_file() {
         run_prebuild(slot)
     } else {
         Ok(())
     };
     write_mark(slot, &base, true)?;
-    built
+    lean.and(built)
+}
+
+/// The checkouts a slot's Lake packages may be cloned from: the repository's main checkout
+/// first, then its other registered worktrees. The slot itself is left out.
+fn package_sources(repository_root: &Path, slot: &Path) -> Vec<PathBuf> {
+    let own = fs::canonicalize(slot).ok();
+    let mut seen = Vec::new();
+    std::iter::once(repository_root.to_path_buf())
+        .chain(registered_worktrees(repository_root).unwrap_or_default())
+        .filter(|path| {
+            let canonical = fs::canonicalize(path).ok();
+            let fresh = canonical.is_some() && canonical != own && !seen.contains(&canonical);
+            seen.push(canonical);
+            fresh
+        })
+        .collect()
 }
 
 /// Takes `ready.slot` for a thread: catches it up to the tip, moves it to the thread's path
@@ -255,7 +283,7 @@ fn run_prebuild(slot: &Path) -> Result<(), WorktreeError> {
 /// Below-normal priority and no console window: the prebuild is for later, agents' builds
 /// are for now.
 #[cfg(windows)]
-fn background_priority(command: &mut Command) {
+pub(crate) fn background_priority(command: &mut Command) {
     use std::os::windows::process::CommandExt;
     const CREATE_NO_WINDOW: u32 = 0x0800_0000;
     const BELOW_NORMAL_PRIORITY_CLASS: u32 = 0x0000_4000;
@@ -263,7 +291,7 @@ fn background_priority(command: &mut Command) {
 }
 
 #[cfg(not(windows))]
-fn background_priority(_command: &mut Command) {}
+pub(crate) fn background_priority(_command: &mut Command) {}
 
 fn registered_worktrees(repository_root: &Path) -> Result<Vec<PathBuf>, WorktreeError> {
     let output = git()
