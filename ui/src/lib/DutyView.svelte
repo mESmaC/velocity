@@ -169,7 +169,7 @@
     </div>
   </div>
 
-  <div class="composer-dock">
+  <div class="dock">
     <Composer
       {layout}
       {send}

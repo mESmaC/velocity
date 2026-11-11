@@ -1,13 +1,15 @@
 //! Running PR duty (SPEC.md F7 PR duty, Rule 4): each idle PR duty agent claims one open PR
-//! that needs work, so two agents never review the same one. A review runs one agent turn in
-//! the PR's `review-pr-<n>` worktree, on the PR merged onto the base branch; the agent records
-//! its decision and merges only through the PR duty MCP server, and the Duty view's cards and
-//! activity feed follow it. Pausing lets running reviews finish and claims nothing new.
+//! that needs work, so two agents never review the same one. A review runs in the PR's
+//! `review-pr-<n>` worktree, on the PR merged onto the base branch, until its agent records a
+//! decision (an agent that ends a turn undecided is asked to carry on, a bounded number of
+//! times); the agent records its decision and merges only through the PR duty MCP server, and
+//! the Duty view's cards and activity feed follow it. Pausing lets running reviews finish and
+//! claims nothing new.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use agent_client_protocol::v1::schema::ContentBlock;
 use tokio::sync::Notify;
@@ -15,8 +17,9 @@ use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender, unbounded_channel};
 use velocity_acp::client::{AgentEvent, AgentInput, AircLaunch};
 use velocity_core::duty::{DutyAgentCard, DutyEventKind, DutyFeedEvent, DutyRoleEntry};
 use velocity_core::pr_review::{
-    ReviewAssignment, ReviewBrief, ReviewCandidate, ReviewWork, assign_reviews, claim_message,
-    review_doing, review_finished_message, review_idle_doing, review_prompt, short_commit,
+    ReviewAssignment, ReviewAttempt, ReviewBrief, ReviewCandidate, ReviewWork, TurnEndAction,
+    assign_reviews, claim_message, continue_prompt, resting_heads, review_doing,
+    review_finished_message, review_idle_doing, review_prompt, short_commit, turn_end_action,
 };
 use velocity_core::review_tier::TierAssessment;
 use velocity_github::{
@@ -67,9 +70,9 @@ struct Instruction {
 struct RunnerState {
     running: BTreeMap<AgentKey, Running>,
     instructions: BTreeMap<u32, Instruction>,
-    /// Per project, the head each PR's last review session ended at. That head is not
-    /// claimed again until it moves, so a review that ends undecided never loops.
-    attempted: BTreeMap<u32, BTreeMap<u32, String>>,
+    /// Per project, each PR's last review session: its head rests (`resting_heads`), so a
+    /// decided head waits for its author and an undecided one is retried after a delay.
+    attempted: BTreeMap<u32, BTreeMap<u32, ReviewAttempt>>,
 }
 
 /// The review runner. Cheap to clone; every clone drives the same reviews.
@@ -83,6 +86,8 @@ pub struct PrDutyReviews {
     app_data: PathBuf,
     /// The project's AIRC channel, passed to every review's agent (F14).
     airc: Option<AircLaunch>,
+    /// The runner's clock: when each attempt ended, so an undecided head's rest can end.
+    epoch: Instant,
     /// Each checkout's GitHub client, kept across ticks: reading the repository's identity is
     /// a GitHub request (#228).
     clients: Arc<Mutex<BTreeMap<PathBuf, Arc<PullRequestClient>>>>,
@@ -91,6 +96,7 @@ pub struct PrDutyReviews {
 impl PrDutyReviews {
     pub fn new(executable: PathBuf, app_data: PathBuf) -> Self {
         Self {
+            epoch: Instant::now(),
             state: Arc::default(),
             wake: Arc::new(Notify::new()),
             executable,
@@ -266,8 +272,12 @@ impl PrDutyReviews {
             .filter(|((owner, _), _)| *owner == project)
             .map(|(_, running)| running.number)
             .collect();
-        let attempted = state.attempted.get(&project).cloned().unwrap_or_default();
-        assign_reviews(candidates, idle, &held, &attempted)
+        let resting = state
+            .attempted
+            .get(&project)
+            .map(|attempts| resting_heads(attempts, self.epoch.elapsed()))
+            .unwrap_or_default();
+        assign_reviews(candidates, idle, &held, &resting)
     }
 
     fn start<Host: ReviewHost>(
@@ -522,9 +532,10 @@ impl Review {
         let _ = self
             .input
             .send(text(&format!("{}{proofs}", self.prompt(&prepared))));
-        self.remember(&prepared.head);
         let session = crate::spawn_session(prepared.plan.agent.clone(), setup, inputs);
         let outcome = self.follow(host, session, &report).await;
+        // Recorded while the claim is still held, so no tick can claim the head in between.
+        self.remember(&prepared.head, outcome.decided);
         let _ = std::fs::remove_file(&report);
         if outcome.merged {
             // Rule 5: the review worktree goes as soon as its PR merges.
@@ -541,14 +552,20 @@ impl Review {
         outcome
     }
 
-    /// The head this session reviews is not claimed again until it moves.
-    fn remember(&self, head: &str) {
+    /// The head this session reviewed rests: until it moves if the session decided, and for
+    /// `UNDECIDED_RETRY_AFTER` if it did not.
+    fn remember(&self, head: &str, decided: bool) {
+        let attempt = ReviewAttempt {
+            head: head.to_owned(),
+            decided,
+            ended_at: self.runner.epoch.elapsed(),
+        };
         self.runner
             .lock()
             .attempted
             .entry(self.key.0)
             .or_default()
-            .insert(self.candidate.number, head.to_owned());
+            .insert(self.candidate.number, attempt);
     }
 
     fn prompt(&self, prepared: &Prepared) -> String {
@@ -579,6 +596,7 @@ impl Review {
         let mut offset = 0;
         let mut outcome = Outcome::default();
         let mut doing = String::new();
+        let mut nudges = 0;
         while let Some(event) = session.events.recv().await {
             let mut batch = vec![event];
             while let Ok(next) = session.events.try_recv() {
@@ -600,7 +618,7 @@ impl Review {
                 .iter()
                 .any(|event| matches!(event, AgentEvent::TurnEnded(_)))
             {
-                self.end_turn();
+                self.end_turn(host, outcome.decided, &mut nudges);
             }
         }
         self.read_reports(host, report, offset, &mut outcome);
@@ -612,16 +630,26 @@ impl Review {
         outcome
     }
 
-    /// A turn ended: the review is over unless you sent an instruction it has yet to answer.
-    fn end_turn(&self) {
+    /// A turn ended: answer your next instruction, ask an undecided agent to carry on, or end
+    /// the review (`turn_end_action`).
+    fn end_turn<Host: ReviewHost>(&self, host: &Host, decided: bool, nudges: &mut u32) {
         let mut state = self.runner.lock();
         let Some(running) = state.running.get_mut(&self.key) else {
             return;
         };
-        if running.pending > 0 {
-            running.pending -= 1;
-        } else {
-            let _ = running.input.send(AgentInput::Stop);
+        match turn_end_action(running.pending, decided, *nudges) {
+            TurnEndAction::AnswerInstruction => running.pending -= 1,
+            TurnEndAction::Stop => {
+                let _ = running.input.send(AgentInput::Stop);
+            }
+            TurnEndAction::Nudge => {
+                *nudges += 1;
+                let number = self.candidate.number;
+                let _ = running.input.send(text(&continue_prompt(number, *nudges)));
+                drop(state);
+                let step = format!("asked to finish its decision ({nudges})");
+                set_card(host, &self.key, true, review_doing(number, &step));
+            }
         }
     }
 

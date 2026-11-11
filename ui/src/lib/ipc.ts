@@ -10,6 +10,7 @@ export * from './ipc/skill-packs';
 export * from './ipc/shared-mcp';
 export * from './ipc/skills';
 export * from './ipc/swarm';
+export * from './ipc/usage';
 import {
   commands,
   WINDOW_STATE_EVENT,

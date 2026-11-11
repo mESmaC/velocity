@@ -57,6 +57,27 @@
     }
   }
 
+  async function toggle(number: number) {
+    const request = generation;
+    try {
+      const snapshot = await issueCommands.toggleExpanded(number);
+      if (request === generation) accept(snapshot);
+    } catch (reason) {
+      if (active && request === generation) error = String(reason);
+    }
+  }
+
+  // Disclosure keys, as in a tree: → opens a collapsed row, ← closes an open one.
+  function onRowKey(event: KeyboardEvent, number: number, expanded: boolean) {
+    if (
+      (event.key === 'ArrowRight' && !expanded) ||
+      (event.key === 'ArrowLeft' && expanded)
+    ) {
+      event.preventDefault();
+      void toggle(number);
+    }
+  }
+
   onMount(() => {
     active = true;
     const stops: (() => void)[] = [];
@@ -115,11 +136,19 @@
         >
           Issues
         </div>{/if}
-      <div class="issue-row" class:taken={row.thread_identifier !== null}>
+      {@const expanded = panel?.expanded.includes(row.number) ?? false}
+      <div
+        class="issue-row"
+        class:taken={row.thread_identifier !== null}
+        class:expanded
+      >
         <button
           class="item issue-item"
           title={row.title}
-          onclick={() => act(row.number, 'open')}
+          aria-expanded={expanded}
+          aria-controls="issue-detail-{row.number}"
+          onclick={() => toggle(row.number)}
+          onkeydown={(event) => onRowKey(event, row.number, expanded)}
         >
           <Icon name="issue" /><span class="item-title">{row.title}</span><span
             class="count issue-number">#{row.number}</span
@@ -151,15 +180,32 @@
             ><Icon name="play" />{row.question ? 'Accept' : 'Dispatch'}</button
           >
         {/if}
-        {#if row.question}
-          <div class="issue-recommendation">
-            {row.question.recommendation || 'No recommended answer recorded.'}
-          </div>
-          <div class="issue-blocks">
-            Blocks {row.question.blocked_items} item{row.question
-              .blocked_items === 1
-              ? ''
-              : 's'}
+        {#if expanded}
+          <div class="issue-detail" id="issue-detail-{row.number}">
+            {#if row.question}
+              <p class="issue-summary">
+                {row.question.recommendation ||
+                  'No recommended answer recorded.'}
+              </p>
+              <p class="issue-blocks">
+                Blocks {row.question.blocked_items} item{row.question
+                  .blocked_items === 1
+                  ? ''
+                  : 's'}
+              </p>
+            {:else}
+              <p class="issue-summary">
+                {row.summary || 'No description.'}
+              </p>
+            {/if}
+            <button
+              class="mini"
+              type="button"
+              onclick={() => act(row.number, 'open')}
+              >{row.thread_identifier === null
+                ? 'Open on GitHub'
+                : 'Open thread'}</button
+            >
           </div>
         {/if}
       </div>

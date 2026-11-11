@@ -104,6 +104,8 @@ export const commands = {
 	getIssuePanel: () => __TAURI_INVOKE<IssuePanelSnapshot_Serialize>("get_issue_panel"),
 	openProjectIssue: (projectIdentifier: number, number: number) => __TAURI_INVOKE<null>("open_project_issue", { projectIdentifier, number }),
 	dispatchIssue: (projectIdentifier: number, number: number, acceptRecommendation: boolean) => __TAURI_INVOKE<LayoutSnapshot_Serialize>("dispatch_issue", { projectIdentifier, number, acceptRecommendation }),
+	/**  Expands or collapses one issue row in the rail (#209) and broadcasts the new snapshot. */
+	toggleIssueExpanded: (number: number) => __TAURI_INVOKE<IssuePanelSnapshot_Serialize>("toggle_issue_expanded", { number }),
 	getPullRequestPanel: () => __TAURI_INVOKE<PullRequestPanelSnapshot_Serialize>("get_pull_request_panel"),
 	openProjectPullRequest: (projectIdentifier: number, number: number) => __TAURI_INVOKE<LayoutSnapshot_Serialize | null>("open_project_pull_request", { projectIdentifier, number }),
 	/**
@@ -1501,6 +1503,8 @@ export type IssuePanelRow_Deserialize = {
 	labels: string[],
 	scout?: string | null,
 	question?: SpecQuestion | null,
+	/**  The body's opening paragraph, shown when the row is expanded (#209). */
+	summary?: string,
 	thread_identifier?: number | null,
 	thread_label?: string | null,
 };
@@ -1511,6 +1515,8 @@ export type IssuePanelRow_Serialize = {
 	labels: string[],
 	scout: string | null,
 	question: SpecQuestion | null,
+	/**  The body's opening paragraph, shown when the row is expanded (#209). */
+	summary: string,
 	thread_identifier: number | null,
 	thread_label: string | null,
 };
@@ -1524,6 +1530,11 @@ export type IssuePanelSnapshot_Deserialize = {
 	loading: boolean,
 	rows: IssuePanelRow_Deserialize[],
 	error?: string | null,
+	/**
+	 *  Issue numbers whose rows show their details. Every row starts collapsed so a long
+	 *  list stays scrollable (#209); the set is per project and survives refreshes.
+	 */
+	expanded?: number[],
 };
 
 export type IssuePanelSnapshot_Serialize = {
@@ -1533,6 +1544,11 @@ export type IssuePanelSnapshot_Serialize = {
 	loading: boolean,
 	rows: IssuePanelRow_Serialize[],
 	error: string | null,
+	/**
+	 *  Issue numbers whose rows show their details. Every row starts collapsed so a long
+	 *  list stays scrollable (#209); the set is per project and survives refreshes.
+	 */
+	expanded: number[],
 };
 
 export type KeyboardInput = {

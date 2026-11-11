@@ -19,15 +19,32 @@
 .issue-error {
   color: var(--err);
 }
-.issue-recommendation {
+/* An expanded row's details line up under its title, in the item's text column. */
+.issue-detail {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: var(--layout-item-gap);
   padding: var(--layout-item-padding);
+  padding-left: var(--issue-detail-indent);
+}
+.issue-summary {
+  margin: var(--layout-empty-margin);
   font-size: var(--layout-item-font-size);
   color: var(--text-2);
+  overflow-wrap: anywhere;
+  user-select: text;
 }
 .issue-blocks {
-  padding: var(--layout-item-padding);
+  margin: var(--layout-empty-margin);
   font: var(--layout-item-meta-font);
   color: var(--warn);
+}
+.issue-row.expanded > .issue-item {
+  background: var(--layout-item-hover-background);
+}
+.issue-row.expanded > .issue-item .item-title {
+  color: var(--text);
 }
 .issue-row:not(.taken):hover .issue-number,
 .issue-row:not(.taken):focus-within .issue-number {

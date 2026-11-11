@@ -56,6 +56,9 @@ pub struct IssuePanelRow {
     pub labels: Vec<String>,
     pub scout: Option<String>,
     pub question: Option<SpecQuestion>,
+    /// The body's opening paragraph, shown when the row is expanded (#209).
+    #[serde(default)]
+    pub summary: String,
     pub thread_identifier: Option<u32>,
     pub thread_label: Option<String>,
 }
@@ -73,6 +76,7 @@ impl IssuePanelRow {
             labels: issue.labels,
             scout: issue.scout,
             question,
+            summary: body_summary(&issue.body),
             thread_identifier: None,
             thread_label: None,
         }
@@ -87,6 +91,10 @@ pub struct IssuePanelSnapshot {
     pub loading: bool,
     pub rows: Vec<IssuePanelRow>,
     pub error: Option<String>,
+    /// Issue numbers whose rows show their details. Every row starts collapsed so a long
+    /// list stays scrollable (#209); the set is per project and survives refreshes.
+    #[serde(default)]
+    pub expanded: Vec<u32>,
 }
 
 impl IssuePanelSnapshot {
@@ -95,6 +103,7 @@ impl IssuePanelSnapshot {
             self.project_identifier = project;
             self.repository = None;
             self.rows.clear();
+            self.expanded.clear();
             self.error = None;
             self.loading = project.is_some();
             self.revision = self.revision.wrapping_add(1);
@@ -106,12 +115,75 @@ impl IssuePanelSnapshot {
         match result {
             Ok((repository, rows)) => {
                 self.repository = Some(repository);
+                self.expanded
+                    .retain(|number| rows.iter().any(|row| row.number == *number));
                 self.rows = rows;
                 self.error = None;
             }
             Err(error) => self.error = Some(error),
         }
         self.revision = self.revision.wrapping_add(1);
+    }
+
+    /// Expands a collapsed row or collapses an expanded one. Returns false for a number the
+    /// panel doesn't list, so a stale click changes nothing.
+    pub fn toggle_expanded(&mut self, number: u32) -> bool {
+        if !self.rows.iter().any(|row| row.number == number) {
+            return false;
+        }
+        if let Some(position) = self.expanded.iter().position(|item| *item == number) {
+            self.expanded.remove(position);
+        } else {
+            self.expanded.push(number);
+        }
+        self.revision = self.revision.wrapping_add(1);
+        true
+    }
+}
+
+/// Characters of an issue body an expanded row shows before it truncates.
+const SUMMARY_LIMIT: usize = 280;
+
+/// The first prose paragraph of an issue body: headings, HTML comments, images and code
+/// fences are skipped, since the rail has room for a few lines of plain text only.
+fn body_summary(body: &str) -> String {
+    let mut words = Vec::new();
+    let mut in_fence = false;
+    let mut in_comment = false;
+    for line in body.lines() {
+        let plain = line.trim();
+        if plain.starts_with("```") {
+            if !words.is_empty() {
+                break;
+            }
+            in_fence = !in_fence;
+            continue;
+        }
+        if in_comment {
+            in_comment = !plain.contains("-->");
+            continue;
+        }
+        if plain.starts_with("<!--") {
+            in_comment = !plain.contains("-->");
+            continue;
+        }
+        let skipped =
+            in_fence || plain.starts_with('#') || plain.starts_with('<') || plain.starts_with("![");
+        if plain.is_empty() || skipped {
+            if !words.is_empty() {
+                break;
+            }
+            continue;
+        }
+        words.push(plain.replace("**", ""));
+    }
+    truncate(words.join(" "))
+}
+
+fn truncate(text: String) -> String {
+    match text.char_indices().nth(SUMMARY_LIMIT) {
+        Some((end, _)) => format!("{}…", text[..end].trim_end()),
+        None => text,
     }
 }
 

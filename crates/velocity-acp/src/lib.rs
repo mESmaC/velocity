@@ -46,4 +46,4 @@ pub use session_start::{keep_first_by_name, mode_to_select};
 pub use steering::{Steering, SteeringEffect, SteeringInput};
 pub use terminal_output::retained_output_start;
 pub use transcript::{Entry, EntryClass, MessageKey, Placement, Transcript};
-pub use usage_limits::LimitReading;
+pub use usage_limits::{LimitReading, LimitWindowReading};

@@ -120,6 +120,9 @@
   width: var(--swarm-legend-swatch-size);
   height: var(--swarm-legend-swatch-size);
 }
+.swarm-view .transcript-inner {
+  max-width: var(--swarm-transcript-inner-max-width);
+}
 .sw-grid {
   display: grid;
   grid-template-columns: var(--swarm-grid-columns);

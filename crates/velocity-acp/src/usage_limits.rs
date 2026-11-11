@@ -1,6 +1,7 @@
 //! Subscription limits read outside ACP (F15 Limit sources): Claude Code's usage report and
-//! Codex's `account/rateLimits/read`. The pure half: each report becomes one reading, the
-//! window closest to its limit, since that is the one that stops work first.
+//! Codex's `account/rateLimits/read`. The pure half: each report becomes one reading. Its
+//! headline is the window closest to its limit, since that is the one that stops work first;
+//! every window the report carried is kept for the footer usage panel.
 
 use serde_json::Value;
 
@@ -14,6 +15,20 @@ pub struct LimitReading {
     pub resets_at: Option<i64>,
     /// The subscription's plan as the provider names it (`Max`, `Pro`).
     pub plan: Option<String>,
+    /// Every window the report carried, shortest first (5-hour before weekly). Empty when the
+    /// source names only the headline window.
+    pub windows: Vec<LimitWindowReading>,
+}
+
+/// One subscription window from a usage report.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct LimitWindowReading {
+    pub percent_used: u8,
+    /// `5-hour`, `weekly`, `weekly · Opus`.
+    pub window: String,
+    /// The window's length, for where even spending would be (the pace mark).
+    pub minutes: i64,
+    pub resets_at: Option<i64>,
 }
 
 impl LimitReading {
@@ -24,6 +39,7 @@ impl LimitReading {
             window,
             resets_at,
             plan: None,
+            windows: Vec::new(),
         }
     }
 }
@@ -40,28 +56,41 @@ pub fn claude_limit_event(report: &Value) -> Option<LimitReading> {
             windows.iter().filter_map(|(name, window)| {
                 let minutes = claude_window_minutes(name)?;
                 let used = window.get("utilization")?.as_f64()?;
-                used.is_finite().then_some((
-                    used * 100.0,
+                used.is_finite().then(|| WindowInput {
+                    used: used * 100.0,
                     minutes,
-                    window.get("resetsAt").and_then(Value::as_i64),
-                ))
+                    resets_at: window.get("resetsAt").and_then(Value::as_i64),
+                    label: claude_window_label(name, minutes),
+                })
             }),
             None,
         );
     }
-    let minutes = claude_window_minutes(report.get("rateLimitType")?.as_str()?)?;
+    let name = report.get("rateLimitType")?.as_str()?;
+    let minutes = claude_window_minutes(name)?;
     let used = report.get("utilization")?.as_f64()?;
     if !used.is_finite() {
         return None;
     }
     fullest(
-        std::iter::once((
-            used * 100.0,
+        std::iter::once(WindowInput {
+            used: used * 100.0,
             minutes,
-            report.get("resetsAt").and_then(Value::as_i64),
-        )),
+            resets_at: report.get("resetsAt").and_then(Value::as_i64),
+            label: claude_window_label(name, minutes),
+        }),
         None,
     )
+}
+
+/// Claude reports separate weekly windows per model family; name them so they don't read as
+/// the same window twice.
+fn claude_window_label(name: &str, minutes: i64) -> String {
+    match name {
+        "seven_day_opus" => "weekly · Opus".into(),
+        "seven_day_sonnet" => "weekly · Sonnet".into(),
+        _ => window_label(minutes),
+    }
 }
 
 fn claude_window_minutes(name: &str) -> Option<i64> {
@@ -88,7 +117,12 @@ pub fn claude_usage_reading(report: &Value) -> Option<LimitReading> {
                 .get("resets_at")
                 .and_then(Value::as_str)
                 .and_then(unix_seconds);
-            Some((used, minutes, resets_at))
+            Some(WindowInput {
+                used,
+                minutes,
+                resets_at,
+                label: window_label(minutes),
+            })
         });
     let plan = report
         .get("subscription_type")
@@ -108,7 +142,12 @@ pub fn codex_usage_reading(result: &Value) -> Option<LimitReading> {
             .and_then(Value::as_i64)
             .unwrap_or(FIVE_HOURS);
         let resets_at = window.get("resetsAt").and_then(Value::as_i64);
-        Some((used, minutes, resets_at))
+        Some(WindowInput {
+            used,
+            minutes,
+            resets_at,
+            label: window_label(minutes),
+        })
     });
     let plan = limits
         .get("planType")
@@ -117,16 +156,37 @@ pub fn codex_usage_reading(result: &Value) -> Option<LimitReading> {
     fullest(windows, plan)
 }
 
+/// One window as a report states it, before rounding.
+struct WindowInput {
+    used: f64,
+    minutes: i64,
+    resets_at: Option<i64>,
+    label: String,
+}
+
 fn fullest(
-    windows: impl Iterator<Item = (f64, i64, Option<i64>)>,
+    windows: impl Iterator<Item = WindowInput>,
     plan: Option<String>,
 ) -> Option<LimitReading> {
-    let (used, minutes, resets_at) = windows.max_by(|left, right| left.0.total_cmp(&right.0))?;
+    let mut windows: Vec<LimitWindowReading> = windows
+        .map(|input| LimitWindowReading {
+            percent_used: percent(input.used),
+            window: input.label,
+            minutes: input.minutes,
+            resets_at: input.resets_at,
+        })
+        .collect();
+    windows.sort_by_key(|window| window.minutes);
+    let headline = windows
+        .iter()
+        .max_by_key(|window| window.percent_used)?
+        .clone();
     Some(LimitReading {
-        percent_used: percent(used),
-        window: window_label(minutes),
-        resets_at,
+        percent_used: headline.percent_used,
+        window: headline.window,
+        resets_at: headline.resets_at,
         plan,
+        windows,
     })
 }
 
