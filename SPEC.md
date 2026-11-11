@@ -407,7 +407,7 @@ There are two views of the same work, switched from the title bar or with `B`:
 | The user deletes the thread | Delete the thread and its worktree together (F12). |
 | Spec interview | No worktree. |
 
-Deletion verifies the saved owning branch and registered checkout and refuses while tracked edits remain or commits are not reachable from a remote ref. A failed verification keeps the checkout and reports why.
+Deletion verifies the saved owning branch and registered checkout and refuses while uncommitted changes remain or commits are not reachable from a remote ref. A failed verification keeps the checkout and reports why.
 
 A worktree's path is fixed when it is created. Changing the location setting affects only worktrees created afterwards.
 

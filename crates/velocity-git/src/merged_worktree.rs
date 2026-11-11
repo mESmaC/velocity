@@ -253,10 +253,11 @@ pub fn verify_deletion(
     // All remote refs matter: a pushed topic branch may already have been deleted
     // after a squash merge, while its commits remain reachable from another remote ref.
     let unpushed = !git(path, &["rev-list", "HEAD", "--not", "--remotes"])?.is_empty()
-        || !git(path, &["status", "--porcelain", "--untracked-files=no"])?.is_empty();
+        || !git(path, &["status", "--porcelain", "--untracked-files=normal"])?.is_empty();
     if !crate::deletion_allowed(merged, thread_deleted, true, unpushed) {
         return Err(MergedWorktreeError::Ownership(
-            "The worktree has unpushed commits or no deletion event; keeping it".into(),
+            "The worktree has uncommitted or unpushed work, or no deletion event; keeping it"
+                .into(),
         ));
     }
     Ok(())
