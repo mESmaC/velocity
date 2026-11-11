@@ -1,4 +1,6 @@
 //! The F9 rail and spec-question projection. Refreshing never opens a browser.
+use std::time::{Duration, Instant};
+
 use serde::{Deserialize, Serialize};
 use specta::Type;
 
@@ -185,7 +187,65 @@ fn truncate(text: String) -> String {
     }
 }
 
+/// The open issues are read in full at least this often, even when the probe saw no change.
+/// Renaming a repository label, for one, changes what the rail shows without moving any
+/// issue's `updatedAt`.
+pub const ISSUE_FULL_REFRESH: Duration = Duration::from_secs(10 * 60);
+
+/// The last full read of the open issues and what the probe showed just before it, kept
+/// between refreshes so a refresh where nothing changed is one small request (#228).
+#[derive(Default)]
+pub struct IssuePanelCache {
+    probe: Option<String>,
+    read_at: Option<Instant>,
+    panel: Option<(String, Vec<IssuePanelRow>)>,
+}
+
 impl IssueClient {
+    /// The panel, read in full only when the probe shows the open issues changed. The probe
+    /// reads the open-issue count and the most recently updated open issue:
+    /// - a new or reopened issue changes the count, and is the newest update;
+    /// - an edited title or body, or an added or removed label, moves that issue's `updatedAt`
+    ///   to the newest;
+    /// - a closed, deleted or transferred issue leaves the open list and lowers the count.
+    ///
+    /// `updatedAt` has one-second precision, so a full read every `ISSUE_FULL_REFRESH`
+    /// catches two changes in one second on either side of a probe.
+    pub fn cached_panel(
+        &self,
+        cache: &mut IssuePanelCache,
+    ) -> Result<(String, Vec<IssuePanelRow>), PullRequestError> {
+        let probe = self.probe_open_issues()?;
+        let fresh = cache
+            .read_at
+            .is_some_and(|read_at| read_at.elapsed() < ISSUE_FULL_REFRESH);
+        if let Some(panel) = &cache.panel
+            && fresh
+            && cache.probe.as_ref() == Some(&probe)
+        {
+            return Ok(panel.clone());
+        }
+        // The probe was taken before this read, so a change in between is read again next time.
+        let panel = self.panel()?;
+        *cache = IssuePanelCache {
+            probe: Some(probe),
+            read_at: Some(Instant::now()),
+            panel: Some(panel.clone()),
+        };
+        Ok(panel)
+    }
+
+    fn probe_open_issues(&self) -> Result<String, PullRequestError> {
+        let probe: serde_json::Value = self.transport.graphql_at(
+            "query($owner:String!,$name:String!) { repository(owner:$owner,name:$name) {
+              issues(states:OPEN,first:1,orderBy:{field:UPDATED_AT,direction:DESC}) {
+                totalCount nodes { number updatedAt } } } }",
+            self.transport.variables(0),
+            "/data/repository/issues",
+        )?;
+        Ok(probe.to_string())
+    }
+
     pub fn panel(&self) -> Result<(String, Vec<IssuePanelRow>), PullRequestError> {
         let mut rows: Vec<_> = self
             .open_issues()?

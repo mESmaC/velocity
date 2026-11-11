@@ -2,7 +2,9 @@
 //! `--operation <json> [<app-data> <project-id> <nick>]` attaches the AIRC
 //! approval record that approve, request changes and merge use (F7).
 use std::path::Path;
-use velocity_github::{PullRequestClient, PullRequestOperation, ReviewRecord, ReviewTierCache};
+use velocity_github::{
+    PullRequestClient, PullRequestOperation, PullRequestPanelCache, ReviewRecord,
+};
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let arguments: Vec<String> = std::env::args().skip(1).collect();
@@ -25,7 +27,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         // Tiers come from the checkout's AGENTS.md, as on the rail (F7).
         let agents =
             std::fs::read_to_string(Path::new(directory).join("AGENTS.md")).unwrap_or_default();
-        let mut tiers = ReviewTierCache::default();
+        let mut tiers = PullRequestPanelCache::default();
         serde_json::to_value(client.tiered_panel(&mut tiers, &agents)?)?
     } else if let Some(number) = arguments.get(1) {
         serde_json::to_value(client.snapshot(number.parse()?)?)?
