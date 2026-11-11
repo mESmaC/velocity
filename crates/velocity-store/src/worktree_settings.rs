@@ -18,6 +18,16 @@ pub fn default_setup_command() -> String {
     velocity_git::DEFAULT_SETUP_COMMAND.into()
 }
 
+fn legacy_setup_command(settings: &super::WorktreeSettings) -> String {
+    // Older snapshots saved Velocity's own install command as every project's default.
+    // Keep other explicitly configured global commands as a compatibility fallback.
+    if settings.setup_command.trim() == "pnpm -C ui install" {
+        String::new()
+    } else {
+        settings.setup_command.clone()
+    }
+}
+
 impl StateStore {
     pub fn worktree_context(&self) -> WorktreeContext {
         let project = usize::try_from(self.state.active_project_index)
@@ -36,7 +46,7 @@ impl StateStore {
                 delete_local_branch: settings.delete_local_branch_on_merge,
                 share_build_cache: settings.share_rust_build_cache,
                 copy_files: settings.copy_files.clone(),
-                setup_command: settings.setup_command.clone(),
+                setup_command: legacy_setup_command(settings),
                 ready_count: settings.warm_pool_count,
             },
         };
@@ -85,13 +95,16 @@ impl StateStore {
         let context = self.worktree_context();
         if matches!(
             edit,
-            WorktreeSettingsEdit::OverrideEnabled(_) | WorktreeSettingsEdit::ProjectRoot(_)
+            WorktreeSettingsEdit::OverrideEnabled(_)
+                | WorktreeSettingsEdit::ProjectRoot(_)
+                | WorktreeSettingsEdit::SetupCommand(_)
         ) && context.project_identifier != project_identifier
         {
             return Err(StoreError::WorktreeSetting(
                 "The selected project changed; retry this edit".into(),
             ));
         }
+        let edits_setup = matches!(edit, WorktreeSettingsEdit::SetupCommand(_));
         let change = preference_change(&context, edit)?;
         let location_changed = velocity_core::worktree_settings::changes_location(&change);
         let preferences = update_preferences(context.preferences, change);
@@ -104,7 +117,12 @@ impl StateStore {
         settings.worktrees.delete_local_branch_on_merge = preferences.delete_local_branch;
         settings.worktrees.share_rust_build_cache = preferences.share_build_cache;
         settings.worktrees.copy_files = preferences.copy_files;
-        settings.worktrees.setup_command = preferences.setup_command;
+        if edits_setup && let Some(identifier) = context.project_identifier {
+            settings
+                .worktrees
+                .project_setup_commands
+                .insert(identifier, preferences.setup_command);
+        }
         settings.worktrees.warm_pool_count = preferences.ready_count;
         if let Some(identifier) = context.project_identifier {
             if let Some(root) = preferences.project_override {
@@ -138,7 +156,11 @@ pub fn project_preferences(
         delete_local_branch: settings.delete_local_branch_on_merge,
         share_build_cache: settings.share_rust_build_cache,
         copy_files: settings.copy_files.clone(),
-        setup_command: settings.setup_command.clone(),
+        setup_command: settings
+            .project_setup_commands
+            .get(&project.id)
+            .cloned()
+            .unwrap_or_else(|| legacy_setup_command(settings)),
         ready_count: settings.warm_pool_count,
     }
 }
@@ -201,14 +223,17 @@ fn preference_change(
                 .map_err(|error| StoreError::WorktreeSetting(error.to_string()))?;
             Change::CopyFiles(files)
         }
-        Edit::SetupCommand(command) => Change::SetupCommand(command),
+        Edit::SetupCommand(command) => {
+            require_project(context)?;
+            Change::SetupCommand(command)
+        }
         Edit::ReadyCount(count) => Change::ReadyCount(count),
     })
 }
 
 fn require_project(context: &WorktreeContext) -> Result<(), StoreError> {
     context.project_identifier.map(|_| ()).ok_or_else(|| {
-        StoreError::WorktreeSetting("Select a project to set its location override".into())
+        StoreError::WorktreeSetting("Select a project to edit its worktree settings".into())
     })
 }
 
