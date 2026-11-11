@@ -14,6 +14,13 @@ pub enum Action {
 }
 
 pub fn observe(thread: &mut ThreadItem, event: &AgentEvent, now: u64) {
+    if let AgentEvent::ProviderQueued(queued, _) = event {
+        // Provider queue time is not time spent running this agent.
+        if thread.provider_queued && !queued {
+            thread.supervision.started = now;
+        }
+        thread.provider_queued = *queued;
+    }
     let checkpoint = &mut thread.supervision;
     if checkpoint.started == 0 {
         checkpoint.started = now;
@@ -64,7 +71,7 @@ pub fn decide(
             return Action::Resume;
         }
     }
-    if !live || thread.activity == AgentActivity::Parked || unavailable {
+    if !live || thread.provider_queued || thread.activity == AgentActivity::Parked || unavailable {
         return Action::Nothing;
     }
     if capped(thread, settings, now) {

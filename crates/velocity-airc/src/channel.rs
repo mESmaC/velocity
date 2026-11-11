@@ -170,16 +170,18 @@ impl Channel {
             directory.push(String::from_utf8_lossy(chunk).as_ref());
         }
         directory.push("channel");
-        Storage::open(&directory)?;
+        std::fs::create_dir_all(&directory)?;
         Ok(Self { directory })
     }
 
     pub fn read(&self, after: u64) -> Result<Vec<Entry>, Error> {
-        Ok(Storage::open(&self.directory)?
-            .read()?
-            .into_iter()
-            .filter(|entry| entry.sequence > after)
-            .collect())
+        let entries = {
+            let storage = Storage::open(&self.directory)?;
+            storage.snapshot()?
+        };
+        // Copy only the requested tail, after releasing the writer's lock.
+        let start = entries.partition_point(|entry| entry.sequence <= after);
+        Ok(entries[start..].to_vec())
     }
 
     pub fn presence(&self) -> Result<Vec<Presence>, Error> {

@@ -2,6 +2,8 @@
   import Composer from './Composer.svelte';
   import Icon from './Icon.svelte';
   import TranscriptBlocks from './TranscriptBlocks.svelte';
+  import Markdown from './Markdown.svelte';
+  import { followTranscript } from './follow-transcript';
   import type {
     InterviewView,
     LayoutAction,
@@ -55,14 +57,16 @@
     </div>
   </header>
 
-  <div class="transcript">
+  <div class="transcript" use:followTranscript={thread.identifier}>
     <div class="transcript-inner">
       {#if thread.blocks.length}
         <TranscriptBlocks blocks={thread.blocks} />
       {:else}
-        {#if interview.brief}<div class="msg-user">{interview.brief}</div>{/if}
+        {#if interview.brief}<div class="msg-user">
+            <Markdown text={interview.brief} />
+          </div>{/if}
         {#if interview.summary}<div class="msg-agent">
-            <p>{interview.summary}</p>
+            <Markdown text={interview.summary} />
           </div>{/if}
         {#each interview.decisions as decision, index (index)}
           <div class="qa">
@@ -90,8 +94,10 @@
           <div class="qn">
             QUESTION {question.number} · {question.key.toUpperCase()}
           </div>
-          <div class="qt">{question.text}</div>
-          {#if question.why}<div class="why">{question.why}</div>{/if}
+          <div class="qt"><Markdown text={question.text} /></div>
+          {#if question.why}<div class="why">
+              <Markdown text={question.why} />
+            </div>{/if}
           <div class="opts">
             {#each question.options as option, index (index)}
               <button

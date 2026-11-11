@@ -9,6 +9,7 @@ mod protocol;
 mod rebase;
 mod routing;
 mod storage;
+mod tail;
 mod tasks;
 pub mod waits;
 
