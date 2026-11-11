@@ -84,3 +84,48 @@ async fn write_bridge() -> std::io::Result<PathBuf> {
     tokio::fs::write(&path, include_str!("codex_limits.cjs")).await?;
     Ok(path)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use agent_client_protocol::v1::schema::UsageUpdate;
+    use serde_json::json;
+
+    // #130: real turn reports must reach the meter bus; context-token updates must not.
+    #[test]
+    fn live_turn_reports_reach_meter() -> Result<(), Box<dyn std::error::Error>> {
+        let mut reports = subscribe_limits();
+        observe(&SessionUpdate::UsageUpdate(UsageUpdate::new(90, 100)));
+        assert!(matches!(
+            reports.try_recv(),
+            Err(broadcast::error::TryRecvError::Empty)
+        ));
+        let metadata: agent_client_protocol::v1::schema::Meta =
+            serde_json::from_value(json!({"_claude/rateLimit": {
+                "status": "allowed", "rateLimitType": "seven_day",
+                "unifiedWindows": {"seven_day": {"utilization": 0.33, "resetsAt": 1794542400}}
+            }}))?;
+        observe(&SessionUpdate::UsageUpdate(
+            UsageUpdate::new(90, 100).meta(metadata),
+        ));
+        let (provider, reading) = reports.try_recv()?;
+        let reading = reading.ok_or("missing Claude reading")?;
+        assert_eq!(
+            (provider, reading.percent_used, reading.window.as_str()),
+            (Provider::Anthropic, 33, "weekly")
+        );
+        assert_eq!(reading.resets_at, Some(1794542400));
+        assert!(observe_log(
+            r#"velocity:codex-limit {"rateLimits":{"primary":{"usedPercent":21,"windowDurationMins":10080,"resetsAt":1794857720},"planType":"pro"}}"#
+        ));
+        let (provider, reading) = reports.try_recv()?;
+        let reading = reading.ok_or("missing Codex reading")?;
+        assert_eq!(
+            (provider, reading.percent_used, reading.plan.as_deref()),
+            (Provider::Codex, 21, Some("Pro"))
+        );
+        assert!(observe_log(r#"velocity:codex-limit {"rateLimits":null}"#));
+        assert_eq!(reports.try_recv()?, (Provider::Codex, None));
+        Ok(())
+    }
+}
