@@ -6,6 +6,7 @@ use specta::Type;
 use std::collections::BTreeMap;
 
 use crate::{PullRequest, PullRequestCheck, PullRequestSnapshot, PullRequestState};
+use velocity_core::proof_card::ProofCard;
 pub use velocity_core::thread_view_model::PullRequestHistoryCard as HistoryCard;
 use velocity_core::thread_view_model::SessionWork;
 use velocity_core::thread_view_model::{PullRequestHistoryView, PullRequestTrackStep};
@@ -14,6 +15,17 @@ use velocity_core::thread_view_model::{PullRequestHistoryView, PullRequestTrackS
 pub struct AgentFollowUp {
     pub identifier: String,
     pub message: String,
+}
+
+/// Velocity's proof checks on the PR (SPEC.md F17), run in the thread's worktree once per
+/// head: the head they last finished on and the card they produced there.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize, Type)]
+#[serde(default)]
+pub struct ProofProgress {
+    /// Empty until the checks first finish.
+    pub checked_head: String,
+    /// `None` when the PR changes no proof file or fixture table.
+    pub card: Option<ProofCard>,
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize, Type)]
@@ -38,6 +50,7 @@ pub struct FollowThrough {
     pub work_session_identifier: Option<String>,
     pub work_tool_start: u32,
     pub ci_state: String,
+    pub proof: ProofProgress,
 }
 
 impl FollowThrough {
@@ -93,6 +106,42 @@ impl FollowThrough {
         self.project(snapshot);
     }
 
+    /// The open PR's current head has not been through the proof checks yet.
+    pub fn needs_proof_check(&self) -> bool {
+        self.number != 0
+            && !self.head.is_empty()
+            && self.proof.checked_head != self.head
+            && !matches!(self.stage.as_str(), "merged" | "closed")
+    }
+
+    /// Records the checks' result at `head`. A result for a head the PR has since moved past
+    /// is dropped: the next head gets its own run. Returns whether it was recorded.
+    pub fn record_proofs(&mut self, head: &str, card: Option<ProofCard>) -> bool {
+        if head != self.head {
+            return false;
+        }
+        self.proof = ProofProgress {
+            checked_head: head.to_owned(),
+            card,
+        };
+        self.refresh_proof_track();
+        true
+    }
+
+    /// PR duty approved `approved_head` and locked its statements: tick the card's lock check.
+    pub fn statements_locked(&mut self, approved_head: &str) -> bool {
+        self.proof
+            .card
+            .as_mut()
+            .is_some_and(|card| card.locked_at(approved_head))
+    }
+
+    /// The proof checks passed at the current head, and the PR changes proofs.
+    pub fn proved(&self) -> bool {
+        self.proof.checked_head == self.head
+            && self.proof.card.as_ref().is_some_and(|card| card.proved)
+    }
+
     pub fn delivered(&mut self, identifier: &str) {
         self.pending
             .retain(|message| message.identifier != identifier);
@@ -129,35 +178,12 @@ impl FollowThrough {
     }
 
     pub fn view(&self) -> PullRequestHistoryView {
-        let current = match self.stage.as_str() {
-            "ci" => 2,
-            "review" | "fixing" => 3,
-            "approved" => 4,
-            "closed" => 4,
-            "merged" if self.worktree_deleted => 6,
-            "merged" => 5,
-            _ => 0,
-        };
         let track = self
             .track
             .iter()
-            .enumerate()
-            .map(|(index, label)| {
-                let state = if index == 2 {
-                    self.ci_state.as_str()
-                } else if index < current {
-                    "done"
-                } else if index > current {
-                    "todo"
-                } else if self.stage == "fixing" || self.stage == "closed" {
-                    "fail"
-                } else {
-                    "run"
-                };
-                PullRequestTrackStep {
-                    label: label.clone(),
-                    state: state.into(),
-                }
+            .map(|label| PullRequestTrackStep {
+                label: label.clone(),
+                state: self.track_state(label).into(),
             })
             .collect();
         PullRequestHistoryView {
@@ -170,6 +196,71 @@ impl FollowThrough {
             track,
             cards: self.history.clone(),
             cleanup_error: self.cleanup_error.clone(),
+            proof: self.proof.card.clone(),
+            proved: self.proved(),
+        }
+    }
+
+    /// Each step's state from its label, so a track saved before a step was added still
+    /// lines up: Task done → Proved → PR #n → CI → Review → Merged → Worktree deleted.
+    fn track_state(&self, label: &str) -> &str {
+        let current = match self.stage.as_str() {
+            "ci" => 2,
+            "review" | "fixing" => 3,
+            "approved" | "closed" => 4,
+            "merged" if self.worktree_deleted => 6,
+            "merged" => 5,
+            _ => 0,
+        };
+        let position = match label {
+            "Task done" => 0,
+            PROVED | NO_PROOFS => return self.proof_state(),
+            "CI" => return self.ci_state.as_str(),
+            "Review" => 3,
+            "Merged" | "Closed without merging" => 4,
+            "Worktree deleted" | "Worktree kept" => 5,
+            _ => 1,
+        };
+        if position < current {
+            "done"
+        } else if position > current {
+            "todo"
+        } else if self.stage == "fixing" || self.stage == "closed" {
+            "fail"
+        } else {
+            "run"
+        }
+    }
+
+    /// Checked at this head: done or failed. A PR that merged or closed before its head was
+    /// checked stays unchecked; otherwise the checks are queued or running in the worktree.
+    fn proof_state(&self) -> &str {
+        let checked = self.proof.checked_head == self.head;
+        match (&self.proof.card, checked) {
+            (Some(card), true) if !card.proved => "fail",
+            (_, true) => "done",
+            _ if matches!(self.stage.as_str(), "merged" | "closed") => "todo",
+            _ => "run",
+        }
+    }
+
+    /// "Proved", or "No proofs" once the checks found nothing to prove at this head.
+    fn proof_label(&self) -> String {
+        if self.proof.checked_head == self.head && self.proof.card.is_none() {
+            NO_PROOFS.into()
+        } else {
+            PROVED.into()
+        }
+    }
+
+    fn refresh_proof_track(&mut self) {
+        let label = self.proof_label();
+        if let Some(step) = self
+            .track
+            .iter_mut()
+            .find(|step| *step == PROVED || *step == NO_PROOFS)
+        {
+            *step = label;
         }
     }
 
@@ -183,16 +274,14 @@ impl FollowThrough {
             "The merged worktree was removed.",
         );
         self.track = vec![
-            "Task done",
-            "PR",
-            "CI",
-            "Review",
-            "Merged",
-            "Worktree deleted",
-        ]
-        .into_iter()
-        .map(str::to_owned)
-        .collect();
+            "Task done".to_owned(),
+            self.proof_label(),
+            format!("PR #{}", self.number),
+            "CI".to_owned(),
+            "Review".to_owned(),
+            "Merged".to_owned(),
+            "Worktree deleted".to_owned(),
+        ];
     }
 
     fn card(&mut self, identifier: &str, title: String, body: &str) {
@@ -439,6 +528,7 @@ impl FollowThrough {
         };
         self.track = vec![
             "Task done".into(),
+            self.proof_label(),
             format!("PR #{}", self.number),
             "CI".into(),
             "Review".into(),
@@ -452,6 +542,9 @@ impl FollowThrough {
         }
     }
 }
+
+const PROVED: &str = "Proved";
+const NO_PROOFS: &str = "No proofs";
 
 fn review_thread_body(thread: &crate::PullRequestReviewThread) -> String {
     thread

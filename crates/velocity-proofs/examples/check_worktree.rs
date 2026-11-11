@@ -2,8 +2,8 @@
 //!
 //! `cargo run -p velocity-proofs --example check_worktree -- <worktree> <base> <head> [<locked head>]`
 //!
-//! Prints the checks PR duty's prompt carries, and, given an earlier head, the theorem
-//! statements changed since it (the statement lock).
+//! Prints the checks PR duty's prompt carries, the proof card a PR thread shows (F17), and,
+//! given an earlier head, the theorem statements changed since it (the statement lock).
 
 use std::path::PathBuf;
 
@@ -19,6 +19,14 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         None => println!("No proof files changed between {base} and {head}."),
     }
     println!("passed: {}", report.passed());
+    match velocity_proofs::proof_card(&worktree, base, head, None)? {
+        Some(card) => println!(
+            "proof card ({}):
+{card:#?}",
+            card.summary()
+        ),
+        None => println!("No proof card: the PR changes no proof file or fixture table."),
+    }
     let current = velocity_proofs::statements_at(&worktree, head)?;
     println!(
         "{} theorem statements locked at {head}",

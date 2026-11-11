@@ -1068,6 +1068,13 @@ How the checks run *(proposed)*:
 - every theorem: Design or Confidence, its name and its statement;
 - the level reached per language, e.g. "Rust · reference · fixture table checked by one test", "TypeScript · reference · scouts diff 10,000 stress inputs against it".
 
+How the card is made *(proposed)*:
+- **Where and when.** For each new head of a thread's open PR, Velocity runs the checks above in the background in the thread's own worktree, once that worktree is checked out at exactly the head with no edits under `proofs/` (otherwise the next observation retries). The card sits under "PR opened" in the PR history; a PR that touches no proof file, fixture table or proof-list feature has no card.
+- **Track.** The "Proved" step runs while the head is unchecked, is done when the checks pass and fails when one fails. It reads "No proofs" when the PR changes nothing to prove. A pass ticks "· proved" on the collapsed work line and posts a `proved` event naming the proof folders, the theorem count and each language's level.
+- **Statement lock check.** Pending until PR duty approves that exact head, then ticked.
+- **Levels.** One row per feature and language, read as "How Velocity reads the level" says; a flagged model-only level is shown in amber. A PR that changes only a proof-list feature's fixture table still gets a card, with its fixture rows and levels.
+- **`stress` events.** Each issue a scout files posts a `stress` event naming its evidence script.
+
 **Accept when:**
 - [ ] A building agent's PR adds tests only for critical contracts, and its implementation outweighs its proofs, tests and docs together.
 - [ ] A proof-list feature's PR can't merge without a design proof that checks.
@@ -1286,7 +1293,7 @@ Each milestone ends with a working app. PR duty checks an item off when it lands
 **M11 · Proofs** (F17)
 - [x] Lean toolchain and Mathlib cache in the warm pool (F5)
 - [x] Proof checks in the worktree: `lake build`, no `sorry`/`admit`, axiom audit, statement lock and review reset
-- [ ] Proof card on the PR, "Proved" on the PR track, `proved`/`statement`/`stress` events
+- [x] Proof card on the PR, "Proved" on the PR track, `proved`/`statement`/`stress` events
 - [x] Merge gate in PR duty; statement review; tiers updated (F7)
 - [x] Scouts: assume-it-fails sweeps, evidence required, Stress and Proof gaps focus areas, stress runs against Lean reference models
 - [x] Levels per language: reference by default (fixture table plus one test; compiled Lean model through FFI for stress), code on request (Aeneas for Rust), model

@@ -1,5 +1,6 @@
 <script lang="ts">
   import type { PullRequestHistoryView } from './ipc';
+  import ProofCard from './ProofCard.svelte';
   let {
     history,
     track = false,
@@ -56,6 +57,9 @@
             >{/if}</span
         >
       </div>
+      {#if card.identifier === 'opened' && history.proof}<ProofCard
+          card={history.proof}
+        />{/if}
     {/if}
   {/each}
   {#if history.cleanup_error}

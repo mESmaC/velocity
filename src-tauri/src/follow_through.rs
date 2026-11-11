@@ -150,6 +150,17 @@ fn observe(
     if let Some(work) = (hooks.tool_steps)(application, key) {
         watch.observe_work(&work);
     }
+    if let Some(worktree) = thread.worktree_path.as_deref() {
+        crate::proof_card::observe(
+            application,
+            &crate::proof_card::ProofTarget {
+                key,
+                worktree,
+                base_branch: &snapshot.pull_request.base_ref_name,
+            },
+            &mut watch,
+        );
+    }
     checkpoint(application, key, &snapshot, watch.clone())?;
     if snapshot.pull_request.state == PullRequestState::Merged {
         finish_merged(application, hooks, project, thread, &mut watch);

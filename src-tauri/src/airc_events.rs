@@ -113,6 +113,7 @@ pub(crate) fn record_pull_request_observation(
                 .and_then(|event| post_event(application, project_identifier, event)),
         );
     }
+    record_proved(application, project_identifier, &nick, before, after);
     if after.stage == "merged" && after.worktree_deleted {
         // `master` moved: ready worktrees catch up and rebuild at the new tip (F5).
         crate::ready_pool::wake(application, Some(project_identifier));
@@ -125,6 +126,27 @@ pub(crate) fn record_pull_request_observation(
             head,
         ));
     }
+}
+
+/// Posts `proved` (F14, F17) when Velocity's proof checks first pass at a PR head, naming
+/// the proof folders, the theorem count and each language's level.
+fn record_proved(
+    application: &AppHandle,
+    project_identifier: u32,
+    nick: &str,
+    before: Option<&FollowThrough>,
+    after: &FollowThrough,
+) {
+    let already = before.is_some_and(|previous| previous.proved() && previous.head == after.head);
+    let Some(card) = after.proof.card.as_ref().filter(|_| after.proved()) else {
+        return;
+    };
+    if already {
+        return;
+    }
+    let text = format!("proved #{} · {}", after.number, card.summary());
+    let event = Event::new("proved", nick, &text).for_pull_request(after.number, Some(&after.head));
+    report(post_event(application, project_identifier, event));
 }
 
 fn record_merged(
@@ -169,25 +191,36 @@ pub(crate) fn record_scout_events(
         if feed_event.kind != DutyEventKind::File {
             continue;
         }
-        if let Some((number, title)) = parse_filed_issue(&feed_event.message) {
+        if let Some((number, title, evidence)) = parse_filed_issue(&feed_event.message) {
             report(
                 Event::issue_filed(&feed_event.actor, number, title)
                     .map_err(|error| error.to_string())
                     .and_then(|event| post_event(application, project_identifier, event)),
             );
+            // The scout's failing script is the issue's evidence (F17): a `stress` event.
+            if let Some(evidence) = evidence {
+                let text = format!("{evidence} fails · evidence for #{number} {title}");
+                report(post_event(
+                    application,
+                    project_identifier,
+                    Event::new("stress", &feed_event.actor, &text),
+                ));
+            }
         }
     }
 }
 
-fn parse_filed_issue(message: &str) -> Option<(u32, &str)> {
+/// `Filed #<n> <title> · failing evidence attached[: <script>]`, as the scout runners write it.
+fn parse_filed_issue(message: &str) -> Option<(u32, &str, Option<&str>)> {
     let rest = message.strip_prefix("Filed #")?;
     let (number_text, tail) = rest.split_once(' ')?;
     let number = number_text.parse::<u32>().ok()?;
-    let title = tail
-        .strip_suffix(" · failing evidence attached")
-        .unwrap_or(tail)
-        .trim();
-    (!title.is_empty()).then_some((number, title))
+    let (title, evidence) = match tail.rsplit_once(" · failing evidence attached") {
+        Some((title, suffix)) => (title, suffix.strip_prefix(": ").map(str::trim)),
+        None => (tail, None),
+    };
+    let title = title.trim();
+    (!title.is_empty()).then_some((number, title, evidence.filter(|path| !path.is_empty())))
 }
 
 /// Posts a `failed` event when a thread stops on an error (§2.1, F14).

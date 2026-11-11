@@ -22,6 +22,7 @@ pub mod main_watch;
 mod new_project;
 mod parking;
 mod projects;
+mod proof_card;
 mod provider_agents;
 mod providers;
 mod pull_request_panel;

@@ -710,6 +710,7 @@ export type FollowThrough_Deserialize = {
 	work_session_identifier?: string | null,
 	work_tool_start?: number,
 	ci_state?: string,
+	proof?: ProofProgress_Deserialize,
 };
 
 export type FollowThrough_Serialize = {
@@ -732,6 +733,7 @@ export type FollowThrough_Serialize = {
 	work_session_identifier: string | null,
 	work_tool_start: number,
 	ci_state: string,
+	proof: ProofProgress_Serialize,
 };
 
 export type GitHubActor = {
@@ -2070,6 +2072,51 @@ export type ProjectSelectionView_Serialize = {
 	menu_open: boolean,
 };
 
+/**  The proof card for one PR head. */
+export type ProofCard = {
+	/**  The PR head the checks ran on. */
+	head: string,
+	/**  The proof folders the PR changes, such as `proofs/ClaimLock/`. */
+	folders: string[],
+	theorem_count: number,
+	/**  Every check that decides a merge passed (the statement lock follows at approval). */
+	proved: boolean,
+	checks: ProofCheck[],
+	theorems: ProofTheorem[],
+	levels: ProofLevel[],
+};
+
+/**
+ *  One of the card's checks: lake build, no sorry or admit, standard axioms, statements
+ *  locked at review (and the design proof's SPEC.md section, shown only when it fails).
+ */
+export type ProofCheck = {
+	label: string,
+	state: ProofCheckState,
+	/**  Why it failed or is pending; empty when it passed. */
+	detail: string,
+};
+
+/**  How one of the card's checks stands. */
+export type ProofCheckState = "Passed" | "Failed" | 
+/**  Not decided yet: the statement lock is taken only when PR duty approves. */
+"Pending";
+
+/**  One language's row on the card. */
+export type ProofLevel = {
+	language: string,
+	level: ProofLevelKind,
+	detail: string,
+	/**
+	 *  A model-only level for a language that has a stronger one available (F17): left to
+	 *  the reviewer, never a block on its own.
+	 */
+	flagged: boolean,
+};
+
+/**  How firmly a language's code is tied to the proven model (SPEC.md §2 "Proof level"). */
+export type ProofLevelKind = "Model" | "Reference" | "Code";
+
 /**
  *  One feature the Ready card proposes for a Lean proof (F3, F17). You switch entries off
  *  before locking; the ones left on are written into SPEC.md.
@@ -2084,8 +2131,44 @@ export type ProofListEntryView = {
 	included: boolean,
 };
 
+/**
+ *  Velocity's proof checks on the PR (SPEC.md F17), run in the thread's worktree once per
+ *  head: the head they last finished on and the card they produced there.
+ */
+export type ProofProgress = ProofProgress_Serialize | ProofProgress_Deserialize;
+
+/**
+ *  Velocity's proof checks on the PR (SPEC.md F17), run in the thread's worktree once per
+ *  head: the head they last finished on and the card they produced there.
+ */
+export type ProofProgress_Deserialize = {
+	/**  Empty until the checks first finish. */
+	checked_head?: string,
+	/**  `None` when the PR changes no proof file or fixture table. */
+	card?: ProofCard | null,
+};
+
+/**
+ *  Velocity's proof checks on the PR (SPEC.md F17), run in the thread's worktree once per
+ *  head: the head they last finished on and the card they produced there.
+ */
+export type ProofProgress_Serialize = {
+	/**  Empty until the checks first finish. */
+	checked_head: string,
+	/**  `None` when the PR changes no proof file or fixture table. */
+	card: ProofCard | null,
+};
+
 export type ProofSettings = {
 	stress_diff_input_count: number,
+};
+
+/**  One proven theorem, or one fixture table the PR adds or changes. */
+export type ProofTheorem = {
+	/**  `Design`, `Confidence`, `Fixture`, or the file's own name for any other proof file. */
+	kind: string,
+	name: string,
+	statement: string,
 };
 
 export type ProviderCardView = ProviderCardView_Serialize | ProviderCardView_Deserialize;
@@ -2407,6 +2490,10 @@ export type PullRequestHistoryView_Deserialize = {
 	track: PullRequestTrackStep[],
 	cards: PullRequestHistoryCard_Deserialize[],
 	cleanup_error?: string | null,
+	/**  The proof card (F17), shown under the "opened" card, when the PR changes proofs. */
+	proof?: ProofCard | null,
+	/**  Velocity's proof checks passed at the current head ("· proved" on the work line). */
+	proved: boolean,
 };
 
 export type PullRequestHistoryView_Serialize = {
@@ -2419,6 +2506,10 @@ export type PullRequestHistoryView_Serialize = {
 	track: PullRequestTrackStep[],
 	cards: PullRequestHistoryCard_Serialize[],
 	cleanup_error: string | null,
+	/**  The proof card (F17), shown under the "opened" card, when the PR changes proofs. */
+	proof: ProofCard | null,
+	/**  Velocity's proof checks passed at the current head ("· proved" on the work line). */
+	proved: boolean,
 };
 
 export type PullRequestLifecycleEvent = {

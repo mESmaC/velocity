@@ -229,7 +229,7 @@ pub struct PullRequestTrackStep {
     feature = "bindings",
     derive(serde::Serialize, serde::Deserialize, specta::Type)
 )]
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Default)]
 pub struct PullRequestHistoryView {
     pub coding_tool_count: Option<u32>,
     pub coding_file_count: Option<u32>,
@@ -240,6 +240,10 @@ pub struct PullRequestHistoryView {
     pub track: Vec<PullRequestTrackStep>,
     pub cards: Vec<PullRequestHistoryCard>,
     pub cleanup_error: Option<String>,
+    /// The proof card (F17), shown under the "opened" card, when the PR changes proofs.
+    pub proof: Option<crate::proof_card::ProofCard>,
+    /// Velocity's proof checks passed at the current head ("· proved" on the work line).
+    pub proved: bool,
 }
 
 #[cfg_attr(
@@ -582,7 +586,7 @@ fn worked_summary(entry: &ThreadDetailEntry) -> Option<WorkedSummaryView> {
             files_touched: history.coding_file_count.unwrap_or(0) as usize,
             added: history.coding_additions as usize,
             deleted: history.coding_deletions as usize,
-            proved: false,
+            proved: history.proved,
         });
     }
     let tool_calls = entry

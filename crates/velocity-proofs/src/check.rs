@@ -5,9 +5,12 @@
 use std::path::Path;
 use std::process::{Command, Output};
 
+use velocity_core::proof_card::ProofCard;
+
 use crate::ProofCheckError;
 use crate::axioms::{audit_script, module_name, parse_audit};
-use crate::lean_source::{ProofFile, names_spec_section, placeholders};
+use crate::card::{CardInput, FixtureTable, LockState, build_card};
+use crate::lean_source::{ProofFile, names_spec_section, placeholders, theorem_statements};
 use crate::levels::{
     FeatureLevels, feature_evidence, feature_levels, fixture_name, touched_features,
 };
@@ -346,3 +349,105 @@ fn hide_console_window(command: &mut Command) {
 
 #[cfg(not(windows))]
 fn hide_console_window(_command: &mut Command) {}
+
+/// Whether the worktree is checked out at exactly `head` with no edits under the proofs
+/// folder, so what Lake builds there is what the PR holds.
+pub fn checkout_at(worktree: &Path, head: &str) -> Result<bool, ProofCheckError> {
+    let current = git(worktree, &["rev-parse", "HEAD"])?;
+    if current.trim() != head {
+        return Ok(false);
+    }
+    let edits = git(
+        worktree,
+        &["status", "--porcelain", "-z", "--", PROJECT_FOLDER],
+    )?;
+    Ok(edits.is_empty())
+}
+
+/// Runs the proof checks on the PR's changes between `base` and `head` and builds its proof
+/// card (F17), or `None` when the PR touches no proof file, fixture table or proof-list
+/// feature. `lock` is the statement lock taken at the PR's last approval, if any.
+pub fn proof_card(
+    worktree: &Path,
+    base: &str,
+    head: &str,
+    lock: Option<&StatementLock>,
+) -> Result<Option<ProofCard>, ProofCheckError> {
+    let fixtures = fixture_tables(worktree, base, head)?;
+    let report = check_worktree(worktree, base, head)?;
+    if report.changed.is_empty() && fixtures.is_empty() && report.levels.is_empty() {
+        return Ok(None);
+    }
+    let mut theorems = Vec::new();
+    for path in &report.changed {
+        let text = std::fs::read_to_string(worktree.join(path))?;
+        theorems.extend(theorem_statements(&ProofFile::new(path, &text)));
+    }
+    let lock = lock_state(worktree, head, lock)?;
+    Ok(build_card(&CardInput {
+        head: head.to_owned(),
+        report,
+        theorems,
+        fixtures,
+        lock,
+    }))
+}
+
+/// The fixture tables the PR adds or changes, with their row counts at `head`.
+fn fixture_tables(
+    worktree: &Path,
+    base: &str,
+    head: &str,
+) -> Result<Vec<FixtureTable>, ProofCheckError> {
+    let folder = format!("{PROJECT_FOLDER}/fixtures");
+    let range = format!("{base}...{head}");
+    let listing = git(
+        worktree,
+        &[
+            "diff",
+            "--name-only",
+            "-z",
+            "--diff-filter=ACMR",
+            &range,
+            "--",
+            &folder,
+        ],
+    )?;
+    let mut tables = Vec::new();
+    for path in listing.split('\0').filter(|path| path.ends_with(".tsv")) {
+        let text = git(worktree, &["show", &format!("{head}:{path}")])?;
+        let lines = text.lines().filter(|line| !line.trim().is_empty()).count();
+        // The first line is the column header.
+        tables.push(FixtureTable::new(path, lines.saturating_sub(1)));
+    }
+    Ok(tables)
+}
+
+fn lock_state(
+    worktree: &Path,
+    head: &str,
+    lock: Option<&StatementLock>,
+) -> Result<LockState, ProofCheckError> {
+    let Some(lock) = lock else {
+        return Ok(LockState::NotApproved);
+    };
+    if lock.head == head {
+        return Ok(LockState::Unchanged);
+    }
+    let changed = lock.changed_in(&statements_at(worktree, head)?);
+    Ok(if changed.is_empty() {
+        LockState::Unchanged
+    } else {
+        LockState::Changed(changed)
+    })
+}
+
+/// The ref the PR's changes are measured from: the remote-tracking base branch when the
+/// worktree has one (what the PR merges into), otherwise the local branch of that name.
+pub fn base_reference(worktree: &Path, base_branch: &str) -> String {
+    let remote = format!("origin/{base_branch}");
+    match git(worktree, &["rev-parse", "--verify", "--quiet", &remote]) {
+        Ok(_) => remote,
+        Err(_) => base_branch.to_owned(),
+    }
+}
