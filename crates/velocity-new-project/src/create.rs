@@ -172,11 +172,12 @@ fn github_repository(resolved: &ResolvedRequest) -> Result<&RepositoryName, NewP
 }
 
 fn project_record(resolved: &ResolvedRequest) -> Result<NewProjectRecord, NewProjectError> {
-    let record = NewProjectRecord::new(
-        resolved.name.clone(),
-        resolved.path_text(),
-        velocity_git::current_branch(&resolved.path)?,
-    );
+    let default_branch = if resolved.location.opens_existing() {
+        velocity_git::opened_project_default_branch(&resolved.path)?
+    } else {
+        velocity_git::current_branch(&resolved.path)?
+    };
+    let record = NewProjectRecord::new(resolved.name.clone(), resolved.path_text(), default_branch);
     // An opened folder whose origin is on GitHub is a GitHub project, as a clone is.
     let repository = resolved.repository.clone().or_else(|| {
         (resolved.location == NewProjectLocation::OpenFolder)
