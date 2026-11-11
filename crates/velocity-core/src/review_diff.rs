@@ -306,14 +306,10 @@ fn is_cosmetic(file: &FileChange) -> bool {
 }
 
 fn is_cosmetic_hunk(syntax: &Syntax, hunk: &HunkChange) -> bool {
-    let code = |lines: &[String]| -> Vec<String> {
-        lines
-            .iter()
-            .filter(|line| !line.trim().is_empty() && !is_comment(syntax, line))
-            .cloned()
-            .collect()
-    };
-    let (removed, added) = (code(&hunk.removed), code(&hunk.added));
+    let (removed, added) = (
+        code_lines(syntax, &hunk.removed),
+        code_lines(syntax, &hunk.added),
+    );
     if syntax.free_form {
         significant_text(&removed) == significant_text(&added)
     } else {
@@ -327,26 +323,64 @@ fn is_cosmetic_hunk(syntax: &Syntax, hunk: &HunkChange) -> bool {
     }
 }
 
-/// Only self-contained block comments are known to be cosmetic from a diff alone.
-/// Unmatched delimiters can change whether unchanged code executes; a leading `*` can
-/// also be multiplication rather than a comment continuation.
-fn is_comment(syntax: &Syntax, line: &str) -> bool {
-    let line = line.trim();
-    if syntax
+/// A block is removable only when its whole extent appears in this side of the hunk.
+/// Keeping incomplete blocks prevents a delimiter outside the available context from
+/// hiding a change to live code. Context is scanned too, so wrapping live code in a
+/// complete comment still changes the resulting code sequence.
+fn code_lines(syntax: &Syntax, lines: &[String]) -> Vec<String> {
+    let mut code = Vec::new();
+    let mut position = 0;
+    while position < lines.len() {
+        let line = lines[position].trim();
+        if line.is_empty() || is_line_comment(syntax, line) {
+            position += 1;
+            continue;
+        }
+        let end = syntax.block_comments.iter().find_map(|(open, close)| {
+            line.strip_prefix(open)
+                .and_then(|rest| block_end(lines, position, rest, open, close))
+        });
+        match end {
+            Some(end) => position = end + 1,
+            None => {
+                code.push(lines[position].clone());
+                position += 1;
+            }
+        }
+    }
+    code
+}
+
+fn is_line_comment(syntax: &Syntax, line: &str) -> bool {
+    syntax
         .line_comments
         .iter()
         .any(|prefix| line.starts_with(prefix))
-    {
-        return true;
-    }
-    for (open, close) in syntax.block_comments {
-        if let Some(rest) = line.strip_prefix(open) {
-            return rest
-                .split_once(close)
-                .is_some_and(|(_, after)| after.trim().is_empty());
+}
+
+/// A nested opener is ambiguous across the supported languages (Rust and Lean nest,
+/// C and JavaScript do not). Leave those blocks as code rather than guessing a close.
+/// Code after a close must likewise remain significant.
+fn block_end(
+    lines: &[String],
+    start: usize,
+    first: &str,
+    open: &str,
+    close: &str,
+) -> Option<usize> {
+    for (position, line) in lines.iter().enumerate().skip(start) {
+        let content = if position == start { first } else { line };
+        let closing = content.find(close);
+        if let Some(nested) = content.find(open)
+            && closing.is_none_or(|closing| nested < closing)
+        {
+            return None;
+        }
+        if let Some((_, after)) = content.split_once(close) {
+            return after.trim().is_empty().then_some(position);
         }
     }
-    false
+    None
 }
 
 /// The lines' text with insignificant whitespace removed: whitespace inside quotes stays,
