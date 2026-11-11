@@ -2171,24 +2171,10 @@ export type ProjectSkills = ProjectSkills_Serialize | ProjectSkills_Deserialize;
 
 export type ProjectSkills_Deserialize = {
 	packs?: { [key in string]: PackSelection_Deserialize },
-	/**  What the latest project scan suggested (F3, F18 Suggestions); the cards show why. */
-	suggestions?: SkillSuggestion_Deserialize[],
-	/**
-	 *  Suggestions you turned off, as `pack` or `pack/bundle`. A re-check after a merge
-	 *  never turns these back on ("switched on unless you turn them off").
-	 */
-	declined?: string[],
 };
 
 export type ProjectSkills_Serialize = {
 	packs: { [key in string]: PackSelection_Serialize },
-	/**  What the latest project scan suggested (F3, F18 Suggestions); the cards show why. */
-	suggestions: SkillSuggestion_Serialize[],
-	/**
-	 *  Suggestions you turned off, as `pack` or `pack/bundle`. A re-check after a merge
-	 *  never turns these back on ("switched on unless you turn them off").
-	 */
-	declined: string[],
 };
 
 /**  The proof card for one PR head. */
@@ -3117,10 +3103,6 @@ export type SkillPackCard_Deserialize = {
 	selection: PackSelection_Deserialize,
 	enabled_count: number,
 	requirements: string[],
-	/**  `suggested · UI found` when the project scan suggested this pack (F3, F18), else empty. */
-	suggestion_badge: string,
-	/**  What the scan found, or what would make it suggest the pack; empty for other packs. */
-	detection: string,
 };
 
 export type SkillPackCard_Serialize = {
@@ -3130,10 +3112,6 @@ export type SkillPackCard_Serialize = {
 	selection: PackSelection_Serialize,
 	enabled_count: number,
 	requirements: string[],
-	/**  `suggested · UI found` when the project scan suggested this pack (F3, F18), else empty. */
-	suggestion_badge: string,
-	/**  What the scan found, or what would make it suggest the pack; empty for other packs. */
-	detection: string,
 };
 
 /**  Static metadata for a built-in or user-added skill pack (SPEC.md F18). */
@@ -3234,34 +3212,6 @@ export type SkillSettingsEdit = ({ Pack: {
 	bundle: string,
 	enabled: boolean,
 } }) & { Pack?: never };
-
-/**
- *  One pack the project scan found a reason for, with the bundles that reason implies
- *  (the Game dev router plus only the detected engine's bundle).
- */
-export type SkillSuggestion = SkillSuggestion_Serialize | SkillSuggestion_Deserialize;
-
-/**
- *  One pack the project scan found a reason for, with the bundles that reason implies
- *  (the Game dev router plus only the detected engine's bundle).
- */
-export type SkillSuggestion_Deserialize = {
-	pack?: string,
-	bundles?: string[],
-	/**  What the scan found, e.g. `UI found: ui/ (Svelte + Tailwind)`. */
-	reason?: string,
-};
-
-/**
- *  One pack the project scan found a reason for, with the bundles that reason implies
- *  (the Game dev router plus only the detected engine's bundle).
- */
-export type SkillSuggestion_Serialize = {
-	pack: string,
-	bundles: string[],
-	/**  What the scan found, e.g. `UI found: ui/ (Svelte + Tailwind)`. */
-	reason: string,
-};
 
 export type SkillsSettingsView = SkillsSettingsView_Serialize | SkillsSettingsView_Deserialize;
 
