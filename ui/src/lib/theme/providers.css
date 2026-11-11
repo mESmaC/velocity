@@ -292,8 +292,10 @@
   bottom: var(--providers-menu-bottom);
   z-index: var(--thread-menu-z-index);
   min-width: var(--providers-menu-min-width);
+  display: flex;
+  flex-direction: column;
   max-height: var(--providers-menu-max-height);
-  overflow-y: auto;
+  overflow: hidden;
   padding: var(--thread-menu-padding);
   border: var(--thread-menu-border);
   border-radius: var(--thread-menu-radius);
@@ -301,6 +303,16 @@
   box-shadow: var(--thread-menu-shadow);
   backdrop-filter: var(--blur-pop);
   -webkit-backdrop-filter: var(--blur-pop);
+}
+.model-menu-list {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+}
+.model-menu.below {
+  top: var(--providers-menu-top);
+  bottom: auto;
 }
 .model-menu-head {
   display: flex;
