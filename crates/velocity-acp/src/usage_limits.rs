@@ -32,6 +32,46 @@ const FIVE_HOURS: i64 = 5 * 60;
 const ONE_DAY: i64 = 24 * 60;
 const ONE_WEEK: i64 = 7 * ONE_DAY;
 
+/// Claude's native `rate_limit_info`, forwarded by its ACP adapter in usage metadata.
+/// Utilization is a fraction here, unlike the percentages in `get_usage`.
+pub fn claude_limit_event(report: &Value) -> Option<LimitReading> {
+    if let Some(windows) = report.get("unifiedWindows").and_then(Value::as_object) {
+        return fullest(
+            windows.iter().filter_map(|(name, window)| {
+                let minutes = claude_window_minutes(name)?;
+                let used = window.get("utilization")?.as_f64()?;
+                used.is_finite().then_some((
+                    used * 100.0,
+                    minutes,
+                    window.get("resetsAt").and_then(Value::as_i64),
+                ))
+            }),
+            None,
+        );
+    }
+    let minutes = claude_window_minutes(report.get("rateLimitType")?.as_str()?)?;
+    let used = report.get("utilization")?.as_f64()?;
+    if !used.is_finite() {
+        return None;
+    }
+    fullest(
+        std::iter::once((
+            used * 100.0,
+            minutes,
+            report.get("resetsAt").and_then(Value::as_i64),
+        )),
+        None,
+    )
+}
+
+fn claude_window_minutes(name: &str) -> Option<i64> {
+    match name {
+        "five_hour" => Some(FIVE_HOURS),
+        "seven_day" | "seven_day_opus" | "seven_day_sonnet" => Some(ONE_WEEK),
+        _ => None,
+    }
+}
+
 /// Claude Code's `get_usage` control response (`response.response`). `None` when it reports
 /// no rate limits, which shows as "limit not reported".
 pub fn claude_usage_reading(report: &Value) -> Option<LimitReading> {
