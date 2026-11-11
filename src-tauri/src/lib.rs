@@ -23,6 +23,7 @@ mod new_project;
 mod parking;
 mod projects;
 mod proof_card;
+mod proofs_settings;
 mod provider_agents;
 mod providers;
 mod pull_request_panel;
@@ -67,6 +68,7 @@ fn bindings() -> Builder<tauri::Wry> {
         layout::dispatch_layout,
         projects::list_projects,
         projects::switch_project,
+        proofs_settings::get_proofs_settings,
         provider_agents::set_provider_command,
         provider_agents::add_custom_agent,
         provider_agents::remove_custom_agent,

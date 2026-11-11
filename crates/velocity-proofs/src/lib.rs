@@ -11,6 +11,7 @@ mod lean_source;
 mod levels;
 mod lock_store;
 mod report;
+mod settings_page;
 mod statement_lock;
 
 pub use axioms::{
@@ -29,6 +30,7 @@ pub use levels::{
 };
 pub use lock_store::{load_statement_lock, save_statement_lock};
 pub use report::{CheckStep, ProofCheckReport};
+pub use settings_page::proofs_settings;
 pub use statement_lock::StatementLock;
 
 #[derive(Debug, thiserror::Error)]
