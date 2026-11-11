@@ -511,13 +511,17 @@ fn report_event(
     report: ScoutReport,
 ) -> DutyFeedEvent {
     match report {
-        ScoutReport::Filed { number, title } => {
+        ScoutReport::Filed {
+            number,
+            title,
+            evidence,
+        } => {
             entry.issues_filed += 1;
             DutyFeedEvent::new(
                 timestamp,
                 nickname,
                 DutyEventKind::File,
-                format!("Filed #{number} {title} · failing evidence attached"),
+                velocity_github::filed_message(number, &title, &evidence),
             )
         }
         ScoutReport::Duplicate { number, title } => DutyFeedEvent::new(

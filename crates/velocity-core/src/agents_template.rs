@@ -7,8 +7,48 @@ pub fn default_agents_markdown(project_name: &str) -> String {
         .split_whitespace()
         .collect::<Vec<_>>()
         .join(" ");
-    format!("# AGENTS.md · {project_name}\n\n{DEFAULT_AGENTS_BODY}")
+    let body = DEFAULT_AGENTS_BODY
+        .replace("{implementation_first}", &IMPLEMENTATION_RULES.join("\n"))
+        .replace("{proofs}", &PROOF_RULES.join("\n"))
+        .replace("{tests_and_docs}", &TESTS_AND_DOCS_RULES.join("\n"));
+    format!("# AGENTS.md · {project_name}\n\n{body}")
 }
+
+pub(crate) const IMPLEMENTATION_RULES: &[&str] = &[
+    "- Build the feature first, end to end, then run it and see it work.",
+    "- Implementation is the larger part of every PR. Proofs, tests and docs together stay smaller than the implementation code.",
+    "- Only after the feature works, add the proofs, tests or docs it needs in the same PR.",
+    "- Lockfiles and generated files count on neither side of the implementation size comparison.",
+    "- Never claim only proofs, tests or docs while implementation work in the milestone is unclaimed.",
+];
+
+pub(crate) const PROOF_RULES: &[&str] = &[
+    "- Write Lean only for features on the proof list in SPEC.md. Every other piece ships with no Lean.",
+    "- For a proof-list feature, write the code first. Then write `proofs/<Feature>/Design.lean` in the same PR with exactly three theorems:",
+    "  - `correct`: the model meets the SPEC.md section it implements; name that section.",
+    "  - `cost_bound`: its cost stays within a bound, under a cost model the theorem states.",
+    "  - `optimal`: no alternative in a class the theorem states costs less.",
+    "- Export a compact fixture table to `proofs/fixtures/<feature>.tsv`, and add one test that checks the implementation against it.",
+    "- Never write a theorem about one behaviour, case or example. That is a test.",
+    "- Never use `sorry`, `admit`, `axiom` or `native_decide`.",
+    "- Never weaken a reviewed theorem statement to make its proof go through.",
+    "- Lemmas are allowed only as steps toward those three theorems.",
+    "- If a design proof passes 300 lines, stop and file an issue.",
+    "- State the cost model and the class of alternatives in the theorem itself.",
+    "- Run code translation tools only when an issue asks for a translation.",
+    "- For a bug fix in a proof-list feature, add the failing input to its fixture table. A bug fix elsewhere has no Lean.",
+    "- Audit every proof declaration: `#print axioms` lists only `propext`, `Classical.choice` and `Quot.sound`.",
+];
+
+pub(crate) const TESTS_AND_DOCS_RULES: &[&str] = &[
+    "- Default: add no tests. Add a targeted test only for a critical contract identified in SPEC.md, with its risk in a comment.",
+    "- Scouts and PR duty agents write the adversarial tests and stress scripts.",
+    "- Update SPEC.md when behaviour changes.",
+    "- Tests and docs are low priority; add them only after the feature works and only where they pay for themselves.",
+    "- Never add a test suite for a whole module or a test that restates the implementation.",
+    "- Copy a scout's failing script into `stress/` unchanged when fixing its bug. Never edit it.",
+    "- Comment code whose purpose is not clear; explain why. Never add a new Markdown file unless the piece asks for one.",
+];
 
 const DEFAULT_AGENTS_BODY: &str = r#"Read this file in full before you start any task. Every rule here is mandatory.
 SPEC.md defines what to build. The project Task List defines what is left.
@@ -30,24 +70,13 @@ SPEC.md defines what to build. The project Task List defines what is left.
 - Update SPEC.md when behaviour changes. Never change a product decision yourself; file an issue when the spec contradicts itself.
 
 ## Implementation first
-- Build the feature first, end to end, then run it and see it work.
-- Implementation is the larger part of every PR. Proofs, tests and docs together stay smaller than the implementation code.
+{implementation_first}
 
 ## Proofs
-- Write Lean only for features on the proof list in SPEC.md. Every other piece ships with no Lean.
-- For a proof-list feature, write the code first. Then write `proofs/<Feature>/Design.lean` in the same PR with exactly three theorems:
-  - `correct`: the model meets the SPEC.md section it implements; name that section.
-  - `cost_bound`: its cost stays within a bound, under a cost model the theorem states.
-  - `optimal`: no alternative in a class the theorem states costs less.
-- Export a compact fixture table to `proofs/fixtures/<feature>.tsv`, and add one test that checks the implementation against it.
-- Never write a theorem about one behaviour, case or example. That is a test.
-- Never use `sorry`, `admit`, `axiom` or `native_decide`.
-- Never weaken a reviewed theorem statement to make its proof go through.
+{proofs}
 
 ## Tests and docs
-- Default: add no tests. Add a targeted test only for a critical contract identified in SPEC.md, with its risk in a comment.
-- Scouts and PR duty agents write the adversarial tests and stress scripts.
-- Update SPEC.md when behaviour changes.
+{tests_and_docs}
 
 ## Coordination (AIRC)
 - Before editing, claim your task, branch and every file you expect to touch in AIRC.

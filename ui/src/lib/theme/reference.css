@@ -868,6 +868,37 @@
   --pr-log-detail-white-space: normal;
 }
 
+/* F17 proof card, reference .proof, .proof .ph, .chk, .thm and .lv. */
+:root {
+  --proof-border: 1px solid var(--line-mid);
+  --proof-border-left: 2px solid var(--ok);
+  --proof-radius: var(--r-md);
+  --proof-head-gap: 8px;
+  --proof-head-padding: 6px 10px;
+  --proof-head-border: 1px solid var(--line-dim);
+  --proof-head-font-size: 11px;
+  --proof-mark-font: 600 12px var(--mono);
+  --proof-count-font-size: 10.5px;
+  --proof-checks-gap: 4px 12px;
+  --proof-checks-padding: 6px 10px 2px;
+  --proof-checks-font: 10px var(--mono);
+  --proof-rows-columns: 78px 1fr;
+  --proof-theorems-gap: 1px 10px;
+  --proof-theorems-padding: 6px 10px;
+  --proof-rows-font-size: 11px;
+  --proof-key-font-size: 10px;
+  --proof-key-transform: uppercase;
+  --proof-key-letter-spacing: 0.05em;
+  --proof-theorem-key-padding-top: 2px;
+  --proof-theorem-font: 10.5px/1.6 var(--mono);
+  --proof-theorem-white-space: pre-wrap;
+  --proof-theorem-name-weight: 500;
+  --proof-levels-gap: 2px 10px;
+  --proof-levels-padding: 6px 10px 8px;
+  --proof-levels-border: 1px solid var(--line-dim);
+  --proof-level-key-padding-top: 1px;
+}
+
 :root {
   --pr-bar-flex: 1;
   --pr-dot-active-background: currentColor;
