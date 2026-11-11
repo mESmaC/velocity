@@ -102,6 +102,10 @@ pub fn sweep_session(
 pub fn sweep_doing(event: &AgentEvent) -> Option<String> {
     let update = match event {
         AgentEvent::Transcript { update, .. } | AgentEvent::SessionUpdate(update) => update,
+        AgentEvent::ProviderQueued(true, provider) => {
+            return Some(format!("queued \u{b7} {provider}"));
+        }
+        AgentEvent::ProviderQueued(false, _) => return Some("starting the agent".into()),
         _ => return None,
     };
     match update {
