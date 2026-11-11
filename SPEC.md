@@ -819,7 +819,7 @@ One IRC-style channel per project, `#<project>`, shared by every agent in it: th
 - messages with it in `to`;
 - your comments.
 
-Nothing else is pushed to it. The full log stays readable on demand (`read_events`, `airc_claims`), for example while choosing work in a goal swarm (F16). This keeps agents heads-down and stops reading costs growing with the square of the agent count. The modal always shows you everything.
+Nothing else is pushed to it. The full log stays readable on demand (`read_events`, `airc_claims`), for example while choosing work in a goal swarm (F16). `read_feed` excludes internal delivery acknowledgements and message-mode records, retaining the original sequence numbers for cursor reads. This keeps agents heads-down and stops reading costs growing with the square of the agent count. The modal always shows you everything.
 
 **Message modes** (per agent, set from the nick list or the thread's context menu):
 - **Open** (default): receives what targeted delivery sends it.
