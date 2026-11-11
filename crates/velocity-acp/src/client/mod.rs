@@ -11,6 +11,7 @@ mod error;
 mod files;
 mod handlers;
 mod limits;
+mod live_limits;
 mod own_config;
 mod probe;
 mod process;
@@ -43,6 +44,7 @@ pub use airc::AircLaunch;
 pub use error::ClientError;
 pub use files::resolve_in_worktree;
 pub use limits::{read_claude_usage, read_codex_usage};
+pub use live_limits::subscribe_limits;
 pub use probe::{AgentProbe, ProbedModel, probe_agent};
 pub use process::AgentLaunch;
 pub use session::{
@@ -126,6 +128,7 @@ impl Shared {
     }
 
     fn record(&self, update: SessionUpdate) {
+        live_limits::observe(&update);
         match entry_class(&update) {
             Some(_) if self.replaying.load(Ordering::Acquire) => {}
             Some(class) => {
@@ -153,7 +156,7 @@ pub fn launch_shared_servers(launch: &AgentLaunch, worktree: &std::path::Path) -
 /// Runs one thread's agent until the thread stops it or the agent exits: spawns the agent in
 /// the worktree, starts the session, then feeds it the thread's messages.
 pub async fn run_session(
-    launch: AgentLaunch,
+    mut launch: AgentLaunch,
     setup: SessionSetup,
     inputs: UnboundedReceiver<AgentInput>,
     events: UnboundedSender<AgentEvent>,
@@ -187,6 +190,8 @@ async fn run_admitted_session(
     events: UnboundedSender<AgentEvent>,
 ) -> Result<(), ClientError> {
     let mut setup = setup;
+    // Meter availability must never prevent starting an agent.
+    let _ = live_limits::prepare(&mut launch).await;
     // Velocity's own servers come first in the setup, so a clash keeps them (session_servers).
     setup
         .shared_servers
@@ -275,7 +280,9 @@ fn forward_log(stderr: ChildStderr, events: UnboundedSender<AgentEvent>) {
                 Ok(_) => {
                     let text = String::from_utf8_lossy(without_line_end(&line)).into_owned();
                     // No receiver: the session is ending; keep draining regardless.
-                    let _ = events.send(AgentEvent::Log(text));
+                    if !live_limits::observe_log(&text) {
+                        let _ = events.send(AgentEvent::Log(text));
+                    }
                 }
             }
         }

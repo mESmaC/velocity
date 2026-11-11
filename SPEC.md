@@ -167,7 +167,7 @@ The native supervisor checks live build threads once a second. Its defaulted che
 | event | `worktree://inventory` | cached live worktree rows, sizes, drive capacity and settings; metadata measurements run outside the UI thread |
 | event | `airc://modal` | The active project's AIRC modal view, published only while the modal is open and when it changed. Agents write the channel from their own MCP processes, so Velocity reads it once a second. Lines are marked read while the modal is open; the footer unread badge (amber when an unread line is an overlap or a failure) arrives on `layout://state`. |
 | event | `airc://event`, `airc://message`, `airc://overlap` | AIRC events, agent messages and overlap detection |
-| event | `provider://status` | Settings → Providers whenever a provider's sign-in state, models or limit changes. Limits are read every 5 minutes (F15 Limit sources) and ride on the same event; the footer meter and the home model pill update on `layout://state`. |
+| event | `provider://status` | Settings → Providers whenever a provider's sign-in state, models or limit changes. Limits are read every 5 minutes and updated from live Claude and Codex reports during turns (F15 Limit sources); both ride on the same event. The footer meter and the home model pill update on `layout://state`. |
 
 
 ### 3.2 Agent protocol: ACP
@@ -897,6 +897,7 @@ Four providers: **Anthropic** (Claude Code agent), **Codex** (Codex CLI agent), 
 | Kimi Code, custom agents | no known source |
 
 - A provider with no source, or whose read fails, shows "limit not reported". Nothing else depends on the bar.
+- Live Claude rate-limit metadata and Codex app-server notifications update the same saved meter immediately. Codex's Node ACP adapter is launched with a bundled preloader that observes its app-server output without changing the RPC stream or the installed adapter. Five-minute reads remain the fallback; a read started before a live update cannot replace that newer report. Reports contain only subscription windows, never context-token usage.
 - `at limit` (§2.2) never comes from the bar. It is set when an agent's turn fails with its provider's usage-limit error, which carries the reset time when the provider gives one.
 
 **Custom ACP agents** (decided, Q19). The four providers are built first. After them, **Add an ACP agent** takes a name, a command and its arguments, as Zed does.
