@@ -104,8 +104,7 @@ pub enum Visibility {
 /// Whether the repository exists and the signed-in account can see it. Any other
 /// failure (signed out, offline) is an error, not "missing".
 pub fn repository_exists(repository: &RepositoryName) -> Result<bool, GitHubError> {
-    let viewed = gh()
-        .args(["repo", "view", &repository.full_name(), "--json", "name"])
+    let viewed = gh(&["repo", "view", &repository.full_name(), "--json", "name"])
         .output()
         .map_err(GitHubError::Spawn)?;
     if viewed.status.success() {
@@ -127,8 +126,7 @@ pub fn create_repository(
         Visibility::Private => "--private",
         Visibility::Public => "--public",
     };
-    let created = gh()
-        .args(["repo", "create", &repository.full_name(), visibility_flag])
+    let created = gh(&["repo", "create", &repository.full_name(), visibility_flag])
         .output()
         .map_err(GitHubError::Spawn)?;
     succeeded("repo create", repository, &created)
@@ -137,8 +135,7 @@ pub fn create_repository(
 /// `gh repo clone` into `target`, with long paths on in the clone so it works past
 /// 260 characters on Windows.
 pub fn clone_repository(repository: &RepositoryName, target: &Path) -> Result<(), GitHubError> {
-    let cloned = gh()
-        .args(["repo", "clone", &repository.full_name()])
+    let cloned = gh(&["repo", "clone", &repository.full_name()])
         .arg(target)
         .args(["--", "--config", "core.longpaths=true"])
         .output()

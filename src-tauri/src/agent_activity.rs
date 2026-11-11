@@ -102,12 +102,7 @@ fn step(
         )
     };
     checkpoint_unavailable(application, key)?;
-    let (_, mut current) = lock(
-        application.state::<ManagedStateStore>().inner(),
-        "persisted state",
-    )?
-    .follow_through_thread(key.0, key.1)
-    .map_err(|error| error.to_string())?;
+    let mut current = supervised_thread(application, key)?;
     if let Some(heartbeat) = heartbeat {
         current.supervision.last_update = current.supervision.last_update.max(heartbeat);
     }
@@ -117,6 +112,21 @@ fn step(
         channel,
         decide(&current, settings, now(), live, build),
     )
+}
+
+/// A failed setup has no worktree, so supervision must not use the follow-through lookup.
+fn supervised_thread(
+    application: &AppHandle,
+    key: ThreadKey,
+) -> Result<velocity_store::ThreadItem, String> {
+    let store = lock(
+        application.state::<ManagedStateStore>().inner(),
+        "persisted state",
+    )?;
+    let project = store
+        .project(key.0)
+        .ok_or_else(|| format!("Project {} is not registered", key.0))?;
+    velocity_threads::agent_activity::supervised_thread(project, key.1).map_err(str::to_owned)
 }
 
 fn execute(
@@ -261,12 +271,7 @@ fn limit(application: &AppHandle, key: ThreadKey, channel: &Channel) -> Result<(
 }
 
 fn release(application: &AppHandle, key: ThreadKey, channel: &Channel) -> Result<(), String> {
-    let (_, thread) = lock(
-        application.state::<ManagedStateStore>().inner(),
-        "persisted state",
-    )?
-    .follow_through_thread(key.0, key.1)
-    .map_err(|error| error.to_string())?;
+    let thread = supervised_thread(application, key)?;
     let pushed = velocity_threads::agent_activity::pushed_commit(&thread);
     velocity_threads::agent_activity::release_claims(channel, &thread, pushed.as_deref())
         .map_err(|error| error.to_string())?;
@@ -276,12 +281,12 @@ fn release(application: &AppHandle, key: ThreadKey, channel: &Channel) -> Result
     )?
     .release_agent_work(key.0, key.1, pushed)
     .map_err(|error| error.to_string())?;
-    post(
-        channel,
-        key,
-        "released",
-        "Piece returned to the pool; worktree kept",
-    )?;
+    let note = if thread.worktree_path.is_some() {
+        "Piece returned to the pool; worktree kept"
+    } else {
+        "Piece returned to the pool; setup left no worktree"
+    };
+    post(channel, key, "released", note)?;
     publish(application, key)
 }
 

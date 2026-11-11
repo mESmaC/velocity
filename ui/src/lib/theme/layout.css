@@ -876,13 +876,18 @@ kbd {
   -webkit-backdrop-filter: var(--blur-pop);
   font-size: var(--toast-font-size);
   color: var(--text);
-  transition: var(--toast-transition);
+  /* Leaving: quick ease-in (#226). .toast.on below sets the arrival. */
+  transition:
+    opacity var(--motion-duration-quick) var(--motion-ease-in),
+    transform var(--motion-duration-quick) var(--motion-ease-in);
   pointer-events: none;
   z-index: var(--toast-z-index);
 }
 .toast.on {
   opacity: 1;
   transform: var(--toast-shown-transform);
+  transition-duration: var(--motion-duration-base);
+  transition-timing-function: var(--motion-ease-out);
 }
 .toast.act {
   display: flex;

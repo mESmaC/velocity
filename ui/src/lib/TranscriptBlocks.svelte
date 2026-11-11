@@ -1,6 +1,7 @@
 <script lang="ts">
   import Icon from './Icon.svelte';
   import Markdown from './Markdown.svelte';
+  import { rise } from './motion';
   import type { DiffLineRole, TranscriptBlock } from './ipc';
   let {
     blocks,
@@ -27,9 +28,11 @@
 
 {#each blocks as block, blockIndex (blockIndex)}
   {#if block.UserMessage}
-    <div class="msg-user"><Markdown text={block.UserMessage.text} /></div>
+    <div class="msg-user" in:rise>
+      <Markdown text={block.UserMessage.text} />
+    </div>
     {#if block.UserMessage.queued}
-      <div class="queued">
+      <div class="queued" in:rise>
         queued · sends when the current step finishes{#if removeQueued}<span>
             ·
           </span><button
@@ -42,7 +45,7 @@
       </div>
     {/if}
   {:else if block.Notice}
-    <div class="msg-user">
+    <div class="msg-user" in:rise>
       <Markdown text={block.Notice.text} />
       <div class="sw-from">from Velocity · read by the agent</div>
     </div>
@@ -51,9 +54,9 @@
       <Markdown text={block.AgentMessage.paragraphs.join('\n\n')} />
     </div>
   {:else if block.ToolGroup}
-    <div class="tools">
+    <div class="tools" in:rise>
       {#each block.ToolGroup.steps as step, stepIndex (stepIndex)}
-        <div class="tool" class:running={step.running}>
+        <div class="tool" class:running={step.running} in:rise>
           {#if step.running}
             <span class="working-dots" aria-hidden="true"
               ><i></i><i></i><i></i></span
@@ -68,7 +71,7 @@
       {/each}
     </div>
   {:else if block.Diff}
-    <div class="diff">
+    <div class="diff" in:rise>
       <div class="diff-h">
         <span>{block.Diff.block.file_path}</span>
         <span>
@@ -81,7 +84,7 @@
           >{/each}</pre>
     </div>
   {:else if block.StatusLine}
-    <div class="status-line">
+    <div class="status-line" in:rise>
       {#if block.StatusLine.running}
         <span class="working-dots" aria-hidden="true"
           ><i></i><i></i><i></i></span
@@ -90,14 +93,14 @@
       <span>{block.StatusLine.text}</span>
     </div>
   {:else if block.ErrorCard}
-    <div class="err-card" role="alert">
+    <div class="err-card" role="alert" in:rise>
       <div class="ah">
         <Icon name="alert" />{block.ErrorCard.card.headline}
       </div>
       <pre>{block.ErrorCard.card.detail}</pre>
     </div>
   {:else if block.Decision}
-    <div class="qa">
+    <div class="qa" in:rise>
       <div class="q">{block.Decision.question}</div>
       <div class="d">
         ✓ <b>{block.Decision.key}</b><span>{block.Decision.value}</span>

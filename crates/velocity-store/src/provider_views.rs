@@ -41,8 +41,12 @@ pub struct ProviderRuntime {
     pub command_line: String,
     /// Whether the agent offers a sign-in method Velocity may use (never an API key).
     pub can_sign_in: bool,
-    /// Why the last check, sign-in or install failed.
+    /// Why the last check or sign-in failed.
     pub detail: Option<String>,
+    /// The last lines of a failed install's output (F15 Install). Kept apart from `detail`
+    /// because each reopen of Providers checks a missing agent again: only a new install,
+    /// Cancel, a changed command or the agent being found clears it.
+    pub install_failure: Option<String>,
     /// What Install runs, e.g. `npm install --global @agentclientprotocol/claude-agent-acp`.
     /// `None` when Velocity can't install it: an agent you added, or a command you changed.
     pub install_command: Option<String>,
@@ -58,6 +62,7 @@ impl ProviderRuntime {
             command_line,
             can_sign_in: false,
             detail: None,
+            install_failure: None,
             install_command: None,
         }
     }
@@ -441,7 +446,7 @@ fn status_text(
             || "Its agent isn't installed".into(),
             |entry| {
                 let missing = format!("{} isn't installed", command_program(&entry.command));
-                match &entry.detail {
+                match entry.detail.as_ref().or(entry.install_failure.as_ref()) {
                     Some(detail) => format!("{missing} · {detail}"),
                     None => missing,
                 }

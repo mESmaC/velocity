@@ -1,6 +1,7 @@
 <script lang="ts">
   import Icon from './Icon.svelte';
   import UsagePanel from './UsagePanel.svelte';
+  import { rise } from './motion';
   import type { LayoutAction, LayoutSnapshot, SidebarRow } from './ipc';
   import './theme/swarm.css';
   let {
@@ -80,7 +81,7 @@
           >
         {/if}
         {#each group.rows as row (row.identifier)}
-          <div class="thread-wrap" class:member={row.member}>
+          <div class="thread-wrap" class:member={row.member} in:rise>
             <button
               class="thread"
               class:active={row.active}
