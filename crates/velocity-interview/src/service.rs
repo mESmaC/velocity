@@ -375,6 +375,12 @@ fn handle_event<H: Host>(
     agent_log: &mut Vec<String>,
 ) {
     match event {
+        AgentEvent::ProviderQueued(queued, _) => {
+            let _ = lock(host.store()).update_thread(key.0, key.1, |thread| {
+                thread.provider_queued = queued;
+            });
+            refresh(host);
+        }
         AgentEvent::Transcript { placement, update } => {
             host.interviews()
                 .with(key, |session| session.live.record(placement, &update));

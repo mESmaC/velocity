@@ -22,6 +22,7 @@ enum EntryContent {
 struct ToolStep {
     verb: &'static str,
     title: String,
+    skill: Option<String>,
     status: ToolCallStatus,
 }
 
@@ -114,12 +115,14 @@ fn new_entry(update: &SessionUpdate) -> EntryContent {
         SessionUpdate::ToolCall(call) => EntryContent::Tool(ToolStep {
             verb: verb(call.kind),
             title: call.title.clone(),
+            skill: loaded_skill(&call.title, call.raw_input.as_ref(), &call.locations),
             status: call.status,
         }),
         SessionUpdate::ToolCallUpdate(update) => {
             let mut step = ToolStep {
                 verb: verb(ToolKind::Other),
                 title: String::new(),
+                skill: None,
                 status: ToolCallStatus::InProgress,
             };
             apply_fields(&mut step, &update.fields);
@@ -153,6 +156,28 @@ fn apply_fields(step: &mut ToolStep, fields: &ToolCallUpdateFields) {
     if let Some(status) = fields.status {
         step.status = status;
     }
+    // ACP status-only updates must keep the skill identified by an earlier update.
+    if let Some(skill) = loaded_skill(
+        &step.title,
+        fields.raw_input.as_ref(),
+        fields.locations.as_deref().unwrap_or_default(),
+    ) {
+        step.skill = Some(skill);
+    }
+}
+
+fn loaded_skill(
+    title: &str,
+    raw_input: Option<&serde_json::Value>,
+    locations: &[agent_client_protocol::v1::schema::ToolCallLocation],
+) -> Option<String> {
+    let raw_skill = raw_input
+        .and_then(|input| input.get("skill"))
+        .and_then(serde_json::Value::as_str);
+    let path = locations
+        .first()
+        .map(|location| location.path.to_string_lossy());
+    velocity_core::skill_menu::loaded_skill(title, raw_skill, path.as_deref())
 }
 
 fn entry_block(entry: &EntryContent) -> Option<TranscriptBlock> {
@@ -176,7 +201,7 @@ fn entry_block(entry: &EntryContent) -> Option<TranscriptBlock> {
 
 /// One tool step; a skill load reads "Skill · <name>", as in a thread (F4, F18).
 fn tool_row(step: &ToolStep) -> ToolStepRow {
-    let skill = velocity_core::skill_menu::loaded_skill(&step.title, None, None);
+    let skill = &step.skill;
     ToolStepRow {
         running: matches!(
             step.status,
@@ -187,7 +212,7 @@ fn tool_row(step: &ToolStep) -> ToolStepRow {
         } else {
             step.verb.into()
         },
-        argument: skill.unwrap_or_else(|| step.title.clone()),
+        argument: skill.clone().unwrap_or_else(|| step.title.clone()),
         result_text: match step.status {
             ToolCallStatus::Failed => "failed".into(),
             _ => String::new(),

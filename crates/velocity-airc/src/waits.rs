@@ -175,11 +175,14 @@ impl Channel {
             .rev()
             .find(|entry| entry.member == dependency.holder && entry.checkout.is_some())
             .map_or(0, |entry| entry.sequence);
+        let mut after = holder_checkout;
         loop {
             if cancelled() {
                 return Err(Error::Invalid("AIRC connection ended while waiting".into()));
             }
-            if let Some(ended) = self.read(0)?.into_iter().rev().find(|entry| {
+            let entries = self.read(after)?;
+            after = entries.last().map_or(after, |entry| entry.sequence);
+            if let Some(ended) = entries.into_iter().rev().find(|entry| {
                 entry.kind == "dependency_end"
                     && entry.member == dependency.holder
                     && entry.sequence > holder_checkout
