@@ -90,6 +90,26 @@ pub struct ThreadRuntimes {
 }
 
 impl ThreadRuntimes {
+    /// Rebuilds conversation views without pretending a process survived the restart.
+    pub fn restore(&mut self, state: &velocity_store::PersistedState) {
+        for project in &state.projects {
+            for thread in &project.threads {
+                if thread.interview.is_some() {
+                    continue;
+                }
+                let path = thread.worktree_path.as_deref().unwrap_or_default();
+                let mut runtime =
+                    parked_runtime(path, thread.state == velocity_store::ThreadState::Review);
+                runtime.transcript = LiveTranscript::restore(path, thread.transcript.clone());
+                let key = (project.id, thread.id);
+                self.threads.insert(key, runtime);
+                if thread.activity == AgentActivity::Parked {
+                    self.parked.insert(key);
+                }
+            }
+        }
+    }
+
     /// Merge cleanup and explicit deletion share one lease through their saved checkpoint.
     pub fn action_lock(&mut self, key: ThreadKey) -> Arc<tokio::sync::Mutex<()>> {
         Arc::clone(self.actions.entry(key).or_default())
@@ -223,8 +243,7 @@ impl ThreadRuntimes {
     }
 
     /// Starts a parked thread's next session: `prompt` first, then the messages that were
-    /// queued when it parked, in order. After an app restart there is no live transcript,
-    /// so a new one starts in the worktree.
+    /// queued when it parked, in order. Saved history survives an app restart.
     pub fn resume_parked(
         &mut self,
         key: ThreadKey,
@@ -270,7 +289,7 @@ impl ThreadRuntimes {
         if self.retired.contains(&key) || self.shutdown_failures.contains(&key) {
             return Err(SteerError::NoSession);
         }
-        let receiver = self.start(key, worktree, message);
+        let receiver = self.resume_parked(key, worktree, message, true)?;
         if let Some(thread) = self.threads.get_mut(&key) {
             thread.phase = SessionPhase::Running;
             thread.follows_pull_request = true;

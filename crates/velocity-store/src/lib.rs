@@ -695,6 +695,9 @@ pub struct ThreadItem {
     /// The agent's ACP session id, which a parked thread loads again on resume (§2.2).
     #[serde(default)]
     pub agent_session: Option<String>,
+    /// Conversation retained across process restarts (?3.2).
+    #[serde(default)]
+    pub transcript: Vec<velocity_core::thread_view_model::TranscriptBlock>,
     pub review_stage: Option<ReviewStage>,
     pub task_ids: Vec<u32>,
     #[serde(default)]
@@ -735,6 +738,7 @@ impl ThreadItem {
             airc_cursor: 0,
             dependency_wait: None,
             agent_session: None,
+            transcript: Vec::new(),
             supervision: Default::default(),
             review_stage: None,
             task_ids: Vec::new(),
@@ -770,6 +774,7 @@ impl ThreadItem {
             airc_cursor: 0,
             dependency_wait: None,
             agent_session: None,
+            transcript: Vec::new(),
             supervision: Default::default(),
             review_stage: None,
             task_ids: Vec::new(),
