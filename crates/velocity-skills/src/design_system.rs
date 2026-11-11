@@ -6,7 +6,7 @@
 use std::fs::{self, OpenOptions};
 use std::io::{self, Write};
 use std::path::{Path, PathBuf};
-use std::time::UNIX_EPOCH;
+use std::time::{SystemTime, UNIX_EPOCH};
 
 use serde::{Deserialize, Serialize};
 
@@ -37,6 +37,10 @@ pub struct DesignSystemStatus {
     /// True when AGENTS.md carries the design system rule.
     #[serde(default)]
     pub rule_in_agents: bool,
+    /// The card's line: `generated 5 min ago · agents read it before UI work`, or
+    /// `not generated yet`.
+    #[serde(default)]
+    pub summary: String,
 }
 
 /// The folder name `search.py` derives from a project name (its `safe_slug`): lower case,
@@ -190,11 +194,38 @@ pub fn design_system_status(checkout: &Path, project_name: &str) -> DesignSystem
     let rule = format!("- {}", design_system_rule(project_name));
     let rule_in_agents = fs::read_to_string(checkout.join("AGENTS.md"))
         .is_ok_and(|text| text.lines().any(|line| line.trim() == rule));
+    let summary = match generated_at {
+        Some(at) => format!(
+            "generated {} · agents read it before UI work",
+            age(at, now())
+        ),
+        None => String::from("not generated yet"),
+    };
     DesignSystemStatus {
         master_path,
         exists: generated_at.is_some(),
         generated_at,
         rule_in_agents,
+        summary,
+    }
+}
+
+fn now() -> u32 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_or(0, |elapsed| {
+            u32::try_from(elapsed.as_secs()).unwrap_or(u32::MAX)
+        })
+}
+
+/// How long ago `at` was, in the reference's words: `just now`, `12 min ago`, `3 h ago`, `2 d ago`.
+pub fn age(at: u32, now: u32) -> String {
+    let seconds = now.saturating_sub(at);
+    match seconds {
+        0..60 => String::from("just now"),
+        60..3_600 => format!("{} min ago", seconds / 60),
+        3_600..86_400 => format!("{} h ago", seconds / 3_600),
+        _ => format!("{} d ago", seconds / 86_400),
     }
 }
 

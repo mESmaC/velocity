@@ -16,6 +16,7 @@ mod process;
 mod program_path;
 pub mod rewrite;
 mod session;
+mod shared;
 mod sign_in;
 mod terminals;
 mod title;
@@ -46,6 +47,7 @@ pub use process::AgentLaunch;
 pub use session::{
     SessionResume, SessionSetup, StartedSession, answer_permission, session_servers,
 };
+pub use shared::{SharedServer, install_shared_servers};
 pub use sign_in::sign_in;
 pub use title::{TitleReply, TitleRequest, request_title};
 pub use updates::{AgentSlashCommand, available_commands, entry_class};

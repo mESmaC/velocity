@@ -7,17 +7,19 @@
 pub mod bundles;
 pub mod catalog;
 pub mod design_system;
+pub mod details;
 pub mod engine;
 pub mod library;
 pub mod manifest;
 pub mod rea;
+pub mod settings;
 
 use std::path::PathBuf;
 use thiserror::Error;
 
 pub use bundles::{
     GAMEDEV_ROUTER_BUNDLE, SkillBundleCount, SkillPackBundleCounts, bundle_of_skill,
-    bundle_skill_counts, default_bundle_selection, normalize_bundle_selection, skills_in_bundles,
+    bundle_skill_counts, selection_includes,
 };
 pub use catalog::{
     SkillBundleDefinition, SkillPackCatalogEntry, built_in_catalog, find_built_in_pack,
@@ -27,6 +29,7 @@ pub use design_system::{
     DesignSystemStatus, design_system_master_path, design_system_query, design_system_rule,
     design_system_slug, design_system_status, generate_design_system, sync_design_system_rule,
 };
+pub use details::{SkillPackDetails, add_pack_details, pack_shared_servers};
 pub use engine::{GameEngineDetection, classify_game_engine, detect_game_engine};
 pub use library::{
     InstalledSkillPack, SkillLibrary, SkillLibrarySnapshot, SkillPackDiffFile,

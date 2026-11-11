@@ -2,11 +2,8 @@
 //! pinned clone each bundle chip turns on, the Game dev router that is always on with its
 //! pack, and the real per-bundle skill counts of an installed clone.
 
-use std::collections::BTreeSet;
-
 use serde::{Deserialize, Serialize};
 
-use crate::catalog::find_built_in_pack;
 use crate::library::InstalledSkillPack;
 use crate::manifest::DiscoveredSkill;
 
@@ -119,68 +116,28 @@ pub fn bundle_of_skill(pack_id: &str, relative_folder: &str) -> Option<&'static 
         .map(|entry| entry.bundle)
 }
 
-/// The bundles that are on when a built-in pack is first switched on: its first bundle. That is
-/// Engineering only for claude-skills, to keep the context budget low (SPEC.md F18), the
-/// router for Game dev skills, and the single skill of UI UX Pro Max and REA.
-pub fn default_bundle_selection(pack_id: &str) -> Vec<String> {
-    find_built_in_pack(pack_id)
-        .and_then(|entry| entry.bundles.first().map(|first| vec![first.id.clone()]))
-        .unwrap_or_default()
-}
-
-/// A bundle selection with the rules of SPEC.md F18 applied: unknown bundles are dropped,
-/// duplicates removed, and the Game dev router is always on with its pack.
-pub fn normalize_bundle_selection(pack_id: &str, selected: &[String]) -> Vec<String> {
-    let known: Vec<String> = find_built_in_pack(pack_id)
-        .map(|entry| entry.bundles.into_iter().map(|bundle| bundle.id).collect())
-        .unwrap_or_default();
-    let mut chosen: BTreeSet<&str> = selected
-        .iter()
-        .map(String::as_str)
-        .filter(|bundle| known.iter().any(|id| id == bundle))
-        .collect();
-    if pack_id == GAMEDEV_PACK {
-        chosen.insert(GAMEDEV_ROUTER_BUNDLE);
+/// Whether a switched-on pack gives agents this skill under its bundle selection (SPEC.md
+/// F18). Mirrors never count. A pack with no bundle table (a custom Agent Skills repo) gives
+/// every skill; a built-in pack gives the skills of its selected bundles, its only bundle when
+/// it has just one (UI UX Pro Max, REA), and always the Game dev router.
+pub fn selection_includes(pack_id: &str, selected: &[String], skill: &DiscoveredSkill) -> bool {
+    if skill.mirror {
+        return false;
     }
-    // Keep the catalog's order, which is the order of the card's chips.
-    known
-        .iter()
-        .filter(|id| chosen.contains(id.as_str()))
-        .cloned()
-        .collect()
-}
-
-/// The skills of an installed pack that a bundle selection turns on. A pack with no bundle
-/// table (a custom Agent Skills repo) turns on every skill it has, once per skill name.
-pub fn skills_in_bundles(pack: &InstalledSkillPack, selected: &[String]) -> Vec<DiscoveredSkill> {
-    if !has_bundle_table(&pack.id) {
-        return distinct_skills(&pack.skills);
+    if !has_bundle_table(pack_id) {
+        return true;
     }
-    let selection = normalize_bundle_selection(&pack.id, selected);
-    pack.skills
+    let Some(bundle) = bundle_of_skill(pack_id, &skill.relative_folder) else {
+        return false;
+    };
+    let single = BUNDLE_FOLDERS
         .iter()
-        .filter(|skill| !skill.mirror)
-        .filter(|skill| {
-            bundle_of_skill(&pack.id, &skill.relative_folder)
-                .is_some_and(|bundle| selection.iter().any(|id| id == bundle))
-        })
-        .cloned()
-        .collect()
-}
-
-// A custom repo may mirror its skills for several agents (`.claude/skills/x`, `.agents/skills/x`).
-// The folder outside a dot-folder wins, so each skill is linked once.
-fn distinct_skills(skills: &[DiscoveredSkill]) -> Vec<DiscoveredSkill> {
-    let mut ordered: Vec<&DiscoveredSkill> = skills.iter().filter(|skill| !skill.mirror).collect();
-    ordered.sort_by_key(|skill| skill.relative_folder.starts_with('.'));
-    let mut seen = BTreeSet::new();
-    let mut distinct: Vec<DiscoveredSkill> = ordered
-        .into_iter()
-        .filter(|skill| seen.insert(skill.name.to_ascii_lowercase()))
-        .cloned()
-        .collect();
-    distinct.sort_by(|left, right| left.relative_folder.cmp(&right.relative_folder));
-    distinct
+        .filter(|entry| entry.pack == pack_id)
+        .count()
+        == 1;
+    single
+        || (pack_id == GAMEDEV_PACK && bundle == GAMEDEV_ROUTER_BUNDLE)
+        || selected.iter().any(|id| id == bundle)
 }
 
 /// Counts the skills each bundle holds in an installed clone, in the catalog's chip order.

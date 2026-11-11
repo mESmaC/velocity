@@ -3,19 +3,23 @@
 //!
 //! 1. Installs UI UX Pro Max, claude-skills, Game dev skills and REA from GitHub (or reuses a
 //!    library folder from an earlier run).
-//! 2. Prints each pack's real bundle counts and the skills a bundle selection turns on.
-//! 3. Generates a design system in a fresh git project, then prints MASTER.md's path, the rule
-//!    AGENTS.md gained and the commits it made.
+//! 2. Generates a design system in a fresh git project, then prints the rule AGENTS.md gained
+//!    and the commits it made.
+//! 3. Prints the Settings → Skills cards with all four packs on: real bundle counts, skills
+//!    on, the design system row, the engine line and REA's server.
 //! 4. Detects engines in a Godot, a Unity, a three.js and a plain project.
-//! 5. Prints the command that starts REA's MCP server.
+//! 5. Starts sessions the way every role does: one in a linked worktree of the project gets
+//!    REA's MCP server, one outside it gets none.
 
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
+use velocity_acp::client::{SessionSetup, SharedServer, install_shared_servers, session_servers};
+use velocity_core::skills::{ProjectSkills, SkillSettingsEdit};
+use velocity_skills::settings::settings_view;
 use velocity_skills::{
-    SkillLibrary, bundle_skill_counts, detect_game_engine, generate_design_system, rea_mcp_server,
-    skills_in_bundles,
+    SkillLibrary, add_pack_details, detect_game_engine, generate_design_system, pack_shared_servers,
 };
 
 type Outcome = Result<(), Box<dyn std::error::Error>>;
@@ -33,45 +37,54 @@ fn main() -> Outcome {
             library.install_pack(pack, None, None)?;
         }
     }
-    print_bundles(&library)?;
-    design_system(&library, &scratch.join("Serenity Spa"))?;
+    let project = scratch.join("Serenity Spa");
+    design_system(&library, &project)?;
+    let choices = choices();
+    print_cards(&library, &choices, &project)?;
     engines(&scratch)?;
-    let server = rea_mcp_server(&library.installed_pack("rea")?)?;
-    println!(
-        "\nREA MCP server `{}`: {} {}",
-        server.name,
-        server.command,
-        server.arguments.join(" ")
-    );
+    shared_with_sessions(library, choices, &project)?;
     Ok(())
 }
 
-fn print_bundles(library: &SkillLibrary) -> Outcome {
-    for counts in library.snapshot()?.bundle_counts {
-        let chips: Vec<String> = counts
+fn print_cards(library: &SkillLibrary, choices: &ProjectSkills, checkout: &Path) -> Outcome {
+    let snapshot = library.snapshot()?;
+    let mut view = settings_view(1, String::from("Serenity Spa"), choices, &snapshot);
+    add_pack_details(&mut view, checkout, &snapshot);
+    for card in &view.cards {
+        let chips: Vec<String> = card
+            .catalog
             .bundles
             .iter()
-            .map(|bundle| format!("{} {}", bundle.bundle_id, bundle.skill_count))
+            .map(|bundle| format!("{} {}", bundle.id, bundle.skill_count))
             .collect();
-        println!("{}: {}", counts.pack_id, chips.join(" · "));
+        println!(
+            "{}: {} skills on · chips: {}",
+            card.catalog.name,
+            card.enabled_count,
+            chips.join(" · ")
+        );
+        if let Some(design) = &card.details.design_system {
+            println!(
+                "  design system {} exists={} rule={}",
+                design.master_path, design.exists, design.rule_in_agents
+            );
+        }
+        if let Some(engine) = &card.details.engine {
+            println!("  {}", engine.summary);
+        }
+        if let Some(server) = &card.details.shared_server {
+            println!(
+                "  shared MCP server {}: {} {}",
+                server.name,
+                server.command,
+                server.arguments.join(" ")
+            );
+        }
     }
-    let gamedev = library.installed_pack("gamedev")?;
-    let godot = skills_in_bundles(&gamedev, &[String::from("godot")]);
     println!(
-        "gamedev [godot] turns on {} skills, router included: {}",
-        godot.len(),
-        godot.iter().any(|skill| skill.relative_folder == "router")
+        "{} skills on · ≈{} tokens",
+        view.enabled_count, view.description_tokens
     );
-    let cskills = library.installed_pack("cskills")?;
-    let engineering = skills_in_bundles(&cskills, &[String::from("eng")]);
-    println!(
-        "cskills [eng] turns on {} of {} discovered skills",
-        engineering.len(),
-        cskills.skills.len()
-    );
-    let check = bundle_skill_counts(&cskills);
-    let total: u32 = check.bundles.iter().map(|bundle| bundle.skill_count).sum();
-    println!("cskills bundles cover {total} skills");
     Ok(())
 }
 
@@ -148,6 +161,62 @@ fn engines(scratch: &Path) -> Outcome {
             project.display(),
             detection.summary,
             detection.suggested_bundles
+        );
+    }
+    Ok(())
+}
+
+fn choices() -> ProjectSkills {
+    let mut choices = ProjectSkills::default();
+    for pack in ["uiux", "cskills", "gamedev", "rea"] {
+        choices.apply(SkillSettingsEdit::Pack {
+            identifier: pack.into(),
+            enabled: true,
+        });
+    }
+    choices.apply(SkillSettingsEdit::Bundle {
+        identifier: "gamedev".into(),
+        bundle: "godot".into(),
+        enabled: true,
+    });
+    choices
+}
+
+// The same path every role's `session/new` takes: the app's source, keyed by the session's
+// folder. A linked worktree of the project must get REA; a folder outside it must not.
+fn shared_with_sessions(library: SkillLibrary, choices: ProjectSkills, project: &Path) -> Outcome {
+    let root = fs::canonicalize(project)?;
+    install_shared_servers(move |folder| {
+        let Ok(checkout) = velocity_git::main_checkout(folder) else {
+            return Vec::new();
+        };
+        if checkout != root {
+            return Vec::new();
+        }
+        pack_shared_servers(&choices, &library)
+            .into_iter()
+            .map(|server| SharedServer::new(server.name, server.command, server.arguments))
+            .collect()
+    });
+    let worktree = project.with_file_name("serenity-spa-wt");
+    git(
+        project,
+        &[
+            "worktree",
+            "add",
+            "-q",
+            "--detach",
+            &worktree.display().to_string(),
+        ],
+    )?;
+    for folder in [worktree.clone(), project.with_file_name("plain-cli")] {
+        let servers = session_servers(&SessionSetup::new(folder.clone(), Vec::new()));
+        println!(
+            "
+session/new in {} gets {} shared server(s): {:?}",
+            folder.display(),
+            servers.len(),
+            servers
         );
     }
     Ok(())

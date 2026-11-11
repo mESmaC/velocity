@@ -100,21 +100,16 @@ export const commands = {
 	getPullRequestPanel: () => __TAURI_INVOKE<PullRequestPanelSnapshot_Serialize>("get_pull_request_panel"),
 	openProjectPullRequest: (projectIdentifier: number, number: number) => __TAURI_INVOKE<LayoutSnapshot_Serialize | null>("open_project_pull_request", { projectIdentifier, number }),
 	getSkillLibrary: () => __TAURI_INVOKE<SkillLibrarySnapshot_Serialize>("get_skill_library"),
+	getSkillSettings: (projectIdentifier: number) => __TAURI_INVOKE<SkillsSettingsView_Serialize>("get_skill_settings", { projectIdentifier }),
+	setSkillSettings: (projectIdentifier: number, edit: SkillSettingsEdit) => __TAURI_INVOKE<SkillsSettingsView_Serialize>("set_skill_settings", { projectIdentifier, edit }),
 	installSkillPack: (packOrRepo: string, sourceOverride: string | null, initialPin: string | null) => __TAURI_INVOKE<InstalledSkillPack_Serialize>("install_skill_pack", { packOrRepo, sourceOverride, initialPin }),
 	checkSkillPackUpdate: (packId: string) => __TAURI_INVOKE<SkillPackUpdatePreview_Serialize>("check_skill_pack_update", { packId }),
 	confirmSkillPackUpdate: (packId: string, candidateCommit: string) => __TAURI_INVOKE<InstalledSkillPack_Serialize>("confirm_skill_pack_update", { packId, candidateCommit }),
-	/**
-	 *  UI UX Pro Max's design system for a project: where MASTER.md lives, whether it exists, and
-	 *  whether AGENTS.md carries its rule (F18).
-	 */
-	getDesignSystem: (projectIdentifier: number) => __TAURI_INVOKE<DesignSystemStatus_Serialize>("get_design_system", { projectIdentifier }),
 	/**
 	 *  Generate (or, with `regenerate`, Regenerate) the project's design system, add the AGENTS.md
 	 *  rule and commit both in the main checkout (F18).
 	 */
 	generateDesignSystem: (projectIdentifier: number, regenerate: boolean) => __TAURI_INVOKE<DesignSystemStatus_Serialize>("generate_design_system", { projectIdentifier, regenerate }),
-	/**  The game engine the project's files show, and the Game dev bundles it suggests (F18). */
-	detectGameEngine: (projectIdentifier: number) => __TAURI_INVOKE<GameEngineDetection_Serialize>("detect_game_engine", { projectIdentifier }),
 	/**  The Swarm dialog for the user's current choices; asked again whenever one changes. */
 	getSwarmDialog: (query: SwarmDialogQuery_Deserialize) => __TAURI_INVOKE<SwarmDialog_Serialize>("get_swarm_dialog", { query }),
 	/**  Starts one agent per selected item, all at once, each in its own worktree (F10). */
@@ -534,6 +529,11 @@ export type DesignSystemStatus_Deserialize = {
 	generated_at?: number | null,
 	/**  True when AGENTS.md carries the design system rule. */
 	rule_in_agents?: boolean,
+	/**
+	 *  The card's line: `generated 5 min ago · agents read it before UI work`, or
+	 *  `not generated yet`.
+	 */
+	summary?: string,
 };
 
 /**  Where a project's design system lives and whether it has been generated. */
@@ -545,6 +545,11 @@ export type DesignSystemStatus_Serialize = {
 	generated_at: number | null,
 	/**  True when AGENTS.md carries the design system rule. */
 	rule_in_agents: boolean,
+	/**
+	 *  The card's line: `generated 5 min ago · agents read it before UI work`, or
+	 *  `not generated yet`.
+	 */
+	summary: string,
 };
 
 export type DiffBlockView = DiffBlockView_Serialize | DiffBlockView_Deserialize;
@@ -2011,6 +2016,18 @@ export type OutlineSnapshot_Serialize = {
 	coverage: CoverageItem[],
 };
 
+export type PackSelection = PackSelection_Serialize | PackSelection_Deserialize;
+
+export type PackSelection_Deserialize = {
+	enabled?: boolean,
+	bundles?: string[],
+};
+
+export type PackSelection_Serialize = {
+	enabled: boolean,
+	bundles: string[],
+};
+
 export type PaletteItem = PaletteItem_Serialize | PaletteItem_Deserialize;
 
 export type PaletteItem_Deserialize = {
@@ -2147,6 +2164,7 @@ export type ProjectItem_Deserialize = {
 	spec_locked: boolean,
 	/**  Completed F16 pieces retained after their merged thread history is deleted. */
 	built_spec_sections?: string[],
+	skills?: ProjectSkills_Deserialize,
 	active_thread_id?: number | null,
 	merged_today: number,
 	tasks: TaskItem_Deserialize[],
@@ -2172,6 +2190,7 @@ export type ProjectItem_Serialize = {
 	spec_locked: boolean,
 	/**  Completed F16 pieces retained after their merged thread history is deleted. */
 	built_spec_sections: string[],
+	skills: ProjectSkills_Serialize,
 	active_thread_id: number | null,
 	merged_today: number,
 	tasks: TaskItem_Serialize[],
@@ -2237,6 +2256,16 @@ export type ProjectSelectionView_Deserialize = {
 export type ProjectSelectionView_Serialize = {
 	active_project: number | null,
 	menu_open: boolean,
+};
+
+export type ProjectSkills = ProjectSkills_Serialize | ProjectSkills_Deserialize;
+
+export type ProjectSkills_Deserialize = {
+	packs?: { [key in string]: PackSelection_Deserialize },
+};
+
+export type ProjectSkills_Serialize = {
+	packs: { [key in string]: PackSelection_Serialize },
 };
 
 /**  The proof card for one PR head. */
@@ -3175,6 +3204,23 @@ export type SkillLibrarySnapshot_Serialize = {
 	bundle_counts: SkillPackBundleCounts_Serialize[],
 };
 
+/**  A stdio MCP server a skill pack contributes to the shared MCP servers. */
+export type SkillMcpServer = SkillMcpServer_Serialize | SkillMcpServer_Deserialize;
+
+/**  A stdio MCP server a skill pack contributes to the shared MCP servers. */
+export type SkillMcpServer_Deserialize = {
+	name?: string,
+	command?: string,
+	arguments?: string[],
+};
+
+/**  A stdio MCP server a skill pack contributes to the shared MCP servers. */
+export type SkillMcpServer_Serialize = {
+	name: string,
+	command: string,
+	arguments: string[],
+};
+
 /**  The real bundle counts of one installed pack, for its card's chips. */
 export type SkillPackBundleCounts = SkillPackBundleCounts_Serialize | SkillPackBundleCounts_Deserialize;
 
@@ -3188,6 +3234,28 @@ export type SkillPackBundleCounts_Deserialize = {
 export type SkillPackBundleCounts_Serialize = {
 	pack_id: string,
 	bundles: SkillBundleCount_Serialize[],
+};
+
+export type SkillPackCard = SkillPackCard_Serialize | SkillPackCard_Deserialize;
+
+export type SkillPackCard_Deserialize = {
+	catalog: SkillPackCatalogEntry_Deserialize,
+	installed: boolean,
+	pin: string,
+	selection: PackSelection_Deserialize,
+	enabled_count: number,
+	requirements: string[],
+	details?: SkillPackDetails_Deserialize,
+};
+
+export type SkillPackCard_Serialize = {
+	catalog: SkillPackCatalogEntry_Serialize,
+	installed: boolean,
+	pin: string,
+	selection: PackSelection_Serialize,
+	enabled_count: number,
+	requirements: string[],
+	details: SkillPackDetails_Serialize,
 };
 
 /**  Static metadata for a built-in or user-added skill pack (SPEC.md F18). */
@@ -3219,6 +3287,29 @@ export type SkillPackCatalogEntry_Serialize = {
 	requires_python: boolean,
 	requires_node: boolean,
 	bundles: SkillBundleDefinition_Serialize[],
+};
+
+/**  The pack-specific rows of one card. Every field is empty for packs without one. */
+export type SkillPackDetails = SkillPackDetails_Serialize | SkillPackDetails_Deserialize;
+
+/**  The pack-specific rows of one card. Every field is empty for packs without one. */
+export type SkillPackDetails_Deserialize = {
+	/**  UI UX Pro Max, while on: the design system and its Generate / Regenerate row. */
+	design_system?: DesignSystemStatus_Deserialize | null,
+	/**  Game dev skills: the engine the project's files show. */
+	engine?: GameEngineDetection_Deserialize | null,
+	/**  REA, while on and installed: the MCP server every new agent gets. */
+	shared_server?: SkillMcpServer_Deserialize | null,
+};
+
+/**  The pack-specific rows of one card. Every field is empty for packs without one. */
+export type SkillPackDetails_Serialize = {
+	/**  UI UX Pro Max, while on: the design system and its Generate / Regenerate row. */
+	design_system: DesignSystemStatus_Serialize | null,
+	/**  Game dev skills: the engine the project's files show. */
+	engine: GameEngineDetection_Serialize | null,
+	/**  REA, while on and installed: the MCP server every new agent gets. */
+	shared_server: SkillMcpServer_Serialize | null,
 };
 
 /**  Diff of a single file between the pinned commit and a candidate upstream commit (SPEC.md F18). */
@@ -3278,6 +3369,35 @@ export type SkillPackUpdatePreview_Serialize = {
 	data_files_changed: number,
 	files: SkillPackDiffFile_Serialize[],
 	unified_diff: string,
+};
+
+export type SkillSettingsEdit = ({ Pack: {
+	identifier: string,
+	enabled: boolean,
+} }) & { Bundle?: never } | ({ Bundle: {
+	identifier: string,
+	bundle: string,
+	enabled: boolean,
+} }) & { Pack?: never };
+
+export type SkillsSettingsView = SkillsSettingsView_Serialize | SkillsSettingsView_Deserialize;
+
+export type SkillsSettingsView_Deserialize = {
+	project_identifier: number,
+	project_name: string,
+	cards: SkillPackCard_Deserialize[],
+	enabled_count: number,
+	description_tokens: number,
+	budget_warning: boolean,
+};
+
+export type SkillsSettingsView_Serialize = {
+	project_identifier: number,
+	project_name: string,
+	cards: SkillPackCard_Serialize[],
+	enabled_count: number,
+	description_tokens: number,
+	budget_warning: boolean,
 };
 
 export type SlashCommandItem = {

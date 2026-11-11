@@ -221,13 +221,15 @@ pub(super) fn initialize_request() -> InitializeRequest {
         .client_info(Implementation::new("velocity", env!("CARGO_PKG_VERSION")))
 }
 
-/// AIRC, then the shared servers, keeping the first server of each name.
+/// AIRC, then the shared servers (the launch path's own, then the app's for the session's
+/// folder), keeping the first server of each name.
 pub fn session_servers(setup: &SessionSetup) -> Vec<McpServer> {
     let servers: Vec<McpServer> = setup
         .airc
         .iter()
         .cloned()
         .chain(setup.shared_servers.iter().cloned())
+        .chain(super::shared::shared_servers_for(&setup.worktree))
         .collect();
     let keep: Vec<bool> = {
         let names: Vec<Option<&str>> = servers.iter().map(server_name).collect();
