@@ -57,6 +57,7 @@ SPEC.md defines what to build. The project Task List defines what is left.
 - Read the project's build, run and lint commands from its manifests and SPEC.md before running them. Record those commands here when they are established.
 - For a project with a pinned Lean project, run `lake build` in `proofs/` before pushing proof changes.
 - Run the project's local checks on the merge result before marking a PR ready. Lint reports zero warnings.
+- Build and check only what your change can affect. A change to docs or SPEC.md needs no build. A change to one part, such as the UI or one package, needs that part's checks, not the whole project's. Never run a build or check again when nothing it covers changed since it last passed.
 
 ## Code
 - Keep functions under 60 lines. Split anything longer.
