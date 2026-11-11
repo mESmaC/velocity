@@ -288,14 +288,13 @@
   --layout-pulse-dot-width: 6px;
   --layout-pulse-dot-height: 6px;
   --layout-pulse-dot-border-radius: 50%;
-  --layout-sidebar-panel-body-composer-pulse-border: 1px solid transparent;
+  --layout-sidebar-panel-body-composer-pulse-border: 1px solid var(--pane-edge);
   --layout-sidebar-panel-body-composer-pulse-background:
-    var(--sheen) padding-box, var(--pane) padding-box,
-    linear-gradient(#000, #000) padding-box, var(--rim) border-box;
+    var(--sheen), var(--pane);
   --layout-sidebar-min-height: 0;
   --layout-sidebar-margin: 0 6px 10px 10px;
   --layout-sidebar-padding: 10px 8px 8px;
-  --layout-sidebar-border-radius: 16px;
+  --layout-sidebar-border-radius: 22px;
   --layout-search-row-gap: 8px;
   --layout-search-row-margin-bottom: 12px;
   --layout-search-flex: 1;
@@ -333,7 +332,7 @@
   --layout-thread-padding: 6px 8px 6px 9px;
   --layout-thread-margin-bottom: 2px;
   --layout-thread-border: 1px solid transparent;
-  --layout-thread-border-radius: 9px;
+  --layout-thread-border-radius: 12px;
   --layout-thread-hover-background: rgba(255, 255, 255, 0.05);
   --layout-thread-active-border-color: var(--accent-line);
   --layout-thread-active-background: linear-gradient(
@@ -428,13 +427,11 @@
   --layout-home-view-flex: 1;
   --layout-home-view-padding: 0 24px 40px;
   --layout-composer-width: min(560px, 100%);
-  --layout-composer-padding: 10px 10px 8px 12px;
-  --layout-composer-border-radius: 18px;
-  --layout-composer-focus-within-background:
-    var(--sheen) padding-box, var(--pane) padding-box,
-    linear-gradient(#000, #000) padding-box, var(--rim-hot) border-box;
+  --layout-composer-padding: 12px 12px 10px 16px;
+  --layout-composer-border-radius: 24px;
+  --layout-composer-focus-within-background: var(--sheen), var(--pane);
   --layout-composer-focus-within-box-shadow:
-    var(--glass-hi), 0 0 0 3px var(--accent-soft);
+    var(--pane-lift), 0 0 0 3px var(--accent-soft);
   --layout-composer-textarea-border: 0;
   --layout-composer-textarea-outline: 0;
   --layout-composer-textarea-min-height: 44px;
@@ -496,7 +493,7 @@
   --layout-panel-body-flex: 1;
   --layout-panel-body-min-height: 0;
   --layout-panel-body-padding: 5px;
-  --layout-panel-body-border-radius: 14px;
+  --layout-panel-body-border-radius: 20px;
   --layout-empty-margin: 0;
   --layout-empty-padding: 8px;
   --layout-empty-font-size: 10.5px;
@@ -578,12 +575,12 @@
   --thread-view-flex: 1;
   --thread-view-min-height: 0;
   --thread-head-gap: 10px;
-  --thread-head-padding: 12px 22px 11px;
-  --thread-head-border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+  --thread-head-padding: 10px 22px 12px;
+  --thread-head-border-bottom: 1px solid transparent;
   --thread-head-h1-margin: 0;
-  --thread-head-h1-font-size: 13.5px;
+  --thread-head-h1-font-size: 20px;
   --thread-head-h1-font-weight: 600;
-  --thread-head-h1-letter-spacing: -0.01em;
+  --thread-head-h1-letter-spacing: -0.02em;
   --thread-head-h1-color: #fff;
   --thread-ttl-chip-margin-left: 10px;
   --thread-ttl-chip-padding: 1px 8px;
@@ -631,7 +628,7 @@
   --thread-msg-user-max-width: 82%;
   --thread-msg-user-padding: 8px 12px;
   --thread-msg-user-border: 0;
-  --thread-msg-user-border-radius: 17px 17px 5px 17px;
+  --thread-msg-user-border-radius: 20px 20px 6px 20px;
   --thread-msg-user-font-size: 12px;
   --thread-msg-user-color: #fff;
   --thread-msg-user-background: linear-gradient(
@@ -646,9 +643,6 @@
   --thread-msg-code-padding: 1px 4px;
   --thread-msg-code-border-radius: 4px;
   --thread-msg-code-background: rgba(255, 255, 255, 0.1);
-  --thread-tools-border-left: 1px solid rgba(255, 255, 255, 0.09);
-  --thread-tools-margin-left: 4px;
-  --thread-tools-padding-left: 12px;
   --thread-tools-gap: 1px;
   --thread-tool-grid-template-columns: 14px 46px minmax(0, 1fr) auto;
   --thread-tool-gap: 8px;
@@ -1477,4 +1471,25 @@
   --colour-branch-border-radius: 999px;
   --colour-swarm-button-border-color: rgba(95, 212, 196, 0.3);
   --colour-swarm-button-background: rgba(95, 212, 196, 0.12);
+}
+
+/* Glass shell, from the "glass shell" rules that close the stylesheet in
+   design/main-window.html: the two-line thread header, its pill buttons and the
+   tool-step card with its accent running row. */
+:root {
+  --glass-head-row-gap: 6px;
+  --glass-head-title-flex: 1 1 0;
+  --glass-head-meta-order: 3;
+  --glass-head-meta-flex: 0 0 100%;
+  --glass-head-btn-height: 26px;
+  --glass-head-btn-padding: 0 12px;
+  --glass-head-btn-border-radius: 999px;
+  --glass-tools-margin-left: 0;
+  --glass-tools-padding: 6px 12px;
+  --glass-tools-border: 1px solid rgba(255, 255, 255, 0.09);
+  --glass-tools-border-radius: 14px;
+  --glass-tools-background: rgba(255, 255, 255, 0.03);
+  --glass-tool-running-margin: 2px -6px 0;
+  --glass-tool-running-padding: 4px 6px;
+  --glass-tool-running-border-radius: 9px;
 }

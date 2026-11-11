@@ -126,6 +126,11 @@ kbd {
 .pulse {
   border: var(--layout-sidebar-panel-body-composer-pulse-border);
   background: var(--layout-sidebar-panel-body-composer-pulse-background);
+  box-shadow: var(--pane-lift);
+  backdrop-filter: var(--blur-pane);
+}
+/* The title-bar capsule is glass too, but stays flat. */
+.pulse {
   box-shadow: var(--glass-hi);
 }
 .sidebar {
@@ -439,7 +444,7 @@ kbd {
   min-width: var(--layout-main-view-min-width);
   min-height: var(--layout-main-view-min-height);
   margin: var(--layout-main-view-margin);
-  background: var(--bg);
+  background: transparent;
 }
 .home-view {
   flex: var(--layout-home-view-flex);
@@ -457,6 +462,7 @@ kbd {
   border-radius: var(--layout-composer-border-radius);
 }
 .composer:focus-within {
+  border-color: var(--accent-line);
   background: var(--layout-composer-focus-within-background);
   box-shadow: var(--layout-composer-focus-within-box-shadow);
 }

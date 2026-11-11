@@ -1174,19 +1174,20 @@ How the card is made *(proposed)*:
 
 - **Base:** OLED, Apple-inspired **graphite** with glassy panes. Black is true black.
   - **Window:** opaque `#000`. There is no desktop show-through (no Mica, Acrylic or vibrancy) because true black is the point.
+    - Two faint pools of light sit behind the panes (`--ambient`: the accent at the top-left, the duty violet at the bottom-right) so the glass has something to refract. Everything else stays black.
   - **Layout:**
     - The sidebar is one floating glass pane, and each rail panel is its own pane.
-    - The main column has no panel: content sits straight on black.
+    - The main column has no panel: content sits straight on the window.
+    - The thread header has two lines: the title (20 px) with Diff and Editor as pill buttons beside it, and the meta line (branch, worktree, diff counts, time) under it.
   - **Materials:**
     - Panes are smoked glass:
-      - a top-lit fill `rgba(255,255,255,.072)` → `.034` over black, plus a faint top-left sheen;
-      - a 1px specular rim, a 165° gradient from `rgba(255,255,255,.30)` at the top-left fading to `.04` and back to `.11` at the bottom-right;
-      - a 1px inner top highlight.
-    - The rim brightens on focus (the composer) and on hover (chips).
+      - a translucent top-lit fill `rgba(255,255,255,.072)` → `.034`, plus a faint top-left sheen, over `blur(36px) saturate(1.7)` of whatever is behind the pane;
+      - a 1px `rgba(255,255,255,.14)` edge and a 1px inner top highlight at 20%;
+      - a soft `0 18px 50px rgba(0,0,0,.55)` lift, so panes float.
+    - The composer takes an accent edge and a 3px accent ring on focus; chips brighten their rim on hover.
     - Popovers, menus, dialogs and toasts are frosted glass: `rgba(44,44,48,.72)` → `rgba(26,26,28,.80)` with `blur(48px) saturate(1.9)` over the content beneath them. The scrim dims to `rgba(0,0,0,.5)` and blurs.
-    - Cards in the content area take a faint top-lit fill and a `rgba(255,255,255,.09)` hairline.
-    - No drop shadows on panes, because they don't read on black.
-  - **Shape:** corner radii 6 / 10 / 14 px. Panes 14–16 px, the composer and dialogs 18 px, menus 12 px. Pills and toasts are fully round.
+    - Cards in the content area take a faint top-lit fill and a `rgba(255,255,255,.09)` hairline. Tool steps sit together in one such card, and the running step is an accent-tinted row.
+  - **Shape:** corner radii 6 / 10 / 14 px. The sidebar is 22 px, rail panels 20 px, the composer 24 px, thread rows 12 px, dialogs 18 px, menus 12 px. Pills and toasts are fully round.
   - **Controls:** the accent is ion blue `#6a8dff`, used for the selected thread, focus rings, checkboxes, the primary button, the send button and anything running. `--accent-soft` (16%) fills and `--accent-line` (46%) rims are its two tints.
     - Thread rows are source-list rows. The selection is a small accent-tinted lozenge with an accent rim, not an outlined box.
     - Segmented controls use a sliding raised segment, and buttons are subtle raised gradients.
