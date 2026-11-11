@@ -1,5 +1,6 @@
 <script lang="ts">
   import { onMount, tick } from 'svelte';
+  import { pop } from './motion';
   import type { LayoutAction, LayoutSnapshot } from './ipc';
   let {
     layout,
@@ -36,6 +37,7 @@
 
 <dialog
   bind:this={dialog}
+  in:pop|global
   class="palette-dialog"
   aria-label="Command palette"
   oncancel={(event) => {
