@@ -15,6 +15,19 @@ pub enum NewProjectLocation {
     GitHubNew,
     /// GitHub · Existing repo: clone it.
     GitHubExisting,
+    /// Open project · folder: register a checkout that already exists, as it is.
+    OpenFolder,
+    /// Open project · GitHub: clone one of your repositories, or open the clone
+    /// already in the target folder.
+    OpenGitHub,
+}
+
+impl NewProjectLocation {
+    /// Opening adopts a project that already exists, so its own SPEC.md decides
+    /// whether a spec interview is needed.
+    pub fn opens_existing(self) -> bool {
+        matches!(self, Self::OpenFolder | Self::OpenGitHub)
+    }
 }
 
 /// What Velocity observed about the request's path and repository before acting.
@@ -28,6 +41,8 @@ pub struct Observation {
     pub remote_exists: bool,
     /// The clone target exists and is not empty.
     pub target_occupied: bool,
+    /// The clone target is already a checkout whose origin is this repository.
+    pub target_is_checkout: bool,
 }
 
 /// One unit of setup work, in the order Create runs them.
@@ -46,6 +61,9 @@ pub enum SetupStep {
     /// Record the spec interview with the dialog's model, effort, speed and brief.
     /// The interview thread itself starts once F3 lands (#25).
     StartInterview,
+    /// Opened projects: lock the spec when the checkout already has SPEC.md, and
+    /// record the spec interview otherwise (Rule 2).
+    AdoptSpec,
 }
 
 /// Why Create cannot set the project up. Nothing has run when this is returned.
@@ -87,7 +105,16 @@ pub fn setup_steps(
                 Ok(Vec::from([SetupStep::CreateRemote, SetupStep::Clone]))
             }
         }
-        NewProjectLocation::GitHubExisting => {
+        NewProjectLocation::OpenFolder => {
+            if observation.is_repository {
+                Ok(Vec::new())
+            } else {
+                Err(Refusal::NotARepository)
+            }
+        }
+        // A clone you already have opens in place, so no network is needed for it.
+        NewProjectLocation::OpenGitHub if observation.target_is_checkout => Ok(Vec::new()),
+        NewProjectLocation::GitHubExisting | NewProjectLocation::OpenGitHub => {
             if !observation.remote_exists {
                 Err(Refusal::RemoteMissing)
             } else if observation.target_occupied {
@@ -108,10 +135,11 @@ pub fn plan_new_project(
         return Err(Refusal::AlreadyAProject);
     }
     let mut steps = setup_steps(location, observation)?;
-    steps.extend([
-        SetupStep::Register,
-        SetupStep::SwitchTo,
-        SetupStep::StartInterview,
-    ]);
+    let spec_step = if location.opens_existing() {
+        SetupStep::AdoptSpec
+    } else {
+        SetupStep::StartInterview
+    };
+    steps.extend([SetupStep::Register, SetupStep::SwitchTo, spec_step]);
     Ok(steps)
 }

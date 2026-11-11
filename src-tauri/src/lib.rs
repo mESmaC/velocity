@@ -121,6 +121,8 @@ fn bindings() -> Builder<tauri::Wry> {
         new_project::get_new_project_defaults,
         new_project::pick_project_folder,
         new_project::create_project,
+        new_project::open_project,
+        new_project::get_github_repositories,
         build_gate::get_launch_eligibility,
     ]);
     event_bindings(builder)
@@ -217,6 +219,7 @@ pub fn run() -> anyhow::Result<()> {
         .manage(agents::ManagedAgents::default())
         .manage(goal_swarm::GoalSwarmPool::default())
         .manage(layout::MainLayout::default())
+        .manage(new_project::ManagedRepositoryPicker::default())
         .manage(providers::ManagedProviders::default())
         .manage(airc_modal::ManagedAircModal::default())
         .manage(threads::ManagedThreads::default())

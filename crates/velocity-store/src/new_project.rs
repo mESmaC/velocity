@@ -13,6 +13,34 @@ pub struct NewProjectRecord {
     pub repository_path: String,
     pub default_branch: String,
     pub github_remote: Option<String>,
+    /// Open project adopts a SPEC.md the checkout already has as its locked spec.
+    pub spec_locked: bool,
+}
+
+impl NewProjectRecord {
+    /// A local project with no GitHub remote and its spec still to be written.
+    pub fn new(name: String, repository_path: String, default_branch: String) -> Self {
+        Self {
+            name,
+            location_kind: ProjectLocationKind::Local,
+            repository_path,
+            default_branch,
+            github_remote: None,
+            spec_locked: false,
+        }
+    }
+
+    /// The project lives on GitHub at `owner/name`.
+    pub fn on_github(mut self, full_name: String) -> Self {
+        self.location_kind = ProjectLocationKind::GitHub;
+        self.github_remote = Some(full_name);
+        self
+    }
+
+    pub fn with_spec_locked(mut self, spec_locked: bool) -> Self {
+        self.spec_locked = spec_locked;
+        self
+    }
 }
 
 impl StateStore {
@@ -66,6 +94,7 @@ fn project_item(
     project.location_kind = record.location_kind;
     project.default_branch = record.default_branch;
     project.github_remote = record.github_remote;
+    project.spec_locked = record.spec_locked;
     project.pending_interview = interview;
     project
 }

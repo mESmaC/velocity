@@ -42,3 +42,78 @@
   border-top: var(--project-menu-divider-top);
   margin: var(--project-menu-divider-margin);
 }
+/* Open from GitHub: the repository picker that replaces the project list. */
+.project-menu.github {
+  width: var(--project-menu-github-width);
+}
+.project-menu .menu-head {
+  display: flex;
+  align-items: center;
+  gap: var(--project-menu-head-gap);
+  padding: var(--project-menu-head-padding);
+  font-size: var(--project-menu-head-font-size);
+  color: var(--muted);
+}
+.project-menu .menu-head button {
+  width: var(--project-menu-head-button-width);
+  padding: var(--project-menu-head-button-padding);
+}
+.project-menu .inp {
+  display: flex;
+  align-items: center;
+  gap: var(--new-project-input-gap);
+  height: var(--new-project-input-height);
+  margin: var(--project-menu-input-margin);
+  padding: var(--new-project-input-padding);
+  border: var(--new-project-input-border);
+  border-radius: var(--new-project-input-border-radius);
+  background: var(--new-project-input-background);
+}
+.project-menu .inp:focus-within {
+  border-color: var(--new-project-input-focus-border-color);
+  box-shadow: var(--focus);
+}
+.project-menu .inp input {
+  flex: 1;
+  width: 0;
+  min-width: 0;
+  border: 0;
+  outline: 0;
+  background: none;
+  color: var(--text);
+  font: var(--new-project-input-font-size) var(--mono);
+}
+.project-menu .repository-list {
+  max-height: var(--project-menu-list-max-height);
+  overflow-y: auto;
+}
+.project-menu .repository-name {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font: var(--project-menu-repository-font);
+}
+.project-menu .menu-note {
+  margin: var(--project-menu-note-margin);
+  padding: var(--project-menu-note-padding);
+  font-size: var(--project-menu-note-font-size);
+  color: var(--muted);
+}
+.project-menu .clone-row {
+  display: flex;
+  align-items: center;
+  gap: var(--project-menu-clone-gap);
+  margin-top: var(--project-menu-clone-margin-top);
+  padding: var(--project-menu-clone-padding);
+  border-top: var(--project-menu-clone-border-top);
+}
+.project-menu .clone-row > span {
+  font-size: var(--project-menu-clone-label-font-size);
+  color: var(--muted);
+  white-space: nowrap;
+}
+.project-menu .clone-row .inp {
+  flex: 1;
+  margin: var(--project-menu-clone-input-margin);
+}

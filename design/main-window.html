@@ -473,6 +473,16 @@ kbd {
 .proj-menu button:hover, .proj-menu button.cur { background: var(--surface-3); color: var(--text); }
 .proj-menu .sub { margin-left: auto; font: 10px var(--mono); color: var(--muted); }
 .proj-menu hr { border: 0; border-top: 1px solid var(--line-dim); margin: 4px 0; }
+.proj-menu.gh { width: 300px; }
+.pm-head { display: flex; align-items: center; gap: 6px; padding: 1px 2px 5px; font-size: 10.5px; color: var(--muted); }
+.proj-menu .pm-head button { width: auto; padding: 3px 7px; }
+.proj-menu .inp { margin: 0 2px 4px; }
+.pm-list { max-height: 260px; overflow-y: auto; }
+.pm-list .name { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font: 11px var(--mono); }
+.pm-note { margin: 0; padding: 6px 8px; font-size: 10.5px; color: var(--muted); }
+.pm-clone { display: flex; align-items: center; gap: 6px; margin-top: 4px; padding: 5px 2px 1px; border-top: 1px solid var(--line-dim); }
+.pm-clone > span { font-size: 10.5px; color: var(--muted); white-space: nowrap; }
+.proj-menu .pm-clone .inp { margin: 0; }
 
 /* ───────────────────────── new project modal ───────────────────────── */
 .np-scrim { position: fixed; inset: 0; background: #000c; display: none; align-items: center; justify-content: center; z-index: 25; }
@@ -2411,17 +2421,66 @@ function createProject() {
 }
 
 /* ───────────── project switcher ───────────── */
+/* Open project: an existing checkout, or one of your GitHub repositories (yours and
+   your organisations', read through gh). A project with SPEC.md opens with its spec
+   locked; without one, the spec interview starts as for a new project (Rule 2). */
+const IC_FOLDER = `<svg class="i" viewBox="0 0 16 16"><path d="M1.5 4h5l1.5 1.5h6.5v7H1.5zM1.5 5V3h5l1.5 1"/></svg>`;
+const IC_GH = `<svg class="i" viewBox="0 0 16 16"><path d="M6 3.5a1.5 1.5 0 1 1-3 0 1.5 1.5 0 0 1 3 0M6 12.5a1.5 1.5 0 1 1-3 0 1.5 1.5 0 0 1 3 0M13 5.5a1.5 1.5 0 1 1-3 0 1.5 1.5 0 0 1 3 0M4.5 5v6M11.5 7c0 2.5-2 3-7 4"/></svg>`;
+const MY_REPOS = [
+  { full:'you/velocity', priv:false, spec:true }, { full:'you/dotfiles', priv:true, spec:false },
+  { full:'acme/billing-api', priv:true, spec:true }, { full:'acme/web', priv:true, spec:false },
+  { full:'you/raytracer', priv:false, spec:false }, { full:'acme/infra', priv:true, spec:true },
+];
+let pmView = 'list', pmQuery = '';
 function renderProjMenu() {
-  $('#projMenu').innerHTML = Object.values(projects).map(p => `<button data-proj="${esc(p.name)}" class="${p===state?'cur':''}">${esc(p.name)}<span class="sub">${p.specLocked ? p.where : 'speccing'}</span></button>`).join('')
-    + `<hr><button data-proj-new>${I.plus}New project…<span class="sub">Ctrl⇧N</span></button>`;
+  const m = $('#projMenu');
+  m.classList.toggle('gh', pmView === 'gh');
+  if (pmView === 'gh') return renderGhMenu();
+  m.innerHTML = Object.values(projects).map(p => `<button data-proj="${esc(p.name)}" class="${p===state?'cur':''}">${esc(p.name)}<span class="sub">${p.specLocked ? p.where : 'speccing'}</span></button>`).join('')
+    + `<hr><button data-proj-new>${I.plus}New project…<span class="sub">Ctrl⇧N</span></button>`
+    + `<button data-proj-open>${IC_FOLDER}Open folder…</button>`
+    + `<button data-proj-gh>${IC_GH}Open from GitHub…</button>`;
+}
+function renderGhMenu() {
+  const words = pmQuery.toLowerCase().split(/\s+/).filter(Boolean);
+  const rows = MY_REPOS.filter(r => words.every(w => r.full.includes(w)));
+  const typed = /^[\w.-]+\/[\w.-]+$/.test(pmQuery.trim()) && !MY_REPOS.some(r => r.full === pmQuery.trim());
+  $('#projMenu').innerHTML = `<div class="pm-head"><button data-pm-back>‹ Back</button>Your repositories</div>`
+    + `<label class="inp"><input id="pmSearch" placeholder="Search, or type owner/name" value="${esc(pmQuery)}" spellcheck="false"></label>`
+    + `<div class="pm-list">${rows.map(r => `<button data-pm-repo="${esc(r.full)}"><span class="name">${esc(r.full)}</span><span class="sub">${r.priv ? 'private' : 'public'}</span></button>`).join('')}`
+    + (typed ? `<button data-pm-repo="${esc(pmQuery.trim())}"><span class="name">Open ${esc(pmQuery.trim())}</span></button>` : '')
+    + (!rows.length && !typed ? `<p class="pm-note">No repositories match.</p>` : '') + `</div>`
+    + `<div class="pm-clone"><span>Clone to</span><label class="inp"><input id="pmClone" value="C:\\Users\\you\\" spellcheck="false"></label></div>`;
+  const input = $('#pmSearch'); input.focus(); input.setSelectionRange(input.value.length, input.value.length);
+  input.oninput = () => { pmQuery = input.value; renderGhMenu(); };
+}
+function openExisting(name, where, hasSpec) {
+  while (projects[name]) name += '-2';
+  const proj = { name, where, specLocked: hasSpec, active: hasSpec ? null : 'spec', threads:[], prs:[], issues:[], tasks:[] };
+  if (!hasSpec) {
+    const m = MODELS[0];
+    proj.threads.push({ id:'spec', title:'Project spec', status:'spec', prov:m.prov, model:m.name, effort:'Low', speed:'Regular', proj,
+      spec:{ phase:'scan', scan:0, q:0, answers:[], brief:'',
+        rows:[['Read', 'README.md · AGENTS.md', 'read'], ['Search', 'src/**', 'mapped'], ['Search', 'SPEC.md', 'none']],
+        summary:'Opened an existing project with no SPEC.md. I read the code; I’ll ask about anything it leaves open.' } });
+  }
+  projects[name] = proj; pmView = 'list'; pmQuery = '';
+  switchProject(name);
+  if (!hasSpec) setTimeout(() => scanTick(proj.threads[0]), 350);
+  toast(hasSpec ? `Opened ${name} · SPEC.md found, spec locked` : `Opened ${name} · no SPEC.md, interview started`);
 }
 function switchProject(name) {
   state = projects[name]; $('#projName').textContent = name; $('#projMenu').classList.remove('on');
   $('#search').value = ''; select(state.active);
 }
-$('#projectBtn').onclick = e => { e.stopPropagation(); renderProjMenu(); $('#projMenu').classList.toggle('on'); };
+$('#projectBtn').onclick = e => { e.stopPropagation(); pmView = 'list'; renderProjMenu(); $('#projMenu').classList.toggle('on'); };
 $('#projMenu').addEventListener('click', e => {
   if (e.target.closest('[data-proj-new]')) return openNewProject();
+  if (e.target.closest('[data-proj-open]')) return openExisting('my-app', 'local', false);
+  if (e.target.closest('[data-proj-gh]')) { pmView = 'gh'; return renderProjMenu(); }
+  if (e.target.closest('[data-pm-back]')) { pmView = 'list'; return renderProjMenu(); }
+  const r = e.target.closest('[data-pm-repo]');
+  if (r) { const repo = MY_REPOS.find(x => x.full === r.dataset.pmRepo); return openExisting(r.dataset.pmRepo.split('/').pop(), 'github', !!repo?.spec); }
   const b = e.target.closest('[data-proj]'); if (b) switchProject(b.dataset.proj);
 });
 document.addEventListener('mousedown', e => { if (!e.target.closest('.brand')) $('#projMenu').classList.remove('on'); });

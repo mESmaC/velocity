@@ -22,6 +22,7 @@ mod pull_request_reviews;
 mod pull_request_types;
 mod pull_requests;
 mod repository;
+mod repository_list;
 mod scout_directory;
 mod scout_evidence;
 mod scout_issues;
@@ -45,6 +46,7 @@ pub use pull_requests::PullRequestClient;
 pub use repository::{
     GitHubError, RepositoryName, Visibility, clone_repository, create_repository, repository_exists,
 };
+pub use repository_list::{GitHubRepository, checkout_repository, list_your_repositories};
 pub use scout_evidence::Reproduction;
 pub use scout_issues::{ScoutFinding, ScoutIssueError, ScoutIssueOutcome};
 pub use scout_reference::{ReferenceComparison, ReferenceComparisonResult};
