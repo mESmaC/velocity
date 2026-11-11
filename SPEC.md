@@ -1020,6 +1020,13 @@ theorem optimal : ∀ strat ∈ RebaseStrategies,
 | **reference** (default) | The Lean model exports a compact fixture table, and one test checks the code against it. For larger input spaces, the model is compiled (Lean 4 compiles to C) and exported with `@[export]`. Scouts' stress scripts run the code and the model on the same inputs and diff the outputs. C and C++ link the model directly. Python, TypeScript and every other language call it through their FFI or a small process. | Every language |
 | **model** | Only the design is proven. The PR is flagged, and scouts treat it as a proof gap. | Every language |
 
+**How Velocity reads the level** *(proposed)*. For each proof-list feature a PR touches (a file in `proofs/<Feature>/`, its root module or its fixture table, where `<Feature>/Design.lean` exists), Velocity reads the checkout without building anything:
+- **code** for Rust when `proofs/<Feature>/Generated/` holds the Aeneas translation and `proofs/<Feature>/Confidence.lean` exists;
+- **reference** for each language whose tracked code outside `proofs/` names the feature's fixture table `proofs/fixtures/<feature>.tsv` (the folder name in kebab case: `TargetedRebase` → `targeted-rebase`), a test or a stress driver;
+- **model** otherwise, listed for each language the PR changes, or once with no language when it changes no code.
+
+A language's strongest level is code where a translator exists (Rust: Aeneas) and reference everywhere else until Q23 adds translators. The levels go on the proof check report and into PR duty's prompt with the other checks, one line per feature and language with its evidence. A model-only level where a stronger one is available is flagged there and never fails the checks.
+
 **Generated translations** (Aeneas output) are marked generated in `.gitattributes`, so they stay out of language statistics and PR diffs.
 
 **Bug fixes:** no design proof. In a proof-list feature, the confidence proof must cover the input the scout's evidence failed on. Elsewhere, a fix has no Lean. The fixing agent copies the scout's script into `stress/` unchanged as part of its PR. Copying isn't writing: Velocity checks the file matches the issue's attachment byte for byte.
@@ -1276,7 +1283,7 @@ Each milestone ends with a working app. PR duty checks an item off when it lands
 - [ ] Proof card on the PR, "Proved" on the PR track, `proved`/`statement`/`stress` events
 - [ ] Merge gate in PR duty; statement review; tiers updated (F7)
 - [x] Scouts: assume-it-fails sweeps, evidence required, Stress and Proof gaps focus areas, stress runs against Lean reference models
-- [ ] Levels per language: reference by default (fixture table plus one test; compiled Lean model through FFI for stress), code on request (Aeneas for Rust), model
+- [x] Levels per language: reference by default (fixture table plus one test; compiled Lean model through FFI for stress), code on request (Aeneas for Rust), model
 - [ ] AGENTS.md: Implementation first, Proofs, and Tests and docs sections; Covers check (F11)
 
 **M12 · Skills** (F18)

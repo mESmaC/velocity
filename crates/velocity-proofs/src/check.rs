@@ -8,6 +8,9 @@ use std::process::{Command, Output};
 use crate::ProofCheckError;
 use crate::axioms::{audit_script, module_name, parse_audit};
 use crate::lean_source::{ProofFile, names_spec_section, placeholders};
+use crate::levels::{
+    FeatureLevels, feature_evidence, feature_levels, fixture_name, touched_features,
+};
 use crate::report::{CheckStep, ProofCheckReport};
 use crate::statement_lock::StatementLock;
 
@@ -29,8 +32,11 @@ pub fn check_worktree(
         return Ok(ProofCheckReport::nothing_changed(None));
     };
     let changed = changed_proof_files(worktree, &folder, base, head)?;
+    let levels = proof_levels(worktree, &folder, base, head)?;
     if changed.is_empty() {
-        return Ok(ProofCheckReport::nothing_changed(Some(folder)));
+        let mut report = ProofCheckReport::nothing_changed(Some(folder));
+        report.levels = levels;
+        return Ok(report);
     }
     let files: Vec<ProofFile> = changed
         .iter()
@@ -56,7 +62,91 @@ pub fn check_worktree(
             .map(|file| file.path.clone())
             .collect(),
         changed,
+        levels,
     })
+}
+
+/// The proof levels alone, without building anything: what the proof card shows per
+/// language. Empty when the worktree has no Lake project or the PR touches no proof-list
+/// feature.
+pub fn levels_between(
+    worktree: &Path,
+    base: &str,
+    head: &str,
+) -> Result<Vec<FeatureLevels>, ProofCheckError> {
+    match project_folder(worktree) {
+        Some(folder) => proof_levels(worktree, &folder, base, head),
+        None => Ok(Vec::new()),
+    }
+}
+
+/// The level each language reaches for every proof-list feature the PR touches (F17
+/// Confidence proof), read from the checkout's tracked files: the feature's translation and
+/// confidence proof, its fixture table, and the code outside the Lake project that reads it.
+fn proof_levels(
+    worktree: &Path,
+    folder: &str,
+    base: &str,
+    head: &str,
+) -> Result<Vec<FeatureLevels>, ProofCheckError> {
+    let range = format!("{base}...{head}");
+    let changed = git(
+        worktree,
+        &["diff", "--name-only", "-z", "--diff-filter=ACMR", &range],
+    )?;
+    let changed: Vec<&str> = changed
+        .split('\0')
+        .filter(|path| !path.is_empty())
+        .collect();
+    let tracked = git(worktree, &["ls-files", "-z", "--", folder])?;
+    let tracked: Vec<&str> = tracked
+        .split('\0')
+        .filter(|path| !path.is_empty())
+        .collect();
+    let prefix = format!("{folder}/");
+    let changed_code: Vec<String> = changed
+        .iter()
+        .filter(|path| !path.starts_with(&prefix))
+        .map(|path| (*path).to_owned())
+        .collect();
+    touched_features(&changed, &tracked, &prefix)
+        .iter()
+        .map(|feature| {
+            let readers = fixture_readers(worktree, folder, &fixture_name(feature))?;
+            let evidence = feature_evidence(feature, &tracked, &prefix, readers);
+            Ok(feature_levels(&evidence, &changed_code))
+        })
+        .collect()
+}
+
+/// Tracked files outside the Lake project that name `<fixture>.tsv`: the test or stress
+/// driver that checks an implementation against the model's table.
+fn fixture_readers(
+    worktree: &Path,
+    folder: &str,
+    fixture: &str,
+) -> Result<Vec<String>, ProofCheckError> {
+    let file = format!("{fixture}.tsv");
+    let outside = format!(":(exclude){folder}");
+    let mut command = Command::new("git");
+    command
+        .args(["-c", "core.longpaths=true", "grep", "-l", "-z", "-F", "-e"])
+        .args([file.as_str(), "--", ".", outside.as_str()])
+        .current_dir(worktree);
+    hide_console_window(&mut command);
+    let output = command.output()?;
+    // `git grep` exits with 1 when nothing matches.
+    if !output.status.success() && output.status.code() != Some(1) {
+        return Err(ProofCheckError::Git(format!(
+            "git grep {file} failed: {}",
+            String::from_utf8_lossy(&output.stderr).trim()
+        )));
+    }
+    Ok(String::from_utf8_lossy(&output.stdout)
+        .split('\0')
+        .filter(|path| !path.is_empty())
+        .map(str::to_owned)
+        .collect())
 }
 
 /// Hashes every theorem statement under the Lake project at `commit`, read from git rather
