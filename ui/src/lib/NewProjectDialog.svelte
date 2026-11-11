@@ -1,5 +1,6 @@
 <script lang="ts">
   import { onMount } from 'svelte';
+  import { pop } from './motion';
   import Icon from './Icon.svelte';
   import ProviderSignInCards from './ProviderSignInCards.svelte';
   import { newProjectCommands } from './ipc';
@@ -129,6 +130,7 @@
 
 <dialog
   bind:this={dialog}
+  in:pop|global
   class="new-project-dialog"
   aria-labelledby="new-project-title"
   oncancel={(event) => {

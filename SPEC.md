@@ -1273,6 +1273,15 @@ How the card is made *(proposed)*:
   | swarm `#5fd4c4` | swarm |
   | claude `#d97757` · codex `#e9e9e9` · agy `#8ab4f8` · kimi `#f08fb8` | provider marks (Anthropic, Codex, Antigravity, Kimi Code) |
 
+- **Motion (#226):** gentle and quick, one system for the whole app. Nothing bounces, overshoots or calls attention to itself.
+  - The `--motion-*` tokens in `reference.css` set four durations: quick 120 ms, fast 150 ms, base 180 ms and slow 260 ms. The 150 and 180 ms values come from the reference's toggle and toast. They also set two curves: an ease-out for things arriving and an ease-in for things leaving, which use the quick duration. Travel is 4 px and scale starts at 0.97.
+  - Menus and popovers (the model picker, the usage panel, the thread context menu, the slash menu, the project switcher) fade and grow in and out. Modal dialogs (the palette, AIRC, New project, Duty and the swarm dialogs) fade and grow in, and their scrim fades with them. They close at once, so focus and keys come back without waiting.
+  - New rows rise 4 px into place: sidebar threads, tasks, issues, an issue's expanded detail, tool steps and other transcript blocks. Rows leave at once, so a list never shows old and new rows together. The toast rises in and fades out.
+  - The arriving view rises into place when switching between thread, board, swarm, duty, settings and settings tabs.
+  - Buttons, pills and rows ease their colour on hover and focus. Compact controls (pills, buttons, segmented controls) sink to 0.97 while pressed; full-width rows only change colour. Status dots and icons ease between state colours. The usage and limit bars fill when they appear and when their value changes.
+  - Motion never delays input or reading. Agent text appears at once, typing never waits, and a backend update never restarts an animation: entry motion runs only when an element is inserted.
+  - Only `opacity` and `transform` animate, apart from the small bars' fill, so nothing reflows.
+  - With `prefers-reduced-motion`, nothing moves or scales and the bars don't fill. Short fades stay.
 - Base tokens are copied exactly from the mockup's `:root` into `ui/src/lib/theme/tokens.css`. Values missing from `:root` are copied from the reference's winning CSS declarations into `ui/src/lib/theme/reference.css` (user-authorized in #12). Components use the token files; the reference is read-only. The Rust theme module mirrors the base tokens.
 - Fonts are bundled locally in the app. The mockup uses a CDN only for convenience.
 

@@ -1,5 +1,6 @@
 <script lang="ts">
   import Icon from './Icon.svelte';
+  import { pop } from './motion';
   import type { LayoutAction, ProviderColor, ProviderUsage } from './ipc';
   import './theme/usage.css';
 
@@ -52,6 +53,8 @@
   role="dialog"
   aria-label="Usage limits"
   bind:this={panel}
+  in:pop
+  out:pop
 >
   <div class="usage-title">Usage limits</div>
   {#each providers as provider (provider.provider + provider.name)}
