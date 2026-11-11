@@ -643,7 +643,7 @@ fn strip_verbatim_prefix(path: &Path) -> String {
     raw.strip_prefix(r"\\?\").unwrap_or(&raw).to_owned()
 }
 
-fn run_git<I, S>(working_dir: &Path, arguments: I) -> Result<String, SkillLibraryError>
+pub(crate) fn run_git<I, S>(working_dir: &Path, arguments: I) -> Result<String, SkillLibraryError>
 where
     I: IntoIterator<Item = S>,
     S: AsRef<OsStr>,

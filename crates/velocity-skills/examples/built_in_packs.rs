@@ -21,7 +21,7 @@ use velocity_acp::client::{
 use velocity_core::skills::{ProjectSkills, SkillSettingsEdit};
 use velocity_skills::settings::settings_view;
 use velocity_skills::{
-    SkillLibrary, add_pack_details, detect_game_engine, generate_design_system, pack_shared_servers,
+    SkillLibrary, add_pack_details, generate_design_system, pack_shared_servers,
 };
 
 type Outcome = Result<(), Box<dyn std::error::Error>>;
@@ -70,9 +70,6 @@ fn print_cards(library: &SkillLibrary, choices: &ProjectSkills, checkout: &Path)
                 "  design system {} exists={} rule={}",
                 design.master_path, design.exists, design.rule_in_agents
             );
-        }
-        if let Some(engine) = &card.details.engine {
-            println!("  {}", engine.summary);
         }
         if let Some(server) = &card.details.shared_server {
             println!(
@@ -157,13 +154,16 @@ fn engines(scratch: &Path) -> Outcome {
     )?;
     println!();
     for project in [&godot, &unity, &three, &plain] {
-        let detection = detect_game_engine(project);
-        println!(
-            "{}: {} -> {:?}",
-            project.display(),
-            detection.summary,
-            detection.suggested_bundles
-        );
+        // Engine detection is the project scan's (F18 Suggestions, #165).
+        for suggestion in velocity_skills::suggestions::scan_project(project, None) {
+            println!(
+                "{}: {} -> {} {:?}",
+                project.display(),
+                suggestion.reason,
+                suggestion.pack,
+                suggestion.bundles
+            );
+        }
     }
     Ok(())
 }

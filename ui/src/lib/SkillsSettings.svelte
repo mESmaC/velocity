@@ -135,9 +135,10 @@
             {#each view.cards as card (card.catalog.id)}
               <div class="sk" class:on={card.selection.enabled}>
                 <div class="top">
-                  <b>{card.catalog.name}</b><span class="kind"
-                    >{card.catalog.kind_summary}</span
-                  >
+                  <b>{card.catalog.name}</b>
+                  {#if card.suggestion_badge}<span class="sugg"
+                      >{card.suggestion_badge}</span
+                    >{/if}<span class="kind">{card.catalog.kind_summary}</span>
                   <span class="repo"
                     >{card.catalog.repository} · {card.catalog.license}</span
                   >
@@ -196,9 +197,7 @@
                       >{requirement}</span
                     >{/each}
                   <span>{card.enabled_count} skills on</span>
-                  {#if card.details.engine}<span
-                      >{card.details.engine.summary}</span
-                    >{/if}
+                  {#if card.detection}<span>{card.detection}</span>{/if}
                 </div>
                 {#if card.details.design_system}
                   {@const design = card.details.design_system}

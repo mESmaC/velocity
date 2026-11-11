@@ -8,12 +8,12 @@ pub mod bundles;
 pub mod catalog;
 pub mod design_system;
 pub mod details;
-pub mod engine;
 pub mod library;
 pub mod manifest;
 pub mod menu;
 pub mod rea;
 pub mod settings;
+pub mod suggestions;
 
 use std::path::PathBuf;
 use thiserror::Error;
@@ -31,7 +31,6 @@ pub use design_system::{
     design_system_slug, design_system_status, generate_design_system, sync_design_system_rule,
 };
 pub use details::{SkillPackDetails, add_pack_details, pack_shared_servers};
-pub use engine::{GameEngineDetection, classify_game_engine, detect_game_engine};
 pub use library::{
     InstalledSkillPack, SkillLibrary, SkillLibrarySnapshot, SkillPackDiffFile,
     SkillPackUpdatePreview, SkillPythonOutput, run_python_utf8,

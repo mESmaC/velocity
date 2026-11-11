@@ -111,11 +111,6 @@ export const commands = {
 	installSkillPack: (packOrRepo: string, sourceOverride: string | null, initialPin: string | null) => __TAURI_INVOKE<InstalledSkillPack_Serialize>("install_skill_pack", { packOrRepo, sourceOverride, initialPin }),
 	checkSkillPackUpdate: (packId: string) => __TAURI_INVOKE<SkillPackUpdatePreview_Serialize>("check_skill_pack_update", { packId }),
 	confirmSkillPackUpdate: (packId: string, candidateCommit: string) => __TAURI_INVOKE<InstalledSkillPack_Serialize>("confirm_skill_pack_update", { packId, candidateCommit }),
-	/**
-	 *  Generate (or, with `regenerate`, Regenerate) the project's design system, add the AGENTS.md
-	 *  rule and commit both in the main checkout (F18).
-	 */
-	generateDesignSystem: (projectIdentifier: number, regenerate: boolean) => __TAURI_INVOKE<DesignSystemStatus_Serialize>("generate_design_system", { projectIdentifier, regenerate }),
 	/**  The Swarm dialog for the user's current choices; asked again whenever one changes. */
 	getSwarmDialog: (query: SwarmDialogQuery_Deserialize) => __TAURI_INVOKE<SwarmDialog_Serialize>("get_swarm_dialog", { query }),
 	/**  Starts one agent per selected item, all at once, each in its own worktree (F10). */
@@ -539,41 +534,6 @@ export type DesignProofEntry = {
 	levels: ProofLevel[],
 };
 
-/**  Where a project's design system lives and whether it has been generated. */
-export type DesignSystemStatus = DesignSystemStatus_Serialize | DesignSystemStatus_Deserialize;
-
-/**  Where a project's design system lives and whether it has been generated. */
-export type DesignSystemStatus_Deserialize = {
-	/**  `design-system/<project>/MASTER.md`, relative to the checkout. */
-	master_path?: string,
-	exists?: boolean,
-	/**  When MASTER.md was last written, in Unix seconds. */
-	generated_at?: number | null,
-	/**  True when AGENTS.md carries the design system rule. */
-	rule_in_agents?: boolean,
-	/**
-	 *  The card's line: `generated 5 min ago · agents read it before UI work`, or
-	 *  `not generated yet`.
-	 */
-	summary?: string,
-};
-
-/**  Where a project's design system lives and whether it has been generated. */
-export type DesignSystemStatus_Serialize = {
-	/**  `design-system/<project>/MASTER.md`, relative to the checkout. */
-	master_path: string,
-	exists: boolean,
-	/**  When MASTER.md was last written, in Unix seconds. */
-	generated_at: number | null,
-	/**  True when AGENTS.md carries the design system rule. */
-	rule_in_agents: boolean,
-	/**
-	 *  The card's line: `generated 5 min ago · agents read it before UI work`, or
-	 *  `not generated yet`.
-	 */
-	summary: string,
-};
-
 export type DiffBlockView = DiffBlockView_Serialize | DiffBlockView_Deserialize;
 
 export type DiffBlockView_Deserialize = {
@@ -608,12 +568,6 @@ export type DiscoveredSkill_Deserialize = {
 	relative_folder?: string,
 	has_scripts?: boolean,
 	has_data?: boolean,
-	/**
-	 *  True when the folder is reached through a link the pack tracks in git (a `120000`
-	 *  entry): a mirror of a skill that lives elsewhere in the pack, such as claude-skills'
-	 *  `vendor/` and per-agent folders. Mirrors never count twice in a bundle.
-	 */
-	mirror?: boolean,
 };
 
 /**  One discovered skill folder (`SKILL.md` plus optional scripts, references and data, SPEC.md §2). */
@@ -624,12 +578,6 @@ export type DiscoveredSkill_Serialize = {
 	relative_folder: string,
 	has_scripts: boolean,
 	has_data: boolean,
-	/**
-	 *  True when the folder is reached through a link the pack tracks in git (a `120000`
-	 *  entry): a mirror of a skill that lives elsewhere in the pack, such as claude-skills'
-	 *  `vendor/` and per-agent folders. Mirrors never count twice in a bundle.
-	 */
-	mirror: boolean,
 };
 
 export type DutyAgentCard = {
@@ -869,45 +817,6 @@ export type FollowThrough_Serialize = {
 	work_tool_start: number,
 	ci_state: string,
 	proof: ProofProgress_Serialize,
-};
-
-/**  The engine the scan found, and the bundles Game dev skills suggests for it. */
-export type GameEngineDetection = GameEngineDetection_Serialize | GameEngineDetection_Deserialize;
-
-/**  The engine the scan found, and the bundles Game dev skills suggests for it. */
-export type GameEngineDetection_Deserialize = {
-	found?: boolean,
-	/**  Display name, e.g. `Godot`. */
-	engine?: string,
-	/**  The engine's bundle in the Game dev skills pack. */
-	bundle_id?: string,
-	/**  The file or dependency that gave the engine away, e.g. `project.godot`. */
-	evidence?: string,
-	/**
-	 *  The router plus the engine's bundle. Engine bundles are exclusive: only the detected
-	 *  engine's is suggested.
-	 */
-	suggested_bundles?: string[],
-	/**  The line the pack's card shows. */
-	summary?: string,
-};
-
-/**  The engine the scan found, and the bundles Game dev skills suggests for it. */
-export type GameEngineDetection_Serialize = {
-	found: boolean,
-	/**  Display name, e.g. `Godot`. */
-	engine: string,
-	/**  The engine's bundle in the Game dev skills pack. */
-	bundle_id: string,
-	/**  The file or dependency that gave the engine away, e.g. `project.godot`. */
-	evidence: string,
-	/**
-	 *  The router plus the engine's bundle. Engine bundles are exclusive: only the detected
-	 *  engine's is suggested.
-	 */
-	suggested_bundles: string[],
-	/**  The line the pack's card shows. */
-	summary: string,
 };
 
 export type GitHubActor = {
@@ -2303,10 +2212,24 @@ export type ProjectSkills = ProjectSkills_Serialize | ProjectSkills_Deserialize;
 
 export type ProjectSkills_Deserialize = {
 	packs?: { [key in string]: PackSelection_Deserialize },
+	/**  What the latest project scan suggested (F3, F18 Suggestions); the cards show why. */
+	suggestions?: SkillSuggestion_Deserialize[],
+	/**
+	 *  Suggestions you turned off, as `pack` or `pack/bundle`. A re-check after a merge
+	 *  never turns these back on ("switched on unless you turn them off").
+	 */
+	declined?: string[],
 };
 
 export type ProjectSkills_Serialize = {
 	packs: { [key in string]: PackSelection_Serialize },
+	/**  What the latest project scan suggested (F3, F18 Suggestions); the cards show why. */
+	suggestions: SkillSuggestion_Serialize[],
+	/**
+	 *  Suggestions you turned off, as `pack` or `pack/bundle`. A re-check after a merge
+	 *  never turns these back on ("switched on unless you turn them off").
+	 */
+	declined: string[],
 };
 
 /**  The proof card for one PR head. */
@@ -3252,21 +3175,6 @@ export type SignInCardView = {
 	can_sign_in: boolean,
 };
 
-/**  How many skills one bundle of an installed pack holds at its pinned commit. */
-export type SkillBundleCount = SkillBundleCount_Serialize | SkillBundleCount_Deserialize;
-
-/**  How many skills one bundle of an installed pack holds at its pinned commit. */
-export type SkillBundleCount_Deserialize = {
-	bundle_id?: string,
-	skill_count?: number,
-};
-
-/**  How many skills one bundle of an installed pack holds at its pinned commit. */
-export type SkillBundleCount_Serialize = {
-	bundle_id: string,
-	skill_count: number,
-};
-
 /**
  *  One bundle inside a skill pack (SPEC.md F18: claude-skills by domain, Game dev skills by
  *  engine/discipline/genre/workflow).
@@ -3307,8 +3215,6 @@ export type SkillLibrarySnapshot_Deserialize = {
 	library_root?: string,
 	catalog?: SkillPackCatalogEntry_Deserialize[],
 	installed?: InstalledSkillPack_Deserialize[],
-	/**  Real skill counts per bundle of each installed built-in pack, at its pinned commit. */
-	bundle_counts?: SkillPackBundleCounts_Deserialize[],
 };
 
 /**  Snapshot of the machine-wide skill library (built-in catalog + installed pinned packs). */
@@ -3316,40 +3222,6 @@ export type SkillLibrarySnapshot_Serialize = {
 	library_root: string,
 	catalog: SkillPackCatalogEntry_Serialize[],
 	installed: InstalledSkillPack_Serialize[],
-	/**  Real skill counts per bundle of each installed built-in pack, at its pinned commit. */
-	bundle_counts: SkillPackBundleCounts_Serialize[],
-};
-
-/**  A stdio MCP server a skill pack contributes to the shared MCP servers. */
-export type SkillMcpServer = SkillMcpServer_Serialize | SkillMcpServer_Deserialize;
-
-/**  A stdio MCP server a skill pack contributes to the shared MCP servers. */
-export type SkillMcpServer_Deserialize = {
-	name?: string,
-	command?: string,
-	arguments?: string[],
-};
-
-/**  A stdio MCP server a skill pack contributes to the shared MCP servers. */
-export type SkillMcpServer_Serialize = {
-	name: string,
-	command: string,
-	arguments: string[],
-};
-
-/**  The real bundle counts of one installed pack, for its card's chips. */
-export type SkillPackBundleCounts = SkillPackBundleCounts_Serialize | SkillPackBundleCounts_Deserialize;
-
-/**  The real bundle counts of one installed pack, for its card's chips. */
-export type SkillPackBundleCounts_Deserialize = {
-	pack_id?: string,
-	bundles?: SkillBundleCount_Deserialize[],
-};
-
-/**  The real bundle counts of one installed pack, for its card's chips. */
-export type SkillPackBundleCounts_Serialize = {
-	pack_id: string,
-	bundles: SkillBundleCount_Serialize[],
 };
 
 export type SkillPackCard = SkillPackCard_Serialize | SkillPackCard_Deserialize;
@@ -3361,7 +3233,10 @@ export type SkillPackCard_Deserialize = {
 	selection: PackSelection_Deserialize,
 	enabled_count: number,
 	requirements: string[],
-	details?: SkillPackDetails_Deserialize,
+	/**  `suggested · UI found` when the project scan suggested this pack (F3, F18), else empty. */
+	suggestion_badge: string,
+	/**  What the scan found, or what would make it suggest the pack; empty for other packs. */
+	detection: string,
 };
 
 export type SkillPackCard_Serialize = {
@@ -3371,7 +3246,10 @@ export type SkillPackCard_Serialize = {
 	selection: PackSelection_Serialize,
 	enabled_count: number,
 	requirements: string[],
-	details: SkillPackDetails_Serialize,
+	/**  `suggested · UI found` when the project scan suggested this pack (F3, F18), else empty. */
+	suggestion_badge: string,
+	/**  What the scan found, or what would make it suggest the pack; empty for other packs. */
+	detection: string,
 };
 
 /**  Static metadata for a built-in or user-added skill pack (SPEC.md F18). */
@@ -3403,29 +3281,6 @@ export type SkillPackCatalogEntry_Serialize = {
 	requires_python: boolean,
 	requires_node: boolean,
 	bundles: SkillBundleDefinition_Serialize[],
-};
-
-/**  The pack-specific rows of one card. Every field is empty for packs without one. */
-export type SkillPackDetails = SkillPackDetails_Serialize | SkillPackDetails_Deserialize;
-
-/**  The pack-specific rows of one card. Every field is empty for packs without one. */
-export type SkillPackDetails_Deserialize = {
-	/**  UI UX Pro Max, while on: the design system and its Generate / Regenerate row. */
-	design_system?: DesignSystemStatus_Deserialize | null,
-	/**  Game dev skills: the engine the project's files show. */
-	engine?: GameEngineDetection_Deserialize | null,
-	/**  REA, while on and installed: the MCP server every new agent gets. */
-	shared_server?: SkillMcpServer_Deserialize | null,
-};
-
-/**  The pack-specific rows of one card. Every field is empty for packs without one. */
-export type SkillPackDetails_Serialize = {
-	/**  UI UX Pro Max, while on: the design system and its Generate / Regenerate row. */
-	design_system: DesignSystemStatus_Serialize | null,
-	/**  Game dev skills: the engine the project's files show. */
-	engine: GameEngineDetection_Serialize | null,
-	/**  REA, while on and installed: the MCP server every new agent gets. */
-	shared_server: SkillMcpServer_Serialize | null,
 };
 
 /**  Diff of a single file between the pinned commit and a candidate upstream commit (SPEC.md F18). */
@@ -3495,6 +3350,34 @@ export type SkillSettingsEdit = ({ Pack: {
 	bundle: string,
 	enabled: boolean,
 } }) & { Pack?: never };
+
+/**
+ *  One pack the project scan found a reason for, with the bundles that reason implies
+ *  (the Game dev router plus only the detected engine's bundle).
+ */
+export type SkillSuggestion = SkillSuggestion_Serialize | SkillSuggestion_Deserialize;
+
+/**
+ *  One pack the project scan found a reason for, with the bundles that reason implies
+ *  (the Game dev router plus only the detected engine's bundle).
+ */
+export type SkillSuggestion_Deserialize = {
+	pack?: string,
+	bundles?: string[],
+	/**  What the scan found, e.g. `UI found: ui/ (Svelte + Tailwind)`. */
+	reason?: string,
+};
+
+/**
+ *  One pack the project scan found a reason for, with the bundles that reason implies
+ *  (the Game dev router plus only the detected engine's bundle).
+ */
+export type SkillSuggestion_Serialize = {
+	pack: string,
+	bundles: string[],
+	/**  What the scan found, e.g. `UI found: ui/ (Svelte + Tailwind)`. */
+	reason: string,
+};
 
 export type SkillsSettingsView = SkillsSettingsView_Serialize | SkillsSettingsView_Deserialize;
 
