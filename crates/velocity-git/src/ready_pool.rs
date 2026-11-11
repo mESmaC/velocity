@@ -11,9 +11,9 @@
 //! Lean projects get their pinned toolchain and Mathlib's prebuilt files in the same step
 //! (see [`crate::lean_setup`]).
 //!
-//! Each slot records its base commit and whether its prebuild finished in a `velocity-ready`
-//! file in its git admin folder, outside the checkout, so agents never see it and a restart
-//! can tell a finished slot from one interrupted mid-setup.
+//! Each slot records its base commit and whether its prebuild finished (and whether it failed)
+//! in a `velocity-ready` file in its git admin folder, outside the checkout, so agents never
+//! see it and a restart can tell a finished slot from one interrupted mid-setup.
 
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -34,7 +34,12 @@ const MARK_FILE: &str = "velocity-ready";
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ReadyMark {
     pub base: String,
+    /// The prebuild at `base` ran, whether or not it succeeded: the prebuild worker does not
+    /// run it again at this base.
     pub built: bool,
+    /// The prebuild at `base` ran and a step failed. The next catch-up rebuilds whatever the
+    /// merge touched, so a passing failure (a network error) is retried when `master` moves.
+    pub failed: bool,
 }
 
 /// A slot found on disk: its index, its folder, and its mark (`None` when setup never
@@ -113,7 +118,7 @@ pub fn create_ready_worktree(request: &WorktreeSetupRequest) -> Result<(), Workt
         let files = parse_untracked_file_list(&request.untracked_files)?;
         copy_configured_untracked_files(&request.repository_root, path, &files)?;
     }
-    write_mark(path, &request.base_ref, false)
+    write_mark(path, &request.base_ref, None)
 }
 
 /// Moves a ready slot's checkout forward to `tip` after a merge. Its prebuild is redone
@@ -122,12 +127,15 @@ pub fn create_ready_worktree(request: &WorktreeSetupRequest) -> Result<(), Workt
 pub fn catch_up_ready_worktree(slot: &Path, tip: &str) -> Result<(), WorktreeError> {
     let previous = read_mark(slot);
     run_git_command(slot, ["checkout", "--quiet", "--detach", tip])?;
-    let still_built =
-        previous.is_some_and(|mark| mark.built && !build_inputs_changed(slot, &mark.base, tip));
-    write_mark(slot, tip, still_built)
+    let still_built = previous.is_some_and(|mark| {
+        mark.built && !mark.failed && !build_inputs_changed(slot, &mark.base, tip)
+    });
+    write_mark(slot, tip, still_built.then_some(PrebuildOutcome::Succeeded))
 }
 
 /// A diff that can't be read counts as a change: a rebuild is only slower, never wrong.
+/// `--no-renames` lists both sides of a rename, so a source file renamed to a prose name
+/// still shows its source path.
 fn build_inputs_changed(slot: &Path, base: &str, tip: &str) -> bool {
     let output = git()
         .arg("-C")
@@ -137,6 +145,7 @@ fn build_inputs_changed(slot: &Path, base: &str, tip: &str) -> bool {
             "core.quotepath=false",
             "diff",
             "--name-only",
+            "--no-renames",
             base,
             tip,
         ])
@@ -157,7 +166,8 @@ fn build_inputs_changed(slot: &Path, base: &str, tip: &str) -> bool {
 /// `cargo build --workspace` in the slot's own `target` folder with the shared compiler
 /// cache. Both run below normal priority so agents' own builds go first. The slot is marked
 /// built either way: a step that fails at the tip of `master` fails for the agent too, and
-/// retrying it would only keep the machine busy.
+/// retrying it would only keep the machine busy. A failure is marked too, so the next merge
+/// to `master` rebuilds it whatever that merge touched (F5 Refilling).
 pub fn prebuild_ready_worktree(
     repository_root: &Path,
     slot: &Path,
@@ -172,8 +182,14 @@ pub fn prebuild_ready_worktree(
     } else {
         Ok(())
     };
-    write_mark(slot, &base, true)?;
-    lean.and(built)
+    let result = lean.and(built);
+    let outcome = if result.is_ok() {
+        PrebuildOutcome::Succeeded
+    } else {
+        PrebuildOutcome::Failed
+    };
+    write_mark(slot, &base, Some(outcome))?;
+    result
 }
 
 /// The checkouts a slot's Lake packages may be cloned from: the repository's main checkout
@@ -365,15 +381,39 @@ fn read_mark(slot: &Path) -> Option<ReadyMark> {
     let text = fs::read_to_string(admin_folder(slot)?.join(MARK_FILE)).ok()?;
     let mut lines = text.lines();
     let base = lines.next()?.trim().to_owned();
-    let built = lines.next()?.trim() == "built";
+    // Marks written before `failed` existed say only `built` or `unbuilt`, and read the same.
+    let (built, failed) = match lines.next()?.trim() {
+        "built" => (true, false),
+        "failed" => (true, true),
+        _ => (false, false),
+    };
     let valid = (7..=64).contains(&base.len()) && base.bytes().all(|byte| byte.is_ascii_hexdigit());
-    valid.then_some(ReadyMark { base, built })
+    valid.then_some(ReadyMark {
+        base,
+        built,
+        failed,
+    })
 }
 
-fn write_mark(slot: &Path, base: &str, built: bool) -> Result<(), WorktreeError> {
+/// How a finished prebuild went. A slot with no outcome is not built yet.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum PrebuildOutcome {
+    Succeeded,
+    Failed,
+}
+
+fn write_mark(
+    slot: &Path,
+    base: &str,
+    prebuild: Option<PrebuildOutcome>,
+) -> Result<(), WorktreeError> {
     let folder = admin_folder(slot).ok_or_else(|| unmarked(slot))?;
     let path = folder.join(MARK_FILE);
-    let state = if built { "built" } else { "unbuilt" };
+    let state = match prebuild {
+        None => "unbuilt",
+        Some(PrebuildOutcome::Succeeded) => "built",
+        Some(PrebuildOutcome::Failed) => "failed",
+    };
     fs::write(&path, format!("{base}\n{state}\n"))
         .map_err(|source| WorktreeError::WriteFile { path, source })
 }
