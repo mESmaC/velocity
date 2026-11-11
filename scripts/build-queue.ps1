@@ -26,7 +26,7 @@ $script:BuildQueueMutexName = 'Global\velocity-build-queue'
 $script:BuildQueueHolderFile = Join-Path $env:LOCALAPPDATA 'velocity\build-queue-holder.json'
 
 function Get-BuildQueueHolder {
-    try { Get-Content -LiteralPath $script:BuildQueueHolderFile -Raw | ConvertFrom-Json } catch { $null }
+    try { Get-Content -LiteralPath $script:BuildQueueHolderFile -Raw -ErrorAction Stop | ConvertFrom-Json } catch { $null }
 }
 
 function Write-BuildQueueWait([datetime]$WaitStart) {
