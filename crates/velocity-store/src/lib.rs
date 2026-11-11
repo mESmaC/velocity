@@ -486,6 +486,8 @@ pub struct ProviderSettings {
     /// Providers you signed out of in Velocity: new work can't use them (F15 Sign out).
     #[serde(default)]
     pub signed_out: Vec<ProviderKind>,
+    #[serde(default)]
+    pub concurrency: Vec<providers::ProviderConcurrency>,
     /// Model chips you switched off (F15 Models).
     #[serde(default)]
     pub hidden_models: Vec<providers::HiddenModel>,
@@ -584,6 +586,7 @@ impl Settings {
                 title_speed: core_settings.providers.title_speed.into(),
                 catalog: Vec::new(),
                 signed_out: Vec::new(),
+                concurrency: Vec::new(),
                 hidden_models: Vec::new(),
                 commands: Vec::new(),
                 custom_agents: Vec::new(),
@@ -695,6 +698,8 @@ pub struct ThreadItem {
     /// The agent's ACP session id, which a parked thread loads again on resume (§2.2).
     #[serde(default)]
     pub agent_session: Option<String>,
+    #[serde(default)]
+    pub provider_queued: bool,
     pub review_stage: Option<ReviewStage>,
     pub task_ids: Vec<u32>,
     #[serde(default)]
@@ -735,6 +740,7 @@ impl ThreadItem {
             airc_cursor: 0,
             dependency_wait: None,
             agent_session: None,
+            provider_queued: false,
             supervision: Default::default(),
             review_stage: None,
             task_ids: Vec::new(),
@@ -770,6 +776,7 @@ impl ThreadItem {
             airc_cursor: 0,
             dependency_wait: None,
             agent_session: None,
+            provider_queued: false,
             supervision: Default::default(),
             review_stage: None,
             task_ids: Vec::new(),
