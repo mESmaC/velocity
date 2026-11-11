@@ -209,11 +209,13 @@
             >
           </div>
           <div class="worktree-setting-row">
-            <label for="worktree-setup">Run after creating</label><label
-              class="worktree-input"
+            <label for="worktree-setup"
+              >Run after creating · {view.project_name}</label
+            ><label class="worktree-input"
               ><input
                 id="worktree-setup"
                 value={view.setup_command}
+                disabled={view.project_identifier === null}
                 spellcheck="false"
                 onkeydown={blurOnEscape}
                 onchange={(event) =>

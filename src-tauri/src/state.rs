@@ -15,7 +15,7 @@ fn resolve_store_directory(application: &AppHandle) -> anyhow::Result<PathBuf> {
 
 pub fn initialize(application: &AppHandle) -> anyhow::Result<()> {
     let directory = resolve_store_directory(application)?;
-    let store =
+    let mut store =
         StateStore::load_or_default(directory).context("Could not initialize persisted state")?;
     if let Some(corrupt_path) = store.recovered_corrupt_snapshot() {
         eprintln!(
@@ -23,6 +23,12 @@ pub fn initialize(application: &AppHandle) -> anyhow::Result<()> {
             corrupt_path.display()
         );
     }
+    store.reset_disconnected_threads()?;
+    application
+        .state::<crate::threads::ManagedThreads>()
+        .lock()
+        .map_err(|_| anyhow::anyhow!("Thread sessions lock is poisoned"))?
+        .restore(store.state());
     application.manage(Mutex::new(store));
     Ok(())
 }

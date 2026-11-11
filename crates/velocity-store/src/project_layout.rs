@@ -140,7 +140,12 @@ fn thread_entry(thread: &ThreadItem, task_count: usize) -> ThreadEntry {
     ThreadEntry {
         policy: LayoutRow {
             identifier: thread.id as usize,
-            group: thread_group(thread.state),
+            group: if thread.state == ThreadState::Working && thread.activity == AgentActivity::Idle
+            {
+                ThreadGroup::Done
+            } else {
+                thread_group(thread.state)
+            },
             hidden: false,
             matches_search: true,
             member_of: None,
@@ -150,6 +155,7 @@ fn thread_entry(thread: &ThreadItem, task_count: usize) -> ThreadEntry {
         },
         title: thread.title.clone(),
         metadata: match &thread.interview {
+            Some(_) if thread.provider_queued => thread_metadata(thread),
             Some(interview) => interview_view(interview, task_count).status_label,
             None => thread_metadata(thread),
         },
@@ -163,9 +169,7 @@ fn thread_entry(thread: &ThreadItem, task_count: usize) -> ThreadEntry {
     }
 }
 
-/// The thread header and model pill from what `state.json` keeps. The
-/// transcript is not persisted, so a reopened thread starts with no blocks
-/// until its agent session streams new ones.
+/// The thread header, conversation and model pill retained in `state.json`.
 fn thread_detail(thread: &ThreadItem) -> ThreadDetailEntry {
     ThreadDetailEntry {
         identifier: thread.id as usize,
@@ -193,7 +197,7 @@ fn thread_detail(thread: &ThreadItem) -> ThreadDetailEntry {
             .as_ref()
             .filter(|watch| watch.number != 0)
             .map(|watch| watch.view()),
-        blocks: Vec::new(),
+        blocks: thread.transcript.clone(),
         agent_commands: Vec::new(),
         provider: provider_color(thread.provider),
         model_name: thread.model_name.clone(),
@@ -258,6 +262,15 @@ fn thread_group(state: ThreadState) -> ThreadGroup {
 }
 
 pub(crate) fn thread_metadata(thread: &ThreadItem) -> String {
+    if thread.provider_queued
+        && thread.activity != AgentActivity::Idle
+        && matches!(
+            thread.state,
+            ThreadState::Working | ThreadState::Review | ThreadState::Spec
+        )
+    {
+        return format!("queued \u{b7} {}", thread.provider.key());
+    }
     if thread.activity == AgentActivity::Stalled {
         return "stalled".into();
     }

@@ -13,8 +13,6 @@ pub struct NewProjectRecord {
     pub repository_path: String,
     pub default_branch: String,
     pub github_remote: Option<String>,
-    /// Open project adopts a SPEC.md the checkout already has as its locked spec.
-    pub spec_locked: bool,
 }
 
 impl NewProjectRecord {
@@ -26,7 +24,6 @@ impl NewProjectRecord {
             repository_path,
             default_branch,
             github_remote: None,
-            spec_locked: false,
         }
     }
 
@@ -37,9 +34,35 @@ impl NewProjectRecord {
         self
     }
 
-    pub fn with_spec_locked(mut self, spec_locked: bool) -> Self {
-        self.spec_locked = spec_locked;
-        self
+    pub fn with_spec_locked(self, spec_locked: bool) -> ProjectRegistration {
+        ProjectRegistration {
+            record: self,
+            spec_locked,
+        }
+    }
+}
+
+/// Registration options stay outside the historical public record so existing
+/// callers can still supply a record literal without newer optional behavior.
+pub struct ProjectRegistration {
+    record: NewProjectRecord,
+    spec_locked: bool,
+}
+
+impl From<NewProjectRecord> for ProjectRegistration {
+    fn from(record: NewProjectRecord) -> Self {
+        Self {
+            record,
+            spec_locked: false,
+        }
+    }
+}
+
+impl std::ops::Deref for ProjectRegistration {
+    type Target = NewProjectRecord;
+
+    fn deref(&self) -> &Self::Target {
+        &self.record
     }
 }
 
@@ -58,7 +81,7 @@ impl StateStore {
     /// leaves the store as it was and Create can be retried.
     pub fn commit_new_project(
         &mut self,
-        record: NewProjectRecord,
+        record: impl Into<ProjectRegistration>,
         interview: Option<PendingInterview>,
         activate: bool,
     ) -> Result<u32, ProjectError> {
@@ -73,7 +96,7 @@ impl StateStore {
             u32::try_from(candidate.projects.len()).map_err(|_| ProjectError::IndexOutOfRange)?;
         candidate
             .projects
-            .push(project_item(identifier, record, interview));
+            .push(project_item(identifier, record.into(), interview));
         if activate {
             candidate.active_project_index = index;
         }
@@ -87,14 +110,15 @@ impl StateStore {
 
 fn project_item(
     identifier: u32,
-    record: NewProjectRecord,
+    registration: ProjectRegistration,
     interview: Option<PendingInterview>,
 ) -> ProjectItem {
+    let record = registration.record;
     let mut project = ProjectItem::new(identifier, record.name, record.repository_path);
     project.location_kind = record.location_kind;
     project.default_branch = record.default_branch;
     project.github_remote = record.github_remote;
-    project.spec_locked = record.spec_locked;
+    project.spec_locked = registration.spec_locked;
     project.pending_interview = interview;
     project
 }

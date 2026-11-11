@@ -58,7 +58,7 @@ fn respond(
     }
     request.get("id")?;
     let result = match method.unwrap_or_default() {
-        "initialize" => match channel.join(member, nick) {
+        "initialize" => match channel.join_with_session(member, nick, true) {
             Ok(nick) => {
                 *initialized = true;
                 json!({"protocolVersion":"2025-11-25","capabilities":{"tools":{}},
@@ -117,14 +117,13 @@ fn call(
         ),
         "task_add" => Ok(json!({"queued":true,
             "request":channel.request_task(member, text(arguments, "title")?)?})),
-        "join" => Ok(json!({"nick":channel.join(member, nick)?})),
+        "join" => Ok(json!({"nick":channel.join_with_session(member, nick, true)?})),
         "leave" => {
             channel.leave(member)?;
             Ok(json!({"left":true}))
         }
         "list_nicks" => Ok(serde_json::to_value(channel.presence()?)?),
-        "read_feed" => Ok(serde_json::to_value(channel.read(after)?)?),
-        name @ ("read_events" | "read_messages" | "read_ledger") => {
+        name @ ("read_feed" | "read_events" | "read_messages" | "read_ledger") => {
             read_filtered(channel, name, arguments, after)
         }
         "append_ledger" => {
@@ -152,6 +151,13 @@ fn read_filtered(
     after: u64,
 ) -> Result<Value, Error> {
     let entries = match name {
+        // Routing must retain these durable records, but agents should not pay
+        // for per-recipient bookkeeping when reading the project feed.
+        "read_feed" => channel
+            .read(after)?
+            .into_iter()
+            .filter(|entry| !matches!(entry.kind.as_str(), "delivery_ack" | "message_mode"))
+            .collect(),
         "read_events" => channel.events(after)?,
         "read_messages" => channel.messages(after)?,
         _ => channel.ledger(ledger(arguments)?, after)?,
@@ -178,7 +184,7 @@ fn tool_list() -> Vec<Value> {
         ),
         tool(
             "read_feed",
-            "Read the project log after a sequence number",
+            "Read the project feed after a sequence number, excluding delivery acknowledgements and message modes",
             cursor.clone(),
             &[],
         ),

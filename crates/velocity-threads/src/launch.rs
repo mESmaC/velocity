@@ -27,6 +27,8 @@ pub(crate) const SHARED_TARGET_FOLDER: &str = ".cargo-target";
 
 #[derive(Debug, Error)]
 pub enum LaunchError {
+    #[error("launch settings need a worktree root; read a Settings snapshot from StateStore")]
+    MissingWorktreeRoot,
     #[error("every branch name for \"vel/{0}\" is already taken in this project")]
     NamesExhausted(String),
     #[error(transparent)]
@@ -95,10 +97,26 @@ pub fn title_worktree_name(
     })
 }
 
+/// Compatibility entry point for saved Settings snapshots (F5/F13).
+/// Use the explicit preferences entry point when the store context is available.
+pub fn plan_launch(
+    project: &ProjectItem,
+    settings: &Settings,
+    prompt: &str,
+) -> Result<LaunchPlan, LaunchError> {
+    // Raw defaults have no store directory. Refuse to invent a different default root.
+    if settings.worktrees.location_root.is_none() {
+        return Err(LaunchError::MissingWorktreeRoot);
+    }
+    let preferences =
+        velocity_store::worktree_settings::project_preferences(project, settings, Path::new(""));
+    plan_launch_with_preferences(project, &preferences, settings, prompt)
+}
+
 /// Plans a thread for `project` from Settings → Worktrees as the store reads it for that
 /// project (`StateStore::worktree_context`), so threads land where the settings page's path
 /// preview says they will (F5).
-pub fn plan_launch(
+pub fn plan_launch_with_preferences(
     project: &ProjectItem,
     worktrees: &WorktreePreferences,
     settings: &Settings,

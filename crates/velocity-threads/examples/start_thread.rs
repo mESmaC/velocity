@@ -7,9 +7,9 @@
 use std::path::PathBuf;
 
 use velocity_acp::client::{AgentEvent, SessionSetup};
-use velocity_core::thread_view_model::TranscriptBlock;
+use velocity_core::thread_view_model::{TranscriptBlock, slash_menu_items_with_agent};
 use velocity_store::StateStore;
-use velocity_threads::{ThreadRuntimes, plan_launch, spawn_session};
+use velocity_threads::{ThreadRuntimes, plan_launch_with_preferences, spawn_session};
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut arguments = std::env::args().skip(1);
@@ -18,7 +18,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let store = StateStore::load_or_default(folder)?;
     let project = store.active_project().ok_or("no active project")?;
     let worktrees = store.worktree_context().preferences;
-    let plan = plan_launch(project, &worktrees, &store.settings(), &prompt)?;
+    let plan = plan_launch_with_preferences(project, &worktrees, &store.settings(), &prompt)?;
     println!("branch   {}", plan.thread.branch_name);
     println!("worktree {}", plan.thread.worktree_path);
     let key = (plan.project, 0);
@@ -40,6 +40,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             );
         }
         match &event {
+            AgentEvent::SessionUpdate(_) => {
+                print_commands(&runtimes, key);
+            }
             AgentEvent::TurnEnded(outcome) => {
                 println!("turn ended: {outcome:?}");
                 break;
@@ -91,5 +94,18 @@ fn describe(block: &TranscriptBlock) -> String {
             format!("error: {} · {}", card.headline, card.detail)
         }
         TranscriptBlock::Decision { key, value, .. } => format!("decision: {key}: {value}"),
+    }
+}
+
+/// Shows the same command projection as the window after each live session update.
+fn print_commands(runtimes: &ThreadRuntimes, key: (u32, u32)) {
+    let Some(view) = runtimes.view(key) else {
+        return;
+    };
+    let Some(commands) = view.agent_commands else {
+        return;
+    };
+    for item in slash_menu_items_with_agent("/", &commands) {
+        println!("command  {}: {}", item.command, item.description);
     }
 }

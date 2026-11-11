@@ -102,7 +102,7 @@ pub enum DiffLineRole {
     feature = "bindings",
     derive(serde::Serialize, serde::Deserialize, specta::Type)
 )]
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct DiffLineView {
     pub role: DiffLineRole,
     pub text: String,
@@ -112,7 +112,7 @@ pub struct DiffLineView {
     feature = "bindings",
     derive(serde::Serialize, serde::Deserialize, specta::Type)
 )]
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct DiffBlockView {
     pub file_path: String,
     #[cfg_attr(feature = "bindings", serde(with = "crate::ipc_number"))]
@@ -128,7 +128,7 @@ pub struct DiffBlockView {
     feature = "bindings",
     derive(serde::Serialize, serde::Deserialize, specta::Type)
 )]
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ErrorCardView {
     pub headline: String,
     pub detail: String,
@@ -138,7 +138,7 @@ pub struct ErrorCardView {
     feature = "bindings",
     derive(serde::Serialize, serde::Deserialize, specta::Type)
 )]
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub enum TranscriptBlock {
     UserMessage {
         text: String,

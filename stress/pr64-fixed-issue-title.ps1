@@ -28,7 +28,7 @@ $source = @'
 use std::{fs, path::{Path, PathBuf}, process::Command};
 use velocity_store::{PersistedState, ProviderKind, StateStore};
 use velocity_github::GitHubIssue;
-use velocity_threads::{plan_issue_dispatch, plan_launch};
+use velocity_threads::{plan_issue_dispatch, plan_launch_with_preferences as plan_launch};
 
 fn report(label: &str, passed: bool) -> usize {
     println!("{} {label}", if passed { "PASS" } else { "FAIL" });
