@@ -123,6 +123,27 @@ pub fn choose_ready(slots: &[ReadySlot], tip: Option<&str>) -> Option<u32> {
         .map(|(index, _)| index)
 }
 
+/// Whether a merge that changed `paths` (repository-relative, forward slashes) can change
+/// what a prebuild produces (F5 Refilling). Only prose and repository metadata can't:
+/// Markdown, reStructuredText, AsciiDoc, license and notice files, and `.github/`. Anything
+/// else counts, so an unknown file costs a rebuild, never a stale slot. A crate that embeds
+/// its README is still only one crate's recompile on the agent's first build.
+pub fn changes_affect_build<'a>(paths: impl IntoIterator<Item = &'a str>) -> bool {
+    paths.into_iter().any(|path| !is_prose_or_metadata(path))
+}
+
+fn is_prose_or_metadata(path: &str) -> bool {
+    let path = path.to_ascii_lowercase();
+    if path.starts_with(".github/") {
+        return true;
+    }
+    let name = path.rsplit('/').next().unwrap_or(&path);
+    let prose_extension = name
+        .rsplit_once('.')
+        .is_some_and(|(_, extension)| matches!(extension, "md" | "markdown" | "rst" | "adoc"));
+    prose_extension || name.starts_with("license") || name.starts_with("notice")
+}
+
 /// The folder name of slot `index`. Thread slugs never start with a dot, so a slot can't
 /// take a thread's name, and the name is unique per project (F5 Guards).
 pub fn slot_folder(index: u32) -> String {

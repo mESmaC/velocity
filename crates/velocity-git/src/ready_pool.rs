@@ -19,7 +19,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
-use velocity_core::ready_pool::{slot_folder, slot_index};
+use velocity_core::ready_pool::{changes_affect_build, slot_folder, slot_index};
 
 use crate::command::git;
 use crate::lean_setup::prepare_lean;
@@ -116,10 +116,38 @@ pub fn create_ready_worktree(request: &WorktreeSetupRequest) -> Result<(), Workt
     write_mark(path, &request.base_ref, false)
 }
 
-/// Moves a ready slot's checkout forward to `tip` after a merge. Its prebuild is redone.
+/// Moves a ready slot's checkout forward to `tip` after a merge. Its prebuild is redone
+/// only when the merge can change the build: a docs-only merge keeps a built slot built,
+/// so the pool never rebuilds every slot for a SPEC.md edit (F5 Refilling).
 pub fn catch_up_ready_worktree(slot: &Path, tip: &str) -> Result<(), WorktreeError> {
+    let previous = read_mark(slot);
     run_git_command(slot, ["checkout", "--quiet", "--detach", tip])?;
-    write_mark(slot, tip, false)
+    let still_built =
+        previous.is_some_and(|mark| mark.built && !build_inputs_changed(slot, &mark.base, tip));
+    write_mark(slot, tip, still_built)
+}
+
+/// A diff that can't be read counts as a change: a rebuild is only slower, never wrong.
+fn build_inputs_changed(slot: &Path, base: &str, tip: &str) -> bool {
+    let output = git()
+        .arg("-C")
+        .arg(slot)
+        .args([
+            "-c",
+            "core.quotepath=false",
+            "diff",
+            "--name-only",
+            base,
+            tip,
+        ])
+        .output();
+    match output {
+        Ok(output) if output.status.success() => {
+            let paths = String::from_utf8_lossy(&output.stdout);
+            changes_affect_build(paths.lines().filter(|path| !path.is_empty()))
+        }
+        _ => true,
+    }
 }
 
 /// Prepares the slot at its base so an agent's first build compiles only what it changes.
