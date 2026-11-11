@@ -103,6 +103,18 @@ export const commands = {
 	installSkillPack: (packOrRepo: string, sourceOverride: string | null, initialPin: string | null) => __TAURI_INVOKE<InstalledSkillPack_Serialize>("install_skill_pack", { packOrRepo, sourceOverride, initialPin }),
 	checkSkillPackUpdate: (packId: string) => __TAURI_INVOKE<SkillPackUpdatePreview_Serialize>("check_skill_pack_update", { packId }),
 	confirmSkillPackUpdate: (packId: string, candidateCommit: string) => __TAURI_INVOKE<InstalledSkillPack_Serialize>("confirm_skill_pack_update", { packId, candidateCommit }),
+	/**
+	 *  UI UX Pro Max's design system for a project: where MASTER.md lives, whether it exists, and
+	 *  whether AGENTS.md carries its rule (F18).
+	 */
+	getDesignSystem: (projectIdentifier: number) => __TAURI_INVOKE<DesignSystemStatus_Serialize>("get_design_system", { projectIdentifier }),
+	/**
+	 *  Generate (or, with `regenerate`, Regenerate) the project's design system, add the AGENTS.md
+	 *  rule and commit both in the main checkout (F18).
+	 */
+	generateDesignSystem: (projectIdentifier: number, regenerate: boolean) => __TAURI_INVOKE<DesignSystemStatus_Serialize>("generate_design_system", { projectIdentifier, regenerate }),
+	/**  The game engine the project's files show, and the Game dev bundles it suggests (F18). */
+	detectGameEngine: (projectIdentifier: number) => __TAURI_INVOKE<GameEngineDetection_Serialize>("detect_game_engine", { projectIdentifier }),
 	/**  The Swarm dialog for the user's current choices; asked again whenever one changes. */
 	getSwarmDialog: (query: SwarmDialogQuery_Deserialize) => __TAURI_INVOKE<SwarmDialog_Serialize>("get_swarm_dialog", { query }),
 	/**  Starts one agent per selected item, all at once, each in its own worktree (F10). */
@@ -510,6 +522,31 @@ export type DependencyWait = {
 	file: string,
 };
 
+/**  Where a project's design system lives and whether it has been generated. */
+export type DesignSystemStatus = DesignSystemStatus_Serialize | DesignSystemStatus_Deserialize;
+
+/**  Where a project's design system lives and whether it has been generated. */
+export type DesignSystemStatus_Deserialize = {
+	/**  `design-system/<project>/MASTER.md`, relative to the checkout. */
+	master_path?: string,
+	exists?: boolean,
+	/**  When MASTER.md was last written, in Unix seconds. */
+	generated_at?: number | null,
+	/**  True when AGENTS.md carries the design system rule. */
+	rule_in_agents?: boolean,
+};
+
+/**  Where a project's design system lives and whether it has been generated. */
+export type DesignSystemStatus_Serialize = {
+	/**  `design-system/<project>/MASTER.md`, relative to the checkout. */
+	master_path: string,
+	exists: boolean,
+	/**  When MASTER.md was last written, in Unix seconds. */
+	generated_at: number | null,
+	/**  True when AGENTS.md carries the design system rule. */
+	rule_in_agents: boolean,
+};
+
 export type DiffBlockView = DiffBlockView_Serialize | DiffBlockView_Deserialize;
 
 export type DiffBlockView_Deserialize = {
@@ -544,6 +581,12 @@ export type DiscoveredSkill_Deserialize = {
 	relative_folder?: string,
 	has_scripts?: boolean,
 	has_data?: boolean,
+	/**
+	 *  True when the folder is reached through a link the pack tracks in git (a `120000`
+	 *  entry): a mirror of a skill that lives elsewhere in the pack, such as claude-skills'
+	 *  `vendor/` and per-agent folders. Mirrors never count twice in a bundle.
+	 */
+	mirror?: boolean,
 };
 
 /**  One discovered skill folder (`SKILL.md` plus optional scripts, references and data, SPEC.md §2). */
@@ -554,6 +597,12 @@ export type DiscoveredSkill_Serialize = {
 	relative_folder: string,
 	has_scripts: boolean,
 	has_data: boolean,
+	/**
+	 *  True when the folder is reached through a link the pack tracks in git (a `120000`
+	 *  entry): a mirror of a skill that lives elsewhere in the pack, such as claude-skills'
+	 *  `vendor/` and per-agent folders. Mirrors never count twice in a bundle.
+	 */
+	mirror: boolean,
 };
 
 export type DutyAgentCard = {
@@ -793,6 +842,45 @@ export type FollowThrough_Serialize = {
 	work_tool_start: number,
 	ci_state: string,
 	proof: ProofProgress_Serialize,
+};
+
+/**  The engine the scan found, and the bundles Game dev skills suggests for it. */
+export type GameEngineDetection = GameEngineDetection_Serialize | GameEngineDetection_Deserialize;
+
+/**  The engine the scan found, and the bundles Game dev skills suggests for it. */
+export type GameEngineDetection_Deserialize = {
+	found?: boolean,
+	/**  Display name, e.g. `Godot`. */
+	engine?: string,
+	/**  The engine's bundle in the Game dev skills pack. */
+	bundle_id?: string,
+	/**  The file or dependency that gave the engine away, e.g. `project.godot`. */
+	evidence?: string,
+	/**
+	 *  The router plus the engine's bundle. Engine bundles are exclusive: only the detected
+	 *  engine's is suggested.
+	 */
+	suggested_bundles?: string[],
+	/**  The line the pack's card shows. */
+	summary?: string,
+};
+
+/**  The engine the scan found, and the bundles Game dev skills suggests for it. */
+export type GameEngineDetection_Serialize = {
+	found: boolean,
+	/**  Display name, e.g. `Godot`. */
+	engine: string,
+	/**  The engine's bundle in the Game dev skills pack. */
+	bundle_id: string,
+	/**  The file or dependency that gave the engine away, e.g. `project.godot`. */
+	evidence: string,
+	/**
+	 *  The router plus the engine's bundle. Engine bundles are exclusive: only the detected
+	 *  engine's is suggested.
+	 */
+	suggested_bundles: string[],
+	/**  The line the pack's card shows. */
+	summary: string,
 };
 
 export type GitHubActor = {
@@ -3019,6 +3107,21 @@ export type SignInCardView = {
 	can_sign_in: boolean,
 };
 
+/**  How many skills one bundle of an installed pack holds at its pinned commit. */
+export type SkillBundleCount = SkillBundleCount_Serialize | SkillBundleCount_Deserialize;
+
+/**  How many skills one bundle of an installed pack holds at its pinned commit. */
+export type SkillBundleCount_Deserialize = {
+	bundle_id?: string,
+	skill_count?: number,
+};
+
+/**  How many skills one bundle of an installed pack holds at its pinned commit. */
+export type SkillBundleCount_Serialize = {
+	bundle_id: string,
+	skill_count: number,
+};
+
 /**
  *  One bundle inside a skill pack (SPEC.md F18: claude-skills by domain, Game dev skills by
  *  engine/discipline/genre/workflow).
@@ -3059,6 +3162,8 @@ export type SkillLibrarySnapshot_Deserialize = {
 	library_root?: string,
 	catalog?: SkillPackCatalogEntry_Deserialize[],
 	installed?: InstalledSkillPack_Deserialize[],
+	/**  Real skill counts per bundle of each installed built-in pack, at its pinned commit. */
+	bundle_counts?: SkillPackBundleCounts_Deserialize[],
 };
 
 /**  Snapshot of the machine-wide skill library (built-in catalog + installed pinned packs). */
@@ -3066,6 +3171,23 @@ export type SkillLibrarySnapshot_Serialize = {
 	library_root: string,
 	catalog: SkillPackCatalogEntry_Serialize[],
 	installed: InstalledSkillPack_Serialize[],
+	/**  Real skill counts per bundle of each installed built-in pack, at its pinned commit. */
+	bundle_counts: SkillPackBundleCounts_Serialize[],
+};
+
+/**  The real bundle counts of one installed pack, for its card's chips. */
+export type SkillPackBundleCounts = SkillPackBundleCounts_Serialize | SkillPackBundleCounts_Deserialize;
+
+/**  The real bundle counts of one installed pack, for its card's chips. */
+export type SkillPackBundleCounts_Deserialize = {
+	pack_id?: string,
+	bundles?: SkillBundleCount_Deserialize[],
+};
+
+/**  The real bundle counts of one installed pack, for its card's chips. */
+export type SkillPackBundleCounts_Serialize = {
+	pack_id: string,
+	bundles: SkillBundleCount_Serialize[],
 };
 
 /**  Static metadata for a built-in or user-added skill pack (SPEC.md F18). */

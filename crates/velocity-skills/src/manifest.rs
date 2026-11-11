@@ -22,6 +22,11 @@ pub struct DiscoveredSkill {
     pub has_scripts: bool,
     #[serde(default)]
     pub has_data: bool,
+    /// True when the folder is reached through a link the pack tracks in git (a `120000`
+    /// entry): a mirror of a skill that lives elsewhere in the pack, such as claude-skills'
+    /// `vendor/` and per-agent folders. Mirrors never count twice in a bundle.
+    #[serde(default)]
+    pub mirror: bool,
 }
 
 impl DiscoveredSkill {
@@ -38,7 +43,22 @@ impl DiscoveredSkill {
             relative_folder,
             has_scripts,
             has_data,
+            mirror: false,
         }
+    }
+}
+
+/// Marks every skill whose folder lies at or under one of `linked_paths` (forward-slash paths
+/// relative to the pack) as a mirror.
+pub fn mark_mirrored_skills(skills: &mut [DiscoveredSkill], linked_paths: &[String]) {
+    for skill in skills {
+        skill.mirror = linked_paths.iter().any(|link| {
+            skill.relative_folder == *link
+                || skill
+                    .relative_folder
+                    .strip_prefix(link.as_str())
+                    .is_some_and(|rest| rest.starts_with('/'))
+        });
     }
 }
 
