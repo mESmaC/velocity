@@ -20,8 +20,8 @@ use velocity_core::pr_review::{
 };
 use velocity_core::review_tier::TierAssessment;
 use velocity_github::{
-    PrDutyReport, PullRequestClient, PullRequestOperation, PullRequestState, ReviewRecord,
-    read_pr_duty_reports,
+    PrDutyReport, PullRequestClient, PullRequestError, PullRequestOperation, PullRequestState,
+    ReviewRecord, read_pr_duty_reports,
 };
 use velocity_store::duty::PrDutyRoster;
 
@@ -83,6 +83,9 @@ pub struct PrDutyReviews {
     app_data: PathBuf,
     /// The project's AIRC channel, passed to every review's agent (F14).
     airc: Option<AircLaunch>,
+    /// Each checkout's GitHub client, kept across ticks: reading the repository's identity is
+    /// a GitHub request (#228).
+    clients: Arc<Mutex<BTreeMap<PathBuf, Arc<PullRequestClient>>>>,
 }
 
 impl PrDutyReviews {
@@ -93,7 +96,29 @@ impl PrDutyReviews {
             executable,
             app_data,
             airc: None,
+            clients: Arc::default(),
         }
+    }
+
+    /// The checkout's cached GitHub client, discovered on first use.
+    fn client(&self, repository: &Path) -> Result<Arc<PullRequestClient>, PullRequestError> {
+        if let Some(client) = self.clients().get(repository) {
+            return Ok(client.clone());
+        }
+        let client = Arc::new(PullRequestClient::discover(repository)?);
+        self.clients()
+            .insert(repository.to_path_buf(), client.clone());
+        Ok(client)
+    }
+
+    /// Drops the checkout's client after a failed read, so a changed remote or sign-in is
+    /// discovered afresh.
+    fn forget_client(&self, repository: &Path) {
+        self.clients().remove(repository);
+    }
+
+    fn clients(&self) -> MutexGuard<'_, BTreeMap<PathBuf, Arc<PullRequestClient>>> {
+        self.clients.lock().unwrap_or_else(PoisonError::into_inner)
     }
 
     /// Gives every review's agent the project's AIRC channel under its PR duty nick (F14).
@@ -192,9 +217,13 @@ impl PrDutyReviews {
         let repository = PathBuf::from(&roster.project.repository_path);
         let app_data = self.app_data.clone();
         let project = roster.project.id.to_string();
+        let runner = self.clone();
         tokio::task::spawn_blocking(move || {
-            let pull_requests: Vec<_> = PullRequestClient::discover(&repository)
-                .and_then(|client| client.list())
+            let listed = runner.client(&repository).and_then(|client| client.list());
+            if listed.is_err() {
+                runner.forget_client(&repository);
+            }
+            let pull_requests: Vec<_> = listed
                 .map_err(|error| error.to_string())?
                 .into_iter()
                 .filter(|pull_request| pull_request.state == PullRequestState::Open)
@@ -365,6 +394,7 @@ impl Review {
     async fn claim<Host: ReviewHost>(&self, host: &Host) -> bool {
         let repository = PathBuf::from(&self.roster.project.repository_path);
         let app_data = self.runner.app_data.clone();
+        let runner = self.runner.clone();
         let project = self.roster.project.id.to_string();
         let (nickname, number, head) = (
             self.key.1.clone(),
@@ -381,8 +411,9 @@ impl Review {
                 number,
                 body: format!("Reviewing · {nickname}"),
             };
-            let _ =
-                PullRequestClient::discover(&repository).and_then(|client| client.execute(comment));
+            let _ = runner
+                .client(&repository)
+                .and_then(|client| client.execute(comment));
         })
         .await;
         let message = claim_message(number, &self.candidate.title, self.work);
