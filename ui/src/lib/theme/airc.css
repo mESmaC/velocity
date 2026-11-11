@@ -281,6 +281,11 @@
   border-color: var(--warn);
   color: var(--warn);
 }
+.cl .dep {
+  grid-column: 2 / 4;
+  font-size: var(--airc-claim-dependency-font-size);
+  color: var(--info);
+}
 .nk-h {
   margin: var(--airc-nick-heading-margin);
   font-size: var(--airc-nick-heading-font-size);

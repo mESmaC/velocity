@@ -1,19 +1,26 @@
 <script lang="ts">
-  import type { ThreadMenuAction, ThreadMenuView } from './ipc';
+  import type { MessageMode, ThreadMenuAction, ThreadMenuView } from './ipc';
   let {
     menu,
     x,
     y,
     choose,
+    chooseMode,
     close,
   }: {
     menu: ThreadMenuView;
     x: number;
     y: number;
     choose: (action: ThreadMenuAction) => void;
+    chooseMode: (mode: MessageMode) => void;
     close: () => void;
   } = $props();
   let element = $state<HTMLElement>();
+  const modes: { mode: MessageMode; label: string }[] = [
+    { mode: 'Open', label: 'Open' },
+    { mode: 'HeadsDown', label: 'Heads-down' },
+    { mode: 'Quarantined', label: 'Quarantined' },
+  ];
   let left = $derived(x);
   let top = $derived(y);
 
@@ -52,6 +59,19 @@
   style:left={`${left}px`}
   style:top={`${top}px`}
 >
+  {#if menu.message_mode}
+    {#each modes as option (option.mode)}
+      <button
+        role="menuitemradio"
+        aria-checked={menu.message_mode.mode === option.mode}
+        onclick={() => chooseMode(option.mode)}
+        >Message mode: {option.label}{#if menu.message_mode.mode === option.mode}<small
+            >Selected</small
+          >{/if}</button
+      >
+    {/each}
+    <hr />
+  {/if}
   {#each menu.entries as entry, index (index)}
     {#if entry === 'Separator'}<hr />{:else}<button
         role="menuitem"

@@ -24,7 +24,7 @@ $source = @'
 use std::{fs, path::Path, process::{Command, exit}};
 use velocity_github::{PullRequestSnapshot, follow_through::FollowThrough};
 use velocity_store::{PersistedState, ProviderKind, StateStore, ThreadState, threads::NewThread};
-use velocity_threads::plan_launch;
+use velocity_threads::plan_launch_with_preferences as plan_launch;
 
 fn report(label: &str, passed: bool, detail: impl std::fmt::Display) -> usize {
     println!("{} {label}: {detail}", if passed { "PASS" } else { "FAIL" });

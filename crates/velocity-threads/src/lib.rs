@@ -32,7 +32,8 @@ pub use deletion::{DeletionError, DeletionPlan, PendingDeletions, plan_deletion}
 pub use dispatch::{DispatchError, IssueDispatchPlan, plan_issue_dispatch};
 pub use follow_through::DeliveryStatus;
 pub use launch::{
-    LaunchError, LaunchPlan, WorktreeNaming, agent_launch, plan_launch, title_worktree_name,
+    LaunchError, LaunchPlan, WorktreeNaming, agent_launch, plan_launch,
+    plan_launch_with_preferences, title_worktree_name,
 };
 pub use ready_pool::{PoolHost, PoolProject, PoolRow, PoolTicket, ReadyPools};
 pub use review::{PR_DUTY_SERVER_SWITCH, ReviewPlan, plan_review};

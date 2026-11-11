@@ -47,6 +47,7 @@ fn bindings() -> Builder<tauri::Wry> {
     // ipc.ts supplies typed listeners, while run() registers native emitters.
     let builder = Builder::new().commands(collect_commands![
         agents::read_agents_md,
+        agents::reload_agents_md,
         agents::edit_agents_md,
         agents::write_agents_md,
         agents::tighten_rule,

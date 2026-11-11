@@ -2,6 +2,7 @@
 //! sign-out, subscription limits, Settings → Providers and the composer's model menu.
 //!
 //! Each agent is asked at startup, after every sign-in and whenever its command changes;
+//! missing agents are checked again whenever Settings → Providers opens.
 //! limits are read every five minutes. What the agents report is saved in the store's provider catalog, so pickers and
 //! the footer meter are right at the next start before the agents answer again.
 
@@ -14,7 +15,8 @@ use tauri::{AppHandle, Manager};
 use tauri_specta::Event;
 use velocity_acp::client::AgentLaunch;
 use velocity_acp::client::{
-    AgentProbe, ClientError, probe_agent, read_claude_usage, read_codex_usage, sign_in,
+    AgentProbe, ClientError, probe_agent, read_antigravity_usage, read_claude_usage,
+    read_codex_usage, sign_in,
 };
 use velocity_acp::{
     LimitReading, SignInMethod, agent_command_label, agent_command_line, choose_sign_in,
@@ -53,6 +55,8 @@ struct Slot {
     /// Bumped whenever the command changes, so a check of the old command can't record over
     /// what the new one reports.
     generation: u64,
+    /// Prevent an older periodic read from replacing a report received during that read.
+    limit_revision: u64,
 }
 
 /// Every provider's slot, in card order, kept in step with Settings → Providers.
@@ -136,6 +140,22 @@ impl ManagedProviders {
     fn phase(&self, provider: ProviderKind) -> Option<ProviderPhase> {
         self.with_slot(provider, |slot| slot.runtime.phase)
     }
+
+    fn retry_missing(&self) -> Vec<ProviderKind> {
+        let Ok(mut slots) = self.0.lock() else {
+            return Vec::new();
+        };
+        let mut providers = Vec::new();
+        for slot in slots.iter_mut() {
+            if slot.runtime.phase == ProviderPhase::NotInstalled {
+                // Reserve the probe before spawning: repeated opens must not start
+                // competing agent processes for the same command.
+                slot.runtime.phase = ProviderPhase::Checking;
+                providers.push(slot.runtime.provider);
+            }
+        }
+        providers
+    }
 }
 
 fn new_slot(provider: ProviderKind) -> Slot {
@@ -144,6 +164,7 @@ fn new_slot(provider: ProviderKind) -> Slot {
         method: None,
         sign_in: None,
         generation: 0,
+        limit_revision: 0,
     }
 }
 
@@ -187,7 +208,31 @@ fn settings(application: &AppHandle) -> Settings {
         .unwrap_or_default()
 }
 
+fn configure_concurrency(application: &AppHandle) {
+    let state = application.state::<ManagedStateStore>();
+    let Ok(store) = state.lock() else {
+        return;
+    };
+    // Keep settings edits serialized through applying the live cap as well as saving it.
+    let limits = store
+        .settings()
+        .providers
+        .concurrency
+        .iter()
+        .map(|entry| {
+            (
+                velocity_threads::titles::provider(entry.provider),
+                entry.maximum,
+            )
+        })
+        .collect::<Vec<_>>();
+    velocity_acp::concurrency::configure(&limits);
+    drop(store);
+}
+
 pub fn initialize(application: &AppHandle) {
+    configure_concurrency(application);
+    watch_live_limits(application);
     let handle = application.clone();
     tauri::async_runtime::spawn(async move {
         let settings = settings(&handle);
@@ -305,13 +350,32 @@ fn record_failure(
 /// Reads one provider's limit where it has a source (F15 Limit sources). A failed read shows
 /// "limit not reported".
 async fn read_limit(application: &AppHandle, provider: ProviderKind) {
+    let providers = application.state::<ManagedProviders>();
+    let revision = providers.with_slot(provider, |slot| (slot.generation, slot.limit_revision));
     let directory = working_directory(application);
     let reading = match provider {
         ProviderKind::Claude => read_claude_usage(&directory, LIMIT_DEADLINE).await,
         ProviderKind::Codex => read_codex_usage(&directory, LIMIT_DEADLINE).await,
-        ProviderKind::Antigravity | ProviderKind::Kimi | ProviderKind::Custom(_) => Ok(None),
+        ProviderKind::Antigravity => {
+            let launch = agent_launch(&settings(application), provider);
+            match launch {
+                Ok((launch, _)) => {
+                    read_antigravity_usage(&launch, &directory, LIMIT_DEADLINE).await
+                }
+                Err(error) => Err(ClientError::Usage(error.to_string())),
+            }
+        }
+        ProviderKind::Kimi | ProviderKind::Custom(_) => Ok(None),
     };
     let reading: Option<LimitReading> = reading.ok().flatten();
+    providers.with_slot(provider, |slot| {
+        if revision == Some((slot.generation, slot.limit_revision)) {
+            record_limit(application, provider, reading);
+        }
+    });
+}
+
+fn record_limit(application: &AppHandle, provider: ProviderKind, reading: Option<LimitReading>) {
     let plan = reading.as_ref().and_then(|reading| reading.plan.clone());
     let limit = reading.map(|reading| {
         ProviderLimit::new(
@@ -324,6 +388,33 @@ async fn read_limit(application: &AppHandle, provider: ProviderKind) {
     });
     with_store(application, |store| {
         store.record_provider_limit(provider, limit, plan)
+    });
+}
+
+fn watch_live_limits(application: &AppHandle) {
+    let mut reports = velocity_acp::client::subscribe_limits();
+    let handle = application.clone();
+    tauri::async_runtime::spawn(async move {
+        loop {
+            match reports.recv().await {
+                Ok((provider, reading)) => {
+                    let provider = match provider {
+                        velocity_acp::Provider::Anthropic => ProviderKind::Claude,
+                        velocity_acp::Provider::Codex => ProviderKind::Codex,
+                        _ => continue,
+                    };
+                    handle
+                        .state::<ManagedProviders>()
+                        .with_slot(provider, |slot| {
+                            slot.limit_revision = slot.limit_revision.wrapping_add(1);
+                            record_limit(&handle, provider, reading);
+                        });
+                    publish(&handle, None);
+                }
+                Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => continue,
+                Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
+            }
+        }
     });
 }
 
@@ -394,7 +485,13 @@ pub(crate) fn current_view(application: &AppHandle) -> Result<ProvidersView, Str
 #[tauri::command]
 #[specta::specta]
 pub fn list_providers(application: AppHandle) -> Result<ProvidersView, String> {
-    current_view(&application)
+    let missing = application.state::<ManagedProviders>().retry_missing();
+    let view = current_view(&application);
+    for provider in missing {
+        let handle = application.clone();
+        tauri::async_runtime::spawn(async move { check(&handle, provider).await });
+    }
+    view
 }
 
 /// Sign in with Claude / ChatGPT / Google / Kimi (F15): runs the agent's own login, which
@@ -563,6 +660,7 @@ pub fn set_provider_settings(
             .edit_providers(edit)
             .map_err(|error| error.to_string())?;
     }
+    configure_concurrency(&application);
     current_view(&application)
 }
 

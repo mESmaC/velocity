@@ -1,10 +1,8 @@
 //! Velocity's git and worktree manager (SPEC.md §1 Rule 5, §4 F5).
 //!
-//! Pure, synchronous planning and state transitions live in [`path_scheme`], [`setup`],
-//! and [`lifecycle`] so that Charon and Aeneas can translate them for verification in
-//! `proofs/WorktreeManager/`. Concrete Windows path resolution, file copying, shared
-//! `CARGO_TARGET_DIR` setup, and `git worktree` command execution live at the crate edge in
-//! [`manager`]. New-project setup (`git init`, repository checks) lives in [`repository`].
+//! Pure planning lives in [`path_scheme`], [`setup`] and [`lifecycle`]. Only deletion
+//! has a Lean model; [`deletion_allowed`] is checked against its exported fixtures.
+//! Git processes, Windows paths and setup run at the crate edge.
 
 #![forbid(unsafe_code)]
 
@@ -12,6 +10,7 @@ pub mod agents_file;
 pub mod agents_template;
 mod changed_files;
 mod command;
+mod deletion;
 mod dependency;
 pub mod inventory;
 pub mod landing;
@@ -29,6 +28,7 @@ mod sweep;
 mod titled;
 
 pub use changed_files::worktree_changed_files;
+pub use deletion::deletion_allowed;
 pub use dependency::continue_after_dependency;
 pub use lean_setup::{
     LakeManifest, LakePackage, lake_project_folders, parse_manifest, parse_toolchain, prepare_lean,
@@ -45,7 +45,8 @@ pub use manager::{
     validate_worktree_path_length,
 };
 pub use merged_worktree::{
-    MergedWorktreeError, remove_merged_worktree, remove_untouched_worktree, verify_thread_worktree,
+    MergedWorktreeError, remove_merged_worktree, remove_untouched_worktree, verify_deletion,
+    verify_thread_worktree,
 };
 pub use path_scheme::{
     JobKind, LocationConfig, WorktreeLeaf, WorktreePath, can_allocate_leaf, effective_root,
@@ -58,7 +59,7 @@ pub use ready_pool::{
 };
 pub use repository::{
     GitError, commit_file, current_branch, folder_is_occupied, initialize_repository,
-    is_repository, main_checkout,
+    is_repository, main_checkout, opened_project_default_branch,
 };
 pub use review::{ReviewCheckout, prepare_review_worktree, remove_review_worktree, review_tier};
 pub use setup::{

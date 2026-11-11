@@ -10,15 +10,26 @@ stall	301	300	false	false	nudge
 stall	301	300	false	true	nothing
 stall	301	300	true	false	restart
 stall	301	300	true	true	nothing
-release	599	600	false	false	false
-release	599	600	false	true	false
-release	599	600	true	false	false
-release	599	600	true	true	false
-release	600	600	false	false	false
-release	600	600	false	true	false
-release	600	600	true	false	true
-release	600	600	true	true	false
-release	601	600	false	false	false
-release	601	600	false	true	false
-release	601	600	true	false	true
-release	601	600	true	true	false
+trace	failure	100	failed	false	100	false	false
+trace	failure	699	failed	false	100	false	false
+trace	failure	700	failed	false	100	true	true
+trace	failure	701	failed	false	100	false	true
+trace	recovery	100	failed	false	100	false	false
+trace	recovery	699	live	false	none	false	false
+trace	recovery	700	failed	false	700	false	false
+trace	recovery	1299	failed	false	700	false	false
+trace	recovery	1300	failed	false	700	true	true
+trace	limit	100	limit	false	100	false	false
+trace	limit	700	limit	false	100	true	true
+trace	pr	100	failed	true	100	false	false
+trace	pr	700	failed	true	100	false	false
+trace	pr	701	failed	false	100	true	true
+trace	exempt	100	failed	false	100	false	false
+trace	exempt	700	parked	false	none	false	false
+trace	exempt	800	queue	false	none	false	false
+trace	exempt	900	closed	false	none	false	false
+trace	exempt	1000	live	false	none	false	false
+trace	exempt	2000	live	false	none	false	false
+trace	switch	100	failed	false	100	false	false
+trace	switch	699	limit	false	100	false	false
+trace	switch	700	failed	false	100	true	true

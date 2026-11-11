@@ -1,6 +1,7 @@
 <script lang="ts">
   import { onMount } from 'svelte';
   import Icon from './Icon.svelte';
+  import ProviderSignInCards from './ProviderSignInCards.svelte';
   import { providerIcon, swarmCommands } from './ipc';
   import type {
     LayoutAction,
@@ -239,6 +240,7 @@
               <span class="md">{model.provider_name}</span>
             </button>
           {/each}
+          <ProviderSignInCards {send} {report} />
         </div>
         <div class="hint">{view?.split_label ?? ''}</div>
       </div>
