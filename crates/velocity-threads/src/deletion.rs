@@ -46,6 +46,8 @@ pub enum DeletionError {
     },
     #[error("Refusing to remove {0}: it is the project's own checkout")]
     MainCheckout(String),
+    #[error(transparent)]
+    Guard(#[from] velocity_git::MergedWorktreeError),
     #[error("Could not close PR #{number}: {source}")]
     PullRequest {
         number: u32,
@@ -89,6 +91,7 @@ impl PendingDeletions {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct DeletionPlan {
     pub repository: PathBuf,
+    pub branch: String,
     pub remove_worktree: Option<PathBuf>,
     pub close_pull_request: Option<u32>,
 }
@@ -114,6 +117,7 @@ pub fn plan_deletion(repository: &Path, thread: &ThreadItem) -> DeletionPlan {
         });
     DeletionPlan {
         repository: repository.to_path_buf(),
+        branch: thread.branch_name.clone(),
         remove_worktree,
         close_pull_request: thread
             .pull_request_number
@@ -128,6 +132,18 @@ fn lifecycle_state(state: ThreadState) -> LifecycleState {
         ThreadState::Merged => LifecycleState::Deleted,
         _ => LifecycleState::Working,
     }
+}
+
+/// Verify the saved owning branch before explicit thread deletion.
+pub fn remove_owned_worktree(
+    repository: &Path,
+    worktree: &Path,
+    branch: &str,
+) -> Result<(), DeletionError> {
+    if worktree.exists() {
+        velocity_git::verify_deletion(repository, worktree, branch, false, true)?;
+    }
+    remove_worktree(repository, worktree)
 }
 
 /// Removes the worktree from git and disk, retrying while the stopped agent exits.

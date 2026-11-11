@@ -452,9 +452,30 @@ impl Settings {
     }
 }
 
+/// A provider's optional cap. Missing entries mean unlimited.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, Type)]
+pub struct ProviderConcurrency {
+    pub provider: ProviderKind,
+    pub maximum: u32,
+}
+
+impl Settings {
+    pub fn provider_maximum(&self, provider: ProviderKind) -> Option<u32> {
+        self.providers
+            .concurrency
+            .iter()
+            .find(|entry| entry.provider == provider)
+            .map(|entry| entry.maximum)
+    }
+}
+
 /// A change from Settings → Providers or the home composer's model menu.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, Type)]
 pub enum ProviderEdit {
+    MaxAgents {
+        provider: ProviderKind,
+        maximum: Option<u32>,
+    },
     /// Show or hide a model chip in the pickers.
     ShowModel {
         provider: ProviderKind,
@@ -669,6 +690,7 @@ impl StateStore {
 fn apply_edit(settings: &mut Settings, edit: ProviderEdit) {
     let providers = &mut settings.providers;
     match edit {
+        ProviderEdit::MaxAgents { provider, maximum } => set_maximum(providers, provider, maximum),
         ProviderEdit::ShowModel {
             provider,
             model,
@@ -702,5 +724,21 @@ fn apply_edit(settings: &mut Settings, edit: ProviderEdit) {
             providers.title_effort = defaults.title_effort;
             providers.title_speed = defaults.title_speed;
         }
+    }
+}
+
+fn set_maximum(
+    providers: &mut crate::ProviderSettings,
+    provider: ProviderKind,
+    maximum: Option<u32>,
+) {
+    providers
+        .concurrency
+        .retain(|entry| entry.provider != provider);
+    if let Some(maximum) = maximum {
+        providers.concurrency.push(ProviderConcurrency {
+            provider,
+            maximum: maximum.max(1),
+        });
     }
 }

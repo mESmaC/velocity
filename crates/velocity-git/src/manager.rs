@@ -21,7 +21,7 @@ use crate::setup::{
 pub const DEFAULT_UNTRACKED_FILES: &str = ".env, .env.local";
 
 /// Default command executed in a newly created worktree before the agent starts (F5).
-pub const DEFAULT_SETUP_COMMAND: &str = "pnpm -C ui install";
+pub const DEFAULT_SETUP_COMMAND: &str = "";
 
 /// Upper-bound pre-check character length for a worktree directory path so `<worktree>\.git`
 /// stays within Windows `MAX_PATH` (260 characters including the null terminator, i.e. 259
@@ -75,7 +75,7 @@ pub enum WorktreeError {
         working_directory: PathBuf,
         source: std::io::Error,
     },
-    #[error("`{command}` failed in `{working_directory}` (exit {status}): {stderr}")]
+    #[error("`{command}` failed in `{working_directory}` ({status}): {stderr}")]
     CommandFailed {
         command: String,
         working_directory: PathBuf,
