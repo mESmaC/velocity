@@ -133,7 +133,10 @@
           </div>
           <div class="skill-cards">
             {#each view.cards as card (card.catalog.id)}
-              <div class="sk" class:on={card.selection.enabled}>
+              <div
+                class="sk"
+                class:on={card.installed && card.selection.enabled}
+              >
                 <div class="top">
                   <b>{card.catalog.name}</b>
                   {#if card.suggestion_badge}<span class="sugg"
@@ -146,15 +149,23 @@
                     class="skill-toggle"
                     role="switch"
                     aria-checked={card.selection.enabled}
-                    aria-label={`Enable ${card.catalog.name}`}
-                    disabled={busy || !card.installed}
+                    aria-label={card.installed
+                      ? `Enable ${card.catalog.name}`
+                      : `Accept suggestion for ${card.catalog.name} after installation`}
+                    disabled={busy ||
+                      (!card.installed && !card.selection.enabled)}
                     onclick={() =>
                       edit({
                         Pack: {
                           identifier: card.catalog.id,
                           enabled: !card.selection.enabled,
                         },
-                      })}>{card.selection.enabled ? 'On' : 'Off'}</button
+                      })}
+                    >{card.selection.enabled
+                      ? card.installed
+                        ? 'On'
+                        : 'Install to turn on'
+                      : 'Off'}</button
                   >
                 </div>
                 <div class="d">{card.catalog.description}</div>

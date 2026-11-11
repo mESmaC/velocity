@@ -26,7 +26,7 @@ $script:BuildQueueMutexName = 'Global\velocity-build-queue'
 $script:BuildQueueHolderFile = Join-Path $env:LOCALAPPDATA 'velocity\build-queue-holder.json'
 
 function Get-BuildQueueHolder {
-    try { Get-Content -LiteralPath $script:BuildQueueHolderFile -Raw | ConvertFrom-Json } catch { $null }
+    try { Get-Content -LiteralPath $script:BuildQueueHolderFile -Raw -ErrorAction Stop | ConvertFrom-Json } catch { $null }
 }
 
 function Write-BuildQueueWait([datetime]$WaitStart) {
@@ -43,6 +43,15 @@ function Write-BuildQueueWait([datetime]$WaitStart) {
 # Runs $Command while holding the machine-wide build lock. The mutex is
 # re-entrant on the same thread, so nested calls in one script never deadlock.
 function Invoke-InBuildQueue([string]$Description, [scriptblock]$Command) {
+    # A queued aggregate runner starts scripts that queue their own cargo calls.
+    # They share the parent's lifetime and must not wait on its mutex again.
+    $holder = Get-BuildQueueHolder
+    if ($env:VELOCITY_BUILD_QUEUE_OWNER -and $holder -and
+        "$($holder.processId)" -eq $env:VELOCITY_BUILD_QUEUE_OWNER -and
+        (Get-Process -Id $holder.processId -ErrorAction SilentlyContinue)) {
+        & $Command
+        return
+    }
     $mutex = [System.Threading.Mutex]::new($false, $script:BuildQueueMutexName)
     $waitStart = Get-Date
     $acquired = $false
@@ -56,12 +65,15 @@ function Invoke-InBuildQueue([string]$Description, [scriptblock]$Command) {
         if (-not $acquired) { Write-BuildQueueWait $waitStart }
     }
     try {
+        $previousQueueOwner = $env:VELOCITY_BUILD_QUEUE_OWNER
+        $env:VELOCITY_BUILD_QUEUE_OWNER = "$PID"
         $holderFolder = Split-Path -Parent $script:BuildQueueHolderFile
         New-Item -ItemType Directory -Force -Path $holderFolder | Out-Null
         @{ processId = $PID; command = $Description; directory = (Get-Location).Path; startedAt = (Get-Date).ToString('o') } |
             ConvertTo-Json | Set-Content -LiteralPath $script:BuildQueueHolderFile -Encoding utf8
         & $Command
     } finally {
+        $env:VELOCITY_BUILD_QUEUE_OWNER = $previousQueueOwner
         Remove-Item -LiteralPath $script:BuildQueueHolderFile -ErrorAction SilentlyContinue
         $mutex.ReleaseMutex()
         $mutex.Dispose()
