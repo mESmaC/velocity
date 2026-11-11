@@ -29,7 +29,7 @@ serde_json = "1"
 $source=@'
 use std::{fs, path::Path, process::{Command, exit}, sync::{Mutex, MutexGuard}};
 use velocity_store::{PersistedState, ProviderKind, StateStore};
-use velocity_threads::{LaunchPlan, SessionInputs, StopOutcome, ThreadKey, ThreadRuntimes, plan_launch, title_worktree_name};
+use velocity_threads::{LaunchPlan, SessionInputs, StopOutcome, ThreadKey, ThreadRuntimes, plan_launch_with_preferences as plan_launch, title_worktree_name};
 
 type ManagedStateStore = Mutex<StateStore>;
 type ManagedThreads = Mutex<ThreadRuntimes>;

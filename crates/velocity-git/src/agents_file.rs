@@ -14,7 +14,7 @@ pub enum AgentsFileError {
     #[error(transparent)]
     Git(#[from] crate::GitError),
     #[error(
-        "AGENTS.md changed on disk. Your draft is kept; reopen after reconciling the external edit."
+        "AGENTS.md changed on disk. Your draft is kept. Copy any edits you want to keep from Markdown, then use Discard draft and reload to load the current file."
     )]
     Changed,
     #[error("AGENTS.md must be a regular file in the project's checkout")]
@@ -43,9 +43,26 @@ impl AgentsFiles {
         });
         // Reopening refreshes a clean document, but never throws away an unsaved draft.
         if !document.editor.snapshot(None).dirty && disk_source != document.disk_source {
-            document.editor = AgentsEditor::new(disk_source.clone().unwrap_or_default());
+            document
+                .editor
+                .reload(disk_source.clone().unwrap_or_default());
             document.disk_source = disk_source;
         }
+        Ok(document.editor.snapshot(None))
+    }
+
+    pub fn reload(&mut self, directory: &Path) -> Result<OutlineSnapshot, AgentsFileError> {
+        let path = file_path(directory)?;
+        // Read and validate first: an unreadable file must leave the draft recoverable.
+        let disk_source = read_source(&path)?;
+        let document = self
+            .documents
+            .get_mut(&path)
+            .ok_or(AgentsFileError::NotOpen)?;
+        document
+            .editor
+            .reload(disk_source.clone().unwrap_or_default());
+        document.disk_source = disk_source;
         Ok(document.editor.snapshot(None))
     }
 

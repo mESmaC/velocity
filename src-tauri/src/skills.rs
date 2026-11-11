@@ -235,7 +235,13 @@ fn save_settings(
         .iter()
         .find(|entry| &entry.id == pack)
         .ok_or("Unknown skill pack")?;
-    if !snapshot.installed.iter().any(|entry| &entry.id == pack) {
+    // A scan can select a pack before installation. Declining that selection must
+    // still be saved, so later scans and installation respect the user's choice.
+    let declining_pack = matches!(
+        &edit,
+        velocity_core::skills::SkillSettingsEdit::Pack { enabled: false, .. }
+    );
+    if !declining_pack && !snapshot.installed.iter().any(|entry| &entry.id == pack) {
         return Err("Install this pack before enabling its skills".into());
     }
     if bundle.is_some_and(|bundle| !catalog.bundles.iter().any(|entry| &entry.id == bundle)) {

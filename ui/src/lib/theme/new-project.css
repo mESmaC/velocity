@@ -231,6 +231,16 @@
   font-size: var(--new-project-card-detail-font-size);
   color: var(--muted);
 }
+.np .model-card.out {
+  border-style: var(--providers-out-border-style);
+}
+.np .model-card.out .mh {
+  font-weight: var(--providers-out-heading-weight);
+  color: var(--muted);
+}
+.np .model-card.out:hover .mh {
+  color: var(--text);
+}
 .np .brief {
   width: 100%;
   min-height: var(--new-project-brief-min-height);

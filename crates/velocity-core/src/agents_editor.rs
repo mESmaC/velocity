@@ -90,6 +90,13 @@ impl AgentsEditor {
         &self.baseline
     }
 
+    pub fn reload(&mut self, source: String) {
+        // Keep revisions monotonic so old answers cannot match a new rewrite after reload.
+        let revision = self.revision + 1;
+        *self = Self::new(source);
+        self.revision = revision;
+    }
+
     pub fn saved(&mut self) {
         self.baseline = self.markdown();
         self.rewrites.clear();

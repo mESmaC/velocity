@@ -42,14 +42,14 @@ pub fn add_task(
     let snapshot = velocity_store::build_gate::layout_snapshot(store.state(), &mut layout);
     drop(layout);
     drop(store);
-    crate::layout::publish(&application, &snapshot, None)?;
     record_added(&application, project_identifier, &task);
+    crate::layout::publish(&application, &snapshot, None)?;
     Ok(task)
 }
 
 pub(crate) fn record_added(application: &AppHandle, project: u32, task: &TaskItem) {
     report(
-        velocity_airc::Event::task_added("you", &task.text)
+        velocity_airc::Event::task_saved("you", task.id, &task.text)
             .map_err(|error| error.to_string())
             .and_then(|event| crate::airc_events::post_event(application, project, event)),
     );
