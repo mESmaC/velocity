@@ -169,19 +169,29 @@ fn entry_block(entry: &EntryContent) -> Option<TranscriptBlock> {
             (!paragraphs.is_empty()).then_some(TranscriptBlock::AgentMessage { paragraphs })
         }
         EntryContent::Tool(step) => Some(TranscriptBlock::ToolGroup {
-            steps: vec![ToolStepRow {
-                running: matches!(
-                    step.status,
-                    ToolCallStatus::Pending | ToolCallStatus::InProgress
-                ),
-                verb: step.verb.into(),
-                argument: step.title.clone(),
-                result_text: match step.status {
-                    ToolCallStatus::Failed => "failed".into(),
-                    _ => String::new(),
-                },
-            }],
+            steps: vec![tool_row(step)],
         }),
+    }
+}
+
+/// One tool step; a skill load reads "Skill · <name>", as in a thread (F4, F18).
+fn tool_row(step: &ToolStep) -> ToolStepRow {
+    let skill = velocity_core::skill_menu::loaded_skill(&step.title, None, None);
+    ToolStepRow {
+        running: matches!(
+            step.status,
+            ToolCallStatus::Pending | ToolCallStatus::InProgress
+        ),
+        verb: if skill.is_some() {
+            "Skill".into()
+        } else {
+            step.verb.into()
+        },
+        argument: skill.unwrap_or_else(|| step.title.clone()),
+        result_text: match step.status {
+            ToolCallStatus::Failed => "failed".into(),
+            _ => String::new(),
+        },
     }
 }
 

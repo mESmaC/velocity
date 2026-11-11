@@ -27,6 +27,7 @@ export const commands = {
 	dispatchLayout: (action: LayoutAction_Deserialize) => __TAURI_INVOKE<LayoutSnapshot_Serialize>("dispatch_layout", { action }),
 	listProjects: () => __TAURI_INVOKE<ProjectList>("list_projects"),
 	switchProject: (identifier: number) => __TAURI_INVOKE<LayoutSnapshot_Serialize>("switch_project", { identifier }),
+	getProofsSettings: (projectIdentifier: number) => __TAURI_INVOKE<ProofsSettingsView_Serialize>("get_proofs_settings", { projectIdentifier }),
 	/**
 	 *  Sets `provider`'s ACP agent command from its card: the program and its arguments as one
 	 *  line. `None` resets a built-in provider to its built-in command. Running agents keep the
@@ -99,6 +100,11 @@ export const commands = {
 	dispatchIssue: (projectIdentifier: number, number: number, acceptRecommendation: boolean) => __TAURI_INVOKE<LayoutSnapshot_Serialize>("dispatch_issue", { projectIdentifier, number, acceptRecommendation }),
 	getPullRequestPanel: () => __TAURI_INVOKE<PullRequestPanelSnapshot_Serialize>("get_pull_request_panel"),
 	openProjectPullRequest: (projectIdentifier: number, number: number) => __TAURI_INVOKE<LayoutSnapshot_Serialize | null>("open_project_pull_request", { projectIdentifier, number }),
+	/**
+	 *  Adds or removes a shared server. New agents of every provider get the saved list; agents
+	 *  already running keep the servers they started with.
+	 */
+	editSharedMcpServers: (edit: SharedMcpServerEdit) => __TAURI_INVOKE<SharedMcpServer[]>("edit_shared_mcp_servers", { edit }),
 	getSkillLibrary: () => __TAURI_INVOKE<SkillLibrarySnapshot_Serialize>("get_skill_library"),
 	getSkillSettings: (projectIdentifier: number) => __TAURI_INVOKE<SkillsSettingsView_Serialize>("get_skill_settings", { projectIdentifier }),
 	setSkillSettings: (projectIdentifier: number, edit: SkillSettingsEdit) => __TAURI_INVOKE<SkillsSettingsView_Serialize>("set_skill_settings", { projectIdentifier, edit }),
@@ -234,6 +240,8 @@ export type AgentSettings_Deserialize = {
 	stall_timeout_minutes: number,
 	tool_timeout_minutes?: number,
 	claim_release_grace_minutes: number,
+	/**  Settings → Agents → shared MCP servers, passed to every agent (§3.2 Tool access). */
+	shared_mcp_servers?: SharedMcpServer[],
 };
 
 export type AgentSettings_Serialize = {
@@ -242,6 +250,8 @@ export type AgentSettings_Serialize = {
 	stall_timeout_minutes: number,
 	tool_timeout_minutes: number,
 	claim_release_grace_minutes: number,
+	/**  Settings → Agents → shared MCP servers, passed to every agent (§3.2 Tool access). */
+	shared_mcp_servers: SharedMcpServer[],
 };
 
 export type AircClaimFile = {
@@ -520,6 +530,18 @@ export type DependencyWait = {
 	holder: string,
 	holder_nick: string,
 	file: string,
+};
+
+/**  A design proof found in the Lake project, `proofs/<Feature>/Design.lean`. */
+export type DesignProofEntry = {
+	feature: string,
+	/**  From the repository root, e.g. `proofs/TargetedRebase`. */
+	folder: string,
+	/**
+	 *  The level each language's code reaches for this feature, read as F17 "How Velocity
+	 *  reads the level" says.
+	 */
+	levels: ProofLevel[],
 };
 
 export type DiffBlockView = DiffBlockView_Serialize | DiffBlockView_Deserialize;
@@ -1427,6 +1449,25 @@ export type KeyboardInput = {
 	typing: boolean,
 };
 
+/**  A language's code-level translator, and the strongest level its code can reach. */
+export type LanguageTranslator = LanguageTranslator_Serialize | LanguageTranslator_Deserialize;
+
+/**  A language's code-level translator, and the strongest level its code can reach. */
+export type LanguageTranslator_Deserialize = {
+	language: string,
+	/**  `None` until a translator is set for the language (Q23); it then tops out at reference. */
+	translator?: string | null,
+	strongest: ProofLevelKind,
+};
+
+/**  A language's code-level translator, and the strongest level its code can reach. */
+export type LanguageTranslator_Serialize = {
+	language: string,
+	/**  `None` until a translator is set for the language (Q23); it then tops out at reference. */
+	translator: string | null,
+	strongest: ProofLevelKind,
+};
+
 export type LaunchEligibility = "allowed" | "lock_spec_first" | "no_project";
 
 export type LaunchGoalSwarmRequest = LaunchGoalSwarmRequest_Serialize | LaunchGoalSwarmRequest_Deserialize;
@@ -2284,6 +2325,16 @@ export type ProofListEntryView = {
 	included: boolean,
 };
 
+/**  One feature on the project's proof list. */
+export type ProofListFeature = {
+	feature: string,
+	/**
+	 *  Why it is on the list: the rest of the bullet after `Feature:`, or the table's other
+	 *  columns joined with ` · `. Empty when SPEC.md gives no reason.
+	 */
+	detail: string,
+};
+
 /**
  *  Velocity's proof checks on the PR (SPEC.md F17), run in the thread's worktree once per
  *  head: the head they last finished on and the card they produced there.
@@ -2322,6 +2373,45 @@ export type ProofTheorem = {
 	kind: string,
 	name: string,
 	statement: string,
+};
+
+/**  Everything the Proofs page shows for one project. */
+export type ProofsSettingsView = ProofsSettingsView_Serialize | ProofsSettingsView_Deserialize;
+
+/**  Everything the Proofs page shows for one project. */
+export type ProofsSettingsView_Deserialize = {
+	/**  The project has a SPEC.md at its root. */
+	spec_found: boolean,
+	/**  SPEC.md has a proof list, even an empty one ("- None."). */
+	proof_list_found: boolean,
+	proof_list: ProofListFeature[],
+	/**  The Lake project's folder from the repository root, when the project has one. */
+	lake_project?: string | null,
+	design_proofs: DesignProofEntry[],
+	translators: LanguageTranslator_Deserialize[],
+	/**
+	 *  How many generated inputs a scout diffs between the code and the compiled Lean model
+	 *  for each feature (F17 reference level). Saved with the app's settings.
+	 */
+	stress_diff_input_count: number,
+};
+
+/**  Everything the Proofs page shows for one project. */
+export type ProofsSettingsView_Serialize = {
+	/**  The project has a SPEC.md at its root. */
+	spec_found: boolean,
+	/**  SPEC.md has a proof list, even an empty one ("- None."). */
+	proof_list_found: boolean,
+	proof_list: ProofListFeature[],
+	/**  The Lake project's folder from the repository root, when the project has one. */
+	lake_project: string | null,
+	design_proofs: DesignProofEntry[],
+	translators: LanguageTranslator_Serialize[],
+	/**
+	 *  How many generated inputs a scout diffs between the code and the compiled Lean model
+	 *  for each feature (F17 reference level). Saved with the app's settings.
+	 */
+	stress_diff_input_count: number,
 };
 
 export type ProviderCardView = ProviderCardView_Serialize | ProviderCardView_Deserialize;
@@ -3049,6 +3139,32 @@ export type Settings_Serialize = {
 	agents: AgentSettings_Serialize,
 	proofs: ProofSettings,
 };
+
+/**  One shared MCP server, in the order Settings → Agents lists it. */
+export type SharedMcpServer = {
+	name: string,
+	transport: SharedMcpTransport,
+};
+
+/**  A change from Settings → Agents. */
+export type SharedMcpServerEdit = 
+/**
+ *  `target` is typed in one field: an `http://` or `https://` URL, or a command line read
+ *  like a provider's command (double quotes around a word with spaces).
+ */
+({ Add: {
+	name: string,
+	target: string,
+} }) & { Remove?: never } | ({ Remove: {
+	name: string,
+} }) & { Add?: never };
+
+/**  How an agent reaches a shared server. */
+export type SharedMcpTransport = 
+/**  A stdio server the agent starts, with your `PATH` and environment (§3.2 Tool access). */
+{ kind: "command"; program: string; arguments: string[] } | 
+/**  A streamable HTTP server. Agents that don't speak MCP over HTTP aren't sent it. */
+{ kind: "url"; url: string };
 
 export type SidebarGroup = SidebarGroup_Serialize | SidebarGroup_Deserialize;
 

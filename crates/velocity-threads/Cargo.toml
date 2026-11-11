@@ -12,6 +12,7 @@ workspace = true
 [dependencies]
 agent-client-protocol = "5.0.0"
 chrono = { version = "0.4", default-features = false, features = ["std"] }
+serde_json.workspace = true
 similar = "2.7"
 thiserror.workspace = true
 tokio = { version = "1.54", features = ["rt", "sync", "time"] }

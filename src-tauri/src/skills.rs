@@ -18,6 +18,8 @@ pub fn initialize(application: &AppHandle) -> anyhow::Result<()> {
     let library = SkillLibrary::open(&app_data)
         .context("Could not initialize the machine-wide skill library")?;
     application.manage(Arc::new(Mutex::new(library)));
+    // A menu that fails to load leaves `$` empty; it never stops the app from starting.
+    crate::threads::report(publish_skill_menus(application));
     Ok(())
 }
 
@@ -41,6 +43,7 @@ pub async fn get_skill_library(
 #[tauri::command]
 #[specta::specta]
 pub async fn install_skill_pack(
+    application: AppHandle,
     library: State<'_, ManagedSkillLibrary>,
     pack_or_repo: String,
     source_override: Option<String>,
@@ -48,7 +51,7 @@ pub async fn install_skill_pack(
 ) -> Result<InstalledSkillPack, String> {
     let library = Arc::clone(&library);
     tauri::async_runtime::spawn_blocking(move || {
-        library
+        let pack = library
             .lock()
             .map_err(|error| error.to_string())?
             .install_pack(
@@ -56,7 +59,10 @@ pub async fn install_skill_pack(
                 source_override.as_deref(),
                 initial_pin.as_deref(),
             )
-            .map_err(|error| error.to_string())
+            .map_err(|error| error.to_string())?;
+        // The library lock above is released by now; the menu takes it again.
+        publish_skill_menus(&application)?;
+        Ok(pack)
     })
     .await
     .map_err(|error| error.to_string())?
@@ -83,17 +89,21 @@ pub async fn check_skill_pack_update(
 #[tauri::command]
 #[specta::specta]
 pub async fn confirm_skill_pack_update(
+    application: AppHandle,
     library: State<'_, ManagedSkillLibrary>,
     pack_id: String,
     candidate_commit: String,
 ) -> Result<InstalledSkillPack, String> {
     let library = Arc::clone(&library);
     tauri::async_runtime::spawn_blocking(move || {
-        library
+        let pack = library
             .lock()
             .map_err(|error| error.to_string())?
             .confirm_update(&pack_id, &candidate_commit)
-            .map_err(|error| error.to_string())
+            .map_err(|error| error.to_string())?;
+        // The library lock above is released by now; the menu takes it again.
+        publish_skill_menus(&application)?;
+        Ok(pack)
     })
     .await
     .map_err(|error| error.to_string())?
@@ -143,6 +153,7 @@ pub async fn set_skill_settings(
 ) -> Result<velocity_skills::settings::SkillsSettingsView, String> {
     tauri::async_runtime::spawn_blocking(move || {
         save_settings(&application, project_identifier, edit)?;
+        publish_skill_menus(&application)?;
         read_settings(&application, project_identifier)
     })
     .await
@@ -189,4 +200,35 @@ fn save_settings(
     store
         .save_project_skills(identifier, choices)
         .map_err(|error| error.to_string())
+}
+
+/// Gives every project's `$` menu the skills it has switched on (F4, F18), after the library
+/// or a project's choices change.
+pub fn publish_skill_menus(application: &AppHandle) -> Result<(), String> {
+    let snapshot = application
+        .state::<ManagedSkillLibrary>()
+        .lock()
+        .map_err(|error| error.to_string())?
+        .snapshot()
+        .map_err(|error| error.to_string())?;
+    let menus: Vec<_> = {
+        let state = application.state::<crate::state::ManagedStateStore>();
+        let store = state.lock().map_err(|error| error.to_string())?;
+        store
+            .state()
+            .projects
+            .iter()
+            .map(|project| {
+                let entries = velocity_skills::menu::skill_menu_entries(&project.skills, &snapshot);
+                (project.id, entries)
+            })
+            .collect()
+    };
+    let layout = application.state::<crate::layout::MainLayout>();
+    let mut layout = layout.lock().map_err(|error| error.to_string())?;
+    for (project, entries) in menus {
+        layout.set_project_skills(project, entries);
+    }
+    // Published under the layout lock, as every layout update is, to keep events in order.
+    crate::layout::publish(application, &layout.snapshot(), None)
 }

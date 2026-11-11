@@ -23,11 +23,13 @@ mod new_project;
 mod parking;
 mod projects;
 mod proof_card;
+mod proofs_settings;
 mod provider_agents;
 mod providers;
 mod pull_request_panel;
 mod ready_pool;
 pub mod reviews;
+mod shared_mcp;
 mod skills;
 mod state;
 mod swarm;
@@ -66,6 +68,7 @@ fn bindings() -> Builder<tauri::Wry> {
         layout::dispatch_layout,
         projects::list_projects,
         projects::switch_project,
+        proofs_settings::get_proofs_settings,
         provider_agents::set_provider_command,
         provider_agents::add_custom_agent,
         provider_agents::remove_custom_agent,
@@ -98,6 +101,7 @@ fn bindings() -> Builder<tauri::Wry> {
         issue_panel::dispatch_issue,
         pull_request_panel::get_pull_request_panel,
         pull_request_panel::open_project_pull_request,
+        shared_mcp::edit_shared_mcp_servers,
         skills::get_skill_library,
         skills::get_skill_settings,
         skills::set_skill_settings,
