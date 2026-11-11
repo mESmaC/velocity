@@ -405,6 +405,7 @@ A worktree's path is fixed when it is created. Changing the location setting aff
   - Built *(proposed)*: one worker makes, removes and catches up ready worktrees one at a time. It fetches the base branch every minute and at once when Velocity sees a merge, and uses `origin`'s tip when it can be fetched. A second worker prebuilds one worktree at a time, below normal priority so agents' own builds go first: `cargo build --workspace` in the worktree's own `target` folder, when the checkout is a Cargo project and "share the Rust build cache" is on. A prebuild that fails is not retried until `master` moves. Setup re-runs at every take, so no manifest check is needed.
 - **Skills.** Pool setup links the project's enabled skills into the worktree (F18), so an agent never starts without them.
 - **Lean.** Pool setup installs the project's pinned Lean toolchain (`lean-toolchain`, through elan) and runs `lake exe cache get`. Mathlib's built files live in the shared build cache, so a worktree never rebuilds them.
+  - Built: the prebuild worker does it for each Lake project (a `lean-toolchain` and a lakefile) at the checkout's root or in a top-level folder such as `proofs/`, before the Cargo build and whether or not the Rust build cache is shared. Mathlib's cache tool keeps its downloads in one machine-wide folder, so only the first worktree on a machine downloads Mathlib and later ones unpack it. Before Lake runs, each package pinned in `lake-manifest.json` that the worktree lacks is cloned locally from another checkout of the repository that has the pinned commit (the main checkout first), with the manifest's URL as `origin`, so Lake uses it instead of cloning Mathlib's history again. A failed step is not retried until `master` moves, like the Cargo prebuild.
 - **Swarm launches.** Launching a swarm or goal swarm tops the pool up to its agent count. Agents that find no ready worktree wait for one rather than racing each other on setup. They wait at most 2 minutes, then make their own *(proposed)*. Worktrees added beyond the setting are taken as soon as they are checked out, without a prebuild.
 - **Build queue** *(proposed)*. Velocity runs agents' heavy builds (compile, test, lint, the PR duty landing check) through one machine-wide queue, one build at a time at full machine resources. Builds run side by side split the cores and memory and all finish late together; run one at a time, the first in line finishes in a fraction of the time and the average wait drops. Order: landing checks first, then checks before a PR is marked ready, then everything else, first come, first served within each. The footer shows the running build and the queue. Long-running dev servers never hold the queue. Until Velocity runs builds itself, `scripts/build-queue.ps1` is the stand-in: a named machine-wide lock, released by Windows when its holder exits.
 
@@ -1051,6 +1052,10 @@ How the checks run *(proposed)*:
 - Lean for a feature off the list, or a theorem about a single behaviour, gets changes requested.
 - A confidence proof at the model level for a language that has a stronger level available is flagged on the proof card and left to the reviewer. Sensitive paths need the strongest level (F7).
 
+- PR duty's MCP approval requires nonempty `proof_review` explanations of proof-list scope, theorem-statement review and confidence level (including why a check is inapplicable). Those explanations are mirrored with the review. Missing design proofs, off-list Lean and unmet tier requirements require changes; applicability and semantic correctness are judged by the reviewer.
+- `pr_duty_checked`, approval and merge run the executable proof gate in the registered review worktree at the prepared head/base. The checkout must match the committed content at that exact head, ignoring CRLF/LF-only differences from Windows generators; content changes and untracked files are refused. Failed builds, placeholders, disallowed axioms, unnamed spec sections and changed modules absent from the Lake build refuse the operation. An ordinary PR with no changed Lean skips Lake. An unreadable check result fails closed.
+- The statement lock is saved before publishing an approval. Merge also requires a readable lock with no changed or removed locked statement. A moved base requires preparation and checks again; GitHub CI remains advisory.
+
 **Where it runs:**
 - Proofs and stress scripts run locally, in each agent's worktree, on the machine that already runs the agents.
 - GitHub CI runs build and lint only, and is advisory: it never blocks a merge (F7).
@@ -1285,10 +1290,10 @@ Each milestone ends with a working app. PR duty checks an item off when it lands
 - [x] Main watcher duty role: post-merge suite, bisect, fix or revert PR (F7)
 
 **M11 · Proofs** (F17)
-- [ ] Lean toolchain and Mathlib cache in the warm pool (F5)
+- [x] Lean toolchain and Mathlib cache in the warm pool (F5)
 - [x] Proof checks in the worktree: `lake build`, no `sorry`/`admit`, axiom audit, statement lock and review reset
 - [ ] Proof card on the PR, "Proved" on the PR track, `proved`/`statement`/`stress` events
-- [ ] Merge gate in PR duty; statement review; tiers updated (F7)
+- [x] Merge gate in PR duty; statement review; tiers updated (F7)
 - [x] Scouts: assume-it-fails sweeps, evidence required, Stress and Proof gaps focus areas, stress runs against Lean reference models
 - [x] Levels per language: reference by default (fixture table plus one test; compiled Lean model through FFI for stress), code on request (Aeneas for Rust), model
 - [ ] AGENTS.md: Implementation first, Proofs, and Tests and docs sections; Covers check (F11)

@@ -5580,7 +5580,6 @@ dependencies = [
  "velocity-github",
  "velocity-interview",
  "velocity-new-project",
- "velocity-proofs",
  "velocity-skills",
  "velocity-store",
  "velocity-threads",
@@ -5599,6 +5598,8 @@ name = "velocity-git"
 version = "0.1.0"
 dependencies = [
  "junction",
+ "serde",
+ "serde_json",
  "sysinfo",
  "tempfile",
  "thiserror 2.0.21",
@@ -5658,7 +5659,6 @@ dependencies = [
  "serde_json",
  "sha2 0.10.9",
  "thiserror 2.0.21",
- "velocity-core",
 ]
 
 [[package]]

@@ -12,6 +12,7 @@ mod issue_types;
 mod issues;
 mod landing;
 mod mcp_stdio;
+mod proof_gate;
 mod pull_request_command;
 mod pull_request_files;
 mod pull_request_mutations;
@@ -33,6 +34,7 @@ pub use duty_server::{PrDutyReport, PrDutyServer, read_pr_duty_reports};
 pub use issue_panel::{IssuePanelRow, IssuePanelSnapshot, SpecQuestion};
 pub use issue_types::*;
 pub use issues::IssueClient;
+pub use proof_gate::check_proof_gate;
 pub use pull_request_command::PullRequestError;
 pub use pull_request_panel::{
     CheckStatus, PullRequestPanelRow, PullRequestPanelSnapshot, PullRequestThread, ReviewStatus,
