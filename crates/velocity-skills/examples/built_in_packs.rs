@@ -15,7 +15,9 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
-use velocity_acp::client::{SessionSetup, SharedServer, install_shared_servers, session_servers};
+use velocity_acp::client::{
+    AgentLaunch, SharedServer, install_shared_servers, launch_shared_servers,
+};
 use velocity_core::skills::{ProjectSkills, SkillSettingsEdit};
 use velocity_skills::settings::settings_view;
 use velocity_skills::{
@@ -210,7 +212,9 @@ fn shared_with_sessions(library: SkillLibrary, choices: ProjectSkills, project: 
         ],
     )?;
     for folder in [worktree.clone(), project.with_file_name("plain-cli")] {
-        let servers = session_servers(&SessionSetup::new(folder.clone(), Vec::new()));
+        // An added agent (no own config), so nothing is left to an agent's own entry.
+        let launch = AgentLaunch::new(PathBuf::from("agent"));
+        let servers = launch_shared_servers(&launch, &folder);
         println!(
             "
 session/new in {} gets {} shared server(s): {:?}",

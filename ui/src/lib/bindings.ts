@@ -99,6 +99,11 @@ export const commands = {
 	dispatchIssue: (projectIdentifier: number, number: number, acceptRecommendation: boolean) => __TAURI_INVOKE<LayoutSnapshot_Serialize>("dispatch_issue", { projectIdentifier, number, acceptRecommendation }),
 	getPullRequestPanel: () => __TAURI_INVOKE<PullRequestPanelSnapshot_Serialize>("get_pull_request_panel"),
 	openProjectPullRequest: (projectIdentifier: number, number: number) => __TAURI_INVOKE<LayoutSnapshot_Serialize | null>("open_project_pull_request", { projectIdentifier, number }),
+	/**
+	 *  Adds or removes a shared server. New agents of every provider get the saved list; agents
+	 *  already running keep the servers they started with.
+	 */
+	editSharedMcpServers: (edit: SharedMcpServerEdit) => __TAURI_INVOKE<SharedMcpServer[]>("edit_shared_mcp_servers", { edit }),
 	getSkillLibrary: () => __TAURI_INVOKE<SkillLibrarySnapshot_Serialize>("get_skill_library"),
 	getSkillSettings: (projectIdentifier: number) => __TAURI_INVOKE<SkillsSettingsView_Serialize>("get_skill_settings", { projectIdentifier }),
 	setSkillSettings: (projectIdentifier: number, edit: SkillSettingsEdit) => __TAURI_INVOKE<SkillsSettingsView_Serialize>("set_skill_settings", { projectIdentifier, edit }),
@@ -229,6 +234,8 @@ export type AgentSettings_Deserialize = {
 	stall_timeout_minutes: number,
 	tool_timeout_minutes?: number,
 	claim_release_grace_minutes: number,
+	/**  Settings → Agents → shared MCP servers, passed to every agent (§3.2 Tool access). */
+	shared_mcp_servers?: SharedMcpServer[],
 };
 
 export type AgentSettings_Serialize = {
@@ -237,6 +244,8 @@ export type AgentSettings_Serialize = {
 	stall_timeout_minutes: number,
 	tool_timeout_minutes: number,
 	claim_release_grace_minutes: number,
+	/**  Settings → Agents → shared MCP servers, passed to every agent (§3.2 Tool access). */
+	shared_mcp_servers: SharedMcpServer[],
 };
 
 export type AircClaimFile = {
@@ -3063,6 +3072,32 @@ export type Settings_Serialize = {
 	agents: AgentSettings_Serialize,
 	proofs: ProofSettings,
 };
+
+/**  One shared MCP server, in the order Settings → Agents lists it. */
+export type SharedMcpServer = {
+	name: string,
+	transport: SharedMcpTransport,
+};
+
+/**  A change from Settings → Agents. */
+export type SharedMcpServerEdit = 
+/**
+ *  `target` is typed in one field: an `http://` or `https://` URL, or a command line read
+ *  like a provider's command (double quotes around a word with spaces).
+ */
+({ Add: {
+	name: string,
+	target: string,
+} }) & { Remove?: never } | ({ Remove: {
+	name: string,
+} }) & { Add?: never };
+
+/**  How an agent reaches a shared server. */
+export type SharedMcpTransport = 
+/**  A stdio server the agent starts, with your `PATH` and environment (§3.2 Tool access). */
+{ kind: "command"; program: string; arguments: string[] } | 
+/**  A streamable HTTP server. Agents that don't speak MCP over HTTP aren't sent it. */
+{ kind: "url"; url: string };
 
 export type SidebarGroup = SidebarGroup_Serialize | SidebarGroup_Deserialize;
 

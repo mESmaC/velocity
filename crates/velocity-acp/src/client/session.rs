@@ -8,10 +8,10 @@ use agent_client_protocol::schema::ProtocolVersion;
 use agent_client_protocol::v1::ConnectionTo;
 use agent_client_protocol::v1::schema::{
     AuthCapabilities, ClientCapabilities, FileSystemCapabilities, Implementation,
-    InitializeRequest, LoadSessionRequest, McpServer, NewSessionRequest, PermissionOptionKind,
-    RequestPermissionOutcome, RequestPermissionRequest, RequestPermissionResponse,
-    SelectedPermissionOutcome, SessionConfigOption, SessionId, SessionModeId, SessionModeState,
-    SetSessionModeRequest,
+    InitializeRequest, LoadSessionRequest, McpCapabilities, McpServer, NewSessionRequest,
+    PermissionOptionKind, RequestPermissionOutcome, RequestPermissionRequest,
+    RequestPermissionResponse, SelectedPermissionOutcome, SessionConfigOption, SessionId,
+    SessionModeId, SessionModeState, SetSessionModeRequest,
 };
 
 use super::config;
@@ -90,14 +90,16 @@ pub async fn start_session(
     connection: &ConnectionTo<Agent>,
     setup: &SessionSetup,
 ) -> Result<SessionId, agent_client_protocol::Error> {
-    connection
+    let initialized = connection
         .send_request(initialize_request())
         .block_task()
         .await?;
+    let servers = supported_servers(
+        session_servers(setup),
+        &initialized.agent_capabilities.mcp_capabilities,
+    );
     let session = connection
-        .send_request(
-            NewSessionRequest::new(setup.worktree.clone()).mcp_servers(session_servers(setup)),
-        )
+        .send_request(NewSessionRequest::new(setup.worktree.clone()).mcp_servers(servers))
         .block_task()
         .await?;
     select_bypass_mode(
@@ -127,13 +129,17 @@ pub async fn start_or_resume_session(
         .as_ref()
         .and_then(|resume| resume.session_id.clone())
         .filter(|_| initialized.agent_capabilities.load_session);
+    let servers = supported_servers(
+        session_servers(setup),
+        &initialized.agent_capabilities.mcp_capabilities,
+    );
     if let Some(earlier) = earlier {
         let session_id = SessionId::new(earlier);
         replaying.store(true, Ordering::Release);
         let loaded = connection
             .send_request(
                 LoadSessionRequest::new(session_id.clone(), setup.worktree.clone())
-                    .mcp_servers(session_servers(setup)),
+                    .mcp_servers(servers.clone()),
             )
             .block_task()
             .await;
@@ -151,9 +157,7 @@ pub async fn start_or_resume_session(
         }
     }
     let session = connection
-        .send_request(
-            NewSessionRequest::new(setup.worktree.clone()).mcp_servers(session_servers(setup)),
-        )
+        .send_request(NewSessionRequest::new(setup.worktree.clone()).mcp_servers(servers))
         .block_task()
         .await?;
     select_bypass_mode(
@@ -221,15 +225,13 @@ pub(super) fn initialize_request() -> InitializeRequest {
         .client_info(Implementation::new("velocity", env!("CARGO_PKG_VERSION")))
 }
 
-/// AIRC, then the shared servers (the launch path's own, then the app's for the session's
-/// folder), keeping the first server of each name.
+/// AIRC, then the shared servers, keeping the first server of each name.
 pub fn session_servers(setup: &SessionSetup) -> Vec<McpServer> {
     let servers: Vec<McpServer> = setup
         .airc
         .iter()
         .cloned()
         .chain(setup.shared_servers.iter().cloned())
-        .chain(super::shared::shared_servers_for(&setup.worktree))
         .collect();
     let keep: Vec<bool> = {
         let names: Vec<Option<&str>> = servers.iter().map(server_name).collect();
@@ -247,7 +249,21 @@ pub fn session_servers(setup: &SessionSetup) -> Vec<McpServer> {
         .collect()
 }
 
-fn server_name(server: &McpServer) -> Option<&str> {
+/// The servers the agent can reach: every agent speaks stdio, but HTTP and SSE servers go
+/// only to agents that advertise them, since an unknown transport fails `session/new` and
+/// would stop the whole session over one shared server.
+fn supported_servers(servers: Vec<McpServer>, capabilities: &McpCapabilities) -> Vec<McpServer> {
+    servers
+        .into_iter()
+        .filter(|server| match server {
+            McpServer::Http(_) => capabilities.http,
+            McpServer::Sse(_) => capabilities.sse,
+            _ => true,
+        })
+        .collect()
+}
+
+pub(super) fn server_name(server: &McpServer) -> Option<&str> {
     match server {
         McpServer::Http(server) => Some(&server.name),
         McpServer::Sse(server) => Some(&server.name),

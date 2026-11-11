@@ -11,6 +11,7 @@ mod error;
 mod files;
 mod handlers;
 mod limits;
+mod own_config;
 mod probe;
 mod process;
 mod program_path;
@@ -28,8 +29,8 @@ use std::sync::{Arc, Mutex, PoisonError};
 
 use agent_client_protocol::v1::ConnectionTo;
 use agent_client_protocol::v1::schema::{
-    CancelNotification, ContentBlock, ContentChunk, PromptRequest, SessionId, SessionUpdate,
-    StopReason,
+    CancelNotification, ContentBlock, ContentChunk, McpServer, PromptRequest, SessionId,
+    SessionUpdate, StopReason,
 };
 use agent_client_protocol::{Agent, ByteStreams, Client};
 use tokio::io::{AsyncBufReadExt, BufReader};
@@ -138,6 +139,15 @@ impl Shared {
     }
 }
 
+/// The shared servers a session in `worktree` gets (§3.2 Tool access): Settings → Agents' list
+/// from the launch, then the app's servers for the folder's project (F18: a switched-on pack's
+/// MCP server, such as REA's), minus every name the agent's own config already has.
+pub fn launch_shared_servers(launch: &AgentLaunch, worktree: &std::path::Path) -> Vec<McpServer> {
+    let mut servers = launch.shared_servers.clone();
+    servers.extend(shared::shared_servers_for(worktree));
+    own_config::without_own_servers(&servers, launch.own_config, worktree)
+}
+
 /// Runs one thread's agent until the thread stops it or the agent exits: spawns the agent in
 /// the worktree, starts the session, then feeds it the thread's messages.
 pub async fn run_session(
@@ -146,6 +156,11 @@ pub async fn run_session(
     inputs: UnboundedReceiver<AgentInput>,
     events: UnboundedSender<AgentEvent>,
 ) -> Result<(), ClientError> {
+    let mut setup = setup;
+    // Velocity's own servers come first in the setup, so a clash keeps them (session_servers).
+    setup
+        .shared_servers
+        .extend(launch_shared_servers(&launch, &setup.worktree));
     let mut agent = process::spawn_agent(&launch, &setup.worktree)?;
     let shared = Arc::new(Shared {
         worktree: setup.worktree.clone(),

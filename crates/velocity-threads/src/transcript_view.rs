@@ -14,6 +14,7 @@ use agent_client_protocol::v1::schema::{
 };
 use similar::TextDiff;
 use velocity_acp::Placement;
+use velocity_core::skill_menu;
 use velocity_core::thread_view_model::{
     DiffBlockView, ErrorCardView, ToolStepRow, TranscriptBlock, build_diff_block,
 };
@@ -29,6 +30,8 @@ struct ToolView {
     status: ToolCallStatus,
     location: Option<String>,
     diffs: Vec<DiffBlockView>,
+    /// The skill this step loads, shown as "Skill · <name>" (F4, F18).
+    skill: Option<String>,
 }
 
 #[derive(Clone, Debug)]
@@ -250,6 +253,7 @@ fn new_entry(update: &SessionUpdate, worktree: &str) -> EntryView {
                 status: ToolCallStatus::Pending,
                 location: None,
                 diffs: Vec::new(),
+                skill: None,
             };
             apply_fields(&mut tool, &update.fields, worktree);
             EntryView::Tool(Box::new(tool))
@@ -288,7 +292,9 @@ fn chunk_text(chunk: &ContentChunk) -> String {
 }
 
 fn tool_view(call: &ToolCall, worktree: &str) -> ToolView {
+    let first_path = call.locations.first().map(|location| &location.path);
     ToolView {
+        skill: loaded_skill(&call.title, call.raw_input.as_ref(), first_path),
         title: call.title.clone(),
         name: call.name.clone(),
         kind: call.kind,
@@ -322,6 +328,28 @@ fn apply_fields(tool: &mut ToolView, fields: &ToolCallUpdateFields, worktree: &s
     if let Some(content) = &fields.content {
         tool.diffs = diffs(content, worktree);
     }
+    let first_path = fields
+        .locations
+        .as_ref()
+        .and_then(|locations| locations.first())
+        .map(|location| &location.path);
+    if let Some(skill) = loaded_skill(&tool.title, fields.raw_input.as_ref(), first_path) {
+        tool.skill = Some(skill);
+    }
+}
+
+/// The skill a tool call loads, from its title, its raw `skill` input or the `SKILL.md` it
+/// reads (F4, F18).
+fn loaded_skill(
+    title: &str,
+    raw_input: Option<&serde_json::Value>,
+    path: Option<&std::path::PathBuf>,
+) -> Option<String> {
+    let raw_skill = raw_input
+        .and_then(|input| input.get("skill"))
+        .and_then(serde_json::Value::as_str);
+    let path = path.map(|path| path.to_string_lossy());
+    skill_menu::loaded_skill(title, raw_skill, path.as_deref())
 }
 
 fn diffs(content: &[ToolCallContent], worktree: &str) -> Vec<DiffBlockView> {
@@ -369,6 +397,14 @@ fn tool_step(tool: &ToolView) -> ToolStepRow {
     } else {
         String::new()
     };
+    if let Some(skill) = &tool.skill {
+        return ToolStepRow {
+            running: is_running(tool.status),
+            verb: "Skill".into(),
+            argument: skill.clone(),
+            result_text,
+        };
+    }
     ToolStepRow {
         running: is_running(tool.status),
         verb: tool_verb(tool),
