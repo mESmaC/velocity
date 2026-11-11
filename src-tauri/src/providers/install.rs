@@ -72,6 +72,7 @@ pub fn install_provider(
             }
             slot.runtime.phase = ProviderPhase::Installing;
             slot.runtime.detail = None;
+            slot.runtime.install_failure = None;
             let generation = slot.generation;
             let task = tauri::async_runtime::spawn(async move {
                 finish_install(&handle, (provider, generation), steps).await;
@@ -104,7 +105,7 @@ async fn finish_install(
             Ok(()) => slot.runtime.phase = ProviderPhase::Checking,
             Err(error) => {
                 slot.runtime.phase = ProviderPhase::NotInstalled;
-                slot.runtime.detail = Some(error.to_string());
+                slot.runtime.install_failure = Some(error.to_string());
             }
         }
     });

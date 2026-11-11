@@ -106,10 +106,15 @@ impl PrDutyReviews {
         }
     }
 
-    /// The checkout's cached GitHub client, discovered on first use.
+    /// The checkout's cached GitHub client, discovered on first use and again when the
+    /// checkout's `origin` changes or the identity is old (#229).
     fn client(&self, repository: &Path) -> Result<Arc<PullRequestClient>, PullRequestError> {
-        if let Some(client) = self.clients().get(repository) {
-            return Ok(client.clone());
+        // Release the lock before reading the checkout's Git config.
+        let cached = self.clients().get(repository).cloned();
+        if let Some(client) = cached
+            && client.is_current(repository)
+        {
+            return Ok(client);
         }
         let client = Arc::new(PullRequestClient::discover(repository)?);
         self.clients()

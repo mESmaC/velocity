@@ -1,5 +1,6 @@
 <script lang="ts">
   import { onMount, tick } from 'svelte';
+  import { pop } from './motion';
   import {
     aircCommands,
     aircRoutingCommands,
@@ -138,6 +139,7 @@
 
 <dialog
   bind:this={dialog}
+  in:pop|global
   class="airc-dialog"
   aria-labelledby="airc-title"
   oncancel={(event) => {
