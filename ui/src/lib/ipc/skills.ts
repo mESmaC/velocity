@@ -16,3 +16,12 @@ export const skillLibraryCommands = {
   checkUpdate: commands.checkSkillPackUpdate,
   confirmUpdate: commands.confirmSkillPackUpdate,
 };
+
+export type {
+  SkillsSettingsView_Serialize as SkillsSettingsView,
+  SkillSettingsEdit,
+} from '../bindings';
+export const skillSettingsCommands = {
+  read: commands.getSkillSettings,
+  edit: commands.setSkillSettings,
+};

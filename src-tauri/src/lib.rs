@@ -99,6 +99,8 @@ fn bindings() -> Builder<tauri::Wry> {
         pull_request_panel::get_pull_request_panel,
         pull_request_panel::open_project_pull_request,
         skills::get_skill_library,
+        skills::get_skill_settings,
+        skills::set_skill_settings,
         skills::install_skill_pack,
         skills::check_skill_pack_update,
         skills::confirm_skill_pack_update,
