@@ -116,9 +116,10 @@ $rustPatterns = @(
     # Read by include_str!/include_bytes!, or generated from Rust.
     'proofs/fixtures/*', 'ui/src/lib/theme/tokens.css', 'ui/src/lib/bindings.ts'
 )
-# Paths no check reads: docs, the read-only reference UI, the icon source, CI (which
-# never holds up a PR) and stress scripts, which the stress runner compiles itself.
-$uncheckedPatterns = @('*.md', 'design/*', 'assets/*', '.github/*', '.gitignore', 'stress/*')
+# Paths no check reads: docs, the root license and notice files, the read-only reference
+# UI, the icon source, CI (which never holds up a PR) and stress scripts, which the stress
+# runner compiles itself.
+$uncheckedPatterns = @('*.md', 'LICENSE*', 'NOTICE*', 'design/*', 'assets/*', '.github/*', '.gitignore', 'stress/*')
 # A path on none of the lists runs everything, this script and the build queue
 # included. A new folder or root file is then checked until someone decides that
 # no check can depend on it; skipping it by default would let a broken build land.

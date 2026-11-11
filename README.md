@@ -52,3 +52,8 @@ pnpm -C ui lint
 Build and lint run in GitHub CI on Windows. Proofs run locally before pushing;
 see [the proof toolchain instructions](proofs/README.md). Scouts and PR duty own
 tests and stress scripts.
+
+## License
+
+Velocity is licensed under the [Apache License, Version 2.0](LICENSE). It comes
+with no warranty, and the license grants no right to use the Velocity name.
