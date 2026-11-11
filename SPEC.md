@@ -1279,7 +1279,7 @@ Each milestone ends with a working app. PR duty checks an item off when it lands
 - [x] Main watcher duty role: post-merge suite, bisect, fix or revert PR (F7)
 
 **M11 · Proofs** (F17)
-- [ ] Lean toolchain and Mathlib cache in the warm pool (F5)
+- [x] Lean toolchain and Mathlib cache in the warm pool (F5)
 - [x] Proof checks in the worktree: `lake build`, no `sorry`/`admit`, axiom audit, statement lock and review reset
 - [ ] Proof card on the PR, "Proved" on the PR track, `proved`/`statement`/`stress` events
 - [ ] Merge gate in PR duty; statement review; tiers updated (F7)
