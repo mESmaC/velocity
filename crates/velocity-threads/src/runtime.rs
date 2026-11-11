@@ -491,6 +491,7 @@ impl ThreadRuntimes {
                 return None;
             }
             AgentEvent::SessionStarted { .. }
+            | AgentEvent::ProviderQueued(..)
             | AgentEvent::Queued
             | AgentEvent::FileWritten { .. } => return None,
         }
