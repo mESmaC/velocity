@@ -76,6 +76,7 @@ struct ThreadRuntime {
     agent_commands: Option<Vec<AgentCommandView>>,
     /// The title model's name until the thread's title settles (F4).
     titling_model: Option<String>,
+    heartbeat: crate::agent_activity::Heartbeat,
 }
 
 #[derive(Default)]
@@ -90,6 +91,22 @@ pub struct ThreadRuntimes {
 }
 
 impl ThreadRuntimes {
+    pub fn heartbeat(&self, key: ThreadKey) -> Option<u64> {
+        self.threads.get(&key)?.heartbeat.last_update()
+    }
+
+    pub fn observe_supervision(&mut self, key: ThreadKey, batch: &[AgentEvent], now: u64) -> bool {
+        self.threads
+            .get_mut(&key)
+            .is_some_and(|thread| thread.heartbeat.observe(batch, now))
+    }
+
+    pub fn nudge_supervision(&mut self, key: ThreadKey, now: u64) {
+        if let Some(thread) = self.threads.get_mut(&key) {
+            thread.heartbeat.nudge(now);
+        }
+    }
+
     /// Merge cleanup and explicit deletion share one lease through their saved checkpoint.
     pub fn action_lock(&mut self, key: ThreadKey) -> Arc<tokio::sync::Mutex<()>> {
         Arc::clone(self.actions.entry(key).or_default())
@@ -117,6 +134,7 @@ impl ThreadRuntimes {
                 log_tail: VecDeque::new(),
                 agent_commands: None,
                 titling_model: None,
+                heartbeat: crate::agent_activity::Heartbeat::default(),
             },
         );
     }
@@ -188,6 +206,7 @@ impl ThreadRuntimes {
                 log_tail: VecDeque::new(),
                 agent_commands: None,
                 titling_model: None,
+                heartbeat: crate::agent_activity::Heartbeat::default(),
             },
         );
         receiver
@@ -538,6 +557,7 @@ fn parked_runtime(worktree: &str, follows_pull_request: bool) -> ThreadRuntime {
         log_tail: VecDeque::new(),
         agent_commands: None,
         titling_model: None,
+        heartbeat: crate::agent_activity::Heartbeat::default(),
     }
 }
 
