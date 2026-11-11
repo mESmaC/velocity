@@ -8,7 +8,7 @@ use std::path::{Path, PathBuf};
 use std::pin::Pin;
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 
-use agent_client_protocol::v1::schema::{ContentBlock, TextContent};
+use agent_client_protocol::v1::schema::{ContentBlock, McpServer, TextContent};
 use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender, unbounded_channel};
 use velocity_acp::Provider;
 use velocity_acp::client::{AgentEvent, AgentInput, AircLaunch, SessionSetup, run_session};
@@ -37,6 +37,9 @@ pub trait Host: Send + Sync + 'static {
     fn airc(&self) -> Option<AircLaunch> {
         None
     }
+    /// Settings → Agents' shared MCP servers, passed to the interview agent like every agent
+    /// (§3.2 Tool access).
+    fn shared_mcp_servers(&self, settings: &velocity_store::Settings) -> Vec<McpServer>;
 }
 
 /// Running interview agents and their live transcripts.
@@ -263,7 +266,12 @@ fn launch_plan<H: Host>(host: &H, (project, thread): InterviewKey) -> Option<Lau
     let command = settings
         .agent_command(spec_thread.provider)
         .map(|command| (PathBuf::from(&command.program), command.arguments.clone()));
+    let shared_servers = host.shared_mcp_servers(settings);
     let agent = velocity_acp::configured_agent(acp_provider(spec_thread.provider), command)
+        .map(|mut agent| {
+            agent.launch.shared_servers = shared_servers;
+            agent
+        })
         .ok_or_else(|| velocity_store::providers::ProviderUnavailable::Removed.to_string());
     Some(LaunchPlan {
         checkout: PathBuf::from(&item.repository_path),

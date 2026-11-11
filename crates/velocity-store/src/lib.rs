@@ -48,6 +48,7 @@ mod project_layout;
 pub mod projects;
 pub mod provider_views;
 pub mod providers;
+pub mod shared_mcp;
 pub mod skills;
 pub mod swarm_dialog;
 pub mod swarms;
@@ -67,6 +68,8 @@ pub enum StoreError {
     AgentSetting,
     #[error("Invalid worktree setting: {0}")]
     WorktreeSetting(String),
+    #[error("Invalid shared MCP server: {0}")]
+    SharedMcpServer(String),
     #[error("Could not create state directory '{path}': {source}")]
     CreateDirectory {
         path: String,
@@ -509,6 +512,9 @@ pub struct AgentSettings {
     #[serde(default = "default_tool_timeout")]
     pub tool_timeout_minutes: u32,
     pub claim_release_grace_minutes: u32,
+    /// Settings → Agents → shared MCP servers, passed to every agent (§3.2 Tool access).
+    #[serde(default)]
+    pub shared_mcp_servers: Vec<shared_mcp::SharedMcpServer>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, Type)]
@@ -589,6 +595,7 @@ impl Settings {
                 stall_timeout_minutes: core_settings.agents.stall_timeout_minutes,
                 tool_timeout_minutes: core_settings.agents.tool_timeout_minutes,
                 claim_release_grace_minutes: core_settings.agents.claim_release_grace_minutes,
+                shared_mcp_servers: Vec::new(),
             },
             proofs: ProofSettings {
                 stress_diff_input_count: core_settings.proofs.stress_diff_input_count,
@@ -1175,6 +1182,8 @@ impl StateStore {
         {
             return Err(StoreError::AgentSetting);
         }
+        shared_mcp::validate_shared_mcp_servers(&agents.shared_mcp_servers)
+            .map_err(|error| StoreError::SharedMcpServer(error.to_string()))?;
         if self.state.settings != next_settings {
             self.state.apply_settings(next_settings);
         }
