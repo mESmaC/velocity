@@ -1143,6 +1143,7 @@ How the card is made *(proposed)*:
   - Game dev skills (the router plus the detected engine's bundle) when an engine is found: `project.godot`, `*.uproject`, `ProjectSettings/`, or a Bevy, Phaser, PixiJS or three.js dependency.
 
   Velocity re-checks after every merge, so a project that gains a UI later gets the suggestion then.
+  A suggested pack that is not installed says **Install to turn on**. Its switch can decline the suggestion before installation; that choice survives later scans and installation. Installing a selected pack activates it automatically. Turning a declined pack back on requires installation.
 - **Requirements:** each card shows what the pack needs and whether it's found, e.g. "✓ Python 3.12", "· Ghidra optional · not found".
 
 **Where agents find them:**
