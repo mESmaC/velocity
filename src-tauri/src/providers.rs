@@ -2,6 +2,7 @@
 //! sign-out, subscription limits, Settings → Providers and the composer's model menu.
 //!
 //! Each agent is asked at startup, after every sign-in and whenever its command changes;
+//! missing agents are checked again whenever Settings → Providers opens.
 //! limits are read every five minutes. What the agents report is saved in the store's provider catalog, so pickers and
 //! the footer meter are right at the next start before the agents answer again.
 
@@ -135,6 +136,22 @@ impl ManagedProviders {
 
     fn phase(&self, provider: ProviderKind) -> Option<ProviderPhase> {
         self.with_slot(provider, |slot| slot.runtime.phase)
+    }
+
+    fn retry_missing(&self) -> Vec<ProviderKind> {
+        let Ok(mut slots) = self.0.lock() else {
+            return Vec::new();
+        };
+        let mut providers = Vec::new();
+        for slot in slots.iter_mut() {
+            if slot.runtime.phase == ProviderPhase::NotInstalled {
+                // Reserve the probe before spawning: repeated opens must not start
+                // competing agent processes for the same command.
+                slot.runtime.phase = ProviderPhase::Checking;
+                providers.push(slot.runtime.provider);
+            }
+        }
+        providers
     }
 }
 
@@ -394,7 +411,13 @@ pub(crate) fn current_view(application: &AppHandle) -> Result<ProvidersView, Str
 #[tauri::command]
 #[specta::specta]
 pub fn list_providers(application: AppHandle) -> Result<ProvidersView, String> {
-    current_view(&application)
+    let missing = application.state::<ManagedProviders>().retry_missing();
+    let view = current_view(&application);
+    for provider in missing {
+        let handle = application.clone();
+        tauri::async_runtime::spawn(async move { check(&handle, provider).await });
+    }
+    view
 }
 
 /// Sign in with Claude / ChatGPT / Google / Kimi (F15): runs the agent's own login, which
