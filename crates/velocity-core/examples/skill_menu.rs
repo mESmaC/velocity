@@ -18,10 +18,12 @@ fn print_menu(layout: &LayoutState, typed: &str) {
 
 fn main() {
     let mut layout = LayoutState::default();
-    let mut data = LayoutData::default();
-    data.project_identifier = Some(1);
-    data.project_name = "demo".into();
-    layout.replace_data(data);
+    // `..Default::default()` keeps this building when `LayoutData` gains a field.
+    layout.replace_data(LayoutData {
+        project_identifier: Some(1),
+        project_name: "demo".into(),
+        ..LayoutData::default()
+    });
     layout.set_project_spec_locked(Some(true));
     layout.set_project_skills(
         1,
