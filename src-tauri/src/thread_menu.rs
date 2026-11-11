@@ -11,9 +11,7 @@ use velocity_core::layout_view::LayoutSnapshot;
 use velocity_core::thread_menu::{ThreadMenuAction, ThreadMenuEntry, ThreadMenuFacts, thread_menu};
 use velocity_github::PullRequestClient;
 use velocity_store::ThreadItem;
-use velocity_threads::deletion::{
-    AGENT_EXIT_WAIT, UNDO_WINDOW, close_pull_request, remove_worktree,
-};
+use velocity_threads::deletion::{AGENT_EXIT_WAIT, UNDO_WINDOW, close_pull_request};
 use velocity_threads::{PendingDeletions, StopOutcome, ThreadKey, plan_deletion};
 
 use crate::layout::MainLayout;
@@ -263,7 +261,11 @@ async fn land_effects(application: &AppHandle, key: ThreadKey) -> Result<(), Str
     }
     tauri::async_runtime::spawn_blocking(move || {
         if let Some(worktree) = &plan.remove_worktree {
-            remove_worktree(&plan.repository, worktree)?;
+            velocity_threads::deletion::remove_owned_worktree(
+                &plan.repository,
+                worktree,
+                &plan.branch,
+            )?;
         }
         if let Some(number) = plan.close_pull_request {
             close_pull_request(&plan.repository, number)?;
