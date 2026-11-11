@@ -346,8 +346,7 @@ pub(crate) fn steer(
         )?;
         if !runtimes.is_live(key) && !runtimes.is_parked(key) {
             drop(runtimes);
-            crate::parking::resume(application, key, prompt)?;
-            return refresh(application, key, false);
+            return resume_message(application, key, prompt);
         }
         runtimes
             .steer(key, prompt)
@@ -368,6 +367,26 @@ pub(crate) fn steer(
     let snapshot = refresh(application, key, false)?;
     emit_status(application, key);
     Ok(snapshot)
+}
+
+fn resume_message(
+    application: &AppHandle,
+    key: ThreadKey,
+    prompt: &str,
+) -> Result<LayoutSnapshot, String> {
+    let store = lock(
+        application.state::<ManagedStateStore>().inner(),
+        "persisted state",
+    )?;
+    let (_, thread) = store
+        .follow_through_thread(key.0, key.1)
+        .map_err(|error| error.to_string())?;
+    if thread.activity == AgentActivity::AtLimit {
+        return Err("This agent will resume when its limit resets".into());
+    }
+    drop(store);
+    crate::parking::resume(application, key, prompt)?;
+    refresh(application, key, false)
 }
 
 async fn run_thread(

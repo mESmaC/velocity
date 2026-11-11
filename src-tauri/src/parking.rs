@@ -140,9 +140,6 @@ pub(crate) fn resume(application: &AppHandle, key: ThreadKey, prompt: &str) -> R
     ) {
         return Err("This thread cannot resume a build session".into());
     }
-    if thread.activity == AgentActivity::AtLimit {
-        return Err("This agent is at its limit; it will resume when the limit resets".into());
-    }
     let path = thread.worktree_path.as_deref().ok_or("Missing worktree")?;
     velocity_git::verify_thread_worktree(
         Path::new(&project.repository_path),
