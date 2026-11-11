@@ -2,7 +2,20 @@
   import Icon from './Icon.svelte';
   import Markdown from './Markdown.svelte';
   import type { DiffLineRole, TranscriptBlock } from './ipc';
-  let { blocks }: { blocks: TranscriptBlock[] } = $props();
+  let {
+    blocks,
+    removeQueued,
+  }: {
+    blocks: TranscriptBlock[];
+    /** Withdraws the queued message at this position among the queued rows (F4). */
+    removeQueued?: (index: number) => void;
+  } = $props();
+
+  // Queued rows sit at the end in send order; each one's position among them.
+  const queuedIndexes = $derived.by(() => {
+    let next = 0;
+    return blocks.map((block) => (block.UserMessage?.queued ? next++ : -1));
+  });
 
   const diffLineClasses: Record<DiffLineRole, string> = {
     Added: 'a',
@@ -16,8 +29,23 @@
   {#if block.UserMessage}
     <div class="msg-user"><Markdown text={block.UserMessage.text} /></div>
     {#if block.UserMessage.queued}
-      <div class="queued">queued · sends when the current step finishes</div>
+      <div class="queued">
+        queued · sends when the current step finishes{#if removeQueued}<span>
+            ·
+          </span><button
+            type="button"
+            class="queued-remove"
+            title="Remove this message before the agent reads it"
+            onclick={() => removeQueued(queuedIndexes[blockIndex])}
+            >remove</button
+          >{/if}
+      </div>
     {/if}
+  {:else if block.Notice}
+    <div class="msg-user">
+      <Markdown text={block.Notice.text} />
+      <div class="sw-from">from Velocity · read by the agent</div>
+    </div>
   {:else if block.AgentMessage}
     <div class="msg-agent">
       <Markdown text={block.AgentMessage.paragraphs.join('\n\n')} />

@@ -121,7 +121,18 @@
       {/if}
 
       {#if thread.transcript_mode !== 'CollapsedWithPrHistory'}
-        <TranscriptBlocks blocks={thread.blocks} />
+        <TranscriptBlocks
+          blocks={thread.blocks}
+          removeQueued={(index) =>
+            send({
+              Request: {
+                RemoveQueuedMessage: {
+                  identifier: thread.identifier,
+                  index: String(index),
+                },
+              },
+            })}
+        />
       {/if}
       {#if thread.pull_request_history}<PullRequestHistory
           history={thread.pull_request_history}

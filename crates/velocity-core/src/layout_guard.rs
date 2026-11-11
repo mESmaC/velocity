@@ -37,6 +37,7 @@ fn launch_kind(intent: &LayoutIntent, interview_thread: bool) -> Option<LaunchKi
         | LayoutIntent::Usage
         | LayoutIntent::Updates
         | LayoutIntent::AddTask(_)
+        | LayoutIntent::RemoveQueuedMessage { .. }
         | LayoutIntent::ToggleProofListEntry(_) => None,
     }
 }
