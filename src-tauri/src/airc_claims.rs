@@ -86,10 +86,14 @@ pub fn observe(
         .app_data_dir()
         .map_err(|error| error.to_string())?;
     let channel = Channel::open(&data, &key.0.to_string()).map_err(|error| error.to_string())?;
-    for path in paths {
-        let path = path.strip_prefix(worktree).unwrap_or(path);
+    let worktree = worktree.display().to_string();
+    // Files outside the worktree (scratch files, temp folders) are not repository files:
+    // they are never claimed, so they never post an overlap (#234).
+    for file in paths.iter().filter_map(|path| {
+        velocity_airc::claims::worktree_file(&worktree, &path.display().to_string())
+    }) {
         channel
-            .observe_file(&format!("thread-{}", key.1), &path.display().to_string())
+            .observe_file(&format!("thread-{}", key.1), &file)
             .map_err(|error| error.to_string())?;
     }
     Ok(())
