@@ -2,6 +2,9 @@
 //! Installs a two-skill pack into a temporary library, then shows the composer's `$` menu for a
 //! project before and after the pack is switched on in Settings → Skills.
 
+// A console example: its children share its console, so no hidden_command (#232).
+#![allow(clippy::disallowed_methods)]
+
 use std::fs;
 use std::path::Path;
 use std::process::Command;

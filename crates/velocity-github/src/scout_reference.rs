@@ -1,12 +1,12 @@
 //! F17 reference stress: identical input for the implementation and compiled Lean model.
 use std::io::{Seek, Write};
 use std::path::Path;
-use std::process::{Command, Output, Stdio};
+use std::process::{Output, Stdio};
 
 use serde::{Deserialize, Serialize};
 
 use crate::scout_directory::ReproductionDirectory;
-use crate::scout_evidence::{capture, hide_console};
+use crate::scout_evidence::capture;
 use crate::{Reproduction, ScoutIssueError};
 
 /// Backend-only drivers, never exposed as a frontend shell command. Each script
@@ -62,14 +62,13 @@ fn run_driver(
     let mut standard_input = tempfile::tempfile()?;
     standard_input.write_all(input.as_bytes())?;
     standard_input.rewind()?;
-    let mut command = Command::new(&driver.program);
+    let mut command = crate::command::hidden_command(&driver.program);
     command
         .current_dir(working.path())
         .args(&driver.arguments)
         .arg(working.script_path(directory, &script))
         .args(&driver.script_arguments)
         .stdin(Stdio::from(standard_input));
-    hide_console(&mut command);
     let output = capture(&mut command)?;
     if !output.status.success() {
         return Err(ScoutIssueError::Invalid(format!(

@@ -1,5 +1,6 @@
 //! Launching an agent: one process per thread, in that thread's worktree (§3.2).
 
+use std::ffi::OsStr;
 use std::path::{Path, PathBuf};
 use std::process::{ExitStatus, Stdio};
 
@@ -51,7 +52,7 @@ pub type AgentProcess = Box<dyn ChildWrapper>;
 /// Starts the agent in `worktree` with piped stdio for ACP. It loads your user and project
 /// config as it would in a terminal: no isolated home, no empty config, no sandbox.
 pub fn spawn_agent(launch: &AgentLaunch, worktree: &Path) -> Result<AgentProcess, ClientError> {
-    let mut command = Command::new(find_program(launch.program.as_os_str()));
+    let mut command = hidden_command(find_program(launch.program.as_os_str()));
     command
         .args(&launch.args)
         .envs(launch.env.iter().map(|(name, value)| (name, value)))
@@ -67,9 +68,9 @@ pub fn spawn_agent(launch: &AgentLaunch, worktree: &Path) -> Result<AgentProcess
 }
 
 /// Ownership groups terminate descendants even after their shell shim exits.
-/// No resource or security limits are applied to the agent or its tools.
+/// No resource or security limits are applied to the agent or its tools. The `CreationFlags`
+/// wrap below replaces the flags `hidden_command` set, so it repeats `CREATE_NO_WINDOW`.
 pub fn spawn_owned_command(mut command: Command) -> std::io::Result<AgentProcess> {
-    hide_console_window(&mut command);
     extend_search_path(&mut command);
     let mut command = CommandWrap::from(command);
     command.wrap(KillOnDrop);
@@ -120,13 +121,17 @@ fn extend_search_path(command: &mut Command) {
     }
 }
 
-/// Velocity is a windowed app: without this flag every agent and terminal command would
-/// open its own console window.
-#[cfg(windows)]
-pub fn hide_console_window(command: &mut Command) {
-    const CREATE_NO_WINDOW: u32 = 0x0800_0000;
-    command.creation_flags(CREATE_NO_WINDOW);
+/// A `Command` that opens no console window. Velocity's release build is a windowed app, so on
+/// Windows a child started without `CREATE_NO_WINDOW` gets a console window of its own that
+/// flashes on screen (#232). Every agent, sign-in, install, limits probe and terminal command is
+/// built here; clippy's `disallowed_methods` (`clippy.toml`) rejects a bare `Command::new`.
+#[allow(clippy::disallowed_methods)]
+pub(crate) fn hidden_command(program: impl AsRef<OsStr>) -> Command {
+    let mut command = Command::new(program);
+    #[cfg(windows)]
+    {
+        const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+        command.creation_flags(CREATE_NO_WINDOW);
+    }
+    command
 }
-
-#[cfg(not(windows))]
-pub fn hide_console_window(_command: &mut Command) {}

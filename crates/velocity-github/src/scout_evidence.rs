@@ -30,14 +30,13 @@ impl Reproduction {
         let script = std::fs::canonicalize(directory.join(&self.script))?;
         let source = read_source(&script)?;
         let working_directory = ReproductionDirectory::new(&directory)?;
-        let mut command = Command::new(&self.program);
+        let mut command = crate::command::hidden_command(&self.program);
         command
             .current_dir(working_directory.path())
             .args(&self.arguments)
             .arg(working_directory.script_path(&directory, &script))
             .args(&self.script_arguments)
             .stdin(Stdio::null());
-        hide_console(&mut command);
         let output = capture(&mut command)?;
         if output.status.success() {
             return Err(ScoutIssueError::NotReproduced);
@@ -157,14 +156,4 @@ pub(crate) fn fenced(value: &str) -> String {
 
 fn invalid_utf8(error: std::string::FromUtf8Error) -> io::Error {
     io::Error::new(io::ErrorKind::InvalidData, error)
-}
-
-pub(crate) fn hide_console(command: &mut Command) {
-    #[cfg(windows)]
-    {
-        use std::os::windows::process::CommandExt;
-        command.creation_flags(0x08000000);
-    }
-    #[cfg(not(windows))]
-    let _ = command;
 }

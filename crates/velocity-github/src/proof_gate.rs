@@ -1,6 +1,5 @@
 //! F17 landing gate: executable checks apply to the exact committed merge result.
 use std::path::Path;
-use std::process::Command;
 
 use crate::PullRequestError;
 
@@ -58,16 +57,11 @@ fn verify_checkout(worktree: &Path, head: &str) -> Result<(), PullRequestError> 
 }
 
 fn git(worktree: &Path, arguments: &[&str]) -> Result<String, PullRequestError> {
-    let mut command = Command::new("git");
+    let mut command = crate::command::hidden_command("git");
     command
         .args(["-c", "core.longpaths=true"])
         .args(arguments)
         .current_dir(worktree);
-    #[cfg(windows)]
-    {
-        use std::os::windows::process::CommandExt;
-        command.creation_flags(0x0800_0000);
-    }
     let output = command.output()?;
     if !output.status.success() {
         return Err(PullRequestError::Invalid(format!(

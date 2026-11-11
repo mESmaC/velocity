@@ -15,7 +15,6 @@
 
 use std::fs;
 use std::path::{Path, PathBuf};
-use std::process::Command;
 
 use serde::Deserialize;
 
@@ -301,7 +300,7 @@ fn run_git(directory: &Path, arguments: &[&str]) -> Result<(), WorktreeError> {
 
 /// Runs elan or lake below normal priority with no console window, like the Cargo prebuild.
 fn run_tool(directory: &Path, program: &str, arguments: &[&str]) -> Result<(), WorktreeError> {
-    let mut command = Command::new(program);
+    let mut command = crate::command::hidden_command(program);
     command.current_dir(directory).args(arguments);
     background_priority(&mut command);
     let output = command

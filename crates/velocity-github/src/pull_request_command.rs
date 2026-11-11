@@ -3,7 +3,7 @@ use serde_json::Value;
 use std::io::Write;
 use std::panic::Location;
 use std::path::{Path, PathBuf};
-use std::process::{Child, Command, Stdio};
+use std::process::{Child, Stdio};
 use thiserror::Error;
 
 #[derive(Debug, Error)]
@@ -131,7 +131,7 @@ impl PullRequestCommand {
             self.caller,
             crate::request_counter::operation(arguments, graphql_path),
         );
-        let mut command = Command::new("gh");
+        let mut command = crate::command::hidden_command("gh");
         command
             .current_dir(&self.directory)
             .args(arguments)
@@ -144,7 +144,6 @@ impl PullRequestCommand {
             })
             .stdout(Stdio::piped())
             .stderr(Stdio::piped());
-        hide_console(&mut command);
         Ok(command.spawn()?)
     }
 }
@@ -172,14 +171,4 @@ fn origin_url(directory: &Path) -> Result<String, PullRequestError> {
         .with_request_alternate_form(false)
         .to_bstring()
         .to_string())
-}
-
-fn hide_console(command: &mut Command) {
-    #[cfg(windows)]
-    {
-        use std::os::windows::process::CommandExt;
-        command.creation_flags(0x08000000);
-    }
-    #[cfg(not(windows))]
-    let _ = command;
 }

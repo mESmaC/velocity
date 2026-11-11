@@ -9,7 +9,6 @@ use std::time::Duration;
 
 use serde_json::{Value, json};
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
-use tokio::process::Command;
 
 use super::ClientError;
 use super::process::{self, AgentProcess};
@@ -84,7 +83,7 @@ async fn exchange(
     deadline: Duration,
     answer: impl Fn(&Value) -> Option<Value>,
 ) -> Result<Value, ClientError> {
-    let mut command = Command::new(find_program(OsStr::new(program)));
+    let mut command = process::hidden_command(find_program(OsStr::new(program)));
     command
         .args(arguments)
         .current_dir(directory)

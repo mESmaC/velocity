@@ -1,8 +1,8 @@
 //! What you do in an interview (F3, §5): answer with `1`–`4` or your own words, Keep
 //! grilling (`G`), switch proof-list entries, Lock (`L`) and open SPEC.md (`S`).
 
+use crate::process::hidden_command;
 use std::path::Path;
-use std::process::Command;
 use std::sync::Arc;
 
 use velocity_core::layout_view::LayoutIntent;
@@ -225,11 +225,11 @@ fn open_spec<H: Host>(host: &H, key: InterviewKey) {
 
 fn open_with_default_app(file: &Path) -> std::io::Result<()> {
     let mut command = if cfg!(windows) {
-        Command::new("explorer.exe")
+        hidden_command("explorer.exe")
     } else if cfg!(target_os = "macos") {
-        Command::new("open")
+        hidden_command("open")
     } else {
-        Command::new("xdg-open")
+        hidden_command("xdg-open")
     };
     // Explorer exits with 1 even when it opened the file, so only a failed start counts.
     command.arg(file).spawn().map(|_| ())

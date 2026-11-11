@@ -11,7 +11,6 @@ use std::time::Duration;
 use agent_client_protocol::v1::ConnectionTo;
 use agent_client_protocol::v1::schema::AuthenticateRequest;
 use agent_client_protocol::{Agent, ByteStreams, Client};
-use tokio::process::Command;
 use tokio::sync::mpsc::unbounded_channel;
 use tokio_util::compat::{TokioAsyncReadCompatExt, TokioAsyncWriteCompatExt};
 
@@ -44,7 +43,7 @@ async fn terminal_login(
     directory: &Path,
     args: &[String],
 ) -> Result<(), ClientError> {
-    let mut command = Command::new(find_program(launch.program.as_os_str()));
+    let mut command = process::hidden_command(find_program(launch.program.as_os_str()));
     command
         .args(args)
         .envs(launch.env.iter().map(|(name, value)| (name, value)))

@@ -11,6 +11,7 @@
 mod actions;
 pub mod envelope;
 pub mod live;
+mod process;
 pub mod prompts;
 mod service;
 pub mod spec_file;

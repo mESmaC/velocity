@@ -1,0 +1,7 @@
+# Velocity's release build is a windowed app: on Windows a child process started without
+# CREATE_NO_WINDOW opens a console window that flashes on screen (#232). Each crate builds its
+# processes through its own `hidden_command`, the one place allowed to call these.
+disallowed-methods = [
+    { path = "std::process::Command::new", reason = "use the crate's hidden_command so no console window opens (#232)" },
+    { path = "tokio::process::Command::new", reason = "use the crate's hidden_command so no console window opens (#232)" },
+]
