@@ -3,6 +3,7 @@
 /proofs/.lake-wsl/
 /proofs/generated-llbc/
 /target/
+/stress/*/Cargo.lock
 /ui/node_modules/
 /ui/dist/
 /src-tauri/gen/

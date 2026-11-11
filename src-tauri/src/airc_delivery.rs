@@ -36,29 +36,38 @@ fn cycle(application: &AppHandle) -> Result<(), String> {
     .projects
     .clone();
     for project in projects {
-        let changed = velocity_threads::agent_tasks::ingest(
-            &mut *lock(
-                application.state::<ManagedStateStore>().inner(),
-                "persisted state",
-            )?,
-            project.id,
-            &channel(application, project.id)?,
-        )
-        .map_err(|error| error.to_string())?;
-        if changed {
-            crate::threads::refresh(
-                application,
-                (project.id, project.active_thread_id.unwrap_or(0)),
-                false,
-            )?;
+        if let Err(error) = project_cycle(application, &project) {
+            eprintln!("Velocity AIRC project {}: {error}", project.id);
         }
-        update_waits(application, &project)?;
-        crate::agent_activity::cycle(application, &project, &channel(application, project.id)?)?;
-        crate::parking::cycle(application, &project, &channel(application, project.id)?);
-        for thread in &project.threads {
-            if let Err(error) = deliver(application, &project, thread) {
-                eprintln!("Velocity AIRC thread {}: {error}", thread.id);
-            }
+    }
+    Ok(())
+}
+
+fn project_cycle(application: &AppHandle, project: &ProjectItem) -> Result<(), String> {
+    let changed = velocity_threads::agent_tasks::ingest(
+        &mut *lock(
+            application.state::<ManagedStateStore>().inner(),
+            "persisted state",
+        )?,
+        project.id,
+        &channel(application, project.id)?,
+    )
+    .map_err(|error| error.to_string())?;
+    if changed {
+        crate::threads::refresh(
+            application,
+            (project.id, project.active_thread_id.unwrap_or(0)),
+            false,
+        )?;
+    }
+    if let Err(error) = update_waits(application, project) {
+        eprintln!("Velocity AIRC project {} waits: {error}", project.id);
+    }
+    crate::agent_activity::cycle(application, project, &channel(application, project.id)?)?;
+    crate::parking::cycle(application, project, &channel(application, project.id)?);
+    for thread in &project.threads {
+        if let Err(error) = deliver(application, project, thread) {
+            eprintln!("Velocity AIRC thread {}: {error}", thread.id);
         }
     }
     Ok(())

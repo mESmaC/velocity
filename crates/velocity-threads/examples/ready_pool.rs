@@ -14,7 +14,9 @@ use std::time::{Duration, Instant};
 use velocity_core::ready_pool::SlotState;
 use velocity_core::worktree_settings::WorktreePreferences;
 use velocity_store::{PersistedState, ProjectItem, StateStore};
-use velocity_threads::{PoolHost, PoolProject, ReadyPools, plan_launch, title_worktree_name};
+use velocity_threads::{
+    PoolHost, PoolProject, ReadyPools, plan_launch_with_preferences, title_worktree_name,
+};
 
 type Outcome<Value = ()> = Result<Value, Box<dyn std::error::Error>>;
 
@@ -107,7 +109,7 @@ fn take_for_thread(host: &Host, pools: &ReadyPools) -> Outcome<PathBuf> {
         let store = host.0.lock().map_err(|_| "store lock")?;
         let project = store.project(1).ok_or("project")?.clone();
         let preferences = store.worktree_preferences(&project);
-        plan_launch(&project, &preferences, &store.settings(), "add the parser")?
+        plan_launch_with_preferences(&project, &preferences, &store.settings(), "add the parser")?
     };
     let name = title_worktree_name(&plan.naming, &plan.worktree, "Warm pool parser")
         .ok_or("title name")?;

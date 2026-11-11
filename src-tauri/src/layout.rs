@@ -2,11 +2,9 @@ use crate::state::ManagedStateStore;
 use std::sync::Mutex;
 use tauri::{Emitter, Manager, State, Window, Wry};
 use tauri_specta::Event;
-use velocity_acp::{available_commands, client::AgentEvent};
 use velocity_core::layout_state::LayoutState;
 use velocity_core::layout_view::{LayoutAction, LayoutIntent, LayoutSnapshot};
 use velocity_core::navigation::NavigationIntent;
-use velocity_core::thread_view_model::AgentCommandView;
 use velocity_interview::Interviews;
 use velocity_store::build_gate;
 
@@ -109,44 +107,4 @@ pub fn publish<Handle: Emitter<Wry> + Manager<Wry>>(
             .map_err(|error| format!("Could not publish navigation intent: {error}"))?;
     }
     Ok(())
-}
-
-/// Routes a live ACP `AgentEvent` (`available_commands_update`, `SPEC.md §3.2`) into the thread's
-/// slash menu read model and returns the updated `LayoutSnapshot` when the state changed.
-pub fn record_agent_event(
-    state: &mut LayoutState,
-    thread_identifier: usize,
-    event: &AgentEvent,
-) -> Option<LayoutSnapshot> {
-    if let AgentEvent::SessionUpdate(update) = event
-        && let Some(commands) = available_commands(update)
-    {
-        let mapped = commands
-            .into_iter()
-            .map(|command| AgentCommandView {
-                name: command.name,
-                description: command.description,
-            })
-            .collect();
-        state.set_thread_agent_commands(thread_identifier, mapped);
-        return Some(state.snapshot());
-    }
-    None
-}
-
-/// Applies a live ACP `AgentEvent` to the managed layout state and publishes `layout://state`.
-pub fn apply_agent_event(
-    window: &Window,
-    state: &MainLayout,
-    thread_identifier: usize,
-    event: &AgentEvent,
-) -> Result<Option<LayoutSnapshot>, String> {
-    let mut state = state
-        .lock()
-        .map_err(|error| format!("Could not update main-window state: {error}"))?;
-    let Some(snapshot) = record_agent_event(&mut state, thread_identifier, event) else {
-        return Ok(None);
-    };
-    publish(window, &snapshot, None)?;
-    Ok(Some(snapshot))
 }

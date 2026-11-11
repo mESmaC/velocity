@@ -65,7 +65,7 @@ pub fn settings_view(
                     .unwrap_or_default(),
                 selection,
                 enabled_count,
-                requirements: requirements(catalog),
+                requirements: crate::requirements::requirements(catalog),
                 details: crate::details::SkillPackDetails::default(),
                 suggestion_badge: suggestion_badge(&catalog.id, choices),
                 detection: detection(&catalog.id, choices),
@@ -139,62 +139,4 @@ fn description_tokens(skills: &[&DiscoveredSkill]) -> u32 {
 /// Bundle membership follows each pack's folders at its pinned commit (`crate::bundles`).
 pub fn skill_enabled(pack: &str, selection: &PackSelection, skill: &DiscoveredSkill) -> bool {
     selection.enabled && crate::bundles::selection_includes(pack, &selection.bundles, skill)
-}
-fn requirements(catalog: &SkillPackCatalogEntry) -> Vec<String> {
-    let mut result = Vec::new();
-    if catalog.requires_python {
-        result.push(probe("python", "Python 3", 3));
-    }
-    if catalog.requires_node {
-        result.push(probe("node", "Node 22+", 22));
-        for program in ["ghidra", "hopper", "ida", "rizin", "objdump"] {
-            result.push(format!(
-                "{program} optional \u{00b7} {}",
-                if std::env::var_os("PATH").is_some_and(|paths| std::env::split_paths(&paths)
-                    .any(|folder| folder.join(program).is_file()
-                        || folder.join(format!("{program}.exe")).is_file()))
-                {
-                    "found"
-                } else {
-                    "not found"
-                }
-            ));
-        }
-    }
-    if result.is_empty() {
-        result.push("No required runtime".into());
-    }
-    result
-}
-fn probe(program: &str, label: &str, minimum: u32) -> String {
-    let version = command_version(program);
-    let found = version
-        .as_deref()
-        .and_then(|text| {
-            text.trim_start_matches(|character: char| !character.is_ascii_digit())
-                .split('.')
-                .next()?
-                .parse::<u32>()
-                .ok()
-        })
-        .is_some_and(|major| major >= minimum);
-    format!(
-        "{} {label} \u{00b7} {}",
-        if found { "\u{2713}" } else { "\u{00b7}" },
-        version.as_deref().unwrap_or("not found")
-    )
-}
-fn command_version(program: &str) -> Option<String> {
-    let mut command = std::process::Command::new(program);
-    command.arg("--version");
-    #[cfg(windows)]
-    {
-        use std::os::windows::process::CommandExt;
-        command.creation_flags(0x08000000);
-    }
-    let output = command.output().ok()?;
-    output
-        .status
-        .success()
-        .then(|| String::from_utf8_lossy(&output.stdout).trim().to_owned())
 }

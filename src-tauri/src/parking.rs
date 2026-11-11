@@ -134,6 +134,12 @@ pub(crate) fn resume(application: &AppHandle, key: ThreadKey, prompt: &str) -> R
             .map_err(|error| error.to_string())?;
         (project, thread, store.settings())
     };
+    if matches!(
+        thread.state,
+        ThreadState::Merged | ThreadState::Done | ThreadState::Spec | ThreadState::Draft
+    ) {
+        return Err("This thread cannot resume a build session".into());
+    }
     let path = thread.worktree_path.as_deref().ok_or("Missing worktree")?;
     velocity_git::verify_thread_worktree(
         Path::new(&project.repository_path),
@@ -197,10 +203,10 @@ fn resume_inputs(
             .view(key)
             .map(|view| view.blocks)
             .unwrap_or_default();
-        setup.resume = Some(SessionResume::new(
-            thread.agent_session.clone(),
-            transcript_context(&blocks),
-        ));
+        setup.resume = Some(
+            SessionResume::new(thread.agent_session.clone(), transcript_context(&blocks))
+                .with_history_replay(blocks.is_empty()),
+        );
         runtimes
             .resume_parked(key, path, prompt, thread.state == ThreadState::Review)
             .map_err(|error| error.to_string())?

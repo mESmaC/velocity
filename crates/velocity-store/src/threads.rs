@@ -68,6 +68,39 @@ impl NewThread {
 }
 
 impl StateStore {
+    /// Processes from a previous app lifetime are gone. Keep parked and capped recovery
+    /// checkpoints, but do not report their other saved activities as live work.
+    pub fn reset_disconnected_threads(&mut self) -> Result<(), StoreError> {
+        let mut next = self.state.clone();
+        for project in &mut next.projects {
+            for thread in &mut project.threads {
+                for block in &mut thread.transcript {
+                    if let velocity_core::thread_view_model::TranscriptBlock::ToolGroup { steps } =
+                        block
+                    {
+                        for step in steps {
+                            step.running = false;
+                        }
+                    }
+                }
+                if thread.interview.is_none()
+                    && matches!(
+                        thread.activity,
+                        crate::AgentActivity::Thinking
+                            | crate::AgentActivity::Executing
+                            | crate::AgentActivity::Stalled
+                    )
+                {
+                    thread.activity = crate::AgentActivity::Idle;
+                }
+            }
+        }
+        if next != self.state {
+            self.commit(next)?;
+        }
+        Ok(())
+    }
+
     pub fn active_project(&self) -> Option<&ProjectItem> {
         crate::project_layout::active_project(&self.state)
     }
