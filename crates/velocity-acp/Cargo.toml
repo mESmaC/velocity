@@ -16,6 +16,7 @@ serde_json.workspace = true
 thiserror.workspace = true
 tokio = { version = "1.54", features = ["io-util", "macros", "process", "rt", "sync", "fs", "time"] }
 tokio-util = { version = "0.7.20", features = ["compat"] }
+toml = "1.2"
 velocity-airc.workspace = true
 
 [target.'cfg(windows)'.dependencies]

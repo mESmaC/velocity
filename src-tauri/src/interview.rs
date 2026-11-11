@@ -5,6 +5,7 @@ use std::future::Future;
 use std::pin::Pin;
 use std::sync::{Arc, Mutex};
 
+use agent_client_protocol::v1::schema::McpServer;
 use tauri::{AppHandle, Manager};
 use tauri_specta::Event;
 use velocity_acp::client::AircLaunch;
@@ -35,6 +36,10 @@ impl Host for AppHost {
         if let Err(error) = (LayoutStateChanged { state: snapshot }).emit(&self.0) {
             eprintln!("Could not publish main-window state: {error}");
         }
+    }
+
+    fn shared_mcp_servers(&self, settings: &velocity_store::Settings) -> Vec<McpServer> {
+        velocity_threads::shared_mcp_servers(settings)
     }
 
     fn spawn(&self, task: Pin<Box<dyn Future<Output = ()> + Send>>) {

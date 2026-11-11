@@ -4,6 +4,7 @@ export * from './ipc/agents';
 export * from './ipc/goal-swarm';
 export * from './ipc/issues';
 export * from './ipc/providers';
+export * from './ipc/shared-mcp';
 export * from './ipc/skills';
 export * from './ipc/swarm';
 import {
