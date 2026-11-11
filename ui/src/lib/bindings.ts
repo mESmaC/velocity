@@ -54,7 +54,7 @@ export const commands = {
 	 */
 	providerSignOut: (provider: ProviderKind) => __TAURI_INVOKE<ProvidersView_Serialize>("provider_sign_out", { provider }),
 	/**  Model chips, the default for new threads and the thread title model (F15). */
-	setProviderSettings: (edit: ProviderEdit) => __TAURI_INVOKE<ProvidersView_Serialize>("set_provider_settings", { edit }),
+	setProviderSettings: (edit: ProviderEdit_Deserialize) => __TAURI_INVOKE<ProvidersView_Serialize>("set_provider_settings", { edit }),
 	/**  The composer's model menu (F4): for a thread, or the defaults from the home composer. */
 	getModelMenu: (projectIdentifier: number, threadIdentifier: number | null) => __TAURI_INVOKE<ModelMenuView_Serialize>("get_model_menu", { projectIdentifier, threadIdentifier }),
 	/**
@@ -2500,6 +2500,7 @@ export type ProviderCardView_Deserialize = {
 	can_sign_in: boolean,
 	limit?: LimitView | null,
 	models: ModelChipView[],
+	max_agents?: number | null,
 };
 
 export type ProviderCardView_Serialize = {
@@ -2520,6 +2521,7 @@ export type ProviderCardView_Serialize = {
 	can_sign_in: boolean,
 	limit: LimitView | null,
 	models: ModelChipView[],
+	max_agents: number | null,
 };
 
 /**  What Velocity last read from one provider's agent. */
@@ -2562,20 +2564,52 @@ export type ProviderCommand_Serialize = {
 	command: AgentCommand_Serialize,
 };
 
+/**  A provider's optional cap. Missing entries mean unlimited. */
+export type ProviderConcurrency = {
+	provider: ProviderKind,
+	maximum: number,
+};
+
 /**  A change from Settings → Providers or the home composer's model menu. */
-export type ProviderEdit = 
+export type ProviderEdit = ProviderEdit_Serialize | ProviderEdit_Deserialize;
+
+/**  A change from Settings → Providers or the home composer's model menu. */
+export type ProviderEdit_Deserialize = ({ MaxAgents: {
+	provider: ProviderKind,
+	maximum?: number | null,
+} }) & { DefaultEffort?: never; DefaultModel?: never; DefaultSpeed?: never; ShowModel?: never; TitleEffort?: never; TitleModel?: never; TitleSpeed?: never } | 
 /**  Show or hide a model chip in the pickers. */
 ({ ShowModel: {
 	provider: ProviderKind,
 	model: string,
 	shown: boolean,
-} }) & { DefaultEffort?: never; DefaultModel?: never; DefaultSpeed?: never; TitleEffort?: never; TitleModel?: never; TitleSpeed?: never } | ({ DefaultModel: {
+} }) & { DefaultEffort?: never; DefaultModel?: never; DefaultSpeed?: never; MaxAgents?: never; TitleEffort?: never; TitleModel?: never; TitleSpeed?: never } | ({ DefaultModel: {
 	provider: ProviderKind,
 	model: string,
-} }) & { DefaultEffort?: never; DefaultSpeed?: never; ShowModel?: never; TitleEffort?: never; TitleModel?: never; TitleSpeed?: never } | ({ DefaultEffort: EffortLevel }) & { DefaultModel?: never; DefaultSpeed?: never; ShowModel?: never; TitleEffort?: never; TitleModel?: never; TitleSpeed?: never } | ({ DefaultSpeed: SpeedMode }) & { DefaultEffort?: never; DefaultModel?: never; ShowModel?: never; TitleEffort?: never; TitleModel?: never; TitleSpeed?: never } | ({ TitleModel: {
+} }) & { DefaultEffort?: never; DefaultSpeed?: never; MaxAgents?: never; ShowModel?: never; TitleEffort?: never; TitleModel?: never; TitleSpeed?: never } | ({ DefaultEffort: EffortLevel }) & { DefaultModel?: never; DefaultSpeed?: never; MaxAgents?: never; ShowModel?: never; TitleEffort?: never; TitleModel?: never; TitleSpeed?: never } | ({ DefaultSpeed: SpeedMode }) & { DefaultEffort?: never; DefaultModel?: never; MaxAgents?: never; ShowModel?: never; TitleEffort?: never; TitleModel?: never; TitleSpeed?: never } | ({ TitleModel: {
 	provider: ProviderKind,
 	model: string,
-} }) & { DefaultEffort?: never; DefaultModel?: never; DefaultSpeed?: never; ShowModel?: never; TitleEffort?: never; TitleSpeed?: never } | ({ TitleEffort: EffortLevel }) & { DefaultEffort?: never; DefaultModel?: never; DefaultSpeed?: never; ShowModel?: never; TitleModel?: never; TitleSpeed?: never } | ({ TitleSpeed: SpeedMode }) & { DefaultEffort?: never; DefaultModel?: never; DefaultSpeed?: never; ShowModel?: never; TitleEffort?: never; TitleModel?: never } | 
+} }) & { DefaultEffort?: never; DefaultModel?: never; DefaultSpeed?: never; MaxAgents?: never; ShowModel?: never; TitleEffort?: never; TitleSpeed?: never } | ({ TitleEffort: EffortLevel }) & { DefaultEffort?: never; DefaultModel?: never; DefaultSpeed?: never; MaxAgents?: never; ShowModel?: never; TitleModel?: never; TitleSpeed?: never } | ({ TitleSpeed: SpeedMode }) & { DefaultEffort?: never; DefaultModel?: never; DefaultSpeed?: never; MaxAgents?: never; ShowModel?: never; TitleEffort?: never; TitleModel?: never } | 
+/**  Back to GPT-6 Luna · Low · Fast (F15 Thread titles). */
+"TitleReset";
+
+/**  A change from Settings → Providers or the home composer's model menu. */
+export type ProviderEdit_Serialize = ({ MaxAgents: {
+	provider: ProviderKind,
+	maximum: number | null,
+} }) & { DefaultEffort?: never; DefaultModel?: never; DefaultSpeed?: never; ShowModel?: never; TitleEffort?: never; TitleModel?: never; TitleSpeed?: never } | 
+/**  Show or hide a model chip in the pickers. */
+({ ShowModel: {
+	provider: ProviderKind,
+	model: string,
+	shown: boolean,
+} }) & { DefaultEffort?: never; DefaultModel?: never; DefaultSpeed?: never; MaxAgents?: never; TitleEffort?: never; TitleModel?: never; TitleSpeed?: never } | ({ DefaultModel: {
+	provider: ProviderKind,
+	model: string,
+} }) & { DefaultEffort?: never; DefaultSpeed?: never; MaxAgents?: never; ShowModel?: never; TitleEffort?: never; TitleModel?: never; TitleSpeed?: never } | ({ DefaultEffort: EffortLevel }) & { DefaultModel?: never; DefaultSpeed?: never; MaxAgents?: never; ShowModel?: never; TitleEffort?: never; TitleModel?: never; TitleSpeed?: never } | ({ DefaultSpeed: SpeedMode }) & { DefaultEffort?: never; DefaultModel?: never; MaxAgents?: never; ShowModel?: never; TitleEffort?: never; TitleModel?: never; TitleSpeed?: never } | ({ TitleModel: {
+	provider: ProviderKind,
+	model: string,
+} }) & { DefaultEffort?: never; DefaultModel?: never; DefaultSpeed?: never; MaxAgents?: never; ShowModel?: never; TitleEffort?: never; TitleSpeed?: never } | ({ TitleEffort: EffortLevel }) & { DefaultEffort?: never; DefaultModel?: never; DefaultSpeed?: never; MaxAgents?: never; ShowModel?: never; TitleModel?: never; TitleSpeed?: never } | ({ TitleSpeed: SpeedMode }) & { DefaultEffort?: never; DefaultModel?: never; DefaultSpeed?: never; MaxAgents?: never; ShowModel?: never; TitleEffort?: never; TitleModel?: never } | 
 /**  Back to GPT-6 Luna · Low · Fast (F15 Thread titles). */
 "TitleReset";
 
@@ -2656,6 +2690,7 @@ export type ProviderSettings_Deserialize = {
 	catalog?: ProviderCatalog_Deserialize[],
 	/**  Providers you signed out of in Velocity: new work can't use them (F15 Sign out). */
 	signed_out?: ProviderKind[],
+	concurrency?: ProviderConcurrency[],
 	/**  Model chips you switched off (F15 Models). */
 	hidden_models?: HiddenModel[],
 	/**  Built-in providers whose ACP agent command you edited; Reset removes the entry (F15). */
@@ -2683,6 +2718,7 @@ export type ProviderSettings_Serialize = {
 	catalog: ProviderCatalog_Serialize[],
 	/**  Providers you signed out of in Velocity: new work can't use them (F15 Sign out). */
 	signed_out: ProviderKind[],
+	concurrency: ProviderConcurrency[],
 	/**  Model chips you switched off (F15 Models). */
 	hidden_models: HiddenModel[],
 	/**  Built-in providers whose ACP agent command you edited; Reset removes the entry (F15). */
@@ -4015,6 +4051,7 @@ export type ThreadItem_Deserialize = {
 	dependency_wait?: string | null,
 	/**  The agent's ACP session id, which a parked thread loads again on resume (§2.2). */
 	agent_session?: string | null,
+	provider_queued?: boolean,
 	review_stage?: ReviewStage | null,
 	task_ids: number[],
 	issue?: ThreadIssue_Deserialize | null,
@@ -4049,6 +4086,7 @@ export type ThreadItem_Serialize = {
 	dependency_wait: string | null,
 	/**  The agent's ACP session id, which a parked thread loads again on resume (§2.2). */
 	agent_session: string | null,
+	provider_queued: boolean,
 	review_stage: ReviewStage | null,
 	task_ids: number[],
 	issue: ThreadIssue_Serialize | null,
@@ -4096,6 +4134,7 @@ export type ThreadMenuView_Deserialize = {
 	project_identifier: number,
 	thread_identifier: number,
 	entries: ThreadMenuEntry_Deserialize[],
+	message_mode?: ThreadMessageMode | null,
 };
 
 /**  One thread's right-click menu, built from saved state and what is on disk. */
@@ -4104,6 +4143,12 @@ export type ThreadMenuView_Serialize = {
 	project_identifier: number,
 	thread_identifier: number,
 	entries: ThreadMenuEntry_Serialize[],
+	message_mode: ThreadMessageMode | null,
+};
+
+export type ThreadMessageMode = {
+	nick: string,
+	mode: MessageMode,
 };
 
 export type ThreadState = "draft" | "spec" | "working" | "review" | "error" | "closed" | "done" | "merged";
