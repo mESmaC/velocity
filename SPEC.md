@@ -50,7 +50,7 @@ These hold for every feature. A feature that breaks one of them is wrong, whatev
 |---|---|---|
 | `draft` | (top, unnamed) | New thread, not sent yet. |
 | `spec` | Spec interview | Interview in progress. Phases: `scan` → `ask` → `ready` → `locked`. |
-| `working` | Running; Done when idle | Agent works in its worktree; an idle conversation can resume on the next message (?3.2). |
+| `working` | Running; Done when idle | Agent works in its worktree; an idle conversation can resume on the next message (§3.2). |
 | `review` | PR open · watching | PR is open; the agent watches it. Stages: `ci`, `review`, `fixing`, `approved`. |
 | `error` | Failed | Agent stopped on an error. Its worktree is kept. |
 | `closed` | Closed · not merged | PR closed without merging. Its worktree is kept. |
