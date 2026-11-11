@@ -1,8 +1,16 @@
 use std::ffi::OsStr;
 use std::process::Command;
 
-pub(crate) fn gh() -> Command {
+/// `gh <arguments>`, counted against the caller like every `PullRequestCommand` call (SPEC.md
+/// F6), so the request totals cover the browser, new-project and repository-list calls too.
+#[track_caller]
+pub(crate) fn gh(arguments: &[&str]) -> Command {
+    crate::request_counter::record(
+        std::panic::Location::caller(),
+        crate::request_counter::operation(arguments, None),
+    );
     let mut command = hidden_command("gh");
+    command.args(arguments);
     // Velocity reads gh's output; prompts would block it and colour codes would
     // garble the errors it shows.
     command.env("GH_PROMPT_DISABLED", "1").env("NO_COLOR", "1");

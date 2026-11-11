@@ -311,8 +311,8 @@ fn fetch_issues(
         return Ok((String::new(), Vec::new()));
     }
     let client = match reader.client.take() {
-        Some(client) => client,
-        None => IssueClient::discover(directory).map_err(|error| error.to_string())?,
+        Some(client) if client.is_current(directory) => client,
+        _ => IssueClient::discover(directory).map_err(|error| error.to_string())?,
     };
     let panel = client
         .cached_panel(&mut reader.cache)
