@@ -1,5 +1,6 @@
 <script lang="ts">
   import Icon from './Icon.svelte';
+  import Markdown from './Markdown.svelte';
   import type { DiffLineRole, TranscriptBlock } from './ipc';
   let { blocks }: { blocks: TranscriptBlock[] } = $props();
 
@@ -13,15 +14,13 @@
 
 {#each blocks as block, blockIndex (blockIndex)}
   {#if block.UserMessage}
-    <div class="msg-user">{block.UserMessage.text}</div>
+    <div class="msg-user"><Markdown text={block.UserMessage.text} /></div>
     {#if block.UserMessage.queued}
       <div class="queued">queued · sends when the current step finishes</div>
     {/if}
   {:else if block.AgentMessage}
     <div class="msg-agent">
-      {#each block.AgentMessage.paragraphs as paragraph, paragraphIndex (paragraphIndex)}
-        <p>{paragraph}</p>
-      {/each}
+      <Markdown text={block.AgentMessage.paragraphs.join('\n\n')} />
     </div>
   {:else if block.ToolGroup}
     <div class="tools">
