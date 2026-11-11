@@ -3,6 +3,7 @@
   import Icon from './Icon.svelte';
   import PullRequestPanel from './PullRequestPanel.svelte';
   import IssuePanel from './IssuePanel.svelte';
+  import { rise } from './motion';
   import type { LayoutAction, LayoutSnapshot } from './ipc';
   let {
     layout,
@@ -51,6 +52,7 @@
             class:done={task.state === 'done'}
             class:now={task.state === 'now'}
             title={task.title}
+            in:rise
           >
             <Icon
               name={task.state === 'draft'

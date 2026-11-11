@@ -1,5 +1,6 @@
 <script lang="ts">
   import type { MessageMode, ThreadMenuAction, ThreadMenuView } from './ipc';
+  import { pop } from './motion';
   let {
     menu,
     x,
@@ -58,6 +59,8 @@
   bind:this={element}
   style:left={`${left}px`}
   style:top={`${top}px`}
+  in:pop
+  out:pop
 >
   {#if menu.message_mode}
     {#each modes as option (option.mode)}
