@@ -21,9 +21,7 @@ pub(crate) fn record(caller: &Location<'static>, operation: String) {
     let mut totals = TOTALS
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
-    *totals
-        .entry((caller_label(caller), operation))
-        .or_insert(0) += 1;
+    *totals.entry((caller_label(caller), operation)).or_insert(0) += 1;
 }
 
 /// Every caller's totals, largest first.
@@ -39,7 +37,7 @@ pub fn request_totals() -> Vec<RequestTotal> {
             count: *count,
         })
         .collect();
-    rows.sort_by(|left, right| right.count.cmp(&left.count));
+    rows.sort_by_key(|row| std::cmp::Reverse(row.count));
     rows
 }
 

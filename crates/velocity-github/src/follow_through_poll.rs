@@ -14,23 +14,29 @@ use crate::{
     PullRequest, PullRequestClient, PullRequestError, PullRequestSnapshot, PullRequestState,
 };
 
+/// Open PRs per page. GitHub prices a query by the nodes it may return, so 50 keeps a page at
+/// one rate-limit point; 100 costs two.
+const OPEN_PAGE: u32 = 50;
+
 /// Closed and merged PRs drop out of the open list. The most recently updated of them are
 /// read in the same request, so a PR that closes between two passes is still seen.
 const RECENTLY_CLOSED: u32 = 25;
 
-/// A followed PR is read in full at least this often, even when its listed fields did not
-/// move: a backstop for a change GitHub records without moving any of them.
+/// A followed open PR is read in full at least this often, even when its listed fields did not
+/// move. GitHub records an edit to an inline review comment without moving any listed field,
+/// and an edited review comment must still reach the agent.
 pub const FULL_REFRESH: Duration = Duration::from_secs(30 * 60);
 
-/// Every field below is checked against GitHub in #217's PR:
-/// - `updatedAt` moves on pushes, new and edited comments, new and edited reviews, review
-///   thread replies, resolving and unresolving a thread, ready/draft, close and reopen.
-/// - It does not move when a CI check changes, so the check contexts are read here too.
-/// - The counts catch a new comment, review or thread at once, while `updatedAt` can lag
-///   behind by a few seconds.
+/// The fields, besides the PR's own, that show whether a snapshot is out of date. Each was
+/// checked against GitHub for #217:
+/// - `updatedAt` (in the PR's fields) moves on a push, a new or edited conversation comment,
+///   a new or edited review, a new inline thread and a reply in one, but can lag by seconds.
+/// - It does not move when a CI check changes, or when a thread is resolved or unresolved,
+///   so the head's check contexts and each thread's `isResolved` are read here.
+/// - The counts change at once when a comment, review, thread or reply is added or deleted.
 const FINGERPRINT_FIELDS: &str = "comments { totalCount } reviews { totalCount }
   reviewThreads(first:100) { totalCount nodes { id isResolved comments { totalCount } } }
-  commits(last:1) { nodes { commit { statusCheckRollup { state contexts(first:100) {
+  headRef { target { ... on Commit { oid statusCheckRollup { state contexts(first:100) {
     totalCount nodes { __typename
       ... on CheckRun { name status conclusion detailsUrl }
       ... on StatusContext { context state targetUrl }
@@ -44,25 +50,27 @@ pub struct ListedPullRequest {
 }
 
 impl PullRequestClient {
-    /// Every open PR and the most recently closed or merged ones, in one request per 100
-    /// open PRs.
+    /// Every open PR and the most recently closed or merged ones: one request, and one more
+    /// for each further 50 open PRs.
     pub fn follow_through_list(&self) -> Result<Vec<ListedPullRequest>, PullRequestError> {
+        // A closed or merged PR needs only its own fields: follow-through reads it in full
+        // once when it leaves the open list, and nothing that happens to it later is sent to
+        // the agent.
         let query = format!(
             "query($owner:String!,$name:String!,$cursor:String) {{
               repository(owner:$owner,name:$name) {{
-                open: pullRequests(states:OPEN,first:100,after:$cursor,
+                open: pullRequests(states:OPEN,first:{OPEN_PAGE},after:$cursor,
                   orderBy:{{field:UPDATED_AT,direction:DESC}}) {{
                   nodes {{ {FIELDS} {FINGERPRINT_FIELDS} }} pageInfo {{ hasNextPage endCursor }}
                 }}
                 recent: pullRequests(states:[CLOSED,MERGED],first:{RECENTLY_CLOSED},
                   orderBy:{{field:UPDATED_AT,direction:DESC}}) {{
-                  nodes {{ {FIELDS} {FINGERPRINT_FIELDS} }} pageInfo {{ hasNextPage endCursor }}
+                  nodes {{ {FIELDS} }} pageInfo {{ hasNextPage endCursor }}
                 }}
               }}
             }}"
         );
-        let response: Value =
-            self.graphql_at(&query, self.variables(0), "/data/repository")?;
+        let response: Value = self.graphql_at(&query, self.variables(0), "/data/repository")?;
         let page = |name: &str| -> Result<Connection<Value>, PullRequestError> {
             let page = response
                 .get(name)
@@ -96,7 +104,6 @@ fn listed(mut node: Value) -> Result<ListedPullRequest, PullRequestError> {
 /// A thread's part in this pass, read from the store before any GitHub call.
 pub struct PollThread<'a> {
     pub key: (u32, u32),
-    pub branch: &'a str,
     pub saved_number: Option<u32>,
     pub watch: &'a FollowThrough,
 }
@@ -165,7 +172,8 @@ impl SnapshotCache {
             }
             (Some(listed), Some(cached))
                 if cached.fingerprint.as_ref() == Some(&listed.fingerprint)
-                    && cached.read_at.elapsed() < FULL_REFRESH =>
+                    && (cached.read_at.elapsed() < FULL_REFRESH
+                        || listed.pull_request.state != PullRequestState::Open) =>
             {
                 PollChoice::Reuse
             }
@@ -228,7 +236,10 @@ fn newest_for_branch<'a>(
         .max_by(|left, right| {
             let order = |listed: &ListedPullRequest| {
                 // GitHub's timestamps share one ISO 8601 form, so they order as text.
-                (listed.pull_request.created_at.clone(), listed.pull_request.number)
+                (
+                    listed.pull_request.created_at.clone(),
+                    listed.pull_request.number,
+                )
             };
             order(left).cmp(&order(right))
         })

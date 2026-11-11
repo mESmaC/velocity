@@ -1,10 +1,14 @@
 //! Native scheduling and edges for F6. Decisions and durable cursors live in the crates.
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
 use std::thread;
 use std::time::Duration;
 use tauri::{AppHandle, Emitter, Manager};
 use velocity_git::remove_merged_worktree;
-use velocity_github::{PullRequestClient, PullRequestSnapshot, PullRequestState};
+use velocity_github::follow_through_poll::{
+    ListedPullRequest, PollChoice, PollThread, SnapshotCache,
+};
+use velocity_github::{PullRequest, PullRequestClient, PullRequestSnapshot, PullRequestState};
 use velocity_store::{ProjectItem, ThreadItem, ThreadState};
 use velocity_threads::DeliveryStatus;
 
@@ -18,6 +22,10 @@ type Deliver = fn(
 ) -> Result<DeliveryStatus, String>;
 type Stop = fn(&AppHandle, ThreadKey) -> Result<bool, String>;
 type ToolSteps = fn(&AppHandle, ThreadKey) -> Option<velocity_core::thread_view_model::SessionWork>;
+
+/// SPEC.md F6 sets no latency for follow-through. 15 s keeps a review comment's delay short,
+/// and one list query per project per pass stays well inside the shared GitHub budget.
+const PASS_INTERVAL: Duration = Duration::from_secs(15);
 
 pub const PR_OPENED_EVENT: &str = "pr://opened";
 pub const PR_CI_EVENT: &str = "pr://ci";
@@ -64,16 +72,34 @@ pub struct PullRequestLifecycleEvent {
 pub fn initialize(application: &AppHandle, hooks: Hooks) {
     let application = application.clone();
     thread::spawn(move || {
+        let mut clients = Clients::new();
+        let mut cache = SnapshotCache::default();
         loop {
-            if let Err(error) = cycle(&application, &hooks) {
+            if let Err(error) = cycle(&application, &hooks, &mut clients, &mut cache) {
                 eprintln!("Velocity PR follow-through: {error}");
             }
-            thread::sleep(Duration::from_secs(5));
+            thread::sleep(PASS_INTERVAL);
         }
     });
 }
 
-fn cycle(application: &AppHandle, hooks: &Hooks) -> Result<(), String> {
+/// Each project's GitHub client, with the checkout it was read from. Reading the repository's
+/// identity is a GitHub request, so it happens once rather than on every pass.
+type Clients = BTreeMap<u32, (String, PullRequestClient)>;
+
+/// One project's GitHub reads for this pass, shared by all of its threads.
+struct ProjectPass<'a> {
+    project: &'a ProjectItem,
+    client: &'a PullRequestClient,
+    listing: &'a [ListedPullRequest],
+}
+
+fn cycle(
+    application: &AppHandle,
+    hooks: &Hooks,
+    clients: &mut Clients,
+    cache: &mut SnapshotCache,
+) -> Result<(), String> {
     let projects = application
         .state::<ManagedStateStore>()
         .lock()
@@ -81,34 +107,32 @@ fn cycle(application: &AppHandle, hooks: &Hooks) -> Result<(), String> {
         .state()
         .projects
         .clone();
-    for project in projects {
-        let threads: Vec<_> = project
-            .threads
-            .iter()
-            .filter(|thread| {
-                matches!(
-                    thread.state,
-                    ThreadState::Working
-                        | ThreadState::Review
-                        | ThreadState::Closed
-                        | ThreadState::Error
-                ) && !thread.branch_name.is_empty()
-                    && thread.worktree_path.is_some()
-            })
-            .cloned()
-            .collect();
+    clients.retain(|identifier, _| projects.iter().any(|project| project.id == *identifier));
+    let mut followed = BTreeSet::new();
+    for project in &projects {
+        let threads = followed_threads(project);
+        followed.extend(threads.iter().map(|thread| (project.id, thread.id)));
         if threads.is_empty() {
             continue;
         }
-        let client = match PullRequestClient::discover(Path::new(&project.repository_path)) {
-            Ok(client) => client,
+        let Some(client) = project_client(clients, project) else {
+            continue;
+        };
+        // One request per project however many threads it has (#217).
+        let listing = match client.follow_through_list() {
+            Ok(listing) => listing,
             Err(error) => {
                 eprintln!("PR watcher for {}: {error}", project.name);
                 continue;
             }
         };
+        let pass = ProjectPass {
+            project,
+            client,
+            listing: &listing,
+        };
         for thread in threads {
-            if let Err(error) = observe(application, hooks, &client, &project, &thread) {
+            if let Err(error) = observe(application, hooks, &pass, cache, &thread) {
                 eprintln!(
                     "PR watcher for {} / {}: {error}",
                     project.name, thread.title
@@ -116,16 +140,57 @@ fn cycle(application: &AppHandle, hooks: &Hooks) -> Result<(), String> {
             }
         }
     }
+    cache.retain(&followed);
     Ok(())
+}
+
+fn followed_threads(project: &ProjectItem) -> Vec<ThreadItem> {
+    project
+        .threads
+        .iter()
+        .filter(|thread| {
+            matches!(
+                thread.state,
+                ThreadState::Working
+                    | ThreadState::Review
+                    | ThreadState::Closed
+                    | ThreadState::Error
+            ) && !thread.branch_name.is_empty()
+                && thread.worktree_path.is_some()
+        })
+        .cloned()
+        .collect()
+}
+
+fn project_client<'a>(
+    clients: &'a mut Clients,
+    project: &ProjectItem,
+) -> Option<&'a PullRequestClient> {
+    let current = clients
+        .get(&project.id)
+        .is_some_and(|(checkout, _)| *checkout == project.repository_path);
+    if !current {
+        match PullRequestClient::discover(Path::new(&project.repository_path)) {
+            Ok(client) => {
+                clients.insert(project.id, (project.repository_path.clone(), client));
+            }
+            Err(error) => {
+                eprintln!("PR watcher for {}: {error}", project.name);
+                return None;
+            }
+        }
+    }
+    clients.get(&project.id).map(|(_, client)| client)
 }
 
 fn observe(
     application: &AppHandle,
     hooks: &Hooks,
-    client: &PullRequestClient,
-    project: &ProjectItem,
+    pass: &ProjectPass<'_>,
+    cache: &mut SnapshotCache,
     thread: &ThreadItem,
 ) -> Result<(), String> {
+    let project = pass.project;
     if project
         .threads
         .iter()
@@ -139,10 +204,10 @@ fn observe(
         .map_err(|error| error.to_string())?
         .follow_through_observer(project.id, thread.id)
         .ok_or("The owning thread was removed before reading GitHub")?;
-    let Some(snapshot) = owning_snapshot(client, thread, &watch)? else {
+    let key = (project.id, thread.id);
+    let Some(snapshot) = owning_snapshot(pass, cache, key, thread, &watch)? else {
         return Ok(());
     };
-    let key = (project.id, thread.id);
     let action = crate::threads::action_lock(application, key)?;
     let _action = action.blocking_lock_owned();
     verify_saved_owner(application, key, thread)?;
@@ -170,31 +235,51 @@ fn observe(
     checkpoint(application, key, &snapshot, watch)
 }
 
+/// The thread's PR as it was last read. It is read again in full only when the project's
+/// list shows it changed, or when it has not been read since Velocity started.
 fn owning_snapshot(
-    client: &PullRequestClient,
+    pass: &ProjectPass<'_>,
+    cache: &mut SnapshotCache,
+    key: ThreadKey,
     thread: &ThreadItem,
     watch: &velocity_github::follow_through::FollowThrough,
 ) -> Result<Option<PullRequestSnapshot>, String> {
-    let number = match thread.pull_request_number {
-        Some(number) => number,
-        None => match client
-            .for_branch(&thread.branch_name)
-            .map_err(|error| error.to_string())?
-            .first()
-        {
-            Some(request) if watch.should_follow(request) && watch.belongs_to_thread(request) => {
-                request.number
+    let client = pass.client;
+    let poll = PollThread {
+        key,
+        saved_number: thread.pull_request_number,
+        watch,
+    };
+    let owns = |request: &PullRequest| client.owns_branch(request, &thread.branch_name);
+    let (number, fingerprint) = match cache.choose(&poll, pass.listing, owns) {
+        PollChoice::Skip => return Ok(None),
+        PollChoice::Reuse => return Ok(cache.snapshot(key).cloned()),
+        PollChoice::Refresh {
+            number,
+            fingerprint,
+        } => (number, fingerprint),
+        PollChoice::Search => {
+            let requests = client
+                .for_branch(&thread.branch_name)
+                .map_err(|error| error.to_string())?;
+            cache.searched(key);
+            match requests.first() {
+                Some(request)
+                    if watch.should_follow(request) && watch.belongs_to_thread(request) =>
+                {
+                    (request.number, None)
+                }
+                _ => return Ok(None),
             }
-            _ => return Ok(None),
-        },
+        }
     };
     let snapshot = client.snapshot(number).map_err(|error| error.to_string())?;
     if !client.owns_branch(&snapshot.pull_request, &thread.branch_name) {
         return Err("The PR head does not match this thread's immutable branch".into());
     }
-    Ok(watch
-        .should_follow(&snapshot.pull_request)
-        .then_some(snapshot))
+    let followed = watch.should_follow(&snapshot.pull_request);
+    cache.store(key, fingerprint, snapshot.clone());
+    Ok(followed.then_some(snapshot))
 }
 
 fn verify_saved_owner(
