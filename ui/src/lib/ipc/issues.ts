@@ -15,6 +15,7 @@ export const issueCommands = {
   panel: commands.getIssuePanel,
   open: commands.openProjectIssue,
   dispatch: commands.dispatchIssue,
+  toggleExpanded: commands.toggleIssueExpanded,
 };
 
 export function onIssuePanel(callback: EventCallback<IssuePanelChanged>) {
