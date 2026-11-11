@@ -3,6 +3,7 @@
 
 use crate::agents_editor::{AgentsEditor, OutlineFocus};
 use crate::agents_markdown::{OutlineKind, OutlineLine};
+use crate::agents_template::{IMPLEMENTATION_RULES, PROOF_RULES, TESTS_AND_DOCS_RULES};
 
 #[cfg_attr(
     feature = "bindings",
@@ -49,31 +50,19 @@ const TOPICS: &[Topic] = &[
         title: "Implementation first",
         detect: Detect::Section("implementation first"),
         section: "Implementation first",
-        rules: &[
-            "- Build the feature first, end to end, then run it and see it work.",
-            "- Implementation is the larger part of every PR. Proofs, tests and docs together stay smaller than the implementation code.",
-        ],
+        rules: IMPLEMENTATION_RULES,
     },
     Topic {
         title: "Proofs: proof list only, after the code",
         detect: Detect::Section("proofs"),
         section: "Proofs",
-        rules: &[
-            "- Write Lean only for features on the proof list in SPEC.md. Every other piece ships with no Lean.",
-            "- For a proof-list feature, write the code first. Then write `proofs/<Feature>/Design.lean` in the same PR: correct, within a stated cost bound, and no alternative in a stated class costs less.",
-            "- Export a compact fixture table to `proofs/fixtures/<feature>.tsv`, and add one test that checks the implementation against it.",
-            "- Never use `sorry`, `admit`, `axiom` or `native_decide`.",
-            "- Never weaken a reviewed theorem statement to make its proof go through.",
-        ],
+        rules: PROOF_RULES,
     },
     Topic {
         title: "Tests and docs: low priority",
         detect: Detect::Section("tests"),
         section: "Tests and docs",
-        rules: &[
-            "- Default: add no tests. Add a targeted test only for a critical contract, with its risk in a comment.",
-            "- Scouts and PR duty agents write the adversarial tests and stress scripts.",
-        ],
+        rules: TESTS_AND_DOCS_RULES,
     },
     Topic {
         title: "Scope: stay on your task",
@@ -177,6 +166,10 @@ impl AgentsEditor {
     /// end of the file when none has that name. Focus lands on the first new bullet.
     pub(crate) fn add_coverage(&mut self, item: u32) -> Option<OutlineFocus> {
         let topic = TOPICS.get(usize::try_from(item).ok()?)?;
+        // A repeated click or delayed action must not duplicate an already covered topic.
+        if covered(topic, &self.lines, &self.markdown()) {
+            return None;
+        }
         let at = match self.section_end(topic.section) {
             Some(at) => at,
             None => {
