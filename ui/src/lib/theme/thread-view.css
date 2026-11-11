@@ -5,10 +5,13 @@
   display: flex;
   flex-direction: column;
 }
+/* The title has its own line; the meta line sits under it. */
 .thread-head {
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
   gap: var(--thread-head-gap);
+  row-gap: var(--glass-head-row-gap);
   padding: var(--thread-head-padding);
   border-bottom: var(--thread-head-border-bottom);
 }
@@ -23,6 +26,7 @@
   /* The title truncates and the titling chip stays whole beside it (#63). */
   display: flex;
   align-items: baseline;
+  flex: var(--glass-head-title-flex);
   min-width: 0;
 }
 .thread-head h1 .title-text {
@@ -51,8 +55,9 @@
   white-space: nowrap;
   /* The meta row takes the header spacer's place: it starts from zero width and grows into
      whatever the title and actions leave, so a long branch or worktree path truncates
-     before the title ever does (#63). */
-  flex: var(--layout-spacer-flex);
+     before the title ever does (#63). It now has the second header line to itself. */
+  order: var(--glass-head-meta-order);
+  flex: var(--glass-head-meta-flex);
   min-width: 0;
   overflow: hidden;
 }
@@ -191,12 +196,15 @@
   border-radius: var(--thread-msg-code-border-radius);
   background: var(--thread-msg-code-background);
 }
+/* Tool steps sit in one quiet card. */
 .tools {
   display: flex;
   flex-direction: column;
-  border-left: var(--thread-tools-border-left);
-  margin-left: var(--thread-tools-margin-left);
-  padding-left: var(--thread-tools-padding-left);
+  margin-left: var(--glass-tools-margin-left);
+  padding: var(--glass-tools-padding);
+  border: var(--glass-tools-border);
+  border-radius: var(--glass-tools-border-radius);
+  background: var(--glass-tools-background);
   gap: var(--thread-tools-gap);
 }
 .tool {
@@ -208,7 +216,11 @@
   padding: var(--thread-tool-padding);
   color: var(--text-2);
 }
+/* A long tool name (an MCP tool) truncates instead of running into its argument. */
 .tool .verb {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
   color: var(--muted);
 }
 .tool .arg {
@@ -228,6 +240,22 @@
 }
 .tool.running .arg {
   color: var(--text);
+}
+/* The running step is the accent row. */
+.tool.running {
+  margin: var(--glass-tool-running-margin);
+  padding: var(--glass-tool-running-padding);
+  border-radius: var(--glass-tool-running-border-radius);
+  background: var(--accent-soft);
+}
+.tool.running .verb,
+.tool.running .res {
+  color: var(--accent);
+}
+.thread-head .btn {
+  height: var(--glass-head-btn-height);
+  padding: var(--glass-head-btn-padding);
+  border-radius: var(--glass-head-btn-border-radius);
 }
 .diff {
   border: var(--thread-diff-border);
