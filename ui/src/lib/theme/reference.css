@@ -1458,9 +1458,15 @@
   --providers-out-heading-weight: 500;
   --providers-menu-min-width: 260px;
   /* Not in the reference, whose mock lists four models: a long list scrolls inside the
-     menu instead of running off the top of the window. */
+     menu instead of running off the window. ModelMenu.svelte narrows this to the room
+     the pill has above or below it. */
   --providers-menu-max-height: 60vh;
   --providers-menu-bottom: calc(100% + 6px);
+  --providers-menu-top: calc(100% + 6px);
+  /* The reference's `openModelMenu` puts the menu 6px from the pill and keeps it 8px
+     inside the window. */
+  --providers-menu-anchor-gap: 6px;
+  --providers-menu-edge-gap: 8px;
   --providers-menu-head-gap: 6px;
   --providers-menu-head-padding: 7px 9px 3px;
   --providers-menu-head-font-size: 10.5px;
