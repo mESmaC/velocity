@@ -1,0 +1,2 @@
+# Stress scripts are console programs whose children share their console, so the root
+# clippy.toml rule against a bare Command::new (#232) does not apply here.

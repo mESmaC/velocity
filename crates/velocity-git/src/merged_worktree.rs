@@ -1,7 +1,6 @@
 //! Verify git's ownership at the I/O edge, then execute the existing proven
 //! worktree lifecycle plan. This never prunes repository-wide metadata.
 use std::path::{Path, PathBuf};
-use std::process::Command;
 
 use crate::{GitCommand, LifecycleEvent, WorktreeError, WorktreeRecord, execute_git_command};
 
@@ -220,17 +219,12 @@ fn common_directory(directory: &Path) -> Result<PathBuf, MergedWorktreeError> {
 }
 
 fn git(directory: &Path, arguments: &[&str]) -> Result<String, MergedWorktreeError> {
-    let mut command = Command::new("git");
+    let mut command = crate::command::hidden_command("git");
     command
         .current_dir(directory)
         .arg("-c")
         .arg("core.longpaths=true")
         .args(arguments);
-    #[cfg(windows)]
-    {
-        use std::os::windows::process::CommandExt;
-        command.creation_flags(0x0800_0000);
-    }
     let output = command.output()?;
     if !output.status.success() {
         return Err(MergedWorktreeError::Ownership(

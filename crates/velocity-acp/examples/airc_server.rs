@@ -4,6 +4,9 @@
 //!
 //! `cargo run -p velocity-acp --example airc_server -- <velocity executable> <app-data> <worktree>`
 
+// A console example: its children share its console, so no hidden_command (#232).
+#![allow(clippy::disallowed_methods)]
+
 use std::io::{BufRead, BufReader, Write};
 use std::path::PathBuf;
 use std::process::{Command, Stdio};

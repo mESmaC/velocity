@@ -283,7 +283,7 @@ fn find_on_path(program: &str) -> Option<PathBuf> {
 }
 
 fn run_prebuild(slot: &Path) -> Result<(), WorktreeError> {
-    let mut command = Command::new("cargo");
+    let mut command = crate::command::hidden_command("cargo");
     command
         .current_dir(slot)
         .args(["build", "--workspace", "--quiet"])

@@ -13,6 +13,7 @@ pub mod goal_swarm;
 pub mod launch;
 pub mod naming;
 pub mod parking;
+mod process;
 pub mod proof_checks;
 pub mod ready_pool;
 pub mod review;

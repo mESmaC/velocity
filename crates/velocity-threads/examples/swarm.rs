@@ -3,6 +3,9 @@
 //! replay a real merged PR through the F6 save path and check the targeted rebase overlap.
 //!
 //! cargo run -p velocity-threads --example swarm -- <empty scratch folder> <github checkout> <merged PR>
+
+// A console example: its children share its console, so no hidden_command (#232).
+#![allow(clippy::disallowed_methods)]
 use std::path::{Path, PathBuf};
 use std::process::Command;
 

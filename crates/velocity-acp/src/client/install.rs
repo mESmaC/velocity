@@ -8,7 +8,6 @@ use std::process::Stdio;
 use std::time::Duration;
 
 use tokio::io::{AsyncRead, AsyncReadExt};
-use tokio::process::Command;
 
 use super::program_path::find_program;
 use super::{ClientError, process};
@@ -36,7 +35,7 @@ pub async fn install_agent(
 }
 
 async fn run_step(step: &InstallStep, directory: &Path) -> Result<(), ClientError> {
-    let mut command = Command::new(find_program(OsStr::new(&step.program)));
+    let mut command = process::hidden_command(find_program(OsStr::new(&step.program)));
     command
         .args(&step.args)
         .current_dir(directory)

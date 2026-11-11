@@ -159,7 +159,7 @@ pub(crate) fn broken_for(entry: &Entry, nick: &str, entries: &[Entry]) -> bool {
     else {
         return false;
     };
-    std::process::Command::new("git")
+    crate::process::hidden_command("git")
         .args([
             "-c",
             "core.longpaths=true",

@@ -11,6 +11,7 @@ pub mod details;
 pub mod library;
 pub mod manifest;
 pub mod menu;
+mod process;
 pub mod rea;
 mod requirements;
 pub mod settings;
