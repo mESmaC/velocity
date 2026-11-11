@@ -1700,7 +1700,7 @@ export type LayoutSnapshot_Deserialize = {
 	pull_requests: RailItem_Deserialize[],
 	issues: RailItem_Deserialize[],
 	worktree_label: string,
-	providers: ProviderUsage[],
+	providers: ProviderUsage_Deserialize[],
 	airc_open: boolean,
 	airc_unread: string,
 	overlap_unread: boolean,
@@ -1756,7 +1756,7 @@ export type LayoutSnapshot_Serialize = {
 	pull_requests: RailItem_Serialize[],
 	issues: RailItem_Serialize[],
 	worktree_label: string,
-	providers: ProviderUsage[],
+	providers: ProviderUsage_Serialize[],
 	airc_open: boolean,
 	airc_unread: string,
 	overlap_unread: boolean,
@@ -1787,6 +1787,29 @@ export type LimitView = {
 	percent_used: number,
 	/**  `38% of 5-hour · resets in 1h 52m`. */
 	label: string,
+};
+
+/**  One subscription window as last read (F15 Limit sources). */
+export type LimitWindow = LimitWindow_Serialize | LimitWindow_Deserialize;
+
+/**  One subscription window as last read (F15 Limit sources). */
+export type LimitWindow_Deserialize = {
+	percent_used: number,
+	/**  `5-hour`, `weekly`, `weekly · Opus`. */
+	window: string,
+	/**  The window's length, for the pace mark: where even spending would be. */
+	minutes?: number,
+	resets_at?: number | null,
+};
+
+/**  One subscription window as last read (F15 Limit sources). */
+export type LimitWindow_Serialize = {
+	percent_used: number,
+	/**  `5-hour`, `weekly`, `weekly · Opus`. */
+	window: string,
+	/**  The window's length, for the pace mark: where even spending would be. */
+	minutes: number,
+	resets_at: number | null,
 };
 
 export type LintKind = 
@@ -2673,6 +2696,12 @@ export type ProviderLimit_Deserialize = {
 	window: string,
 	/**  When the window resets, in Unix seconds. */
 	resets_at?: number | null,
+	/**
+	 *  Every window the provider reported, shortest first, for the footer usage panel. Empty
+	 *  for a source that names only the headline window, and in a `state.json` saved before
+	 *  windows were kept: the panel then shows the headline alone.
+	 */
+	windows?: LimitWindow_Deserialize[],
 };
 
 /**  The share of one subscription window used, as last read (F15 Limit sources). */
@@ -2682,6 +2711,12 @@ export type ProviderLimit_Serialize = {
 	window: string,
 	/**  When the window resets, in Unix seconds. */
 	resets_at: number | null,
+	/**
+	 *  Every window the provider reported, shortest first, for the footer usage panel. Empty
+	 *  for a source that names only the headline window, and in a `state.json` saved before
+	 *  windows were kept: the panel then shows the headline alone.
+	 */
+	windows: LimitWindow_Serialize[],
 };
 
 /**  One model a provider's agent offers, as last read from it. */
@@ -2779,10 +2814,34 @@ export type ProviderSettings_Serialize = {
 	next_custom_agent: number,
 };
 
-export type ProviderUsage = {
+export type ProviderUsage = ProviderUsage_Serialize | ProviderUsage_Deserialize;
+
+export type ProviderUsage_Deserialize = {
 	provider: ProviderColor,
 	label: string,
 	percent_used: number,
+	/**  The usage panel's heading: `Claude`. */
+	name: string,
+	/**  The subscription plan the provider named (`Max`, `Pro`). */
+	plan?: string | null,
+	/**  The usage panel's rows, one per subscription window, shortest first. */
+	windows: UsageWindowView[],
+	/**  What the panel shows instead of rows: `No limits reported.` */
+	note?: string | null,
+};
+
+export type ProviderUsage_Serialize = {
+	provider: ProviderColor,
+	label: string,
+	percent_used: number,
+	/**  The usage panel's heading: `Claude`. */
+	name: string,
+	/**  The subscription plan the provider named (`Max`, `Pro`). */
+	plan: string | null,
+	/**  The usage panel's rows, one per subscription window, shortest first. */
+	windows: UsageWindowView[],
+	/**  What the panel shows instead of rows: `No limits reported.` */
+	note: string | null,
 };
 
 export type ProvidersChanged = ProvidersChanged_Serialize | ProvidersChanged_Deserialize;
@@ -4313,6 +4372,23 @@ export type TranscriptBlock_Serialize = ({ UserMessage: {
 } }) & { AgentMessage?: never; Diff?: never; ErrorCard?: never; StatusLine?: never; ToolGroup?: never; UserMessage?: never };
 
 export type TranscriptModeView = "FullTranscript" | "CollapsedWithPrHistory" | "ExpandedWithPrHistory";
+
+/**
+ *  One subscription window in the footer usage panel, as T3 Code draws it: the share left,
+ *  a bar of what is left and when it resets (F15).
+ */
+export type UsageWindowView = {
+	/**  `5-hour`, `Weekly`. */
+	label: string,
+	percent_left: number,
+	/**  `resets in 2h 14m`, or empty when the provider gave no reset time. */
+	resets_in: string,
+	/**
+	 *  The bar's tooltip and accessible name, with the pace: the share of the window's time
+	 *  left, where even spending would put the bar.
+	 */
+	summary: string,
+};
 
 export type WindowStateChanged = {
 	maximized: boolean,

@@ -191,17 +191,7 @@ impl LayoutState {
         providers: Vec<crate::layout_view::ProviderUsage>,
         default_pill: crate::thread_view_model::ModelPillView,
     ) -> bool {
-        let same_meter = self.data.providers.len() == providers.len()
-            && self
-                .data
-                .providers
-                .iter()
-                .zip(&providers)
-                .all(|(old, new)| {
-                    old.provider == new.provider
-                        && old.label == new.label
-                        && old.percent_used == new.percent_used
-                });
+        let same_meter = self.data.providers == providers;
         let same_pill = self.data.default_model_pill.as_ref().is_some_and(|old| {
             old.provider == default_pill.provider
                 && old.model_name == default_pill.model_name
