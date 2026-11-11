@@ -50,14 +50,14 @@ pub fn initialize(application: &AppHandle) {
 /// Reads the channel now; opening the modal and sending a comment call this so neither
 /// waits for the next tick.
 pub(crate) fn refresh(application: &AppHandle) -> Result<(), String> {
-    let Some(active) = read_active(application)? else {
-        return Ok(());
-    };
     let open = lock(
         application.state::<MainLayout>().inner(),
         "main-window state",
     )?
     .airc_open();
+    let Some(active) = read_active(application, !open)? else {
+        return Ok(());
+    };
     let mut seen = active.seen;
     let latest = latest_sequence(&active.input.records);
     if open && latest > seen {
@@ -103,13 +103,16 @@ pub fn get_airc_modal(
     application: AppHandle,
     project_identifier: u32,
 ) -> Result<AircModalView, String> {
-    let active = read_active(&application)?
+    let active = read_active(&application, false)?
         .filter(|active| active.project == project_identifier)
         .ok_or("That project is not the active project")?;
     Ok(modal_view(&active.input))
 }
 
-fn read_active(application: &AppHandle) -> Result<Option<ActiveChannel>, String> {
+fn read_active(
+    application: &AppHandle,
+    unread_only: bool,
+) -> Result<Option<ActiveChannel>, String> {
     let (project, name, seen, members) = {
         let store = lock(
             application.state::<ManagedStateStore>().inner(),
@@ -134,7 +137,7 @@ fn read_active(application: &AppHandle) -> Result<Option<ActiveChannel>, String>
         .app_data_dir()
         .map_err(|error| error.to_string())?;
     let entries = Channel::open(&directory, &project.to_string())
-        .and_then(|channel| channel.read(0))
+        .and_then(|channel| channel.read(if unread_only { seen } else { 0 }))
         .map_err(|error| error.to_string())?;
     let claims = velocity_airc::claims::claims(&entries)
         .into_iter()
@@ -193,7 +196,7 @@ pub fn set_airc_message_mode(
     nick: String,
     mode: velocity_airc::MessageMode,
 ) -> Result<(), String> {
-    read_active(&application)?
+    read_active(&application, false)?
         .filter(|active| active.project == project_identifier)
         .ok_or("That project is not the active project")?;
     let directory = application
