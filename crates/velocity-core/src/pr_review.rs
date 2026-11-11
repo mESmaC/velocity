@@ -3,6 +3,7 @@
 //! reviewing agent is told, and what its card and the Duty view's activity feed say.
 
 use std::collections::{BTreeMap, BTreeSet};
+use std::time::Duration;
 
 use crate::duty::{DutyMergeMethod, PrDutyRuleSettings};
 use crate::review_tier::{ReviewTier, TierAssessment};
@@ -41,9 +42,78 @@ pub enum ReviewWork {
     Merge,
 }
 
-/// The work a PR needs now, if any. A draft is still a claim, not a PR to review; a head an
-/// agent already finished a session on without a decision is not retried until it moves,
-/// so an undecided review never loops.
+/// How many times a review that ends a turn without a decision is asked to carry on before
+/// its session stops. Bounds a broken agent; a working review decides well before it.
+pub const UNDECIDED_NUDGES: u32 = 3;
+
+/// How long a head whose review ended without a decision rests before it is claimed again.
+/// Long enough that a broken agent can't loop on it, short enough that a ready PR never
+/// waits on the user (Rule 1: no "needs you" state).
+pub const UNDECIDED_RETRY_AFTER: Duration = Duration::from_secs(5 * 60);
+
+/// What happens when a review's agent ends a turn.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum TurnEndAction {
+    /// An instruction from the composer is queued: its turn comes next.
+    AnswerInstruction,
+    /// No decision yet: ask the agent to carry on (`continue_prompt`).
+    Nudge,
+    /// The review is over: it decided, or ran out of nudges.
+    Stop,
+}
+
+/// A review lasts until its agent records a decision, not one turn: an agent that ends its
+/// turn to wait for a long command would otherwise be cut off mid-review (#237).
+pub fn turn_end_action(
+    pending_instructions: usize,
+    decided: bool,
+    nudges_sent: u32,
+) -> TurnEndAction {
+    if pending_instructions > 0 {
+        TurnEndAction::AnswerInstruction
+    } else if decided || nudges_sent >= UNDECIDED_NUDGES {
+        TurnEndAction::Stop
+    } else {
+        TurnEndAction::Nudge
+    }
+}
+
+/// The message that asks an agent which ended its turn undecided to carry on.
+pub fn continue_prompt(number: u32, nudge: u32) -> String {
+    format!(
+        "You ended your turn without recording a decision on PR #{number} (reminder {nudge} of {UNDECIDED_NUDGES}). Your session stops when a turn ends without one, so nothing you left running in the background will call you back. Continue the review now: run any long command in the foreground and wait for it, then record your decision with `pr_duty_review` (and merge with `pr_duty_merge` once approved). If you cannot decide, say why in one line.\n"
+    )
+}
+
+/// The last session on a PR, as the runner remembers it.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ReviewAttempt {
+    /// The head the session reviewed.
+    pub head: String,
+    /// Whether it recorded a decision (approve, request changes, merge or a refused merge).
+    pub decided: bool,
+    /// When it ended, on the runner's clock.
+    pub ended_at: Duration,
+}
+
+/// The heads not to claim now: a decided head until it moves (its standing says what it
+/// needs next), an undecided one only until `UNDECIDED_RETRY_AFTER` has passed, so one bad
+/// session never strands a PR.
+pub fn resting_heads(
+    attempts: &BTreeMap<u32, ReviewAttempt>,
+    now: Duration,
+) -> BTreeMap<u32, String> {
+    attempts
+        .iter()
+        .filter(|(_, attempt)| {
+            attempt.decided || now.saturating_sub(attempt.ended_at) < UNDECIDED_RETRY_AFTER
+        })
+        .map(|(number, attempt)| (*number, attempt.head.clone()))
+        .collect()
+}
+
+/// The work a PR needs now, if any. A draft is still a claim, not a PR to review; a resting
+/// head (`resting_heads`) is not claimed until it moves or its rest ends.
 pub fn review_work(
     candidate: &ReviewCandidate,
     attempted_head: Option<&str>,
@@ -136,7 +206,7 @@ pub fn review_prompt(brief: &ReviewBrief) -> String {
     if let Some(instruction) = brief.instruction {
         prompt.push_str(&format!("\nThe user asks PR duty: {instruction}\n"));
     }
-    prompt.push_str("\nEnd your turn with a one-line summary of your decision.\n");
+    prompt.push_str("\nRun every command in the foreground and wait for it, however long it takes (a cold build, `lake build`, the stress suite). Never end your turn before you record your decision: ending it stops your session, and a command left running in the background never calls you back.\nEnd your turn with a one-line summary of your decision.\n");
     prompt
 }
 
@@ -247,7 +317,8 @@ pub fn claim_message(number: u32, title: &str, work: ReviewWork) -> String {
     }
 }
 
-/// The feed line for a review session that ended without merging or a decision.
+/// The feed line for a review session that ended without merging or a decision. A session
+/// that ended undecided rests its head for `UNDECIDED_RETRY_AFTER`, and the line says so.
 pub fn review_finished_message(
     number: u32,
     decided: bool,
@@ -258,7 +329,10 @@ pub fn review_finished_message(
             "Review of #{number} stopped · {}",
             step_doing(failure)
         )),
-        (None, false) => Some(format!("Released #{number} without a decision")),
+        (None, false) => Some(format!(
+            "Released #{number} without a decision · retrying in {} min",
+            UNDECIDED_RETRY_AFTER.as_secs() / 60
+        )),
         (None, true) => None,
     }
 }
