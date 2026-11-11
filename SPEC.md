@@ -1324,7 +1324,7 @@ Each milestone ends with a working app. PR duty checks an item off when it lands
 - [ ] Link enabled skills into every worktree and the spec checkout per provider folder; `.git/info/exclude`; committed mode
 - [ ] Built-in packs: UI UX Pro Max (design system and AGENTS.md rule), claude-skills (bundles), Game dev skills (router and engine detection), REA (shared MCP server)
 - [ ] Project scan suggestions (F3), re-checked after merges
-- [ ] `$` skill menu in the composer; skill loads shown as tool steps (F4)
+- [x] `$` skill menu in the composer; skill loads shown as tool steps (F4)
 
 ---
 
