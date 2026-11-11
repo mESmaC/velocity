@@ -218,14 +218,19 @@ fn restart(application: &AppHandle, key: ThreadKey, channel: &Channel) -> Result
 }
 
 fn limit(application: &AppHandle, key: ThreadKey, channel: &Channel) -> Result<(), String> {
+    let message = {
+        let store = lock(
+            application.state::<ManagedStateStore>().inner(),
+            "persisted state",
+        )?;
+        let (_, thread) = store
+            .follow_through_thread(key.0, key.1)
+            .map_err(|error| error.to_string())?;
+        velocity_threads::agent_activity::limit_message(&thread, &store.settings().agents)
+    };
     end(application, key)?;
     crate::threads::save_activity(application, key, AgentActivity::AtLimit, None)?;
-    post(
-        channel,
-        key,
-        "at limit",
-        "Per-agent cap reached; session stopped and worktree kept",
-    )?;
+    post(channel, key, "at limit", &message)?;
     publish(application, key)
 }
 

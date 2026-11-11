@@ -138,6 +138,31 @@ fn capped(thread: &ThreadItem, settings: &AgentSettings, now: u64) -> bool {
         })
 }
 
+/// Describe the cause before shutdown changes the activity to `AtLimit` for both causes.
+pub fn limit_message(thread: &ThreadItem, settings: &AgentSettings) -> String {
+    let cause = if thread.activity == AgentActivity::AtLimit
+        && let Some(retry_after) = thread.supervision.retry_after
+    {
+        let retry = i64::try_from(retry_after)
+            .ok()
+            .and_then(|epoch| chrono::DateTime::from_timestamp(epoch, 0))
+            .map(|time| time.format("%Y-%m-%d %H:%M:%S UTC").to_string())
+            .unwrap_or_else(|| format!("Unix timestamp {retry_after}"));
+        format!(
+            "Provider {} usage limit reached; retry at {retry}",
+            thread.provider.key()
+        )
+    } else if settings
+        .max_turns
+        .is_some_and(|limit| thread.supervision.turns >= limit)
+    {
+        "Per-agent max turns cap reached".into()
+    } else {
+        "Per-agent max duration cap reached".into()
+    };
+    format!("{cause}; session stopped and worktree kept")
+}
+
 pub fn begin(thread: &mut ThreadItem, now: u64) {
     if thread.activity != AgentActivity::AtLimit {
         thread.activity = AgentActivity::Thinking;
