@@ -6,11 +6,13 @@
 //! the transcript (`transcript`).
 
 mod airc;
+mod antigravity_limits;
 mod config;
 mod error;
 mod files;
 mod handlers;
 mod limits;
+mod live_limits;
 mod own_config;
 mod probe;
 mod process;
@@ -40,9 +42,11 @@ use tokio::sync::oneshot;
 use tokio_util::compat::{TokioAsyncReadCompatExt, TokioAsyncWriteCompatExt};
 
 pub use airc::AircLaunch;
+pub use antigravity_limits::read_antigravity_usage;
 pub use error::ClientError;
 pub use files::resolve_in_worktree;
 pub use limits::{read_claude_usage, read_codex_usage};
+pub use live_limits::subscribe_limits;
 pub use probe::{AgentProbe, ProbedModel, probe_agent};
 pub use process::AgentLaunch;
 pub use session::{
@@ -88,6 +92,8 @@ pub enum AgentEvent {
     SessionUpdate(SessionUpdate),
     /// A message waits: "queued · sends when the current step finishes".
     Queued,
+    /// Waiting for, or admitted to, a provider concurrency slot (F15).
+    ProviderQueued(bool, String),
     /// A turn ended: why, or the error the prompt failed with.
     TurnEnded(Result<StopReason, String>),
     /// The agent wrote a file through `fs/write_text_file` (for the diff view and claims).
@@ -124,6 +130,7 @@ impl Shared {
     }
 
     fn record(&self, update: SessionUpdate) {
+        live_limits::observe(&update);
         match entry_class(&update) {
             Some(_) if self.replaying.load(Ordering::Acquire) => {}
             Some(class) => {
@@ -151,12 +158,42 @@ pub fn launch_shared_servers(launch: &AgentLaunch, worktree: &std::path::Path) -
 /// Runs one thread's agent until the thread stops it or the agent exits: spawns the agent in
 /// the worktree, starts the session, then feeds it the thread's messages.
 pub async fn run_session(
+    mut launch: AgentLaunch,
+    setup: SessionSetup,
+    inputs: UnboundedReceiver<AgentInput>,
+    events: UnboundedSender<AgentEvent>,
+) -> Result<(), ClientError> {
+    let (inputs, stopped) = forward_inputs(inputs);
+    let provider = launch.concurrency_provider.or_else(|| {
+        setup
+            .run_settings
+            .as_ref()
+            .map(|settings| settings.provider)
+    });
+    let _permit = if let Some(provider) = provider {
+        let permit = tokio::select! {
+            permit = crate::concurrency::acquire(provider, || {
+                let _ = events.send(AgentEvent::ProviderQueued(true, provider.label()));
+            }) => permit,
+            _ = stopped => return Ok(()),
+        };
+        let _ = events.send(AgentEvent::ProviderQueued(false, provider.label()));
+        Some(permit)
+    } else {
+        None
+    };
+    run_admitted_session(launch, setup, inputs, events).await
+}
+
+async fn run_admitted_session(
     launch: AgentLaunch,
     setup: SessionSetup,
     inputs: UnboundedReceiver<AgentInput>,
     events: UnboundedSender<AgentEvent>,
 ) -> Result<(), ClientError> {
     let mut setup = setup;
+    // Meter availability must never prevent starting an agent.
+    let _ = live_limits::prepare(&mut launch).await;
     // Velocity's own servers come first in the setup, so a clash keeps them (session_servers).
     setup
         .shared_servers
@@ -220,7 +257,8 @@ fn forward_inputs(
     let (stop, stopped) = oneshot::channel();
     tokio::spawn(async move {
         while let Some(input) = inputs.recv().await {
-            if matches!(input, AgentInput::Stop) || forwarded.send(input).is_err() {
+            let stopping = matches!(input, AgentInput::Stop);
+            if forwarded.send(input).is_err() || stopping {
                 break;
             }
         }
@@ -244,7 +282,9 @@ fn forward_log(stderr: ChildStderr, events: UnboundedSender<AgentEvent>) {
                 Ok(_) => {
                     let text = String::from_utf8_lossy(without_line_end(&line)).into_owned();
                     // No receiver: the session is ending; keep draining regardless.
-                    let _ = events.send(AgentEvent::Log(text));
+                    if !live_limits::observe_log(&text) {
+                        let _ = events.send(AgentEvent::Log(text));
+                    }
                 }
             }
         }

@@ -76,7 +76,13 @@ pub(crate) fn set_up(
     for step in steps {
         run_step(step, resolved, &interview, &mut pending)?;
     }
-    if velocity_git::agents_template::install_default_agents(&resolved.path, &resolved.name)? {
+    let installed =
+        velocity_git::agents_template::install_default_agents(&resolved.path, &resolved.name)?;
+    // A failed commit leaves the template on disk. Retry it before registration so
+    // new worktrees inherit the instructions, without adopting a user's custom file.
+    if installed
+        || velocity_git::agents_template::is_default_agents(&resolved.path, &resolved.name)?
+    {
         velocity_git::agents_file::commit_agents(&resolved.path)?;
     }
     let identifier = finish(resolved, pending, store, layout, publish)?;
@@ -172,11 +178,12 @@ fn github_repository(resolved: &ResolvedRequest) -> Result<&RepositoryName, NewP
 }
 
 fn project_record(resolved: &ResolvedRequest) -> Result<NewProjectRecord, NewProjectError> {
-    let record = NewProjectRecord::new(
-        resolved.name.clone(),
-        resolved.path_text(),
-        velocity_git::current_branch(&resolved.path)?,
-    );
+    let default_branch = if resolved.location.opens_existing() {
+        velocity_git::opened_project_default_branch(&resolved.path)?
+    } else {
+        velocity_git::current_branch(&resolved.path)?
+    };
+    let record = NewProjectRecord::new(resolved.name.clone(), resolved.path_text(), default_branch);
     // An opened folder whose origin is on GitHub is a GitHub project, as a clone is.
     let repository = resolved.repository.clone().or_else(|| {
         (resolved.location == NewProjectLocation::OpenFolder)
