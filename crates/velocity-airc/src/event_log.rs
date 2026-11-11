@@ -208,6 +208,17 @@ impl Event {
         ))
     }
 
+    /// Saved task identity keeps replay idempotent without hiding distinct tasks
+    /// with the same title. Identifiers are scoped to this project's channel.
+    pub fn task_saved(actor_nick: &str, identifier: u32, title: &str) -> Result<Self, Error> {
+        let event = Self::task_added(actor_nick, title)?;
+        Ok(Self::new(
+            event.tag(),
+            event.nick(),
+            &format!("{} · task #{identifier}", event.text()),
+        ))
+    }
+
     /// `failed`: `<nick> failed · <reason> · its claim is held` (§2.1, F14).
     pub fn thread_failed(owner_nick: &str, reason: &str) -> Result<Self, Error> {
         require_text(reason)?;

@@ -16,7 +16,15 @@ param(
     [string]$Base = 'origin/master'
 )
 $ErrorActionPreference = 'Stop'
-Set-Location -LiteralPath (Split-Path -Parent $PSScriptRoot)
+$checkoutPath = Split-Path -Parent $PSScriptRoot
+# pnpm resolves Windows drive aliases and junctions before launching Cargo.
+# Use the same physical path for every check, or Cargo gives the same package
+# two identities and recompiles it when the binding export runs (#74).
+$physicalCheckoutPath = node -e "process.stdout.write(require('node:fs').realpathSync.native(process.argv[1]))" -- $checkoutPath
+if ($LASTEXITCODE -ne 0 -or -not $physicalCheckoutPath) {
+    throw "Could not resolve the physical checkout path: $checkoutPath"
+}
+Set-Location -LiteralPath $physicalCheckoutPath
 
 # Vite's Windows path probe runs `net use`. With Java's bin folders ahead of
 # System32 on PATH, `net` resolves to Java's net.dll and the build never exits

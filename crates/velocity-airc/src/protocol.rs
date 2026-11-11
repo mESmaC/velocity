@@ -58,7 +58,7 @@ fn respond(
     }
     request.get("id")?;
     let result = match method.unwrap_or_default() {
-        "initialize" => match channel.join(member, nick) {
+        "initialize" => match channel.join_with_session(member, nick, true) {
             Ok(nick) => {
                 *initialized = true;
                 json!({"protocolVersion":"2025-11-25","capabilities":{"tools":{}},
@@ -117,7 +117,7 @@ fn call(
         ),
         "task_add" => Ok(json!({"queued":true,
             "request":channel.request_task(member, text(arguments, "title")?)?})),
-        "join" => Ok(json!({"nick":channel.join(member, nick)?})),
+        "join" => Ok(json!({"nick":channel.join_with_session(member, nick, true)?})),
         "leave" => {
             channel.leave(member)?;
             Ok(json!({"left":true}))
