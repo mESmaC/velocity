@@ -10,7 +10,11 @@ use velocity_core::proof_card::{
 
 use crate::axioms::ALLOWED_AXIOMS;
 use crate::lean_source::TheoremStatement;
+use crate::levels::{self, FeatureLevels};
 use crate::report::{CheckStep, ProofCheckReport};
+
+/// The Lake project folder, as the levels name features inside it.
+const PROJECT_FOLDER: &str = "proofs";
 
 /// A fixture table the PR adds or changes (`proofs/fixtures/<feature>.tsv`): the reference
 /// level's tie between the Lean model and the code (F17 Confidence proof).
@@ -18,8 +22,15 @@ use crate::report::{CheckStep, ProofCheckReport};
 pub struct FixtureTable {
     pub path: String,
     pub rows: usize,
-    /// Code files at the PR head that name the table: the tests that check the code against it.
-    pub checked_by: Vec<String>,
+}
+
+impl FixtureTable {
+    pub fn new(path: &str, rows: usize) -> Self {
+        Self {
+            path: path.to_owned(),
+            rows,
+        }
+    }
 }
 
 /// Where the theorem statements stand against the lock taken when PR duty approved.
@@ -40,17 +51,14 @@ pub struct CardInput {
     pub report: ProofCheckReport,
     pub theorems: Vec<TheoremStatement>,
     pub fixtures: Vec<FixtureTable>,
-    /// The PR's changed files outside `proofs/`, for the per-language levels.
-    pub code_files: Vec<String>,
-    /// The PR changes an Aeneas translation of its Rust (the code level).
-    pub translated: bool,
     pub lock: LockState,
 }
 
-/// The card, or `None` when the PR changes no proof file and no fixture table: a PR off the
-/// proof list carries no card.
+/// The card, or `None` when the PR touches no proof file, fixture table or proof-list
+/// feature: a PR off the proof list carries no card.
 pub fn build_card(input: &CardInput) -> Option<ProofCard> {
-    if input.report.changed.is_empty() && input.fixtures.is_empty() {
+    let report = &input.report;
+    if report.changed.is_empty() && input.fixtures.is_empty() && report.levels.is_empty() {
         return None;
     }
     let mut card = ProofCard::new(&input.head, proof_folders(input));
@@ -59,7 +67,7 @@ pub fn build_card(input: &CardInput) -> Option<ProofCard> {
     card.theorems = input.theorems.iter().map(theorem_row).collect();
     card.theorem_count = u32::try_from(card.theorems.len()).unwrap_or(u32::MAX);
     card.theorems.extend(input.fixtures.iter().map(fixture_row));
-    card.levels = levels(input);
+    card.levels = levels(&report.levels);
     Some(card)
 }
 
@@ -70,10 +78,17 @@ fn proof_folders(input: &CardInput) -> Vec<String> {
         .changed
         .iter()
         .chain(input.fixtures.iter().map(|table| &table.path))
-        .map(|path| match path.rsplit_once('/') {
-            Some((folder, _)) => format!("{folder}/"),
-            None => path.clone(),
-        })
+        // Root files (`Velocity.lean`, the lakefile) only register modules; skip them.
+        .filter_map(|path| path.rsplit_once('/'))
+        .map(|(folder, _)| format!("{folder}/"))
+        .filter(|folder| *folder != format!("{PROJECT_FOLDER}/"))
+        .chain(
+            input
+                .report
+                .levels
+                .iter()
+                .map(|feature| format!("{}/{}/", PROJECT_FOLDER, feature.feature)),
+        )
         .collect();
     folders.into_iter().collect()
 }
@@ -175,78 +190,42 @@ fn theorem_row(theorem: &TheoremStatement) -> ProofTheorem {
 }
 
 fn fixture_row(table: &FixtureTable) -> ProofTheorem {
-    let checked = if table.checked_by.is_empty() {
-        "no test names it yet".to_owned()
-    } else {
-        format!("checked by {}", table.checked_by.join(", "))
-    };
     let rows = match table.rows {
         1 => "1 row".to_owned(),
         count => format!("{count} rows"),
     };
-    ProofTheorem::new("Fixture", &table.path, &format!("{rows} · {checked}"))
+    ProofTheorem::new(
+        "Fixture",
+        &table.path,
+        &format!("{rows} exported from the model"),
+    )
 }
 
-/// The level each changed language reaches: code with an Aeneas translation (Rust only),
-/// reference when one of its files checks a fixture table, otherwise model, flagged, since
-/// the reference level is available to every language (F17 levels).
-fn levels(input: &CardInput) -> Vec<ProofLevel> {
-    let languages: BTreeSet<&str> = input
-        .code_files
+/// One row per feature and language, from the levels the checks read (F17 levels).
+fn levels(features: &[FeatureLevels]) -> Vec<ProofLevel> {
+    features
         .iter()
-        .filter_map(|path| language_of(path))
-        .collect();
-    languages
-        .into_iter()
-        .map(|language| level_for(input, language))
+        .flat_map(|feature| {
+            feature.languages.iter().map(move |language| {
+                ProofLevel::new(
+                    language.language.unwrap_or("No code"),
+                    level_kind(language.level),
+                    &format!(
+                        "{} · {}",
+                        feature.feature,
+                        language.evidence.replace('`', "")
+                    ),
+                    language.flagged(),
+                )
+            })
+        })
         .collect()
 }
 
-fn level_for(input: &CardInput, language: &str) -> ProofLevel {
-    if language == "Rust" && input.translated {
-        return ProofLevel::new(
-            language,
-            ProofLevelKind::Code,
-            "Aeneas translation refines the design model",
-            false,
-        );
+fn level_kind(level: levels::ProofLevel) -> ProofLevelKind {
+    match level {
+        levels::ProofLevel::Model => ProofLevelKind::Model,
+        levels::ProofLevel::Reference => ProofLevelKind::Reference,
+        levels::ProofLevel::Code => ProofLevelKind::Code,
     }
-    let checking = input.fixtures.iter().find_map(|table| {
-        table
-            .checked_by
-            .iter()
-            .find(|path| language_of(path) == Some(language))
-            .map(|test| (table, test))
-    });
-    match checking {
-        Some((table, test)) => ProofLevel::new(
-            language,
-            ProofLevelKind::Reference,
-            &format!("fixture table · {} · checked by {test}", table.path),
-            false,
-        ),
-        None => ProofLevel::new(
-            language,
-            ProofLevelKind::Model,
-            "only the design is proven · reference is available: export a fixture table and check the code against it",
-            true,
-        ),
-    }
-}
-
-/// The language of a source file, or `None` for files that carry no logic (docs, config,
-/// lockfiles, styles) and for Lean itself.
-pub fn language_of(path: &str) -> Option<&'static str> {
-    let extension = path.rsplit_once('.')?.1.to_ascii_lowercase();
-    Some(match extension.as_str() {
-        "rs" => "Rust",
-        "ts" | "tsx" | "svelte" => "TypeScript",
-        "js" | "jsx" | "mjs" | "cjs" => "JavaScript",
-        "py" => "Python",
-        "c" => "C",
-        "cc" | "cpp" | "cxx" | "h" | "hh" | "hpp" => "C++",
-        "go" => "Go",
-        "ps1" => "PowerShell",
-        _ => return None,
-    })
 }

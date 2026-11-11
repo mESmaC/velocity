@@ -9,8 +9,11 @@ use velocity_core::proof_card::ProofCard;
 
 use crate::ProofCheckError;
 use crate::axioms::{audit_script, module_name, parse_audit};
-use crate::card::{CardInput, FixtureTable, LockState, build_card, language_of};
+use crate::card::{CardInput, FixtureTable, LockState, build_card};
 use crate::lean_source::{ProofFile, names_spec_section, placeholders, theorem_statements};
+use crate::levels::{
+    FeatureLevels, feature_evidence, feature_levels, fixture_name, touched_features,
+};
 use crate::report::{CheckStep, ProofCheckReport};
 use crate::statement_lock::StatementLock;
 
@@ -32,8 +35,11 @@ pub fn check_worktree(
         return Ok(ProofCheckReport::nothing_changed(None));
     };
     let changed = changed_proof_files(worktree, &folder, base, head)?;
+    let levels = proof_levels(worktree, &folder, base, head)?;
     if changed.is_empty() {
-        return Ok(ProofCheckReport::nothing_changed(Some(folder)));
+        let mut report = ProofCheckReport::nothing_changed(Some(folder));
+        report.levels = levels;
+        return Ok(report);
     }
     let files: Vec<ProofFile> = changed
         .iter()
@@ -59,7 +65,91 @@ pub fn check_worktree(
             .map(|file| file.path.clone())
             .collect(),
         changed,
+        levels,
     })
+}
+
+/// The proof levels alone, without building anything: what the proof card shows per
+/// language. Empty when the worktree has no Lake project or the PR touches no proof-list
+/// feature.
+pub fn levels_between(
+    worktree: &Path,
+    base: &str,
+    head: &str,
+) -> Result<Vec<FeatureLevels>, ProofCheckError> {
+    match project_folder(worktree) {
+        Some(folder) => proof_levels(worktree, &folder, base, head),
+        None => Ok(Vec::new()),
+    }
+}
+
+/// The level each language reaches for every proof-list feature the PR touches (F17
+/// Confidence proof), read from the checkout's tracked files: the feature's translation and
+/// confidence proof, its fixture table, and the code outside the Lake project that reads it.
+fn proof_levels(
+    worktree: &Path,
+    folder: &str,
+    base: &str,
+    head: &str,
+) -> Result<Vec<FeatureLevels>, ProofCheckError> {
+    let range = format!("{base}...{head}");
+    let changed = git(
+        worktree,
+        &["diff", "--name-only", "-z", "--diff-filter=ACMR", &range],
+    )?;
+    let changed: Vec<&str> = changed
+        .split('\0')
+        .filter(|path| !path.is_empty())
+        .collect();
+    let tracked = git(worktree, &["ls-files", "-z", "--", folder])?;
+    let tracked: Vec<&str> = tracked
+        .split('\0')
+        .filter(|path| !path.is_empty())
+        .collect();
+    let prefix = format!("{folder}/");
+    let changed_code: Vec<String> = changed
+        .iter()
+        .filter(|path| !path.starts_with(&prefix))
+        .map(|path| (*path).to_owned())
+        .collect();
+    touched_features(&changed, &tracked, &prefix)
+        .iter()
+        .map(|feature| {
+            let readers = fixture_readers(worktree, folder, &fixture_name(feature))?;
+            let evidence = feature_evidence(feature, &tracked, &prefix, readers);
+            Ok(feature_levels(&evidence, &changed_code))
+        })
+        .collect()
+}
+
+/// Tracked files outside the Lake project that name `<fixture>.tsv`: the test or stress
+/// driver that checks an implementation against the model's table.
+fn fixture_readers(
+    worktree: &Path,
+    folder: &str,
+    fixture: &str,
+) -> Result<Vec<String>, ProofCheckError> {
+    let file = format!("{fixture}.tsv");
+    let outside = format!(":(exclude){folder}");
+    let mut command = Command::new("git");
+    command
+        .args(["-c", "core.longpaths=true", "grep", "-l", "-z", "-F", "-e"])
+        .args([file.as_str(), "--", ".", outside.as_str()])
+        .current_dir(worktree);
+    hide_console_window(&mut command);
+    let output = command.output()?;
+    // `git grep` exits with 1 when nothing matches.
+    if !output.status.success() && output.status.code() != Some(1) {
+        return Err(ProofCheckError::Git(format!(
+            "git grep {file} failed: {}",
+            String::from_utf8_lossy(&output.stderr).trim()
+        )));
+    }
+    Ok(String::from_utf8_lossy(&output.stdout)
+        .split('\0')
+        .filter(|path| !path.is_empty())
+        .map(str::to_owned)
+        .collect())
 }
 
 /// Hashes every theorem statement under the Lake project at `commit`, read from git rather
@@ -275,117 +365,62 @@ pub fn checkout_at(worktree: &Path, head: &str) -> Result<bool, ProofCheckError>
 }
 
 /// Runs the proof checks on the PR's changes between `base` and `head` and builds its proof
-/// card (F17), or `None` when the PR changes no proof file or fixture table. `lock` is the
-/// statement lock taken at the PR's last approval, if any.
+/// card (F17), or `None` when the PR touches no proof file, fixture table or proof-list
+/// feature. `lock` is the statement lock taken at the PR's last approval, if any.
 pub fn proof_card(
     worktree: &Path,
     base: &str,
     head: &str,
     lock: Option<&StatementLock>,
 ) -> Result<Option<ProofCard>, ProofCheckError> {
-    let changed = changed_files(worktree, base, head)?;
-    let fixtures = fixture_tables(worktree, head, &changed)?;
+    let fixtures = fixture_tables(worktree, base, head)?;
     let report = check_worktree(worktree, base, head)?;
-    if report.changed.is_empty() && fixtures.is_empty() {
+    if report.changed.is_empty() && fixtures.is_empty() && report.levels.is_empty() {
         return Ok(None);
     }
     let mut theorems = Vec::new();
-    let mut translated = false;
     for path in &report.changed {
         let text = std::fs::read_to_string(worktree.join(path))?;
-        translated |= path.contains("/Generated/")
-            || (path.ends_with("/Confidence.lean") && text.contains("Aeneas"));
         theorems.extend(theorem_statements(&ProofFile::new(path, &text)));
     }
     let lock = lock_state(worktree, head, lock)?;
-    let prefix = format!("{PROJECT_FOLDER}/");
-    let code_files = changed
-        .into_iter()
-        .filter(|path| !path.starts_with(&prefix) && !path.starts_with("stress/"))
-        .collect();
     Ok(build_card(&CardInput {
         head: head.to_owned(),
         report,
         theorems,
         fixtures,
-        code_files,
-        translated,
         lock,
     }))
 }
 
-/// Every file the PR adds, copies, modifies or renames.
-fn changed_files(worktree: &Path, base: &str, head: &str) -> Result<Vec<String>, ProofCheckError> {
+/// The fixture tables the PR adds or changes, with their row counts at `head`.
+fn fixture_tables(
+    worktree: &Path,
+    base: &str,
+    head: &str,
+) -> Result<Vec<FixtureTable>, ProofCheckError> {
+    let folder = format!("{PROJECT_FOLDER}/fixtures");
     let range = format!("{base}...{head}");
     let listing = git(
         worktree,
-        &["diff", "--name-only", "-z", "--diff-filter=ACMR", &range],
+        &[
+            "diff",
+            "--name-only",
+            "-z",
+            "--diff-filter=ACMR",
+            &range,
+            "--",
+            &folder,
+        ],
     )?;
-    Ok(listing
-        .split('\0')
-        .filter(|path| !path.is_empty())
-        .map(str::to_owned)
-        .collect())
-}
-
-/// The fixture tables among `changed`, with their row counts and the code files that name
-/// them at `head`.
-fn fixture_tables(
-    worktree: &Path,
-    head: &str,
-    changed: &[String],
-) -> Result<Vec<FixtureTable>, ProofCheckError> {
-    let folder = format!("{PROJECT_FOLDER}/fixtures/");
     let mut tables = Vec::new();
-    for path in changed
-        .iter()
-        .filter(|path| path.starts_with(&folder) && path.ends_with(".tsv"))
-    {
+    for path in listing.split('\0').filter(|path| path.ends_with(".tsv")) {
         let text = git(worktree, &["show", &format!("{head}:{path}")])?;
         let lines = text.lines().filter(|line| !line.trim().is_empty()).count();
-        let name = path.rsplit('/').next().unwrap_or(path);
-        tables.push(FixtureTable {
-            path: path.clone(),
-            // The first line is the column header.
-            rows: lines.saturating_sub(1),
-            checked_by: files_naming(worktree, head, name)?,
-        });
+        // The first line is the column header.
+        tables.push(FixtureTable::new(path, lines.saturating_sub(1)));
     }
     Ok(tables)
-}
-
-/// Code files outside the proofs folder that mention `name` at `head`.
-fn files_naming(worktree: &Path, head: &str, name: &str) -> Result<Vec<String>, ProofCheckError> {
-    let mut command = Command::new("git");
-    command
-        .args([
-            "-c",
-            "core.longpaths=true",
-            "grep",
-            "-l",
-            "-z",
-            "-F",
-            name,
-            head,
-        ])
-        .current_dir(worktree);
-    hide_console_window(&mut command);
-    let output = command.output()?;
-    // git grep exits with 1 when nothing matches.
-    if !output.status.success() && output.status.code() != Some(1) {
-        return Err(ProofCheckError::Git(format!(
-            "git grep failed: {}",
-            String::from_utf8_lossy(&output.stderr).trim()
-        )));
-    }
-    let prefix = format!("{head}:");
-    let proofs = format!("{PROJECT_FOLDER}/");
-    Ok(String::from_utf8_lossy(&output.stdout)
-        .split('\0')
-        .filter_map(|path| path.strip_prefix(&prefix))
-        .filter(|path| !path.starts_with(&proofs) && language_of(path).is_some())
-        .map(str::to_owned)
-        .collect())
 }
 
 fn lock_state(
