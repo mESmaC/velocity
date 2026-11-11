@@ -8,6 +8,11 @@ pub fn refresh(
 ) -> Result<Vec<(u32, Option<String>)>, Error> {
     let waits = channel.dependency_waits()?;
     for waiting in &waits {
+        // Duty and spec members have their own lifecycle; absence from the build
+        // thread list says nothing about whether their work has ended.
+        if !waiting.holder.starts_with("thread-") {
+            continue;
+        }
         let holder = project
             .threads
             .iter()

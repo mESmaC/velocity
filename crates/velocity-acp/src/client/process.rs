@@ -29,6 +29,8 @@ pub struct AgentLaunch {
     /// The built-in provider whose config files the agent loads, so a shared server whose
     /// name is also in them is left to the agent's own entry. `None` for an agent you added.
     pub own_config: Option<Provider>,
+    /// Provider slot shared with every role, including sessions using agent defaults.
+    pub concurrency_provider: Option<Provider>,
 }
 
 impl AgentLaunch {
@@ -39,6 +41,7 @@ impl AgentLaunch {
             env: Vec::new(),
             shared_servers: Vec::new(),
             own_config: None,
+            concurrency_provider: None,
         }
     }
 }

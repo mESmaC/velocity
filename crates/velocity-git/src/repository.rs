@@ -109,6 +109,34 @@ fn copy_metadata(source: &Path, destination: &Path) -> io::Result<()> {
     Ok(())
 }
 
+/// The default branch advertised by origin, falling back to the checkout's branch
+/// when no remote HEAD is recorded. Reads local metadata without fetching.
+pub fn opened_project_default_branch(folder: &Path) -> Result<String, GitError> {
+    let checkout = CheckoutPath::new(folder).map_err(GitError::Spawn)?;
+    let output = git()
+        .arg("-C")
+        .arg(checkout.path())
+        .args(["symbolic-ref", "--quiet", "refs/remotes/origin/HEAD"])
+        .output()
+        .map_err(GitError::Spawn)?;
+    // Exit 1 means the ref is absent or is not symbolic. Other failures must not
+    // silently turn a feature branch into the project's default branch.
+    if output.status.code() == Some(1) {
+        return current_branch(folder);
+    }
+    let reference = String::from_utf8_lossy(&output.stdout).trim().to_owned();
+    succeeded("symbolic-ref", folder, output)?;
+    reference
+        .strip_prefix("refs/remotes/origin/")
+        .filter(|branch| !branch.is_empty())
+        .map(str::to_owned)
+        .ok_or_else(|| GitError::Failed {
+            operation: "symbolic-ref",
+            path: folder.to_path_buf(),
+            stderr: format!("origin/HEAD points outside origin: {reference}"),
+        })
+}
+
 /// The branch HEAD points at: the default branch of a fresh `git init` or clone.
 pub fn current_branch(folder: &Path) -> Result<String, GitError> {
     let checkout = CheckoutPath::new(folder).map_err(GitError::Spawn)?;

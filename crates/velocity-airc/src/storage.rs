@@ -1,6 +1,7 @@
 use std::fs::{File, OpenOptions};
 use std::io::{Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 
 use crate::{Entry, Error};
 
@@ -26,20 +27,13 @@ impl Storage {
     }
 
     pub(crate) fn read(&self) -> Result<Vec<Entry>, Error> {
-        let mut paths = std::fs::read_dir(&self.directory)?
-            .map(|entry| entry.map(|entry| entry.path()))
-            .collect::<Result<Vec<_>, _>>()?;
-        paths.retain(|path| {
-            path.extension()
-                .is_some_and(|extension| extension == "jsonl")
-        });
-        paths.sort();
-        let mut entries = Vec::new();
-        for path in paths {
-            entries.extend(read_log(&path)?);
-        }
-        entries.sort_by_key(|entry: &Entry| entry.sequence);
-        Ok(entries)
+        Ok(self.snapshot()?.as_ref().clone())
+    }
+
+    pub(crate) fn snapshot(&self) -> Result<Arc<Vec<Entry>>, Error> {
+        // The cross-process lock is already held: offsets only observe committed,
+        // stable files and mutations still allocate their sequence atomically.
+        crate::tail::snapshot(&self.directory)
     }
 
     pub(crate) fn append(&self, entry: &Entry) -> Result<(), Error> {
@@ -71,17 +65,4 @@ impl Storage {
         file.sync_all()?;
         Ok(())
     }
-}
-
-fn read_log(path: &Path) -> Result<Vec<Entry>, Error> {
-    let bytes = std::fs::read(path)?;
-    let length = bytes
-        .iter()
-        .rposition(|byte| *byte == b'\n')
-        .map_or(0, |index| index + 1);
-    bytes[..length]
-        .split(|byte| *byte == b'\n')
-        .filter(|line| !line.is_empty())
-        .map(|line| serde_json::from_slice(line).map_err(Error::from))
-        .collect()
 }

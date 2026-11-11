@@ -150,6 +150,7 @@ fn thread_entry(thread: &ThreadItem, task_count: usize) -> ThreadEntry {
         },
         title: thread.title.clone(),
         metadata: match &thread.interview {
+            Some(_) if thread.provider_queued => thread_metadata(thread),
             Some(interview) => interview_view(interview, task_count).status_label,
             None => thread_metadata(thread),
         },
@@ -258,6 +259,15 @@ fn thread_group(state: ThreadState) -> ThreadGroup {
 }
 
 pub(crate) fn thread_metadata(thread: &ThreadItem) -> String {
+    if thread.provider_queued
+        && thread.activity != AgentActivity::Idle
+        && matches!(
+            thread.state,
+            ThreadState::Working | ThreadState::Review | ThreadState::Spec
+        )
+    {
+        return format!("queued \u{b7} {}", thread.provider.key());
+    }
     if thread.activity == AgentActivity::Stalled {
         return "stalled".into();
     }
