@@ -20,6 +20,18 @@ pub struct ThreadEntry {
 }
 
 impl ThreadEntry {
+    /// A sidebar row with no thread detail and no duty role.
+    pub fn new(policy: LayoutRow, title: String, metadata: String, view: NavigationView) -> Self {
+        Self {
+            policy,
+            title,
+            metadata,
+            view,
+            detail: None,
+            duty: None,
+        }
+    }
+
     /// A row under Swarms that opens the Swarm view and nests its members (F10, F16).
     pub fn swarm_row(identifier: usize, title: String, metadata: String, agents: usize) -> Self {
         Self {

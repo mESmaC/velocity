@@ -40,6 +40,23 @@ pub struct LayoutRow {
     pub paused: bool,
 }
 
+impl LayoutRow {
+    /// A visible, unpaused top-level row with no agents. Callers that build rows outside
+    /// this module start from it, so a field added here cannot break them.
+    pub fn new(identifier: usize, group: ThreadGroup) -> Self {
+        Self {
+            identifier,
+            group,
+            hidden: false,
+            matches_search: true,
+            member_of: None,
+            expanded: false,
+            agent_count: 0,
+            paused: false,
+        }
+    }
+}
+
 #[cfg_attr(
     feature = "bindings",
     derive(serde::Serialize, serde::Deserialize, specta::Type)

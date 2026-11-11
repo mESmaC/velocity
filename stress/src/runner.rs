@@ -7,8 +7,16 @@ use std::{
 
 type Result<T> = std::result::Result<T, Box<dyn Error>>;
 
-pub fn run(root: &Path, entries: &[PathBuf]) -> bool {
+pub fn run(root: &Path, entries: &[PathBuf], whole_suite: bool) -> bool {
     let mut failures = Vec::new();
+    if whole_suite {
+        workspace_checks(root, &mut failures);
+    }
+    run_entries(root, entries, &mut failures);
+    report(entries.len() + usize::from(whole_suite) * 2, &failures)
+}
+
+fn workspace_checks(root: &Path, failures: &mut Vec<String>) {
     let mut tests = Command::new("cargo");
     tests.args(["test", "--workspace", "--locked"]);
     let mut assets = Command::new("pwsh");
@@ -25,6 +33,9 @@ pub fn run(root: &Path, entries: &[PathBuf]) -> bool {
             failures.push(label.to_owned());
         }
     }
+}
+
+fn run_entries(root: &Path, entries: &[PathBuf], failures: &mut Vec<String>) {
     for entry in entries {
         let label = entry
             .strip_prefix(root)
@@ -40,12 +51,15 @@ pub fn run(root: &Path, entries: &[PathBuf]) -> bool {
             }
         }
     }
+}
+
+fn report(total: usize, failures: &[String]) -> bool {
     println!(
         "\n{} passed; {} failed",
-        entries.len() + 2 - failures.len(),
+        total - failures.len(),
         failures.len()
     );
-    for failure in &failures {
+    for failure in failures {
         eprintln!("  {failure}");
     }
     failures.is_empty()
@@ -74,6 +88,13 @@ fn execute(root: &Path, entry: &Path) -> Result<bool> {
             command
         }
     };
+    // Standalone harnesses declare their own `[workspace]`, so they miss the root
+    // manifest's `debug = "line-tables-only"`. With full debug info velocity-acp's rlib
+    // passes 4 GiB, which MSVC link.exe rejects as an invalid library (LNK4003), and every
+    // symbol from it goes unresolved (#230).
+    if std::env::var_os("CARGO_PROFILE_DEV_DEBUG").is_none() {
+        command.env("CARGO_PROFILE_DEV_DEBUG", "line-tables-only");
+    }
     status(root, &mut command)
 }
 
@@ -123,6 +144,17 @@ fn rust_manifest(root: &Path, entry: &Path) -> Result<PathBuf> {
             ));
         }
     }
+    // Evidence that builds ACP messages needs the protocol types and JSON. The copied
+    // lockfile pins both to the versions the workspace crates were built with.
+    for (library, package) in [
+        ("agent_client_protocol", "agent-client-protocol"),
+        ("serde_json", "serde_json"),
+    ] {
+        if source.contains(library) {
+            manifest.push_str(&format!("{package} = \"*\"\n"));
+        }
+    }
+    fs::copy(root.join("Cargo.lock"), directory.join("Cargo.lock"))?;
     let path = directory.join("Cargo.toml");
     fs::write(&path, manifest)?;
     Ok(path)

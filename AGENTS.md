@@ -29,7 +29,7 @@ Your job is working functionality. Proofs, tests and docs support it; they never
 - Proofs: `lake build` in `proofs/`. Run it before every push that changes `proofs/`.
 - Proof toolchain setup (Windows + Ubuntu WSL): `powershell -File proofs/scripts/Setup-Toolchain.ps1`.
 - Charon and Aeneas (only when an issue asks for a translation): `powershell -File proofs/scripts/Export-Rust.ps1 -CratePath crates/<crate> -Feature <Feature> -StartFrom crate::<module>`. This runs pinned `charon cargo --preset=aeneas` then `aeneas -backend lean`; complete the confidence proof and run `lake build` afterwards. See `proofs/README.md`.
-- Stress: `cargo run -p stress -- --all`. Scouts and PR duty agents only.
+- Stress: `cargo run -p stress -- --all`. Scouts and PR duty agents only. To run one script, name it: `cargo run -p stress -- pr86-read-overlap` (`--list` shows the names). A named run skips the workspace tests and UI build that `--all` adds.
 - UI type check: `pnpm -C ui check` (svelte-check). Zero errors and zero warnings.
 - UI lint: `pnpm -C ui lint`. Zero warnings.
 - UI format: `pnpm -C ui format`. Run it before every commit.
@@ -116,7 +116,12 @@ Both are low priority. Add them only where they pay for themselves, and only aft
 - Add a targeted test only for a critical contract: the claim lock, worktree deletion, saved state surviving a save and load, the fixture check for a proof-list feature, or a concrete failure a scout found. Put the risk it covers in a comment above it.
 - Never write a test that restates the implementation, and never add a test suite for a whole module.
 - Scouts and PR duty agents write the adversarial tests and stress scripts.
-- A bug fix copies the scout's failing script into `stress/` unchanged. Never edit it.
+- A bug fix copies the scout's failing script into `stress/` unchanged.
+- A stress script is evidence for one risk, named in its header comment. Keep it that way:
+  1. When master's types or entry points move, update the script so it still exercises the same risk through the current entry point. What it asserts must not get weaker. Say in its header what changed and why.
+  2. When the product has made the risk impossible to express (the entry point is gone and the hazard with it), retire the script: delete it, and record the risk, the commit that removed the hazard and the reason in the PR that deletes it.
+  3. When a script fails because the product is wrong, leave the script as it is. Fix the product or file an issue.
+  4. Build other modules' structs through their constructors, like all other code (see Code), so a new field can't break the script.
 - Docs: update SPEC.md when behaviour changes, and comment code whose purpose isn't clear. Never add a new markdown file unless the piece asks for one.
 
 ## Choosing work
@@ -228,4 +233,4 @@ Long review cycles cost more than the defects they catch. Block only what matter
 - Never edit `design/`. Changes to the reference UI come from the user.
 - Never skip git hooks (`--no-verify`).
 - Never commit secrets, tokens or `.env` files.
-- Never skip, delete or weaken a scout's test or stress script to make anything pass.
+- Never skip, delete or weaken a scout's test or stress script to make anything pass. Update or retire one only as Tests and docs describes.

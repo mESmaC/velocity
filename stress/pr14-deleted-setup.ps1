@@ -2,6 +2,8 @@
 # a replacement thread that reused its ID. Runs real git/planner/store/runtime code and
 # the unchanged native completion/record_names bodies with a store-only handle adapter.
 # All filesystem effects are confined to the isolated fixture; no agent is started.
+# Updated for #230: the native completion decision moved from an inline `let wanted = lock(..)`
+# block into `mark_worktree_ready`; the fixture now takes that function's unchanged body.
 $ErrorActionPreference='Stop'
 $repositoryRoot=[IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..'))
 $harnessRoot=Join-Path $repositoryRoot '.tools\pr14-deleted-setup'
@@ -9,7 +11,7 @@ New-Item -ItemType Directory -Path (Join-Path $harnessRoot 'src') -Force | Out-N
 $native=Get-Content -Raw -LiteralPath (Join-Path $repositoryRoot 'src-tauri\src\threads.rs')
 $lock=[regex]::Matches($native,'(?s)pub\(crate\) fn lock<.*?(?=/// \x60start_thread)')
 $names=[regex]::Matches($native,'(?s)fn record_names\(.*?(?=/// Applies agent events)')
-$wanted=[regex]::Matches($native,'(?s)    let wanted = lock\(.*?    \.unwrap_or\(false\);')
+$wanted=[regex]::Matches($native,'(?s)fn mark_worktree_ready\(.*?(?=/// Checks the worktree out)')
 if($lock.Count -ne 1 -or $names.Count -ne 1 -or $wanted.Count -ne 1){throw 'Native completion shape changed; inspect the current path before adapting this fixture'}
 $storePath=(Join-Path $repositoryRoot 'crates\velocity-store').Replace('\','/')
 $threadsPath=(Join-Path $repositoryRoot 'crates\velocity-threads').Replace('\','/')
@@ -168,13 +170,13 @@ fn main() {
 '@
 $completion = 'fn complete_setup(application: &AppHandle, key: ThreadKey, path: String, branch: &str) -> bool {' + [Environment]::NewLine +
     '    let failure: Option<String> = None;' + [Environment]::NewLine +
-    $wanted[0].Value + [Environment]::NewLine +
+    '    let wanted = mark_worktree_ready(application, key, &path, failure.is_some());' + [Environment]::NewLine +
     '    if wanted { record_names(application, key, &path, Some(branch)).expect("native record_names"); }' + [Environment]::NewLine +
     '    wanted' + [Environment]::NewLine + '}'
 $encoding=New-Object Text.UTF8Encoding($false)
 [IO.File]::WriteAllText((Join-Path $harnessRoot 'Cargo.toml'),$manifest,$encoding)
 [IO.File]::WriteAllText((Join-Path $harnessRoot 'src\main.rs'),$source,$encoding)
-[IO.File]::WriteAllText((Join-Path $harnessRoot 'src\native_functions.rs'),$lock[0].Value+$names[0].Value+$completion,$encoding)
+[IO.File]::WriteAllText((Join-Path $harnessRoot 'src\native_functions.rs'),$lock[0].Value+$names[0].Value+$wanted[0].Value+$completion,$encoding)
 Copy-Item -LiteralPath (Join-Path $repositoryRoot 'Cargo.lock') -Destination (Join-Path $harnessRoot 'Cargo.lock')
 $env:CARGO_TARGET_DIR=Join-Path $repositoryRoot '.tools\pr14-target'
 $fixtureRoot=[IO.Path]::GetFullPath((Join-Path $harnessRoot ('fixture-'+[Guid]::NewGuid().ToString('N').Substring(0,8))))
