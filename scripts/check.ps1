@@ -26,6 +26,9 @@ pwsh -NoProfile -File scripts/check.ps1
 pwsh -NoProfile -File scripts/check.ps1 -Full
 
 .EXAMPLE
+pwsh -NoProfile -File scripts/check.ps1 -Plan
+
+.EXAMPLE
 pwsh -NoProfile -File scripts/check.ps1 -Priority landing
 #>
 param(
@@ -33,6 +36,8 @@ param(
     [string]$Base = 'origin/master',
     # Run every check, whatever changed.
     [switch]$Full,
+    # Print the changed paths and the checks they would run, then stop.
+    [switch]$Plan,
     # Place in the build queue (SPEC.md F5): PR duty's landing checks pass
     # landing; an agent's check before marking a PR ready keeps the default.
     [ValidateSet('landing', 'ready', 'normal')]
@@ -57,12 +62,30 @@ $env:Path = (Join-Path $env:SystemRoot 'System32') + ';' + $env:Path
 # Cargo steps run in the machine-wide build queue, one build at a time (build-queue.ps1).
 . (Join-Path $PSScriptRoot 'build-queue.ps1')
 
+# The bindings export and lake build write these files with LF line endings.
+# Under core.autocrlf, git status then lists them as modified though git diff
+# sees no change (#224). Put back the ones whose content is unchanged, so a run
+# leaves the worktree as it found it. A real change shows in git diff and stays.
+function Restore-LineEndingRewrites {
+    $rewritten = @(git -c core.quotePath=false status --porcelain --untracked-files=no -- ui/src/lib/bindings.ts proofs/fixtures |
+            ForEach-Object { $_.Substring(3) })
+    foreach ($path in $rewritten) {
+        git diff --quiet -- $path
+        if ($LASTEXITCODE -eq 0) { git checkout --quiet -- $path }
+    }
+}
+
+function Exit-Check([int]$Code) {
+    Restore-LineEndingRewrites
+    exit $Code
+}
+
 function Invoke-Check([string]$Name, [scriptblock]$Command) {
     Write-Host "==> $Name" -ForegroundColor Cyan
     & $Command
     if ($LASTEXITCODE -ne 0) {
         Write-Host "FAILED: $Name (exit $LASTEXITCODE)" -ForegroundColor Red
-        exit 1
+        Exit-Check 1
     }
 }
 
@@ -70,9 +93,12 @@ $mergeBase = git merge-base $Base HEAD
 if ($LASTEXITCODE -ne 0 -or -not $mergeBase) {
     throw "Could not find the merge base with $Base. Run git fetch origin first."
 }
-# Committed changes since the merge base plus uncommitted ones. A rename lists its new path.
-$changedPaths = @(git diff --name-only $mergeBase) +
-    @(git status --porcelain --untracked-files=all | ForEach-Object { ($_.Substring(3) -split ' -> ')[-1].Trim('"') }) |
+# Tracked files that differ from the merge base, committed or not, plus untracked
+# files. git diff compares content after line-ending conversion, so a file
+# rewritten with other line endings and nothing else is not a change (#224);
+# git status would list it. A rename lists its new path.
+$changedPaths = @(git -c core.quotePath=false diff --name-only $mergeBase) +
+    @(git -c core.quotePath=false ls-files --others --exclude-standard) |
     Where-Object { $_ } | Sort-Object -Unique
 
 function Test-Changed([string[]]$Patterns) {
@@ -108,6 +134,11 @@ $runAll = $Full -or $unrecognisedPaths.Count -gt 0
 $rustChanged = $runAll -or (Test-Changed $rustPatterns)
 $uiChanged = $rustChanged -or (Test-Changed @('ui/*'))
 $proofsChanged = $runAll -or (Test-Changed @('proofs/*'))
+if ($Plan) {
+    Write-Host "Changed paths: $(if ($changedPaths) { $changedPaths -join ', ' } else { 'none' })"
+    Write-Host "Plan: rust=$rustChanged ui=$uiChanged proofs=$proofsChanged"
+    exit 0
+}
 
 if ($rustChanged -or $uiChanged) {
     if (-not (Test-Path -LiteralPath 'ui/node_modules')) {
@@ -149,11 +180,11 @@ if ($uiChanged) {
 if (-not $proofsChanged) {
     Write-Host '==> Proofs: proofs/ unchanged, skipped' -ForegroundColor Cyan
     Write-Host 'All checks passed.' -ForegroundColor Green
-    exit 0
+    Exit-Check 0
 }
 if (-not (Get-Command lake -ErrorAction SilentlyContinue)) {
     Write-Host 'FAILED: proofs/ changed but lake is not installed. Run proofs/scripts/Setup-Toolchain.ps1.' -ForegroundColor Red
-    exit 1
+    Exit-Check 1
 }
 Write-Host '==> Proofs: lake build and axiom audit' -ForegroundColor Cyan
 Push-Location proofs
@@ -162,7 +193,7 @@ $lakeExit = $LASTEXITCODE
 Pop-Location
 if ($lakeExit -ne 0) {
     Write-Host "FAILED: lake build (exit $lakeExit)" -ForegroundColor Red
-    exit 1
+    Exit-Check 1
 }
 # `#print axioms` lines read "'Name' depends on axioms: [a, b]". Only these three are allowed.
 $allowedAxioms = @('propext', 'Classical.choice', 'Quot.sound')
@@ -173,6 +204,7 @@ $badAxioms = foreach ($line in $lakeLines) {
 }
 if ($badAxioms) {
     Write-Host "FAILED: disallowed axioms: $(($badAxioms | Sort-Object -Unique) -join ', ')" -ForegroundColor Red
-    exit 1
+    Exit-Check 1
 }
 Write-Host 'All checks passed.' -ForegroundColor Green
+Exit-Check 0
