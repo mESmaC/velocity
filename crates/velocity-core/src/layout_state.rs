@@ -971,6 +971,7 @@ impl LayoutState {
         if let LayoutIntent::SettingsTab(tab) = &intent
             && (tab == "worktrees"
                 || tab == "providers"
+                || tab == "skills"
                 || tab == "agent-settings"
                 || tab == "proofs")
         {

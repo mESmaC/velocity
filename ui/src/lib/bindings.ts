@@ -101,6 +101,8 @@ export const commands = {
 	getPullRequestPanel: () => __TAURI_INVOKE<PullRequestPanelSnapshot_Serialize>("get_pull_request_panel"),
 	openProjectPullRequest: (projectIdentifier: number, number: number) => __TAURI_INVOKE<LayoutSnapshot_Serialize | null>("open_project_pull_request", { projectIdentifier, number }),
 	getSkillLibrary: () => __TAURI_INVOKE<SkillLibrarySnapshot_Serialize>("get_skill_library"),
+	getSkillSettings: (projectIdentifier: number) => __TAURI_INVOKE<SkillsSettingsView_Serialize>("get_skill_settings", { projectIdentifier }),
+	setSkillSettings: (projectIdentifier: number, edit: SkillSettingsEdit) => __TAURI_INVOKE<SkillsSettingsView_Serialize>("set_skill_settings", { projectIdentifier, edit }),
 	installSkillPack: (packOrRepo: string, sourceOverride: string | null, initialPin: string | null) => __TAURI_INVOKE<InstalledSkillPack_Serialize>("install_skill_pack", { packOrRepo, sourceOverride, initialPin }),
 	checkSkillPackUpdate: (packId: string) => __TAURI_INVOKE<SkillPackUpdatePreview_Serialize>("check_skill_pack_update", { packId }),
 	confirmSkillPackUpdate: (packId: string, candidateCommit: string) => __TAURI_INVOKE<InstalledSkillPack_Serialize>("confirm_skill_pack_update", { packId, candidateCommit }),
@@ -1955,6 +1957,18 @@ export type OutlineSnapshot_Serialize = {
 	coverage: CoverageItem[],
 };
 
+export type PackSelection = PackSelection_Serialize | PackSelection_Deserialize;
+
+export type PackSelection_Deserialize = {
+	enabled?: boolean,
+	bundles?: string[],
+};
+
+export type PackSelection_Serialize = {
+	enabled: boolean,
+	bundles: string[],
+};
+
 export type PaletteItem = PaletteItem_Serialize | PaletteItem_Deserialize;
 
 export type PaletteItem_Deserialize = {
@@ -2091,6 +2105,7 @@ export type ProjectItem_Deserialize = {
 	spec_locked: boolean,
 	/**  Completed F16 pieces retained after their merged thread history is deleted. */
 	built_spec_sections?: string[],
+	skills?: ProjectSkills_Deserialize,
 	active_thread_id?: number | null,
 	merged_today: number,
 	tasks: TaskItem_Deserialize[],
@@ -2116,6 +2131,7 @@ export type ProjectItem_Serialize = {
 	spec_locked: boolean,
 	/**  Completed F16 pieces retained after their merged thread history is deleted. */
 	built_spec_sections: string[],
+	skills: ProjectSkills_Serialize,
 	active_thread_id: number | null,
 	merged_today: number,
 	tasks: TaskItem_Serialize[],
@@ -2181,6 +2197,16 @@ export type ProjectSelectionView_Deserialize = {
 export type ProjectSelectionView_Serialize = {
 	active_project: number | null,
 	menu_open: boolean,
+};
+
+export type ProjectSkills = ProjectSkills_Serialize | ProjectSkills_Deserialize;
+
+export type ProjectSkills_Deserialize = {
+	packs?: { [key in string]: PackSelection_Deserialize },
+};
+
+export type ProjectSkills_Serialize = {
+	packs: { [key in string]: PackSelection_Serialize },
 };
 
 /**  The proof card for one PR head. */
@@ -3149,6 +3175,26 @@ export type SkillLibrarySnapshot_Serialize = {
 	installed: InstalledSkillPack_Serialize[],
 };
 
+export type SkillPackCard = SkillPackCard_Serialize | SkillPackCard_Deserialize;
+
+export type SkillPackCard_Deserialize = {
+	catalog: SkillPackCatalogEntry_Deserialize,
+	installed: boolean,
+	pin: string,
+	selection: PackSelection_Deserialize,
+	enabled_count: number,
+	requirements: string[],
+};
+
+export type SkillPackCard_Serialize = {
+	catalog: SkillPackCatalogEntry_Serialize,
+	installed: boolean,
+	pin: string,
+	selection: PackSelection_Serialize,
+	enabled_count: number,
+	requirements: string[],
+};
+
 /**  Static metadata for a built-in or user-added skill pack (SPEC.md F18). */
 export type SkillPackCatalogEntry = SkillPackCatalogEntry_Serialize | SkillPackCatalogEntry_Deserialize;
 
@@ -3237,6 +3283,35 @@ export type SkillPackUpdatePreview_Serialize = {
 	data_files_changed: number,
 	files: SkillPackDiffFile_Serialize[],
 	unified_diff: string,
+};
+
+export type SkillSettingsEdit = ({ Pack: {
+	identifier: string,
+	enabled: boolean,
+} }) & { Bundle?: never } | ({ Bundle: {
+	identifier: string,
+	bundle: string,
+	enabled: boolean,
+} }) & { Pack?: never };
+
+export type SkillsSettingsView = SkillsSettingsView_Serialize | SkillsSettingsView_Deserialize;
+
+export type SkillsSettingsView_Deserialize = {
+	project_identifier: number,
+	project_name: string,
+	cards: SkillPackCard_Deserialize[],
+	enabled_count: number,
+	description_tokens: number,
+	budget_warning: boolean,
+};
+
+export type SkillsSettingsView_Serialize = {
+	project_identifier: number,
+	project_name: string,
+	cards: SkillPackCard_Serialize[],
+	enabled_count: number,
+	description_tokens: number,
+	budget_warning: boolean,
 };
 
 export type SlashCommandItem = {
