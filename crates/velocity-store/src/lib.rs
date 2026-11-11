@@ -49,6 +49,7 @@ pub mod projects;
 pub mod provider_views;
 pub mod providers;
 pub mod shared_mcp;
+pub mod skills;
 pub mod swarm_dialog;
 pub mod swarms;
 pub mod task_list;
@@ -855,6 +856,8 @@ pub struct ProjectItem {
     /// Completed F16 pieces retained after their merged thread history is deleted.
     #[serde(default)]
     pub built_spec_sections: Vec<String>,
+    #[serde(default)]
+    pub skills: velocity_core::skills::ProjectSkills,
     pub active_thread_id: Option<u32>,
     pub merged_today: u32,
     pub tasks: Vec<TaskItem>,
@@ -901,6 +904,7 @@ impl ProjectItem {
             spec_path: "SPEC.md".into(),
             spec_locked: false,
             built_spec_sections: Vec::new(),
+            skills: velocity_core::skills::ProjectSkills::default(),
             active_thread_id: None,
             merged_today: 0,
             tasks: Vec::new(),

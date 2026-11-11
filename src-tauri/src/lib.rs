@@ -101,6 +101,8 @@ fn bindings() -> Builder<tauri::Wry> {
         pull_request_panel::open_project_pull_request,
         shared_mcp::edit_shared_mcp_servers,
         skills::get_skill_library,
+        skills::get_skill_settings,
+        skills::set_skill_settings,
         skills::install_skill_pack,
         skills::check_skill_pack_update,
         skills::confirm_skill_pack_update,
