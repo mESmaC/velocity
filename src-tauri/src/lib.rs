@@ -108,6 +108,7 @@ fn bindings() -> Builder<tauri::Wry> {
         skills::install_skill_pack,
         skills::check_skill_pack_update,
         skills::confirm_skill_pack_update,
+        skills::generate_design_system,
         swarm::get_swarm_dialog,
         swarm::launch_swarm,
         swarm::add_to_swarm,

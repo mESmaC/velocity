@@ -137,6 +137,11 @@
   color: var(--skills-chip-81);
   text-decoration: var(--skills-chip-82);
 }
+.skill-chip small {
+  margin-left: var(--skills-10-margin-left);
+  color: var(--skills-10-color);
+  font: var(--skills-10-font);
+}
 .skill-cards {
   display: flex;
   flex-direction: column;

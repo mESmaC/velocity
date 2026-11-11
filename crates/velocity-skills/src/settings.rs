@@ -12,6 +12,8 @@ pub struct SkillPackCard {
     pub selection: PackSelection,
     pub enabled_count: u32,
     pub requirements: Vec<String>,
+    #[serde(default)]
+    pub details: crate::details::SkillPackDetails,
     /// `suggested · UI found` when the project scan suggested this pack (F3, F18), else empty.
     pub suggestion_badge: String,
     /// What the scan found, or what would make it suggest the pack; empty for other packs.
@@ -56,7 +58,7 @@ pub fn settings_view(
             // Estimate the name and description loaded at startup, without loading skill bodies.
             tokens += description_tokens(&skills);
             SkillPackCard {
-                catalog: catalog.clone(),
+                catalog: with_installed_counts(catalog, library),
                 installed: installed.is_some(),
                 pin: installed
                     .map(|pack| pack.short_commit.clone())
@@ -64,6 +66,7 @@ pub fn settings_view(
                 selection,
                 enabled_count,
                 requirements: requirements(catalog),
+                details: crate::details::SkillPackDetails::default(),
                 suggestion_badge: suggestion_badge(&catalog.id, choices),
                 detection: detection(&catalog.id, choices),
             }
@@ -77,6 +80,30 @@ pub fn settings_view(
         description_tokens: tokens,
         budget_warning: count > 150,
     }
+}
+// The chips show how many skills each bundle holds at the pinned commit, once installed.
+fn with_installed_counts(
+    catalog: &SkillPackCatalogEntry,
+    library: &SkillLibrarySnapshot,
+) -> SkillPackCatalogEntry {
+    let mut entry = catalog.clone();
+    let Some(counts) = library
+        .bundle_counts
+        .iter()
+        .find(|counts| counts.pack_id == catalog.id)
+    else {
+        return entry;
+    };
+    for bundle in &mut entry.bundles {
+        if let Some(count) = counts
+            .bundles
+            .iter()
+            .find(|count| count.bundle_id == bundle.id)
+        {
+            bundle.skill_count = count.skill_count;
+        }
+    }
+    entry
 }
 fn suggestion_badge(pack: &str, choices: &ProjectSkills) -> String {
     choices
@@ -109,43 +136,9 @@ fn description_tokens(skills: &[&DiscoveredSkill]) -> u32 {
         .sum()
 }
 
-/// Bundle membership follows the pack's repository directories; custom packs enable all skills.
+/// Bundle membership follows each pack's folders at its pinned commit (`crate::bundles`).
 pub fn skill_enabled(pack: &str, selection: &PackSelection, skill: &DiscoveredSkill) -> bool {
-    if !selection.enabled {
-        return false;
-    }
-    if pack != "cskills" && pack != "gamedev" {
-        return true;
-    }
-    let path = skill.relative_folder.to_ascii_lowercase();
-    selection.bundles.iter().any(|bundle| {
-        bundle_paths(bundle)
-            .iter()
-            .any(|prefix| path.split('/').any(|part| part == *prefix))
-    })
-}
-fn bundle_paths(bundle: &str) -> Vec<&str> {
-    match bundle {
-        "eng" => vec!["engineering"],
-        "engp" => vec!["engineering-team"],
-        "mkt" => vec!["marketing", "marketing-skill"],
-        "product" => vec!["product-team"],
-        "prod" => vec!["productivity"],
-        "pm" => vec!["project-management"],
-        "raqm" => vec!["ra-qm-team"],
-        "comp" => vec!["compliance-os"],
-        "clevel" => vec!["c-level-advisor", "c-level-agents"],
-        "biz" => vec!["business-growth", "business-operations", "finance"],
-        "launch" => vec!["agent-launcher"],
-        "router" => vec!["router"],
-        "disc" => vec!["disciplines"],
-        "genre" => vec!["genres"],
-        "flow" => vec!["workflows"],
-        "ebiten" => vec!["ebitengine"],
-        "web" => vec!["web-engines"],
-        "other" => vec!["other-engines"],
-        _ => vec![bundle],
-    }
+    selection.enabled && crate::bundles::selection_includes(pack, &selection.bundles, skill)
 }
 fn requirements(catalog: &SkillPackCatalogEntry) -> Vec<String> {
     let mut result = Vec::new();

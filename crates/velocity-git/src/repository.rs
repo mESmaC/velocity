@@ -124,6 +124,22 @@ pub fn current_branch(folder: &Path) -> Result<String, GitError> {
     Ok(branch)
 }
 
+/// The project's main checkout for any folder git knows: the checkout itself, or the clone a
+/// linked worktree (a thread's, a duty agent's or a warm pool slot) was made from.
+pub fn main_checkout(folder: &Path) -> Result<PathBuf, GitError> {
+    let checkout = CheckoutPath::new(folder).map_err(GitError::Spawn)?;
+    let output = git()
+        .arg("-C")
+        .arg(checkout.path())
+        .args(["rev-parse", "--path-format=absolute", "--git-common-dir"])
+        .output()
+        .map_err(GitError::Spawn)?;
+    let common = PathBuf::from(String::from_utf8_lossy(&output.stdout).trim());
+    succeeded("rev-parse", folder, output)?;
+    let root = common.parent().unwrap_or(&common).to_path_buf();
+    fs::canonicalize(&root).map_err(GitError::Spawn)
+}
+
 /// Commits one file in `folder`, and nothing else that happens to be staged. Returns
 /// `false` when the file already matches `HEAD`, so there is nothing to commit.
 pub fn commit_file(folder: &Path, file: &Path, message: &str) -> Result<bool, GitError> {

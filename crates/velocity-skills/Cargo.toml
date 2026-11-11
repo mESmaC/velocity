@@ -13,7 +13,11 @@ serde.workspace = true
 serde_json.workspace = true
 specta = { workspace = true, optional = true }
 thiserror.workspace = true
+velocity-git.workspace = true
 velocity-core = { path = "../velocity-core" }
+
+[dev-dependencies]
+velocity-acp = { path = "../velocity-acp" }
 
 [lints]
 workspace = true
