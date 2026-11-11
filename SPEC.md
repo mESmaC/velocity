@@ -889,7 +889,7 @@ Four providers: **Anthropic** (Claude Code agent), **Codex** (Codex CLI agent), 
 |---|---|
 | Anthropic | Claude Code's usage report (the 5-hour and weekly windows), and the rate-limit events it sends during a turn |
 | Codex | `account/rateLimits/read` on Codex's app server, and its rate-limit notifications |
-| Antigravity | Google's quota report for the signed-in account |
+| Antigravity | Google's `retrieveUserQuotaSummary` report for the agent's signed-in account, falling back to `fetchAvailableModels` for older accounts. Uses the native agent's Windows `gemini:antigravity` credential; an expired token is refreshed by a prompt-free ACP probe through the configured agent. Tokens stay in the agent's credential store. The fullest enabled quota window supplies the bar and reset time; older per-model reports without a duration say "reported quota". |
 | Kimi Code, custom agents | no known source |
 
 - A provider with no source, or whose read fails, shows "limit not reported". Nothing else depends on the bar.

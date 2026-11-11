@@ -14,7 +14,8 @@ use tauri::{AppHandle, Manager};
 use tauri_specta::Event;
 use velocity_acp::client::AgentLaunch;
 use velocity_acp::client::{
-    AgentProbe, ClientError, probe_agent, read_claude_usage, read_codex_usage, sign_in,
+    AgentProbe, ClientError, probe_agent, read_antigravity_usage, read_claude_usage,
+    read_codex_usage, sign_in,
 };
 use velocity_acp::{
     LimitReading, SignInMethod, agent_command_label, agent_command_line, choose_sign_in,
@@ -309,7 +310,16 @@ async fn read_limit(application: &AppHandle, provider: ProviderKind) {
     let reading = match provider {
         ProviderKind::Claude => read_claude_usage(&directory, LIMIT_DEADLINE).await,
         ProviderKind::Codex => read_codex_usage(&directory, LIMIT_DEADLINE).await,
-        ProviderKind::Antigravity | ProviderKind::Kimi | ProviderKind::Custom(_) => Ok(None),
+        ProviderKind::Antigravity => {
+            let launch = agent_launch(&settings(application), provider);
+            match launch {
+                Ok((launch, _)) => {
+                    read_antigravity_usage(&launch, &directory, LIMIT_DEADLINE).await
+                }
+                Err(error) => Err(ClientError::Usage(error.to_string())),
+            }
+        }
+        ProviderKind::Kimi | ProviderKind::Custom(_) => Ok(None),
     };
     let reading: Option<LimitReading> = reading.ok().flatten();
     let plan = reading.as_ref().and_then(|reading| reading.plan.clone());
