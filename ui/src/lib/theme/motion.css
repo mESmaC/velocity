@@ -1,0 +1,146 @@
+/* The motion system (#226, SPEC.md §6 Motion). Every value is a --motion-*
+   token from reference.css. Rules use :where() so they carry no specificity:
+   a component rule that sets its own transition still wins.
+
+   Only opacity, transform and colours animate here, so nothing reflows. The
+   one exception is the usage and limit bars, whose fill is a width or height
+   on a small absolutely positioned element. */
+
+@property --motion-presence {
+  syntax: '<number>';
+  inherits: true;
+  initial-value: 1;
+}
+
+/* Hover, press and focus feedback. Colours ease in and out quickly. */
+:where(
+  button,
+  a,
+  summary,
+  input,
+  textarea,
+  select,
+  [role='button'],
+  [role='menuitem'],
+  [role='option'],
+  [role='tab']
+) {
+  transition-property:
+    background-color, border-color, color, box-shadow, opacity, transform;
+  transition-duration: var(--motion-duration-quick);
+  transition-timing-function: var(--motion-ease-in-out);
+}
+
+/* Compact controls sink slightly while pressed. Full-width rows don't: a
+   scaled row would shift its text, so rows only change colour. */
+:where(
+    .btn,
+    .pill,
+    .chip,
+    .mini,
+    .icon-btn,
+    .send,
+    .opt,
+    .project-select,
+    .worktree-button,
+    .view-switch button,
+    .window-controls button,
+    .airc-tabs button,
+    .pv-seg button,
+    .seg button,
+    .stepper button
+  ):active:not(:disabled) {
+  transform: scale(var(--motion-press-scale));
+}
+
+/* Status colours change smoothly: sidebar status icons, swarm segments, lane,
+   pulse and worktree dots, and pull request checks. */
+:where(
+  .status-icon,
+  .sg,
+  .lane-dot,
+  .pulse-dot,
+  .worktree-dot,
+  .agents-dot,
+  .pull-request-check
+) {
+  transition:
+    background-color var(--motion-duration-base) var(--motion-ease-in-out),
+    color var(--motion-duration-base) var(--motion-ease-in-out);
+}
+
+/* Usage and limit bars fill when they appear and when the backend reports a
+   new value. Reduced motion sets the duration to 0s. */
+:where(.usage-bar > span, .provider-meter > span) {
+  transition:
+    width var(--motion-progress-duration) var(--motion-ease-out),
+    height var(--motion-progress-duration) var(--motion-ease-out);
+}
+@starting-style {
+  .usage-bar > span {
+    width: 0;
+  }
+  .provider-meter > span {
+    height: 0;
+  }
+}
+
+/* Switching views: the arriving view rises into place. A CSS animation runs
+   only when its element is inserted, never when the backend updates it, so a
+   thread that streams text never re-animates. */
+@keyframes motion-view-in {
+  from {
+    opacity: 0;
+    transform: translateY(var(--motion-rise));
+  }
+}
+.main-view > *,
+.workspace > :not(.main-view) {
+  animation: motion-view-in var(--motion-duration-slow) var(--motion-ease-out);
+}
+
+/* The project switcher is a native popover: it fades and grows in and out with
+   CSS, since Svelte doesn't render its open state. */
+.project-menu {
+  transition:
+    opacity var(--motion-duration-quick) var(--motion-ease-in),
+    transform var(--motion-duration-quick) var(--motion-ease-in),
+    overlay var(--motion-duration-quick) allow-discrete,
+    display var(--motion-duration-quick) allow-discrete;
+  opacity: 0;
+  transform: scale(var(--motion-scale-from));
+  transform-origin: top left;
+}
+.project-menu:popover-open {
+  opacity: 1;
+  transform: none;
+  transition-duration: var(--motion-duration-base);
+  transition-timing-function: var(--motion-ease-out);
+}
+@starting-style {
+  .project-menu:popover-open {
+    opacity: 0;
+    transform: scale(var(--motion-scale-from));
+  }
+}
+
+/* Modal scrims follow their dialog. The dialog's Svelte transition animates
+   --motion-presence from 0 to 1 (or back), and ::backdrop inherits it. */
+dialog::backdrop {
+  opacity: var(--motion-presence);
+}
+
+/* Menus grow out of the control that opened them. */
+.model-menu {
+  transform-origin: bottom right;
+}
+.model-menu.below {
+  transform-origin: top right;
+}
+.usage-panel,
+.slash-menu {
+  transform-origin: bottom left;
+}
+.thread-menu {
+  transform-origin: top left;
+}

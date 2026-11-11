@@ -8,6 +8,10 @@ use crate::pull_request_command::PullRequestCommand;
 use crate::pull_request_queries::{CHECKS, FIELDS};
 use crate::{PullRequest, PullRequestCheck, PullRequestError, PullRequestSnapshot};
 
+/// How long a kept client's repository identity is trusted. Re-reading it costs one request,
+/// so this is one request per kept client per half hour.
+const IDENTITY_LIFETIME: std::time::Duration = std::time::Duration::from_secs(30 * 60);
+
 pub struct PullRequestClient {
     pub(crate) command: PullRequestCommand,
     pub(crate) repository: String,
@@ -86,6 +90,14 @@ impl PullRequestClient {
             review_record: None,
             command,
         })
+    }
+
+    /// Whether this client still describes `directory`'s repository. Callers that keep a client
+    /// between reads check this before each use: a changed `origin` is seen at once, from the
+    /// local Git config, and a renamed default branch, which only GitHub knows, within
+    /// `IDENTITY_LIFETIME` (#229).
+    pub fn is_current(&self, directory: &Path) -> bool {
+        self.command.is_current(directory, IDENTITY_LIFETIME)
     }
 
     /// Approve, request changes and merge read and write Velocity's approval
