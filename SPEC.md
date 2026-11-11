@@ -1325,7 +1325,7 @@ Each milestone ends with a working app. PR duty checks an item off when it lands
 - [x] Skill library: clone and pin packs, update with a diff, Windows symlink and UTF-8 handling
 - [x] Settings → Skills: per-project switches, bundles, context budget, requirements, add any Agent Skills repo
 - [ ] Link enabled skills into every worktree and the spec checkout per provider folder; `.git/info/exclude`; committed mode
-- [ ] Built-in packs: UI UX Pro Max (design system and AGENTS.md rule), claude-skills (bundles), Game dev skills (router and engine detection), REA (shared MCP server)
+- [x] Built-in packs: UI UX Pro Max (design system and AGENTS.md rule), claude-skills (bundles), Game dev skills (router and engine detection), REA (shared MCP server)
 - [x] Project scan suggestions (F3), re-checked after merges
 - [x] `$` skill menu in the composer; skill loads shown as tool steps (F4)
 
