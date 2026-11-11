@@ -870,6 +870,7 @@ Four providers: **Anthropic** (Claude Code agent), **Codex** (Codex CLI agent), 
   - **Signed in** shows the plan and how many agents are on it.
   - **Waiting** shows "Waiting for you to finish signing in at <site>…" with Cancel.
   - **Not signed in** means the provider's models are hidden from every picker.
+  - **Not installed** is checked again whenever Settings → Providers opens. Installing an agent while Velocity runs needs no restart; its card and models update when the check finishes.
 - **Sign in with Claude / ChatGPT / Google / Kimi:** opens the provider's OAuth page in your browser. When the login completes, the card flips to signed in by itself and a toast lists the models now available.
 - **Sign out:** agents already running on that provider keep their session until they finish. New work can't use it. When the default for new threads is signed out, new threads, spec interviews and the duty dialog start on the first signed-in provider in card order and its model; with no provider signed in, nothing new starts and the launch says to sign in. Swarm and goal swarm launches refuse a provider signed out since its dialog was drawn, never swapping it. Sign out is recorded by Velocity and leaves the agent's own login alone *(proposed)*, so signing in again needs no browser while that login holds.
 - **Limit:** a bar showing the share of the current subscription window used (5-hour, daily, weekly, whatever the provider reports) and when it resets.
