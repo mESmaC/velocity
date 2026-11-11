@@ -17,8 +17,8 @@ use velocity_threads::goal_swarm::{
 };
 use velocity_threads::{
     DeliveryStatus, LaunchPlan, RunningSession, SessionInputs, StopOutcome, ThreadKey,
-    ThreadProgress, ThreadRuntimes, agent_launch, plan_launch, resolve_title, spawn_session,
-    title_worktree_name,
+    ThreadProgress, ThreadRuntimes, agent_launch, plan_launch_with_preferences, resolve_title,
+    spawn_session, title_worktree_name,
 };
 
 use crate::layout::MainLayout;
@@ -111,6 +111,13 @@ fn resume_follow_through(
         .with_run_settings(velocity_threads::thread_run_settings(&thread));
     setup.airc = crate::airc_access::managed(application)
         .map(|airc| airc.thread(key.0, key.1, std::path::Path::new(path)));
+    setup.resume = Some(
+        velocity_acp::client::SessionResume::new(
+            thread.agent_session.clone(),
+            velocity_threads::parking::transcript_context(&thread.transcript),
+        )
+        .with_history_replay(thread.transcript.is_empty()),
+    );
     crate::airc_claims::attach(application, key, &setup, &thread.branch_name)?;
     let inputs = lock(
         application.state::<ManagedThreads>().inner(),
@@ -257,7 +264,7 @@ fn start_thread(application: &AppHandle, prompt: &str) -> Result<LayoutSnapshot,
             .ok_or("Select or create a project first")?;
         // Settings → Worktrees for the active project, which is the one the thread starts in.
         let worktrees = store.worktree_context().preferences;
-        let plan = plan_launch(project, &worktrees, &store.settings(), prompt)
+        let plan = plan_launch_with_preferences(project, &worktrees, &store.settings(), prompt)
             .map_err(|error| error.to_string())?;
         let thread = store
             .add_thread(plan.project, plan.thread.clone())
@@ -340,18 +347,62 @@ pub(crate) fn steer(
             application.state::<ManagedThreads>().inner(),
             "thread sessions",
         )?;
+        if !runtimes.is_live(key) && !runtimes.is_parked(key) {
+            drop(runtimes);
+            return resume_message(application, key, prompt);
+        }
         runtimes
             .steer(key, prompt)
             .map_err(|error| error.to_string())?;
         runtimes.is_parked(key)
     };
     // A parked thread holds the message for its resume and stays parked (§2.2).
-    if !parked {
-        save_activity(application, key, AgentActivity::Thinking, None)?;
-    }
+    save_activity(
+        application,
+        key,
+        if parked {
+            AgentActivity::Parked
+        } else {
+            AgentActivity::Thinking
+        },
+        None,
+    )?;
     let snapshot = refresh(application, key, false)?;
     emit_status(application, key);
     Ok(snapshot)
+}
+
+fn resume_message(
+    application: &AppHandle,
+    key: ThreadKey,
+    prompt: &str,
+) -> Result<LayoutSnapshot, String> {
+    let store = lock(
+        application.state::<ManagedStateStore>().inner(),
+        "persisted state",
+    )?;
+    let (_, thread) = store
+        .follow_through_thread(key.0, key.1)
+        .map_err(|error| error.to_string())?;
+    if thread.activity == AgentActivity::AtLimit {
+        return Err("This agent will resume when its limit resets".into());
+    }
+    let has_queued = thread
+        .transcript
+        .iter()
+        .any(|block| matches!(block, TranscriptBlock::UserMessage { queued: true, .. }));
+    drop(store);
+    if has_queued {
+        // Resume ahead of the old queue; the new message must follow those earlier sends.
+        crate::parking::resume(
+            application,
+            key,
+            "Velocity restarted. Continue the earlier session.",
+        )?;
+        return steer(application, key, prompt);
+    }
+    crate::parking::resume(application, key, prompt)?;
+    refresh(application, key, false)
 }
 
 async fn run_thread(
@@ -809,11 +860,20 @@ pub(crate) fn save_activity(
     activity: AgentActivity,
     progress: Option<ThreadProgress>,
 ) -> Result<bool, String> {
+    let transcript = lock(
+        application.state::<ManagedThreads>().inner(),
+        "thread sessions",
+    )?
+    .view(key)
+    .map(|view| view.blocks);
     lock(
         application.state::<ManagedStateStore>().inner(),
         "persisted state",
     )?
     .update_thread(key.0, key.1, |thread| {
+        if let Some(transcript) = transcript {
+            thread.transcript = transcript;
+        }
         if thread.activity != AgentActivity::AtLimit {
             thread.activity = activity;
         }
@@ -849,6 +909,7 @@ pub(crate) fn fail(application: &AppHandle, key: ThreadKey, headline: &str, deta
     ) {
         runtimes.fail(key, headline, detail);
     }
+    report(save_activity(application, key, AgentActivity::Idle, None));
     let saved = lock(
         application.state::<ManagedStateStore>().inner(),
         "persisted state",

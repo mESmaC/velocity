@@ -12,8 +12,10 @@
 
 #![forbid(unsafe_code)]
 
+pub mod antigravity_limits;
 pub mod auth;
 pub mod client;
+pub mod concurrency;
 pub mod paths;
 pub mod permissions;
 pub mod providers;

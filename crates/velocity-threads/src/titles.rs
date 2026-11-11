@@ -106,7 +106,7 @@ pub fn thread_run_settings(thread: &ThreadItem) -> RunSettings<String> {
     }
 }
 
-pub(crate) fn provider(kind: ProviderKind) -> Provider {
+pub fn provider(kind: ProviderKind) -> Provider {
     match kind {
         ProviderKind::Claude => Provider::Anthropic,
         ProviderKind::Codex => Provider::Codex,

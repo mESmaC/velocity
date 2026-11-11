@@ -40,6 +40,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         return Err("Checkpoint lost".into());
     }
     println!("Supervision checkpoint survived save/load");
+    recovery_trace()?;
     persisted_release()?;
     Ok(())
 }
@@ -96,5 +97,39 @@ fn persisted_release() -> Result<(), Box<dyn std::error::Error>> {
         "Channel and store released ownership; failed thread and optional pushed work retained at {}",
         directory.display()
     );
+    Ok(())
+}
+
+fn recovery_trace() -> Result<(), Box<dyn std::error::Error>> {
+    use velocity_threads::agent_activity::checkpoint_unavailable;
+    let settings = Settings::default().agents;
+    let mut thread = ThreadItem::new(1, "Recovery trace".into());
+    for (now, failed, expected) in [
+        (100, true, false),
+        (699, false, false),
+        (700, true, false),
+        (1299, true, false),
+        (1300, true, true),
+        (1301, true, false),
+    ] {
+        thread.state = if failed {
+            ThreadState::Error
+        } else {
+            ThreadState::Working
+        };
+        thread.activity = AgentActivity::Thinking;
+        checkpoint_unavailable(&mut thread, now);
+        let action = decide(&thread, &settings, now, true, false);
+        println!(
+            "Recovery trace at {now}: {action:?}, since {:?}",
+            thread.supervision.unavailable_since
+        );
+        if (action == Action::Release) != expected {
+            return Err("Release violated continuous grace or repeated".into());
+        }
+        if action == Action::Release {
+            thread.supervision.released = true;
+        }
+    }
     Ok(())
 }

@@ -46,6 +46,8 @@ pub struct SessionSetup {
 pub struct SessionResume {
     pub session_id: Option<String>,
     pub transcript: String,
+    /// Older records may have only a provider session id and need its replayed history.
+    pub replay_history: bool,
 }
 
 impl SessionResume {
@@ -53,7 +55,13 @@ impl SessionResume {
         Self {
             session_id,
             transcript,
+            replay_history: false,
         }
+    }
+
+    pub fn with_history_replay(mut self, replay: bool) -> Self {
+        self.replay_history = replay;
+        self
     }
 }
 
@@ -113,8 +121,7 @@ pub async fn start_session(
 }
 
 /// Like [`start_session`], but a resumed thread first tries `session/load` of its earlier
-/// session. `replaying` is set while the agent replays that session's history, which the
-/// thread's transcript already holds.
+/// session. `replaying` suppresses replay only when the thread already holds its history.
 pub async fn start_or_resume_session(
     connection: &ConnectionTo<Agent>,
     setup: &SessionSetup,
@@ -133,29 +140,54 @@ pub async fn start_or_resume_session(
         session_servers(setup),
         &initialized.agent_capabilities.mcp_capabilities,
     );
-    if let Some(earlier) = earlier {
-        let session_id = SessionId::new(earlier);
-        replaying.store(true, Ordering::Release);
-        let loaded = connection
-            .send_request(
-                LoadSessionRequest::new(session_id.clone(), setup.worktree.clone())
-                    .mcp_servers(servers.clone()),
-            )
-            .block_task()
-            .await;
-        replaying.store(false, Ordering::Release);
-        // A session the agent no longer has falls back to a new one with the transcript.
-        if let Ok(response) = loaded {
-            select_bypass_mode(connection, &session_id, response.modes.as_ref(), setup).await?;
-            let options =
-                configure(connection, &session_id, response.config_options, setup).await?;
-            return Ok(StartedSession {
-                session_id,
-                loaded: true,
-                options,
-            });
-        }
+    if let Some(earlier) = earlier
+        && let Some(started) =
+            load_earlier_session(connection, setup, replaying, earlier, &servers).await?
+    {
+        return Ok(started);
     }
+    new_resumed_session(connection, setup, servers).await
+}
+
+async fn load_earlier_session(
+    connection: &ConnectionTo<Agent>,
+    setup: &SessionSetup,
+    replaying: &AtomicBool,
+    earlier: String,
+    servers: &[McpServer],
+) -> Result<Option<StartedSession>, agent_client_protocol::Error> {
+    let session_id = SessionId::new(earlier);
+    let suppress_history = !setup
+        .resume
+        .as_ref()
+        .is_some_and(|resume| resume.replay_history);
+    replaying.store(suppress_history, Ordering::Release);
+    let loaded = connection
+        .send_request(
+            LoadSessionRequest::new(session_id.clone(), setup.worktree.clone())
+                .mcp_servers(servers.to_vec()),
+        )
+        .block_task()
+        .await;
+    replaying.store(false, Ordering::Release);
+    // A session the agent no longer has falls back to a new one with the transcript.
+    if let Ok(response) = loaded {
+        select_bypass_mode(connection, &session_id, response.modes.as_ref(), setup).await?;
+        let options = configure(connection, &session_id, response.config_options, setup).await?;
+        return Ok(Some(StartedSession {
+            session_id,
+            loaded: true,
+            options,
+        }));
+    }
+    Ok(None)
+}
+
+async fn new_resumed_session(
+    connection: &ConnectionTo<Agent>,
+    setup: &SessionSetup,
+    servers: Vec<McpServer>,
+) -> Result<StartedSession, agent_client_protocol::Error> {
     let session = connection
         .send_request(NewSessionRequest::new(setup.worktree.clone()).mcp_servers(servers))
         .block_task()

@@ -58,3 +58,15 @@ impl<Model> RunSettings<Model> {
         RunSettings { model, ..self }
     }
 }
+
+impl Provider {
+    pub fn label(self) -> String {
+        match self {
+            Self::Anthropic => "Anthropic".into(),
+            Self::Codex => "Codex".into(),
+            Self::Antigravity => "Antigravity".into(),
+            Self::KimiCode => "Kimi Code".into(),
+            Self::Custom(identifier) => format!("custom-{identifier}"),
+        }
+    }
+}

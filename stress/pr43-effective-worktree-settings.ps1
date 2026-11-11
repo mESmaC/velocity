@@ -20,7 +20,7 @@ velocity-store = { path = "$storePath" }
 $source = @'
 use std::{fs, path::{Path, PathBuf}, process::{Command, exit}};
 use velocity_store::{NewProjectRecord, ProjectLocationKind, StateStore};
-use velocity_threads::{LaunchPlan, plan_launch};
+use velocity_threads::{LaunchPlan, plan_launch_with_preferences as plan_launch};
 
 fn report(name: &str, passed: bool, detail: impl std::fmt::Display) -> usize {
     println!("{} {name}: {detail}", if passed { "PASS" } else { "FAIL" });

@@ -5,6 +5,7 @@ import { invoke as __TAURI_INVOKE } from "@tauri-apps/api/core";
 /** Commands */
 export const commands = {
 	readAgentsMd: (projectIdentifier: number) => __TAURI_INVOKE<OutlineSnapshot_Serialize>("read_agents_md", { projectIdentifier }),
+	reloadAgentsMd: (projectIdentifier: number) => __TAURI_INVOKE<OutlineSnapshot_Serialize>("reload_agents_md", { projectIdentifier }),
 	editAgentsMd: (projectIdentifier: number, action: OutlineAction_Deserialize) => __TAURI_INVOKE<OutlineSnapshot_Serialize>("edit_agents_md", { projectIdentifier, action }),
 	writeAgentsMd: (projectIdentifier: number) => __TAURI_INVOKE<OutlineSnapshot_Serialize>("write_agents_md", { projectIdentifier }),
 	tightenRule: (projectIdentifier: number, identifier: number) => __TAURI_INVOKE<OutlineSnapshot_Serialize>("tighten_rule", { projectIdentifier, identifier }),
@@ -14,7 +15,7 @@ export const commands = {
 	aircMessages: (projectIdentifier: number, after: number | null) => __TAURI_INVOKE<Entry_Serialize[]>("airc_messages", { projectIdentifier, after }),
 	aircLedger: (projectIdentifier: number, ledger: string, after: number | null) => __TAURI_INVOKE<Entry_Serialize[]>("airc_ledger", { projectIdentifier, ledger, after }),
 	/**  The modal's current view, for the window to draw before the next `airc://modal`. */
-	getAircModal: (projectIdentifier: number) => __TAURI_INVOKE<AircModalView>("get_airc_modal", { projectIdentifier }),
+	getAircModal: (projectIdentifier: number) => __TAURI_INVOKE<AircModalView_Serialize>("get_airc_modal", { projectIdentifier }),
 	/**  User-owned delivery mode, independent of the agent's tool permissions. */
 	setAircMessageMode: (projectIdentifier: number, nick: string, mode: MessageMode) => __TAURI_INVOKE<null>("set_airc_message_mode", { projectIdentifier, nick, mode }),
 	getWindowState: () => __TAURI_INVOKE<WindowStateChanged>("get_window_state"),
@@ -54,7 +55,7 @@ export const commands = {
 	 */
 	providerSignOut: (provider: ProviderKind) => __TAURI_INVOKE<ProvidersView_Serialize>("provider_sign_out", { provider }),
 	/**  Model chips, the default for new threads and the thread title model (F15). */
-	setProviderSettings: (edit: ProviderEdit) => __TAURI_INVOKE<ProvidersView_Serialize>("set_provider_settings", { edit }),
+	setProviderSettings: (edit: ProviderEdit_Deserialize) => __TAURI_INVOKE<ProvidersView_Serialize>("set_provider_settings", { edit }),
 	/**  The composer's model menu (F4): for a thread, or the defaults from the home composer. */
 	getModelMenu: (projectIdentifier: number, threadIdentifier: number | null) => __TAURI_INVOKE<ModelMenuView_Serialize>("get_model_menu", { projectIdentifier, threadIdentifier }),
 	/**
@@ -264,12 +265,24 @@ export type AircClaimFile = {
 	overlap: boolean,
 };
 
-export type AircClaimRow = {
+export type AircClaimRow = AircClaimRow_Serialize | AircClaimRow_Deserialize;
+
+export type AircClaimRow_Deserialize = {
 	nick: string,
 	nick_tone: NickTone,
 	task: string,
 	state: string,
 	files: AircClaimFile[],
+	dependency?: string | null,
+};
+
+export type AircClaimRow_Serialize = {
+	nick: string,
+	nick_tone: NickTone,
+	task: string,
+	state: string,
+	files: AircClaimFile[],
+	dependency: string | null,
 };
 
 export type AircEventPublished = AircEventPublished_Serialize | AircEventPublished_Deserialize;
@@ -309,19 +322,41 @@ export type AircMessagePublished_Serialize = {
 	entry: Entry_Serialize,
 };
 
-export type AircModalPublished = {
+export type AircModalPublished = AircModalPublished_Serialize | AircModalPublished_Deserialize;
+
+export type AircModalPublished_Deserialize = {
 	project_identifier: number,
-	view: AircModalView,
+	view: AircModalView_Deserialize,
 };
 
-export type AircModalView = {
+export type AircModalPublished_Serialize = {
+	project_identifier: number,
+	view: AircModalView_Serialize,
+};
+
+export type AircModalView = AircModalView_Serialize | AircModalView_Deserialize;
+
+export type AircModalView_Deserialize = {
 	channel: string,
 	tabs: AircTabView[],
 	events: AircLineView[],
 	messages: AircLineView[],
 	claims_note: string,
 	claims_warn: boolean,
-	claims: AircClaimRow[],
+	claims: AircClaimRow_Deserialize[],
+	discoveries: AircLineView[],
+	past_work: AircLineView[],
+	nick_groups: AircNickGroup[],
+};
+
+export type AircModalView_Serialize = {
+	channel: string,
+	tabs: AircTabView[],
+	events: AircLineView[],
+	messages: AircLineView[],
+	claims_note: string,
+	claims_warn: boolean,
+	claims: AircClaimRow_Serialize[],
 	discoveries: AircLineView[],
 	past_work: AircLineView[],
 	nick_groups: AircNickGroup[],
@@ -773,6 +808,8 @@ export type Entry = Entry_Serialize | Entry_Deserialize;
 
 export type Entry_Deserialize = {
 	sequence: number,
+	/**  Only stdio joins are leased to an OS session lock; native runner joins persist. */
+	session?: boolean | null,
 	time: string,
 	kind: string,
 	nick: string,
@@ -797,6 +834,8 @@ export type Entry_Deserialize = {
 
 export type Entry_Serialize = {
 	sequence: number,
+	/**  Only stdio joins are leased to an OS session lock; native runner joins persist. */
+	session?: boolean,
 	time: string,
 	kind: string,
 	nick: string,
@@ -2500,6 +2539,7 @@ export type ProviderCardView_Deserialize = {
 	can_sign_in: boolean,
 	limit?: LimitView | null,
 	models: ModelChipView[],
+	max_agents?: number | null,
 };
 
 export type ProviderCardView_Serialize = {
@@ -2520,6 +2560,7 @@ export type ProviderCardView_Serialize = {
 	can_sign_in: boolean,
 	limit: LimitView | null,
 	models: ModelChipView[],
+	max_agents: number | null,
 };
 
 /**  What Velocity last read from one provider's agent. */
@@ -2562,20 +2603,52 @@ export type ProviderCommand_Serialize = {
 	command: AgentCommand_Serialize,
 };
 
+/**  A provider's optional cap. Missing entries mean unlimited. */
+export type ProviderConcurrency = {
+	provider: ProviderKind,
+	maximum: number,
+};
+
 /**  A change from Settings → Providers or the home composer's model menu. */
-export type ProviderEdit = 
+export type ProviderEdit = ProviderEdit_Serialize | ProviderEdit_Deserialize;
+
+/**  A change from Settings → Providers or the home composer's model menu. */
+export type ProviderEdit_Deserialize = ({ MaxAgents: {
+	provider: ProviderKind,
+	maximum?: number | null,
+} }) & { DefaultEffort?: never; DefaultModel?: never; DefaultSpeed?: never; ShowModel?: never; TitleEffort?: never; TitleModel?: never; TitleSpeed?: never } | 
 /**  Show or hide a model chip in the pickers. */
 ({ ShowModel: {
 	provider: ProviderKind,
 	model: string,
 	shown: boolean,
-} }) & { DefaultEffort?: never; DefaultModel?: never; DefaultSpeed?: never; TitleEffort?: never; TitleModel?: never; TitleSpeed?: never } | ({ DefaultModel: {
+} }) & { DefaultEffort?: never; DefaultModel?: never; DefaultSpeed?: never; MaxAgents?: never; TitleEffort?: never; TitleModel?: never; TitleSpeed?: never } | ({ DefaultModel: {
 	provider: ProviderKind,
 	model: string,
-} }) & { DefaultEffort?: never; DefaultSpeed?: never; ShowModel?: never; TitleEffort?: never; TitleModel?: never; TitleSpeed?: never } | ({ DefaultEffort: EffortLevel }) & { DefaultModel?: never; DefaultSpeed?: never; ShowModel?: never; TitleEffort?: never; TitleModel?: never; TitleSpeed?: never } | ({ DefaultSpeed: SpeedMode }) & { DefaultEffort?: never; DefaultModel?: never; ShowModel?: never; TitleEffort?: never; TitleModel?: never; TitleSpeed?: never } | ({ TitleModel: {
+} }) & { DefaultEffort?: never; DefaultSpeed?: never; MaxAgents?: never; ShowModel?: never; TitleEffort?: never; TitleModel?: never; TitleSpeed?: never } | ({ DefaultEffort: EffortLevel }) & { DefaultModel?: never; DefaultSpeed?: never; MaxAgents?: never; ShowModel?: never; TitleEffort?: never; TitleModel?: never; TitleSpeed?: never } | ({ DefaultSpeed: SpeedMode }) & { DefaultEffort?: never; DefaultModel?: never; MaxAgents?: never; ShowModel?: never; TitleEffort?: never; TitleModel?: never; TitleSpeed?: never } | ({ TitleModel: {
 	provider: ProviderKind,
 	model: string,
-} }) & { DefaultEffort?: never; DefaultModel?: never; DefaultSpeed?: never; ShowModel?: never; TitleEffort?: never; TitleSpeed?: never } | ({ TitleEffort: EffortLevel }) & { DefaultEffort?: never; DefaultModel?: never; DefaultSpeed?: never; ShowModel?: never; TitleModel?: never; TitleSpeed?: never } | ({ TitleSpeed: SpeedMode }) & { DefaultEffort?: never; DefaultModel?: never; DefaultSpeed?: never; ShowModel?: never; TitleEffort?: never; TitleModel?: never } | 
+} }) & { DefaultEffort?: never; DefaultModel?: never; DefaultSpeed?: never; MaxAgents?: never; ShowModel?: never; TitleEffort?: never; TitleSpeed?: never } | ({ TitleEffort: EffortLevel }) & { DefaultEffort?: never; DefaultModel?: never; DefaultSpeed?: never; MaxAgents?: never; ShowModel?: never; TitleModel?: never; TitleSpeed?: never } | ({ TitleSpeed: SpeedMode }) & { DefaultEffort?: never; DefaultModel?: never; DefaultSpeed?: never; MaxAgents?: never; ShowModel?: never; TitleEffort?: never; TitleModel?: never } | 
+/**  Back to GPT-6 Luna · Low · Fast (F15 Thread titles). */
+"TitleReset";
+
+/**  A change from Settings → Providers or the home composer's model menu. */
+export type ProviderEdit_Serialize = ({ MaxAgents: {
+	provider: ProviderKind,
+	maximum: number | null,
+} }) & { DefaultEffort?: never; DefaultModel?: never; DefaultSpeed?: never; ShowModel?: never; TitleEffort?: never; TitleModel?: never; TitleSpeed?: never } | 
+/**  Show or hide a model chip in the pickers. */
+({ ShowModel: {
+	provider: ProviderKind,
+	model: string,
+	shown: boolean,
+} }) & { DefaultEffort?: never; DefaultModel?: never; DefaultSpeed?: never; MaxAgents?: never; TitleEffort?: never; TitleModel?: never; TitleSpeed?: never } | ({ DefaultModel: {
+	provider: ProviderKind,
+	model: string,
+} }) & { DefaultEffort?: never; DefaultSpeed?: never; MaxAgents?: never; ShowModel?: never; TitleEffort?: never; TitleModel?: never; TitleSpeed?: never } | ({ DefaultEffort: EffortLevel }) & { DefaultModel?: never; DefaultSpeed?: never; MaxAgents?: never; ShowModel?: never; TitleEffort?: never; TitleModel?: never; TitleSpeed?: never } | ({ DefaultSpeed: SpeedMode }) & { DefaultEffort?: never; DefaultModel?: never; MaxAgents?: never; ShowModel?: never; TitleEffort?: never; TitleModel?: never; TitleSpeed?: never } | ({ TitleModel: {
+	provider: ProviderKind,
+	model: string,
+} }) & { DefaultEffort?: never; DefaultModel?: never; DefaultSpeed?: never; MaxAgents?: never; ShowModel?: never; TitleEffort?: never; TitleSpeed?: never } | ({ TitleEffort: EffortLevel }) & { DefaultEffort?: never; DefaultModel?: never; DefaultSpeed?: never; MaxAgents?: never; ShowModel?: never; TitleModel?: never; TitleSpeed?: never } | ({ TitleSpeed: SpeedMode }) & { DefaultEffort?: never; DefaultModel?: never; DefaultSpeed?: never; MaxAgents?: never; ShowModel?: never; TitleEffort?: never; TitleModel?: never } | 
 /**  Back to GPT-6 Luna · Low · Fast (F15 Thread titles). */
 "TitleReset";
 
@@ -2656,6 +2729,7 @@ export type ProviderSettings_Deserialize = {
 	catalog?: ProviderCatalog_Deserialize[],
 	/**  Providers you signed out of in Velocity: new work can't use them (F15 Sign out). */
 	signed_out?: ProviderKind[],
+	concurrency?: ProviderConcurrency[],
 	/**  Model chips you switched off (F15 Models). */
 	hidden_models?: HiddenModel[],
 	/**  Built-in providers whose ACP agent command you edited; Reset removes the entry (F15). */
@@ -2683,6 +2757,7 @@ export type ProviderSettings_Serialize = {
 	catalog: ProviderCatalog_Serialize[],
 	/**  Providers you signed out of in Velocity: new work can't use them (F15 Sign out). */
 	signed_out: ProviderKind[],
+	concurrency: ProviderConcurrency[],
 	/**  Model chips you switched off (F15 Models). */
 	hidden_models: HiddenModel[],
 	/**  Built-in providers whose ACP agent command you edited; Reset removes the entry (F15). */
@@ -4015,6 +4090,9 @@ export type ThreadItem_Deserialize = {
 	dependency_wait?: string | null,
 	/**  The agent's ACP session id, which a parked thread loads again on resume (§2.2). */
 	agent_session?: string | null,
+	provider_queued?: boolean,
+	/**  Conversation retained across process restarts (§3.2). */
+	transcript?: TranscriptBlock_Deserialize[],
 	review_stage?: ReviewStage | null,
 	task_ids: number[],
 	issue?: ThreadIssue_Deserialize | null,
@@ -4049,6 +4127,9 @@ export type ThreadItem_Serialize = {
 	dependency_wait: string | null,
 	/**  The agent's ACP session id, which a parked thread loads again on resume (§2.2). */
 	agent_session: string | null,
+	provider_queued: boolean,
+	/**  Conversation retained across process restarts (§3.2). */
+	transcript: TranscriptBlock_Serialize[],
 	review_stage: ReviewStage | null,
 	task_ids: number[],
 	issue: ThreadIssue_Serialize | null,
@@ -4096,6 +4177,7 @@ export type ThreadMenuView_Deserialize = {
 	project_identifier: number,
 	thread_identifier: number,
 	entries: ThreadMenuEntry_Deserialize[],
+	message_mode?: ThreadMessageMode | null,
 };
 
 /**  One thread's right-click menu, built from saved state and what is on disk. */
@@ -4104,6 +4186,12 @@ export type ThreadMenuView_Serialize = {
 	project_identifier: number,
 	thread_identifier: number,
 	entries: ThreadMenuEntry_Serialize[],
+	message_mode: ThreadMessageMode | null,
+};
+
+export type ThreadMessageMode = {
+	nick: string,
+	mode: MessageMode,
 };
 
 export type ThreadState = "draft" | "spec" | "working" | "review" | "error" | "closed" | "done" | "merged";
@@ -4385,6 +4473,8 @@ export type WorktreeSettings_Deserialize = {
 	project_roots?: { [key in number]: string },
 	copy_files?: string,
 	setup_command?: string,
+	/**  Per-project commands, including an explicit empty command to skip setup. */
+	project_setup_commands?: { [key in number]: string },
 };
 
 export type WorktreeSettings_Serialize = {
@@ -4395,4 +4485,6 @@ export type WorktreeSettings_Serialize = {
 	project_roots: { [key in number]: string },
 	copy_files: string,
 	setup_command: string,
+	/**  Per-project commands, including an explicit empty command to skip setup. */
+	project_setup_commands: { [key in number]: string },
 };

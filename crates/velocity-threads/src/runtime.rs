@@ -9,14 +9,14 @@ use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 
-use agent_client_protocol::v1::schema::ContentBlock;
+use agent_client_protocol::v1::schema::{ContentBlock, SessionUpdate};
 use thiserror::Error;
 use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender, unbounded_channel};
 use tokio::sync::oneshot;
+use velocity_acp::available_commands;
 use velocity_acp::client::{
     AgentEvent, AgentInput, AgentLaunch, ClientError, SessionSetup, run_session,
 };
-use velocity_acp::{Steering, SteeringEffect, SteeringInput, available_commands};
 use velocity_core::thread_view_model::{AgentCommandView, LiveThreadView, SessionWork};
 use velocity_store::AgentActivity;
 
@@ -68,14 +68,21 @@ struct ThreadRuntime {
     deliveries: Deliveries,
     transcript: LiveTranscript,
     inputs: UnboundedSender<AgentInput>,
-    /// Mirrors the client's steering (Rule 1): whether a turn is running, and which
-    /// messages wait for it to end. The client sees the same sends and turn ends, so the
-    /// mirror knows exactly which queued messages each prompt carries.
-    steering: Steering<String, ()>,
+    /// Client transcript chunks acknowledge inputs in FIFO order. Opening prompts are
+    /// invisible here; steering stays visible until its own acknowledgement arrives.
+    pending_inputs: VecDeque<PendingInput>,
+    busy: bool,
     log_tail: VecDeque<String>,
     agent_commands: Option<Vec<AgentCommandView>>,
     /// The title model's name until the thread's title settles (F4).
     titling_model: Option<String>,
+    heartbeat: crate::agent_activity::Heartbeat,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum PendingInput {
+    Opening,
+    Steering,
 }
 
 #[derive(Default)]
@@ -90,6 +97,42 @@ pub struct ThreadRuntimes {
 }
 
 impl ThreadRuntimes {
+    pub fn heartbeat(&self, key: ThreadKey) -> Option<u64> {
+        self.threads.get(&key)?.heartbeat.last_update()
+    }
+
+    pub fn observe_supervision(&mut self, key: ThreadKey, batch: &[AgentEvent], now: u64) -> bool {
+        self.threads
+            .get_mut(&key)
+            .is_some_and(|thread| thread.heartbeat.observe(batch, now))
+    }
+
+    pub fn nudge_supervision(&mut self, key: ThreadKey, now: u64) {
+        if let Some(thread) = self.threads.get_mut(&key) {
+            thread.heartbeat.nudge(now);
+        }
+    }
+
+    /// Rebuilds conversation views without pretending a process survived the restart.
+    pub fn restore(&mut self, state: &velocity_store::PersistedState) {
+        for project in &state.projects {
+            for thread in &project.threads {
+                if thread.interview.is_some() {
+                    continue;
+                }
+                let path = thread.worktree_path.as_deref().unwrap_or_default();
+                let mut runtime =
+                    parked_runtime(path, thread.state == velocity_store::ThreadState::Review);
+                runtime.transcript = LiveTranscript::restore(path, thread.transcript.clone());
+                let key = (project.id, thread.id);
+                self.threads.insert(key, runtime);
+                if thread.activity == AgentActivity::Parked {
+                    self.parked.insert(key);
+                }
+            }
+        }
+    }
+
     /// Merge cleanup and explicit deletion share one lease through their saved checkpoint.
     pub fn action_lock(&mut self, key: ThreadKey) -> Arc<tokio::sync::Mutex<()>> {
         Arc::clone(self.actions.entry(key).or_default())
@@ -102,8 +145,6 @@ impl ThreadRuntimes {
         self.retired.remove(&key);
         self.shutdown_failures.remove(&key);
         let (inputs, _unused) = unbounded_channel();
-        let mut steering = Steering::new(());
-        steering.step(SteeringInput::Send(String::new()));
         self.threads.insert(
             key,
             ThreadRuntime {
@@ -113,10 +154,12 @@ impl ThreadRuntimes {
                 deliveries: Deliveries::default(),
                 transcript: LiveTranscript::new(worktree),
                 inputs,
-                steering,
+                pending_inputs: VecDeque::new(),
+                busy: true,
                 log_tail: VecDeque::new(),
                 agent_commands: None,
                 titling_model: None,
+                heartbeat: crate::agent_activity::Heartbeat::default(),
             },
         );
     }
@@ -135,15 +178,10 @@ impl ThreadRuntimes {
         }
         let (inputs, receiver) = unbounded_channel();
         let _ = inputs.send(text_input(opening_prompt));
-        if let SteeringEffect::Prompt(queued) = thread.steering.step(SteeringInput::TurnEnded) {
-            for message in queued {
-                let _ = inputs.send(text_input(&message));
-            }
-        } else {
-            thread.steering = Steering::new(());
-            thread
-                .steering
-                .step(SteeringInput::Send(opening_prompt.to_owned()));
+        thread.pending_inputs = VecDeque::from([PendingInput::Opening]);
+        for message in thread.transcript.queued() {
+            let _ = inputs.send(text_input(message));
+            thread.pending_inputs.push_back(PendingInput::Steering);
         }
         thread.inputs = inputs;
         thread.phase = SessionPhase::Running;
@@ -172,9 +210,6 @@ impl ThreadRuntimes {
         let (inputs, receiver) = unbounded_channel();
         // The receiver is alive: it is returned below.
         let _ = inputs.send(text_input(prompt));
-        let mut steering = Steering::new(());
-        // An idle client prompts the first message at once, so it is never queued.
-        steering.step(SteeringInput::Send(prompt.to_owned()));
         self.threads.insert(
             key,
             ThreadRuntime {
@@ -184,10 +219,12 @@ impl ThreadRuntimes {
                 deliveries: Deliveries::default(),
                 transcript: LiveTranscript::new(worktree),
                 inputs,
-                steering,
+                pending_inputs: VecDeque::from([PendingInput::Opening]),
+                busy: true,
                 log_tail: VecDeque::new(),
                 agent_commands: None,
                 titling_model: None,
+                heartbeat: crate::agent_activity::Heartbeat::default(),
             },
         );
         receiver
@@ -206,7 +243,8 @@ impl ThreadRuntimes {
         }
         let _ = thread.inputs.send(AgentInput::Stop);
         thread.phase = SessionPhase::Ended;
-        thread.steering = Steering::new(());
+        thread.busy = false;
+        thread.pending_inputs.clear();
         let (ended, receiver) = oneshot::channel();
         self.stopping.insert(key, Vec::from([ended]));
         self.parked.insert(key);
@@ -223,8 +261,7 @@ impl ThreadRuntimes {
     }
 
     /// Starts a parked thread's next session: `prompt` first, then the messages that were
-    /// queued when it parked, in order. After an app restart there is no live transcript,
-    /// so a new one starts in the worktree.
+    /// queued when it parked, in order. Saved history survives an app restart.
     pub fn resume_parked(
         &mut self,
         key: ThreadKey,
@@ -243,18 +280,26 @@ impl ThreadRuntimes {
             .entry(key)
             .or_insert_with(|| parked_runtime(worktree, follows_pull_request));
         thread.transcript.new_session();
-        let mut steering = Steering::new(());
+        thread.pending_inputs = VecDeque::from([PendingInput::Opening]);
         for message in
             std::iter::once(prompt).chain(thread.transcript.queued().iter().map(String::as_str))
         {
             // The receiver is alive: it is returned below.
             let _ = inputs.send(text_input(message));
-            steering.step(SteeringInput::Send(message.to_owned()));
         }
+        thread.pending_inputs.extend(
+            thread
+                .transcript
+                .queued()
+                .iter()
+                .map(|_| PendingInput::Steering),
+        );
         thread.inputs = inputs;
-        thread.steering = steering;
+        thread.busy = true;
         thread.phase = SessionPhase::Running;
         thread.log_tail.clear();
+        // Commands belong to the new session; it may advertise a different set or none.
+        thread.agent_commands = Some(Vec::new());
         self.parked.remove(&key);
         Ok(receiver)
     }
@@ -270,7 +315,7 @@ impl ThreadRuntimes {
         if self.retired.contains(&key) || self.shutdown_failures.contains(&key) {
             return Err(SteerError::NoSession);
         }
-        let receiver = self.start(key, worktree, message);
+        let receiver = self.resume_parked(key, worktree, message, true)?;
         if let Some(thread) = self.threads.get_mut(&key) {
             thread.phase = SessionPhase::Running;
             thread.follows_pull_request = true;
@@ -323,10 +368,8 @@ impl ThreadRuntimes {
             .inputs
             .send(text_input(prompt))
             .map_err(|_| SteerError::NoSession)?;
-        if let SteeringEffect::Queued = thread.steering.step(SteeringInput::Send(prompt.to_owned()))
-        {
-            thread.transcript.queue(prompt);
-        }
+        thread.pending_inputs.push_back(PendingInput::Steering);
+        thread.transcript.queue(prompt);
         Ok(())
     }
 
@@ -445,7 +488,8 @@ impl ThreadRuntimes {
             thread.transcript.record_error(headline, &text);
             thread.phase = SessionPhase::Ended;
             // The session is over: nothing runs and nothing queued will be sent.
-            thread.steering = Steering::new(());
+            thread.busy = false;
+            thread.pending_inputs.clear();
         }
     }
 
@@ -454,6 +498,12 @@ impl ThreadRuntimes {
         thread.deliveries.apply(event);
         match event {
             AgentEvent::Transcript { placement, update } => {
+                if matches!(update, SessionUpdate::UserMessageChunk(_)) {
+                    thread.busy = true;
+                    if thread.pending_inputs.pop_front() == Some(PendingInput::Steering) {
+                        thread.transcript.sent_queued(1);
+                    }
+                }
                 thread.transcript.record(*placement, update);
             }
             AgentEvent::SessionUpdate(update) => {
@@ -476,12 +526,9 @@ impl ThreadRuntimes {
                         .transcript
                         .record_error("The agent's turn failed", error);
                 }
-                // The client emits the turn end before it prompts what was queued, so the
-                // queued rows leave just before the prompt's own message arrives.
-                if let SteeringEffect::Prompt(sent) = thread.steering.step(SteeringInput::TurnEnded)
-                {
-                    thread.transcript.sent_queued(sent.len());
-                }
+                // A delayed turn end cannot acknowledge inputs sent after that turn.
+                // Only the client's prompt chunks above remove queued rows.
+                thread.busy = false;
             }
             AgentEvent::Log(line) => {
                 thread.log_tail.push_back(line.clone());
@@ -491,6 +538,7 @@ impl ThreadRuntimes {
                 return None;
             }
             AgentEvent::SessionStarted { .. }
+            | AgentEvent::ProviderQueued(..)
             | AgentEvent::Queued
             | AgentEvent::FileWritten { .. } => return None,
         }
@@ -509,9 +557,11 @@ impl ThreadRuntimes {
 
 fn progress(thread: &ThreadRuntime) -> ThreadProgress {
     // A turn that ended leaves no tool running, whatever status its calls last reported.
-    let activity = if !thread.steering.is_busy() {
+    let activity = if !thread.busy
+        && (thread.phase == SessionPhase::Ended || thread.transcript.queued().is_empty())
+    {
         AgentActivity::Idle
-    } else if thread.transcript.has_running_tool() {
+    } else if thread.busy && thread.transcript.has_running_tool() {
         AgentActivity::Executing
     } else {
         AgentActivity::Thinking
@@ -534,10 +584,12 @@ fn parked_runtime(worktree: &str, follows_pull_request: bool) -> ThreadRuntime {
         deliveries: Deliveries::default(),
         transcript: LiveTranscript::new(worktree),
         inputs,
-        steering: Steering::new(()),
+        pending_inputs: VecDeque::new(),
+        busy: false,
         log_tail: VecDeque::new(),
         agent_commands: None,
         titling_model: None,
+        heartbeat: crate::agent_activity::Heartbeat::default(),
     }
 }
 

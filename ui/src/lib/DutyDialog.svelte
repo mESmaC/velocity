@@ -1,6 +1,7 @@
 <script lang="ts">
   import { onMount } from 'svelte';
   import Icon from './Icon.svelte';
+  import ProviderSignInCards from './ProviderSignInCards.svelte';
   import { dutyCommands, providerIcon } from './ipc';
   import type {
     DutyDialogDefaults,
@@ -255,6 +256,7 @@
               </span>
             </button>
           {/if}
+          <ProviderSignInCards {send} {report} />
         </div>
       </div>
 

@@ -54,12 +54,14 @@ pub fn placeholders(file: &ProofFile) -> Vec<Placeholder> {
 }
 
 /// Whether the file names the SPEC.md section it covers: a line that mentions `SPEC.md`
-/// together with a `§` section or a feature number such as `F14` (F17 Design proof).
+/// together with a `§` section, `section 2.2`, or a feature number such as `F14`
+/// (F17 Design proof).
 pub fn names_spec_section(text: &str) -> bool {
     text.lines()
         .filter(|line| line.contains("SPEC.md"))
         .any(|line| {
             line.contains('§')
+                || names_numbered_section(line)
                 || words(line).any(|word| {
                     let mut characters = word.text.chars();
                     characters.next() == Some('F')
@@ -67,6 +69,50 @@ pub fn names_spec_section(text: &str) -> bool {
                         && characters.as_str().chars().all(|c| c.is_ascii_digit())
                 })
         })
+}
+
+fn names_numbered_section(line: &str) -> bool {
+    let Some((_, reference)) = line.split_once("SPEC.md") else {
+        return false;
+    };
+    let mut tokens = reference.split_whitespace();
+    while let Some(token) = tokens.next() {
+        if token != "section" {
+            continue;
+        }
+        let Some(number) = tokens.next() else {
+            return false;
+        };
+        // Prose punctuation can follow the section; each dotted component still
+        // needs digits so an unspecified or malformed section cannot pass.
+        let number = number.trim_end_matches([':', ',', ';', ')']);
+        let number = number.strip_suffix('.').unwrap_or(number);
+        if number.split('.').all(|component| {
+            !component.is_empty() && component.bytes().all(|byte| byte.is_ascii_digit())
+        }) {
+            return true;
+        }
+    }
+    false
+}
+
+// #150: a valid section reference must not block PR duty's proof gate.
+#[cfg(test)]
+#[test]
+fn numbered_spec_references_pass_the_design_proof_gate() {
+    for reference in [
+        "section 2.2: stall escalation",
+        "section 2",
+        "section 2.2.1.",
+    ] {
+        assert!(names_spec_section(&format!("-- SPEC.md {reference}")));
+    }
+    for reference in ["section", "section two", "section 2..2", "section 2.2x"] {
+        assert!(!names_spec_section(&format!("-- SPEC.md {reference}")));
+    }
+    assert!(names_spec_section("-- SPEC.md §2.2"));
+    assert!(names_spec_section("-- SPEC.md F14"));
+    assert!(!names_spec_section("-- section 2.2"));
 }
 
 /// Every `theorem` in the file, with its statement.
