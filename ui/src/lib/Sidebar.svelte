@@ -58,7 +58,7 @@
   <nav class="thread-groups" aria-label="Thread groups">
     {#each layout.groups as group (group.group)}
       <section aria-label={group.title || 'Drafts'}>
-        {#if group.title}<div class="group-h">
+        {#if group.title}<div class="group-h" data-group={group.group}>
             <span>{group.title}</span>
             {#if group.group === 'Duty'}<button
                 class="icon-btn"

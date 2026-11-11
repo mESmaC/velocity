@@ -279,9 +279,9 @@
   --layout-project-select-hover-background: rgba(255, 255, 255, 0.1);
   --layout-project-select-icon-width: 12px;
   --layout-project-select-icon-height: 12px;
-  --layout-pulse-gap: 14px;
+  --layout-pulse-gap: 6px;
   --layout-pulse-height: 24px;
-  --layout-pulse-padding: 0 14px;
+  --layout-pulse-padding: 0 5px 0 3px;
   --layout-pulse-border-radius: 999px;
   --layout-pulse-font-size: 11px;
   --layout-pulse-span-pulse-button-gap: 6px;
@@ -335,11 +335,11 @@
   --layout-thread-border: 1px solid transparent;
   --layout-thread-border-radius: 9px;
   --layout-thread-hover-background: rgba(255, 255, 255, 0.05);
-  --layout-thread-active-border-color: rgba(255, 255, 255, 0.09);
+  --layout-thread-active-border-color: var(--accent-line);
   --layout-thread-active-background: linear-gradient(
     180deg,
-    rgba(255, 255, 255, 0.14),
-    rgba(255, 255, 255, 0.085)
+    rgba(106, 141, 255, 0.22),
+    rgba(106, 141, 255, 0.13)
   );
   --layout-thread-active-box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.1);
   --layout-t-title-font-size: 12px;
@@ -362,8 +362,8 @@
   );
   --layout-thread-active-data-status-duty-background: linear-gradient(
     180deg,
-    rgba(183, 163, 230, 0.17),
-    rgba(183, 163, 230, 0.09)
+    rgba(183, 156, 255, 0.17),
+    rgba(183, 156, 255, 0.09)
   );
   --layout-thread-active-data-status-error-border-color: rgba(
     232,
@@ -373,8 +373,8 @@
   );
   --layout-thread-active-data-status-error-background: linear-gradient(
     180deg,
-    rgba(232, 128, 122, 0.17),
-    rgba(232, 128, 122, 0.09)
+    rgba(255, 115, 105, 0.17),
+    rgba(255, 115, 105, 0.09)
   );
   --layout-thread-active-data-status-spec-border-color: rgba(
     143,
@@ -395,8 +395,8 @@
   );
   --layout-thread-active-data-status-swarm-background: linear-gradient(
     180deg,
-    rgba(127, 209, 199, 0.15),
-    rgba(127, 209, 199, 0.08)
+    rgba(95, 212, 196, 0.15),
+    rgba(95, 212, 196, 0.08)
   );
   --layout-swarm-toggle-right: 0;
   --layout-swarm-toggle-top: 0;
@@ -434,7 +434,7 @@
     var(--sheen) padding-box, var(--pane) padding-box,
     linear-gradient(#000, #000) padding-box, var(--rim-hot) border-box;
   --layout-composer-focus-within-box-shadow:
-    var(--glass-hi), 0 0 0 4px rgba(152, 152, 157, 0.1);
+    var(--glass-hi), 0 0 0 3px var(--accent-soft);
   --layout-composer-textarea-border: 0;
   --layout-composer-textarea-outline: 0;
   --layout-composer-textarea-min-height: 44px;
@@ -452,8 +452,8 @@
   --layout-send-height: 24px;
   --layout-send-border: 0;
   --layout-send-border-radius: 50%;
-  --layout-send-background: linear-gradient(#fff, #d8d8dc);
-  --layout-send-box-shadow: inset 0 1px 0 #fff;
+  --layout-send-background: var(--accent);
+  --layout-send-box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.35);
   --layout-starters-width: min(560px, 100%);
   --layout-starters-gap: 6px;
   --layout-starters-margin-top: 10px;
@@ -611,11 +611,11 @@
     rgba(255, 255, 255, 0.17),
     rgba(255, 255, 255, 0.1)
   );
-  --thread-btn-primary-border-color: rgba(255, 255, 255, 0.22);
-  --thread-btn-primary-background: linear-gradient(#85858b, #626267);
-  --thread-btn-primary-color: #fff;
-  --thread-btn-primary-box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.22);
-  --thread-btn-primary-hover-background: linear-gradient(#909096, #6c6c71);
+  --thread-btn-primary-border-color: var(--accent-line);
+  --thread-btn-primary-background: var(--accent);
+  --thread-btn-primary-color: #000;
+  --thread-btn-primary-box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.3);
+  --thread-btn-primary-hover-background: var(--accent-hi);
   --thread-btn-kbd-padding: 1px 3px;
   --thread-btn-kbd-font-size: 9px;
   --thread-mini-height: 18px;
@@ -667,9 +667,9 @@
   --thread-diff-pre-margin: 0;
   --thread-diff-pre-padding: 6px 0;
   --thread-diff-line-padding: 0 10px;
-  --thread-diff-added-background: #9ccc9512;
+  --thread-diff-added-background: #5fd08a12;
   --thread-diff-added-color: #c3e6be;
-  --thread-diff-deleted-background: #e8807a12;
+  --thread-diff-deleted-background: #ff736912;
   --thread-worked-gap: 8px;
   --thread-worked-padding: 7px 10px;
   --thread-worked-border: 1px dashed var(--line-mid);
@@ -678,7 +678,7 @@
   --thread-err-card-border: 1px solid #6b3532;
   --thread-err-card-border-radius: 12px;
   --thread-err-card-padding: 10px 12px;
-  --thread-err-card-background: #e8807a0a;
+  --thread-err-card-background: #ff73690a;
   --thread-err-card-ah-font-size: 11px;
   --thread-err-card-ah-margin-bottom: 6px;
   --thread-err-card-ah-gap: 8px;
@@ -859,7 +859,7 @@
   --pr-log-bold-weight: 600;
   --pr-comment-border: 1px solid #6b3532;
   --pr-comment-border-left: 2px solid var(--err);
-  --pr-comment-background: #e8807a08;
+  --pr-comment-background: #ff736908;
   --pr-comment-resolved-background: transparent;
   --pr-comment-header-padding: 6px 10px;
   --pr-comment-header-border: 1px solid var(--line-dim);
@@ -904,7 +904,7 @@
   --pr-dot-active-background: currentColor;
   --pr-card-padding: 10px 12px;
   --pr-done-border: 1px solid #3f5a3c;
-  --pr-done-background: #9ccc950a;
+  --pr-done-background: #5fd08a0a;
   --pr-card-radius: 12px;
   --pr-done-heading-font-size: 11px;
   --pr-done-heading-gap: 8px;
@@ -939,7 +939,7 @@
   --thread-menu-button-radius: 7px;
   --thread-menu-button-font-size: 11.5px;
   --thread-menu-button-hover: rgba(255, 255, 255, 0.13);
-  --thread-menu-danger-hover: #e8807a18;
+  --thread-menu-danger-hover: #ff736918;
   --thread-menu-detail-font: 10px var(--mono);
   --thread-menu-detail-max-width: 300px;
   --thread-menu-divider-margin: 4px 2px;
@@ -1008,7 +1008,7 @@
   --spec-card-padding: 12px;
   --spec-card-background: #8fb4e80a;
   --spec-card-locked-border-color: #3f5a3c;
-  --spec-card-locked-background: #9ccc950a;
+  --spec-card-locked-background: #5fd08a0a;
   --spec-card-head-gap: 8px;
   --spec-card-head-font-size: 11px;
   --spec-card-head-margin-bottom: 10px;
@@ -1028,13 +1028,13 @@
   --agents-rewrite-gap: 6px;
   --agents-rewrite-margin: 0 0 3px;
   --agents-rewrite-size: 10.5px;
-  --agents-rewrite-strike: #e8807a99;
+  --agents-rewrite-strike: #ff736999;
 }
 
 /* F11 live lint: reference .b-text mark, .b-st, .lint, .lint-h, .cov and .lf rules (766–808). */
 :root {
-  --agents-mark-hedge: #e6b66726;
-  --agents-mark-modal: #e8807a22;
+  --agents-mark-hedge: #f0b65126;
+  --agents-mark-modal: #ff736922;
   --agents-mark-vague: #8fb4e81f;
   --agents-mark-border: 1px solid;
   --agents-mark-radius: 2px;
@@ -1351,10 +1351,10 @@
   --airc-tag-background: rgba(255, 255, 255, 0.07);
   --airc-tag-claim-background: rgba(255, 255, 255, 0.13);
   --airc-tag-info-background: rgba(143, 180, 232, 0.13);
-  --airc-tag-positive-background: rgba(156, 204, 149, 0.13);
-  --airc-tag-warning-background: rgba(230, 182, 103, 0.13);
-  --airc-tag-danger-background: rgba(232, 128, 122, 0.13);
-  --airc-overlap-row-background: rgba(230, 182, 103, 0.06);
+  --airc-tag-positive-background: rgba(95, 208, 138, 0.13);
+  --airc-tag-warning-background: rgba(240, 182, 81, 0.13);
+  --airc-tag-danger-background: rgba(255, 115, 105, 0.13);
+  --airc-overlap-row-background: rgba(240, 182, 81, 0.06);
   --airc-ledger-padding: 5px 16px;
   --airc-ledger-font: 11.5px/1.55 var(--mono);
   --airc-note-margin: 2px 16px 8px;
@@ -1383,11 +1383,11 @@
   /* Nick hues from the reference's NICKC list. */
   --airc-nick-0: #d97757;
   --airc-nick-1: #8fb4e8;
-  --airc-nick-2: #9ccc95;
-  --airc-nick-3: #e6b667;
-  --airc-nick-4: #b7a3e6;
-  --airc-nick-5: #7fd1c7;
-  --airc-nick-6: #e8807a;
+  --airc-nick-2: #5fd08a;
+  --airc-nick-3: #f0b651;
+  --airc-nick-4: #b79cff;
+  --airc-nick-5: #5fd4c4;
+  --airc-nick-6: #ff7369;
   --airc-nick-7: #f0a3c8;
   --airc-nick-8: #a3d4f0;
   --airc-nick-9: #d4c38f;
@@ -1459,4 +1459,22 @@
   --task-source-gap: 8px;
   --task-done-decoration: #555;
   --task-source-underline-offset: 2px;
+}
+
+/* Colour roles, from the "colour roles" rules that close the stylesheet in
+   design/main-window.html: the tinted status pills, the branch chip and the
+   swarm buttons. */
+:root {
+  --colour-pulse-pill-height: 18px;
+  --colour-pulse-pill-padding: 0 8px;
+  --colour-pulse-pill-border-radius: 999px;
+  --colour-pulse-pill-background: color-mix(
+    in srgb,
+    currentColor 14%,
+    transparent
+  );
+  --colour-branch-padding: 1px 8px;
+  --colour-branch-border-radius: 999px;
+  --colour-swarm-button-border-color: rgba(95, 212, 196, 0.3);
+  --colour-swarm-button-background: rgba(95, 212, 196, 0.12);
 }
