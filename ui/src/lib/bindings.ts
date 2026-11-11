@@ -4096,6 +4096,7 @@ export type ThreadMenuView_Deserialize = {
 	project_identifier: number,
 	thread_identifier: number,
 	entries: ThreadMenuEntry_Deserialize[],
+	message_mode?: ThreadMessageMode | null,
 };
 
 /**  One thread's right-click menu, built from saved state and what is on disk. */
@@ -4104,6 +4105,12 @@ export type ThreadMenuView_Serialize = {
 	project_identifier: number,
 	thread_identifier: number,
 	entries: ThreadMenuEntry_Serialize[],
+	message_mode: ThreadMessageMode | null,
+};
+
+export type ThreadMessageMode = {
+	nick: string,
+	mode: MessageMode,
 };
 
 export type ThreadState = "draft" | "spec" | "working" | "review" | "error" | "closed" | "done" | "merged";
