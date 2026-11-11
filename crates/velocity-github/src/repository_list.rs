@@ -21,16 +21,15 @@ pub struct GitHubRepository {
 /// recently updated first. One paginated `gh api` call covers both, so the list
 /// never waits on one request per organisation.
 pub fn list_your_repositories() -> Result<Vec<GitHubRepository>, GitHubError> {
-    let listed = gh()
-        .args([
-            "api",
-            "--paginate",
-            "user/repos?affiliation=owner,organization_member&sort=updated&per_page=100",
-            "--jq",
-            ".[] | {full_name, description, private, updated_at}",
-        ])
-        .output()
-        .map_err(GitHubError::Spawn)?;
+    let listed = gh(&[
+        "api",
+        "--paginate",
+        "user/repos?affiliation=owner,organization_member&sort=updated&per_page=100",
+        "--jq",
+        ".[] | {full_name, description, private, updated_at}",
+    ])
+    .output()
+    .map_err(GitHubError::Spawn)?;
     if !listed.status.success() {
         return Err(GitHubError::ListFailed {
             stderr: String::from_utf8_lossy(&listed.stderr).trim().to_owned(),
