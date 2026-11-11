@@ -188,7 +188,13 @@ fn settings(application: &AppHandle) -> Settings {
 }
 
 fn configure_concurrency(application: &AppHandle) {
-    let limits = settings(application)
+    let state = application.state::<ManagedStateStore>();
+    let Ok(store) = state.lock() else {
+        return;
+    };
+    // Keep settings edits serialized through applying the live cap as well as saving it.
+    let limits = store
+        .settings()
         .providers
         .concurrency
         .iter()
@@ -200,6 +206,7 @@ fn configure_concurrency(application: &AppHandle) {
         })
         .collect::<Vec<_>>();
     velocity_acp::concurrency::configure(&limits);
+    drop(store);
 }
 
 pub fn initialize(application: &AppHandle) {
