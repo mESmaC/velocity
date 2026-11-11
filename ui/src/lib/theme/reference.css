@@ -1654,11 +1654,11 @@
   --skills-chip-82: none;
 }
 
-/* Markdown uses the reference's outline indentation (20px), diff header inset
-   (10px), tool-card padding (6px 12px) and quiet card border. */
+/* Markdown follows the reference transcript's grouped-text inset (.tools,
+   12px), tool-card padding (6px 12px) and quiet card border. */
 :root {
-  --markdown-list-padding: 20px;
-  --markdown-quote-padding: 10px;
+  --markdown-list-padding: 12px;
+  --markdown-quote-padding: 12px;
   --markdown-quote-border: 1px solid rgba(255, 255, 255, 0.09);
   --markdown-code-padding: 6px 12px;
 }
