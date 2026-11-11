@@ -68,7 +68,11 @@ pub fn claims(entries: &[Entry]) -> Vec<Claim> {
         };
         match record.kind.as_str() {
             "claim" => {
-                held.insert(claim.key().to_owned(), claim.clone());
+                // Logs written before #234 can hold absolute paths of files outside the
+                // worktree. They are not repository files, so they never overlap anything.
+                let mut claim = claim.clone();
+                claim.files.retain(|file| repository_relative(file));
+                held.insert(claim.key().to_owned(), claim);
             }
             "released" => {
                 held.remove(claim.key());
@@ -205,6 +209,9 @@ impl Channel {
 
     /// Observed edits extend every piece this agent holds, without changing piece ownership.
     pub fn observe_file(&self, member: &str, file: &str) -> Result<(), Error> {
+        if !repository_relative(file) {
+            return Ok(());
+        }
         for claim in self
             .claims()?
             .into_iter()
@@ -282,6 +289,61 @@ pub fn normalize_file(file: &str) -> String {
     format!("{prefix}{}", parts.join("/"))
 }
 
+/// Whether a claimed file names a path inside the repository. Absolute paths (a drive,
+/// a root, a UNC or verbatim prefix) and paths that climb out with `..` are outside it.
+pub fn repository_relative(file: &str) -> bool {
+    let file = normalize_file(file);
+    let first = file.split('/').next().unwrap_or_default();
+    !file.is_empty() && !file.starts_with('/') && first != ".." && !drive_segment(first)
+}
+
+/// The repository-relative, slash-separated path of `path` inside `worktree`, or `None`
+/// when the file is outside it. A relative `path` is already relative to the worktree,
+/// as ACP resolves it. Windows spellings of one folder compare equal: drive-letter case,
+/// either slash, a trailing separator and the `\\?\` verbatim prefix. Other segments
+/// keep their case, as in [`normalize_file`].
+pub fn worktree_file(worktree: &str, path: &str) -> Option<String> {
+    let path = normalize_file(&strip_verbatim(path));
+    if repository_relative(&path) {
+        return Some(path);
+    }
+    let worktree = normalize_file(&strip_verbatim(worktree));
+    if worktree.is_empty() || path.starts_with("//") != worktree.starts_with("//") {
+        return None;
+    }
+    let mut inside = path.split('/');
+    for expected in worktree.split('/') {
+        let actual = inside.next()?;
+        let same = if drive_segment(expected) {
+            actual.eq_ignore_ascii_case(expected)
+        } else {
+            actual == expected
+        };
+        if !same {
+            return None;
+        }
+    }
+    let rest = inside.collect::<Vec<_>>().join("/");
+    repository_relative(&rest).then_some(rest)
+}
+
+/// `\\?\C:\x` is `C:\x`, and `\\?\UNC\server\share` is `\\server\share`.
+fn strip_verbatim(path: &str) -> String {
+    let slashed = path.replace('\\', "/");
+    if let Some(rest) = slashed.strip_prefix("//?/UNC/") {
+        format!("//{rest}")
+    } else if let Some(rest) = slashed.strip_prefix("//?/") {
+        rest.into()
+    } else {
+        slashed
+    }
+}
+
+fn drive_segment(segment: &str) -> bool {
+    let bytes = segment.as_bytes();
+    bytes.len() == 2 && bytes[0].is_ascii_alphabetic() && bytes[1] == b':'
+}
+
 fn generated(file: &str) -> bool {
     matches!(
         file,
@@ -338,7 +400,7 @@ fn build_claim(
         files
             .into_iter()
             .map(|file| normalize_file(&file))
-            .filter(|file| !generated(file)),
+            .filter(|file| !generated(file) && repository_relative(file)),
     );
     paths.sort();
     paths.dedup();

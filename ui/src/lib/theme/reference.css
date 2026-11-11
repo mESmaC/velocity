@@ -1677,3 +1677,37 @@
   --markdown-quote-border: 1px solid rgba(255, 255, 255, 0.09);
   --markdown-code-padding: 6px 12px;
 }
+
+/* ───────────── Motion (#226) ─────────────
+   The user asked for gentle, Apple-like motion in #226. The reference has three
+   transition values: 0.15s on the toggle knob (.tgl::after), 0.18s on the toast
+   and the number hints. Those are the fast and base durations below; the rest
+   is new. One set of durations and curves, so every surface moves the same
+   way: things arrive with an ease-out and leave a little faster with an
+   ease-in. Travel is a few pixels and scale starts at 0.97. Nothing overshoots.
+   motion.ts reads these for Svelte transitions; motion.css uses them for CSS
+   transitions. */
+:root {
+  --motion-duration-quick: 0.12s; /* hover, press, focus, and anything leaving */
+  --motion-duration-fast: 0.15s; /* reference .tgl::after */
+  --motion-duration-base: 0.18s; /* reference .toast and .hint */
+  --motion-duration-slow: 0.26s; /* views arriving, bars filling */
+  --motion-ease-out: cubic-bezier(0.2, 0.8, 0.2, 1);
+  --motion-ease-in: cubic-bezier(0.4, 0, 1, 1);
+  --motion-ease-in-out: cubic-bezier(0.4, 0, 0.2, 1);
+  --motion-rise: 4px; /* rows and views drift up this far as they arrive */
+  --motion-scale-from: 0.97; /* menus, popovers and dialogs grow from this */
+  --motion-press-scale: 0.97; /* compact controls while pressed */
+  --motion-progress-duration: var(--motion-duration-slow);
+}
+
+/* Reduced motion: no travel, no scale, no filling bars. Fades stay, because
+   an element appearing with a short opacity change moves nothing. */
+@media (prefers-reduced-motion: reduce) {
+  :root {
+    --motion-rise: 0px;
+    --motion-scale-from: 1;
+    --motion-press-scale: 1;
+    --motion-progress-duration: 0s;
+  }
+}

@@ -189,7 +189,10 @@ def traces : List (String × List Observation) := [
     {time := 800, status := .buildQueue}, {time := 900, status := .closed},
     {time := 1000, status := .live}, {time := 2000, status := .live}]),
   ("switch", [{time := 100, status := .failed}, {time := 699, status := .atLimit},
-    {time := 700, status := .failed}])]
+    {time := 700, status := .failed}]),
+  -- #212: setup failed before a worktree existed; the Rust check runs this trace
+  -- with no worktree and no live session.
+  ("setup", [{time := 100, status := .failed}, {time := 700, status := .failed}])]
 
 #eval IO.FS.writeFile "fixtures/agent-activity.tsv"
   (stallRows ++ String.join (traces.map fun (name, observations) => traceRows name observations))

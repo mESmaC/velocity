@@ -33,3 +33,5 @@ trace	exempt	2000	live	false	none	false	false
 trace	switch	100	failed	false	100	false	false
 trace	switch	699	limit	false	100	false	false
 trace	switch	700	failed	false	100	true	true
+trace	setup	100	failed	false	100	false	false
+trace	setup	700	failed	false	100	true	true
