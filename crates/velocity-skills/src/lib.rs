@@ -9,6 +9,7 @@ pub mod library;
 pub mod manifest;
 pub mod menu;
 pub mod settings;
+pub mod suggestions;
 
 use std::path::PathBuf;
 use thiserror::Error;

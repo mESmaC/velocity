@@ -12,6 +12,10 @@ pub struct SkillPackCard {
     pub selection: PackSelection,
     pub enabled_count: u32,
     pub requirements: Vec<String>,
+    /// `suggested · UI found` when the project scan suggested this pack (F3, F18), else empty.
+    pub suggestion_badge: String,
+    /// What the scan found, or what would make it suggest the pack; empty for other packs.
+    pub detection: String,
 }
 #[cfg_attr(feature = "bindings", derive(specta::Type))]
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -60,6 +64,8 @@ pub fn settings_view(
                 selection,
                 enabled_count,
                 requirements: requirements(catalog),
+                suggestion_badge: suggestion_badge(&catalog.id, choices),
+                detection: detection(&catalog.id, choices),
             }
         })
         .collect();
@@ -70,6 +76,25 @@ pub fn settings_view(
         enabled_count: count,
         description_tokens: tokens,
         budget_warning: count > 150,
+    }
+}
+fn suggestion_badge(pack: &str, choices: &ProjectSkills) -> String {
+    choices
+        .suggestion_for(pack)
+        .map(|suggestion| {
+            let finding = suggestion.reason.split(':').next().unwrap_or_default();
+            format!("suggested \u{00b7} {finding}")
+        })
+        .unwrap_or_default()
+}
+fn detection(pack: &str, choices: &ProjectSkills) -> String {
+    if let Some(suggestion) = choices.suggestion_for(pack) {
+        return suggestion.reason.clone();
+    }
+    match pack {
+        "uiux" => crate::suggestions::UI_HINT.into(),
+        "gamedev" => crate::suggestions::ENGINE_HINT.into(),
+        _ => String::new(),
     }
 }
 fn description_tokens(skills: &[&DiscoveredSkill]) -> u32 {

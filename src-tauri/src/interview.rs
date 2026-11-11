@@ -58,6 +58,35 @@ fn host(application: &AppHandle) -> Arc<AppHost> {
 /// Starts the interviews Create recorded, and resumes ones a restart cut off.
 pub fn start(application: &AppHandle) {
     velocity_interview::start_interviews(&host(application));
+    // The scan also suggests skill packs for the project (F3 step 1, F18).
+    for project in scanning_projects(application) {
+        crate::skills::recheck_suggestions(
+            application,
+            project,
+            crate::skills::SuggestionCheck::Opened,
+        );
+    }
+}
+
+fn scanning_projects(application: &AppHandle) -> Vec<u32> {
+    let state = application.state::<ManagedStateStore>();
+    let Ok(store) = state.lock() else {
+        return Vec::new();
+    };
+    store
+        .state()
+        .projects
+        .iter()
+        .filter(|project| {
+            project.threads.iter().any(|thread| {
+                thread
+                    .interview
+                    .as_ref()
+                    .is_some_and(|record| record.stage == velocity_store::InterviewStage::Scan)
+            })
+        })
+        .map(|project| project.id)
+        .collect()
 }
 
 /// Carries out `intent` when it belongs to the open spec interview.
