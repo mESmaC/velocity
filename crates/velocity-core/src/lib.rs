@@ -29,6 +29,7 @@ pub mod new_project;
 pub mod pr_review;
 pub mod projects;
 pub mod proof_card;
+pub mod proofs_settings;
 pub mod ready_pool;
 pub mod review_diff;
 pub mod review_tier;

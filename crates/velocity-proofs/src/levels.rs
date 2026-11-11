@@ -87,6 +87,14 @@ const LANGUAGES: &[Language] = &[
     },
 ];
 
+/// Every language Velocity attributes code to, in display order, with its code-level
+/// translator (Settings → Proofs, F13).
+pub fn language_translators() -> impl Iterator<Item = (&'static str, Option<&'static str>)> {
+    LANGUAGES
+        .iter()
+        .map(|language| (language.name, language.translator))
+}
+
 /// The language a source file is written in, by its extension (ignoring case).
 pub fn language_of(path: &str) -> Option<&'static str> {
     language_entry(path).map(|language| language.name)

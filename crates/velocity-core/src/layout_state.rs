@@ -1005,7 +1005,8 @@ impl LayoutState {
             && (tab == "worktrees"
                 || tab == "providers"
                 || tab == "skills"
-                || tab == "agent-settings")
+                || tab == "agent-settings"
+                || tab == "proofs")
         {
             self.view = NavigationView::Settings;
             self.settings_tab = tab.clone();

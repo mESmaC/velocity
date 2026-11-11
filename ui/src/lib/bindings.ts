@@ -27,6 +27,7 @@ export const commands = {
 	dispatchLayout: (action: LayoutAction_Deserialize) => __TAURI_INVOKE<LayoutSnapshot_Serialize>("dispatch_layout", { action }),
 	listProjects: () => __TAURI_INVOKE<ProjectList>("list_projects"),
 	switchProject: (identifier: number) => __TAURI_INVOKE<LayoutSnapshot_Serialize>("switch_project", { identifier }),
+	getProofsSettings: (projectIdentifier: number) => __TAURI_INVOKE<ProofsSettingsView_Serialize>("get_proofs_settings", { projectIdentifier }),
 	/**
 	 *  Sets `provider`'s ACP agent command from its card: the program and its arguments as one
 	 *  line. `None` resets a built-in provider to its built-in command. Running agents keep the
@@ -519,6 +520,18 @@ export type DependencyWait = {
 	holder: string,
 	holder_nick: string,
 	file: string,
+};
+
+/**  A design proof found in the Lake project, `proofs/<Feature>/Design.lean`. */
+export type DesignProofEntry = {
+	feature: string,
+	/**  From the repository root, e.g. `proofs/TargetedRebase`. */
+	folder: string,
+	/**
+	 *  The level each language's code reaches for this feature, read as F17 "How Velocity
+	 *  reads the level" says.
+	 */
+	levels: ProofLevel[],
 };
 
 export type DiffBlockView = DiffBlockView_Serialize | DiffBlockView_Deserialize;
@@ -1403,6 +1416,25 @@ export type KeyboardInput = {
 	typing: boolean,
 };
 
+/**  A language's code-level translator, and the strongest level its code can reach. */
+export type LanguageTranslator = LanguageTranslator_Serialize | LanguageTranslator_Deserialize;
+
+/**  A language's code-level translator, and the strongest level its code can reach. */
+export type LanguageTranslator_Deserialize = {
+	language: string,
+	/**  `None` until a translator is set for the language (Q23); it then tops out at reference. */
+	translator?: string | null,
+	strongest: ProofLevelKind,
+};
+
+/**  A language's code-level translator, and the strongest level its code can reach. */
+export type LanguageTranslator_Serialize = {
+	language: string,
+	/**  `None` until a translator is set for the language (Q23); it then tops out at reference. */
+	translator: string | null,
+	strongest: ProofLevelKind,
+};
+
 export type LaunchEligibility = "allowed" | "lock_spec_first" | "no_project";
 
 export type LaunchGoalSwarmRequest = LaunchGoalSwarmRequest_Serialize | LaunchGoalSwarmRequest_Deserialize;
@@ -2245,6 +2277,16 @@ export type ProofListEntryView = {
 	included: boolean,
 };
 
+/**  One feature on the project's proof list. */
+export type ProofListFeature = {
+	feature: string,
+	/**
+	 *  Why it is on the list: the rest of the bullet after `Feature:`, or the table's other
+	 *  columns joined with ` · `. Empty when SPEC.md gives no reason.
+	 */
+	detail: string,
+};
+
 /**
  *  Velocity's proof checks on the PR (SPEC.md F17), run in the thread's worktree once per
  *  head: the head they last finished on and the card they produced there.
@@ -2283,6 +2325,45 @@ export type ProofTheorem = {
 	kind: string,
 	name: string,
 	statement: string,
+};
+
+/**  Everything the Proofs page shows for one project. */
+export type ProofsSettingsView = ProofsSettingsView_Serialize | ProofsSettingsView_Deserialize;
+
+/**  Everything the Proofs page shows for one project. */
+export type ProofsSettingsView_Deserialize = {
+	/**  The project has a SPEC.md at its root. */
+	spec_found: boolean,
+	/**  SPEC.md has a proof list, even an empty one ("- None."). */
+	proof_list_found: boolean,
+	proof_list: ProofListFeature[],
+	/**  The Lake project's folder from the repository root, when the project has one. */
+	lake_project?: string | null,
+	design_proofs: DesignProofEntry[],
+	translators: LanguageTranslator_Deserialize[],
+	/**
+	 *  How many generated inputs a scout diffs between the code and the compiled Lean model
+	 *  for each feature (F17 reference level). Saved with the app's settings.
+	 */
+	stress_diff_input_count: number,
+};
+
+/**  Everything the Proofs page shows for one project. */
+export type ProofsSettingsView_Serialize = {
+	/**  The project has a SPEC.md at its root. */
+	spec_found: boolean,
+	/**  SPEC.md has a proof list, even an empty one ("- None."). */
+	proof_list_found: boolean,
+	proof_list: ProofListFeature[],
+	/**  The Lake project's folder from the repository root, when the project has one. */
+	lake_project: string | null,
+	design_proofs: DesignProofEntry[],
+	translators: LanguageTranslator_Serialize[],
+	/**
+	 *  How many generated inputs a scout diffs between the code and the compiled Lean model
+	 *  for each feature (F17 reference level). Saved with the app's settings.
+	 */
+	stress_diff_input_count: number,
 };
 
 export type ProviderCardView = ProviderCardView_Serialize | ProviderCardView_Deserialize;

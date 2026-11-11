@@ -222,7 +222,7 @@ fn levels(features: &[FeatureLevels]) -> Vec<ProofLevel> {
         .collect()
 }
 
-fn level_kind(level: levels::ProofLevel) -> ProofLevelKind {
+pub(crate) fn level_kind(level: levels::ProofLevel) -> ProofLevelKind {
     match level {
         levels::ProofLevel::Model => ProofLevelKind::Model,
         levels::ProofLevel::Reference => ProofLevelKind::Reference,
