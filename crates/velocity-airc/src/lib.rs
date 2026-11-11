@@ -1,6 +1,7 @@
 //! F14 project channels. Claims and step-boundary delivery are separate layers.
 mod channel;
 pub mod claims;
+mod comment;
 mod delivery;
 mod event_log;
 mod launch;
