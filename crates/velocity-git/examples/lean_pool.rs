@@ -6,6 +6,9 @@
 //!
 //! `cargo run -p velocity-git --example lean_pool -- <repository> [commit]`
 
+// A console example: its children share its console, so no hidden_command (#232).
+#![allow(clippy::disallowed_methods)]
+
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::time::Instant;

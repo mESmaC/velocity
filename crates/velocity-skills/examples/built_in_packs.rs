@@ -11,6 +11,9 @@
 //! 5. Starts sessions the way every role does: one in a linked worktree of the project gets
 //!    REA's MCP server, one outside it gets none.
 
+// A console example: its children share its console, so no hidden_command (#232).
+#![allow(clippy::disallowed_methods)]
+
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;

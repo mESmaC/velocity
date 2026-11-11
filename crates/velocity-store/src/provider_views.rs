@@ -3,12 +3,12 @@
 
 use serde::{Deserialize, Serialize};
 use specta::Type;
-use velocity_core::layout_view::ProviderUsage;
+use velocity_core::layout_view::{ProviderUsage, UsageWindowView};
 use velocity_core::thread_view::project_model_pill;
 use velocity_core::thread_view_model::ModelPillView;
 
 use crate::project_layout::provider_color;
-use crate::providers::ProviderLimit;
+use crate::providers::{LimitWindow, ProviderLimit, unix_now};
 use crate::threads::ThreadError;
 use crate::{EffortLevel, ProviderKind, Settings, SpeedMode, StateStore, ThreadItem, ThreadState};
 
@@ -315,8 +315,13 @@ impl StateStore {
     }
 }
 
-/// The footer meter: one bar per signed-in provider (F1, F15).
+/// The footer meter and its usage panel: one entry per signed-in provider (F1, F15).
 pub fn provider_usage(settings: &Settings) -> Vec<ProviderUsage> {
+    provider_usage_at(settings, unix_now())
+}
+
+/// [`provider_usage`] with "resets in …" and the pace mark measured from `now`.
+pub fn provider_usage_at(settings: &Settings, now: u32) -> Vec<ProviderUsage> {
     settings
         .usable_providers()
         .into_iter()
@@ -330,13 +335,83 @@ pub fn provider_usage(settings: &Settings) -> Vec<ProviderUsage> {
                 ),
                 None => (0, format!("{name} · limit not reported")),
             };
-            Some(ProviderUsage::new(
-                provider_color(provider),
-                label,
-                percent_used,
-            ))
+            let windows = catalog
+                .limit
+                .as_ref()
+                .map(|limit| usage_windows(limit, now))
+                .unwrap_or_default();
+            // T3 Code's wording for a signed-in account with nothing to draw.
+            let note = windows.is_empty().then(|| "No limits reported.".to_owned());
+            Some(
+                ProviderUsage::new(provider_color(provider), label, percent_used).with_panel(
+                    name,
+                    catalog.plan.clone(),
+                    windows,
+                    note,
+                ),
+            )
         })
         .collect()
+}
+
+/// The panel's rows: every window the provider reported, or its headline alone when the
+/// source (or an older `state.json`) kept only that.
+fn usage_windows(limit: &ProviderLimit, now: u32) -> Vec<UsageWindowView> {
+    if limit.windows.is_empty() {
+        let headline =
+            LimitWindow::new(limit.percent_used, limit.window.clone(), 0, limit.resets_at);
+        return vec![usage_window(&headline, now)];
+    }
+    limit
+        .windows
+        .iter()
+        .map(|window| usage_window(window, now))
+        .collect()
+}
+
+fn usage_window(window: &LimitWindow, now: u32) -> UsageWindowView {
+    let percent_left = 100 - window.percent_used.min(100);
+    let resets_in = match window.resets_at {
+        Some(at) if at <= now => "resets now".to_owned(),
+        Some(at) if at - now < 60 => "resets momentarily".to_owned(),
+        Some(at) => format!("resets in {}", duration_label(at - now)),
+        None => String::new(),
+    };
+    let pace_left = pace_left(window, now);
+    let mut summary = format!("{percent_left}% left · {}% used", window.percent_used);
+    if let Some(pace) = pace_left {
+        summary.push_str(&format!(" · {pace}% of the window left"));
+    }
+    if !resets_in.is_empty() {
+        summary.push_str(&format!(" · {resets_in}"));
+    }
+    UsageWindowView {
+        label: capitalized(&window.window),
+        percent_left,
+        resets_in,
+        summary,
+    }
+}
+
+/// The share of the window's time still to run, where the bar of what is left would sit if
+/// spending were even (T3 Code's pace). `None` without a length or a reset time.
+fn pace_left(window: &LimitWindow, now: u32) -> Option<u8> {
+    let length = u64::from(window.minutes) * 60;
+    let resets_at = window.resets_at?;
+    if length == 0 {
+        return None;
+    }
+    let remaining = u64::from(resets_at.saturating_sub(now)).min(length);
+    // remaining <= length, so the share is 0–100 and fits a u8.
+    u8::try_from((remaining * 100 + length / 2) / length).ok()
+}
+
+fn capitalized(text: &str) -> String {
+    let mut characters = text.chars();
+    match characters.next() {
+        Some(first) => first.to_uppercase().chain(characters).collect(),
+        None => String::new(),
+    }
 }
 
 /// The home composer's model pill: what a new thread starts on, the default for new threads

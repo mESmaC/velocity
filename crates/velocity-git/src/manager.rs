@@ -4,7 +4,6 @@
 use std::ffi::{OsStr, OsString};
 use std::fs;
 use std::path::{Component, Path, PathBuf};
-use std::process::Command;
 use std::thread;
 use std::time::Duration;
 
@@ -346,7 +345,7 @@ where
         .into_iter()
         .map(|argument| argument.as_ref().to_string_lossy().into_owned())
         .collect();
-    let mut command = Command::new(program);
+    let mut command = crate::command::hidden_command(program);
     command
         .current_dir(working_directory)
         .args(&collected_arguments);
@@ -483,7 +482,7 @@ pub fn local_branch_exists(repository_root: &Path, branch_name: &str) -> bool {
 
 fn probe_local_branch_existence(repository_root: &Path, branch_name: &str) -> BranchExistenceProbe {
     let reference = format!("refs/heads/{branch_name}");
-    let output = Command::new("git")
+    let output = crate::command::hidden_command("git")
         .current_dir(repository_root)
         .args([
             "-c",

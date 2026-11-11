@@ -137,11 +137,19 @@ pub struct LayoutData {
     feature = "bindings",
     derive(serde::Serialize, serde::Deserialize, specta::Type)
 )]
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ProviderUsage {
     pub provider: ProviderColor,
     pub label: String,
     pub percent_used: u8,
+    /// The usage panel's heading: `Claude`.
+    pub name: String,
+    /// The subscription plan the provider named (`Max`, `Pro`).
+    pub plan: Option<String>,
+    /// The usage panel's rows, one per subscription window, shortest first.
+    pub windows: Vec<UsageWindowView>,
+    /// What the panel shows instead of rows: `No limits reported.`
+    pub note: Option<String>,
 }
 
 impl ProviderUsage {
@@ -150,8 +158,45 @@ impl ProviderUsage {
             provider,
             label,
             percent_used,
+            name: String::new(),
+            plan: None,
+            windows: Vec::new(),
+            note: None,
         }
     }
+
+    /// The footer usage panel's section for this provider (F15).
+    pub fn with_panel(
+        mut self,
+        name: String,
+        plan: Option<String>,
+        windows: Vec<UsageWindowView>,
+        note: Option<String>,
+    ) -> Self {
+        self.name = name;
+        self.plan = plan;
+        self.windows = windows;
+        self.note = note;
+        self
+    }
+}
+
+/// One subscription window in the footer usage panel, as T3 Code draws it: the share left,
+/// a bar of what is left and when it resets (F15).
+#[cfg_attr(
+    feature = "bindings",
+    derive(serde::Serialize, serde::Deserialize, specta::Type)
+)]
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct UsageWindowView {
+    /// `5-hour`, `Weekly`.
+    pub label: String,
+    pub percent_left: u8,
+    /// `resets in 2h 14m`, or empty when the provider gave no reset time.
+    pub resets_in: String,
+    /// The bar's tooltip and accessible name, with the pace: the share of the window's time
+    /// left, where even spending would put the bar.
+    pub summary: String,
 }
 
 #[cfg_attr(

@@ -87,13 +87,8 @@ fn probe(program: &str, label: &str, minimum: u32) -> String {
     )
 }
 fn command_version(program: &str) -> Option<String> {
-    let mut command = std::process::Command::new(program);
+    let mut command = crate::process::hidden_command(program);
     command.arg("--version");
-    #[cfg(windows)]
-    {
-        use std::os::windows::process::CommandExt;
-        command.creation_flags(0x08000000);
-    }
     let output = command.output().ok()?;
     output
         .status

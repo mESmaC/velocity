@@ -5,7 +5,7 @@ use std::time::{Duration, Instant};
 use tauri::{AppHandle, Manager, State};
 use tauri_specta::Event;
 use velocity_core::layout_view::{LayoutAction, LayoutIntent, LayoutSnapshot};
-use velocity_github::{IssueClient, IssuePanelSnapshot};
+use velocity_github::{IssueClient, IssuePanelCache, IssuePanelSnapshot};
 use velocity_store::issues::{ThreadIssue, issue_thread};
 
 use crate::layout::MainLayout;
@@ -44,6 +44,25 @@ pub fn get_issue_panel(
     let project = selected_project(&application)?;
     let mut panel = lock(panel.inner(), "issues")?;
     panel.select(project.map(|project| project.identifier));
+    Ok(panel.clone())
+}
+
+/// Expands or collapses one issue row in the rail (#209) and broadcasts the new snapshot.
+#[tauri::command]
+#[specta::specta]
+pub fn toggle_issue_expanded(
+    application: AppHandle,
+    panel: State<'_, IssuePanel>,
+    number: u32,
+) -> Result<IssuePanelSnapshot, String> {
+    let mut panel = lock(panel.inner(), "issues")?;
+    if panel.toggle_expanded(number) {
+        IssuePanelChanged {
+            panel: panel.clone(),
+        }
+        .emit(&application)
+        .map_err(|error| error.to_string())?;
+    }
     Ok(panel.clone())
 }
 
@@ -211,17 +230,29 @@ pub fn initialize(application: &AppHandle) {
     std::thread::spawn(move || monitor(application));
 }
 
+/// The selected project's GitHub client and its last full read. Kept between refreshes:
+/// reading the repository's identity is a GitHub request (#228).
+#[derive(Default)]
+struct IssueReader {
+    client: Option<IssueClient>,
+    cache: IssuePanelCache,
+}
+
 fn monitor(application: AppHandle) {
     let mut previous = None;
     let mut refreshed = None::<Instant>;
     let mut revision = None;
+    let mut reader = IssueReader::default();
     loop {
         if let Ok(project) = selected_project(&application) {
             if previous != project
                 || refreshed.is_none_or(|time| time.elapsed() >= Duration::from_secs(30))
             {
+                if previous != project {
+                    reader = IssueReader::default();
+                }
                 previous = project.clone();
-                report(refresh(&application, project));
+                report(refresh(&application, project, &mut reader));
                 refreshed = Some(Instant::now());
             }
             let next = application
@@ -238,7 +269,11 @@ fn monitor(application: AppHandle) {
     }
 }
 
-fn refresh(application: &AppHandle, project: Option<ProjectContext>) -> Result<(), String> {
+fn refresh(
+    application: &AppHandle,
+    project: Option<ProjectContext>,
+    reader: &mut IssueReader,
+) -> Result<(), String> {
     {
         let panel = application.state::<IssuePanel>();
         let mut panel = lock(panel.inner(), "issues")?;
@@ -252,7 +287,7 @@ fn refresh(application: &AppHandle, project: Option<ProjectContext>) -> Result<(
     let Some(project) = project else {
         return Ok(());
     };
-    let result = fetch_issues(&project.directory);
+    let result = fetch_issues(&project.directory, reader);
     if selected_project(application)?.as_ref() != Some(&project) {
         return Ok(());
     }
@@ -269,13 +304,22 @@ fn refresh(application: &AppHandle, project: Option<ProjectContext>) -> Result<(
 
 fn fetch_issues(
     directory: &std::path::Path,
+    reader: &mut IssueReader,
 ) -> Result<(String, Vec<velocity_github::IssuePanelRow>), String> {
     if !IssueClient::has_origin(directory).map_err(|error| error.to_string())? {
+        *reader = IssueReader::default();
         return Ok((String::new(), Vec::new()));
     }
-    IssueClient::discover(directory)
-        .and_then(|client| client.panel())
-        .map_err(|error| error.to_string())
+    let client = match reader.client.take() {
+        Some(client) => client,
+        None => IssueClient::discover(directory).map_err(|error| error.to_string())?,
+    };
+    let panel = client
+        .cached_panel(&mut reader.cache)
+        .map_err(|error| error.to_string())?;
+    // A failed read drops the client, so a changed remote or sign-in is discovered afresh.
+    reader.client = Some(client);
+    Ok(panel)
 }
 
 fn update_links(application: &AppHandle) -> Result<(), String> {

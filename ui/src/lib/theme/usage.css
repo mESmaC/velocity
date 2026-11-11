@@ -1,0 +1,110 @@
+/* The footer usage panel (SPEC.md F15). The reference UI mocks no usage panel, so it reuses
+   the reference's popover values (the thread menu frame and the model menu heads) and the
+   limit bar from Settings → Providers. Provider colours come from the footer meter's
+   [data-provider] rules in layout.css. */
+.sidebar-foot:has(.usage-panel) {
+  position: relative;
+}
+.usage-panel {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: var(--providers-menu-bottom);
+  z-index: var(--thread-menu-z-index);
+  max-height: var(--providers-menu-max-height);
+  overflow-y: auto;
+  padding: var(--thread-menu-padding);
+  border: var(--thread-menu-border);
+  border-radius: var(--thread-menu-radius);
+  background: var(--glass-pop);
+  box-shadow: var(--thread-menu-shadow);
+  backdrop-filter: var(--blur-pop);
+  -webkit-backdrop-filter: var(--blur-pop);
+}
+.usage-title {
+  padding: var(--providers-menu-head-padding);
+  font-size: var(--providers-name-font-size);
+  font-weight: var(--providers-name-font-weight);
+  color: var(--text);
+}
+.usage-provider-head {
+  display: flex;
+  align-items: center;
+  gap: var(--providers-menu-head-gap);
+  padding: var(--providers-menu-head-padding);
+  font-size: var(--providers-menu-head-font-size);
+  color: var(--muted);
+}
+.usage-provider-head span {
+  margin-left: auto;
+  font: var(--providers-menu-head-meta-font);
+}
+.usage-window {
+  display: flex;
+  flex-direction: column;
+  gap: var(--providers-limit-gap);
+  padding: var(--providers-menu-item-padding);
+}
+.usage-window-line {
+  display: flex;
+  align-items: center;
+  gap: var(--providers-status-gap);
+  min-width: 0;
+  font-size: var(--providers-status-font-size);
+  white-space: nowrap;
+}
+.usage-window-label {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  color: var(--text-2);
+}
+.usage-window-line b {
+  flex: none;
+  font-weight: var(--providers-name-font-weight);
+  color: var(--text);
+}
+.usage-window-reset {
+  flex: none;
+  margin-left: auto;
+  font: var(--providers-meta-font);
+  color: var(--muted);
+}
+.usage-bar {
+  position: relative;
+  display: block;
+  flex: 1;
+  height: var(--providers-bar-height);
+  overflow: hidden;
+  border-radius: var(--providers-bar-radius);
+  background: var(--line-dim);
+}
+.usage-bar > span {
+  position: absolute;
+  inset-block: 0;
+  left: 0;
+  width: var(--usage-left);
+}
+.usage-note {
+  margin: 0;
+  padding: var(--providers-menu-item-padding);
+  font: var(--providers-meta-font);
+  color: var(--muted);
+}
+.usage-panel hr {
+  margin: var(--thread-menu-divider-margin);
+  border: 0;
+  border-top: var(--thread-menu-divider-top);
+}
+.usage-link {
+  display: flex;
+  width: 100%;
+  padding: var(--thread-menu-button-padding);
+  border-radius: var(--thread-menu-button-radius);
+  font-size: var(--thread-menu-button-font-size);
+  color: var(--text-2);
+}
+.usage-link:hover {
+  background: var(--thread-menu-button-hover);
+  color: var(--text);
+}
