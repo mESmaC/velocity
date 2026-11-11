@@ -1,12 +1,15 @@
-//! Tauri commands for the New project dialog (SPEC.md F2). The work happens in
+//! Tauri commands for the New project dialog and the switcher's Open project
+//! (SPEC.md F2). The work happens in
 //! `velocity-new-project`; these commands lock the managed state, call it and emit
 //! the resulting events.
 
+use std::sync::Mutex;
 use tauri::{AppHandle, Manager};
 use tauri_plugin_dialog::DialogExt;
 use tauri_specta::Event;
 use velocity_new_project::{
-    CreatedProject, NewProjectDefaults, NewProjectRequest, Publication, new_project_defaults,
+    CreatedProject, NewProjectDefaults, NewProjectRequest, OpenProjectRequest, Publication,
+    RepositoryPicker, RepositoryPickerView, new_project_defaults,
 };
 
 use crate::layout::{LayoutStateChanged, MainLayout};
@@ -68,6 +71,64 @@ pub async fn create_project(
     })
     .await
     .map_err(|error| format!("Create stopped: {error}"))?
+}
+
+/// Open project: a folder or one of your GitHub repositories. Cloning runs off the
+/// UI thread. A project without SPEC.md starts its spec interview straight away.
+#[tauri::command]
+#[specta::specta]
+pub async fn open_project(
+    application: AppHandle,
+    request: OpenProjectRequest,
+) -> Result<CreatedProject, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let opened = velocity_new_project::open_project(
+            &request,
+            &application.state::<ManagedStateStore>(),
+            &application.state::<MainLayout>(),
+            |publication| publish(&application, publication),
+        )
+        .map_err(|error| error.to_string())?;
+        crate::interview::start(&application);
+        Ok(opened)
+    })
+    .await
+    .map_err(|error| format!("Open project stopped: {error}"))?
+}
+
+/// The switcher's cached list of your GitHub repositories.
+#[derive(Default)]
+pub struct ManagedRepositoryPicker(Mutex<RepositoryPicker>);
+
+/// Your repositories matching `query`. `gh` is asked only on the first call and when
+/// `refresh` is set; every other keystroke searches the list already read.
+#[tauri::command]
+#[specta::specta]
+pub async fn get_github_repositories(
+    application: AppHandle,
+    query: String,
+    refresh: bool,
+) -> Result<RepositoryPickerView, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let picker = &application.state::<ManagedRepositoryPicker>().0;
+        let lock_failed = || String::from("Repository picker lock is poisoned");
+        let needs_fetch = picker
+            .lock()
+            .map_err(|_| lock_failed())?
+            .needs_fetch(refresh);
+        if needs_fetch {
+            // gh runs without the lock, so a search typed meanwhile is not blocked.
+            let repositories =
+                velocity_github::list_your_repositories().map_err(|error| error.to_string())?;
+            picker
+                .lock()
+                .map_err(|_| lock_failed())?
+                .replace(repositories);
+        }
+        Ok(picker.lock().map_err(|_| lock_failed())?.view(&query))
+    })
+    .await
+    .map_err(|error| format!("Listing your repositories stopped: {error}"))?
 }
 
 fn publish(application: &AppHandle, publication: Publication) -> Result<(), String> {

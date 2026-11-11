@@ -16,6 +16,10 @@ pub enum GitHubError {
         repository: String,
         stderr: String,
     },
+    #[error("gh could not list your repositories: {stderr}")]
+    ListFailed { stderr: String },
+    #[error("gh listed your repositories in a form Velocity cannot read: {message}")]
+    ListParse { message: String },
 }
 
 /// `github.com/<owner>/<name>`, as typed in the New project dialog.

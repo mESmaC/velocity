@@ -6,7 +6,7 @@ use velocity_core::new_project::{NewProjectLocation, Refusal};
 use velocity_github::{RepositoryName, Visibility};
 
 use crate::error::NewProjectError;
-use crate::request::{ProjectLocationRequest, RepositoryVisibility};
+use crate::request::{OpenProjectRequest, ProjectLocationRequest, RepositoryVisibility};
 
 /// The request with its path, name and repository worked out.
 pub(crate) struct ResolvedRequest {
@@ -70,6 +70,33 @@ pub(crate) fn resolve(
     }
 }
 
+/// Open project's request: a checkout you already have, or one of your repositories.
+pub(crate) fn resolve_open(
+    request: &OpenProjectRequest,
+) -> Result<ResolvedRequest, NewProjectError> {
+    match request {
+        OpenProjectRequest::LocalFolder { path } => {
+            let path = absolute_folder(path)?;
+            Ok(ResolvedRequest {
+                location: NewProjectLocation::OpenFolder,
+                name: folder_name(&path)?,
+                path,
+                repository: None,
+                visibility: Visibility::Private,
+            })
+        }
+        OpenProjectRequest::GitHub {
+            repository,
+            clone_to,
+        } => resolve_github(
+            NewProjectLocation::OpenGitHub,
+            repository,
+            clone_to,
+            Visibility::Private,
+        ),
+    }
+}
+
 fn resolve_github(
     location: NewProjectLocation,
     repository: &str,
@@ -113,7 +140,14 @@ pub(crate) fn refusal_message(refusal: Refusal, resolved: &ResolvedRequest) -> S
         .as_ref()
         .map(RepositoryName::full_name)
         .unwrap_or_default();
+    let opening = resolved.location.opens_existing();
     match refusal {
+        Refusal::NotARepository if opening => {
+            format!("{path} is not a git repository. Use New project to set it up as one.")
+        }
+        Refusal::TargetOccupied if opening => format!(
+            "{path} already exists and is not a clone of github.com/{repository}. Choose another clone folder."
+        ),
         Refusal::NotARepository => format!(
             "{path} is not a git repository. Turn on \"Create the folder and run git init if needed\"."
         ),

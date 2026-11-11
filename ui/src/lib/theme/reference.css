@@ -244,6 +244,30 @@
   --project-menu-divider-margin: 4px 0;
 }
 
+/* Project switcher · Open from GitHub: design/main-window.html rules 476–485
+   (.proj-menu.gh, .pm-*), with its inputs taking the winning .inp override at
+   1045–1046 (the --new-project-input-* tokens hold the same values). */
+:root {
+  --project-menu-github-width: 300px;
+  --project-menu-head-gap: 6px;
+  --project-menu-head-padding: 1px 2px 5px;
+  --project-menu-head-font-size: 10.5px;
+  --project-menu-head-button-width: auto;
+  --project-menu-head-button-padding: 3px 7px;
+  --project-menu-input-margin: 0 2px 4px;
+  --project-menu-list-max-height: 260px;
+  --project-menu-repository-font: 11px var(--mono);
+  --project-menu-note-margin: 0;
+  --project-menu-note-padding: 6px 8px;
+  --project-menu-note-font-size: 10.5px;
+  --project-menu-clone-gap: 6px;
+  --project-menu-clone-margin-top: 4px;
+  --project-menu-clone-padding: 5px 2px 1px;
+  --project-menu-clone-border-top: 1px solid var(--line-dim);
+  --project-menu-clone-label-font-size: 10.5px;
+  --project-menu-clone-input-margin: 0;
+}
+
 /* F1 supplement: values from design/main-window.html rules 82–193, 283–321,
    415–427, 455, 553–555, 611–634, 813–814 and final overrides 947–1080.
    Structural zero/full-size declarations adapt those layouts to Svelte and dialog. */

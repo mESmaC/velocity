@@ -128,6 +128,16 @@ export const commands = {
 	pickProjectFolder: () => __TAURI_INVOKE<string | null>("pick_project_folder"),
 	/**  Create & start interview. `git` and `gh` run off the UI thread. */
 	createProject: (request: NewProjectRequest_Deserialize) => __TAURI_INVOKE<CreatedProject>("create_project", { request }),
+	/**
+	 *  Open project: a folder or one of your GitHub repositories. Cloning runs off the
+	 *  UI thread. A project without SPEC.md starts its spec interview straight away.
+	 */
+	openProject: (request: OpenProjectRequest) => __TAURI_INVOKE<CreatedProject>("open_project", { request }),
+	/**
+	 *  Your repositories matching `query`. `gh` is asked only on the first call and when
+	 *  `refresh` is set; every other keystroke searches the list already read.
+	 */
+	getGithubRepositories: (query: string, refresh: boolean) => __TAURI_INVOKE<RepositoryPickerView_Serialize>("get_github_repositories", { query, refresh }),
 	getLaunchEligibility: (request: LaunchRequest) => __TAURI_INVOKE<LaunchEligibility>("get_launch_eligibility", { request }),
 };
 
@@ -799,6 +809,29 @@ export type FollowThrough_Serialize = {
 
 export type GitHubActor = {
 	login: string,
+};
+
+/**  One repository the signed-in account owns or can see through an organisation. */
+export type GitHubRepository = GitHubRepository_Serialize | GitHubRepository_Deserialize;
+
+/**  One repository the signed-in account owns or can see through an organisation. */
+export type GitHubRepository_Deserialize = {
+	/**  `owner/name`. */
+	full_name: string,
+	description?: string | null,
+	private: boolean,
+	/**  When anything in the repository last changed, as GitHub reports it (RFC 3339). */
+	updated_at: string,
+};
+
+/**  One repository the signed-in account owns or can see through an organisation. */
+export type GitHubRepository_Serialize = {
+	/**  `owner/name`. */
+	full_name: string,
+	description: string | null,
+	private: boolean,
+	/**  When anything in the repository last changed, as GitHub reports it (RFC 3339). */
+	updated_at: string,
 };
 
 /**
@@ -1805,6 +1838,21 @@ export type NickDot = "Active" | "Idle" | "Hold" | "Left";
 export type NickTone = "You" | "Velocity" | { Hue: number };
 
 export type NumberHintEvent = "AltDown" | "AltUp" | "Blur" | "Other";
+
+/**  Open project in the project switcher (F2): a project that already exists. */
+export type OpenProjectRequest = 
+/**  A git checkout on this machine, opened where it is. */
+({ LocalFolder: {
+	path: string,
+} }) & { GitHub?: never } | 
+/**
+ *  One of your GitHub repositories, cloned to `<clone_to>/<name>`, or opened
+ *  there when that folder is already its clone.
+ */
+({ GitHub: {
+	repository: string,
+	clone_to: string,
+} }) & { LocalFolder?: never };
 
 export type OutlineAction = OutlineAction_Serialize | OutlineAction_Deserialize;
 
@@ -2899,6 +2947,35 @@ export type RailItem_Serialize = {
 	identifier: string,
 	title: string,
 	metadata: string,
+};
+
+/**  What the picker shows for the current search. */
+export type RepositoryPickerView = RepositoryPickerView_Serialize | RepositoryPickerView_Deserialize;
+
+/**  What the picker shows for the current search. */
+export type RepositoryPickerView_Deserialize = {
+	/**  The matching repositories, most recently updated first. */
+	rows: GitHubRepository_Deserialize[],
+	/**  Matches left out of `rows`; typing more narrows them down. */
+	hidden: number,
+	/**
+	 *  The search is an `owner/name` that is not in your list, offered as its own
+	 *  row so any repository you can see still opens.
+	 */
+	typed?: string | null,
+};
+
+/**  What the picker shows for the current search. */
+export type RepositoryPickerView_Serialize = {
+	/**  The matching repositories, most recently updated first. */
+	rows: GitHubRepository_Serialize[],
+	/**  Matches left out of `rows`; typing more narrows them down. */
+	hidden: number,
+	/**
+	 *  The search is an `owner/name` that is not in your list, offered as its own
+	 *  row so any repository you can see still opens.
+	 */
+	typed: string | null,
 };
 
 export type RepositoryVisibility = "Private" | "Public";

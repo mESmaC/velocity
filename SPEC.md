@@ -124,6 +124,7 @@ The native supervisor checks live build threads once a second. Its defaulted che
 | command | `get_layout_state`, `dispatch_layout { action }` | `Navigation(Board)` shows the Board or leaves it, and `Navigation(Focus)` returns to the selected thread or Home; the snapshot's `board` lists the lanes and cards. Backend-owned main-window projection, search, palette selection, Alt hints, contextual keyboard dispatch and navigation requests. Build intents are gated from the persisted active project's spec lock before publication; snapshots carry launch eligibility, rejection notices and draft-task hints. |
 | command | `list_projects`, `create_project`, `switch_project` | projects |
 | command | `get_new_project_defaults`, `pick_project_folder`, `create_project { request }` | New project dialog (F2): default folders, interview effort, speed and model from Settings; the native folder picker; Create, which refuses before anything runs or sets the project up, registers it, switches to it and records its spec interview |
+| command | `open_project { request }`, `get_github_repositories { query, refresh }` | Open project in the switcher (F2): opens a local checkout where it is, or clones one of your GitHub repositories (or opens its existing clone in the target folder), registers it and switches to it; the repository picker's list from signed-in `gh` (repositories you own and those of organisations you belong to), read once and searched in Rust, re-read when `refresh` is set |
 | command | `list_threads`, `start_thread`, `send_message`, `delete_thread` | threads. `start_thread` and `send_message` are the composer's `StartPrompt` and `SteerThread` intents from `dispatch_layout`: the backend checks the launch gate afresh, records a `working` thread, creates its worktree on `vel/<slug>` (the message slug until thread titles land), starts the provider's ACP agent there and streams its transcript into `layout://state`. Messages to a busy agent are queued (Rule 1). |
 | command | `list_pull_requests { project_identifier }`, `get_pull_request { project_identifier, number }`, `dispatch_pull_request { project_identifier, operation }` | GitHub through signed-in `gh`: paginated PR snapshots and typed create, review, comment, reply, resolve, review-request, merge and close operations. Create accepts `base_branch` (the project's configured branch), defaulting to GitHub's default branch. Approve and request changes follow F7's approval record (Q28): each needs a reason, records an `approved` / `changes` event (PR number, reviewer nick, head SHA) in the project's AIRC channel, and mirrors it on GitHub as a review starting "Approved at `<sha7>`" (a comment review when the login authored the PR, which GitHub refuses to approve). Window commands record as `you`. Merge requires that record: the latest approval with no newer `changes`, at exactly the head being merged, which is sent to GitHub as the expected head. GitHub's review state is not consulted. A refused merge posts a `failed` event; a merged same-repository topic branch is deleted. CI is advisory (F7). F6 observes same-repository PRs by the thread's immutable branch, including a PR closed or merged between observations. An open draft claim leaves its thread working until the PR is marked ready; a closed draft still reports closure. The native watcher checkpoints its history and pending agent notifications in `state.json`, queues changed CI/review/conflict information at agent step boundaries, and publishes the thread lifecycle. Closing preserves the checkout and branches; confirmed merges stop the agent and remove only its registered worktree through the existing F5 lifecycle plan, retrying cleanup errors. The live rail uses the independent `pr://panel` projection below. |
 | command | `get_pull_request_panel`, `open_project_pull_request { project_identifier, number }` | Backend-owned active-project PR rail. Native refresh reads all open PRs, the current head's aggregate CI, line counts, review decision, review tier (F7, read from the PR's diff once per head against the checkout's AGENTS.md) and the first explicit claim comment: `Reviewing · <nick>` names a PR duty agent, a bare `Reviewing` its author. A row opens its owning thread (recorded PR identity, then an unassigned matching branch from the same repository), otherwise GitHub in the browser. Clicks validate project identity. |
@@ -255,6 +256,7 @@ There are two views of the same work, switched from the title bar or with `B`:
 **Title bar:**
 - **Brand and project switcher:** a dropdown listing every project. Each entry shows whether it is local or on GitHub, or "speccing" if its spec isn't locked yet.
   - Switching restores that project's saved active thread, sidebar and rail context, clears transient search and input, and closes the dropdown. The last active project and each project's active thread survive restart. Unknown project IDs leave the current selection unchanged.
+  - Below the list: New project… (F2), Open folder… and Open from GitHub… (F2 Open project).
 - **View switch:** a Focus | Board segmented control, shown once a project is open.
 - **Pulse:** live counts, each shown only when it is non-zero:
   - on duty
@@ -328,6 +330,17 @@ There are two views of the same work, switched from the title bar or with `B`:
 **Accept when:**
 - [ ] Create sets up the project (folder / `git init` / repo / clone), switches to it, and starts the spec interview thread straight away.
 - [ ] Esc cancels; nothing is created.
+
+**Open project** (in the project switcher, F1): opens a project that already exists, without the dialog.
+- **Open folder…:** the native folder picker. The folder must already be a git repository; it is opened where it is, nothing is cloned or initialised. When its `origin` is on GitHub, the project is shown as a GitHub project.
+- **Open from GitHub…:** the dropdown shows your repositories in place of the project list: those you own and those of organisations you belong to, read through signed-in `gh`, most recently updated first. A search box filters them by name and description; typing an `owner/name` that is not in the list offers it as its own row. A "Clone to" folder (default: your home folder) sets where the clone goes, `<clone to>/<name>`. Choosing a repository clones it there, or opens the clone already in that folder when its `origin` is that repository.
+- **The spec:** a project that already has `SPEC.md` at its root opens with its spec locked, so build work can start at once. A project without one starts its spec interview, as Create does (Rule 2), using Settings' default model, effort and speed and no brief. The interview's scan reads the existing code; it waits for a provider sign-in if none is signed in.
+- Opening refuses, before anything is cloned, a folder that is already a project, a folder that is not a git repository, a repository `gh` cannot see, and a clone folder that is occupied by something else. As with Create, a missing AGENTS.md is added from the default template and committed (F11).
+
+**Accept when:**
+- [ ] Open folder… opens a git checkout from the native picker and switches to it.
+- [ ] Open from GitHub… lists your and your organisations' repositories, searchable, and opens the chosen one by cloning it or by opening its existing clone.
+- [ ] A project with `SPEC.md` opens with its spec locked; one without starts the spec interview.
 
 ### F3 · Spec interview
 
@@ -1246,6 +1259,7 @@ Each milestone ends with a working app. PR duty checks an item off when it lands
 **M2 · Projects and spec**
 - [x] Project store and switcher (F1)
 - [x] New-project dialog: local (git init) and GitHub (new/existing, visibility, clone) (F2)
+- [ ] Open project from the switcher: a local folder or one of your GitHub repositories; an existing SPEC.md locks the spec (F2)
 - [x] Spec interview: scan, ask, ready, lock; SPEC.md written and committed; draft → published tasks (F3)
 - [x] Gate: no build work on unlocked projects (Rule 2)
 

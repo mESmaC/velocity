@@ -26,6 +26,19 @@ pub enum ProjectLocationRequest {
     },
 }
 
+/// Open project in the project switcher (F2): a project that already exists.
+#[derive(Clone, Debug, serde::Deserialize, specta::Type)]
+pub enum OpenProjectRequest {
+    /// A git checkout on this machine, opened where it is.
+    LocalFolder { path: String },
+    /// One of your GitHub repositories, cloned to `<clone_to>/<name>`, or opened
+    /// there when that folder is already its clone.
+    GitHub {
+        repository: String,
+        clone_to: String,
+    },
+}
+
 #[derive(Clone, Debug, serde::Deserialize, specta::Type)]
 pub struct NewProjectRequest {
     pub location: ProjectLocationRequest,
