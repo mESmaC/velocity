@@ -182,6 +182,8 @@
                     class:ov={file.overlap}>{file.path}</code
                   >{/each}</span
               >
+              {#if claim.dependency}<span class="dep">{claim.dependency}</span
+                >{/if}
             </div>{/each}
         {:else if tab === 'Discoveries' || tab === 'PastWork'}
           {#each lines as line (line.key)}<div class="lg">

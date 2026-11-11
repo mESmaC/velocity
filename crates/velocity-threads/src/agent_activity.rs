@@ -13,7 +13,49 @@ pub enum Action {
     Resume,
 }
 
+/// Live ACP silence clock. Only durable transitions request a store checkpoint.
+#[derive(Default)]
+pub struct Heartbeat {
+    last_update: Option<u64>,
+    nudged: bool,
+}
+
+impl Heartbeat {
+    pub fn last_update(&self) -> Option<u64> {
+        self.last_update
+    }
+
+    pub fn observe(&mut self, batch: &[AgentEvent], now: u64) -> bool {
+        let active = batch.is_empty()
+            || batch
+                .iter()
+                .any(|event| !matches!(event, AgentEvent::Log(_) | AgentEvent::Queued));
+        let checkpoint = batch.is_empty()
+            || batch
+                .iter()
+                .any(|event| matches!(event, AgentEvent::TurnEnded(_)))
+            || (active && self.nudged);
+        if active {
+            self.last_update = Some(now);
+            self.nudged = false;
+        }
+        checkpoint
+    }
+
+    pub fn nudge(&mut self, now: u64) {
+        self.last_update = Some(now);
+        self.nudged = true;
+    }
+}
+
 pub fn observe(thread: &mut ThreadItem, event: &AgentEvent, now: u64) {
+    if let AgentEvent::ProviderQueued(queued, _) = event {
+        // Provider queue time is not time spent running this agent.
+        if thread.provider_queued && !queued {
+            thread.supervision.started = now;
+        }
+        thread.provider_queued = *queued;
+    }
     let checkpoint = &mut thread.supervision;
     if checkpoint.started == 0 {
         checkpoint.started = now;
@@ -65,7 +107,7 @@ pub fn decide(
             return Action::Resume;
         }
     }
-    if !live || thread.activity == AgentActivity::Parked || unavailable {
+    if !live || thread.provider_queued || thread.activity == AgentActivity::Parked || unavailable {
         return Action::Nothing;
     }
     if capped(thread, settings, now) {
@@ -147,6 +189,7 @@ pub fn begin(thread: &mut ThreadItem, now: u64) {
         thread.supervision.started = now;
     }
     thread.supervision.last_update = now;
+    thread.supervision.nudged = false;
 }
 
 fn availability(thread: &ThreadItem) -> Availability {

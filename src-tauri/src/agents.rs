@@ -38,6 +38,26 @@ pub async fn read_agents_md(
 
 #[tauri::command]
 #[specta::specta]
+pub async fn reload_agents_md(
+    store: State<'_, ManagedStateStore>,
+    documents: State<'_, ManagedAgents>,
+    project_identifier: u32,
+) -> Result<OutlineSnapshot, String> {
+    let directory = directory(&store, project_identifier)?;
+    let documents = Arc::clone(&documents);
+    tauri::async_runtime::spawn_blocking(move || {
+        documents
+            .lock()
+            .map_err(|error| error.to_string())?
+            .reload(&directory)
+            .map_err(|error| error.to_string())
+    })
+    .await
+    .map_err(|error| error.to_string())?
+}
+
+#[tauri::command]
+#[specta::specta]
 pub async fn edit_agents_md(
     store: State<'_, ManagedStateStore>,
     documents: State<'_, ManagedAgents>,

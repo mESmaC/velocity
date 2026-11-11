@@ -30,6 +30,7 @@
     onLayoutIntent,
     projectCommands,
     threadMenuCommands,
+    aircRoutingCommands,
   } from './lib/ipc';
   import type {
     LayoutAction,
@@ -37,6 +38,7 @@
     LayoutIntent,
     ThreadMenuAction,
     ThreadMenuView,
+    MessageMode,
   } from './lib/ipc';
   import './lib/theme/layout.css';
   import './lib/theme/board.css';
@@ -179,6 +181,15 @@
 
   function undoDelete(deletion: number) {
     enqueue(() => threadMenuCommands.undoDelete(deletion));
+  }
+
+  function chooseThreadMode(mode: MessageMode) {
+    const menu = threadMenu?.view;
+    threadMenu = null;
+    if (!menu?.message_mode) return;
+    aircRoutingCommands
+      .setMode(menu.project_identifier, menu.message_mode.nick, mode)
+      .catch(report);
   }
 
   function switchProject(identifier: number) {
@@ -355,6 +366,7 @@
     x={threadMenu.x}
     y={threadMenu.y}
     choose={chooseThreadAction}
+    chooseMode={chooseThreadMode}
     close={() => (threadMenu = null)}
   />{/if}
 <Toast toast={layout?.toast ?? null} undo={undoDelete} />
