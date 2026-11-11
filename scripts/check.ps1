@@ -24,12 +24,19 @@ pwsh -NoProfile -File scripts/check.ps1
 
 .EXAMPLE
 pwsh -NoProfile -File scripts/check.ps1 -Full
+
+.EXAMPLE
+pwsh -NoProfile -File scripts/check.ps1 -Priority landing
 #>
 param(
     # The branch the change detection compares against.
     [string]$Base = 'origin/master',
     # Run every check, whatever changed.
-    [switch]$Full
+    [switch]$Full,
+    # Place in the build queue (SPEC.md F5): PR duty's landing checks pass
+    # landing; an agent's check before marking a PR ready keeps the default.
+    [ValidateSet('landing', 'ready', 'normal')]
+    [string]$Priority = 'ready'
 )
 $ErrorActionPreference = 'Stop'
 $checkoutPath = Split-Path -Parent $PSScriptRoot
@@ -109,7 +116,7 @@ if ($rustChanged -or $uiChanged) {
 }
 if ($rustChanged) {
     Invoke-Check 'Rust format' { cargo fmt --all --check }
-    Invoke-InBuildQueue "check.ps1 cargo steps" {
+    Invoke-InBuildQueue "check.ps1 cargo steps ($Priority)" -Priority $Priority -Command {
         Invoke-Check 'Rust build (locked)' { cargo build --workspace --locked }
         # The workspace build turns on every crate's features together, so a crate that
         # only compiles with a feature another member enables still passes it. Stress
