@@ -14,6 +14,7 @@ mod build_gate;
 pub mod duty;
 mod follow_through;
 mod github;
+mod github_requests;
 mod goal_swarm;
 mod interview;
 mod issue_panel;
@@ -232,6 +233,7 @@ pub fn run() -> anyhow::Result<()> {
             projects::initialize(application.handle())?;
             providers::initialize(application.handle());
             follow_through::initialize(application.handle(), threads::follow_through_hooks());
+            github_requests::initialize(application.handle());
             issue_panel::initialize(application.handle());
             worktree_settings::initialize(application.handle())?;
             ready_pool::initialize(application.handle())?;

@@ -36,6 +36,13 @@ pub(crate) struct Connection<T> {
     page: PageInfo,
 }
 
+impl<T> Connection<T> {
+    /// This page's nodes, without reading further pages.
+    pub(crate) fn into_nodes(self) -> Vec<T> {
+        self.nodes
+    }
+}
+
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct PageInfo {
@@ -44,6 +51,9 @@ struct PageInfo {
 }
 
 impl PullRequestClient {
+    /// Reads the repository's identity once. Keep the client for repeated reads: every
+    /// `discover` is a GitHub request.
+    #[track_caller]
     pub fn discover(directory: &Path) -> Result<Self, PullRequestError> {
         let (command, repository) = PullRequestCommand::new(directory)?;
         let identity: RepositoryIdentity = command.read(&[
@@ -136,11 +146,9 @@ impl PullRequestClient {
         variables: Value,
         path: &str,
     ) -> Result<T, PullRequestError> {
-        let response: Value = self.command.api(
-            "POST",
-            "graphql",
-            &json!({"query":query,"variables":variables}),
-        )?;
+        let response: Value = self
+            .command
+            .graphql(path, &json!({"query":query,"variables":variables}))?;
         if let Some(errors) = response.get("errors") {
             return Err(PullRequestError::Invalid(format!(
                 "GitHub GraphQL errors: {errors}"

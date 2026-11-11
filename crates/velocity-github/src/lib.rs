@@ -7,6 +7,7 @@ mod branch_pull_requests;
 mod command;
 mod duty_server;
 pub mod follow_through;
+pub mod follow_through_poll;
 mod issue_panel;
 mod issue_types;
 mod issues;
@@ -23,6 +24,7 @@ mod pull_request_types;
 mod pull_requests;
 mod repository;
 mod repository_list;
+mod request_counter;
 mod scout_directory;
 mod scout_evidence;
 mod scout_issues;
@@ -47,6 +49,7 @@ pub use repository::{
     GitHubError, RepositoryName, Visibility, clone_repository, create_repository, repository_exists,
 };
 pub use repository_list::{GitHubRepository, checkout_repository, list_your_repositories};
+pub use request_counter::{RequestTotal, request_totals};
 pub use scout_evidence::Reproduction;
 pub use scout_issues::{ScoutFinding, ScoutIssueError, ScoutIssueOutcome};
 pub use scout_reference::{ReferenceComparison, ReferenceComparisonResult};

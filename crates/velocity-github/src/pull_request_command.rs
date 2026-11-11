@@ -1,6 +1,7 @@
 use serde::de::DeserializeOwned;
 use serde_json::Value;
 use std::io::Write;
+use std::panic::Location;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
 use thiserror::Error;
@@ -23,10 +24,14 @@ pub enum PullRequestError {
 
 pub(crate) struct PullRequestCommand {
     directory: PathBuf,
+    /// Where this client was created, so each `gh` call is counted against its feature.
+    caller: &'static Location<'static>,
 }
 
 impl PullRequestCommand {
+    #[track_caller]
     pub fn new(directory: &Path) -> Result<(Self, String), PullRequestError> {
+        let caller = Location::caller();
         let directory = std::fs::canonicalize(directory)?;
         // CreateProcess and Git's repository discovery reject long working
         // directories. Read Git metadata in Rust and run gh at the volume root.
@@ -38,18 +43,19 @@ impl PullRequestCommand {
         Ok((
             Self {
                 directory: root.to_path_buf(),
+                caller,
             },
             repository,
         ))
     }
 
     pub fn read<T: DeserializeOwned>(&self, arguments: &[&str]) -> Result<T, PullRequestError> {
-        self.run(arguments, None)
+        self.run(arguments, None, None)
     }
 
     /// A command's plain-text output, such as `gh pr diff`.
     pub fn text(&self, arguments: &[&str]) -> Result<String, PullRequestError> {
-        let output = self.spawn(arguments, false)?.wait_with_output()?;
+        let output = self.spawn(arguments, false, None)?.wait_with_output()?;
         if !output.status.success() {
             return Err(PullRequestError::Command {
                 code: output.status.code(),
@@ -68,6 +74,20 @@ impl PullRequestCommand {
         self.run(
             &["api", "--method", method, endpoint, "--input", "-"],
             Some(body),
+            None,
+        )
+    }
+
+    /// A GraphQL request, counted under the response path it reads.
+    pub fn graphql<T: DeserializeOwned>(
+        &self,
+        path: &str,
+        body: &Value,
+    ) -> Result<T, PullRequestError> {
+        self.run(
+            &["api", "--method", "POST", "graphql", "--input", "-"],
+            Some(body),
+            Some(path),
         )
     }
 
@@ -75,9 +95,10 @@ impl PullRequestCommand {
         &self,
         arguments: &[&str],
         body: Option<&Value>,
+        graphql_path: Option<&str>,
     ) -> Result<T, PullRequestError> {
         let input = body.map(serde_json::to_vec).transpose()?;
-        let mut child = self.spawn(arguments, input.is_some())?;
+        let mut child = self.spawn(arguments, input.is_some(), graphql_path)?;
         if let Some(input) = input {
             let written = child
                 .stdin
@@ -100,7 +121,16 @@ impl PullRequestCommand {
         Ok(serde_json::from_slice(&output.stdout)?)
     }
 
-    fn spawn(&self, arguments: &[&str], has_input: bool) -> Result<Child, PullRequestError> {
+    fn spawn(
+        &self,
+        arguments: &[&str],
+        has_input: bool,
+        graphql_path: Option<&str>,
+    ) -> Result<Child, PullRequestError> {
+        crate::request_counter::record(
+            self.caller,
+            crate::request_counter::operation(arguments, graphql_path),
+        );
         let mut command = Command::new("gh");
         command
             .current_dir(&self.directory)
