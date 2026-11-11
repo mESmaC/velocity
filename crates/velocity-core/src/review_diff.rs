@@ -29,10 +29,17 @@ impl DiffSummary {
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 struct FileChange {
     paths: Vec<String>,
-    removed: Vec<String>,
-    added: Vec<String>,
+    hunks: Vec<HunkChange>,
     /// A change the line lists cannot show: binary content, a rename or a mode change.
     opaque: bool,
+}
+
+/// Context belongs to both sides: dropping it hides reordered statements. Each hunk is
+/// compared separately so a removal cannot cancel an addition elsewhere in the file.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+struct HunkChange {
+    removed: Vec<String>,
+    added: Vec<String>,
 }
 
 /// Reads `git diff` / `gh pr diff` output.
@@ -65,6 +72,9 @@ fn parse_files(diff: &str) -> Vec<FileChange> {
             }
         } else if let Some(range) = line.strip_prefix("@@ ") {
             hunk = hunk_size(range);
+            if let Some(file) = files.last_mut() {
+                file.hunks.push(HunkChange::default());
+            }
         } else {
             header_line(files.last_mut(), line);
         }
@@ -78,20 +88,25 @@ fn hunk_line(
     line: &str,
     (old, new): (usize, usize),
 ) -> (usize, usize) {
-    let Some(file) = file else {
+    let Some(hunk) = file.and_then(|file| file.hunks.last_mut()) else {
         return (0, 0);
     };
     match line.as_bytes().first() {
         Some(b'-') => {
-            file.removed.push(line[1..].to_owned());
+            hunk.removed.push(line[1..].to_owned());
             (old.saturating_sub(1), new)
         }
         Some(b'+') => {
-            file.added.push(line[1..].to_owned());
+            hunk.added.push(line[1..].to_owned());
             (old, new.saturating_sub(1))
         }
         // "\ No newline at end of file" belongs to the line before it.
         Some(b'\\') => (old, new),
+        Some(b' ') => {
+            hunk.removed.push(line[1..].to_owned());
+            hunk.added.push(line[1..].to_owned());
+            (old.saturating_sub(1), new.saturating_sub(1))
+        }
         _ => (old.saturating_sub(1), new.saturating_sub(1)),
     }
 }
@@ -287,6 +302,10 @@ fn is_cosmetic(file: &FileChange) -> bool {
     let Some(Some(syntax)) = syntaxes.next() else {
         return false;
     };
+    file.hunks.iter().all(|hunk| is_cosmetic_hunk(syntax, hunk))
+}
+
+fn is_cosmetic_hunk(syntax: &Syntax, hunk: &HunkChange) -> bool {
     let code = |lines: &[String]| -> Vec<String> {
         lines
             .iter()
@@ -294,7 +313,7 @@ fn is_cosmetic(file: &FileChange) -> bool {
             .cloned()
             .collect()
     };
-    let (removed, added) = (code(&file.removed), code(&file.added));
+    let (removed, added) = (code(&hunk.removed), code(&hunk.added));
     if syntax.free_form {
         significant_text(&removed) == significant_text(&added)
     } else {
@@ -308,8 +327,9 @@ fn is_cosmetic(file: &FileChange) -> bool {
     }
 }
 
-/// A whole-line comment. A line that opens a block comment and has code after its close is
-/// code; a block comment's inner lines count only when they start with `*` (C style).
+/// Only self-contained block comments are known to be cosmetic from a diff alone.
+/// Unmatched delimiters can change whether unchanged code executes; a leading `*` can
+/// also be multiplication rather than a comment continuation.
 fn is_comment(syntax: &Syntax, line: &str) -> bool {
     let line = line.trim();
     if syntax
@@ -321,11 +341,12 @@ fn is_comment(syntax: &Syntax, line: &str) -> bool {
     }
     for (open, close) in syntax.block_comments {
         if let Some(rest) = line.strip_prefix(open) {
-            return !rest.contains(close) || line.ends_with(close);
+            return rest
+                .split_once(close)
+                .is_some_and(|(_, after)| after.trim().is_empty());
         }
     }
-    let c_style = syntax.block_comments.contains(&("/*", "*/"));
-    c_style && (line == "*" || line.starts_with("* ") || line.starts_with("*/"))
+    false
 }
 
 /// The lines' text with insignificant whitespace removed: whitespace inside quotes stays,
