@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { onMount } from 'svelte';
+  import { onMount, tick } from 'svelte';
   import Icon from './Icon.svelte';
   import {
     providerCommands,
@@ -35,6 +35,15 @@
   let view = $state<ModelMenuView | null>(null);
   let error = $state('');
   let menu: HTMLElement | undefined = $state();
+  let list: HTMLElement | undefined = $state();
+  // Where the menu fits (#222): above the pill as in the reference, below it when the
+  // content needs more room than there is above and there is more below, and never
+  // taller or wider than the window allows. The model list scrolls inside the menu while
+  // effort and speed stay pinned under it, so they are reachable however long the list.
+  let below = $state(false);
+  let maxHeight = $state<number | null>(null);
+  let maxWidth = $state<number | null>(null);
+  let scrolledToSelection = false;
 
   const efforts: EffortLevel[] = ['low', 'medium', 'high', 'max'];
   const effortNames: Record<EffortLevel, string> = {
@@ -66,6 +75,40 @@
       })
       .catch(report);
   }
+
+  function tokenPixels(element: HTMLElement, token: string) {
+    return parseFloat(window.getComputedStyle(element).getPropertyValue(token));
+  }
+
+  function place() {
+    const row = menu?.offsetParent;
+    if (!menu || !(row instanceof HTMLElement)) return;
+    const anchorGap = tokenPixels(menu, '--providers-menu-anchor-gap');
+    const edgeGap = tokenPixels(menu, '--providers-menu-edge-gap');
+    const bounds = row.getBoundingClientRect();
+    const roomAbove = bounds.top - anchorGap - edgeGap;
+    const roomBelow = window.innerHeight - bounds.bottom - anchorGap - edgeGap;
+    const hidden = list ? list.scrollHeight - list.clientHeight : 0;
+    const wanted = menu.offsetHeight + hidden;
+    below = wanted > roomAbove && roomBelow > roomAbove;
+    maxHeight = Math.max(0, Math.floor(below ? roomBelow : roomAbove));
+    // The menu hangs from the row's right edge, so its left edge is what can leave the window.
+    maxWidth = Math.max(0, Math.floor(bounds.right - edgeGap));
+  }
+
+  // Re-place whenever the content changes, and bring the checked model into view the
+  // first time the list arrives so a pick far down a long list is visible.
+  $effect(() => {
+    if (!view || !menu) return;
+    void tick().then(() => {
+      place();
+      if (scrolledToSelection || !menu) return;
+      scrolledToSelection = true;
+      menu
+        .querySelector('.model-menu-item.on')
+        ?.scrollIntoView({ block: 'nearest' });
+    });
+  });
 
   function signIn(provider: ProviderKind) {
     close();
@@ -104,36 +147,51 @@
 </script>
 
 <svelte:document onmousedown={dismiss} onkeydown={escape} />
+<svelte:window onresize={place} />
 
-<div class="model-menu" role="menu" bind:this={menu}>
+<div
+  class="model-menu"
+  class:below
+  role="menu"
+  bind:this={menu}
+  style:max-height={maxHeight === null ? undefined : `${maxHeight}px`}
+  style:max-width={maxWidth === null ? undefined : `${maxWidth}px`}
+>
   {#if view}
-    {#each view.groups as group (group.provider)}
-      <div class="model-menu-head" data-provider={providerMark(group.provider)}>
-        <Icon name={providerIcon(group.provider)} />{group.name}<span
-          >{group.note}</span
+    <div class="model-menu-list" bind:this={list}>
+      {#each view.groups as group (group.provider)}
+        <div
+          class="model-menu-head"
+          data-provider={providerMark(group.provider)}
         >
-      </div>
-      {#if group.signed_in}
-        {#each group.models as item (item.model)}<button
-            class="model-menu-item"
-            class:on={item.selected}
-            role="menuitemradio"
-            aria-checked={item.selected}
-            disabled={!item.enabled}
-            title={item.enabled ? undefined : 'Start a new thread for this one'}
-            onclick={() =>
-              choose(
-                { Model: { provider: group.provider, model: item.model } },
-                close,
-              )}>{item.model}</button
-          >{/each}
-      {:else if group.can_sign_in}<button
-          class="model-menu-item sign-in"
-          role="menuitem"
-          onclick={() => signIn(group.provider)}
-          >{group.sign_in_label}<small>OAuth in your browser</small></button
-        >{/if}
-    {/each}
+          <Icon name={providerIcon(group.provider)} />{group.name}<span
+            >{group.note}</span
+          >
+        </div>
+        {#if group.signed_in}
+          {#each group.models as item (item.model)}<button
+              class="model-menu-item"
+              class:on={item.selected}
+              role="menuitemradio"
+              aria-checked={item.selected}
+              disabled={!item.enabled}
+              title={item.enabled
+                ? undefined
+                : 'Start a new thread for this one'}
+              onclick={() =>
+                choose(
+                  { Model: { provider: group.provider, model: item.model } },
+                  close,
+                )}>{item.model}</button
+            >{/each}
+        {:else if group.can_sign_in}<button
+            class="model-menu-item sign-in"
+            role="menuitem"
+            onclick={() => signIn(group.provider)}
+            >{group.sign_in_label}<small>OAuth in your browser</small></button
+          >{/if}
+      {/each}
+    </div>
     <hr />
     <div class="model-menu-row">
       Effort
