@@ -122,6 +122,38 @@ fn proof_levels(
         .collect()
 }
 
+/// Every design proof the Lake project tracks, `<folder>/<Feature>/Design.lean`, with the level
+/// each language's code reaches for it (Settings → Proofs, F13). Read from git, so the page
+/// shows what is committed. `None` when the repository has no Lake project.
+pub(crate) fn tracked_design_levels(
+    repository: &Path,
+) -> Result<Option<(String, Vec<FeatureLevels>)>, ProofCheckError> {
+    let Some(folder) = project_folder(repository) else {
+        return Ok(None);
+    };
+    let tracked = git(repository, &["ls-files", "-z", "--", &folder])?;
+    let tracked: Vec<&str> = tracked
+        .split('\0')
+        .filter(|path| !path.is_empty())
+        .collect();
+    let prefix = format!("{folder}/");
+    let mut features: Vec<&str> = tracked
+        .iter()
+        .filter_map(|path| path.strip_prefix(&prefix)?.strip_suffix("/Design.lean"))
+        .filter(|feature| !feature.contains('/'))
+        .collect();
+    features.sort_unstable();
+    let levels = features
+        .iter()
+        .map(|feature| {
+            let readers = fixture_readers(repository, &folder, &fixture_name(feature))?;
+            let evidence = feature_evidence(feature, &tracked, &prefix, readers);
+            Ok(feature_levels(&evidence, &[]))
+        })
+        .collect::<Result<_, ProofCheckError>>()?;
+    Ok(Some((folder, levels)))
+}
+
 /// Tracked files outside the Lake project that name `<fixture>.tsv`: the test or stress
 /// driver that checks an implementation against the model's table.
 fn fixture_readers(
