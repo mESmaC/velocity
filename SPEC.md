@@ -1262,7 +1262,7 @@ Each milestone ends with a working app. PR duty checks an item off when it lands
 **M2 · Projects and spec**
 - [x] Project store and switcher (F1)
 - [x] New-project dialog: local (git init) and GitHub (new/existing, visibility, clone) (F2)
-- [ ] Open project from the switcher: a local folder or one of your GitHub repositories; an existing SPEC.md locks the spec (F2)
+- [x] Open project from the switcher: a local folder or one of your GitHub repositories; an existing SPEC.md locks the spec (F2)
 - [x] Spec interview: scan, ask, ready, lock; SPEC.md written and committed; draft → published tasks (F3)
 - [x] Gate: no build work on unlocked projects (Rule 2)
 
