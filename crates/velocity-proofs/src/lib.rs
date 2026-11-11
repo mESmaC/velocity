@@ -6,6 +6,7 @@
 mod axioms;
 mod check;
 mod lean_source;
+mod levels;
 mod lock_store;
 mod report;
 mod statement_lock;
@@ -13,9 +14,13 @@ mod statement_lock;
 pub use axioms::{
     ALLOWED_AXIOMS, AxiomAudit, DisallowedAxiom, audit_script, module_name, parse_audit,
 };
-pub use check::{check_worktree, statements_at};
+pub use check::{check_worktree, levels_between, statements_at};
 pub use lean_source::{
     Placeholder, ProofFile, TheoremStatement, names_spec_section, placeholders, theorem_statements,
+};
+pub use levels::{
+    FeatureEvidence, FeatureLevels, LanguageLevel, ProofLevel, feature_evidence, feature_levels,
+    fixture_name, language_of, strongest_available, touched_features,
 };
 pub use lock_store::{load_statement_lock, save_statement_lock};
 pub use report::{CheckStep, ProofCheckReport};
