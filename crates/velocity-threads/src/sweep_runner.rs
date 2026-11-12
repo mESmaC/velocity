@@ -145,6 +145,9 @@ impl ScoutSweeps {
                     last: scout.sweep.as_ref(),
                     now: unix_now(),
                     base_commit: base.as_deref(),
+                    // Only a sweep the runner started marks the card busy, and finishing
+                    // clears it, so a busy card it isn't running was cut off by an exit.
+                    interrupted: scout.busy && !running,
                 };
                 let instructed = instruction
                     .as_ref()

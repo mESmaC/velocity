@@ -153,12 +153,21 @@ impl MainWatches {
                     .collect()
             };
             let mut waiting = idle.clone();
+            // Only a watch the runner started marks a card busy, and finishing clears it, so
+            // a busy card it isn't running was cut off when Velocity closed (§3.2).
+            let interrupted = idle.iter().any(|index| roster.watchers[*index].busy);
+            let mut keep_busy = false;
             if let (false, Some(first)) = (roster.paused, idle.first()) {
                 let tip = self.base_commit(&roster).await;
-                if let Some(start) = self.due(&roster, tip.as_deref(), *first) {
+                // Until the tip can be read, the busy card is what remembers the stopped watch.
+                keep_busy = interrupted && tip.is_none();
+                if let Some(start) = self.due(&roster, tip.as_deref(), *first, interrupted) {
                     waiting.retain(|index| index != first);
                     self.start(host, &roster, start);
                 }
+            }
+            if keep_busy {
+                continue;
             }
             for index in waiting {
                 settle_card(host, &roster, index);
@@ -167,7 +176,13 @@ impl MainWatches {
     }
 
     /// The watch the role starts now on watcher `index`, if any.
-    fn due(&self, roster: &WatchRoster, tip: Option<&str>, index: usize) -> Option<WatchStart> {
+    fn due(
+        &self,
+        roster: &WatchRoster,
+        tip: Option<&str>,
+        index: usize,
+        interrupted: bool,
+    ) -> Option<WatchStart> {
         let project = roster.project.id;
         let running: Vec<String> = self
             .lock()
@@ -183,6 +198,7 @@ impl MainWatches {
             last: latest_watch(roster.watchers.iter().filter_map(|w| w.sweep.as_ref())),
             running: &running,
             instructed: instruction.is_some(),
+            interrupted,
         };
         let (reason, tip) = watch_due(&schedule)?;
         if reason == WatchReason::Instruction {

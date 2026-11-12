@@ -13,7 +13,9 @@ fn resolve_store_directory(application: &AppHandle) -> anyhow::Result<PathBuf> {
         .context("Could not resolve the application data directory")
 }
 
-pub fn initialize(application: &AppHandle) -> anyhow::Result<()> {
+/// Loads `state.json` and returns the build threads whose turn the last exit cut off, which
+/// `crate::restart` continues once the rest of the app is up (§3.2).
+pub fn initialize(application: &AppHandle) -> anyhow::Result<Vec<velocity_threads::ThreadKey>> {
     let directory = resolve_store_directory(application)?;
     let mut store =
         StateStore::load_or_default(directory).context("Could not initialize persisted state")?;
@@ -23,6 +25,7 @@ pub fn initialize(application: &AppHandle) -> anyhow::Result<()> {
             corrupt_path.display()
         );
     }
+    let interrupted = velocity_threads::restart::interrupted_turns(store.state());
     store.reset_disconnected_threads()?;
     application
         .state::<crate::threads::ManagedThreads>()
@@ -30,7 +33,7 @@ pub fn initialize(application: &AppHandle) -> anyhow::Result<()> {
         .map_err(|_| anyhow::anyhow!("Thread sessions lock is poisoned"))?
         .restore(store.state());
     application.manage(Mutex::new(store));
-    Ok(())
+    Ok(interrupted)
 }
 
 #[tauri::command]

@@ -29,6 +29,7 @@ mod provider_agents;
 mod providers;
 mod pull_request_panel;
 mod ready_pool;
+mod restart;
 pub mod reviews;
 mod shared_mcp;
 mod skills;
@@ -239,7 +240,7 @@ pub fn run() -> anyhow::Result<()> {
         .invoke_handler(bindings.invoke_handler())
         .setup(move |application| {
             bindings.mount_events(application);
-            state::initialize(application.handle())?;
+            let interrupted = state::initialize(application.handle())?;
             airc_access::initialize(application.handle())?;
             projects::initialize(application.handle())?;
             providers::initialize(application.handle());
@@ -257,6 +258,7 @@ pub fn run() -> anyhow::Result<()> {
             airc_delivery::initialize(application.handle());
             airc_modal::initialize(application.handle());
             updates::initialize(application.handle());
+            restart::resume_interrupted(application.handle(), interrupted);
             Ok(())
         })
         .on_window_event(|window, event| {

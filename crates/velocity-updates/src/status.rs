@@ -207,13 +207,13 @@ impl UpdateState {
 }
 
 /// Restarting ends every running turn (§3.2 Resume after a restart): worktrees and
-/// transcripts are kept, parked threads resume on their own, the rest on their next message.
+/// transcripts are kept, and each cut-off turn continues by itself once Velocity is back.
 fn restart_warning(working_agents: usize) -> String {
     match working_agents {
         0 => String::new(),
-        1 => "1 agent is working. Restarting stops its turn; its worktree and transcript are kept, and it continues when you message it.".to_owned(),
+        1 => "1 agent is working. Restarting stops its turn; it continues where it left off, in the same worktree, when Velocity starts again.".to_owned(),
         count => format!(
-            "{count} agents are working. Restarting stops their turns; worktrees and transcripts are kept, and each continues when you message it."
+            "{count} agents are working. Restarting stops their turns; each continues where it left off, in the same worktree, when Velocity starts again."
         ),
     }
 }

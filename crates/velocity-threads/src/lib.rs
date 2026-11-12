@@ -16,6 +16,7 @@ pub mod parking;
 mod process;
 pub mod proof_checks;
 pub mod ready_pool;
+pub mod restart;
 pub mod review;
 pub mod review_runner;
 pub mod runtime;
