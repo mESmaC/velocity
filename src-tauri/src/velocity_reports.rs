@@ -58,8 +58,9 @@ fn report_all(application: &AppHandle) -> Result<(), String> {
     Ok(())
 }
 
-/// Reports the project's marked discoveries after its cursor, in order, saving after each
-/// one so a crash never files the same discovery twice.
+/// Reports the project's marked discoveries after its cursor, in order. Each one is marked
+/// pending before GitHub is asked and recorded as soon as it answers, so an attempt cut off in
+/// between is matched to the issue it opened on the next pass rather than filed again.
 fn report_project(
     app_data: &Path,
     (project, name): (u32, &str),
@@ -81,6 +82,10 @@ fn report_project(
         else {
             continue;
         };
+        let reports = saved.projects.entry(project).or_default();
+        let retry = reports.pending == Some(entry.sequence);
+        reports.pending = Some(entry.sequence);
+        saved.save(app_data).map_err(|error| error.to_string())?;
         let outcome = velocity_reports::report(
             &DiscoveryReport {
                 title: title.clone(),
@@ -90,11 +95,13 @@ fn report_project(
                 time: entry.time.clone(),
             },
             filed,
+            retry,
         )
         .map_err(|error| error.to_string())?;
         let reports = saved.projects.entry(project).or_default();
         reports.issues.insert(entry.sequence, outcome.issue());
         reports.cursor = entry.sequence;
+        reports.pending = None;
         saved.save(app_data).map_err(|error| error.to_string())?;
     }
     let reports = saved.projects.entry(project).or_default();

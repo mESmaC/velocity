@@ -19,6 +19,11 @@ pub const VELOCITY_REPOSITORY: &str = "mESmaC/velocity";
 /// The app data file that records what Velocity has reported.
 pub const REPORTS_FILE: &str = "velocity-reports.json";
 
+/// The most of a discovery's text a report quotes. `gh api` takes the body on its command
+/// line, which Windows caps at 32,767 characters; a longer body would fail on every pass and
+/// hold up the project's later reports.
+const QUOTED_TEXT_LIMIT: usize = 20_000;
+
 /// Titles whose significant words overlap at least this much (shared words over all words in
 /// either title) describe the same problem.
 const SAME_PROBLEM: f64 = 0.5;
@@ -74,6 +79,10 @@ pub struct ProjectReports {
     /// Discovery sequence → the Velocity issue it was filed on or added to.
     #[serde(default)]
     pub issues: BTreeMap<u64, u32>,
+    /// The discovery being reported, saved before GitHub is asked. Still set on the next pass
+    /// means the last attempt may have reached GitHub without being recorded.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pending: Option<u64>,
 }
 
 impl ReportedDiscoveries {
@@ -108,15 +117,22 @@ impl ReportedDiscoveries {
 /// problem. `filed` holds the issues the caller filed moments ago: GitHub's issue list lags
 /// a few seconds behind a new issue, so two reports of one problem in quick succession would
 /// otherwise open two issues. A newly filed issue is added to it.
+///
+/// `retry` says an earlier attempt at this report may have reached GitHub unrecorded. An open
+/// issue with exactly its title is then taken as that attempt's result, and nothing is posted.
 pub fn report(
     report: &DiscoveryReport,
     filed: &mut Vec<(u32, String)>,
+    retry: bool,
 ) -> Result<ReportOutcome, PullRequestError> {
     let mut open = open_issues()?;
     for issue in filed.iter() {
         if !open.iter().any(|(number, _)| *number == issue.0) {
             open.push(issue.clone());
         }
+    }
+    if retry && let Some(number) = same_title(&report.title, &open) {
+        return Ok(ReportOutcome::Joined(number));
     }
     if let Some(number) = same_problem(&report.title, &open) {
         let body = format!(
@@ -181,7 +197,11 @@ fn open_issues() -> Result<Vec<(u32, String)>, PullRequestError> {
 
 /// The open issue whose title overlaps `title` by at least half of their significant words.
 pub fn same_problem(title: &str, open: &[(u32, String)]) -> Option<u32> {
+    if let Some(number) = same_title(title, open) {
+        return Some(number);
+    }
     let wanted = significant_words(title);
+    // One word is too little to call two problems the same, unless the titles are equal.
     if wanted.len() < 2 {
         return None;
     }
@@ -210,8 +230,25 @@ fn significant_words(text: &str) -> HashSet<String> {
         .collect()
 }
 
+/// The open issue titled exactly `title`, ignoring case and surrounding space.
+fn same_title(title: &str, open: &[(u32, String)]) -> Option<u32> {
+    let title = title.trim();
+    open.iter()
+        .find(|(_, other)| other.trim().eq_ignore_ascii_case(title))
+        .map(|(number, _)| *number)
+}
+
 fn quote(text: &str) -> String {
-    text.lines()
+    let shortened = match text.char_indices().nth(QUOTED_TEXT_LIMIT) {
+        Some((cut, _)) => format!(
+            "{}
+… (cut at {QUOTED_TEXT_LIMIT} characters)",
+            &text[..cut]
+        ),
+        None => text.to_owned(),
+    };
+    shortened
+        .lines()
         .map(|line| format!("> {line}"))
         .collect::<Vec<_>>()
         .join("\n")
