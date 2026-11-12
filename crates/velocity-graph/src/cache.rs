@@ -16,7 +16,7 @@ use crate::extract::FileParse;
 use crate::language::Language;
 
 /// Bump when extraction changes, so every cached parse is redone.
-pub const PARSER_VERSION: u32 = 1;
+pub const PARSER_VERSION: u32 = 2;
 
 /// The log is rewritten with only live entries once it passes this size and twice the live
 /// size.

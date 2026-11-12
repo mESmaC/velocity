@@ -132,6 +132,7 @@ fn fits(reference: ReferenceKind, symbol: SymbolKind, precise: bool, qualified: 
         ReferenceKind::Call => symbol.callable() && symbol != SymbolKind::Method,
         ReferenceKind::Method if precise => symbol == SymbolKind::Method,
         ReferenceKind::Method => symbol.callable(),
+        ReferenceKind::Macro => symbol == SymbolKind::Macro,
         ReferenceKind::Type | ReferenceKind::Implementation => symbol.type_like(),
         ReferenceKind::Mention => symbol != SymbolKind::Heading,
         ReferenceKind::FileMention => false,
@@ -165,7 +166,7 @@ impl Scope<'_, '_> {
 
     fn reference_edges(&self, reference: &Reference) -> Vec<Edge> {
         let relation = match reference.kind {
-            ReferenceKind::Call | ReferenceKind::Method => Relation::Calls,
+            ReferenceKind::Call | ReferenceKind::Method | ReferenceKind::Macro => Relation::Calls,
             ReferenceKind::Type => Relation::References,
             ReferenceKind::Implementation => Relation::Implements,
             ReferenceKind::Mention | ReferenceKind::FileMention => Relation::Mentions,
@@ -444,8 +445,9 @@ impl Scope<'_, '_> {
             .collect()
     }
 
-    /// Type names the code at `source` uses: its container, the words of its signature, and
-    /// the types referenced inside it.
+    /// Type names the code at `source` uses: the words of its signature and the types
+    /// referenced inside it. Its own type doesn't count: a call on `self` resolves through
+    /// `self`, so another receiver in a method (`cache.get()`) is some other type.
     fn types_in_play(&self, source: usize) -> HashSet<String> {
         let record = &self.graph().records[source];
         let mut names: HashSet<String> = record
@@ -454,7 +456,6 @@ impl Scope<'_, '_> {
             .filter(|word| !word.is_empty())
             .map(str::to_owned)
             .collect();
-        names.extend(record.container.clone());
         let whole_file = source == self.record;
         names.extend(
             self.file

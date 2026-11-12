@@ -89,6 +89,8 @@ pub enum ReferenceKind {
     Call,
     /// A method call on a receiver whose type the parser can't know (`value.run()`).
     Method,
+    /// A macro invocation (`format!`): it can only land on a macro.
+    Macro,
     Type,
     Implementation,
     /// A Markdown section naming a symbol in backticks.
@@ -242,8 +244,8 @@ impl<'source> Collector<'source> {
             Some((role, node)) if role.starts_with("definition.") => {
                 self.definition(&role["definition.".len()..], node, &captures);
             }
-            Some((role, node)) if role.starts_with("reference.") => {
-                self.reference(&role["reference.".len()..], node, &captures);
+            Some((role, _)) if role.starts_with("reference.") => {
+                self.reference(&role["reference.".len()..], &captures);
             }
             Some(("container", node)) => self.container(node, &captures),
             Some(("import", node)) => self.import(node, &captures),
@@ -294,7 +296,7 @@ impl<'source> Collector<'source> {
         self.definitions.insert(name_byte, definition);
     }
 
-    fn reference(&mut self, role: &str, node: Node, captures: &HashMap<&str, Node>) {
+    fn reference(&mut self, role: &str, captures: &HashMap<&str, Node>) {
         let Some(name_node) = captures.get("name") else {
             return;
         };
@@ -305,6 +307,7 @@ impl<'source> Collector<'source> {
         let kind = match role {
             "call" | "class" => ReferenceKind::Call,
             "method" => ReferenceKind::Method,
+            "macro" => ReferenceKind::Macro,
             "implementation" => ReferenceKind::Implementation,
             _ => ReferenceKind::Type,
         };
@@ -320,7 +323,9 @@ impl<'source> Collector<'source> {
         {
             return;
         }
-        let line = node.start_position().row as u32 + 1;
+        // The name's line, not the call's: a call that starts a chain over several lines is
+        // reported where the method is named.
+        let line = name_node.start_position().row as u32 + 1;
         self.references.insert(
             byte,
             Reference {

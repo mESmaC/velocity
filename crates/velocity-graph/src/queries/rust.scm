@@ -23,7 +23,7 @@
 (call_expression function: (generic_function function: (identifier) @name)) @reference.call
 (call_expression function: (generic_function function: (scoped_identifier path: (_) @qualifier name: (identifier) @name))) @reference.call
 (call_expression function: (generic_function function: (field_expression field: (field_identifier) @name))) @reference.method
-(macro_invocation macro: (identifier) @name) @reference.call
+(macro_invocation macro: (identifier) @name) @reference.macro
 (struct_expression name: (type_identifier) @name) @reference.call
 (struct_expression name: (scoped_type_identifier path: (_) @qualifier name: (type_identifier) @name)) @reference.call
 
