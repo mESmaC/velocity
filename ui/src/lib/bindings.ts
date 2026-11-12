@@ -78,6 +78,13 @@ export const commands = {
 	startDuty: (request: StartDutyRequest_Deserialize) => __TAURI_INVOKE<LayoutSnapshot_Serialize>("start_duty", { request }),
 	pauseDuty: (request: PauseDutyRequest_Deserialize) => __TAURI_INVOKE<LayoutSnapshot_Serialize>("pause_duty", { request }),
 	addDutyAgents: (request: StartDutyRequest_Deserialize) => __TAURI_INVOKE<LayoutSnapshot_Serialize>("add_duty_agents", { request }),
+	/**
+	 *  Dismisses one duty agent (F7): it leaves the saved roster, its session stops, and a PR it
+	 *  held is released for the next agent.
+	 */
+	dismissDutyAgent: (request: DismissDutyAgentRequest) => __TAURI_INVOKE<LayoutSnapshot_Serialize>("dismiss_duty_agent", { request }),
+	/**  Stops a duty role (F7): every agent on it is dismissed and the role leaves "On duty". */
+	stopDuty: (request: StopDutyRequest) => __TAURI_INVOKE<LayoutSnapshot_Serialize>("stop_duty", { request }),
 	listPullRequests: (projectIdentifier: number) => __TAURI_INVOKE<PullRequest_Serialize[]>("list_pull_requests", { projectIdentifier }),
 	getPullRequest: (projectIdentifier: number, number: number) => __TAURI_INVOKE<PullRequestSnapshot_Serialize>("get_pull_request", { projectIdentifier, number }),
 	dispatchPullRequest: (projectIdentifier: number, operation: PullRequestOperation_Deserialize) => __TAURI_INVOKE<PullRequestReceipt>("dispatch_pull_request", { projectIdentifier, operation }),
@@ -691,6 +698,12 @@ export type DiscoveredSkill_Serialize = {
 	 *  `vendor/` and per-agent folders. Mirrors never count twice in a bundle.
 	 */
 	mirror: boolean,
+};
+
+/**  Dismiss one duty agent (F7): its session stops and it leaves the role. */
+export type DismissDutyAgentRequest = {
+	role: DutyRole,
+	nickname: string,
 };
 
 export type DutyAgentCard = {
@@ -3820,6 +3833,11 @@ export type StartDutyRequest_Serialize = {
 	model_name: string | null,
 	pr_rules: PrDutyRuleSettings | null,
 	scout_rules: ScoutRuleSettings | null,
+};
+
+/**  Stop a duty role (F7): every agent is dismissed and the role leaves "On duty". */
+export type StopDutyRequest = {
+	role: DutyRole,
 };
 
 export type Supervision = Supervision_Serialize | Supervision_Deserialize;
