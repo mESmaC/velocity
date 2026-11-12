@@ -77,3 +77,51 @@ fn write_staged(staged: &Path, bytes: &[u8]) -> std::io::Result<()> {
 pub fn remove_previous(executable: &Path) -> bool {
     std::fs::remove_file(sidecar(executable, "old")).is_ok()
 }
+
+/// Set on the copy a portable update starts, so it waits for the copy it replaced.
+pub const REPLACED_MARKER: &str = "VELOCITY_REPLACED_PREVIOUS";
+
+/// Starts the replaced executable with this process's arguments, marked so it waits for
+/// this copy to exit before it opens its window ([`wait_for_previous`]).
+pub fn relaunch(executable: &Path) -> std::io::Result<()> {
+    hidden_command(executable)
+        .args(std::env::args_os().skip(1))
+        .env(REPLACED_MARKER, "1")
+        .spawn()
+        .map(drop)
+}
+
+/// A `Command` that opens no console window (#232); clippy's `disallowed_methods` rejects a
+/// bare `Command::new`. Velocity itself is a windowed app, so its own window is unaffected.
+#[allow(clippy::disallowed_methods)]
+fn hidden_command(program: impl AsRef<std::ffi::OsStr>) -> std::process::Command {
+    let mut command = std::process::Command::new(program);
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+        command.creation_flags(CREATE_NO_WINDOW);
+    }
+    command
+}
+
+/// Waits, up to `limit`, for the process that ran `<name>.old` to exit, and removes it.
+/// Windows keeps a running image locked against deletion, so the delete succeeding means
+/// that process is gone. Starting the window before then races the old copy's WebView2
+/// shutting down over the same profile, and the new copy exits without showing anything.
+pub fn wait_for_previous(executable: &Path, limit: std::time::Duration) {
+    let previous = sidecar(executable, "old");
+    let started = std::time::Instant::now();
+    loop {
+        match std::fs::remove_file(&previous) {
+            Err(error) if error.kind() != std::io::ErrorKind::NotFound => {}
+            _ => break,
+        }
+        if started.elapsed() >= limit {
+            return;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(100));
+    }
+    // The old copy's WebView2 browser processes close just after it does.
+    std::thread::sleep(std::time::Duration::from_millis(500));
+}

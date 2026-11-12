@@ -175,7 +175,10 @@
       title="Usage"
       aria-label="Usage"
       aria-expanded={usageOpen}
-      onclick={() => (usageOpen = !usageOpen)}><Icon name="usage" /></button
+      onclick={() => {
+        usageOpen = !usageOpen;
+        updatesOpen = false;
+      }}><Icon name="usage" /></button
     >
     <button
       class="icon-btn updates-trigger"
@@ -200,7 +203,10 @@
         title="Subscription limits"
         aria-label="Provider subscription limits"
         aria-expanded={usageOpen}
-        onclick={() => (usageOpen = !usageOpen)}
+        onclick={() => {
+          usageOpen = !usageOpen;
+          updatesOpen = false;
+        }}
       >
         {#each layout.providers as provider (provider.provider)}<span
             class="provider-meter"

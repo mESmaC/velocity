@@ -202,6 +202,7 @@ pub fn export_bindings() -> anyhow::Result<()> {
 pub fn run() -> anyhow::Result<()> {
     #[cfg(debug_assertions)]
     export_bindings()?;
+    updates::wait_after_portable_update();
 
     let bindings = bindings().events(collect_events![
         airc_events::AircEventPublished,

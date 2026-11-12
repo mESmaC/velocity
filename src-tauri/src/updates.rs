@@ -35,6 +35,17 @@ fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
         .unwrap_or_else(|poisoned| poisoned.into_inner())
 }
 
+/// Runs before the window exists: a copy a portable update just started waits for the
+/// copy it replaced to exit first.
+pub fn wait_after_portable_update() {
+    if std::env::var_os(velocity_updates::REPLACED_MARKER).is_none() {
+        return;
+    }
+    if let Ok(executable) = std::env::current_exe() {
+        velocity_updates::wait_for_previous(&executable, Duration::from_secs(15));
+    }
+}
+
 pub fn initialize(application: &AppHandle) {
     let executable = std::env::current_exe().ok();
     let kind = executable
@@ -183,12 +194,9 @@ fn restart_portable(application: &AppHandle, bytes: &[u8]) -> Result<(), String>
     let executable = std::env::current_exe()
         .map_err(|error| format!("Could not find Velocity's executable: {error}"))?;
     velocity_updates::replace_running(&executable, bytes).map_err(|error| error.to_string())?;
-    std::process::Command::new(&executable)
-        .args(std::env::args_os().skip(1))
-        .spawn()
-        .map_err(|error| {
-            format!("The new version is in place but didn't start ({error}). Start Velocity again.")
-        })?;
+    velocity_updates::relaunch(&executable).map_err(|error| {
+        format!("The new version is in place but didn't start ({error}). Start Velocity again.")
+    })?;
     application.exit(0);
     Ok(())
 }
