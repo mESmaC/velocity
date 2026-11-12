@@ -44,7 +44,10 @@
   grid-template-columns: var(--duty-agents-columns);
   gap: var(--duty-agents-gap);
 }
+/* A grid item's automatic minimum width is its content, so a long activity line widened
+   the card past its track and over the next card (#281). */
 .duty-view .agent-card {
+  min-width: 0;
   padding: var(--duty-agent-card-padding);
   border: var(--duty-agent-card-border);
   border-radius: var(--duty-agent-card-border-radius);
@@ -77,6 +80,13 @@
   margin-top: var(--duty-agent-doing-margin-top);
   font-size: var(--duty-agent-doing-font-size);
   color: var(--text-2);
+}
+/* One line with an ellipsis, as the reference's swarm cards show an agent's activity. */
+.duty-view .agent-card .doing-text {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 .duty-view .feed {
   display: flex;
