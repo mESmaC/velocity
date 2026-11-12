@@ -22,6 +22,11 @@ export const commands = {
 	minimizeWindow: () => __TAURI_INVOKE<null>("minimize_window"),
 	toggleMaximizeWindow: () => __TAURI_INVOKE<null>("toggle_maximize_window"),
 	closeWindow: () => __TAURI_INVOKE<null>("close_window"),
+	/**
+	 *  Records an error the window caught: a pane that failed to render, an uncaught exception
+	 *  or an unhandled promise rejection. `source` names where the window caught it.
+	 */
+	logWindowError: (source: string, message: string) => __TAURI_INVOKE<void>("log_window_error", { source, message }),
 	getSettings: () => __TAURI_INVOKE<Settings_Serialize>("get_settings"),
 	setSettings: (settings: Settings_Deserialize) => __TAURI_INVOKE<Settings_Serialize>("set_settings", { settings }),
 	getLayoutState: () => __TAURI_INVOKE<LayoutSnapshot_Serialize>("get_layout_state"),
