@@ -893,6 +893,11 @@ export type Entry_Deserialize = {
 	message_mode?: MessageMode | null,
 	acknowledged?: number | null,
 	files?: string[],
+	/**
+	 *  A discovery about Velocity itself rather than the project: the issue title its agent
+	 *  gave. Velocity files it on its own repository.
+	 */
+	velocity_issue?: string | null,
 };
 
 export type Entry_Serialize = {
@@ -919,6 +924,11 @@ export type Entry_Serialize = {
 	message_mode: MessageMode | null,
 	acknowledged: number | null,
 	files: string[],
+	/**
+	 *  A discovery about Velocity itself rather than the project: the issue title its agent
+	 *  gave. Velocity files it on its own repository.
+	 */
+	velocity_issue?: string,
 };
 
 export type ErrorCardView = {

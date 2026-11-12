@@ -147,7 +147,9 @@ function Wait-BuildQueueTurn([hashtable]$Ticket, [System.Threading.Mutex]$Mutex)
     $waitStart = Get-Date
     $nextReport = $waitStart.AddMinutes(1)
     while ($true) {
-        $tickets = Get-BuildQueueTickets
+        # @() keeps a one-waiter line a list: Windows PowerShell 5.1 unrolls it to the bare
+        # ticket, whose .Count is empty, and the only waiter never took the lock.
+        $tickets = @(Get-BuildQueueTickets)
         if ($tickets.Count -gt 0 -and $tickets[0].name -eq $Ticket.name) {
             if (Wait-BuildQueueMutex $Mutex ([TimeSpan]::FromMilliseconds(500))) { return }
         } else {

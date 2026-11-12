@@ -4,7 +4,11 @@
 //! Everything goes through GitHub's REST API, which keeps working when a swarm has spent the
 //! GraphQL budget.
 
-use std::collections::HashSet;
+use std::collections::{BTreeMap, HashSet};
+use std::io::Write;
+use std::path::Path;
+
+use serde::{Deserialize, Serialize};
 
 use crate::command::gh;
 use crate::pull_request_command::PullRequestError;
@@ -12,7 +16,11 @@ use crate::pull_request_command::PullRequestError;
 /// Where Velocity's own issues live.
 pub const VELOCITY_REPOSITORY: &str = "mESmaC/velocity";
 
-/// Titles sharing at least this share of their significant words describe the same problem.
+/// The app data file that records what Velocity has reported.
+pub const REPORTS_FILE: &str = "velocity-reports.json";
+
+/// Titles whose significant words overlap at least this much (shared words over all words in
+/// either title) describe the same problem.
 const SAME_PROBLEM: f64 = 0.5;
 
 const STOP_WORDS: [&str; 22] = [
@@ -50,10 +58,66 @@ impl ReportOutcome {
     }
 }
 
+/// What Velocity has reported from each project's discoveries, keyed by project identifier.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ReportedDiscoveries {
+    #[serde(default)]
+    pub projects: BTreeMap<u32, ProjectReports>,
+}
+
+/// One project's reporting progress.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ProjectReports {
+    /// Every channel entry up to this sequence has been looked at.
+    #[serde(default)]
+    pub cursor: u64,
+    /// Discovery sequence → the Velocity issue it was filed on or added to.
+    #[serde(default)]
+    pub issues: BTreeMap<u64, u32>,
+}
+
+impl ReportedDiscoveries {
+    /// Reads the saved record. A missing file means nothing has been reported yet; a damaged
+    /// one is an error, so reporting stops rather than filing every discovery again.
+    pub fn load(app_data: &Path) -> Result<Self, PullRequestError> {
+        match std::fs::read(app_data.join(REPORTS_FILE)) {
+            Ok(bytes) => Ok(serde_json::from_slice(&bytes)?),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(Self::default()),
+            Err(error) => Err(error.into()),
+        }
+    }
+
+    /// Writes the record through a temporary file, so a crash mid-write keeps the old one.
+    pub fn save(&self, app_data: &Path) -> Result<(), PullRequestError> {
+        std::fs::create_dir_all(app_data)?;
+        let mut file = tempfile::NamedTempFile::new_in(app_data)?;
+        file.write_all(&serde_json::to_vec_pretty(self)?)?;
+        file.as_file().sync_all()?;
+        file.persist(app_data.join(REPORTS_FILE))
+            .map_err(|error| PullRequestError::Process(error.error))?;
+        Ok(())
+    }
+
+    /// The issue a project's discovery was reported on, if it has been.
+    pub fn issue(&self, project: u32, sequence: u64) -> Option<u32> {
+        self.projects.get(&project)?.issues.get(&sequence).copied()
+    }
+}
+
 /// Files `report` on Velocity's repository, or adds it to the open issue about the same
-/// problem.
-pub fn report(report: &DiscoveryReport) -> Result<ReportOutcome, PullRequestError> {
-    let open = open_issues()?;
+/// problem. `filed` holds the issues the caller filed moments ago: GitHub's issue list lags
+/// a few seconds behind a new issue, so two reports of one problem in quick succession would
+/// otherwise open two issues. A newly filed issue is added to it.
+pub fn report(
+    report: &DiscoveryReport,
+    filed: &mut Vec<(u32, String)>,
+) -> Result<ReportOutcome, PullRequestError> {
+    let mut open = open_issues()?;
+    for issue in filed.iter() {
+        if !open.iter().any(|(number, _)| *number == issue.0) {
+            open.push(issue.clone());
+        }
+    }
     if let Some(number) = same_problem(&report.title, &open) {
         let body = format!(
             "Seen again by `{}` in project `{}` ({}):\n\n{}",
@@ -89,11 +153,12 @@ pub fn report(report: &DiscoveryReport) -> Result<ReportOutcome, PullRequestErro
         "--jq",
         ".number",
     ])?;
-    number
+    let number: u32 = number
         .trim()
         .parse()
-        .map(ReportOutcome::Filed)
-        .map_err(|_| PullRequestError::Missing("the new issue's number".into()))
+        .map_err(|_| PullRequestError::Missing("the new issue's number".into()))?;
+    filed.push((number, report.title.clone()));
+    Ok(ReportOutcome::Filed(number))
 }
 
 /// Velocity's open issues (not pull requests), as number and title.
@@ -114,7 +179,7 @@ fn open_issues() -> Result<Vec<(u32, String)>, PullRequestError> {
         .collect())
 }
 
-/// The open issue whose title shares at least half its significant words with `title`.
+/// The open issue whose title overlaps `title` by at least half of their significant words.
 pub fn same_problem(title: &str, open: &[(u32, String)]) -> Option<u32> {
     let wanted = significant_words(title);
     if wanted.len() < 2 {

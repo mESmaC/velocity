@@ -46,6 +46,7 @@ mod tasks;
 mod thread_menu;
 mod threads;
 mod updates;
+mod velocity_reports;
 mod window;
 mod work_pool;
 mod worktree_settings;
@@ -272,6 +273,7 @@ pub fn run() -> anyhow::Result<()> {
             airc_delivery::initialize(application.handle());
             airc_modal::initialize(application.handle());
             updates::initialize(application.handle());
+            velocity_reports::initialize(application.handle());
             restart::resume_interrupted(application.handle(), interrupted);
             Ok(())
         })
