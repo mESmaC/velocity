@@ -59,7 +59,7 @@ These hold for every feature. A feature that breaks one of them is wrong, whatev
 
 The sidebar shows groups in this order: draft, On duty, Swarms, Spec interview, Running, PR open · watching, Failed, Settled. Settled is collapsed by default, shows its count and a chevron, and is the only collapsible group. Its expanded state is saved per project. Finished swarm members move there immediately; idle working threads and failures stay in their active groups. Search reveals matching settled threads even while collapsed. Empty groups are hidden, except "On duty", which shows a "start one" button when empty.
 
-Command errors clear after four seconds or the next successful dispatch. Backend launch notices remain visible while set.
+Command errors clear after four seconds or the next successful dispatch. Key reports (`Keyboard`, `NumberHints`) don't count as a dispatch here: Enter's own key report would otherwise hide a failed send's error at once. Backend launch notices remain visible while set.
 
 ### 2.2 Agent activity
 
@@ -132,7 +132,7 @@ The native supervisor checks live build threads once a second. Its defaulted che
 | command | `get_pull_request_panel`, `open_project_pull_request { project_identifier, number }` | Backend-owned active-project PR rail. Native refresh reads all open PRs, the current head's aggregate CI, line counts, review decision, review tier (F7, read from the PR's diff once per head against the checkout's AGENTS.md) and the first explicit claim comment: `Reviewing · <nick>` names a PR duty agent, a bare `Reviewing` its author. A row opens its owning thread (recorded PR identity, then an unassigned matching branch from the same repository), otherwise GitHub in the browser. Clicks validate project identity. |
 | command | `get_thread_menu { thread_identifier }`, `run_thread_menu_action { project_identifier, thread_identifier, action }`, `delete_thread { project_identifier, thread_identifier }`, `undo_delete_thread { deletion }` | Sidebar right-click menu and Delete with Undo (F12). The backend builds the menu from saved state, the agent session and the worktree's measured size. Actions: open the worktree in Explorer, copy its path (with a toast), open the PR in the browser. `delete_thread` hides the thread at once and publishes a toast carrying the deletion's Undo token on `layout://state`. Nothing is touched for 5 s. Then the backend stops the agent, removes the worktree (the worktree lifecycle's `UserDeletedThread`), closes any open PR, returns the thread's tasks to todo and drops its record. A worktree that cannot be removed keeps the thread and shows why. |
 | command | `get_launch_eligibility { request }` | UI eligibility for the active project, read from the backend state. No project/lock flag is accepted from the frontend. Launch handlers check the guard afresh before worktree or agent effects (Rule 2, F3). |
-| command | `get_duty_dialog_defaults { project_id }`, `start_duty { request }`, `pause_duty { request }`, `add_duty_agents { request }` | Duty view, start dialog defaults, start/pause/resume and add-agents lifecycle for PR duty, Scouts and the Main watcher, persisted on the project in `state.json` and broadcast over `duty://event` (F7) |
+| command | `get_duty_dialog_defaults { project_id }`, `start_duty { request }`, `pause_duty { request }`, `add_duty_agents { request }`, `dismiss_duty_agent { request }`, `stop_duty { request }` | Duty view, start dialog defaults, start/pause/resume, add-agents, dismiss-agent and stop-role lifecycle for PR duty, Scouts and the Main watcher, persisted on the project in `state.json` and broadcast over `duty://event` (F7) |
 | command | `get_issue_panel`, `open_project_issue { project_identifier, number }`, `dispatch_issue { project_identifier, number, accept_recommendation }`, `toggle_issue_expanded { number }` | Active-project issue rail (F9). Rows start collapsed; `toggle_issue_expanded` expands or collapses one row and the expanded set lives in the snapshot. Native refresh reads open issues, labels, scout attribution and spec-question recommendations. Opening an assigned issue selects its thread; otherwise it opens GitHub. Dispatch re-reads the issue, checks the saved spec lock and atomically records issue ownership before starting the ordinary worktree/ACP lifecycle. Accept scopes that thread to the recommended one-line proposed SPEC.md answer. |
 | command | `get_swarm_dialog { query }`, `launch_swarm { request }`, `add_to_swarm { request }` | Swarm (F10). `get_swarm_dialog` draws the dialog in Rust from the user's choices: source counts, open items (taken items and draft tasks shown but unselectable), launchable models with the round-robin split, the PR duty capacity offer and the footer. `launch_swarm` checks the launch gate afresh, records the swarm on the project in `state.json`, then for each item atomically adds a member thread on `vel/<task-slug>` or `vel/issue-<n>` (a task becomes Now with its thread) and starts its worktree and ACP agent; `add_to_swarm` does the same into an existing swarm. Optionally starts or tops up PR duty. Members are ordinary threads: a member's merge marks its task done, and the other members whose changed files overlap the merged PR's files get a queued rebase notice. A message from the swarm composer is queued to every working or in-review member. |
 | command | `get_work_pool { project_identifier }` | F16 read-only work inventory: open tasks, open GitHub issues and unfinished spec entries, with saved thread owners and separate available counts. The native adapter reads sources off the UI thread; source errors fail the snapshot. |
@@ -392,6 +392,7 @@ There are two views of the same work, switched from the title bar or with `B`:
   - `Enter` sends, `Shift+Enter` adds a new line, `Esc` leaves the box.
   - Model pill (provider, model, effort, and "· Fast" when Fast is on), attach, mic. The pill opens a menu grouped by provider: each signed-in provider with its models and limit used, each signed-out provider as a "Sign in with …" row, and effort and speed at the bottom. On a running thread, a new model or speed applies from the next message.
   - A message sent while the agent is busy shows "queued · sends when the current step finishes" and a `remove` link. The message stays with Velocity, not the agent, until the turn ends, so `remove` withdraws it (the `RemoveQueuedMessage` intent). The messages queued during a turn go to the agent together as its next prompt. Lines Velocity delivers to the agent (F14, PR follow-through) never join this queue; the transcript shows them as "from Velocity" notices once read.
+  - A message the agent never received (no session to resume, a missing worktree) leaves the transcript and goes back to the composer as you typed it, with the error, but only while its thread is still open and the composer is still empty. A message the agent received never comes back to the composer, even if saving or redrawing the thread fails afterwards.
 - **Slash menu:** `/task`, `/fanout 3`, `/review`, `/compact`, `/model`, followed by the active session's advertised commands and descriptions (`available_commands_update`, §3.2), filtered by the typed prefix. Selecting an agent command inserts `/<name>` for the next prompt. Advertisements are scoped to the project and thread and cleared when its session is replaced.
 - **Skill menu:** typing `$` lists the project's enabled skills with a one-line description each, filtered as you type. Picking one inserts `$<skill>`, and the agent is told to load that skill for this message. The transcript shows each skill an agent loads as a tool step ("Skill · ui-ux-pro-max").
 - **Fan out** (`F`): the same prompt goes to 3 models in 3 worktrees.
@@ -454,6 +455,7 @@ A worktree's path is fixed when it is created. Changing the location setting aff
 - The pool removes only its own ready worktrees: a registered, detached checkout under a `.ready-<n>` name. A thread's worktree is never removed through it.
 - Deleting a worktree removes only that worktree's own entry. A repo-wide `git worktree prune` runs only from the **Prune orphans** button.
 - Worktree folder names are unique per project, never generic names like `workspace`.
+- A slug made from a title (a model title, a Task List item or a SPEC section) is at most 40 characters. A longer one keeps its first words and ends in `-` and six hex digits of a hash of the whole slug, so two long titles still get different names and the worktree, branch and git admin paths stay well under Windows' 260-character limit (#275). Titles themselves are never cut.
 
 **Accept when:**
 - [ ] With a ready worktree in the pool, an agent starts working within 5 seconds of being launched.
@@ -484,7 +486,7 @@ The watcher reads GitHub every 15 seconds, with one query per project that lists
   - Answer every review comment: either fix and push, or reply with the reason. Then resolve the thread and re-request review.
   - If the PR is closed without merging, report why in the thread.
 - **Status line:** "watching PR #n · <stage> · answers new comments as they arrive", or "addressing N open review comment(s)".
-- **Sidebar meta:** `#n` plus the stage label in the stage colour: checking / in review / addressing review / approved · merging.
+- **Sidebar meta:** `#n` plus the stage label in the stage colour: checking / in review / addressing review / approved · merging. Once GitHub reports the merge, the label reads merged · deleting worktree until cleanup finishes and the thread settles as merged.
 
 **Landing and rebases** (from Anthropic's Scion):
 
@@ -524,8 +526,9 @@ Long-running roles. They appear under **On duty**, with an agent count (×N) and
 - **Rules:** chips. Hard rules are shown locked.
 - **Agents:** one card per agent with its model and what it is doing now.
 - **Activity:** a timestamped feed.
-- **Header actions:** Pause/Resume, + Agent, Rules.
+- **Header actions:** Pause/Resume, Stop, + Agent, Rules.
 - **Composer:** instructs every agent in the role.
+- **Dismiss and Stop.** Each agent card has a × (shown on hover or focus) that dismisses that agent at once, with no confirmation (§1). Its running session stops, which ends its agent's process tree; a PR it was reviewing is released (the AIRC `released` event, the `reviewing` label removed if an agent added one, and a `Released · <nick>` comment on the PR) and doesn't rest, so the next idle PR duty agent can claim it on its next tick. The agent leaves the role in `state.json` and the feed gets "Dismissed <nick>". **Stop** in the header dismisses every agent and removes the role from "On duty"; the view goes Home, as it does for a deleted thread. Both survive a restart. A later + Agent takes the lowest free nick numbers, so a dismissed agent's nick can be reused. Worktrees the agent used stay on disk. There is no Undo: + Agent or starting the role again brings agents back.
 
 **PR duty:**
 - Claims unclaimed PRs, one PR per agent, so two agents never review the same one. The review claim goes through the AIRC lock (`airc_claim` on the PR), so it is atomic. Only its holder updates, approves or merges that PR. A finding that arrives after the PR merged is filed as an issue.
@@ -634,7 +637,7 @@ The project-scoped list in the top-right panel.
 - Tasks added before the spec is locked are drafts.
 - **After the spec is locked** (decided, Q6): a task you or an agent adds goes straight to todo and stays outside SPEC.md. Adding a task never starts an interview and never edits SPEC.md. When the work changes behaviour SPEC.md describes, the building agent updates SPEC.md in its own PR (AGENTS.md).
 
-**Live state:** a task with an agent shows that agent's state (agent working / #n · in review / merged · #n), linked to its thread.
+**Live state:** a task with an agent shows that agent's state (agent working / agent idle / #n · in review / merged · #n), linked to its thread. Agent idle means its turn ended before its PR is followed, such as a draft claim not yet marked ready.
 
 **Accept when:**
 - [ ] Re-rendering the list never takes focus from the add-task input.

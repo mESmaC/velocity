@@ -91,6 +91,8 @@ fn bindings() -> Builder<tauri::Wry> {
         duty::start_duty,
         duty::pause_duty,
         duty::add_duty_agents,
+        duty::dismiss_duty_agent,
+        duty::stop_duty,
         github::list_pull_requests,
         github::get_pull_request,
         github::dispatch_pull_request,

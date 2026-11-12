@@ -907,14 +907,21 @@ kbd {
 .task.now .item-title {
   color: var(--text);
 }
+/* One line, as the reference's ".item .sub": a status such as "#33 · approved · merging"
+   wrapped word by word into a narrow column beside the attribution (#281). */
 .task-sources {
   display: flex;
   gap: var(--task-source-gap);
+  min-width: 0;
+  overflow: hidden;
+  white-space: nowrap;
 }
 .task-source,
 .task-sources span {
+  min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
+  white-space: nowrap;
 }
 .task-source {
   color: var(--text-2);

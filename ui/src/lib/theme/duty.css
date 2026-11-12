@@ -44,7 +44,10 @@
   grid-template-columns: var(--duty-agents-columns);
   gap: var(--duty-agents-gap);
 }
+/* A grid item's automatic minimum width is its content, so a long activity line widened
+   the card past its track and over the next card (#281). */
 .duty-view .agent-card {
+  min-width: 0;
   padding: var(--duty-agent-card-padding);
   border: var(--duty-agent-card-border);
   border-radius: var(--duty-agent-card-border-radius);
@@ -77,6 +80,13 @@
   margin-top: var(--duty-agent-doing-margin-top);
   font-size: var(--duty-agent-doing-font-size);
   color: var(--text-2);
+}
+/* One line with an ellipsis, as the reference's swarm cards show an agent's activity. */
+.duty-view .agent-card .doing-text {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 .duty-view .feed {
   display: flex;
@@ -266,4 +276,25 @@
 }
 .duty-dialog .sub-row {
   margin-top: var(--duty-sub-row-margin-top);
+}
+/* Dismiss one agent (F7, #282): a quiet × that shows while the card is hovered or focused. */
+.duty-view .agent-card .ah .dismiss {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: none;
+  width: var(--duty-agent-dismiss-size);
+  height: var(--duty-agent-dismiss-size);
+  border-radius: var(--duty-agent-dismiss-border-radius);
+  color: var(--muted);
+  opacity: var(--duty-agent-dismiss-hidden-opacity);
+}
+.duty-view .agent-card:hover .ah .dismiss,
+.duty-view .agent-card:focus-within .ah .dismiss {
+  opacity: var(--duty-agent-dismiss-shown-opacity);
+}
+.duty-view .agent-card .ah .dismiss:hover,
+.duty-view .agent-card .ah .dismiss:focus-visible {
+  background: var(--duty-agent-dismiss-hover-background);
+  color: var(--text);
 }

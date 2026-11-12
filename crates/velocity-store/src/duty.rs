@@ -230,6 +230,25 @@ pub struct PauseDutyRequest {
     pub role: Option<DutyRole>,
 }
 
+/// Dismiss one duty agent (F7): its session stops and it leaves the role.
+#[derive(Clone, Debug, Serialize, Deserialize, Type)]
+pub struct DismissDutyAgentRequest {
+    pub role: DutyRole,
+    pub nickname: String,
+}
+
+/// Stop a duty role (F7): every agent is dismissed and the role leaves "On duty".
+#[derive(Clone, Debug, Serialize, Deserialize, Type)]
+pub struct StopDutyRequest {
+    pub role: DutyRole,
+}
+
+/// A stopped role: the window's outcome and the agents whose sessions must stop.
+pub struct StoppedDuty {
+    pub outcome: DutyMutationOutcome,
+    pub nicknames: Vec<String>,
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize, Type)]
 pub struct DutyMutationOutcome {
     pub snapshot: LayoutSnapshot,
@@ -333,6 +352,75 @@ impl StateStore {
             snapshot: layout.snapshot(),
             role,
             event,
+        })
+    }
+
+    /// Takes one agent off the active project's role and saves (F7 Dismiss). `released` is
+    /// the PR its running review held, named in the feed line.
+    pub fn dismiss_duty_agent(
+        &mut self,
+        layout: &mut LayoutState,
+        request: &DismissDutyAgentRequest,
+        released: Option<u32>,
+        timestamp: String,
+    ) -> Result<DutyMutationOutcome, ProjectError> {
+        let mut next = self.state.clone();
+        let project = active_project_mut(&mut next)?;
+        let item = project
+            .duty_roles
+            .iter_mut()
+            .find(|item| item.role == request.role)
+            .ok_or(ProjectError::IndexOutOfRange)?;
+        let mut core_entry = item.to_core();
+        let event =
+            duty::dismiss_duty_agent(&mut core_entry, &request.nickname, released, timestamp)
+                .ok_or(ProjectError::IndexOutOfRange)?;
+        *item = DutyRoleItem::from_core(core_entry, self.state.settings.providers.default_provider);
+        self.commit_duty_state(next)?;
+        layout.replace_data(read_model(&self.state));
+        crate::build_gate::sync_layout(&self.state, layout);
+        Ok(DutyMutationOutcome {
+            snapshot: layout.snapshot(),
+            role: request.role,
+            event,
+        })
+    }
+
+    /// Removes the role from the active project and saves (F7 Stop). The window leaves its
+    /// view the way it leaves a deleted thread's. Returns the agents that were on it.
+    pub fn stop_duty(
+        &mut self,
+        layout: &mut LayoutState,
+        request: &StopDutyRequest,
+        timestamp: &str,
+    ) -> Result<StoppedDuty, ProjectError> {
+        let mut next = self.state.clone();
+        let project = active_project_mut(&mut next)?;
+        let index = project
+            .duty_roles
+            .iter()
+            .position(|item| item.role == request.role)
+            .ok_or(ProjectError::IndexOutOfRange)?;
+        let removed = project.duty_roles.remove(index);
+        if project.active_thread_id == Some(removed.id) {
+            project.active_thread_id = None;
+        }
+        let nicknames: Vec<String> = removed
+            .agents
+            .into_iter()
+            .map(|agent| agent.nickname)
+            .collect();
+        self.commit_duty_state(next)?;
+        layout.replace_data(read_model(&self.state));
+        crate::build_gate::sync_layout(&self.state, layout);
+        let event = duty::stop_duty_event(request.role, nicknames.len(), timestamp);
+        Ok(StoppedDuty {
+            outcome: DutyMutationOutcome {
+                snapshot: layout.snapshot(),
+                role: request.role,
+                event,
+            },
+            nicknames,
         })
     }
 
@@ -579,4 +667,65 @@ pub fn clock_timestamp() -> String {
     let hours = day_seconds / 3_600;
     let minutes = (day_seconds % 3_600) / 60;
     format!("{hours:02}:{minutes:02}")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use velocity_core::layout_view::ProviderColor;
+
+    // #282: a dismissed agent or a stopped role that came back after a restart would start
+    // its agents again, and a reused nick must never collide with a live one.
+    #[test]
+    fn dismiss_and_stop_survive_save_and_reload() -> Result<(), Box<dyn std::error::Error>> {
+        let directory =
+            std::env::temp_dir().join(format!("velocity-duty-dismiss-{}", std::process::id()));
+        let mut store = StateStore::load_or_default(&directory)?;
+        let spec = DutyStartSpec {
+            role: DutyRole::PrDuty,
+            agent_count: 3,
+            provider: ProviderColor::Claude,
+            model_name: "model".into(),
+            pr_rules: PrDutyRuleSettings::default(),
+            scout_rules: ScoutRuleSettings::default(),
+            has_open_pull_requests: false,
+            timestamp: "00:00".into(),
+        };
+        let (entry, _) = duty::start_duty_entry(7, spec);
+        let mut project = ProjectItem::new(1, "One".into(), r"C:\project one".into());
+        project.duty_roles = vec![DutyRoleItem::from_core(entry, ProviderKind::Claude)];
+        project.active_thread_id = Some(7);
+        store.state.projects = vec![project];
+        let mut layout = LayoutState::default();
+        let request = DismissDutyAgentRequest {
+            role: DutyRole::PrDuty,
+            nickname: "pr-2".into(),
+        };
+        let outcome = store.dismiss_duty_agent(&mut layout, &request, Some(41), "00:01".into())?;
+        assert_eq!(outcome.event.message, "Dismissed pr-2 · released #41");
+        let loaded = StateStore::load_or_default(&directory)?;
+        let role = loaded.state().projects[0].duty_roles[0].to_core();
+        let nicknames: Vec<&str> = role.agents.iter().map(|a| a.nickname.as_str()).collect();
+        assert_eq!(nicknames, ["pr-1", "pr-3"]);
+        let added = duty::build_duty_agents(
+            role.role,
+            &role.agents,
+            1,
+            ProviderColor::Claude,
+            "m",
+            false,
+        );
+        assert_eq!(added[0].nickname, "pr-2");
+        let stop = StopDutyRequest {
+            role: DutyRole::PrDuty,
+        };
+        let stopped = store.stop_duty(&mut layout, &stop, "00:02")?;
+        assert_eq!(stopped.nicknames, ["pr-1", "pr-3"]);
+        let loaded = StateStore::load_or_default(&directory)?;
+        assert!(loaded.state().projects[0].duty_roles.is_empty());
+        assert_eq!(loaded.state().projects[0].active_thread_id, None);
+        std::fs::remove_file(directory.join(crate::STATE_FILE_NAME))?;
+        std::fs::remove_dir(directory)?;
+        Ok(())
+    }
 }

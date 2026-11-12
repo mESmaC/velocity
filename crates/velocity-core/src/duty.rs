@@ -535,9 +535,11 @@ pub struct DutyStartSpec {
     pub timestamp: String,
 }
 
+/// New agents take the lowest numbers no agent on the role holds, so a nick freed by a
+/// dismissal is reused and two agents never share one (F7 Dismiss).
 pub fn build_duty_agents(
     role: DutyRole,
-    start_index: usize,
+    existing: &[DutyAgentCard],
     count: usize,
     provider: ProviderColor,
     model_name: &str,
@@ -545,18 +547,19 @@ pub fn build_duty_agents(
 ) -> Vec<DutyAgentCard> {
     let clamped = clamp_duty_agent_count(count);
     let doing = initial_agent_doing(role, has_open_pull_requests);
-    (0..clamped)
-        .map(|offset| {
-            let number = start_index.saturating_add(offset).saturating_add(1);
-            DutyAgentCard {
-                nickname: format!("{}-{number}", role.prefix()),
-                provider,
-                model_name: model_name.to_owned(),
-                busy: false,
-                doing: doing.clone(),
-                sweep: None,
-                review_worktrees: Vec::new(),
-            }
+    let taken = |nickname: &str| existing.iter().any(|agent| agent.nickname == nickname);
+    (1..)
+        .map(|number: usize| format!("{}-{number}", role.prefix()))
+        .filter(|nickname| !taken(nickname))
+        .take(clamped)
+        .map(|nickname| DutyAgentCard {
+            nickname,
+            provider,
+            model_name: model_name.to_owned(),
+            busy: false,
+            doing: doing.clone(),
+            sweep: None,
+            review_worktrees: Vec::new(),
         })
         .collect()
 }
@@ -565,7 +568,7 @@ pub fn start_duty_entry(identifier: usize, spec: DutyStartSpec) -> (DutyRoleEntr
     let clamped = clamp_duty_agent_count(spec.agent_count);
     let agents = build_duty_agents(
         spec.role,
-        0,
+        &[],
         clamped,
         spec.provider,
         &spec.model_name,
@@ -596,7 +599,7 @@ pub fn add_agents_to_duty_entry(entry: &mut DutyRoleEntry, spec: DutyStartSpec) 
     let clamped = clamp_duty_agent_count(spec.agent_count);
     let additional = build_duty_agents(
         entry.role,
-        entry.agents.len(),
+        &entry.agents,
         clamped,
         spec.provider,
         &spec.model_name,
@@ -635,6 +638,39 @@ pub fn toggle_duty_pause(entry: &mut DutyRoleEntry, timestamp: String) -> DutyFe
     };
     entry.feed.push(event.clone());
     event
+}
+
+/// Takes `nickname` off the role (F7 Dismiss) and posts who was dismissed, and the PR it let
+/// go when it held one. `None` when no agent on the role has that nick.
+pub fn dismiss_duty_agent(
+    entry: &mut DutyRoleEntry,
+    nickname: &str,
+    released: Option<u32>,
+    timestamp: String,
+) -> Option<DutyFeedEvent> {
+    let index = entry
+        .agents
+        .iter()
+        .position(|agent| agent.nickname == nickname)?;
+    entry.agents.remove(index);
+    let message = match released {
+        Some(number) => format!("Dismissed {nickname} · released #{number}"),
+        None => format!("Dismissed {nickname}"),
+    };
+    let event = DutyFeedEvent::new(&timestamp, "you", DutyEventKind::You, message);
+    entry.feed.push(event.clone());
+    Some(event)
+}
+
+/// The feed line for a stopped role (F7 Stop). The role and its feed are gone; this line
+/// goes out over `duty://event` only.
+pub fn stop_duty_event(role: DutyRole, agent_count: usize, timestamp: &str) -> DutyFeedEvent {
+    let suffix = if agent_count == 1 { "" } else { "s" };
+    let message = format!(
+        "Stopped {} · dismissed {agent_count} agent{suffix}",
+        role.title().to_lowercase()
+    );
+    DutyFeedEvent::new(timestamp, "you", DutyEventKind::You, message)
 }
 
 pub fn record_duty_instruction(

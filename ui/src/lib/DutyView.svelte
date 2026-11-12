@@ -71,6 +71,27 @@
     }
   }
 
+  // Dismiss and Stop act at once: SPEC.md §1 rules out confirmation prompts.
+  async function run(action: () => Promise<LayoutSnapshot>) {
+    if (busy) return;
+    busy = true;
+    try {
+      onResult(await action());
+    } catch (reason) {
+      onError(reason);
+    } finally {
+      busy = false;
+    }
+  }
+
+  function dismiss(nickname: string) {
+    void run(() => dutyCommands.dismissAgent({ role: duty.role, nickname }));
+  }
+
+  function stopRole() {
+    void run(() => dutyCommands.stop({ role: duty.role }));
+  }
+
   const dialogIntents: Record<DutyRole, NavigationIntent> = {
     pr_duty: 'PrDuty',
     scouts: 'Scouts',
@@ -106,6 +127,9 @@
       <button class="btn" type="button" disabled={busy} onclick={togglePause}>
         {duty.paused ? 'Resume' : 'Pause'}
       </button>
+      <button class="btn" type="button" disabled={busy} onclick={stopRole}
+        >Stop</button
+      >
       <button class="btn" type="button" onclick={openDialog}>
         <Icon name="plus" /> Agent
       </button>
@@ -138,6 +162,14 @@
                 </span>
                 <b>{agent.nickname}</b>
                 <span class="model-name">{agent.model_name}</span>
+                <button
+                  class="dismiss"
+                  type="button"
+                  disabled={busy}
+                  aria-label="Dismiss {agent.nickname}"
+                  title="Dismiss {agent.nickname}"
+                  onclick={() => dismiss(agent.nickname)}>×</button
+                >
               </div>
               <div class="doing">
                 {#if duty.paused}
@@ -146,7 +178,9 @@
                   {#if agent.busy}<span class="working-dots" aria-hidden="true"
                       ><span></span><span></span><span></span></span
                     >{/if}
-                  <span>{agent.doing}</span>
+                  <span class="doing-text" title={agent.doing}
+                    >{agent.doing}</span
+                  >
                 {/if}
               </div>
             </div>
