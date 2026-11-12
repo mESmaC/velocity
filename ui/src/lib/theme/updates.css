@@ -1,0 +1,13 @@
+/* The footer Updates panel (SPEC.md F1). It reuses the usage panel's frame and rows
+   (usage.css); these rules only colour its progress bar and keep release-note lines. */
+.updates-trigger.ready {
+  color: var(--accent);
+}
+.updates-progress > span {
+  background: var(--accent);
+}
+.updates-notes {
+  max-height: var(--providers-menu-max-height);
+  overflow-y: auto;
+  white-space: pre-line;
+}

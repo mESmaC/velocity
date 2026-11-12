@@ -1,8 +1,16 @@
 <script lang="ts">
   import Icon from './Icon.svelte';
   import UsagePanel from './UsagePanel.svelte';
+  import UpdatesPanel from './UpdatesPanel.svelte';
   import { rise } from './motion';
-  import type { LayoutAction, LayoutSnapshot, SidebarRow } from './ipc';
+  import {
+    onUpdateStatus,
+    updateCommands,
+    type LayoutAction,
+    type LayoutSnapshot,
+    type SidebarRow,
+    type UpdateView,
+  } from './ipc';
   import './theme/swarm.css';
   let {
     layout,
@@ -37,6 +45,21 @@
 
   // Like the model menu, the open state is the popover's own; its rows come from Rust.
   let usageOpen = $state(false);
+  let updatesOpen = $state(false);
+  // Velocity's own update status (F1 Updates): Rust checks and publishes; the footer shows it.
+  let update = $state<UpdateView | null>(null);
+
+  $effect(() => {
+    let stopped = false;
+    void updateCommands.status().then((view) => {
+      if (!stopped) update = view;
+    });
+    const listening = onUpdateStatus((event) => (update = event.payload.view));
+    return () => {
+      stopped = true;
+      void listening.then((unlisten) => unlisten());
+    };
+  });
 </script>
 
 <aside class="sidebar" aria-label="Threads">
@@ -152,14 +175,21 @@
       title="Usage"
       aria-label="Usage"
       aria-expanded={usageOpen}
-      onclick={() => (usageOpen = !usageOpen)}><Icon name="usage" /></button
+      onclick={() => {
+        usageOpen = !usageOpen;
+        updatesOpen = false;
+      }}><Icon name="usage" /></button
     >
     <button
-      class="icon-btn"
-      title="Updates"
+      class="icon-btn updates-trigger"
+      class:ready={update?.badge}
+      title={update?.badge ? update.headline : 'Updates'}
       aria-label="Updates"
-      onclick={() => send({ Request: 'Updates' })}
-      ><Icon name="update" /></button
+      aria-expanded={updatesOpen}
+      onclick={() => {
+        updatesOpen = !updatesOpen;
+        usageOpen = false;
+      }}><Icon name="update" /></button
     >
     <span class="spacer"></span>
     <button
@@ -173,7 +203,10 @@
         title="Subscription limits"
         aria-label="Provider subscription limits"
         aria-expanded={usageOpen}
-        onclick={() => (usageOpen = !usageOpen)}
+        onclick={() => {
+          usageOpen = !usageOpen;
+          updatesOpen = false;
+        }}
       >
         {#each layout.providers as provider (provider.provider)}<span
             class="provider-meter"
@@ -183,6 +216,10 @@
             ></span></span
           >{/each}
       </button>{/if}
+    {#if updatesOpen && update}<UpdatesPanel
+        {update}
+        close={() => (updatesOpen = false)}
+      />{/if}
     {#if usageOpen}<UsagePanel
         providers={layout.providers}
         {send}

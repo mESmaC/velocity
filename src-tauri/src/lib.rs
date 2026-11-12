@@ -39,6 +39,7 @@ pub mod sweeps;
 mod tasks;
 mod thread_menu;
 mod threads;
+mod updates;
 mod window;
 mod work_pool;
 mod worktree_settings;
@@ -120,6 +121,9 @@ fn bindings() -> Builder<tauri::Wry> {
         thread_menu::run_thread_menu_action,
         thread_menu::delete_thread,
         thread_menu::undo_delete_thread,
+        updates::get_update_status,
+        updates::check_for_update,
+        updates::install_update,
         new_project::get_new_project_defaults,
         new_project::pick_project_folder,
         new_project::create_project,
@@ -149,6 +153,7 @@ fn event_bindings(builder: Builder<tauri::Wry>) -> Builder<tauri::Wry> {
         .typ::<pull_request_panel::PullRequestPanelChanged>()
         .typ::<threads::ThreadStatusChanged>()
         .typ::<threads::ThreadStepRecorded>()
+        .typ::<updates::UpdateStatusChanged>()
         .constant("AIRC_EVENT", airc_events::AircEventPublished::NAME)
         .constant(
             "AIRC_MESSAGE_EVENT",
@@ -178,6 +183,7 @@ fn event_bindings(builder: Builder<tauri::Wry>) -> Builder<tauri::Wry> {
         )
         .constant("THREAD_STATUS_EVENT", threads::ThreadStatusChanged::NAME)
         .constant("THREAD_STEP_EVENT", threads::ThreadStepRecorded::NAME)
+        .constant("UPDATE_STATUS_EVENT", updates::UpdateStatusChanged::NAME)
         .error_handling(tauri_specta::ErrorHandlingMode::Throw)
 }
 
@@ -196,6 +202,7 @@ pub fn export_bindings() -> anyhow::Result<()> {
 pub fn run() -> anyhow::Result<()> {
     #[cfg(debug_assertions)]
     export_bindings()?;
+    updates::wait_after_portable_update();
 
     let bindings = bindings().events(collect_events![
         airc_events::AircEventPublished,
@@ -212,12 +219,14 @@ pub fn run() -> anyhow::Result<()> {
         worktree_settings::WorktreeInventoryChanged,
         pull_request_panel::PullRequestPanelChanged,
         threads::ThreadStatusChanged,
-        threads::ThreadStepRecorded
+        threads::ThreadStepRecorded,
+        updates::UpdateStatusChanged
     ]);
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_clipboard_manager::init())
+        .plugin(tauri_plugin_updater::Builder::new().build())
         .manage(agents::ManagedAgents::default())
         .manage(goal_swarm::GoalSwarmPool::default())
         .manage(layout::MainLayout::default())
@@ -247,6 +256,7 @@ pub fn run() -> anyhow::Result<()> {
             main_watch::initialize(application.handle())?;
             airc_delivery::initialize(application.handle());
             airc_modal::initialize(application.handle());
+            updates::initialize(application.handle());
             Ok(())
         })
         .on_window_event(|window, event| {

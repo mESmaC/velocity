@@ -1,0 +1,140 @@
+name: Release
+
+# A `v*` tag builds Velocity, signs every download with the updater key and publishes the
+# GitHub Release plus the update manifest the app checks (SPEC.md F1 Updates). A tag with a
+# pre-release part (`v0.1.0-beta.2`) is published as a pre-release and builds no MSI,
+# because MSI versions must be numeric.
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Existing tag to release, e.g. v0.1.0-beta.2
+        required: true
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release
+  cancel-in-progress: false
+
+env:
+  TAG: ${{ inputs.tag || github.ref_name }}
+  TAURI_CLI: '@tauri-apps/cli@2.12.4'
+  # The rolling release whose `latest.json` every installed copy reads.
+  MANIFEST_TAG: updater
+
+jobs:
+  release:
+    name: Build, sign and publish
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ env.TAG }}
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10.34.9
+      - name: Install pinned Rust toolchain
+        run: rustup show active-toolchain
+      - name: Install UI dependencies
+        run: pnpm -C ui install --frozen-lockfile
+
+      - name: Read the version from the tag
+        id: version
+        shell: pwsh
+        run: |
+          if ($env:TAG -notmatch '^v(\d+\.\d+\.\d+(-[0-9A-Za-z.-]+)?)$') { throw "Tag $env:TAG is not v<semver>" }
+          $version = $Matches[1]
+          $prerelease = [bool]$Matches[2]
+          "version=$version" >> $env:GITHUB_OUTPUT
+          "prerelease=$($prerelease.ToString().ToLower())" >> $env:GITHUB_OUTPUT
+          # The app reports this version to the updater, so it must be the tag's.
+          @{ version = $version } | ConvertTo-Json | Set-Content -Encoding utf8 "$env:RUNNER_TEMP\version.json"
+
+      - name: Build
+        shell: pwsh
+        run: |
+          $bundles = if ('${{ steps.version.outputs.prerelease }}' -eq 'true') { 'nsis' } else { 'nsis,msi' }
+          npx -y $env:TAURI_CLI build --ci --bundles $bundles --config "$env:RUNNER_TEMP\version.json"
+          if ($LASTEXITCODE -ne 0) { throw "tauri build failed" }
+
+      - name: Collect and sign the downloads
+        shell: pwsh
+        env:
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+        run: |
+          $version = '${{ steps.version.outputs.version }}'
+          $out = New-Item -ItemType Directory -Force dist
+          Copy-Item (Get-ChildItem target/release/bundle/nsis/*-setup.exe | Select-Object -First 1) "$out/Velocity_${version}_x64-setup.exe"
+          $msi = Get-ChildItem target/release/bundle/msi/*.msi -ErrorAction SilentlyContinue | Select-Object -First 1
+          if ($msi) { Copy-Item $msi "$out/Velocity_${version}_x64_en-US.msi" }
+          # The portable download is the app executable itself.
+          $exe = @('target/release/Velocity.exe', 'target/release/velocity-app.exe') | Where-Object { Test-Path $_ } | Select-Object -First 1
+          if (-not $exe) { throw "No app executable in target/release" }
+          Copy-Item $exe "$out/Velocity_${version}_x64-portable.exe"
+          # Each signature binds the version, so a manifest can't pair an old package with a new number.
+          foreach ($file in Get-ChildItem $out -File) {
+            npx -y $env:TAURI_CLI signer sign --app-version $version $file.FullName
+            if ($LASTEXITCODE -ne 0) { throw "Could not sign $($file.Name)" }
+          }
+          Get-ChildItem $out -File -Exclude *.sig | ForEach-Object {
+            "$((Get-FileHash $_.FullName -Algorithm SHA256).Hash.ToLower())  $($_.Name)"
+          } | Set-Content -Encoding utf8 "$out/SHA256SUMS.txt"
+
+      - name: Publish the release
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release view $env:TAG *> $null
+          if ($LASTEXITCODE -ne 0) {
+            $flags = @('--generate-notes', '--verify-tag', '--title', "Velocity ${{ steps.version.outputs.version }}")
+            if ('${{ steps.version.outputs.prerelease }}' -eq 'true') { $flags += '--prerelease' }
+            gh release create $env:TAG @flags
+            if ($LASTEXITCODE -ne 0) { throw "Could not create the release" }
+          }
+          gh release upload $env:TAG (Get-ChildItem dist -File).FullName --clobber
+          if ($LASTEXITCODE -ne 0) { throw "Could not upload the downloads" }
+
+      - name: Publish the update manifest
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $version = '${{ steps.version.outputs.version }}'
+          $base = "https://github.com/${{ github.repository }}/releases/download/$env:TAG"
+          function Entry($name) {
+            @{ url = "$base/$name"; signature = (Get-Content -Raw "dist/$name.sig").Trim() }
+          }
+          $setup = Entry "Velocity_${version}_x64-setup.exe"
+          $platforms = [ordered]@{
+            'windows-x86_64' = $setup
+            'windows-x86_64-nsis' = $setup
+            'windows-x86_64-portable' = Entry "Velocity_${version}_x64-portable.exe"
+          }
+          if (Test-Path "dist/Velocity_${version}_x64_en-US.msi") {
+            $platforms['windows-x86_64-msi'] = Entry "Velocity_${version}_x64_en-US.msi"
+          }
+          $notes = gh release view $env:TAG --json body --jq .body | Out-String
+          [ordered]@{
+            version = $version
+            notes = $notes.Trim()
+            pub_date = (Get-Date).ToUniversalTime().ToString("yyyy-MM-ddTHH:mm:ssZ")
+            platforms = $platforms
+          } | ConvertTo-Json -Depth 5 | Set-Content -Encoding utf8NoBOM dist/latest.json
+          gh release upload $env:TAG dist/latest.json --clobber
+          gh release view $env:MANIFEST_TAG *> $null
+          if ($LASTEXITCODE -ne 0) {
+            gh release create $env:MANIFEST_TAG --title "Update manifest" --prerelease --latest=false --target master `
+              --notes "Holds latest.json, which installed copies of Velocity read to find updates. Not a download."
+            if ($LASTEXITCODE -ne 0) { throw "Could not create the manifest release" }
+          }
+          gh release upload $env:MANIFEST_TAG dist/latest.json --clobber
+          if ($LASTEXITCODE -ne 0) { throw "Could not publish the update manifest" }

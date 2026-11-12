@@ -23,12 +23,14 @@ tauri-build = { version = "2.7.4", features = [] }
 agent-client-protocol = "5.0.0"
 anyhow.workspace = true
 serde.workspace = true
+serde_json.workspace = true
 specta.workspace = true
 specta-typescript.workspace = true
 tauri.workspace = true
 tauri-plugin-clipboard-manager.workspace = true
 tauri-plugin-dialog.workspace = true
 tauri-plugin-opener.workspace = true
+tauri-plugin-updater.workspace = true
 tauri-specta.workspace = true
 tokio.workspace = true
 velocity-git.workspace = true
@@ -41,6 +43,7 @@ velocity-skills = { workspace = true, features = ["bindings"] }
 velocity-store.workspace = true
 velocity-github.workspace = true
 velocity-threads.workspace = true
+velocity-updates = { workspace = true, features = ["bindings"] }
 velocity-interview.workspace = true
 
 [lints]
