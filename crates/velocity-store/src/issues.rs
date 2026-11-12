@@ -36,6 +36,9 @@ pub fn issue_thread_label(thread: &ThreadItem) -> String {
             "#{} · {}",
             thread.pull_request_number.unwrap_or_default(),
             match thread.review_stage {
+                _ if crate::follow_through::merged_awaiting_cleanup(thread) => {
+                    crate::follow_through::MERGED_CLEANING_UP
+                }
                 Some(crate::ReviewStage::Fixing) => "addressing review",
                 Some(crate::ReviewStage::Approved) => "approved · merging",
                 Some(crate::ReviewStage::ContinuousIntegration) => "checking",
