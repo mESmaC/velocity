@@ -20,3 +20,4 @@ serde_json.workspace = true
 specta = { workspace = true, optional = true }
 thiserror.workspace = true
 velocity-git = { path = "../velocity-git" }
+velocity-graph.workspace = true

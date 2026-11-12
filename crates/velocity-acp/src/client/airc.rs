@@ -6,6 +6,32 @@ use std::path::{Path, PathBuf};
 use agent_client_protocol::v1::schema::{McpServer, McpServerStdio};
 use velocity_airc::{SERVER_NAME, SERVER_SWITCH, server_arguments};
 
+/// The code graph server (F19) for a session that has AIRC: the same executable and project,
+/// over the session's worktree. Every session Velocity starts gets AIRC, so deriving the graph
+/// from it means no role can start without the graph. `None` for a server [`AircLaunch`]
+/// didn't make.
+pub fn graph_server(airc: &McpServer, worktree: &Path) -> Option<McpServer> {
+    let McpServer::Stdio(airc) = airc else {
+        return None;
+    };
+    // `AircLaunch::server` lays the arguments out as switch, app data, project, member, nick.
+    let [switch, app_data, project, ..] = airc.args.as_slice() else {
+        return None;
+    };
+    if switch != SERVER_SWITCH {
+        return None;
+    }
+    let mut arguments = vec![velocity_graph::SERVER_SWITCH.to_owned()];
+    arguments.extend(velocity_graph::server_arguments(
+        Path::new(app_data),
+        project,
+        worktree,
+    ));
+    Some(McpServer::Stdio(
+        McpServerStdio::new(velocity_graph::SERVER_NAME, &airc.command).args(arguments),
+    ))
+}
+
 /// Where the AIRC server comes from: Velocity's own executable started with
 /// [`SERVER_SWITCH`], over the channels kept under the app data folder.
 #[derive(Clone, Debug, PartialEq, Eq)]

@@ -257,12 +257,18 @@ pub(super) fn initialize_request() -> InitializeRequest {
         .client_info(Implementation::new("velocity", env!("CARGO_PKG_VERSION")))
 }
 
-/// AIRC, then the shared servers, keeping the first server of each name.
+/// AIRC, the code graph beside it (F19), then the shared servers, keeping the first server of
+/// each name.
 pub fn session_servers(setup: &SessionSetup) -> Vec<McpServer> {
+    let graph = setup
+        .airc
+        .as_ref()
+        .and_then(|airc| super::airc::graph_server(airc, &setup.worktree));
     let servers: Vec<McpServer> = setup
         .airc
         .iter()
         .cloned()
+        .chain(graph)
         .chain(setup.shared_servers.iter().cloned())
         .collect();
     let keep: Vec<bool> = {

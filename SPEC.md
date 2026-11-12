@@ -216,6 +216,7 @@ How Velocity's features map onto ACP:
 - **Skills:** the project's enabled skill packs (F18) are linked into every agent's worktree, in the folder its provider reads, on top of your own skills.
 - **Shared MCP servers** (Settings → Agents): servers listed here are passed to every agent of every provider in `session/new`, so one list reaches all four providers. When a name is also in an agent's own config, the agent's own entry wins. A server is a command the agent starts (stdio) or a URL (streamable HTTP); it has no environment or header field, so a server that needs a credential reads it from your environment or signs in itself. An HTTP server is sent only to agents that advertise HTTP MCP support in `initialize`. Velocity reads the server names in the files each agent loads (Claude Code: `~/.claude.json` and its entry for the folder, and `.mcp.json`; Codex: `config.toml` in `CODEX_HOME` or `~/.codex`, and `.codex/config.toml`; Antigravity: `~/.gemini/settings.json`, `~/.gemini/antigravity/mcp_config.json` and `.gemini/settings.json`; Kimi Code: `~/.kimi-code/mcp.json` and `~/.kimi/mcp.json`) and leaves a clashing shared server out of `session/new`. New agents get the list; running agents keep the servers they started with.
 - **AIRC:** always passed (F14).
+- **Code graph:** the `velocity-graph` server is always passed, beside AIRC (F19).
 - **Shell, network, toolchains:** the shell runs as you, with your `PATH`, toolchains (cargo, lake, node, python…), credentials and network. There is no sandbox or container.
 - **GitHub:** agents use your signed-in `gh` and git credentials to push, open PRs, review, comment and merge (merging stays PR duty's job, Rule 4).
 - **Worktree:** the working directory, not a jail. Agents can read anything on the machine, such as other repos, docs and caches. Their edits belong in their own worktree (AGENTS.md); edits elsewhere aren't blocked.
@@ -1227,6 +1228,63 @@ The provider-to-folder mapping is a data table in `velocity-skills`, not code, s
 - [ ] The `$` menu lists exactly the project's enabled skills.
 - [ ] Opening a Godot project suggests the router and the Godot bundle, and opening a Svelte app suggests UI UX Pro Max.
 
+### F19 · Code graph
+
+**What it is:** Velocity maps each project's code into a graph of symbols, files and subsystems. Every agent queries it through tools, so it finds the right code with fewer searches and reads only the lines that matter. The aim is less digging: fewer tool calls and fewer tokens per task at the same accuracy. It is built into Velocity, needs no install, and keeps one graph per project for all of the project's agents. Inspired by [Graphify](https://github.com/Graphify-Labs/graphify) (#277). Its accuracy rules come from the A.TXY address memory in MCL4-COE and `elem`: route hard, process soft.
+
+**Accuracy rules:**
+- **Exact or a classified failure.** A lookup returns one exact record, or `ambiguous` (with every candidate), `missing` (with the nearest names) or `stale`. It never guesses between candidates, and a name that matches several symbols is never resolved to one of them.
+- **The graph points; the agent reads.** Every record gives its file, line range and signature, so the agent opens exactly those lines. The graph never stands in for the source.
+- **Never stale.** Every record carries the hash of the source span it came from. Before a record is returned, its span is checked against the file on disk. A mismatch re-indexes that file and answers from the new records.
+- **Every edge says how it was found.** `extracted` edges are explicit in the source: a definition's container, an import, a call to a name defined in the same file or imported into it. `inferred` edges are resolved by name across files, and carry the number of candidates. A call whose name matches several definitions is kept as `ambiguous` with its candidates, and programs never follow it unless asked.
+- **No tool is restricted (Rule 1).** Agents keep Read, Grep and the shell. The tools' instructions say when the graph is the better path (finding a symbol, its callers, what a change affects) and when it isn't (strings, literals, config values, build output).
+- **No model in the index.** Parsing and resolution are deterministic (tree-sitter), so building the graph spends no subscription usage. Docs are read for structure only.
+
+**What it holds** (planes, after A.TXY):
+
+| Plane | Records | Links |
+|---|---|---|
+| 1 · Symbols | functions, methods, types (struct, enum, trait, class, interface), constants, macros, Markdown headings | UP to the file; `calls`, `implements`, `references`; `mentions` from a doc heading to the code its section names in backticks |
+| 2 · Files | each tracked source and Markdown file | UP to the subsystem, DOWN to its symbols; `imports` |
+| 3 · Subsystems | workspace members and packages (Cargo members, `package.json` workspaces and packages, Go modules) and otherwise top-level folders | DOWN to their files; `depends` from the manifests |
+
+- **Languages:** Rust, TypeScript, JavaScript, Svelte (its script blocks), Python, Go, C#, Java, C and C++, plus Markdown headings. Other files are listed at plane 2 with no symbols.
+- **Left out:** files git ignores, files git doesn't track, and the project's generated files (lockfiles and generated bindings, as AIRC's claims leave them out, F14).
+- **Addresses:** each record has a short address such as `1.k3f9q`: its plane, then base-36 characters from a hash of its path, qualified name and kind. An address stays the same while the symbol keeps its name and file, so an agent can pass it back in later calls. A moved or renamed symbol returns `stale` with the record's new address when one matches.
+
+**Building and keeping it current:**
+- **Parse cache.** Velocity keeps one parse cache per project in the app data folder: each file's symbols and references, keyed by a hash of the file's content and the parser version. It is an append-only log of checksummed records, shared by every agent of the project, so a file is parsed once whatever worktree or commit it appears in. A torn or corrupt record at the end of the log is dropped and that file is parsed again. The log is compacted when it grows past twice the size of the records still in use.
+- **Each agent's graph.** An agent's tools hash every file in its worktree that git tracks or doesn't ignore, take what the cache already holds, parse the rest, and resolve names across the whole set. A file watcher picks up the agent's edits as it works, and the span check catches anything the watcher missed.
+- **Warming.** After each merge to the base branch, Velocity parses the files the merge changed, read from git at the new tip, in the background below normal priority on the trigger that catches up the warm pool (F5). New agents then start with a full cache.
+- **Speed:** a query answers in under 50 ms on a 100,000-line project. Building the graph for such a project takes under 10 s with an empty cache and under 1 s with a full one.
+
+**Agent tools.** Every session Velocity starts, on every provider and in every role, gets an MCP server named `velocity-graph` in `session/new`, beside `airc` (§3.2, F14). The name carries Velocity's reserved prefix, so it never clashes with a server of your own, such as Graphify's. It runs Velocity's own executable as `velocity --graph-mcp <app-data> <project-id> <worktree>`.
+
+| Tool | Does |
+|---|---|
+| `graph_find { query, plane?, kind?, limit? }` | Ranks candidates for a name or a plain-language description. Matching is by words, with camelCase and snake_case split, word stems, rarer words weighted higher, and an exact name ranked first. Returns addresses with kind, name, file:line and signature. A result that is the only exact match for the name is marked `exact`. |
+| `graph_read { target, source? }` | One record by address or exact name: signature, doc summary, file and lines, its UP chain, its DOWN children by name, and its links grouped by relation with their counts. `source: true` adds the source lines themselves, so the agent doesn't need a separate read. Fails as the accuracy rules say. |
+| `graph_impact { targets }` | What depends on symbols or files, followed transitively: callers, implementors, importers and docs that mention them. It is grouped by subsystem and file, with counts and depth. `inferred` and `ambiguous` links are listed apart from `extracted` ones. |
+| `graph_run { program }` | A pointer program of up to 16 steps, run in one call over one register: `FIND`, `READ`, `UP`, `DOWN`, `FOLLOW <relation> [in\|out]`, `FILTER <kind\|plane\|path glob\|name>`, `PATH <target>`, `COUNT`, `SOURCE`. Returns the result and a one-line audit for each step (what it did and how many records it held). For example, `FIND "approval record"; FOLLOW calls in; FILTER path crates/velocity-github/**; COUNT` replaces several searches and reads with one call. |
+
+- **Budget.** Every answer is capped at 8,000 characters. Anything cut is reported with its count and how to narrow it.
+- **Instructions.** The server's MCP instructions say to locate code with the graph before broad searches, to read only the lines a record gives, and to treat `inferred` and `ambiguous` links as leads to check, not facts.
+
+**Measuring it.** The graph exists to save time and tokens without costing accuracy, so Velocity measures that. A switch per project turns the graph on (the default) or off. Velocity records, for each thread, the tokens its agent reports, its tool calls, its time working, and its outcome (PR merged, closed or failed), next to whether the graph was on. Settings → Agents shows the two sides. If threads with the graph use no fewer tokens and no less time at the same merge rate, the graph does not pay for itself and the default turns off. Lookup accuracy (did the graph return the right record), record integrity (did the record match the source) and task outcome are kept as separate figures.
+
+**Velocity's own uses** (later, built on the graph):
+- **AIRC overlaps by symbol** (F14): two agents editing different functions in one file don't overlap. An agent changing a symbol another agent's claimed work calls is told.
+- **Swarm split** (F10, F16): work items are grouped by the subsystems their likely code falls in, so concurrent agents collide less.
+- **PR duty** (F7): a review starts from the change's impact set: the changed symbols, and what depends on them.
+
+**Accept when:**
+- [ ] Every new agent of every provider has the graph tools with no per-provider setup.
+- [ ] A name defined more than once returns `ambiguous` with every candidate, never one of them.
+- [ ] After an agent edits a file, the next query answers from the edited file, never from an older parse.
+- [ ] After a merge to the base branch, only the files it changed are parsed.
+- [ ] A query answers in under 50 ms on a 100,000-line project.
+- [ ] Settings → Agents compares tokens, time and outcomes for threads with the graph on and off.
+
 ## 5. Keyboard map
 
 | Key | Where | Action |
@@ -1402,6 +1460,12 @@ Each milestone ends with a working app. PR duty checks an item off when it lands
 
 **M13 · Releases and updates** (F1)
 - [x] In-app updates: signed releases from `v*` tags, the update check and Updates panel, Restart to update for setup, MSI and portable copies
+
+**M14 · Code graph** (F19)
+- [ ] Code graph index: tree-sitter symbols, files and subsystems with addresses, span hashes and edge provenance; the per-project parse cache, warmed after merges
+- [ ] `velocity-graph` MCP server in every session: `graph_find`, `graph_read`, `graph_impact` and `graph_run` over each agent's worktree view, with the span check (§3.2)
+- [ ] Per-project switch, and the graph on/off comparison of tokens, time and outcomes in Settings → Agents
+- [ ] AIRC overlaps by symbol, swarm split by subsystem, and PR duty's impact set
 
 ---
 

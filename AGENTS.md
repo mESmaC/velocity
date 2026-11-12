@@ -44,6 +44,7 @@ Your job is working functionality. Proofs, tests and docs support it; they never
 - `crates/velocity-acp/`: the ACP client and agent processes.
 - `crates/velocity-airc/`: claims, events, ledgers and the AIRC MCP server.
 - `crates/velocity-github/`: GitHub through `gh`.
+- `crates/velocity-graph/`: the code graph (F19): tree-sitter symbols, files and subsystems with their links, the per-project parse cache, and the `velocity-graph` MCP tools every agent gets.
 - `crates/velocity-threads/`: starting build threads from the composer (F4): the thread's name and worktree plan, its live agent session, and the transcript the thread view shows.
 - `crates/velocity-updates/`: Velocity's own updates (F1 Updates): how this copy was installed (setup, MSI or portable), the Updates panel's state, and replacing a running portable executable.
 - `crates/velocity-new-project/`: Create in the New project dialog (F2): resolves the request and runs the planned git, `gh` and store steps.

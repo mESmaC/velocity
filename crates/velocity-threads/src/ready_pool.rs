@@ -9,7 +9,7 @@
 //! its slot taken under the pool's lock, so two threads never get the same worktree.
 
 use std::collections::BTreeMap;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::{Arc, Condvar, Mutex, MutexGuard, PoisonError};
 use std::time::{Duration, Instant};
 
@@ -89,6 +89,9 @@ pub trait PoolHost: Send + Sync + 'static {
     fn projects(&self) -> Vec<(PoolProject, WorktreePreferences)>;
     /// A slot was made, built, taken or removed: Settings → Worktrees lists them.
     fn changed(&self);
+    /// A ready worktree now sits at the base tip, made or caught up after a merge: the code
+    /// graph parses what changed, so new agents start with a full cache (F19 Warming).
+    fn slot_at_tip(&self, _project: u32, _slot: &Path) {}
 }
 
 #[derive(Default)]
@@ -290,7 +293,7 @@ impl ReadyPools {
             }
             self.fetch_tips();
             while let Some((project, work)) = self.next_checkout() {
-                self.run_checkout(&project, work);
+                self.run_checkout(host, &project, work);
                 host.changed();
                 worked = true;
             }
@@ -427,7 +430,7 @@ impl ReadyPools {
         })
     }
 
-    fn run_checkout(&self, project: &PoolProject, work: CheckoutWork) {
+    fn run_checkout(&self, host: &dyn PoolHost, project: &PoolProject, work: CheckoutWork) {
         let preferences = self
             .lock()
             .get(&project.identifier)
@@ -448,7 +451,14 @@ impl ReadyPools {
             }
             (CheckoutWork::Create { .. }, None) => Ok(None),
         };
+        let at_tip = matches!(outcome, Ok(Some(_)));
         self.settle(project, &work, outcome);
+        if let (true, CheckoutWork::Create { index } | CheckoutWork::CatchUp { index, .. }) =
+            (at_tip, &work)
+        {
+            let slot = ready_slot_path(&project.project_root, *index);
+            host.slot_at_tip(project.identifier, &slot);
+        }
     }
 
     fn tip(&self, project: u32) -> Option<String> {

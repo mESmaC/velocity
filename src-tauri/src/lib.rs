@@ -17,6 +17,7 @@ mod follow_through;
 mod github;
 mod github_requests;
 mod goal_swarm;
+pub mod graph_access;
 mod interview;
 mod issue_panel;
 mod kept_worktrees;

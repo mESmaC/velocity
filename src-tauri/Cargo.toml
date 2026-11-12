@@ -36,6 +36,7 @@ tokio.workspace = true
 velocity-git.workspace = true
 velocity-acp = { path = "../crates/velocity-acp" }
 velocity-airc = { workspace = true, features = ["bindings"] }
+velocity-graph.workspace = true
 velocity-core = { workspace = true, features = ["bindings"] }
 velocity-new-project.workspace = true
 velocity-proofs.workspace = true
