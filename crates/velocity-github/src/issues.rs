@@ -50,7 +50,7 @@ impl IssueClient {
         &self.transport.repository
     }
 
-    pub(crate) fn open_issues(&self) -> Result<Vec<GitHubIssue>, PullRequestError> {
+    pub fn open_issues(&self) -> Result<Vec<GitHubIssue>, PullRequestError> {
         let query = format!(
             "query($owner:String!,$name:String!,$cursor:String) {{ repository(owner:$owner,name:$name) {{ issues(first:100,after:$cursor,states:OPEN,orderBy:{{field:CREATED_AT,direction:ASC}}) {{ nodes {{ {ISSUE_FIELDS} }} pageInfo {{ hasNextPage endCursor }} }} }} }}"
         );

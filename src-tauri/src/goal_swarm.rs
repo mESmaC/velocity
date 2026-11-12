@@ -170,7 +170,7 @@ pub async fn get_goal_swarm_board(
     .cloned()
     .ok_or("Select or create a project first")?;
     let read = tauri::async_runtime::spawn_blocking(move || {
-        velocity_threads::work_pool::read_work_pool(&project)
+        velocity_threads::work_pool::read_display_work_pool(&project)
     })
     .await
     .map_err(|error| error.to_string())?
