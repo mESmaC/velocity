@@ -5,7 +5,18 @@
   let { text }: { text: string } = $props();
   // Agent output is untrusted. Keep markdown formatting without executable HTML,
   // embedded content, remote images or attributes that can escape the transcript.
-  const html = $derived(renderMarkdown(text));
+  // Every snapshot hands the transcript over as new objects, so this re-runs for every block
+  // on every update. Parse only when the text itself changed: a long transcript with many
+  // agents streaming would otherwise re-parse all of it many times a second (#273).
+  let parsedText: string | undefined;
+  let parsedHtml = '';
+  const html = $derived.by(() => {
+    if (text !== parsedText) {
+      parsedHtml = renderMarkdown(text);
+      parsedText = text;
+    }
+    return parsedHtml;
+  });
 
   function renderMarkdown(source: string): string {
     const content = DOMPurify.sanitize(

@@ -21,6 +21,14 @@ use crate::thread_view_model::{
 };
 use std::collections::{BTreeMap, BTreeSet};
 
+/// What `submit_composer` sent to a thread, kept so a failed send can be undone.
+#[derive(Clone)]
+struct SentSteering {
+    identifier: usize,
+    prompt: String,
+    typed: String,
+}
+
 #[derive(Clone)]
 pub struct LayoutState {
     data: LayoutData,
@@ -54,6 +62,9 @@ pub struct LayoutState {
     form_open: bool,
     overlay_open: bool,
     composer_text: String,
+    /// The last message sent to a thread, as typed. A failed send gives back these words
+    /// rather than the prompt with its skill instructions.
+    sent_steering: Option<SentSteering>,
     task_text: String,
     project_spec_locked: Option<bool>,
     launch_notice: Option<String>,
@@ -91,6 +102,7 @@ impl Default for LayoutState {
             form_open: false,
             overlay_open: false,
             composer_text: String::new(),
+            sent_steering: None,
             task_text: String::new(),
             project_spec_locked: None,
             launch_notice: None,
@@ -950,7 +962,48 @@ impl LayoutState {
         self.composer_text.clear();
         self.slash_selection = 0;
         self.record_steering(&intent);
+        self.sent_steering = match &intent {
+            LayoutIntent::SteerThread {
+                identifier, prompt, ..
+            } => Some(SentSteering {
+                identifier: *identifier,
+                prompt: prompt.clone(),
+                typed: text,
+            }),
+            _ => None,
+        };
         Some(intent)
+    }
+
+    /// A message that never reached its agent (#261) leaves the transcript, where
+    /// `record_steering` showed it as sent, and goes back to the composer as typed. It goes
+    /// back only to its own thread's empty composer: the composer is shared by every thread,
+    /// so text typed since, or another thread's view, must not receive it (#274).
+    pub fn return_unsent_message(&mut self, identifier: usize, prompt: &str) {
+        let sent = self.sent_steering.take();
+        let typed = sent
+            .filter(|sent| sent.identifier == identifier && sent.prompt == prompt)
+            .map_or_else(|| prompt.to_owned(), |sent| sent.typed);
+        if let Some(blocks) = self
+            .data
+            .threads
+            .iter_mut()
+            .find(|thread| thread.policy.identifier == identifier)
+            .and_then(|thread| thread.detail.as_mut())
+            .map(|detail| &mut detail.blocks)
+            && let Some(index) = blocks.iter().rposition(|block| {
+                matches!(block, TranscriptBlock::UserMessage { text, .. } if text == prompt)
+            })
+        {
+            blocks.remove(index);
+        }
+        let still_open =
+            self.selected_thread == Some(identifier) && !matches!(self.view, NavigationView::Home);
+        if still_open && self.composer_text.is_empty() {
+            self.composer_text = typed;
+            self.slash_selection = 0;
+        }
+        self.changed();
     }
 
     fn record_steering(&mut self, intent: &LayoutIntent) {

@@ -11,6 +11,7 @@ mod airc_delivery;
 mod airc_events;
 mod airc_modal;
 mod build_gate;
+mod diagnostics;
 pub mod duty;
 mod follow_through;
 mod github;
@@ -30,6 +31,7 @@ mod provider_agents;
 mod providers;
 mod pull_request_panel;
 mod ready_pool;
+mod restart;
 pub mod reviews;
 mod shared_mcp;
 mod skills;
@@ -65,6 +67,7 @@ fn bindings() -> Builder<tauri::Wry> {
         window::minimize_window,
         window::toggle_maximize_window,
         window::close_window,
+        diagnostics::log_window_error,
         state::get_settings,
         state::set_settings,
         layout::get_layout_state,
@@ -92,6 +95,8 @@ fn bindings() -> Builder<tauri::Wry> {
         duty::start_duty,
         duty::pause_duty,
         duty::add_duty_agents,
+        duty::dismiss_duty_agent,
+        duty::stop_duty,
         github::list_pull_requests,
         github::get_pull_request,
         github::dispatch_pull_request,
@@ -242,7 +247,8 @@ pub fn run() -> anyhow::Result<()> {
         .invoke_handler(bindings.invoke_handler())
         .setup(move |application| {
             bindings.mount_events(application);
-            state::initialize(application.handle())?;
+            diagnostics::initialize(application.handle());
+            let interrupted = state::initialize(application.handle())?;
             airc_access::initialize(application.handle())?;
             projects::initialize(application.handle())?;
             providers::initialize(application.handle());
@@ -261,6 +267,7 @@ pub fn run() -> anyhow::Result<()> {
             airc_delivery::initialize(application.handle());
             airc_modal::initialize(application.handle());
             updates::initialize(application.handle());
+            restart::resume_interrupted(application.handle(), interrupted);
             Ok(())
         })
         .on_window_event(|window, event| {

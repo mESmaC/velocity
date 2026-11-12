@@ -63,6 +63,9 @@ struct RunnerState {
     instructions: BTreeMap<u32, String>,
     /// The base branch's tip per project, and when it was read.
     bases: BTreeMap<u32, (Instant, Option<String>)>,
+    /// Counts dismissals, so a tick that read its rosters before one starts no watch for the
+    /// dismissed watcher.
+    dismissals: u64,
 }
 
 /// The watch runner. Cheap to clone; every clone drives the same watches.
@@ -122,6 +125,19 @@ impl MainWatches {
         self.wake();
     }
 
+    /// Dismisses `watcher` (F7): stops its running watch's session, which kills the agent's
+    /// process tree. Its tip goes to the next idle watcher. Call it after the watcher left
+    /// the saved roster.
+    pub fn dismiss(&self, project: u32, watcher: &str) {
+        let mut state = self.lock();
+        state.dismissals = state.dismissals.wrapping_add(1);
+        if let Some(running) = state.running.get(&(project, watcher.to_owned())) {
+            let _ = running.input.send(AgentInput::Stop);
+        }
+        drop(state);
+        self.wake();
+    }
+
     /// Watchers whose watches are running, and the tip each one watches.
     pub fn running(&self) -> BTreeMap<WatcherKey, String> {
         self.lock()
@@ -142,6 +158,7 @@ impl MainWatches {
 
     /// Starts a watch for each project whose tip moved, and settles idle cards.
     pub async fn tick<Host: WatchHost>(&self, host: &Host) {
+        let dismissals = self.lock().dismissals;
         for roster in host.rosters() {
             let idle: Vec<usize> = {
                 let state = self.lock();
@@ -153,12 +170,25 @@ impl MainWatches {
                     .collect()
             };
             let mut waiting = idle.clone();
+            // Only a watch the runner started marks a card busy, and finishing clears it, so
+            // a busy card it isn't running was cut off when Velocity closed (§3.2).
+            let interrupted = idle.iter().any(|index| roster.watchers[*index].busy);
+            let mut keep_busy = false;
             if let (false, Some(first)) = (roster.paused, idle.first()) {
                 let tip = self.base_commit(&roster).await;
-                if let Some(start) = self.due(&roster, tip.as_deref(), *first) {
+                if self.lock().dismissals != dismissals {
+                    // A watcher left while the tip was read: the dismissal's wake reads afresh.
+                    return;
+                }
+                // Until the tip can be read, the busy card is what remembers the stopped watch.
+                keep_busy = interrupted && tip.is_none();
+                if let Some(start) = self.due(&roster, tip.as_deref(), *first, interrupted) {
                     waiting.retain(|index| index != first);
                     self.start(host, &roster, start);
                 }
+            }
+            if keep_busy {
+                continue;
             }
             for index in waiting {
                 settle_card(host, &roster, index);
@@ -167,7 +197,13 @@ impl MainWatches {
     }
 
     /// The watch the role starts now on watcher `index`, if any.
-    fn due(&self, roster: &WatchRoster, tip: Option<&str>, index: usize) -> Option<WatchStart> {
+    fn due(
+        &self,
+        roster: &WatchRoster,
+        tip: Option<&str>,
+        index: usize,
+        interrupted: bool,
+    ) -> Option<WatchStart> {
         let project = roster.project.id;
         let running: Vec<String> = self
             .lock()
@@ -183,6 +219,7 @@ impl MainWatches {
             last: latest_watch(roster.watchers.iter().filter_map(|w| w.sweep.as_ref())),
             running: &running,
             instructed: instruction.is_some(),
+            interrupted,
         };
         let (reason, tip) = watch_due(&schedule)?;
         if reason == WatchReason::Instruction {

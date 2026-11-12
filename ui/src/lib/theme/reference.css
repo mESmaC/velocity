@@ -1116,6 +1116,13 @@
   --duty-agent-doing-gap: 6px;
   --duty-agent-doing-margin-top: 4px;
   --duty-agent-doing-font-size: 11px;
+  /* The card's dismiss × (#282): sized like the reference's `.gs-row .x` remove control,
+     shown on hover or focus like its `.b-row .mini` actions. */
+  --duty-agent-dismiss-size: 18px;
+  --duty-agent-dismiss-border-radius: 5px;
+  --duty-agent-dismiss-hover-background: rgba(255, 255, 255, 0.1);
+  --duty-agent-dismiss-hidden-opacity: 0;
+  --duty-agent-dismiss-shown-opacity: 1;
   --duty-event-columns: 38px 62px 1fr;
   --duty-event-gap: 8px;
   --duty-event-padding: 6px 4px;

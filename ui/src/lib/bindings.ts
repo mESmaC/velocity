@@ -22,6 +22,11 @@ export const commands = {
 	minimizeWindow: () => __TAURI_INVOKE<null>("minimize_window"),
 	toggleMaximizeWindow: () => __TAURI_INVOKE<null>("toggle_maximize_window"),
 	closeWindow: () => __TAURI_INVOKE<null>("close_window"),
+	/**
+	 *  Records an error the window caught: a pane that failed to render, an uncaught exception
+	 *  or an unhandled promise rejection. `source` names where the window caught it.
+	 */
+	logWindowError: (source: string, message: string) => __TAURI_INVOKE<void>("log_window_error", { source, message }),
 	getSettings: () => __TAURI_INVOKE<Settings_Serialize>("get_settings"),
 	setSettings: (settings: Settings_Deserialize) => __TAURI_INVOKE<Settings_Serialize>("set_settings", { settings }),
 	getLayoutState: () => __TAURI_INVOKE<LayoutSnapshot_Serialize>("get_layout_state"),
@@ -78,6 +83,13 @@ export const commands = {
 	startDuty: (request: StartDutyRequest_Deserialize) => __TAURI_INVOKE<LayoutSnapshot_Serialize>("start_duty", { request }),
 	pauseDuty: (request: PauseDutyRequest_Deserialize) => __TAURI_INVOKE<LayoutSnapshot_Serialize>("pause_duty", { request }),
 	addDutyAgents: (request: StartDutyRequest_Deserialize) => __TAURI_INVOKE<LayoutSnapshot_Serialize>("add_duty_agents", { request }),
+	/**
+	 *  Dismisses one duty agent (F7): it leaves the saved roster, its session stops, and a PR it
+	 *  held is released for the next agent.
+	 */
+	dismissDutyAgent: (request: DismissDutyAgentRequest) => __TAURI_INVOKE<LayoutSnapshot_Serialize>("dismiss_duty_agent", { request }),
+	/**  Stops a duty role (F7): every agent on it is dismissed and the role leaves "On duty". */
+	stopDuty: (request: StopDutyRequest) => __TAURI_INVOKE<LayoutSnapshot_Serialize>("stop_duty", { request }),
 	listPullRequests: (projectIdentifier: number) => __TAURI_INVOKE<PullRequest_Serialize[]>("list_pull_requests", { projectIdentifier }),
 	getPullRequest: (projectIdentifier: number, number: number) => __TAURI_INVOKE<PullRequestSnapshot_Serialize>("get_pull_request", { projectIdentifier, number }),
 	dispatchPullRequest: (projectIdentifier: number, operation: PullRequestOperation_Deserialize) => __TAURI_INVOKE<PullRequestReceipt>("dispatch_pull_request", { projectIdentifier, operation }),
@@ -130,8 +142,6 @@ export const commands = {
 	launchSwarm: (request: LaunchSwarmRequest_Deserialize) => __TAURI_INVOKE<LayoutSnapshot_Serialize>("launch_swarm", { request }),
 	/**  + Items: the same launch, adding members to an existing swarm. */
 	addToSwarm: (request: LaunchSwarmRequest_Deserialize) => __TAURI_INVOKE<LayoutSnapshot_Serialize>("add_to_swarm", { request }),
-	/**  Hides the swarm and its members at once and offers Undo; the deletion lands after 5 s. */
-	deleteSwarm: (projectIdentifier: number, swarmIdentifier: number) => __TAURI_INVOKE<LayoutSnapshot_Serialize>("delete_swarm", { projectIdentifier, swarmIdentifier }),
 	addTask: (projectIdentifier: number, title: string) => __TAURI_INVOKE<TaskItem_Serialize>("add_task", { projectIdentifier, title }),
 	listTasks: (projectIdentifier: number) => __TAURI_INVOKE<TaskView_Serialize[]>("list_tasks", { projectIdentifier }),
 	getThreadMenu: (threadIdentifier: number) => __TAURI_INVOKE<ThreadMenuView_Serialize | null>("get_thread_menu", { threadIdentifier }),
@@ -142,10 +152,7 @@ export const commands = {
 	runThreadMenuAction: (projectIdentifier: number, threadIdentifier: number, action: ThreadMenuAction) => __TAURI_INVOKE<null>("run_thread_menu_action", { projectIdentifier, threadIdentifier, action }),
 	/**  Hides the thread at once and offers Undo; the deletion lands after 5 s (F12). */
 	deleteThread: (projectIdentifier: number, threadIdentifier: number) => __TAURI_INVOKE<LayoutSnapshot_Serialize>("delete_thread", { projectIdentifier, threadIdentifier }),
-	/**
-	 *  Undo within the 5 s: the thread or swarm is back exactly as it was, since nothing was
-	 *  touched.
-	 */
+	/**  Undo within the 5 s: the thread is back exactly as it was, since nothing was touched. */
 	undoDeleteThread: (deletion: number) => __TAURI_INVOKE<LayoutSnapshot_Serialize>("undo_delete_thread", { deletion }),
 	getUpdateStatus: () => __TAURI_INVOKE<UpdateView_Serialize>("get_update_status"),
 	checkForUpdate: () => __TAURI_INVOKE<UpdateView_Serialize>("check_for_update"),
@@ -696,6 +703,12 @@ export type DiscoveredSkill_Serialize = {
 	 *  `vendor/` and per-agent folders. Mirrors never count twice in a bundle.
 	 */
 	mirror: boolean,
+};
+
+/**  Dismiss one duty agent (F7): its session stops and it leaves the role. */
+export type DismissDutyAgentRequest = {
+	role: DutyRole,
+	nickname: string,
 };
 
 export type DutyAgentCard = {
@@ -3827,6 +3840,11 @@ export type StartDutyRequest_Serialize = {
 	scout_rules: ScoutRuleSettings | null,
 };
 
+/**  Stop a duty role (F7): every agent is dismissed and the role leaves "On duty". */
+export type StopDutyRequest = {
+	role: DutyRole,
+};
+
 export type Supervision = Supervision_Serialize | Supervision_Deserialize;
 
 export type Supervision_Deserialize = {
@@ -4298,8 +4316,6 @@ export type ThreadMenuView_Deserialize = {
 	thread_identifier: number,
 	entries: ThreadMenuEntry_Deserialize[],
 	message_mode?: ThreadMessageMode | null,
-	/**  The row is a swarm or goal swarm: its Delete is `delete_swarm` (F10, F12). */
-	swarm: boolean,
 };
 
 /**  One thread's right-click menu, built from saved state and what is on disk. */
@@ -4309,8 +4325,6 @@ export type ThreadMenuView_Serialize = {
 	thread_identifier: number,
 	entries: ThreadMenuEntry_Serialize[],
 	message_mode: ThreadMessageMode | null,
-	/**  The row is a swarm or goal swarm: its Delete is `delete_swarm` (F10, F12). */
-	swarm: boolean,
 };
 
 export type ThreadMessageMode = {
