@@ -1393,7 +1393,7 @@ Each milestone ends with a working app. PR duty checks an item off when it lands
 - [x] `$` skill menu in the composer; skill loads shown as tool steps (F4)
 
 **M13 · Releases and updates** (F1)
-- [ ] In-app updates: signed releases from `v*` tags, the update check and Updates panel, Restart to update for setup, MSI and portable copies
+- [x] In-app updates: signed releases from `v*` tags, the update check and Updates panel, Restart to update for setup, MSI and portable copies
 
 ---
 
