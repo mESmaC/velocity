@@ -56,6 +56,10 @@ pub struct Record {
     pub subsystem: usize,
     /// The method's type, for `self.` calls.
     pub container: Option<String>,
+    /// The trait a method implements (`impl Trait for Type`).
+    pub trait_name: Option<String>,
+    /// A Tauri command the frontend reaches by name.
+    pub command: bool,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]

@@ -12,6 +12,10 @@ pub struct Import {
     /// (`./ipc/updates`) or a Python module.
     pub source: String,
     pub line: u32,
+    /// `export ... from` (JavaScript) or `pub use` (Rust): the name is passed on to the
+    /// file's own importers.
+    #[serde(default)]
+    pub reexport: bool,
 }
 
 /// Expands a Rust use tree (`crate::a::{B, c::{self, D as E}, *}`) into one import per name.
@@ -54,6 +58,7 @@ fn expand(prefix: String, tree: &str, line: u32, imports: &mut Vec<Import>) {
         name: name.to_owned(),
         source: full.to_owned(),
         line,
+        reexport: false,
     });
 }
 

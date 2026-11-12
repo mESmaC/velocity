@@ -75,6 +75,8 @@ fn sections(source: &str, headings: &[Heading]) -> Vec<Definition> {
                 name: heading.title.clone(),
                 kind: SymbolKind::Heading,
                 container: None,
+                trait_name: None,
+                command: false,
                 start_line: heading.line,
                 end_line: end_line.max(heading.line),
                 start_byte: heading.byte as u32,

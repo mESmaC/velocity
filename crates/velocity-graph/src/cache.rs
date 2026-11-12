@@ -16,7 +16,7 @@ use crate::extract::FileParse;
 use crate::language::Language;
 
 /// Bump when extraction changes, so every cached parse is redone.
-pub const PARSER_VERSION: u32 = 2;
+pub const PARSER_VERSION: u32 = 5;
 
 /// The log is rewritten with only live entries once it passes this size and twice the live
 /// size.
@@ -35,7 +35,10 @@ pub struct Cache {
 
 /// The cache key of a file's parse.
 pub fn key(hash: &str, language: Language) -> String {
-    format!("{PARSER_VERSION}:{language:?}:{hash}")
+    // The build's version too: a grammar upgrade changes parses without touching
+    // `PARSER_VERSION` (Graphify #4236), and a release re-parses once.
+    let build = env!("CARGO_PKG_VERSION");
+    format!("{PARSER_VERSION}:{build}:{language:?}:{hash}")
 }
 
 impl Cache {
@@ -46,6 +49,28 @@ impl Cache {
             .map(|bytes| read_frames(&bytes))
             .unwrap_or_default();
         Self { log, entries }
+    }
+
+    /// Reads the log again, picking up what other agents appended since it was opened.
+    pub fn reload(&mut self) {
+        if let Ok(bytes) = std::fs::read(&self.log) {
+            self.entries.extend(read_frames(&bytes));
+        }
+    }
+
+    /// The project's build lock, held while one agent parses many files (see
+    /// `Index::load`). Separate from the append lock, which the holder still takes to write.
+    pub fn build_lock(&self) -> Result<File, Error> {
+        if let Some(folder) = self.log.parent() {
+            std::fs::create_dir_all(folder)?;
+        }
+        let lock = OpenOptions::new()
+            .create(true)
+            .truncate(false)
+            .write(true)
+            .open(self.log.with_extension("build.lock"))?;
+        lock.lock()?;
+        Ok(lock)
     }
 
     pub fn get(&self, key: &str) -> Option<Arc<FileParse>> {

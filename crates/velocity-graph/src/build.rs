@@ -4,7 +4,7 @@ use std::collections::HashMap;
 
 use crate::graph::{Edge, FileInput, Provenance, Record, RecordKind, Relation};
 use crate::subsystems::{Subsystem, depends, owner};
-use crate::text::digest;
+use sha2::{Digest, Sha256};
 
 pub struct Builder {
     subsystems: Vec<Subsystem>,
@@ -89,6 +89,8 @@ impl Builder {
                 down: Vec::new(),
                 subsystem,
                 container: definition.container.clone(),
+                trait_name: definition.trait_name.clone(),
+                command: definition.command,
             };
             let symbol = self.push(record, key);
             // `down` of a file lines up with its parse's definitions; resolution relies on it.
@@ -152,6 +154,8 @@ fn blank(kind: RecordKind, name: &str, path: &str) -> Record {
         down: Vec::new(),
         subsystem: 0,
         container: None,
+        trait_name: None,
+        command: false,
     }
 }
 
@@ -162,7 +166,7 @@ fn assign_addresses(records: &mut [Record], keys: &[String]) {
     order.sort_by(|left, right| keys[*left].cmp(&keys[*right]));
     let mut taken = std::collections::HashSet::new();
     for index in order {
-        let code = base36(&digest(keys[index].as_bytes()));
+        let code = address_code(&keys[index]);
         let plane = records[index].kind.plane();
         let address = (5..=code.len())
             .map(|length| format!("{plane}.{}", &code[..length]))
@@ -173,14 +177,17 @@ fn assign_addresses(records: &mut [Record], keys: &[String]) {
     }
 }
 
-fn base36(hex: &str) -> String {
+/// Twelve base-36 characters from a hash of `key`.
+fn address_code(key: &str) -> String {
     const ALPHABET: &[u8] = b"0123456789abcdefghijklmnopqrstuvwxyz";
-    let mut value = u128::from_str_radix(&hex[..hex.len().min(32)], 16).unwrap_or_default();
-    let mut out = Vec::new();
-    while value > 0 {
-        out.push(ALPHABET[(value % 36) as usize]);
+    let hash = Sha256::digest(key.as_bytes());
+    let mut value = u64::from_le_bytes([
+        hash[0], hash[1], hash[2], hash[3], hash[4], hash[5], hash[6], hash[7],
+    ]);
+    let mut out = String::with_capacity(12);
+    for _ in 0..12 {
+        out.push(ALPHABET[(value % 36) as usize] as char);
         value /= 36;
     }
-    out.reverse();
-    String::from_utf8(out).unwrap_or_default()
+    out
 }

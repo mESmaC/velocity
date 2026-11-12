@@ -69,6 +69,13 @@ pub struct Definition {
     pub kind: SymbolKind,
     /// The type a method belongs to (a Rust impl's type, a class), or the trait it declares.
     pub container: Option<String>,
+    /// For a method in a Rust `impl Trait for Type`: the trait, so the method links to the
+    /// trait's declaration of it.
+    #[serde(default)]
+    pub trait_name: Option<String>,
+    /// A Rust function marked `#[tauri::command]`: the frontend reaches it by name.
+    #[serde(default)]
+    pub command: bool,
     pub start_line: u32,
     pub end_line: u32,
     pub start_byte: u32,
@@ -91,12 +98,18 @@ pub enum ReferenceKind {
     Method,
     /// A macro invocation (`format!`): it can only land on a macro.
     Macro,
+    /// A call inside a macro's arguments (`format!("{}", name(x))`). The parser sees tokens,
+    /// not a call, so it never counts as `extracted`.
+    MacroArgument,
     Type,
     Implementation,
     /// A Markdown section naming a symbol in backticks.
     Mention,
     /// A Markdown section naming a file path in backticks.
     FileMention,
+    /// A frontend call into a Tauri command: `commands.checkForUpdate` (tauri-specta) or
+    /// `invoke("check_for_update")`.
+    Command,
 }
 
 /// One use of a name.
@@ -234,6 +247,7 @@ impl<'source> Collector<'source> {
                 || name.starts_with("reference.")
                 || name == "container"
                 || name == "import"
+                || name == "reexport"
             {
                 role = Some((name, capture.node));
             } else {
@@ -248,7 +262,8 @@ impl<'source> Collector<'source> {
                 self.reference(&role["reference.".len()..], &captures);
             }
             Some(("container", node)) => self.container(node, &captures),
-            Some(("import", node)) => self.import(node, &captures),
+            Some(("import", node)) => self.import(node, &captures, false),
+            Some(("reexport", node)) => self.import(node, &captures, true),
             _ => {}
         }
     }
@@ -283,6 +298,10 @@ impl<'source> Collector<'source> {
             name,
             kind,
             container: None,
+            trait_name: None,
+            command: self.language == Language::Rust
+                && kind == SymbolKind::Function
+                && tauri_command(&self.lines, start_line as usize),
             start_line,
             end_line: node.end_position().row as u32 + 1,
             start_byte: start as u32,
@@ -304,10 +323,21 @@ impl<'source> Collector<'source> {
         if name.is_empty() {
             return;
         }
+        // In a macro's tokens a name before `[...]` or `{...}` is indexing or a literal, not a
+        // call: only `name(` counts.
+        if role == "macro_argument"
+            && !self.source[name_node.end_byte()..]
+                .trim_start()
+                .starts_with('(')
+        {
+            return;
+        }
         let kind = match role {
             "call" | "class" => ReferenceKind::Call,
             "method" => ReferenceKind::Method,
             "macro" => ReferenceKind::Macro,
+            "macro_argument" => ReferenceKind::MacroArgument,
+            "command" => ReferenceKind::Command,
             "implementation" => ReferenceKind::Implementation,
             _ => ReferenceKind::Type,
         };
@@ -320,6 +350,7 @@ impl<'source> Collector<'source> {
         // knows more.
         if let Some(existing) = self.references.get(&byte)
             && (existing.qualifier.is_some() || qualifier.is_none())
+            && kind != ReferenceKind::Command
         {
             return;
         }
@@ -354,16 +385,18 @@ impl<'source> Collector<'source> {
         });
     }
 
-    fn import(&mut self, node: Node, captures: &HashMap<&str, Node>) {
+    fn import(&mut self, node: Node, captures: &HashMap<&str, Node>, reexport: bool) {
         let line = node.start_position().row as u32 + 1;
         if let Some(path) = captures.get("import.path") {
             self.imports.extend(rust_use_tree(self.text(*path), line));
             return;
         }
-        let Some(name) = captures.get("import.name") else {
-            return;
+        // `export * from './x'` names nothing: everything passes through.
+        let name = match captures.get("import.name") {
+            Some(name) => self.text(*name),
+            None if reexport => "*",
+            None => return,
         };
-        let name = self.text(*name);
         let source = captures
             .get("import.source")
             .map_or(name, |node| self.text(*node));
@@ -377,6 +410,7 @@ impl<'source> Collector<'source> {
             name: local.to_owned(),
             source: source.to_owned(),
             line,
+            reexport,
         });
     }
 
@@ -412,7 +446,7 @@ impl<'source> Collector<'source> {
 
     /// Functions inside an impl, a trait or a class become methods of that type.
     fn assign_containers(&mut self) {
-        let types: Vec<(u32, u32, String)> = self
+        let types: Vec<(u32, u32, String, Option<String>)> = self
             .definitions
             .values()
             .filter(|definition| {
@@ -423,13 +457,17 @@ impl<'source> Collector<'source> {
                     definition.start_byte,
                     definition.end_byte,
                     definition.name.clone(),
+                    None,
                 )
             })
-            .chain(
-                self.containers
-                    .iter()
-                    .map(|container| (container.start, container.end, container.type_name.clone())),
-            )
+            .chain(self.containers.iter().map(|container| {
+                (
+                    container.start,
+                    container.end,
+                    container.type_name.clone(),
+                    container.trait_name.clone(),
+                )
+            }))
             .collect();
         for definition in self.definitions.values_mut() {
             if !matches!(definition.kind, SymbolKind::Function | SymbolKind::Method) {
@@ -437,16 +475,27 @@ impl<'source> Collector<'source> {
             }
             let innermost = types
                 .iter()
-                .filter(|(start, end, _)| {
+                .filter(|(start, end, _, _)| {
                     *start < definition.start_byte && definition.end_byte <= *end
                 })
-                .min_by_key(|(start, end, _)| end - start);
-            if let Some((_, _, name)) = innermost {
+                .min_by_key(|(start, end, _, _)| end - start);
+            if let Some((_, _, name, trait_name)) = innermost {
                 definition.kind = SymbolKind::Method;
                 definition.container = Some(name.clone());
+                definition.trait_name = trait_name.clone();
             }
         }
     }
+}
+
+/// Whether the attribute lines above line `start_line` (1-based) include `#[tauri::command]`.
+fn tauri_command(lines: &[&str], start_line: usize) -> bool {
+    lines[..start_line.saturating_sub(1).min(lines.len())]
+        .iter()
+        .rev()
+        .map(|line| line.trim())
+        .take_while(|line| line.starts_with("#[") || line.starts_with("///"))
+        .any(|line| line.starts_with("#[tauri::command"))
 }
 
 fn implements(container: &Container) -> Option<Reference> {

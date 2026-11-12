@@ -6,7 +6,8 @@ use std::collections::HashSet;
 use std::ffi::OsString;
 use std::io::{BufRead, Write};
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, Mutex, OnceLock};
+use std::sync::{Arc, Mutex, OnceLock, mpsc};
+use std::time::Duration;
 
 use notify::{RecursiveMode, Watcher};
 use serde_json::{Value, json};
@@ -36,7 +37,9 @@ const NOISE: [&str; 9] = [
     ".pnpm-store",
 ];
 
-const INSTRUCTIONS: &str = "The graph tools map this project's code: symbols, files and subsystems, with calls, imports, implementations, type references and doc mentions. Use them to locate code before broad searches: graph_find for a name or description, graph_read for one record and its links (source: true adds its lines), graph_impact for what depends on a change, graph_run to chain several hops in one call. Every record gives its file and lines: read only those lines. Links tagged inferred or ambiguous are leads to check, not facts. A name defined more than once returns `ambiguous` with every candidate: pass one address. For strings, literals, config values and build output, search the files instead.";
+/// What every agent is told at connection. Stated as facts, not orders: imperative "MUST"
+/// rules read like prompt injection and get ignored (Graphify #2202).
+const INSTRUCTIONS: &str = "The velocity-graph tools map this worktree's code: symbols, files and subsystems, linked by calls, imports, implementations, type uses and doc mentions. Finding where something lives, what calls it, or what a change affects is what the graph answers, so these questions start there rather than with a grep or a file read: graph_find for a name or a description, graph_read for one record and its links (source: true adds its lines), graph_impact for what depends on a change, and graph_run to chain several hops in one call. Every record gives its file and lines, so a read can be just those lines. Links marked inferred, ambiguous or unconfirmed are leads to check, not facts, and when the graph has nothing on a question it says so rather than guessing. Grep remains the tool for exact text: strings, literals, config values and logs. The graph follows edits as they happen.";
 
 pub fn server_arguments(app_data: &Path, project: &str, worktree: &Path) -> Vec<String> {
     vec![
@@ -65,6 +68,20 @@ pub fn serve_stdio(arguments: &[OsString]) -> Result<(), Error> {
 
 type Shared = Arc<OnceLock<Result<Mutex<Tools>, String>>>;
 
+/// How long `initialize` waits for the index, so the session-start map can go out with the
+/// instructions. With a warm cache a build takes a fraction of this.
+const MAP_WAIT: Duration = Duration::from_millis(1500);
+
+/// One agent's connection.
+struct Connection {
+    tools: Shared,
+    root: PathBuf,
+    cache: PathBuf,
+    dirty: Arc<Mutex<HashSet<String>>>,
+    /// Signalled once the background build finished; taken by the first `initialize`.
+    built: Mutex<Option<mpsc::Receiver<()>>>,
+}
+
 /// Serves one connection. The index is built in the background from the start, so the first
 /// tool call usually finds it ready.
 pub fn serve(
@@ -73,21 +90,32 @@ pub fn serve(
     input: impl BufRead,
     mut output: impl Write,
 ) -> Result<(), Error> {
-    let tools: Shared = Arc::new(OnceLock::new());
+    let (signal, built) = mpsc::channel();
+    let connection = Connection {
+        tools: Arc::new(OnceLock::new()),
+        root,
+        cache,
+        dirty: Arc::default(),
+        built: Mutex::new(Some(built)),
+    };
     let builder = {
-        let (tools, root, cache) = (tools.clone(), root.clone(), cache.clone());
+        let (tools, root, cache) = (
+            connection.tools.clone(),
+            connection.root.clone(),
+            connection.cache.clone(),
+        );
         std::thread::spawn(move || {
             tools.get_or_init(|| build(&root, &cache));
+            let _ = signal.send(());
         })
     };
-    let dirty: Arc<Mutex<HashSet<String>>> = Arc::default();
     // Kept alive for the connection; a watcher that can't start leaves the staleness check
     // to catch edits.
-    let _watcher = watch(&root, dirty.clone());
+    let _watcher = watch(&connection.root, connection.dirty.clone());
     for line in input.lines() {
         let line = line?;
         let response = match serde_json::from_str::<Value>(&line) {
-            Ok(request) => respond(&request, &tools, &root, &cache, &dirty),
+            Ok(request) => respond(&request, &connection),
             Err(_) => Some(failure(Value::Null, -32700, "Parse error")),
         };
         if let Some(response) = response {
@@ -120,10 +148,14 @@ pub fn warm(
         .spawn()
 }
 
+/// Builds the index. A panic in a parser becomes an error the tools report, rather than the
+/// end of the agent's graph server.
 fn build(root: &Path, cache: &Path) -> Result<Mutex<Tools>, String> {
-    Index::open(root, cache)
-        .map(|index| Mutex::new(Tools::new(index)))
-        .map_err(|error| error.to_string())
+    match std::panic::catch_unwind(|| Index::open(root, cache)) {
+        Ok(Ok(index)) => Ok(Mutex::new(Tools::new(index))),
+        Ok(Err(error)) => Err(error.to_string()),
+        Err(_) => Err("the indexer stopped on an internal error".to_owned()),
+    }
 }
 
 fn watch(root: &Path, dirty: Arc<Mutex<HashSet<String>>>) -> Option<notify::RecommendedWatcher> {
@@ -146,13 +178,7 @@ fn watch(root: &Path, dirty: Arc<Mutex<HashSet<String>>>) -> Option<notify::Reco
     Some(watcher)
 }
 
-fn respond(
-    request: &Value,
-    tools: &Shared,
-    root: &Path,
-    cache: &Path,
-    dirty: &Mutex<HashSet<String>>,
-) -> Option<Value> {
+fn respond(request: &Value, connection: &Connection) -> Option<Value> {
     let id = request.get("id").cloned().unwrap_or(Value::Null);
     let method = request.get("method").and_then(Value::as_str);
     if request.get("jsonrpc").and_then(Value::as_str) != Some("2.0") || method.is_none() {
@@ -165,36 +191,62 @@ fn respond(
             "protocolVersion": "2025-11-25",
             "capabilities": {"tools": {}},
             "serverInfo": {"name": "velocity-graph", "version": env!("CARGO_PKG_VERSION")},
-            "instructions": INSTRUCTIONS,
+            "instructions": instructions(connection),
         }),
         "ping" => json!({}),
         "tools/list" => json!({"tools": tool_list()}),
-        "tools/call" => call(&request["params"], tools, root, cache, dirty),
+        "tools/call" => call(&request["params"], connection),
         _ => return Some(failure(id, -32601, "Method not found")),
     };
     Some(json!({"jsonrpc": "2.0", "id": id, "result": result}))
 }
 
-fn call(
-    parameters: &Value,
-    tools: &Shared,
-    root: &Path,
-    cache: &Path,
-    dirty: &Mutex<HashSet<String>>,
-) -> Value {
+/// The instructions, with the session-start map when the index is ready in time.
+fn instructions(connection: &Connection) -> String {
+    let built = connection
+        .built
+        .lock()
+        .unwrap_or_else(|poison| poison.into_inner())
+        .take();
+    if let Some(built) = built {
+        let _ = built.recv_timeout(MAP_WAIT);
+    }
+    let map = match connection.tools.get() {
+        Some(Ok(tools)) => tools
+            .lock()
+            .unwrap_or_else(|poison| poison.into_inner())
+            .map(),
+        _ => String::new(),
+    };
+    if map.is_empty() {
+        INSTRUCTIONS.to_owned()
+    } else {
+        format!("{INSTRUCTIONS}\n\n{map}")
+    }
+}
+
+fn call(parameters: &Value, connection: &Connection) -> Value {
     let name = parameters["name"].as_str().unwrap_or_default();
-    let result = match tools.get_or_init(|| build(root, cache)) {
+    let tools = connection
+        .tools
+        .get_or_init(|| build(&connection.root, &connection.cache));
+    let result = match tools {
         Ok(tools) => {
             let mut tools = tools.lock().unwrap_or_else(|poison| poison.into_inner());
-            let changed: Vec<String> = dirty
+            let changed: Vec<String> = connection
+                .dirty
                 .lock()
                 .unwrap_or_else(|poison| poison.into_inner())
                 .drain()
                 .collect();
-            match tools.refresh(&changed) {
-                Ok(()) => tools.call(name, &parameters["arguments"]),
-                Err(error) => Err(error.to_string()),
-            }
+            // One request that trips a bug fails alone; the agent keeps its graph.
+            std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                tools
+                    .refresh(&changed)
+                    .map_err(|error| error.to_string())
+                    .and_then(|()| tools.call(name, &parameters["arguments"]))
+            }))
+            .unwrap_or_else(|_| Err("the code graph failed on this request".to_owned()))
         }
         Err(error) => Err(format!("the code graph could not be built: {error}")),
     };
@@ -232,7 +284,7 @@ fn tool_list() -> Vec<Value> {
         ),
         tool(
             "graph_impact",
-            "What depends on symbols or files, followed transitively through calls, implementations, type references, imports and doc mentions: grouped by subsystem with depth. Links found in the source are listed apart from leads to check.",
+            "What depends on symbols or files, followed transitively through calls, implementations, type uses, imports and doc mentions, grouped by subsystem with depth. A type brings its methods, and a trait method implementation brings the callers of the trait method. Links found in the source are listed apart from leads to check. No dependents does not prove code unused: dynamic calls and copies are invisible to the graph, so grep a distinctive literal before deleting.",
             json!({
                 "targets": {"oneOf": [{"type": "string"}, {"type": "array", "items": {"type": "string"}}], "description": "Addresses, names or paths"},
                 "depth": {"type": "integer", "minimum": 1, "maximum": 6, "description": "Hops to follow (default 3)"},

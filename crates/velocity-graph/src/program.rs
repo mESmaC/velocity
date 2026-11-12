@@ -5,7 +5,7 @@ use std::collections::{HashSet, VecDeque};
 use std::fmt::Write;
 
 use crate::graph::{Graph, Provenance, Relation};
-use crate::query::{Lookup, failure, line, lookup, short};
+use crate::query::{Lookup, failure, hub_threshold, line, lookup, short};
 use crate::search::Search;
 
 const STEP_LIMIT: usize = 16;
@@ -36,20 +36,27 @@ pub fn run(graph: &Graph, search: &Search, program: &str) -> Result<Outcome, Str
     }
     let mut register = Register::Empty;
     let mut audit = String::new();
-    let mut source = Vec::new();
+    let mut extra = Extra::default();
+    let mut last = String::new();
     for (number, step) in steps.iter().enumerate() {
         let words = tokens(step);
         let Some(operation) = words.first().map(|word| word.to_ascii_uppercase()) else {
             continue;
         };
         let arguments = &words[1..];
-        register = apply(graph, search, &operation, arguments, register, &mut source)
+        last.clone_from(&operation);
+        register = apply(graph, search, &operation, arguments, register, &mut extra)
             .map_err(|error| format!("{audit}step {} `{step}`: {error}", number + 1))?;
         let _ = writeln!(audit, "{}. {step} → {}", number + 1, describe(&register));
     }
     let mut text = audit;
+    for note in &extra.notes {
+        text.push_str(note);
+    }
     let mut files = Vec::new();
     match &register {
+        // A path's note already lists its records.
+        Register::Set(_) if last == "PATH" => {}
         Register::Set(records) => {
             for record in records.iter().take(200) {
                 let _ = writeln!(text, "{}", line(graph, *record));
@@ -69,15 +76,24 @@ pub fn run(graph: &Graph, search: &Search, program: &str) -> Result<Outcome, Str
         Register::Empty => {}
     }
     files.extend(
-        source
+        extra
+            .source
             .iter()
             .map(|record| graph.records[*record].path.clone()),
     );
     Ok(Outcome {
         text,
         files,
-        source,
+        source: extra.source,
     })
+}
+
+/// What steps add besides the register: records whose source to show, and notes such as a
+/// path's hops.
+#[derive(Default)]
+struct Extra {
+    source: Vec<usize>,
+    notes: Vec<String>,
 }
 
 fn apply(
@@ -86,7 +102,7 @@ fn apply(
     operation: &str,
     arguments: &[String],
     register: Register,
-    source: &mut Vec<usize>,
+    extra: &mut Extra,
 ) -> Result<Register, String> {
     let set = || match &register {
         Register::Set(records) => Ok(records.clone()),
@@ -111,12 +127,16 @@ fn apply(
         )),
         "FOLLOW" => Register::Set(follow(graph, &set()?, arguments)?),
         "FILTER" => Register::Set(filter(graph, set()?, arguments)?),
-        "PATH" => Register::Set(path(graph, search, &set()?, &arguments.join(" "))?),
+        "PATH" => {
+            let (chain, note) = path(graph, search, &set()?, &arguments.join(" "))?;
+            extra.notes.push(note);
+            Register::Set(chain)
+        }
         "COUNT" => Register::Count(set()?.len()),
         "READ" | "SOURCE" => {
             let records = set()?;
             if operation == "SOURCE" {
-                source.extend(records.iter().take(20));
+                extra.source.extend(records.iter().take(20));
             }
             Register::Set(records)
         }
@@ -243,57 +263,113 @@ fn filter(graph: &Graph, records: Vec<usize>, arguments: &[String]) -> Result<Ve
     Ok(kept)
 }
 
-/// `PATH <target>`: the shortest chain of links (either direction, ambiguous links left out)
-/// from the register's first record to the target.
+/// One step of a path: the record reached and how (`calls`, `calls (in)`, `in`, `contains`),
+/// with the link's provenance.
+type Hop = (usize, String, Provenance);
+
+/// `PATH <target>`: the shortest chain of links from the register's first record to the
+/// target, in either direction and through containment, leaving ambiguous links out. The note
+/// lists each hop and the path's confidence: that of its weakest hop (after Graphify).
 fn path(
     graph: &Graph,
     search: &Search,
     records: &[usize],
     target: &str,
-) -> Result<Vec<usize>, String> {
+) -> Result<(Vec<usize>, String), String> {
     let start = *records.first().ok_or("PATH needs a starting record")?;
     let goal = match lookup(graph, search, target) {
         Lookup::Found(record) => record,
         other => return Err(failure(graph, target, &other)),
     };
-    let mut previous = vec![usize::MAX; graph.records.len()];
+    let mut previous: Vec<Option<(usize, String, Provenance)>> = vec![None; graph.records.len()];
     let mut queue = VecDeque::from([start]);
-    previous[start] = start;
+    let mut seen = HashSet::from([start]);
+    let hub = hub_threshold(graph);
     while let Some(record) = queue.pop_front() {
         if record == goal {
             break;
         }
-        let neighbours = graph.outgoing[record]
-            .iter()
-            .map(|edge| (&graph.edges[*edge], graph.edges[*edge].to))
-            .chain(
-                graph.incoming[record]
-                    .iter()
-                    .map(|edge| (&graph.edges[*edge], graph.edges[*edge].from)),
-            );
-        for (edge, next) in neighbours {
-            if matches!(edge.provenance, Provenance::Ambiguous(_)) || previous[next] != usize::MAX {
-                continue;
+        // A path through a hub (a shared `Error` type, a logging helper) says nothing.
+        if record != start && graph.incoming[record].len() >= hub {
+            continue;
+        }
+        for (next, how, provenance) in neighbours(graph, record) {
+            if seen.insert(next) {
+                previous[next] = Some((record, how, provenance));
+                queue.push_back(next);
             }
-            previous[next] = record;
-            queue.push_back(next);
         }
     }
-    if previous[goal] == usize::MAX {
+    if !seen.contains(&goal) {
         return Err(format!(
             "no path from {} to {} without ambiguous links",
             short(graph, start),
             short(graph, goal)
         ));
     }
-    let mut chain = vec![goal];
-    while let Some(last) = chain.last().copied()
-        && last != start
-    {
-        chain.push(previous[last]);
+    let mut hops: Vec<Hop> = Vec::new();
+    let mut at = goal;
+    while let Some((from, how, provenance)) = previous[at].clone() {
+        hops.push((at, how, provenance));
+        at = from;
     }
-    chain.reverse();
-    Ok(chain)
+    hops.reverse();
+    Ok(path_note(graph, start, hops))
+}
+
+fn neighbours(graph: &Graph, record: usize) -> Vec<Hop> {
+    let mut out: Vec<Hop> = Vec::new();
+    for edge in &graph.outgoing[record] {
+        let edge = &graph.edges[*edge];
+        out.push((edge.to, edge.relation.label().to_owned(), edge.provenance));
+    }
+    for edge in &graph.incoming[record] {
+        let edge = &graph.edges[*edge];
+        out.push((
+            edge.from,
+            format!("{} (in)", edge.relation.label()),
+            edge.provenance,
+        ));
+    }
+    let node = &graph.records[record];
+    out.extend(
+        node.up
+            .map(|up| (up, "in".to_owned(), Provenance::Extracted)),
+    );
+    out.extend(
+        node.down
+            .iter()
+            .map(|down| (*down, "contains".to_owned(), Provenance::Extracted)),
+    );
+    out.retain(|(_, _, provenance)| !matches!(provenance, Provenance::Ambiguous(_)));
+    out
+}
+
+fn path_note(graph: &Graph, start: usize, hops: Vec<Hop>) -> (Vec<usize>, String) {
+    let weakest = hops
+        .iter()
+        .map(|(_, _, provenance)| *provenance)
+        .max_by_key(|provenance| match provenance {
+            Provenance::Extracted => 0,
+            Provenance::Inferred => 1,
+            Provenance::Ambiguous(_) => 2,
+        })
+        .unwrap_or(Provenance::Extracted);
+    let mut note = format!("path, {} hops:\n  {}\n", hops.len(), short(graph, start));
+    let mut chain = vec![start];
+    for (record, how, provenance) in hops {
+        note.push_str(&format!(
+            "  --{how} [{}]--> {}\n",
+            provenance.label(),
+            short(graph, record)
+        ));
+        chain.push(record);
+    }
+    note.push_str(&format!(
+        "path confidence: {} (its weakest hop)\n",
+        weakest.label()
+    ));
+    (chain, note)
 }
 
 fn dedup(records: impl Iterator<Item = usize>) -> Vec<usize> {

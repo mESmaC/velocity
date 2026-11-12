@@ -31,8 +31,70 @@ struct Draft {
 
 impl Tools {
     pub fn new(index: Index) -> Self {
-        let search = Search::new(&index.graph);
+        let search = Search::new(&index.graph, None);
         Self { index, search }
+    }
+
+    /// The session-start map (F19): the worktree, its size, its biggest subsystems and its
+    /// most-used symbols, in about 250 tokens, so an agent starts oriented.
+    pub fn map(&self) -> String {
+        let graph = &self.index.graph;
+        let records = &graph.records;
+        let code = |record: &crate::graph::Record| matches!(record.kind, RecordKind::Symbol(kind) if kind != crate::SymbolKind::Heading);
+        let symbols = records.iter().filter(|record| code(record)).count();
+        let mut subsystems: Vec<usize> = (0..records.len())
+            .filter(|index| records[*index].kind == RecordKind::Subsystem)
+            .collect();
+        subsystems.sort_by_key(|index| std::cmp::Reverse(records[*index].down.len()));
+        let shown: Vec<String> = subsystems
+            .iter()
+            .take(12)
+            .map(|index| {
+                format!(
+                    "{} ({}/, {})",
+                    records[*index].name,
+                    records[*index].path,
+                    records[*index].down.len()
+                )
+            })
+            .collect();
+        let more = subsystems.len().saturating_sub(12);
+        let mut used: Vec<usize> = (0..records.len())
+            .filter(|index| {
+                code(&records[*index]) && !crate::search::is_test_path(&records[*index].path)
+            })
+            .filter(|index| !crate::resolve::is_standard_name(&records[*index].name))
+            .collect();
+        used.sort_by_key(|index| std::cmp::Reverse(graph.incoming[*index].len()));
+        let hubs: Vec<String> = used
+            .iter()
+            .take(8)
+            .map(|index| {
+                format!(
+                    "{} {} {} ({})",
+                    records[*index].address,
+                    records[*index].kind.label(),
+                    records[*index].qualified,
+                    records[*index].path
+                )
+            })
+            .collect();
+        let mut map = format!(
+            "Map of {}: {} files, {symbols} symbols.
+Subsystems (files): {}",
+            self.index.root().display(),
+            self.index.report.files,
+            shown.join(", ")
+        );
+        if more > 0 {
+            map.push_str(&format!(", and {more} more"));
+        }
+        map.push_str(&format!(
+            ".
+Most used: {}.",
+            hubs.join("; ")
+        ));
+        map
     }
 
     pub fn index(&self) -> &Index {
@@ -47,11 +109,15 @@ impl Tools {
             .cloned()
             .partition(|path| self.index.contains(path));
         let mut changed = self.index.refresh(&known)?;
-        if !unknown.is_empty() {
+        // A folder's own event says nothing a file event won't; only a file new to the index
+        // (or one that vanished) needs the worktree listed again.
+        let root = self.index.root();
+        if unknown.iter().any(|path| !root.join(path).is_dir()) {
             changed |= self.index.refresh_listing()?;
         }
         if changed {
-            self.search = Search::new(&self.index.graph);
+            let previous = std::mem::replace(&mut self.search, Search::empty());
+            self.search = Search::new(&self.index.graph, Some(previous));
         }
         Ok(())
     }
@@ -158,7 +224,7 @@ impl Tools {
                 other => return Err(failure(graph, target, &other)),
             }
         }
-        let depth = arguments["depth"].as_u64().unwrap_or(3).clamp(1, 6) as usize;
+        let depth = arguments["depth"].as_u64().unwrap_or(2).clamp(1, 6) as usize;
         let files = records
             .iter()
             .map(|record| graph.records[*record].path.clone())

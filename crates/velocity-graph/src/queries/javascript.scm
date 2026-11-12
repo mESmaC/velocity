@@ -13,7 +13,14 @@
 (call_expression function: (member_expression property: (property_identifier) @name)) @reference.method
 (new_expression constructor: (identifier) @name) @reference.call
 
+; Calls into a Tauri backend: tauri-specta's `commands.checkForUpdate` and `invoke("name")`.
+((member_expression object: (identifier) @qualifier property: (property_identifier) @name) @reference.command
+  (#eq? @qualifier "commands"))
+((call_expression function: (identifier) @function arguments: (arguments . (string (string_fragment) @name))) @reference.command
+  (#eq? @function "invoke"))
+
 (import_statement (import_clause (named_imports (import_specifier name: (identifier) @import.name))) source: (string (string_fragment) @import.source)) @import
 (import_statement (import_clause (identifier) @import.name) source: (string (string_fragment) @import.source)) @import
 (import_statement (import_clause (namespace_import (identifier) @import.name)) source: (string (string_fragment) @import.source)) @import
-(export_statement (export_clause (export_specifier name: (identifier) @import.name)) source: (string (string_fragment) @import.source)) @import
+(export_statement (export_clause (export_specifier name: (identifier) @import.name)) source: (string (string_fragment) @import.source)) @reexport
+(export_statement "*" source: (string (string_fragment) @import.source)) @reexport

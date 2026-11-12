@@ -4,6 +4,7 @@
 use std::collections::{BTreeMap, HashSet, VecDeque};
 use std::fmt::Write;
 
+use crate::SymbolKind;
 use crate::graph::{Graph, Provenance, Record, RecordKind, Relation};
 use crate::search::Search;
 
@@ -273,21 +274,25 @@ pub fn short(graph: &Graph, index: usize) -> String {
 }
 
 /// `graph_impact`: what depends on `targets`, transitively, split into links found in the
-/// source and leads to check.
+/// source and leads to check (after Graphify's affected analysis).
+/// - A type's methods and a file's symbols are seeds too, so callers of a method are found
+///   from its type.
+/// - A method that implements a trait method also seeds that declaration, so callers through
+///   the trait are found.
+/// - Hubs (heavily used records) are listed but not followed further, which keeps one common
+///   helper from pulling in half the project.
+/// - Ambiguous and unconfirmed links are listed as direct leads and never followed.
 pub fn impact(graph: &Graph, targets: &[usize], depth_limit: usize) -> String {
-    let mut seeds: Vec<usize> = targets.to_vec();
-    for target in targets {
-        if graph.records[*target].kind == RecordKind::File {
-            seeds.extend(&graph.records[*target].down);
-        }
-    }
-    // (record, depth, every hop extracted)
+    let seeds = impact_seeds(graph, targets);
+    let hub = hub_threshold(graph);
+    // record -> (depth, every hop extracted, relation of the hop that found it)
     let mut found: BTreeMap<usize, (usize, bool, Relation)> = BTreeMap::new();
     let mut queue: VecDeque<(usize, usize, bool)> =
         seeds.iter().map(|seed| (*seed, 0, true)).collect();
     let mut seen: HashSet<usize> = seeds.iter().copied().collect();
     while let Some((record, depth, sure)) = queue.pop_front() {
-        if depth >= depth_limit {
+        let hub_here = depth > 0 && graph.incoming[record].len() >= hub;
+        if depth >= depth_limit || hub_here {
             continue;
         }
         for edge in &graph.incoming[record] {
@@ -295,14 +300,69 @@ pub fn impact(graph: &Graph, targets: &[usize], depth_limit: usize) -> String {
             if edge.relation == Relation::Depends {
                 continue;
             }
+            let lead = matches!(edge.provenance, Provenance::Ambiguous(_));
+            if lead && depth > 0 {
+                continue;
+            }
             let sure = sure && edge.provenance == Provenance::Extracted;
             if seen.insert(edge.from) {
                 found.insert(edge.from, (depth + 1, sure, edge.relation));
-                queue.push_back((edge.from, depth + 1, sure));
+                if !lead {
+                    queue.push_back((edge.from, depth + 1, sure));
+                }
             }
         }
     }
     render_impact(graph, targets, &found)
+}
+
+fn impact_seeds(graph: &Graph, targets: &[usize]) -> Vec<usize> {
+    let mut seeds: Vec<usize> = targets.to_vec();
+    for target in targets {
+        let record = &graph.records[*target];
+        match record.kind {
+            RecordKind::File => seeds.extend(&record.down),
+            RecordKind::Symbol(SymbolKind::Class | SymbolKind::Interface) => {
+                seeds.extend(
+                    graph
+                        .records
+                        .iter()
+                        .enumerate()
+                        .filter_map(|(index, member)| {
+                            (member.container.as_deref() == Some(record.name.as_str())
+                                && member.subsystem == record.subsystem)
+                                .then_some(index)
+                        }),
+                );
+            }
+            _ => {}
+        }
+    }
+    let declarations: Vec<usize> = seeds
+        .iter()
+        .flat_map(|seed| graph.outgoing[*seed].iter())
+        .map(|edge| &graph.edges[*edge])
+        .filter(|edge| {
+            edge.relation == Relation::Implements && edge.provenance == Provenance::Extracted
+        })
+        .map(|edge| edge.to)
+        .collect();
+    seeds.extend(declarations);
+    seeds.sort_unstable();
+    seeds.dedup();
+    seeds
+}
+
+/// A record with at least this many incoming links is a hub: the 99th percentile of incoming
+/// links, and never under 50 (Graphify's hub rule).
+pub(crate) fn hub_threshold(graph: &Graph) -> usize {
+    let mut degrees: Vec<usize> = graph.incoming.iter().map(Vec::len).collect();
+    degrees.sort_unstable();
+    let percentile = degrees
+        .get(degrees.len().saturating_mul(99) / 100)
+        .copied()
+        .unwrap_or_default();
+    percentile.max(50)
 }
 
 fn render_impact(
@@ -350,24 +410,27 @@ fn render_impact(
     out
 }
 
-/// Cuts `text` to the budget at a line end, saying how much was cut.
+/// Cuts `text` to the budget at a line end. The notice goes first, so an agent knows before
+/// reading that the answer is partial and how to narrow it (Graphify #2601: a notice at the
+/// end, or a false one, taught agents to distrust complete answers).
 pub fn within_budget(text: String) -> String {
     if text.len() <= BUDGET {
         return text;
     }
     let mut cut = 0;
     for (index, _) in text.match_indices('\n') {
-        if index > BUDGET - 200 {
+        if index > BUDGET - 300 {
             break;
         }
         cut = index;
     }
-    let dropped = text[cut..]
+    let total = text.lines().filter(|line| !line.trim().is_empty()).count();
+    let kept = text[..cut]
         .lines()
         .filter(|line| !line.trim().is_empty())
         .count();
     format!(
-        "{}\n… {dropped} more lines cut to fit 8,000 characters. Narrow the query: a FILTER, a lower depth, or one address.\n",
+        "[cut: showing {kept} of {total} lines to fit 8,000 characters. Narrow it: one address, a FILTER, or a lower depth.]\n{}\n",
         &text[..cut]
     )
 }

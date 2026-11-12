@@ -13,6 +13,9 @@ use crate::graph::{FileInput, Graph};
 use crate::language::Language;
 use crate::subsystems::detect;
 
+/// Parses at least this large take the project's build lock (see `load`).
+const COLD_BUILD: usize = 64;
+
 struct FileState {
     hash: String,
     language: Option<Language>,
@@ -137,9 +140,40 @@ impl Index {
                 self.files.remove(path);
             }
         }
-        let sources: Vec<SourceFile> = sources.into_iter().flatten().collect();
+        let (mut to_parse, mut cached) = self.take_cached(sources.into_iter().flatten().collect());
+        // A large parse (a new project, a cold cache) runs under the project's build lock, so
+        // a swarm's agents starting together parse once: the others wait, then find the
+        // parses in the cache.
+        let _build = if to_parse.len() >= COLD_BUILD {
+            let guard = self.cache.build_lock()?;
+            self.cache.reload();
+            let (misses, hits) = self.take_cached(to_parse);
+            to_parse = misses;
+            cached += hits;
+            Some(guard)
+        } else {
+            None
+        };
+        let parses = in_parallel(&to_parse, |source| {
+            let language = source.language?;
+            Some(Arc::new(extract(language, source.text.as_deref()?)))
+        });
         let mut fresh = Vec::new();
-        let mut to_parse = Vec::new();
+        for (source, parse) in to_parse.iter().zip(parses) {
+            let parse = parse.unwrap_or_default();
+            if let Some(language) = source.language {
+                fresh.push((key(&source.hash, language), parse.clone()));
+            }
+            self.insert(source, parse);
+        }
+        self.cache.append(&fresh)?;
+        Ok((to_parse.len(), cached))
+    }
+
+    /// Takes every source the cache already holds (and every file with no parser), and
+    /// returns the rest, with how many came from the cache.
+    fn take_cached(&mut self, sources: Vec<SourceFile>) -> (Vec<SourceFile>, usize) {
+        let mut misses = Vec::new();
         let mut cached = 0;
         for source in sources {
             let hit = source
@@ -150,23 +184,11 @@ impl Index {
                     cached += 1;
                     self.insert(&source, parse);
                 }
-                (None, Some(_)) => to_parse.push(source),
+                (None, Some(_)) => misses.push(source),
                 (None, None) => self.insert(&source, Arc::new(FileParse::default())),
             }
         }
-        let parses = in_parallel(&to_parse, |source| {
-            let language = source.language?;
-            Some(Arc::new(extract(language, source.text.as_deref()?)))
-        });
-        for (source, parse) in to_parse.iter().zip(parses) {
-            let parse = parse.unwrap_or_default();
-            if let Some(language) = source.language {
-                fresh.push((key(&source.hash, language), parse.clone()));
-            }
-            self.insert(source, parse);
-        }
-        self.cache.append(&fresh)?;
-        Ok((to_parse.len(), cached))
+        (misses, cached)
     }
 
     fn insert(&mut self, source: &SourceFile, parse: Arc<FileParse>) {

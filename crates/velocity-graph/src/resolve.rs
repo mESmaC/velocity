@@ -1,15 +1,152 @@
 //! Name resolution (F19 accuracy rules): every reference becomes edges that say how they were
 //! found, and a name the parser can't pin down stays `ambiguous` instead of being guessed.
 
+use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
+use std::rc::Rc;
 
 use crate::extract::{Reference, ReferenceKind, SymbolKind};
 use crate::graph::{Edge, FileInput, Graph, Provenance, RecordKind, Relation};
 use crate::imports::Import;
 use crate::language::Language;
+use crate::search::is_test_path;
 
 /// A name matching more definitions than this is too common to link at all.
 const AMBIGUITY_LIMIT: usize = 12;
+
+/// Standard Rust types and traits. A project that defines one of these names (a crate's own
+/// `Result` or `Error`) is linked only from its own file or an explicit import, never by bare
+/// name: in one large workspace `String` became the most-linked node (Graphify, rust.rs).
+const RUST_STANDARD_NAMES: [&str; 40] = [
+    "String",
+    "str",
+    "Option",
+    "Some",
+    "None",
+    "Vec",
+    "Box",
+    "Arc",
+    "Rc",
+    "Weak",
+    "RefCell",
+    "Cell",
+    "Mutex",
+    "RwLock",
+    "Result",
+    "Ok",
+    "Err",
+    "HashMap",
+    "HashSet",
+    "BTreeMap",
+    "BTreeSet",
+    "VecDeque",
+    "Path",
+    "PathBuf",
+    "OsStr",
+    "OsString",
+    "Duration",
+    "Instant",
+    "Ordering",
+    "Cow",
+    "Default",
+    "Clone",
+    "Debug",
+    "Display",
+    "Iterator",
+    "From",
+    "Into",
+    "Error",
+    "Value",
+    "Formatter",
+];
+
+/// Whether `name` is a standard Rust type or trait name (`Error`, `Result`, `String`).
+pub(crate) fn is_standard_name(name: &str) -> bool {
+    RUST_STANDARD_NAMES.contains(&name)
+}
+
+/// Method names every standard type has. A call to one on a receiver of unknown type
+/// (`cache.get()`, `names.join()`) is never linked by name: far more often it's the standard
+/// method than the project's (Graphify's trait-method blocklist). Calls on `self` and
+/// `Type::name` still resolve.
+const COMMON_METHODS: [&str; 76] = [
+    "new",
+    "default",
+    "clone",
+    "into",
+    "from",
+    "len",
+    "is_empty",
+    "iter",
+    "iter_mut",
+    "into_iter",
+    "get",
+    "get_mut",
+    "set",
+    "push",
+    "pop",
+    "insert",
+    "remove",
+    "contains",
+    "contains_key",
+    "map",
+    "map_err",
+    "and_then",
+    "ok",
+    "err",
+    "unwrap",
+    "unwrap_or",
+    "unwrap_or_default",
+    "unwrap_or_else",
+    "expect",
+    "lock",
+    "read",
+    "write",
+    "join",
+    "split",
+    "trim",
+    "parse",
+    "to_string",
+    "to_owned",
+    "to_vec",
+    "as_str",
+    "as_ref",
+    "as_mut",
+    "borrow",
+    "borrow_mut",
+    "send",
+    "recv",
+    "extend",
+    "clear",
+    "first",
+    "last",
+    "find",
+    "filter",
+    "collect",
+    "entry",
+    "keys",
+    "values",
+    "fmt",
+    "eq",
+    "cmp",
+    "hash",
+    "next",
+    "take",
+    "flush",
+    "close",
+    "drop",
+    "append",
+    "replace",
+    "starts_with",
+    "ends_with",
+    "lines",
+    "sort",
+    "retain",
+    "drain",
+    "any",
+    "all",
+    "count",
+];
 
 type Targets = Vec<(usize, Provenance)>;
 
@@ -25,8 +162,12 @@ pub fn edges(graph: &Graph, files: &[FileInput], depends: &[Edge]) -> Vec<Edge> 
             file,
             record,
             subsystem: graph.records[record].subsystem,
+            innermost: innermost_symbols(graph, record, &file.parse.references),
+            in_play: RefCell::default(),
+            in_tests: is_test_path(&file.path),
         };
         edges.extend(scope.import_edges());
+        edges.extend(scope.trait_method_edges());
         for reference in &file.parse.references {
             edges.extend(scope.reference_edges(reference));
         }
@@ -39,6 +180,7 @@ struct Context<'graph> {
     /// Code symbols (not headings) by exact name.
     symbols: HashMap<&'graph str, Vec<usize>>,
     languages: HashMap<&'graph str, Option<Language>>,
+    files: HashMap<&'graph str, &'graph FileInput>,
     /// Subsystem records by the name Rust code uses (`velocity_git`) and the package name.
     packages: HashMap<String, usize>,
     /// For each subsystem record, the subsystems its code can see: itself and what its
@@ -75,6 +217,10 @@ impl<'graph> Context<'graph> {
             languages: files
                 .iter()
                 .map(|file| (file.path.as_str(), file.language))
+                .collect(),
+            files: files
+                .iter()
+                .map(|file| (file.path.as_str(), file))
                 .collect(),
             packages,
             visible: visibility(&manifests, depends),
@@ -133,9 +279,10 @@ fn fits(reference: ReferenceKind, symbol: SymbolKind, precise: bool, qualified: 
         ReferenceKind::Method if precise => symbol == SymbolKind::Method,
         ReferenceKind::Method => symbol.callable(),
         ReferenceKind::Macro => symbol == SymbolKind::Macro,
+        ReferenceKind::MacroArgument => symbol.callable(),
         ReferenceKind::Type | ReferenceKind::Implementation => symbol.type_like(),
         ReferenceKind::Mention => symbol != SymbolKind::Heading,
-        ReferenceKind::FileMention => false,
+        ReferenceKind::FileMention | ReferenceKind::Command => false,
     }
 }
 
@@ -144,6 +291,46 @@ struct Scope<'scope, 'graph> {
     file: &'scope FileInput,
     record: usize,
     subsystem: usize,
+    /// Each reference's innermost enclosing symbol, by the reference's byte.
+    innermost: HashMap<u32, usize>,
+    /// Types in play per calling symbol, worked out once each.
+    in_play: RefCell<HashMap<usize, Rc<HashSet<String>>>>,
+    /// Whether this file is test, example or stress code, which may call other test code.
+    in_tests: bool,
+}
+
+/// The innermost symbol around each reference, in one pass over the file's symbols and
+/// references in byte order. Definitions come from syntax nodes, so they nest or don't touch.
+fn innermost_symbols(graph: &Graph, file: usize, references: &[Reference]) -> HashMap<u32, usize> {
+    let records = &graph.records;
+    let symbols = &records[file].down;
+    let mut order: Vec<&Reference> = references.iter().collect();
+    order.sort_by_key(|reference| reference.byte);
+    let mut open: Vec<usize> = Vec::new();
+    let mut next = 0;
+    let mut innermost = HashMap::with_capacity(references.len());
+    for reference in order {
+        while let Some(symbol) = symbols.get(next).copied()
+            && records[symbol].start_byte <= reference.byte
+        {
+            while open
+                .last()
+                .is_some_and(|top| records[*top].end_byte <= records[symbol].start_byte)
+            {
+                open.pop();
+            }
+            open.push(symbol);
+            next += 1;
+        }
+        while open
+            .last()
+            .is_some_and(|top| records[*top].end_byte <= reference.byte)
+        {
+            open.pop();
+        }
+        innermost.insert(reference.byte, open.last().copied().unwrap_or(file));
+    }
+    innermost
 }
 
 impl Scope<'_, '_> {
@@ -159,6 +346,47 @@ impl Scope<'_, '_> {
         self.file.language == Some(Language::Rust)
     }
 
+    fn javascript(&self) -> bool {
+        matches!(
+            self.file.language,
+            Some(Language::JavaScript | Language::TypeScript | Language::Tsx | Language::Svelte)
+        )
+    }
+
+    /// `implements` edges from each method of an `impl Trait for Type` to the trait's own
+    /// declaration of it, so impact through a trait reaches the implementations.
+    fn trait_method_edges(&self) -> Vec<Edge> {
+        let records = &self.graph().records;
+        let mut edges = Vec::new();
+        for method in self.own_symbols() {
+            let Some(trait_name) = &records[*method].trait_name else {
+                continue;
+            };
+            let declarations: Vec<usize> = self
+                .context
+                .symbols
+                .get(records[*method].name.as_str())
+                .into_iter()
+                .flatten()
+                .copied()
+                .filter(|candidate| {
+                    records[*candidate].container.as_deref() == Some(trait_name.as_str())
+                        && self.context.sees(self.subsystem, *candidate)
+                })
+                .collect();
+            edges.extend(pick(&declarations, Provenance::Extracted).into_iter().map(
+                |(to, provenance)| Edge {
+                    from: *method,
+                    to,
+                    relation: Relation::Implements,
+                    provenance,
+                    line: records[*method].start_line,
+                },
+            ));
+        }
+        edges
+    }
+
     /// This file's symbols, in the order of its parse's definitions.
     fn own_symbols(&self) -> &[usize] {
         &self.graph().records[self.record].down
@@ -166,7 +394,11 @@ impl Scope<'_, '_> {
 
     fn reference_edges(&self, reference: &Reference) -> Vec<Edge> {
         let relation = match reference.kind {
-            ReferenceKind::Call | ReferenceKind::Method | ReferenceKind::Macro => Relation::Calls,
+            ReferenceKind::Call
+            | ReferenceKind::Method
+            | ReferenceKind::Macro
+            | ReferenceKind::MacroArgument
+            | ReferenceKind::Command => Relation::Calls,
             ReferenceKind::Type => Relation::References,
             ReferenceKind::Implementation => Relation::Implements,
             ReferenceKind::Mention | ReferenceKind::FileMention => Relation::Mentions,
@@ -196,13 +428,8 @@ impl Scope<'_, '_> {
         {
             return *found;
         }
-        self.own_symbols()
-            .iter()
-            .filter(|symbol| {
-                let record = &records[**symbol];
-                record.start_byte <= reference.byte && reference.byte < record.end_byte
-            })
-            .min_by_key(|symbol| records[**symbol].end_byte - records[**symbol].start_byte)
+        self.innermost
+            .get(&reference.byte)
             .copied()
             .unwrap_or(self.record)
     }
@@ -210,6 +437,9 @@ impl Scope<'_, '_> {
     fn resolve(&self, reference: &Reference) -> Targets {
         if reference.kind == ReferenceKind::FileMention {
             return self.file_mention(&reference.name);
+        }
+        if reference.kind == ReferenceKind::Command {
+            return self.command(&reference.name);
         }
         let precise = self.precise();
         let candidates: Vec<usize> = self
@@ -225,9 +455,16 @@ impl Scope<'_, '_> {
                 }
                 _ => false,
             })
+            // Production code never calls into tests, examples or stress scripts.
+            .filter(|candidate| {
+                self.in_tests || !is_test_path(&self.graph().records[*candidate].path)
+            })
             .collect();
         if candidates.is_empty() {
             return Vec::new();
+        }
+        if reference.kind == ReferenceKind::MacroArgument {
+            return self.macro_argument(reference, &candidates);
         }
         if let Some(qualifier) = &reference.qualifier {
             if let Some(targets) = self.qualified(reference, qualifier, &candidates) {
@@ -308,12 +545,45 @@ impl Scope<'_, '_> {
                 None => Vec::new(),
             };
         }
-        let files = self.module_files(&import.source);
+        let files = self.reexported_files(self.module_files(&import.source), &import.name);
         candidates
             .iter()
             .copied()
             .filter(|candidate| files.contains(&self.graph().records[*candidate].path))
             .collect()
+    }
+
+    /// `files` and every file they pass `name` on from (`export * from`, `export { name }
+    /// from`), up to three barrels deep.
+    fn reexported_files(&self, files: Vec<String>, name: &str) -> Vec<String> {
+        let mut all = files.clone();
+        let mut frontier = files;
+        for _ in 0..3 {
+            let mut next = Vec::new();
+            for path in &frontier {
+                let Some(file) = self.context.files.get(path.as_str()) else {
+                    continue;
+                };
+                let folder = path.rsplit_once('/').map_or("", |(folder, _)| folder);
+                for import in
+                    file.parse.imports.iter().filter(|import| {
+                        import.reexport && (import.name == "*" || import.name == name)
+                    })
+                {
+                    for target in module_files_from(self.context, folder, &import.source) {
+                        if !all.contains(&target) {
+                            all.push(target.clone());
+                            next.push(target);
+                        }
+                    }
+                }
+            }
+            if next.is_empty() {
+                break;
+            }
+            frontier = next;
+        }
+        all
     }
 
     /// A Rust path qualifier (`crate::claims`, `velocity_git::lifecycle`, `claims`).
@@ -412,7 +682,48 @@ impl Scope<'_, '_> {
                 return pick(&imported, Provenance::Extracted);
             }
         }
+        if self.javascript()
+            || (self.rust() && RUST_STANDARD_NAMES.contains(&reference.name.as_str()))
+        {
+            // JavaScript and TypeScript bring every outside name in by import, so a name that
+            // is neither defined here nor imported is a global (Graphify #1659). A standard
+            // Rust name needs the same evidence.
+            return Vec::new();
+        }
         pick(&visible, Provenance::Inferred)
+    }
+
+    /// A call inside a macro's arguments: resolved like a call, but never `extracted`, since
+    /// the parser saw only tokens.
+    fn macro_argument(&self, reference: &Reference, candidates: &[usize]) -> Targets {
+        if COMMON_METHODS.contains(&reference.name.as_str())
+            || RUST_STANDARD_NAMES.contains(&reference.name.as_str())
+        {
+            return Vec::new();
+        }
+        let records = &self.graph().records;
+        let (functions, methods): (Vec<usize>, Vec<usize>) =
+            candidates.iter().copied().partition(|candidate| {
+                records[*candidate].kind != RecordKind::Symbol(SymbolKind::Method)
+            });
+        if functions.is_empty() {
+            let visible: Vec<usize> = methods
+                .into_iter()
+                .filter(|candidate| self.context.sees(self.subsystem, *candidate))
+                .collect();
+            return self.method_call(reference, &visible);
+        }
+        let as_call = Reference {
+            kind: ReferenceKind::Call,
+            ..reference.clone()
+        };
+        self.unqualified(&as_call, &functions)
+            .into_iter()
+            .map(|(target, provenance)| match provenance {
+                Provenance::Extracted => (target, Provenance::Inferred),
+                other => (target, other),
+            })
+            .collect()
     }
 
     /// A call on a receiver whose type the parser can't know (`value.join()`). A candidate
@@ -420,6 +731,9 @@ impl Scope<'_, '_> {
     /// or its own impl), so `names.join(",")` never lands on a project's `Channel::join`.
     /// Candidates whose type isn't in play stay `ambiguous`, which programs don't follow.
     fn method_call(&self, reference: &Reference, visible: &[usize]) -> Targets {
+        if COMMON_METHODS.contains(&reference.name.as_str()) {
+            return Vec::new();
+        }
         let records = &self.graph().records;
         let in_play = self.types_in_play(self.source(reference));
         let confirmed: Vec<usize> = visible
@@ -448,7 +762,16 @@ impl Scope<'_, '_> {
     /// Type names the code at `source` uses: the words of its signature and the types
     /// referenced inside it. Its own type doesn't count: a call on `self` resolves through
     /// `self`, so another receiver in a method (`cache.get()`) is some other type.
-    fn types_in_play(&self, source: usize) -> HashSet<String> {
+    fn types_in_play(&self, source: usize) -> Rc<HashSet<String>> {
+        if let Some(known) = self.in_play.borrow().get(&source) {
+            return known.clone();
+        }
+        let names = Rc::new(self.collect_types_in_play(source));
+        self.in_play.borrow_mut().insert(source, names.clone());
+        names
+    }
+
+    fn collect_types_in_play(&self, source: usize) -> HashSet<String> {
         let record = &self.graph().records[source];
         let mut names: HashSet<String> = record
             .signature
@@ -469,6 +792,23 @@ impl Scope<'_, '_> {
                 .map(|used| used.name.clone()),
         );
         names
+    }
+
+    /// The Rust `#[tauri::command]` function a frontend call names: tauri-specta turns
+    /// `check_for_update` into `commands.checkForUpdate`, and `invoke` takes the name as is.
+    fn command(&self, name: &str) -> Targets {
+        let snake = snake_case(name);
+        let records = &self.graph().records;
+        let matching: Vec<usize> = self
+            .context
+            .symbols
+            .get(snake.as_str())
+            .into_iter()
+            .flatten()
+            .copied()
+            .filter(|candidate| records[*candidate].command)
+            .collect();
+        pick(&matching, Provenance::Extracted)
     }
 
     fn file_mention(&self, path: &str) -> Targets {
@@ -502,7 +842,7 @@ impl Scope<'_, '_> {
                     .filter_map(|path| graph.by_path.get(&path).copied()),
             );
         }
-        targets
+        let mut edges: Vec<Edge> = targets
             .into_iter()
             .map(|to| Edge {
                 from: self.record,
@@ -511,7 +851,46 @@ impl Scope<'_, '_> {
                 provenance: Provenance::Extracted,
                 line: 0,
             })
-            .collect()
+            .collect();
+        edges.extend(self.imported_symbol_edges());
+        edges
+    }
+
+    /// `imports` edges from this file to each symbol it imports by name (`use a::b::Name;`,
+    /// `import { name } from './x'`), so impact reaches code that uses a symbol through an
+    /// import without calling it (a constant, a type, an object of command wrappers).
+    fn imported_symbol_edges(&self) -> Vec<Edge> {
+        let mut edges = Vec::new();
+        for import in &self.file.parse.imports {
+            if import.name == "*" || import.reexport && !self.javascript() {
+                continue;
+            }
+            // The name as defined: a Rust path's last segment, a JavaScript import's name.
+            let defined = if self.rust() {
+                import.source.rsplit("::").next().unwrap_or_default()
+            } else {
+                import.name.as_str()
+            };
+            let candidates: Vec<usize> = self
+                .context
+                .symbols
+                .get(defined)
+                .into_iter()
+                .flatten()
+                .copied()
+                .collect();
+            let targets = self.import_scope(import, &candidates, true);
+            edges.extend(pick(&targets, Provenance::Extracted).into_iter().map(
+                |(to, provenance)| Edge {
+                    from: self.record,
+                    to,
+                    relation: Relation::Imports,
+                    provenance,
+                    line: import.line,
+                },
+            ));
+        }
+        edges
     }
 
     fn rust_import_files(&self, import: &Import) -> Vec<String> {
@@ -604,6 +983,29 @@ impl Scope<'_, '_> {
     }
 }
 
+/// The project files a relative JavaScript specifier names from `folder`.
+fn module_files_from(context: &Context, folder: &str, specifier: &str) -> Vec<String> {
+    if !specifier.starts_with('.') {
+        return Vec::new();
+    }
+    let base = join(folder, specifier);
+    const ENDINGS: [&str; 8] = [
+        "",
+        ".ts",
+        ".tsx",
+        ".js",
+        ".mjs",
+        ".svelte",
+        "/index.ts",
+        "/index.js",
+    ];
+    ENDINGS
+        .iter()
+        .map(|ending| format!("{base}{ending}"))
+        .filter(|path| context.files.contains_key(path.as_str()))
+        .collect()
+}
+
 /// `src/claims.rs`, `src/claims/mod.rs` and `src/claims/store.rs` are all in module `claims`.
 fn path_has_module(path: &str, module: &str) -> bool {
     path.split('/').any(|component| {
@@ -612,6 +1014,22 @@ fn path_has_module(path: &str, module: &str) -> bool {
                 .rsplit_once('.')
                 .is_some_and(|(stem, _)| stem == module)
     })
+}
+
+/// `checkForUpdate` is `check_for_update`; a name already in snake case stays as it is.
+fn snake_case(name: &str) -> String {
+    let mut out = String::with_capacity(name.len() + 4);
+    for (index, character) in name.chars().enumerate() {
+        if character.is_uppercase() {
+            if index > 0 {
+                out.push('_');
+            }
+            out.extend(character.to_lowercase());
+        } else {
+            out.push(character);
+        }
+    }
+    out
 }
 
 /// `folder` joined with a relative path, with `.` and `..` resolved.
