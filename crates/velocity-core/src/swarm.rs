@@ -317,33 +317,59 @@ fn merged_count(members: &[MemberProgress]) -> usize {
         .count()
 }
 
-/// The sidebar row's meta line: counts by stage, ending with merged/total.
-pub fn sidebar_summary(members: &[MemberProgress]) -> String {
-    if members.is_empty() {
-        return "no agents".into();
+/// A member still at work: choosing, working, PR open or addressing review. Merged,
+/// closed and failed members are finished, and deleted ones are not members at all.
+pub fn is_live(stage: SwarmStage) -> bool {
+    matches!(
+        stage,
+        SwarmStage::Choosing | SwarmStage::Working | SwarmStage::PullRequest | SwarmStage::Fixing
+    )
+}
+
+/// The sidebar row's ×N and meta line from the stages of the members nested under it
+/// (finished ones have moved to Settled). Only live members count towards ×N; a swarm with
+/// none left reads "finished" (#283).
+pub fn row_summary(stages: &[SwarmStage]) -> (usize, String) {
+    let live = stages.iter().filter(|stage| is_live(**stage)).count();
+    let mut parts: Vec<String> = [
+        SwarmStage::Choosing,
+        SwarmStage::Working,
+        SwarmStage::PullRequest,
+        SwarmStage::Fixing,
+        SwarmStage::Failed,
+    ]
+    .into_iter()
+    .filter_map(|stage| {
+        let members = stages.iter().filter(|item| **item == stage).count();
+        (members > 0).then(|| format!("{members} {}", stage.label()))
+    })
+    .collect();
+    if live == 0 {
+        parts.insert(0, "finished".to_owned());
     }
-    let merged = merged_count(members);
-    let mut parts: Vec<String> = stage_counts(members)
-        .into_iter()
-        .filter(|item| item.stage != SwarmStage::Merged)
-        .map(|item| item.label)
-        .collect();
-    parts.push(format!("{merged}/{} merged", members.len()));
-    parts.join(" · ")
+    (live, parts.join(" · "))
 }
 
 pub fn project_swarm_view(entry: &SwarmEntry) -> SwarmViewSnapshot {
     let total = entry.members.len();
     let merged = merged_count(&entry.members);
+    let live = segments(&entry.members).into_iter().any(is_live);
     SwarmViewSnapshot {
         identifier: entry.identifier,
         title: entry.title.clone(),
-        agents_label: format!(
-            "{total} agent{} · {} worktree{} live",
-            if total == 1 { "" } else { "s" },
-            total - merged,
-            if total - merged == 1 { "" } else { "s" }
-        ),
+        agents_label: if live {
+            format!(
+                "{total} agent{} · {} worktree{} live",
+                if total == 1 { "" } else { "s" },
+                total - merged,
+                if total - merged == 1 { "" } else { "s" }
+            )
+        } else {
+            format!(
+                "{total} agent{} · finished",
+                if total == 1 { "" } else { "s" }
+            )
+        },
         started_label: format!("started {}", entry.started_label),
         merged_label: (merged > 0).then(|| format!("{merged}/{total} merged")),
         segments: segments(&entry.members),

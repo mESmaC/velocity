@@ -12,5 +12,7 @@ export const threadMenuCommands = {
   get: commands.getThreadMenu,
   run: commands.runThreadMenuAction,
   delete: commands.deleteThread,
+  // A swarm or goal swarm row's Delete takes the swarm and its members (F10, F12).
+  deleteSwarm: commands.deleteSwarm,
   undoDelete: commands.undoDeleteThread,
 };

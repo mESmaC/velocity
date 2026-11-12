@@ -195,7 +195,11 @@
     threadMenu = null;
     if (!menu) return;
     const { project_identifier, thread_identifier } = menu;
-    if (action === 'Delete')
+    if (action === 'Delete' && menu.swarm)
+      enqueue(() =>
+        threadMenuCommands.deleteSwarm(project_identifier, thread_identifier),
+      );
+    else if (action === 'Delete')
       enqueue(() =>
         threadMenuCommands.delete(project_identifier, thread_identifier),
       );

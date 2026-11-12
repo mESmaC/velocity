@@ -121,6 +121,58 @@ pub fn thread_menu(facts: &ThreadMenuFacts) -> Option<Vec<ThreadMenuEntry>> {
     Some(entries)
 }
 
+/// What the app knows about a swarm's or goal swarm's members when its row's menu opens.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct SwarmMenuFacts {
+    /// Members whose agent is set up or running in this app session.
+    pub agents_running: usize,
+    /// The members' PRs that are still open, which deleting closes.
+    pub open_pull_requests: Vec<u32>,
+    /// Members that still have their own worktree on disk.
+    pub worktrees: usize,
+    /// Bytes on disk under those worktrees, as far as they could be measured.
+    pub worktree_bytes: u64,
+}
+
+impl SwarmMenuFacts {
+    pub fn new() -> Self {
+        Self::default()
+    }
+}
+
+/// A swarm row's menu: one red Delete that takes the swarm and all its members, as the
+/// reference's `ctxFor` builds it for a swarm (F10, F12).
+pub fn swarm_menu(facts: &SwarmMenuFacts) -> Vec<ThreadMenuEntry> {
+    let mut parts = Vec::new();
+    match facts.agents_running {
+        0 => {}
+        1 => parts.push("stops the agent".to_owned()),
+        count => parts.push(format!("stops {count} agents")),
+    }
+    match facts.open_pull_requests.as_slice() {
+        [] => {}
+        [number] => parts.push(format!("closes PR #{number}")),
+        numbers => parts.push(format!("closes {} open PRs", numbers.len())),
+    }
+    if facts.worktrees > 0 {
+        parts.push(format!("{} freed", size_label(facts.worktree_bytes)));
+    }
+    let worktrees = facts.worktrees;
+    vec![ThreadMenuEntry::Item {
+        action: ThreadMenuAction::Delete,
+        label: format!(
+            "Delete swarm and its {worktrees} worktree{}",
+            if worktrees == 1 { "" } else { "s" }
+        ),
+        detail: Some(if parts.is_empty() {
+            "worktree already deleted".into()
+        } else {
+            parts.join(" · ")
+        }),
+        danger: true,
+    }]
+}
+
 fn item(action: ThreadMenuAction, label: &str, detail: Option<String>) -> ThreadMenuEntry {
     ThreadMenuEntry::Item {
         action,

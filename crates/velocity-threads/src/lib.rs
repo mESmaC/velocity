@@ -31,7 +31,7 @@ pub mod watch;
 pub mod watch_runner;
 pub mod work_pool;
 
-pub use deletion::{DeletionError, DeletionPlan, PendingDeletions, plan_deletion};
+pub use deletion::{Deletion, DeletionError, DeletionPlan, PendingDeletions, plan_deletion};
 pub use dispatch::{DispatchError, IssueDispatchPlan, plan_issue_dispatch};
 pub use follow_through::DeliveryStatus;
 pub use launch::{

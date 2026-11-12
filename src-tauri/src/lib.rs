@@ -19,6 +19,7 @@ mod github_requests;
 mod goal_swarm;
 mod interview;
 mod issue_panel;
+mod kept_worktrees;
 pub mod layout;
 pub mod main_watch;
 mod new_project;
@@ -36,6 +37,7 @@ mod shared_mcp;
 mod skills;
 mod state;
 mod swarm;
+mod swarm_deletion;
 mod swarm_rebase;
 pub mod sweeps;
 mod tasks;
@@ -120,6 +122,7 @@ fn bindings() -> Builder<tauri::Wry> {
         swarm::get_swarm_dialog,
         swarm::launch_swarm,
         swarm::add_to_swarm,
+        swarm_deletion::delete_swarm,
         tasks::add_task,
         tasks::list_tasks,
         thread_menu::get_thread_menu,
@@ -250,6 +253,7 @@ pub fn run() -> anyhow::Result<()> {
             projects::initialize(application.handle())?;
             providers::initialize(application.handle());
             follow_through::initialize(application.handle(), threads::follow_through_hooks());
+            kept_worktrees::initialize(application.handle());
             github_requests::initialize(application.handle());
             issue_panel::initialize(application.handle());
             worktree_settings::initialize(application.handle())?;

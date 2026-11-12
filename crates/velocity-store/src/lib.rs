@@ -11,6 +11,7 @@ pub mod agent_tasks;
 pub mod airc_members;
 pub mod build_gate;
 pub mod claim_piece;
+pub mod deleted_worktrees;
 pub mod follow_through;
 
 use serde::{Deserialize, Serialize};
@@ -897,6 +898,10 @@ pub struct ProjectItem {
     #[serde(default)]
     #[specta(skip)]
     pub airc_seen: u64,
+    /// Deleted threads' worktrees that are still on disk, retried in the background (F12).
+    #[serde(default)]
+    #[specta(skip)]
+    pub deleted_worktrees: Vec<deleted_worktrees::DeletedWorktree>,
 }
 
 /// The New project dialog's interview choices, kept until the spec interview
@@ -933,6 +938,7 @@ impl ProjectItem {
             swarms: Vec::new(),
             goal_swarms: Vec::new(),
             airc_seen: 0,
+            deleted_worktrees: Vec::new(),
         }
     }
 

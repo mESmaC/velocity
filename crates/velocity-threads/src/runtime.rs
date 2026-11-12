@@ -498,6 +498,11 @@ impl ThreadRuntimes {
         self.retired.contains(&key)
     }
 
+    /// A stop was asked for and the agent has not exited yet.
+    pub fn is_stopping(&self, key: ThreadKey) -> bool {
+        self.stopping.contains_key(&key)
+    }
+
     pub fn shutdown_failed(&self, key: ThreadKey) -> bool {
         self.shutdown_failures.contains(&key)
     }
