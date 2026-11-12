@@ -1,6 +1,7 @@
 export * from './ipc/agent_activity';
 import { listen, type EventCallback } from '@tauri-apps/api/event';
 export * from './ipc/agents';
+export * from './ipc/diagnostics';
 export * from './ipc/goal-swarm';
 export * from './ipc/issues';
 export * from './ipc/open-project';

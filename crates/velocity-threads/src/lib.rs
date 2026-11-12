@@ -24,6 +24,7 @@ pub mod swarm;
 pub mod sweep;
 pub mod sweep_runner;
 pub mod titles;
+pub mod transcript_saves;
 pub mod transcript_view;
 pub mod watch;
 pub mod watch_runner;

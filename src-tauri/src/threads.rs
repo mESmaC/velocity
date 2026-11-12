@@ -886,7 +886,7 @@ fn apply_batch(
             .last()
     };
     let saved = match progress {
-        Some(progress) => save_activity(application, key, progress.activity, Some(progress))?,
+        Some(progress) => save_progress(application, key, progress)?,
         None => false,
     };
     refresh(application, key, false)?;
@@ -936,6 +936,38 @@ pub(crate) fn save_activity(
     )?
     .view(key)
     .map(|view| view.blocks);
+    save_thread(application, key, activity, progress, transcript)
+}
+
+/// Saves a streamed batch's progress. The transcript goes along only when its save is due,
+/// so a swarm's chunks don't rewrite `state.json` many times a second (#273).
+fn save_progress(
+    application: &AppHandle,
+    key: ThreadKey,
+    progress: ThreadProgress,
+) -> Result<bool, String> {
+    let turn_over = progress.activity == AgentActivity::Idle;
+    let transcript = lock(
+        application.state::<ManagedThreads>().inner(),
+        "thread sessions",
+    )?
+    .transcript_to_save(key, std::time::Instant::now(), turn_over);
+    save_thread(
+        application,
+        key,
+        progress.activity,
+        Some(progress),
+        transcript,
+    )
+}
+
+fn save_thread(
+    application: &AppHandle,
+    key: ThreadKey,
+    activity: AgentActivity,
+    progress: Option<ThreadProgress>,
+    transcript: Option<Vec<TranscriptBlock>>,
+) -> Result<bool, String> {
     lock(
         application.state::<ManagedStateStore>().inner(),
         "persisted state",
@@ -1087,6 +1119,6 @@ fn emit_step(application: &AppHandle, key: ThreadKey) {
 /// Background work has no caller to return an error to; the log is where it goes.
 pub(crate) fn report<Value>(result: Result<Value, String>) {
     if let Err(error) = result {
-        eprintln!("Velocity thread runtime: {error}");
+        crate::diagnostics::record("thread runtime", &error);
     }
 }
