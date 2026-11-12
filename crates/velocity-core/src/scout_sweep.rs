@@ -38,8 +38,12 @@ impl SweepRecord {
 pub enum SweepReason {
     First,
     Interval,
-    NewCommits { base_commit: String },
+    NewCommits {
+        base_commit: String,
+    },
     Instruction,
+    /// Velocity closed during the scout's last sweep, which stopped it: sweep again.
+    Interrupted,
 }
 
 /// What decides whether a scout sweeps now.
@@ -52,6 +56,8 @@ pub struct SweepSchedule<'a> {
     pub now: u64,
     /// The base branch's tip now, when it could be read.
     pub base_commit: Option<&'a str>,
+    /// The saved card says a sweep runs, but none does: the app closed during it (§3.2).
+    pub interrupted: bool,
 }
 
 /// The sweep a scout starts now, if any. A paused role or a running sweep starts nothing
@@ -60,6 +66,9 @@ pub struct SweepSchedule<'a> {
 pub fn sweep_due(schedule: &SweepSchedule) -> Option<SweepReason> {
     if schedule.paused || schedule.running {
         return None;
+    }
+    if schedule.interrupted {
+        return Some(SweepReason::Interrupted);
     }
     let Some(last) = schedule.last else {
         return Some(SweepReason::First);
@@ -143,6 +152,9 @@ fn reason_sentence(reason: &SweepReason, base_branch: &str) -> String {
         SweepReason::Instruction => {
             format!("The user pointed the scouts somewhere; sweep `{base_branch}` with that focus.")
         }
+        SweepReason::Interrupted => format!(
+            "Velocity closed during your last sweep, which stopped it; sweep `{base_branch}` again. Issues you filed then are in `scout_issues`."
+        ),
     }
 }
 
@@ -219,6 +231,9 @@ pub fn sweep_started_message(reason: &SweepReason, rules: &ScoutRuleSettings) ->
             short_commit(base_commit)
         ),
         SweepReason::Instruction => "Sweep started · following your instruction".into(),
+        SweepReason::Interrupted => {
+            "Sweep started · again, after a restart stopped the last one".into()
+        }
     }
 }
 
