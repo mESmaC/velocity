@@ -87,10 +87,15 @@ pub fn dispatch_layout(
         Some(intent) => match crate::threads::handle_intent(window.app_handle(), &intent) {
             Ok(updated) => Ok(updated.unwrap_or(snapshot)),
             Err(error) => {
-                if let LayoutIntent::SteerThread { prompt, .. } = &intent {
+                // A steer error means the agent never got the message: a send that reached
+                // it reports later failures without an error (#274).
+                if let LayoutIntent::SteerThread {
+                    identifier, prompt, ..
+                } = &intent
+                {
                     let managed = window.state::<MainLayout>();
                     let mut state = managed.lock().map_err(|error| error.to_string())?;
-                    state.apply(LayoutAction::ComposerText(prompt.clone()));
+                    state.return_unsent_message(*identifier, prompt);
                     publish(&window, &state.snapshot(), None)?;
                 }
                 Err(error)

@@ -398,19 +398,29 @@ pub(crate) fn steer(
         runtimes.is_parked(key)
     };
     // A parked thread holds the message for its resume and stays parked (§2.2).
-    save_activity(
-        application,
-        key,
-        if parked {
-            AgentActivity::Parked
-        } else {
-            AgentActivity::Thinking
-        },
-        None,
-    )?;
-    let snapshot = refresh(application, key, false)?;
+    let activity = if parked {
+        AgentActivity::Parked
+    } else {
+        AgentActivity::Thinking
+    };
+    report(save_activity(application, key, activity, None));
+    let snapshot = delivered_snapshot(application, key);
     emit_status(application, key);
-    Ok(snapshot)
+    snapshot
+}
+
+/// The window once the agent has the message. From here a failed save or refresh is
+/// reported, not returned: an error would tell the window the message was never sent, and
+/// it would go back to the composer as a draft (#274).
+fn delivered_snapshot(application: &AppHandle, key: ThreadKey) -> Result<LayoutSnapshot, String> {
+    refresh(application, key, false).or_else(|error| {
+        report::<()>(Err(error));
+        let layout = lock(
+            application.state::<MainLayout>().inner(),
+            "main-window state",
+        )?;
+        Ok(layout.snapshot())
+    })
 }
 
 fn resume_message(
@@ -443,7 +453,7 @@ fn resume_message(
         return steer(application, key, prompt);
     }
     crate::parking::resume(application, key, prompt)?;
-    refresh(application, key, false)
+    delivered_snapshot(application, key)
 }
 
 async fn run_thread(

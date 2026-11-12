@@ -59,7 +59,7 @@ These hold for every feature. A feature that breaks one of them is wrong, whatev
 
 The sidebar shows groups in this order: draft, On duty, Swarms, Spec interview, Running, PR open · watching, Failed, Settled. Settled is collapsed by default, shows its count and a chevron, and is the only collapsible group. Its expanded state is saved per project. Finished swarm members move there immediately; idle working threads and failures stay in their active groups. Search reveals matching settled threads even while collapsed. Empty groups are hidden, except "On duty", which shows a "start one" button when empty.
 
-Command errors clear after four seconds or the next successful dispatch. Backend launch notices remain visible while set.
+Command errors clear after four seconds or the next successful dispatch. Key reports (`Keyboard`, `NumberHints`) don't count as a dispatch here: Enter's own key report would otherwise hide a failed send's error at once. Backend launch notices remain visible while set.
 
 ### 2.2 Agent activity
 
@@ -392,6 +392,7 @@ There are two views of the same work, switched from the title bar or with `B`:
   - `Enter` sends, `Shift+Enter` adds a new line, `Esc` leaves the box.
   - Model pill (provider, model, effort, and "· Fast" when Fast is on), attach, mic. The pill opens a menu grouped by provider: each signed-in provider with its models and limit used, each signed-out provider as a "Sign in with …" row, and effort and speed at the bottom. On a running thread, a new model or speed applies from the next message.
   - A message sent while the agent is busy shows "queued · sends when the current step finishes" and a `remove` link. The message stays with Velocity, not the agent, until the turn ends, so `remove` withdraws it (the `RemoveQueuedMessage` intent). The messages queued during a turn go to the agent together as its next prompt. Lines Velocity delivers to the agent (F14, PR follow-through) never join this queue; the transcript shows them as "from Velocity" notices once read.
+  - A message the agent never received (no session to resume, a missing worktree) leaves the transcript and goes back to the composer as you typed it, with the error, but only while its thread is still open and the composer is still empty. A message the agent received never comes back to the composer, even if saving or redrawing the thread fails afterwards.
 - **Slash menu:** `/task`, `/fanout 3`, `/review`, `/compact`, `/model`, followed by the active session's advertised commands and descriptions (`available_commands_update`, §3.2), filtered by the typed prefix. Selecting an agent command inserts `/<name>` for the next prompt. Advertisements are scoped to the project and thread and cleared when its session is replaced.
 - **Skill menu:** typing `$` lists the project's enabled skills with a one-line description each, filtered as you type. Picking one inserts `$<skill>`, and the agent is told to load that skill for this message. The transcript shows each skill an agent loads as a tool step ("Skill · ui-ux-pro-max").
 - **Fan out** (`F`): the same prompt goes to 3 models in 3 worktrees.
