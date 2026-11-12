@@ -178,7 +178,9 @@
                   {#if agent.busy}<span class="working-dots" aria-hidden="true"
                       ><span></span><span></span><span></span></span
                     >{/if}
-                  <span>{agent.doing}</span>
+                  <span class="doing-text" title={agent.doing}
+                    >{agent.doing}</span
+                  >
                 {/if}
               </div>
             </div>
