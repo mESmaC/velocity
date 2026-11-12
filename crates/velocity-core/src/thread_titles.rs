@@ -169,8 +169,18 @@ fn cut_at_word_boundary(words: &[&str], limit: usize) -> String {
     }
 }
 
-/// The `vel/`-less branch slug for a model title, as the reference names it: lowercase ASCII
-/// letters and digits, every other run as one `-`, no leading or trailing `-`.
+/// The longest `vel/`-less slug a title names (#275). A slug becomes the worktree folder, the
+/// branch's ref file and the worktree's git admin folder, and Task List items and SPEC
+/// sections have no length limit, so an uncut title pushed those paths past Windows'
+/// 260-character limit. A six-word model title fits whole.
+pub const SLUG_LENGTH: usize = 40;
+
+/// Hex digits of the hash a cut slug ends with.
+const SLUG_HASH_DIGITS: usize = 6;
+
+/// The `vel/`-less branch slug for a title (a model title, a Task List item or a SPEC
+/// section), as the reference names it: lowercase ASCII letters and digits, every other run
+/// as one `-`, no leading or trailing `-`, cut to [`SLUG_LENGTH`] by [`capped_slug`].
 pub fn title_slug(title: &str) -> String {
     let mut slug = String::new();
     for character in title.chars().flat_map(char::to_lowercase) {
@@ -184,6 +194,33 @@ pub fn title_slug(title: &str) -> String {
     if trimmed.is_empty() {
         FALLBACK_SLUG.to_owned()
     } else {
-        trimmed.to_owned()
+        capped_slug(trimmed)
     }
+}
+
+/// `slug` when it fits [`SLUG_LENGTH`]. A longer one keeps its first words, cut at a `-`
+/// when one is near the cut, then `-` and six hex digits of a hash of the whole slug. Two
+/// titles that share their first words then still get different names, and the same title
+/// always gets the same name, so a relaunch finds the branch it made before.
+pub fn capped_slug(slug: &str) -> String {
+    if slug.chars().count() <= SLUG_LENGTH {
+        return slug.to_owned();
+    }
+    let keep = SLUG_LENGTH - SLUG_HASH_DIGITS - 1;
+    let head: String = slug.chars().take(keep).collect();
+    // `rfind` returns the byte index of an ASCII `-`, always a character boundary.
+    let words = match head.rfind('-') {
+        Some(cut) if cut >= keep / 2 => &head[..cut],
+        _ => head.as_str(),
+    };
+    let hash = stable_hash(slug) & 0x00FF_FFFF;
+    format!("{}-{hash:06x}", words.trim_end_matches('-'))
+}
+
+/// FNV-1a: the same value on every machine and Rust version, unlike `DefaultHasher`, so a
+/// cut slug never changes between runs.
+fn stable_hash(text: &str) -> u32 {
+    text.bytes().fold(0x811C_9DC5, |hash: u32, byte| {
+        (hash ^ u32::from(byte)).wrapping_mul(0x0100_0193)
+    })
 }

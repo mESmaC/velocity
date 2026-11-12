@@ -454,6 +454,7 @@ A worktree's path is fixed when it is created. Changing the location setting aff
 - The pool removes only its own ready worktrees: a registered, detached checkout under a `.ready-<n>` name. A thread's worktree is never removed through it.
 - Deleting a worktree removes only that worktree's own entry. A repo-wide `git worktree prune` runs only from the **Prune orphans** button.
 - Worktree folder names are unique per project, never generic names like `workspace`.
+- A slug made from a title (a model title, a Task List item or a SPEC section) is at most 40 characters. A longer one keeps its first words and ends in `-` and six hex digits of a hash of the whole slug, so two long titles still get different names and the worktree, branch and git admin paths stay well under Windows' 260-character limit (#275). Titles themselves are never cut.
 
 **Accept when:**
 - [ ] With a ready worktree in the pool, an agent starts working within 5 seconds of being launched.

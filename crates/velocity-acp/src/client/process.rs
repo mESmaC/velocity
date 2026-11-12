@@ -69,7 +69,9 @@ pub fn spawn_agent(launch: &AgentLaunch, worktree: &Path) -> Result<AgentProcess
 
 /// Ownership groups terminate descendants even after their shell shim exits.
 /// No resource or security limits are applied to the agent or its tools. The `CreationFlags`
-/// wrap below replaces the flags `hidden_command` set, so it repeats `CREATE_NO_WINDOW`.
+/// wrap below replaces the flags `hidden_command` set, so it repeats `CREATE_NO_WINDOW`; clippy's
+/// `disallowed_types` keeps every other process from using it (#276).
+#[allow(clippy::disallowed_types)]
 pub fn spawn_owned_command(mut command: Command) -> std::io::Result<AgentProcess> {
     extend_search_path(&mut command);
     let mut command = CommandWrap::from(command);
