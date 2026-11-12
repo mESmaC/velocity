@@ -60,7 +60,7 @@ fn main() -> Result<(), Failure> {
         .view(KEY)
         .map(|view| view.blocks)
         .unwrap_or_default();
-    let earlier = Some(session_id).filter(|_| load);
+    let earlier = load.then_some(session_id);
     let resume = SessionResume::new(earlier, transcript_context(&blocks))
         .with_history_replay(blocks.is_empty());
     let inputs = runtimes.resume_parked(KEY, &path, CONTINUE_PROMPT, false)?;
