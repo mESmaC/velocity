@@ -102,6 +102,7 @@ pub struct ThreadRuntimes {
     /// Threads whose session was ended for parking and not yet resumed (§2.2).
     parked: BTreeSet<ThreadKey>,
     actions: BTreeMap<ThreadKey, Arc<tokio::sync::Mutex<()>>>,
+    transcript_saves: crate::transcript_saves::TranscriptSaves,
 }
 
 impl ThreadRuntimes {
@@ -618,6 +619,19 @@ impl ThreadRuntimes {
             | AgentEvent::FileWritten { .. } => return None,
         }
         Some(progress(thread))
+    }
+
+    /// A streaming thread's live transcript when saving it is due (`transcript_saves`).
+    pub fn transcript_to_save(
+        &mut self,
+        key: ThreadKey,
+        now: std::time::Instant,
+        turn_over: bool,
+    ) -> Option<Vec<velocity_core::thread_view_model::TranscriptBlock>> {
+        if !self.threads.contains_key(&key) || !self.transcript_saves.due(key, now, turn_over) {
+            return None;
+        }
+        self.view(key).map(|view| view.blocks)
     }
 
     pub fn view(&self, key: ThreadKey) -> Option<LiveThreadView> {

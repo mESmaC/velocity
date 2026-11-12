@@ -11,6 +11,7 @@ mod airc_delivery;
 mod airc_events;
 mod airc_modal;
 mod build_gate;
+mod diagnostics;
 pub mod duty;
 mod follow_through;
 mod github;
@@ -64,6 +65,7 @@ fn bindings() -> Builder<tauri::Wry> {
         window::minimize_window,
         window::toggle_maximize_window,
         window::close_window,
+        diagnostics::log_window_error,
         state::get_settings,
         state::set_settings,
         layout::get_layout_state,
@@ -242,6 +244,7 @@ pub fn run() -> anyhow::Result<()> {
         .invoke_handler(bindings.invoke_handler())
         .setup(move |application| {
             bindings.mount_events(application);
+            diagnostics::initialize(application.handle());
             let interrupted = state::initialize(application.handle())?;
             airc_access::initialize(application.handle())?;
             projects::initialize(application.handle())?;

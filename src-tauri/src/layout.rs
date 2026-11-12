@@ -1,6 +1,6 @@
 use crate::state::ManagedStateStore;
 use std::sync::Mutex;
-use tauri::{Emitter, Manager, State, Window, Wry};
+use tauri::{Emitter, Manager, Window, Wry};
 use tauri_specta::Event;
 use velocity_core::layout_state::LayoutState;
 use velocity_core::layout_view::{LayoutAction, LayoutIntent, LayoutSnapshot};
@@ -22,12 +22,36 @@ pub struct LayoutIntentRequested {
     pub intent: LayoutIntent,
 }
 
+// Both commands wait for the store lock, which a background save can hold for a while.
+// A synchronous command runs on the window's UI thread, and waiting there froze the
+// whole window while a swarm streamed (#273), so they wait on the blocking pool instead.
+
 #[tauri::command]
 #[specta::specta]
-pub fn get_layout_state(
-    store: State<'_, ManagedStateStore>,
-    state: State<'_, MainLayout>,
+pub async fn get_layout_state(window: Window) -> Result<LayoutSnapshot, String> {
+    off_ui_thread(move || read_layout(&window)).await
+}
+
+#[tauri::command]
+#[specta::specta]
+pub async fn dispatch_layout(
+    window: Window,
+    action: LayoutAction,
 ) -> Result<LayoutSnapshot, String> {
+    off_ui_thread(move || dispatch(&window, action)).await
+}
+
+async fn off_ui_thread<Value: Send + 'static>(
+    work: impl FnOnce() -> Result<Value, String> + Send + 'static,
+) -> Result<Value, String> {
+    tauri::async_runtime::spawn_blocking(work)
+        .await
+        .map_err(|error| format!("Main-window state task failed: {error}"))?
+}
+
+fn read_layout(window: &Window) -> Result<LayoutSnapshot, String> {
+    let store = window.state::<ManagedStateStore>();
+    let state = window.state::<MainLayout>();
     let store = store.lock().map_err(|error| error.to_string())?;
     let mut state = state
         .lock()
@@ -35,14 +59,9 @@ pub fn get_layout_state(
     Ok(build_gate::layout_snapshot(store.state(), &mut state))
 }
 
-#[tauri::command]
-#[specta::specta]
-pub fn dispatch_layout(
-    window: Window,
-    store: State<'_, ManagedStateStore>,
-    state: State<'_, MainLayout>,
-    action: LayoutAction,
-) -> Result<LayoutSnapshot, String> {
+fn dispatch(window: &Window, action: LayoutAction) -> Result<LayoutSnapshot, String> {
+    let store = window.state::<ManagedStateStore>();
+    let state = window.state::<MainLayout>();
     let mut store = store.lock().map_err(|error| error.to_string())?;
     let mut state = state
         .lock()
@@ -68,15 +87,15 @@ pub fn dispatch_layout(
         .intent
         .filter(|intent| !crate::interview::handle_intent(window.app_handle(), intent))
         .filter(|intent| !crate::issue_panel::handle_intent(window.app_handle(), intent));
-    publish(&window, &snapshot, intent.clone())?;
+    publish(window, &snapshot, intent.clone())?;
     if let Some((role, event)) = outcome.duty_event {
         crate::reviews::instruct(window.app_handle(), role, &event.message);
         crate::sweeps::instruct(window.app_handle(), role, &event.message);
         crate::main_watch::instruct(window.app_handle(), role, &event.message);
-        crate::duty::publish_duty_event(&window, role, event)?;
+        crate::duty::publish_duty_event(window, role, event)?;
     }
     if let Some((projects, selection)) = project_selection {
-        crate::projects::publish_selection(&window, projects, selection)?;
+        crate::projects::publish_selection(window, projects, selection)?;
     }
     // Opening the modal marks the channel read now, not at the watcher's next tick.
     if let Some(LayoutIntent::Navigation(NavigationIntent::Airc)) = &intent {
@@ -96,7 +115,7 @@ pub fn dispatch_layout(
                     let managed = window.state::<MainLayout>();
                     let mut state = managed.lock().map_err(|error| error.to_string())?;
                     state.return_unsent_message(*identifier, prompt);
-                    publish(&window, &state.snapshot(), None)?;
+                    publish(window, &state.snapshot(), None)?;
                 }
                 Err(error)
             }

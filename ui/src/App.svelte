@@ -24,6 +24,7 @@
   import DutyDialog from './lib/DutyDialog.svelte';
   import ThreadMenu from './lib/ThreadMenu.svelte';
   import Toast from './lib/Toast.svelte';
+  import PaneBoundary from './lib/PaneBoundary.svelte';
   import {
     layoutCommands,
     onLayoutState,
@@ -31,6 +32,7 @@
     projectCommands,
     threadMenuCommands,
     aircRoutingCommands,
+    reportWindowError,
   } from './lib/ipc';
   import type {
     LayoutAction,
@@ -47,6 +49,7 @@
   import './lib/theme/spec-interview.css';
 
   let layout = $state<LayoutSnapshot | null>(null);
+  const revision = $derived(layout?.revision ?? 0);
   let error = $state('');
   let latest: LayoutSnapshot | null = null;
   let pending = 0;
@@ -93,9 +96,16 @@
     errorTimer = setTimeout(clearError, 4000);
   }
 
+  let frame = 0;
   function receive(snapshot: LayoutSnapshot) {
     if (!latest || snapshot.revision >= latest.revision) latest = snapshot;
-    flush();
+    // A swarm publishes many snapshots a second (#273). Draw only the newest, once per
+    // frame, rather than re-rendering the whole window for each one.
+    if (!frame)
+      frame = window.requestAnimationFrame(() => {
+        frame = 0;
+        flush();
+      });
   }
 
   function flush() {
@@ -278,9 +288,13 @@
       const snapshot = await layoutCommands.getState();
       if (active) receive(snapshot);
     }
-    void start().catch(report);
+    void start().catch((reason: unknown) => {
+      reportWindowError('startup', reason);
+      report(reason);
+    });
     return () => {
       active = false;
+      window.cancelAnimationFrame(frame);
       stops.forEach((stop) => stop());
     };
   });
@@ -294,59 +308,70 @@
   onblur={() => send({ NumberHints: 'Blur' })}
 />
 
+<!-- Each pane fails on its own and redraws from the next snapshot (#273). -->
 <div class="app-shell">
-  <TitleBar {layout} {send} {switchProject} />
+  <PaneBoundary name="title bar" {revision}
+    ><TitleBar {layout} {send} {switchProject} /></PaneBoundary
+  >
   {#if layout}<div class="workspace" class:board-mode={layout.view === 'Board'}>
       <!-- The Board replaces the sidebar, one thread and the rail with every thread at once. -->
-      {#if layout.view === 'Board'}<Board {layout} {send} />{:else}
-        <Sidebar {layout} {send} openMenu={openThreadMenu} />
+      {#if layout.view === 'Board'}<PaneBoundary name="board" {revision}
+          ><Board {layout} {send} /></PaneBoundary
+        >{:else}
+        <PaneBoundary name="sidebar" {revision}
+          ><Sidebar {layout} {send} openMenu={openThreadMenu} /></PaneBoundary
+        >
         <main class="main-view" aria-label="Velocity workspace">
-          {#if layout.view === 'Agents' && layout.project_identifier !== null}
-            {#key layout.project_identifier}<AgentsEditor
-                project={layout.project_identifier}
-                saveRequests={agentsSaves}
-              />{/key}
-          {:else if layout.view === 'Home'}<Home
-              {layout}
-              {send}
-            />{:else if layout.active_thread?.interview}<SpecInterview
-              {layout}
-              thread={layout.active_thread}
-              interview={layout.active_thread.interview}
-              {send}
-            />{:else if layout.view === 'Thread' && layout.active_thread}<ThreadView
-              {layout}
-              thread={layout.active_thread}
-              {send}
-            />{:else if layout.view === 'Duty' && layout.active_duty}<DutyView
-              {layout}
-              duty={layout.active_duty}
-              {send}
-              onResult={receive}
-              onError={report}
-            />{:else if layout.view === 'Swarm' && layout.active_swarm}<SwarmView
-              {layout}
-              swarm={layout.active_swarm}
-              {send}
-            />{:else if layout.view === 'Swarm' && layout.active_goal_swarm}<GoalSwarmView
-              {layout}
-              swarm={layout.active_goal_swarm}
-              {send}
-            />{:else if layout.view === 'Settings' && layout.settings_tab === 'worktrees'}<WorktreeSettings
-              {send}
-            />{:else if layout.view === 'Settings' && layout.settings_tab === 'providers'}<ProvidersSettings
-              {send}
-            />{:else if layout.view === 'Settings' && layout.settings_tab === 'skills'}<SkillsSettings
-              {send}
-              projectIdentifier={layout.project_identifier}
-            />{:else if layout.view === 'Settings' && layout.settings_tab === 'agent-settings'}<AgentSettings
-              {send}
-            />{:else if layout.view === 'Settings' && layout.settings_tab === 'proofs' && layout.project_identifier !== null}{#key layout.project_identifier}<ProofsSettings
-                project={layout.project_identifier}
+          <PaneBoundary name="main view" {revision}>
+            {#if layout.view === 'Agents' && layout.project_identifier !== null}
+              {#key layout.project_identifier}<AgentsEditor
+                  project={layout.project_identifier}
+                  saveRequests={agentsSaves}
+                />{/key}
+            {:else if layout.view === 'Home'}<Home
+                {layout}
                 {send}
-              />{/key}{/if}
+              />{:else if layout.active_thread?.interview}<SpecInterview
+                {layout}
+                thread={layout.active_thread}
+                interview={layout.active_thread.interview}
+                {send}
+              />{:else if layout.view === 'Thread' && layout.active_thread}<ThreadView
+                {layout}
+                thread={layout.active_thread}
+                {send}
+              />{:else if layout.view === 'Duty' && layout.active_duty}<DutyView
+                {layout}
+                duty={layout.active_duty}
+                {send}
+                onResult={receive}
+                onError={report}
+              />{:else if layout.view === 'Swarm' && layout.active_swarm}<SwarmView
+                {layout}
+                swarm={layout.active_swarm}
+                {send}
+              />{:else if layout.view === 'Swarm' && layout.active_goal_swarm}<GoalSwarmView
+                {layout}
+                swarm={layout.active_goal_swarm}
+                {send}
+              />{:else if layout.view === 'Settings' && layout.settings_tab === 'worktrees'}<WorktreeSettings
+                {send}
+              />{:else if layout.view === 'Settings' && layout.settings_tab === 'providers'}<ProvidersSettings
+                {send}
+              />{:else if layout.view === 'Settings' && layout.settings_tab === 'skills'}<SkillsSettings
+                {send}
+                projectIdentifier={layout.project_identifier}
+              />{:else if layout.view === 'Settings' && layout.settings_tab === 'agent-settings'}<AgentSettings
+                {send}
+              />{:else if layout.view === 'Settings' && layout.settings_tab === 'proofs' && layout.project_identifier !== null}{#key layout.project_identifier}<ProofsSettings
+                  project={layout.project_identifier}
+                  {send}
+                />{/key}{/if}
+          </PaneBoundary>
         </main>
-        <Rail {layout} {send} />{/if}
+        <PaneBoundary name="rail" {revision}
+          ><Rail {layout} {send} /></PaneBoundary
+        >{/if}
     </div>{:else}<p class="empty" role="status">Opening workspace…</p>{/if}
 </div>
 {#if layout?.palette_open}<CommandPalette {layout} {send} />{/if}
