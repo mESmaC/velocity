@@ -65,10 +65,14 @@
   }
 
   // The board joins the work pool (GitHub issues, SPEC.md) with saved claims, so it is
-  // read again whenever a claim, PR or merge moves the swarm.
+  // read again whenever a claim, PR or merge moves the swarm. Every layout snapshot brings a
+  // new `swarm` object, many a second while agents stream, so the effect tracks these two
+  // values: a derived string only wakes the effect when it actually changes.
+  const swarmIdentifier = $derived(swarm.identifier);
+  const boardRevision = $derived(swarm.board_revision);
   $effect(() => {
-    const identifier = swarm.identifier;
-    void swarm.board_revision;
+    const identifier = swarmIdentifier;
+    void boardRevision;
     const request = ++boardRequest;
     goalSwarmCommands
       .board(identifier)
