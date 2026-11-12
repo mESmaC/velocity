@@ -122,6 +122,18 @@ impl PullRequestClient {
         Ok(())
     }
 
+    /// Takes `label` off PR `number`, e.g. a dismissed PR duty agent's `reviewing` hold (F7).
+    /// GitHub answers 404 when the PR doesn't carry it, which comes back as an error.
+    pub fn remove_label(&self, number: u32, label: &str) -> Result<(), PullRequestError> {
+        require_text(label, "label")?;
+        self.command.api::<Value>(
+            "DELETE",
+            &format!("repos/{}/issues/{number}/labels/{label}", self.repository),
+            &json!({}),
+        )?;
+        Ok(())
+    }
+
     fn request_review(&self, number: u32, reviewers: &[String]) -> Result<(), PullRequestError> {
         if reviewers.is_empty() {
             return Err(PullRequestError::Invalid(

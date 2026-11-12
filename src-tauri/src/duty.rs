@@ -1,14 +1,18 @@
 //! Tauri commands and activity event emission for duty agents (`SPEC.md §3.1`, `§4 F7`, `§7 M5`).
 
+use std::path::{Path, PathBuf};
+
 use crate::layout::{LayoutStateChanged, MainLayout};
 use crate::state::ManagedStateStore;
-use tauri::{Manager, State, Window};
+use tauri::{AppHandle, Manager, State, Window};
 use tauri_specta::Event;
 use velocity_core::duty::{DutyFeedEvent, DutyRole};
 use velocity_core::layout_view::LayoutSnapshot;
 use velocity_store::duty::{
-    DutyDialogDefaults, DutyMutationOutcome, PauseDutyRequest, StartDutyRequest, clock_timestamp,
+    DismissDutyAgentRequest, DutyDialogDefaults, DutyMutationOutcome, PauseDutyRequest,
+    StartDutyRequest, StopDutyRequest, clock_timestamp,
 };
+use velocity_threads::{MainWatches, PrDutyReviews, ScoutSweeps};
 
 #[derive(Clone, Debug, serde::Serialize, serde::Deserialize, specta::Type, Event)]
 #[tauri_specta(event_name = "duty://event")]
@@ -76,6 +80,105 @@ pub fn pause_duty(
     crate::sweeps::wake(window.app_handle());
     crate::main_watch::wake(window.app_handle());
     snapshot
+}
+
+/// Dismisses one duty agent (F7): it leaves the saved roster, its session stops, and a PR it
+/// held is released for the next agent.
+#[tauri::command]
+#[specta::specta]
+pub fn dismiss_duty_agent(
+    window: Window,
+    store: State<'_, ManagedStateStore>,
+    state: State<'_, MainLayout>,
+    request: DismissDutyAgentRequest,
+) -> Result<LayoutSnapshot, String> {
+    let application = window.app_handle();
+    let (outcome, project, repository) = {
+        let mut store = store.lock().map_err(|error| error.to_string())?;
+        let (project, repository) = active_project(&store)?;
+        let held = application
+            .try_state::<PrDutyReviews>()
+            .filter(|_| request.role == DutyRole::PrDuty)
+            .and_then(|reviews| reviews.held(project, &request.nickname));
+        let mut state = state
+            .lock()
+            .map_err(|error| format!("Could not update main-window state: {error}"))?;
+        let outcome = store
+            .dismiss_duty_agent(&mut state, &request, held, clock_timestamp())
+            .map_err(|error| error.to_string())?;
+        (outcome, project, repository)
+    };
+    let nicknames = std::slice::from_ref(&request.nickname);
+    stop_sessions(application, request.role, project, &repository, nicknames);
+    publish_duty_outcome(&window, outcome)
+}
+
+/// Stops a duty role (F7): every agent on it is dismissed and the role leaves "On duty".
+#[tauri::command]
+#[specta::specta]
+pub fn stop_duty(
+    window: Window,
+    store: State<'_, ManagedStateStore>,
+    state: State<'_, MainLayout>,
+    request: StopDutyRequest,
+) -> Result<LayoutSnapshot, String> {
+    let (stopped, project, repository) = {
+        let mut store = store.lock().map_err(|error| error.to_string())?;
+        let (project, repository) = active_project(&store)?;
+        let mut state = state
+            .lock()
+            .map_err(|error| format!("Could not update main-window state: {error}"))?;
+        let stopped = store
+            .stop_duty(&mut state, &request, &clock_timestamp())
+            .map_err(|error| error.to_string())?;
+        (stopped, project, repository)
+    };
+    let application = window.app_handle();
+    stop_sessions(
+        application,
+        request.role,
+        project,
+        &repository,
+        &stopped.nicknames,
+    );
+    publish_duty_outcome(&window, stopped.outcome)
+}
+
+fn active_project(store: &velocity_store::StateStore) -> Result<(u32, PathBuf), String> {
+    store
+        .active_project()
+        .map(|project| (project.id, PathBuf::from(&project.repository_path)))
+        .ok_or_else(|| "No project is open".to_owned())
+}
+
+/// Stops the dismissed agents' running sessions through their role's runner. They already
+/// left the saved roster, so no runner starts them again.
+fn stop_sessions(
+    application: &AppHandle,
+    role: DutyRole,
+    project: u32,
+    repository: &Path,
+    nicknames: &[String],
+) {
+    for nickname in nicknames {
+        match role {
+            DutyRole::PrDuty => {
+                if let Some(reviews) = application.try_state::<PrDutyReviews>() {
+                    reviews.dismiss(project, nickname, repository);
+                }
+            }
+            DutyRole::Scouts => {
+                if let Some(sweeps) = application.try_state::<ScoutSweeps>() {
+                    sweeps.dismiss(project, nickname);
+                }
+            }
+            DutyRole::MainWatcher => {
+                if let Some(watches) = application.try_state::<MainWatches>() {
+                    watches.dismiss(project, nickname);
+                }
+            }
+        }
+    }
 }
 
 fn apply_start_or_add(

@@ -277,3 +277,24 @@
 .duty-dialog .sub-row {
   margin-top: var(--duty-sub-row-margin-top);
 }
+/* Dismiss one agent (F7, #282): a quiet × that shows while the card is hovered or focused. */
+.duty-view .agent-card .ah .dismiss {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: none;
+  width: var(--duty-agent-dismiss-size);
+  height: var(--duty-agent-dismiss-size);
+  border-radius: var(--duty-agent-dismiss-border-radius);
+  color: var(--muted);
+  opacity: var(--duty-agent-dismiss-hidden-opacity);
+}
+.duty-view .agent-card:hover .ah .dismiss,
+.duty-view .agent-card:focus-within .ah .dismiss {
+  opacity: var(--duty-agent-dismiss-shown-opacity);
+}
+.duty-view .agent-card .ah .dismiss:hover,
+.duty-view .agent-card .ah .dismiss:focus-visible {
+  background: var(--duty-agent-dismiss-hover-background);
+  color: var(--text);
+}
