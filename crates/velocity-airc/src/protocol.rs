@@ -63,7 +63,7 @@ fn respond(
                 *initialized = true;
                 json!({"protocolVersion":"2025-11-25","capabilities":{"tools":{}},
                         "serverInfo":{"name":"velocity-airc","version":env!("CARGO_PKG_VERSION")},
-                        "instructions":format!("You joined this project's AIRC channel as {nick}. Read airc_claims before choosing work. Call airc_claim with the task, branch and every file BEFORE editing, and with piece set to the work item's identity (task:<id>, issue:<number> or spec:<section>) when it has one; on refusal the holder is named, so re-read airc_claims and claim the first open piece. Extend your existing task claim to add files. Record airc_share or a dependency wait before editing an overlapping file. Messages require named recipients and an intent. Use task_add ONLY when the user explicitly asks to add tasks to the project Task List; otherwise file issues. Adding tasks never edits SPEC.md or starts an interview.")})
+                        "instructions":format!("You joined this project's AIRC channel as {nick}. Read airc_claims before choosing work. Call airc_claim with the task, branch and every file BEFORE editing, and with piece set to the work item's identity (task:<id>, issue:<number> or spec:<section>) when it has one; on refusal the holder is named, so re-read airc_claims and claim the first open piece. Extend your existing task claim to add files. Record airc_share or a dependency wait before editing an overlapping file. Messages require named recipients and an intent. Use task_add ONLY when the user explicitly asks to add tasks to the project Task List; otherwise file issues. Adding tasks never edits SPEC.md or starts an interview. A discovery about Velocity itself (its worktrees, AIRC, duty tools, agent shells, build queue or app), not this project, goes in append_ledger with velocity_issue set, and Velocity files it on its own repository.")})
             }
             Err(error) => return Some(failure(id, -32603, &error.to_string())),
         },
@@ -127,8 +127,18 @@ fn call(
             read_filtered(channel, name, arguments, after)
         }
         "append_ledger" => {
-            channel.append_ledger(member, ledger(arguments)?, text(arguments, "text")?)?;
-            Ok(json!({"appended":true}))
+            let velocity_issue = arguments
+                .get("velocity_issue")
+                .and_then(Value::as_str)
+                .map(str::to_owned);
+            let reported = velocity_issue.is_some();
+            channel.append_ledger_entry(
+                member,
+                ledger(arguments)?,
+                text(arguments, "text")?,
+                velocity_issue,
+            )?;
+            Ok(json!({"appended":true,"velocity_issue":reported}))
         }
         "send_message" => {
             let recipients = serde_json::from_value(arguments["to"].clone())?;
@@ -222,8 +232,10 @@ fn writing_tools() -> Vec<Value> {
         ),
         tool(
             "append_ledger",
-            "Record a discovery or past work",
-            json!({"ledger":ledger,"text":string.clone()}),
+            "Record a discovery or past work. When a discovery is a problem in Velocity itself (its worktrees and paths, AIRC, the PR duty, scout or watch tools, agent shells and sandboxes, the build queue, the code graph, or the app) rather than in this project's code, also pass velocity_issue: a one-line issue title. Velocity then files it on its own repository, or adds it to an open issue about the same problem. Read the discoveries first, and leave velocity_issue out when another agent already reported the same Velocity problem.",
+            json!({"ledger":ledger,"text":string.clone(),
+                "velocity_issue":{"type":"string","minLength":1,"maxLength":200,
+                    "description":"Only for a discovery about Velocity itself: the issue title"}}),
             &["ledger", "text"],
         ),
         tool(

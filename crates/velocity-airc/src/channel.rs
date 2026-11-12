@@ -40,6 +40,10 @@ pub struct Entry {
     pub acknowledged: Option<u64>,
     #[serde(default)]
     pub files: Vec<String>,
+    /// A discovery about Velocity itself rather than the project: the issue title its agent
+    /// gave. Velocity files it on its own repository.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub velocity_issue: Option<String>,
 }
 
 /// Event tags Velocity posts from what it observes (F14). Agents never type them.
@@ -287,12 +291,40 @@ impl Channel {
     }
 
     pub fn append_ledger(&self, member: &str, ledger: &str, text: &str) -> Result<(), Error> {
+        self.append_ledger_entry(member, ledger, text, None)
+    }
+
+    /// Records a ledger entry. A discovery with `velocity_issue` (a one-line issue title) is
+    /// about Velocity itself, and Velocity files it on its own repository.
+    pub fn append_ledger_entry(
+        &self,
+        member: &str,
+        ledger: &str,
+        text: &str,
+        velocity_issue: Option<String>,
+    ) -> Result<(), Error> {
         if !matches!(ledger, "discovery" | "past_work") {
             return Err(Error::Invalid(
                 "Ledger must be discovery or past_work".into(),
             ));
         }
-        self.post(member, ledger, text, Vec::new(), None)
+        let velocity_issue = velocity_issue
+            .map(|title| title.trim().to_owned())
+            .filter(|title| !title.is_empty());
+        if velocity_issue.is_some() && ledger != "discovery" {
+            return Err(Error::Invalid(
+                "Only a discovery can be reported as a Velocity issue".into(),
+            ));
+        }
+        if velocity_issue
+            .as_ref()
+            .is_some_and(|title| title.contains(['\r', '\n']) || title.chars().count() > 200)
+        {
+            return Err(Error::Invalid(
+                "The Velocity issue title must be one line of at most 200 characters".into(),
+            ));
+        }
+        self.post_with(member, ledger, text, Vec::new(), None, velocity_issue)
     }
 
     /// Velocity records a Past work ledger entry (for example on every merge, F14)
@@ -340,6 +372,18 @@ impl Channel {
         to: Vec<String>,
         intent: Option<String>,
     ) -> Result<(), Error> {
+        self.post_with(member, kind, text, to, intent, None)
+    }
+
+    fn post_with(
+        &self,
+        member: &str,
+        kind: &str,
+        text: &str,
+        to: Vec<String>,
+        intent: Option<String>,
+        velocity_issue: Option<String>,
+    ) -> Result<(), Error> {
         require_text(text)?;
         let storage = Storage::open(&self.directory)?;
         let entries = self.read_presence_log(&storage)?;
@@ -361,6 +405,7 @@ impl Channel {
         let mut record = entry(&entries, kind, member, &active.nick, text);
         record.to = to;
         record.intent = intent;
+        record.velocity_issue = velocity_issue;
         storage.append(&record)
     }
 }
@@ -384,6 +429,7 @@ pub(crate) fn entry(entries: &[Entry], kind: &str, member: &str, nick: &str, tex
         message_mode: None,
         acknowledged: None,
         files: Vec::new(),
+        velocity_issue: None,
     }
 }
 
