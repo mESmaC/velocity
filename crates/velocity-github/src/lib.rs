@@ -30,6 +30,7 @@ mod scout_evidence;
 mod scout_issues;
 mod scout_reference;
 mod scout_server;
+pub mod velocity_reports;
 mod watch_server;
 
 pub use approval::{ReviewRecord, review_standing};

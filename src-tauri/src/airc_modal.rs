@@ -11,6 +11,7 @@ use velocity_core::airc_modal::{
     AircClaimRecord, AircModalInput, AircModalView, AircRecord, latest_sequence, modal_view,
     unread_badge,
 };
+use velocity_github::velocity_reports::ReportedDiscoveries;
 use velocity_store::airc_members::airc_members;
 use velocity_store::projects::ProjectError;
 
@@ -151,7 +152,22 @@ fn read_active(
             .map_err(|error| error.to_string())?
     };
     let claims = claim_records(&entries, &waits);
-    let input = AircModalInput::new(name, entries.iter().map(record).collect(), claims, members);
+    // The badge never shows report results. Without the saved record, marked discoveries
+    // read "filing…" until it can be read.
+    let reported = if unread_only {
+        ReportedDiscoveries::default()
+    } else {
+        ReportedDiscoveries::load(&directory).unwrap_or_default()
+    };
+    let input = AircModalInput::new(
+        name,
+        entries
+            .iter()
+            .map(|entry| record(entry, project, &reported))
+            .collect(),
+        claims,
+        members,
+    );
     Ok(Some(ActiveChannel {
         project,
         seen,
@@ -176,9 +192,9 @@ fn claim_records(
         .collect()
 }
 
-fn record(entry: &Entry) -> AircRecord {
+fn record(entry: &Entry, project: u32, reported: &ReportedDiscoveries) -> AircRecord {
     let shown = entry.as_event_entry();
-    AircRecord::new(
+    let record = AircRecord::new(
         entry.sequence,
         &entry.time,
         &entry.kind,
@@ -193,7 +209,11 @@ fn record(entry: &Entry) -> AircRecord {
         entry.to.clone(),
     )
     .with_event_text(&shown.text)
-    .as_event(entry.is_event())
+    .as_event(entry.is_event());
+    match &entry.velocity_issue {
+        Some(title) => record.with_velocity_issue(title, reported.issue(project, entry.sequence)),
+        None => record,
+    }
 }
 
 fn mark_seen(application: &AppHandle, project: u32, seen: u64) -> Result<(), String> {
