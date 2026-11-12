@@ -325,7 +325,7 @@ mod tests {
         let worktree = root.join("worktrees").join("leftover");
         std::fs::create_dir_all(&repository)?;
         let git = |arguments: &[&str]| -> Result<(), Box<dyn std::error::Error>> {
-            let status = std::process::Command::new("git")
+            let status = crate::process::hidden_command("git")
                 .current_dir(&repository)
                 .args([
                     "-c",
