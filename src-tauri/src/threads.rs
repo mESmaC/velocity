@@ -149,9 +149,15 @@ fn stop_follow_through(application: &AppHandle, key: ThreadKey) -> Result<bool, 
     match stopped {
         StopOutcome::NotRunning => {}
         StopOutcome::SettingUp => return Ok(false),
-        StopOutcome::Stopping(ended) => ended
-            .blocking_recv()
-            .map_err(|error| format!("Agent shutdown was not confirmed: {error}"))?,
+        // Bounded: the watcher runs every project's follow-through on one thread, so a session
+        // that never reports its end must not stop every other PR from being followed (#278).
+        // A timed-out wait is a cleanup error, retried on the next pass. The timer is made
+        // inside the runtime: this watcher thread is not one of its workers.
+        StopOutcome::Stopping(ended) => tauri::async_runtime::block_on(async move {
+            tokio::time::timeout(velocity_threads::deletion::AGENT_EXIT_WAIT, ended).await
+        })
+        .map_err(|_| "The agent is still stopping; its worktree was kept".to_owned())?
+        .map_err(|error| format!("Agent shutdown was not confirmed: {error}"))?,
     }
     if lock(
         application.state::<ManagedThreads>().inner(),

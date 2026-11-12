@@ -1,7 +1,15 @@
 # Velocity's release build is a windowed app: on Windows a child process started without
 # CREATE_NO_WINDOW opens a console window that flashes on screen (#232). Each crate builds its
 # processes through its own `hidden_command`, the one place allowed to call these.
+# Creation flags replace the ones already set rather than adding to them, so a later
+# `creation_flags` call or a process-wrap `CreationFlags` wrapper would silently drop
+# CREATE_NO_WINDOW (#276): only `hidden_command` and the few places that repeat the flag may.
 disallowed-methods = [
     { path = "std::process::Command::new", reason = "use the crate's hidden_command so no console window opens (#232)" },
     { path = "tokio::process::Command::new", reason = "use the crate's hidden_command so no console window opens (#232)" },
+    { path = "std::os::windows::process::CommandExt::creation_flags", allow-invalid = true, reason = "creation flags replace CREATE_NO_WINDOW; set them in hidden_command (#276)" },
+    { path = "tokio::process::Command::creation_flags", allow-invalid = true, reason = "creation flags replace CREATE_NO_WINDOW; set them in hidden_command (#276)" },
+]
+disallowed-types = [
+    { path = "process_wrap::tokio::CreationFlags", allow-invalid = true, reason = "it replaces CREATE_NO_WINDOW; use spawn_owned_command (#276)" },
 ]

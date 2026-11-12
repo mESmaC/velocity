@@ -455,6 +455,7 @@ A worktree's path is fixed when it is created. Changing the location setting aff
 - The pool removes only its own ready worktrees: a registered, detached checkout under a `.ready-<n>` name. A thread's worktree is never removed through it.
 - Deleting a worktree removes only that worktree's own entry. A repo-wide `git worktree prune` runs only from the **Prune orphans** button.
 - Worktree folder names are unique per project, never generic names like `workspace`.
+- A slug made from a title (a model title, a Task List item or a SPEC section) is at most 40 characters. A longer one keeps its first words and ends in `-` and six hex digits of a hash of the whole slug, so two long titles still get different names and the worktree, branch and git admin paths stay well under Windows' 260-character limit (#275). Titles themselves are never cut.
 
 **Accept when:**
 - [ ] With a ready worktree in the pool, an agent starts working within 5 seconds of being launched.
@@ -485,7 +486,7 @@ The watcher reads GitHub every 15 seconds, with one query per project that lists
   - Answer every review comment: either fix and push, or reply with the reason. Then resolve the thread and re-request review.
   - If the PR is closed without merging, report why in the thread.
 - **Status line:** "watching PR #n · <stage> · answers new comments as they arrive", or "addressing N open review comment(s)".
-- **Sidebar meta:** `#n` plus the stage label in the stage colour: checking / in review / addressing review / approved · merging.
+- **Sidebar meta:** `#n` plus the stage label in the stage colour: checking / in review / addressing review / approved · merging. Once GitHub reports the merge, the label reads merged · deleting worktree until cleanup finishes and the thread settles as merged.
 
 **Landing and rebases** (from Anthropic's Scion):
 
@@ -635,7 +636,7 @@ The project-scoped list in the top-right panel.
 - Tasks added before the spec is locked are drafts.
 - **After the spec is locked** (decided, Q6): a task you or an agent adds goes straight to todo and stays outside SPEC.md. Adding a task never starts an interview and never edits SPEC.md. When the work changes behaviour SPEC.md describes, the building agent updates SPEC.md in its own PR (AGENTS.md).
 
-**Live state:** a task with an agent shows that agent's state (agent working / #n · in review / merged · #n), linked to its thread.
+**Live state:** a task with an agent shows that agent's state (agent working / agent idle / #n · in review / merged · #n), linked to its thread. Agent idle means its turn ended before its PR is followed, such as a draft claim not yet marked ready.
 
 **Accept when:**
 - [ ] Re-rendering the list never takes focus from the add-task input.

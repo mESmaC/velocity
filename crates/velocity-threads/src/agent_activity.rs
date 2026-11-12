@@ -170,8 +170,11 @@ pub fn in_build_queue(blocks: &[velocity_core::thread_view_model::TranscriptBloc
 /// Only offer commits known to have been pushed, never an unpushed working tree.
 pub fn pushed_commit(thread: &ThreadItem) -> Option<String> {
     let path = thread.worktree_path.as_ref()?;
+    // Git for Windows refuses paths over 260 characters without core.longpaths.
     let output = crate::process::hidden_command("git")
         .args([
+            "-c",
+            "core.longpaths=true",
             "-C",
             path,
             "rev-parse",
