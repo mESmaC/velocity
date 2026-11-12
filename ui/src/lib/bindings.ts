@@ -142,6 +142,13 @@ export const commands = {
 	deleteThread: (projectIdentifier: number, threadIdentifier: number) => __TAURI_INVOKE<LayoutSnapshot_Serialize>("delete_thread", { projectIdentifier, threadIdentifier }),
 	/**  Undo within the 5 s: the thread is back exactly as it was, since nothing was touched. */
 	undoDeleteThread: (deletion: number) => __TAURI_INVOKE<LayoutSnapshot_Serialize>("undo_delete_thread", { deletion }),
+	getUpdateStatus: () => __TAURI_INVOKE<UpdateView_Serialize>("get_update_status"),
+	checkForUpdate: () => __TAURI_INVOKE<UpdateView_Serialize>("check_for_update"),
+	/**
+	 *  Downloads the release the last check found, then installs it and restarts. Failures
+	 *  land in the panel's status, never as an error the window keeps showing.
+	 */
+	installUpdate: () => __TAURI_INVOKE<UpdateView_Serialize>("install_update"),
 	getNewProjectDefaults: () => __TAURI_INVOKE<NewProjectDefaults_Serialize>("get_new_project_defaults"),
 	/**  Browse…: the native folder picker. `None` when it is dismissed. */
 	pickProjectFolder: () => __TAURI_INVOKE<string | null>("pick_project_folder"),
@@ -196,6 +203,8 @@ export const SWARM_EVENT = "swarm://event" as const;
 export const THREAD_STATUS_EVENT = "thread://status" as const;
 
 export const THREAD_STEP_EVENT = "thread://step" as const;
+
+export const UPDATE_STATUS_EVENT = "update://status" as const;
 
 export const WINDOW_STATE_EVENT = "window://state" as const;
 
@@ -4424,6 +4433,56 @@ export type TranscriptBlock_Serialize = ({ UserMessage: {
 } }) & { AgentMessage?: never; Decision?: never; Diff?: never; ErrorCard?: never; StatusLine?: never; ToolGroup?: never; UserMessage?: never };
 
 export type TranscriptModeView = "FullTranscript" | "CollapsedWithPrHistory" | "ExpandedWithPrHistory";
+
+/**  The one action the panel offers. */
+export type UpdateAction = "none" | "check" | "install";
+
+export type UpdateStatusChanged = UpdateStatusChanged_Serialize | UpdateStatusChanged_Deserialize;
+
+export type UpdateStatusChanged_Deserialize = {
+	view: UpdateView_Deserialize,
+};
+
+export type UpdateStatusChanged_Serialize = {
+	view: UpdateView_Serialize,
+};
+
+/**  The Updates panel and the footer badge, ready to render. */
+export type UpdateView = UpdateView_Serialize | UpdateView_Deserialize;
+
+/**  The Updates panel and the footer badge, ready to render. */
+export type UpdateView_Deserialize = {
+	headline: string,
+	detail: string,
+	/**  The release notes of the available version, as published. */
+	notes: string,
+	/**  Shown above the install button: what restarting does to working agents. */
+	warning: string,
+	install_label: string,
+	action: UpdateAction,
+	action_label: string,
+	/**  0–100 while downloading with a known size. */
+	progress?: number | null,
+	/**  The footer button's dot: a newer version is ready to install. */
+	badge: boolean,
+};
+
+/**  The Updates panel and the footer badge, ready to render. */
+export type UpdateView_Serialize = {
+	headline: string,
+	detail: string,
+	/**  The release notes of the available version, as published. */
+	notes: string,
+	/**  Shown above the install button: what restarting does to working agents. */
+	warning: string,
+	install_label: string,
+	action: UpdateAction,
+	action_label: string,
+	/**  0–100 while downloading with a known size. */
+	progress: number | null,
+	/**  The footer button's dot: a newer version is ready to install. */
+	badge: boolean,
+};
 
 /**
  *  One subscription window in the footer usage panel, as T3 Code draws it: the share left,
