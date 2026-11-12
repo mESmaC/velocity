@@ -56,33 +56,70 @@ pub enum DeletionError {
     },
 }
 
+/// What one Delete takes: a thread, or a swarm or goal swarm with its members (F10, F12).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Deletion {
+    Thread(ThreadKey),
+    Swarm {
+        project: u32,
+        swarm: u32,
+        /// The members when Delete was chosen; landing reads them again.
+        members: Vec<u32>,
+    },
+}
+
+impl Deletion {
+    pub fn project(&self) -> u32 {
+        match self {
+            Self::Thread((project, _)) | Self::Swarm { project, .. } => *project,
+        }
+    }
+
+    /// The sidebar rows hidden while Undo is on offer.
+    pub fn rows(&self) -> Vec<usize> {
+        match self {
+            Self::Thread((_, thread)) => Vec::from([*thread as usize]),
+            Self::Swarm { swarm, members, .. } => std::iter::once(swarm)
+                .chain(members)
+                .map(|row| *row as usize)
+                .collect(),
+        }
+    }
+
+    /// Whether this deletion takes the thread or swarm `key` names.
+    pub fn covers(&self, key: ThreadKey) -> bool {
+        self.project() == key.0 && self.rows().contains(&(key.1 as usize))
+    }
+}
+
 /// Deletions inside their undo window. Undo and landing each take the deletion out, so
 /// whichever comes first wins and the other finds nothing.
 #[derive(Debug, Default)]
 pub struct PendingDeletions {
     next: u32,
-    pending: BTreeMap<u32, ThreadKey>,
+    pending: BTreeMap<u32, Deletion>,
 }
 
 impl PendingDeletions {
-    /// Starts the undo window for a thread and returns the deletion's token.
-    pub fn begin(&mut self, key: ThreadKey) -> u32 {
+    /// Starts the undo window for a deletion and returns its token.
+    pub fn begin(&mut self, deletion: Deletion) -> u32 {
         self.next = self.next.wrapping_add(1);
-        self.pending.insert(self.next, key);
+        self.pending.insert(self.next, deletion);
         self.next
     }
 
+    /// Whether a pending deletion takes this thread, swarm or swarm member.
     pub fn is_pending(&self, key: ThreadKey) -> bool {
-        self.pending.values().any(|pending| *pending == key)
+        self.pending.values().any(|pending| pending.covers(key))
     }
 
-    /// Undo: the thread comes back untouched.
-    pub fn undo(&mut self, token: u32) -> Option<ThreadKey> {
+    /// Undo: everything comes back untouched.
+    pub fn undo(&mut self, token: u32) -> Option<Deletion> {
         self.pending.remove(&token)
     }
 
     /// The window is over: the deletion lands unless it was undone.
-    pub fn land(&mut self, token: u32) -> Option<ThreadKey> {
+    pub fn land(&mut self, token: u32) -> Option<Deletion> {
         self.pending.remove(&token)
     }
 }
@@ -140,10 +177,55 @@ pub fn remove_owned_worktree(
     worktree: &Path,
     branch: &str,
 ) -> Result<(), DeletionError> {
-    if worktree.exists() {
+    if worktree.exists() && !is_removal_leftover(repository, worktree) {
         velocity_git::verify_deletion(repository, worktree, branch, false, true)?;
     }
     remove_worktree(repository, worktree)
+}
+
+/// What an interrupted `git worktree remove --force` leaves on Windows (#283). Git deletes
+/// the checkout's `.git` file first, stops at a file another process still holds open,
+/// and drops the registration anyway. The folder is then no checkout: verification would
+/// refuse it as unregistered for ever, so the thread could never be deleted. Nothing of git
+/// is left in it to lose (the branch and its commits live in the repository), so the
+/// thread's own folder at its fixed path is removed once the file is released.
+/// Fails closed: any `.git` entry below it, or the repository inside it, keeps it.
+fn is_removal_leftover(repository: &Path, worktree: &Path) -> bool {
+    let repository_inside = match (
+        std::fs::canonicalize(repository),
+        std::fs::canonicalize(worktree),
+    ) {
+        (Ok(repository), Ok(worktree)) => repository.starts_with(worktree),
+        _ => true,
+    };
+    !repository_inside && !contains_git_entry(worktree)
+}
+
+/// Whether a `.git` file or folder is anywhere under `folder`, links not followed. An
+/// unreadable folder counts as one.
+fn contains_git_entry(folder: &Path) -> bool {
+    let mut pending = Vec::from([folder.to_path_buf()]);
+    while let Some(directory) = pending.pop() {
+        let Ok(entries) = std::fs::read_dir(velocity_store::extended_windows_path(&directory))
+        else {
+            return true;
+        };
+        for entry in entries {
+            let Ok(entry) = entry else {
+                return true;
+            };
+            if entry.file_name() == ".git" {
+                return true;
+            }
+            let Ok(kind) = entry.file_type() else {
+                return true;
+            };
+            if kind.is_dir() && !kind.is_symlink() {
+                pending.push(directory.join(entry.file_name()));
+            }
+        }
+    }
+    false
 }
 
 /// Removes the worktree from git and disk, retrying while the stopped agent exits.
@@ -228,6 +310,53 @@ mod tests {
         assert!(!spec_owns_it);
         assert!(matches!(refused, Err(DeletionError::MainCheckout(_))));
         assert!(still_there);
+        Ok(())
+    }
+
+    // Risk (#283): a `git worktree remove --force` interrupted by a file another process
+    // holds open deletes the checkout's `.git` file and its registration but leaves a
+    // folder; verification then refused it for ever, so the thread could never be deleted.
+    // The leftover must go, but a folder still holding any `.git` entry must not.
+    #[test]
+    fn interrupted_removal_leftover_goes_but_a_checkout_inside_stays()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let root = std::env::temp_dir().join(format!("velocity-283-{}", std::process::id()));
+        let repository = root.join("repository");
+        let worktree = root.join("worktrees").join("leftover");
+        std::fs::create_dir_all(&repository)?;
+        let git = |arguments: &[&str]| -> Result<(), Box<dyn std::error::Error>> {
+            let status = std::process::Command::new("git")
+                .current_dir(&repository)
+                .args([
+                    "-c",
+                    "user.name=velocity",
+                    "-c",
+                    "user.email=velocity@example.com",
+                ])
+                .args(arguments)
+                .status()?;
+            if status.success() {
+                Ok(())
+            } else {
+                Err("git failed".into())
+            }
+        };
+        git(&["init", "-q"])?;
+        git(&["commit", "-q", "--allow-empty", "-m", "base"])?;
+        let path = worktree.display().to_string();
+        git(&["worktree", "add", "-q", "-b", "vel/leftover", &path])?;
+        // What git leaves: no `.git` file, no registration, the rest of the folder.
+        std::fs::remove_file(worktree.join(".git"))?;
+        std::fs::remove_dir_all(repository.join(".git").join("worktrees"))?;
+        std::fs::create_dir_all(worktree.join("held").join(".git"))?;
+        let kept = remove_owned_worktree(&repository, &worktree, "vel/leftover");
+        let kept_folder = worktree.is_dir();
+        std::fs::remove_dir_all(worktree.join("held"))?;
+        let removed = remove_owned_worktree(&repository, &worktree, "vel/leftover");
+        let removed_folder = !worktree.exists();
+        std::fs::remove_dir_all(&root)?;
+        assert!(kept.is_err() && kept_folder);
+        assert!(removed.is_ok() && removed_folder);
         Ok(())
     }
 }

@@ -289,25 +289,10 @@ pub fn mix_label(agents: &[GoalAgentProgress]) -> String {
         .join(" · ")
 }
 
-/// The sidebar row's meta line: "2 choosing · 3 working · 1 PR open · 1/6 merged".
-pub fn goal_sidebar_summary(agents: &[GoalAgentProgress]) -> String {
-    if agents.is_empty() {
-        return "no agents".into();
-    }
-    let merged = goal_segments(agents)
-        .into_iter()
-        .filter(|stage| *stage == SwarmStage::Merged)
-        .count();
-    if merged == agents.len() {
-        return format!("all {merged} merged");
-    }
-    let mut parts: Vec<String> = legend(agents)
-        .into_iter()
-        .filter(|item| item.stage != SwarmStage::Merged)
-        .map(|item| item.label)
-        .collect();
-    parts.push(format!("{merged}/{} merged", agents.len()));
-    parts.join(" · ")
+/// The sidebar row's ×N and meta line: "2 choosing · 3 working · 1 PR open",
+/// counting live agents only, or "finished" once none is left at work.
+pub fn goal_row_summary(agents: &[GoalAgentProgress]) -> (usize, String) {
+    crate::swarm::row_summary(&goal_segments(agents))
 }
 
 pub fn project_goal_swarm_view(entry: &GoalSwarmEntry) -> GoalSwarmViewSnapshot {
@@ -319,10 +304,18 @@ pub fn project_goal_swarm_view(entry: &GoalSwarmEntry) -> GoalSwarmViewSnapshot 
     } else {
         ""
     };
+    let finished = if goal_segments(&entry.agents)
+        .into_iter()
+        .any(crate::swarm::is_live)
+    {
+        ""
+    } else {
+        " · finished"
+    };
     GoalSwarmViewSnapshot {
         identifier: entry.identifier,
         title: entry.title.clone(),
-        agents_label: format!("{total} agent{} · one prompt", plural(total)),
+        agents_label: format!("{total} agent{} · one prompt{finished}", plural(total)),
         started_label: format!("started {}", entry.started_label),
         merged_label: (merged > 0).then(|| format!("{merged} PR{} merged", plural(merged))),
         prompt: entry.prompt.clone(),

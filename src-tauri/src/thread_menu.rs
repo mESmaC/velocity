@@ -11,8 +11,11 @@ use velocity_core::layout_view::LayoutSnapshot;
 use velocity_core::thread_menu::{ThreadMenuAction, ThreadMenuEntry, ThreadMenuFacts, thread_menu};
 use velocity_github::PullRequestClient;
 use velocity_store::ThreadItem;
+use velocity_store::deleted_worktrees::DeletedWorktree;
 use velocity_threads::deletion::{AGENT_EXIT_WAIT, UNDO_WINDOW, close_pull_request};
-use velocity_threads::{PendingDeletions, StopOutcome, ThreadKey, plan_deletion};
+use velocity_threads::{
+    Deletion, DeletionPlan, PendingDeletions, StopOutcome, ThreadKey, plan_deletion,
+};
 
 use crate::layout::MainLayout;
 use crate::state::ManagedStateStore;
@@ -28,6 +31,8 @@ pub struct ThreadMenuView {
     pub thread_identifier: u32,
     pub entries: Vec<ThreadMenuEntry>,
     pub message_mode: Option<ThreadMessageMode>,
+    /// The row is a swarm or goal swarm: its Delete is `delete_swarm` (F10, F12).
+    pub swarm: bool,
 }
 
 #[derive(Clone, Debug, serde::Serialize, serde::Deserialize, specta::Type)]
@@ -96,6 +101,18 @@ pub async fn get_thread_menu(
     .active_project()
     .map(|project| project.id)
     .ok_or("Select a project first")?;
+    if let Some(entries) =
+        crate::swarm_deletion::swarm_menu(&application, project_identifier, thread_identifier)
+            .await?
+    {
+        return Ok(Some(ThreadMenuView {
+            project_identifier,
+            thread_identifier,
+            entries,
+            message_mode: None,
+            swarm: true,
+        }));
+    }
     let key = (project_identifier, thread_identifier);
     let (_, thread) = match find_thread(&application, project_identifier, thread_identifier) {
         Ok(found) => found,
@@ -134,6 +151,7 @@ pub async fn get_thread_menu(
         thread_identifier,
         entries,
         message_mode,
+        swarm: false,
     }))
 }
 
@@ -147,6 +165,16 @@ pub async fn run_thread_menu_action(
     thread_identifier: u32,
     action: ThreadMenuAction,
 ) -> Result<(), String> {
+    if action == ThreadMenuAction::Delete
+        && crate::swarm_deletion::is_swarm(&application, project_identifier, thread_identifier)?
+    {
+        return crate::swarm_deletion::delete_swarm(
+            application,
+            project_identifier,
+            thread_identifier,
+        )
+        .map(|_| ());
+    }
     let (repository, thread) = find_thread(&application, project_identifier, thread_identifier)?;
     let worktree = thread.worktree_path.clone().unwrap_or_default();
     match action {
@@ -184,16 +212,7 @@ pub fn delete_thread(
     project_identifier: u32,
     thread_identifier: u32,
 ) -> Result<LayoutSnapshot, String> {
-    let key = (project_identifier, thread_identifier);
     let (_, thread) = find_thread(&application, project_identifier, thread_identifier)?;
-    let deletions = application.state::<ManagedDeletions>();
-    let token = {
-        let mut deletions = lock(deletions.inner(), "pending deletions")?;
-        if deletions.is_pending(key) {
-            return Err("The thread is already being deleted".into());
-        }
-        deletions.begin(key)
-    };
     let worktree = velocity_core::thread_menu::owns_worktree(
         thread.state.into(),
         thread.worktree_path.as_deref(),
@@ -206,8 +225,36 @@ pub fn delete_thread(
         thread.title,
         if worktree { " and its worktree" } else { "" }
     );
-    let snapshot = update_layout(&application, |layout| {
-        layout.set_threads_hidden(project_identifier, &[thread_identifier as usize], true);
+    begin_deletion(
+        &application,
+        Deletion::Thread((project_identifier, thread_identifier)),
+        message,
+    )
+}
+
+/// Hides the deletion's rows, offers Undo, and lands it when the 5 s are up (F12).
+pub(crate) fn begin_deletion(
+    application: &AppHandle,
+    deletion: Deletion,
+    message: String,
+) -> Result<LayoutSnapshot, String> {
+    let project = deletion.project();
+    let rows = deletion.rows();
+    let token = {
+        let mut deletions = lock(
+            application.state::<ManagedDeletions>().inner(),
+            "pending deletions",
+        )?;
+        if rows
+            .iter()
+            .any(|row| deletions.is_pending((project, *row as u32)))
+        {
+            return Err("It is already being deleted".into());
+        }
+        deletions.begin(deletion)
+    };
+    let snapshot = update_layout(application, |layout| {
+        layout.set_threads_hidden(project, &rows, true);
         layout.show_toast(message, Some(token));
     })?;
     let handle = application.clone();
@@ -218,7 +265,8 @@ pub fn delete_thread(
     Ok(snapshot)
 }
 
-/// Undo within the 5 s: the thread is back exactly as it was, since nothing was touched.
+/// Undo within the 5 s: the thread or swarm is back exactly as it was, since nothing was
+/// touched.
 #[tauri::command]
 #[specta::specta]
 pub fn undo_delete_thread(application: AppHandle, deletion: u32) -> Result<LayoutSnapshot, String> {
@@ -228,91 +276,183 @@ pub fn undo_delete_thread(application: AppHandle, deletion: u32) -> Result<Layou
     )?
     .undo(deletion);
     update_layout(&application, |layout| {
-        if let Some((project, thread)) = undone {
-            layout.set_threads_hidden(project, &[thread as usize], false);
+        if let Some(undone) = undone {
+            layout.set_threads_hidden(undone.project(), &undone.rows(), false);
         }
         layout.clear_deletion_toast(deletion);
     })
 }
 
-/// The undo window is over: stop the agent, remove the worktree, close the PR and drop the
-/// record. A worktree that cannot be removed keeps the thread, so nothing is lost silently.
+/// The undo window is over: the deletion lands unless Undo took it first.
 async fn land(application: &AppHandle, token: u32) {
     let landed = lock(
         application.state::<ManagedDeletions>().inner(),
         "pending deletions",
     )
     .map(|mut deletions| deletions.land(token));
-    let Ok(Some(key)) = landed else {
+    let Ok(Some(deletion)) = landed else {
         return;
     };
-    let action = match crate::threads::action_lock(application, key) {
-        Ok(action) => action,
-        Err(error) => return report(Err::<(), _>(error)),
-    };
-    let _action = action.lock_owned().await;
     report(update_layout(application, |layout| layout.clear_deletion_toast(token)).map(|_| ()));
-    let outcome = match land_effects(application, key).await {
-        Ok(()) => remove_record(application, key),
-        Err(error) => Err(error),
-    };
-    if let Err(error) = outcome {
-        report(
-            update_layout(application, |layout| {
-                layout.set_threads_hidden(key.0, &[key.1 as usize], false);
-                layout.show_toast(error.clone(), None);
-            })
-            .map(|_| ()),
-        );
+    match deletion {
+        Deletion::Thread(key) => {
+            let problems = land_thread(application, key).await;
+            show_problems(application, key.0, &[key.1 as usize], &problems);
+        }
+        Deletion::Swarm {
+            project,
+            swarm,
+            members,
+        } => crate::swarm_deletion::land(application, project, swarm, members).await,
     }
 }
 
-async fn land_effects(application: &AppHandle, key: ThreadKey) -> Result<(), String> {
-    let (repository, thread) = find_saved_thread(application, key)?;
-    let mut plan = plan_deletion(&repository, &thread);
+/// Stops the agent, removes the worktree, closes the PR and drops the record. The record
+/// always goes (#283): a worktree that cannot be removed yet is saved with the deletion and
+/// retried in the background, and an agent that is slow to exit or a PR that will not close
+/// is reported rather than bringing the thread back. Returns what went wrong.
+pub(crate) async fn land_thread(application: &AppHandle, key: ThreadKey) -> Vec<String> {
+    let action = match crate::threads::action_lock(application, key) {
+        Ok(action) => action,
+        Err(error) => return Vec::from([error]),
+    };
+    let _action = action.lock_owned().await;
+    let (repository, thread) = match find_saved_thread(application, key) {
+        Ok(found) => found,
+        // Already gone: nothing is left to delete.
+        Err(_) => return Vec::new(),
+    };
+    let plan = plan_deletion(&repository, &thread);
+    let stop = stop_agent(application, key).await;
+    let (kept, mut problems) = run_effects(plan, &thread, stop).await;
+    if let Err(error) = crate::airc_claims::release(application, key) {
+        problems.push(format!("its claims were not released: {error}"));
+    }
+    let removed = lock(
+        application.state::<ManagedStateStore>().inner(),
+        "persisted state",
+    )
+    .and_then(|mut store| {
+        store
+            .remove_deleted_thread(key.0, key.1, kept)
+            .map_err(|error| error.to_string())
+    });
+    match removed {
+        Ok(_) => problems
+            .into_iter()
+            .map(|problem| format!("Deleted “{}”, but {problem}", thread.title))
+            .collect(),
+        Err(error) => Vec::from([format!("Could not delete “{}”: {error}", thread.title)]),
+    }
+}
+
+/// How the thread's agent took the stop.
+enum AgentStop {
+    Exited,
+    /// Its worktree is still being set up; the launch removes it once setup ends.
+    SettingUp,
+    /// It has not exited (or its exit was not confirmed) yet, so its worktree is left for
+    /// the background retry, which waits until it has.
+    StillRunning,
+}
+
+async fn stop_agent(application: &AppHandle, key: ThreadKey) -> AgentStop {
     application
         .state::<velocity_interview::Interviews>()
         .stop_agent(key);
     let stopped = lock(
         application.state::<ManagedThreads>().inner(),
         "thread sessions",
-    )?
-    .stop(key);
-    match stopped {
-        StopOutcome::Stopping(ended) => {
-            tokio::time::timeout(AGENT_EXIT_WAIT, ended)
-                .await
-                .map_err(|_| "The agent is still stopping; its worktree was kept".to_owned())?
-                .map_err(|error| error.to_string())?;
+    )
+    .map(|mut runtimes| runtimes.stop(key));
+    let outcome = match stopped {
+        Ok(StopOutcome::Stopping(ended)) => {
+            match tokio::time::timeout(AGENT_EXIT_WAIT, ended).await {
+                Ok(Ok(())) => AgentStop::Exited,
+                _ => AgentStop::StillRunning,
+            }
         }
-        // The launch removes the worktree itself once setup ends.
-        StopOutcome::SettingUp => plan.remove_worktree = None,
-        StopOutcome::NotRunning => {}
-    }
-    if lock(
+        Ok(StopOutcome::SettingUp) => AgentStop::SettingUp,
+        Ok(StopOutcome::NotRunning) => AgentStop::Exited,
+        Err(_) => AgentStop::StillRunning,
+    };
+    let unconfirmed = lock(
         application.state::<ManagedThreads>().inner(),
         "thread sessions",
-    )?
-    .shutdown_failed(key)
-    {
-        return Err("Agent shutdown was not confirmed; its worktree was kept".into());
+    )
+    .map_or(true, |runtimes| runtimes.shutdown_failed(key));
+    match outcome {
+        AgentStop::Exited if unconfirmed => AgentStop::StillRunning,
+        outcome => outcome,
     }
-    tauri::async_runtime::spawn_blocking(move || {
-        if let Some(worktree) = &plan.remove_worktree {
-            velocity_threads::deletion::remove_owned_worktree(
+}
+
+/// Removes the worktree and closes the PR off the async runtime. Returns the worktree when
+/// it is still on disk, to be retried, and what went wrong.
+async fn run_effects(
+    plan: DeletionPlan,
+    thread: &ThreadItem,
+    stop: AgentStop,
+) -> (Option<DeletedWorktree>, Vec<String>) {
+    let worktree = plan.remove_worktree.as_ref().and_then(|_| {
+        let path = thread.worktree_path.clone()?;
+        Some(DeletedWorktree::new(
+            thread.id,
+            path,
+            thread.branch_name.clone(),
+        ))
+    });
+    let worktree = match stop {
+        AgentStop::SettingUp => None,
+        _ => worktree,
+    };
+    let exited = matches!(stop, AgentStop::Exited);
+    let kept = worktree.clone();
+    let outcome = tauri::async_runtime::spawn_blocking(move || {
+        let mut problems = Vec::new();
+        let removed = match (&plan.remove_worktree, &kept) {
+            (Some(path), Some(_)) if exited => velocity_threads::deletion::remove_owned_worktree(
                 &plan.repository,
-                worktree,
+                path,
                 &plan.branch,
-            )?;
+            )
+            .map_err(|error| error.to_string()),
+            (Some(_), Some(_)) => Err("its agent is still exiting".to_owned()),
+            _ => Ok(()),
+        };
+        if let Err(error) = &removed {
+            problems.push(format!(
+                "its worktree is kept until it can be removed ({error})"
+            ));
         }
-        if let Some(number) = plan.close_pull_request {
-            close_pull_request(&plan.repository, number)?;
+        if let Some(number) = plan.close_pull_request
+            && let Err(error) = close_pull_request(&plan.repository, number)
+        {
+            problems.push(format!("its PR stays open ({error})"));
         }
-        Ok::<(), velocity_threads::DeletionError>(())
+        (removed.err().and(kept), problems)
     })
-    .await
-    .map_err(|error| error.to_string())?
-    .map_err(|error| error.to_string())
+    .await;
+    outcome.unwrap_or_else(|error| (worktree, Vec::from([error.to_string()])))
+}
+
+/// The deletion's rows leave their hidden state (their records are gone, unless dropping
+/// one failed), and anything that went wrong is shown.
+pub(crate) fn show_problems(
+    application: &AppHandle,
+    project: u32,
+    rows: &[usize],
+    problems: &[String],
+) {
+    report(
+        update_layout(application, |layout| {
+            layout.set_threads_hidden(project, rows, false);
+            if !problems.is_empty() {
+                layout.show_toast(problems.join(" · "), None);
+            }
+        })
+        .map(|_| ()),
+    );
 }
 
 /// Like [`find_thread`], but for any saved project: the user may have switched projects
@@ -334,21 +474,6 @@ fn find_saved_thread(
     Ok((PathBuf::from(&project.repository_path), thread.clone()))
 }
 
-fn remove_record(application: &AppHandle, key: ThreadKey) -> Result<(), String> {
-    crate::airc_claims::release(application, key)?;
-    lock(
-        application.state::<ManagedStateStore>().inner(),
-        "persisted state",
-    )?
-    .remove_thread(key.0, key.1)
-    .map_err(|error| error.to_string())?;
-    update_layout(application, |layout| {
-        // The row is gone from the store, so the hidden mark has nothing left to hide.
-        layout.set_threads_hidden(key.0, &[key.1 as usize], false);
-    })
-    .map(|_| ())
-}
-
 fn show_toast(
     application: &AppHandle,
     message: String,
@@ -361,7 +486,7 @@ fn show_toast(
 }
 
 /// Applies `change` to the main window over fresh saved state and publishes the snapshot.
-fn update_layout(
+pub(crate) fn update_layout(
     application: &AppHandle,
     change: impl FnOnce(&mut velocity_core::layout_state::LayoutState),
 ) -> Result<LayoutSnapshot, String> {

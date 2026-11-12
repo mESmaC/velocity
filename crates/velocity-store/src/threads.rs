@@ -174,40 +174,50 @@ impl StateStore {
     /// project's active thread. Returns the removed record.
     pub fn remove_thread(&mut self, project: u32, thread: u32) -> Result<ThreadItem, ThreadError> {
         let mut next = self.state.clone();
-        let item = next
-            .projects
-            .iter_mut()
-            .find(|item| item.id == project)
-            .ok_or(ThreadError::UnknownProject(project))?;
-        let position = item
-            .threads
-            .iter()
-            .position(|record| record.id == thread)
-            .ok_or(ThreadError::UnknownThread { project, thread })?;
-        let removed = item.threads.remove(position);
-        if removed.state == crate::ThreadState::Merged
-            && let Some(section) = &removed.spec_section
-            && !item.built_spec_sections.contains(section)
-        {
-            item.built_spec_sections.push(section.clone());
-        }
-        for task in &mut item.tasks {
-            if task.assigned_thread_id == Some(thread) || removed.task_ids.contains(&task.id) {
-                task.assigned_thread_id = None;
-                if task.state == TaskState::Now {
-                    task.state = TaskState::Todo;
-                }
-            }
-        }
-        if item.active_thread_id == Some(thread) {
-            item.active_thread_id = None;
-        }
-        if let Some(started) = next.thread_started_at.get_mut(&project) {
-            started.remove(&thread);
-        }
+        let removed = remove_thread_record(&mut next, project, thread)?;
         self.commit(next)?;
         Ok(removed)
     }
+}
+
+/// Takes a thread's record out of `next`, as [`StateStore::remove_thread`] describes.
+pub(crate) fn remove_thread_record(
+    next: &mut crate::PersistedState,
+    project: u32,
+    thread: u32,
+) -> Result<ThreadItem, ThreadError> {
+    let item = next
+        .projects
+        .iter_mut()
+        .find(|item| item.id == project)
+        .ok_or(ThreadError::UnknownProject(project))?;
+    let position = item
+        .threads
+        .iter()
+        .position(|record| record.id == thread)
+        .ok_or(ThreadError::UnknownThread { project, thread })?;
+    let removed = item.threads.remove(position);
+    if removed.state == crate::ThreadState::Merged
+        && let Some(section) = &removed.spec_section
+        && !item.built_spec_sections.contains(section)
+    {
+        item.built_spec_sections.push(section.clone());
+    }
+    for task in &mut item.tasks {
+        if task.assigned_thread_id == Some(thread) || removed.task_ids.contains(&task.id) {
+            task.assigned_thread_id = None;
+            if task.state == TaskState::Now {
+                task.state = TaskState::Todo;
+            }
+        }
+    }
+    if item.active_thread_id == Some(thread) {
+        item.active_thread_id = None;
+    }
+    if let Some(started) = next.thread_started_at.get_mut(&project) {
+        started.remove(&thread);
+    }
+    Ok(removed)
 }
 
 /// Records a `working` thread in `next` and makes it the project's active thread.

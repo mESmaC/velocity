@@ -130,6 +130,8 @@ export const commands = {
 	launchSwarm: (request: LaunchSwarmRequest_Deserialize) => __TAURI_INVOKE<LayoutSnapshot_Serialize>("launch_swarm", { request }),
 	/**  + Items: the same launch, adding members to an existing swarm. */
 	addToSwarm: (request: LaunchSwarmRequest_Deserialize) => __TAURI_INVOKE<LayoutSnapshot_Serialize>("add_to_swarm", { request }),
+	/**  Hides the swarm and its members at once and offers Undo; the deletion lands after 5 s. */
+	deleteSwarm: (projectIdentifier: number, swarmIdentifier: number) => __TAURI_INVOKE<LayoutSnapshot_Serialize>("delete_swarm", { projectIdentifier, swarmIdentifier }),
 	addTask: (projectIdentifier: number, title: string) => __TAURI_INVOKE<TaskItem_Serialize>("add_task", { projectIdentifier, title }),
 	listTasks: (projectIdentifier: number) => __TAURI_INVOKE<TaskView_Serialize[]>("list_tasks", { projectIdentifier }),
 	getThreadMenu: (threadIdentifier: number) => __TAURI_INVOKE<ThreadMenuView_Serialize | null>("get_thread_menu", { threadIdentifier }),
@@ -140,7 +142,10 @@ export const commands = {
 	runThreadMenuAction: (projectIdentifier: number, threadIdentifier: number, action: ThreadMenuAction) => __TAURI_INVOKE<null>("run_thread_menu_action", { projectIdentifier, threadIdentifier, action }),
 	/**  Hides the thread at once and offers Undo; the deletion lands after 5 s (F12). */
 	deleteThread: (projectIdentifier: number, threadIdentifier: number) => __TAURI_INVOKE<LayoutSnapshot_Serialize>("delete_thread", { projectIdentifier, threadIdentifier }),
-	/**  Undo within the 5 s: the thread is back exactly as it was, since nothing was touched. */
+	/**
+	 *  Undo within the 5 s: the thread or swarm is back exactly as it was, since nothing was
+	 *  touched.
+	 */
 	undoDeleteThread: (deletion: number) => __TAURI_INVOKE<LayoutSnapshot_Serialize>("undo_delete_thread", { deletion }),
 	getUpdateStatus: () => __TAURI_INVOKE<UpdateView_Serialize>("get_update_status"),
 	checkForUpdate: () => __TAURI_INVOKE<UpdateView_Serialize>("check_for_update"),
@@ -4293,6 +4298,8 @@ export type ThreadMenuView_Deserialize = {
 	thread_identifier: number,
 	entries: ThreadMenuEntry_Deserialize[],
 	message_mode?: ThreadMessageMode | null,
+	/**  The row is a swarm or goal swarm: its Delete is `delete_swarm` (F10, F12). */
+	swarm: boolean,
 };
 
 /**  One thread's right-click menu, built from saved state and what is on disk. */
@@ -4302,6 +4309,8 @@ export type ThreadMenuView_Serialize = {
 	thread_identifier: number,
 	entries: ThreadMenuEntry_Serialize[],
 	message_mode: ThreadMessageMode | null,
+	/**  The row is a swarm or goal swarm: its Delete is `delete_swarm` (F10, F12). */
+	swarm: boolean,
 };
 
 export type ThreadMessageMode = {

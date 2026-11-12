@@ -5,7 +5,7 @@ use std::collections::BTreeSet;
 
 use velocity_core::goal_swarm_view::{
     BoardPiece, ClaimHolder, GoalAgentProgress, GoalClaimsBoard, GoalSwarmEntry, MergedPiece,
-    claims_board, goal_sidebar_summary,
+    claims_board, goal_row_summary,
 };
 use velocity_core::layout_view::ThreadEntry;
 use velocity_core::work_pool::{WorkKey, WorkPool};
@@ -117,24 +117,8 @@ pub(crate) fn goal_membership(
 
 /// The goal swarm's row under Swarms: target icon, "Goal · <prompt>", ×N, segment bar.
 pub(crate) fn goal_swarm_row(entry: &GoalSwarmEntry) -> ThreadEntry {
-    use velocity_core::state::ThreadState as CoreThreadState;
-    let agents: Vec<_> = entry
-        .agents
-        .iter()
-        .filter(|agent| {
-            !matches!(
-                agent.state,
-                CoreThreadState::Merged | CoreThreadState::Done | CoreThreadState::Closed
-            )
-        })
-        .cloned()
-        .collect();
-    ThreadEntry::swarm_row(
-        entry.identifier,
-        entry.title.clone(),
-        goal_sidebar_summary(&agents),
-        agents.len(),
-    )
+    let (agents, metadata) = goal_row_summary(&entry.agents);
+    ThreadEntry::swarm_row(entry.identifier, entry.title.clone(), metadata, agents)
 }
 
 /// The claims board for one goal swarm: every piece in `pool`, held pieces with their

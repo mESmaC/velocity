@@ -786,23 +786,13 @@ impl LayoutState {
     }
 
     fn active_swarm_snapshot(&self) -> Option<SwarmViewSnapshot> {
-        let identifier = self.selected_thread?;
-        let entry = self
-            .data
-            .swarms
-            .iter()
-            .find(|entry| entry.identifier == identifier)?;
-        Some(swarm::project_swarm_view(entry))
+        let entry = self.listed_swarm(self.selected_thread?, false)?;
+        Some(swarm::project_swarm_view(&entry))
     }
 
     fn active_goal_swarm_snapshot(&self) -> Option<GoalSwarmViewSnapshot> {
-        let identifier = self.selected_thread?;
-        let entry = self
-            .data
-            .goal_swarms
-            .iter()
-            .find(|entry| entry.identifier == identifier)?;
-        Some(goal_swarm_view::project_goal_swarm_view(entry))
+        let entry = self.listed_goal_swarm(self.selected_thread?, false)?;
+        Some(goal_swarm_view::project_goal_swarm_view(&entry))
     }
 
     fn default_model_pill(&self) -> ModelPillView {
@@ -1239,6 +1229,9 @@ impl LayoutState {
         number: &mut usize,
     ) -> SidebarRow {
         *number = number.saturating_add(1);
+        let (agents, metadata) = self
+            .swarm_row_summary(entry.policy.identifier)
+            .unwrap_or_else(|| (entry.policy.agent_count, entry.metadata.clone()));
         SidebarRow {
             identifier: entry.policy.identifier,
             title: entry.title.clone(),
@@ -1246,14 +1239,14 @@ impl LayoutState {
                 || self
                     .live_thread(entry.policy.identifier)
                     .is_some_and(|live| live.titling_model.is_some()),
-            metadata: entry.metadata.clone(),
+            metadata,
             group: entry.policy.group,
             duty_role: entry.duty.as_ref().map(|duty| duty.role),
             member,
             expanded,
             active: self.selected_thread == Some(entry.policy.identifier),
             paused: entry.policy.paused,
-            agents: entry.policy.agent_count,
+            agents,
             number: if *number <= 9 { Some(*number) } else { None },
             segments: self.row_segments(entry.policy.identifier),
             goal: self
@@ -1266,44 +1259,65 @@ impl LayoutState {
 
     /// A swarm or goal swarm row's segment bar, one segment per member or agent.
     fn row_segments(&self, identifier: usize) -> Vec<swarm::SwarmStage> {
-        if let Some(goal) = self
+        if let Some(goal) = self.listed_goal_swarm(identifier, true) {
+            return goal_swarm_view::goal_segments(&goal.agents);
+        }
+        self.listed_swarm(identifier, true)
+            .map(|swarm| swarm::segments(&swarm.members))
+            .unwrap_or_default()
+    }
+
+    /// A swarm or goal swarm row's ×N and meta line, from the members nested under it.
+    fn swarm_row_summary(&self, identifier: usize) -> Option<(usize, String)> {
+        if let Some(goal) = self.listed_goal_swarm(identifier, true) {
+            return Some(goal_swarm_view::goal_row_summary(&goal.agents));
+        }
+        self.listed_swarm(identifier, true)
+            .map(|swarm| swarm::row_summary(&swarm::segments(&swarm.members)))
+    }
+
+    /// Whether a member still counts for its swarm. A member in its 5 s undo window is
+    /// hidden, so it leaves the swarm's counts, bar and cards at once, like its row (#283).
+    /// The sidebar row also leaves out finished members, which move to Settled (§2.1);
+    /// the swarm view keeps their cards.
+    fn listed_member(&self, swarm: usize, thread: usize, nested_only: bool) -> bool {
+        self.data.threads.iter().any(|row| {
+            row.policy.identifier == thread
+                && !row.policy.hidden
+                && (!nested_only || row.policy.member_of == Some(swarm))
+        })
+    }
+
+    /// The swarm with only the members that still count (see [`Self::listed_member`]).
+    fn listed_swarm(&self, identifier: usize, nested_only: bool) -> Option<swarm::SwarmEntry> {
+        let mut entry = self
+            .data
+            .swarms
+            .iter()
+            .find(|swarm| swarm.identifier == identifier)?
+            .clone();
+        entry
+            .members
+            .retain(|member| self.listed_member(identifier, member.identifier, nested_only));
+        Some(entry)
+    }
+
+    /// The goal swarm with only the agents that still count.
+    fn listed_goal_swarm(
+        &self,
+        identifier: usize,
+        nested_only: bool,
+    ) -> Option<goal_swarm_view::GoalSwarmEntry> {
+        let mut entry = self
             .data
             .goal_swarms
             .iter()
-            .find(|goal| goal.identifier == identifier)
-        {
-            let agents: Vec<_> = goal
-                .agents
-                .iter()
-                .filter(|agent| {
-                    self.data.threads.iter().any(|thread| {
-                        thread.policy.identifier == agent.thread_identifier
-                            && thread.policy.member_of == Some(identifier)
-                    })
-                })
-                .cloned()
-                .collect();
-            return goal_swarm_view::goal_segments(&agents);
-        }
-        self.data
-            .swarms
-            .iter()
-            .find(|swarm| swarm.identifier == identifier)
-            .map(|swarm| {
-                let members: Vec<_> = swarm
-                    .members
-                    .iter()
-                    .filter(|member| {
-                        self.data.threads.iter().any(|thread| {
-                            thread.policy.identifier == member.identifier
-                                && thread.policy.member_of == Some(identifier)
-                        })
-                    })
-                    .cloned()
-                    .collect();
-                swarm::segments(&members)
-            })
-            .unwrap_or_default()
+            .find(|goal| goal.identifier == identifier)?
+            .clone();
+        entry
+            .agents
+            .retain(|agent| self.listed_member(identifier, agent.thread_identifier, nested_only));
+        Some(entry)
     }
 
     fn pulse(&self) -> Vec<PulseCount> {

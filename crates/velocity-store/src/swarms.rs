@@ -108,6 +108,40 @@ pub fn live_members<'a>(
     })
 }
 
+/// The saved threads of a swarm or goal swarm, every round included, or `None` when the
+/// project has no swarm with this identifier (F10, F16).
+pub fn swarm_member_threads(project: &ProjectItem, swarm: u32) -> Option<Vec<u32>> {
+    let mut members: Vec<u32> = if let Some(record) = project.swarms.iter().find(|s| s.id == swarm)
+    {
+        live_members(project, record)
+            .map(|(_, thread)| thread.id)
+            .collect()
+    } else {
+        let record = project.goal_swarms.iter().find(|s| s.id == swarm)?;
+        let recorded: Vec<u32> = record
+            .members
+            .iter()
+            .flat_map(|member| member.thread.iter().chain(&member.merged_threads))
+            .copied()
+            .collect();
+        project
+            .threads
+            .iter()
+            .filter(|thread| {
+                recorded.contains(&thread.id)
+                    || thread
+                        .goal_member
+                        .as_ref()
+                        .is_some_and(|goal| goal.swarm_id == swarm)
+            })
+            .map(|thread| thread.id)
+            .collect()
+    };
+    members.sort_unstable();
+    members.dedup();
+    Some(members)
+}
+
 /// Every member has merged: "Swarm finished · all N PRs merged".
 pub fn swarm_finished(project: &ProjectItem, swarm: &SwarmRecord) -> bool {
     let mut members = live_members(project, swarm).peekable();
@@ -116,6 +150,24 @@ pub fn swarm_finished(project: &ProjectItem, swarm: &SwarmRecord) -> bool {
 }
 
 impl StateStore {
+    /// Drops a deleted swarm or goal swarm's record once its members are gone (F10, F12).
+    /// `false` when it no longer exists.
+    pub fn remove_swarm(&mut self, project: u32, swarm: u32) -> Result<bool, ThreadError> {
+        let mut next = self.state.clone();
+        let item = project_mut(&mut next, project)?;
+        let before = item.swarms.len() + item.goal_swarms.len();
+        item.swarms.retain(|record| record.id != swarm);
+        item.goal_swarms.retain(|record| record.id != swarm);
+        if item.swarms.len() + item.goal_swarms.len() == before {
+            return Ok(false);
+        }
+        if item.active_thread_id == Some(swarm) {
+            item.active_thread_id = None;
+        }
+        self.commit(next)?;
+        Ok(true)
+    }
+
     /// Records a new swarm on the active project, or returns `into` when + Items adds to one.
     pub fn open_swarm(
         &mut self,
@@ -311,34 +363,12 @@ fn member_progress(
 pub(crate) fn swarm_row(
     entry: &velocity_core::swarm::SwarmEntry,
 ) -> velocity_core::layout_view::ThreadEntry {
-    use velocity_core::layout::{LayoutRow, ThreadGroup};
-    use velocity_core::state::ThreadState as CoreThreadState;
-    let members: Vec<_> = entry
-        .members
-        .iter()
-        .filter(|member| {
-            !matches!(
-                member.state,
-                CoreThreadState::Merged | CoreThreadState::Done | CoreThreadState::Closed
-            )
-        })
-        .cloned()
-        .collect();
-    velocity_core::layout_view::ThreadEntry {
-        policy: LayoutRow {
-            identifier: entry.identifier,
-            group: ThreadGroup::Swarm,
-            hidden: false,
-            matches_search: true,
-            member_of: None,
-            expanded: false,
-            agent_count: members.len(),
-            paused: false,
-        },
-        title: entry.title.clone(),
-        metadata: velocity_core::swarm::sidebar_summary(&members),
-        view: velocity_core::navigation::NavigationView::Swarm,
-        detail: None,
-        duty: None,
-    }
+    use velocity_core::swarm::{row_summary, segments};
+    let (agents, metadata) = row_summary(&segments(&entry.members));
+    velocity_core::layout_view::ThreadEntry::swarm_row(
+        entry.identifier,
+        entry.title.clone(),
+        metadata,
+        agents,
+    )
 }
