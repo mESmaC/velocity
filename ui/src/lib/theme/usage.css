@@ -1,25 +1,67 @@
-/* The footer usage panel (SPEC.md F15). The reference UI mocks no usage panel, so it reuses
-   the reference's popover values (the thread menu frame and the model menu heads) and the
-   limit bar from Settings → Providers. Provider colours come from the footer meter's
-   [data-provider] rules in layout.css. */
-.sidebar-foot:has(.usage-panel) {
-  position: relative;
+/* The usage modal (SPEC.md F15 Usage, F19 Measuring it). Its frame copies the reference's
+   modal values through the --usage-modal-* tokens in reference.css. The limit rows reuse the
+   reference's popover values (the model menu heads) and the limit bar from Settings →
+   Providers. Provider colours come from the footer meter's [data-provider] rules in
+   layout.css. */
+.usage-dialog {
+  position: fixed;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  max-width: none;
+  max-height: none;
+  margin: 0;
+  padding: 0;
+  border: 0;
+  background: none;
+  color: var(--text);
 }
-.usage-panel {
-  position: absolute;
-  left: 0;
-  right: 0;
-  bottom: var(--providers-menu-bottom);
-  z-index: var(--thread-menu-z-index);
-  max-height: var(--providers-menu-max-height);
-  overflow-y: auto;
-  padding: var(--thread-menu-padding);
-  border: var(--thread-menu-border);
-  border-radius: var(--thread-menu-radius);
+.usage-dialog[open] {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+.usage-dialog::backdrop {
+  background: var(--usage-modal-scrim-background);
+  backdrop-filter: var(--usage-modal-scrim-backdrop-filter);
+}
+.usage-modal {
+  display: flex;
+  flex-direction: column;
+  width: var(--usage-modal-width);
+  max-height: var(--usage-modal-max-height);
+  border: var(--usage-modal-border);
+  border-radius: var(--usage-modal-border-radius);
   background: var(--glass-pop);
-  box-shadow: var(--thread-menu-shadow);
+  box-shadow: var(--usage-modal-box-shadow);
   backdrop-filter: var(--blur-pop);
   -webkit-backdrop-filter: var(--blur-pop);
+  overflow: hidden;
+}
+.usage-modal-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  padding: var(--usage-modal-header-padding);
+}
+.usage-modal-head h2 {
+  margin: 0;
+  font-size: var(--usage-modal-title-font-size);
+  font-weight: var(--usage-modal-title-font-weight);
+  letter-spacing: var(--usage-modal-title-letter-spacing);
+  color: var(--usage-modal-title-color);
+}
+.usage-modal .label {
+  font-size: var(--usage-modal-label-font-size);
+  color: var(--text-2);
+}
+.usage-modal-body {
+  display: flex;
+  flex-direction: column;
+  gap: var(--usage-modal-body-gap);
+  min-height: 0;
+  overflow-y: auto;
+  padding: var(--usage-modal-body-padding);
 }
 .usage-title {
   padding: var(--providers-menu-head-padding);
@@ -91,7 +133,7 @@
   font: var(--providers-meta-font);
   color: var(--muted);
 }
-.usage-panel hr {
+.usage-modal hr {
   margin: var(--thread-menu-divider-margin);
   border: 0;
   border-top: var(--thread-menu-divider-top);
@@ -107,4 +149,108 @@
 .usage-link:hover {
   background: var(--thread-menu-button-hover);
   color: var(--text);
+}
+.usage-graph-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+.usage-seg {
+  display: inline-flex;
+  gap: var(--usage-modal-segment-gap);
+  padding: var(--usage-modal-segment-padding);
+  border-radius: var(--usage-modal-segment-border-radius);
+  background: var(--usage-modal-segment-background);
+  box-shadow: var(--usage-modal-segment-box-shadow);
+}
+.usage-seg button {
+  height: var(--usage-modal-segment-button-height);
+  padding: var(--usage-modal-segment-button-padding);
+  border-radius: var(--usage-modal-segment-button-border-radius);
+  font-size: var(--usage-modal-segment-button-font-size);
+  color: var(--text-2);
+}
+.usage-seg button.on {
+  background: var(--usage-modal-segment-on-background);
+  color: var(--usage-modal-segment-on-color);
+  box-shadow: var(--usage-modal-segment-on-box-shadow);
+}
+.usage-compare {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: var(--providers-status-font-size);
+}
+.usage-compare th,
+.usage-compare td {
+  padding: var(--providers-menu-item-padding);
+  text-align: right;
+  white-space: nowrap;
+}
+.usage-compare th:first-child,
+.usage-compare td:first-child {
+  text-align: left;
+  color: var(--text-2);
+}
+.usage-compare thead th {
+  font-weight: var(--providers-name-font-weight);
+  color: var(--text);
+}
+.usage-compare td {
+  font: var(--providers-meta-font);
+  color: var(--text);
+}
+.usage-verdict {
+  margin: 0;
+  padding: var(--providers-menu-item-padding);
+  font-size: var(--providers-status-font-size);
+  color: var(--text);
+}
+.usage-verdict.pending {
+  color: var(--muted);
+}
+.usage-graph-foot {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: var(--providers-menu-item-padding);
+  font: var(--providers-meta-font);
+  color: var(--muted);
+}
+.usage-button {
+  height: var(--usage-modal-button-height);
+  padding: var(--usage-modal-button-padding);
+  border: var(--usage-modal-button-border);
+  border-radius: var(--usage-modal-button-border-radius);
+  background: var(--usage-modal-button-background);
+  box-shadow: var(--usage-modal-button-box-shadow);
+  font-size: var(--usage-modal-button-font-size);
+  color: var(--text);
+}
+.usage-button:hover {
+  border-color: var(--usage-modal-button-hover-border-color);
+}
+/* The footer popover frame. The Updates panel uses it (SPEC.md F1 Updates). */
+.sidebar-foot:has(.usage-panel) {
+  position: relative;
+}
+.usage-panel {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: var(--providers-menu-bottom);
+  z-index: var(--thread-menu-z-index);
+  max-height: var(--providers-menu-max-height);
+  overflow-y: auto;
+  padding: var(--thread-menu-padding);
+  border: var(--thread-menu-border);
+  border-radius: var(--thread-menu-radius);
+  background: var(--glass-pop);
+  box-shadow: var(--thread-menu-shadow);
+  backdrop-filter: var(--blur-pop);
+  -webkit-backdrop-filter: var(--blur-pop);
+}
+.usage-panel hr {
+  margin: var(--thread-menu-divider-margin);
+  border: 0;
+  border-top: var(--thread-menu-divider-top);
 }

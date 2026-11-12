@@ -1,6 +1,9 @@
 //! The warm worktree pool in the app (F5): which projects keep one, and the managed pool the
 //! launch paths take worktrees from.
-use std::sync::Arc;
+use std::collections::HashMap;
+use std::path::Path;
+use std::process::Child;
+use std::sync::{Arc, Mutex};
 
 use tauri::{AppHandle, Manager};
 use velocity_core::ready_pool::SlotState;
@@ -15,13 +18,17 @@ pub type ManagedReadyPools = ReadyPools;
 /// The owner name ready worktrees show under in Settings → Worktrees.
 const POOL_OWNER: &str = "warm pool";
 
-struct Host(AppHandle);
+struct Host {
+    application: AppHandle,
+    /// Each project's running graph warming, so a merge that catches up four slots warms once.
+    warming: Mutex<HashMap<u32, Child>>,
+}
 
 impl PoolHost for Host {
     /// Projects whose spec is locked: only they start build work (Rule 2), so only they
     /// need worktrees ready.
     fn projects(&self) -> Vec<(PoolProject, WorktreePreferences)> {
-        let state = self.0.state::<ManagedStateStore>();
+        let state = self.application.state::<ManagedStateStore>();
         let Ok(store) = state.lock() else {
             return Vec::new();
         };
@@ -40,12 +47,44 @@ impl PoolHost for Host {
 
     /// Settings → Worktrees re-reads its rows every second; nothing to push.
     fn changed(&self) {}
+
+    /// Parses what the merge changed into the project's graph cache (F19 Warming), unless a
+    /// warming run for the project is still going: it covers the same tip.
+    fn slot_at_tip(&self, project: u32, slot: &Path) {
+        let mut warming = self
+            .warming
+            .lock()
+            .unwrap_or_else(|poison| poison.into_inner());
+        if let Some(running) = warming.get_mut(&project)
+            && matches!(running.try_wait(), Ok(None))
+        {
+            return;
+        }
+        let (Ok(executable), Ok(app_data)) = (
+            std::env::current_exe(),
+            self.application.path().app_data_dir(),
+        ) else {
+            return;
+        };
+        if !velocity_graph::usage::enabled(&app_data, &project.to_string()) {
+            return;
+        }
+        match velocity_graph::warm(&executable, &app_data, &project.to_string(), slot) {
+            Ok(child) => {
+                warming.insert(project, child);
+            }
+            Err(error) => eprintln!("Velocity code graph warming of {}: {error}", slot.display()),
+        }
+    }
 }
 
 pub fn initialize(application: &AppHandle) -> anyhow::Result<()> {
     let pools = ReadyPools::new();
     application.manage(pools.clone());
-    pools.start(Arc::new(Host(application.clone())))?;
+    pools.start(Arc::new(Host {
+        application: application.clone(),
+        warming: Mutex::default(),
+    }))?;
     Ok(())
 }
 

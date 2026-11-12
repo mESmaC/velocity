@@ -17,5 +17,9 @@ fn main() -> anyhow::Result<()> {
     if velocity_app_lib::airc_access::serve_airc_server()? {
         return Ok(());
     }
+    // Every agent session also starts it as its code graph MCP server (F19).
+    if velocity_app_lib::graph_access::serve_graph_server()? {
+        return Ok(());
+    }
     velocity_app_lib::run()
 }

@@ -11,12 +11,14 @@ mod airc_delivery;
 mod airc_events;
 mod airc_modal;
 mod build_gate;
+mod code_graph;
 mod diagnostics;
 pub mod duty;
 mod follow_through;
 mod github;
 mod github_requests;
 mod goal_swarm;
+pub mod graph_access;
 mod interview;
 mod issue_panel;
 mod kept_worktrees;
@@ -63,6 +65,9 @@ fn bindings() -> Builder<tauri::Wry> {
         airc_events::airc_ledger,
         airc_modal::get_airc_modal,
         airc_modal::set_airc_message_mode,
+        code_graph::get_code_graph,
+        code_graph::set_code_graph,
+        code_graph::reset_code_graph_usage,
         window::get_window_state,
         window::minimize_window,
         window::toggle_maximize_window,

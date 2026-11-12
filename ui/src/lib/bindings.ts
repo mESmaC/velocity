@@ -18,6 +18,15 @@ export const commands = {
 	getAircModal: (projectIdentifier: number) => __TAURI_INVOKE<AircModalView_Serialize>("get_airc_modal", { projectIdentifier }),
 	/**  User-owned delivery mode, independent of the agent's tool permissions. */
 	setAircMessageMode: (projectIdentifier: number, nick: string, mode: MessageMode) => __TAURI_INVOKE<null>("set_airc_message_mode", { projectIdentifier, nick, mode }),
+	/**  The usage modal's code graph section for a project: its switch and the comparison. */
+	getCodeGraph: (projectIdentifier: number) => __TAURI_INVOKE<GraphComparison>("get_code_graph", { projectIdentifier }),
+	/**
+	 *  Turns the project's graph on or off for agents started from now on. Running agents keep
+	 *  what they started with.
+	 */
+	setCodeGraph: (projectIdentifier: number, enabled: boolean) => __TAURI_INVOKE<GraphComparison>("set_code_graph", { projectIdentifier, enabled }),
+	/**  Clears both sides' totals, so a comparison starts fresh. */
+	resetCodeGraphUsage: (projectIdentifier: number) => __TAURI_INVOKE<GraphComparison>("reset_code_graph_usage", { projectIdentifier }),
 	getWindowState: () => __TAURI_INVOKE<WindowStateChanged>("get_window_state"),
 	minimizeWindow: () => __TAURI_INVOKE<null>("minimize_window"),
 	toggleMaximizeWindow: () => __TAURI_INVOKE<null>("toggle_maximize_window"),
@@ -530,6 +539,21 @@ export type Claim_Serialize = {
 	branch: string,
 	files: string[],
 	since: string,
+};
+
+export type ComparisonSide = {
+	/**  "Graph on" or "Graph off". */
+	label: string,
+	/**  "42". */
+	turns: string,
+	/**  Average tokens per turn: "61.2k", or "–" before any report. */
+	tokens_per_turn: string,
+	/**  Average working time per turn: "48 s". */
+	time_per_turn: string,
+	total_tokens: string,
+	total_time: string,
+	/**  "Tokens reported for 40 of 42 turns", when some turns came without counts. */
+	note: string,
 };
 
 export type CoverageItem = {
@@ -1332,6 +1356,18 @@ export type GoalThreadMember_Serialize = {
 	swarm_id: number,
 	nick: string,
 	choosing: boolean,
+};
+
+/**  The usage modal's code graph section, worked out in Rust (AGENTS.md: no logic in the UI). */
+export type GraphComparison = {
+	enabled: boolean,
+	/**  "Counting since 12 Nov 14:05", or "Counting since the first turn". */
+	since: string,
+	sides: ComparisonSide[],
+	/**  The conclusion, or what's still missing before there can be one. */
+	verdict: string,
+	/**  Whether the verdict compares the two sides (both have enough turns). */
+	conclusive: boolean,
 };
 
 /**  A model you hid from the pickers by clicking its chip (F15 Models). */

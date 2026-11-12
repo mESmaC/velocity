@@ -148,6 +148,7 @@ The native supervisor checks live build threads once a second. Its defaulted che
 | command | `list_providers`, `provider_sign_in { provider }`, `provider_sign_out { provider }`, `install_provider { provider }`, `set_provider_settings { edit }` | Settings → Providers (F15), drawn in Rust. At startup and after each sign-in the backend starts each provider's ACP agent with no prompt: `initialize` gives its sign-in methods, `session/new` succeeds when its login holds (`auth_required` when it doesn't), and its model option lists the models; each model is selected once to read whether it offers a fast mode. The answers are saved in `state.json` as the provider catalog, so pickers are right before the agents answer again. Sign in runs the agent's own login: ACP `authenticate`, or a terminal method's command with no console window; methods that take an API key or bill an API account are never chosen. Sign out (Cancel while waiting) is Velocity's own record *(proposed)*: the agent's login is left alone, so your CLI stays signed in. `install_provider` runs a built-in provider's fixed install steps (F15 Install) for an agent that isn't installed; `provider_sign_out` cancels it while it runs. `set_provider_settings` shows or hides a model chip, sets the optional per-provider concurrency cap, and sets the default model, effort and speed for new threads and the thread title model. |
 | command | `set_provider_command { provider, command }`, `add_custom_agent { name, command }`, `remove_custom_agent { provider }` | ACP agent commands in Settings → Providers (F15). A provider is `claude`, `codex`, `antigravity`, `kimi` or `custom-<id>` for an agent you added. `set_provider_command` takes the program and its arguments as one line (double quotes around a word with spaces, backslashes kept as typed); `null` resets a built-in provider to its built-in command. Add an ACP agent takes a name (not one already in use) and a command, with no environment or key field, and saves it in `state.json`. Removing an added agent drops what was read from it; its threads keep their records, new work can't start on it, and a default or title model on it returns to the built-in default. Each change asks the agent again over ACP with its new command; running agents keep the command they started with. An added agent is offered the known bypass modes (`bypassPermissions`, `full-access`, `yolo`) and has no limit source. |
 | command | `edit_shared_mcp_servers { edit }` | Settings → Agents → shared MCP servers (§3.2 Tool access). `Add { name, target }` reads `target` as an `http://` or `https://` URL, or else as a command line; `Remove { name }` drops one. Names use letters, digits, `-` and `_`, are unique ignoring case, and may not start with `velocity` (Velocity's own servers). Returns the saved list, which `get_settings` also carries as `agents.shared_mcp_servers`. |
+| command | `get_code_graph { project_identifier }`, `set_code_graph { project_identifier, enabled }`, `reset_code_graph_usage { project_identifier }` | The usage modal's Code graph section (F19 Measuring it): the project's switch and the comparison of its graph-on and graph-off totals, worked out in Rust. `set_code_graph` applies to agents started afterwards; `reset_code_graph_usage` clears both sides' totals and starts counting again. Each returns the section's new view. |
 | command | `get_model_menu { project_identifier, thread_identifier? }`, `choose_model { project_identifier, thread_identifier?, choice }` | The composer's model menu (F4), drawn in Rust: signed-in providers with their models and limit, signed-out ones as "Sign in with …", effort and speed. On the home composer a pick changes the defaults. On a thread it is saved on the thread and sent to a live session as `session/set_config_option`, which applies from its next turn and never cancels the running one. A running thread stays on its provider's agent, so other providers' models are listed but not selectable there. |
 | command | `get_proofs_settings { project_identifier }` | Settings → Proofs (F13, F17), read from the project's checkout without building: SPEC.md's proof list (a `Proof list` heading, or the list under a line ending `proof list:`), each tracked `proofs/<Feature>/Design.lean` with the level each language reaches, each language's code-level translator and strongest level, and the stress-diff input count. The count is saved with `set_settings`; scout sweeps diff at least that many inputs per feature against its compiled model. |
 | command | `get_skill_settings { project_identifier }`, `set_skill_settings { project_identifier, edit }` | F18 project pack switches and bundle selections, saved atomically; pinned-manifest skill counts, estimated description tokens and detected requirements |
@@ -216,6 +217,7 @@ How Velocity's features map onto ACP:
 - **Skills:** the project's enabled skill packs (F18) are linked into every agent's worktree, in the folder its provider reads, on top of your own skills.
 - **Shared MCP servers** (Settings → Agents): servers listed here are passed to every agent of every provider in `session/new`, so one list reaches all four providers. When a name is also in an agent's own config, the agent's own entry wins. A server is a command the agent starts (stdio) or a URL (streamable HTTP); it has no environment or header field, so a server that needs a credential reads it from your environment or signs in itself. An HTTP server is sent only to agents that advertise HTTP MCP support in `initialize`. Velocity reads the server names in the files each agent loads (Claude Code: `~/.claude.json` and its entry for the folder, and `.mcp.json`; Codex: `config.toml` in `CODEX_HOME` or `~/.codex`, and `.codex/config.toml`; Antigravity: `~/.gemini/settings.json`, `~/.gemini/antigravity/mcp_config.json` and `.gemini/settings.json`; Kimi Code: `~/.kimi-code/mcp.json` and `~/.kimi/mcp.json`) and leaves a clashing shared server out of `session/new`. New agents get the list; running agents keep the servers they started with.
 - **AIRC:** always passed (F14).
+- **Code graph:** the `velocity-graph` server is always passed, beside AIRC (F19).
 - **Shell, network, toolchains:** the shell runs as you, with your `PATH`, toolchains (cargo, lake, node, python…), credentials and network. There is no sandbox or container.
 - **GitHub:** agents use your signed-in `gh` and git credentials to push, open PRs, review, comment and merge (merging stays PR duty's job, Rule 4).
 - **Worktree:** the working directory, not a jail. Agents can read anything on the machine, such as other repos, docs and caches. Their edits belong in their own worktree (AGENTS.md); edits elsewhere aren't blocked.
@@ -292,7 +294,7 @@ There are two views of the same work, switched from the title bar or with `B`:
 **Sidebar:**
 - search (`/`) and a new-thread button
 - the thread groups (§2.1)
-- a footer with settings, usage, updates, a live worktree count ("8 on D:", click → Settings · Worktrees) and a subscription-limit meter: one bar per signed-in provider, filled to the share of its limit used, coloured by provider. The usage button and the meter both open the usage panel (F15 Usage panel). There is no dollar spend: every provider runs on a subscription.
+- a footer with settings, usage, updates, a live worktree count ("8 on D:", click → Settings · Worktrees) and a subscription-limit meter: one bar per signed-in provider, filled to the share of its limit used, coloured by provider. The usage button and the meter both open the usage modal (F15 Usage modal). There is no dollar spend: every provider runs on a subscription.
   - **Updates:** Velocity checks its GitHub Releases for a newer version 30 seconds after it starts, every 6 hours, and when you press Check for updates. While one is available, the Updates button turns accent-coloured. It opens the Updates panel, which shows the new version, its release notes, how this copy was installed (setup, MSI or portable), how many agents are mid-turn, and **Restart to update**. Restarting stops running turns; worktrees and transcripts are kept, and each stopped turn continues by itself when Velocity starts again (§3.2 Resume after a restart). Every download is verified against Velocity's release signing key, with the version bound into the signature, before anything runs. Setup and MSI copies run their installer, which restarts Velocity. A portable copy replaces its own executable and starts again. Velocity never restarts itself without you pressing the button. There is one channel: the newest release, betas included. A `v*` tag publishes a release (`.github/workflows/release.yml`); development builds check only when asked and never install. A failed check or download shows in the panel, not as a window error.
 
 **Rail:** three panels: Task List, Open Pull Requests, Open Issues. Below them are footer links: AIRC (F14), with an unread badge that turns amber when an overlap is unread, and AGENTS.md.
@@ -932,13 +934,14 @@ Four providers: **Anthropic** (Claude Code agent), **Codex** (Codex CLI agent), 
 - `at limit` (§2.2) never comes from the bar. It is set when an agent's turn fails with its provider's usage-limit error, which carries the reset time when the provider gives one.
 - Every window a report carries is saved with the reading (Claude's 5-hour and weekly, and its per-model weekly windows; Codex's primary and secondary). The fullest one is the headline that the meter, the cards and the pickers show. A live event names only its own window, so the other saved windows keep their last read until the next full read.
 
-**Usage panel.** The footer usage button and the limit meter open a panel above the footer, laid out like T3 Code's usage limits. Rust draws its rows; it updates while open whenever a limit changes (`layout://state`).
+**Usage modal.** The footer usage button and the limit meter open a modal, like AIRC's: a centred window over a dimmed, blurred scrim. It holds the usage limits, laid out like T3 Code's, and the project's code graph section (F19 Measuring it). Rust draws its rows; the limits update while it is open whenever a limit changes (`layout://state`).
 - **Title:** "Usage limits".
 - **A section per signed-in provider,** in card order: its icon, name and plan (`Max`, `Pro`).
 - **A row per subscription window,** shortest first: the window (`5-hour`, `Weekly`) and "resets in 1d 10h" on one line, then a bar of the share left in the provider's colour and "61% left". The tooltip adds the share used and, when the provider gives the window's length and reset time, the share of the window's time left: where even spending would put the bar.
 - **A provider with no window to show** (no source, or a failed read) says "No limits reported." With no provider signed in, the panel says "No provider is signed in."
+- **Code graph** (F19): the active project's On/Off switch and the comparison of its turns with the graph on and off. With no project open, it says so.
 - **Settings · Providers** at the bottom opens that page.
-- Clicking outside the panel, clicking its button again, or Esc closes it. It stays inside the window down to the minimum size, scrolling when it is taller than 60% of the window.
+- Clicking the scrim or Esc closes it. Its body scrolls when it is taller than the window allows.
 
 **Custom ACP agents** (decided, Q19). The four providers are built first. After them, **Add an ACP agent** takes a name, a command and its arguments, as Zed does.
 - The agent gets its own card and works like a built-in provider everywhere a model is chosen. Its models and fast mode are read over ACP, and it runs unrestricted with every tool (Rule 1, §3.2).
@@ -1227,6 +1230,74 @@ The provider-to-folder mapping is a data table in `velocity-skills`, not code, s
 - [ ] The `$` menu lists exactly the project's enabled skills.
 - [ ] Opening a Godot project suggests the router and the Godot bundle, and opening a Svelte app suggests UI UX Pro Max.
 
+### F19 · Code graph
+
+**What it is:** Velocity maps each project's code into a graph of symbols, files and subsystems. Every agent queries it through tools, so it finds the right code with fewer searches and reads only the lines that matter. The aim is less digging: fewer tool calls and fewer tokens per task at the same accuracy. It is built into Velocity, needs no install, and keeps one graph per project for all of the project's agents. Inspired by [Graphify](https://github.com/Graphify-Labs/graphify) (#277). Its accuracy rules come from the A.TXY address memory in MCL4-COE and `elem`: route hard, process soft.
+
+**Accuracy rules:**
+- **Exact or a classified failure.** A lookup returns one exact record, or `ambiguous` (with every candidate), `missing` (with the nearest names) or `stale`. It never guesses between candidates, and a name that matches several symbols is never resolved to one of them.
+- **The graph points; the agent reads.** Every record gives its file, line range and signature, so the agent opens exactly those lines. The graph never stands in for the source.
+- **Never stale.** Every record carries the hash of the source span it came from, and the graph the hash of every file. Before an answer leaves, the files it names are hashed again; a file that changed is re-indexed and the answer is made again from the new records.
+- **Every edge says how it was found.** `extracted` edges are explicit in the source: a definition's container, an import, a call to a name defined in the same file or imported into it, a path-qualified call (`Type::new`, `module::run`). `inferred` edges are resolved by name across the packages the caller's package depends on, with one candidate. A name that matches several definitions is `ambiguous`, kept with its candidates. A method call on a receiver whose type the calling code never names is `unconfirmed`. Programs and impact never follow `ambiguous` or `unconfirmed` links unless asked.
+- **No guessing by common names.** Several rules keep name matches from inventing links (after Graphify's resolver):
+  - A standard type name (`String`, `Result`, `Error`) links only to a definition in the same file or an imported one.
+  - A standard method name (`get`, `len`, `join`, `push`) on a receiver of unknown type links to nothing.
+  - Test, example and stress code is never a candidate for production code.
+  - In JavaScript and TypeScript, a name links only through a definition in the file or an import.
+  - A call inside a macro's arguments is `inferred` at best.
+- **No tool is restricted (Rule 1).** Agents keep Read, Grep and the shell. The tools' instructions say when the graph is the better path (finding a symbol, its callers, what a change affects) and when it isn't (strings, literals, config values, build output).
+- **No model in the index.** Parsing and resolution are deterministic (tree-sitter), so building the graph spends no subscription usage. Docs are read for structure only.
+
+**What it holds** (planes, after A.TXY):
+
+| Plane | Records | Links |
+|---|---|---|
+| 1 · Symbols | functions, methods, types (struct, enum, trait, class, interface), constants, macros, Markdown headings | UP to the file; `calls`, `implements`, `references`; `implements` from a trait method's implementation to its declaration; `calls` from frontend code into a Tauri command (`commands.checkForUpdate`, `invoke("check_for_update")`); `mentions` from a doc heading to the code its section names in backticks |
+| 2 · Files | each tracked source and Markdown file | UP to the subsystem, DOWN to its symbols; `imports` to the files and the symbols it imports (through `export * from` barrels) |
+| 3 · Subsystems | workspace members and packages (Cargo members, `package.json` workspaces and packages, Go modules) and otherwise top-level folders | DOWN to their files; `depends` from the manifests |
+
+- **Languages:** Rust, TypeScript, JavaScript, Svelte (its script blocks), Python, Go, C#, Java, C and C++, plus Markdown headings. Other files are listed at plane 2 with no symbols.
+- **Left out:** files git ignores, files git doesn't track, and the project's generated files (lockfiles and generated bindings, as AIRC's claims leave them out, F14).
+- **Addresses:** each record has a short address such as `1.k3f9q`: its plane, then base-36 characters from a hash of its path, qualified name and kind. An address stays the same while the symbol keeps its name and file, so an agent can pass it back in later calls. A moved or renamed symbol returns `stale` with the record's new address when one matches.
+
+**Building and keeping it current:**
+- **Parse cache.** Velocity keeps one parse cache per project in the app data folder: each file's symbols and references, keyed by a hash of the file's content, the parser version and Velocity's version. It is an append-only log of checksummed records, shared by every agent of the project, so a file is parsed once whatever worktree or commit it appears in. A torn or corrupt record at the end of the log is dropped and that file is parsed again. The log is compacted when it grows past twice the size of the records still in use. A large parse (a new project, a cold cache) runs under the project's build lock, so a swarm's agents starting together parse once and the rest read the cache.
+- **Each agent's graph.** An agent's tools hash every file in its worktree that git tracks or doesn't ignore, take what the cache already holds, parse the rest, and resolve names across the whole set. A file watcher picks up the agent's edits as it works, and the span check catches anything the watcher missed.
+- **Warming.** After each merge to the base branch, Velocity parses the files the merge changed, read from git at the new tip, in the background below normal priority on the trigger that catches up the warm pool (F5). New agents then start with a full cache.
+- **Speed:** a query answers in under 50 ms on a 100,000-line project. Building the graph for such a project takes under 10 s with an empty cache and under 1 s with a full one.
+
+**Agent tools.** Every session Velocity starts, on every provider and in every role, gets an MCP server named `velocity-graph` in `session/new`, beside `airc` (§3.2, F14). The name carries Velocity's reserved prefix, so it never clashes with a server of your own, such as Graphify's. It runs Velocity's own executable as `velocity --graph-mcp <app-data> <project-id> <worktree>`.
+
+| Tool | Does |
+|---|---|
+| `graph_find { query, plane?, kind?, limit? }` | Ranks candidates for a name or a plain-language description. Matching is by words, with camelCase and snake_case split, word stems and rarer words weighted higher. A record's score scales with the square of the share of the query's words it matches. An exact name ranks first, then names that start with the query. Tests, examples and docs rank lower unless the query asks for them. Returns addresses with kind, name, file:line and signature. A result that is the only exact match for the name is marked `exact`. |
+| `graph_read { target, source? }` | One record by address or exact name: signature, doc summary, file and lines, its UP chain, its DOWN children by name, and its links grouped by relation with their counts. `source: true` adds the source lines themselves, so the agent doesn't need a separate read. Fails as the accuracy rules say. |
+| `graph_impact { targets, depth? }` | What depends on symbols or files, followed transitively through calls, implementations, type uses, imports and doc mentions (2 hops by default, at most 6). A type brings its methods and a file its symbols, and an implementation of a trait method brings the callers of the trait method. A hub (a record with at least the 99th percentile of incoming links, and at least 50) is listed but not followed. `ambiguous` and `unconfirmed` links are listed only as direct leads. The answer is grouped by subsystem with depth, and links found in the source are listed apart from leads to check. It says that no dependents doesn't prove code unused. |
+| `graph_run { program }` | A pointer program of up to 16 steps, run in one call over one register: `FIND`, `AT`, `READ`, `UP`, `DOWN`, `FOLLOW <relation> [in\|out] [all]`, `FILTER <kind\|plane\|path glob\|name>`, `PATH <target>`, `COUNT`, `SOURCE`. Returns the result and a one-line audit for each step (what it did and how many records it held). `PATH` lists each hop with its relation and provenance, and the path's confidence: that of its weakest hop. It never passes through a hub. For example, `FIND "approval record"; FOLLOW calls in; FILTER path crates/velocity-github/**; COUNT` replaces several searches and reads with one call. |
+
+- **Budget.** Every answer is capped at 8,000 characters. A cut answer says so on its first line, with how much was kept and how to narrow it.
+- **Instructions.** The server's MCP instructions state when the graph is the better path (where something lives, what calls it, what a change affects) and when grep is (exact text), that a record's lines are what to read, and that `inferred`, `ambiguous` and `unconfirmed` links are leads to check. They are written as facts, not orders: imperative rules read like prompt injection and get ignored.
+- **Session-start map.** When the index is ready within 1.5 s of the agent connecting, the instructions end with a map of about 250 tokens: the worktree, its file and symbol counts, its biggest subsystems and its most-used symbols with their addresses.
+
+**Measuring it.** The graph exists to save time and tokens without costing accuracy, so Velocity measures that, in total rather than per thread.
+- **The switch.** Each project has a code graph switch, on by default, in the usage modal. Agents started while it is off get no `velocity-graph` server; agents already running keep what they started with. It is saved with the project's graph in the app data folder, and warming skips a project whose graph is off.
+- **Totals.** Every turn of every agent, in every role, adds its tokens and its working time to the project's totals for the side it ran on: the graph on or off. Tokens are what the agent reports when the turn ends (ACP's turn usage, which agents report as running session totals, so each turn adds the difference). A turn whose agent reports none still counts its time. Writes are serialized, so agents finishing together never lose a turn.
+- **The comparison** (usage modal, Code graph): for each side, its turns, tokens per turn, time per turn, total tokens and total time. Once each side has at least 10 turns, a line states the difference, such as "With the graph, a turn used 23% fewer tokens and took 18% less time". Before that it says how many turns each side still needs. **Reset counts** clears both sides and starts again; the modal shows when counting began.
+- **Reading it.** If turns with the graph use no fewer tokens and no less time, the graph does not pay for itself and the default turns off. Lookup accuracy (did the graph return the right record), record integrity (did the record match the source) and task outcome stay separate measures.
+
+**Velocity's own uses** (later, built on the graph):
+- **AIRC overlaps by symbol** (F14): two agents editing different functions in one file don't overlap. An agent changing a symbol another agent's claimed work calls is told.
+- **Swarm split** (F10, F16): work items are grouped by the subsystems their likely code falls in, so concurrent agents collide less.
+- **PR duty** (F7): a review starts from the change's impact set: the changed symbols, and what depends on them.
+
+**Accept when:**
+- [ ] Every new agent of every provider has the graph tools with no per-provider setup.
+- [ ] A name defined more than once returns `ambiguous` with every candidate, never one of them.
+- [ ] After an agent edits a file, the next query answers from the edited file, never from an older parse.
+- [ ] After a merge to the base branch, only the files it changed are parsed.
+- [ ] A query answers in under 50 ms on a 100,000-line project.
+- [ ] The usage modal compares tokens and time per turn for the active project with the graph on and off, and its switch decides whether new agents get the graph.
+
 ## 5. Keyboard map
 
 | Key | Where | Action |
@@ -1291,7 +1362,7 @@ The provider-to-folder mapping is a data table in `velocity-skills`, not code, s
 
 - **Motion (#226):** gentle and quick, one system for the whole app. Nothing bounces, overshoots or calls attention to itself.
   - The `--motion-*` tokens in `reference.css` set four durations: quick 120 ms, fast 150 ms, base 180 ms and slow 260 ms. The 150 and 180 ms values come from the reference's toggle and toast. They also set two curves: an ease-out for things arriving and an ease-in for things leaving, which use the quick duration. Travel is 4 px and scale starts at 0.97.
-  - Menus and popovers (the model picker, the usage panel, the thread context menu, the slash menu, the project switcher) fade and grow in and out. Modal dialogs (the palette, AIRC, New project, Duty and the swarm dialogs) fade and grow in, and their scrim fades with them. They close at once, so focus and keys come back without waiting.
+  - Menus and popovers (the model picker, the thread context menu, the slash menu, the project switcher) fade and grow in and out. Modal dialogs (the palette, AIRC, usage, New project, Duty and the swarm dialogs) fade and grow in, and their scrim fades with them. They close at once, so focus and keys come back without waiting.
   - New rows rise 4 px into place: sidebar threads, tasks, issues, an issue's expanded detail, tool steps and other transcript blocks. Rows leave at once, so a list never shows old and new rows together. The toast rises in and fades out.
   - The arriving view rises into place when switching between thread, board, swarm, duty, settings and settings tabs.
   - Buttons, pills and rows ease their colour on hover and focus. Compact controls (pills, buttons, segmented controls) sink to 0.97 while pressed; full-width rows only change colour. Status dots and icons ease between state colours. The usage and limit bars fill when they appear and when their value changes.
@@ -1402,6 +1473,12 @@ Each milestone ends with a working app. PR duty checks an item off when it lands
 
 **M13 · Releases and updates** (F1)
 - [x] In-app updates: signed releases from `v*` tags, the update check and Updates panel, Restart to update for setup, MSI and portable copies
+
+**M14 · Code graph** (F19)
+- [x] Code graph index: tree-sitter symbols, files and subsystems with addresses, span hashes and edge provenance; the per-project parse cache, warmed after merges
+- [x] `velocity-graph` MCP server in every session: `graph_find`, `graph_read`, `graph_impact` and `graph_run` over each agent's worktree view, with the span check (§3.2)
+- [x] Per-project switch, and the graph on/off comparison of tokens and time per turn in the usage modal (F15 Usage modal)
+- [ ] AIRC overlaps by symbol, swarm split by subsystem, and PR duty's impact set
 
 ---
 
