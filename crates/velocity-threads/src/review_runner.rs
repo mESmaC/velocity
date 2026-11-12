@@ -58,6 +58,8 @@ struct Running {
     input: UnboundedSender<AgentInput>,
     pending: usize,
     number: u32,
+    /// Its agent was dismissed (F7): the session is stopping and the PR is already released.
+    dismissed: bool,
 }
 
 /// Your instruction for a project's PR duty, and the agents that already have it.
@@ -73,6 +75,9 @@ struct RunnerState {
     /// Per project, each PR's last review session: its head rests (`resting_heads`), so a
     /// decided head waits for its author and an undecided one is retried after a delay.
     attempted: BTreeMap<u32, BTreeMap<u32, ReviewAttempt>>,
+    /// Counts dismissals, so a tick that read its rosters before one starts no review for the
+    /// dismissed agent.
+    dismissals: u64,
 }
 
 /// The review runner. Cheap to clone; every clone drives the same reviews.
@@ -152,6 +157,70 @@ impl PrDutyReviews {
             .collect()
     }
 
+    /// The PR `nickname`'s running review holds, if it has one.
+    pub fn held(&self, project: u32, nickname: &str) -> Option<u32> {
+        self.lock()
+            .running
+            .get(&(project, nickname.to_owned()))
+            .filter(|running| !running.dismissed)
+            .map(|running| running.number)
+    }
+
+    /// Dismisses `nickname` (F7): stops its running review's session, which kills the agent's
+    /// process tree, and releases the PR it held at once, in AIRC and on GitHub, so another
+    /// agent can claim it on the next tick. Call it after the agent left the saved roster.
+    pub fn dismiss(&self, project: u32, nickname: &str, repository: &Path) {
+        let mut state = self.lock();
+        state.dismissals = state.dismissals.wrapping_add(1);
+        let number = state
+            .running
+            .get_mut(&(project, nickname.to_owned()))
+            .filter(|running| !running.dismissed)
+            .map(|running| {
+                running.dismissed = true;
+                let _ = running.input.send(AgentInput::Stop);
+                running.number
+            });
+        if let Some(number) = number
+            && let Some(attempts) = state.attempted.get_mut(&project)
+        {
+            // A released PR doesn't rest: the next idle agent takes it.
+            attempts.remove(&number);
+        }
+        drop(state);
+        if let Some(number) = number {
+            let runner = self.clone();
+            let (repository, nickname) = (repository.to_path_buf(), nickname.to_owned());
+            // Blocking GitHub calls, and the window's command may hold no async runtime.
+            std::thread::spawn(move || runner.release(&repository, project, &nickname, number));
+        }
+        self.wake();
+    }
+
+    /// Lets PR `number` go for a dismissed agent: the AIRC `released` event, the `reviewing`
+    /// label an agent following AGENTS.md may have added, and a comment saying so.
+    fn release(&self, repository: &Path, project: u32, nickname: &str, number: u32) {
+        if let Ok(record) = ReviewRecord::open(&self.app_data, &project.to_string(), nickname) {
+            let _ = record.release(number);
+        }
+        let Ok(client) = self.client(repository) else {
+            return;
+        };
+        let _ = client.remove_label(number, "reviewing");
+        let comment = PullRequestOperation::Comment {
+            number,
+            body: format!("Released · {nickname} was dismissed from PR duty"),
+        };
+        let _ = client.execute(comment);
+    }
+
+    fn dismissed(&self, key: &AgentKey) -> bool {
+        self.lock()
+            .running
+            .get(key)
+            .is_some_and(|running| running.dismissed)
+    }
+
     /// Delivers your instruction from the Duty view's composer (F7: it instructs every agent
     /// in the role). A running review gets it as its next message; each idle agent gets it with
     /// its next claim. PRs already looked at are looked at again.
@@ -185,6 +254,7 @@ impl PrDutyReviews {
 
     /// Claims a PR for every idle agent that has one to take, and settles idle cards.
     pub async fn tick<Host: ReviewHost>(&self, host: &Host) {
+        let dismissals = self.lock().dismissals;
         for roster in host.rosters() {
             let idle: Vec<String> = {
                 let state = self.lock();
@@ -203,7 +273,12 @@ impl PrDutyReviews {
                 settle_cards(host, &roster, &idle, None);
                 continue;
             }
-            match self.candidates(&roster).await {
+            let candidates = self.candidates(&roster).await;
+            if self.lock().dismissals != dismissals {
+                // An agent left while PRs were listed: the dismissal's wake reads afresh.
+                return;
+            }
+            match candidates {
                 Ok(candidates) => {
                     let assignments = self.assign(&roster, &candidates, &idle);
                     let claimed: BTreeSet<&str> =
@@ -274,7 +349,7 @@ impl PrDutyReviews {
         let held: BTreeSet<u32> = state
             .running
             .iter()
-            .filter(|((owner, _), _)| *owner == project)
+            .filter(|((owner, _), running)| *owner == project && !running.dismissed)
             .map(|(_, running)| running.number)
             .collect();
         let resting = state
@@ -308,6 +383,7 @@ impl PrDutyReviews {
                     input: input.clone(),
                     pending: 0,
                     number: candidate.number,
+                    dismissed: false,
                 },
             );
             state
@@ -376,8 +452,8 @@ impl Review {
     async fn run<Host: ReviewHost>(self, host: &Host, inputs: UnboundedReceiver<AgentInput>) {
         let number = self.candidate.number;
         set_card(host, &self.key, true, review_doing(number, "claiming"));
-        if !self.claim(host).await {
-            return;
+        if !self.claim(host).await || self.runner.dismissed(&self.key) {
+            return self.finish(host, Outcome::default()).await;
         }
         set_card(
             host,
@@ -528,6 +604,10 @@ impl Review {
             app_data: &self.runner.app_data,
             report: &report,
         };
+        if self.runner.dismissed(&self.key) {
+            // Dismissed while the worktree or the proofs were prepared: no session starts.
+            return Outcome::default();
+        }
         let mut setup = review_session(&prepared.plan, prepared.worktree.clone(), server);
         setup.airc = self
             .runner
@@ -560,6 +640,9 @@ impl Review {
     /// The head this session reviewed rests: until it moves if the session decided, and for
     /// `UNDECIDED_RETRY_AFTER` if it did not.
     fn remember(&self, head: &str, decided: bool) {
+        if self.runner.dismissed(&self.key) {
+            return;
+        }
         let attempt = ReviewAttempt {
             head: head.to_owned(),
             decided,
@@ -696,6 +779,11 @@ impl Review {
 
     /// Releases the claim; the card goes idle, or says why the review failed.
     async fn finish<Host: ReviewHost>(&self, host: &Host, outcome: Outcome) {
+        if self.runner.dismissed(&self.key) {
+            // `dismiss` released the PR and posted the feed line; a card under this nick now
+            // belongs to a later agent.
+            return;
+        }
         let app_data = self.runner.app_data.clone();
         let project = self.roster.project.id.to_string();
         let (nickname, number) = (self.key.1.clone(), self.candidate.number);

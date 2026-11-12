@@ -18,6 +18,8 @@ pub enum WatchReason {
     Merged { previous: String },
     /// You instructed the watcher from the Duty view's composer.
     Instruction,
+    /// Velocity closed during the last watch, which stopped it: watch the tip again.
+    Interrupted,
 }
 
 /// What decides whether the role starts a watch now.
@@ -32,6 +34,8 @@ pub struct WatchSchedule<'a> {
     pub running: &'a [String],
     /// You sent the watcher an instruction it has not had yet.
     pub instructed: bool,
+    /// A saved card says a watch runs, but none does: the app closed during it (§3.2).
+    pub interrupted: bool,
 }
 
 /// The watch to start now, and the tip it watches, if any. A paused role starts nothing
@@ -47,6 +51,10 @@ pub fn watch_due(schedule: &WatchSchedule) -> Option<(WatchReason, String)> {
     }
     if schedule.instructed {
         return Some((WatchReason::Instruction, tip.to_owned()));
+    }
+    // The stopped watch never checked its tip, so it is no base to bisect from.
+    if schedule.interrupted {
+        return Some((WatchReason::Interrupted, tip.to_owned()));
     }
     let Some(last) = schedule.last else {
         return Some((WatchReason::First, tip.to_owned()));
@@ -114,6 +122,9 @@ fn reason_sentence(reason: &WatchReason, base: &str) -> String {
         WatchReason::Instruction => {
             format!("The user instructed the main watcher; watch `{base}` with that in mind.")
         }
+        WatchReason::Interrupted => format!(
+            "Velocity closed during the last watch, which stopped it; watch `{base}` again from the start."
+        ),
     }
 }
 
@@ -123,7 +134,9 @@ fn bisect_steps(brief: &WatchBrief) -> String {
     let tip = brief.tip;
     let good = match brief.reason {
         WatchReason::Merged { previous } => previous.clone(),
-        WatchReason::First | WatchReason::Instruction => format!("{tip}~{FIRST_WATCH_DEPTH}"),
+        WatchReason::First | WatchReason::Instruction | WatchReason::Interrupted => {
+            format!("{tip}~{FIRST_WATCH_DEPTH}")
+        }
     };
     format!(
         "\nWhen something fails every time:\n- Bisect the merges: `git bisect start --first-parent {tip} {good}`, run the failing command at each step, and find the first merge that fails. If `{good}` fails too, the break is older: say so and use the oldest failing merge you can reach. End with `git bisect reset`.\n- Call `watch_broken` with that merge commit, its PR number when it has one, the failing command and its output. Velocity posts the `broken` event, and only the agents whose branches contain that merge are told.\n",
@@ -147,6 +160,9 @@ pub fn watch_started_message(reason: &WatchReason, base: &str, tip: &str) -> Str
         ),
         WatchReason::Instruction => {
             format!("Watching {base} at {tip} · following your instruction")
+        }
+        WatchReason::Interrupted => {
+            format!("Watching {base} at {tip} · again, after a restart stopped the last watch")
         }
     }
 }

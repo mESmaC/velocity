@@ -59,6 +59,9 @@ struct RunnerState {
     instructions: BTreeMap<u32, Instruction>,
     /// The base branch's tip per project, and when it was read.
     bases: BTreeMap<u32, (Instant, Option<String>)>,
+    /// Counts dismissals, so a tick that read its rosters before one starts no sweep for the
+    /// dismissed scout.
+    dismissals: u64,
 }
 
 /// The sweep runner. Cheap to clone; every clone drives the same sweeps.
@@ -116,6 +119,18 @@ impl ScoutSweeps {
         self.wake();
     }
 
+    /// Dismisses `scout` (F7): stops its running sweep's session, which kills the agent's
+    /// process tree. Call it after the scout left the saved roster.
+    pub fn dismiss(&self, project: u32, scout: &str) {
+        let mut state = self.lock();
+        state.dismissals = state.dismissals.wrapping_add(1);
+        if let Some((input, _)) = state.running.get(&(project, scout.to_owned())) {
+            let _ = input.send(AgentInput::Stop);
+        }
+        drop(state);
+        self.wake();
+    }
+
     /// Scouts whose sweeps are running.
     pub fn running(&self) -> BTreeSet<ScoutKey> {
         self.lock().running.keys().cloned().collect()
@@ -132,8 +147,13 @@ impl ScoutSweeps {
 
     /// Starts every due sweep once, and settles idle cards.
     pub async fn tick<Host: SweepHost>(&self, host: &Host) {
+        let dismissals = self.lock().dismissals;
         for roster in host.rosters() {
             let base = self.base_commit(&roster).await;
+            if self.lock().dismissals != dismissals {
+                // A scout left while the tip was read: the dismissal's wake reads afresh.
+                return;
+            }
             let instruction = self.lock().instructions.remove(&roster.project.id);
             for (index, scout) in roster.scouts.iter().enumerate() {
                 let key = (roster.project.id, scout.nickname.clone());
@@ -145,6 +165,9 @@ impl ScoutSweeps {
                     last: scout.sweep.as_ref(),
                     now: unix_now(),
                     base_commit: base.as_deref(),
+                    // Only a sweep the runner started marks the card busy, and finishing
+                    // clears it, so a busy card it isn't running was cut off by an exit.
+                    interrupted: scout.busy && !running,
                 };
                 let instructed = instruction
                     .as_ref()

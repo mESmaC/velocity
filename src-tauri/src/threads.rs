@@ -149,9 +149,15 @@ fn stop_follow_through(application: &AppHandle, key: ThreadKey) -> Result<bool, 
     match stopped {
         StopOutcome::NotRunning => {}
         StopOutcome::SettingUp => return Ok(false),
-        StopOutcome::Stopping(ended) => ended
-            .blocking_recv()
-            .map_err(|error| format!("Agent shutdown was not confirmed: {error}"))?,
+        // Bounded: the watcher runs every project's follow-through on one thread, so a session
+        // that never reports its end must not stop every other PR from being followed (#278).
+        // A timed-out wait is a cleanup error, retried on the next pass. The timer is made
+        // inside the runtime: this watcher thread is not one of its workers.
+        StopOutcome::Stopping(ended) => tauri::async_runtime::block_on(async move {
+            tokio::time::timeout(velocity_threads::deletion::AGENT_EXIT_WAIT, ended).await
+        })
+        .map_err(|_| "The agent is still stopping; its worktree was kept".to_owned())?
+        .map_err(|error| format!("Agent shutdown was not confirmed: {error}"))?,
     }
     if lock(
         application.state::<ManagedThreads>().inner(),
@@ -398,19 +404,29 @@ pub(crate) fn steer(
         runtimes.is_parked(key)
     };
     // A parked thread holds the message for its resume and stays parked (§2.2).
-    save_activity(
-        application,
-        key,
-        if parked {
-            AgentActivity::Parked
-        } else {
-            AgentActivity::Thinking
-        },
-        None,
-    )?;
-    let snapshot = refresh(application, key, false)?;
+    let activity = if parked {
+        AgentActivity::Parked
+    } else {
+        AgentActivity::Thinking
+    };
+    report(save_activity(application, key, activity, None));
+    let snapshot = delivered_snapshot(application, key);
     emit_status(application, key);
-    Ok(snapshot)
+    snapshot
+}
+
+/// The window once the agent has the message. From here a failed save or refresh is
+/// reported, not returned: an error would tell the window the message was never sent, and
+/// it would go back to the composer as a draft (#274).
+fn delivered_snapshot(application: &AppHandle, key: ThreadKey) -> Result<LayoutSnapshot, String> {
+    refresh(application, key, false).or_else(|error| {
+        report::<()>(Err(error));
+        let layout = lock(
+            application.state::<MainLayout>().inner(),
+            "main-window state",
+        )?;
+        Ok(layout.snapshot())
+    })
 }
 
 fn resume_message(
@@ -443,7 +459,7 @@ fn resume_message(
         return steer(application, key, prompt);
     }
     crate::parking::resume(application, key, prompt)?;
-    refresh(application, key, false)
+    delivered_snapshot(application, key)
 }
 
 async fn run_thread(

@@ -151,12 +151,12 @@
     if (target) document.getElementById(target)?.focus();
   }
 
-  function enqueue(request: () => Promise<LayoutSnapshot>) {
+  function enqueue(request: () => Promise<LayoutSnapshot>, clearsError = true) {
     pending += 1;
     queue = queue
       .then(async () => {
         const snapshot = await request();
-        clearError();
+        if (clearsError) clearError();
         receive(snapshot);
       })
       .catch(report)
@@ -167,7 +167,12 @@
   }
 
   function send(action: LayoutAction) {
-    enqueue(() => layoutCommands.dispatch(action));
+    // Key reports go out with every keypress. Enter's own report follows the send it
+    // started, so letting it clear errors hid a failed send's reason at once (#274).
+    const keyReport =
+      typeof action === 'object' &&
+      ('Keyboard' in action || 'NumberHints' in action);
+    enqueue(() => layoutCommands.dispatch(action), !keyReport);
   }
 
   let threadMenu = $state<{
