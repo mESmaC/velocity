@@ -325,8 +325,10 @@ fn run_prebuild(slot: &Path) -> Result<(), WorktreeError> {
 }
 
 /// Below-normal priority and no console window: the prebuild is for later, agents' builds
-/// are for now.
+/// are for now. Creation flags replace the ones `hidden_command` set, so this repeats
+/// `CREATE_NO_WINDOW` (#276).
 #[cfg(windows)]
+#[allow(clippy::disallowed_methods)]
 pub(crate) fn background_priority(command: &mut Command) {
     use std::os::windows::process::CommandExt;
     const CREATE_NO_WINDOW: u32 = 0x0800_0000;
