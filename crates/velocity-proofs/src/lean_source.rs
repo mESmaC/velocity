@@ -53,47 +53,23 @@ pub fn placeholders(file: &ProofFile) -> Vec<Placeholder> {
         .collect()
 }
 
-/// Whether the file names the SPEC.md section it covers: a line that mentions `SPEC.md`
-/// together with a `§` section, `section 2.2`, or a feature number such as `F14`
-/// (F17 Design proof).
+/// Accept project-specific section labels instead of assuming Velocity's numbering.
 pub fn names_spec_section(text: &str) -> bool {
     text.lines()
-        .filter(|line| line.contains("SPEC.md"))
-        .any(|line| {
-            line.contains('§')
-                || names_numbered_section(line)
-                || words(line).any(|word| {
-                    let mut characters = word.text.chars();
-                    characters.next() == Some('F')
-                        && !characters.as_str().is_empty()
-                        && characters.as_str().chars().all(|c| c.is_ascii_digit())
-                })
+        .filter_map(|line| line.split_once("SPEC.md"))
+        .any(|(_, section)| {
+            let mut labels = section.split_whitespace();
+            labels.any(|label| {
+                let label = label.trim_matches([':', ',', ';', ')', '`']);
+                let label = label.trim_end_matches('.');
+                let label = label.strip_prefix('\u{a7}').unwrap_or(label);
+                let number = label.trim_start_matches(|c: char| c.is_ascii_uppercase());
+                !number.is_empty()
+                    && number
+                        .split('.')
+                        .all(|part| !part.is_empty() && part.chars().all(|c| c.is_ascii_digit()))
+            })
         })
-}
-
-fn names_numbered_section(line: &str) -> bool {
-    let Some((_, reference)) = line.split_once("SPEC.md") else {
-        return false;
-    };
-    let mut tokens = reference.split_whitespace();
-    while let Some(token) = tokens.next() {
-        if token != "section" {
-            continue;
-        }
-        let Some(number) = tokens.next() else {
-            return false;
-        };
-        // Prose punctuation can follow the section; each dotted component still
-        // needs digits so an unspecified or malformed section cannot pass.
-        let number = number.trim_end_matches([':', ',', ';', ')']);
-        let number = number.strip_suffix('.').unwrap_or(number);
-        if number.split('.').all(|component| {
-            !component.is_empty() && component.bytes().all(|byte| byte.is_ascii_digit())
-        }) {
-            return true;
-        }
-    }
-    false
 }
 
 // #150: a valid section reference must not block PR duty's proof gate.
@@ -104,6 +80,10 @@ fn numbered_spec_references_pass_the_design_proof_gate() {
         "section 2.2: stall escalation",
         "section 2",
         "section 2.2.1.",
+        "R8",
+        "R5",
+        "M3",
+        "4.2",
     ] {
         assert!(names_spec_section(&format!("-- SPEC.md {reference}")));
     }

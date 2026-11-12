@@ -84,8 +84,18 @@ pub fn dispatch_layout(
     }
     // Starting or steering a thread publishes its own newer snapshot.
     match intent {
-        Some(intent) => crate::threads::handle_intent(window.app_handle(), &intent)
-            .map(|updated| updated.unwrap_or(snapshot)),
+        Some(intent) => match crate::threads::handle_intent(window.app_handle(), &intent) {
+            Ok(updated) => Ok(updated.unwrap_or(snapshot)),
+            Err(error) => {
+                if let LayoutIntent::SteerThread { prompt, .. } = &intent {
+                    let managed = window.state::<MainLayout>();
+                    let mut state = managed.lock().map_err(|error| error.to_string())?;
+                    state.apply(LayoutAction::ComposerText(prompt.clone()));
+                    publish(&window, &state.snapshot(), None)?;
+                }
+                Err(error)
+            }
+        },
         None => Ok(snapshot),
     }
 }

@@ -391,9 +391,10 @@ pub(crate) fn steer(
             drop(runtimes);
             return resume_message(application, key, prompt);
         }
-        runtimes
-            .steer(key, prompt)
-            .map_err(|error| error.to_string())?;
+        if runtimes.steer(key, prompt).is_err() {
+            drop(runtimes);
+            return resume_message(application, key, prompt);
+        }
         runtimes.is_parked(key)
     };
     // A parked thread holds the message for its resume and stays parked (§2.2).
@@ -786,6 +787,12 @@ fn setup_no_longer_wanted(application: &AppHandle, key: ThreadKey) -> bool {
 /// Applies agent events as they arrive. A burst of streamed chunks is applied together and
 /// published once, so the window gets one snapshot per burst rather than one per token.
 pub(crate) async fn pump(application: &AppHandle, key: ThreadKey, mut session: RunningSession) {
+    let generation = lock(
+        application.state::<ManagedThreads>().inner(),
+        "thread sessions",
+    )
+    .ok()
+    .and_then(|runtimes| runtimes.session_identifier(key));
     report(crate::agent_activity::observe(application, key, &[]));
     let shutdown = session.shutdown.clone();
     let mut mutations = velocity_acp::tool_mutations::ToolMutations::default();
@@ -800,6 +807,9 @@ pub(crate) async fn pump(application: &AppHandle, key: ThreadKey, mut session: R
         let mut batch = Vec::from([event]);
         while let Ok(next) = session.events.try_recv() {
             batch.push(next);
+        }
+        if !current_session(application, key, &generation) {
+            continue;
         }
         report(save_agent_session(application, key, &batch));
         report(crate::agent_activity::observe(application, key, &batch));
@@ -816,11 +826,23 @@ pub(crate) async fn pump(application: &AppHandle, key: ThreadKey, mut session: R
         report(apply_batch(application, key, &batch));
     }
     let outcome = session.outcome.await;
+    if !current_session(application, key, &generation) {
+        return;
+    }
+    finish_session(application, key, shutdown.confirmed(), outcome);
+}
+
+fn finish_session(
+    application: &AppHandle,
+    key: ThreadKey,
+    shutdown_confirmed: bool,
+    outcome: Result<Result<(), String>, tokio::sync::oneshot::error::RecvError>,
+) {
     let still_wanted = lock(
         application.state::<ManagedThreads>().inner(),
         "thread sessions",
     )
-    .map(|mut runtimes| runtimes.session_ended_with_shutdown(key, shutdown.confirmed()))
+    .map(|mut runtimes| runtimes.session_ended_with_shutdown(key, shutdown_confirmed))
     .unwrap_or(false);
     if !still_wanted {
         return;
@@ -838,6 +860,14 @@ pub(crate) async fn pump(application: &AppHandle, key: ThreadKey, mut session: R
             "Its session ended unexpectedly.",
         ),
     }
+}
+
+fn current_session(application: &AppHandle, key: ThreadKey, generation: &Option<String>) -> bool {
+    lock(
+        application.state::<ManagedThreads>().inner(),
+        "thread sessions",
+    )
+    .is_ok_and(|runtimes| runtimes.session_identifier(key) == *generation)
 }
 
 fn apply_batch(

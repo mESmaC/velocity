@@ -125,7 +125,7 @@ fn lane_of(group: ThreadGroup) -> Option<BoardLaneKind> {
             Some(BoardLaneKind::Running)
         }
         ThreadGroup::Review => Some(BoardLaneKind::InReview),
-        ThreadGroup::Closed | ThreadGroup::Done | ThreadGroup::Merged => {
+        ThreadGroup::Closed | ThreadGroup::Done | ThreadGroup::Merged | ThreadGroup::Settled => {
             Some(BoardLaneKind::Finished)
         }
     }

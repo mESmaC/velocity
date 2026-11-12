@@ -196,6 +196,7 @@ fn commit_spec(plan: &LockPlan) -> Result<(), InterviewError> {
         Path::new(&plan.spec_path),
         "Lock spec",
     )?;
+    velocity_git::publish_instructions(Path::new(&plan.checkout))?;
     Ok(())
 }
 

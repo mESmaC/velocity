@@ -312,6 +312,18 @@ pub(crate) fn swarm_row(
     entry: &velocity_core::swarm::SwarmEntry,
 ) -> velocity_core::layout_view::ThreadEntry {
     use velocity_core::layout::{LayoutRow, ThreadGroup};
+    use velocity_core::state::ThreadState as CoreThreadState;
+    let members: Vec<_> = entry
+        .members
+        .iter()
+        .filter(|member| {
+            !matches!(
+                member.state,
+                CoreThreadState::Merged | CoreThreadState::Done | CoreThreadState::Closed
+            )
+        })
+        .cloned()
+        .collect();
     velocity_core::layout_view::ThreadEntry {
         policy: LayoutRow {
             identifier: entry.identifier,
@@ -320,11 +332,11 @@ pub(crate) fn swarm_row(
             matches_search: true,
             member_of: None,
             expanded: false,
-            agent_count: entry.members.len(),
+            agent_count: members.len(),
             paused: false,
         },
         title: entry.title.clone(),
-        metadata: velocity_core::swarm::sidebar_summary(&entry.members),
+        metadata: velocity_core::swarm::sidebar_summary(&members),
         view: velocity_core::navigation::NavigationView::Swarm,
         detail: None,
         duty: None,

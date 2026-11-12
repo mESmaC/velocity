@@ -874,6 +874,8 @@ pub struct ProjectItem {
     pub built_spec_sections: Vec<String>,
     #[serde(default)]
     pub skills: velocity_core::skills::ProjectSkills,
+    #[serde(default)]
+    pub settled_expanded: bool,
     pub active_thread_id: Option<u32>,
     pub merged_today: u32,
     pub tasks: Vec<TaskItem>,
@@ -921,6 +923,7 @@ impl ProjectItem {
             spec_locked: false,
             built_spec_sections: Vec::new(),
             skills: velocity_core::skills::ProjectSkills::default(),
+            settled_expanded: false,
             active_thread_id: None,
             merged_today: 0,
             tasks: Vec::new(),

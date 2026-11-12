@@ -4,7 +4,7 @@ use crate::layout::{PulseKind, ThreadGroup};
 use crate::layout_view::{LayoutIntent, PaletteItem, PaletteTarget};
 use crate::navigation::NavigationIntent;
 
-pub const GROUPS: [ThreadGroup; 10] = [
+pub const GROUPS: [ThreadGroup; 8] = [
     ThreadGroup::Draft,
     ThreadGroup::Duty,
     ThreadGroup::Swarm,
@@ -12,9 +12,7 @@ pub const GROUPS: [ThreadGroup; 10] = [
     ThreadGroup::Working,
     ThreadGroup::Review,
     ThreadGroup::Error,
-    ThreadGroup::Closed,
-    ThreadGroup::Done,
-    ThreadGroup::Merged,
+    ThreadGroup::Settled,
 ];
 
 pub const PULSE: [(PulseKind, &str); 6] = [
@@ -38,6 +36,7 @@ pub fn group_title(group: ThreadGroup) -> &'static str {
         ThreadGroup::Closed => "Closed · not merged",
         ThreadGroup::Done => "Done",
         ThreadGroup::Merged => "Merged",
+        ThreadGroup::Settled => "Settled",
     }
 }
 
