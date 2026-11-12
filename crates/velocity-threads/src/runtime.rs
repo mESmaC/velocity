@@ -94,6 +94,9 @@ enum PendingInput {
 pub struct ThreadRuntimes {
     threads: BTreeMap<ThreadKey, ThreadRuntime>,
     stopping: BTreeMap<ThreadKey, Vec<oneshot::Sender<()>>>,
+    /// The session [Self::stop] is ending, by thread. Stopping removes the thread's record,
+    /// and the session's event pump still has to report its end to wake the waiters above.
+    stopped_sessions: BTreeMap<ThreadKey, String>,
     retired: BTreeSet<ThreadKey>,
     shutdown_failures: BTreeSet<ThreadKey>,
     /// Threads whose session was ended for parking and not yet resumed (§2.2).
@@ -200,6 +203,7 @@ impl ThreadRuntimes {
     pub fn discard_choosing(&mut self, key: ThreadKey) {
         self.threads.remove(&key);
         self.stopping.remove(&key);
+        self.stopped_sessions.remove(&key);
     }
 
     /// Registers a starting thread with its first prompt already waiting, and returns the
@@ -472,10 +476,14 @@ impl ThreadRuntimes {
             .is_some_and(|thread| thread.phase != SessionPhase::Ended)
     }
 
+    /// The thread's current session, or the one [Self::stop] is ending after it removed the
+    /// thread's record. A session's pump reports its end only while it is current, and that
+    /// report is what wakes merge cleanup and deletion waiting for the agent to stop (#278).
     pub fn session_identifier(&self, key: ThreadKey) -> Option<String> {
         self.threads
             .get(&key)
             .map(|thread| thread.session_identifier.clone())
+            .or_else(|| self.stopped_sessions.get(&key).cloned())
     }
 
     pub fn is_setting_up(&self, key: ThreadKey) -> bool {
@@ -511,6 +519,7 @@ impl ThreadRuntimes {
                 let _ = thread.inputs.send(AgentInput::Stop);
                 let (ended, receiver) = oneshot::channel();
                 self.stopping.insert(key, Vec::from([ended]));
+                self.stopped_sessions.insert(key, thread.session_identifier);
                 StopOutcome::Stopping(receiver)
             }
         }
@@ -525,6 +534,7 @@ impl ThreadRuntimes {
             self.shutdown_failures.insert(key);
         }
         if let Some(waiters) = self.stopping.remove(&key) {
+            self.stopped_sessions.remove(&key);
             for ended in waiters {
                 let _ = ended.send(());
             }
@@ -773,5 +783,25 @@ fn failed_session_keeps_queued_messages_on_resume() -> Result<(), SteerError> {
     assert!(resumed.try_recv().is_err());
     assert!(runtimes.view(key).is_some_and(|view| view.blocks.iter().any(|block|
         matches!(block, velocity_core::thread_view_model::TranscriptBlock::UserMessage { text, queued: true, .. } if text == "keep this message"))));
+    Ok(())
+}
+
+// #278: merge cleanup waits for the stopped session to end before it deletes the worktree. The
+// pump reports that end only for the thread's current session, so stopping must not orphan it.
+#[cfg(test)]
+#[test]
+fn stopped_session_still_wakes_its_waiters() -> Result<(), &'static str> {
+    let mut runtimes = ThreadRuntimes::default();
+    let key = (1, 2);
+    let _inputs = runtimes.start(key, "checkout", "start");
+    runtimes.worktree_ready(key);
+    let generation = runtimes.session_identifier(key);
+    let StopOutcome::Stopping(mut ended) = runtimes.stop(key) else {
+        return Err("a running session must stop");
+    };
+    assert_eq!(runtimes.session_identifier(key), generation);
+    assert!(!runtimes.session_ended_with_shutdown(key, true));
+    assert!(ended.try_recv().is_ok());
+    assert_eq!(runtimes.session_identifier(key), None);
     Ok(())
 }

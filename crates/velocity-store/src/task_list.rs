@@ -128,10 +128,18 @@ fn thread_label(thread: &ThreadItem) -> String {
             .unwrap_or_else(|| "in review".into()),
         ThreadState::Error => "failed · worktree kept".into(),
         ThreadState::Closed => "closed · worktree kept".into(),
+        // The agent's turn ended before its PR is followed (a draft claim, or the watcher's
+        // next pass): it is waiting, not working (#280).
+        ThreadState::Working if thread.activity == crate::AgentActivity::Idle => {
+            "agent idle".into()
+        }
         _ => "agent working".into(),
     }
 }
 fn review_label(thread: &ThreadItem) -> &'static str {
+    if crate::follow_through::merged_awaiting_cleanup(thread) {
+        return crate::follow_through::MERGED_CLEANING_UP;
+    }
     match thread.review_stage {
         Some(crate::ReviewStage::ContinuousIntegration) => "checking",
         Some(crate::ReviewStage::Fixing) => "addressing review",
