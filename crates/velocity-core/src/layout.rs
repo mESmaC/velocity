@@ -16,6 +16,7 @@ pub enum ThreadGroup {
     Closed,
     Done,
     Merged,
+    Settled,
 }
 
 #[cfg_attr(
@@ -83,6 +84,7 @@ pub fn group_index(group: ThreadGroup) -> usize {
         ThreadGroup::Closed => 7,
         ThreadGroup::Done => 8,
         ThreadGroup::Merged => 9,
+        ThreadGroup::Settled => 10,
     }
 }
 

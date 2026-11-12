@@ -516,6 +516,11 @@ impl LayoutState {
                 self.edit_composer(action);
                 None
             }
+            LayoutAction::ToggleSettled => {
+                self.data.settled_expanded = !self.data.settled_expanded;
+                self.changed();
+                None
+            }
             LayoutAction::SubmitComposer => self.submit_composer(),
             LayoutAction::SubmitTask => self.submit_task(),
             LayoutAction::Request(intent) => self.request(intent),
@@ -1186,8 +1191,16 @@ impl LayoutState {
                     return None;
                 }
                 let count = roots.len();
-                let rows = self.sidebar_rows(&roots, selected, &mut number);
+                let collapsed = group == ThreadGroup::Settled
+                    && !self.data.settled_expanded
+                    && query.is_empty();
+                let rows = if collapsed {
+                    Vec::new()
+                } else {
+                    self.sidebar_rows(&roots, selected, &mut number)
+                };
                 Some(SidebarGroup {
+                    collapsed,
                     group,
                     title: layout_catalog::group_title(group).into(),
                     count,
@@ -1259,13 +1272,37 @@ impl LayoutState {
             .iter()
             .find(|goal| goal.identifier == identifier)
         {
-            return goal_swarm_view::goal_segments(&goal.agents);
+            let agents: Vec<_> = goal
+                .agents
+                .iter()
+                .filter(|agent| {
+                    self.data.threads.iter().any(|thread| {
+                        thread.policy.identifier == agent.thread_identifier
+                            && thread.policy.member_of == Some(identifier)
+                    })
+                })
+                .cloned()
+                .collect();
+            return goal_swarm_view::goal_segments(&agents);
         }
         self.data
             .swarms
             .iter()
             .find(|swarm| swarm.identifier == identifier)
-            .map(|swarm| swarm::segments(&swarm.members))
+            .map(|swarm| {
+                let members: Vec<_> = swarm
+                    .members
+                    .iter()
+                    .filter(|member| {
+                        self.data.threads.iter().any(|thread| {
+                            thread.policy.identifier == member.identifier
+                                && thread.policy.member_of == Some(identifier)
+                        })
+                    })
+                    .cloned()
+                    .collect();
+                swarm::segments(&members)
+            })
             .unwrap_or_default()
     }
 

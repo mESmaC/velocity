@@ -36,6 +36,7 @@ pub(crate) fn read_model(state: &PersistedState) -> LayoutData {
     if let Some(project) = active_project(state) {
         data.project_identifier = Some(project.id);
         data.project_name = project.name.clone();
+        data.settled_expanded = project.settled_expanded;
         let merged_today = project.merged_today as usize;
         let task_count = project.tasks.len();
         let mut entries: Vec<ThreadEntry> = project
@@ -91,7 +92,9 @@ fn thread_entries(project: &ProjectItem, task_count: usize) -> Vec<ThreadEntry> 
                 .map(|(swarm, agent)| (swarm.id, agent, 0))
                 .or_else(|| crate::goal_swarm_view::goal_membership(project, thread));
             let mut entry = thread_entry(thread, task_count);
-            entry.policy.member_of = membership.map(|(swarm, _, _)| swarm as usize);
+            entry.policy.member_of = membership
+                .filter(|_| entry.policy.group != ThreadGroup::Settled)
+                .map(|(swarm, _, _)| swarm as usize);
             (membership, entry)
         })
         .collect();
@@ -140,12 +143,7 @@ fn thread_entry(thread: &ThreadItem, task_count: usize) -> ThreadEntry {
     ThreadEntry {
         policy: LayoutRow {
             identifier: thread.id as usize,
-            group: if thread.state == ThreadState::Working && thread.activity == AgentActivity::Idle
-            {
-                ThreadGroup::Done
-            } else {
-                thread_group(thread.state)
-            },
+            group: thread_group(thread.state),
             hidden: false,
             matches_search: true,
             member_of: None,
@@ -255,9 +253,9 @@ fn thread_group(state: ThreadState) -> ThreadGroup {
         ThreadState::Working => ThreadGroup::Working,
         ThreadState::Review => ThreadGroup::Review,
         ThreadState::Error => ThreadGroup::Error,
-        ThreadState::Closed => ThreadGroup::Closed,
-        ThreadState::Done => ThreadGroup::Done,
-        ThreadState::Merged => ThreadGroup::Merged,
+        ThreadState::Closed => ThreadGroup::Settled,
+        ThreadState::Done => ThreadGroup::Settled,
+        ThreadState::Merged => ThreadGroup::Settled,
     }
 }
 

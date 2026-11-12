@@ -159,6 +159,13 @@ impl StateStore {
     ) -> Result<ProjectDispatch, ProjectError> {
         // A failed persistence write must leave both the live view and its saved
         // selection unchanged. Apply transient actions to a candidate first.
+        if matches!(action, LayoutAction::ToggleSettled) {
+            let mut next = self.state.clone();
+            if let Some(project) = next.projects.get_mut(next.active_project_index as usize) {
+                project.settled_expanded = !project.settled_expanded;
+            }
+            self.commit_project_state(next)?;
+        }
         let mut candidate = layout.clone();
         let mut intent = crate::build_gate::dispatch_layout(&self.state, &mut candidate, action);
         let task_added = self.dispatch_task_intent(&mut candidate, &mut intent)?;

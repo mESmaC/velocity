@@ -117,11 +117,23 @@ pub(crate) fn goal_membership(
 
 /// The goal swarm's row under Swarms: target icon, "Goal · <prompt>", ×N, segment bar.
 pub(crate) fn goal_swarm_row(entry: &GoalSwarmEntry) -> ThreadEntry {
+    use velocity_core::state::ThreadState as CoreThreadState;
+    let agents: Vec<_> = entry
+        .agents
+        .iter()
+        .filter(|agent| {
+            !matches!(
+                agent.state,
+                CoreThreadState::Merged | CoreThreadState::Done | CoreThreadState::Closed
+            )
+        })
+        .cloned()
+        .collect();
     ThreadEntry::swarm_row(
         entry.identifier,
         entry.title.clone(),
-        goal_sidebar_summary(&entry.agents),
-        entry.agents.len(),
+        goal_sidebar_summary(&agents),
+        agents.len(),
     )
 }
 

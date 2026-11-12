@@ -97,7 +97,11 @@ pub async fn get_thread_menu(
     .map(|project| project.id)
     .ok_or("Select a project first")?;
     let key = (project_identifier, thread_identifier);
-    let (_, thread) = find_thread(&application, project_identifier, thread_identifier)?;
+    let (_, thread) = match find_thread(&application, project_identifier, thread_identifier) {
+        Ok(found) => found,
+        Err(error) if error == "The thread no longer exists" => return Ok(None),
+        Err(error) => return Err(error),
+    };
     let agent_running = lock(
         application.state::<ManagedThreads>().inner(),
         "thread sessions",

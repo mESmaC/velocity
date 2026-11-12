@@ -113,6 +113,7 @@ pub struct LayoutData {
     /// The persisted project these rows belong to; keys the live thread overlay.
     pub project_identifier: Option<u32>,
     pub project_name: String,
+    pub settled_expanded: bool,
     pub threads: Vec<ThreadEntry>,
     pub projects: Vec<PaletteItem>,
     pub tasks: Vec<TaskView>,
@@ -251,6 +252,7 @@ pub struct SidebarRow {
 )]
 #[derive(Clone, Debug)]
 pub struct SidebarGroup {
+    pub collapsed: bool,
     pub group: ThreadGroup,
     pub title: String,
     #[cfg_attr(feature = "bindings", serde(with = "crate::ipc_number"))]
@@ -380,6 +382,7 @@ pub struct KeyboardInput {
 )]
 #[derive(Clone, Debug)]
 pub enum LayoutAction {
+    ToggleSettled,
     Request(LayoutIntent),
     SidebarSearch(String),
     PaletteSearch(String),

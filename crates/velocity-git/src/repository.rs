@@ -229,3 +229,134 @@ fn succeeded(operation: &'static str, path: &Path, output: Output) -> Result<(),
         })
     }
 }
+
+/// Publish instruction files before agents branch from origin. Local projects stay local.
+pub fn publish_instructions(folder: &Path) -> Result<(), GitError> {
+    let checkout = CheckoutPath::new(folder).map_err(GitError::Spawn)?;
+    let folder = checkout.path();
+    let remote = git()
+        .arg("-C")
+        .arg(folder)
+        .args(["remote", "get-url", "origin"])
+        .output()
+        .map_err(GitError::Spawn)?;
+    if !remote.status.success() {
+        return Ok(());
+    }
+    let branch = opened_project_default_branch(folder)?;
+    if current_branch(folder)? != branch {
+        return Err(GitError::Failed {
+            operation: "publish instructions",
+            path: folder.to_owned(),
+            stderr: format!("Switch the main checkout to {branch} before publishing instructions"),
+        });
+    }
+    require_publishable_checkout(folder)?;
+    for (operation, arguments) in [
+        ("fetch", vec!["fetch", "origin", branch.as_str()]),
+        ("merge", vec!["merge", "--no-edit", "FETCH_HEAD"]),
+        ("push", vec!["push", "origin", "HEAD"]),
+    ] {
+        let output = git()
+            .arg("-C")
+            .arg(folder)
+            .args(arguments)
+            .output()
+            .map_err(GitError::Spawn)?;
+        if let Err(error) = succeeded(operation, folder, output) {
+            if operation == "merge" {
+                let _ = git()
+                    .arg("-C")
+                    .arg(folder)
+                    .args(["merge", "--abort"])
+                    .output();
+            }
+            return Err(error);
+        }
+    }
+    Ok(())
+}
+
+// Never fold unrelated staged edits into the merge, or abort a merge the user started.
+fn require_publishable_checkout(folder: &Path) -> Result<(), GitError> {
+    let output = git()
+        .arg("-C")
+        .arg(folder)
+        .args(["status", "--porcelain", "--untracked-files=no"])
+        .output()
+        .map_err(GitError::Spawn)?;
+    let dirty = !output.stdout.is_empty();
+    succeeded("status", folder, output)?;
+    let merging = git()
+        .arg("-C")
+        .arg(folder)
+        .args(["rev-parse", "--quiet", "--verify", "MERGE_HEAD"])
+        .output()
+        .map_err(GitError::Spawn)?;
+    if dirty || merging.status.success() {
+        return Err(GitError::Failed { operation: "publish instructions", path: folder.to_owned(),
+            stderr: "Finish the existing merge and commit or stash other tracked edits before publishing; the instruction commit was kept".into() });
+    }
+    Ok(())
+}
+
+#[cfg(all(test, windows))]
+mod publication_regression {
+    use super::*;
+
+    fn run(folder: &Path, arguments: &[&str]) -> Result<String, GitError> {
+        let output = git()
+            .arg("-C")
+            .arg(folder)
+            .args(arguments)
+            .output()
+            .map_err(GitError::Spawn)?;
+        let text = String::from_utf8_lossy(&output.stdout).trim().to_owned();
+        succeeded("publication regression", folder, output)?;
+        Ok(text)
+    }
+
+    // #262: instruction commits must reach origin even when other PRs advance the default branch.
+    #[test]
+    fn instructions_publish_after_remote_advance() -> Result<(), Box<dyn std::error::Error>> {
+        let directory = tempfile::tempdir()?;
+        let remote = directory.path().join("remote.git");
+        let local = directory.path().join("main checkout with spaces");
+        let other = directory.path().join("other");
+        for folder in [&remote, &local, &other] {
+            fs::create_dir(folder)?;
+        }
+        run(&remote, &["init", "--bare", "--initial-branch=master"])?;
+        for folder in [&local, &other] {
+            run(folder, &["init", "--initial-branch=master"])?;
+            run(folder, &["config", "user.name", "Regression"])?;
+            run(
+                folder,
+                &["config", "user.email", "regression@example.invalid"],
+            )?;
+            let remote_path = remote.to_string_lossy();
+            run(folder, &["remote", "add", "origin", &remote_path])?;
+        }
+        fs::write(local.join("README"), "initial")?;
+        commit_file(&local, Path::new("README"), "initial")?;
+        run(&local, &["push", "origin", "master"])?;
+        run(&other, &["pull", "origin", "master"])?;
+        fs::write(other.join("README"), "merged PR")?;
+        commit_file(&other, Path::new("README"), "remote advance")?;
+        run(&other, &["push", "origin", "master"])?;
+        fs::write(local.join("AGENTS.md"), "project instructions")?;
+        commit_file(&local, Path::new("AGENTS.md"), "Update AGENTS.md")?;
+        let hook = remote.join("hooks/pre-receive");
+        fs::write(&hook, "#!/bin/sh\nexit 1\n")?;
+        assert!(publish_instructions(&local).is_err());
+        fs::remove_file(hook)?;
+        publish_instructions(&local)?;
+        assert_eq!(
+            run(&remote, &["show", "master:AGENTS.md"])?,
+            "project instructions"
+        );
+        assert_eq!(fs::read_to_string(local.join("README"))?, "merged PR");
+        publish_instructions(&local)?;
+        Ok(())
+    }
+}

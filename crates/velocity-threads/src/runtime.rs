@@ -305,7 +305,11 @@ impl ThreadRuntimes {
         follows_pull_request: bool,
     ) -> Result<SessionInputs, SteerError> {
         let live = self.is_live(key);
-        if live || self.retired.contains(&key) || self.stopping.contains_key(&key) {
+        let input_open = self
+            .threads
+            .get(&key)
+            .is_some_and(|thread| !thread.inputs.is_closed());
+        if live && input_open || self.retired.contains(&key) || self.stopping.contains_key(&key) {
             return Err(SteerError::NoSession);
         }
         self.shutdown_failures.remove(&key);
@@ -314,6 +318,7 @@ impl ThreadRuntimes {
             .threads
             .entry(key)
             .or_insert_with(|| parked_runtime(worktree, follows_pull_request));
+        thread.session_identifier = uuid::Uuid::new_v4().to_string();
         thread.transcript.new_session();
         thread.pending_inputs = VecDeque::from([PendingInput::Opening]);
         for message in
@@ -465,6 +470,12 @@ impl ThreadRuntimes {
         self.threads
             .get(&key)
             .is_some_and(|thread| thread.phase != SessionPhase::Ended)
+    }
+
+    pub fn session_identifier(&self, key: ThreadKey) -> Option<String> {
+        self.threads
+            .get(&key)
+            .map(|thread| thread.session_identifier.clone())
     }
 
     pub fn is_setting_up(&self, key: ThreadKey) -> bool {
@@ -742,4 +753,25 @@ pub fn spawn_session(
         outcome,
         shutdown,
     }
+}
+
+// #261: failed sessions must retain queued user messages across follow-through restart.
+#[cfg(test)]
+#[test]
+fn failed_session_keeps_queued_messages_on_resume() -> Result<(), SteerError> {
+    let mut runtimes = ThreadRuntimes::default();
+    let key = (1, 2);
+    let opening = runtimes.start(key, "checkout", "start");
+    runtimes.steer(key, "keep this message")?;
+    let generation = runtimes.session_identifier(key);
+    drop(opening);
+    runtimes.fail(key, "stopped", "transport failed");
+    let mut resumed = runtimes.resume_follow_through(key, "checkout", "review-1", "fix review")?;
+    assert_ne!(generation, runtimes.session_identifier(key));
+    assert!(resumed.try_recv().is_ok());
+    assert!(resumed.try_recv().is_ok());
+    assert!(resumed.try_recv().is_err());
+    assert!(runtimes.view(key).is_some_and(|view| view.blocks.iter().any(|block|
+        matches!(block, velocity_core::thread_view_model::TranscriptBlock::UserMessage { text, queued: true, .. } if text == "keep this message"))));
+    Ok(())
 }

@@ -50,14 +50,16 @@ These hold for every feature. A feature that breaks one of them is wrong, whatev
 |---|---|---|
 | `draft` | (top, unnamed) | New thread, not sent yet. |
 | `spec` | Spec interview | Interview in progress. Phases: `scan` → `ask` → `ready` → `locked`. |
-| `working` | Running; Done when idle | Agent works in its worktree; an idle conversation can resume on the next message (§3.2). |
+| `working` | Running | Agent works in its worktree; an idle conversation can resume on the next message (§3.2). |
 | `review` | PR open · watching | PR is open; the agent watches it. Stages: `ci`, `review`, `fixing`, `approved`. |
 | `error` | Failed | Agent stopped on an error. Its worktree is kept. |
-| `closed` | Closed · not merged | PR closed without merging. Its worktree is kept. |
-| `done` | Done | Spec locked (spec threads only). |
-| `merged` | Merged | PR merged and worktree deleted. The thread is finished. |
+| `closed` | Settled | PR closed without merging. Its worktree is kept. |
+| `done` | Settled | Spec locked (spec threads only). |
+| `merged` | Settled | PR merged and worktree deleted. The thread is finished. |
 
-The sidebar shows groups in this order: draft, On duty, Swarms, Spec interview, Running, PR open · watching, Failed, Closed · not merged, Done, Merged. Empty groups are hidden, except "On duty", which shows a "start one" button when empty.
+The sidebar shows groups in this order: draft, On duty, Swarms, Spec interview, Running, PR open · watching, Failed, Settled. Settled is collapsed by default, shows its count and a chevron, and is the only collapsible group. Its expanded state is saved per project. Finished swarm members move there immediately; idle working threads and failures stay in their active groups. Search reveals matching settled threads even while collapsed. Empty groups are hidden, except "On duty", which shows a "start one" button when empty.
+
+Command errors clear after four seconds or the next successful dispatch. Backend launch notices remain visible while set.
 
 ### 2.2 Agent activity
 
@@ -72,7 +74,7 @@ A thread's state (§2.1) says where it is in its lifecycle. Its **activity** say
 | `at limit` | The agent hit a per-agent cap or its provider's subscription limit. This stays set until the agent resumes. | Velocity, provider |
 | `idle` | The agent's turn ended and nothing is queued. | ACP turn end |
 
-**Parked agents wake on events, not by polling.** A wait subscribes the agent to the `merged` event of the PR it waits on. When that event fires, Velocity resumes the session (`session/load`, or a new session with the transcript if the agent can't load one), rebases, and posts `unblocked`. If the PR is closed, fails or is deleted, the agent wakes and the wait ends.
+**Parked agents wake on events, not by polling.** A wait subscribes the agent to the `merged` event of the PR it waits on. When that event fires, Velocity resumes the session (`session/load`, or a new session with the transcript if the agent can't load one), rebases, and posts `unblocked`. If the PR is closed, fails or is deleted, the agent wakes and the wait ends. A dependency wait also ends after 20 minutes, including across app restarts; the resumed agent is told the wait expired and to coordinate with the holder or proceed. Expiry does not rebase or release either claim.
 
 **Stall timeout** (decided, Q20): 5 minutes without an ACP update. Two cases never count as silence:
 - **A running tool call** gets 30 minutes *(proposed)*. A build, a test run or `lake build` reports nothing until it ends, and restarting the session would kill it and start it again.
@@ -139,7 +141,7 @@ The native supervisor checks live build threads once a second. Its defaulted che
 | command | `get_goal_swarm_board { swarm_identifier }` | Goal swarm view claims board (F16). Reads the active project's work pool off the UI thread, then joins it with saved claims: claimed pieces first with the holder's nick and state (working, the AIRC dependency wait, `#n · <review stage>`, failed or closed · claim held), open pieces next, and the pieces this swarm merged last with `merged #n`. The rest of the view (header, prompt bubble, segment bar, one card per agent, activity) arrives on `layout://state` as `active_goal_swarm`, with a `board_revision` that changes whenever a claim, PR or merge could move the board; the window reads the board again then. The goal swarm's sidebar row (`goal: true`) nests its agents' threads; `AddGoalAgents` opens the dialog on the swarm's prompt for `add_goal_agents`, and a message from the goal swarm composer is queued to every working or in-review agent. |
 | command | `add_task { project_identifier, title }`, `list_tasks { project_identifier }` | F8 project Task List. Adding saves a user-attributed draft before lock or todo after lock, without changing SPEC.md. The add input and `/task` use the same store path through `dispatch_layout`. `layout://state` carries per-task states, owning-thread status and attribution links. |
 | command | `read_agents_md`, `write_agents_md`, `tighten_rule { project_identifier, identifier }` | AGENTS.md. F11 rewrites use the normal unrestricted Claude ACP client in the project checkout, with the Haiku model selected through the Claude SDK launch environment and whole-file context. Late results are discarded after edits, Undo or save; invalid responses and failures retain the original rule with an explanation. |
-| command | `read_agents_md { project_identifier }`, `reload_agents_md { project_identifier }`, `edit_agents_md { project_identifier, action }`, `write_agents_md { project_identifier }` | F11 outliner: read the checkout's real AGENTS.md, apply section/rule and structural keyboard edits in Rust, and save/commit only that file. Snapshots include the exact Markdown, rule count, dirty state and focus target. Unsupported Markdown is preserved verbatim. Saving rejects external changes and keeps the draft; Discard draft and reload explicitly replaces the draft with the current disk file without writing or committing. Reload failures keep the draft. A failed commit can be retried. Snapshots also carry each rule's live lint marks (hedge, modal, vague; never inside inline code), the Flagged list and the Covers checklist; `AddCoverage { item }` inserts a missing topic's bullets after the last rule of its section, or in a new section at the end. |
+| command | `read_agents_md { project_identifier }`, `reload_agents_md { project_identifier }`, `edit_agents_md { project_identifier, action }`, `write_agents_md { project_identifier }` | F11 outliner: read the checkout's real AGENTS.md, apply section/rule and structural keyboard edits in Rust, and save/commit only that file. Snapshots include the exact Markdown, rule count, dirty state and focus target. Unsupported Markdown is preserved verbatim. Saving rejects external changes and keeps the draft; Discard draft and reload explicitly replaces the draft with the current disk file without writing or committing. Reload failures keep the draft. A failed commit or push can be retried. Remote projects fetch and merge the default branch without rewriting history before pushing; a conflict names the files and stops publication, and a rejected push keeps the local commit for retry. Local projects without origin keep local commits. The default AGENTS.md template uses the same publication path. Snapshots also carry each rule's live lint marks (hedge, modal, vague; never inside inline code), the Flagged list and the Covers checklist; `AddCoverage { item }` inserts a missing topic's bullets after the last rule of its section, or in a new section at the end. |
 | command | `get_settings`, `set_settings`, `list_worktrees`, `prune_worktrees` | settings |
 | command | `set_worktree_settings { edit, project_identifier }`, `preview_worktree_folder { folder }`, `browse_worktree_folder` | persist a worktree preference edit; preview the path for a folder still being typed, without saving it; select a location through the native folder picker |
 | command | `list_providers`, `provider_sign_in { provider }`, `provider_sign_out { provider }`, `install_provider { provider }`, `set_provider_settings { edit }` | Settings → Providers (F15), drawn in Rust. At startup and after each sign-in the backend starts each provider's ACP agent with no prompt: `initialize` gives its sign-in methods, `session/new` succeeds when its login holds (`auth_required` when it doesn't), and its model option lists the models; each model is selected once to read whether it offers a fast mode. The answers are saved in `state.json` as the provider catalog, so pickers are right before the agents answer again. Sign in runs the agent's own login: ACP `authenticate`, or a terminal method's command with no console window; methods that take an API key or bill an API account are never chosen. Sign out (Cancel while waiting) is Velocity's own record *(proposed)*: the agent's login is left alone, so your CLI stays signed in. `install_provider` runs a built-in provider's fixed install steps (F15 Install) for an agent that isn't installed; `provider_sign_out` cancels it while it runs. `set_provider_settings` shows or hides a model chip, sets the optional per-provider concurrency cap, and sets the default model, effort and speed for new threads and the thread title model. |
@@ -154,6 +156,7 @@ The native supervisor checks live build threads once a second. Its defaulted che
 | command | `airc_send { project_identifier, text }` | Your F14 comment in a registered project channel. An exact `nick:` prefix targets that member. A single-word prefix that is a likely mistyped nick (a nick that left, or one within two character edits of a joined nick, ignoring case) is rejected with the closest nick named. Every other comment broadcasts to active thread members, including one that starts with an ordinary word and a colon. Delivery uses ordinary queued steering and never cancels a running turn. |
 | command | `get_airc_modal { project_identifier }` | The F14 AIRC modal's view, built in Rust from the active project's channel and saved thread and duty state: tab counts (Claims adds its overlap count), tagged and toned event rows, messages with mentions of you, the claims board with overlapping files of working and PR-open agents, both ledgers, and the grouped nick list. `A`, the palette and the footer link open the modal through `dispatch_layout` (`airc_open` on `layout://state`); `Esc` closes it. Comments go through `airc_send`. |
 | command | `airc_events { project_identifier, after }`, `airc_messages { project_identifier, after }`, `airc_send`, `airc_claims`, `airc_claim`, `airc_release`, `airc_share`, `airc_wait`, `airc_ledger { project_identifier, ledger, after }` | AIRC (agents get the same as MCP tools). `airc_events` returns only F14 event log entries (`EVENT_TAGS`, including `discovery` notices); `airc_messages` returns only agent messages and user comments; `airc_ledger` reads `discovery` or `past_work`. `airc_claim` is atomic: it returns `granted`, or `refused { holder, since }` |
+| command | `dispatch_layout` with `ToggleSettled` | Toggle the active project's saved Settled group expansion. |
 | command | `dispatch_layout` with `Navigation(Answer(n))`, `Navigation(Lock)`, `Navigation(SpecFile)`, `Navigation(Grill)`, `SteerThread` on a spec thread, and `ToggleProofListEntry(index)` | spec interview (F3): answer `1`–`4` or in your own words, Lock spec & publish tasks, open SPEC.md, Keep grilling, and switch a proposed proof-list entry. The backend carries these out; the interview's phase, question, decisions and proof list arrive on `active_thread.interview` in `layout://state`. |
 | event | `thread://status`, `thread://step` | thread state and tool steps: `thread://status` carries a thread's state and activity (§2.1, §2.2) whenever either changes; `thread://step` carries the thread's newest transcript block after each agent update |
 | event | `window://state` | native maximize/restore state, including changes made by the operating system |
@@ -359,14 +362,14 @@ There are two views of the same work, switched from the title bar or with `B`:
    - The agent keeps asking until nothing is ambiguous.
 3. **Ready:** a spec card lists every decision.
    - **Proof list:** the card proposes which features get Lean proofs (F17), and you edit it before locking. Most projects list a handful; UI and plumbing never appear on it.
-   - **Lock spec & publish tasks** (`L`): commits SPEC.md, turns the draft tasks into real tasks, and marks the thread done.
+   - **Lock spec & publish tasks** (`L`): commits SPEC.md and pushes to the remote default branch before locking, turns the draft tasks into real tasks, and marks the thread done.
    - **SPEC.md** (`S`): opens the file.
    - **Keep grilling** (`G`): asks more questions.
 4. **How the agent reports structure:** the interview runs on any provider, so the prompt carries the whole protocol. The agent ends each reply with a fenced `velocity-interview` JSON block: the scan summary (first reply), the draft tasks the last answer adds, and either the next question (`key`, `text`, `why`, up to 4 options, one recommended) or `ready` with the proposed proof list. Velocity hides the block from the transcript. A reply without one leaves the question open for a free-text answer. Lock writes the edited proof list into SPEC.md's `## Proof list` section before committing. After a restart, an interview resumes on your next message from its saved decisions (§3.2 Resume after a restart).
 
 **Accept when:**
 - [ ] No build thread, swarm or dispatch can start on a project whose spec is unlocked. Swarm marks draft tasks "lock the spec first".
-- [ ] Locking commits SPEC.md and publishes the tasks.
+- [ ] Locking commits and pushes SPEC.md before it publishes the tasks.
 - [ ] The Task List counter shows `draft · N` before lock and `done/total` after.
 
 ### F4 · Threads and composer
@@ -740,7 +743,7 @@ Open it from the rail link or the palette. It reads and writes the repo's `AGENT
 - Shared files: the project's generated files and registration lists, and how to merge them (F14).
 
 **Accept when:**
-- [ ] Saving commits AGENTS.md; agents pick it up on their next task.
+- [ ] Saving commits and pushes AGENTS.md; agents pick it up on their next task.
 - [ ] Undo restores your exact original wording, including removing any split-off bullet.
 
 ### F12 · Thread context menu and delete
