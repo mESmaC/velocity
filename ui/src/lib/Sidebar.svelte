@@ -1,6 +1,6 @@
 <script lang="ts">
   import Icon from './Icon.svelte';
-  import UsagePanel from './UsagePanel.svelte';
+  import UsageModal from './UsageModal.svelte';
   import UpdatesPanel from './UpdatesPanel.svelte';
   import { rise } from './motion';
   import {
@@ -220,8 +220,9 @@
         {update}
         close={() => (updatesOpen = false)}
       />{/if}
-    {#if usageOpen}<UsagePanel
+    {#if usageOpen}<UsageModal
         providers={layout.providers}
+        project={layout.project_identifier}
         {send}
         close={() => (usageOpen = false)}
       />{/if}

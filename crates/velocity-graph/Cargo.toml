@@ -9,12 +9,17 @@ publish = false
 [lints]
 workspace = true
 
+[features]
+bindings = ["dep:specta"]
+
 [dependencies]
+chrono = { version = "0.4", default-features = false, features = ["clock"] }
 crc32fast = "1.5"
 notify = "8.2"
 serde.workspace = true
 serde_json.workspace = true
 sha2 = "0.10"
+specta = { workspace = true, optional = true }
 thiserror.workspace = true
 tree-sitter = "0.25"
 tree-sitter-c = "0.24"

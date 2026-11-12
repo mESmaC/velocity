@@ -1718,3 +1718,53 @@
     --motion-progress-duration: 0s;
   }
 }
+
+/* F15/F19 usage modal: the modal frame, header and segmented switch copy the New project
+   dialog's values (reference 470-569 and 1017-1046), its width the goal swarm dialog's
+   (reference `goal swarm`), so it reads as one of Velocity's dialogs. */
+:root {
+  --usage-modal-scrim-background: rgba(0, 0, 0, 0.5);
+  --usage-modal-scrim-backdrop-filter: blur(8px) saturate(1.3);
+  --usage-modal-width: min(660px, 94vw);
+  --usage-modal-max-height: calc(100vh - 150px);
+  --usage-modal-border: 1px solid rgba(255, 255, 255, 0.13);
+  --usage-modal-border-radius: 18px;
+  --usage-modal-box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.12), 0 0 0 0.5px #000,
+    0 30px 90px rgba(0, 0, 0, 0.9);
+  --usage-modal-header-padding: 14px 16px 6px;
+  --usage-modal-title-font-size: 13.5px;
+  --usage-modal-title-font-weight: 600;
+  --usage-modal-title-letter-spacing: -0.01em;
+  --usage-modal-title-color: #fff;
+  --usage-modal-label-font-size: 10.5px;
+  --usage-modal-body-padding: 8px 16px 14px;
+  --usage-modal-body-gap: 16px;
+  --usage-modal-segment-gap: 2px;
+  --usage-modal-segment-padding: 2px;
+  --usage-modal-segment-border-radius: 8px;
+  --usage-modal-segment-background: rgba(255, 255, 255, 0.07);
+  --usage-modal-segment-box-shadow: inset 0 0 0 0.5px rgba(255, 255, 255, 0.06);
+  --usage-modal-segment-button-height: 19px;
+  --usage-modal-segment-button-padding: 0 9px;
+  --usage-modal-segment-button-font-size: 10.5px;
+  --usage-modal-segment-button-border-radius: 6px;
+  --usage-modal-segment-on-background: linear-gradient(
+    rgba(255, 255, 255, 0.24),
+    rgba(255, 255, 255, 0.16)
+  );
+  --usage-modal-segment-on-color: #fff;
+  --usage-modal-segment-on-box-shadow:
+    0 1px 3px rgba(0, 0, 0, 0.6), inset 0 1px 0 rgba(255, 255, 255, 0.16);
+  --usage-modal-button-height: 24px;
+  --usage-modal-button-padding: 0 10px;
+  --usage-modal-button-border: 1px solid rgba(255, 255, 255, 0.11);
+  --usage-modal-button-border-radius: 7px;
+  --usage-modal-button-font-size: 11px;
+  --usage-modal-button-background: linear-gradient(
+    rgba(255, 255, 255, 0.12),
+    rgba(255, 255, 255, 0.06)
+  );
+  --usage-modal-button-box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.1);
+  --usage-modal-button-hover-border-color: rgba(255, 255, 255, 0.18);
+}

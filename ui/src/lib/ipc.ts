@@ -12,6 +12,7 @@ export * from './ipc/shared-mcp';
 export * from './ipc/skills';
 export * from './ipc/swarm';
 export * from './ipc/updates';
+export * from './ipc/code-graph';
 export * from './ipc/usage';
 import {
   commands,

@@ -10,7 +10,7 @@ publish = false
 workspace = true
 
 [dependencies]
-agent-client-protocol = "5.0.0"
+agent-client-protocol = { version = "5.0.0", features = ["unstable_end_turn_token_usage"] }
 process-wrap = { version = "=10.0.1", features = ["tokio1"] }
 reqwest = { version = "0.13", default-features = false, features = ["json", "native-tls"] }
 serde_json.workspace = true

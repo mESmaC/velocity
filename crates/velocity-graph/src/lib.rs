@@ -19,6 +19,7 @@ mod subsystems;
 mod svelte;
 mod text;
 mod tools;
+pub mod usage;
 
 pub use extract::{FileParse, SymbolKind};
 pub use graph::{Graph, Provenance, Record, RecordKind, Relation};

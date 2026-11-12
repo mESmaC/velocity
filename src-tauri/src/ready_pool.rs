@@ -66,6 +66,9 @@ impl PoolHost for Host {
         ) else {
             return;
         };
+        if !velocity_graph::usage::enabled(&app_data, &project.to_string()) {
+            return;
+        }
         match velocity_graph::warm(&executable, &app_data, &project.to_string(), slot) {
             Ok(child) => {
                 warming.insert(project, child);

@@ -24,6 +24,7 @@ mod shared;
 mod sign_in;
 mod terminals;
 mod title;
+mod turn_usage;
 mod updates;
 
 use std::path::PathBuf;
@@ -309,6 +310,7 @@ async fn drive(
 ) -> Result<(), agent_client_protocol::Error> {
     let started = session::start_or_resume_session(&connection, &setup, &shared.replaying).await?;
     let session_id = started.session_id;
+    let mut meter = turn_usage::UsageMeter::for_setup(&setup);
     let mut options = started.options;
     shared.emit(AgentEvent::SessionStarted {
         session_id: session_id.clone(),
@@ -319,7 +321,7 @@ async fn drive(
         .resume
         .filter(|_| !started.loaded)
         .map(|resume| ContentBlock::from(resume.transcript));
-    let (turn_sender, mut turn_ended) = unbounded_channel();
+    let (turn_sender, mut turn_ended) = unbounded_channel::<turn_usage::TurnReport>();
     let mut steering: Steering<Vec<ContentBlock>, ()> = Steering::new(());
     loop {
         let input = tokio::select! {
@@ -332,8 +334,11 @@ async fn drive(
                 }
                 Some(AgentInput::Stop) | None => return Ok(()),
             },
-            Some(outcome) = turn_ended.recv() => {
-                shared.emit(AgentEvent::TurnEnded(outcome));
+            Some(report) = turn_ended.recv() => {
+                if let Some(meter) = meter.as_mut() {
+                    meter.record(&report);
+                }
+                shared.emit(AgentEvent::TurnEnded(report.outcome));
                 SteeringInput::TurnEnded
             }
         };
@@ -374,7 +379,7 @@ struct Turn<'session> {
     connection: &'session ConnectionTo<Agent>,
     shared: &'session Shared,
     session_id: &'session SessionId,
-    turn_sender: &'session UnboundedSender<Result<StopReason, String>>,
+    turn_sender: &'session UnboundedSender<turn_usage::TurnReport>,
     preface: &'session mut Option<ContentBlock>,
 }
 
@@ -414,14 +419,24 @@ impl Turn<'_> {
             blocks.insert(0, preface);
         }
         let turn_sender = self.turn_sender.clone();
+        let started = std::time::Instant::now();
         self.connection
             .send_request(PromptRequest::new(self.session_id.clone(), blocks))
             .on_receiving_result(move |result| async move {
+                let usage = result
+                    .as_ref()
+                    .ok()
+                    .and_then(|response| response.usage.as_ref())
+                    .map(turn_usage::counts);
                 let outcome = result
                     .map(|response| response.stop_reason)
                     .map_err(|error| error.to_string());
                 // The loop ended: the session is stopping and no one waits for the turn.
-                let _ = turn_sender.send(outcome);
+                let _ = turn_sender.send(turn_usage::TurnReport {
+                    outcome,
+                    usage,
+                    elapsed: started.elapsed(),
+                });
                 Ok(())
             })
     }

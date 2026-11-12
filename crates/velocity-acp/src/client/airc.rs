@@ -6,11 +6,8 @@ use std::path::{Path, PathBuf};
 use agent_client_protocol::v1::schema::{McpServer, McpServerStdio};
 use velocity_airc::{SERVER_NAME, SERVER_SWITCH, server_arguments};
 
-/// The code graph server (F19) for a session that has AIRC: the same executable and project,
-/// over the session's worktree. Every session Velocity starts gets AIRC, so deriving the graph
-/// from it means no role can start without the graph. `None` for a server [`AircLaunch`]
-/// didn't make.
-pub fn graph_server(airc: &McpServer, worktree: &Path) -> Option<McpServer> {
+/// The app data folder and project an AIRC server [`AircLaunch`] made is for.
+pub(super) fn airc_project(airc: &McpServer) -> Option<(&McpServerStdio, &str, &str)> {
     let McpServer::Stdio(airc) = airc else {
         return None;
     };
@@ -18,7 +15,17 @@ pub fn graph_server(airc: &McpServer, worktree: &Path) -> Option<McpServer> {
     let [switch, app_data, project, ..] = airc.args.as_slice() else {
         return None;
     };
-    if switch != SERVER_SWITCH {
+    (switch == SERVER_SWITCH).then_some((airc, app_data.as_str(), project.as_str()))
+}
+
+/// The code graph server (F19) for a session that has AIRC: the same executable and project,
+/// over the session's worktree. Every session Velocity starts gets AIRC, so deriving the graph
+/// from it means no role can start without the graph. `None` for a server [`AircLaunch`]
+/// didn't make.
+/// While the project's code graph switch is off (F19), sessions start without it.
+pub fn graph_server(airc: &McpServer, worktree: &Path) -> Option<McpServer> {
+    let (airc, app_data, project) = airc_project(airc)?;
+    if !velocity_graph::usage::enabled(Path::new(app_data), project) {
         return None;
     }
     let mut arguments = vec![velocity_graph::SERVER_SWITCH.to_owned()];
