@@ -181,7 +181,7 @@ impl ProofCheckReport {
             "passed".into()
         } else {
             format!(
-                "FAILED: {} never name a SPEC.md section (e.g. `-- SPEC.md F14`)",
+                "FAILED: {} never name a SPEC.md section; use the project's own section label",
                 self.unnamed_sections.join(", ")
             )
         }

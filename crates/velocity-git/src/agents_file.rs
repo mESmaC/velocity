@@ -123,6 +123,13 @@ impl AgentsFiles {
             document.disk_source = Some(markdown);
         }
         commit_agents(directory)?;
+        let published = read_source(&path)?;
+        if published != document.disk_source {
+            document
+                .editor
+                .reload(published.clone().unwrap_or_default());
+            document.disk_source = published;
+        }
         document.editor.saved();
         Ok(document.editor.snapshot(None))
     }
@@ -131,6 +138,7 @@ impl AgentsFiles {
 /// Commit only AGENTS.md; the repository edge handles long Windows paths.
 pub fn commit_agents(directory: &Path) -> Result<(), AgentsFileError> {
     crate::commit_file(directory, Path::new("AGENTS.md"), "Update AGENTS.md")?;
+    crate::publish_instructions(directory)?;
     Ok(())
 }
 

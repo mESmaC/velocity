@@ -165,31 +165,19 @@ impl Channel {
             .watch(&self.directory, notify::RecursiveMode::NonRecursive)
             .map_err(|error| Error::Invalid(error.to_string()))?;
         let waiting = self.begin_wait(member, holder, file)?;
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(20 * 60);
         let dependency = waiting
             .dependency
             .as_ref()
             .ok_or_else(|| Error::Invalid("Missing wait".into()))?;
-        let holder_checkout = self
-            .read(0)?
-            .iter()
-            .rev()
-            .find(|entry| entry.member == dependency.holder && entry.checkout.is_some())
-            .map_or(0, |entry| entry.sequence);
-        let mut after = holder_checkout;
         loop {
             if cancelled() {
                 return Err(Error::Invalid("AIRC connection ended while waiting".into()));
             }
-            let entries = self.read(after)?;
-            after = entries.last().map_or(after, |entry| entry.sequence);
-            if let Some(ended) = entries.into_iter().rev().find(|entry| {
-                entry.kind == "dependency_end"
-                    && entry.member == dependency.holder
-                    && entry.sequence > holder_checkout
-            }) {
+            if let Some(ended) = holder_end(&self.read(0)?, dependency) {
                 return self.continue_wait(member, dependency, &ended);
             }
-            receive_change(&receiver, &cancelled)?;
+            receive_change(&receiver, &cancelled, deadline)?;
         }
     }
 
@@ -322,6 +310,29 @@ fn holder_end(entries: &[Entry], dependency: &DependencyWait) -> Option<Entry> {
                 && entry.sequence > checkout
         })
         .cloned()
+        .or_else(|| expired_wait(entries, dependency))
+}
+
+// Read the durable wait timestamp so restarting Velocity cannot reset the deadline.
+fn expired_wait(entries: &[Entry], dependency: &DependencyWait) -> Option<Entry> {
+    let waiting = entries.iter().rev().find(|entry| {
+        entry.kind == "waits"
+            && entry
+                .dependency
+                .as_ref()
+                .is_some_and(|wait| wait.member == dependency.member)
+    })?;
+    let started = chrono::DateTime::parse_from_rfc3339(&waiting.time).ok()?;
+    if chrono::Utc::now()
+        .signed_duration_since(started)
+        .num_seconds()
+        < 20 * 60
+    {
+        return None;
+    }
+    let mut ended = waiting.clone();
+    ended.text = "wait expired after 20 minutes; coordinate with the holder or proceed".into();
+    Some(ended)
 }
 
 fn reject_cycle(
@@ -344,15 +355,18 @@ fn reject_cycle(
     ))
 }
 
-// Timeouts check transport cancellation only; dependency state is read solely
-// after a filesystem event, so a pending agent never polls for its dependency.
+// Check cancellation in short slices, but re-read dependency state only on events or expiry.
 fn receive_change(
     receiver: &std::sync::mpsc::Receiver<Result<(), String>>,
     cancelled: &impl Fn() -> bool,
+    deadline: std::time::Instant,
 ) -> Result<(), Error> {
     loop {
         if cancelled() {
             return Err(Error::Invalid("AIRC connection ended while waiting".into()));
+        }
+        if std::time::Instant::now() >= deadline {
+            return Ok(());
         }
         match receiver.recv_timeout(std::time::Duration::from_millis(250)) {
             Ok(result) => return result.map_err(Error::Invalid),
@@ -360,4 +374,25 @@ fn receive_change(
             Err(error) => return Err(Error::Invalid(error.to_string())),
         }
     }
+}
+
+// #260: a blocked dependency must not strand a parked thread indefinitely after restart.
+#[cfg(test)]
+#[test]
+fn blocked_wait_expires_from_durable_timestamp() {
+    let dependency = DependencyWait {
+        member: "a".into(),
+        nick: "a".into(),
+        holder: "b".into(),
+        holder_nick: "b".into(),
+        file: "shared.rs".into(),
+    };
+    let mut waiting = entry(&[], "waits", "velocity", "a", "waiting for b");
+    waiting.dependency = Some(dependency.clone());
+    assert!(expired_wait(&[waiting.clone()], &dependency).is_none());
+    waiting.time = (chrono::Utc::now() - chrono::Duration::minutes(21)).to_rfc3339();
+    assert!(
+        holder_end(&[waiting], &dependency)
+            .is_some_and(|ended| ended.text.contains("wait expired"))
+    );
 }

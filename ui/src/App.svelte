@@ -82,8 +82,15 @@
     'arrowup',
   ]);
 
+  let errorTimer: ReturnType<typeof setTimeout> | undefined;
+  function clearError() {
+    clearTimeout(errorTimer);
+    error = '';
+  }
   function report(reason: unknown) {
+    clearError();
     error = reason instanceof Error ? reason.message : String(reason);
+    errorTimer = setTimeout(clearError, 4000);
   }
 
   function receive(snapshot: LayoutSnapshot) {
@@ -137,7 +144,11 @@
   function enqueue(request: () => Promise<LayoutSnapshot>) {
     pending += 1;
     queue = queue
-      .then(async () => receive(await request()))
+      .then(async () => {
+        const snapshot = await request();
+        clearError();
+        receive(snapshot);
+      })
       .catch(report)
       .finally(() => {
         pending -= 1;
