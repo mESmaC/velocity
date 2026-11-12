@@ -25,7 +25,9 @@ pub use extract::{FileParse, SymbolKind};
 pub use graph::{Graph, Provenance, Record, RecordKind, Relation};
 pub use index::{BuildReport, Index};
 pub use language::Language;
-pub use mcp::{SERVER_NAME, SERVER_SWITCH, serve, serve_stdio, server_arguments, warm};
+pub use mcp::{
+    SERVER_NAME, SERVER_SWITCH, WARM_SWITCH, serve, serve_stdio, server_arguments, warm, warm_stdio,
+};
 pub use tools::Tools;
 
 #[derive(Debug, thiserror::Error)]

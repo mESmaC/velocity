@@ -18,6 +18,10 @@ use crate::tools::Tools;
 
 /// The switch that makes Velocity's executable serve the graph.
 pub const SERVER_SWITCH: &str = "--graph-mcp";
+/// The switch that makes Velocity's executable fill a project's parse cache and exit
+/// (warming).
+pub const WARM_SWITCH: &str = "--graph-warm";
+
 /// The MCP server name agents see.
 pub const SERVER_NAME: &str = "velocity-graph";
 
@@ -123,15 +127,16 @@ pub fn serve(
             output.flush()?;
         }
     }
-    // A connection that ends while the index is still building (a warming run, below) lets
+    // A connection that ends while the index is still building (a session stopped early) lets
     // the build finish, so its parses reach the cache.
     let _ = builder.join();
     Ok(())
 }
 
 /// Fills the project's parse cache from `worktree` in the background (F19 "Warming"): the
-/// executable runs as a graph server with no input, below normal priority, and exits once the
-/// index is built.
+/// executable runs with [`WARM_SWITCH`], below normal priority, and exits once the index is
+/// built. It holds no watcher, so a thread can take the ready worktree (a folder rename)
+/// while it runs.
 pub fn warm(
     executable: &Path,
     app_data: &Path,
@@ -140,12 +145,24 @@ pub fn warm(
 ) -> std::io::Result<std::process::Child> {
     let mut command = crate::files::background_command(executable);
     command
-        .arg(SERVER_SWITCH)
+        .arg(WARM_SWITCH)
         .args(server_arguments(app_data, project, worktree))
         .stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::null())
         .stderr(std::process::Stdio::null())
         .spawn()
+}
+
+/// The warming run from [`warm`]'s arguments: builds the index, which fills the cache.
+pub fn warm_stdio(arguments: &[OsString]) -> Result<(), Error> {
+    let [app_data, project, worktree] = arguments else {
+        return Err(Error::Invalid(USAGE.into()));
+    };
+    let project = project
+        .to_str()
+        .ok_or_else(|| Error::Invalid("Invalid project identity".into()))?;
+    let cache = PathBuf::from(app_data).join("graph").join(project);
+    Index::open(Path::new(worktree), &cache).map(drop)
 }
 
 /// Builds the index. A panic in a parser becomes an error the tools report, rather than the

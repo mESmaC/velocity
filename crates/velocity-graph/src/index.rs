@@ -57,6 +57,9 @@ impl Index {
         index.rebuild();
         let live: Vec<String> = index.live_keys();
         index.cache.compact(&live)?;
+        // The log holds parses of every version of every file any agent saw; this agent
+        // needs only its own files' (an edit's new parse is made, not looked up).
+        index.cache.retain(&live);
         index.report = BuildReport {
             files: index.files.len(),
             parsed,

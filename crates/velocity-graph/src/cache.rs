@@ -51,6 +51,12 @@ impl Cache {
         Self { log, entries }
     }
 
+    /// Drops every parse in memory but `live`'s. The log on disk keeps them all.
+    pub fn retain(&mut self, live: &[String]) {
+        let live: std::collections::HashSet<&String> = live.iter().collect();
+        self.entries.retain(|key, _| live.contains(key));
+    }
+
     /// Reads the log again, picking up what other agents appended since it was opened.
     pub fn reload(&mut self) {
         if let Ok(bytes) = std::fs::read(&self.log) {

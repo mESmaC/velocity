@@ -1475,9 +1475,9 @@ Each milestone ends with a working app. PR duty checks an item off when it lands
 - [x] In-app updates: signed releases from `v*` tags, the update check and Updates panel, Restart to update for setup, MSI and portable copies
 
 **M14 · Code graph** (F19)
-- [ ] Code graph index: tree-sitter symbols, files and subsystems with addresses, span hashes and edge provenance; the per-project parse cache, warmed after merges
-- [ ] `velocity-graph` MCP server in every session: `graph_find`, `graph_read`, `graph_impact` and `graph_run` over each agent's worktree view, with the span check (§3.2)
-- [ ] Per-project switch, and the graph on/off comparison of tokens and time per turn in the usage modal (F15 Usage modal)
+- [x] Code graph index: tree-sitter symbols, files and subsystems with addresses, span hashes and edge provenance; the per-project parse cache, warmed after merges
+- [x] `velocity-graph` MCP server in every session: `graph_find`, `graph_read`, `graph_impact` and `graph_run` over each agent's worktree view, with the span check (§3.2)
+- [x] Per-project switch, and the graph on/off comparison of tokens and time per turn in the usage modal (F15 Usage modal)
 - [ ] AIRC overlaps by symbol, swarm split by subsystem, and PR duty's impact set
 
 ---
