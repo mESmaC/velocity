@@ -131,6 +131,17 @@ impl StateStore {
     }
 }
 
+/// GitHub merged the thread's PR, but the thread stays in review until its worktree is gone
+/// (F5, F6). Its label says the merge happened rather than "approved · merging" (#278).
+pub(crate) const MERGED_CLEANING_UP: &str = "merged · deleting worktree";
+
+pub(crate) fn merged_awaiting_cleanup(thread: &ThreadItem) -> bool {
+    thread
+        .follow_through
+        .as_ref()
+        .is_some_and(|watch| watch.stage == "merged" && !watch.worktree_deleted)
+}
+
 /// A task is done when its PR merged (F8): the merged thread's tasks tick off (F10).
 fn finish_thread_tasks(state: &mut crate::PersistedState, project: u32, thread: u32) {
     let Some(project) = state.projects.iter_mut().find(|item| item.id == project) else {

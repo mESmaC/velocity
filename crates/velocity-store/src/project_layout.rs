@@ -295,6 +295,9 @@ pub(crate) fn thread_metadata(thread: &ThreadItem) -> String {
     }
     if thread.state == ThreadState::Review {
         let stage = match thread.review_stage {
+            _ if crate::follow_through::merged_awaiting_cleanup(thread) => {
+                crate::follow_through::MERGED_CLEANING_UP
+            }
             Some(ReviewStage::ContinuousIntegration) => "waiting on CI",
             Some(ReviewStage::Fixing) => "addressing review",
             Some(ReviewStage::Approved) => "approved · merging",

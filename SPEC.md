@@ -484,7 +484,7 @@ The watcher reads GitHub every 15 seconds, with one query per project that lists
   - Answer every review comment: either fix and push, or reply with the reason. Then resolve the thread and re-request review.
   - If the PR is closed without merging, report why in the thread.
 - **Status line:** "watching PR #n · <stage> · answers new comments as they arrive", or "addressing N open review comment(s)".
-- **Sidebar meta:** `#n` plus the stage label in the stage colour: checking / in review / addressing review / approved · merging.
+- **Sidebar meta:** `#n` plus the stage label in the stage colour: checking / in review / addressing review / approved · merging. Once GitHub reports the merge, the label reads merged · deleting worktree until cleanup finishes and the thread settles as merged.
 
 **Landing and rebases** (from Anthropic's Scion):
 
@@ -634,7 +634,7 @@ The project-scoped list in the top-right panel.
 - Tasks added before the spec is locked are drafts.
 - **After the spec is locked** (decided, Q6): a task you or an agent adds goes straight to todo and stays outside SPEC.md. Adding a task never starts an interview and never edits SPEC.md. When the work changes behaviour SPEC.md describes, the building agent updates SPEC.md in its own PR (AGENTS.md).
 
-**Live state:** a task with an agent shows that agent's state (agent working / #n · in review / merged · #n), linked to its thread.
+**Live state:** a task with an agent shows that agent's state (agent working / agent idle / #n · in review / merged · #n), linked to its thread. Agent idle means its turn ended before its PR is followed, such as a draft claim not yet marked ready.
 
 **Accept when:**
 - [ ] Re-rendering the list never takes focus from the add-task input.
