@@ -11,6 +11,7 @@ members = [
     "crates/velocity-skills",
     "crates/velocity-store",
     "crates/velocity-threads",
+    "crates/velocity-updates",
     "src-tauri",
     "stress",
 ]
@@ -33,6 +34,7 @@ tauri-specta = { version = "=2.0.0-rc.26", features = ["derive", "typescript"] }
 tauri-plugin-clipboard-manager = "=2.5.0"
 tauri-plugin-dialog = "=2.8.4"
 tauri-plugin-opener = "=2.7.2"
+tauri-plugin-updater = "=2.14.1"
 thiserror = "2.0"
 tokio = { version = "1.54", features = ["rt", "sync", "time"] }
 velocity-airc = { path = "crates/velocity-airc" }
@@ -45,6 +47,7 @@ velocity-proofs = { path = "crates/velocity-proofs" }
 velocity-skills = { path = "crates/velocity-skills" }
 velocity-store = { path = "crates/velocity-store" }
 velocity-threads = { path = "crates/velocity-threads" }
+velocity-updates = { path = "crates/velocity-updates" }
 
 [workspace.lints.rust]
 unsafe_code = "forbid"

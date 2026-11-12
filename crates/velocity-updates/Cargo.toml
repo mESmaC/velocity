@@ -1,0 +1,18 @@
+[package]
+name = "velocity-updates"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish = false
+
+[features]
+bindings = ["dep:specta"]
+
+[dependencies]
+chrono = { version = "0.4", default-features = false, features = ["clock"] }
+serde.workspace = true
+specta = { workspace = true, optional = true }
+thiserror.workspace = true
+
+[lints]
+workspace = true

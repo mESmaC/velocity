@@ -30,6 +30,16 @@
       "devCsp": "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' asset: http://asset.localhost; font-src 'self'; connect-src ipc: http://ipc.localhost http://127.0.0.1:1420 ws://127.0.0.1:1420"
     }
   },
+  "plugins": {
+    "updater": {
+      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IDdFMEZDOEJCQjFEMzBDQ0EKUldUS0ROT3h1OGdQZm9CSmx6NEs2cHpqMzhDRXBtK3JPbjJIVmNJVXoxeVNLc0ljYytFODdPU2gK",
+      "endpoints": ["https://github.com/mESmaC/velocity/releases/download/updater/latest.json"],
+      "requireSignedVersion": true,
+      "windows": {
+        "installMode": "passive"
+      }
+    }
+  },
   "bundle": {
     "active": true,
     "targets": "all",

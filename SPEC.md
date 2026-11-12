@@ -168,6 +168,8 @@ The native supervisor checks live build threads once a second. Its defaulted che
 | event | `airc://modal` | The active project's AIRC modal view, published only while the modal is open and when it changed. Agents write the channel from their own MCP processes, so Velocity reads it once a second. Lines are marked read while the modal is open; the footer unread badge (amber when an unread line is an overlap or a failure) arrives on `layout://state`. |
 | event | `airc://event`, `airc://message`, `airc://overlap` | AIRC events, agent messages and overlap detection |
 | event | `provider://status` | Settings → Providers whenever a provider's sign-in state, models or limit changes. Limits are read every 5 minutes and updated from live Claude and Codex reports during turns (F15 Limit sources); both ride on the same event. The footer meter and the home model pill update on `layout://state`. |
+| command | `get_update_status`, `check_for_update`, `install_update` | Velocity's own updates (F1 Updates): the Updates panel's view; a check now; download, verify, install and restart. Each returns the panel's view, and failures show in it. |
+| event | `update://status` | the Updates panel and the footer button whenever a check, download or install moves on (F1 Updates) |
 
 
 ### 3.2 Agent protocol: ACP
@@ -287,6 +289,7 @@ There are two views of the same work, switched from the title bar or with `B`:
 - search (`/`) and a new-thread button
 - the thread groups (§2.1)
 - a footer with settings, usage, updates, a live worktree count ("8 on D:", click → Settings · Worktrees) and a subscription-limit meter: one bar per signed-in provider, filled to the share of its limit used, coloured by provider. The usage button and the meter both open the usage panel (F15 Usage panel). There is no dollar spend: every provider runs on a subscription.
+  - **Updates:** Velocity checks its GitHub Releases for a newer version 30 seconds after it starts, every 6 hours, and when you press Check for updates. While one is available, the Updates button turns accent-coloured. It opens the Updates panel, which shows the new version, its release notes, how this copy was installed (setup, MSI or portable), how many agents are mid-turn, and **Restart to update**. Restarting stops running turns; worktrees and transcripts are kept (§3.2 Resume after a restart). Every download is verified against Velocity's release signing key, with the version bound into the signature, before anything runs. Setup and MSI copies run their installer, which restarts Velocity. A portable copy replaces its own executable and starts again. Velocity never restarts itself without you pressing the button. There is one channel: the newest release, betas included. A `v*` tag publishes a release (`.github/workflows/release.yml`); development builds check only when asked and never install. A failed check or download shows in the panel, not as a window error.
 
 **Rail:** three panels: Task List, Open Pull Requests, Open Issues. Below them are footer links: AIRC (F14), with an unread badge that turns amber when an overlap is unread, and AGENTS.md.
 
@@ -1385,6 +1388,9 @@ Each milestone ends with a working app. PR duty checks an item off when it lands
 - [x] Built-in packs: UI UX Pro Max (design system and AGENTS.md rule), claude-skills (bundles), Game dev skills (router and engine detection), REA (shared MCP server)
 - [x] Project scan suggestions (F3), re-checked after merges
 - [x] `$` skill menu in the composer; skill loads shown as tool steps (F4)
+
+**M13 · Releases and updates** (F1)
+- [ ] In-app updates: signed releases from `v*` tags, the update check and Updates panel, Restart to update for setup, MSI and portable copies
 
 ---
 
