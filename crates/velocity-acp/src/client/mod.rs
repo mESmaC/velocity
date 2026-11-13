@@ -43,7 +43,7 @@ use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender, unbounded_channel};
 use tokio::sync::oneshot;
 use tokio_util::compat::{TokioAsyncReadCompatExt, TokioAsyncWriteCompatExt};
 
-pub use airc::AircLaunch;
+pub use airc::{AircLaunch, duty_member};
 pub use antigravity_limits::read_antigravity_usage;
 pub use error::ClientError;
 pub use files::resolve_in_worktree;

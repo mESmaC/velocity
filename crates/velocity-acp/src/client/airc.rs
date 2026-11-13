@@ -39,6 +39,11 @@ pub fn graph_server(airc: &McpServer, worktree: &Path) -> Option<McpServer> {
     ))
 }
 
+/// The AIRC member a duty agent's sessions join as, so delivery can find its nick (F14).
+pub fn duty_member(nick: &str) -> String {
+    format!("duty-{nick}")
+}
+
 /// Where the AIRC server comes from: Velocity's own executable started with
 /// [`SERVER_SWITCH`], over the channels kept under the app data folder.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -69,7 +74,7 @@ impl AircLaunch {
 
     /// A duty agent's connection under its role nick (`scout-1`, `pr-1`).
     pub fn duty(&self, project: u32, nick: &str) -> McpServer {
-        self.server(project, &format!("duty-{nick}"), nick)
+        self.server(project, &duty_member(nick), nick)
     }
 
     /// The spec interview's connection. It works in the main checkout, so it has no
