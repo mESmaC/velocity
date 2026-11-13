@@ -159,7 +159,7 @@ impl Driver {
         for block in self
             .runtimes
             .view(KEY)
-            .map(|view| view.blocks)
+            .map(|view| view.blocks.to_vec())
             .unwrap_or_default()
         {
             match block {

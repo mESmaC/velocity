@@ -711,7 +711,7 @@ pub struct ThreadItem {
     pub provider_queued: bool,
     /// Conversation retained across process restarts (§3.2).
     #[serde(default)]
-    pub transcript: Vec<velocity_core::thread_view_model::TranscriptBlock>,
+    pub transcript: velocity_core::thread_view_model::SharedBlocks,
     pub review_stage: Option<ReviewStage>,
     pub task_ids: Vec<u32>,
     #[serde(default)]
@@ -753,7 +753,7 @@ impl ThreadItem {
             dependency_wait: None,
             agent_session: None,
             provider_queued: false,
-            transcript: Vec::new(),
+            transcript: Default::default(),
             supervision: Default::default(),
             review_stage: None,
             task_ids: Vec::new(),
@@ -790,7 +790,7 @@ impl ThreadItem {
             dependency_wait: None,
             agent_session: None,
             provider_queued: false,
-            transcript: Vec::new(),
+            transcript: Default::default(),
             supervision: Default::default(),
             review_stage: None,
             task_ids: Vec::new(),

@@ -292,7 +292,7 @@ pub struct ThreadDetailSnapshot {
     pub transcript_mode: TranscriptModeView,
     pub worked_summary: Option<WorkedSummaryView>,
     pub pull_request_history: Option<PullRequestHistoryView>,
-    pub blocks: Vec<TranscriptBlock>,
+    pub blocks: SharedBlocks,
     pub agent_commands: Vec<AgentCommandView>,
     pub composer_placeholder: String,
     pub model_pill: ModelPillView,
@@ -300,11 +300,16 @@ pub struct ThreadDetailSnapshot {
     pub interview: Option<InterviewView>,
 }
 
+/// A thread's transcript, shared rather than copied: the saved record, the layout's thread
+/// entry, the live view and each snapshot all hold the same blocks, and a long transcript
+/// was copied three or four times on every agent burst (#319).
+pub type SharedBlocks = std::sync::Arc<Vec<TranscriptBlock>>;
+
 /// What a running agent session adds to a thread on top of `state.json`: the transcript
 /// (which is not persisted) and the agent's advertised slash commands (`SPEC.md §3.2`, F4).
 #[derive(Clone, Debug, Default)]
 pub struct LiveThreadView {
-    pub blocks: Vec<TranscriptBlock>,
+    pub blocks: SharedBlocks,
     /// `None` until the agent's first `available_commands_update`; an empty list withdraws them.
     pub agent_commands: Option<Vec<AgentCommandView>>,
     /// The title model's name while it is naming the thread (F4): the sidebar title pulses
@@ -315,12 +320,12 @@ pub struct LiveThreadView {
 
 impl LiveThreadView {
     pub fn new(
-        blocks: Vec<TranscriptBlock>,
+        blocks: impl Into<SharedBlocks>,
         agent_commands: Option<Vec<AgentCommandView>>,
         titling_model: Option<String>,
     ) -> Self {
         LiveThreadView {
-            blocks,
+            blocks: blocks.into(),
             agent_commands,
             titling_model,
         }
@@ -367,7 +372,7 @@ pub struct ThreadDetailEntry {
     pub show_work: bool,
     pub worked_summary: Option<WorkedSummaryView>,
     pub pull_request_history: Option<PullRequestHistoryView>,
-    pub blocks: Vec<TranscriptBlock>,
+    pub blocks: SharedBlocks,
     pub agent_commands: Vec<AgentCommandView>,
     pub provider: ProviderColor,
     pub model_name: String,
@@ -402,7 +407,7 @@ impl ThreadDetailEntry {
             show_work: false,
             worked_summary: None,
             pull_request_history: None,
-            blocks: Vec::new(),
+            blocks: SharedBlocks::default(),
             agent_commands: Vec::new(),
             provider,
             model_name: String::new(),

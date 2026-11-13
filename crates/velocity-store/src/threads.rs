@@ -74,12 +74,16 @@ impl StateStore {
         let mut next = self.state.clone();
         for project in &mut next.projects {
             for thread in &mut project.threads {
-                for block in &mut thread.transcript {
-                    if let velocity_core::thread_view_model::TranscriptBlock::ToolGroup { steps } =
-                        block
-                    {
-                        for step in steps {
-                            step.running = false;
+                // Copied only when a step needs clearing: the transcript is shared (#319).
+                if thread.transcript.iter().any(has_running_step) {
+                    for block in std::sync::Arc::make_mut(&mut thread.transcript) {
+                        if let velocity_core::thread_view_model::TranscriptBlock::ToolGroup {
+                            steps,
+                        } = block
+                        {
+                            for step in steps {
+                                step.running = false;
+                            }
                         }
                     }
                 }
@@ -173,6 +177,14 @@ impl StateStore {
         self.commit(next)?;
         Ok(removed)
     }
+}
+
+fn has_running_step(block: &velocity_core::thread_view_model::TranscriptBlock) -> bool {
+    matches!(
+        block,
+        velocity_core::thread_view_model::TranscriptBlock::ToolGroup { steps }
+            if steps.iter().any(|step| step.running)
+    )
 }
 
 fn thread_record(

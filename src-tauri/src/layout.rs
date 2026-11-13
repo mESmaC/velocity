@@ -1,4 +1,5 @@
 use crate::state::ManagedStateStore;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Mutex, OnceLock, mpsc};
 use tauri::{AppHandle, Emitter, Manager, Window, Wry};
 use tauri_specta::Event;
@@ -163,6 +164,35 @@ fn deliver_steer(application: &AppHandle, intent: &LayoutIntent) {
     state.return_unsent_message(*identifier, prompt);
     state.show_toast(error, None);
     crate::threads::report(publish(application, &state.snapshot(), None));
+}
+
+/// How often `publish_soon` sends the window its latest state at most.
+const PUBLISH_INTERVAL: std::time::Duration = std::time::Duration::from_millis(100);
+
+/// Sends the window the latest state within `PUBLISH_INTERVAL`, coalescing every change made
+/// in between into one snapshot. Agent bursts use it: with a swarm running, publishing each
+/// one cost more than the window could draw (#319).
+pub fn publish_soon(application: &AppHandle) {
+    static PENDING: AtomicBool = AtomicBool::new(false);
+    static PUBLISHER: OnceLock<()> = OnceLock::new();
+    PENDING.store(true, Ordering::Release);
+    PUBLISHER.get_or_init(|| {
+        let application = application.clone();
+        std::thread::spawn(move || {
+            loop {
+                std::thread::sleep(PUBLISH_INTERVAL);
+                if PENDING.swap(false, Ordering::AcqRel) {
+                    crate::threads::report(publish_latest(&application));
+                }
+            }
+        });
+    });
+}
+
+fn publish_latest(application: &AppHandle) -> Result<(), String> {
+    let managed = application.state::<MainLayout>();
+    let layout = managed.lock().map_err(|error| error.to_string())?;
+    publish(application, &layout.snapshot(), None)
 }
 
 pub fn publish<Handle: Emitter<Wry> + Manager<Wry>>(

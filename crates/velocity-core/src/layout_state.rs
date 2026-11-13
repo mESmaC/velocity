@@ -318,6 +318,17 @@ impl LayoutState {
         self.changed();
     }
 
+    /// Whether replacing a thread's live view with `view` changes what the window shows:
+    /// the thread is open, or its sidebar title starts or stops pulsing for titling.
+    pub fn live_view_shows(&self, project: u32, identifier: usize, view: &LiveThreadView) -> bool {
+        if self.data.project_identifier != Some(project) {
+            return false;
+        }
+        let titling = |live: &LiveThreadView| live.titling_model.is_some();
+        self.selected_thread == Some(identifier)
+            || self.live.get(&(project, identifier)).map(titling) != Some(titling(view))
+    }
+
     /// Opens a thread the backend just started, as if it had been clicked (F4).
     pub fn select_thread(&mut self, identifier: usize) {
         self.open_thread(identifier);
@@ -371,7 +382,7 @@ impl LayoutState {
             .find(|thread| thread.policy.identifier == identifier)
             && let Some(detail) = thread.detail.as_mut()
         {
-            detail.blocks = blocks;
+            detail.blocks = blocks.into();
             detail.agent_busy = agent_busy;
             self.changed();
         }
@@ -1025,7 +1036,7 @@ impl LayoutState {
         if let Some(project) = self.data.project_identifier
             && let Some(live) = self.live.get_mut(&(project, *identifier))
         {
-            live.blocks.push(message.clone());
+            std::sync::Arc::make_mut(&mut live.blocks).push(message.clone());
         }
         if let Some(thread) = self
             .data
@@ -1034,7 +1045,7 @@ impl LayoutState {
             .find(|thread| thread.policy.identifier == *identifier)
             && let Some(detail) = thread.detail.as_mut()
         {
-            detail.blocks.push(message);
+            std::sync::Arc::make_mut(&mut detail.blocks).push(message);
         }
     }
 
@@ -1502,10 +1513,10 @@ fn shortcut_key(input: &KeyboardInput) -> ShortcutKey {
 }
 
 /// Takes the last copy of a message the agent never received back out of a transcript.
-fn remove_last_message(blocks: &mut Vec<TranscriptBlock>, prompt: &str) {
+fn remove_last_message(blocks: &mut crate::thread_view_model::SharedBlocks, prompt: &str) {
     if let Some(index) = blocks.iter().rposition(
         |block| matches!(block, TranscriptBlock::UserMessage { text, .. } if text == prompt),
     ) {
-        blocks.remove(index);
+        std::sync::Arc::make_mut(blocks).remove(index);
     }
 }

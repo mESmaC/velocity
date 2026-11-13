@@ -905,9 +905,16 @@ fn apply_batch(
         Some(progress) => save_progress(application, key, progress)?,
         None => false,
     };
-    refresh(application, key, false)?;
+    // Most bursts are streamed text that changes nothing saved. Rebuilding the window from
+    // every thread's record and sending it all for each of them, on every agent at once,
+    // is what slowed Velocity down over a session (#319). Such a burst only moves its own
+    // thread's live transcript, and the window is told at most ten times a second.
     if saved {
+        rebuild_layout(application, key)?;
+        crate::layout::publish_soon(application);
         emit_status(application, key);
+    } else if update_live_view(application, key)? {
+        crate::layout::publish_soon(application);
     }
     if batch
         .iter()
@@ -982,7 +989,7 @@ fn save_thread(
     key: ThreadKey,
     activity: AgentActivity,
     progress: Option<ThreadProgress>,
-    transcript: Option<Vec<TranscriptBlock>>,
+    transcript: Option<velocity_core::thread_view_model::SharedBlocks>,
 ) -> Result<bool, String> {
     lock(
         application.state::<ManagedStateStore>().inner(),
@@ -1089,6 +1096,49 @@ pub(crate) fn refresh(
     // Publish under the locks, as dispatch does, so snapshots reach the window in order.
     crate::layout::publish(application, &snapshot, None)?;
     Ok(snapshot)
+}
+
+/// Rebuilds the window's data from the store with `key`'s live transcript, without
+/// publishing it.
+fn rebuild_layout(application: &AppHandle, key: ThreadKey) -> Result<(), String> {
+    let view = lock(
+        application.state::<ManagedThreads>().inner(),
+        "thread sessions",
+    )?
+    .view(key);
+    let store = lock(
+        application.state::<ManagedStateStore>().inner(),
+        "persisted state",
+    )?;
+    let mut layout = lock(
+        application.state::<MainLayout>().inner(),
+        "main-window state",
+    )?;
+    store.refresh_layout(&mut layout);
+    if let Some(view) = view {
+        let identifier = usize::try_from(key.1).map_err(|error| error.to_string())?;
+        layout.set_live_thread(key.0, identifier, view);
+    }
+    Ok(())
+}
+
+/// Replaces only `key`'s live transcript. Returns whether the change shows on screen.
+fn update_live_view(application: &AppHandle, key: ThreadKey) -> Result<bool, String> {
+    let Some(view) = lock(
+        application.state::<ManagedThreads>().inner(),
+        "thread sessions",
+    )?
+    .view(key) else {
+        return Ok(false);
+    };
+    let identifier = usize::try_from(key.1).map_err(|error| error.to_string())?;
+    let mut layout = lock(
+        application.state::<MainLayout>().inner(),
+        "main-window state",
+    )?;
+    let visible = layout.live_view_shows(key.0, identifier, &view);
+    layout.set_live_thread(key.0, identifier, view);
+    Ok(visible)
 }
 
 pub(crate) fn emit_status(application: &AppHandle, key: ThreadKey) {
