@@ -135,11 +135,8 @@ impl StateStore {
         Ok(identifier)
     }
 
-    pub(crate) fn commit(&mut self, mut next: crate::PersistedState) -> Result<(), StoreError> {
-        next.revision = self.state.revision.wrapping_add(1);
-        crate::write_atomic_snapshot(&self.directory, &next)?;
-        self.disk_revision = next.revision;
-        self.state = next;
+    pub(crate) fn commit(&mut self, next: crate::PersistedState) -> Result<(), StoreError> {
+        self.store_snapshot(next)?;
         Ok(())
     }
 
@@ -150,22 +147,20 @@ impl StateStore {
         thread: u32,
         change: impl FnOnce(&mut ThreadItem),
     ) -> Result<bool, ThreadError> {
-        let mut next = self.state.clone();
-        let item = next
-            .projects
-            .iter_mut()
-            .find(|item| item.id == project)
-            .ok_or(ThreadError::UnknownProject(project))?
-            .threads
-            .iter_mut()
-            .find(|item| item.id == thread)
-            .ok_or(ThreadError::UnknownThread { project, thread })?;
+        // Changed in place: cloning the whole state on every agent burst cost more than
+        // the change itself (#320). Only the one thread is copied, to see if it changed.
+        let item = thread_record(&mut self.state, project, thread)?;
         let before = item.clone();
         change(item);
         if *item == before {
             return Ok(false);
         }
-        self.commit(next)?;
+        if let Err(error) = self.record_change() {
+            if let Ok(item) = thread_record(&mut self.state, project, thread) {
+                *item = before;
+            }
+            return Err(error.into());
+        }
         Ok(true)
     }
 
@@ -178,6 +173,22 @@ impl StateStore {
         self.commit(next)?;
         Ok(removed)
     }
+}
+
+fn thread_record(
+    state: &mut crate::PersistedState,
+    project: u32,
+    thread: u32,
+) -> Result<&mut ThreadItem, ThreadError> {
+    state
+        .projects
+        .iter_mut()
+        .find(|item| item.id == project)
+        .ok_or(ThreadError::UnknownProject(project))?
+        .threads
+        .iter_mut()
+        .find(|item| item.id == thread)
+        .ok_or(ThreadError::UnknownThread { project, thread })
 }
 
 /// Takes a thread's record out of `next`, as [`StateStore::remove_thread`] describes.

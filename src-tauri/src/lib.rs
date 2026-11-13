@@ -282,6 +282,12 @@ pub fn run() -> anyhow::Result<()> {
             window::on_window_event(window, event);
             worktree_settings::on_window_event(window, event);
         })
-        .run(tauri::generate_context!())
-        .context("Could not run Velocity")
+        .build(tauri::generate_context!())
+        .context("Could not run Velocity")?
+        .run(|application, event| {
+            if matches!(event, tauri::RunEvent::Exit) {
+                state::save_now(application);
+            }
+        });
+    Ok(())
 }

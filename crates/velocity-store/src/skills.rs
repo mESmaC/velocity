@@ -1,5 +1,5 @@
 //! Save project choices atomically before acknowledging a settings edit (F18).
-use crate::{StateStore, projects::ProjectError, write_atomic_snapshot};
+use crate::{StateStore, projects::ProjectError};
 use velocity_core::skills::ProjectSkills;
 impl StateStore {
     pub fn save_project_skills(
@@ -14,10 +14,7 @@ impl StateStore {
             .find(|project| project.id == identifier)
             .ok_or(ProjectError::UnknownProject(identifier))?;
         project.skills = skills;
-        next.revision = self.state.revision.wrapping_add(1);
-        write_atomic_snapshot(&self.directory, &next)?;
-        self.disk_revision = next.revision;
-        self.state = next;
+        self.store_snapshot(next)?;
         Ok(())
     }
 }

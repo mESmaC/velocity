@@ -9,7 +9,7 @@ use velocity_core::layout_state::LayoutState;
 use velocity_core::layout_view::{LayoutAction, LayoutIntent, LayoutSnapshot};
 use velocity_core::projects::{self as policy, ProjectSelection, ProjectSource};
 
-use crate::{PersistedState, ProjectLocationKind, StateStore, StoreError, write_atomic_snapshot};
+use crate::{PersistedState, ProjectLocationKind, StateStore, StoreError};
 
 #[derive(Debug, Error)]
 pub enum ProjectError {
@@ -268,11 +268,8 @@ impl StateStore {
         self.commit_project_state(next)
     }
 
-    fn commit_project_state(&mut self, mut next: PersistedState) -> Result<(), ProjectError> {
-        next.revision = self.state.revision.wrapping_add(1);
-        write_atomic_snapshot(&self.directory, &next)?;
-        self.disk_revision = next.revision;
-        self.state = next;
+    fn commit_project_state(&mut self, next: PersistedState) -> Result<(), ProjectError> {
+        self.store_snapshot(next)?;
         Ok(())
     }
 }
