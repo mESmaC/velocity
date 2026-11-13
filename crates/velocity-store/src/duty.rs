@@ -2,8 +2,10 @@
 
 use crate::project_layout::{active_project, provider_color, read_model};
 use crate::projects::ProjectError;
+use crate::swarm_dialog::{SwarmModelCard, provider_model_name};
 use crate::{
-    PersistedState, ProjectItem, ProviderKind, StateStore, ThreadState, write_atomic_snapshot,
+    EffortLevel, PersistedState, ProjectItem, ProviderKind, SpeedMode, StateStore, ThreadState,
+    write_atomic_snapshot,
 };
 use serde::{Deserialize, Serialize};
 use specta::Type;
@@ -30,6 +32,12 @@ pub struct DutyAgentItem {
     #[serde(default)]
     #[specta(skip)]
     pub review_worktrees: Vec<String>,
+    /// The effort and speed its sessions run at, chosen in the Start a duty agent dialog
+    /// (F7). `None` on an agent saved before they could be chosen: Settings' defaults apply.
+    #[serde(default)]
+    pub effort: Option<EffortLevel>,
+    #[serde(default)]
+    pub preferred_speed: Option<SpeedMode>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, Type)]
@@ -72,6 +80,8 @@ impl DutyRoleItem {
                     doing: agent.doing.clone(),
                     sweep: agent.sweep.clone(),
                     review_worktrees: agent.review_worktrees.clone(),
+                    effort: agent.effort.map(Into::into),
+                    speed: agent.preferred_speed.map(Into::into),
                 })
                 .collect(),
             feed: self
@@ -106,6 +116,8 @@ impl DutyRoleItem {
                     doing: agent.doing,
                     sweep: agent.sweep,
                     review_worktrees: agent.review_worktrees,
+                    effort: agent.effort.map(Into::into),
+                    preferred_speed: agent.speed.map(Into::into),
                 })
                 .collect(),
             feed: entry
@@ -194,6 +206,11 @@ pub struct DutyDialogDefaults {
     pub provider_name: String,
     pub model_name: String,
     pub model_configured: bool,
+    /// Every signed-in provider's model, the default one selected (F7, F15).
+    pub models: Vec<SwarmModelCard>,
+    /// Settings' default effort and speed, where the dialog's Effort and Speed start.
+    pub effort: EffortLevel,
+    pub speed: SpeedMode,
     pub pr_duty_exists: bool,
     pub scouts_exists: bool,
     pub main_watcher_exists: bool,
@@ -207,6 +224,11 @@ pub struct StartDutyRequest {
     pub agent_count: u8,
     pub provider: Option<ProviderKind>,
     pub model_name: Option<String>,
+    /// The new agents' effort and speed; `None` keeps Settings' defaults.
+    #[serde(default)]
+    pub effort: Option<EffortLevel>,
+    #[serde(default)]
+    pub speed: Option<SpeedMode>,
     pub pr_rules: Option<PrDutyRuleSettings>,
     pub scout_rules: Option<ScoutRuleSettings>,
 }
@@ -219,6 +241,8 @@ impl StartDutyRequest {
             agent_count,
             provider: None,
             model_name: None,
+            effort: None,
+            speed: None,
             pr_rules: None,
             scout_rules: None,
         }
@@ -268,6 +292,16 @@ impl StateStore {
                 .as_ref()
                 .is_some_and(|name| !name.trim().is_empty());
         let model_name = settings.provider_model(provider);
+        let models = settings
+            .usable_providers()
+            .into_iter()
+            .map(|option| SwarmModelCard {
+                provider: option,
+                provider_name: settings.provider_name(option),
+                model_name: provider_model_name(settings, option),
+                selected: option == provider,
+            })
+            .collect();
         let project = active_project(&self.state);
         let existing_pr = project.and_then(|proj| find_role(proj, DutyRole::PrDuty));
         let existing_scouts = project.and_then(|proj| find_role(proj, DutyRole::Scouts));
@@ -276,6 +310,9 @@ impl StateStore {
             provider_name: settings.provider_name(provider),
             model_name,
             model_configured,
+            models,
+            effort: settings.providers.default_effort,
+            speed: settings.providers.default_speed,
             pr_duty_exists: existing_pr.is_some(),
             scouts_exists: existing_scouts.is_some(),
             main_watcher_exists: project
@@ -301,11 +338,18 @@ impl StateStore {
         let project = active_project_mut(&mut next)?;
         let provider = request.provider.unwrap_or(defaults.provider);
         self.state.settings.ensure_new_work(provider)?;
+        // A provider other than the default runs its own model, never the default's name.
         let model_name = request
             .model_name
             .clone()
             .filter(|name| !name.trim().is_empty())
-            .unwrap_or(defaults.model_name);
+            .unwrap_or_else(|| {
+                if provider == defaults.provider {
+                    defaults.model_name
+                } else {
+                    provider_model_name(&self.state.settings, provider)
+                }
+            });
         let has_open_pull_requests = project.threads.iter().any(|thread| {
             thread.state == ThreadState::Review && thread.pull_request_number.is_some()
         });
@@ -624,6 +668,8 @@ fn apply_start_or_add(
             agent_count: usize::from(request.agent_count),
             provider: provider_color(provider),
             model_name,
+            effort: request.effort.map(Into::into),
+            speed: request.speed.map(Into::into),
             pr_rules: request
                 .pr_rules
                 .clone()
@@ -646,6 +692,8 @@ fn apply_start_or_add(
             agent_count: usize::from(request.agent_count),
             provider: provider_color(provider),
             model_name,
+            effort: request.effort.map(Into::into),
+            speed: request.speed.map(Into::into),
             pr_rules: request.pr_rules.clone().unwrap_or_default(),
             scout_rules: request.scout_rules.clone().unwrap_or_default(),
             has_open_pull_requests,
@@ -686,6 +734,8 @@ mod tests {
             agent_count: 3,
             provider: ProviderColor::Claude,
             model_name: "model".into(),
+            effort: None,
+            speed: None,
             pr_rules: PrDutyRuleSettings::default(),
             scout_rules: ScoutRuleSettings::default(),
             has_open_pull_requests: false,
@@ -726,6 +776,36 @@ mod tests {
         assert_eq!(loaded.state().projects[0].active_thread_id, None);
         std::fs::remove_file(directory.join(crate::STATE_FILE_NAME))?;
         std::fs::remove_dir(directory)?;
+        Ok(())
+    }
+    // #302: a duty agent's effort and speed are saved state. Adding agents rebuilds the role
+    // through the core cards, which must not drop the existing agents' choices, and an agent
+    // saved before these fields existed must still load.
+    #[test]
+    fn duty_run_choice_survives_adding_agents_and_old_records() -> Result<(), serde_json::Error> {
+        let spec = |speed| DutyStartSpec {
+            role: DutyRole::PrDuty,
+            agent_count: 1,
+            provider: ProviderColor::Codex,
+            model_name: "6.1 Sol".into(),
+            effort: Some(velocity_core::state::EffortLevel::Medium),
+            speed: Some(speed),
+            pr_rules: PrDutyRuleSettings::default(),
+            scout_rules: ScoutRuleSettings::default(),
+            has_open_pull_requests: false,
+            timestamp: "00:00".into(),
+        };
+        let (entry, _) = duty::start_duty_entry(7, spec(velocity_core::state::SpeedMode::Fast));
+        let mut core = DutyRoleItem::from_core(entry, ProviderKind::Codex).to_core();
+        duty::add_agents_to_duty_entry(&mut core, spec(velocity_core::state::SpeedMode::Regular));
+        let item = DutyRoleItem::from_core(core, ProviderKind::Codex);
+        let saved: DutyRoleItem = serde_json::from_str(&serde_json::to_string(&item)?)?;
+        let speeds: Vec<_> = saved.agents.iter().map(|a| a.preferred_speed).collect();
+        assert_eq!(speeds, [Some(SpeedMode::Fast), Some(SpeedMode::Regular)]);
+        assert_eq!(saved.agents[0].effort, Some(EffortLevel::Medium));
+        let old = r#"{"nickname":"pr-1","provider":"claude","model_name":"Opus 5.5","busy":false,"doing":""}"#;
+        let old: DutyAgentItem = serde_json::from_str(old)?;
+        assert_eq!((old.effort, old.preferred_speed), (None, None));
         Ok(())
     }
 }

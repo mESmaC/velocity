@@ -49,7 +49,8 @@ pub fn watch_session(
     tip: &str,
     reports: &WatchReports,
 ) -> SessionSetup {
-    let mut setup = SessionSetup::new(worktree.clone(), plan.bypass_modes.clone());
+    let mut setup = SessionSetup::new(worktree.clone(), plan.bypass_modes.clone())
+        .with_run_settings(plan.run_settings.clone());
     let checkout = worktree.display().to_string();
     let watch = McpServerStdio::new("velocity-watch", executable).args(vec![
         WATCH_SERVER_SWITCH.to_owned(),

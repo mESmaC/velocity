@@ -4,6 +4,7 @@
 use std::path::{Path, PathBuf};
 
 use agent_client_protocol::v1::schema::{McpServer, McpServerStdio, SessionUpdate};
+use velocity_acp::RunSettings;
 use velocity_acp::client::{AgentEvent, AgentLaunch, SessionSetup};
 use velocity_core::scout_sweep::step_doing;
 use velocity_core::worktree_settings::WorktreePreferences;
@@ -30,6 +31,8 @@ pub struct SweepPlan {
     pub worktree: WorktreeSetupRequest,
     pub agent: AgentLaunch,
     pub bypass_modes: Vec<String>,
+    /// The model, effort and speed the duty agent runs on (F7, F15).
+    pub run_settings: RunSettings<String>,
 }
 
 /// Plans `scout`'s sweep worktree at `base_ref` and its agent from the scout's own provider.
@@ -76,6 +79,7 @@ pub fn plan_duty_checkout(
         worktree,
         agent: with_compiler_cache(agent, preferences.share_build_cache),
         bypass_modes,
+        run_settings: crate::titles::duty_run_settings(settings, agent_item),
     })
 }
 
@@ -87,7 +91,8 @@ pub fn sweep_session(
     scout_server: &Path,
     report: &Path,
 ) -> SessionSetup {
-    let mut setup = SessionSetup::new(worktree.clone(), plan.bypass_modes.clone());
+    let mut setup = SessionSetup::new(worktree.clone(), plan.bypass_modes.clone())
+        .with_run_settings(plan.run_settings.clone());
     let server = McpServerStdio::new("velocity-scout", scout_server).args(vec![
         SCOUT_SERVER_SWITCH.to_owned(),
         worktree.display().to_string(),

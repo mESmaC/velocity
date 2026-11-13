@@ -523,7 +523,7 @@ The PR duty MCP server exposes `pr_duty_prepare_landing` and `pr_duty_checked`. 
 
 ### F7 · Duty agents
 
-Long-running roles. They appear under **On duty**, with an agent count (×N) and a one-line summary. Start one from the home chips (`V`, `S`), the palette, or the + on the group. The start dialog sets role, number of agents (1–4), model and role-specific rules. Starting a role that already exists adds agents to it.
+Long-running roles. They appear under **On duty**, with an agent count (×N) and a one-line summary. Start one from the home chips (`V`, `S`), the palette, or the + on the group. The start dialog sets role, number of agents (1–4), model, effort, speed and role-specific rules. Its model cards are every signed-in provider's model, starting on the default for new threads, and Effort and Speed start at Settings' defaults. Every session the agents run (PR duty reviews, scout sweeps, Main watcher watches) runs on that model, effort and speed. An agent saved before effort and speed could be chosen uses Settings' defaults. Starting a role that already exists adds agents to it; agents already on the role keep their own model.
 
 **Duty view:**
 - **Rules:** chips. Hard rules are shown locked.
