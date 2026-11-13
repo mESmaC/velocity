@@ -14,7 +14,8 @@ use std::time::{Duration, Instant};
 use agent_client_protocol::v1::schema::ContentBlock;
 use tokio::sync::Notify;
 use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender, unbounded_channel};
-use velocity_acp::client::{AgentEvent, AgentInput, AircLaunch};
+use velocity_acp::client::{AgentEvent, AgentInput, AircLaunch, duty_member};
+use velocity_airc::Channel;
 use velocity_core::duty::{DutyAgentCard, DutyEventKind, DutyFeedEvent, DutyRoleEntry};
 use velocity_core::pr_review::{
     ReviewAssignment, ReviewAttempt, ReviewBrief, ReviewCandidate, ReviewWork, TurnEndAction,
@@ -37,6 +38,8 @@ use crate::sweep::sweep_doing;
 const TICK: Duration = Duration::from_secs(30);
 /// A card that says this had a review that failed; it keeps saying so until the next one.
 const FAILED: &str = "review failed";
+/// How often running reviews are given their AIRC messages, as build threads are.
+const AIRC_DELIVERY: Duration = Duration::from_secs(1);
 
 /// A change to a project's PR duty: given the feed's timestamp, it returns the events to post.
 pub type ReviewChange = Box<dyn FnOnce(&mut DutyRoleEntry, &str) -> Vec<DutyFeedEvent> + Send>;
@@ -60,6 +63,12 @@ struct Running {
     number: u32,
     /// Its agent was dismissed (F7): the session is stopping and the PR is already released.
     dismissed: bool,
+    /// The last AIRC line looked at for this review (F14): the channel's tip at its claim,
+    /// so an earlier review's messages are never replayed into this one.
+    airc_after: u64,
+    /// Set once the review prompt is queued, so an AIRC message never becomes the first
+    /// prompt, and cleared when the review is told to stop.
+    delivering: bool,
 }
 
 /// Your instruction for a project's PR duty, and the agents that already have it.
@@ -245,6 +254,9 @@ impl PrDutyReviews {
 
     /// Runs until the app exits.
     pub async fn run<Host: ReviewHost>(self, host: Host) {
+        if self.airc.is_some() {
+            tokio::spawn(self.clone().deliver_airc_forever());
+        }
         loop {
             self.tick(&host).await;
             // Woken early or timed out: either way, look again.
@@ -384,6 +396,8 @@ impl PrDutyReviews {
                     pending: 0,
                     number: candidate.number,
                     dismissed: false,
+                    airc_after: 0,
+                    delivering: false,
                 },
             );
             state
@@ -411,6 +425,78 @@ impl PrDutyReviews {
             runner.lock().running.remove(&key);
             runner.wake();
         });
+    }
+
+    /// Passes each running review the AIRC messages meant for its agent (F14), checked once
+    /// a second like build threads. Without this a duty agent never hears a question (#304).
+    async fn deliver_airc_forever(self) {
+        loop {
+            let runner = self.clone();
+            let _ = tokio::task::spawn_blocking(move || runner.deliver_airc()).await;
+            tokio::time::sleep(AIRC_DELIVERY).await;
+        }
+    }
+
+    fn deliver_airc(&self) {
+        let reviews: Vec<(AgentKey, u32, u64)> = self
+            .lock()
+            .running
+            .iter()
+            .filter(|(_, running)| running.delivering && !running.dismissed)
+            .map(|(key, running)| (key.clone(), running.number, running.airc_after))
+            .collect();
+        for (key, number, after) in reviews {
+            let Some(cursor) = self.deliver_to(&key, number, after) else {
+                continue;
+            };
+            if let Some(running) = self.lock().running.get_mut(&key)
+                && running.number == number
+            {
+                running.airc_after = running.airc_after.max(cursor);
+            }
+        }
+    }
+
+    /// Delivers targeted messages after `after` to the review of `number`: each is queued
+    /// as the session's next prompt and answered in its own turn. Returns the new cursor.
+    fn deliver_to(&self, key: &AgentKey, number: u32, after: u64) -> Option<u64> {
+        let channel = Channel::open(&self.app_data, &key.0.to_string()).ok()?;
+        let member = duty_member(&key.1);
+        // Only the review's own AIRC server joins: a join made here would outlive its session.
+        let nick = channel
+            .presence()
+            .ok()?
+            .into_iter()
+            .find(|presence| presence.member == member && presence.joined)?
+            .nick;
+        let deliver = |_: &str, message: &str| -> Result<bool, String> {
+            let mut state = self.lock();
+            let Some(running) = state
+                .running
+                .get_mut(key)
+                .filter(|running| running.number == number && running.delivering)
+            else {
+                return Ok(false);
+            };
+            if running.input.send(text(message)).is_err() {
+                return Ok(false);
+            }
+            running.pending += 1;
+            Ok(true)
+        };
+        velocity_airc::deliver_targeted(&channel, &nick, after, false, deliver).ok()
+    }
+
+    /// Starts a review's AIRC cursor at the channel's tip, as its claim is posted.
+    fn start_airc_cursor(&self, key: &AgentKey) {
+        let tip = Channel::open(&self.app_data, &key.0.to_string())
+            .and_then(|channel| channel.read(0))
+            .ok()
+            .and_then(|entries| entries.last().map(|entry| entry.sequence))
+            .unwrap_or(0);
+        if let Some(running) = self.lock().running.get_mut(key) {
+            running.airc_after = tip;
+        }
     }
 
     fn lock(&self) -> MutexGuard<'_, RunnerState> {
@@ -494,7 +580,9 @@ impl Review {
         );
         // Best effort: the runner's own lock is what keeps two agents off one PR, and a
         // missing comment only hides the claimer on the rail.
+        let key = self.key.clone();
         let _ = tokio::task::spawn_blocking(move || {
+            runner.start_airc_cursor(&key);
             if let Ok(record) = ReviewRecord::open(&app_data, &project, &nickname) {
                 let _ = record.claim(number, &head);
             }
@@ -617,6 +705,9 @@ impl Review {
         let _ = self
             .input
             .send(text(&format!("{}{proofs}", self.prompt(&prepared))));
+        if let Some(running) = self.runner.lock().running.get_mut(&self.key) {
+            running.delivering = true;
+        }
         let session = crate::spawn_session(prepared.plan.agent.clone(), setup, inputs);
         let outcome = self.follow(host, session, &report).await;
         // Recorded while the claim is still held, so no tick can claim the head in between.
@@ -728,6 +819,7 @@ impl Review {
         match turn_end_action(running.pending, decided, *nudges) {
             TurnEndAction::AnswerInstruction => running.pending -= 1,
             TurnEndAction::Stop => {
+                running.delivering = false;
                 let _ = running.input.send(AgentInput::Stop);
             }
             TurnEndAction::Nudge => {

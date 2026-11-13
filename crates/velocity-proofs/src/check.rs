@@ -264,7 +264,10 @@ fn lake_build(folder: &Path) -> CheckStep<()> {
     }
 }
 
-/// Elaborates the audit file with `lake lean`, which builds its imports first.
+/// Audits each changed module with `lake lean`, which builds its imports first. One module
+/// per audit file: modules that are each fine alone can clash when imported together, such
+/// as two `Export.lean` files that each define the top-level `main` their `lean_exe` needs
+/// (#306).
 fn audit_axioms(
     lake_folder: &Path,
     folder: &str,
@@ -280,27 +283,39 @@ fn audit_axioms(
             ..Default::default()
         });
     }
+    let mut total = crate::axioms::AxiomAudit {
+        unbuilt,
+        ..Default::default()
+    };
+    for module in modules {
+        match audit_module(lake_folder, &module) {
+            Ok(audit) => {
+                total.audited += audit.audited;
+                total.disallowed.extend(audit.disallowed);
+            }
+            Err(failure) => return CheckStep::Failed(failure),
+        }
+    }
+    CheckStep::Ran(total)
+}
+
+/// Elaborates the audit file for one module and reads what it found.
+fn audit_module(lake_folder: &Path, module: &str) -> Result<crate::axioms::AxiomAudit, String> {
     let script = lake_folder.join(AUDIT_FILE);
-    let written = script
+    script
         .parent()
         .map_or(Ok(()), std::fs::create_dir_all)
-        .and_then(|()| std::fs::write(&script, audit_script(&modules)));
-    if let Err(error) = written {
-        return CheckStep::Failed(format!("Could not write the audit file: {error}"));
-    }
+        .and_then(|()| std::fs::write(&script, audit_script(&[module.to_owned()])))
+        .map_err(|error| format!("Could not write the audit file: {error}"))?;
     let output = lake(lake_folder, &["lean", AUDIT_FILE]);
     let _ = std::fs::remove_file(&script);
-    match output {
-        Ok(output) => {
-            let stdout = String::from_utf8_lossy(&output.stdout);
-            match parse_audit(&stdout) {
-                Some(audit) if output.status.success() => {
-                    CheckStep::Ran(crate::axioms::AxiomAudit { unbuilt, ..audit })
-                }
-                _ => CheckStep::Failed(excerpt("lake lean (axiom audit)", &output)),
-            }
-        }
-        Err(error) => CheckStep::Failed(error),
+    let output = output?;
+    match parse_audit(&String::from_utf8_lossy(&output.stdout)) {
+        Some(audit) if output.status.success() => Ok(audit),
+        _ => Err(excerpt(
+            &format!("lake lean (axiom audit of {module})"),
+            &output,
+        )),
     }
 }
 

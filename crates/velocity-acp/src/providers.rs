@@ -17,7 +17,19 @@ pub struct ProviderAgent {
 
 /// The unrestricted session modes the built-in agents name (Rule 1). An agent you added may
 /// be a build of one of them, or share their naming, so it is offered all of them.
-const KNOWN_BYPASS_MODES: [&str; 3] = ["bypassPermissions", "full-access", "yolo"];
+const KNOWN_BYPASS_MODES: [&str; 4] = [
+    "bypassPermissions",
+    "agent-full-access",
+    "full-access",
+    "yolo",
+];
+
+/// codex-acp's unrestricted mode: no sandbox, no approvals. Newer builds name it
+/// `agent-full-access` and start every session in `agent` (a workspace-write sandbox that
+/// ignores `sandbox_mode` in your Codex config); older builds name it `full-access`. Without
+/// it, Codex runs each shell command inside the Windows sandbox, which hangs in worktrees
+/// (#301).
+const CODEX_FULL_ACCESS: [&str; 2] = ["agent-full-access", "full-access"];
 
 /// The built-in ACP agent for `provider` (§3.2): Claude Code through `claude-agent-acp`,
 /// Codex through `codex-acp`, Kimi CLI's `kimi acp` and Antigravity's own `agy acp` (Q14),
@@ -25,7 +37,7 @@ const KNOWN_BYPASS_MODES: [&str; 3] = ["bypassPermissions", "full-access", "yolo
 pub fn provider_agent(provider: Provider) -> Option<ProviderAgent> {
     let (program, args, bypass_modes): (&str, &[&str], &[&str]) = match provider {
         Provider::Anthropic => ("claude-agent-acp", &[], &["bypassPermissions"]),
-        Provider::Codex => ("codex-acp", &[], &["full-access"]),
+        Provider::Codex => ("codex-acp", &[], &CODEX_FULL_ACCESS),
         Provider::KimiCode => ("kimi", &["acp"], &[]),
         // `yolo` is Antigravity's unrestricted mode (§3.2 Antigravity, Rule 1).
         Provider::Antigravity => ("agy", &["acp"], &["yolo"]),
@@ -35,6 +47,14 @@ pub fn provider_agent(provider: Provider) -> Option<ProviderAgent> {
     launch.args = args.iter().map(|argument| (*argument).to_owned()).collect();
     launch.own_config = Some(provider);
     launch.concurrency_provider = Some(provider);
+    if provider == Provider::Codex {
+        // codex-acp reads its first mode from here, so a session is never sandboxed, even
+        // before `session/set_mode` arrives or when a resumed session reports no modes.
+        launch.env.push((
+            "INITIAL_AGENT_MODE".to_owned(),
+            CODEX_FULL_ACCESS[0].to_owned(),
+        ));
+    }
     Some(ProviderAgent {
         launch,
         bypass_modes: bypass_modes.iter().map(|mode| (*mode).to_owned()).collect(),
