@@ -87,6 +87,16 @@ fn apply(store: &mut StateStore, project: u32, request: &Entry) -> Result<Outcom
             result,
         }),
         Err(TaskError::Persistence(error)) => Err(error.into()),
+        // Numbers are never reused, so a missing number that was handed out was deleted:
+        // the replay of a delete saved just before a crash, or someone else's delete.
+        Err(TaskError::UnknownTask(task))
+            if request.kind == "task_delete_request"
+                && store
+                    .project(project)
+                    .is_some_and(|item| task <= item.last_task_identifier) =>
+        {
+            Ok(Outcome::Refused(format!("task #{task} is already deleted")))
+        }
         Err(error) => Ok(Outcome::Refused(format!("Task was not changed: {error}"))),
     }
 }
