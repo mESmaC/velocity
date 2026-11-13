@@ -233,7 +233,14 @@ pub fn handle_intent(
             deliver_message(application, project, *identifier, prompt).map(Some)
         }
         LayoutIntent::RemoveQueuedMessage { identifier, index } => {
-            remove_queued_message(application, *identifier, *index).map(Some)
+            let project = lock(
+                application.state::<ManagedStateStore>().inner(),
+                "persisted state",
+            )?
+            .active_project()
+            .map(|project| project.id)
+            .ok_or("Select a project first")?;
+            remove_queued_message(application, project, *identifier, *index).map(Some)
         }
         _ => Ok(None),
     }
@@ -353,8 +360,9 @@ pub(crate) fn deliver_message(
 
 /// Withdraws a message you queued that the agent has not read yet (F4, #231). The saved
 /// transcript drops it too, so it does not come back after a restart.
-fn remove_queued_message(
+pub(crate) fn remove_queued_message(
     application: &AppHandle,
+    project: u32,
     identifier: usize,
     index: usize,
 ) -> Result<LayoutSnapshot, String> {
@@ -363,7 +371,7 @@ fn remove_queued_message(
             application.state::<ManagedStateStore>().inner(),
             "persisted state",
         )?;
-        let project = store.active_project().ok_or("Select a project first")?;
+        let project = store.project(project).ok_or("Unknown project")?;
         let activity = project
             .threads
             .iter()
