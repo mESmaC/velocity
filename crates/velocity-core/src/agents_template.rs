@@ -94,7 +94,7 @@ SPEC.md defines what to build. The project Task List defines what is left.
 - Keep both additions to shared registration lists, inside each module's group.
 
 ## Sensitive paths
-- PR duty gives a PR that touches a path listed here the sensitive review: full review, the full stress suite before merge, and a confidence proof at the strongest level its language allows.
+- PR duty gives a PR that touches a path listed here the sensitive review: full review, the project's stress suite (the stress command under Commands marked as the merge gate) on the merge result before merge, and a confidence proof at the reference level for each proof-list feature it changes. Code level is required only when an issue asks for one. A long benchmark or load run is never a merge gate.
 - List one path, folder or glob per bullet, as inline code, followed by why it is sensitive. Add migrations, worktree deletion and auth code as they are established.
 - `.github/workflows/`: CI config.
 
