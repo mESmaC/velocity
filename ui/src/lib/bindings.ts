@@ -943,6 +943,8 @@ export type Entry_Deserialize = {
 	 *  gave. Velocity files it on its own repository.
 	 */
 	velocity_issue?: string | null,
+	/**  The task and fields a `task_update_request` or `task_delete_request` names (F8). */
+	task_change?: TaskChange_Deserialize | null,
 };
 
 export type Entry_Serialize = {
@@ -974,6 +976,8 @@ export type Entry_Serialize = {
 	 *  gave. Velocity files it on its own repository.
 	 */
 	velocity_issue?: string,
+	/**  The task and fields a `task_update_request` or `task_delete_request` names (F8). */
+	task_change?: TaskChange_Serialize,
 };
 
 export type ErrorCardView = {
@@ -4195,6 +4199,23 @@ export type SwarmViewSnapshot_Serialize = {
 
 export type TaskAttribution = { kind: "spec" } | { kind: "user" } | { kind: "thread"; thread_id: number };
 
+/**  The task an update or delete names, and the fields an update changes. */
+export type TaskChange = TaskChange_Serialize | TaskChange_Deserialize;
+
+/**  The task an update or delete names, and the fields an update changes. */
+export type TaskChange_Deserialize = {
+	task: number,
+	title?: string | null,
+	state?: TaskTarget | null,
+};
+
+/**  The task an update or delete names, and the fields an update changes. */
+export type TaskChange_Serialize = {
+	task: number,
+	title?: string,
+	state?: TaskTarget,
+};
+
 export type TaskItem = TaskItem_Serialize | TaskItem_Deserialize;
 
 export type TaskItem_Deserialize = {
@@ -4214,6 +4235,12 @@ export type TaskItem_Serialize = {
 };
 
 export type TaskState = "draft" | "todo" | "now" | "done";
+
+/**
+ *  The state an agent may move a task to. `now` belongs to the agent working on it, and
+ *  every task is a draft until the spec is locked, so neither can be requested.
+ */
+export type TaskTarget = "todo" | "done";
 
 /**  F8 task rows carry independent links for ownership and attribution. */
 export type TaskView = TaskView_Serialize | TaskView_Deserialize;
@@ -4576,10 +4603,10 @@ export type UpdateStatusChanged_Serialize = {
 	view: UpdateView_Serialize,
 };
 
-/**  The Updates panel and the footer badge, ready to render. */
+/**  The Updates modal and the footer badge, ready to render. */
 export type UpdateView = UpdateView_Serialize | UpdateView_Deserialize;
 
-/**  The Updates panel and the footer badge, ready to render. */
+/**  The Updates modal and the footer badge, ready to render. */
 export type UpdateView_Deserialize = {
 	headline: string,
 	detail: string,
@@ -4596,7 +4623,7 @@ export type UpdateView_Deserialize = {
 	badge: boolean,
 };
 
-/**  The Updates panel and the footer badge, ready to render. */
+/**  The Updates modal and the footer badge, ready to render. */
 export type UpdateView_Serialize = {
 	headline: string,
 	detail: string,

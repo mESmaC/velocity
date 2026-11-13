@@ -137,7 +137,6 @@ dialog::backdrop {
 .model-menu.below {
   transform-origin: top right;
 }
-.usage-panel,
 .slash-menu {
   transform-origin: bottom left;
 }

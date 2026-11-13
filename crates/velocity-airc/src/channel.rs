@@ -44,6 +44,9 @@ pub struct Entry {
     /// gave. Velocity files it on its own repository.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub velocity_issue: Option<String>,
+    /// The task and fields a `task_update_request` or `task_delete_request` names (F8).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub task_change: Option<crate::TaskChange>,
 }
 
 /// Event tags Velocity posts from what it observes (F14). Agents never type them.
@@ -430,6 +433,7 @@ pub(crate) fn entry(entries: &[Entry], kind: &str, member: &str, nick: &str, tex
         acknowledged: None,
         files: Vec::new(),
         velocity_issue: None,
+        task_change: None,
     }
 }
 

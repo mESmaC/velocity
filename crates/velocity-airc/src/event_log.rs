@@ -219,6 +219,18 @@ impl Event {
         ))
     }
 
+    /// `task`: `<actor> changed task #<n>: <what changed>` or `<actor> removed task #<n>
+    /// from the Task List: <title>` (F8). `change` is the store owner's own description.
+    pub fn task_changed(actor_nick: &str, change: &str) -> Result<Self, Error> {
+        require_text(change)?;
+        let actor = if actor_nick == "you" {
+            String::from("you")
+        } else {
+            nick(actor_nick, 16)
+        };
+        Ok(Self::new("task", &actor, &one_line(change)))
+    }
+
     /// `failed`: `<nick> failed · <reason> · its claim is held` (§2.1, F14).
     pub fn thread_failed(owner_nick: &str, reason: &str) -> Result<Self, Error> {
         require_text(reason)?;

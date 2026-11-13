@@ -12,6 +12,12 @@ pub enum TaskError {
     EmptyTitle,
     #[error("This project has exhausted its task identifiers")]
     IdentifiersExhausted,
+    #[error("Task #{0} is not on this project's Task List")]
+    UnknownTask(u32),
+    #[error("Task #{0} stays a draft until the spec is locked")]
+    SpecUnlocked(u32),
+    #[error("An agent is working on task #{0}: it can be marked done, not reopened")]
+    TaskInProgress(u32),
     #[error(transparent)]
     Persistence(#[from] StoreError),
 }
@@ -28,6 +34,47 @@ impl StateStore {
             .find(|project| project.id == project_identifier)
             .ok_or(TaskError::UnknownProject(project_identifier))?;
         let task = append_task(project, &title, TaskAttribution::User)?;
+        self.commit(next)?;
+        Ok(task)
+    }
+    /// Retitle a task, move it between todo and done, or both (F8). `Now` and `Draft` are
+    /// never requested: an agent's start sets `Now`, and the spec lock ends `Draft`.
+    pub fn update_task(
+        &mut self,
+        project_identifier: u32,
+        change: TaskUpdate,
+    ) -> Result<TaskItem, TaskError> {
+        let mut next = self.state.clone();
+        let project = next
+            .projects
+            .iter_mut()
+            .find(|project| project.id == project_identifier)
+            .ok_or(TaskError::UnknownProject(project_identifier))?;
+        let task = apply_update(project, &change)?;
+        self.commit(next)?;
+        Ok(task)
+    }
+    /// Remove a task (F8). A thread working on it keeps running; it just stops listing it.
+    pub fn delete_task(
+        &mut self,
+        project_identifier: u32,
+        identifier: u32,
+    ) -> Result<TaskItem, TaskError> {
+        let mut next = self.state.clone();
+        let project = next
+            .projects
+            .iter_mut()
+            .find(|project| project.id == project_identifier)
+            .ok_or(TaskError::UnknownProject(project_identifier))?;
+        let position = project
+            .tasks
+            .iter()
+            .position(|task| task.id == identifier)
+            .ok_or(TaskError::UnknownTask(identifier))?;
+        let task = project.tasks.remove(position);
+        for thread in &mut project.threads {
+            thread.task_ids.retain(|listed| *listed != identifier);
+        }
         self.commit(next)?;
         Ok(task)
     }
@@ -61,6 +108,61 @@ pub(crate) fn append_task(
     Ok(task)
 }
 
+/// A task edit: a new title, a new state, or both.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct TaskUpdate {
+    pub task: u32,
+    pub title: Option<String>,
+    pub state: Option<TaskState>,
+}
+impl TaskUpdate {
+    pub fn new(task: u32) -> Self {
+        Self {
+            task,
+            title: None,
+            state: None,
+        }
+    }
+}
+fn apply_update(project: &mut ProjectItem, change: &TaskUpdate) -> Result<TaskItem, TaskError> {
+    let title = change
+        .title
+        .as_deref()
+        .map(|title| task_title(title).ok_or(TaskError::EmptyTitle))
+        .transpose()?;
+    let spec_locked = project.spec_locked;
+    let task = project
+        .tasks
+        .iter_mut()
+        .find(|task| task.id == change.task)
+        .ok_or(TaskError::UnknownTask(change.task))?;
+    let reopened = match change.state {
+        Some(_) if !spec_locked => return Err(TaskError::SpecUnlocked(task.id)),
+        Some(TaskState::Todo) if task.state == TaskState::Now => {
+            return Err(TaskError::TaskInProgress(task.id));
+        }
+        Some(state) => {
+            task.state = state;
+            state == TaskState::Todo
+        }
+        None => false,
+    };
+    if reopened {
+        task.assigned_thread_id = None;
+    }
+    if let Some(title) = title {
+        task.text = title;
+    }
+    let task = task.clone();
+    // Reopening frees the task from the thread that finished it, so that thread's merge
+    // cannot close it again.
+    if reopened {
+        for thread in &mut project.threads {
+            thread.task_ids.retain(|listed| *listed != task.id);
+        }
+    }
+    Ok(task)
+}
 fn task_title(title: &str) -> Option<String> {
     let title = title.trim().strip_suffix('.').unwrap_or(title.trim());
     let mut characters = title.chars();

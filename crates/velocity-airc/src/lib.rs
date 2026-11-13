@@ -12,6 +12,7 @@ mod rebase;
 mod routing;
 mod storage;
 mod tail;
+mod task_tools;
 mod tasks;
 pub mod waits;
 
@@ -22,6 +23,7 @@ pub use delivery::{deliver_messages, message_for};
 pub use launch::{SERVER_NAME, SERVER_SWITCH, serve_stdio, server_arguments};
 pub use protocol::serve;
 pub use routing::{MessageMode, mode_for};
+pub use tasks::{TaskChange, TaskListRow, TaskTarget};
 
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
