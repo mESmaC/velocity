@@ -4,6 +4,7 @@
 use std::path::{Path, PathBuf};
 
 use agent_client_protocol::v1::schema::{McpServer, McpServerStdio};
+use velocity_acp::RunSettings;
 use velocity_acp::client::{AgentLaunch, SessionSetup};
 use velocity_core::duty::DutyMergeMethod;
 use velocity_git::{JobKind, WorktreeError, WorktreeSetupRequest};
@@ -29,6 +30,8 @@ pub struct ReviewPlan {
     pub worktree: WorktreeSetupRequest,
     pub agent: AgentLaunch,
     pub bypass_modes: Vec<String>,
+    /// The model, effort and speed the review runs on (F7, F15).
+    pub run_settings: RunSettings<String>,
 }
 
 /// Plans `agent`'s review of PR `number` in the PR's `review-pr-<n>` worktree, made at
@@ -64,6 +67,7 @@ pub fn plan_review(
         worktree,
         agent: with_compiler_cache(launch, preferences.share_build_cache),
         bypass_modes,
+        run_settings: crate::titles::duty_run_settings(&roster.settings, agent),
     })
 }
 
@@ -80,7 +84,8 @@ pub struct ReviewServer<'a> {
 /// The session a review runs: unrestricted like every agent (Rule 1), in the review worktree,
 /// with the PR duty MCP server beside the shared servers.
 pub fn review_session(plan: &ReviewPlan, worktree: PathBuf, server: ReviewServer) -> SessionSetup {
-    let mut setup = SessionSetup::new(worktree.clone(), plan.bypass_modes.clone());
+    let mut setup = SessionSetup::new(worktree.clone(), plan.bypass_modes.clone())
+        .with_run_settings(plan.run_settings.clone());
     let method = match plan.merge_method {
         DutyMergeMethod::Squash => "squash",
         DutyMergeMethod::Rebase => "rebase",

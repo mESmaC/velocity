@@ -233,6 +233,14 @@ pub struct DutyAgentCard {
     #[cfg_attr(feature = "bindings", serde(skip))]
     #[cfg_attr(feature = "bindings", specta(skip))]
     pub review_worktrees: Vec<String>,
+    /// The effort and speed its sessions run at (F7, F15). `None` on an agent saved before
+    /// they could be chosen: its sessions use Settings' defaults. Saved state only.
+    #[cfg_attr(feature = "bindings", serde(skip))]
+    #[cfg_attr(feature = "bindings", specta(skip))]
+    pub effort: Option<crate::state::EffortLevel>,
+    #[cfg_attr(feature = "bindings", serde(skip))]
+    #[cfg_attr(feature = "bindings", specta(skip))]
+    pub speed: Option<crate::state::SpeedMode>,
 }
 
 #[cfg_attr(feature = "bindings", derive(specta::Type))]
@@ -529,6 +537,9 @@ pub struct DutyStartSpec {
     pub agent_count: usize,
     pub provider: ProviderColor,
     pub model_name: String,
+    /// The effort and speed the new agents run at; `None` keeps Settings' defaults.
+    pub effort: Option<crate::state::EffortLevel>,
+    pub speed: Option<crate::state::SpeedMode>,
     pub pr_rules: PrDutyRuleSettings,
     pub scout_rules: ScoutRuleSettings,
     pub has_open_pull_requests: bool,
@@ -560,8 +571,19 @@ pub fn build_duty_agents(
             doing: doing.clone(),
             sweep: None,
             review_worktrees: Vec::new(),
+            effort: None,
+            speed: None,
         })
         .collect()
+}
+
+/// The new agents run at the effort and speed the dialog chose (F7).
+fn with_run_choice(mut agents: Vec<DutyAgentCard>, spec: &DutyStartSpec) -> Vec<DutyAgentCard> {
+    for agent in &mut agents {
+        agent.effort = spec.effort;
+        agent.speed = spec.speed;
+    }
+    agents
 }
 
 pub fn start_duty_entry(identifier: usize, spec: DutyStartSpec) -> (DutyRoleEntry, DutyFeedEvent) {
@@ -574,6 +596,7 @@ pub fn start_duty_entry(identifier: usize, spec: DutyStartSpec) -> (DutyRoleEntr
         &spec.model_name,
         spec.has_open_pull_requests,
     );
+    let agents = with_run_choice(agents, &spec);
     let suffix = if clamped == 1 { "" } else { "s" };
     let role_lower = spec.role.title().to_lowercase();
     let event = DutyFeedEvent {
@@ -605,7 +628,7 @@ pub fn add_agents_to_duty_entry(entry: &mut DutyRoleEntry, spec: DutyStartSpec) 
         &spec.model_name,
         spec.has_open_pull_requests,
     );
-    entry.agents.extend(additional);
+    entry.agents.extend(with_run_choice(additional, &spec));
     entry.pr_rules = spec.pr_rules;
     entry.scout_rules = spec.scout_rules;
     let suffix = if clamped == 1 { "" } else { "s" };

@@ -8,12 +8,15 @@
     DutyDialogDefaults,
     DutyMergeMethod,
     DutyRole,
+    EffortLevel,
     LayoutAction,
     LayoutSnapshot,
     PrDutyRuleSettings,
+    ProviderKind,
     ScoutCadence,
     ScoutFocusArea,
     ScoutRuleSettings,
+    SpeedMode,
   } from './ipc';
   import './theme/new-project.css';
 
@@ -70,6 +73,13 @@
     ['ux', 'UX'],
   ];
 
+  const efforts: [EffortLevel, string][] = [
+    ['low', 'Low'],
+    ['medium', 'Medium'],
+    ['high', 'High'],
+    ['max', 'Max'],
+  ];
+
   const cadences: [ScoutCadence, string][] = [
     ['once', 'Once'],
     ['every_thirty_minutes', 'Every 30m'],
@@ -80,6 +90,9 @@
   let defaults = $state<DutyDialogDefaults | null>(null);
   let role = $state<DutyRole>('pr_duty');
   let agentCount = $state(1);
+  let provider = $state<ProviderKind | null>(null);
+  let effort = $state<EffortLevel>('high');
+  let speed = $state<SpeedMode>('regular');
   let prRules = $state<PrDutyRuleSettings>({
     review_theorem_statements: true,
     ci_green_before_merge: true,
@@ -108,6 +121,9 @@
       .defaults()
       .then((loaded) => {
         defaults = loaded;
+        provider = loaded.provider;
+        effort = loaded.effort;
+        speed = loaded.speed;
         prRules = loaded.pr_rules;
         scoutRules = loaded.scout_rules;
       })
@@ -158,6 +174,10 @@
     roles.find(([value]) => value === role) ?? roles[0],
   );
 
+  const chosenModel = $derived(
+    defaults?.models.find((model) => model.provider === provider) ?? null,
+  );
+
   async function submit() {
     if (submitting) return;
     submitting = true;
@@ -166,8 +186,10 @@
       const request = {
         role,
         agent_count: agentCount,
-        provider: defaults?.provider ?? null,
-        model_name: defaults?.model_name ?? null,
+        provider: chosenModel?.provider ?? defaults?.provider ?? null,
+        model_name: chosenModel?.model_name ?? defaults?.model_name ?? null,
+        effort,
+        speed,
         pr_rules: prRules,
         scout_rules: scoutRules,
       };
@@ -243,21 +265,54 @@
       </div>
 
       <div class="field">
-        <span class="label" id="duty-model-label">Model</span>
+        <div class="row2 spread">
+          <span class="label" id="duty-model-label">Model</span>
+          <div class="row2">
+            <div class="seg sm" role="group" aria-label="Effort">
+              {#each efforts as [value, label] (value)}<button
+                  type="button"
+                  class:on={effort === value}
+                  aria-pressed={effort === value}
+                  onclick={() => (effort = value)}>{label}</button
+                >{/each}
+            </div>
+            <div class="seg sm" role="group" aria-label="Speed">
+              <button
+                type="button"
+                class:on={speed === 'regular'}
+                aria-pressed={speed === 'regular'}
+                onclick={() => (speed = 'regular')}>Regular</button
+              ><button
+                type="button"
+                class:on={speed === 'fast'}
+                aria-pressed={speed === 'fast'}
+                onclick={() => (speed = 'fast')}
+                ><Icon name="bolt" />Fast</button
+              >
+            </div>
+          </div>
+        </div>
         <div class="models" role="group" aria-labelledby="duty-model-label">
-          {#if defaults}
-            <button type="button" class="model-card on" aria-pressed="true">
+          {#each defaults?.models ?? [] as model (model.provider)}
+            <button
+              type="button"
+              class="model-card"
+              class:on={model.provider === provider}
+              aria-pressed={model.provider === provider}
+              onclick={() => (provider = model.provider)}
+            >
               <span class="mh">
-                <Icon name={providerIcon(defaults.provider)} />
-                {defaults.model_name}
+                <Icon name={providerIcon(model.provider)} />
+                {model.model_name}
               </span>
               <span class="md">
-                {defaults.provider_name}{defaults.model_configured
-                  ? ''
-                  : ' · default'}
+                {model.provider_name}{model.provider === defaults?.provider &&
+                !defaults.model_configured
+                  ? ' · default'
+                  : ''}
               </span>
             </button>
-          {/if}
+          {/each}
           <ProviderSignInCards {send} {report} />
         </div>
       </div>

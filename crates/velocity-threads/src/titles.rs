@@ -10,6 +10,7 @@ use velocity_core::thread_titles::{
     TITLE_DEADLINE_MILLISECONDS, ThreadTitle, TitleSource, title_from_response,
     title_request_prompt,
 };
+use velocity_store::duty::DutyAgentItem;
 use velocity_store::{EffortLevel, ProviderKind, Settings, SpeedMode, ThreadItem};
 
 use crate::launch::agent_launch;
@@ -103,6 +104,19 @@ pub fn thread_run_settings(thread: &ThreadItem) -> RunSettings<String> {
         model: thread.model_name.clone(),
         effort: effort(thread.effort),
         speed: speed(thread.preferred_speed),
+    }
+}
+
+/// What a duty agent's sessions run on (F7, F15): its provider and model, at the effort and
+/// speed chosen when it was added. An agent saved before those could be chosen uses Settings'
+/// defaults, like a new thread.
+pub fn duty_run_settings(settings: &Settings, agent: &DutyAgentItem) -> RunSettings<String> {
+    let defaults = &settings.providers;
+    RunSettings {
+        provider: provider(agent.provider),
+        model: agent.model_name.clone(),
+        effort: effort(agent.effort.unwrap_or(defaults.default_effort)),
+        speed: speed(agent.preferred_speed.unwrap_or(defaults.default_speed)),
     }
 }
 

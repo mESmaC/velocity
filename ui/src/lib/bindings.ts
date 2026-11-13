@@ -748,12 +748,34 @@ export type DutyAgentCard = {
 	doing: string,
 };
 
-export type DutyAgentItem = {
+export type DutyAgentItem = DutyAgentItem_Serialize | DutyAgentItem_Deserialize;
+
+export type DutyAgentItem_Deserialize = {
 	nickname: string,
 	provider: ProviderKind,
 	model_name: string,
 	busy: boolean,
 	doing: string,
+	/**
+	 *  The effort and speed its sessions run at, chosen in the Start a duty agent dialog
+	 *  (F7). `None` on an agent saved before they could be chosen: Settings' defaults apply.
+	 */
+	effort?: EffortLevel | null,
+	preferred_speed?: SpeedMode | null,
+};
+
+export type DutyAgentItem_Serialize = {
+	nickname: string,
+	provider: ProviderKind,
+	model_name: string,
+	busy: boolean,
+	doing: string,
+	/**
+	 *  The effort and speed its sessions run at, chosen in the Start a duty agent dialog
+	 *  (F7). `None` on an agent saved before they could be chosen: Settings' defaults apply.
+	 */
+	effort: EffortLevel | null,
+	preferred_speed: SpeedMode | null,
 };
 
 export type DutyDialogDefaults = DutyDialogDefaults_Serialize | DutyDialogDefaults_Deserialize;
@@ -764,6 +786,11 @@ export type DutyDialogDefaults_Deserialize = {
 	provider_name?: string,
 	model_name: string,
 	model_configured: boolean,
+	/**  Every signed-in provider's model, the default one selected (F7, F15). */
+	models: SwarmModelCard_Deserialize[],
+	/**  Settings' default effort and speed, where the dialog's Effort and Speed start. */
+	effort: EffortLevel,
+	speed: SpeedMode,
 	pr_duty_exists: boolean,
 	scouts_exists: boolean,
 	main_watcher_exists: boolean,
@@ -777,6 +804,11 @@ export type DutyDialogDefaults_Serialize = {
 	provider_name: string,
 	model_name: string,
 	model_configured: boolean,
+	/**  Every signed-in provider's model, the default one selected (F7, F15). */
+	models: SwarmModelCard_Serialize[],
+	/**  Settings' default effort and speed, where the dialog's Effort and Speed start. */
+	effort: EffortLevel,
+	speed: SpeedMode,
 	pr_duty_exists: boolean,
 	scouts_exists: boolean,
 	main_watcher_exists: boolean,
@@ -811,14 +843,27 @@ export type DutyRole = "pr_duty" | "scouts" |
 /**  Watches the base branch after merges (F7 Main watcher; the role name is proposed, Q22). */
 "main_watcher";
 
-export type DutyRoleItem = {
+export type DutyRoleItem = DutyRoleItem_Serialize | DutyRoleItem_Deserialize;
+
+export type DutyRoleItem_Deserialize = {
 	id: number,
 	role: DutyRole,
 	paused: boolean,
 	issues_filed: number,
 	pr_rules: PrDutyRuleSettings,
 	scout_rules: ScoutRuleSettings,
-	agents: DutyAgentItem[],
+	agents: DutyAgentItem_Deserialize[],
+	feed: DutyFeedItem[],
+};
+
+export type DutyRoleItem_Serialize = {
+	id: number,
+	role: DutyRole,
+	paused: boolean,
+	issues_filed: number,
+	pr_rules: PrDutyRuleSettings,
+	scout_rules: ScoutRuleSettings,
+	agents: DutyAgentItem_Serialize[],
 	feed: DutyFeedItem[],
 };
 
@@ -2400,7 +2445,7 @@ export type ProjectItem_Deserialize = {
 	/**  The spec interview Create asked for and nothing has started yet (F2, F3). */
 	pending_interview?: PendingInterview_Deserialize | null,
 	/**  Duty roles started on this project (F7). */
-	duty_roles?: DutyRoleItem[],
+	duty_roles?: DutyRoleItem_Deserialize[],
 	/**  Swarms launched on this project, newest first (F10). */
 	swarms?: SwarmRecord_Deserialize[],
 	/**  Goal swarms launched on this project, newest first (F16). */
@@ -2427,7 +2472,7 @@ export type ProjectItem_Serialize = {
 	/**  The spec interview Create asked for and nothing has started yet (F2, F3). */
 	pending_interview: PendingInterview_Serialize | null,
 	/**  Duty roles started on this project (F7). */
-	duty_roles: DutyRoleItem[],
+	duty_roles: DutyRoleItem_Serialize[],
 	/**  Swarms launched on this project, newest first (F10). */
 	swarms: SwarmRecord_Serialize[],
 	/**  Goal swarms launched on this project, newest first (F16). */
@@ -3878,6 +3923,9 @@ export type StartDutyRequest_Deserialize = {
 	agent_count: number,
 	provider?: ProviderKind | null,
 	model_name?: string | null,
+	/**  The new agents' effort and speed; `None` keeps Settings' defaults. */
+	effort?: EffortLevel | null,
+	speed?: SpeedMode | null,
 	pr_rules?: PrDutyRuleSettings | null,
 	scout_rules?: ScoutRuleSettings | null,
 };
@@ -3887,6 +3935,9 @@ export type StartDutyRequest_Serialize = {
 	agent_count: number,
 	provider: ProviderKind | null,
 	model_name: string | null,
+	/**  The new agents' effort and speed; `None` keeps Settings' defaults. */
+	effort: EffortLevel | null,
+	speed: SpeedMode | null,
 	pr_rules: PrDutyRuleSettings | null,
 	scout_rules: ScoutRuleSettings | null,
 };
