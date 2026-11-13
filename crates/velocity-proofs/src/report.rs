@@ -104,7 +104,7 @@ impl ProofCheckReport {
             return None;
         }
         let mut lines = Vec::from([
-            "Proof levels (a model-only level where a stronger one is available is FLAGGED: point it out and decide, it does not fail the checks; a PR touching a Sensitive path needs the strongest level):".to_owned(),
+            "Proof levels (a model-only level where a stronger one is available is FLAGGED: point it out and decide, it does not fail the checks; a PR touching a Sensitive path needs the reference level; code level only when an issue asks for it):".to_owned(),
         ]);
         for feature in &self.levels {
             for entry in &feature.languages {

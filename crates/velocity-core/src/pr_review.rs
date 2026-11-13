@@ -240,7 +240,8 @@ fn checkout_paragraph(brief: &ReviewBrief) -> String {
 }
 
 /// F7 Tiered review: a trivial PR gets the checks and a claim check; a normal PR the full
-/// review; a sensitive PR the full review plus the stress suite and the strongest proof level.
+/// review; a sensitive PR the full review plus the project's stress suite and reference-level
+/// confidence proofs (code level only when an issue asks for it, F17).
 fn tier_steps(brief: &ReviewBrief) -> String {
     match brief.tier.tier {
         ReviewTier::Trivial => format!(
@@ -252,7 +253,7 @@ fn tier_steps(brief: &ReviewBrief) -> String {
             review_steps(brief.rules)
         ),
         ReviewTier::Sensitive => format!(
-            "\nTier: sensitive. It touches {}, listed under Sensitive paths in AGENTS.md. Full review, plus:\n- Run the project's full stress suite (its stress command in AGENTS.md) on the merge result before you merge. A failure blocks the merge.\n- Any proof-list feature it changes needs its confidence proof at the strongest level its language allows (SPEC.md F17). A weaker level blocks the merge.\n{}",
+            "\nTier: sensitive. It touches {}, listed under Sensitive paths in AGENTS.md. Full review, plus:\n- Run the project's stress suite, the stress command AGENTS.md names as the merge gate, on the merge result before you merge. A failure blocks the merge. Never run a benchmark or load run that AGENTS.md marks as not a merge gate.\n- Any proof-list feature it changes needs its confidence proof at the reference level: a fixture table exported from the Lean model plus a test that checks the code against it (SPEC.md F17). A model-only level blocks the merge. The code level (a translation) is required only when an issue asks for one.\n{}",
             quoted_list(&brief.tier.sensitive_files),
             review_steps(brief.rules)
         ),
@@ -290,7 +291,7 @@ fn review_steps(rules: &PrDutyRuleSettings) -> String {
     steps.push_str(local_checks_step(rules));
     steps.push_str("- If `proofs/` changes, run `lake build` and the axiom audit. Never merge unless the proofs check.\n");
     steps.push_str("- Review every theorem statement, not the proofs: does it say what the SPEC.md section says, do its hypotheses exclude real inputs, is the cost model honest, and is the class of alternatives the one that matters?\n");
-    steps.push_str("- Compare the claimed feature and changed runtime paths with the project proof list. A new proof-list feature needs Design.lean with exactly correct, cost_bound and optimal; off-list Lean or a theorem about one case gets changes requested. For a bug fix require the failing input in its confidence fixtures instead. Review confidence levels per language: reference by default, code only when requested, model flagged as a proof gap; sensitive changes require the strongest available level. Implementation must outweigh proofs, tests and docs together.\n");
+    steps.push_str("- Compare the claimed feature and changed runtime paths with the project proof list. A new proof-list feature needs Design.lean with exactly correct, cost_bound and optimal; off-list Lean or a theorem about one case gets changes requested. For a bug fix require the failing input in its confidence fixtures instead. Review confidence levels per language: reference by default, code only when requested, model flagged as a proof gap; sensitive changes require at least the reference level. Implementation must outweigh proofs, tests and docs together.\n");
     steps.push_str("- When you doubt a claim no proof covers, write a stress script, run it, and put its output in your review.\n");
     steps
 }

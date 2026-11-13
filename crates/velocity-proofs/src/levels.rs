@@ -178,7 +178,8 @@ impl LanguageLevel {
         self.level == ProofLevel::Model && self.strongest > ProofLevel::Model
     }
 
-    /// Below the strongest available level: what a Sensitive path refuses (F7).
+    /// Below the strongest available level. Shown as available on request; a Sensitive path
+    /// needs only the reference level (F7, F17).
     pub fn below_strongest(&self) -> bool {
         self.level < self.strongest
     }
