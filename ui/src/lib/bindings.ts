@@ -89,6 +89,11 @@ export const commands = {
 	browseWorktreeFolder: () => __TAURI_INVOKE<string | null>("browse_worktree_folder"),
 	pruneWorktrees: () => __TAURI_INVOKE<string>("prune_worktrees"),
 	getDutyDialogDefaults: () => __TAURI_INVOKE<DutyDialogDefaults_Serialize>("get_duty_dialog_defaults"),
+	/**
+	 *  What a PR duty agent's latest review session showed (F7), for the Duty view's session
+	 *  panel. `None` when the agent has had no review since Velocity started.
+	 */
+	getDutyAgentTranscript: (nickname: string) => __TAURI_INVOKE<TranscriptBlock_Serialize[] | null>("get_duty_agent_transcript", { nickname }),
 	startDuty: (request: StartDutyRequest_Deserialize) => __TAURI_INVOKE<LayoutSnapshot_Serialize>("start_duty", { request }),
 	pauseDuty: (request: PauseDutyRequest_Deserialize) => __TAURI_INVOKE<LayoutSnapshot_Serialize>("pause_duty", { request }),
 	addDutyAgents: (request: StartDutyRequest_Deserialize) => __TAURI_INVOKE<LayoutSnapshot_Serialize>("add_duty_agents", { request }),

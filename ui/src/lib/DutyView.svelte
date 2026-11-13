@@ -2,8 +2,10 @@
   import { tick } from 'svelte';
   import Composer from './Composer.svelte';
   import Icon from './Icon.svelte';
+  import TranscriptBlocks from './TranscriptBlocks.svelte';
   import { dutyCommands } from './ipc';
   import type {
+    TranscriptBlock,
     DutyEventKind,
     DutyRole,
     DutyViewSnapshot,
@@ -29,6 +31,36 @@
 
   let transcriptEl: HTMLElement | null = null;
   let busy = $state(false);
+
+  // The PR duty agent whose review session is open, and what that session shows. Reviews
+  // stream outside the layout snapshot, so the open session is read again while it shows.
+  const SESSION_REFRESH_MS = 1500;
+  let sessionNickname = $state<string | null>(null);
+  let sessionBlocks = $state<TranscriptBlock[] | null>(null);
+
+  $effect(() => {
+    const nickname = sessionNickname;
+    if (nickname === null || duty.role !== 'pr_duty') return;
+    let stopped = false;
+    const load = () =>
+      dutyCommands
+        .agentTranscript(nickname)
+        .then((blocks) => {
+          if (!stopped) sessionBlocks = blocks;
+        })
+        .catch(onError);
+    void load();
+    const timer = globalThis.setInterval(() => void load(), SESSION_REFRESH_MS);
+    return () => {
+      stopped = true;
+      globalThis.clearInterval(timer);
+    };
+  });
+
+  function toggleSession(nickname: string) {
+    sessionBlocks = null;
+    sessionNickname = sessionNickname === nickname ? null : nickname;
+  }
 
   const providerIcons: Record<ProviderColor, string> = {
     Claude: 'claude',
@@ -103,6 +135,17 @@
   }
 </script>
 
+{#snippet doing(agentBusy: boolean, step: string)}
+  {#if duty.paused}
+    paused
+  {:else}
+    {#if agentBusy}<span class="working-dots" aria-hidden="true"
+        ><span></span><span></span><span></span></span
+      >{/if}
+    <span class="doing-text" title={step}>{step}</span>
+  {/if}
+{/snippet}
+
 <section class="thread-view duty-view" aria-label={duty.title}>
   <header class="thread-head">
     <h1>{duty.title}</h1>
@@ -155,7 +198,10 @@
         <div class="section-h">Agents</div>
         <div class="duty-agents">
           {#each duty.agents as agent (agent.nickname)}
-            <div class="agent-card">
+            <div
+              class="agent-card"
+              class:open={agent.nickname === sessionNickname}
+            >
               <div class="ah">
                 <span class="prov" data-provider={agent.provider}>
                   <Icon name={providerIcons[agent.provider]} />
@@ -171,22 +217,43 @@
                   onclick={() => dismiss(agent.nickname)}>×</button
                 >
               </div>
-              <div class="doing">
-                {#if duty.paused}
-                  paused
-                {:else}
-                  {#if agent.busy}<span class="working-dots" aria-hidden="true"
-                      ><span></span><span></span><span></span></span
-                    >{/if}
-                  <span class="doing-text" title={agent.doing}
-                    >{agent.doing}</span
-                  >
-                {/if}
-              </div>
+              {#if duty.role === 'pr_duty'}
+                <button
+                  type="button"
+                  class="doing open-session"
+                  aria-pressed={agent.nickname === sessionNickname}
+                  title="Show {agent.nickname}'s review session"
+                  onclick={() => toggleSession(agent.nickname)}
+                >
+                  {@render doing(agent.busy, agent.doing)}
+                </button>
+              {:else}
+                <div class="doing">
+                  {@render doing(agent.busy, agent.doing)}
+                </div>
+              {/if}
             </div>
           {/each}
         </div>
       </div>
+
+      {#if sessionNickname !== null}
+        <div class="duty-session">
+          <div class="section-h session-h">
+            <span>Session · {sessionNickname}</span>
+            <button
+              type="button"
+              class="btn"
+              onclick={() => (sessionNickname = null)}>Close</button
+            >
+          </div>
+          {#if sessionBlocks === null}
+            <p class="empty">No review since Velocity started.</p>
+          {:else}
+            <TranscriptBlocks blocks={sessionBlocks} />
+          {/if}
+        </div>
+      {/if}
 
       <div>
         <div class="section-h">Activity</div>

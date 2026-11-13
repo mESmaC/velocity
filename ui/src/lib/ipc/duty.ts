@@ -29,6 +29,8 @@ export const dutyCommands = {
   addAgents: commands.addDutyAgents,
   dismissAgent: commands.dismissDutyAgent,
   stop: commands.stopDuty,
+  /** A PR duty agent's latest review session; null before its first review. */
+  agentTranscript: commands.getDutyAgentTranscript,
 };
 
 export const onDutyEvent = (callback: EventCallback<DutyEventPublished>) =>

@@ -298,3 +298,26 @@
   background: var(--duty-agent-dismiss-hover-background);
   color: var(--text);
 }
+/* A PR duty agent's activity line opens its review session; it keeps the line's look. */
+.duty-view .agent-card .open-session {
+  width: 100%;
+  padding: 0;
+  border: none;
+  background: none;
+  font-family: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+.duty-view .agent-card .open-session:hover,
+.duty-view .agent-card .open-session:focus-visible {
+  color: var(--text);
+}
+.duty-view .agent-card.open {
+  border-color: var(--line);
+}
+.duty-view .duty-session .session-h {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--duty-agents-gap);
+}

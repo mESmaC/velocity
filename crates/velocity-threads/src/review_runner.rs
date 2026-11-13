@@ -23,6 +23,7 @@ use velocity_core::pr_review::{
     review_finished_message, review_idle_doing, review_prompt, short_commit, turn_end_action,
 };
 use velocity_core::review_tier::TierAssessment;
+use velocity_core::thread_view_model::TranscriptBlock;
 use velocity_github::{
     PrDutyReport, PullRequestClient, PullRequestError, PullRequestOperation, PullRequestState,
     ReviewRecord, read_pr_duty_reports,
@@ -33,6 +34,7 @@ use crate::RunningSession;
 use crate::proof_checks::{ProofCheckTarget, check_before_review};
 use crate::review::{ReviewPlan, ReviewServer, plan_review, review_session};
 use crate::sweep::sweep_doing;
+use crate::transcript_view::LiveTranscript;
 
 /// How often the runner looks for PRs that need an agent when nothing wakes it sooner.
 const TICK: Duration = Duration::from_secs(30);
@@ -87,6 +89,9 @@ struct RunnerState {
     /// Counts dismissals, so a tick that read its rosters before one starts no review for the
     /// dismissed agent.
     dismissals: u64,
+    /// Each agent's latest review session as the Duty view shows it (F7). Kept after the
+    /// session ends so its last review can still be read; a new review replaces it.
+    transcripts: BTreeMap<AgentKey, LiveTranscript>,
 }
 
 /// The review runner. Cheap to clone; every clone drives the same reviews.
@@ -164,6 +169,15 @@ impl PrDutyReviews {
             .iter()
             .map(|(key, running)| (key.clone(), running.number))
             .collect()
+    }
+
+    /// What `nickname`'s latest review session showed, oldest first; `None` before its first
+    /// review since Velocity started.
+    pub fn transcript(&self, project: u32, nickname: &str) -> Option<Vec<TranscriptBlock>> {
+        self.lock()
+            .transcripts
+            .get(&(project, nickname.to_owned()))
+            .map(LiveTranscript::blocks)
     }
 
     /// The PR `nickname`'s running review holds, if it has one.
@@ -705,8 +719,16 @@ impl Review {
         let _ = self
             .input
             .send(text(&format!("{}{proofs}", self.prompt(&prepared))));
-        if let Some(running) = self.runner.lock().running.get_mut(&self.key) {
-            running.delivering = true;
+        {
+            let mut state = self.runner.lock();
+            if let Some(running) = state.running.get_mut(&self.key) {
+                running.delivering = true;
+            }
+            let worktree = prepared.worktree.display().to_string();
+            state.transcripts.insert(
+                self.key.clone(),
+                LiveTranscript::restore(&worktree, Vec::new()),
+            );
         }
         let session = crate::spawn_session(prepared.plan.agent.clone(), setup, inputs);
         let outcome = self.follow(host, session, &report).await;
@@ -781,6 +803,7 @@ impl Review {
             while let Ok(next) = session.events.try_recv() {
                 batch.push(next);
             }
+            self.record_transcript(&batch);
             if let Some(step) = batch.iter().rev().find_map(sweep_doing)
                 && step != doing
             {
@@ -807,6 +830,19 @@ impl Review {
             Err(_) => Some("its session ended unexpectedly".into()),
         };
         outcome
+    }
+
+    /// Adds the session's transcript updates to the agent's view of its review.
+    fn record_transcript(&self, batch: &[AgentEvent]) {
+        let mut state = self.runner.lock();
+        let Some(transcript) = state.transcripts.get_mut(&self.key) else {
+            return;
+        };
+        for event in batch {
+            if let AgentEvent::Transcript { placement, update } = event {
+                transcript.record(*placement, update);
+            }
+        }
     }
 
     /// A turn ended: answer your next instruction, ask an undecided agent to carry on, or end
@@ -1003,6 +1039,17 @@ fn report_event(timestamp: &str, nickname: &str, report: PrDutyReport) -> Option
             DutyEventKind::Wait,
             velocity_core::scout_sweep::step_doing(&format!(
                 "Merge of #{number} refused · {reason}"
+            )),
+        ),
+        PrDutyReport::Held {
+            number,
+            head,
+            reason,
+        } => (
+            DutyEventKind::Wait,
+            velocity_core::scout_sweep::step_doing(&format!(
+                "Held #{number} at {} · {reason}",
+                short_commit(&head)
             )),
         ),
         PrDutyReport::Commented { .. } => return None,

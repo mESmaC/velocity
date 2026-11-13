@@ -24,11 +24,31 @@ use crate::{
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "outcome", rename_all = "snake_case")]
 pub enum PrDutyReport {
-    Approved { number: u32, head: String },
-    ChangesRequested { number: u32, head: String },
-    Commented { number: u32 },
-    Merged { number: u32, branch_kept: bool },
-    MergeFailed { number: u32, reason: String },
+    Approved {
+        number: u32,
+        head: String,
+    },
+    ChangesRequested {
+        number: u32,
+        head: String,
+    },
+    Commented {
+        number: u32,
+    },
+    /// A comment on the PR holds it: its head rests until it moves (F7).
+    Held {
+        number: u32,
+        head: String,
+        reason: String,
+    },
+    Merged {
+        number: u32,
+        branch_kept: bool,
+    },
+    MergeFailed {
+        number: u32,
+        reason: String,
+    },
 }
 
 /// One reviewing agent's connection: its PR, its merge method and its report file.
@@ -93,6 +113,7 @@ enum ReviewChoice {
     Approve,
     RequestChanges,
     Comment,
+    Hold,
 }
 
 #[derive(Deserialize)]
@@ -155,9 +176,13 @@ impl PrDutyServer {
         let action = match arguments.action {
             ReviewChoice::Approve => ReviewAction::Approve,
             ReviewChoice::RequestChanges => ReviewAction::RequestChanges,
-            ReviewChoice::Comment => ReviewAction::Comment,
+            ReviewChoice::Comment | ReviewChoice::Hold => ReviewAction::Comment,
         };
+        let held = arguments.reason.clone();
         let mut reason = arguments.reason;
+        if matches!(arguments.action, ReviewChoice::Hold) {
+            reason = format!("Held by PR duty ({}): {reason}", self.reviewer);
+        }
         if matches!(arguments.action, ReviewChoice::Approve) {
             reason.push_str(
                 &arguments
@@ -185,6 +210,11 @@ impl PrDutyServer {
             ReviewChoice::Approve => PrDutyReport::Approved { number, head },
             ReviewChoice::RequestChanges => PrDutyReport::ChangesRequested { number, head },
             ReviewChoice::Comment => PrDutyReport::Commented { number },
+            ReviewChoice::Hold => PrDutyReport::Held {
+                number,
+                head,
+                reason: held,
+            },
         });
         Ok(serde_json::to_value(receipt)?)
     }
@@ -384,11 +414,11 @@ fn tool_list(number: u32) -> Vec<Value> {
 fn review_tool(number: u32, string: &Value, head: &Value) -> Value {
     json!({
         "name": "pr_duty_review",
-        "description": format!("Record your decision on PR #{number}. approve and request_changes are recorded in Velocity's approval record (the approval Rule 4 requires) and mirrored on GitHub; comment only comments. A reason is required."),
+        "description": format!("Record your decision on PR #{number}. approve and request_changes are recorded in Velocity's approval record (the approval Rule 4 requires) and mirrored on GitHub; comment only comments. hold leaves the PR undecided because a comment on it says to wait (on hold, do not review or merge yet, waits for other work): it posts your reason, and PR duty skips this head until it moves. A reason is required."),
         "inputSchema": {
             "type": "object",
             "properties": {
-                "action": {"type": "string", "enum": ["approve", "request_changes", "comment"]},
+                "action": {"type": "string", "enum": ["approve", "request_changes", "comment", "hold"]},
                 "head": head,
                 "reason": string,
                 "proof_review": {

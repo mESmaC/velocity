@@ -8,6 +8,7 @@ use tauri::{AppHandle, Manager, State, Window};
 use tauri_specta::Event;
 use velocity_core::duty::{DutyFeedEvent, DutyRole};
 use velocity_core::layout_view::LayoutSnapshot;
+use velocity_core::thread_view_model::TranscriptBlock;
 use velocity_store::duty::{
     DismissDutyAgentRequest, DutyDialogDefaults, DutyMutationOutcome, PauseDutyRequest,
     StartDutyRequest, StopDutyRequest, clock_timestamp,
@@ -34,6 +35,25 @@ pub fn get_duty_dialog_defaults(
 ) -> Result<DutyDialogDefaults, String> {
     let store = store.lock().map_err(|error| error.to_string())?;
     Ok(store.duty_dialog_defaults())
+}
+
+/// What a PR duty agent's latest review session showed (F7), for the Duty view's session
+/// panel. `None` when the agent has had no review since Velocity started.
+#[tauri::command]
+#[specta::specta]
+pub fn get_duty_agent_transcript(
+    window: Window,
+    store: State<'_, ManagedStateStore>,
+    nickname: String,
+) -> Result<Option<Vec<TranscriptBlock>>, String> {
+    let project = {
+        let store = store.lock().map_err(|error| error.to_string())?;
+        active_project(&store)?.0
+    };
+    Ok(window
+        .app_handle()
+        .try_state::<PrDutyReviews>()
+        .and_then(|reviews| reviews.transcript(project, &nickname)))
 }
 
 #[tauri::command]
