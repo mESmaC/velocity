@@ -3,13 +3,13 @@
 
 use serde::{Deserialize, Serialize};
 use specta::Type;
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 use crate::{PullRequest, PullRequestCheck, PullRequestSnapshot, PullRequestState};
 use velocity_core::proof_card::ProofCard;
 pub use velocity_core::thread_view_model::PullRequestHistoryCard as HistoryCard;
-use velocity_core::thread_view_model::SessionWork;
 use velocity_core::thread_view_model::{PullRequestHistoryView, PullRequestTrackStep};
+use velocity_core::thread_view_model::{SessionWork, ToolStepRow};
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, Type)]
 pub struct AgentFollowUp {
@@ -145,6 +145,33 @@ impl FollowThrough {
     pub fn delivered(&mut self, identifier: &str) {
         self.pending
             .retain(|message| message.identifier != identifier);
+    }
+
+    /// Drops the tool cards older versions added again on every resumed PR session: each
+    /// resumed session replayed the thread's whole step list from its first step, so the
+    /// same steps appeared once per session (933 cards for 284 steps on one thread). A
+    /// later session's leading cards are dropped only when they are exactly that replay:
+    /// the coding steps before the PR, then every card already kept.
+    pub fn compact_work_cards(&mut self) {
+        let sessions = work_card_sessions(&self.history);
+        let coding = self.coding_tool_count.unwrap_or(0) as usize;
+        let mut kept: Vec<&ToolStepRow> = Vec::new();
+        let mut dropped = BTreeSet::new();
+        for (position, cards) in sessions.iter().enumerate() {
+            let tools: Vec<&ToolStepRow> = cards
+                .iter()
+                .filter_map(|index| self.history[*index].tool.as_ref())
+                .collect();
+            let replay = replayed_prefix(&tools, &kept, coding).filter(|_| position > 0);
+            let skip = replay.unwrap_or(0);
+            dropped.extend(cards.iter().take(skip).copied());
+            kept.extend(tools.into_iter().skip(skip));
+        }
+        let mut index = 0;
+        self.history.retain(|_| {
+            index += 1;
+            !dropped.contains(&(index - 1))
+        });
     }
 
     pub fn observe_work(&mut self, work: &SessionWork) {
@@ -545,6 +572,45 @@ impl FollowThrough {
 
 const PROVED: &str = "Proved";
 const NO_PROOFS: &str = "No proofs";
+
+/// The positions of each work session's tool cards in `history`, sessions in the order they
+/// first appear. A tool card's identifier is `fix:<session>:<step>`.
+fn work_card_sessions(history: &[HistoryCard]) -> Vec<Vec<usize>> {
+    let mut order: Vec<&str> = Vec::new();
+    let mut sessions: BTreeMap<&str, Vec<usize>> = BTreeMap::new();
+    for (index, card) in history.iter().enumerate() {
+        let Some(session) = card
+            .identifier
+            .strip_prefix("fix:")
+            .and_then(|rest| rest.rsplit_once(':'))
+            .map(|(session, _)| session)
+            .filter(|_| card.tool.is_some())
+        else {
+            continue;
+        };
+        if !sessions.contains_key(session) {
+            order.push(session);
+        }
+        sessions.entry(session).or_default().push(index);
+    }
+    order
+        .into_iter()
+        .filter_map(|session| sessions.remove(session))
+        .collect()
+}
+
+/// How many leading `tools` replay the thread's earlier steps: every step before the PR
+/// (`coding`, or none when the first session kept them) and then exactly `kept`. `None`
+/// when they don't, so a session that did its own work is never trimmed.
+fn replayed_prefix(tools: &[&ToolStepRow], kept: &[&ToolStepRow], coding: usize) -> Option<usize> {
+    if kept.is_empty() {
+        return None;
+    }
+    [coding, 0].into_iter().find_map(|skipped| {
+        let replay = skipped + kept.len();
+        (tools.len() >= replay && tools[skipped..replay] == *kept).then_some(replay)
+    })
+}
 
 fn review_thread_body(thread: &crate::PullRequestReviewThread) -> String {
     thread
