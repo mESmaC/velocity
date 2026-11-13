@@ -336,6 +336,7 @@ pub(crate) fn post_event(
 /// its next step (Rule 1). `None` when `identifier` is not a swarm.
 pub fn broadcast(
     application: &AppHandle,
+    project: u32,
     identifier: usize,
     prompt: &str,
 ) -> Option<Result<LayoutSnapshot, String>> {
@@ -345,7 +346,7 @@ pub fn broadcast(
             "persisted state",
         )
         .ok()?;
-        let project = store.active_project()?;
+        let project = store.project(project)?;
         let swarm = project
             .swarms
             .iter()

@@ -222,12 +222,16 @@ pub fn handle_intent(
         LayoutIntent::StartPrompt(prompt) => start_thread(application, prompt).map(Some),
         LayoutIntent::SteerThread {
             identifier, prompt, ..
-        } => match crate::swarm::broadcast(application, *identifier, prompt)
-            .or_else(|| crate::goal_swarm::broadcast(application, *identifier, prompt))
-        {
-            Some(result) => result.map(Some),
-            None => send_message(application, *identifier, prompt).map(Some),
-        },
+        } => {
+            let project = lock(
+                application.state::<ManagedStateStore>().inner(),
+                "persisted state",
+            )?
+            .active_project()
+            .map(|project| project.id)
+            .ok_or("Select or create a project first")?;
+            deliver_message(application, project, *identifier, prompt).map(Some)
+        }
         LayoutIntent::RemoveQueuedMessage { identifier, index } => {
             remove_queued_message(application, *identifier, *index).map(Some)
         }
@@ -329,18 +333,20 @@ pub(crate) fn start_goal_member(
 }
 
 /// A message for a running thread: sent at once when idle, queued while busy (Rule 1).
-fn send_message(
+/// Hands a composer message to thread or swarm `identifier` in `project`: a swarm's
+/// composer reaches every working member (F10, F16). The project is the one the message
+/// was written in, which may no longer be the active one by the time it is sent.
+pub(crate) fn deliver_message(
     application: &AppHandle,
+    project: u32,
     identifier: usize,
     prompt: &str,
 ) -> Result<LayoutSnapshot, String> {
-    let project = lock(
-        application.state::<ManagedStateStore>().inner(),
-        "persisted state",
-    )?
-    .active_project()
-    .map(|project| project.id)
-    .ok_or("Select or create a project first")?;
+    if let Some(result) = crate::swarm::broadcast(application, project, identifier, prompt)
+        .or_else(|| crate::goal_swarm::broadcast(application, project, identifier, prompt))
+    {
+        return result;
+    }
     let thread = u32::try_from(identifier).map_err(|error| error.to_string())?;
     steer(application, (project, thread), prompt)
 }

@@ -31,7 +31,7 @@ pub struct LayoutIntentRequested {
 #[tauri::command]
 #[specta::specta]
 pub async fn get_layout_state(window: Window) -> Result<LayoutSnapshot, String> {
-    off_ui_thread(move || read_layout(&window)).await
+    concurrently(move || read_layout(&window)).await
 }
 
 #[tauri::command]
@@ -40,16 +40,53 @@ pub async fn dispatch_layout(
     window: Window,
     action: LayoutAction,
 ) -> Result<LayoutSnapshot, String> {
-    off_ui_thread(move || dispatch(&window, action)).await
+    concurrently(move || dispatch(&window, action)).await
 }
 
-/// Runs a command's body on the blocking pool, off the window's UI thread.
-pub(crate) async fn off_ui_thread<Value: Send + 'static>(
+/// The layout commands take only the store and layout locks, in that order, so they run
+/// side by side on the blocking pool and never wait behind a slower command (#273).
+async fn concurrently<Value: Send + 'static>(
     work: impl FnOnce() -> Result<Value, String> + Send + 'static,
 ) -> Result<Value, String> {
     tauri::async_runtime::spawn_blocking(work)
         .await
-        .map_err(|error| format!("Command task failed: {error}"))?
+        .map_err(|error| format!("Main-window state task failed: {error}"))?
+}
+
+type CommandBody = Box<dyn FnOnce() + Send>;
+
+/// Runs a command's body off the window's UI thread, on one command thread, one at a
+/// time and in the order the window sent them. On the UI thread they ran in order, and
+/// some depend on it: two model choices for one thread save the model and reconfigure
+/// the agent in separate steps, which side by side could interleave (#286).
+pub(crate) async fn off_ui_thread<Value: Send + 'static>(
+    work: impl FnOnce() -> Result<Value, String> + Send + 'static,
+) -> Result<Value, String> {
+    static COMMANDS: OnceLock<Mutex<mpsc::Sender<CommandBody>>> = OnceLock::new();
+    let commands = COMMANDS.get_or_init(|| {
+        let (sender, receiver) = mpsc::channel::<CommandBody>();
+        std::thread::spawn(move || {
+            for body in receiver {
+                body();
+            }
+        });
+        Mutex::new(sender)
+    });
+    let (reply, result) = tokio::sync::oneshot::channel();
+    let body: CommandBody = Box::new(move || {
+        // A panicking command fails its own request, not every command after it.
+        let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(work))
+            .unwrap_or_else(|_| Err("The command failed unexpectedly".into()));
+        let _ignored = reply.send(outcome);
+    });
+    commands
+        .lock()
+        .map_err(|error| error.to_string())?
+        .send(body)
+        .map_err(|_| String::from("The command thread has stopped"))?;
+    result
+        .await
+        .map_err(|_| String::from("The command thread has stopped"))?
 }
 
 fn read_layout(window: &Window) -> Result<LayoutSnapshot, String> {
@@ -105,13 +142,14 @@ fn dispatch(window: &Window, action: LayoutAction) -> Result<LayoutSnapshot, Str
         crate::threads::report(crate::airc_modal::refresh(window.app_handle()));
     }
     // Starting or steering a thread publishes its own newer snapshot.
+    let project = snapshot.project_identifier;
     match intent {
         Some(intent @ LayoutIntent::SteerThread { .. }) => {
             // The reducer has already cleared the composer and added the message. The
             // window draws nothing while a request is pending, so waiting here for the
             // agent, a resume and their saves left the message in the composer until the
             // agent replied (#318).
-            steer_in_background(window.app_handle(), intent);
+            steer_in_background(window.app_handle(), project, intent);
             Ok(snapshot)
         }
         Some(intent) => crate::threads::handle_intent(window.app_handle(), &intent)
@@ -121,47 +159,55 @@ fn dispatch(window: &Window, action: LayoutAction) -> Result<LayoutSnapshot, Str
 }
 
 /// Sends thread messages on one background thread, in the order they were typed.
-fn steer_in_background(application: &AppHandle, intent: LayoutIntent) {
-    type Queued = (AppHandle, LayoutIntent);
+fn steer_in_background(application: &AppHandle, project: Option<u32>, intent: LayoutIntent) {
+    type Queued = (AppHandle, Option<u32>, LayoutIntent);
     static QUEUE: OnceLock<Mutex<mpsc::Sender<Queued>>> = OnceLock::new();
     let queue = QUEUE.get_or_init(|| {
         let (sender, receiver) = mpsc::channel::<Queued>();
         std::thread::spawn(move || {
-            for (application, intent) in receiver {
-                deliver_steer(&application, &intent);
+            for (application, project, intent) in receiver {
+                deliver_steer(&application, project, &intent);
             }
         });
         Mutex::new(sender)
     });
     let unsent = match queue.lock() {
         Ok(sender) => sender
-            .send((application.clone(), intent))
+            .send((application.clone(), project, intent))
             .err()
-            .map(|error| error.0.1),
+            .map(|error| error.0.2),
         Err(_) => Some(intent),
     };
     if let Some(intent) = unsent {
-        deliver_steer(application, &intent);
+        deliver_steer(application, project, &intent);
     }
 }
 
-fn deliver_steer(application: &AppHandle, intent: &LayoutIntent) {
-    let Err(error) = crate::threads::handle_intent(application, intent) else {
-        return;
-    };
-    // A steer error means the agent never got the message: a send that reached it reports
-    // later failures without an error (#274). Put it back in the composer and say why.
+fn deliver_steer(application: &AppHandle, project: Option<u32>, intent: &LayoutIntent) {
     let LayoutIntent::SteerThread {
         identifier, prompt, ..
     } = intent
     else {
         return;
     };
+    // Sent to the project the message was written in, even after a project switch.
+    let delivered = match project {
+        Some(project) => crate::threads::deliver_message(application, project, *identifier, prompt),
+        None => Err("Select or create a project first".into()),
+    };
+    let Err(error) = delivered else {
+        return;
+    };
+    // A steer error means the agent never got the message: a send that reached it reports
+    // later failures without an error (#274). Put it back in the composer and say why.
     let managed = application.state::<MainLayout>();
     let Ok(mut state) = managed.lock() else {
         return;
     };
-    state.return_unsent_message(*identifier, prompt);
+    // After a project switch the composer belongs to another project; only say why.
+    if state.snapshot().project_identifier == project {
+        state.return_unsent_message(*identifier, prompt);
+    }
     state.show_toast(error, None);
     crate::threads::report(publish(application, &state.snapshot(), None));
 }
