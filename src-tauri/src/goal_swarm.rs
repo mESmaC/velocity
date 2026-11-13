@@ -200,6 +200,7 @@ pub async fn get_goal_swarm_board(
 /// up at its next step (Rule 1). `None` when `identifier` is not a goal swarm.
 pub fn broadcast(
     application: &AppHandle,
+    project: u32,
     identifier: usize,
     prompt: &str,
 ) -> Option<Result<LayoutSnapshot, String>> {
@@ -209,7 +210,7 @@ pub fn broadcast(
             "persisted state",
         )
         .ok()?;
-        let project = store.active_project()?;
+        let project = store.project(project)?;
         let swarm = project
             .goal_swarms
             .iter()
