@@ -49,20 +49,22 @@ fn start_background_saves(application: &AppHandle) {
     std::thread::spawn(move || {
         loop {
             std::thread::sleep(SAVE_INTERVAL);
-            save_now(&application);
+            if let Err(error) = save_now(&application) {
+                eprintln!("{error}");
+            }
         }
     });
 }
 
 /// Writes any change not yet in `state.json`. Called by the background loop, and before
 /// Velocity exits or hands over to an installer.
-pub fn save_now(application: &AppHandle) {
+pub fn save_now(application: &AppHandle) -> Result<(), String> {
     let Some(store) = application.try_state::<ManagedStateStore>() else {
-        return;
+        return Ok(());
     };
-    if let Err(error) = velocity_store::save_pending(store.inner()) {
-        eprintln!("Could not save state: {error}");
-    }
+    velocity_store::save_pending(store.inner())
+        .map(|_| ())
+        .map_err(|error| format!("Could not save state: {error}"))
 }
 
 #[tauri::command]
