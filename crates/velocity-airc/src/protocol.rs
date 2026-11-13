@@ -63,7 +63,7 @@ fn respond(
                 *initialized = true;
                 json!({"protocolVersion":"2025-11-25","capabilities":{"tools":{}},
                         "serverInfo":{"name":"velocity-airc","version":env!("CARGO_PKG_VERSION")},
-                        "instructions":format!("You joined this project's AIRC channel as {nick}. Read airc_claims before choosing work. Call airc_claim with the task, branch and every file BEFORE editing, and with piece set to the work item's identity (task:<id>, issue:<number> or spec:<section>) when it has one; on refusal the holder is named, so re-read airc_claims and claim the first open piece. Extend your existing task claim to add files. Record airc_share or a dependency wait before editing an overlapping file. Messages require named recipients and an intent. Use task_add ONLY when the user explicitly asks to add tasks to the project Task List; otherwise file issues. Adding tasks never edits SPEC.md or starts an interview. A discovery about Velocity itself (its worktrees, AIRC, duty tools, agent shells, build queue or app), not this project, goes in append_ledger with velocity_issue set, and Velocity files it on its own repository.")})
+                        "instructions":format!("You joined this project's AIRC channel as {nick}. Read airc_claims before choosing work. Call airc_claim with the task, branch and every file BEFORE editing, and with piece set to the work item's identity (task:<id>, issue:<number> or spec:<section>) when it has one; on refusal the holder is named, so re-read airc_claims and claim the first open piece. Extend your existing task claim to add files. Record airc_share or a dependency wait before editing an overlapping file. Messages require named recipients and an intent. task_list reads the project Task List at any time. Use task_add, task_update and task_delete ONLY when the user explicitly asks you to add, change or remove Task List items; otherwise file issues. Task List changes never edit SPEC.md or start an interview. A discovery about Velocity itself (its worktrees, AIRC, duty tools, agent shells, build queue or app), not this project, goes in append_ledger with velocity_issue set, and Velocity files it on its own repository.")})
             }
             Err(error) => return Some(failure(id, -32603, &error.to_string())),
         },
@@ -115,8 +115,9 @@ fn call(
             text(arguments, "file")?,
             || !connected.load(std::sync::atomic::Ordering::Acquire),
         ),
-        "task_add" => Ok(json!({"queued":true,
-            "request":channel.request_task(member, text(arguments, "title")?)?})),
+        name if crate::task_tools::TASK_TOOLS.contains(&name) => {
+            crate::task_tools::call(channel, member, name, arguments)
+        }
         "join" => Ok(json!({"nick":channel.join_with_session(member, nick, true)?})),
         "leave" => {
             channel.leave(member)?;
@@ -211,7 +212,7 @@ fn tool_list() -> Vec<Value> {
             &[],
         ),
     ];
-    tools.push(tool("task_add", "Add a project Task List item ONLY when the user explicitly asks you to add it. Otherwise file an issue. Returns a durable queued request; Velocity saves it with your attribution. Never edits SPEC.md or starts an interview.", json!({"title":{"type":"string","minLength":1}}), &["title"]));
+    tools.extend(crate::task_tools::tools());
     tools.extend(writing_tools());
     tools.extend(claim_tools());
     tools.push(tool("airc_rebase", "Bring your registered branch up to date without rewriting history. Commit current edits first, then call this on a targeted merge notice or at landing. Velocity posts rebased on success or conflict on failure; resolve conflicts in your own worktree, regenerate artifacts and check before pushing.", json!({}), &[]));
@@ -248,7 +249,7 @@ fn writing_tools() -> Vec<Value> {
     ]
 }
 
-fn tool(name: &str, description: &str, properties: Value, required: &[&str]) -> Value {
+pub(crate) fn tool(name: &str, description: &str, properties: Value, required: &[&str]) -> Value {
     json!({"name":name,"description":description,"inputSchema":{
         "type":"object","properties":properties,"required":required,"additionalProperties":false}})
 }
@@ -262,7 +263,7 @@ fn ledger(arguments: &Value) -> Result<&str, Error> {
     }
 }
 
-fn text<'a>(value: &'a Value, key: &str) -> Result<&'a str, Error> {
+pub(crate) fn text<'a>(value: &'a Value, key: &str) -> Result<&'a str, Error> {
     value
         .get(key)
         .and_then(Value::as_str)

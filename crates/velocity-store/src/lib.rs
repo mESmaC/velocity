@@ -902,6 +902,11 @@ pub struct ProjectItem {
     #[serde(default)]
     #[specta(skip)]
     pub deleted_worktrees: Vec<deleted_worktrees::DeletedWorktree>,
+    /// The highest task number ever given out (F8). A deleted task's number is never
+    /// reused, so AIRC claims (`task:<n>`) and feed lines keep meaning one task.
+    #[serde(default)]
+    #[specta(skip)]
+    pub last_task_identifier: u32,
 }
 
 /// The New project dialog's interview choices, kept until the spec interview
@@ -939,7 +944,23 @@ impl ProjectItem {
             goal_swarms: Vec::new(),
             airc_seen: 0,
             deleted_worktrees: Vec::new(),
+            last_task_identifier: 0,
         }
+    }
+
+    /// Hand out the next task number, above every task saved now or before (F8).
+    /// `None` once the numbers are exhausted.
+    pub fn next_task_identifier(&mut self) -> Option<u32> {
+        let highest = self
+            .tasks
+            .iter()
+            .map(|task| task.id)
+            .max()
+            .unwrap_or(0)
+            .max(self.last_task_identifier);
+        let next = highest.checked_add(1)?;
+        self.last_task_identifier = next;
+        Some(next)
     }
 
     pub fn normalize(mut self) -> Self {

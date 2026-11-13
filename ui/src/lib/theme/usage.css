@@ -229,28 +229,3 @@
 .usage-button:hover {
   border-color: var(--usage-modal-button-hover-border-color);
 }
-/* The footer popover frame. The Updates panel uses it (SPEC.md F1 Updates). */
-.sidebar-foot:has(.usage-panel) {
-  position: relative;
-}
-.usage-panel {
-  position: absolute;
-  left: 0;
-  right: 0;
-  bottom: var(--providers-menu-bottom);
-  z-index: var(--thread-menu-z-index);
-  max-height: var(--providers-menu-max-height);
-  overflow-y: auto;
-  padding: var(--thread-menu-padding);
-  border: var(--thread-menu-border);
-  border-radius: var(--thread-menu-radius);
-  background: var(--glass-pop);
-  box-shadow: var(--thread-menu-shadow);
-  backdrop-filter: var(--blur-pop);
-  -webkit-backdrop-filter: var(--blur-pop);
-}
-.usage-panel hr {
-  margin: var(--thread-menu-divider-margin);
-  border: 0;
-  border-top: var(--thread-menu-divider-top);
-}

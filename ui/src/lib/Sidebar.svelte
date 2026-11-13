@@ -1,7 +1,7 @@
 <script lang="ts">
   import Icon from './Icon.svelte';
   import UsageModal from './UsageModal.svelte';
-  import UpdatesPanel from './UpdatesPanel.svelte';
+  import UpdatesModal from './UpdatesModal.svelte';
   import { rise } from './motion';
   import {
     onUpdateStatus,
@@ -216,7 +216,7 @@
             ></span></span
           >{/each}
       </button>{/if}
-    {#if updatesOpen && update}<UpdatesPanel
+    {#if updatesOpen && update}<UpdatesModal
         {update}
         close={() => (updatesOpen = false)}
       />{/if}

@@ -23,7 +23,7 @@ pub enum UpdatePhase {
     Failed(String),
 }
 
-/// What the footer Updates panel knows. `src-tauri` drives the transitions from the
+/// What the Updates modal knows. `src-tauri` drives the transitions from the
 /// updater's results; [`UpdateState::view`] turns it into what the panel shows.
 #[derive(Clone, Debug)]
 pub struct UpdateState {
@@ -106,7 +106,7 @@ pub enum UpdateAction {
     Install,
 }
 
-/// The Updates panel and the footer badge, ready to render.
+/// The Updates modal and the footer badge, ready to render.
 #[derive(Clone, Debug, PartialEq, Eq, serde::Serialize)]
 #[cfg_attr(feature = "bindings", derive(specta::Type))]
 pub struct UpdateView {
