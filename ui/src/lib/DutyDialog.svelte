@@ -12,11 +12,11 @@
     LayoutAction,
     LayoutSnapshot,
     PrDutyRuleSettings,
-    ProviderKind,
     ScoutCadence,
     ScoutFocusArea,
     ScoutRuleSettings,
     SpeedMode,
+    SwarmModelCard,
   } from './ipc';
   import './theme/new-project.css';
 
@@ -90,7 +90,11 @@
   let defaults = $state<DutyDialogDefaults | null>(null);
   let role = $state<DutyRole>('pr_duty');
   let agentCount = $state(1);
-  let provider = $state<ProviderKind | null>(null);
+  // A card is one model of one provider; a provider lists several, so the pair is the key.
+  // A custom agent's provider is an object, so it is compared through its JSON.
+  const cardKey = (card: SwarmModelCard) =>
+    `${JSON.stringify(card.provider)}:${card.model_name}`;
+  let chosenKey = $state<string | null>(null);
   let effort = $state<EffortLevel>('high');
   let speed = $state<SpeedMode>('regular');
   let prRules = $state<PrDutyRuleSettings>({
@@ -121,7 +125,8 @@
       .defaults()
       .then((loaded) => {
         defaults = loaded;
-        provider = loaded.provider;
+        const initial = loaded.models.find((card) => card.selected);
+        chosenKey = initial ? cardKey(initial) : null;
         effort = loaded.effort;
         speed = loaded.speed;
         prRules = loaded.pr_rules;
@@ -175,7 +180,7 @@
   );
 
   const chosenModel = $derived(
-    defaults?.models.find((model) => model.provider === provider) ?? null,
+    defaults?.models.find((model) => cardKey(model) === chosenKey) ?? null,
   );
 
   async function submit() {
@@ -293,21 +298,21 @@
           </div>
         </div>
         <div class="models" role="group" aria-labelledby="duty-model-label">
-          {#each defaults?.models ?? [] as model (model.provider)}
+          {#each defaults?.models ?? [] as model (cardKey(model))}
             <button
               type="button"
               class="model-card"
-              class:on={model.provider === provider}
-              aria-pressed={model.provider === provider}
-              onclick={() => (provider = model.provider)}
+              class:on={cardKey(model) === chosenKey}
+              aria-pressed={cardKey(model) === chosenKey}
+              onclick={() => (chosenKey = cardKey(model))}
             >
               <span class="mh">
                 <Icon name={providerIcon(model.provider)} />
                 {model.model_name}
               </span>
               <span class="md">
-                {model.provider_name}{model.provider === defaults?.provider &&
-                !defaults.model_configured
+                {model.provider_name}{model.selected &&
+                !defaults?.model_configured
                   ? ' · default'
                   : ''}
               </span>

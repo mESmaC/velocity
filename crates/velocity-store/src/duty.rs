@@ -206,7 +206,7 @@ pub struct DutyDialogDefaults {
     pub provider_name: String,
     pub model_name: String,
     pub model_configured: bool,
-    /// Every signed-in provider's model, the default one selected (F7, F15).
+    /// Every visible model of every signed-in provider, the default one selected (F7, F15).
     pub models: Vec<SwarmModelCard>,
     /// Settings' default effort and speed, where the dialog's Effort and Speed start.
     pub effort: EffortLevel,
@@ -292,16 +292,7 @@ impl StateStore {
                 .as_ref()
                 .is_some_and(|name| !name.trim().is_empty());
         let model_name = settings.provider_model(provider);
-        let models = settings
-            .usable_providers()
-            .into_iter()
-            .map(|option| SwarmModelCard {
-                provider: option,
-                provider_name: settings.provider_name(option),
-                model_name: provider_model_name(settings, option),
-                selected: option == provider,
-            })
-            .collect();
+        let models = duty_model_cards(settings, provider, &model_name);
         let project = active_project(&self.state);
         let existing_pr = project.and_then(|proj| find_role(proj, DutyRole::PrDuty));
         let existing_scouts = project.and_then(|proj| find_role(proj, DutyRole::Scouts));
@@ -613,6 +604,39 @@ impl StateStore {
         self.state = next;
         Ok(())
     }
+}
+
+/// One card per visible model of each signed-in provider, so a duty agent can run any of
+/// them (Settings → Providers hides the rest). A provider whose models haven't been read yet
+/// shows the one model it would run. The card for `default_model` on `default_provider` is
+/// selected.
+fn duty_model_cards(
+    settings: &crate::Settings,
+    default_provider: ProviderKind,
+    default_model: &str,
+) -> Vec<SwarmModelCard> {
+    settings
+        .usable_providers()
+        .into_iter()
+        .flat_map(|provider| {
+            let mut names: Vec<String> = settings
+                .visible_models(provider)
+                .into_iter()
+                .map(|model| model.name.clone())
+                .collect();
+            let runs = provider_model_name(settings, provider);
+            if !names.contains(&runs) {
+                names.insert(0, runs);
+            }
+            let provider_name = settings.provider_name(provider);
+            names.into_iter().map(move |model_name| SwarmModelCard {
+                provider,
+                provider_name: provider_name.clone(),
+                selected: provider == default_provider && model_name == default_model,
+                model_name,
+            })
+        })
+        .collect()
 }
 
 fn active_project_mut(state: &mut PersistedState) -> Result<&mut ProjectItem, ProjectError> {
