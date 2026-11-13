@@ -130,7 +130,13 @@ impl ThreadRuntimes {
     pub fn restore(&mut self, state: &velocity_store::PersistedState) {
         for project in &state.projects {
             for thread in &project.threads {
-                if thread.interview.is_some() {
+                // A merged or done thread never resumes a session, and its transcript is in
+                // the saved state already; a runtime would hold a second copy (#322).
+                let finished = matches!(
+                    thread.state,
+                    velocity_store::ThreadState::Merged | velocity_store::ThreadState::Done
+                );
+                if thread.interview.is_some() || finished {
                     continue;
                 }
                 let path = thread.worktree_path.as_deref().unwrap_or_default();

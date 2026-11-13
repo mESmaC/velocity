@@ -1,6 +1,8 @@
 //! F8 request ingestion runs in the same store owner as user task edits. Agents add, change
 //! and delete tasks through queued AIRC requests, and read the list from the snapshot this
 //! owner publishes after each pass.
+use std::sync::Mutex;
+
 use velocity_airc::{Channel, Entry, Event, TaskListRow, TaskTarget};
 use velocity_store::task_list::{TaskError, TaskUpdate};
 use velocity_store::{StateStore, TaskState, threads::ThreadError};
@@ -11,6 +13,8 @@ pub enum AgentTaskError {
     Channel(#[from] velocity_airc::Error),
     #[error(transparent)]
     Persistence(#[from] velocity_store::StoreError),
+    #[error("The saved state's lock was poisoned")]
+    StoreLock,
 }
 
 /// What one request did: the event for the feed and the result for the agent, or the
@@ -25,27 +29,79 @@ pub fn ingest(
     project: u32,
     channel: &Channel,
 ) -> Result<bool, AgentTaskError> {
-    let mut changed = false;
-    for request in channel.pending_tasks()? {
-        match apply(store, project, &request)? {
-            Outcome::Saved { event, result } => {
-                if request.kind == "task_request" {
-                    // An add's event names its task number, so replay after a crash
-                    // deduplicates it without hiding a second task of the same title.
-                    channel.post_event_once(event)?;
-                } else {
-                    channel.post_event(event)?;
-                }
-                // The list goes out before the answer, so an agent that reads it after
-                // its change saved sees that change.
-                publish(store, project, channel)?;
-                channel.finish_task(&request, &result)?;
-                changed = true;
-            }
-            Outcome::Refused(reason) => channel.finish_task(&request, &reason)?,
+    let requests = channel.pending_tasks()?;
+    let (answers, failure) = apply_all(store, project, requests);
+    let changed = answer(channel, answers, task_rows(store, project))?;
+    failure.map_or(Ok(changed), Err)
+}
+
+/// [`ingest`] for the app, which runs it every second for every project: the store lock
+/// is held only while requests change the store, never while the channel files are read
+/// or written (#322).
+pub fn ingest_shared(
+    store: &Mutex<StateStore>,
+    project: u32,
+    channel: &Channel,
+) -> Result<bool, AgentTaskError> {
+    let requests = channel.pending_tasks()?;
+    let (answers, failure, rows) = {
+        let mut store = store.lock().map_err(|_| AgentTaskError::StoreLock)?;
+        let (answers, failure) = apply_all(&mut store, project, requests);
+        (answers, failure, task_rows(&store, project))
+    };
+    let changed = answer(channel, answers, rows)?;
+    failure.map_or(Ok(changed), Err)
+}
+
+/// Each request with what it did. Stops at the first failure to save, which is returned
+/// beside the answers already earned; the failed request stays queued for the next pass.
+fn apply_all(
+    store: &mut StateStore,
+    project: u32,
+    requests: Vec<Entry>,
+) -> (Vec<(Entry, Outcome)>, Option<AgentTaskError>) {
+    let mut answers = Vec::with_capacity(requests.len());
+    for request in requests {
+        match apply(store, project, &request) {
+            Ok(outcome) => answers.push((request, outcome)),
+            Err(error) => return (answers, Some(error)),
         }
     }
-    publish(store, project, channel)?;
+    (answers, None)
+}
+
+/// Posts each change's event, then the list as it stands after every change, then the
+/// answers: an agent that reads the list after its answer sees its change. Returns
+/// whether anything was saved.
+fn answer(
+    channel: &Channel,
+    answers: Vec<(Entry, Outcome)>,
+    rows: Option<Vec<TaskListRow>>,
+) -> Result<bool, AgentTaskError> {
+    let mut changed = false;
+    for (request, outcome) in &answers {
+        let Outcome::Saved { event, .. } = outcome else {
+            continue;
+        };
+        if request.kind == "task_request" {
+            // An add's event names its task number, so replay after a crash
+            // deduplicates it without hiding a second task of the same title.
+            channel.post_event_once(event.clone())?;
+        } else {
+            channel.post_event(event.clone())?;
+        }
+        changed = true;
+    }
+    if let Some(rows) = rows {
+        channel.publish_task_list(&rows)?;
+    }
+    for (request, outcome) in answers {
+        let text = match outcome {
+            Outcome::Saved { result, .. } => result,
+            Outcome::Refused(reason) => reason,
+        };
+        channel.finish_task(&request, &text)?;
+    }
     Ok(changed)
 }
 
@@ -112,12 +168,11 @@ fn add(store: &mut StateStore, project: u32, request: &Entry) -> Result<Outcome,
     }
 }
 
-/// Publish the saved list for `task_list`, whoever changed it (the user, an agent, a merge).
-fn publish(store: &StateStore, project: u32, channel: &Channel) -> Result<(), AgentTaskError> {
-    let Ok(views) = store.list_tasks(project) else {
-        return Ok(());
-    };
-    let rows: Vec<TaskListRow> = views
+/// The saved list as `task_list` publishes it, whoever changed it (the user, an agent, a
+/// merge).
+fn task_rows(store: &StateStore, project: u32) -> Option<Vec<TaskListRow>> {
+    let views = store.list_tasks(project).ok()?;
+    let rows = views
         .into_iter()
         .filter_map(|view| {
             let mut row = TaskListRow::new(view.identifier.parse().ok()?, view.title, view.state);
@@ -129,8 +184,7 @@ fn publish(store: &StateStore, project: u32, channel: &Channel) -> Result<(), Ag
             Some(row)
         })
         .collect();
-    channel.publish_task_list(&rows)?;
-    Ok(())
+    Some(rows)
 }
 
 fn state_name(state: TaskState) -> &'static str {

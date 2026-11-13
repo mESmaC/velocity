@@ -320,6 +320,15 @@ impl LayoutState {
 
     /// Whether replacing a thread's live view with `view` changes what the window shows:
     /// the thread is open, or its sidebar title starts or stops pulsing for titling.
+    /// Drops a thread's live transcript once its session is gone (stopped, merged or
+    /// deleted): its saved transcript shows from then on, and `live` holds only threads
+    /// that have a session (#322).
+    pub fn forget_live_thread(&mut self, project: u32, identifier: usize) {
+        if self.live.remove(&(project, identifier)).is_some() {
+            self.changed();
+        }
+    }
+
     pub fn live_view_shows(&self, project: u32, identifier: usize, view: &LiveThreadView) -> bool {
         if self.data.project_identifier != Some(project) {
             return false;
