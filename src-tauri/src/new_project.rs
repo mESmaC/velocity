@@ -18,17 +18,22 @@ use crate::state::ManagedStateStore;
 
 #[tauri::command]
 #[specta::specta]
-pub fn get_new_project_defaults(application: AppHandle) -> Result<NewProjectDefaults, String> {
-    let home = application
-        .path()
-        .home_dir()
-        .map_err(|error| format!("Could not find your home folder: {error}"))?;
-    let settings = application
-        .state::<ManagedStateStore>()
-        .lock()
-        .map_err(|_| String::from("Persisted state store lock is poisoned"))?
-        .settings();
-    Ok(new_project_defaults(&home, settings))
+pub async fn get_new_project_defaults(
+    application: AppHandle,
+) -> Result<NewProjectDefaults, String> {
+    crate::layout::off_ui_thread(move || {
+        let home = application
+            .path()
+            .home_dir()
+            .map_err(|error| format!("Could not find your home folder: {error}"))?;
+        let settings = application
+            .state::<ManagedStateStore>()
+            .lock()
+            .map_err(|_| String::from("Persisted state store lock is poisoned"))?
+            .settings();
+        Ok(new_project_defaults(&home, settings))
+    })
+    .await
 }
 
 /// Browse…: the native folder picker. `None` when it is dismissed.

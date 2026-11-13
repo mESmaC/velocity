@@ -168,7 +168,7 @@ pub async fn run_thread_menu_action(
     if action == ThreadMenuAction::Delete
         && crate::swarm_deletion::is_swarm(&application, project_identifier, thread_identifier)?
     {
-        return crate::swarm_deletion::delete_swarm(
+        return crate::swarm_deletion::delete_swarm_now(
             application,
             project_identifier,
             thread_identifier,
@@ -199,7 +199,7 @@ pub async fn run_thread_menu_action(
             .map_err(|error| error.to_string())
         }
         ThreadMenuAction::Delete => {
-            delete_thread(application, project_identifier, thread_identifier).map(|_| ())
+            delete_thread_now(application, project_identifier, thread_identifier).map(|_| ())
         }
     }
 }
@@ -207,7 +207,19 @@ pub async fn run_thread_menu_action(
 /// Hides the thread at once and offers Undo; the deletion lands after 5 s (F12).
 #[tauri::command]
 #[specta::specta]
-pub fn delete_thread(
+pub async fn delete_thread(
+    application: AppHandle,
+    project_identifier: u32,
+    thread_identifier: u32,
+) -> Result<LayoutSnapshot, String> {
+    crate::layout::off_ui_thread(move || {
+        delete_thread_now(application, project_identifier, thread_identifier)
+    })
+    .await
+}
+
+/// [`delete_thread`] on the calling thread, for callers already off the UI thread.
+pub(crate) fn delete_thread_now(
     application: AppHandle,
     project_identifier: u32,
     thread_identifier: u32,
@@ -269,18 +281,24 @@ pub(crate) fn begin_deletion(
 /// touched.
 #[tauri::command]
 #[specta::specta]
-pub fn undo_delete_thread(application: AppHandle, deletion: u32) -> Result<LayoutSnapshot, String> {
-    let undone = lock(
-        application.state::<ManagedDeletions>().inner(),
-        "pending deletions",
-    )?
-    .undo(deletion);
-    update_layout(&application, |layout| {
-        if let Some(undone) = undone {
-            layout.set_threads_hidden(undone.project(), &undone.rows(), false);
-        }
-        layout.clear_deletion_toast(deletion);
+pub async fn undo_delete_thread(
+    application: AppHandle,
+    deletion: u32,
+) -> Result<LayoutSnapshot, String> {
+    crate::layout::off_ui_thread(move || {
+        let undone = lock(
+            application.state::<ManagedDeletions>().inner(),
+            "pending deletions",
+        )?
+        .undo(deletion);
+        update_layout(&application, |layout| {
+            if let Some(undone) = undone {
+                layout.set_threads_hidden(undone.project(), &undone.rows(), false);
+            }
+            layout.clear_deletion_toast(deletion);
+        })
     })
+    .await
 }
 
 /// The undo window is over: the deletion lands unless Undo took it first.

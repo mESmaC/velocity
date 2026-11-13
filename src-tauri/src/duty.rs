@@ -30,138 +30,157 @@ impl DutyEventPublished {
 
 #[tauri::command]
 #[specta::specta]
-pub fn get_duty_dialog_defaults(
-    store: State<'_, ManagedStateStore>,
+pub async fn get_duty_dialog_defaults(
+    application: AppHandle,
 ) -> Result<DutyDialogDefaults, String> {
-    let store = store.lock().map_err(|error| error.to_string())?;
-    Ok(store.duty_dialog_defaults())
+    crate::layout::off_ui_thread(move || {
+        let store = application.state::<ManagedStateStore>();
+        let store = store.lock().map_err(|error| error.to_string())?;
+        Ok(store.duty_dialog_defaults())
+    })
+    .await
 }
 
 /// What a PR duty agent's latest review session showed (F7), for the Duty view's session
 /// panel. `None` when the agent has had no review since Velocity started.
 #[tauri::command]
 #[specta::specta]
-pub fn get_duty_agent_transcript(
+pub async fn get_duty_agent_transcript(
     window: Window,
-    store: State<'_, ManagedStateStore>,
     nickname: String,
 ) -> Result<Option<Vec<TranscriptBlock>>, String> {
-    let project = {
-        let store = store.lock().map_err(|error| error.to_string())?;
-        active_project(&store)?.0
-    };
-    Ok(window
-        .app_handle()
-        .try_state::<PrDutyReviews>()
-        .and_then(|reviews| reviews.transcript(project, &nickname)))
+    crate::layout::off_ui_thread(move || {
+        let store = window.state::<ManagedStateStore>();
+        let project = {
+            let store = store.lock().map_err(|error| error.to_string())?;
+            active_project(&store)?.0
+        };
+        Ok(window
+            .app_handle()
+            .try_state::<PrDutyReviews>()
+            .and_then(|reviews| reviews.transcript(project, &nickname)))
+    })
+    .await
 }
 
 #[tauri::command]
 #[specta::specta]
-pub fn start_duty(
+pub async fn start_duty(
     window: Window,
-    store: State<'_, ManagedStateStore>,
-    state: State<'_, MainLayout>,
     request: StartDutyRequest,
 ) -> Result<LayoutSnapshot, String> {
-    apply_start_or_add(&window, &store, &state, request)
+    crate::layout::off_ui_thread(move || {
+        let store = window.state::<ManagedStateStore>();
+        let state = window.state::<MainLayout>();
+        apply_start_or_add(&window, &store, &state, request)
+    })
+    .await
 }
 
 #[tauri::command]
 #[specta::specta]
-pub fn add_duty_agents(
+pub async fn add_duty_agents(
     window: Window,
-    store: State<'_, ManagedStateStore>,
-    state: State<'_, MainLayout>,
     request: StartDutyRequest,
 ) -> Result<LayoutSnapshot, String> {
-    apply_start_or_add(&window, &store, &state, request)
+    crate::layout::off_ui_thread(move || {
+        let store = window.state::<ManagedStateStore>();
+        let state = window.state::<MainLayout>();
+        apply_start_or_add(&window, &store, &state, request)
+    })
+    .await
 }
 
 #[tauri::command]
 #[specta::specta]
-pub fn pause_duty(
+pub async fn pause_duty(
     window: Window,
-    store: State<'_, ManagedStateStore>,
-    state: State<'_, MainLayout>,
     request: PauseDutyRequest,
 ) -> Result<LayoutSnapshot, String> {
-    let outcome = {
-        let mut store = store.lock().map_err(|error| error.to_string())?;
-        let mut state = state
-            .lock()
-            .map_err(|error| format!("Could not update main-window state: {error}"))?;
-        store
-            .toggle_pause_duty(&mut state, request, clock_timestamp())
-            .map_err(|error| error.to_string())?
-    };
-    let snapshot = publish_duty_outcome(&window, outcome);
-    crate::reviews::wake(window.app_handle());
-    crate::sweeps::wake(window.app_handle());
-    crate::main_watch::wake(window.app_handle());
-    snapshot
+    crate::layout::off_ui_thread(move || {
+        let store = window.state::<ManagedStateStore>();
+        let state = window.state::<MainLayout>();
+        let outcome = {
+            let mut store = store.lock().map_err(|error| error.to_string())?;
+            let mut state = state
+                .lock()
+                .map_err(|error| format!("Could not update main-window state: {error}"))?;
+            store
+                .toggle_pause_duty(&mut state, request, clock_timestamp())
+                .map_err(|error| error.to_string())?
+        };
+        let snapshot = publish_duty_outcome(&window, outcome);
+        crate::reviews::wake(window.app_handle());
+        crate::sweeps::wake(window.app_handle());
+        crate::main_watch::wake(window.app_handle());
+        snapshot
+    })
+    .await
 }
 
 /// Dismisses one duty agent (F7): it leaves the saved roster, its session stops, and a PR it
 /// held is released for the next agent.
 #[tauri::command]
 #[specta::specta]
-pub fn dismiss_duty_agent(
+pub async fn dismiss_duty_agent(
     window: Window,
-    store: State<'_, ManagedStateStore>,
-    state: State<'_, MainLayout>,
     request: DismissDutyAgentRequest,
 ) -> Result<LayoutSnapshot, String> {
-    let application = window.app_handle();
-    let (outcome, project, repository) = {
-        let mut store = store.lock().map_err(|error| error.to_string())?;
-        let (project, repository) = active_project(&store)?;
-        let held = application
-            .try_state::<PrDutyReviews>()
-            .filter(|_| request.role == DutyRole::PrDuty)
-            .and_then(|reviews| reviews.held(project, &request.nickname));
-        let mut state = state
-            .lock()
-            .map_err(|error| format!("Could not update main-window state: {error}"))?;
-        let outcome = store
-            .dismiss_duty_agent(&mut state, &request, held, clock_timestamp())
-            .map_err(|error| error.to_string())?;
-        (outcome, project, repository)
-    };
-    let nicknames = std::slice::from_ref(&request.nickname);
-    stop_sessions(application, request.role, project, &repository, nicknames);
-    publish_duty_outcome(&window, outcome)
+    crate::layout::off_ui_thread(move || {
+        let store = window.state::<ManagedStateStore>();
+        let state = window.state::<MainLayout>();
+        let application = window.app_handle();
+        let (outcome, project, repository) = {
+            let mut store = store.lock().map_err(|error| error.to_string())?;
+            let (project, repository) = active_project(&store)?;
+            let held = application
+                .try_state::<PrDutyReviews>()
+                .filter(|_| request.role == DutyRole::PrDuty)
+                .and_then(|reviews| reviews.held(project, &request.nickname));
+            let mut state = state
+                .lock()
+                .map_err(|error| format!("Could not update main-window state: {error}"))?;
+            let outcome = store
+                .dismiss_duty_agent(&mut state, &request, held, clock_timestamp())
+                .map_err(|error| error.to_string())?;
+            (outcome, project, repository)
+        };
+        let nicknames = std::slice::from_ref(&request.nickname);
+        stop_sessions(application, request.role, project, &repository, nicknames);
+        publish_duty_outcome(&window, outcome)
+    })
+    .await
 }
 
 /// Stops a duty role (F7): every agent on it is dismissed and the role leaves "On duty".
 #[tauri::command]
 #[specta::specta]
-pub fn stop_duty(
-    window: Window,
-    store: State<'_, ManagedStateStore>,
-    state: State<'_, MainLayout>,
-    request: StopDutyRequest,
-) -> Result<LayoutSnapshot, String> {
-    let (stopped, project, repository) = {
-        let mut store = store.lock().map_err(|error| error.to_string())?;
-        let (project, repository) = active_project(&store)?;
-        let mut state = state
-            .lock()
-            .map_err(|error| format!("Could not update main-window state: {error}"))?;
-        let stopped = store
-            .stop_duty(&mut state, &request, &clock_timestamp())
-            .map_err(|error| error.to_string())?;
-        (stopped, project, repository)
-    };
-    let application = window.app_handle();
-    stop_sessions(
-        application,
-        request.role,
-        project,
-        &repository,
-        &stopped.nicknames,
-    );
-    publish_duty_outcome(&window, stopped.outcome)
+pub async fn stop_duty(window: Window, request: StopDutyRequest) -> Result<LayoutSnapshot, String> {
+    crate::layout::off_ui_thread(move || {
+        let store = window.state::<ManagedStateStore>();
+        let state = window.state::<MainLayout>();
+        let (stopped, project, repository) = {
+            let mut store = store.lock().map_err(|error| error.to_string())?;
+            let (project, repository) = active_project(&store)?;
+            let mut state = state
+                .lock()
+                .map_err(|error| format!("Could not update main-window state: {error}"))?;
+            let stopped = store
+                .stop_duty(&mut state, &request, &clock_timestamp())
+                .map_err(|error| error.to_string())?;
+            (stopped, project, repository)
+        };
+        let application = window.app_handle();
+        stop_sessions(
+            application,
+            request.role,
+            project,
+            &repository,
+            &stopped.nicknames,
+        );
+        publish_duty_outcome(&window, stopped.outcome)
+    })
+    .await
 }
 
 fn active_project(store: &velocity_store::StateStore) -> Result<(u32, PathBuf), String> {

@@ -1,6 +1,6 @@
 use crate::state::ManagedStateStore;
-use std::sync::Mutex;
-use tauri::{Emitter, Manager, Window, Wry};
+use std::sync::{Mutex, OnceLock, mpsc};
+use tauri::{AppHandle, Emitter, Manager, Window, Wry};
 use tauri_specta::Event;
 use velocity_core::layout_state::LayoutState;
 use velocity_core::layout_view::{LayoutAction, LayoutIntent, LayoutSnapshot};
@@ -22,9 +22,10 @@ pub struct LayoutIntentRequested {
     pub intent: LayoutIntent,
 }
 
-// Both commands wait for the store lock, which a background save can hold for a while.
-// A synchronous command runs on the window's UI thread, and waiting there froze the
-// whole window while a swarm streamed (#273), so they wait on the blocking pool instead.
+// Commands wait for the store lock, which an agent's update can hold for a while. A
+// synchronous command runs on the window's UI thread, and waiting there froze the whole
+// window while a swarm streamed (#273, #286), so every command that takes a lock or does
+// I/O waits on the blocking pool instead, through `off_ui_thread`.
 
 #[tauri::command]
 #[specta::specta]
@@ -41,12 +42,13 @@ pub async fn dispatch_layout(
     off_ui_thread(move || dispatch(&window, action)).await
 }
 
-async fn off_ui_thread<Value: Send + 'static>(
+/// Runs a command's body on the blocking pool, off the window's UI thread.
+pub(crate) async fn off_ui_thread<Value: Send + 'static>(
     work: impl FnOnce() -> Result<Value, String> + Send + 'static,
 ) -> Result<Value, String> {
     tauri::async_runtime::spawn_blocking(work)
         .await
-        .map_err(|error| format!("Main-window state task failed: {error}"))?
+        .map_err(|error| format!("Command task failed: {error}"))?
 }
 
 fn read_layout(window: &Window) -> Result<LayoutSnapshot, String> {
@@ -103,25 +105,64 @@ fn dispatch(window: &Window, action: LayoutAction) -> Result<LayoutSnapshot, Str
     }
     // Starting or steering a thread publishes its own newer snapshot.
     match intent {
-        Some(intent) => match crate::threads::handle_intent(window.app_handle(), &intent) {
-            Ok(updated) => Ok(updated.unwrap_or(snapshot)),
-            Err(error) => {
-                // A steer error means the agent never got the message: a send that reached
-                // it reports later failures without an error (#274).
-                if let LayoutIntent::SteerThread {
-                    identifier, prompt, ..
-                } = &intent
-                {
-                    let managed = window.state::<MainLayout>();
-                    let mut state = managed.lock().map_err(|error| error.to_string())?;
-                    state.return_unsent_message(*identifier, prompt);
-                    publish(window, &state.snapshot(), None)?;
-                }
-                Err(error)
-            }
-        },
+        Some(intent @ LayoutIntent::SteerThread { .. }) => {
+            // The reducer has already cleared the composer and added the message. The
+            // window draws nothing while a request is pending, so waiting here for the
+            // agent, a resume and their saves left the message in the composer until the
+            // agent replied (#318).
+            steer_in_background(window.app_handle(), intent);
+            Ok(snapshot)
+        }
+        Some(intent) => crate::threads::handle_intent(window.app_handle(), &intent)
+            .map(|updated| updated.unwrap_or(snapshot)),
         None => Ok(snapshot),
     }
+}
+
+/// Sends thread messages on one background thread, in the order they were typed.
+fn steer_in_background(application: &AppHandle, intent: LayoutIntent) {
+    type Queued = (AppHandle, LayoutIntent);
+    static QUEUE: OnceLock<Mutex<mpsc::Sender<Queued>>> = OnceLock::new();
+    let queue = QUEUE.get_or_init(|| {
+        let (sender, receiver) = mpsc::channel::<Queued>();
+        std::thread::spawn(move || {
+            for (application, intent) in receiver {
+                deliver_steer(&application, &intent);
+            }
+        });
+        Mutex::new(sender)
+    });
+    let unsent = match queue.lock() {
+        Ok(sender) => sender
+            .send((application.clone(), intent))
+            .err()
+            .map(|error| error.0.1),
+        Err(_) => Some(intent),
+    };
+    if let Some(intent) = unsent {
+        deliver_steer(application, &intent);
+    }
+}
+
+fn deliver_steer(application: &AppHandle, intent: &LayoutIntent) {
+    let Err(error) = crate::threads::handle_intent(application, intent) else {
+        return;
+    };
+    // A steer error means the agent never got the message: a send that reached it reports
+    // later failures without an error (#274). Put it back in the composer and say why.
+    let LayoutIntent::SteerThread {
+        identifier, prompt, ..
+    } = intent
+    else {
+        return;
+    };
+    let managed = application.state::<MainLayout>();
+    let Ok(mut state) = managed.lock() else {
+        return;
+    };
+    state.return_unsent_message(*identifier, prompt);
+    state.show_toast(error, None);
+    crate::threads::report(publish(application, &state.snapshot(), None));
 }
 
 pub fn publish<Handle: Emitter<Wry> + Manager<Wry>>(

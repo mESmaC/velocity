@@ -107,18 +107,19 @@ pub fn on_window_event(window: &Window, event: &WindowEvent) {
 
 #[tauri::command]
 #[specta::specta]
-pub fn list_worktrees(
-    application: AppHandle,
-    store: State<'_, ManagedStateStore>,
-    runtime: State<'_, ManagedWorktrees>,
-) -> Result<WorktreeSettingsView, String> {
-    let context = store
-        .lock()
-        .map_err(|error| error.to_string())?
-        .worktree_context();
-    runtime
-        .snapshot(&with_pool(&application, context))
-        .map_err(|error| error.to_string())
+pub async fn list_worktrees(application: AppHandle) -> Result<WorktreeSettingsView, String> {
+    crate::layout::off_ui_thread(move || {
+        let store = application.state::<ManagedStateStore>();
+        let runtime = application.state::<ManagedWorktrees>();
+        let context = store
+            .lock()
+            .map_err(|error| error.to_string())?
+            .worktree_context();
+        runtime
+            .snapshot(&with_pool(&application, context))
+            .map_err(|error| error.to_string())
+    })
+    .await
 }
 
 #[tauri::command]
@@ -164,12 +165,16 @@ fn save_worktree_settings(
 
 #[tauri::command]
 #[specta::specta]
-pub fn preview_worktree_folder(
-    store: State<'_, ManagedStateStore>,
+pub async fn preview_worktree_folder(
+    application: AppHandle,
     folder: String,
 ) -> Result<WorktreePathPreview, String> {
-    let store = store.lock().map_err(|error| error.to_string())?;
-    Ok(folder_preview(&store.worktree_context(), &folder))
+    crate::layout::off_ui_thread(move || {
+        let store = application.state::<ManagedStateStore>();
+        let store = store.lock().map_err(|error| error.to_string())?;
+        Ok(folder_preview(&store.worktree_context(), &folder))
+    })
+    .await
 }
 
 #[tauri::command]

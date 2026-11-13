@@ -984,18 +984,19 @@ impl LayoutState {
         let typed = sent
             .filter(|sent| sent.identifier == identifier && sent.prompt == prompt)
             .map_or_else(|| prompt.to_owned(), |sent| sent.typed);
-        if let Some(blocks) = self
+        let project = self.data.project_identifier;
+        let live = project.and_then(|project| self.live.get_mut(&(project, identifier)));
+        if let Some(live) = live {
+            remove_last_message(&mut live.blocks, prompt);
+        }
+        if let Some(detail) = self
             .data
             .threads
             .iter_mut()
             .find(|thread| thread.policy.identifier == identifier)
             .and_then(|thread| thread.detail.as_mut())
-            .map(|detail| &mut detail.blocks)
-            && let Some(index) = blocks.iter().rposition(|block| {
-                matches!(block, TranscriptBlock::UserMessage { text, .. } if text == prompt)
-            })
         {
-            blocks.remove(index);
+            remove_last_message(&mut detail.blocks, prompt);
         }
         let still_open =
             self.selected_thread == Some(identifier) && !matches!(self.view, NavigationView::Home);
@@ -1007,22 +1008,33 @@ impl LayoutState {
     }
 
     fn record_steering(&mut self, intent: &LayoutIntent) {
-        if let LayoutIntent::SteerThread {
+        let LayoutIntent::SteerThread {
             identifier,
             prompt,
             queued,
         } = intent
-            && let Some(thread) = self
-                .data
-                .threads
-                .iter_mut()
-                .find(|thread| thread.policy.identifier == *identifier)
+        else {
+            return;
+        };
+        let message = TranscriptBlock::UserMessage {
+            text: prompt.clone(),
+            queued: *queued,
+        };
+        // A running thread is drawn from its live transcript, not `detail`, so the message
+        // goes there too; otherwise it showed only once the agent's next update arrived (#318).
+        if let Some(project) = self.data.project_identifier
+            && let Some(live) = self.live.get_mut(&(project, *identifier))
+        {
+            live.blocks.push(message.clone());
+        }
+        if let Some(thread) = self
+            .data
+            .threads
+            .iter_mut()
+            .find(|thread| thread.policy.identifier == *identifier)
             && let Some(detail) = thread.detail.as_mut()
         {
-            detail.blocks.push(TranscriptBlock::UserMessage {
-                text: prompt.clone(),
-                queued: *queued,
-            });
+            detail.blocks.push(message);
         }
     }
 
@@ -1486,5 +1498,14 @@ fn shortcut_key(input: &KeyboardInput) -> ShortcutKey {
         "e" => E,
         "b" => B,
         _ => Other,
+    }
+}
+
+/// Takes the last copy of a message the agent never received back out of a transcript.
+fn remove_last_message(blocks: &mut Vec<TranscriptBlock>, prompt: &str) {
+    if let Some(index) = blocks.iter().rposition(
+        |block| matches!(block, TranscriptBlock::UserMessage { text, .. } if text == prompt),
+    ) {
+        blocks.remove(index);
     }
 }

@@ -32,7 +32,15 @@ pub struct SwarmEventPublished {
 /// The Swarm dialog for the user's current choices; asked again whenever one changes.
 #[tauri::command]
 #[specta::specta]
-pub fn get_swarm_dialog(
+pub async fn get_swarm_dialog(
+    application: AppHandle,
+    query: SwarmDialogQuery,
+) -> Result<SwarmDialog, String> {
+    crate::layout::off_ui_thread(move || get_swarm_dialog_now(application, query)).await
+}
+
+/// [`get_swarm_dialog`] on the calling thread, for callers already off the UI thread.
+pub(crate) fn get_swarm_dialog_now(
     application: AppHandle,
     query: SwarmDialogQuery,
 ) -> Result<SwarmDialog, String> {
@@ -56,24 +64,27 @@ pub fn get_swarm_dialog(
 /// Starts one agent per selected item, all at once, each in its own worktree (F10).
 #[tauri::command]
 #[specta::specta]
-pub fn launch_swarm(
+pub async fn launch_swarm(
     application: AppHandle,
     request: LaunchSwarmRequest,
 ) -> Result<LayoutSnapshot, String> {
-    launch(&application, request)
+    crate::layout::off_ui_thread(move || launch(&application, request)).await
 }
 
 /// + Items: the same launch, adding members to an existing swarm.
 #[tauri::command]
 #[specta::specta]
-pub fn add_to_swarm(
+pub async fn add_to_swarm(
     application: AppHandle,
     request: LaunchSwarmRequest,
 ) -> Result<LayoutSnapshot, String> {
-    if request.into.is_none() {
-        return Err("Choose the swarm to add items to".into());
-    }
-    launch(&application, request)
+    crate::layout::off_ui_thread(move || {
+        if request.into.is_none() {
+            return Err("Choose the swarm to add items to".into());
+        }
+        launch(&application, request)
+    })
+    .await
 }
 
 fn launch(application: &AppHandle, request: LaunchSwarmRequest) -> Result<LayoutSnapshot, String> {
@@ -160,7 +171,7 @@ fn add_pr_duty(application: &AppHandle, request: &LaunchSwarmRequest) -> Result<
         providers: request.providers.clone(),
         into: request.into,
     };
-    let shortfall = get_swarm_dialog(application.clone(), query)?.pr_duty_shortfall;
+    let shortfall = get_swarm_dialog_now(application.clone(), query)?.pr_duty_shortfall;
     if shortfall == 0 {
         return Ok(());
     }
