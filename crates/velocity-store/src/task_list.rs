@@ -91,12 +91,7 @@ pub(crate) fn append_task(
 ) -> Result<TaskItem, TaskError> {
     let title = task_title(title).ok_or(TaskError::EmptyTitle)?;
     let identifier = project
-        .tasks
-        .iter()
-        .map(|task| task.id)
-        .max()
-        .unwrap_or(0)
-        .checked_add(1)
+        .next_task_identifier()
         .ok_or(TaskError::IdentifiersExhausted)?;
     let state = if project.spec_locked {
         TaskState::Todo

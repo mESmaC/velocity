@@ -169,12 +169,9 @@ pub fn add_draft_tasks(project: &mut ProjectItem, tasks: Vec<String>) {
         if text.is_empty() || project.tasks.iter().any(|task| task.text == text) {
             continue;
         }
-        let identifier = project
-            .tasks
-            .iter()
-            .map(|task| task.id)
-            .max()
-            .map_or(1, |highest| highest.saturating_add(1));
+        let Some(identifier) = project.next_task_identifier() else {
+            return;
+        };
         project.tasks.push(TaskItem::new(
             identifier,
             text,

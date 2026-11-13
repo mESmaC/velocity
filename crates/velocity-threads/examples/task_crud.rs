@@ -115,7 +115,13 @@ fn requests() -> Vec<String> {
             "task_update",
             serde_json::json!({"task":1,"state":"todo"}),
         ),
-        call(10, "task_list", serde_json::json!({})),
+        // Task 2 was deleted: the next add must get 3, never reuse 2.
+        call(
+            10,
+            "task_add",
+            serde_json::json!({"title":"Add a changelog"}),
+        ),
+        call(11, "task_list", serde_json::json!({})),
     ]
 }
 
