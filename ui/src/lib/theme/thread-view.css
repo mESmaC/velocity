@@ -294,6 +294,16 @@
 .diff .c {
   color: var(--muted);
 }
+/* The browser skips layout and paint for transcript blocks off screen, so a long
+   transcript costs only what is visible (#321). The height is only a placeholder until a
+   block is first drawn; after that the browser keeps its real height. Not on .msg-user:
+   paint containment would clip its shadow. */
+.transcript .msg-agent,
+.transcript .tools,
+.transcript .diff {
+  content-visibility: auto;
+  contain-intrinsic-size: auto 160px;
+}
 .worked {
   display: flex;
   align-items: center;
