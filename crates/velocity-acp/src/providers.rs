@@ -47,6 +47,14 @@ pub fn provider_agent(provider: Provider) -> Option<ProviderAgent> {
     launch.args = args.iter().map(|argument| (*argument).to_owned()).collect();
     launch.own_config = Some(provider);
     launch.concurrency_provider = Some(provider);
+    if provider == Provider::Codex {
+        // codex-acp reads its first mode from here, so a session is never sandboxed, even
+        // before `session/set_mode` arrives or when a resumed session reports no modes.
+        launch.env.push((
+            "INITIAL_AGENT_MODE".to_owned(),
+            CODEX_FULL_ACCESS[0].to_owned(),
+        ));
+    }
     Some(ProviderAgent {
         launch,
         bypass_modes: bypass_modes.iter().map(|mode| (*mode).to_owned()).collect(),
