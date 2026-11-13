@@ -5,7 +5,6 @@ use crate::projects::ProjectError;
 use crate::swarm_dialog::{SwarmModelCard, provider_model_name};
 use crate::{
     EffortLevel, PersistedState, ProjectItem, ProviderKind, SpeedMode, StateStore, ThreadState,
-    write_atomic_snapshot,
 };
 use serde::{Deserialize, Serialize};
 use specta::Type;
@@ -597,11 +596,8 @@ impl StateStore {
         Ok(Some(events))
     }
 
-    fn commit_duty_state(&mut self, mut next: PersistedState) -> Result<(), ProjectError> {
-        next.revision = self.state.revision.wrapping_add(1);
-        write_atomic_snapshot(&self.directory, &next)?;
-        self.disk_revision = next.revision;
-        self.state = next;
+    fn commit_duty_state(&mut self, next: PersistedState) -> Result<(), ProjectError> {
+        self.store_snapshot(next)?;
         Ok(())
     }
 }

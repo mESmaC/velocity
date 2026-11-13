@@ -20,7 +20,10 @@ use std::collections::BTreeMap;
 use std::fs::{self, File};
 use std::io::Write;
 use std::path::{Path, PathBuf};
+use std::sync::{Arc, Mutex};
 use thiserror::Error;
+
+pub use save_behind::save_pending;
 
 pub mod interview;
 pub mod issues;
@@ -49,6 +52,7 @@ mod project_layout;
 pub mod projects;
 pub mod provider_views;
 pub mod providers;
+mod save_behind;
 pub mod shared_mcp;
 pub mod skills;
 pub mod swarm_dialog;
@@ -1079,8 +1083,9 @@ pub fn extended_windows_path(path: &Path) -> PathBuf {
 }
 
 fn write_atomic_snapshot(directory: &Path, state: &PersistedState) -> Result<(), StoreError> {
-    let serialized = serde_json::to_vec_pretty(state)
-        .map_err(|source| StoreError::SerializeSnapshot { source })?;
+    // Compact, not pretty: pretty printing made the file about 70% larger (#320).
+    let serialized =
+        serde_json::to_vec(state).map_err(|source| StoreError::SerializeSnapshot { source })?;
     let partial_path = extended_windows_path(&directory.join(PARTIAL_STATE_FILE_NAME));
     let destination_path = extended_windows_path(&directory.join(STATE_FILE_NAME));
     let mut partial_file =
@@ -1101,11 +1106,34 @@ fn write_atomic_snapshot(directory: &Path, state: &PersistedState) -> Result<(),
             source,
         })?;
     drop(partial_file);
-    fs::rename(&partial_path, &destination_path).map_err(|source| StoreError::ReplaceSnapshot {
-        partial: partial_path.display().to_string(),
-        destination: destination_path.display().to_string(),
-        source,
+    replace_with_retry(&partial_path, &destination_path).map_err(|source| {
+        StoreError::ReplaceSnapshot {
+            partial: partial_path.display().to_string(),
+            destination: destination_path.display().to_string(),
+            source,
+        }
     })
+}
+
+/// Renames `partial` over `destination`, retrying briefly. On Windows an antivirus scan
+/// or the search indexer can hold the freshly written `state.json` open for a moment,
+/// and the rename then fails with "Access is denied" (#320).
+fn replace_with_retry(partial: &Path, destination: &Path) -> std::io::Result<()> {
+    const ATTEMPTS: u64 = 8;
+    let mut attempt = 1;
+    loop {
+        match fs::rename(partial, destination) {
+            Ok(()) => return Ok(()),
+            Err(error)
+                if attempt < ATTEMPTS
+                    && matches!(error.kind(), std::io::ErrorKind::PermissionDenied) =>
+            {
+                std::thread::sleep(std::time::Duration::from_millis(25 * attempt));
+                attempt += 1;
+            }
+            Err(error) => return Err(error),
+        }
+    }
 }
 
 fn recover_or_cleanup_partial(directory: &Path) -> Result<(), StoreError> {
@@ -1163,6 +1191,10 @@ pub struct StateStore {
     state: PersistedState,
     disk_revision: u32,
     recovered_corrupt_snapshot: Option<PathBuf>,
+    /// Set once the app's background writer takes over saving (see `save_behind`).
+    deferred_saves: bool,
+    /// Held while a background save writes, so writes happen in revision order.
+    write_lock: Arc<Mutex<()>>,
 }
 
 impl StateStore {
@@ -1198,6 +1230,8 @@ impl StateStore {
                     state: normalized,
                     disk_revision,
                     recovered_corrupt_snapshot: None,
+                    deferred_saves: false,
+                    write_lock: Arc::default(),
                 })
             }
             Err(parse_error) => {
@@ -1224,6 +1258,8 @@ impl StateStore {
             state: initial_state,
             disk_revision,
             recovered_corrupt_snapshot,
+            deferred_saves: false,
+            write_lock: Arc::default(),
         })
     }
 
@@ -1271,6 +1307,10 @@ impl StateStore {
     }
 
     pub fn save_if_changed(&mut self) -> Result<bool, StoreError> {
+        if self.deferred_saves {
+            // The background writer saves this revision (see `save_behind`).
+            return Ok(false);
+        }
         let (write_now, next_disk_revision) =
             apply_dirty_checked_step(self.disk_revision, self.state.revision);
         if write_now {

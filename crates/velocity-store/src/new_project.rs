@@ -2,9 +2,7 @@
 //! check, and one commit that registers, activates and records the interview.
 
 use crate::projects::ProjectError;
-use crate::{
-    PendingInterview, ProjectItem, ProjectLocationKind, StateStore, write_atomic_snapshot,
-};
+use crate::{PendingInterview, ProjectItem, ProjectLocationKind, StateStore};
 
 /// What Create knows about a project it has just set up.
 pub struct NewProjectRecord {
@@ -100,10 +98,7 @@ impl StateStore {
         if activate {
             candidate.active_project_index = index;
         }
-        candidate.revision = self.state.revision.wrapping_add(1);
-        write_atomic_snapshot(&self.directory, &candidate)?;
-        self.disk_revision = candidate.revision;
-        self.state = candidate;
+        self.store_snapshot(candidate)?;
         Ok(identifier)
     }
 }

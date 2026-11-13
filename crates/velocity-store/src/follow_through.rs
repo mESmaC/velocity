@@ -123,10 +123,7 @@ impl StateStore {
         if thread.state == ThreadState::Merged && previous.state != ThreadState::Merged {
             finish_thread_tasks(&mut next, project_identifier, thread_identifier);
         }
-        next.revision = next.revision.wrapping_add(1);
-        crate::write_atomic_snapshot(&self.directory, &next)?;
-        self.disk_revision = next.revision;
-        self.state = next;
+        self.store_snapshot(next)?;
         Ok(true)
     }
 }

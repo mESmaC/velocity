@@ -5,7 +5,7 @@ use serde::{Deserialize, Serialize};
 use specta::Type;
 
 use crate::projects::ProjectError;
-use crate::{PersistedState, ProjectItem, StateStore, write_atomic_snapshot};
+use crate::{PersistedState, ProjectItem, StateStore};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, Type)]
 #[serde(rename_all = "snake_case")]
@@ -87,14 +87,11 @@ impl StateStore {
         Ok(value)
     }
 
-    fn save_candidate(&mut self, mut candidate: PersistedState) -> Result<(), ProjectError> {
+    fn save_candidate(&mut self, candidate: PersistedState) -> Result<(), ProjectError> {
         if candidate == self.state {
             return Ok(());
         }
-        candidate.revision = self.state.revision.wrapping_add(1);
-        write_atomic_snapshot(&self.directory, &candidate)?;
-        self.disk_revision = candidate.revision;
-        self.state = candidate;
+        self.store_snapshot(candidate)?;
         Ok(())
     }
 

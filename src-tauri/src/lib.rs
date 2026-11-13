@@ -282,6 +282,15 @@ pub fn run() -> anyhow::Result<()> {
             window::on_window_event(window, event);
             worktree_settings::on_window_event(window, event);
         })
-        .run(tauri::generate_context!())
-        .context("Could not run Velocity")
+        .build(tauri::generate_context!())
+        .context("Could not run Velocity")?
+        .run(|application, event| {
+            // Nothing can stop the exit now; a failed save is logged like any other.
+            if matches!(event, tauri::RunEvent::Exit)
+                && let Err(error) = state::save_now(application)
+            {
+                eprintln!("{error}");
+            }
+        });
+    Ok(())
 }
