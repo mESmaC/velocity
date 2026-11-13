@@ -65,6 +65,10 @@ struct ThreadRuntime {
     phase: SessionPhase,
     session_identifier: String,
     follows_pull_request: bool,
+    /// How many tool steps the transcript held when this session started. A resumed PR
+    /// session reports only the steps after it, so its follow-through cards are its own
+    /// work and not every earlier step again.
+    session_tool_start: usize,
     deliveries: Deliveries,
     transcript: LiveTranscript,
     inputs: UnboundedSender<AgentInput>,
@@ -160,6 +164,7 @@ impl ThreadRuntimes {
                 phase: SessionPhase::SettingUp,
                 session_identifier: uuid::Uuid::new_v4().to_string(),
                 follows_pull_request: false,
+                session_tool_start: 0,
                 deliveries: Deliveries::default(),
                 transcript: LiveTranscript::new(worktree),
                 inputs,
@@ -227,6 +232,7 @@ impl ThreadRuntimes {
                 phase: SessionPhase::SettingUp,
                 session_identifier: uuid::Uuid::new_v4().to_string(),
                 follows_pull_request: false,
+                session_tool_start: 0,
                 deliveries: Deliveries::default(),
                 transcript: LiveTranscript::new(worktree),
                 inputs,
@@ -325,6 +331,7 @@ impl ThreadRuntimes {
             .or_insert_with(|| parked_runtime(worktree, follows_pull_request));
         thread.session_identifier = uuid::Uuid::new_v4().to_string();
         thread.transcript.new_session();
+        thread.session_tool_start = thread.transcript.tool_steps().len();
         thread.pending_inputs = VecDeque::from([PendingInput::Opening]);
         for message in
             std::iter::once(prompt).chain(thread.transcript.queued().iter().map(String::as_str))
@@ -401,7 +408,7 @@ impl ThreadRuntimes {
         Some(SessionWork::new(
             thread.session_identifier.clone(),
             thread.follows_pull_request,
-            thread.transcript.tool_steps(),
+            session_steps(thread),
         ))
     }
 
@@ -668,6 +675,17 @@ fn progress(thread: &ThreadRuntime) -> ThreadProgress {
     }
 }
 
+/// The steps a session's follow-through cards come from. A PR session numbers its cards
+/// from its own first step; the first coding session keeps every step, because
+/// follow-through skips the steps made before the PR opened.
+fn session_steps(thread: &ThreadRuntime) -> Vec<velocity_core::thread_view_model::ToolStepRow> {
+    let mut steps = thread.transcript.tool_steps();
+    if thread.follows_pull_request {
+        steps.drain(..thread.session_tool_start.min(steps.len()));
+    }
+    steps
+}
+
 /// A parked thread with no live record, after an app restart.
 fn parked_runtime(worktree: &str, follows_pull_request: bool) -> ThreadRuntime {
     let (inputs, _closed) = unbounded_channel();
@@ -675,6 +693,7 @@ fn parked_runtime(worktree: &str, follows_pull_request: bool) -> ThreadRuntime {
         phase: SessionPhase::Ended,
         session_identifier: uuid::Uuid::new_v4().to_string(),
         follows_pull_request,
+        session_tool_start: 0,
         deliveries: Deliveries::default(),
         transcript: LiveTranscript::new(worktree),
         inputs,

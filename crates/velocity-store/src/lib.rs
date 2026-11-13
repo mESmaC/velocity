@@ -849,7 +849,12 @@ impl ThreadItem {
     pub fn normalize(self) -> Self {
         let (item, core_record) = self.into_core_record();
         let normalized = core_state::normalize_thread_record(core_record);
-        item.apply_core_record(normalized)
+        let mut item = item.apply_core_record(normalized);
+        // Older saves repeat a PR thread's tool cards once per resumed session.
+        if let Some(follow_through) = item.follow_through.as_mut() {
+            follow_through.compact_work_cards();
+        }
+        item
     }
 
     pub fn switch_model(self, next_model_name: String, next_model_supports_fast: bool) -> Self {
