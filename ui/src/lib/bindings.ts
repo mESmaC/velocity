@@ -786,7 +786,7 @@ export type DutyDialogDefaults_Deserialize = {
 	provider_name?: string,
 	model_name: string,
 	model_configured: boolean,
-	/**  Every signed-in provider's model, the default one selected (F7, F15). */
+	/**  Every visible model of every signed-in provider, the default one selected (F7, F15). */
 	models: SwarmModelCard_Deserialize[],
 	/**  Settings' default effort and speed, where the dialog's Effort and Speed start. */
 	effort: EffortLevel,
@@ -804,7 +804,7 @@ export type DutyDialogDefaults_Serialize = {
 	provider_name: string,
 	model_name: string,
 	model_configured: boolean,
-	/**  Every signed-in provider's model, the default one selected (F7, F15). */
+	/**  Every visible model of every signed-in provider, the default one selected (F7, F15). */
 	models: SwarmModelCard_Serialize[],
 	/**  Settings' default effort and speed, where the dialog's Effort and Speed start. */
 	effort: EffortLevel,
