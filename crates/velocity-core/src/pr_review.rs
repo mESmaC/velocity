@@ -245,7 +245,7 @@ fn checkout_paragraph(brief: &ReviewBrief) -> String {
 fn tier_steps(brief: &ReviewBrief) -> String {
     match brief.tier.tier {
         ReviewTier::Trivial => format!(
-            "\nTier: trivial. Velocity read its diff as docs, comments or formatting only. No proof is needed.\n- Read the PR with `pr_duty_pull_request` and confirm the change matches the piece its description claims. If you find a change that is not docs, comments or formatting, review it in full as a normal PR.\n{}- Approve once the local checks pass and the change matches its claim.\n",
+            "\nTier: trivial. Velocity read its diff as docs, comments or formatting only. No proof is needed.\n{CONVERSATION_STEP}- Read the PR with `pr_duty_pull_request` and confirm the change matches the piece its description claims. If you find a change that is not docs, comments or formatting, review it in full as a normal PR.\n{}- Approve once the local checks pass and the change matches its claim.\n",
             local_checks_step(brief.rules)
         ),
         ReviewTier::Normal => format!(
@@ -259,6 +259,10 @@ fn tier_steps(brief: &ReviewBrief) -> String {
         ),
     }
 }
+
+/// Comments are how you steer a review from GitHub (F7): read before deciding, and a hold
+/// rests the head instead of being reviewed past.
+const CONVERSATION_STEP: &str = "- Before anything else, read the PR's whole conversation in `pr_duty_pull_request`: every comment, review and review thread, newest last. A comment from a person (not a PR duty agent's review) is an instruction for this review: follow it. If one puts the PR on hold, says not to review or merge it yet, or makes it wait for other work, and nothing newer lifts that, call `pr_duty_review` with action `hold`, the head and the comment's reason, then stop: run no checks.\n";
 
 fn local_checks_step(rules: &PrDutyRuleSettings) -> &'static str {
     if rules.ci_green_before_merge {
@@ -285,6 +289,7 @@ fn review_steps(rules: &PrDutyRuleSettings) -> String {
     let mut steps = String::from(
         "Review:\n- Read AGENTS.md and SPEC.md first and follow AGENTS.md's rules for PR duty. Read the PR with `pr_duty_pull_request`: its description names the piece it completes.\n- Review the intent, not each line: check the PR against its claim, its Task List item, issue or SPEC.md section, and AGENTS.md. Style is left to linters.\n",
     );
+    steps.push_str(CONVERSATION_STEP);
     if rules.check_diff_against_spec {
         steps.push_str("- Check the diff against SPEC.md: the main path of the claimed piece must do what its section says.\n");
     }

@@ -98,6 +98,7 @@ fn bindings() -> Builder<tauri::Wry> {
         worktree_settings::browse_worktree_folder,
         worktree_settings::prune_worktrees,
         duty::get_duty_dialog_defaults,
+        duty::get_duty_agent_transcript,
         duty::start_duty,
         duty::pause_duty,
         duty::add_duty_agents,
