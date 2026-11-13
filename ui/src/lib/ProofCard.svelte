@@ -48,8 +48,10 @@
     </div>
   {/if}
   {#if card.levels.length}
+    <!-- One row per feature and language, so a language repeats when a PR changes several
+         features: keying by language threw each_key_duplicate and the pane never drew. -->
     <div class="lv">
-      {#each card.levels as level (level.language)}
+      {#each card.levels as level, index (index)}
         <span class="k">{level.language}</span><span
           class={level.level}
           class:flagged={level.flagged}
