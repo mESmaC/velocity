@@ -217,6 +217,10 @@ fn deliver_steer(application: &AppHandle, project: Option<u32>, intent: &LayoutI
         None => Err("Select or create a project first".into()),
     };
     let Err(error) = delivered else {
+        if let (Some(project), Ok(mut state)) = (project, application.state::<MainLayout>().lock())
+        {
+            state.message_delivered(project, *identifier, prompt);
+        }
         return;
     };
     // A steer error means the agent never got the message: a send that reached it reports
