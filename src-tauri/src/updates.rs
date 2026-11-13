@@ -179,8 +179,10 @@ async fn install(application: &AppHandle) -> Result<(), String> {
         .await
         .map_err(|error| format!("Could not download the update: {error}"))?;
     set_state(application, |state| state.phase = UpdatePhase::Installing);
-    // The installer exits Velocity without an exit event, so save first.
-    crate::state::save_now(application);
+    // The installer exits Velocity without an exit event, so save first, and don't
+    // install over changes that couldn't be saved.
+    crate::state::save_now(application)
+        .map_err(|error| format!("{error}. The update was not installed."))?;
     match kind {
         InstallKind::Portable => restart_portable(application, &bytes),
         // Launches the installer and exits Velocity; it only returns on failure.

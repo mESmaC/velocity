@@ -285,8 +285,11 @@ pub fn run() -> anyhow::Result<()> {
         .build(tauri::generate_context!())
         .context("Could not run Velocity")?
         .run(|application, event| {
-            if matches!(event, tauri::RunEvent::Exit) {
-                state::save_now(application);
+            // Nothing can stop the exit now; a failed save is logged like any other.
+            if matches!(event, tauri::RunEvent::Exit)
+                && let Err(error) = state::save_now(application)
+            {
+                eprintln!("{error}");
             }
         });
     Ok(())
