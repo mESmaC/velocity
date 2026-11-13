@@ -979,15 +979,20 @@ impl LayoutState {
     /// `record_steering` showed it as sent, and goes back to the composer as typed. It goes
     /// back only to its own thread's empty composer: the composer is shared by every thread,
     /// so text typed since, or another thread's view, must not receive it (#274).
-    pub fn return_unsent_message(&mut self, identifier: usize, prompt: &str) {
+    ///
+    /// `project` is the project the message was written in. Its thread's transcript always
+    /// drops the message; the composer gets it back only while that project is still open.
+    pub fn return_unsent_message(&mut self, project: u32, identifier: usize, prompt: &str) {
         let sent = self.sent_steering.take();
         let typed = sent
             .filter(|sent| sent.identifier == identifier && sent.prompt == prompt)
             .map_or_else(|| prompt.to_owned(), |sent| sent.typed);
-        let project = self.data.project_identifier;
-        let live = project.and_then(|project| self.live.get_mut(&(project, identifier)));
-        if let Some(live) = live {
+        if let Some(live) = self.live.get_mut(&(project, identifier)) {
             remove_last_message(&mut live.blocks, prompt);
+        }
+        if self.data.project_identifier != Some(project) {
+            self.changed();
+            return;
         }
         if let Some(detail) = self
             .data

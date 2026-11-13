@@ -126,7 +126,7 @@ fn launch(application: &AppHandle, request: LaunchSwarmRequest) -> Result<Layout
         }
     }
     record_launch(application, &request, swarm, started);
-    finish_launch(application, swarm, started, &refused)
+    finish_launch(application, &request, swarm, started, &refused)
 }
 
 /// The Issues panel's last read of open issues, which the dialog was drawn from (F9).
@@ -181,6 +181,11 @@ fn add_pr_duty(application: &AppHandle, request: &LaunchSwarmRequest) -> Result<
             application.state::<ManagedStateStore>().inner(),
             "persisted state",
         )?;
+        // PR duty starts in the active project. A switch since the launch began must not
+        // add this project's duty agents to another one.
+        if !is_active(&store, request.project_identifier) {
+            return Err("PR duty not started: the project changed during the launch".into());
+        }
         let mut layout = lock(
             application.state::<MainLayout>().inner(),
             "main-window state",
@@ -271,8 +276,13 @@ fn record_launch(
     ));
 }
 
+fn is_active(store: &velocity_store::StateStore, project: u32) -> bool {
+    store.active_project().map(|active| active.id) == Some(project)
+}
+
 fn finish_launch(
     application: &AppHandle,
+    request: &LaunchSwarmRequest,
     swarm: u32,
     started: usize,
     refused: &[String],
@@ -286,7 +296,11 @@ fn finish_launch(
         "main-window state",
     )?;
     store.refresh_follow_through_layout(&mut layout);
-    layout.close_swarm_dialog_and_select(swarm as usize);
+    // After a project switch the window shows another project, where this swarm's number
+    // means nothing; the launch still reports in the toast.
+    if is_active(&store, request.project_identifier) {
+        layout.close_swarm_dialog_and_select(swarm as usize);
+    }
     let mut message = format!(
         "{started} agent{} launched · {started} worktrees · all running",
         if started == 1 { "" } else { "s" }

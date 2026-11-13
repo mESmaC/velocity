@@ -225,9 +225,8 @@ fn deliver_steer(application: &AppHandle, project: Option<u32>, intent: &LayoutI
     let Ok(mut state) = managed.lock() else {
         return;
     };
-    // After a project switch the composer belongs to another project; only say why.
-    if state.snapshot().project_identifier == project {
-        state.return_unsent_message(*identifier, prompt);
+    if let Some(project) = project {
+        state.return_unsent_message(project, *identifier, prompt);
     }
     state.show_toast(error, None);
     crate::threads::report(publish(application, &state.snapshot(), None));
