@@ -3463,8 +3463,8 @@ export type ReviewTier =
 /**  Full review. */
 "normal" | 
 /**
- *  Touches a sensitive path: full review, the full stress suite before merge, and a
- *  confidence proof at the strongest level the language allows (F17).
+ *  Touches a sensitive path: full review, the project's stress suite before merge, and a
+ *  confidence proof at the reference level; code level only when an issue asks (F17).
  */
 "sensitive";
 
