@@ -145,7 +145,9 @@ impl Driver {
         let earlier = self.session_id.clone().filter(|_| load);
         let resume = SessionResume::new(earlier, transcript_context(&blocks));
         let path = self.worktree.display().to_string();
-        let inputs = self.runtimes.resume_parked(KEY, &path, &prompt, false)?;
+        let inputs = self
+            .runtimes
+            .resume_parked(KEY, &path, Some(&prompt), false)?;
         let mut session = spawn_session(self.agent.clone(), self.setup(Some(resume)), inputs);
         let mut turns = 0;
         while turns < 2 {

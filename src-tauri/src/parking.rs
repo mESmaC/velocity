@@ -123,7 +123,30 @@ fn wake(application: &AppHandle, key: ThreadKey, channel: &Channel) -> Result<()
     Ok(())
 }
 
+/// What a resumed session opens with.
+#[derive(Clone, Copy)]
+enum Opening<'a> {
+    /// A prompt from Velocity, sent ahead of the messages still queued.
+    Prompt(&'a str),
+    /// A message you sent the ended thread. It joins the queue, so it is kept until the
+    /// agent echoes it, however the new session ends (#317).
+    Message(&'a str),
+}
+
 pub(crate) fn resume(application: &AppHandle, key: ThreadKey, prompt: &str) -> Result<(), String> {
+    start_session(application, key, Opening::Prompt(prompt))
+}
+
+/// Resumes an ended thread for a message you sent it, queued behind any earlier sends.
+pub(crate) fn resume_with_message(
+    application: &AppHandle,
+    key: ThreadKey,
+    message: &str,
+) -> Result<(), String> {
+    start_session(application, key, Opening::Message(message))
+}
+
+fn start_session(application: &AppHandle, key: ThreadKey, opening: Opening) -> Result<(), String> {
     let (project, thread, settings) = {
         let store = lock(
             application.state::<ManagedStateStore>().inner(),
@@ -155,7 +178,7 @@ pub(crate) fn resume(application: &AppHandle, key: ThreadKey, prompt: &str) -> R
         .map(|airc| airc.thread(key.0, key.1, Path::new(path)));
     crate::airc_claims::attach(application, key, &setup, &thread.branch_name)?;
     reset_supervision(application, key)?;
-    let inputs = resume_inputs(application, key, path, prompt, &thread, &mut setup)?;
+    let inputs = resume_inputs(application, key, path, opening, &thread, &mut setup)?;
     crate::threads::save_activity(application, key, AgentActivity::Thinking, None)?;
     crate::threads::refresh(application, key, false)?;
     crate::threads::emit_status(application, key);
@@ -190,7 +213,7 @@ fn resume_inputs(
     application: &AppHandle,
     key: ThreadKey,
     path: &str,
-    prompt: &str,
+    opening: Opening,
     thread: &ThreadItem,
     setup: &mut SessionSetup,
 ) -> Result<velocity_threads::SessionInputs, String> {
@@ -207,9 +230,16 @@ fn resume_inputs(
             SessionResume::new(thread.agent_session.clone(), transcript_context(&blocks))
                 .with_history_replay(blocks.is_empty()),
         );
-        runtimes
-            .resume_parked(key, path, prompt, thread.state == ThreadState::Review)
-            .map_err(|error| error.to_string())?
+        let follows_pull_request = thread.state == ThreadState::Review;
+        match opening {
+            Opening::Prompt(prompt) => {
+                runtimes.resume_parked(key, path, Some(prompt), follows_pull_request)
+            }
+            Opening::Message(message) => {
+                runtimes.resume_with_message(key, path, message, follows_pull_request)
+            }
+        }
+        .map_err(|error| error.to_string())?
     };
     Ok(inputs)
 }
