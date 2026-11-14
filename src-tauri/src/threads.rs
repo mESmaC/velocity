@@ -925,6 +925,17 @@ pub(crate) async fn pump(application: &AppHandle, key: ThreadKey, mut session: R
             }
         }
         report(apply_batch(application, key, &batch));
+        if batch
+            .iter()
+            .any(|event| matches!(event, AgentEvent::TurnEnded(_)))
+        {
+            // A turn's end is the agent's step boundary: a rebase Rosen made meanwhile
+            // is written into its workspace now, before its next turn reads it.
+            let handle = application.clone();
+            tauri::async_runtime::spawn(async move {
+                crate::rosen_rebase::apply_at_boundary(&handle, key).await;
+            });
+        }
     }
     let outcome = session.outcome.await;
     if !current_session(application, key, &generation) {

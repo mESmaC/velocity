@@ -535,6 +535,22 @@ impl ThreadRuntimes {
             .or_else(|| self.stopped_sessions.get(&key).cloned())
     }
 
+    /// Whether the thread's agent is at a step boundary: no session runs, or the running one
+    /// finished its turn and has nothing sent to it that it has not started on. Velocity
+    /// changes the agent's files only here, never under a running step (Rosen rebases, F5).
+    pub fn is_at_step_boundary(&self, key: ThreadKey) -> bool {
+        if self.stopping.contains_key(&key) {
+            return false;
+        }
+        self.threads
+            .get(&key)
+            .is_none_or(|thread| match thread.phase {
+                SessionPhase::Ended => true,
+                SessionPhase::Running => !thread.busy && thread.pending_inputs.is_empty(),
+                SessionPhase::SettingUp => false,
+            })
+    }
+
     pub fn is_setting_up(&self, key: ThreadKey) -> bool {
         self.threads
             .get(&key)

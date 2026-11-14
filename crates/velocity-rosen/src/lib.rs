@@ -8,6 +8,7 @@
 mod agent;
 #[cfg(feature = "bundled")]
 mod bundled;
+mod conflicts;
 pub mod duty;
 mod events;
 mod process;
@@ -15,7 +16,8 @@ mod server;
 mod workspace;
 
 pub use agent::{agent_environment, agent_name, workspace_note};
-pub use events::{ChangeEvent, EventStream, change_event};
+pub use conflicts::{conflict_message, conflict_message_without_diff};
+pub use events::{ChangeEvent, EventStream, change_event, conflict_paths};
 pub use rosen_client::Error as ClientError;
 pub use server::{BINARY_FOLDER_ENV, ImportSource, ProjectServer, Servers, binary_folder};
 pub use workspace::{AgentWorkspace, Watches, abandon_change, create_workspace};

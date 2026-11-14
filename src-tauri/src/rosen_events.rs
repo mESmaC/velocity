@@ -44,8 +44,24 @@ async fn follow_project(application: &AppHandle, project: u32) {
                 Ok(mut stream) => {
                     while let Some(event) = stream.next().await {
                         after = after.max(event.seq);
-                        if let Some((change, meaning)) = velocity_rosen::change_event(&event) {
-                            report(take(application, project, event.seq, change, meaning).await);
+                        match velocity_rosen::change_event(&event) {
+                            Some((change, ChangeEvent::Rebased)) => {
+                                crate::rosen_rebase::rebased(application, project, change).await;
+                            }
+                            Some((change, ChangeEvent::Conflict)) => {
+                                let paths = velocity_rosen::conflict_paths(&event);
+                                crate::rosen_rebase::conflicted(
+                                    application,
+                                    project,
+                                    change,
+                                    paths,
+                                )
+                                .await;
+                            }
+                            Some((change, meaning)) => {
+                                report(take(application, project, event.seq, change, meaning).await)
+                            }
+                            None => {}
                         }
                     }
                 }
@@ -75,6 +91,9 @@ async fn take(
         ChangeEvent::Named => RosenProgress::Named,
         ChangeEvent::Landed => RosenProgress::Landed,
         ChangeEvent::Reverted => RosenProgress::Reverted,
+        // Handled by `rosen_rebase`: a rebase at the agent's step boundary, a conflict as a
+        // message to it.
+        ChangeEvent::Rebased | ChangeEvent::Conflict => return Ok(()),
     };
     let thread = save(application, project, seq, change, progress)?;
     match (thread, meaning) {

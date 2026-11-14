@@ -270,7 +270,7 @@ pub async fn change_diff(server: &ProjectServer, change: &str) -> Result<String,
 }
 
 /// The diff as unified text, the form agents read best.
-fn unified(diff: &rosen_client::protocol::Diff) -> String {
+pub(crate) fn unified(diff: &rosen_client::protocol::Diff) -> String {
     use rosen_client::protocol::LineKind;
     let mut text = String::new();
     for file in &diff.files {
