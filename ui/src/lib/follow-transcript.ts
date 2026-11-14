@@ -22,15 +22,22 @@ export function followTranscript(viewport: HTMLElement, identifier: string) {
     previousTop = viewport.scrollTop;
   }
 
-  const mutations = new MutationObserver(follow);
-  mutations.observe(viewport, {
-    childList: true,
-    subtree: true,
-    characterData: true,
-  });
+  // Growth shows up as a resize of the content, which the browser reports after layout.
+  // Watching every text change in the whole transcript instead forced a layout of all
+  // of it for each streamed chunk (#321). The content element itself can be replaced,
+  // so watch the viewport's direct children for that and observe the new one.
   const resizing = new ResizeObserver(follow);
   resizing.observe(viewport);
-  if (viewport.firstElementChild) resizing.observe(viewport.firstElementChild);
+  let content = viewport.firstElementChild;
+  if (content) resizing.observe(content);
+  const mutations = new MutationObserver(() => {
+    if (viewport.firstElementChild === content) return;
+    if (content) resizing.unobserve(content);
+    content = viewport.firstElementChild;
+    if (content) resizing.observe(content);
+    follow();
+  });
+  mutations.observe(viewport, { childList: true });
   viewport.addEventListener('scroll', onScroll, { passive: true });
   follow();
   return {
