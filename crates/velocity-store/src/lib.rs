@@ -710,6 +710,11 @@ pub struct ThreadItem {
     /// The Rosen change the thread works on, when its workspace came from Rosen (F5).
     #[serde(default)]
     pub rosen_change: Option<String>,
+    /// What the thread's Rosen events still ask Velocity to do, oldest first (F5): saved
+    /// with the event that asked, and removed once done, so a crash never loses it.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    #[specta(skip)]
+    pub rosen_follow_ups: Vec<rosen::RosenFollowUp>,
     #[serde(default)]
     pub follow_through: Option<velocity_github::follow_through::FollowThrough>,
     /// Last AIRC message whose receiving turn completed (F14).
@@ -785,6 +790,7 @@ impl ThreadItem {
             model_supports_fast: false,
             interview: None,
             goal_member: None,
+            rosen_follow_ups: Vec::new(),
         }
     }
 
@@ -823,6 +829,7 @@ impl ThreadItem {
             model_supports_fast: thread.model_supports_fast,
             interview: None,
             goal_member: None,
+            rosen_follow_ups: Vec::new(),
         }
         .normalize()
     }
