@@ -21,7 +21,8 @@ pub struct ModeEvidence {
     pub tier: ReviewTier,
     /// The role's "Checks pass" rule: a merge waits for checks.
     pub checks_required: bool,
-    /// GitHub reports at least one check on the PR's head.
+    /// Something other than the agent checks the head: GitHub reports at least one check
+    /// on the PR's head, or a Rosen project names pre-land commands for Velocity to run.
     pub has_github_checks: bool,
     /// The PR changes a file in the Lake project.
     pub changes_proofs: bool,

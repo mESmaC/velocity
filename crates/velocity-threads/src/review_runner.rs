@@ -7,8 +7,10 @@
 //! claims nothing new.
 //!
 //! Most reviews are by reading (F7 "Checks before merge"): the agent decides and its session
-//! ends, and `landing` merges the approved head once GitHub's checks pass.
+//! ends. `landing` merges an approved PR head once GitHub's checks pass, and `checker` runs
+//! the pre-land checks on an approved Rosen change and lands it.
 
+mod checker;
 mod landing;
 
 use std::collections::{BTreeMap, BTreeSet};
@@ -108,6 +110,10 @@ struct RunnerState {
     landing: BTreeMap<(u32, u32), landing::LandingNote>,
     /// The projects with a landing pass running, so two never merge the same head.
     landing_projects: BTreeSet<u32>,
+    /// Per project and Rosen change, what Velocity last saw of the approved head it checks.
+    checking: BTreeMap<(u32, String), checker::CheckNote>,
+    /// The projects with a checker pass running: one build at a time in each check folder.
+    checking_projects: BTreeSet<u32>,
 }
 
 /// The review runner. Cheap to clone; every clone drives the same reviews.
@@ -325,6 +331,7 @@ impl PrDutyReviews {
             match candidates {
                 Ok(candidates) => {
                     let candidates = self.land_approved(host, &roster, candidates);
+                    let candidates = self.check_approved(host, &roster, candidates);
                     self.claim_for_idle(host, &roster, &candidates, &idle);
                 }
                 Err(error) => settle_cards(host, &roster, &idle, Some(&error)),
@@ -583,6 +590,9 @@ struct Outcome {
     decided: bool,
     merged: bool,
     failure: Option<String>,
+    /// The review is of a Rosen change by reading: its approval is its decision, since
+    /// Velocity's checker lands the approved head.
+    approval_decides: bool,
 }
 
 /// A prepared review: its plan, its worktree and the head it checks.
@@ -745,6 +755,7 @@ impl Review {
             nickname: &self.key.1,
             thread,
             change,
+            work: self.work,
             report: &report,
         })
         .await?;
@@ -755,8 +766,7 @@ impl Review {
             base_commit: prepared.base,
             conflicts: prepared.conflicts,
             tier: prepared.tier,
-            // No GitHub checks run on a Rosen change: its review runs the local checks.
-            mode: ReviewMode::LocalChecks,
+            mode: prepared.mode,
             launch_file: Some(prepared.launch_file),
         })
     }
@@ -848,7 +858,8 @@ impl Review {
             );
         }
         let session = crate::spawn_session(prepared.plan.agent.clone(), setup, inputs);
-        let outcome = self.follow(host, session, &report).await;
+        let reading_change = prepared.launch_file.is_some() && prepared.mode == ReviewMode::Reading;
+        let outcome = self.follow(host, session, &report, reading_change).await;
         // Recorded while the claim is still held, so no tick can claim the head in between.
         self.remember(&prepared.head, outcome.decided);
         let _ = std::fs::remove_file(&report);
@@ -903,6 +914,7 @@ impl Review {
                     conflicts: &prepared.conflicts,
                     work: self.work,
                     tier: &prepared.tier,
+                    mode: prepared.mode,
                     rules: &self.roster.rules,
                     instruction: self.instruction.as_deref(),
                 });
@@ -932,9 +944,13 @@ impl Review {
         host: &Host,
         mut session: RunningSession,
         report: &Path,
+        approval_decides: bool,
     ) -> Outcome {
         let mut offset = 0;
-        let mut outcome = Outcome::default();
+        let mut outcome = Outcome {
+            approval_decides,
+            ..Outcome::default()
+        };
         let mut doing = String::new();
         let mut nudges = 0;
         while let Some(event) = session.events.recv().await {
@@ -1023,11 +1039,12 @@ impl Review {
         }
         for report in &reports {
             match report {
-                // An approval decides a change only once it lands: Rosen has no Velocity
-                // merge pass to land an approved head later, so an unlanded one is retried.
-                PrDutyReport::Commented { .. }
-                | PrDutyReport::ChangeCommented { .. }
-                | PrDutyReport::ChangeApproved { .. } => {}
+                PrDutyReport::Commented { .. } | PrDutyReport::ChangeCommented { .. } => {}
+                // An agent that runs the checks itself also lands: its approval alone
+                // leaves the head to be retried. A review by reading ends at its approval.
+                PrDutyReport::ChangeApproved { .. } => {
+                    outcome.decided |= outcome.approval_decides;
+                }
                 PrDutyReport::Merged { .. } | PrDutyReport::ChangeLanded { .. } => {
                     outcome.decided = true;
                     outcome.merged = true;
