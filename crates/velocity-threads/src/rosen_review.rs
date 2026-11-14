@@ -7,10 +7,11 @@ use std::path::{Path, PathBuf};
 use velocity_core::merge_gate::ReviewMode;
 use velocity_core::pr_review::{ReviewCandidate, ReviewWork};
 use velocity_core::review_diff::DiffSummary;
-use velocity_core::review_tier::{TierAssessment, assess_tier, sensitive_paths};
+use velocity_core::review_tier::{TierAssessment, assess_tier_with};
 use velocity_core::rosen_checker::change_review_mode;
 use velocity_rosen::ProjectServer;
-use velocity_rosen::{checker, duty};
+use velocity_rosen::duty;
+use velocity_rosen::policy::{CheckPolicy, policy_at};
 use velocity_store::duty::PrDutyRoster;
 use velocity_store::{ReviewStage, ThreadState};
 
@@ -81,28 +82,40 @@ pub(crate) struct ChangeReview<'a> {
 /// `change`'s review tier, from its paths, and how it is reviewed (F7 "Checks before
 /// merge"): by reading when Velocity can check it itself, with the project's pre-land
 /// commands. Merge work is an approved head Velocity could not check, so its agent does.
+///
+/// The tier and the commands come from the policy at the current base, as Rosen reads it
+/// from `rosen.toml` there: never from the change's own copy, which could drop a sensitive
+/// path, nor from a git checkout's `AGENTS.md`, which can be older than the base. A policy
+/// Rosen can't read is an error, so the review waits for the next tick rather than going
+/// ahead as if nothing were sensitive.
 pub(crate) async fn change_mode(
     server: &ProjectServer,
-    repository_root: &Path,
     change: &str,
     work: ReviewWork,
 ) -> Result<(TierAssessment, ReviewMode), String> {
     let paths = duty::changed_paths(server, change)
         .await
         .map_err(|error| format!("Could not read the change's diff: {error}"))?;
-    // The main checkout's AGENTS.md: the change's own copy could drop a sensitive path.
-    let agents = std::fs::read_to_string(repository_root.join("AGENTS.md")).unwrap_or_default();
-    let tier = assess_tier(
-        &DiffSummary::from_paths(paths.clone()),
-        &sensitive_paths(&agents),
-    );
+    let policy = policy_at(server, None)
+        .await
+        .map_err(|error| format!("Could not read the project's rosen.toml at the base: {error}"))?;
+    Ok(mode_under(&policy, &paths, work))
+}
+
+/// The tier and review mode of a change touching `paths`, under `policy`.
+pub(crate) fn mode_under(
+    policy: &CheckPolicy,
+    paths: &[String],
+    work: ReviewWork,
+) -> (TierAssessment, ReviewMode) {
+    let tier = assess_tier_with(&DiffSummary::from_paths(paths.to_vec()), |path| {
+        policy.is_sensitive(path)
+    });
     if work == ReviewWork::Merge {
-        return Ok((tier, ReviewMode::LocalChecks));
+        return (tier, ReviewMode::LocalChecks);
     }
-    // A configuration that can't be read names no commands: the agent runs the checks.
-    let commands = checker::pre_land_commands(server).await.unwrap_or_default();
-    let mode = change_review_mode(tier.tier, &paths, !commands.is_empty());
-    Ok((tier, mode))
+    let mode = change_review_mode(tier.tier, paths, !policy.commands.is_empty());
+    (tier, mode)
 }
 
 /// Plans the review, writes the change's merge result into its folder with the folder
@@ -117,8 +130,7 @@ pub(crate) async fn prepare_change(review: ChangeReview<'_>) -> Result<PreparedC
     let plan = plan_change_review(review.roster, agent, review.thread, review.change)
         .map_err(|error| error.to_string())?;
     let server = ProjectServer::new(review.app_data, review.roster.project.id);
-    let root = &plan.worktree.repository_root;
-    let (tier, mode) = change_mode(&server, root, review.change, review.work).await?;
+    let (tier, mode) = change_mode(&server, review.change, review.work).await?;
     let launch = RosenDutyLaunch::for_review(review.app_data, &plan, review.change, review.report)
         .by_reading(mode == ReviewMode::Reading);
     let checkout = check_out_review(&server, &launch).await?;
