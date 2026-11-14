@@ -13,6 +13,9 @@ pub enum RosenProgress {
     /// Post-land verification reverted the landed change and gave it back to its owner
     /// (Rosen R12): the thread needs fixing.
     Reverted,
+    /// PR duty requested changes (F7): the thread fixes them, and is reviewed again when it
+    /// names its work again.
+    ChangesRequested,
 }
 
 impl StateStore {
@@ -79,5 +82,11 @@ fn apply_progress(thread: &mut ThreadItem, progress: RosenProgress) -> bool {
             thread.review_stage = Some(ReviewStage::Fixing);
             false
         }
+        RosenProgress::ChangesRequested if thread.state != ThreadState::Merged => {
+            thread.state = ThreadState::Review;
+            thread.review_stage = Some(ReviewStage::Fixing);
+            false
+        }
+        RosenProgress::ChangesRequested => false,
     }
 }

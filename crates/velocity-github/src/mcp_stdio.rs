@@ -11,7 +11,7 @@ use serde::de::DeserializeOwned;
 use serde_json::{Value, json};
 
 /// One duty MCP server: its name, what it tells the agent, its tools and how it runs them.
-pub(crate) trait ToolServer {
+pub trait ToolServer {
     fn name(&self) -> &'static str;
     fn instructions(&self) -> String;
     fn tools(&self) -> Vec<Value>;
@@ -20,7 +20,7 @@ pub(crate) trait ToolServer {
 }
 
 /// Answers JSON-RPC requests, one per line, until the agent closes the connection.
-pub(crate) fn serve(
+pub fn serve(
     server: &mut impl ToolServer,
     input: impl BufRead,
     mut output: impl Write,
@@ -79,7 +79,7 @@ fn failure(id: Value, code: i32, message: &str) -> Value {
 
 /// Appends one report line for Velocity to read. One short append per outcome; the reader
 /// takes whole lines only.
-pub(crate) fn append_report(path: &Path, report: &impl Serialize) -> std::io::Result<()> {
+pub fn append_report(path: &Path, report: &impl Serialize) -> std::io::Result<()> {
     let mut line = serde_json::to_string(report)?;
     line.push('\n');
     OpenOptions::new()

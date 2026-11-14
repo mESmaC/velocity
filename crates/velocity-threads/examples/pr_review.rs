@@ -51,6 +51,10 @@ impl ReviewHost for Host {
         }
         true
     }
+
+    fn changes_requested(&self, project: u32, thread: u32, change: &str, message: &str) {
+        println!("author {project}/{thread} ({change}) <- {message}");
+    }
 }
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {

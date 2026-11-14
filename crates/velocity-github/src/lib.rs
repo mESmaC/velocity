@@ -12,7 +12,7 @@ mod issue_panel;
 mod issue_types;
 mod issues;
 mod landing;
-mod mcp_stdio;
+pub mod mcp_stdio;
 mod merge_gate;
 mod proof_gate;
 mod pull_request_command;

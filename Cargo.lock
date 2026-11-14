@@ -6552,6 +6552,7 @@ name = "velocity-rosen"
 version = "0.1.0"
 dependencies = [
  "rosen-client",
+ "rosen-core",
  "thiserror 2.0.21",
  "tokio",
 ]
@@ -6588,6 +6589,7 @@ version = "0.1.0"
 dependencies = [
  "agent-client-protocol",
  "chrono",
+ "serde",
  "serde_json",
  "similar",
  "thiserror 2.0.21",
@@ -6599,6 +6601,7 @@ dependencies = [
  "velocity-git",
  "velocity-github",
  "velocity-proofs",
+ "velocity-rosen",
  "velocity-store",
 ]
 
