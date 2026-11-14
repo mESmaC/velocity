@@ -88,13 +88,12 @@ pub fn levels_between(
 /// git without building anything. PR duty reviews such a PR with the local proof checks,
 /// never by reading alone (F7 "Checks before merge").
 pub fn changes_proofs(worktree: &Path, base: &str, head: &str) -> Result<bool, ProofCheckError> {
-    let Some(folder) = project_folder(worktree) else {
-        return Ok(false);
-    };
+    // Asked of the diff, not of the checkout: a PR that deletes the Lake manifest leaves no
+    // project in the checkout and still changes proofs.
     let range = format!("{base}...{head}");
     let changed = git(
         worktree,
-        &["diff", "--name-only", "-z", &range, "--", &folder],
+        &["diff", "--name-only", "-z", &range, "--", PROJECT_FOLDER],
     )?;
     Ok(!changed.is_empty())
 }
