@@ -57,11 +57,25 @@ jobs:
           # The app reports this version to the updater, so it must be the tag's.
           @{ version = $version } | ConvertTo-Json | Set-Content -Encoding utf8 "$env:RUNNER_TEMP\version.json"
 
+      # Rosen is Velocity's version control (SPEC.md F5). Its binaries are built from the
+      # commit velocity-rosen pins and carried inside the app, so the portable download has
+      # them too; Velocity unpacks them on first use.
+      - name: Build Rosen
+        shell: pwsh
+        run: |
+          $manifest = Get-Content -Raw crates/velocity-rosen/Cargo.toml
+          if ($manifest -notmatch 'rosen-client = \{ git = "([^"]+)", rev = "([0-9a-f]{40})" \}') { throw "No pinned rosen-client in crates/velocity-rosen/Cargo.toml" }
+          $root = "$env:RUNNER_TEMP\rosen"
+          cargo install --locked --git $Matches[1] --rev $Matches[2] --root $root rosen-server rosen-cli
+          if ($LASTEXITCODE -ne 0) { throw "Could not build Rosen" }
+          "VELOCITY_ROSEN_SERVER_EXE=$root\bin\rosen-server.exe" >> $env:GITHUB_ENV
+          "VELOCITY_ROSEN_CLI_EXE=$root\bin\rosen.exe" >> $env:GITHUB_ENV
+
       - name: Build
         shell: pwsh
         run: |
           $bundles = if ('${{ steps.version.outputs.prerelease }}' -eq 'true') { 'nsis' } else { 'nsis,msi' }
-          npx -y $env:TAURI_CLI build --ci --bundles $bundles --config "$env:RUNNER_TEMP\version.json"
+          npx -y $env:TAURI_CLI build --ci --bundles $bundles --features bundled-rosen --config "$env:RUNNER_TEMP\version.json"
           if ($LASTEXITCODE -ne 0) { throw "tauri build failed" }
 
       - name: Collect and sign the downloads

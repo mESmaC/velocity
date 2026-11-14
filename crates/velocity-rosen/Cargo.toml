@@ -9,6 +9,12 @@ publish = false
 [lints]
 workspace = true
 
+[features]
+# Builds Rosen's binaries into Velocity, for releases: the release workflow names them in
+# VELOCITY_ROSEN_SERVER_EXE and VELOCITY_ROSEN_CLI_EXE. Development builds find them
+# through VELOCITY_ROSEN_BIN or PATH instead.
+bundled = []
+
 [dependencies]
 # Pinned to a reviewed Rosen commit; move the pin deliberately, like any toolchain pin.
 rosen-client = { git = "https://github.com/mESmaC/rosen", rev = "b9f6da89b77af4cda399eccd968cb85bff0337b0" }
