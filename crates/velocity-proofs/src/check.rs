@@ -37,6 +37,36 @@ pub fn check_worktree(
     };
     let changed = changed_proof_files(worktree, &folder, base, head)?;
     let levels = proof_levels(worktree, &folder, base, head)?;
+    check_changed(worktree, folder, changed, levels)
+}
+
+/// Runs every check on the proof files among `changed_paths`, in `tree`: a Rosen change's
+/// merge result, written by Rosen as a plain build tree with no git to diff (F5, F17). The
+/// paths are the ones Rosen reports the change touches.
+pub fn check_build_tree(
+    tree: &Path,
+    changed_paths: &[String],
+) -> Result<ProofCheckReport, ProofCheckError> {
+    let Some(folder) = project_folder(tree) else {
+        return Ok(ProofCheckReport::nothing_changed(None));
+    };
+    let prefix = format!("{folder}/");
+    // A deleted file is not in the tree: as with `--diff-filter=ACMR`, only what is there.
+    let changed = changed_paths
+        .iter()
+        .filter(|path| path.starts_with(&prefix) && is_proof_source(path))
+        .filter(|path| tree.join(path).is_file())
+        .cloned()
+        .collect();
+    check_changed(tree, folder, changed, Vec::new())
+}
+
+fn check_changed(
+    worktree: &Path,
+    folder: String,
+    changed: Vec<String>,
+    levels: Vec<FeatureLevels>,
+) -> Result<ProofCheckReport, ProofCheckError> {
     if changed.is_empty() {
         let mut report = ProofCheckReport::nothing_changed(Some(folder));
         report.levels = levels;

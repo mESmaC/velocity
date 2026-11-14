@@ -354,6 +354,7 @@ impl RosenDutyServer {
                 "That is not the merge result in the folder: call rosen_duty_prepare_landing, check, then record its head and base".into(),
             );
         }
+        self.check_proofs()?;
         let (server, reviewer) = (&self.server, self.reviewer.as_str());
         let change = self.launch.change.as_str();
         let pair = (arguments.head.as_str(), arguments.base.as_str());
@@ -364,6 +365,32 @@ impl RosenDutyServer {
         })?;
         self.checked = Some(wanted);
         Ok(json!({"checked": true, "head": arguments.head, "base": arguments.base}))
+    }
+
+    /// Never land unless the proofs check (F7, F17; locked): a change that touches the Lake
+    /// project gets no receipt, so Rosen won't land it, until `lake build` and the audits
+    /// pass on its merge result.
+    fn check_proofs(&self) -> Result<(), String> {
+        let (server, change) = (&self.server, self.launch.change.as_str());
+        let paths = self.block_on(async {
+            duty::changed_paths(server, change)
+                .await
+                .map_err(|error| error.to_string())
+        })?;
+        let report = velocity_proofs::check_build_tree(&self.launch.folder, &paths)
+            .map_err(|error| format!("Proof gate could not run: {error}"))?;
+        if !report.passed() {
+            return Err(report.summary().unwrap_or_default());
+        }
+        if let velocity_proofs::CheckStep::Ran(audit) = &report.axioms
+            && !audit.unbuilt.is_empty()
+        {
+            return Err(format!(
+                "Proof gate: lake build did not check these changed modules: {}",
+                audit.unbuilt.join(", ")
+            ));
+        }
+        Ok(())
     }
 
     fn land(&self, arguments: Value) -> Result<Value, String> {
