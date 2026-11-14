@@ -4,7 +4,6 @@
 
 use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
 use tauri::{AppHandle, Manager};
@@ -21,9 +20,6 @@ use crate::threads::{lock, report};
 pub(crate) struct ManagedRosen {
     servers: Servers,
     watches: Watches,
-    /// Set while the servers are stopped for an update or exit, so watchers aren't
-    /// started again, which would start the servers again.
-    paused: AtomicBool,
     /// Projects whose event stream a follower reads (F6).
     following: std::sync::Mutex<BTreeSet<u32>>,
 }
@@ -38,7 +34,6 @@ pub(crate) fn initialize(application: &AppHandle) -> anyhow::Result<()> {
     application.manage(ManagedRosen {
         servers: Servers::new(app_data),
         watches: Watches::default(),
-        paused: AtomicBool::new(false),
         following: std::sync::Mutex::new(BTreeSet::new()),
     });
     let handle = application.clone();
@@ -76,7 +71,7 @@ pub(crate) fn uses_rosen(application: &AppHandle, project: u32) -> bool {
 pub(crate) fn paused(application: &AppHandle) -> bool {
     application
         .try_state::<ManagedRosen>()
-        .is_none_or(|managed| managed.paused.load(Ordering::SeqCst))
+        .is_none_or(|managed| managed.servers.stopped())
 }
 
 /// Records that a follower reads `project`'s events; false when one already does.
@@ -319,7 +314,8 @@ async fn watch_open_threads(application: &AppHandle) {
 /// stopped for an update or exit.
 async fn watch_thread(application: &AppHandle, project: u32, root: &Path) -> Result<(), String> {
     let managed = application.state::<ManagedRosen>();
-    if managed.paused.load(Ordering::SeqCst) || managed.watches.is_watching(root) {
+    // A stopped server refuses to start again anyway; this only saves the attempt.
+    if managed.servers.stopped() || managed.watches.is_watching(root) {
         return Ok(());
     }
     let server = server(application, project).await?;
@@ -342,7 +338,6 @@ pub(crate) async fn shutdown_servers(application: &AppHandle) {
     let Some(managed) = application.try_state::<ManagedRosen>() else {
         return;
     };
-    managed.paused.store(true, Ordering::SeqCst);
     let _ = tokio::time::timeout(Duration::from_secs(10), managed.servers.shutdown_all()).await;
 }
 
@@ -351,7 +346,6 @@ pub(crate) async fn shutdown_servers(application: &AppHandle) {
 pub(crate) async fn restart_servers(application: &AppHandle) {
     if let Some(managed) = application.try_state::<ManagedRosen>() {
         managed.servers.restart_all().await;
-        managed.paused.store(false, Ordering::SeqCst);
     }
 }
 
