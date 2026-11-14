@@ -48,6 +48,13 @@ pub fn check_build_tree(
     changed_paths: &[String],
 ) -> Result<ProofCheckReport, ProofCheckError> {
     let Some(folder) = project_folder(tree) else {
+        // No project left in the merge result: fine for a project without proofs, but a
+        // change that deletes the manifest would otherwise pass with nothing built.
+        let manifests =
+            ["lakefile.lean", "lakefile.toml"].map(|name| format!("{PROJECT_FOLDER}/{name}"));
+        if let Some(removed) = changed_paths.iter().find(|path| manifests.contains(path)) {
+            return Err(ProofCheckError::RemovedProject(removed.clone()));
+        }
         return Ok(ProofCheckReport::nothing_changed(None));
     };
     let prefix = format!("{folder}/");

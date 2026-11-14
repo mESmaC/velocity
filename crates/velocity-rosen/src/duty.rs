@@ -127,14 +127,18 @@ pub async fn check_out_merge_result(
     folder: &Path,
 ) -> Result<MergeCheckout, RosenError> {
     let marker = checkout_marker(folder);
-    if folder.exists() && !marker.is_file() {
-        return Err(RosenError::Io {
-            action: "replace",
-            path: folder.to_path_buf(),
-            source: std::io::Error::other("the folder is not a Rosen review checkout"),
-        });
-    }
     let staging = sibling(folder, ".rosen-next");
+    // The marker is what makes the folder and its staging sibling Velocity's: without it,
+    // either one belongs to someone else and is left alone.
+    for path in [folder, staging.as_path()] {
+        if path.exists() && !marker.is_file() {
+            return Err(RosenError::Io {
+                action: "replace",
+                path: path.to_path_buf(),
+                source: std::io::Error::other("the folder is not a Rosen review checkout"),
+            });
+        }
+    }
     if staging.exists() {
         remove_folder(&staging)?;
     }
@@ -195,14 +199,16 @@ fn io_error(action: &'static str, path: &Path, source: std::io::Error) -> RosenE
 
 /// Removes a review checkout and its marker, once its agent has stopped.
 pub fn remove_checkout(folder: &Path) -> Result<(), RosenError> {
-    if folder.exists() && checkout_marker(folder).is_file() {
-        remove_folder(folder)?;
+    let marker = checkout_marker(folder);
+    if !marker.is_file() {
+        return Ok(());
     }
-    let staging = sibling(folder, ".rosen-next");
-    if staging.exists() {
-        remove_folder(&staging)?;
+    for path in [folder.to_path_buf(), sibling(folder, ".rosen-next")] {
+        if path.exists() {
+            remove_folder(&path)?;
+        }
     }
-    let _ = std::fs::remove_file(checkout_marker(folder));
+    let _ = std::fs::remove_file(marker);
     Ok(())
 }
 

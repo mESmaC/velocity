@@ -287,7 +287,10 @@ impl RosenDutyServer {
                 reason: arguments.reason.clone(),
             },
         };
-        self.record(&report);
+        // For requested changes and holds the report is the decision itself: the author
+        // hears of it only through the report, so a failed write is the tool's failure.
+        append_report(&self.launch.report, &report)
+            .map_err(|error| format!("Could not record the decision: {error}"))?;
         Ok(json!({"recorded": true, "head": arguments.head}))
     }
 
@@ -334,6 +337,8 @@ impl RosenDutyServer {
 
     /// Writes the change's current merge result into the folder.
     fn prepare_landing(&mut self) -> Result<Value, String> {
+        // A failed refresh must not leave the previous merge result certifiable.
+        self.prepared = None;
         let (server, launch) = (&self.server, &self.launch);
         let checkout = self.block_on(async { check_out_review(server, launch).await })?;
         self.prepared = Some((checkout.head.clone(), checkout.base.clone()));

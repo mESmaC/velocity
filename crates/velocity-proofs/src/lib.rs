@@ -42,4 +42,6 @@ pub enum ProofCheckError {
     Io(#[from] std::io::Error),
     #[error("A statement lock is not valid JSON: {0}")]
     Json(#[from] serde_json::Error),
+    #[error("The change removes the Lake project's manifest, {0}: its proofs can't be built")]
+    RemovedProject(String),
 }

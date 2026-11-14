@@ -370,8 +370,12 @@ impl PrDutyReviews {
                 .iter()
                 .any(|thread| thread.rosen_change.is_some())
         {
-            candidates
-                .extend(crate::rosen_review::change_candidates(&self.app_data, roster).await?);
+            // A failed change lookup still leaves the PRs to review and land.
+            match crate::rosen_review::change_candidates(&self.app_data, roster).await {
+                Ok(changes) => candidates.extend(changes),
+                Err(error) if candidates.is_empty() => return Err(error),
+                Err(_) => {}
+            }
         }
         Ok(candidates)
     }
@@ -810,6 +814,10 @@ impl Review {
         };
         if self.runner.dismissed(&self.key) {
             // Dismissed while the worktree or the proofs were prepared: no session starts.
+            if let Some(launch_file) = &prepared.launch_file {
+                let _ = std::fs::remove_file(launch_file);
+                crate::rosen_review::remove_folder(prepared.worktree.clone()).await;
+            }
             return Outcome::default();
         }
         let mut setup = match &prepared.launch_file {
@@ -1015,7 +1023,11 @@ impl Review {
         }
         for report in &reports {
             match report {
-                PrDutyReport::Commented { .. } | PrDutyReport::ChangeCommented { .. } => {}
+                // An approval decides a change only once it lands: Rosen has no Velocity
+                // merge pass to land an approved head later, so an unlanded one is retried.
+                PrDutyReport::Commented { .. }
+                | PrDutyReport::ChangeCommented { .. }
+                | PrDutyReport::ChangeApproved { .. } => {}
                 PrDutyReport::Merged { .. } | PrDutyReport::ChangeLanded { .. } => {
                     outcome.decided = true;
                     outcome.merged = true;

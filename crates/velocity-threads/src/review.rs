@@ -56,8 +56,9 @@ pub fn plan_review(
 }
 
 /// Plans `agent`'s review of Rosen change `change`, which thread `thread` works on, in the
-/// project's `review-change-<thread>` folder. Rosen writes the change's merge result there:
-/// a plain build tree, not a git worktree.
+/// project's `review-change-<thread>-<nickname>` folder. Rosen writes the change's merge
+/// result there: a plain build tree, not a git worktree. The folder is the reviewer's own, so
+/// a dismissed review cleaning up never removes the one its replacement builds in.
 pub fn plan_change_review(
     roster: &PrDutyRoster,
     agent: &DutyAgentItem,
@@ -67,7 +68,7 @@ pub fn plan_change_review(
     let location = Location::new(&roster.project, &roster.worktrees);
     let folder = location
         .project_root()?
-        .join(format!("review-change-{thread}"));
+        .join(format!("review-change-{thread}-{}", agent.nickname));
     let subject = ReviewSubject::Change {
         thread,
         change: change.to_owned(),
