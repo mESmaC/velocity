@@ -15,6 +15,12 @@ pub enum ChangeEvent {
     Landed,
     /// Post-land verification reverted the change and reopened it (R12).
     Reverted,
+    /// The server rebased the change onto a newer base (R2): its workspace takes the new
+    /// head at the agent's next step boundary.
+    Rebased,
+    /// The change did not merge onto the moved base and stays on its old one; the
+    /// conflicts are stored on the server and [`conflict_paths`] names their files (R5).
+    Conflict,
 }
 
 /// The change an event names and what it means for its thread; `None` for events a
@@ -29,9 +35,26 @@ pub fn change_event(event: &Event) -> Option<(&str, ChangeEvent)> {
         }
         EventKind::Landed => ChangeEvent::Landed,
         EventKind::Reverted => ChangeEvent::Reverted,
+        EventKind::Rebased => ChangeEvent::Rebased,
+        EventKind::Conflict => ChangeEvent::Conflict,
         _ => return None,
     };
     Some((change, meaning))
+}
+
+/// The files a `conflict` event names (R5).
+pub fn conflict_paths(event: &Event) -> Vec<String> {
+    event
+        .detail
+        .get("paths")
+        .and_then(|paths| paths.as_array())
+        .map(|paths| {
+            paths
+                .iter()
+                .filter_map(|path| path.as_str().map(str::to_owned))
+                .collect()
+        })
+        .unwrap_or_default()
 }
 
 /// Every event of one project's server after a cursor: the project view, which stores no

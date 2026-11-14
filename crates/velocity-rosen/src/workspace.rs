@@ -1,7 +1,7 @@
 //! Agent workspaces: a Rosen change and its workspace for each agent, kept stored on the
 //! server by a write-through watcher while the agent works (Rosen R2, R3, R4).
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 
@@ -87,6 +87,12 @@ pub async fn abandon_change(
 #[derive(Default)]
 pub struct Watches {
     running: Mutex<BTreeMap<PathBuf, WorkspaceWatch>>,
+    /// Workspaces a rebase is being written into: no watcher starts there meanwhile.
+    held: Mutex<BTreeSet<PathBuf>>,
+    /// Workspaces whose watcher is starting and not yet in `running`, where a rebase's stop
+    /// would miss it. Each side marks itself before it checks the other, so of a start and
+    /// a rebase that race, at least one sees the other and stands back.
+    starting: Mutex<BTreeSet<PathBuf>>,
 }
 
 impl Watches {
@@ -98,7 +104,21 @@ impl Watches {
         agent: &str,
         root: &Path,
     ) -> Result<(), RosenError> {
-        if self.is_watching(root) {
+        if !mark(&self.starting, root) {
+            return Ok(());
+        }
+        let started = self.start_marked(server, agent, root).await;
+        unmark(&self.starting, root);
+        started
+    }
+
+    async fn start_marked(
+        &self,
+        server: &ProjectServer,
+        agent: &str,
+        root: &Path,
+    ) -> Result<(), RosenError> {
+        if self.is_watching(root) || self.is_held(root) {
             return Ok(());
         }
         let mut watch = session(server, agent).await?.watch(root);
@@ -110,11 +130,68 @@ impl Watches {
             watch.stop().await?;
             return Err(RosenError::WatchEnded(root.to_path_buf()));
         }
+        if self.is_held(root) {
+            // A rebase began while this watcher started: it must not run under the write.
+            watch.stop().await?;
+            return Ok(());
+        }
         if let Ok(mut running) = self.running.lock() {
             running.retain(|_, watch| !watch.is_finished());
             running.entry(root.to_path_buf()).or_insert(watch);
         }
         Ok(())
+    }
+
+    fn is_held(&self, root: &Path) -> bool {
+        self.held.lock().is_ok_and(|held| held.contains(root))
+    }
+
+    /// Writes the server's rebase of the change into its workspace at `root` (Rosen R2), if
+    /// one is waiting: stops the watcher, stores a final snapshot of the workspace, writes
+    /// the change's rebased head and starts the watcher again. Call it at the agent's step
+    /// boundary, when nothing writes there. Rosen refuses, leaving the workspace as it was,
+    /// while an edit there is not stored. Returns the head now in the workspace, or `None`
+    /// when no rebase waited or another call is already writing one there.
+    pub async fn apply_rebase(
+        &self,
+        server: &ProjectServer,
+        agent: &str,
+        root: &Path,
+    ) -> Result<Option<String>, RosenError> {
+        if !mark(&self.held, root) {
+            return Ok(None);
+        }
+        // A watcher still starting would hold the workspace unseen; the rebase waits on the
+        // server for the next check.
+        if self
+            .starting
+            .lock()
+            .is_ok_and(|starting| starting.contains(root))
+        {
+            unmark(&self.held, root);
+            return Ok(None);
+        }
+        let applied = self.write_rebase(server, agent, root).await;
+        unmark(&self.held, root);
+        let restarted = self.start(server, agent, root).await;
+        let head = applied?;
+        restarted?;
+        Ok(head)
+    }
+
+    async fn write_rebase(
+        &self,
+        server: &ProjectServer,
+        agent: &str,
+        root: &Path,
+    ) -> Result<Option<String>, RosenError> {
+        let session = session(server, agent).await?;
+        if !rebase_waiting(&session, root).await? {
+            return Ok(None);
+        }
+        self.stop(root).await;
+        session.snapshot(root, None).await?;
+        Ok(Some(session.apply_rebase(root).await?.to_string()))
     }
 
     /// Whether a watcher runs on `root`. One that ended on its own doesn't count.
@@ -136,4 +213,39 @@ impl Watches {
             let _ = watch.stop().await;
         }
     }
+}
+
+/// Adds `root` to `set`; false when it was there already.
+fn mark(set: &Mutex<BTreeSet<PathBuf>>, root: &Path) -> bool {
+    set.lock()
+        .is_ok_and(|mut set| set.insert(root.to_path_buf()))
+}
+
+fn unmark(set: &Mutex<BTreeSet<PathBuf>>, root: &Path) {
+    if let Ok(mut set) = set.lock() {
+        set.remove(root);
+    }
+}
+
+/// Whether Rosen holds a head for the workspace's open change that the workspace doesn't:
+/// the server rebased it (R2), and that lasts until the rebase is applied, across restarts.
+/// The workspace's marker names the tree of its last stored snapshot, which is the change's
+/// head unless the server moved it.
+async fn rebase_waiting(session: &Session, root: &Path) -> Result<bool, RosenError> {
+    let marker =
+        rosen_client::snapshot::WorkspaceMarker::read(root).map_err(|source| RosenError::Io {
+            action: "read the Rosen marker of",
+            path: root.to_path_buf(),
+            source,
+        })?;
+    let record = session
+        .client()
+        .change_show(&marker.change.to_string())
+        .await?
+        .change;
+    let open = matches!(
+        record.state,
+        rosen_client::ChangeState::Open | rosen_client::ChangeState::Ready
+    );
+    Ok(open && record.head != marker.tree)
 }

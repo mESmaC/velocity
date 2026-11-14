@@ -97,6 +97,23 @@ pub(crate) fn end_following(application: &AppHandle, project: u32) {
     }
 }
 
+/// Writes the server's rebase into the workspace at `root`, if one waits, between its
+/// watcher's stop and restart (Rosen R2). Returns the head written, if any.
+pub(crate) async fn apply_rebase(
+    application: &AppHandle,
+    project: u32,
+    root: &Path,
+) -> Result<Option<String>, String> {
+    let server = server(application, project).await?;
+    let agent = velocity_rosen::agent_name(root);
+    application
+        .state::<ManagedRosen>()
+        .watches
+        .apply_rebase(&server, &agent, root)
+        .await
+        .map_err(|error| error.to_string())
+}
+
 /// Stops the watcher on a workspace whose change has closed.
 pub(crate) async fn stop_watch(application: &AppHandle, root: &Path) {
     application.state::<ManagedRosen>().watches.stop(root).await;
@@ -297,6 +314,7 @@ async fn watch_open_threads(application: &AppHandle) {
             report(watch_thread(application, project, &root).await);
         }
     }
+    crate::rosen_rebase::apply_pending(application).await;
 }
 
 /// Each open Rosen thread's project and workspace root.
