@@ -19,13 +19,14 @@ use velocity_core::rosen_checker::{
     conflict_line, conflict_message, land_refusal, landed_line, refused_line,
 };
 use velocity_rosen::ProjectServer;
-use velocity_rosen::checker::{self, CHECKER, Priority};
+use velocity_rosen::checker::{self, CHECKER, Priority, StagedMerge};
 use velocity_rosen::duty::{self, LandOutcome};
 use velocity_store::duty::PrDutyRoster;
 
 use super::landing::LANDER;
 use super::{PrDutyReviews, ReviewHost};
 use crate::launch::Location;
+use crate::rosen_review::mode_under;
 
 /// How often one change is checked again in a pass because the base moved under its
 /// receipt. Only another lander moves it, so more rounds than this mean the change is
@@ -120,13 +121,17 @@ impl PrDutyReviews {
             return;
         };
         let server = ProjectServer::new(&self.app_data, roster.project.id);
-        let repository = PathBuf::from(&roster.project.repository_path);
-        let mode =
-            crate::rosen_review::change_mode(&server, &repository, change, ReviewWork::Review);
+        // A first look at the current base, so a change only an agent can check never waits
+        // for a staging; the policy at the base the checks run on decides again below.
+        let mode = crate::rosen_review::change_mode(&server, change, ReviewWork::Review);
         match mode.await {
             Ok((_, ReviewMode::Reading)) => {}
             Ok((_, ReviewMode::LocalChecks)) => {
-                return self.leave_change_to_agent(roster.project.id, candidate);
+                return self.leave_change_to_agent(
+                    roster.project.id,
+                    &candidate.subject,
+                    &candidate.head,
+                );
             }
             // Rosen could not be read: the next tick looks again.
             Err(_) => return,
@@ -146,18 +151,18 @@ impl PrDutyReviews {
     /// An approved head Velocity can't check itself (a sensitive path, a changed proof, or
     /// a project with no pre-land commands) stops resting, so the next idle agent takes it,
     /// runs the local checks and lands it.
-    fn leave_change_to_agent(&self, project: u32, candidate: &ReviewCandidate) {
-        let Some(change) = change_of(candidate) else {
+    fn leave_change_to_agent(&self, project: u32, subject: &ReviewSubject, head: &str) {
+        let ReviewSubject::Change { change, .. } = subject else {
             return;
         };
         let mut state = self.lock();
         let note = state
             .checking
-            .entry((project, change.to_owned()))
-            .or_insert_with(|| CheckNote::new(&candidate.head));
+            .entry((project, change.clone()))
+            .or_insert_with(|| CheckNote::new(head));
         note.left_to_agent = true;
         if let Some(attempts) = state.attempted.get_mut(&project) {
-            attempts.remove(&candidate.subject);
+            attempts.remove(subject);
         }
         drop(state);
         self.wake();
@@ -207,15 +212,12 @@ impl<Host: ReviewHost> Check<'_, Host> {
         let Some(folder) = self.folder() else {
             return false;
         };
-        let commands = match checker::pre_land_commands(&self.server).await {
-            // No commands would be a receipt for nothing: an agent checks it instead.
-            Ok(commands) if !commands.is_empty() => commands,
-            _ => return false,
-        };
-        let staged = match checker::stage_merge_result(&self.server, self.change, &folder).await {
-            Ok(staged) => staged,
-            Err(error) => return self.could_not_check(&error.to_string()),
-        };
+        let StagedMerge { merge, policy } =
+            match checker::stage_merge_result(&self.server, self.change, &folder).await {
+                Ok(staged) => staged,
+                Err(error) => return self.could_not_check(&error.to_string()),
+            };
+        let staged = merge;
         if !staged.conflicts.is_empty() {
             let base_branch = crate::launch::base_branch(&self.roster.project);
             let message = conflict_message(self.change, &base_branch, &staged.conflicts);
@@ -226,6 +228,23 @@ impl<Host: ReviewHost> Check<'_, Host> {
             // A new head since the approval: Rosen has voided it.
             return false;
         }
+        // The policy that counts is the one at the base the checks run on: a land since the
+        // first look may have made this change sensitive, or changed the commands.
+        let paths = match duty::changed_paths(&self.server, self.change).await {
+            Ok(paths) => paths,
+            Err(error) => return self.could_not_check(&error.to_string()),
+        };
+        let (_, mode) = mode_under(&policy, &paths, ReviewWork::Review);
+        if mode == ReviewMode::LocalChecks {
+            let subject = ReviewSubject::Change {
+                thread: self.thread,
+                change: self.change.to_owned(),
+            };
+            self.runner
+                .leave_change_to_agent(self.roster.project.id, &subject, self.head);
+            return false;
+        }
+        let commands = policy.commands;
         self.post(
             DutyEventKind::Wait,
             checking_line(self.change, &staged.base),
@@ -236,6 +255,7 @@ impl<Host: ReviewHost> Check<'_, Host> {
         })
         .await;
         match ran {
+            // The receipt names the check set the staged base holds: the commands just run.
             Ok(Ok(None)) => self.submit_receipt(&staged.head, &staged.base).await,
             Ok(Ok(Some(failed))) => {
                 let failed = FailedCheck {

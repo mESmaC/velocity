@@ -39,14 +39,20 @@ pub struct TierAssessment {
 /// Tiers a diff against the sensitive path patterns. Sensitive wins over trivial: a comment
 /// edit in a sensitive file still gets the sensitive review.
 pub fn assess_tier(diff: &DiffSummary, sensitive_patterns: &[String]) -> TierAssessment {
+    assess_tier_with(diff, |path| {
+        sensitive_patterns
+            .iter()
+            .any(|pattern| path_matches(pattern, path))
+    })
+}
+
+/// Tiers a diff where `is_sensitive` says which paths are sensitive: for a project whose
+/// version control keeps the list itself, as Rosen keeps it in `rosen.toml` at the base.
+pub fn assess_tier_with(diff: &DiffSummary, is_sensitive: impl Fn(&str) -> bool) -> TierAssessment {
     let sensitive_files: Vec<String> = diff
         .paths
         .iter()
-        .filter(|path| {
-            sensitive_patterns
-                .iter()
-                .any(|pattern| path_matches(pattern, path))
-        })
+        .filter(|path| is_sensitive(path))
         .cloned()
         .collect();
     let tier = if !sensitive_files.is_empty() {

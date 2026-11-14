@@ -5,9 +5,10 @@
 
 use std::path::{Path, PathBuf};
 
+use rosen_client::Client;
 use rosen_client::protocol::{CommentTarget, DiffRequest, LandStatus};
-use rosen_client::{Client, ObjectId};
 
+use crate::policy::object;
 use crate::workspace::session;
 use crate::{ProjectServer, RosenError};
 
@@ -356,23 +357,20 @@ pub async fn comment_on_line(
 }
 
 /// Records that the pre-land checks passed on `change`'s merge result of `head` onto
-/// `base`: the receipt Rosen needs to land it.
+/// `base`: the receipt Rosen needs to land it. The receipt names the check set `base`
+/// holds, the one Rosen asks for when it lands on that base, not whatever set the current
+/// base names by the time the checks finish.
 pub async fn submit_receipt(
     server: &ProjectServer,
     reviewer: &str,
     change: &str,
     (head, base): (&str, &str),
 ) -> Result<(), RosenError> {
-    let session = session(server, reviewer).await?;
-    let check_set = session
-        .client()
-        .project_config(None)
+    let check_set = crate::policy::policy_at(server, Some(base))
         .await?
-        .config
-        .checks
-        .pre_land
-        .name;
-    session
+        .check_set;
+    session(server, reviewer)
+        .await?
         .submit_receipt(change, object(head)?, object(base)?, &check_set)
         .await?;
     Ok(())
@@ -412,8 +410,4 @@ pub async fn land(
             message,
         },
     })
-}
-
-fn object(id: &str) -> Result<ObjectId, RosenError> {
-    id.parse().map_err(|_| RosenError::InvalidId(id.to_owned()))
 }
