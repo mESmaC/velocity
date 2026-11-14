@@ -19,6 +19,9 @@ pub mod ready_pool;
 pub mod restart;
 pub mod review;
 pub mod review_runner;
+pub mod rosen_duty_server;
+mod rosen_duty_tools;
+mod rosen_review;
 pub mod runtime;
 pub mod shared_mcp;
 pub mod swarm;
@@ -41,6 +44,7 @@ pub use launch::{
 pub use ready_pool::{PoolHost, PoolProject, PoolRow, PoolTicket, ReadyPools};
 pub use review::{PR_DUTY_SERVER_SWITCH, ReviewPlan, plan_review};
 pub use review_runner::{PrDutyReviews, ReviewChange, ReviewHost};
+pub use rosen_duty_server::{ROSEN_DUTY_SERVER_SWITCH, RosenDutyServer};
 pub use runtime::{
     RunningSession, SessionInputs, SteerError, StopOutcome, ThreadKey, ThreadProgress,
     ThreadRuntimes, spawn_session,

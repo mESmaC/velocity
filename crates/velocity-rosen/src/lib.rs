@@ -8,6 +8,7 @@
 mod agent;
 #[cfg(feature = "bundled")]
 mod bundled;
+pub mod duty;
 mod events;
 mod process;
 mod server;
@@ -34,6 +35,8 @@ pub enum RosenError {
     Stopped,
     #[error("{0} is not a valid Rosen agent name")]
     AgentName(String),
+    #[error("{0} is not a commit or tree id")]
+    InvalidId(String),
     #[error(transparent)]
     Client(#[from] rosen_client::Error),
     #[error("the watcher on {0} ended as it started")]

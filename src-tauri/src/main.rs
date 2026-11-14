@@ -9,6 +9,10 @@ fn main() -> anyhow::Result<()> {
     if velocity_app_lib::reviews::serve_pr_duty_server()? {
         return Ok(());
     }
+    // And as the MCP server of each PR duty agent reviewing a Rosen change (F5, F7).
+    if velocity_app_lib::reviews::serve_rosen_duty_server()? {
+        return Ok(());
+    }
     // Watches start it as the Main watcher's MCP server (F7).
     if velocity_app_lib::main_watch::serve_watch_server()? {
         return Ok(());

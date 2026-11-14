@@ -12,7 +12,10 @@ use velocity_core::duty::DutyRole;
 use velocity_github::{MergeMethod, PrDutyServer, PullRequestClient, ReviewRecord};
 use velocity_interview::Interviews;
 use velocity_store::duty::PrDutyRoster;
-use velocity_threads::{PR_DUTY_SERVER_SWITCH, PrDutyReviews, ReviewChange, ReviewHost};
+use velocity_threads::{
+    PR_DUTY_SERVER_SWITCH, PrDutyReviews, ROSEN_DUTY_SERVER_SWITCH, ReviewChange, ReviewHost,
+    RosenDutyServer,
+};
 
 use crate::duty::DutyEventPublished;
 use crate::layout::MainLayout;
@@ -63,6 +66,29 @@ pub fn serve_pr_duty_server() -> anyhow::Result<bool> {
     server
         .serve(input, &mut output)
         .context("The PR duty MCP connection failed")?;
+    output.flush()?;
+    Ok(true)
+}
+
+/// `velocity --rosen-duty-mcp <launch-file>`: serve one Rosen change review's MCP connection
+/// on stdin/stdout and exit. The runner wrote the change and the reviewer into the launch
+/// file, so the agent can't act on another change or as anyone else. `false` when Velocity
+/// was started normally.
+pub fn serve_rosen_duty_server() -> anyhow::Result<bool> {
+    let arguments: Vec<String> = std::env::args().skip(1).collect();
+    if arguments.first().map(String::as_str) != Some(ROSEN_DUTY_SERVER_SWITCH) {
+        return Ok(false);
+    }
+    let [_, launch_file] = arguments.as_slice() else {
+        anyhow::bail!("Usage: {ROSEN_DUTY_SERVER_SWITCH} <launch-file>");
+    };
+    let mut server =
+        RosenDutyServer::from_launch_file(Path::new(launch_file)).map_err(anyhow::Error::msg)?;
+    let input = BufReader::new(std::io::stdin().lock());
+    let mut output = std::io::stdout().lock();
+    server
+        .serve(input, &mut output)
+        .context("The Rosen duty MCP connection failed")?;
     output.flush()?;
     Ok(true)
 }
@@ -122,6 +148,15 @@ impl ReviewHost for TauriReviewHost {
         let saved = self.save(project, change);
         report(saved.clone().map(|_| ()));
         saved.unwrap_or(false)
+    }
+
+    fn changes_requested(&self, project: u32, thread: u32, change: &str, message: &str) {
+        report(crate::rosen_events::changes_requested(
+            &self.0,
+            (project, thread),
+            change,
+            message,
+        ));
     }
 }
 

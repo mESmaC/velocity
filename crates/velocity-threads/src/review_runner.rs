@@ -18,11 +18,13 @@ use velocity_acp::client::{AgentEvent, AgentInput, AircLaunch, duty_member};
 use velocity_airc::Channel;
 use velocity_core::duty::{DutyAgentCard, DutyEventKind, DutyFeedEvent, DutyRoleEntry};
 use velocity_core::pr_review::{
-    ReviewAssignment, ReviewAttempt, ReviewBrief, ReviewCandidate, ReviewWork, TurnEndAction,
-    assign_reviews, claim_message, continue_prompt, resting_heads, review_doing,
-    review_finished_message, review_idle_doing, review_prompt, short_commit, turn_end_action,
+    ReviewAssignment, ReviewAttempt, ReviewBrief, ReviewCandidate, ReviewSubject, ReviewWork,
+    TurnEndAction, assign_reviews, claim_message, continue_prompt, resting_heads, review_doing,
+    review_finished_message, review_idle_doing, review_prompt, short_change, short_commit,
+    turn_end_action,
 };
 use velocity_core::review_tier::TierAssessment;
+use velocity_core::rosen_review::{RosenReviewBrief, rosen_review_prompt};
 use velocity_core::thread_view_model::TranscriptBlock;
 use velocity_github::{
     PrDutyReport, PullRequestClient, PullRequestError, PullRequestOperation, PullRequestState,
@@ -53,16 +55,19 @@ pub trait ReviewHost: Clone + Send + Sync + 'static {
     /// Applies `change` to the project's PR duty, appends and publishes the events it returns,
     /// saves, and refreshes the window. `false` when the project or the role is gone.
     fn update(&self, project: u32, change: ReviewChange) -> bool;
+    /// PR duty requested changes on thread `thread`'s Rosen change: the thread goes back to
+    /// fixing, and its agent gets `message` (F5). A PR's author reads them on GitHub instead.
+    fn changes_requested(&self, project: u32, thread: u32, change: &str, message: &str);
 }
 
 type AgentKey = (u32, String);
 
 /// A running review: its input, how many of your instructions it still has to answer, and
-/// the PR it holds.
+/// the PR or change it holds.
 struct Running {
     input: UnboundedSender<AgentInput>,
     pending: usize,
-    number: u32,
+    subject: ReviewSubject,
     /// Its agent was dismissed (F7): the session is stopping and the PR is already released.
     dismissed: bool,
     /// The last AIRC line looked at for this review (F14): the channel's tip at its claim,
@@ -83,9 +88,10 @@ struct Instruction {
 struct RunnerState {
     running: BTreeMap<AgentKey, Running>,
     instructions: BTreeMap<u32, Instruction>,
-    /// Per project, each PR's last review session: its head rests (`resting_heads`), so a
-    /// decided head waits for its author and an undecided one is retried after a delay.
-    attempted: BTreeMap<u32, BTreeMap<u32, ReviewAttempt>>,
+    /// Per project, each PR's or change's last review session: its head rests
+    /// (`resting_heads`), so a decided head waits for its author and an undecided one is
+    /// retried after a delay.
+    attempted: BTreeMap<u32, BTreeMap<ReviewSubject, ReviewAttempt>>,
     /// Counts dismissals, so a tick that read its rosters before one starts no review for the
     /// dismissed agent.
     dismissals: u64,
@@ -162,12 +168,12 @@ impl PrDutyReviews {
         self.wake.notify_one();
     }
 
-    /// Each running review's agent and the PR it holds.
-    pub fn running(&self) -> BTreeMap<AgentKey, u32> {
+    /// Each running review's agent and the PR or change it holds.
+    pub fn running(&self) -> BTreeMap<AgentKey, ReviewSubject> {
         self.lock()
             .running
             .iter()
-            .map(|(key, running)| (key.clone(), running.number))
+            .map(|(key, running)| (key.clone(), running.subject.clone()))
             .collect()
     }
 
@@ -180,13 +186,13 @@ impl PrDutyReviews {
             .map(LiveTranscript::blocks)
     }
 
-    /// The PR `nickname`'s running review holds, if it has one.
+    /// The PR `nickname`'s running review holds, if it holds one (not a Rosen change).
     pub fn held(&self, project: u32, nickname: &str) -> Option<u32> {
         self.lock()
             .running
             .get(&(project, nickname.to_owned()))
             .filter(|running| !running.dismissed)
-            .map(|running| running.number)
+            .and_then(|running| running.subject.number())
     }
 
     /// Dismisses `nickname` (F7): stops its running review's session, which kills the agent's
@@ -195,23 +201,24 @@ impl PrDutyReviews {
     pub fn dismiss(&self, project: u32, nickname: &str, repository: &Path) {
         let mut state = self.lock();
         state.dismissals = state.dismissals.wrapping_add(1);
-        let number = state
+        let subject = state
             .running
             .get_mut(&(project, nickname.to_owned()))
             .filter(|running| !running.dismissed)
             .map(|running| {
                 running.dismissed = true;
                 let _ = running.input.send(AgentInput::Stop);
-                running.number
+                running.subject.clone()
             });
-        if let Some(number) = number
+        if let Some(subject) = &subject
             && let Some(attempts) = state.attempted.get_mut(&project)
         {
-            // A released PR doesn't rest: the next idle agent takes it.
-            attempts.remove(&number);
+            // A released PR or change doesn't rest: the next idle agent takes it.
+            attempts.remove(subject);
         }
         drop(state);
-        if let Some(number) = number {
+        // Only a PR has a claim outside Velocity to release.
+        if let Some(number) = subject.and_then(|subject| subject.number()) {
             let runner = self.clone();
             let (repository, nickname) = (repository.to_path_buf(), nickname.to_owned());
             // Blocking GitHub calls, and the window's command may hold no async runtime.
@@ -324,8 +331,33 @@ impl PrDutyReviews {
         }
     }
 
-    /// The project's open PRs, each with where the approval record leaves its head.
+    /// The project's open PRs, each with where the approval record leaves its head, then its
+    /// Rosen changes in review. A Rosen project needs no GitHub remote: its PRs are left out
+    /// when they can't be listed.
     async fn candidates(&self, roster: &PrDutyRoster) -> Result<Vec<ReviewCandidate>, String> {
+        let rosen = roster.project.version_control == velocity_store::VersionControl::Rosen;
+        let mut candidates = match self.pull_request_candidates(roster).await {
+            Ok(candidates) => candidates,
+            Err(_) if rosen => Vec::new(),
+            Err(error) => return Err(error),
+        };
+        if rosen
+            || roster
+                .project
+                .threads
+                .iter()
+                .any(|thread| thread.rosen_change.is_some())
+        {
+            candidates
+                .extend(crate::rosen_review::change_candidates(&self.app_data, roster).await?);
+        }
+        Ok(candidates)
+    }
+
+    async fn pull_request_candidates(
+        &self,
+        roster: &PrDutyRoster,
+    ) -> Result<Vec<ReviewCandidate>, String> {
         let repository = PathBuf::from(&roster.project.repository_path);
         let app_data = self.app_data.clone();
         let project = roster.project.id.to_string();
@@ -351,7 +383,7 @@ impl PrDutyReviews {
                 .into_iter()
                 .zip(standings)
                 .map(|(pull_request, standing)| ReviewCandidate {
-                    number: pull_request.number,
+                    subject: ReviewSubject::PullRequest(pull_request.number),
                     title: pull_request.title,
                     head: pull_request.head_ref_oid,
                     head_branch: pull_request.head_ref_name,
@@ -372,11 +404,11 @@ impl PrDutyReviews {
     ) -> Vec<ReviewAssignment> {
         let state = self.lock();
         let project = roster.project.id;
-        let held: BTreeSet<u32> = state
+        let held: BTreeSet<ReviewSubject> = state
             .running
             .iter()
             .filter(|((owner, _), running)| *owner == project && !running.dismissed)
-            .map(|(_, running)| running.number)
+            .map(|(_, running)| running.subject.clone())
             .collect();
         let resting = state
             .attempted
@@ -395,7 +427,7 @@ impl PrDutyReviews {
     ) {
         let Some(candidate) = candidates
             .iter()
-            .find(|candidate| candidate.number == assignment.number)
+            .find(|candidate| candidate.subject == assignment.subject)
         else {
             return;
         };
@@ -408,7 +440,7 @@ impl PrDutyReviews {
                 Running {
                     input: input.clone(),
                     pending: 0,
-                    number: candidate.number,
+                    subject: candidate.subject.clone(),
                     dismissed: false,
                     airc_after: 0,
                     delivering: false,
@@ -452,28 +484,28 @@ impl PrDutyReviews {
     }
 
     fn deliver_airc(&self) {
-        let reviews: Vec<(AgentKey, u32, u64)> = self
+        let reviews: Vec<(AgentKey, ReviewSubject, u64)> = self
             .lock()
             .running
             .iter()
             .filter(|(_, running)| running.delivering && !running.dismissed)
-            .map(|(key, running)| (key.clone(), running.number, running.airc_after))
+            .map(|(key, running)| (key.clone(), running.subject.clone(), running.airc_after))
             .collect();
-        for (key, number, after) in reviews {
-            let Some(cursor) = self.deliver_to(&key, number, after) else {
+        for (key, subject, after) in reviews {
+            let Some(cursor) = self.deliver_to(&key, &subject, after) else {
                 continue;
             };
             if let Some(running) = self.lock().running.get_mut(&key)
-                && running.number == number
+                && running.subject == subject
             {
                 running.airc_after = running.airc_after.max(cursor);
             }
         }
     }
 
-    /// Delivers targeted messages after `after` to the review of `number`: each is queued
+    /// Delivers targeted messages after `after` to the review of `subject`: each is queued
     /// as the session's next prompt and answered in its own turn. Returns the new cursor.
-    fn deliver_to(&self, key: &AgentKey, number: u32, after: u64) -> Option<u64> {
+    fn deliver_to(&self, key: &AgentKey, subject: &ReviewSubject, after: u64) -> Option<u64> {
         let channel = Channel::open(&self.app_data, &key.0.to_string()).ok()?;
         let member = duty_member(&key.1);
         // Only the review's own AIRC server joins: a join made here would outlive its session.
@@ -488,7 +520,7 @@ impl PrDutyReviews {
             let Some(running) = state
                 .running
                 .get_mut(key)
-                .filter(|running| running.number == number && running.delivering)
+                .filter(|running| running.subject == *subject && running.delivering)
             else {
                 return Ok(false);
             };
@@ -530,11 +562,14 @@ struct Outcome {
 /// A prepared review: its plan, its worktree and the head it checks.
 struct Prepared {
     plan: ReviewPlan,
+    /// The PR's review worktree, or the change's review folder.
     worktree: PathBuf,
     head: String,
     base_commit: String,
     conflicts: Vec<String>,
     tier: TierAssessment,
+    /// A Rosen change's MCP server launch file; `None` for a PR.
+    launch_file: Option<PathBuf>,
 }
 
 /// One agent's review of one PR, from its claim to its release.
@@ -550,27 +585,32 @@ struct Review {
 
 impl Review {
     async fn run<Host: ReviewHost>(self, host: &Host, inputs: UnboundedReceiver<AgentInput>) {
-        let number = self.candidate.number;
-        set_card(host, &self.key, true, review_doing(number, "claiming"));
+        let subject = self.candidate.subject.clone();
+        set_card(host, &self.key, true, review_doing(&subject, "claiming"));
         if !self.claim(host).await || self.runner.dismissed(&self.key) {
             return self.finish(host, Outcome::default()).await;
         }
-        set_card(
-            host,
-            &self.key,
-            true,
-            review_doing(number, "preparing the review worktree"),
-        );
-        let outcome = match self.prepare().await {
+        let step = match subject {
+            ReviewSubject::PullRequest(_) => "preparing the review worktree",
+            ReviewSubject::Change { .. } => "checking out the merge result",
+        };
+        set_card(host, &self.key, true, review_doing(&subject, step));
+        let prepared = match &subject {
+            ReviewSubject::PullRequest(number) => self.prepare(*number).await,
+            ReviewSubject::Change { thread, change } => self.prepare_change(*thread, change).await,
+        };
+        let outcome = match prepared {
             Ok(prepared) => {
-                keep_worktree(host, &self.key, &prepared.worktree, true);
-                set_card(
-                    host,
-                    &self.key,
-                    true,
-                    review_doing(number, "checking proofs"),
-                );
-                let proofs = self.check_proofs(&prepared).await;
+                // A change's review folder is removed when its review ends: no card keeps it.
+                let proofs = match subject.number() {
+                    Some(number) => {
+                        keep_worktree(host, &self.key, &prepared.worktree, true);
+                        let step = review_doing(&subject, "checking proofs");
+                        set_card(host, &self.key, true, step);
+                        self.check_proofs(number, &prepared).await
+                    }
+                    None => String::new(),
+                };
                 self.review(host, prepared, &proofs, inputs).await
             }
             Err(failure) => Outcome {
@@ -589,14 +629,17 @@ impl Review {
         let project = self.roster.project.id.to_string();
         let (nickname, number, head) = (
             self.key.1.clone(),
-            self.candidate.number,
+            self.candidate.subject.number(),
             self.candidate.head.clone(),
         );
         // Best effort: the runner's own lock is what keeps two agents off one PR, and a
-        // missing comment only hides the claimer on the rail.
+        // missing comment only hides the claimer on the rail. A Rosen change has neither.
         let key = self.key.clone();
         let _ = tokio::task::spawn_blocking(move || {
             runner.start_airc_cursor(&key);
+            let Some(number) = number else {
+                return;
+            };
             if let Ok(record) = ReviewRecord::open(&app_data, &project, &nickname) {
                 let _ = record.claim(number, &head);
             }
@@ -609,7 +652,7 @@ impl Review {
                 .and_then(|client| client.execute(comment));
         })
         .await;
-        let message = claim_message(number, &self.candidate.title, self.work);
+        let message = claim_message(&self.candidate.subject, &self.candidate.title, self.work);
         let nickname = self.key.1.clone();
         host.update(
             self.key.0,
@@ -626,10 +669,9 @@ impl Review {
 
     /// Makes or resets the review worktree at the PR head merged onto the base branch's tip
     /// (blocking git work).
-    async fn prepare(&self) -> Result<Prepared, String> {
+    async fn prepare(&self, number: u32) -> Result<Prepared, String> {
         let roster = self.roster.clone();
         let nickname = self.key.1.clone();
-        let number = self.candidate.number;
         tokio::task::spawn_blocking(move || {
             let agent = roster
                 .agents
@@ -654,19 +696,53 @@ impl Review {
                 base_commit: checkout.base_commit,
                 conflicts: checkout.conflicts,
                 tier,
+                launch_file: None,
             })
         })
         .await
         .map_err(|error| error.to_string())?
     }
 
+    /// Writes the Rosen change's merge result into its review folder, with the folder setup.
+    async fn prepare_change(&self, thread: u32, change: &str) -> Result<Prepared, String> {
+        let report = self.report_path();
+        if let Some(folder) = report.parent() {
+            let _ = std::fs::create_dir_all(folder);
+        }
+        let prepared = crate::rosen_review::prepare_change(crate::rosen_review::ChangeReview {
+            app_data: &self.runner.app_data,
+            roster: &self.roster,
+            nickname: &self.key.1,
+            thread,
+            change,
+            report: &report,
+        })
+        .await?;
+        Ok(Prepared {
+            worktree: prepared.plan.worktree.worktree_path.clone(),
+            plan: prepared.plan,
+            head: prepared.head,
+            base_commit: prepared.base,
+            conflicts: prepared.conflicts,
+            tier: prepared.tier,
+            launch_file: Some(prepared.launch_file),
+        })
+    }
+
+    /// The review's report file, which its MCP server appends decisions to.
+    fn report_path(&self) -> PathBuf {
+        self.runner
+            .app_data
+            .join("pr-duty-reports")
+            .join(format!("{}-{}.jsonl", self.key.0, self.key.1))
+    }
+
     /// Runs the proof checks and the statement lock on the prepared worktree (F17), before the
     /// agent sees the PR. Returns what its prompt adds.
-    async fn check_proofs(&self, prepared: &Prepared) -> String {
+    async fn check_proofs(&self, number: u32, prepared: &Prepared) -> String {
         let app_data = self.runner.app_data.clone();
         let project = self.roster.project.id.to_string();
         let nickname = self.key.1.clone();
-        let number = self.candidate.number;
         let worktree = prepared.worktree.clone();
         let (base_commit, head) = (prepared.base_commit.clone(), prepared.head.clone());
         tokio::task::spawn_blocking(move || {
@@ -691,11 +767,7 @@ impl Review {
         proofs: &str,
         inputs: UnboundedReceiver<AgentInput>,
     ) -> Outcome {
-        let report = self
-            .runner
-            .app_data
-            .join("pr-duty-reports")
-            .join(format!("{}-{}.jsonl", self.key.0, self.key.1));
+        let report = self.report_path();
         if let Some(folder) = report.parent() {
             let _ = std::fs::create_dir_all(folder);
         }
@@ -710,7 +782,14 @@ impl Review {
             // Dismissed while the worktree or the proofs were prepared: no session starts.
             return Outcome::default();
         }
-        let mut setup = review_session(&prepared.plan, prepared.worktree.clone(), server);
+        let mut setup = match &prepared.launch_file {
+            Some(launch_file) => crate::review::change_review_session(
+                &prepared.plan,
+                &self.runner.executable,
+                launch_file,
+            ),
+            None => review_session(&prepared.plan, prepared.worktree.clone(), server),
+        };
         setup.airc = self
             .runner
             .airc
@@ -735,7 +814,10 @@ impl Review {
         // Recorded while the claim is still held, so no tick can claim the head in between.
         self.remember(&prepared.head, outcome.decided);
         let _ = std::fs::remove_file(&report);
-        if outcome.merged {
+        if let Some(launch_file) = &prepared.launch_file {
+            let _ = std::fs::remove_file(launch_file);
+            crate::rosen_review::remove_folder(prepared.worktree.clone()).await;
+        } else if outcome.merged {
             // Rule 5: the review worktree goes as soon as its PR merges.
             let repository = prepared.plan.worktree.repository_root.clone();
             let worktree = prepared.worktree.clone();
@@ -766,13 +848,31 @@ impl Review {
             .attempted
             .entry(self.key.0)
             .or_default()
-            .insert(self.candidate.number, attempt);
+            .insert(self.candidate.subject.clone(), attempt);
     }
 
     fn prompt(&self, prepared: &Prepared) -> String {
+        let number = match &self.candidate.subject {
+            ReviewSubject::PullRequest(number) => *number,
+            ReviewSubject::Change { change, .. } => {
+                return rosen_review_prompt(&RosenReviewBrief {
+                    nickname: &self.key.1,
+                    change,
+                    title: &self.candidate.title,
+                    head: &prepared.head,
+                    base_branch: &prepared.plan.base_branch,
+                    base_commit: &prepared.base_commit,
+                    conflicts: &prepared.conflicts,
+                    work: self.work,
+                    tier: &prepared.tier,
+                    rules: &self.roster.rules,
+                    instruction: self.instruction.as_deref(),
+                });
+            }
+        };
         review_prompt(&ReviewBrief {
             nickname: &self.key.1,
-            number: self.candidate.number,
+            number,
             title: &self.candidate.title,
             head: &prepared.head,
             head_branch: &self.candidate.head_branch,
@@ -811,7 +911,7 @@ impl Review {
                     host,
                     &self.key,
                     true,
-                    review_doing(self.candidate.number, &step),
+                    review_doing(&self.candidate.subject, &step),
                 );
                 doing = step;
             }
@@ -860,11 +960,11 @@ impl Review {
             }
             TurnEndAction::Nudge => {
                 *nudges += 1;
-                let number = self.candidate.number;
-                let _ = running.input.send(text(&continue_prompt(number, *nudges)));
+                let subject = &self.candidate.subject;
+                let _ = running.input.send(text(&continue_prompt(subject, *nudges)));
                 drop(state);
                 let step = format!("asked to finish its decision ({nudges})");
-                set_card(host, &self.key, true, review_doing(number, &step));
+                set_card(host, &self.key, true, review_doing(subject, &step));
             }
         }
     }
@@ -884,10 +984,18 @@ impl Review {
         }
         for report in &reports {
             match report {
-                PrDutyReport::Commented { .. } => {}
-                PrDutyReport::Merged { .. } => {
+                PrDutyReport::Commented { .. } | PrDutyReport::ChangeCommented { .. } => {}
+                PrDutyReport::Merged { .. } | PrDutyReport::ChangeLanded { .. } => {
                     outcome.decided = true;
                     outcome.merged = true;
+                }
+                PrDutyReport::ChangeChangesRequested {
+                    change, message, ..
+                } => {
+                    outcome.decided = true;
+                    if let ReviewSubject::Change { thread, .. } = &self.candidate.subject {
+                        host.changes_requested(self.key.0, *thread, change, message);
+                    }
                 }
                 _ => outcome.decided = true,
             }
@@ -914,17 +1022,20 @@ impl Review {
         }
         let app_data = self.runner.app_data.clone();
         let project = self.roster.project.id.to_string();
-        let (nickname, number) = (self.key.1.clone(), self.candidate.number);
-        let _ = tokio::task::spawn_blocking(move || {
-            ReviewRecord::open(&app_data, &project, &nickname)
-                .and_then(|record| record.release(number))
-        })
-        .await;
-        let message = review_finished_message(number, outcome.decided, outcome.failure.as_deref());
+        let nickname = self.key.1.clone();
+        let subject = &self.candidate.subject;
+        if let Some(number) = subject.number() {
+            let _ = tokio::task::spawn_blocking(move || {
+                ReviewRecord::open(&app_data, &project, &nickname)
+                    .and_then(|record| record.release(number))
+            })
+            .await;
+        }
+        let message = review_finished_message(subject, outcome.decided, outcome.failure.as_deref());
         let failed = outcome
             .failure
             .as_deref()
-            .map(|failure| review_doing(number, &format!("{FAILED} · {failure}")));
+            .map(|failure| review_doing(subject, &format!("{FAILED} · {failure}")));
         let nickname = self.key.1.clone();
         host.update(
             self.key.0,
@@ -1052,7 +1163,63 @@ fn report_event(timestamp: &str, nickname: &str, report: PrDutyReport) -> Option
                 short_commit(&head)
             )),
         ),
-        PrDutyReport::Commented { .. } => return None,
+        PrDutyReport::Commented { .. } | PrDutyReport::ChangeCommented { .. } => return None,
+        report => return change_report_event(timestamp, nickname, report),
+    };
+    Some(DutyFeedEvent::new(timestamp, nickname, kind, message))
+}
+
+/// The feed line for a decision on a Rosen change.
+fn change_report_event(
+    timestamp: &str,
+    nickname: &str,
+    report: PrDutyReport,
+) -> Option<DutyFeedEvent> {
+    let (kind, message) = match report {
+        PrDutyReport::ChangeApproved { change, head } => (
+            DutyEventKind::Approve,
+            format!(
+                "Approved change {} at {}",
+                short_change(&change),
+                short_commit(&head)
+            ),
+        ),
+        PrDutyReport::ChangeChangesRequested { change, head, .. } => (
+            DutyEventKind::Changes,
+            format!(
+                "Requested changes on change {} at {}",
+                short_change(&change),
+                short_commit(&head)
+            ),
+        ),
+        PrDutyReport::ChangeLanded { change, commit } => (
+            DutyEventKind::Merge,
+            format!(
+                "Landed change {} · {}",
+                short_change(&change),
+                short_commit(&commit)
+            ),
+        ),
+        PrDutyReport::ChangeLandFailed { change, reason } => (
+            DutyEventKind::Wait,
+            velocity_core::scout_sweep::step_doing(&format!(
+                "Land of change {} refused · {reason}",
+                short_change(&change)
+            )),
+        ),
+        PrDutyReport::ChangeHeld {
+            change,
+            head,
+            reason,
+        } => (
+            DutyEventKind::Wait,
+            velocity_core::scout_sweep::step_doing(&format!(
+                "Held change {} at {} · {reason}",
+                short_change(&change),
+                short_commit(&head)
+            )),
+        ),
+        _ => return None,
     };
     Some(DutyFeedEvent::new(timestamp, nickname, kind, message))
 }

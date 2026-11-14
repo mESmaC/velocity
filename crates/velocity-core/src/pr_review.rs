@@ -1,6 +1,6 @@
-//! PR duty reviews (SPEC.md F7 PR duty, Rule 4): which open PRs need an agent, which agent
-//! takes which PR (one PR per agent, so two agents never review the same one), what the
-//! reviewing agent is told, and what its card and the Duty view's activity feed say.
+//! PR duty reviews (SPEC.md F7 PR duty, Rule 4): which open PRs and Rosen changes need an
+//! agent, which agent takes which (one each, so two agents never review the same one), what
+//! the reviewing agent is told, and what its card and the Duty view's activity feed say.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::time::Duration;
@@ -22,15 +22,71 @@ pub enum ReviewStanding {
     MergeFailed,
 }
 
-/// An open PR as PR duty sees it.
+/// What a PR duty agent reviews: a GitHub PR, or a Rosen change its thread has named ready
+/// (F5). PRs come first, oldest first, then changes in their threads' order.
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum ReviewSubject {
+    PullRequest(u32),
+    Change { thread: u32, change: String },
+}
+
+impl ReviewSubject {
+    /// How cards and feed lines name it: `#12`, or `change abcdefgh`.
+    pub fn label(&self) -> String {
+        match self {
+            Self::PullRequest(number) => format!("#{number}"),
+            Self::Change { change, .. } => format!("change {}", short_change(change)),
+        }
+    }
+
+    /// The PR's number; `None` for a Rosen change.
+    pub fn number(&self) -> Option<u32> {
+        match self {
+            Self::PullRequest(number) => Some(*number),
+            Self::Change { .. } => None,
+        }
+    }
+}
+
+/// A Rosen change id's first eight characters, enough to tell changes apart in a project.
+pub fn short_change(change: &str) -> &str {
+    change.get(..8).unwrap_or(change)
+}
+
+/// An open PR or a Rosen change in review, as PR duty sees it.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ReviewCandidate {
-    pub number: u32,
+    pub subject: ReviewSubject,
     pub title: String,
     pub head: String,
     pub head_branch: String,
     pub draft: bool,
     pub standing: ReviewStanding,
+}
+
+impl ReviewCandidate {
+    /// Rosen change `change`, named ready by thread `thread`. Rosen holds its approvals: it
+    /// is approved when one stands at exactly `head`.
+    pub fn change(
+        thread: u32,
+        change: String,
+        title: String,
+        head: String,
+        approved: bool,
+    ) -> Self {
+        Self {
+            subject: ReviewSubject::Change { thread, change },
+            title,
+            head,
+            head_branch: String::new(),
+            draft: false,
+            standing: if approved {
+                ReviewStanding::Approved
+            } else {
+                ReviewStanding::Unreviewed
+            },
+        }
+    }
 }
 
 /// What an agent does with the PR it claims.
@@ -79,9 +135,19 @@ pub fn turn_end_action(
 }
 
 /// The message that asks an agent which ended its turn undecided to carry on.
-pub fn continue_prompt(number: u32, nudge: u32) -> String {
+pub fn continue_prompt(subject: &ReviewSubject, nudge: u32) -> String {
+    let (named, tools) = match subject {
+        ReviewSubject::PullRequest(number) => (
+            format!("PR #{number}"),
+            "`pr_duty_review` (and merge with `pr_duty_merge` once approved)",
+        ),
+        ReviewSubject::Change { .. } => (
+            format!("Rosen {}", subject.label()),
+            "`rosen_duty_review` (and land with `rosen_duty_land` once approved)",
+        ),
+    };
     format!(
-        "You ended your turn without recording a decision on PR #{number} (reminder {nudge} of {UNDECIDED_NUDGES}). Your session stops when a turn ends without one, so nothing you left running in the background will call you back. Continue the review now: run any long command in the foreground and wait for it, then record your decision with `pr_duty_review` (and merge with `pr_duty_merge` once approved). If you cannot decide, say why in one line.\n"
+        "You ended your turn without recording a decision on {named} (reminder {nudge} of {UNDECIDED_NUDGES}). Your session stops when a turn ends without one, so nothing you left running in the background will call you back. Continue the review now: run any long command in the foreground and wait for it, then record your decision with {tools}. If you cannot decide, say why in one line.\n"
     )
 }
 
@@ -100,15 +166,15 @@ pub struct ReviewAttempt {
 /// needs next), an undecided one only until `UNDECIDED_RETRY_AFTER` has passed, so one bad
 /// session never strands a PR.
 pub fn resting_heads(
-    attempts: &BTreeMap<u32, ReviewAttempt>,
+    attempts: &BTreeMap<ReviewSubject, ReviewAttempt>,
     now: Duration,
-) -> BTreeMap<u32, String> {
+) -> BTreeMap<ReviewSubject, String> {
     attempts
         .iter()
         .filter(|(_, attempt)| {
             attempt.decided || now.saturating_sub(attempt.ended_at) < UNDECIDED_RETRY_AFTER
         })
-        .map(|(number, attempt)| (*number, attempt.head.clone()))
+        .map(|(subject, attempt)| (subject.clone(), attempt.head.clone()))
         .collect()
 }
 
@@ -132,34 +198,34 @@ pub fn review_work(
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ReviewAssignment {
     pub agent: String,
-    pub number: u32,
+    pub subject: ReviewSubject,
     pub work: ReviewWork,
 }
 
-/// Pairs idle agents with PRs that need work, oldest PR first. A PR another agent holds is
-/// never handed out, and each agent gets at most one PR (F7: one PR per agent).
+/// Pairs idle agents with PRs and changes that need work, oldest first. One another agent
+/// holds is never handed out, and each agent gets at most one (F7: one PR per agent).
 pub fn assign_reviews(
     candidates: &[ReviewCandidate],
     idle_agents: &[String],
-    held: &BTreeSet<u32>,
-    attempted: &BTreeMap<u32, String>,
+    held: &BTreeSet<ReviewSubject>,
+    attempted: &BTreeMap<ReviewSubject, String>,
 ) -> Vec<ReviewAssignment> {
-    let mut open: Vec<(u32, ReviewWork)> = candidates
+    let mut open: Vec<(ReviewSubject, ReviewWork)> = candidates
         .iter()
-        .filter(|candidate| !held.contains(&candidate.number))
+        .filter(|candidate| !held.contains(&candidate.subject))
         .filter_map(|candidate| {
-            let tried = attempted.get(&candidate.number).map(String::as_str);
-            review_work(candidate, tried).map(|work| (candidate.number, work))
+            let tried = attempted.get(&candidate.subject).map(String::as_str);
+            review_work(candidate, tried).map(|work| (candidate.subject.clone(), work))
         })
         .collect();
-    open.sort_by_key(|(number, _)| *number);
-    open.dedup_by_key(|(number, _)| *number);
+    open.sort_by(|(left, _), (right, _)| left.cmp(right));
+    open.dedup_by(|(left, _), (right, _)| left == right);
     idle_agents
         .iter()
         .zip(open)
-        .map(|(agent, (number, work))| ReviewAssignment {
+        .map(|(agent, (subject, work))| ReviewAssignment {
             agent: agent.clone(),
-            number,
+            subject,
             work,
         })
         .collect()
@@ -264,7 +330,7 @@ fn tier_steps(brief: &ReviewBrief) -> String {
 /// rests the head instead of being reviewed past.
 const CONVERSATION_STEP: &str = "- Before anything else, read the PR's whole conversation in `pr_duty_pull_request`: every comment, review and review thread, newest last. A comment from a person (not a PR duty agent's review) is an instruction for this review: follow it. If one puts the PR on hold, says not to review or merge it yet, or makes it wait for other work, and nothing newer lifts that, call `pr_duty_review` with action `hold`, the head and the comment's reason, then stop: run no checks.\n";
 
-fn local_checks_step(rules: &PrDutyRuleSettings) -> &'static str {
+pub(crate) fn local_checks_step(rules: &PrDutyRuleSettings) -> &'static str {
     if rules.ci_green_before_merge {
         "- Run the project's local checks from AGENTS.md here, on the merge result. They decide, not GitHub CI: a pending, red or stale run never holds a PR up.\n"
     } else {
@@ -272,7 +338,7 @@ fn local_checks_step(rules: &PrDutyRuleSettings) -> &'static str {
     }
 }
 
-fn quoted_list(files: &[String]) -> String {
+pub(crate) fn quoted_list(files: &[String]) -> String {
     const SHOWN: usize = 8;
     let mut list: Vec<String> = files
         .iter()
@@ -301,7 +367,7 @@ fn review_steps(rules: &PrDutyRuleSettings) -> String {
     steps
 }
 
-const SEVERITY_BAR: &str = "\nSeverity bar (locked):\n- Block only for data loss or corruption, a crash or hang, a SPEC.md §1 rule violation, a security hole, a failing local check, or the main path of the claimed piece not doing what its SPEC.md section says.\n- File everything else as an issue with its evidence (`gh issue create`) and link it from an approving review.\n- Put every blocking finding in this review. When you are unsure whether a finding blocks, it does not block.\n";
+pub(crate) const SEVERITY_BAR: &str = "\nSeverity bar (locked):\n- Block only for data loss or corruption, a crash or hang, a SPEC.md §1 rule violation, a security hole, a failing local check, or the main path of the claimed piece not doing what its SPEC.md section says.\n- File everything else as an issue with its evidence (`gh issue create`) and link it from an approving review.\n- Put every blocking finding in this review. When you are unsure whether a finding blocks, it does not block.\n";
 
 fn decision_rules(brief: &ReviewBrief) -> String {
     let method = match brief.rules.merge_method {
@@ -316,36 +382,38 @@ fn decision_rules(brief: &ReviewBrief) -> String {
 }
 
 /// The feed line for a claim (F7 activity feed).
-pub fn claim_message(number: u32, title: &str, work: ReviewWork) -> String {
+pub fn claim_message(subject: &ReviewSubject, title: &str, work: ReviewWork) -> String {
+    let label = subject.label();
     match work {
-        ReviewWork::Review => format!("Claimed #{number} {title} · reviewing"),
-        ReviewWork::Merge => format!("Claimed #{number} {title} · merging the approved head"),
+        ReviewWork::Review => format!("Claimed {label} {title} · reviewing"),
+        ReviewWork::Merge => format!("Claimed {label} {title} · merging the approved head"),
     }
 }
 
 /// The feed line for a review session that ended without merging or a decision. A session
 /// that ended undecided rests its head for `UNDECIDED_RETRY_AFTER`, and the line says so.
 pub fn review_finished_message(
-    number: u32,
+    subject: &ReviewSubject,
     decided: bool,
     failure: Option<&str>,
 ) -> Option<String> {
+    let label = subject.label();
     match (failure, decided) {
         (Some(failure), _) => Some(format!(
-            "Review of #{number} stopped · {}",
+            "Review of {label} stopped · {}",
             step_doing(failure)
         )),
         (None, false) => Some(format!(
-            "Released #{number} without a decision · retrying in {} min",
+            "Released {label} without a decision · retrying in {} min",
             UNDECIDED_RETRY_AFTER.as_secs() / 60
         )),
         (None, true) => None,
     }
 }
 
-/// A reviewing agent's card line: the PR and the agent's current step.
-pub fn review_doing(number: u32, step: &str) -> String {
-    step_doing(&format!("#{number} · {step}"))
+/// A reviewing agent's card line: the PR or change and the agent's current step.
+pub fn review_doing(subject: &ReviewSubject, step: &str) -> String {
+    step_doing(&format!("{} · {step}", subject.label()))
 }
 
 /// What an idle PR duty card says.
