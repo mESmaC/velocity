@@ -6,6 +6,11 @@ You are building Velocity: a Rust + Tauri desktop IDE that runs many coding agen
 - `SPEC.md` defines what to build. §1 holds the product rules; §7 is the build order; §8 lists open questions.
 - `design/main-window.html` is the reference UI. Open it in a browser. Every feature in SPEC.md is mocked there with live simulated data, and its behaviour is part of the spec.
 
+## Where you work
+- Velocity's projects, this one included, use Rosen by default (SPEC.md F5). Your thread works in a Rosen workspace by default: Velocity's first message says so and names your change. Follow "In a Rosen workspace" below.
+- Git is the fallback: when the project uses git, or Rosen can't make a workspace, your folder is a git worktree. Follow "In a git worktree" below.
+- A Rosen workspace has a `.rosen` folder at its root and no `.git`.
+
 ## Implementation first
 Your job is working functionality. Proofs, tests and docs support it; they never replace it.
 - Build the feature first, end to end, then run it (`cargo tauri dev`, or the crate's own entry point) and see it work.
@@ -20,6 +25,7 @@ Your job is working functionality. Proofs, tests and docs support it; they never
 - Format: `cargo fmt --all`. Run it before every commit.
 - All local checks: `pwsh -NoProfile -File scripts/check.ps1`. It runs the checks PR duty approves on, but only those your change can affect. Rust inputs (`crates/`, `src-tauri/`, Cargo files, the toolchain, and files Rust embeds) run format, the locked build, each changed crate built on its own, generated bindings and clippy. `ui/` or Rust changes run the UI check, lint and build. `proofs/` changes run `lake build` with the axiom audit. A docs-only change runs nothing. A path the script does not recognise, such as a new folder or a file in `scripts/`, runs everything, and so does `-Full`. Run it on the merge result before you mark a PR ready.
 - One-time machine setup: `pwsh -NoProfile -File scripts/Setup-DevMachine.ps1`. It registers the merge driver for generated files and turns on the shared sccache compiler cache.
+- In a Rosen workspace, run heavy builds with `rosen run -- <command>`, for example `rosen run -- cargo build -p velocity-core`. It waits in the machine's run queue (Rosen R3), the same line as the build queue below.
 - Heavy builds go through the build queue: `pwsh -NoProfile -File scripts/build-queue.ps1 cargo build --workspace`. Use it for `cargo build`, `cargo test`, `cargo clippy` and `cargo run`. It runs one build at a time on this machine, so each gets every core and finishes several times faster than five builds side by side. Builds run first come, first served, except that landing checks go first and checks before a PR is marked ready go next: `scripts/check.ps1` already uses it with `-Priority ready`, and PR duty passes `-Priority landing`. While you wait, it prints your place in line and who holds the queue; never stop that process to jump the queue. On a machine with Rosen, the script waits in Rosen's run queue instead (`landing` in its `landing` class, the rest in `build`), the same line as Velocity's checks, Rosen's warm pool prepares and `rosen run`; inside a Rosen workspace, `rosen run -- <command>` does the same directly. Never run `cargo tauri dev` through it: the dev server runs until stopped and would hold the queue.
 - Build only when your change needs it. The build queue is shared by every agent on this machine, so each build you skip shortens everyone's wait.
   - Docs, SPEC.md, AGENTS.md, README and stress scripts need no build. Don't build at all.
@@ -137,7 +143,12 @@ Both are low priority. Add them only where they pay for themselves, and only aft
 - Work only on the piece you claimed. If you find an unrelated problem, file an issue for it. Do not fix it in your PR.
 
 ## Coordination (claims)
-Velocity's AIRC (F14) replaces this section once M8 merges. Until then, claims are draft PRs:
+In a Rosen workspace, claims are Rosen's:
+- Before you edit anything, claim every file you expect to touch: `rosen claim <paths>`. The first claim wins; a refusal names the change that holds the path. Pick other work, or record `rosen share <paths>` when you must edit a held file, or `rosen wait <paths>` when you need its change landed first.
+- Claims are released when your change lands or is abandoned; `rosen release <paths>` gives one up sooner.
+- There is no claim PR, `[claim]` title or "shares" note: Rosen records all of it.
+
+In a git worktree, claims are draft PRs:
 - Before you edit anything, claim your piece:
   1. List open PRs: `gh pr list --state open --json number,title,body,createdAt,headRefName`.
   2. Pick a piece no open PR claims.
@@ -150,23 +161,25 @@ Velocity's AIRC (F14) replaces this section once M8 merges. Until then, claims a
 - When the work is done, retitle the PR without `[claim]` and mark it ready for review.
 
 ## Worktrees
-- Every agent works in its own git worktree under `X:\velocity-wt\`. Create it from the latest `master`: `git fetch origin` then `git worktree add X:\velocity-wt\<slug> -b vel/<slug> origin/master`.
+- In Rosen, Velocity creates your workspace when your thread starts and deletes it when your change lands. Never delete it or move files out of it.
+- In git, every agent works in its own git worktree under `X:\velocity-wt\`. Create it from the latest `master`: `git fetch origin` then `git worktree add X:\velocity-wt\<slug> -b vel/<slug> origin/master`.
 - Branch name: `vel/<slug>`, where the slug is a short name for the piece.
 - After your PR merges, remove your worktree (`git worktree remove X:\velocity-wt\<slug>`) and delete your local branch.
 - Never touch another agent's worktree or branch. Never run `git worktree prune`. The one exception: PR duty agents update PR branches with `master` (see If you are on PR duty).
 
 ## Shared files
 Most merge conflicts come from a few files every feature touches. Keep your edits to them conflict-free:
+- **In Rosen**, `rosen.toml`'s `registration_lists` holds the generated files and registration lists below, and Rosen merges them by keeping both sides' additions. The pre-land checks (`--locked`, `--frozen-lockfile`, `export-bindings --check`) refuse a merge that came out wrong; then regenerate in your workspace and name the work again.
 - **Generated files:** `ui/src/lib/bindings.ts`, `Cargo.lock` and `ui/pnpm-lock.yaml`. Never resolve a conflict in them by hand. After `scripts/Setup-DevMachine.ps1`, `git merge origin/master` keeps master's copy without stopping. Then regenerate and commit: `pnpm -C ui bindings`, `cargo build --workspace` for `Cargo.lock`, `pnpm -C ui install` for `pnpm-lock.yaml`. `scripts/check.ps1` fails if you forget.
 - **Registration lists:** `collect_commands!`, `collect_events!`, `.typ` and `.constant` in `src-tauri/src/lib.rs`, the `mod` lines in each crate's `lib.rs`, and the dependency and member lists in `Cargo.toml`. Add your lines inside your module's group. A new module's group goes in alphabetical order, never at the end: two PRs that both append at the end always conflict.
 - Edits to generated files and registration lists never need a "shares" note (Coordination).
 - **`.gitattributes`:** `/stress/*` already preserves every stress script's bytes. Never add a line per script.
-- **SPEC.md §7:** never tick a checkbox in your PR. PR duty ticks it when it lands the PR.
+- **SPEC.md §7:** never tick a checkbox in a PR: PR duty ticks it when it lands the PR. A Rosen change ticks its own item's checkbox, since only the reviewed change lands, so the tick lands with the work and never without it.
 - **Overlapping fixes, first come, first served:** when two open PRs fix the same root problem or add the same helper, the one that lands first wins. The later PR drops its own version and switches to `master`'s in the commit that merges `master` in. Never land two implementations of one thing, and never hold a PR back so another can land its version first.
 - **Silent conflicts:** after merging `master`, a build error in code neither side edited (a struct gained a field, a function was renamed) is a merge conflict. Fix it in the merge commit.
 
 ## Sensitive paths
-PR duty tiers every PR (SPEC.md F7 Tiered review). A PR that touches a path listed here is sensitive: full review, `cargo run -p stress -- --all` on the merge result before merge, and a confidence proof at the reference level (a fixture table exported from the Lean model plus one Rust test that checks the implementation against it) for any proof-list feature it changes. The code level (an Aeneas translation) is required only when an issue asks for one (#142). A PR that changes only docs, comments or formatting is trivial: approve it once `scripts/check.ps1` passes and the change matches its claim. Every other PR gets the full review. Every tier needs an approving review.
+PR duty tiers every change and PR (SPEC.md F7 Tiered review). A change or PR that touches a path listed here is sensitive: full review, `cargo run -p stress -- --all` on the merge result before merge, and a confidence proof at the reference level (a fixture table exported from the Lean model plus one Rust test that checks the implementation against it) for any proof-list feature it changes. The code level (an Aeneas translation) is required only when an issue asks for one (#142). A PR that changes only docs, comments or formatting is trivial: approve it once `scripts/check.ps1` passes and the change matches its claim. Every other PR gets the full review. Every tier needs an approving review.
 - `rosen.toml`: the project's Rosen configuration; it names the checks a land needs, the sensitive paths and the mirror remote. Keep its `sensitive` list the same as the list in this file. Its `registration_lists` also holds the generated files, for the reason it gives.
 - `crates/velocity-store/`: saved state; a mistake loses `state.json`.
 - `crates/velocity-git/src/lifecycle.rs`, `crates/velocity-git/src/merged_worktree.rs`, `crates/velocity-git/src/review.rs`: worktree deletion.
@@ -175,7 +188,20 @@ PR duty tiers every PR (SPEC.md F7 Tiered review). A PR that touches a path list
 - `.github/workflows/`, `scripts/check.ps1`, `scripts/check-ui.mjs`: CI config, the local checks, and the UI checks Rosen's pre-land check set runs.
 - `scripts/Get-PrDutyToken.ps1`: PR duty's GitHub App credentials.
 
-## Pull requests
+## Landing your work
+One piece, one change (or one PR).
+
+### In a Rosen workspace
+- The folder is not a git checkout. Never run `git` or `gh` in it, and skip every branch, commit, push and pull request step below.
+- Every file you write is on the Rosen server within 2 seconds; there is nothing to push. `rosen status` shows what is stored and whether the server has rebased your change; `rosen diff` shows your change.
+- When the work runs end to end and its checks pass (`scripts/check.ps1` covers what your change can affect), name it: `rosen commit -m "<what changed, the §7 item or issue, the theorems proved>"`. That is your request for review. End your turn.
+- PR duty reviews your change's merge result onto `master`, and Velocity runs `rosen.toml`'s pre-land checks on that exact tree before it lands it. Never approve or land your own change (`rosen review approve`, `rosen receipt submit`, `rosen land`).
+- Requested changes and failed pre-land checks come back to you as a message. Fix them, then name the work again with `rosen commit -m`.
+- A conflict with `master`: run `rosen rebase`, combine both sides between the conflict markers, run `rosen resolve <file>` for each file, then `rosen commit -m` again.
+- After a land, the post-land checks run the full tests. If your change broke them, Rosen reverts it and Velocity reopens your workspace with the failing output. Your work is kept: fix it and name it again.
+- Rosen mirrors `master` to GitHub after each land. Never open a GitHub PR for a Rosen change.
+
+### In a git worktree
 - One piece, one branch, one PR, against `master`.
 - PR description: what changed, why, the theorems you proved, and the piece it completes (§7 item, `Fixes #n`, or SPEC section).
 - Name your §7 item in the PR description. Never tick its checkbox yourself: PR duty ticks it when it lands the PR.
@@ -188,6 +214,8 @@ PR duty tiers every PR (SPEC.md F7 Tiered review). A PR that touches a path list
 - If the PR is closed without merging, report why in your thread and keep your worktree.
 
 ## If you are on PR duty
+- For a Rosen change, Velocity gives you the review claim, a folder holding the change's merge result and the `rosen_duty_*` tools, and its prompt says which checks you run. Record every decision with `rosen_duty_review`. Velocity runs the pre-land checks and lands. The review rules and Review severity below apply; the GitHub steps (labels, holds, `gh`, branch updates) do not.
+- For a GitHub PR, everything below applies.
 - Hold one open, ready PR at a time. To take one: pick a ready PR without the `reviewing` label, or one whose hold is stale (below), add the label (`gh pr edit <n> --add-label reviewing`), comment "Reviewing · <your worktree slug>", then read the PR's comments again. If another agent's "Reviewing" comment is earlier than yours and its hold is live, leave the label and pick another PR.
 - A hold is live only while its holder works on the PR. While you hold one, post a one-line progress comment at least every 15 minutes. A hold is stale when its holder has posted no comment, commit or review on the PR for 20 minutes: its agent has stopped. Find the last activity with `gh pr view <n> --json comments,commits,reviews --jq '[.comments[].createdAt, .commits[].committedDate, .reviews[].submittedAt] | max'`. Take a stale hold over with the comment "Reviewing · <your worktree slug>, taking over a stale hold", and build on the earlier holder's findings and commits.
 - Never review, update or merge a PR another agent holds with a live hold. Remove the `reviewing` label when you merge, send the PR back to its author, or stop.
@@ -228,10 +256,10 @@ Long review cycles cost more than the defects they catch. Block only what matter
 ## Done means
 - The piece is built exactly as SPEC.md describes it and behaves like the reference UI. You ran it and saw it work.
 - The proofs check, clippy, `pnpm -C ui check` and `pnpm -C ui lint` report zero warnings on the merge result.
-- The PR is merged and your worktree is removed.
+- The change has landed and its post-land checks passed, or the PR is merged and your worktree is removed.
 
 ## Never
-- Never push to `master` directly.
+- Never push to `master` directly, and never land your own Rosen change.
 - Never merge your own PR. PR duty agents merge.
 - Never force-push to another agent's branch.
 - Never edit `design/`. Changes to the reference UI come from the user.
