@@ -10,6 +10,7 @@
 
 use std::collections::BTreeSet;
 use std::path::PathBuf;
+use std::time::Instant;
 
 use velocity_core::duty::{DutyEventKind, DutyFeedEvent};
 use velocity_core::rosen_checker::{
@@ -100,6 +101,7 @@ impl<Host: ReviewHost> Verify<Host> {
     /// Tests one batch. `true` when it went green, so the next can be looked for.
     async fn verify(&self, batch: &Batch) -> bool {
         // A project with no post-land commands has nothing to fail: its lands are green.
+        let started = Instant::now();
         let failed = if batch.commands.is_empty() {
             None
         } else {
@@ -113,7 +115,8 @@ impl<Host: ReviewHost> Verify<Host> {
             return match post_land::batch_passed(&self.server, batch).await {
                 Ok(()) if batch.commands.is_empty() => true,
                 Ok(()) => {
-                    self.say(DutyEventKind::Approve, verified_line(&batch.commit));
+                    let line = verified_line(&batch.commit, started.elapsed());
+                    self.say(DutyEventKind::Approve, line);
                     true
                 }
                 Err(error) => self.stopped(&batch.commit, &error.to_string()),

@@ -139,6 +139,14 @@ async fn reopen_reverted(
     velocity_rosen::reopen_workspace(&server, &agent, change, &root)
         .await
         .map_err(|error| error.to_string())?;
+    // The land stopped the thread's session for good; the revert gives it work again.
+    lock(
+        application
+            .state::<crate::threads::ManagedThreads>()
+            .inner(),
+        "thread sessions",
+    )?
+    .reopen(key);
     let report = output.unwrap_or("Rosen kept no output for the failing run.");
     let message = velocity_core::rosen_checker::reverted_message(change, report);
     crate::threads::steer(application, key, &message).map(|_| ())

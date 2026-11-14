@@ -1,9 +1,9 @@
 use serde::de::DeserializeOwned;
 use serde_json::Value;
-use std::io::Write;
+use std::io::{Read, Write};
 use std::panic::Location;
 use std::path::{Path, PathBuf};
-use std::process::{Child, Stdio};
+use std::process::{Child, Output, Stdio};
 use std::time::{Duration, Instant};
 use thiserror::Error;
 
@@ -13,6 +13,8 @@ pub enum PullRequestError {
     Process(#[from] std::io::Error),
     #[error("gh failed ({code:?}): {message}")]
     Command { code: Option<i32>, message: String },
+    #[error("gh did not answer within {0} seconds and was stopped")]
+    TimedOut(u64),
     #[error("Invalid GitHub response: {0}")]
     Response(#[from] serde_json::Error),
     #[error("GitHub response is missing {0}")]
@@ -22,6 +24,13 @@ pub enum PullRequestError {
     #[error("Approval record: {0}")]
     Record(#[from] velocity_airc::Error),
 }
+
+/// How long one `gh` call may run. GitHub answers in seconds; a call still running after
+/// this is hung (a stalled connection, a prompt nobody can answer), and whatever waits on
+/// it, a PR duty pass or a merge, would otherwise wait for good.
+const DEADLINE: Duration = Duration::from_secs(120);
+/// How often a running `gh` is checked for its exit.
+const POLL: Duration = Duration::from_millis(10);
 
 pub(crate) struct PullRequestCommand {
     directory: PathBuf,
@@ -72,7 +81,7 @@ impl PullRequestCommand {
 
     /// A command's plain-text output, such as `gh pr diff`.
     pub fn text(&self, arguments: &[&str]) -> Result<String, PullRequestError> {
-        let output = self.spawn(arguments, false, None)?.wait_with_output()?;
+        let output = finish(self.spawn(arguments, false, None)?, DEADLINE)?;
         if !output.status.success() {
             return Err(PullRequestError::Command {
                 code: output.status.code(),
@@ -128,7 +137,7 @@ impl PullRequestCommand {
                 return Err(error.into());
             }
         }
-        let output = child.wait_with_output()?;
+        let output = finish(child, DEADLINE)?;
         if !output.status.success() {
             return Err(PullRequestError::Command {
                 code: output.status.code(),
@@ -163,6 +172,42 @@ impl PullRequestCommand {
             .stderr(Stdio::piped());
         Ok(command.spawn()?)
     }
+}
+
+/// Waits for `child` and collects what it printed, stopping it when it runs past `limit`.
+fn finish(mut child: Child, limit: Duration) -> Result<Output, PullRequestError> {
+    // Read on their own threads: a child that fills a pipe nobody reads never exits.
+    let stdout = collect(child.stdout.take());
+    let stderr = collect(child.stderr.take());
+    let started = Instant::now();
+    let status = loop {
+        if let Some(status) = child.try_wait()? {
+            break status;
+        }
+        if started.elapsed() > limit {
+            // The readers end when the pipes close; nothing waits for them.
+            let _ = child.kill();
+            let _ = child.wait();
+            return Err(PullRequestError::TimedOut(limit.as_secs()));
+        }
+        std::thread::sleep(POLL);
+    };
+    Ok(Output {
+        status,
+        stdout: stdout.join().unwrap_or_default(),
+        stderr: stderr.join().unwrap_or_default(),
+    })
+}
+
+/// Reads `pipe` to its end on another thread.
+fn collect<Pipe: Read + Send + 'static>(pipe: Option<Pipe>) -> std::thread::JoinHandle<Vec<u8>> {
+    std::thread::spawn(move || {
+        let mut bytes = Vec::new();
+        if let Some(mut pipe) = pipe {
+            let _ = pipe.read_to_end(&mut bytes);
+        }
+        bytes
+    })
 }
 
 fn origin_url(directory: &Path) -> Result<String, PullRequestError> {
