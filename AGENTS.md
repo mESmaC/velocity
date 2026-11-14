@@ -167,6 +167,7 @@ Most merge conflicts come from a few files every feature touches. Keep your edit
 
 ## Sensitive paths
 PR duty tiers every PR (SPEC.md F7 Tiered review). A PR that touches a path listed here is sensitive: full review, `cargo run -p stress -- --all` on the merge result before merge, and a confidence proof at the reference level (a fixture table exported from the Lean model plus one Rust test that checks the implementation against it) for any proof-list feature it changes. The code level (an Aeneas translation) is required only when an issue asks for one (#142). A PR that changes only docs, comments or formatting is trivial: approve it once `scripts/check.ps1` passes and the change matches its claim. Every other PR gets the full review. Every tier needs an approving review.
+- `rosen.toml`: the project's Rosen configuration; it names the checks a land needs, the sensitive paths and the mirror remote. Keep its `sensitive`, `generated` and `registration_lists` the same as the lists in this file.
 - `crates/velocity-store/`: saved state; a mistake loses `state.json`.
 - `crates/velocity-git/src/lifecycle.rs`, `crates/velocity-git/src/merged_worktree.rs`, `crates/velocity-git/src/review.rs`: worktree deletion.
 - `crates/velocity-airc/src/claims.rs`: the claim lock.

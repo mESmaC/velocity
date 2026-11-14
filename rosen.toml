@@ -1,0 +1,114 @@
+# Velocity's project configuration for Rosen (Rosen SPEC.md §2 "Project
+# configuration"). The Rosen server reads this file from the base, never from
+# a change, so an edit takes effect only once it lands. Unknown keys are
+# refused. `rosen config show` prints the configuration in force.
+
+# Untracked paths snapshots skip, in .gitignore syntax. They rank below
+# .gitignore, which already covers build output. These keep credentials that
+# Velocity copies into a workspace, or a tool leaves there, out of every
+# snapshot, and so out of the public mirror.
+ignore = [
+    ".env",
+    ".env.*",
+    "*.pem",
+    "*.pfx",
+    "*.p12",
+    "*.key",
+]
+
+# Regenerated after a merge, never merged by hand (AGENTS.md "Shared files").
+# When both sides change one, the merge result holds the base's copy and the
+# change's owner regenerates it. The pre-land checks refuse a stale copy.
+generated = [
+    "Cargo.lock",
+    "ui/pnpm-lock.yaml",
+    "ui/src/lib/bindings.ts",
+]
+
+# Both sides' additions are kept (AGENTS.md "Shared files"). Only files that
+# are lists: `crates/velocity-store/src/lib.rs` holds the saved state's code
+# and merges as text, so two edits to one place there stay a conflict.
+registration_lists = [
+    "Cargo.toml",
+    "src-tauri/src/lib.rs",
+    "ui/src/lib/ipc.ts",
+    "crates/velocity-acp/src/lib.rs",
+    "crates/velocity-airc/src/lib.rs",
+    "crates/velocity-core/src/lib.rs",
+    "crates/velocity-git/src/lib.rs",
+    "crates/velocity-github/src/lib.rs",
+    "crates/velocity-graph/src/lib.rs",
+    "crates/velocity-interview/src/lib.rs",
+    "crates/velocity-new-project/src/lib.rs",
+    "crates/velocity-proofs/src/lib.rs",
+    "crates/velocity-rosen/src/lib.rs",
+    "crates/velocity-skills/src/lib.rs",
+    "crates/velocity-threads/src/lib.rs",
+    "crates/velocity-updates/src/lib.rs",
+]
+
+# Changes to these take the sensitive review tier. Each one's reason is under
+# "Sensitive paths" in AGENTS.md; keep the two lists the same.
+sensitive = [
+    "rosen.toml",
+    ".github/workflows/",
+    "scripts/check.ps1",
+    "scripts/Get-PrDutyToken.ps1",
+    "crates/velocity-store/",
+    "crates/velocity-git/src/lifecycle.rs",
+    "crates/velocity-git/src/merged_worktree.rs",
+    "crates/velocity-git/src/review.rs",
+    "crates/velocity-airc/src/claims.rs",
+    "crates/velocity-github/src/approval.rs",
+]
+
+# Build units are left to discovery: each package of the Cargo workspace is a
+# unit, read from the manifests at the base. `ui/`, `proofs/` and `scripts/`
+# lie in no unit, so a change to them counts as reaching every unit.
+
+# Build and lint on the exact merge result, before a land: the steps
+# .github/workflows/build.yml runs, in its order. Each command is one line
+# that runs the same from cmd, PowerShell and sh.
+[checks.pre_land]
+commands = [
+    "pnpm -C ui install --frozen-lockfile",
+    "cargo fmt --all -- --check",
+    "pnpm -C ui build",
+    "cargo build --workspace --locked",
+    "cargo run --locked -p velocity-app --bin export-bindings -- --check",
+    "cargo clippy --workspace --all-targets --locked -- -D warnings",
+    "pnpm -C ui check",
+    "pnpm -C ui lint",
+]
+
+# The full tests, on landed commits in batches. A commit that fails them
+# twice while its parent passes is reverted.
+[checks.post_land]
+commands = [
+    "pnpm -C ui install --frozen-lockfile",
+    "pnpm -C ui build",
+    "cargo test --workspace --locked",
+]
+
+# Ready workspaces each machine's daemon keeps at the base tip. On a ReFS
+# volume each is a block clone of one prepared template, so the size costs
+# almost no disk.
+[warm_pool]
+size = 8
+
+# Run in the template, or in each ready workspace where there is no ReFS, so
+# an agent's first build compiles only what it changed. No `--locked` or
+# `--frozen-lockfile`: a lockfile the base left stale must not leave every
+# workspace unprepared.
+[prepare]
+commands = [
+    "pnpm -C ui install",
+    "pnpm -C ui build",
+    "cargo build --workspace",
+    "cargo clippy --workspace --all-targets -- -D warnings",
+]
+
+# The base is pushed here after each land. The server's git credential
+# helper holds the credentials.
+[mirror]
+remote = "https://github.com/mESmaC/velocity.git"

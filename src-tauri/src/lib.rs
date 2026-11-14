@@ -205,9 +205,28 @@ fn event_bindings(builder: Builder<tauri::Wry>) -> Builder<tauri::Wry> {
         .error_handling(tauri_specta::ErrorHandlingMode::Throw)
 }
 
-/// Use a manifest-relative path so export also works from a checkout with spaces.
+/// Manifest-relative, so the export also works from a checkout with spaces.
+fn bindings_path() -> std::path::PathBuf {
+    Path::new(env!("CARGO_MANIFEST_DIR")).join("../ui/src/lib/bindings.ts")
+}
+
+/// Regenerates the bindings and fails when the copy on disk was stale. This is the check
+/// for a tree with no git to diff against, such as a Rosen merge result. Line endings are
+/// ignored: a git checkout on Windows can hold the file with CRLF.
+pub fn check_bindings() -> anyhow::Result<()> {
+    let unix = |text: String| text.replace("\r\n", "\n");
+    let committed = std::fs::read_to_string(bindings_path()).unwrap_or_default();
+    export_bindings()?;
+    let generated = std::fs::read_to_string(bindings_path())?;
+    anyhow::ensure!(
+        unix(committed) == unix(generated),
+        "ui/src/lib/bindings.ts was stale. It is regenerated now: include it in the change."
+    );
+    Ok(())
+}
+
 pub fn export_bindings() -> anyhow::Result<()> {
-    let destination = Path::new(env!("CARGO_MANIFEST_DIR")).join("../ui/src/lib/bindings.ts");
+    let destination = bindings_path();
     bindings()
         .export(specta_typescript::Typescript::default(), &destination)
         .context("Could not generate the frontend command and event bindings")?;
