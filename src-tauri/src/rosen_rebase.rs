@@ -119,18 +119,17 @@ fn open_threads(application: &AppHandle) -> Vec<ThreadKey> {
         .collect()
 }
 
-/// The thread's workspace, while it is still on disk.
+/// The thread's Rosen workspace, while it is still on disk. A thread in a git worktree has
+/// none: every turn's end asks, and only Rosen threads have a rebase to take.
 fn workspace(application: &AppHandle, key: ThreadKey) -> Option<std::path::PathBuf> {
     let store = lock(
         application.state::<ManagedStateStore>().inner(),
         "persisted state",
     )
     .ok()?;
-    let thread = store
-        .project(key.0)?
-        .threads
-        .iter()
-        .find(|thread| thread.id == key.1 && thread.state != ThreadState::Merged)?;
+    let thread = store.project(key.0)?.threads.iter().find(|thread| {
+        thread.id == key.1 && thread.rosen_change.is_some() && thread.state != ThreadState::Merged
+    })?;
     let root = std::path::PathBuf::from(thread.worktree_path.as_deref()?);
     root.is_dir().then_some(root)
 }
