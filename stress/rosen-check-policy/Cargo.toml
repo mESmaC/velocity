@@ -9,10 +9,10 @@ publish = false
 # the pre-land checks for one script.
 [dependencies]
 velocity-rosen = { path = "../../crates/velocity-rosen" }
-rosen-client = { git = "https://github.com/mESmaC/rosen", rev = "6a135befceb2796b47ba441e7e8c93b500feef40" }
-rosen-core = { git = "https://github.com/mESmaC/rosen", rev = "6a135befceb2796b47ba441e7e8c93b500feef40" }
-rosen-server = { git = "https://github.com/mESmaC/rosen", rev = "6a135befceb2796b47ba441e7e8c93b500feef40" }
-rosen-store = { git = "https://github.com/mESmaC/rosen", rev = "6a135befceb2796b47ba441e7e8c93b500feef40" }
+rosen-client = { git = "https://github.com/mESmaC/rosen", rev = "56ca3c3904788b3ac10b872d438f5867cafb801c" }
+rosen-core = { git = "https://github.com/mESmaC/rosen", rev = "56ca3c3904788b3ac10b872d438f5867cafb801c" }
+rosen-server = { git = "https://github.com/mESmaC/rosen", rev = "56ca3c3904788b3ac10b872d438f5867cafb801c" }
+rosen-store = { git = "https://github.com/mESmaC/rosen", rev = "56ca3c3904788b3ac10b872d438f5867cafb801c" }
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "time"] }
 
 [workspace]

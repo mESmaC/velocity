@@ -12,7 +12,7 @@ use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
 use std::time::{Duration, Instant};
 
-use rosen_client::run_queue::{RunClass, RunQueue, Turn};
+use rosen_client::run_queue::{self, RunClass, RunQueue, Turn};
 
 use crate::duty::{self, MergeCheckout};
 use crate::policy::{CheckPolicy, policy_at};
@@ -153,16 +153,19 @@ fn remove_entries(folder: &Path) -> Result<(), RosenError> {
 ///
 /// The whole run takes one turn in the machine's run queue (Rosen R3 "Run queue"), so the
 /// checks of several projects, agents' own builds and the warm pools' prepares take turns
-/// instead of all compiling at once. Checks a land waits on are first in that line.
+/// instead of all compiling at once. Checks a land waits on are first in that line. The
+/// commands are told they run beneath that turn (`ROSEN_RUN_HELD`), so a `rosen run` or
+/// build-queue step inside them runs at once instead of waiting behind its own check.
 pub fn run_commands(
     folder: &Path,
     commands: &[String],
     priority: Priority,
 ) -> Result<Option<FailedCommand>, RosenError> {
     let log = duty::sibling(folder, ".rosen-check.log");
-    let _turn = turn(folder, priority);
+    let turn = turn(folder, priority);
+    let held = turn.as_ref().map(|_| class_of(priority));
     for command in commands {
-        let exit_code = match run_one(folder, command, &log, priority)? {
+        let exit_code = match run_one(folder, command, &log, (priority, held))? {
             Some(0) => continue,
             other => other,
         };
@@ -179,28 +182,37 @@ pub fn run_commands(
 /// Waits for this run's turn. `None` when the queue can't be used: it only schedules, so
 /// the checks then run without waiting.
 fn turn(folder: &Path, priority: Priority) -> Option<Turn> {
-    let class = match priority {
-        Priority::Landing => RunClass::Landing,
-        Priority::Background => RunClass::Verify,
-    };
+    let class = class_of(priority);
     let note = format!("{} checks in {}", class.name(), folder.display());
     RunQueue::machine().ok()?.turn(class, &note).ok()
 }
 
+fn class_of(priority: Priority) -> RunClass {
+    match priority {
+        Priority::Landing => RunClass::Landing,
+        Priority::Background => RunClass::Verify,
+    }
+}
+
 /// The command's exit status, or `None` when it was stopped for running too long. A
-/// process ended by a signal counts as status 1.
+/// process ended by a signal counts as status 1. `held` is the run queue turn the command
+/// runs beneath, if one was taken.
 fn run_one(
     folder: &Path,
     command: &str,
     log: &Path,
-    priority: Priority,
+    (priority, held): (Priority, Option<RunClass>),
 ) -> Result<Option<i32>, RosenError> {
     let failed = |source| io_error("run a check in", folder, source);
     let output = File::create(log).map_err(|source| io_error("write", log, source))?;
     let errors = output
         .try_clone()
         .map_err(|source| io_error("write", log, source))?;
-    let mut child = shell(command, priority)
+    let mut shell = shell(command, priority);
+    if let Some(class) = held {
+        shell.env(run_queue::HELD_ENV, class.name());
+    }
+    let mut child = shell
         .current_dir(folder)
         .stdin(Stdio::null())
         .stdout(output)
