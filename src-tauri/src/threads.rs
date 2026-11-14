@@ -592,6 +592,10 @@ async fn run_thread(
         SessionSetup::new(worktree_path, plan.bypass_modes),
     );
     setup.preface = rosen_change.as_deref().map(velocity_rosen::workspace_note);
+    if rosen_change.is_some() {
+        let server = crate::rosen::mcp_server(&setup.worktree, &plan.agent.env);
+        setup.shared_servers.extend(server);
+    }
     setup.airc = crate::airc_access::managed(&application)
         .map(|airc| airc.thread(key.0, key.1, &setup.worktree));
     let branch = branch_name.as_deref().unwrap_or(&plan.thread.branch_name);
