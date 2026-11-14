@@ -1,0 +1,16 @@
+[package]
+name = "velocity-rosen"
+description = "Velocity's Rosen version control: each project's server, its import, and agent workspaces"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish = false
+
+[lints]
+workspace = true
+
+[dependencies]
+# Pinned to a reviewed Rosen commit; move the pin deliberately, like any toolchain pin.
+rosen-client = { git = "https://github.com/mESmaC/rosen", rev = "b9f6da89b77af4cda399eccd968cb85bff0337b0" }
+thiserror.workspace = true
+tokio = { workspace = true, features = ["sync"] }

@@ -104,6 +104,17 @@ impl LiveTranscript {
         }
     }
 
+    /// A Rosen workspace took the worktree's place (F5): the first step names its change.
+    pub fn rosen_workspace_ready(&mut self, change: &str) {
+        let worktree = self.worktree.clone();
+        if let Some(EntryView::Setup(step)) = self.entries.first_mut() {
+            *step = setup_step(&worktree, false);
+            step.verb = "Workspace".into();
+            let short: String = change.chars().take(8).collect();
+            step.result_text = format!("Rosen change {short} from master");
+        }
+    }
+
     pub fn record_error(&mut self, headline: &str, detail: &str) {
         self.entries.push(EntryView::Error(ErrorCardView {
             headline: headline.to_owned(),

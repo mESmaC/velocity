@@ -141,6 +141,9 @@ pub fn plan_deletion(repository: &Path, thread: &ThreadItem) -> DeletionPlan {
         .worktree_path
         .as_deref()
         .filter(|path| owns_worktree(state, Some(path)))
+        // A Rosen workspace is Rosen's to delete: abandoning its change removes it under
+        // Rosen's deletion guard (F5, Rosen R4).
+        .filter(|_| thread.rosen_change.is_none())
         .and_then(|path| {
             let mut record = WorktreeRecord::new(Path::new(path), thread.branch_name.as_str());
             record.state = lifecycle_state(thread.state);

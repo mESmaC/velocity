@@ -38,6 +38,9 @@ pub struct SessionSetup {
     /// The model, effort and speed the session runs on (F15), set through the agent's config
     /// options once the session starts. `None` leaves the agent's own defaults.
     pub run_settings: Option<RunSettings<String>>,
+    /// Sent ahead of the session's first prompt and not shown in the transcript: what the
+    /// agent must know about its folder, such as a Rosen workspace's note (F5).
+    pub preface: Option<String>,
 }
 
 /// How a parked thread's agent picks up where it stopped: `session/load` of its earlier
@@ -83,6 +86,7 @@ impl SessionSetup {
             bypass_modes,
             resume: None,
             run_settings: None,
+            preface: None,
         }
     }
 

@@ -49,6 +49,7 @@ Your job is working functionality. Proofs, tests and docs support it; they never
 - `crates/velocity-updates/`: Velocity's own updates (F1 Updates): how this copy was installed (setup, MSI or portable), the Updates panel's state, and replacing a running portable executable.
 - `crates/velocity-new-project/`: Create in the New project dialog (F2): resolves the request and runs the planned git, `gh` and store steps.
 - `crates/velocity-proofs/`: the proof checks (F17): `lake build`, the `sorry`/`admit` scan, the axiom audit, the design proof's SPEC.md section, and the statement lock PR duty's approvals take.
+- `crates/velocity-rosen/`: Rosen, the first-class version control (F5): starts and imports each project's Rosen server, creates, watches and abandons agents' Rosen workspaces, and the environment and note their agents get.
 - `crates/velocity-skills/`: the machine-wide skill pack library (F18): clones and pins packs with `core.symlinks=true`, previews update diffs of `SKILL.md` files, scripts and data before moving a pin, and runs pack Python tools with `PYTHONUTF8=1`.
 - `crates/velocity-interview/`: the spec interview (F3): runs the spec agent in the main checkout, parses its questions, records decisions and draft tasks, and locks the spec.
 - `ui/`: the frontend: Svelte 5, TypeScript and Vite, built with pnpm.

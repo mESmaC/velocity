@@ -35,6 +35,7 @@ mod pull_request_panel;
 mod ready_pool;
 mod restart;
 pub mod reviews;
+mod rosen;
 mod shared_mcp;
 mod skills;
 mod state;
@@ -259,6 +260,7 @@ pub fn run() -> anyhow::Result<()> {
             airc_access::initialize(application.handle())?;
             projects::initialize(application.handle())?;
             providers::initialize(application.handle());
+            rosen::initialize(application.handle())?;
             follow_through::initialize(application.handle(), threads::follow_through_hooks());
             kept_worktrees::initialize(application.handle());
             github_requests::initialize(application.handle());
@@ -286,10 +288,11 @@ pub fn run() -> anyhow::Result<()> {
         .context("Could not run Velocity")?
         .run(|application, event| {
             // Nothing can stop the exit now; a failed save is logged like any other.
-            if matches!(event, tauri::RunEvent::Exit)
-                && let Err(error) = state::save_now(application)
-            {
-                eprintln!("{error}");
+            if matches!(event, tauri::RunEvent::Exit) {
+                if let Err(error) = state::save_now(application) {
+                    eprintln!("{error}");
+                }
+                rosen::shutdown(application);
             }
         });
     Ok(())

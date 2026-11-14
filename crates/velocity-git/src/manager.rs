@@ -617,7 +617,7 @@ pub fn execute_worktree_setup(
 
 /// Every setup step after the checkout, for a worktree [`create_git_worktree_from_base`]
 /// already created (see `titled`, which names the worktree in between).
-pub(crate) fn finish_worktree_setup(
+pub fn finish_worktree_setup(
     request: &WorktreeSetupRequest,
 ) -> Result<CreatedWorktree, WorktreeError> {
     let actions = plan_setup_actions(

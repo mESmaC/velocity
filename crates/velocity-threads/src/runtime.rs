@@ -512,6 +512,13 @@ impl ThreadRuntimes {
         }
     }
 
+    /// The thread's folder is a Rosen workspace for `change` (F5).
+    pub fn rosen_workspace_ready(&mut self, key: ThreadKey, change: &str) {
+        if let Some(thread) = self.threads.get_mut(&key) {
+            thread.transcript.rosen_workspace_ready(change);
+        }
+    }
+
     pub fn is_live(&self, key: ThreadKey) -> bool {
         self.threads
             .get(&key)

@@ -406,6 +406,15 @@ There are two views of the same work, switched from the title bar or with `B`:
 
 ### F5 · Worktrees
 
+**Rosen first, git as the fallback (decided, #331).** Rosen (`github.com/mESmaC/rosen`) is Velocity's first-class version control. Each project's agents work in Rosen changes and workspaces; git worktrees are the fallback, used when a project chooses git or Rosen can't make a workspace. A project's choice is saved with it and defaults to Rosen. The rest of this section describes git worktrees, which still back every job that has not moved to Rosen yet.
+
+- **The project's server.** Velocity starts and owns one Rosen server per project, on this machine, with its data in `%APPDATA%\dev.velocity.ide\rosen\<project>` and its own named pipe. It finds `rosen-server` beside Velocity's executable, in the folder `VELOCITY_ROSEN_BIN` names, or on `PATH`. The first time, it imports the project's history from the checkout's `origin` (the checkout itself when it has none), and `origin` becomes the mirror every land is pushed to (Rosen R1). Velocity stops the servers it started when it exits and before an update installs, so their binaries can be replaced.
+- **A thread's workspace.** A new thread gets a Rosen change and a workspace at the folder its worktree would have had, from Rosen's warm pool when it has one ready (Rosen R3). Its agent's Rosen name is that folder's name. The first transcript step is `Workspace · <path> · Rosen change <id> from master`. Velocity then runs the per-agent setup steps below (untracked files, build cache, setup command), which Rosen leaves to whoever takes a workspace.
+- **Stored as the agent writes.** Velocity runs a write-through watcher on each open workspace, so every write is on the Rosen server within 2 seconds, and starts the watchers again after a restart. There is nothing to commit or push.
+- **What the agent is told.** The agent's process gets `ROSEN_ENDPOINT`, `ROSEN_AGENT` and Rosen's folder on `PATH`, so the `rosen` CLI reaches the project's server as that agent. Its first prompt, and a resumed session's, starts with a note that is not shown in the transcript: the folder is a Rosen workspace, not a git checkout, so git branch, commit, push and PR steps don't apply; `rosen commit -m` names the work.
+- **Deleting the thread** abandons its change. Rosen then deletes the workspace under its deletion guard, which keeps it while any edit there is not stored on the server (Rosen R4).
+- **Falling back.** When the server can't start or the workspace can't be made, the thread takes a git worktree as below, and a notice names the reason.
+
 **Lifecycle (decided):**
 
 | When | What happens |
