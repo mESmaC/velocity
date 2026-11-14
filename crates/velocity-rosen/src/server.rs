@@ -318,11 +318,14 @@ impl Servers {
     }
 }
 
-/// The folder holding Rosen's binaries: [`BINARY_FOLDER_ENV`], then beside Velocity's
-/// executable (the installed app), then the first `PATH` folder that has them.
+/// The folder holding Rosen's binaries: [`BINARY_FOLDER_ENV`], then the copy built into
+/// a release of Velocity, then beside Velocity's executable, then the first `PATH` folder
+/// that has them.
 pub fn binary_folder() -> Result<PathBuf, RosenError> {
     let server = executable("rosen-server");
     let configured = std::env::var_os(BINARY_FOLDER_ENV).map(PathBuf::from);
+    #[cfg(feature = "bundled")]
+    let configured = configured.or_else(crate::bundled::folder);
     let beside_app = std::env::current_exe()
         .ok()
         .and_then(|path| path.parent().map(Path::to_path_buf));
