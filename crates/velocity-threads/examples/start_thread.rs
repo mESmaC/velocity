@@ -56,7 +56,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
     for block in runtimes
         .view(key)
-        .map(|view| view.blocks)
+        .map(|view| view.blocks.to_vec())
         .unwrap_or_default()
     {
         println!("{}", describe(&block));

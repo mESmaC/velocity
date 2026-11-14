@@ -136,7 +136,7 @@ impl ThreadRuntimes {
                 let path = thread.worktree_path.as_deref().unwrap_or_default();
                 let mut runtime =
                     parked_runtime(path, thread.state == velocity_store::ThreadState::Review);
-                runtime.transcript = LiveTranscript::restore(path, thread.transcript.clone());
+                runtime.transcript = LiveTranscript::restore(path, thread.transcript.to_vec());
                 let key = (project.id, thread.id);
                 self.threads.insert(key, runtime);
                 if thread.activity == AgentActivity::Parked {
@@ -639,7 +639,7 @@ impl ThreadRuntimes {
         key: ThreadKey,
         now: std::time::Instant,
         turn_over: bool,
-    ) -> Option<Vec<velocity_core::thread_view_model::TranscriptBlock>> {
+    ) -> Option<velocity_core::thread_view_model::SharedBlocks> {
         if !self.threads.contains_key(&key) || !self.transcript_saves.due(key, now, turn_over) {
             return None;
         }

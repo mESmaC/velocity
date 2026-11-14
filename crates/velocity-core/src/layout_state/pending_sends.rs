@@ -5,7 +5,7 @@
 //!
 //! Sends to one thread reach their agent in order, so each answer (delivered or failed)
 //! belongs to the oldest unanswered send with its text.
-use crate::thread_view_model::TranscriptBlock;
+use crate::thread_view_model::{SharedBlocks, TranscriptBlock};
 
 #[derive(Clone, Default)]
 pub(super) struct PendingSends {
@@ -96,7 +96,7 @@ impl PendingSends {
     }
 
     /// Forgets the messages the agent's transcript now shows, and appends the rest.
-    pub(super) fn add_to(&mut self, thread: (u32, usize), blocks: &mut Vec<TranscriptBlock>) {
+    pub(super) fn add_to(&mut self, thread: (u32, usize), blocks: &mut SharedBlocks) {
         let mut shown = Vec::new();
         self.waiting.retain(|pending| {
             if pending.thread != thread {
@@ -112,12 +112,13 @@ impl PendingSends {
             waiting
         });
         self.shown_before_answer.extend(shown);
+        // The agent's blocks are shared with its runtime; copy them only to add to them.
         for pending in self
             .waiting
             .iter()
             .filter(|pending| pending.thread == thread)
         {
-            blocks.push(TranscriptBlock::UserMessage {
+            std::sync::Arc::make_mut(blocks).push(TranscriptBlock::UserMessage {
                 text: pending.text.clone(),
                 queued: pending.queued,
             });
