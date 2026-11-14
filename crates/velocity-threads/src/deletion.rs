@@ -177,55 +177,11 @@ pub fn remove_owned_worktree(
     worktree: &Path,
     branch: &str,
 ) -> Result<(), DeletionError> {
-    if worktree.exists() && !is_removal_leftover(repository, worktree) {
+    // An interrupted removal's leftover folder (#283) is no checkout to verify.
+    if worktree.exists() && !velocity_git::is_removal_leftover(repository, worktree) {
         velocity_git::verify_deletion(repository, worktree, branch, false, true)?;
     }
     remove_worktree(repository, worktree)
-}
-
-/// What an interrupted `git worktree remove --force` leaves on Windows (#283). Git deletes
-/// the checkout's `.git` file first, stops at a file another process still holds open,
-/// and drops the registration anyway. The folder is then no checkout: verification would
-/// refuse it as unregistered for ever, so the thread could never be deleted. Nothing of git
-/// is left in it to lose (the branch and its commits live in the repository), so the
-/// thread's own folder at its fixed path is removed once the file is released.
-/// Fails closed: any `.git` entry below it, or the repository inside it, keeps it.
-fn is_removal_leftover(repository: &Path, worktree: &Path) -> bool {
-    let repository_inside = match (
-        std::fs::canonicalize(repository),
-        std::fs::canonicalize(worktree),
-    ) {
-        (Ok(repository), Ok(worktree)) => repository.starts_with(worktree),
-        _ => true,
-    };
-    !repository_inside && !contains_git_entry(worktree)
-}
-
-/// Whether a `.git` file or folder is anywhere under `folder`, links not followed. An
-/// unreadable folder counts as one.
-fn contains_git_entry(folder: &Path) -> bool {
-    let mut pending = Vec::from([folder.to_path_buf()]);
-    while let Some(directory) = pending.pop() {
-        let Ok(entries) = std::fs::read_dir(velocity_store::extended_windows_path(&directory))
-        else {
-            return true;
-        };
-        for entry in entries {
-            let Ok(entry) = entry else {
-                return true;
-            };
-            if entry.file_name() == ".git" {
-                return true;
-            }
-            let Ok(kind) = entry.file_type() else {
-                return true;
-            };
-            if kind.is_dir() && !kind.is_symlink() {
-                pending.push(directory.join(entry.file_name()));
-            }
-        }
-    }
-    false
 }
 
 /// Removes the worktree from git and disk, retrying while the stopped agent exits.
