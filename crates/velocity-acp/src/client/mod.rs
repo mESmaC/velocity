@@ -316,11 +316,19 @@ async fn drive(
         session_id: session_id.clone(),
         loaded: started.loaded,
     });
-    // A new session for a resumed thread is sent its transcript ahead of the first prompt.
-    let mut preface = setup
-        .resume
-        .filter(|_| !started.loaded)
-        .map(|resume| ContentBlock::from(resume.transcript));
+    // The setup's preface, and for a resumed thread in a new session its transcript, go
+    // ahead of the first prompt.
+    let mut preface: Vec<ContentBlock> = setup
+        .preface
+        .map(ContentBlock::from)
+        .into_iter()
+        .chain(
+            setup
+                .resume
+                .filter(|_| !started.loaded)
+                .map(|resume| ContentBlock::from(resume.transcript)),
+        )
+        .collect();
     let (turn_sender, mut turn_ended) = unbounded_channel::<turn_usage::TurnReport>();
     let mut steering: Steering<Vec<ContentBlock>, ()> = Steering::new(());
     loop {
@@ -380,7 +388,7 @@ struct Turn<'session> {
     shared: &'session Shared,
     session_id: &'session SessionId,
     turn_sender: &'session UnboundedSender<turn_usage::TurnReport>,
-    preface: &'session mut Option<ContentBlock>,
+    preface: &'session mut Vec<ContentBlock>,
 }
 
 impl Turn<'_> {
@@ -415,8 +423,10 @@ impl Turn<'_> {
                 )));
         }
         // The thread view already shows the transcript, so the preface is sent unrecorded.
-        if let Some(preface) = self.preface.take() {
-            blocks.insert(0, preface);
+        if !self.preface.is_empty() {
+            let mut sent = std::mem::take(self.preface);
+            sent.append(&mut blocks);
+            blocks = sent;
         }
         let turn_sender = self.turn_sender.clone();
         let started = std::time::Instant::now();

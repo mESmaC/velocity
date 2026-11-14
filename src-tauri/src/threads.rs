@@ -99,16 +99,19 @@ fn resume_follow_through(
         return Ok(DeliveryStatus::Pending);
     }
     let path = thread.worktree_path.as_deref().ok_or("Missing worktree")?;
-    velocity_git::verify_thread_worktree(
-        std::path::Path::new(&project.repository_path),
-        std::path::Path::new(path),
-        &thread.branch_name,
-    )
-    .map_err(|error| error.to_string())?;
-    let (agent, bypass_modes) =
+    let (mut agent, bypass_modes) =
         agent_launch(&settings, thread.provider).map_err(|error| error.to_string())?;
     let mut setup = SessionSetup::new(path.into(), bypass_modes)
         .with_run_settings(velocity_threads::thread_run_settings(&thread));
+    match crate::rosen::prepare_resume(application, key.0, &thread, &mut agent, &mut setup) {
+        Some(prepared) => prepared?,
+        None => velocity_git::verify_thread_worktree(
+            std::path::Path::new(&project.repository_path),
+            std::path::Path::new(path),
+            &thread.branch_name,
+        )
+        .map_err(|error| error.to_string())?,
+    }
     setup.airc = crate::airc_access::managed(application)
         .map(|airc| airc.thread(key.0, key.1, std::path::Path::new(path)));
     setup.resume = Some(
@@ -465,14 +468,62 @@ fn resume_message(
     delivered_snapshot(application, key)
 }
 
-async fn run_thread(
-    application: AppHandle,
+/// Marks the thread's folder ready. False when the thread was deleted meanwhile.
+fn folder_ready(
+    application: &AppHandle,
     key: ThreadKey,
-    plan: LaunchPlan,
-    inputs: SessionInputs,
-) {
-    let (worktree_path, branch_name, failure) = match take_worktree(&application, key, &plan).await
+    folder: &ThreadFolder,
+    path: &str,
+) -> bool {
+    let wanted = mark_worktree_ready(application, key, path, folder.failure.is_some());
+    if let Some(change) = &folder.rosen_change
+        && let Ok(mut runtimes) = lock(
+            application.state::<ManagedThreads>().inner(),
+            "thread sessions",
+        )
     {
+        runtimes.rosen_workspace_ready(key, change);
+    }
+    wanted
+}
+
+/// The folder a new thread's agent works in: a Rosen workspace, or a git worktree when
+/// the project uses git or Rosen couldn't make one (F5).
+struct ThreadFolder {
+    path: PathBuf,
+    branch_name: Option<String>,
+    failure: Option<String>,
+    rosen_change: Option<String>,
+}
+
+async fn take_folder(
+    application: &AppHandle,
+    key: ThreadKey,
+    plan: &mut LaunchPlan,
+) -> ThreadFolder {
+    let mut settled = None;
+    if crate::rosen::uses_rosen(application, key.0) {
+        // The title is settled meanwhile; a Rosen workspace keeps its first folder name.
+        let titling = {
+            let (application, plan) = (application.clone(), plan.clone());
+            tauri::async_runtime::spawn(async move { settle_title(&application, key, &plan).await })
+        };
+        let taken = crate::rosen::take_workspace(application, key, &plan.worktree).await;
+        settled = Some(titling.await.ok().flatten());
+        match taken {
+            Ok(workspace) => {
+                plan.agent.env.extend(workspace.environment);
+                return ThreadFolder {
+                    path: workspace.root,
+                    branch_name: plan.worktree.branch_name.clone(),
+                    failure: workspace.setup.err(),
+                    rosen_change: Some(workspace.change),
+                };
+            }
+            Err(error) => crate::rosen::fell_back(application, &error),
+        }
+    }
+    let (path, branch_name, failure) = match take_worktree(application, key, plan, settled).await {
         Ok(worktree) => (
             worktree.worktree_path,
             worktree.branch_name,
@@ -484,12 +535,37 @@ async fn run_thread(
             Some(error),
         ),
     };
-    let path = worktree_path.display().to_string();
-    // A thread deleted while its worktree was being created starts no agent (F12).
-    let wanted = mark_worktree_ready(&application, key, &path, failure.is_some());
-    if !wanted {
-        return remove_deleted_worktree(plan.worktree.repository_root, worktree_path).await;
+    ThreadFolder {
+        path,
+        branch_name,
+        failure,
+        rosen_change: None,
     }
+}
+
+async fn run_thread(
+    application: AppHandle,
+    key: ThreadKey,
+    mut plan: LaunchPlan,
+    inputs: SessionInputs,
+) {
+    let folder = take_folder(&application, key, &mut plan).await;
+    let path = folder.path.display().to_string();
+    // A thread deleted while its worktree was being created starts no agent (F12).
+    if !folder_ready(&application, key, &folder, &path) {
+        if let Some(change) = &folder.rosen_change {
+            let abandoned =
+                crate::rosen::abandon_unstarted(&application, key.0, &folder.path, change).await;
+            return report(abandoned);
+        }
+        return remove_deleted_worktree(plan.worktree.repository_root, folder.path).await;
+    }
+    let ThreadFolder {
+        path: worktree_path,
+        branch_name,
+        failure,
+        rosen_change,
+    } = folder;
     report(record_names(
         &application,
         key,
@@ -515,6 +591,7 @@ async fn run_thread(
         key,
         SessionSetup::new(worktree_path, plan.bypass_modes),
     );
+    setup.preface = rosen_change.as_deref().map(velocity_rosen::workspace_note);
     setup.airc = crate::airc_access::managed(&application)
         .map(|airc| airc.thread(key.0, key.1, &setup.worktree));
     let branch = branch_name.as_deref().unwrap_or(&plan.thread.branch_name);
@@ -711,11 +788,13 @@ fn mark_worktree_ready(application: &AppHandle, key: ThreadKey, path: &str, fail
 
 /// Checks the worktree out while the title model answers; naming and setup wait for the
 /// title, at most F4's two seconds (`resolve_title` enforces the deadline). The checkout is a
-/// ready worktree from the warm pool when it has one (F5).
+/// ready worktree from the warm pool when it has one (F5). `settled` is the title's names
+/// when a Rosen attempt already asked for the title, so it is never asked twice.
 async fn take_worktree(
     application: &AppHandle,
     key: ThreadKey,
     plan: &LaunchPlan,
+    settled: Option<Option<WorktreeName>>,
 ) -> Result<TitledWorktree, String> {
     let (name_sender, name_receiver) = std::sync::mpsc::channel();
     let request = plan.worktree.clone();
@@ -730,7 +809,10 @@ async fn take_worktree(
             || name_receiver.recv().ok().flatten(),
         )
     });
-    let name = settle_title(application, key, plan).await;
+    let name = match settled {
+        Some(name) => name,
+        None => settle_title(application, key, plan).await,
+    };
     // Setup is waiting for this; if the checkout already failed, nobody is listening.
     let _ = name_sender.send(name);
     worktree.await.map_err(|error| error.to_string())

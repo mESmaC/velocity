@@ -164,16 +164,19 @@ fn start_session(application: &AppHandle, key: ThreadKey, opening: Opening) -> R
         return Err("This thread cannot resume a build session".into());
     }
     let path = thread.worktree_path.as_deref().ok_or("Missing worktree")?;
-    velocity_git::verify_thread_worktree(
-        Path::new(&project.repository_path),
-        Path::new(path),
-        &thread.branch_name,
-    )
-    .map_err(|error| error.to_string())?;
-    let (agent, bypass_modes) =
+    let (mut agent, bypass_modes) =
         agent_launch(&settings, thread.provider).map_err(|error| error.to_string())?;
     let mut setup = SessionSetup::new(path.into(), bypass_modes)
         .with_run_settings(velocity_threads::thread_run_settings(&thread));
+    match crate::rosen::prepare_resume(application, key.0, &thread, &mut agent, &mut setup) {
+        Some(prepared) => prepared?,
+        None => velocity_git::verify_thread_worktree(
+            Path::new(&project.repository_path),
+            Path::new(path),
+            &thread.branch_name,
+        )
+        .map_err(|error| error.to_string())?,
+    }
     setup.airc = crate::airc_access::managed(application)
         .map(|airc| airc.thread(key.0, key.1, Path::new(path)));
     crate::airc_claims::attach(application, key, &setup, &thread.branch_name)?;

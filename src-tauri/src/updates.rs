@@ -183,13 +183,18 @@ async fn install(application: &AppHandle) -> Result<(), String> {
     // install over changes that couldn't be saved.
     crate::state::save_now(application)
         .map_err(|error| format!("{error}. The update was not installed."))?;
-    match kind {
+    crate::rosen::shutdown_servers(application).await;
+    let installed = match kind {
         InstallKind::Portable => restart_portable(application, &bytes),
         // Launches the installer and exits Velocity; it only returns on failure.
         InstallKind::Nsis | InstallKind::Msi => update
             .install(&bytes)
             .map_err(|error| format!("Could not start the installer: {error}")),
+    };
+    if installed.is_err() {
+        crate::rosen::restart_servers(application).await;
     }
+    installed
 }
 
 /// The bytes were verified by `download`. The new executable takes the running one's name,

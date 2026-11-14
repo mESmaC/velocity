@@ -678,6 +678,16 @@ pub enum WorktreeRole {
     Sweep,
 }
 
+/// How a project's agents get their working folders (F5). Rosen is first-class; git
+/// worktrees are the fallback, used when the project chooses git or Rosen can't start.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize, Type)]
+#[serde(rename_all = "snake_case")]
+pub enum VersionControl {
+    #[default]
+    Rosen,
+    Git,
+}
+
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, Type)]
 pub struct ThreadItem {
     #[serde(default)]
@@ -696,6 +706,9 @@ pub struct ThreadItem {
     #[specta(skip)]
     pub worktree_path_id: Option<String>,
     pub pull_request_number: Option<u32>,
+    /// The Rosen change the thread works on, when its workspace came from Rosen (F5).
+    #[serde(default)]
+    pub rosen_change: Option<String>,
     #[serde(default)]
     pub follow_through: Option<velocity_github::follow_through::FollowThrough>,
     /// Last AIRC message whose receiving turn completed (F14).
@@ -748,6 +761,7 @@ impl ThreadItem {
             worktree_role: WorktreeRole::Thread,
             worktree_path_id: None,
             pull_request_number: None,
+            rosen_change: None,
             follow_through: None,
             airc_cursor: 0,
             dependency_wait: None,
@@ -785,6 +799,7 @@ impl ThreadItem {
             worktree_role: WorktreeRole::Thread,
             worktree_path_id: None,
             pull_request_number: None,
+            rosen_change: None,
             follow_through: None,
             airc_cursor: 0,
             dependency_wait: None,
@@ -916,6 +931,9 @@ pub struct ProjectItem {
     #[serde(default)]
     #[specta(skip)]
     pub last_task_identifier: u32,
+    /// Rosen or git for this project's agents (F5). Saved projects take Rosen.
+    #[serde(default)]
+    pub version_control: VersionControl,
 }
 
 /// The New project dialog's interview choices, kept until the spec interview
@@ -954,6 +972,7 @@ impl ProjectItem {
             airc_seen: 0,
             deleted_worktrees: Vec::new(),
             last_task_identifier: 0,
+            version_control: VersionControl::default(),
         }
     }
 

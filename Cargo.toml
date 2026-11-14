@@ -9,6 +9,7 @@ members = [
     "crates/velocity-interview",
     "crates/velocity-new-project",
     "crates/velocity-proofs",
+    "crates/velocity-rosen",
     "crates/velocity-skills",
     "crates/velocity-store",
     "crates/velocity-threads",
@@ -46,6 +47,7 @@ velocity-graph = { path = "crates/velocity-graph" }
 velocity-interview = { path = "crates/velocity-interview" }
 velocity-new-project = { path = "crates/velocity-new-project" }
 velocity-proofs = { path = "crates/velocity-proofs" }
+velocity-rosen = { path = "crates/velocity-rosen" }
 velocity-skills = { path = "crates/velocity-skills" }
 velocity-store = { path = "crates/velocity-store" }
 velocity-threads = { path = "crates/velocity-threads" }

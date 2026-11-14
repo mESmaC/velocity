@@ -2459,6 +2459,8 @@ export type ProjectItem_Deserialize = {
 	swarms?: SwarmRecord_Deserialize[],
 	/**  Goal swarms launched on this project, newest first (F16). */
 	goal_swarms?: GoalSwarmRecord_Deserialize[],
+	/**  Rosen or git for this project's agents (F5). Saved projects take Rosen. */
+	version_control?: VersionControl,
 };
 
 export type ProjectItem_Serialize = {
@@ -2486,6 +2488,8 @@ export type ProjectItem_Serialize = {
 	swarms: SwarmRecord_Serialize[],
 	/**  Goal swarms launched on this project, newest first (F16). */
 	goal_swarms: GoalSwarmRecord_Serialize[],
+	/**  Rosen or git for this project's agents (F5). Saved projects take Rosen. */
+	version_control: VersionControl,
 };
 
 export type ProjectLabel = "local" | "github" | "speccing";
@@ -4358,6 +4362,8 @@ export type ThreadItem_Deserialize = {
 	worktree_path: string | null,
 	worktree_role?: WorktreeRole,
 	pull_request_number?: number | null,
+	/**  The Rosen change the thread works on, when its workspace came from Rosen (F5). */
+	rosen_change?: string | null,
 	follow_through?: FollowThrough_Deserialize | null,
 	dependency_wait?: string | null,
 	/**  The agent's ACP session id, which a parked thread loads again on resume (§2.2). */
@@ -4395,6 +4401,8 @@ export type ThreadItem_Serialize = {
 	worktree_path: string | null,
 	worktree_role: WorktreeRole,
 	pull_request_number: number | null,
+	/**  The Rosen change the thread works on, when its workspace came from Rosen (F5). */
+	rosen_change: string | null,
 	follow_through: FollowThrough_Serialize | null,
 	dependency_wait: string | null,
 	/**  The agent's ACP session id, which a parked thread loads again on resume (§2.2). */
@@ -4661,6 +4669,12 @@ export type UsageWindowView = {
 	 */
 	summary: string,
 };
+
+/**
+ *  How a project's agents get their working folders (F5). Rosen is first-class; git
+ *  worktrees are the fallback, used when the project chooses git or Rosen can't start.
+ */
+export type VersionControl = "rosen" | "git";
 
 export type WindowStateChanged = {
 	maximized: boolean,

@@ -343,6 +343,11 @@ pub(crate) async fn land_thread(application: &AppHandle, key: ThreadKey) -> Vec<
     let plan = plan_deletion(&repository, &thread);
     let stop = stop_agent(application, key).await;
     let (kept, mut problems) = run_effects(plan, &thread, stop).await;
+    if let Some(change) = &thread.rosen_change
+        && let Err(error) = crate::rosen::abandon(application, key.0, &thread, change).await
+    {
+        problems.push(format!("its Rosen change stays open ({error})"));
+    }
     if let Err(error) = crate::airc_claims::release(application, key) {
         problems.push(format!("its claims were not released: {error}"));
     }
