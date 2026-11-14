@@ -30,6 +30,8 @@ pub enum RosenError {
     AgentName(String),
     #[error(transparent)]
     Client(#[from] rosen_client::Error),
+    #[error("the watcher on {0} ended as it started")]
+    WatchEnded(PathBuf),
     #[error("could not {action} {path}: {source}")]
     Io {
         action: &'static str,
