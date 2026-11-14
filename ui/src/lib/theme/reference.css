@@ -1135,6 +1135,10 @@
   --duty-event-dot-radius: 50%;
   --duty-event-dot-margin-right: 8px;
   --duty-event-dot-vertical-align: 1px;
+  /* The reference caps a long dialog's body at this height and scrolls it (.np.gs,
+     main-window.html 887). The duty dialog lists every signed-in model, so it can grow as
+     long (#315). */
+  --duty-dialog-body-max-height: calc(100vh - 150px);
   --duty-role-cards-columns: 1fr 1fr;
   --duty-role-cards-gap: 6px;
   --duty-role-card-padding: 10px;

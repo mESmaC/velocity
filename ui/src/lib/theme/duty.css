@@ -171,6 +171,12 @@
   background: var(--new-project-scrim-background);
   backdrop-filter: var(--new-project-scrim-backdrop-filter);
 }
+/* With many signed-in models the body outgrows the window; it scrolls so the header and
+   the Start and Cancel buttons stay on screen. */
+.duty-dialog .np-body {
+  max-height: var(--duty-dialog-body-max-height);
+  overflow-y: auto;
+}
 .duty-dialog .role-cards {
   display: grid;
   grid-template-columns: var(--duty-role-cards-columns);
