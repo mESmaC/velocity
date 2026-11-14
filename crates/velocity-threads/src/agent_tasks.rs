@@ -1,6 +1,8 @@
 //! F8 request ingestion runs in the same store owner as user task edits. Agents add, change
 //! and delete tasks through queued AIRC requests, and read the list from the snapshot this
 //! owner publishes after each pass.
+use std::sync::Mutex;
+
 use velocity_airc::{Channel, Entry, Event, TaskListRow, TaskTarget};
 use velocity_store::task_list::{TaskError, TaskUpdate};
 use velocity_store::{StateStore, TaskState, threads::ThreadError};
@@ -11,6 +13,8 @@ pub enum AgentTaskError {
     Channel(#[from] velocity_airc::Error),
     #[error(transparent)]
     Persistence(#[from] velocity_store::StoreError),
+    #[error("The saved state's lock was poisoned")]
+    StoreLock,
 }
 
 /// What one request did: the event for the feed and the result for the agent, or the
@@ -25,27 +29,95 @@ pub fn ingest(
     project: u32,
     channel: &Channel,
 ) -> Result<bool, AgentTaskError> {
+    ingest_with(store, project, channel)
+}
+
+/// [`ingest`] for the app, which runs it every second for every project: the store lock
+/// is held only while one request changes the store, never while the channel files are
+/// read or written (#322).
+pub fn ingest_shared(
+    store: &Mutex<StateStore>,
+    project: u32,
+    channel: &Channel,
+) -> Result<bool, AgentTaskError> {
+    ingest_with(store, project, channel)
+}
+
+/// The store, borrowed outright or taken under its lock for one step at a time.
+trait StoreAccess {
+    fn with<Value>(
+        &mut self,
+        step: impl FnOnce(&mut StateStore) -> Value,
+    ) -> Result<Value, AgentTaskError>;
+}
+
+impl StoreAccess for &mut StateStore {
+    fn with<Value>(
+        &mut self,
+        step: impl FnOnce(&mut StateStore) -> Value,
+    ) -> Result<Value, AgentTaskError> {
+        Ok(step(self))
+    }
+}
+
+impl StoreAccess for &Mutex<StateStore> {
+    fn with<Value>(
+        &mut self,
+        step: impl FnOnce(&mut StateStore) -> Value,
+    ) -> Result<Value, AgentTaskError> {
+        let mut store = self.lock().map_err(|_| AgentTaskError::StoreLock)?;
+        Ok(step(&mut store))
+    }
+}
+
+/// Applies each request and answers it before the next one is applied, so a replay after
+/// a failure never sees a later request's change without the earlier one's answer: an add
+/// and a delete of one task, applied together and then answered, could bring the task
+/// back under a new number if the answers were lost (#322).
+fn ingest_with(
+    mut store: impl StoreAccess,
+    project: u32,
+    channel: &Channel,
+) -> Result<bool, AgentTaskError> {
     let mut changed = false;
     for request in channel.pending_tasks()? {
-        match apply(store, project, &request)? {
-            Outcome::Saved { event, result } => {
-                if request.kind == "task_request" {
-                    // An add's event names its task number, so replay after a crash
-                    // deduplicates it without hiding a second task of the same title.
-                    channel.post_event_once(event)?;
-                } else {
-                    channel.post_event(event)?;
-                }
-                // The list goes out before the answer, so an agent that reads it after
-                // its change saved sees that change.
-                publish(store, project, channel)?;
-                channel.finish_task(&request, &result)?;
-                changed = true;
-            }
-            Outcome::Refused(reason) => channel.finish_task(&request, &reason)?,
-        }
+        let (outcome, rows) = store.with(|store| {
+            apply(store, project, &request).map(|outcome| (outcome, task_rows(store, project)))
+        })??;
+        changed |= answer(channel, &request, outcome, rows)?;
     }
-    publish(store, project, channel)?;
+    if let Some(rows) = store.with(|store| task_rows(store, project))? {
+        channel.publish_task_list(&rows)?;
+    }
+    Ok(changed)
+}
+
+/// Answers one request: a saved change posts its event, then the list as it stands after
+/// it, then the answer, so an agent that reads the list after its answer sees its change.
+/// Returns whether the request changed the store.
+fn answer(
+    channel: &Channel,
+    request: &Entry,
+    outcome: Outcome,
+    rows: Option<Vec<TaskListRow>>,
+) -> Result<bool, AgentTaskError> {
+    let (text, changed) = match outcome {
+        Outcome::Saved { event, result } => {
+            if request.kind == "task_request" {
+                // An add's event names its task number, so replay after a crash
+                // deduplicates it without hiding a second task of the same title.
+                channel.post_event_once(event)?;
+            } else {
+                channel.post_event(event)?;
+            }
+            if let Some(rows) = rows {
+                channel.publish_task_list(&rows)?;
+            }
+            (result, true)
+        }
+        Outcome::Refused(reason) => (reason, false),
+    };
+    channel.finish_task(request, &text)?;
     Ok(changed)
 }
 
@@ -112,12 +184,11 @@ fn add(store: &mut StateStore, project: u32, request: &Entry) -> Result<Outcome,
     }
 }
 
-/// Publish the saved list for `task_list`, whoever changed it (the user, an agent, a merge).
-fn publish(store: &StateStore, project: u32, channel: &Channel) -> Result<(), AgentTaskError> {
-    let Ok(views) = store.list_tasks(project) else {
-        return Ok(());
-    };
-    let rows: Vec<TaskListRow> = views
+/// The saved list as `task_list` publishes it, whoever changed it (the user, an agent, a
+/// merge).
+fn task_rows(store: &StateStore, project: u32) -> Option<Vec<TaskListRow>> {
+    let views = store.list_tasks(project).ok()?;
+    let rows = views
         .into_iter()
         .filter_map(|view| {
             let mut row = TaskListRow::new(view.identifier.parse().ok()?, view.title, view.state);
@@ -129,8 +200,7 @@ fn publish(store: &StateStore, project: u32, channel: &Channel) -> Result<(), Ag
             Some(row)
         })
         .collect();
-    channel.publish_task_list(&rows)?;
-    Ok(())
+    Some(rows)
 }
 
 fn state_name(state: TaskState) -> &'static str {

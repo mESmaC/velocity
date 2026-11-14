@@ -142,15 +142,19 @@ impl Channel {
     }
 
     pub fn pending_tasks(&self) -> Result<Vec<Entry>, Error> {
-        let entries = self.read(0)?;
+        // The app asks every second for every project: share the cached log rather than
+        // copy it, and look answers up in a set rather than rescan the log per request.
+        let entries = Storage::open(&self.directory)?.snapshot()?;
+        let answered: std::collections::HashSet<u64> = entries
+            .iter()
+            .filter(|result| result.kind == "task_result")
+            .filter_map(|result| result.acknowledged)
+            .collect();
         Ok(entries
             .iter()
             .filter(|request| {
                 TASK_REQUEST_KINDS.contains(&request.kind.as_str())
-                    && !entries.iter().any(|result| {
-                        result.kind == "task_result"
-                            && result.acknowledged == Some(request.sequence)
-                    })
+                    && !answered.contains(&request.sequence)
             })
             .cloned()
             .collect())

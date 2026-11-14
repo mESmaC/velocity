@@ -1096,8 +1096,9 @@ pub(crate) fn refresh(
     )?;
     let identifier = usize::try_from(key.1).map_err(|error| error.to_string())?;
     store.refresh_layout(&mut layout);
-    if let Some(view) = view {
-        layout.set_live_thread(key.0, identifier, view);
+    match view {
+        Some(view) => layout.set_live_thread(key.0, identifier, view),
+        None => layout.forget_live_thread(key.0, identifier),
     }
     if select
         && store
@@ -1129,9 +1130,10 @@ fn rebuild_layout(application: &AppHandle, key: ThreadKey) -> Result<(), String>
         "main-window state",
     )?;
     store.refresh_layout(&mut layout);
-    if let Some(view) = view {
-        let identifier = usize::try_from(key.1).map_err(|error| error.to_string())?;
-        layout.set_live_thread(key.0, identifier, view);
+    let identifier = usize::try_from(key.1).map_err(|error| error.to_string())?;
+    match view {
+        Some(view) => layout.set_live_thread(key.0, identifier, view),
+        None => layout.forget_live_thread(key.0, identifier),
     }
     Ok(())
 }

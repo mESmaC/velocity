@@ -1,4 +1,6 @@
 //! Native F14 message edge: queued input, persistent acknowledgement and user comments.
+use std::collections::BTreeSet;
+
 use tauri::{AppHandle, Manager};
 use velocity_airc::Channel;
 use velocity_store::{ProjectItem, ThreadItem};
@@ -18,8 +20,17 @@ fn channel(application: &AppHandle, project: u32) -> Result<Channel, String> {
 pub fn initialize(application: &AppHandle) {
     let application = application.clone();
     std::thread::spawn(move || {
+        let mut left = Left::new();
+        let mut pass: u64 = 0;
         loop {
-            if let Err(error) = cycle(&application) {
+            pass = pass.wrapping_add(1);
+            // A member can rejoin without this loop seeing its thread live (a resume
+            // that fails between passes), so the set is cleared now and then: a missed
+            // leave is at most this many seconds late.
+            if pass.is_multiple_of(LEFT_RECHECK_PASSES) {
+                left.clear();
+            }
+            if let Err(error) = cycle(&application, &mut left) {
                 eprintln!("Velocity AIRC delivery: {error}");
             }
             std::thread::sleep(std::time::Duration::from_secs(1));
@@ -27,7 +38,14 @@ pub fn initialize(application: &AppHandle) {
     });
 }
 
-fn cycle(application: &AppHandle) -> Result<(), String> {
+/// Threads whose member this loop has already taken out of the channel. A stopped thread
+/// leaves once, not every second: each leave locks and reads the channel (#322).
+type Left = BTreeSet<velocity_threads::ThreadKey>;
+
+const LEFT_RECHECK_PASSES: u64 = 30;
+
+fn cycle(application: &AppHandle, left: &mut Left) -> Result<(), String> {
+    // Transcripts are shared, not copied, so this clone copies thread records only.
     let projects = lock(
         application.state::<ManagedStateStore>().inner(),
         "persisted state",
@@ -36,21 +54,24 @@ fn cycle(application: &AppHandle) -> Result<(), String> {
     .projects
     .clone();
     for project in projects {
-        if let Err(error) = project_cycle(application, &project) {
+        if let Err(error) = project_cycle(application, &project, left) {
             eprintln!("Velocity AIRC project {}: {error}", project.id);
         }
     }
     Ok(())
 }
 
-fn project_cycle(application: &AppHandle, project: &ProjectItem) -> Result<(), String> {
-    let changed = velocity_threads::agent_tasks::ingest(
-        &mut *lock(
-            application.state::<ManagedStateStore>().inner(),
-            "persisted state",
-        )?,
+fn project_cycle(
+    application: &AppHandle,
+    project: &ProjectItem,
+    left: &mut Left,
+) -> Result<(), String> {
+    // One handle for the whole pass: opening resolves and creates the folder each time.
+    let channel = channel(application, project.id)?;
+    let changed = velocity_threads::agent_tasks::ingest_shared(
+        application.state::<ManagedStateStore>().inner(),
         project.id,
-        &channel(application, project.id)?,
+        &channel,
     )
     .map_err(|error| error.to_string())?;
     if changed {
@@ -60,13 +81,13 @@ fn project_cycle(application: &AppHandle, project: &ProjectItem) -> Result<(), S
             false,
         )?;
     }
-    if let Err(error) = update_waits(application, project) {
+    if let Err(error) = update_waits(application, project, &channel) {
         eprintln!("Velocity AIRC project {} waits: {error}", project.id);
     }
-    crate::agent_activity::cycle(application, project, &channel(application, project.id)?)?;
-    crate::parking::cycle(application, project, &channel(application, project.id)?);
+    crate::agent_activity::cycle(application, project, &channel)?;
+    crate::parking::cycle(application, project, &channel);
     for thread in &project.threads {
-        if let Err(error) = deliver(application, project, thread) {
+        if let Err(error) = deliver(application, (project.id, thread), &channel, left) {
             eprintln!("Velocity AIRC thread {}: {error}", thread.id);
         }
     }
@@ -75,12 +96,12 @@ fn project_cycle(application: &AppHandle, project: &ProjectItem) -> Result<(), S
 
 fn deliver(
     application: &AppHandle,
-    project: &ProjectItem,
-    thread: &ThreadItem,
+    (project, thread): (u32, &ThreadItem),
+    channel: &Channel,
+    left: &mut Left,
 ) -> Result<(), String> {
-    let key = (project.id, thread.id);
+    let key = (project, thread.id);
     let member = format!("thread-{}", key.1);
-    let channel = channel(application, project.id)?;
     let (live, setting_up) = {
         let runtimes = lock(
             application.state::<ManagedThreads>().inner(),
@@ -89,8 +110,14 @@ fn deliver(
         (runtimes.is_live(key), runtimes.is_setting_up(key))
     };
     if !live {
-        return channel.leave(&member).map_err(|error| error.to_string());
+        if left.contains(&key) {
+            return Ok(());
+        }
+        channel.leave(&member).map_err(|error| error.to_string())?;
+        left.insert(key);
+        return Ok(());
     }
+    left.remove(&key);
     if setting_up {
         return Ok(());
     }
@@ -101,7 +128,7 @@ fn deliver(
         .join(&member, path)
         .map_err(|error| error.to_string())?;
     let cursor = velocity_airc::deliver_targeted(
-        &channel,
+        channel,
         &nick,
         channel
             .delivery_cursor(&member, thread.airc_cursor)
@@ -131,9 +158,12 @@ fn deliver(
 
 /// Translate the runner's saved lifecycle into wake events. The waiting MCP server
 /// subscribes to these writes; it never polls GitHub or the runner.
-fn update_waits(application: &AppHandle, project: &ProjectItem) -> Result<(), String> {
-    let channel = channel(application, project.id)?;
-    for (identifier, description) in velocity_threads::dependencies::refresh(&channel, project)
+fn update_waits(
+    application: &AppHandle,
+    project: &ProjectItem,
+    channel: &Channel,
+) -> Result<(), String> {
+    for (identifier, description) in velocity_threads::dependencies::refresh(channel, project)
         .map_err(|error| error.to_string())?
     {
         lock(
