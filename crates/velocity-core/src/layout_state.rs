@@ -27,6 +27,7 @@ use std::collections::{BTreeMap, BTreeSet};
 /// What `submit_composer` sent to a thread, kept so a failed send can be undone.
 #[derive(Clone)]
 struct SentSteering {
+    project: u32,
     identifier: usize,
     prompt: String,
     typed: String,
@@ -67,7 +68,9 @@ pub struct LayoutState {
     composer_text: String,
     /// The last message sent to a thread, as typed. A failed send gives back these words
     /// rather than the prompt with its skill instructions.
-    sent_steering: Option<SentSteering>,
+    /// One entry per send still on its way, oldest first: sends to one thread are
+    /// delivered in order, so each answer belongs to the oldest matching entry.
+    sent_steering: Vec<SentSteering>,
     pending_sends: PendingSends,
     task_text: String,
     project_spec_locked: Option<bool>,
@@ -106,7 +109,7 @@ impl Default for LayoutState {
             form_open: false,
             overlay_open: false,
             composer_text: String::new(),
-            sent_steering: None,
+            sent_steering: Vec::new(),
             pending_sends: PendingSends::default(),
             task_text: String::new(),
             project_spec_locked: None,
@@ -980,16 +983,20 @@ impl LayoutState {
         self.composer_text.clear();
         self.slash_selection = 0;
         self.record_steering(&intent);
-        self.sent_steering = match &intent {
+        if let (
             LayoutIntent::SteerThread {
                 identifier, prompt, ..
-            } => Some(SentSteering {
+            },
+            Some(project),
+        ) = (&intent, self.data.project_identifier)
+        {
+            self.sent_steering.push(SentSteering {
+                project,
                 identifier: *identifier,
                 prompt: prompt.clone(),
                 typed: text,
-            }),
-            _ => None,
-        };
+            });
+        }
         Some(intent)
     }
 
@@ -1001,9 +1008,8 @@ impl LayoutState {
     /// `project` is the project the message was written in. Its thread's transcript always
     /// drops the message; the composer gets it back only while that project is still open.
     pub fn return_unsent_message(&mut self, project: u32, identifier: usize, prompt: &str) {
-        let sent = self.sent_steering.take();
-        let typed = sent
-            .filter(|sent| sent.identifier == identifier && sent.prompt == prompt)
+        let typed = self
+            .take_sent_steering(project, identifier, prompt)
             .map_or_else(|| prompt.to_owned(), |sent| sent.typed);
         if let Some(live) = self.live.get_mut(&(project, identifier)) {
             remove_last_message(&mut live.blocks, prompt);
@@ -1033,7 +1039,20 @@ impl LayoutState {
 
     /// The agent took a message sent from the composer; see [`PendingSends`].
     pub fn message_delivered(&mut self, project: u32, identifier: usize, prompt: &str) {
+        self.take_sent_steering(project, identifier, prompt);
         self.pending_sends.delivered((project, identifier), prompt);
+    }
+
+    fn take_sent_steering(
+        &mut self,
+        project: u32,
+        identifier: usize,
+        prompt: &str,
+    ) -> Option<SentSteering> {
+        let index = self.sent_steering.iter().position(|sent| {
+            sent.project == project && sent.identifier == identifier && sent.prompt == prompt
+        })?;
+        Some(self.sent_steering.remove(index))
     }
 
     fn record_steering(&mut self, intent: &LayoutIntent) {

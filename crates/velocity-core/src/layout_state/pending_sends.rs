@@ -2,10 +2,18 @@
 //! thread is drawn from its live transcript, and each agent update replaces that whole
 //! transcript with the agent's own, which lacks a message still waiting in the send
 //! queue. These are added back to every update until the agent's transcript shows them.
+//!
+//! Sends to one thread reach their agent in order, so each answer (delivered or failed)
+//! belongs to the oldest unanswered send with its text.
 use crate::thread_view_model::{SharedBlocks, TranscriptBlock};
 
 #[derive(Clone, Default)]
-pub(super) struct PendingSends(Vec<PendingSend>);
+pub(super) struct PendingSends {
+    waiting: Vec<PendingSend>,
+    /// Sends the agent's transcript showed before their answer came back. Their answer
+    /// still arrives, and must not be taken for a later send with the same text.
+    shown_before_answer: Vec<((u32, usize), String)>,
+}
 
 #[derive(Clone)]
 struct PendingSend {
@@ -31,7 +39,7 @@ impl PendingSends {
     ) {
         // `blocks` already holds this message and the earlier pending ones like it.
         let shown_after = count_messages(blocks, text).saturating_sub(1);
-        self.0.push(PendingSend {
+        self.waiting.push(PendingSend {
             thread,
             text: text.to_owned(),
             queued,
@@ -40,37 +48,69 @@ impl PendingSends {
         });
     }
 
-    /// Drops the newest pending message with this text: its send failed.
+    /// The oldest unanswered send with this text failed: it leaves the transcript.
     pub(super) fn forget(&mut self, thread: (u32, usize), text: &str) {
-        if let Some(index) = self
-            .0
-            .iter()
-            .rposition(|pending| pending.thread == thread && pending.text == text)
-        {
-            self.0.remove(index);
+        if self.answered_early(thread, text) {
+            return;
+        }
+        if let Some(index) = self.unanswered(thread, text) {
+            self.waiting.remove(index);
         }
     }
 
-    /// Marks the oldest waiting message with this text as taken by the agent.
+    /// The oldest unanswered send with this text reached the agent.
     pub(super) fn delivered(&mut self, thread: (u32, usize), text: &str) {
-        if let Some(pending) = self
-            .0
-            .iter_mut()
-            .find(|pending| pending.thread == thread && pending.text == text && !pending.delivered)
-        {
-            pending.delivered = true;
+        if self.answered_early(thread, text) {
+            return;
         }
+        if let Some(index) = self.unanswered(thread, text) {
+            self.waiting[index].delivered = true;
+        }
+    }
+
+    /// Whether this answer belongs to a send the transcript already showed; if so, that
+    /// send is now fully answered.
+    fn answered_early(&mut self, thread: (u32, usize), text: &str) -> bool {
+        let Some(index) = self
+            .shown_before_answer
+            .iter()
+            .position(|(shown, shown_text)| *shown == thread && shown_text == text)
+        else {
+            return false;
+        };
+        self.shown_before_answer.remove(index);
+        true
+    }
+
+    fn unanswered(&self, thread: (u32, usize), text: &str) -> Option<usize> {
+        self.waiting.iter().position(|pending| {
+            pending.thread == thread && pending.text == text && !pending.delivered
+        })
     }
 
     /// Forgets the messages the agent's transcript now shows, and appends the rest.
     pub(super) fn add_to(&mut self, thread: (u32, usize), blocks: &mut SharedBlocks) {
-        self.0.retain(|pending| {
-            pending.thread != thread
-                || (!pending.delivered
-                    && count_messages(blocks, &pending.text) <= pending.shown_after)
+        let mut shown = Vec::new();
+        self.waiting.retain(|pending| {
+            if pending.thread != thread {
+                return true;
+            }
+            if pending.delivered {
+                return false;
+            }
+            let waiting = count_messages(blocks, &pending.text) <= pending.shown_after;
+            if !waiting {
+                shown.push((thread, pending.text.clone()));
+            }
+            waiting
         });
+        self.shown_before_answer.extend(shown);
         // The agent's blocks are shared with its runtime; copy them only to add to them.
-        for pending in self.0.iter().filter(|pending| pending.thread == thread) {
+        for pending in self
+            .waiting
+            .iter()
+            .filter(|pending| pending.thread == thread)
+        {
             std::sync::Arc::make_mut(blocks).push(TranscriptBlock::UserMessage {
                 text: pending.text.clone(),
                 queued: pending.queued,
