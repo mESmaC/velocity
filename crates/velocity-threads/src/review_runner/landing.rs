@@ -26,7 +26,7 @@ use crate::review::review_worktree;
 /// nothing else will build it, so an agent runs the local checks and merges it.
 const NO_CHECKS_GRACE: Duration = Duration::from_secs(120);
 /// The nick Velocity reads the approval record under when it lands a head.
-const LANDER: &str = "pr-duty";
+pub(super) const LANDER: &str = "pr-duty";
 
 /// What Velocity last saw and said about one approved head.
 pub(super) struct LandingNote {
@@ -105,7 +105,7 @@ impl PrDutyReviews {
             });
             let (approved, rest): (Vec<_>, Vec<_>) =
                 candidates.into_iter().partition(|candidate| {
-                    // A Rosen change is landed by its agent through Rosen, never here.
+                    // A Rosen change lands through Rosen (`checker`), never here.
                     candidate.subject.number().is_some()
                         && candidate.standing == ReviewStanding::Approved
                         && !candidate.draft

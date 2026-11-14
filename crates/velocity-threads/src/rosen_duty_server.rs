@@ -1,6 +1,9 @@
 //! PR duty's MCP server for a Rosen change (F5, F7, Rule 4): the only way a reviewing agent
 //! approves, requests changes, records its checks and lands the change it holds.
 //!
+//! A review by reading (F7 "Checks before merge") only decides: its approval needs no
+//! checks from the agent, and Velocity's checker submits the receipt and lands the change.
+//!
 //! The runner fixes the reviewer and the one change in a launch file, so an agent can neither
 //! act on another change nor record a decision as anyone else. Rosen itself holds the gate: it
 //! lands nothing without an approval at the change's head and a receipt for its merge result.
@@ -33,6 +36,10 @@ pub struct RosenDutyLaunch {
     pub folder: PathBuf,
     pub report: PathBuf,
     pub setup: FolderSetup,
+    /// The review is by reading: the agent builds nothing in the folder, so it gets no
+    /// setup, and the checking and landing tools are Velocity's, not the agent's.
+    #[serde(default)]
+    pub reading: bool,
 }
 
 impl RosenDutyLaunch {
@@ -51,7 +58,14 @@ impl RosenDutyLaunch {
             folder: plan.worktree.worktree_path.clone(),
             report: report.to_path_buf(),
             setup: FolderSetup::of(&plan.worktree),
+            reading: false,
         }
+    }
+
+    /// The same launch for a review by reading, or not.
+    pub fn by_reading(mut self, reading: bool) -> Self {
+        self.reading = reading;
+        self
     }
 }
 
@@ -105,7 +119,8 @@ pub fn reviewer_name(nickname: &str) -> String {
 }
 
 /// Writes the change's merge result into the review folder and gives it the per-agent setup.
-/// A conflicted merge leaves the folder empty, so it gets no setup.
+/// A conflicted merge leaves the folder empty, so it gets no setup; nor does a folder that
+/// is only read.
 pub async fn check_out_review(
     server: &ProjectServer,
     launch: &RosenDutyLaunch,
@@ -114,7 +129,7 @@ pub async fn check_out_review(
     let checkout = duty::check_out_merge_result(server, &reviewer, &launch.change, &launch.folder)
         .await
         .map_err(|error| error.to_string())?;
-    if checkout.conflicts.is_empty() {
+    if checkout.conflicts.is_empty() && !launch.reading {
         let request = launch.setup.request(&launch.folder);
         tokio::task::spawn_blocking(move || finish_worktree_setup(&request))
             .await
@@ -305,10 +320,12 @@ impl RosenDutyServer {
         {
             return Err("Explain proof scope, statement review and confidence level (or why each is inapplicable)".into());
         }
-        if self
-            .checked
-            .as_ref()
-            .is_none_or(|(head, _)| *head != arguments.head)
+        // A review by reading approves what it read: Velocity checks the head afterwards.
+        if !self.launch.reading
+            && self
+                .checked
+                .as_ref()
+                .is_none_or(|(head, _)| *head != arguments.head)
         {
             return Err("Prepare the merge result, run the checks and record them with rosen_duty_checked before approving".into());
         }
@@ -470,20 +487,33 @@ impl ToolServer for RosenDutyServer {
     }
 
     fn instructions(&self) -> String {
+        let landing = if self.launch.reading {
+            "Velocity checks and lands the head you approve"
+        } else {
+            "land an approved head with rosen_duty_land"
+        };
         format!(
-            "You are {}, holding the review claim on Rosen change {}. Read it with rosen_duty_change, record your decision with rosen_duty_review, and land an approved head with rosen_duty_land.",
+            "You are {}, holding the review claim on Rosen change {}. Read it with rosen_duty_change, record your decision with rosen_duty_review, and {landing}.",
             self.launch.nickname, self.launch.change
         )
     }
 
     fn tools(&self) -> Vec<Value> {
-        crate::rosen_duty_tools::tool_list(&self.launch.change)
+        crate::rosen_duty_tools::tool_list(&self.launch.change, self.launch.reading)
     }
 
     fn call(&mut self, name: Option<&str>, arguments: Value) -> Result<Value, String> {
         match name {
             Some("rosen_duty_change") => self.change(),
             Some("rosen_duty_review") => self.review(arguments),
+            Some("rosen_duty_prepare_landing" | "rosen_duty_checked" | "rosen_duty_land")
+                if self.launch.reading =>
+            {
+                Err(format!(
+                    "This review is by reading. Velocity runs the pre-land checks on change {} itself, submits the receipt and lands it once you approve. Record your decision with rosen_duty_review, then end your turn.",
+                    self.launch.change
+                ))
+            }
             Some("rosen_duty_prepare_landing") => self.prepare_landing(),
             Some("rosen_duty_checked") => self.checked(arguments),
             Some("rosen_duty_land") => self.land(arguments),

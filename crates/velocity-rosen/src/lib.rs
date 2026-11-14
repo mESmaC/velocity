@@ -8,6 +8,7 @@
 mod agent;
 #[cfg(feature = "bundled")]
 mod bundled;
+pub mod checker;
 mod conflicts;
 pub mod duty;
 mod events;

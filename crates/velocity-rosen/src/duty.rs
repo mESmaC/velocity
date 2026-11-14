@@ -126,8 +126,24 @@ pub async fn check_out_merge_result(
     change: &str,
     folder: &Path,
 ) -> Result<MergeCheckout, RosenError> {
+    let staging = claim_checkout(folder)?;
+    let checkout = session(server, reviewer)
+        .await?
+        .check_out_merge_result(change, &staging)
+        .await?;
+    replace_entries(folder, &staging)?;
+    Ok(MergeCheckout {
+        head: checkout.merge.head.to_string(),
+        base: checkout.merge.base.to_string(),
+        conflicts: checkout.merge.conflicts,
+    })
+}
+
+/// Makes `folder` a checkout of Velocity's, with nothing staged beside it, and returns
+/// where the next merge result is staged.
+pub(crate) fn claim_checkout(folder: &Path) -> Result<PathBuf, RosenError> {
     let marker = checkout_marker(folder);
-    let staging = sibling(folder, ".rosen-next");
+    let staging = staging_folder(folder);
     // The marker is what makes the folder and its staging sibling Velocity's: without it,
     // either one belongs to someone else and is left alone.
     for path in [folder, staging.as_path()] {
@@ -144,16 +160,12 @@ pub async fn check_out_merge_result(
     }
     create_folder(folder)?;
     write_marker(&marker)?;
-    let checkout = session(server, reviewer)
-        .await?
-        .check_out_merge_result(change, &staging)
-        .await?;
-    replace_entries(folder, &staging)?;
-    Ok(MergeCheckout {
-        head: checkout.merge.head.to_string(),
-        base: checkout.merge.base.to_string(),
-        conflicts: checkout.merge.conflicts,
-    })
+    Ok(staging)
+}
+
+/// Where a merge result is written before it replaces what `folder` holds.
+pub(crate) fn staging_folder(folder: &Path) -> PathBuf {
+    sibling(folder, ".rosen-next")
 }
 
 /// Empties `folder`, moves every entry of `staging` into it and removes `staging`.
@@ -203,7 +215,7 @@ pub fn remove_checkout(folder: &Path) -> Result<(), RosenError> {
     if !marker.is_file() {
         return Ok(());
     }
-    for path in [folder.to_path_buf(), sibling(folder, ".rosen-next")] {
+    for path in [folder.to_path_buf(), staging_folder(folder)] {
         if path.exists() {
             remove_folder(&path)?;
         }
@@ -217,7 +229,7 @@ fn checkout_marker(folder: &Path) -> PathBuf {
     sibling(folder, ".rosen-review")
 }
 
-fn sibling(folder: &Path, suffix: &str) -> PathBuf {
+pub(crate) fn sibling(folder: &Path, suffix: &str) -> PathBuf {
     let mut name = folder.file_name().unwrap_or_default().to_os_string();
     name.push(suffix);
     folder.with_file_name(name)
