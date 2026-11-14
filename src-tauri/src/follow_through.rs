@@ -158,6 +158,8 @@ fn followed_threads(project: &ProjectItem) -> Vec<ThreadItem> {
                     | ThreadState::Error
             ) && !thread.branch_name.is_empty()
                 && thread.worktree_path.is_some()
+                // A Rosen thread opens no PR: its project's Rosen events follow it.
+                && thread.rosen_change.is_none()
         })
         .cloned()
         .collect()

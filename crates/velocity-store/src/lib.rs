@@ -52,6 +52,7 @@ mod project_layout;
 pub mod projects;
 pub mod provider_views;
 pub mod providers;
+pub mod rosen;
 mod save_behind;
 pub mod shared_mcp;
 pub mod skills;
@@ -934,6 +935,10 @@ pub struct ProjectItem {
     /// Rosen or git for this project's agents (F5). Saved projects take Rosen.
     #[serde(default)]
     pub version_control: VersionControl,
+    /// The newest event of the project's Rosen stream its threads have taken in (F6).
+    #[serde(default)]
+    #[specta(skip)]
+    pub rosen_event_cursor: u64,
 }
 
 /// The New project dialog's interview choices, kept until the spec interview
@@ -973,6 +978,7 @@ impl ProjectItem {
             deleted_worktrees: Vec::new(),
             last_task_identifier: 0,
             version_control: VersionControl::default(),
+            rosen_event_cursor: 0,
         }
     }
 

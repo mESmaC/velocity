@@ -413,6 +413,7 @@ There are two views of the same work, switched from the title bar or with `B`:
 - **Stored as the agent writes.** Velocity runs a write-through watcher on each open workspace, so every write is on the Rosen server within 2 seconds, and starts the watchers again after a restart. There is nothing to commit or push.
 - **What the agent is told.** The agent's process gets `ROSEN_ENDPOINT`, `ROSEN_AGENT` and Rosen's folder on `PATH`, so the `rosen` CLI reaches the project's server as that agent. Its first prompt, and a resumed session's, starts with a note that is not shown in the transcript: the folder is a Rosen workspace, not a git checkout, so git branch, commit, push and PR steps don't apply; `rosen commit -m` names the work.
 - **Deleting the thread** abandons its change. Rosen then deletes the workspace under its deletion guard, which keeps it while any edit there is not stored on the server (Rosen R4).
+- **Followed through Rosen's events (F6).** Velocity follows each Rosen project's event stream (Rosen R9) in place of the GitHub PR watcher, which no longer follows Rosen threads. A named snapshot (`rosen commit -m`) moves the thread to review. A land marks it merged and ticks off its tasks; its agent and watcher stop and its AIRC claims are released, and Rosen deletes the workspace. A post-land revert (Rosen R12) puts it back in review, stage fixing. Velocity saves the stream's cursor with each event that moves a thread, so a restart resumes after it and finishes a land's cleanup that a crash interrupted.
 - **Falling back.** When the server can't start or the workspace can't be made, the thread takes a git worktree as below, and a notice names the reason.
 
 **Lifecycle (decided):**
@@ -480,7 +481,7 @@ A worktree's path is fixed when it is created. Changing the location setting aff
 
 ### F6 · PR follow-through
 
-When the task is done, the agent opens a PR. The PR description links the Task List item or says `Fixes #n`. The thread moves to **PR open · watching**.
+When the task is done, the agent opens a PR. The PR description links the Task List item or says `Fixes #n`. The thread moves to **PR open · watching**. A thread in a Rosen workspace opens no PR: its project's Rosen events follow it instead (F5).
 
 Draft claims keep the coding transcript until the PR is ready. The watcher follows the thread's same-repository branch and excludes historical PRs from earlier uses of that branch. New review work is saved before delivery and remains pending until its ACP prompt completes; after a restart it resumes in the retained worktree. The PR author's own progress replies remain in history without prompting another response. Merge cleanup and explicit deletion (F12) share the thread's lifecycle lock and wait for confirmed shutdown of its agent and owned terminals before removing the checkout.
 
