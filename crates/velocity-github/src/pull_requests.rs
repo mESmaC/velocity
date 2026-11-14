@@ -211,7 +211,7 @@ impl PullRequestClient {
         }
     }
 
-    fn checks(&self, number: u32) -> Result<Vec<PullRequestCheck>, PullRequestError> {
+    pub(crate) fn checks(&self, number: u32) -> Result<Vec<PullRequestCheck>, PullRequestError> {
         let path = "/data/repository/pullRequest/commits/nodes/0/commit/statusCheckRollup";
         let commit: Value = self.graphql_at::<Value>(
             CHECKS,

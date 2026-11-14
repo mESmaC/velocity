@@ -5,6 +5,11 @@
 //! times); the agent records its decision and merges only through the PR duty MCP server, and
 //! the Duty view's cards and activity feed follow it. Pausing lets running reviews finish and
 //! claims nothing new.
+//!
+//! Most reviews are by reading (F7 "Checks before merge"): the agent decides and its session
+//! ends, and `landing` merges the approved head once GitHub's checks pass.
+
+mod landing;
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
@@ -17,6 +22,7 @@ use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender, unbounded_channel};
 use velocity_acp::client::{AgentEvent, AgentInput, AircLaunch, duty_member};
 use velocity_airc::Channel;
 use velocity_core::duty::{DutyAgentCard, DutyEventKind, DutyFeedEvent, DutyRoleEntry};
+use velocity_core::merge_gate::ReviewMode;
 use velocity_core::pr_review::{
     ReviewAssignment, ReviewAttempt, ReviewBrief, ReviewCandidate, ReviewWork, TurnEndAction,
     assign_reviews, claim_message, continue_prompt, resting_heads, review_doing,
@@ -92,6 +98,10 @@ struct RunnerState {
     /// Each agent's latest review session as the Duty view shows it (F7). Kept after the
     /// session ends so its last review can still be read; a new review replaces it.
     transcripts: BTreeMap<AgentKey, LiveTranscript>,
+    /// Per project and PR, what Velocity last saw of the approved head it is landing.
+    landing: BTreeMap<(u32, u32), landing::LandingNote>,
+    /// The projects with a landing pass running, so two never merge the same head.
+    landing_projects: BTreeSet<u32>,
 }
 
 /// The review runner. Cheap to clone; every clone drives the same reviews.
@@ -295,10 +305,11 @@ impl PrDutyReviews {
                     })
                     .collect()
             };
-            if roster.paused || idle.is_empty() {
+            if roster.paused || roster.agents.is_empty() {
                 settle_cards(host, &roster, &idle, None);
                 continue;
             }
+            // Listed even when every agent is busy: approved heads land without one.
             let candidates = self.candidates(&roster).await;
             if self.lock().dismissals != dismissals {
                 // An agent left while PRs were listed: the dismissal's wake reads afresh.
@@ -306,21 +317,32 @@ impl PrDutyReviews {
             }
             match candidates {
                 Ok(candidates) => {
-                    let assignments = self.assign(&roster, &candidates, &idle);
-                    let claimed: BTreeSet<&str> =
-                        assignments.iter().map(|next| next.agent.as_str()).collect();
-                    let waiting: Vec<String> = idle
-                        .iter()
-                        .filter(|nickname| !claimed.contains(nickname.as_str()))
-                        .cloned()
-                        .collect();
-                    settle_cards(host, &roster, &waiting, None);
-                    for assignment in assignments {
-                        self.start(host, &roster, &candidates, assignment);
-                    }
+                    let candidates = self.land_approved(host, &roster, candidates);
+                    self.claim_for_idle(host, &roster, &candidates, &idle);
                 }
                 Err(error) => settle_cards(host, &roster, &idle, Some(&error)),
             }
+        }
+    }
+
+    /// Gives each idle agent a PR that needs one, and settles the cards of the rest.
+    fn claim_for_idle<Host: ReviewHost>(
+        &self,
+        host: &Host,
+        roster: &PrDutyRoster,
+        candidates: &[ReviewCandidate],
+        idle: &[String],
+    ) {
+        let assignments = self.assign(roster, candidates, idle);
+        let claimed: BTreeSet<&str> = assignments.iter().map(|next| next.agent.as_str()).collect();
+        let waiting: Vec<String> = idle
+            .iter()
+            .filter(|nickname| !claimed.contains(nickname.as_str()))
+            .cloned()
+            .collect();
+        settle_cards(host, roster, &waiting, None);
+        for assignment in assignments {
+            self.start(host, roster, candidates, assignment);
         }
     }
 
@@ -535,6 +557,7 @@ struct Prepared {
     base_commit: String,
     conflicts: Vec<String>,
     tier: TierAssessment,
+    mode: ReviewMode,
 }
 
 /// One agent's review of one PR, from its claim to its release.
@@ -630,6 +653,7 @@ impl Review {
         let roster = self.roster.clone();
         let nickname = self.key.1.clone();
         let number = self.candidate.number;
+        let (runner, work) = (self.runner.clone(), self.work);
         tokio::task::spawn_blocking(move || {
             let agent = roster
                 .agents
@@ -647,7 +671,9 @@ impl Review {
             let tier =
                 velocity_git::review_tier(&checkout.path, &checkout.base_commit, &checkout.head)
                     .map_err(|error| format!("Could not read the PR's diff: {error}"))?;
+            let mode = runner.review_mode(&roster, number, work, &checkout, tier.tier);
             Ok(Prepared {
+                mode,
                 plan,
                 worktree: checkout.path,
                 head: checkout.head,
@@ -705,6 +731,8 @@ impl Review {
             executable: &self.runner.executable,
             app_data: &self.runner.app_data,
             report: &report,
+            reading_base: (prepared.mode == ReviewMode::Reading)
+                .then_some(prepared.base_commit.as_str()),
         };
         if self.runner.dismissed(&self.key) {
             // Dismissed while the worktree or the proofs were prepared: no session starts.
@@ -781,6 +809,7 @@ impl Review {
             conflicts: &prepared.conflicts,
             work: self.work,
             tier: &prepared.tier,
+            mode: prepared.mode,
             rules: &self.roster.rules,
             instruction: self.instruction.as_deref(),
         })
