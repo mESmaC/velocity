@@ -39,7 +39,7 @@ pub use launch::{
     plan_launch_with_preferences, title_worktree_name,
 };
 pub use ready_pool::{PoolHost, PoolProject, PoolRow, PoolTicket, ReadyPools};
-pub use review::{PR_DUTY_SERVER_SWITCH, ReviewPlan, plan_review};
+pub use review::{PR_DUTY_SERVER_SWITCH, READING_REVIEW_ARGUMENT, ReviewPlan, plan_review};
 pub use review_runner::{PrDutyReviews, ReviewChange, ReviewHost};
 pub use runtime::{
     RunningSession, SessionInputs, SteerError, StopOutcome, ThreadKey, ThreadProgress,
