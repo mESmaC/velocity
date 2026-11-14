@@ -9,6 +9,9 @@ use rosen_client::{Session, WorkspaceSpec, WorkspaceWatch};
 
 use crate::{ProjectServer, RosenError};
 
+/// How long a new watcher has to fail before it counts as started.
+const STARTUP_GRACE: std::time::Duration = std::time::Duration::from_secs(2);
+
 /// A new change and the workspace that holds it.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct AgentWorkspace {
@@ -98,7 +101,15 @@ impl Watches {
         if self.is_watching(root) {
             return Ok(());
         }
-        let watch = session(server, agent).await?.watch(root);
+        let mut watch = session(server, agent).await?.watch(root);
+        // A watcher that can't open its workspace or its file watch ends at once. One that
+        // runs reports its first snapshot of the whole workspace, or a failed attempt it
+        // will retry. Waiting briefly for either tells the two apart; a large workspace
+        // whose first snapshot is still running counts as started.
+        if let Ok(None) = tokio::time::timeout(STARTUP_GRACE, watch.next_report()).await {
+            watch.stop().await?;
+            return Err(RosenError::WatchEnded(root.to_path_buf()));
+        }
         if let Ok(mut running) = self.running.lock() {
             running.retain(|_, watch| !watch.is_finished());
             running.entry(root.to_path_buf()).or_insert(watch);
@@ -106,7 +117,8 @@ impl Watches {
         Ok(())
     }
 
-    fn is_watching(&self, root: &Path) -> bool {
+    /// Whether a watcher runs on `root`. One that ended on its own doesn't count.
+    pub fn is_watching(&self, root: &Path) -> bool {
         self.running
             .lock()
             .map(|running| running.get(root).is_some_and(|watch| !watch.is_finished()))

@@ -21,6 +21,11 @@ pub(crate) struct ManagedRosen {
     watches: Watches,
 }
 
+/// How often every open Rosen thread is checked for a running watcher: one that ended,
+/// or never started, is started again. Its first snapshot covers the whole workspace,
+/// so the edits made meanwhile are stored then.
+const WATCH_CHECK: Duration = Duration::from_secs(30);
+
 pub(crate) fn initialize(application: &AppHandle) -> anyhow::Result<()> {
     let app_data = application.path().app_data_dir()?;
     application.manage(ManagedRosen {
@@ -28,7 +33,12 @@ pub(crate) fn initialize(application: &AppHandle) -> anyhow::Result<()> {
         watches: Watches::default(),
     });
     let handle = application.clone();
-    tauri::async_runtime::spawn(async move { resume_watches(&handle).await });
+    tauri::async_runtime::spawn(async move {
+        loop {
+            watch_open_threads(&handle).await;
+            tokio::time::sleep(WATCH_CHECK).await;
+        }
+    });
     Ok(())
 }
 
@@ -192,6 +202,13 @@ pub(crate) fn prepare_resume(
         .env
         .extend(velocity_rosen::agent_environment(&server, &name));
     setup.preface = Some(velocity_rosen::workspace_note(change));
+    // The watcher started at launch may have failed; the agent's edits are stored only
+    // while one runs.
+    let handle = application.clone();
+    let root = root.to_path_buf();
+    tauri::async_runtime::spawn(async move {
+        report(watch_thread(&handle, project, &root).await);
+    });
     Some(Ok(()))
 }
 
@@ -221,9 +238,10 @@ pub(crate) fn fell_back(application: &AppHandle, error: &str) {
     );
 }
 
-/// After a restart, watches the workspace of every Rosen thread whose change is still
-/// open, so edits made while Velocity was closed are stored too.
-async fn resume_watches(application: &AppHandle) {
+/// Watches the workspace of every Rosen thread whose change is still open and has no
+/// watcher: after a restart, so edits made while Velocity was closed are stored too, and
+/// after a watcher ended or failed to start.
+async fn watch_open_threads(application: &AppHandle) {
     let open: Vec<(u32, PathBuf)> = match lock(
         application.state::<ManagedStateStore>().inner(),
         "persisted state",
@@ -247,12 +265,20 @@ async fn resume_watches(application: &AppHandle) {
         Err(_) => return,
     };
     for (project, root) in open {
-        let watched = match server(application, project).await {
-            Ok(server) => watch(application, &server, &root).await,
-            Err(error) => Err(error),
-        };
-        report(watched);
+        report(watch_thread(application, project, &root).await);
     }
+}
+
+/// Starts the watcher on a Rosen thread's workspace unless one runs, or the servers are
+/// stopped for an update or exit.
+async fn watch_thread(application: &AppHandle, project: u32, root: &Path) -> Result<(), String> {
+    let managed = application.state::<ManagedRosen>();
+    // A stopped server refuses to start again anyway; this only saves the attempt.
+    if managed.servers.stopped() || managed.watches.is_watching(root) {
+        return Ok(());
+    }
+    let server = server(application, project).await?;
+    watch(application, &server, root).await
 }
 
 async fn watch(application: &AppHandle, server: &ProjectServer, root: &Path) -> Result<(), String> {
