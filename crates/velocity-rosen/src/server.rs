@@ -4,6 +4,7 @@
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
+use std::sync::Arc;
 use std::time::Duration;
 
 use rosen_client::protocol::ErrorCode;
@@ -247,19 +248,22 @@ fn origin_url(repository: &Path) -> Option<String> {
     (output.status.success() && !url.is_empty()).then_some(url)
 }
 
-/// The servers Velocity has made ready this run. Making one ready is serialised, so two
-/// threads starting at once never race to start the server or import twice.
+/// The servers Velocity has made ready this run. Making one project's server ready is
+/// serialised, so two threads starting at once never race to start it or import twice;
+/// other projects' servers and the registry never wait on it.
 #[derive(Debug)]
 pub struct Servers {
     app_data: PathBuf,
-    ready: tokio::sync::Mutex<BTreeMap<u32, ProjectServer>>,
+    registry: std::sync::Mutex<BTreeMap<u32, ProjectServer>>,
+    starting: std::sync::Mutex<BTreeMap<u32, Arc<tokio::sync::Mutex<()>>>>,
 }
 
 impl Servers {
     pub fn new(app_data: PathBuf) -> Self {
         Self {
             app_data,
-            ready: tokio::sync::Mutex::new(BTreeMap::new()),
+            registry: std::sync::Mutex::new(BTreeMap::new()),
+            starting: std::sync::Mutex::new(BTreeMap::new()),
         }
     }
 
@@ -270,26 +274,34 @@ impl Servers {
         project: u32,
         source: &ImportSource,
     ) -> Result<ProjectServer, RosenError> {
-        let mut ready = self.ready.lock().await;
+        let start_lock = self
+            .starting
+            .lock()
+            .map(|mut starting| Arc::clone(starting.entry(project).or_default()))
+            .unwrap_or_default();
+        let _starting = start_lock.lock().await;
         let server = ProjectServer::new(&self.app_data, project);
         let client = server.connect().await?;
         // Recorded before the import, so a server whose import fails is still stopped at
         // exit.
-        ready.insert(project, server.clone());
+        if let Ok(mut registry) = self.registry.lock() {
+            registry.insert(project, server.clone());
+        }
         server.import(&client, source).await?;
         Ok(server)
     }
 
-    /// The project's server if this run already made it ready.
-    pub async fn get(&self, project: u32) -> Option<ProjectServer> {
-        self.ready.lock().await.get(&project).cloned()
+    fn registered(&self) -> Vec<ProjectServer> {
+        self.registry
+            .lock()
+            .map(|registry| registry.values().cloned().collect())
+            .unwrap_or_default()
     }
 
     /// Starts again every server this run used, after [`Self::shutdown_all`] when the
     /// update it made way for didn't install. Watchers journal meanwhile and catch up.
     pub async fn restart_all(&self) {
-        let servers: Vec<ProjectServer> = self.ready.lock().await.values().cloned().collect();
-        for server in servers {
+        for server in self.registered() {
             let _ = server.connect().await;
         }
     }
@@ -297,8 +309,7 @@ impl Servers {
     /// Stops every server this run started or used, so an update can replace their
     /// binaries. Agents' watchers journal offline until the next start (Rosen R2).
     pub async fn shutdown_all(&self) {
-        let servers: Vec<ProjectServer> = self.ready.lock().await.values().cloned().collect();
-        for server in servers {
+        for server in self.registered() {
             if let Ok(client) = Client::connect(server.endpoint()).await {
                 let _ = client.shutdown().await;
             }

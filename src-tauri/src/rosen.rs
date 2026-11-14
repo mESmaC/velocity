@@ -266,12 +266,12 @@ async fn watch(application: &AppHandle, server: &ProjectServer, root: &Path) -> 
 }
 
 /// Stops the project servers this run used, so an update's installer can replace their
-/// binaries. Waits at most a few seconds.
+/// binaries. Waits at most ten seconds.
 pub(crate) async fn shutdown_servers(application: &AppHandle) {
     let Some(managed) = application.try_state::<ManagedRosen>() else {
         return;
     };
-    let _ = tokio::time::timeout(Duration::from_secs(3), managed.servers.shutdown_all()).await;
+    let _ = tokio::time::timeout(Duration::from_secs(10), managed.servers.shutdown_all()).await;
 }
 
 /// Starts the servers again when an update [`shutdown_servers`] made way for didn't
