@@ -55,6 +55,13 @@ impl PendingSends {
         }
         if let Some(index) = self.unanswered(thread, text) {
             self.waiting.remove(index);
+            // Later sends like it counted this one among those ahead of them.
+            for later in self.waiting[index..]
+                .iter_mut()
+                .filter(|later| later.thread == thread && later.text == text)
+            {
+                later.shown_after = later.shown_after.saturating_sub(1);
+            }
         }
     }
 
