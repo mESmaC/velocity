@@ -312,15 +312,27 @@ impl ThreadRuntimes {
         self.parked.contains(&key)
     }
 
-    /// Starts a parked thread's next session: `prompt` first, then the messages that were
-    /// queued when it parked, in order. Saved history survives an app restart.
-    pub fn resume_parked(
+    /// Starts an ended thread's next session for a message you sent it (#317). The message
+    /// joins the queue before the session starts, so it shows as queued at once, its echo
+    /// clears it, and a session that ends before the echo (parked, stalled, stopped while
+    /// waiting for a provider slot, failed to load) leaves it queued for the next resume.
+    pub fn resume_with_message(
         &mut self,
         key: ThreadKey,
         worktree: &str,
-        prompt: &str,
+        message: &str,
         follows_pull_request: bool,
     ) -> Result<SessionInputs, SteerError> {
+        self.ensure_resumable(key)?;
+        self.threads
+            .entry(key)
+            .or_insert_with(|| parked_runtime(worktree, follows_pull_request))
+            .transcript
+            .queue(message);
+        self.resume_parked(key, worktree, None, follows_pull_request)
+    }
+
+    fn ensure_resumable(&self, key: ThreadKey) -> Result<(), SteerError> {
         let live = self.is_live(key);
         let input_open = self
             .threads
@@ -329,6 +341,21 @@ impl ThreadRuntimes {
         if live && input_open || self.retired.contains(&key) || self.stopping.contains_key(&key) {
             return Err(SteerError::NoSession);
         }
+        Ok(())
+    }
+
+    /// Starts a parked thread's next session: `prompt` first when there is one, then the
+    /// messages that were queued when it parked, in order. Saved history survives an app
+    /// restart. With no `prompt` the queued messages open the session; each stays queued
+    /// until the agent echoes it.
+    pub fn resume_parked(
+        &mut self,
+        key: ThreadKey,
+        worktree: &str,
+        prompt: Option<&str>,
+        follows_pull_request: bool,
+    ) -> Result<SessionInputs, SteerError> {
+        self.ensure_resumable(key)?;
         self.shutdown_failures.remove(&key);
         let (inputs, receiver) = unbounded_channel();
         let thread = self
@@ -338,9 +365,10 @@ impl ThreadRuntimes {
         thread.session_identifier = uuid::Uuid::new_v4().to_string();
         thread.transcript.new_session();
         thread.session_tool_start = thread.transcript.tool_steps().len();
-        thread.pending_inputs = VecDeque::from([PendingInput::Opening]);
-        for message in
-            std::iter::once(prompt).chain(thread.transcript.queued().iter().map(String::as_str))
+        thread.pending_inputs = prompt.map(|_| PendingInput::Opening).into_iter().collect();
+        for message in prompt
+            .into_iter()
+            .chain(thread.transcript.queued().iter().map(String::as_str))
         {
             // The receiver is alive: it is returned below.
             let _ = inputs.send(text_input(message));
@@ -377,7 +405,7 @@ impl ThreadRuntimes {
         if self.retired.contains(&key) || self.shutdown_failures.contains(&key) {
             return Err(SteerError::NoSession);
         }
-        let receiver = self.resume_parked(key, worktree, message, true)?;
+        let receiver = self.resume_parked(key, worktree, Some(message), true)?;
         if let Some(thread) = self.threads.get_mut(&key) {
             thread.phase = SessionPhase::Running;
             thread.follows_pull_request = true;
@@ -847,5 +875,26 @@ fn stopped_session_still_wakes_its_waiters() -> Result<(), &'static str> {
     assert!(!runtimes.session_ended_with_shutdown(key, true));
     assert!(ended.try_recv().is_ok());
     assert_eq!(runtimes.session_identifier(key), None);
+    Ok(())
+}
+
+// #317: a message sent to an ended thread must not vanish when the new session ends before
+// the agent echoes it; it stays queued and goes out again with the next resume.
+#[cfg(test)]
+#[test]
+fn message_to_ended_thread_survives_a_failed_resume() -> Result<(), SteerError> {
+    let mut runtimes = ThreadRuntimes::default();
+    let key = (1, 2);
+    drop(runtimes.start(key, "checkout", "start"));
+    runtimes.session_ended(key);
+    let mut first = runtimes.resume_with_message(key, "checkout", "keep this", false)?;
+    assert!(first.try_recv().is_ok());
+    assert!(first.try_recv().is_err());
+    drop(first);
+    runtimes.fail(key, "Could not load the session", "load failed");
+    let mut second = runtimes.resume_parked(key, "checkout", None, false)?;
+    assert!(second.try_recv().is_ok());
+    assert!(runtimes.view(key).is_some_and(|view| view.blocks.iter().any(|block|
+        matches!(block, velocity_core::thread_view_model::TranscriptBlock::UserMessage { text, queued: true } if text == "keep this"))));
     Ok(())
 }

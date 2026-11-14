@@ -63,7 +63,7 @@ fn main() -> Result<(), Failure> {
     let earlier = load.then_some(session_id);
     let resume = SessionResume::new(earlier, transcript_context(&blocks))
         .with_history_replay(blocks.is_empty());
-    let inputs = runtimes.resume_parked(KEY, &path, CONTINUE_PROMPT, false)?;
+    let inputs = runtimes.resume_parked(KEY, &path, Some(CONTINUE_PROMPT), false)?;
     let session = spawn_session(agent, setup(&worktree, Some(resume)), inputs);
     finish_resumed(&mut runtimes, session)?;
     let written = std::fs::read_to_string(worktree.join("done.txt"))?;
