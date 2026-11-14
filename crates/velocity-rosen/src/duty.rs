@@ -120,17 +120,28 @@ pub struct MergeCheckout {
 /// The folder itself stays: it is the reviewing agent's working directory, which Windows
 /// won't remove. Rosen writes the result into a new sibling, whose entries then replace the
 /// folder's.
+///
+/// With `prepared`, for a review that builds, the result comes from Rosen's warm pool when
+/// it can (Rosen R3): a ready workspace brought to the merge result, with the build output
+/// its prepare left, so the review's first build compiles what the change touched and not
+/// the whole project. A review that only reads asks for the files alone, and takes nothing
+/// from the pool.
 pub async fn check_out_merge_result(
     server: &ProjectServer,
     reviewer: &str,
     change: &str,
     folder: &Path,
+    prepared: bool,
 ) -> Result<MergeCheckout, RosenError> {
     let staging = claim_checkout(folder)?;
-    let checkout = session(server, reviewer)
-        .await?
-        .check_out_merge_result(change, &staging)
-        .await?;
+    let session = session(server, reviewer).await?;
+    let checkout = if prepared {
+        session
+            .check_out_prepared_merge_result(change, &staging)
+            .await?
+    } else {
+        session.check_out_merge_result(change, &staging).await?
+    };
     replace_entries(folder, &staging)?;
     Ok(MergeCheckout {
         head: checkout.merge.head.to_string(),
