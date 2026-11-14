@@ -3,7 +3,6 @@
 //! are the fallback when the project chooses git or Rosen can't start.
 
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
 use tauri::{AppHandle, Manager};
@@ -20,9 +19,6 @@ use crate::threads::{lock, report};
 pub(crate) struct ManagedRosen {
     servers: Servers,
     watches: Watches,
-    /// Set while the servers are stopped for an update or exit, so watchers aren't
-    /// started again, which would start the servers again.
-    paused: AtomicBool,
 }
 
 /// How often every open Rosen thread is checked for a running watcher: one that ended,
@@ -35,7 +31,6 @@ pub(crate) fn initialize(application: &AppHandle) -> anyhow::Result<()> {
     application.manage(ManagedRosen {
         servers: Servers::new(app_data),
         watches: Watches::default(),
-        paused: AtomicBool::new(false),
     });
     let handle = application.clone();
     tauri::async_runtime::spawn(async move {
@@ -278,7 +273,8 @@ async fn watch_open_threads(application: &AppHandle) {
 /// stopped for an update or exit.
 async fn watch_thread(application: &AppHandle, project: u32, root: &Path) -> Result<(), String> {
     let managed = application.state::<ManagedRosen>();
-    if managed.paused.load(Ordering::SeqCst) || managed.watches.is_watching(root) {
+    // A stopped server refuses to start again anyway; this only saves the attempt.
+    if managed.servers.stopped() || managed.watches.is_watching(root) {
         return Ok(());
     }
     let server = server(application, project).await?;
@@ -301,7 +297,6 @@ pub(crate) async fn shutdown_servers(application: &AppHandle) {
     let Some(managed) = application.try_state::<ManagedRosen>() else {
         return;
     };
-    managed.paused.store(true, Ordering::SeqCst);
     let _ = tokio::time::timeout(Duration::from_secs(10), managed.servers.shutdown_all()).await;
 }
 
@@ -310,7 +305,6 @@ pub(crate) async fn shutdown_servers(application: &AppHandle) {
 pub(crate) async fn restart_servers(application: &AppHandle) {
     if let Some(managed) = application.try_state::<ManagedRosen>() {
         managed.servers.restart_all().await;
-        managed.paused.store(false, Ordering::SeqCst);
     }
 }
 

@@ -5,6 +5,7 @@ use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
 use rosen_client::protocol::ErrorCode;
@@ -250,12 +251,15 @@ fn origin_url(repository: &Path) -> Option<String> {
 
 /// The servers Velocity has made ready this run. Making one project's server ready is
 /// serialised, so two threads starting at once never race to start it or import twice;
-/// other projects' servers and the registry never wait on it.
+/// other projects' servers and the registry never wait on it. Stopping them for an update
+/// or exit takes the same per-project lock, so a start already under way finishes first
+/// and is stopped, and none begins until they are started again.
 #[derive(Debug)]
 pub struct Servers {
     app_data: PathBuf,
     registry: std::sync::Mutex<BTreeMap<u32, ProjectServer>>,
     starting: std::sync::Mutex<BTreeMap<u32, Arc<tokio::sync::Mutex<()>>>>,
+    stopped: AtomicBool,
 }
 
 impl Servers {
@@ -264,7 +268,21 @@ impl Servers {
             app_data,
             registry: std::sync::Mutex::new(BTreeMap::new()),
             starting: std::sync::Mutex::new(BTreeMap::new()),
+            stopped: AtomicBool::new(false),
         }
+    }
+
+    /// Whether the servers are stopped for an update or exit; [`Self::ready`] refuses until
+    /// [`Self::restart_all`].
+    pub fn stopped(&self) -> bool {
+        self.stopped.load(Ordering::SeqCst)
+    }
+
+    fn start_lock(&self, project: u32) -> Arc<tokio::sync::Mutex<()>> {
+        self.starting
+            .lock()
+            .map(|mut starting| Arc::clone(starting.entry(project).or_default()))
+            .unwrap_or_default()
     }
 
     /// The project's server, started and imported. A server that stopped since is
@@ -274,12 +292,12 @@ impl Servers {
         project: u32,
         source: &ImportSource,
     ) -> Result<ProjectServer, RosenError> {
-        let start_lock = self
-            .starting
-            .lock()
-            .map(|mut starting| Arc::clone(starting.entry(project).or_default()))
-            .unwrap_or_default();
+        let start_lock = self.start_lock(project);
         let _starting = start_lock.lock().await;
+        // Checked under the lock [`Self::shutdown_all`] takes, so no start slips in after it.
+        if self.stopped() {
+            return Err(RosenError::Stopped);
+        }
         let server = ProjectServer::new(&self.app_data, project);
         let client = server.connect().await?;
         // Recorded before the import, so a server whose import fails is still stopped at
@@ -301,15 +319,26 @@ impl Servers {
     /// Starts again every server this run used, after [`Self::shutdown_all`] when the
     /// update it made way for didn't install. Watchers journal meanwhile and catch up.
     pub async fn restart_all(&self) {
+        self.stopped.store(false, Ordering::SeqCst);
         for server in self.registered() {
             let _ = server.connect().await;
         }
     }
 
-    /// Stops every server this run started or used, so an update can replace their
-    /// binaries. Agents' watchers journal offline until the next start (Rosen R2).
+    /// Stops every server this run started or began to start, so an update can replace
+    /// their binaries, and keeps them stopped until [`Self::restart_all`]. Agents' watchers
+    /// journal offline until the next start (Rosen R2).
     pub async fn shutdown_all(&self) {
-        for server in self.registered() {
+        self.stopped.store(true, Ordering::SeqCst);
+        let projects: Vec<u32> = self
+            .starting
+            .lock()
+            .map(|starting| starting.keys().copied().collect())
+            .unwrap_or_default();
+        for project in projects {
+            let start_lock = self.start_lock(project);
+            let _starting = start_lock.lock().await;
+            let server = ProjectServer::new(&self.app_data, project);
             if let Ok(client) = Client::connect(server.endpoint()).await {
                 let _ = client.shutdown().await;
             }

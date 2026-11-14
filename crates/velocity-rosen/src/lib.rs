@@ -28,6 +28,8 @@ pub enum RosenError {
     MissingBinary,
     #[error("could not start rosen-server: {0}")]
     Start(String),
+    #[error("Rosen's servers are stopped for an update or exit")]
+    Stopped,
     #[error("{0} is not a valid Rosen agent name")]
     AgentName(String),
     #[error(transparent)]
