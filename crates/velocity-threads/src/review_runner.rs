@@ -7,11 +7,13 @@
 //! claims nothing new.
 //!
 //! Most reviews are by reading (F7 "Checks before merge"): the agent decides and its session
-//! ends. `landing` merges an approved PR head once GitHub's checks pass, and `checker` runs
-//! the pre-land checks on an approved Rosen change and lands it.
+//! ends. `landing` merges an approved PR head once GitHub's checks pass, `checker` runs
+//! the pre-land checks on an approved Rosen change and lands it, and `post_land` runs the
+//! full tests on what landed.
 
 mod checker;
 mod landing;
+mod post_land;
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
@@ -114,6 +116,10 @@ struct RunnerState {
     checking: BTreeMap<(u32, String), checker::CheckNote>,
     /// The projects with a checker pass running: one build at a time in each check folder.
     checking_projects: BTreeSet<u32>,
+    /// Per project, what Velocity has said about the landed batch it last tested.
+    verifying: BTreeMap<u32, post_land::VerifyNote>,
+    /// The projects with a post-land pass running: one at a time in each folder.
+    verifying_projects: BTreeSet<u32>,
 }
 
 /// The review runner. Cheap to clone; every clone drives the same reviews.
@@ -322,6 +328,7 @@ impl PrDutyReviews {
                 settle_cards(host, &roster, &idle, None);
                 continue;
             }
+            self.verify_landed(host, &roster);
             // Listed even when every agent is busy: approved heads land without one.
             let candidates = self.candidates(&roster).await;
             if self.lock().dismissals != dismissals {

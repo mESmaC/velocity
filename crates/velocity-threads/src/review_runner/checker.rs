@@ -18,7 +18,7 @@ use velocity_core::rosen_checker::{
     conflict_line, conflict_message, land_refusal, landed_line, refused_line,
 };
 use velocity_rosen::ProjectServer;
-use velocity_rosen::checker::{self, CHECKER};
+use velocity_rosen::checker::{self, CHECKER, Priority};
 use velocity_rosen::duty::{self, LandOutcome};
 use velocity_store::duty::PrDutyRoster;
 
@@ -225,7 +225,7 @@ impl<Host: ReviewHost> Check<'_, Host> {
         );
         let ran = tokio::task::spawn_blocking(move || {
             checker::apply_staged(&folder)?;
-            checker::run_commands(&folder, &commands)
+            checker::run_commands(&folder, &commands, Priority::Landing)
         })
         .await;
         match ran {

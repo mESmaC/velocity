@@ -71,6 +71,45 @@ pub async fn create_workspace(
     }
 }
 
+/// Gives the existing change `change` a workspace at `root` again, at its current head: a
+/// change Rosen reverted and reopened lost its workspace when it landed (R4, R12). A folder
+/// that is still a workspace is left as it is. Folders a guarded deletion left behind,
+/// empty of files, are cleared first; a folder that holds files is never replaced.
+pub async fn reopen_workspace(
+    server: &ProjectServer,
+    agent: &str,
+    change: &str,
+    root: &Path,
+) -> Result<(), RosenError> {
+    if rosen_client::snapshot::WorkspaceMarker::path(root).is_file() {
+        return Ok(());
+    }
+    if root.exists() {
+        remove_empty_folders(root).map_err(|source| RosenError::Io {
+            action: "replace",
+            path: root.to_path_buf(),
+            source,
+        })?;
+    }
+    session(server, agent)
+        .await?
+        .open_workspace(change, root, rosen_client::Sparse::all())
+        .await?;
+    Ok(())
+}
+
+/// Removes `folder` when nothing but folders is under it; fails at the first file.
+fn remove_empty_folders(folder: &Path) -> std::io::Result<()> {
+    for entry in std::fs::read_dir(folder)? {
+        let entry = entry?;
+        if !entry.file_type()?.is_dir() {
+            return Err(std::io::Error::other("the folder still holds files"));
+        }
+        remove_empty_folders(&entry.path())?;
+    }
+    std::fs::remove_dir(folder)
+}
+
 /// Abandons `change`. Rosen then deletes its workspace under the deletion guard, which
 /// keeps it while any edit there is not stored on the server (R4).
 pub async fn abandon_change(

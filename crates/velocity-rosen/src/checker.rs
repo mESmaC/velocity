@@ -15,7 +15,7 @@ use std::time::{Duration, Instant};
 use rosen_client::Client;
 
 use crate::duty::{self, MergeCheckout};
-use crate::process::hidden_command;
+use crate::process::{background_command, hidden_command};
 use crate::workspace::session;
 use crate::{ProjectServer, RosenError};
 
@@ -25,7 +25,16 @@ pub const CHECKER: &str = "velocity-checker";
 const COMMAND_LIMIT: Duration = Duration::from_secs(60 * 60);
 const POLL: Duration = Duration::from_millis(250);
 
-/// A pre-land command that did not pass.
+/// How much of the machine a run of commands may take.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Priority {
+    /// A change waits to land on this run.
+    Landing,
+    /// Nothing waits on this run: it yields to every other build on the machine.
+    Background,
+}
+
+/// A check command that did not pass.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct FailedCommand {
     pub command: String,
@@ -93,10 +102,11 @@ pub fn apply_staged(folder: &Path) -> Result<(), RosenError> {
 pub fn run_commands(
     folder: &Path,
     commands: &[String],
+    priority: Priority,
 ) -> Result<Option<FailedCommand>, RosenError> {
     let log = duty::sibling(folder, ".rosen-check.log");
     for command in commands {
-        let exit_code = match run_one(folder, command, &log)? {
+        let exit_code = match run_one(folder, command, &log, priority)? {
             Some(0) => continue,
             other => other,
         };
@@ -112,13 +122,18 @@ pub fn run_commands(
 
 /// The command's exit status, or `None` when it was stopped for running too long. A
 /// process ended by a signal counts as status 1.
-fn run_one(folder: &Path, command: &str, log: &Path) -> Result<Option<i32>, RosenError> {
+fn run_one(
+    folder: &Path,
+    command: &str,
+    log: &Path,
+    priority: Priority,
+) -> Result<Option<i32>, RosenError> {
     let failed = |source| io_error("run a check in", folder, source);
     let output = File::create(log).map_err(|source| io_error("write", log, source))?;
     let errors = output
         .try_clone()
         .map_err(|source| io_error("write", log, source))?;
-    let mut child = shell(command)
+    let mut child = shell(command, priority)
         .current_dir(folder)
         .stdin(Stdio::null())
         .stdout(output)
@@ -141,18 +156,25 @@ fn run_one(folder: &Path, command: &str, log: &Path) -> Result<Option<i32>, Rose
 /// `cmd /S /C "<command>"`: with `/S`, cmd drops the outer quotes and runs the rest as
 /// written, so the command's own quotes survive.
 #[cfg(windows)]
-fn shell(command: &str) -> Command {
+fn shell(command: &str, priority: Priority) -> Command {
     use std::os::windows::process::CommandExt;
-    let mut shell = hidden_command("cmd");
+    let mut shell = shell_program("cmd", priority);
     shell.raw_arg(format!("/S /C \"{command}\""));
     shell
 }
 
 #[cfg(not(windows))]
-fn shell(command: &str) -> Command {
-    let mut shell = hidden_command("sh");
+fn shell(command: &str, priority: Priority) -> Command {
+    let mut shell = shell_program("sh", priority);
     shell.args(["-c", command]);
     shell
+}
+
+fn shell_program(program: &str, priority: Priority) -> Command {
+    match priority {
+        Priority::Landing => hidden_command(program),
+        Priority::Background => background_command(program),
+    }
 }
 
 /// Stops the command and what it started: a build left running would hold the folder's

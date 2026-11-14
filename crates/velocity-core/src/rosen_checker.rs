@@ -1,7 +1,8 @@
 //! Velocity's checker for Rosen changes (SPEC.md F7 "Checks before merge"; Rosen §9 "Build
 //! queue"): which changes PR duty reviews by reading, what a refused land asks for next, and
-//! what the author and the Duty feed are told. Pure decisions; the Rosen calls live in
-//! `velocity-rosen` and the pass that drives them in `velocity-threads`.
+//! what the author and the Duty feed are told, before a land and after one (Rosen R12). Pure
+//! decisions; the Rosen calls live in `velocity-rosen` and the passes that drive them in
+//! `velocity-threads`.
 
 use crate::merge_gate::{ModeEvidence, ReviewMode, review_mode};
 use crate::pr_review::{short_change, short_commit};
@@ -53,7 +54,7 @@ pub fn land_refusal(code: &str) -> LandRefusal {
     }
 }
 
-/// A pre-land command that did not pass.
+/// A check command that did not pass.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct FailedCheck {
     pub command: String,
@@ -132,6 +133,74 @@ pub fn refused_line(change: &str, reason: &str) -> String {
     step_doing(&format!(
         "Land of change {} refused · {reason}",
         short_change(change)
+    ))
+}
+
+/// What Rosen is told a failed post-land command printed. Rosen keeps it with the revert and
+/// hands it to the reverted change's owner, so it names the command and holds only the end.
+pub fn failed_check_report(failed: &FailedCheck) -> String {
+    let ended = match failed.exit_code {
+        Some(code) => format!("exited with status {code}"),
+        None => "ran too long and was stopped".to_owned(),
+    };
+    format!("`{}` {ended}.\n\n{}", failed.command, tail(&failed.output))
+}
+
+/// What the author's agent is told when Rosen reverted its landed change. `report` is what
+/// the checker gave Rosen for the failing run ([`failed_check_report`]).
+pub fn reverted_message(change: &str, report: &str) -> String {
+    format!(
+        "Your Rosen change `{}` landed, then failed the project's post-land checks (rosen.toml), the full tests. It failed twice where the commit before it passed, so Rosen reverted it on the base and reopened it. Your work is kept: this workspace holds it again on the current base. What the failing run printed:\n\n{}\n\nFix it here and run that command yourself until it passes. Then name the work again with `rosen commit -m \"<what changed>\"` so PR duty reviews it and it lands again. If the failure is the machine's and not your change's (a missing tool, a full disk), say so in your thread instead of changing code.\n",
+        short_change(change),
+        tail(report),
+    )
+}
+
+/// The feed line while the post-land checks run on a landed commit.
+pub fn verifying_line(commit: &str) -> String {
+    format!("Running post-land checks on {}", short_commit(commit))
+}
+
+/// The feed line for a landed commit the post-land checks passed on.
+pub fn verified_line(commit: &str) -> String {
+    format!("Post-land checks passed on {}", short_commit(commit))
+}
+
+/// The feed line for a failed batch, while Rosen's bisection looks for the change.
+pub fn verify_failed_line(commit: &str, command: &str) -> String {
+    step_doing(&format!(
+        "Post-land checks failed on {} · `{command}` · finding the change that broke it",
+        short_commit(commit)
+    ))
+}
+
+/// The feed line for one bisection step.
+pub fn bisecting_line(commit: &str) -> String {
+    format!("Post-land checks · testing {}", short_commit(commit))
+}
+
+/// The feed line for the change the bisection found, which Rosen has reverted.
+pub fn reverted_line(change: &str, commit: &str) -> String {
+    format!(
+        "Change {} ({}) broke the post-land checks · reverted · reopened for its author",
+        short_change(change),
+        short_commit(commit)
+    )
+}
+
+/// The feed line for a failing batch no one change explains: nothing is reverted.
+pub fn unconfirmed_line(commit: &str) -> String {
+    format!(
+        "Post-land checks fail on {}, but no one change fails where the commit before it passes · nothing reverted · tried again after the next land",
+        short_commit(commit)
+    )
+}
+
+/// The feed line for post-land checks that could not run or report.
+pub fn verify_stopped_line(commit: &str, reason: &str) -> String {
+    step_doing(&format!(
+        "Post-land checks on {} stopped · {reason}",
+        short_commit(commit)
     ))
 }
 
