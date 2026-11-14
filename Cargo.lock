@@ -4392,7 +4392,7 @@ dependencies = [
 [[package]]
 name = "rosen-client"
 version = "0.1.0"
-source = "git+https://github.com/mESmaC/rosen?rev=b9f6da89b77af4cda399eccd968cb85bff0337b0#b9f6da89b77af4cda399eccd968cb85bff0337b0"
+source = "git+https://github.com/mESmaC/rosen?rev=9b7954ce63dd6f560b70e1bbed76693166ba520c#9b7954ce63dd6f560b70e1bbed76693166ba520c"
 dependencies = [
  "atomicwrites",
  "base64 0.22.1",
@@ -4405,6 +4405,7 @@ dependencies = [
  "rosen-protocol",
  "rosen-store",
  "rustls",
+ "same-file",
  "serde",
  "serde_json",
  "sha2 0.10.9",
@@ -4416,7 +4417,7 @@ dependencies = [
 [[package]]
 name = "rosen-core"
 version = "0.1.0"
-source = "git+https://github.com/mESmaC/rosen?rev=b9f6da89b77af4cda399eccd968cb85bff0337b0#b9f6da89b77af4cda399eccd968cb85bff0337b0"
+source = "git+https://github.com/mESmaC/rosen?rev=9b7954ce63dd6f560b70e1bbed76693166ba520c#9b7954ce63dd6f560b70e1bbed76693166ba520c"
 dependencies = [
  "serde",
  "sha1",
@@ -4426,18 +4427,21 @@ dependencies = [
 [[package]]
 name = "rosen-platform"
 version = "0.1.0"
-source = "git+https://github.com/mESmaC/rosen?rev=b9f6da89b77af4cda399eccd968cb85bff0337b0#b9f6da89b77af4cda399eccd968cb85bff0337b0"
+source = "git+https://github.com/mESmaC/rosen?rev=9b7954ce63dd6f560b70e1bbed76693166ba520c#9b7954ce63dd6f560b70e1bbed76693166ba520c"
 dependencies = [
+ "libc",
  "windows-sys 0.61.2",
 ]
 
 [[package]]
 name = "rosen-protocol"
 version = "0.1.0"
-source = "git+https://github.com/mESmaC/rosen?rev=b9f6da89b77af4cda399eccd968cb85bff0337b0#b9f6da89b77af4cda399eccd968cb85bff0337b0"
+source = "git+https://github.com/mESmaC/rosen?rev=9b7954ce63dd6f560b70e1bbed76693166ba520c#9b7954ce63dd6f560b70e1bbed76693166ba520c"
 dependencies = [
  "base64 0.22.1",
+ "libc",
  "rosen-core",
+ "rosen-platform",
  "serde",
  "serde_json",
  "tokio",
@@ -4447,7 +4451,7 @@ dependencies = [
 [[package]]
 name = "rosen-store"
 version = "0.1.0"
-source = "git+https://github.com/mESmaC/rosen?rev=b9f6da89b77af4cda399eccd968cb85bff0337b0#b9f6da89b77af4cda399eccd968cb85bff0337b0"
+source = "git+https://github.com/mESmaC/rosen?rev=9b7954ce63dd6f560b70e1bbed76693166ba520c#9b7954ce63dd6f560b70e1bbed76693166ba520c"
 dependencies = [
  "atomicwrites",
  "flate2",

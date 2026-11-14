@@ -6,6 +6,7 @@ use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
+use agent_client_protocol::v1::schema::{EnvVariable, McpServer, McpServerStdio};
 use tauri::{AppHandle, Manager};
 use velocity_acp::client::{AgentLaunch, SessionSetup};
 use velocity_git::WorktreeSetupRequest;
@@ -50,10 +51,25 @@ pub(crate) fn initialize(application: &AppHandle) -> anyhow::Result<()> {
 pub(crate) struct ThreadWorkspace {
     pub change: String,
     pub root: PathBuf,
-    /// `ROSEN_ENDPOINT`, `ROSEN_AGENT` and `PATH` for the agent's process.
+    /// `ROSEN_ENDPOINT`, `ROSEN_AGENT`, `ROSEN_CHANGE` and `PATH` for the agent's process.
     pub environment: Vec<(String, String)>,
     /// The per-agent setup after the take: untracked files, build cache, setup command.
     pub setup: Result<(), String>,
+}
+
+/// Rosen's MCP server for the agent in workspace `root`, whose process has `environment`:
+/// the `rosen` commands as tools (Rosen R10). `None` when Rosen's CLI isn't installed.
+pub(crate) fn mcp_server(root: &Path, environment: &[(String, String)]) -> Option<McpServer> {
+    let command = velocity_rosen::mcp_command(root, environment)?;
+    let variables = command
+        .environment
+        .into_iter()
+        .map(|(name, value)| EnvVariable::new(name, value))
+        .collect();
+    let server = McpServerStdio::new("rosen", command.program)
+        .args(command.arguments)
+        .env(variables);
+    Some(McpServer::Stdio(server))
 }
 
 /// Whether `project`'s agents work in Rosen workspaces.
@@ -182,8 +198,8 @@ pub(crate) async fn take_workspace(
     .map_err(|error| error.to_string())
     .and_then(|setup| setup.map_err(|error| error.to_string()));
     Ok(ThreadWorkspace {
+        environment: velocity_rosen::agent_environment(&server, &agent, &workspace.change),
         change: workspace.change,
-        environment: velocity_rosen::agent_environment(&server, &agent),
         root: workspace.root,
         setup,
     })
@@ -257,7 +273,8 @@ pub(crate) fn prepare_resume(
     let name = velocity_rosen::agent_name(root);
     agent
         .env
-        .extend(velocity_rosen::agent_environment(&server, &name));
+        .extend(velocity_rosen::agent_environment(&server, &name, change));
+    setup.shared_servers.extend(mcp_server(root, &agent.env));
     setup.preface = Some(velocity_rosen::workspace_note(change));
     // The watcher started at launch may have failed; the agent's edits are stored only
     // while one runs.
