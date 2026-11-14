@@ -1,5 +1,7 @@
 //! Backend-owned main-window state. No native effects or persistence live here.
 
+mod pending_sends;
+
 use crate::airc_modal::AircBadge;
 use crate::build_gate::{BuildKind, LaunchKind, launch_block_reason};
 use crate::duty::{self, DutyRole, DutyViewSnapshot};
@@ -19,6 +21,7 @@ use crate::thread_view_model::{
     self, AgentCommandView, LiveThreadView, ModelPillView, SlashCommandItem, ThreadDetailSnapshot,
     TranscriptBlock,
 };
+use pending_sends::PendingSends;
 use std::collections::{BTreeMap, BTreeSet};
 
 /// What `submit_composer` sent to a thread, kept so a failed send can be undone.
@@ -65,6 +68,7 @@ pub struct LayoutState {
     /// The last message sent to a thread, as typed. A failed send gives back these words
     /// rather than the prompt with its skill instructions.
     sent_steering: Option<SentSteering>,
+    pending_sends: PendingSends,
     task_text: String,
     project_spec_locked: Option<bool>,
     launch_notice: Option<String>,
@@ -103,6 +107,7 @@ impl Default for LayoutState {
             overlay_open: false,
             composer_text: String::new(),
             sent_steering: None,
+            pending_sends: PendingSends::default(),
             task_text: String::new(),
             project_spec_locked: None,
             launch_notice: None,
@@ -313,7 +318,9 @@ impl LayoutState {
     }
 
     /// A running session's transcript and commands for one thread (`SPEC.md §3.2`, F4).
-    pub fn set_live_thread(&mut self, project: u32, identifier: usize, view: LiveThreadView) {
+    pub fn set_live_thread(&mut self, project: u32, identifier: usize, mut view: LiveThreadView) {
+        self.pending_sends
+            .add_to((project, identifier), &mut view.blocks);
         self.live.insert((project, identifier), view);
         self.changed();
     }
@@ -990,15 +997,21 @@ impl LayoutState {
     /// `record_steering` showed it as sent, and goes back to the composer as typed. It goes
     /// back only to its own thread's empty composer: the composer is shared by every thread,
     /// so text typed since, or another thread's view, must not receive it (#274).
-    pub fn return_unsent_message(&mut self, identifier: usize, prompt: &str) {
+    ///
+    /// `project` is the project the message was written in. Its thread's transcript always
+    /// drops the message; the composer gets it back only while that project is still open.
+    pub fn return_unsent_message(&mut self, project: u32, identifier: usize, prompt: &str) {
         let sent = self.sent_steering.take();
         let typed = sent
             .filter(|sent| sent.identifier == identifier && sent.prompt == prompt)
             .map_or_else(|| prompt.to_owned(), |sent| sent.typed);
-        let project = self.data.project_identifier;
-        let live = project.and_then(|project| self.live.get_mut(&(project, identifier)));
-        if let Some(live) = live {
+        if let Some(live) = self.live.get_mut(&(project, identifier)) {
             remove_last_message(&mut live.blocks, prompt);
+        }
+        self.pending_sends.forget((project, identifier), prompt);
+        if self.data.project_identifier != Some(project) {
+            self.changed();
+            return;
         }
         if let Some(detail) = self
             .data
@@ -1016,6 +1029,11 @@ impl LayoutState {
             self.slash_selection = 0;
         }
         self.changed();
+    }
+
+    /// The agent took a message sent from the composer; see [`PendingSends`].
+    pub fn message_delivered(&mut self, project: u32, identifier: usize, prompt: &str) {
+        self.pending_sends.delivered((project, identifier), prompt);
     }
 
     fn record_steering(&mut self, intent: &LayoutIntent) {
@@ -1037,6 +1055,8 @@ impl LayoutState {
             && let Some(live) = self.live.get_mut(&(project, *identifier))
         {
             std::sync::Arc::make_mut(&mut live.blocks).push(message.clone());
+            self.pending_sends
+                .record((project, *identifier), &live.blocks, prompt, *queued);
         }
         if let Some(thread) = self
             .data
