@@ -58,7 +58,9 @@ pub fn names_spec_section(text: &str) -> bool {
     text.lines()
         .filter_map(|line| line.split_once("SPEC.md"))
         .any(|(_, section)| {
-            let mut labels = section.split_whitespace();
+            // `/` and `(` separate labels too, so `F6/F14.` and `(§2.2)` each yield a
+            // section; the empty pieces they leave fail the `!number.is_empty()` guard.
+            let mut labels = section.split(|c: char| c.is_whitespace() || matches!(c, '/' | '('));
             labels.any(|label| {
                 let label = label.trim_matches([':', ',', ';', ')', '`']);
                 let label = label.trim_end_matches('.');
