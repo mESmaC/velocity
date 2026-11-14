@@ -404,7 +404,8 @@ fn followed_projects(application: &AppHandle) -> BTreeSet<u32> {
         .state()
         .projects
         .iter()
-        .filter(|project| project.version_control == VersionControl::Rosen)
+        // Whatever the project's choice now: its Rosen threads' lands and reverts still
+        // come through the stream after it switches to git.
         .filter(|project| {
             project
                 .threads
