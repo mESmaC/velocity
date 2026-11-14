@@ -29,15 +29,18 @@ fn change_providers<T>(
 /// command they started with; new work uses the new one.
 #[tauri::command]
 #[specta::specta]
-pub fn set_provider_command(
+pub async fn set_provider_command(
     application: AppHandle,
     provider: ProviderKind,
     command: Option<String>,
 ) -> Result<ProvidersView, String> {
-    change_providers(&application, |store| {
-        store.set_provider_command(provider, command.as_deref())
-    })?;
-    current_view(&application)
+    crate::layout::off_ui_thread(move || {
+        change_providers(&application, |store| {
+            store.set_provider_command(provider, command.as_deref())
+        })?;
+        current_view(&application)
+    })
+    .await
 }
 
 /// Add an ACP agent (F15 Custom ACP agents): a name, and the command with its arguments. It
@@ -45,27 +48,33 @@ pub fn set_provider_command(
 /// environment variable or a key; the agent inherits your environment.
 #[tauri::command]
 #[specta::specta]
-pub fn add_custom_agent(
+pub async fn add_custom_agent(
     application: AppHandle,
     name: String,
     command: String,
 ) -> Result<ProvidersView, String> {
-    change_providers(&application, |store| {
-        store.add_custom_agent(&name, &command)
-    })?;
-    current_view(&application)
+    crate::layout::off_ui_thread(move || {
+        change_providers(&application, |store| {
+            store.add_custom_agent(&name, &command)
+        })?;
+        current_view(&application)
+    })
+    .await
 }
 
 /// Removes an agent you added. Its threads keep their record; new work can't start on it.
 #[tauri::command]
 #[specta::specta]
-pub fn remove_custom_agent(
+pub async fn remove_custom_agent(
     application: AppHandle,
     provider: ProviderKind,
 ) -> Result<ProvidersView, String> {
-    let ProviderKind::Custom(identifier) = provider else {
-        return Err("Only an agent you added can be removed".into());
-    };
-    change_providers(&application, |store| store.remove_custom_agent(identifier))?;
-    current_view(&application)
+    crate::layout::off_ui_thread(move || {
+        let ProviderKind::Custom(identifier) = provider else {
+            return Err("Only an agent you added can be removed".into());
+        };
+        change_providers(&application, |store| store.remove_custom_agent(identifier))?;
+        current_view(&application)
+    })
+    .await
 }

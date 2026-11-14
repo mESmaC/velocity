@@ -37,19 +37,22 @@ pub struct GoalSwarmPool(Mutex<Option<(u32, GoalPool)>>);
 /// every edit, and after the pool is read.
 #[tauri::command]
 #[specta::specta]
-pub fn get_goal_swarm_dialog(
+pub async fn get_goal_swarm_dialog(
     application: AppHandle,
     query: GoalSwarmDialogQuery,
 ) -> Result<GoalSwarmDialog, String> {
-    let store = lock(
-        application.state::<ManagedStateStore>().inner(),
-        "persisted state",
-    )?;
-    let active = store.active_project().map(|project| project.id);
-    let pool = cached_pool(&application, active)?;
-    store
-        .goal_swarm_dialog(&query, &pool)
-        .ok_or_else(|| "Select or create a project first".into())
+    crate::layout::off_ui_thread(move || {
+        let store = lock(
+            application.state::<ManagedStateStore>().inner(),
+            "persisted state",
+        )?;
+        let active = store.active_project().map(|project| project.id);
+        let pool = cached_pool(&application, active)?;
+        store
+            .goal_swarm_dialog(&query, &pool)
+            .ok_or_else(|| "Select or create a project first".into())
+    })
+    .await
 }
 
 /// Reads the active project's work pool for the pool line and the PR duty check. Issues
@@ -85,72 +88,78 @@ pub async fn read_goal_swarm_pool(application: AppHandle) -> Result<(), String> 
 /// Starts all N goal swarm agents at once on one prompt and the chosen model mix (F16).
 #[tauri::command]
 #[specta::specta]
-pub fn launch_goal_swarm(
+pub async fn launch_goal_swarm(
     application: AppHandle,
     request: LaunchGoalSwarmRequest,
 ) -> Result<LayoutSnapshot, String> {
-    if request.add_pr_duty {
-        report(ensure_pr_duty(
-            &application,
-            request.project_identifier,
-            &request.mix,
-        ));
-    }
-    let (swarm_id, slots, mix_summary) = {
-        let mut store = lock(
-            application.state::<ManagedStateStore>().inner(),
-            "persisted state",
-        )?;
-        let (swarm_id, slots) = store
-            .open_goal_swarm(&request, clock_timestamp())
-            .map_err(|error| error.to_string())?;
-        let summary = store
-            .project(request.project_identifier)
-            .and_then(|project| project.goal_swarms.iter().find(|item| item.id == swarm_id))
-            .map(|record| record.mix_summary.clone())
-            .unwrap_or_default();
-        (swarm_id, slots, summary)
-    };
-    let (started, refused) = spawn_goal_slots(&application, request.project_identifier, slots);
-    if started > 0 {
-        post_swarm_started_event(
-            &application,
-            request.project_identifier,
-            started,
-            &mix_summary,
-        );
-    }
-    finish_goal_launch(&application, swarm_id, started, &refused, true)
+    crate::layout::off_ui_thread(move || {
+        if request.add_pr_duty {
+            report(ensure_pr_duty(
+                &application,
+                request.project_identifier,
+                &request.mix,
+            ));
+        }
+        let (swarm_id, slots, mix_summary) = {
+            let mut store = lock(
+                application.state::<ManagedStateStore>().inner(),
+                "persisted state",
+            )?;
+            let (swarm_id, slots) = store
+                .open_goal_swarm(&request, clock_timestamp())
+                .map_err(|error| error.to_string())?;
+            let summary = store
+                .project(request.project_identifier)
+                .and_then(|project| project.goal_swarms.iter().find(|item| item.id == swarm_id))
+                .map(|record| record.mix_summary.clone())
+                .unwrap_or_default();
+            (swarm_id, slots, summary)
+        };
+        let (started, refused) = spawn_goal_slots(&application, request.project_identifier, slots);
+        if started > 0 {
+            post_swarm_started_event(
+                &application,
+                request.project_identifier,
+                started,
+                &mix_summary,
+            );
+        }
+        finish_goal_launch(&application, swarm_id, started, &refused, true)
+    })
+    .await
 }
 
 /// `+ Agents`: starts more agents on an existing goal swarm's prompt (F16).
 #[tauri::command]
 #[specta::specta]
-pub fn add_goal_agents(
+pub async fn add_goal_agents(
     application: AppHandle,
     request: AddGoalAgentsRequest,
 ) -> Result<LayoutSnapshot, String> {
-    if request.add_pr_duty {
-        report(ensure_pr_duty(
+    crate::layout::off_ui_thread(move || {
+        if request.add_pr_duty {
+            report(ensure_pr_duty(
+                &application,
+                request.project_identifier,
+                &request.mix,
+            ));
+        }
+        let slots = lock(
+            application.state::<ManagedStateStore>().inner(),
+            "persisted state",
+        )?
+        .add_goal_swarm_agents(&request, &clock_timestamp())
+        .map_err(|error| error.to_string())?;
+        let (started, refused) = spawn_goal_slots(&application, request.project_identifier, slots);
+        finish_goal_launch(
             &application,
-            request.project_identifier,
-            &request.mix,
-        ));
-    }
-    let slots = lock(
-        application.state::<ManagedStateStore>().inner(),
-        "persisted state",
-    )?
-    .add_goal_swarm_agents(&request, &clock_timestamp())
-    .map_err(|error| error.to_string())?;
-    let (started, refused) = spawn_goal_slots(&application, request.project_identifier, slots);
-    finish_goal_launch(
-        &application,
-        request.swarm_identifier,
-        started,
-        &refused,
-        false,
-    )
+            request.swarm_identifier,
+            started,
+            &refused,
+            false,
+        )
+    })
+    .await
 }
 
 /// The goal swarm view's claims board (F16): every piece in the work pool with its holder
@@ -191,6 +200,7 @@ pub async fn get_goal_swarm_board(
 /// up at its next step (Rule 1). `None` when `identifier` is not a goal swarm.
 pub fn broadcast(
     application: &AppHandle,
+    project: u32,
     identifier: usize,
     prompt: &str,
 ) -> Option<Result<LayoutSnapshot, String>> {
@@ -200,7 +210,7 @@ pub fn broadcast(
             "persisted state",
         )
         .ok()?;
-        let project = store.active_project()?;
+        let project = store.project(project)?;
         let swarm = project
             .goal_swarms
             .iter()

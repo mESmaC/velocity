@@ -532,56 +532,62 @@ pub(crate) fn current_view(application: &AppHandle) -> Result<ProvidersView, Str
 
 #[tauri::command]
 #[specta::specta]
-pub fn list_providers(application: AppHandle) -> Result<ProvidersView, String> {
-    let missing = application.state::<ManagedProviders>().retry_missing();
-    let view = current_view(&application);
-    for provider in missing {
-        let handle = application.clone();
-        tauri::async_runtime::spawn(async move { check(&handle, provider).await });
-    }
-    view
+pub async fn list_providers(application: AppHandle) -> Result<ProvidersView, String> {
+    crate::layout::off_ui_thread(move || {
+        let missing = application.state::<ManagedProviders>().retry_missing();
+        let view = current_view(&application);
+        for provider in missing {
+            let handle = application.clone();
+            tauri::async_runtime::spawn(async move { check(&handle, provider).await });
+        }
+        view
+    })
+    .await
 }
 
 /// Sign in with Claude / ChatGPT / Google / Kimi (F15): runs the agent's own login, which
 /// opens the provider's OAuth page in your browser. The card waits until it finishes.
 #[tauri::command]
 #[specta::specta]
-pub fn provider_sign_in(
+pub async fn provider_sign_in(
     application: AppHandle,
     provider: ProviderKind,
 ) -> Result<ProvidersView, String> {
-    let providers = application.state::<ManagedProviders>();
-    // Signed out only in Velocity: the agent's login still holds, so no browser is needed.
-    if providers.phase(provider) == Some(ProviderPhase::SignedIn) {
-        with_store(&application, |store| {
-            store.set_provider_signed_out(provider, false)
-        });
-        let message = signed_in_toast(&application, provider);
-        return publish(&application, Some(message)).ok_or_else(|| "Could not sign in".into());
-    }
-    let method = providers
-        .with_slot(provider, |slot| slot.method.clone())
-        .flatten()
-        .ok_or_else(|| {
-            format!(
-                "{}'s agent offers no sign-in Velocity can use. Sign in with its own CLI, then reopen Providers.",
-                settings(&application).provider_name(provider)
-            )
-        })?;
-    let handle = application.clone();
-    let task = tauri::async_runtime::spawn(async move {
-        finish_sign_in(&handle, provider, method).await;
-    });
-    providers.with_slot(provider, |slot| {
-        if let Some(previous) = slot.sign_in.replace(task) {
-            previous.abort();
+    crate::layout::off_ui_thread(move || {
+        let providers = application.state::<ManagedProviders>();
+        // Signed out only in Velocity: the agent's login still holds, so no browser is needed.
+        if providers.phase(provider) == Some(ProviderPhase::SignedIn) {
+            with_store(&application, |store| {
+                store.set_provider_signed_out(provider, false)
+            });
+            let message = signed_in_toast(&application, provider);
+            return publish(&application, Some(message)).ok_or_else(|| "Could not sign in".into());
         }
-        slot.runtime.phase = ProviderPhase::Waiting;
-        slot.runtime.detail = None;
-    });
-    let site = settings(&application).provider_facts(provider).site;
-    let toast = format!("Opened {site} in your browser · finish signing in there");
-    publish(&application, Some(toast)).ok_or_else(|| "Could not sign in".into())
+        let method = providers
+            .with_slot(provider, |slot| slot.method.clone())
+            .flatten()
+            .ok_or_else(|| {
+                format!(
+                    "{}'s agent offers no sign-in Velocity can use. Sign in with its own CLI, then reopen Providers.",
+                    settings(&application).provider_name(provider)
+                )
+            })?;
+        let handle = application.clone();
+        let task = tauri::async_runtime::spawn(async move {
+            finish_sign_in(&handle, provider, method).await;
+        });
+        providers.with_slot(provider, |slot| {
+            if let Some(previous) = slot.sign_in.replace(task) {
+                previous.abort();
+            }
+            slot.runtime.phase = ProviderPhase::Waiting;
+            slot.runtime.detail = None;
+        });
+        let site = settings(&application).provider_facts(provider).site;
+        let toast = format!("Opened {site} in your browser · finish signing in there");
+        publish(&application, Some(toast)).ok_or_else(|| "Could not sign in".into())
+    })
+    .await
 }
 
 async fn finish_sign_in(application: &AppHandle, provider: ProviderKind, method: SignInMethod) {
@@ -639,60 +645,63 @@ fn signed_in_toast(application: &AppHandle, provider: ProviderKind) -> String {
 /// provider keep their session until they finish; new work can't use it.
 #[tauri::command]
 #[specta::specta]
-pub fn provider_sign_out(
+pub async fn provider_sign_out(
     application: AppHandle,
     provider: ProviderKind,
 ) -> Result<ProvidersView, String> {
-    let providers = application.state::<ManagedProviders>();
-    let name = settings(&application).provider_name(provider);
-    // Cancel while installing stops the install and everything it started (F15 Install).
-    let installing = providers
-        .with_slot(provider, |slot| {
-            let task = slot.install.take();
-            if let Some(task) = &task {
-                task.abort();
-                slot.runtime.phase = ProviderPhase::NotInstalled;
-                slot.runtime.detail = None;
-                slot.runtime.install_failure = None;
-            }
-            task.is_some()
-        })
-        .unwrap_or(false);
-    if installing {
-        let toast = format!("Cancelled installing {name}'s agent");
-        return publish(&application, Some(toast)).ok_or_else(|| "Could not cancel".into());
-    }
-    let cancelled = providers
-        .with_slot(provider, |slot| {
-            let task = slot.sign_in.take();
-            if let Some(task) = &task {
-                task.abort();
-                slot.runtime.phase = ProviderPhase::SignedOut;
-            }
-            task.is_some()
-        })
-        .unwrap_or(false);
-    if cancelled {
-        return publish(
-            &application,
-            Some(format!("Cancelled signing in to {name}")),
-        )
-        .ok_or_else(|| "Could not cancel".into());
-    }
-    with_store(&application, |store| {
-        store.set_provider_signed_out(provider, true)
-    });
-    let running = running_agents(&application, provider);
-    let toast = match running {
-        0 => format!("Signed out of {name}"),
-        1 => {
-            format!("Signed out of {name} · its running agent keeps its session until it finishes")
+    crate::layout::off_ui_thread(move || {
+        let providers = application.state::<ManagedProviders>();
+        let name = settings(&application).provider_name(provider);
+        // Cancel while installing stops the install and everything it started (F15 Install).
+        let installing = providers
+            .with_slot(provider, |slot| {
+                let task = slot.install.take();
+                if let Some(task) = &task {
+                    task.abort();
+                    slot.runtime.phase = ProviderPhase::NotInstalled;
+                    slot.runtime.detail = None;
+                    slot.runtime.install_failure = None;
+                }
+                task.is_some()
+            })
+            .unwrap_or(false);
+        if installing {
+            let toast = format!("Cancelled installing {name}'s agent");
+            return publish(&application, Some(toast)).ok_or_else(|| "Could not cancel".into());
         }
-        count => format!(
-            "Signed out of {name} · its {count} running agents keep their session until they finish"
-        ),
-    };
-    publish(&application, Some(toast)).ok_or_else(|| "Could not sign out".into())
+        let cancelled = providers
+            .with_slot(provider, |slot| {
+                let task = slot.sign_in.take();
+                if let Some(task) = &task {
+                    task.abort();
+                    slot.runtime.phase = ProviderPhase::SignedOut;
+                }
+                task.is_some()
+            })
+            .unwrap_or(false);
+        if cancelled {
+            return publish(
+                &application,
+                Some(format!("Cancelled signing in to {name}")),
+            )
+            .ok_or_else(|| "Could not cancel".into());
+        }
+        with_store(&application, |store| {
+            store.set_provider_signed_out(provider, true)
+        });
+        let running = running_agents(&application, provider);
+        let toast = match running {
+            0 => format!("Signed out of {name}"),
+            1 => {
+                format!("Signed out of {name} · its running agent keeps its session until it finishes")
+            }
+            count => format!(
+                "Signed out of {name} · its {count} running agents keep their session until they finish"
+            ),
+        };
+        publish(&application, Some(toast)).ok_or_else(|| "Could not sign out".into())
+    })
+    .await
 }
 
 fn running_agents(application: &AppHandle, provider: ProviderKind) -> usize {
@@ -714,7 +723,15 @@ fn running_agents(application: &AppHandle, provider: ProviderKind) -> usize {
 /// Model chips, the default for new threads and the thread title model (F15).
 #[tauri::command]
 #[specta::specta]
-pub fn set_provider_settings(
+pub async fn set_provider_settings(
+    application: AppHandle,
+    edit: ProviderEdit,
+) -> Result<ProvidersView, String> {
+    crate::layout::off_ui_thread(move || set_provider_settings_now(application, edit)).await
+}
+
+/// [`set_provider_settings`] on the calling thread, for callers already off the UI thread.
+pub(crate) fn set_provider_settings_now(
     application: AppHandle,
     edit: ProviderEdit,
 ) -> Result<ProvidersView, String> {
@@ -732,12 +749,15 @@ pub fn set_provider_settings(
 /// The composer's model menu (F4): for a thread, or the defaults from the home composer.
 #[tauri::command]
 #[specta::specta]
-pub fn get_model_menu(
+pub async fn get_model_menu(
     application: AppHandle,
     project_identifier: u32,
     thread_identifier: Option<u32>,
 ) -> Result<ModelMenuView, String> {
-    model_menu(&application, project_identifier, thread_identifier)
+    crate::layout::off_ui_thread(move || {
+        model_menu(&application, project_identifier, thread_identifier)
+    })
+    .await
 }
 
 fn model_menu(
@@ -768,26 +788,29 @@ fn model_menu(
 /// thread stays on its provider's agent (F4).
 #[tauri::command]
 #[specta::specta]
-pub fn choose_model(
+pub async fn choose_model(
     application: AppHandle,
     project_identifier: u32,
     thread_identifier: Option<u32>,
     choice: ModelMenuChoice,
 ) -> Result<ModelMenuView, String> {
-    match thread_identifier {
-        Some(thread) => choose_for_thread(&application, (project_identifier, thread), choice)?,
-        None => {
-            let edit = match choice {
-                ModelMenuChoice::Model { provider, model } => {
-                    ProviderEdit::DefaultModel { provider, model }
-                }
-                ModelMenuChoice::Effort(effort) => ProviderEdit::DefaultEffort(effort),
-                ModelMenuChoice::Speed(speed) => ProviderEdit::DefaultSpeed(speed),
-            };
-            set_provider_settings(application.clone(), edit)?;
+    crate::layout::off_ui_thread(move || {
+        match thread_identifier {
+            Some(thread) => choose_for_thread(&application, (project_identifier, thread), choice)?,
+            None => {
+                let edit = match choice {
+                    ModelMenuChoice::Model { provider, model } => {
+                        ProviderEdit::DefaultModel { provider, model }
+                    }
+                    ModelMenuChoice::Effort(effort) => ProviderEdit::DefaultEffort(effort),
+                    ModelMenuChoice::Speed(speed) => ProviderEdit::DefaultSpeed(speed),
+                };
+                set_provider_settings_now(application.clone(), edit)?;
+            }
         }
-    }
-    model_menu(&application, project_identifier, thread_identifier)
+        model_menu(&application, project_identifier, thread_identifier)
+    })
+    .await
 }
 
 fn choose_for_thread(

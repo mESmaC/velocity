@@ -100,14 +100,17 @@ pub(crate) fn refresh(application: &AppHandle) -> Result<(), String> {
 /// The modal's current view, for the window to draw before the next `airc://modal`.
 #[tauri::command]
 #[specta::specta]
-pub fn get_airc_modal(
+pub async fn get_airc_modal(
     application: AppHandle,
     project_identifier: u32,
 ) -> Result<AircModalView, String> {
-    let active = read_active(&application, false)?
-        .filter(|active| active.project == project_identifier)
-        .ok_or("That project is not the active project")?;
-    Ok(modal_view(&active.input))
+    crate::layout::off_ui_thread(move || {
+        let active = read_active(&application, false)?
+            .filter(|active| active.project == project_identifier)
+            .ok_or("That project is not the active project")?;
+        Ok(modal_view(&active.input))
+    })
+    .await
 }
 
 fn read_active(
@@ -231,21 +234,24 @@ fn mark_seen(application: &AppHandle, project: u32, seen: u64) -> Result<(), Str
 /// User-owned delivery mode, independent of the agent's tool permissions.
 #[tauri::command]
 #[specta::specta]
-pub fn set_airc_message_mode(
+pub async fn set_airc_message_mode(
     application: AppHandle,
     project_identifier: u32,
     nick: String,
     mode: velocity_airc::MessageMode,
 ) -> Result<(), String> {
-    read_active(&application, false)?
-        .filter(|active| active.project == project_identifier)
-        .ok_or("That project is not the active project")?;
-    let directory = application
-        .path()
-        .app_data_dir()
-        .map_err(|error| error.to_string())?;
-    Channel::open(&directory, &project_identifier.to_string())
-        .and_then(|channel| channel.set_message_mode(&nick, mode))
-        .map_err(|error| error.to_string())?;
-    refresh(&application)
+    crate::layout::off_ui_thread(move || {
+        read_active(&application, false)?
+            .filter(|active| active.project == project_identifier)
+            .ok_or("That project is not the active project")?;
+        let directory = application
+            .path()
+            .app_data_dir()
+            .map_err(|error| error.to_string())?;
+        Channel::open(&directory, &project_identifier.to_string())
+            .and_then(|channel| channel.set_message_mode(&nick, mode))
+            .map_err(|error| error.to_string())?;
+        refresh(&application)
+    })
+    .await
 }

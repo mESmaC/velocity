@@ -152,24 +152,27 @@ fn update_waits(application: &AppHandle, project: &ProjectItem) -> Result<(), St
 /// Sending is independent of the later modal: the typed IPC is also usable headlessly.
 #[tauri::command]
 #[specta::specta]
-pub fn airc_send(
+pub async fn airc_send(
     application: AppHandle,
     project_identifier: u32,
     text: String,
 ) -> Result<(), String> {
-    let exists = lock(
-        application.state::<ManagedStateStore>().inner(),
-        "persisted state",
-    )?
-    .state()
-    .projects
-    .iter()
-    .any(|project| project.id == project_identifier);
-    if !exists {
-        return Err("Unknown project".into());
-    }
-    channel(&application, project_identifier)?
-        .comment(&text)
-        .map_err(|error| error.to_string())?;
-    crate::airc_modal::refresh(&application)
+    crate::layout::off_ui_thread(move || {
+        let exists = lock(
+            application.state::<ManagedStateStore>().inner(),
+            "persisted state",
+        )?
+        .state()
+        .projects
+        .iter()
+        .any(|project| project.id == project_identifier);
+        if !exists {
+            return Err("Unknown project".into());
+        }
+        channel(&application, project_identifier)?
+            .comment(&text)
+            .map_err(|error| error.to_string())?;
+        crate::airc_modal::refresh(&application)
+    })
+    .await
 }

@@ -122,7 +122,19 @@ pub async fn swarm_menu(
 /// Hides the swarm and its members at once and offers Undo; the deletion lands after 5 s.
 #[tauri::command]
 #[specta::specta]
-pub fn delete_swarm(
+pub async fn delete_swarm(
+    application: AppHandle,
+    project_identifier: u32,
+    swarm_identifier: u32,
+) -> Result<LayoutSnapshot, String> {
+    crate::layout::off_ui_thread(move || {
+        delete_swarm_now(application, project_identifier, swarm_identifier)
+    })
+    .await
+}
+
+/// [`delete_swarm`] on the calling thread, for callers already off the UI thread.
+pub(crate) fn delete_swarm_now(
     application: AppHandle,
     project_identifier: u32,
     swarm_identifier: u32,

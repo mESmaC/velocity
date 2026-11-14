@@ -43,14 +43,18 @@ fn selected_project(store: &ManagedStateStore) -> Result<Option<ProjectContext>,
 
 #[tauri::command]
 #[specta::specta]
-pub fn get_pull_request_panel(
-    store: State<'_, ManagedStateStore>,
-    panel: State<'_, PullRequestPanel>,
+pub async fn get_pull_request_panel(
+    application: AppHandle,
 ) -> Result<PullRequestPanelSnapshot, String> {
-    let project = selected_project(&store)?;
-    let mut panel = panel.lock().map_err(|error| error.to_string())?;
-    panel.select(project.map(|project| project.identifier));
-    Ok(panel.clone())
+    crate::layout::off_ui_thread(move || {
+        let store = application.state::<ManagedStateStore>();
+        let panel = application.state::<PullRequestPanel>();
+        let project = selected_project(&store)?;
+        let mut panel = panel.lock().map_err(|error| error.to_string())?;
+        panel.select(project.map(|project| project.identifier));
+        Ok(panel.clone())
+    })
+    .await
 }
 
 #[tauri::command]

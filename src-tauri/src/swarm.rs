@@ -32,7 +32,15 @@ pub struct SwarmEventPublished {
 /// The Swarm dialog for the user's current choices; asked again whenever one changes.
 #[tauri::command]
 #[specta::specta]
-pub fn get_swarm_dialog(
+pub async fn get_swarm_dialog(
+    application: AppHandle,
+    query: SwarmDialogQuery,
+) -> Result<SwarmDialog, String> {
+    crate::layout::off_ui_thread(move || get_swarm_dialog_now(application, query)).await
+}
+
+/// [`get_swarm_dialog`] on the calling thread, for callers already off the UI thread.
+pub(crate) fn get_swarm_dialog_now(
     application: AppHandle,
     query: SwarmDialogQuery,
 ) -> Result<SwarmDialog, String> {
@@ -56,24 +64,27 @@ pub fn get_swarm_dialog(
 /// Starts one agent per selected item, all at once, each in its own worktree (F10).
 #[tauri::command]
 #[specta::specta]
-pub fn launch_swarm(
+pub async fn launch_swarm(
     application: AppHandle,
     request: LaunchSwarmRequest,
 ) -> Result<LayoutSnapshot, String> {
-    launch(&application, request)
+    crate::layout::off_ui_thread(move || launch(&application, request)).await
 }
 
 /// + Items: the same launch, adding members to an existing swarm.
 #[tauri::command]
 #[specta::specta]
-pub fn add_to_swarm(
+pub async fn add_to_swarm(
     application: AppHandle,
     request: LaunchSwarmRequest,
 ) -> Result<LayoutSnapshot, String> {
-    if request.into.is_none() {
-        return Err("Choose the swarm to add items to".into());
-    }
-    launch(&application, request)
+    crate::layout::off_ui_thread(move || {
+        if request.into.is_none() {
+            return Err("Choose the swarm to add items to".into());
+        }
+        launch(&application, request)
+    })
+    .await
 }
 
 fn launch(application: &AppHandle, request: LaunchSwarmRequest) -> Result<LayoutSnapshot, String> {
@@ -115,7 +126,7 @@ fn launch(application: &AppHandle, request: LaunchSwarmRequest) -> Result<Layout
         }
     }
     record_launch(application, &request, swarm, started);
-    finish_launch(application, swarm, started, &refused)
+    finish_launch(application, &request, swarm, started, &refused)
 }
 
 /// The Issues panel's last read of open issues, which the dialog was drawn from (F9).
@@ -160,7 +171,7 @@ fn add_pr_duty(application: &AppHandle, request: &LaunchSwarmRequest) -> Result<
         providers: request.providers.clone(),
         into: request.into,
     };
-    let shortfall = get_swarm_dialog(application.clone(), query)?.pr_duty_shortfall;
+    let shortfall = get_swarm_dialog_now(application.clone(), query)?.pr_duty_shortfall;
     if shortfall == 0 {
         return Ok(());
     }
@@ -170,6 +181,11 @@ fn add_pr_duty(application: &AppHandle, request: &LaunchSwarmRequest) -> Result<
             application.state::<ManagedStateStore>().inner(),
             "persisted state",
         )?;
+        // PR duty starts in the active project. A switch since the launch began must not
+        // add this project's duty agents to another one.
+        if !is_active(&store, request.project_identifier) {
+            return Err("PR duty not started: the project changed during the launch".into());
+        }
         let mut layout = lock(
             application.state::<MainLayout>().inner(),
             "main-window state",
@@ -260,8 +276,13 @@ fn record_launch(
     ));
 }
 
+fn is_active(store: &velocity_store::StateStore, project: u32) -> bool {
+    store.active_project().map(|active| active.id) == Some(project)
+}
+
 fn finish_launch(
     application: &AppHandle,
+    request: &LaunchSwarmRequest,
     swarm: u32,
     started: usize,
     refused: &[String],
@@ -275,7 +296,11 @@ fn finish_launch(
         "main-window state",
     )?;
     store.refresh_follow_through_layout(&mut layout);
-    layout.close_swarm_dialog_and_select(swarm as usize);
+    // After a project switch the window shows another project, where this swarm's number
+    // means nothing; the launch still reports in the toast.
+    if is_active(&store, request.project_identifier) {
+        layout.close_swarm_dialog_and_select(swarm as usize);
+    }
     let mut message = format!(
         "{started} agent{} launched · {started} worktrees · all running",
         if started == 1 { "" } else { "s" }
@@ -325,6 +350,7 @@ pub(crate) fn post_event(
 /// its next step (Rule 1). `None` when `identifier` is not a swarm.
 pub fn broadcast(
     application: &AppHandle,
+    project: u32,
     identifier: usize,
     prompt: &str,
 ) -> Option<Result<LayoutSnapshot, String>> {
@@ -334,7 +360,7 @@ pub fn broadcast(
             "persisted state",
         )
         .ok()?;
-        let project = store.active_project()?;
+        let project = store.project(project)?;
         let swarm = project
             .swarms
             .iter()

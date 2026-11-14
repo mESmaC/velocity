@@ -2,7 +2,7 @@
 use std::path::PathBuf;
 use std::sync::Mutex;
 use std::time::{Duration, Instant};
-use tauri::{AppHandle, Manager, State};
+use tauri::{AppHandle, Manager};
 use tauri_specta::Event;
 use velocity_core::layout_view::{LayoutAction, LayoutIntent, LayoutSnapshot};
 use velocity_github::{IssueClient, IssuePanelCache, IssuePanelSnapshot};
@@ -37,33 +37,37 @@ fn selected_project(application: &AppHandle) -> Result<Option<ProjectContext>, S
 
 #[tauri::command]
 #[specta::specta]
-pub fn get_issue_panel(
-    application: AppHandle,
-    panel: State<'_, IssuePanel>,
-) -> Result<IssuePanelSnapshot, String> {
-    let project = selected_project(&application)?;
-    let mut panel = lock(panel.inner(), "issues")?;
-    panel.select(project.map(|project| project.identifier));
-    Ok(panel.clone())
+pub async fn get_issue_panel(application: AppHandle) -> Result<IssuePanelSnapshot, String> {
+    crate::layout::off_ui_thread(move || {
+        let panel = application.state::<IssuePanel>();
+        let project = selected_project(&application)?;
+        let mut panel = lock(panel.inner(), "issues")?;
+        panel.select(project.map(|project| project.identifier));
+        Ok(panel.clone())
+    })
+    .await
 }
 
 /// Expands or collapses one issue row in the rail (#209) and broadcasts the new snapshot.
 #[tauri::command]
 #[specta::specta]
-pub fn toggle_issue_expanded(
+pub async fn toggle_issue_expanded(
     application: AppHandle,
-    panel: State<'_, IssuePanel>,
     number: u32,
 ) -> Result<IssuePanelSnapshot, String> {
-    let mut panel = lock(panel.inner(), "issues")?;
-    if panel.toggle_expanded(number) {
-        IssuePanelChanged {
-            panel: panel.clone(),
+    crate::layout::off_ui_thread(move || {
+        let panel = application.state::<IssuePanel>();
+        let mut panel = lock(panel.inner(), "issues")?;
+        if panel.toggle_expanded(number) {
+            IssuePanelChanged {
+                panel: panel.clone(),
+            }
+            .emit(&application)
+            .map_err(|error| error.to_string())?;
         }
-        .emit(&application)
-        .map_err(|error| error.to_string())?;
-    }
-    Ok(panel.clone())
+        Ok(panel.clone())
+    })
+    .await
 }
 
 #[tauri::command]

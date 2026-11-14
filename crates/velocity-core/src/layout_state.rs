@@ -1,5 +1,7 @@
 //! Backend-owned main-window state. No native effects or persistence live here.
 
+mod pending_sends;
+
 use crate::airc_modal::AircBadge;
 use crate::build_gate::{BuildKind, LaunchKind, launch_block_reason};
 use crate::duty::{self, DutyRole, DutyViewSnapshot};
@@ -19,11 +21,13 @@ use crate::thread_view_model::{
     self, AgentCommandView, LiveThreadView, ModelPillView, SlashCommandItem, ThreadDetailSnapshot,
     TranscriptBlock,
 };
+use pending_sends::PendingSends;
 use std::collections::{BTreeMap, BTreeSet};
 
 /// What `submit_composer` sent to a thread, kept so a failed send can be undone.
 #[derive(Clone)]
 struct SentSteering {
+    project: u32,
     identifier: usize,
     prompt: String,
     typed: String,
@@ -64,7 +68,10 @@ pub struct LayoutState {
     composer_text: String,
     /// The last message sent to a thread, as typed. A failed send gives back these words
     /// rather than the prompt with its skill instructions.
-    sent_steering: Option<SentSteering>,
+    /// One entry per send still on its way, oldest first: sends to one thread are
+    /// delivered in order, so each answer belongs to the oldest matching entry.
+    sent_steering: Vec<SentSteering>,
+    pending_sends: PendingSends,
     task_text: String,
     project_spec_locked: Option<bool>,
     launch_notice: Option<String>,
@@ -102,7 +109,8 @@ impl Default for LayoutState {
             form_open: false,
             overlay_open: false,
             composer_text: String::new(),
-            sent_steering: None,
+            sent_steering: Vec::new(),
+            pending_sends: PendingSends::default(),
             task_text: String::new(),
             project_spec_locked: None,
             launch_notice: None,
@@ -313,7 +321,9 @@ impl LayoutState {
     }
 
     /// A running session's transcript and commands for one thread (`SPEC.md §3.2`, F4).
-    pub fn set_live_thread(&mut self, project: u32, identifier: usize, view: LiveThreadView) {
+    pub fn set_live_thread(&mut self, project: u32, identifier: usize, mut view: LiveThreadView) {
+        self.pending_sends
+            .add_to((project, identifier), &mut view.blocks);
         self.live.insert((project, identifier), view);
         self.changed();
     }
@@ -962,16 +972,20 @@ impl LayoutState {
         self.composer_text.clear();
         self.slash_selection = 0;
         self.record_steering(&intent);
-        self.sent_steering = match &intent {
+        if let (
             LayoutIntent::SteerThread {
                 identifier, prompt, ..
-            } => Some(SentSteering {
+            },
+            Some(project),
+        ) = (&intent, self.data.project_identifier)
+        {
+            self.sent_steering.push(SentSteering {
+                project,
                 identifier: *identifier,
                 prompt: prompt.clone(),
                 typed: text,
-            }),
-            _ => None,
-        };
+            });
+        }
         Some(intent)
     }
 
@@ -979,23 +993,29 @@ impl LayoutState {
     /// `record_steering` showed it as sent, and goes back to the composer as typed. It goes
     /// back only to its own thread's empty composer: the composer is shared by every thread,
     /// so text typed since, or another thread's view, must not receive it (#274).
-    pub fn return_unsent_message(&mut self, identifier: usize, prompt: &str) {
-        let sent = self.sent_steering.take();
-        let typed = sent
-            .filter(|sent| sent.identifier == identifier && sent.prompt == prompt)
+    ///
+    /// `project` is the project the message was written in. Its thread's transcript always
+    /// drops the message; the composer gets it back only while that project is still open.
+    pub fn return_unsent_message(&mut self, project: u32, identifier: usize, prompt: &str) {
+        let typed = self
+            .take_sent_steering(project, identifier, prompt)
             .map_or_else(|| prompt.to_owned(), |sent| sent.typed);
-        if let Some(blocks) = self
+        if let Some(live) = self.live.get_mut(&(project, identifier)) {
+            remove_last_message(&mut live.blocks, prompt);
+        }
+        self.pending_sends.forget((project, identifier), prompt);
+        if self.data.project_identifier != Some(project) {
+            self.changed();
+            return;
+        }
+        if let Some(detail) = self
             .data
             .threads
             .iter_mut()
             .find(|thread| thread.policy.identifier == identifier)
             .and_then(|thread| thread.detail.as_mut())
-            .map(|detail| &mut detail.blocks)
-            && let Some(index) = blocks.iter().rposition(|block| {
-                matches!(block, TranscriptBlock::UserMessage { text, .. } if text == prompt)
-            })
         {
-            blocks.remove(index);
+            remove_last_message(&mut detail.blocks, prompt);
         }
         let still_open =
             self.selected_thread == Some(identifier) && !matches!(self.view, NavigationView::Home);
@@ -1006,23 +1026,54 @@ impl LayoutState {
         self.changed();
     }
 
+    /// The agent took a message sent from the composer; see [`PendingSends`].
+    pub fn message_delivered(&mut self, project: u32, identifier: usize, prompt: &str) {
+        self.take_sent_steering(project, identifier, prompt);
+        self.pending_sends.delivered((project, identifier), prompt);
+    }
+
+    fn take_sent_steering(
+        &mut self,
+        project: u32,
+        identifier: usize,
+        prompt: &str,
+    ) -> Option<SentSteering> {
+        let index = self.sent_steering.iter().position(|sent| {
+            sent.project == project && sent.identifier == identifier && sent.prompt == prompt
+        })?;
+        Some(self.sent_steering.remove(index))
+    }
+
     fn record_steering(&mut self, intent: &LayoutIntent) {
-        if let LayoutIntent::SteerThread {
+        let LayoutIntent::SteerThread {
             identifier,
             prompt,
             queued,
         } = intent
-            && let Some(thread) = self
-                .data
-                .threads
-                .iter_mut()
-                .find(|thread| thread.policy.identifier == *identifier)
+        else {
+            return;
+        };
+        let message = TranscriptBlock::UserMessage {
+            text: prompt.clone(),
+            queued: *queued,
+        };
+        // A running thread is drawn from its live transcript, not `detail`, so the message
+        // goes there too; otherwise it showed only once the agent's next update arrived (#318).
+        if let Some(project) = self.data.project_identifier
+            && let Some(live) = self.live.get_mut(&(project, *identifier))
+        {
+            live.blocks.push(message.clone());
+            self.pending_sends
+                .record((project, *identifier), &live.blocks, prompt, *queued);
+        }
+        if let Some(thread) = self
+            .data
+            .threads
+            .iter_mut()
+            .find(|thread| thread.policy.identifier == *identifier)
             && let Some(detail) = thread.detail.as_mut()
         {
-            detail.blocks.push(TranscriptBlock::UserMessage {
-                text: prompt.clone(),
-                queued: *queued,
-            });
+            detail.blocks.push(message);
         }
     }
 
@@ -1486,5 +1537,14 @@ fn shortcut_key(input: &KeyboardInput) -> ShortcutKey {
         "e" => E,
         "b" => B,
         _ => Other,
+    }
+}
+
+/// Takes the last copy of a message the agent never received back out of a transcript.
+fn remove_last_message(blocks: &mut Vec<TranscriptBlock>, prompt: &str) {
+    if let Some(index) = blocks.iter().rposition(
+        |block| matches!(block, TranscriptBlock::UserMessage { text, .. } if text == prompt),
+    ) {
+        blocks.remove(index);
     }
 }

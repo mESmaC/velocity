@@ -1,5 +1,5 @@
 use anyhow::Context;
-use tauri::{AppHandle, Manager, State, Window};
+use tauri::{AppHandle, Manager, Window};
 use tauri_specta::Event;
 use velocity_core::layout_view::LayoutSnapshot;
 use velocity_store::projects::{ProjectList, ProjectSelectionView};
@@ -29,37 +29,41 @@ pub fn initialize(application: &AppHandle) -> anyhow::Result<()> {
 
 #[tauri::command]
 #[specta::specta]
-pub fn list_projects(store: State<'_, ManagedStateStore>) -> Result<ProjectList, String> {
-    store
-        .lock()
-        .map(|store| store.list_projects())
-        .map_err(|error| error.to_string())
+pub async fn list_projects(application: AppHandle) -> Result<ProjectList, String> {
+    crate::layout::off_ui_thread(move || {
+        let store = application.state::<ManagedStateStore>();
+        store
+            .lock()
+            .map(|store| store.list_projects())
+            .map_err(|error| error.to_string())
+    })
+    .await
 }
 
 #[tauri::command]
 #[specta::specta]
-pub fn switch_project(
-    window: Window,
-    store: State<'_, ManagedStateStore>,
-    layout: State<'_, MainLayout>,
-    identifier: u32,
-) -> Result<LayoutSnapshot, String> {
-    let mut store = store.lock().map_err(|error| error.to_string())?;
-    let mut layout = layout.lock().map_err(|error| error.to_string())?;
-    let selection = store
-        .switch_project_layout(&mut layout, identifier)
-        .map_err(|error| error.to_string())?;
-    let snapshot = layout.snapshot();
-    let projects = store.list_projects();
-    drop(store);
-    crate::layout::publish(&window, &snapshot, None)?;
-    publish_selection(&window, projects, selection)?;
-    crate::skills::recheck_suggestions(
-        window.app_handle(),
-        identifier,
-        crate::skills::SuggestionCheck::Opened,
-    );
-    Ok(snapshot)
+pub async fn switch_project(window: Window, identifier: u32) -> Result<LayoutSnapshot, String> {
+    crate::layout::off_ui_thread(move || {
+        let store = window.state::<ManagedStateStore>();
+        let layout = window.state::<MainLayout>();
+        let mut store = store.lock().map_err(|error| error.to_string())?;
+        let mut layout = layout.lock().map_err(|error| error.to_string())?;
+        let selection = store
+            .switch_project_layout(&mut layout, identifier)
+            .map_err(|error| error.to_string())?;
+        let snapshot = layout.snapshot();
+        let projects = store.list_projects();
+        drop(store);
+        crate::layout::publish(&window, &snapshot, None)?;
+        publish_selection(&window, projects, selection)?;
+        crate::skills::recheck_suggestions(
+            window.app_handle(),
+            identifier,
+            crate::skills::SuggestionCheck::Opened,
+        );
+        Ok(snapshot)
+    })
+    .await
 }
 
 pub fn publish_selection(

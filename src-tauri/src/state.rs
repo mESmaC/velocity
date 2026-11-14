@@ -1,7 +1,7 @@
 use anyhow::Context;
 use std::path::PathBuf;
 use std::sync::Mutex;
-use tauri::{AppHandle, Manager, State};
+use tauri::{AppHandle, Manager};
 use velocity_store::{Settings, StateStore};
 
 pub type ManagedStateStore = Mutex<StateStore>;
@@ -69,23 +69,28 @@ pub fn save_now(application: &AppHandle) -> Result<(), String> {
 
 #[tauri::command]
 #[specta::specta]
-pub fn get_settings(store: State<'_, ManagedStateStore>) -> Result<Settings, String> {
-    let guard = store
-        .lock()
-        .map_err(|_| String::from("Persisted state store lock is poisoned"))?;
-    Ok(guard.settings())
+pub async fn get_settings(application: AppHandle) -> Result<Settings, String> {
+    crate::layout::off_ui_thread(move || {
+        let store = application.state::<ManagedStateStore>();
+        let guard = store
+            .lock()
+            .map_err(|_| String::from("Persisted state store lock is poisoned"))?;
+        Ok(guard.settings())
+    })
+    .await
 }
 
 #[tauri::command]
 #[specta::specta]
-pub fn set_settings(
-    store: State<'_, ManagedStateStore>,
-    settings: Settings,
-) -> Result<Settings, String> {
-    let mut guard = store
-        .lock()
-        .map_err(|_| String::from("Persisted state store lock is poisoned"))?;
-    guard
-        .set_settings(settings)
-        .map_err(|error| error.to_string())
+pub async fn set_settings(application: AppHandle, settings: Settings) -> Result<Settings, String> {
+    crate::layout::off_ui_thread(move || {
+        let store = application.state::<ManagedStateStore>();
+        let mut guard = store
+            .lock()
+            .map_err(|_| String::from("Persisted state store lock is poisoned"))?;
+        guard
+            .set_settings(settings)
+            .map_err(|error| error.to_string())
+    })
+    .await
 }

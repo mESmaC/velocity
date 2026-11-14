@@ -274,39 +274,48 @@ fn cursor(after: Option<u32>) -> u64 {
 
 #[tauri::command]
 #[specta::specta]
-pub fn airc_events(
+pub async fn airc_events(
     application: AppHandle,
     project_identifier: u32,
     after: Option<u32>,
 ) -> Result<Vec<Entry>, String> {
-    open_channel(&application, project_identifier)?
-        .events(cursor(after))
-        .map_err(|error| error.to_string())
+    crate::layout::off_ui_thread(move || {
+        open_channel(&application, project_identifier)?
+            .events(cursor(after))
+            .map_err(|error| error.to_string())
+    })
+    .await
 }
 
 #[tauri::command]
 #[specta::specta]
-pub fn airc_messages(
+pub async fn airc_messages(
     application: AppHandle,
     project_identifier: u32,
     after: Option<u32>,
 ) -> Result<Vec<Entry>, String> {
-    open_channel(&application, project_identifier)?
-        .messages(cursor(after))
-        .map_err(|error| error.to_string())
+    crate::layout::off_ui_thread(move || {
+        open_channel(&application, project_identifier)?
+            .messages(cursor(after))
+            .map_err(|error| error.to_string())
+    })
+    .await
 }
 
 #[tauri::command]
 #[specta::specta]
-pub fn airc_ledger(
+pub async fn airc_ledger(
     application: AppHandle,
     project_identifier: u32,
     ledger: String,
     after: Option<u32>,
 ) -> Result<Vec<Entry>, String> {
-    open_channel(&application, project_identifier)?
-        .ledger(&ledger, cursor(after))
-        .map_err(|error| error.to_string())
+    crate::layout::off_ui_thread(move || {
+        open_channel(&application, project_identifier)?
+            .ledger(&ledger, cursor(after))
+            .map_err(|error| error.to_string())
+    })
+    .await
 }
 
 fn merged_files(application: &AppHandle, project: u32, number: u32) -> Result<Vec<String>, String> {
