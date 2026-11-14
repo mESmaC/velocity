@@ -23,6 +23,8 @@ pub(crate) struct ManagedRosen {
     watches: Watches,
     /// Projects whose event stream a follower reads (F6).
     following: std::sync::Mutex<BTreeSet<u32>>,
+    /// Projects whose disk budget this run has sized.
+    budgeted: std::sync::Mutex<BTreeSet<u32>>,
 }
 
 /// How often every open Rosen thread is checked for a running watcher: one that ended,
@@ -36,6 +38,7 @@ pub(crate) fn initialize(application: &AppHandle) -> anyhow::Result<()> {
         servers: Servers::new(app_data),
         watches: Watches::default(),
         following: std::sync::Mutex::new(BTreeSet::new()),
+        budgeted: std::sync::Mutex::new(BTreeSet::new()),
     });
     let handle = application.clone();
     tauri::async_runtime::spawn(async move {
@@ -135,6 +138,9 @@ pub(crate) async fn stop_watch(application: &AppHandle, root: &Path) {
     application.state::<ManagedRosen>().watches.stop(root).await;
 }
 
+/// The folder, among a project's workspaces, that Rosen keeps its warm pool under.
+const WARM_POOL_FOLDER: &str = ".rosen-pool";
+
 /// The project's server, started and imported.
 pub(crate) async fn server(application: &AppHandle, project: u32) -> Result<ProjectServer, String> {
     let source = {
@@ -145,20 +151,55 @@ pub(crate) async fn server(application: &AppHandle, project: u32) -> Result<Proj
         let item = store.project(project).ok_or("Unknown project")?;
         let repository = PathBuf::from(&item.repository_path);
         let branch = item.default_branch.clone();
-        (repository, branch)
+        // Beside the project's workspaces, so the pool is on their volume (Rosen R3).
+        let preferences = store.worktree_preferences(item);
+        let pool = velocity_threads::project_workspace_root(item, &preferences)
+            .map(|root| root.join(WARM_POOL_FOLDER));
+        (repository, branch, pool)
     };
-    let (repository, branch) = source;
+    let (repository, branch, pool) = source;
     let source = tauri::async_runtime::spawn_blocking(move || {
         ImportSource::for_checkout(&repository, &branch)
     })
     .await
     .map_err(|error| error.to_string())?;
     let managed = application.state::<ManagedRosen>();
-    managed
+    let server = managed
         .servers
-        .ready(project, &source)
+        .ready(project, &source, pool.clone())
         .await
-        .map_err(|error| error.to_string())
+        .map_err(|error| error.to_string())?;
+    let first = managed
+        .budgeted
+        .lock()
+        .is_ok_and(|mut budgeted| budgeted.insert(project));
+    if let Some(folder) = pool.filter(|_| first) {
+        size_disk_budget(&server, folder).await;
+    }
+    Ok(server)
+}
+
+/// Lets Rosen's workspaces use most of the free space on their volume (see
+/// [`ProjectServer::raise_disk_budget`]). A budget that can't be sized keeps Rosen's own.
+async fn size_disk_budget(server: &ProjectServer, workspaces: PathBuf) {
+    let free = tauri::async_runtime::spawn_blocking(move || free_bytes(&workspaces)).await;
+    let Ok(Some(free)) = free else {
+        return;
+    };
+    if let Err(error) = server.raise_disk_budget(free / 10 * 8).await {
+        eprintln!("Rosen disk budget: {error}");
+    }
+}
+
+/// The free bytes of the drive `folder` is on.
+fn free_bytes(folder: &Path) -> Option<u64> {
+    let folder = folder.to_string_lossy().to_lowercase();
+    velocity_git::inventory::read_drives()
+        .ok()?
+        .into_iter()
+        .filter(|drive| folder.starts_with(&drive.root.to_lowercase()))
+        .max_by_key(|drive| drive.root.len())
+        .map(|drive| drive.free_bytes)
 }
 
 /// Creates the thread's change and workspace at the folder its worktree would have had,

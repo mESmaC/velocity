@@ -29,6 +29,8 @@ const START_TIMEOUT: Duration = Duration::from_secs(20);
 pub struct ProjectServer {
     endpoint: Endpoint,
     data_dir: PathBuf,
+    /// Where the server keeps its warm pool, when it is started from here.
+    warm_pool_dir: Option<PathBuf>,
 }
 
 impl ProjectServer {
@@ -52,7 +54,21 @@ impl ProjectServer {
         } else {
             Endpoint::new(data_dir.join(format!("{name}.sock")).to_string_lossy())
         };
-        Self { endpoint, data_dir }
+        Self {
+            endpoint,
+            data_dir,
+            warm_pool_dir: None,
+        }
+    }
+
+    /// Keeps the server's warm pool under `folder` (Rosen R3). A ready workspace is handed
+    /// out by renaming it, which works only within one volume, so the pool has to sit on
+    /// the volume the project's workspaces are made on; left in the data folder, on another
+    /// volume, it is never used and every workspace is a full copy with nothing built.
+    /// It takes effect when this starts the server: one already running keeps its own.
+    pub fn with_warm_pool_dir(mut self, folder: Option<PathBuf>) -> Self {
+        self.warm_pool_dir = folder;
+        self
     }
 
     pub fn endpoint(&self) -> &Endpoint {
@@ -61,6 +77,24 @@ impl ProjectServer {
 
     pub fn data_dir(&self) -> &Path {
         &self.data_dir
+    }
+
+    /// Raises this machine's workspace disk budget (Rosen R3 "Load limits") to what is
+    /// charged to it now plus `room` bytes, when it is lower. Never lowers it.
+    ///
+    /// Rosen admits a new workspace against a budget of logical bytes, 100 GiB unless
+    /// raised, and a request over it waits rather than fails. Every pooled and taken
+    /// workspace counts in full with its build output, block clones included, so a pool
+    /// and a dozen agents on a project whose built workspace is several GiB would leave
+    /// the next thread waiting with nothing to say why.
+    pub async fn raise_disk_budget(&self, room: u64) -> Result<(), RosenError> {
+        let client = Client::connect(&self.endpoint).await?;
+        let load = client.load_limits(None, None).await?;
+        let wanted = load.charged_bytes.saturating_add(room);
+        if load.settings.disk_bytes < wanted {
+            client.load_limits(None, Some(wanted)).await?;
+        }
+        Ok(())
     }
 
     /// Connects to the server, starting it first when none listens.
@@ -109,7 +143,11 @@ impl ProjectServer {
             .arg("--data-dir")
             .arg(&self.data_dir)
             .arg("--endpoint")
-            .arg(self.endpoint.as_str())
+            .arg(self.endpoint.as_str());
+        if let Some(folder) = &self.warm_pool_dir {
+            command.arg("--warm-pool-dir").arg(folder);
+        }
+        command
             .current_dir(&self.data_dir)
             .stdin(Stdio::null())
             .stdout(log)
@@ -293,12 +331,13 @@ impl Servers {
             .unwrap_or_default()
     }
 
-    /// The project's server, started and imported. A server that stopped since is
-    /// started again.
+    /// The project's server, started and imported, with its warm pool under
+    /// `warm_pool_dir` when given. A server that stopped since is started again.
     pub async fn ready(
         &self,
         project: u32,
         source: &ImportSource,
+        warm_pool_dir: Option<PathBuf>,
     ) -> Result<ProjectServer, RosenError> {
         let start_lock = self.start_lock(project);
         let _starting = start_lock.lock().await;
@@ -306,7 +345,7 @@ impl Servers {
         if self.stopped() {
             return Err(RosenError::Stopped);
         }
-        let server = ProjectServer::new(&self.app_data, project);
+        let server = ProjectServer::new(&self.app_data, project).with_warm_pool_dir(warm_pool_dir);
         let client = server.connect().await?;
         // Stopped while this start was connecting: the server it started goes too.
         if self.stopped() {
