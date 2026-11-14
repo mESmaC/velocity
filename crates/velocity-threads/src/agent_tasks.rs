@@ -29,79 +29,95 @@ pub fn ingest(
     project: u32,
     channel: &Channel,
 ) -> Result<bool, AgentTaskError> {
-    let requests = channel.pending_tasks()?;
-    let (answers, failure) = apply_all(store, project, requests);
-    let changed = answer(channel, answers, task_rows(store, project))?;
-    failure.map_or(Ok(changed), Err)
+    ingest_with(store, project, channel)
 }
 
 /// [`ingest`] for the app, which runs it every second for every project: the store lock
-/// is held only while requests change the store, never while the channel files are read
-/// or written (#322).
+/// is held only while one request changes the store, never while the channel files are
+/// read or written (#322).
 pub fn ingest_shared(
     store: &Mutex<StateStore>,
     project: u32,
     channel: &Channel,
 ) -> Result<bool, AgentTaskError> {
-    let requests = channel.pending_tasks()?;
-    let (answers, failure, rows) = {
-        let mut store = store.lock().map_err(|_| AgentTaskError::StoreLock)?;
-        let (answers, failure) = apply_all(&mut store, project, requests);
-        (answers, failure, task_rows(&store, project))
-    };
-    let changed = answer(channel, answers, rows)?;
-    failure.map_or(Ok(changed), Err)
+    ingest_with(store, project, channel)
 }
 
-/// Each request with what it did. Stops at the first failure to save, which is returned
-/// beside the answers already earned; the failed request stays queued for the next pass.
-fn apply_all(
-    store: &mut StateStore,
-    project: u32,
-    requests: Vec<Entry>,
-) -> (Vec<(Entry, Outcome)>, Option<AgentTaskError>) {
-    let mut answers = Vec::with_capacity(requests.len());
-    for request in requests {
-        match apply(store, project, &request) {
-            Ok(outcome) => answers.push((request, outcome)),
-            Err(error) => return (answers, Some(error)),
-        }
+/// The store, borrowed outright or taken under its lock for one step at a time.
+trait StoreAccess {
+    fn with<Value>(
+        &mut self,
+        step: impl FnOnce(&mut StateStore) -> Value,
+    ) -> Result<Value, AgentTaskError>;
+}
+
+impl StoreAccess for &mut StateStore {
+    fn with<Value>(
+        &mut self,
+        step: impl FnOnce(&mut StateStore) -> Value,
+    ) -> Result<Value, AgentTaskError> {
+        Ok(step(self))
     }
-    (answers, None)
 }
 
-/// Posts each change's event, then the list as it stands after every change, then the
-/// answers: an agent that reads the list after its answer sees its change. Returns
-/// whether anything was saved.
-fn answer(
+impl StoreAccess for &Mutex<StateStore> {
+    fn with<Value>(
+        &mut self,
+        step: impl FnOnce(&mut StateStore) -> Value,
+    ) -> Result<Value, AgentTaskError> {
+        let mut store = self.lock().map_err(|_| AgentTaskError::StoreLock)?;
+        Ok(step(&mut store))
+    }
+}
+
+/// Applies each request and answers it before the next one is applied, so a replay after
+/// a failure never sees a later request's change without the earlier one's answer: an add
+/// and a delete of one task, applied together and then answered, could bring the task
+/// back under a new number if the answers were lost (#322).
+fn ingest_with(
+    mut store: impl StoreAccess,
+    project: u32,
     channel: &Channel,
-    answers: Vec<(Entry, Outcome)>,
-    rows: Option<Vec<TaskListRow>>,
 ) -> Result<bool, AgentTaskError> {
     let mut changed = false;
-    for (request, outcome) in &answers {
-        let Outcome::Saved { event, .. } = outcome else {
-            continue;
-        };
-        if request.kind == "task_request" {
-            // An add's event names its task number, so replay after a crash
-            // deduplicates it without hiding a second task of the same title.
-            channel.post_event_once(event.clone())?;
-        } else {
-            channel.post_event(event.clone())?;
-        }
-        changed = true;
+    for request in channel.pending_tasks()? {
+        let (outcome, rows) = store.with(|store| {
+            apply(store, project, &request).map(|outcome| (outcome, task_rows(store, project)))
+        })??;
+        changed |= answer(channel, &request, outcome, rows)?;
     }
-    if let Some(rows) = rows {
+    if let Some(rows) = store.with(|store| task_rows(store, project))? {
         channel.publish_task_list(&rows)?;
     }
-    for (request, outcome) in answers {
-        let text = match outcome {
-            Outcome::Saved { result, .. } => result,
-            Outcome::Refused(reason) => reason,
-        };
-        channel.finish_task(&request, &text)?;
-    }
+    Ok(changed)
+}
+
+/// Answers one request: a saved change posts its event, then the list as it stands after
+/// it, then the answer, so an agent that reads the list after its answer sees its change.
+/// Returns whether the request changed the store.
+fn answer(
+    channel: &Channel,
+    request: &Entry,
+    outcome: Outcome,
+    rows: Option<Vec<TaskListRow>>,
+) -> Result<bool, AgentTaskError> {
+    let (text, changed) = match outcome {
+        Outcome::Saved { event, result } => {
+            if request.kind == "task_request" {
+                // An add's event names its task number, so replay after a crash
+                // deduplicates it without hiding a second task of the same title.
+                channel.post_event_once(event)?;
+            } else {
+                channel.post_event(event)?;
+            }
+            if let Some(rows) = rows {
+                channel.publish_task_list(&rows)?;
+            }
+            (result, true)
+        }
+        Outcome::Refused(reason) => (reason, false),
+    };
+    channel.finish_task(request, &text)?;
     Ok(changed)
 }
 

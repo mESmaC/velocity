@@ -21,7 +21,15 @@ pub fn initialize(application: &AppHandle) {
     let application = application.clone();
     std::thread::spawn(move || {
         let mut left = Left::new();
+        let mut pass: u64 = 0;
         loop {
+            pass = pass.wrapping_add(1);
+            // A member can rejoin without this loop seeing its thread live (a resume
+            // that fails between passes), so the set is cleared now and then: a missed
+            // leave is at most this many seconds late.
+            if pass.is_multiple_of(LEFT_RECHECK_PASSES) {
+                left.clear();
+            }
             if let Err(error) = cycle(&application, &mut left) {
                 eprintln!("Velocity AIRC delivery: {error}");
             }
@@ -33,6 +41,8 @@ pub fn initialize(application: &AppHandle) {
 /// Threads whose member this loop has already taken out of the channel. A stopped thread
 /// leaves once, not every second: each leave locks and reads the channel (#322).
 type Left = BTreeSet<velocity_threads::ThreadKey>;
+
+const LEFT_RECHECK_PASSES: u64 = 30;
 
 fn cycle(application: &AppHandle, left: &mut Left) -> Result<(), String> {
     // Transcripts are shared, not copied, so this clone copies thread records only.
