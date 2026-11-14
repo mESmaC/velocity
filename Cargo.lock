@@ -4392,7 +4392,7 @@ dependencies = [
 [[package]]
 name = "rosen-client"
 version = "0.1.0"
-source = "git+https://github.com/mESmaC/rosen?rev=abdf04275b5513f3611ce8aba7ae61e49812b34d#abdf04275b5513f3611ce8aba7ae61e49812b34d"
+source = "git+https://github.com/mESmaC/rosen?rev=549fd6108a8f685e283d1c1f4c44f1df13a9f725#549fd6108a8f685e283d1c1f4c44f1df13a9f725"
 dependencies = [
  "atomicwrites",
  "base64 0.22.1",
@@ -4417,7 +4417,7 @@ dependencies = [
 [[package]]
 name = "rosen-core"
 version = "0.1.0"
-source = "git+https://github.com/mESmaC/rosen?rev=abdf04275b5513f3611ce8aba7ae61e49812b34d#abdf04275b5513f3611ce8aba7ae61e49812b34d"
+source = "git+https://github.com/mESmaC/rosen?rev=549fd6108a8f685e283d1c1f4c44f1df13a9f725#549fd6108a8f685e283d1c1f4c44f1df13a9f725"
 dependencies = [
  "serde",
  "sha1",
@@ -4427,7 +4427,7 @@ dependencies = [
 [[package]]
 name = "rosen-platform"
 version = "0.1.0"
-source = "git+https://github.com/mESmaC/rosen?rev=abdf04275b5513f3611ce8aba7ae61e49812b34d#abdf04275b5513f3611ce8aba7ae61e49812b34d"
+source = "git+https://github.com/mESmaC/rosen?rev=549fd6108a8f685e283d1c1f4c44f1df13a9f725#549fd6108a8f685e283d1c1f4c44f1df13a9f725"
 dependencies = [
  "libc",
  "windows-sys 0.61.2",
@@ -4436,7 +4436,7 @@ dependencies = [
 [[package]]
 name = "rosen-protocol"
 version = "0.1.0"
-source = "git+https://github.com/mESmaC/rosen?rev=abdf04275b5513f3611ce8aba7ae61e49812b34d#abdf04275b5513f3611ce8aba7ae61e49812b34d"
+source = "git+https://github.com/mESmaC/rosen?rev=549fd6108a8f685e283d1c1f4c44f1df13a9f725#549fd6108a8f685e283d1c1f4c44f1df13a9f725"
 dependencies = [
  "base64 0.22.1",
  "libc",
@@ -4451,7 +4451,7 @@ dependencies = [
 [[package]]
 name = "rosen-store"
 version = "0.1.0"
-source = "git+https://github.com/mESmaC/rosen?rev=abdf04275b5513f3611ce8aba7ae61e49812b34d#abdf04275b5513f3611ce8aba7ae61e49812b34d"
+source = "git+https://github.com/mESmaC/rosen?rev=549fd6108a8f685e283d1c1f4c44f1df13a9f725#549fd6108a8f685e283d1c1f4c44f1df13a9f725"
 dependencies = [
  "atomicwrites",
  "flate2",

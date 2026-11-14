@@ -172,7 +172,7 @@ PR duty tiers every PR (SPEC.md F7 Tiered review). A PR that touches a path list
 - `crates/velocity-git/src/lifecycle.rs`, `crates/velocity-git/src/merged_worktree.rs`, `crates/velocity-git/src/review.rs`: worktree deletion.
 - `crates/velocity-airc/src/claims.rs`: the claim lock.
 - `crates/velocity-github/src/approval.rs`: the approval record that gates merges (Rule 4).
-- `.github/workflows/`, `scripts/check.ps1`: CI config and the local checks.
+- `.github/workflows/`, `scripts/check.ps1`, `scripts/check-ui.mjs`: CI config, the local checks, and the UI checks Rosen's pre-land check set runs.
 - `scripts/Get-PrDutyToken.ps1`: PR duty's GitHub App credentials.
 
 ## Pull requests

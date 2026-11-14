@@ -94,6 +94,10 @@ pub fn workspace_note(change: &str) -> String {
          change. `rosen status` shows what is stored, `rosen diff` your change, and \
          `rosen claim <paths>` claims files other agents might edit. The `rosen` MCP server \
          offers the same commands as tools (`status`, `diff`, `claim`, `overlaps`, `commit` \
-         and the rest), returning JSON."
+         and the rest), returning JSON. Run every build and test through \
+         `rosen run -- <command>`, such as `rosen run -- cargo build -p <crate>`: builds on \
+         this machine take turns, so yours has the cores when it runs, and the checks a \
+         land waits on go first. Use it in place of any build queue script your \
+         instructions name."
     )
 }

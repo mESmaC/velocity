@@ -57,6 +57,7 @@ sensitive = [
     "rosen.toml",
     ".github/workflows/",
     "scripts/check.ps1",
+    "scripts/check-ui.mjs",
     "scripts/Get-PrDutyToken.ps1",
     "crates/velocity-store/",
     "crates/velocity-git/src/lifecycle.rs",
@@ -71,26 +72,28 @@ sensitive = [
 # lie in no unit, so a change to them counts as reaching every unit.
 
 # Build and lint on the exact merge result, before a land: the steps
-# .github/workflows/build.yml runs, in its order. Each command is one line
-# that runs the same from cmd, PowerShell and sh.
+# .github/workflows/build.yml runs. Each command is one line that runs the
+# same from cmd, PowerShell and sh.
+#
+# `scripts/check-ui.mjs` is the UI's install, build, type check and lint. They
+# read nothing outside `ui/`, so the script skips them when they already
+# passed in the checker's folder on exactly the same `ui/` files: about eight
+# seconds saved on every change that touches only Rust. It runs before the
+# Rust build, which embeds `ui/dist`.
 [checks.pre_land]
 commands = [
-    "pnpm -C ui install --frozen-lockfile",
     "cargo fmt --all -- --check",
-    "pnpm -C ui build",
+    "node scripts/check-ui.mjs",
     "cargo build --workspace --locked",
     "cargo run --locked -p velocity-app --bin export-bindings -- --check",
     "cargo clippy --workspace --all-targets --locked -- -D warnings",
-    "pnpm -C ui check",
-    "pnpm -C ui lint",
 ]
 
 # The full tests, on landed commits in batches. A commit that fails them
 # twice while its parent passes is reverted.
 [checks.post_land]
 commands = [
-    "pnpm -C ui install --frozen-lockfile",
-    "pnpm -C ui build",
+    "node scripts/check-ui.mjs",
     "cargo test --workspace --locked",
 ]
 
