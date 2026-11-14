@@ -347,7 +347,7 @@ pub fn build_pr_duty_rule_chips(settings: &PrDutyRuleSettings) -> Vec<DutyRuleCh
     }
     if settings.ci_green_before_merge {
         chips.push(DutyRuleChip {
-            text: "Local checks pass".into(),
+            text: "Checks pass".into(),
             hard: false,
         });
     }

@@ -13,6 +13,7 @@ mod issue_types;
 mod issues;
 mod landing;
 pub mod mcp_stdio;
+mod merge_gate;
 mod proof_gate;
 mod pull_request_command;
 mod pull_request_files;
@@ -38,6 +39,7 @@ pub use duty_server::{PrDutyReport, PrDutyServer, read_pr_duty_reports};
 pub use issue_panel::{IssuePanelCache, IssuePanelRow, IssuePanelSnapshot, SpecQuestion};
 pub use issue_types::*;
 pub use issues::IssueClient;
+pub use merge_gate::{StatementLockPlace, require_statement_lock};
 pub use proof_gate::check_proof_gate;
 pub use pull_request_command::PullRequestError;
 pub use pull_request_panel::{

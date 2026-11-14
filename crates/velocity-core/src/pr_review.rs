@@ -6,6 +6,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::time::Duration;
 
 use crate::duty::{DutyMergeMethod, PrDutyRuleSettings};
+use crate::merge_gate::ReviewMode;
 use crate::review_tier::{ReviewTier, TierAssessment};
 use crate::scout_sweep::step_doing;
 
@@ -94,7 +95,8 @@ impl ReviewCandidate {
 pub enum ReviewWork {
     /// Review the head, then approve and merge, or request changes.
     Review,
-    /// The head is already approved: re-run the checks on the merge result and merge.
+    /// The head is already approved and nothing else would check it: re-run the local
+    /// checks on the merge result and merge. Velocity lands every other approved head itself.
     Merge,
 }
 
@@ -246,6 +248,8 @@ pub struct ReviewBrief<'a> {
     pub work: ReviewWork,
     /// The PR's review tier (F7 Tiered review), read from its diff against the base.
     pub tier: &'a TierAssessment,
+    /// Whether the agent reads the PR or runs the local checks (F7 "Checks before merge").
+    pub mode: ReviewMode,
     pub rules: &'a PrDutyRuleSettings,
     /// What you told PR duty from the Duty view's composer, if this review follows it.
     pub instruction: Option<&'a str>,
@@ -272,8 +276,19 @@ pub fn review_prompt(brief: &ReviewBrief) -> String {
     if let Some(instruction) = brief.instruction {
         prompt.push_str(&format!("\nThe user asks PR duty: {instruction}\n"));
     }
-    prompt.push_str("\nRun every command in the foreground and wait for it, however long it takes (a cold build, `lake build`, the stress suite). Never end your turn before you record your decision: ending it stops your session, and a command left running in the background never calls you back.\nEnd your turn with a one-line summary of your decision.\n");
+    prompt.push_str(closing(brief.mode));
     prompt
+}
+
+fn closing(mode: ReviewMode) -> &'static str {
+    match mode {
+        ReviewMode::Reading => {
+            "\nNever end your turn before you record your decision: ending it stops your session.\nEnd your turn with a one-line summary of your decision.\n"
+        }
+        ReviewMode::LocalChecks => {
+            "\nRun every command in the foreground and wait for it, however long it takes (a cold build, `lake build`, the stress suite). Never end your turn before you record your decision: ending it stops your session, and a command left running in the background never calls you back.\nEnd your turn with a one-line summary of your decision.\n"
+        }
+    }
 }
 
 fn work_sentence(brief: &ReviewBrief) -> String {
@@ -289,8 +304,12 @@ fn work_sentence(brief: &ReviewBrief) -> String {
 fn checkout_paragraph(brief: &ReviewBrief) -> String {
     let base = brief.base_branch;
     if brief.conflicts.is_empty() {
+        let purpose = match brief.mode {
+            ReviewMode::Reading => "so you read the change as it lands",
+            ReviewMode::LocalChecks => "so your checks run on the merge result",
+        };
         return format!(
-            "This worktree is a detached checkout of the PR head {} with `{base}` ({}) merged in, so your checks run on the merge result, not the old PR head. The merge commit is local; do not push it unless you update the PR branch on purpose.\n",
+            "This worktree is a detached checkout of the PR head {} with `{base}` ({}) merged in, {purpose}, not the old PR head. The merge commit is local; do not push it unless you update the PR branch on purpose.\n",
             short_commit(brief.head),
             short_commit(brief.base_commit)
         );
@@ -311,17 +330,18 @@ fn checkout_paragraph(brief: &ReviewBrief) -> String {
 fn tier_steps(brief: &ReviewBrief) -> String {
     match brief.tier.tier {
         ReviewTier::Trivial => format!(
-            "\nTier: trivial. Velocity read its diff as docs, comments or formatting only. No proof is needed.\n{CONVERSATION_STEP}- Read the PR with `pr_duty_pull_request` and confirm the change matches the piece its description claims. If you find a change that is not docs, comments or formatting, review it in full as a normal PR.\n{}- Approve once the local checks pass and the change matches its claim.\n",
-            local_checks_step(brief.rules)
+            "\nTier: trivial. Velocity read its diff as docs, comments or formatting only. No proof is needed.\n{CONVERSATION_STEP}- Read the PR with `pr_duty_pull_request` and confirm the change matches the piece its description claims. If you find a change that is not docs, comments or formatting, review it in full as a normal PR.\n{}- Approve once {} the change matches its claim.\n",
+            checks_step(brief),
+            match brief.mode {
+                ReviewMode::Reading => "you have read it and",
+                ReviewMode::LocalChecks => "the local checks pass and",
+            }
         ),
-        ReviewTier::Normal => format!(
-            "\nTier: normal. Full review.\n{}",
-            review_steps(brief.rules)
-        ),
+        ReviewTier::Normal => format!("\nTier: normal. Full review.\n{}", review_steps(brief)),
         ReviewTier::Sensitive => format!(
             "\nTier: sensitive. It touches {}, listed under Sensitive paths in AGENTS.md. Full review, plus:\n- Run the project's stress suite, the stress command AGENTS.md names as the merge gate, on the merge result before you merge. A failure blocks the merge. Never run a benchmark or load run that AGENTS.md marks as not a merge gate.\n- Any proof-list feature it changes needs its confidence proof at the reference level: a fixture table exported from the Lean model plus a test that checks the code against it (SPEC.md F17). A model-only level blocks the merge. The code level (a translation) is required only when an issue asks for one.\n{}",
             quoted_list(&brief.tier.sensitive_files),
-            review_steps(brief.rules)
+            review_steps(brief)
         ),
     }
 }
@@ -330,11 +350,20 @@ fn tier_steps(brief: &ReviewBrief) -> String {
 /// rests the head instead of being reviewed past.
 const CONVERSATION_STEP: &str = "- Before anything else, read the PR's whole conversation in `pr_duty_pull_request`: every comment, review and review thread, newest last. A comment from a person (not a PR duty agent's review) is an instruction for this review: follow it. If one puts the PR on hold, says not to review or merge it yet, or makes it wait for other work, and nothing newer lifts that, call `pr_duty_review` with action `hold`, the head and the comment's reason, then stop: run no checks.\n";
 
-pub(crate) fn local_checks_step(rules: &PrDutyRuleSettings) -> &'static str {
-    if rules.ci_green_before_merge {
-        "- Run the project's local checks from AGENTS.md here, on the merge result. They decide, not GitHub CI: a pending, red or stale run never holds a PR up.\n"
-    } else {
-        ""
+/// What the review is told about checks (F7 "Checks before merge"): a reading review runs
+/// none, whatever the project's AGENTS.md tells PR duty; a local review runs AGENTS.md's.
+fn checks_step(brief: &ReviewBrief) -> &'static str {
+    match (brief.mode, brief.rules.ci_green_before_merge) {
+        (ReviewMode::Reading, true) => {
+            "- Review by reading. Do not build, run the tests or run the local checks, even where AGENTS.md tells PR duty to: GitHub's checks build and test this head, and Velocity merges it only once they pass.\n"
+        }
+        (ReviewMode::Reading, false) => {
+            "- Review by reading. Do not build, run the tests or run the local checks, even where AGENTS.md tells PR duty to: this role merges on approval.\n"
+        }
+        (ReviewMode::LocalChecks, true) => {
+            "- Run the project's local checks from AGENTS.md here, on the merge result. Nothing else checks this PR before it merges: a pending, red or stale GitHub run does not hold it up.\n"
+        }
+        (ReviewMode::LocalChecks, false) => "",
     }
 }
 
@@ -351,7 +380,8 @@ pub(crate) fn quoted_list(files: &[String]) -> String {
     list.join(", ")
 }
 
-fn review_steps(rules: &PrDutyRuleSettings) -> String {
+fn review_steps(brief: &ReviewBrief) -> String {
+    let rules = brief.rules;
     let mut steps = String::from(
         "Review:\n- Read AGENTS.md and SPEC.md first and follow AGENTS.md's rules for PR duty. Read the PR with `pr_duty_pull_request`: its description names the piece it completes.\n- Review the intent, not each line: check the PR against its claim, its Task List item, issue or SPEC.md section, and AGENTS.md. Style is left to linters.\n",
     );
@@ -359,11 +389,20 @@ fn review_steps(rules: &PrDutyRuleSettings) -> String {
     if rules.check_diff_against_spec {
         steps.push_str("- Check the diff against SPEC.md: the main path of the claimed piece must do what its section says.\n");
     }
-    steps.push_str(local_checks_step(rules));
-    steps.push_str("- If `proofs/` changes, run `lake build` and the axiom audit. Never merge unless the proofs check.\n");
+    steps.push_str(checks_step(brief));
+    // A review by reading never has changed proofs or anything to run: those PRs get the
+    // local checks.
+    let runs_checks = brief.mode == ReviewMode::LocalChecks;
+    if runs_checks {
+        steps.push_str("- If `proofs/` changes, run `lake build` and the axiom audit. Never merge unless the proofs check.\n");
+    }
     steps.push_str("- Review every theorem statement, not the proofs: does it say what the SPEC.md section says, do its hypotheses exclude real inputs, is the cost model honest, and is the class of alternatives the one that matters?\n");
     steps.push_str("- Compare the claimed feature and changed runtime paths with the project proof list. A new proof-list feature needs Design.lean with exactly correct, cost_bound and optimal; off-list Lean or a theorem about one case gets changes requested. For a bug fix require the failing input in its confidence fixtures instead. Review confidence levels per language: reference by default, code only when requested, model flagged as a proof gap; sensitive changes require at least the reference level. Implementation must outweigh proofs, tests and docs together.\n");
-    steps.push_str("- When you doubt a claim no proof covers, write a stress script, run it, and put its output in your review.\n");
+    if runs_checks {
+        steps.push_str("- When you doubt a claim no proof covers, write a stress script, run it, and put its output in your review.\n");
+    } else {
+        steps.push_str("- When you doubt a claim no proof covers, say what you doubt and why in your review. Block on it only if it meets the severity bar; otherwise file it as an issue.\n");
+    }
     steps
 }
 
@@ -375,9 +414,27 @@ fn decision_rules(brief: &ReviewBrief) -> String {
         DutyMergeMethod::Rebase => "rebase",
         DutyMergeMethod::MergeCommit => "merge commit",
     };
+    if brief.mode == ReviewMode::Reading {
+        return reading_decision_rules(brief, method);
+    }
     format!(
         "\nDecide (locked rules):\n- Record your decision only with `pr_duty_review`: action `approve` or `request_changes`, the head you checked (the PR head {}, or the new head if you pushed to the PR) and your reason, with `proof_review` explanations for scope against the proof list, theorem statements and confidence level (or why inapplicable), and inline comments in `comments`. Velocity's record of it is the approval Rule 4 requires; never approve, request changes or merge through `gh` or the GitHub website.\n- Before checking and again before merging call `pr_duty_prepare_landing`. Fetch and check out its returned head in this review worktree (never reset the author worktree), regenerate generated files and run the returned check scope. Report successful checks with `pr_duty_checked` using its exact head/base. If the base moves repeat: full checks for overlapping files, build and lint otherwise. Never skip a rebuild when the base moved. Conflicts go to the owning agent through request_changes naming the files when you cannot preserve both behaviours.\n- Never merge without an approving review. After you approve, merge with `pr_duty_merge` at the head you approved ({method}). A commit pushed after your approval needs a new review.\n- If the merge is refused, stop: Velocity records the failure.\n",
         short_commit(brief.head)
+    )
+}
+
+/// A reading review ends at its decision: Velocity lands the approved head (F7 "Checks
+/// before merge"), so the agent never updates the branch, builds or merges.
+fn reading_decision_rules(brief: &ReviewBrief, method: &str) -> String {
+    let lands = if brief.rules.ci_green_before_merge {
+        "once GitHub's checks on it pass and every review thread is resolved. A failed check or a new commit sends it back to its author"
+    } else {
+        "as soon as every review thread is resolved"
+    };
+    format!(
+        "\nDecide (locked rules):\n- Record your decision only with `pr_duty_review`: action `approve` or `request_changes`, the head you reviewed (the PR head {}, or the new head if you pushed to the PR) and your reason, with `proof_review` explanations for scope against the proof list, theorem statements and confidence level (or why inapplicable), and inline comments in `comments`. Velocity's record of it is the approval Rule 4 requires; never approve, request changes or merge through `gh` or the GitHub website.\n- An approval is refused while a review thread is open. Reply to and resolve each thread whose finding is fixed or does not block; request changes for one that blocks.\n- Do not call `pr_duty_prepare_landing`, `pr_duty_checked` or `pr_duty_merge`, and do not update the PR branch with `{}` unless this prompt says it conflicts. Velocity merges the head you approve itself ({method}) {lands}.\n- If `pr_duty_review` refuses an approval because the head changes proof files, do what its message says: that head needs the local proof checks.\n",
+        short_commit(brief.head),
+        brief.base_branch
     )
 }
 

@@ -3,9 +3,7 @@
 //! records the checks, and Rosen lands the change only with an approval at its head.
 
 use crate::duty::PrDutyRuleSettings;
-use crate::pr_review::{
-    ReviewWork, SEVERITY_BAR, local_checks_step, quoted_list, short_change, short_commit,
-};
+use crate::pr_review::{ReviewWork, SEVERITY_BAR, quoted_list, short_change, short_commit};
 use crate::review_tier::{ReviewTier, TierAssessment};
 
 /// Everything a Rosen review's prompt is built from.
@@ -96,7 +94,10 @@ fn review_steps(rules: &PrDutyRuleSettings) -> String {
     if rules.check_diff_against_spec {
         steps.push_str("- Check the diff against SPEC.md: the main path of the claimed piece must do what its section says.\n");
     }
-    steps.push_str(local_checks_step(rules));
+    // A Rosen change has no GitHub checks: the local checks are the only ones it gets.
+    if rules.ci_green_before_merge {
+        steps.push_str("- Run the project's local checks from AGENTS.md here, on the merge result. Nothing else checks this change before it lands.\n");
+    }
     steps.push_str("- If `proofs/` changes, run `lake build` and the axiom audit. Never land unless the proofs check.\n");
     steps.push_str("- When you doubt a claim no proof covers, write a stress script, run it, and put its output in your review.\n");
     steps

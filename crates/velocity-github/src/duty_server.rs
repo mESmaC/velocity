@@ -7,6 +7,9 @@
 //! is an AIRC event bound to the head the agent checked. Merge sends exactly the approved
 //! head to GitHub. Every outcome is appended to the review's report file, which Velocity
 //! reads to update the Duty view's activity feed.
+//!
+//! A review by reading (F7 "Checks before merge") approves without a check receipt and never
+//! merges: Velocity lands the head it approved once GitHub's checks pass.
 
 use std::io::{BufRead, Write};
 use std::path::PathBuf;
@@ -92,6 +95,8 @@ pub struct PrDutyServer {
     prepared: Option<crate::landing::LandingCheckpoint>,
     checked: Option<crate::landing::LandingCheckpoint>,
     statement_lock: Option<StatementLockPlace>,
+    /// Set when the review is by reading: the base commit its diff is read against.
+    reading_base: Option<String>,
 }
 
 /// Where an approval's statement lock is read and kept (F17): the review worktree, whose git
@@ -167,7 +172,15 @@ impl PrDutyServer {
             prepared: None,
             checked: None,
             statement_lock: None,
+            reading_base: None,
         }
+    }
+
+    /// Makes this a review by reading (F7 "Checks before merge"): an approval needs no check
+    /// receipt unless the head changes proof files since `base_commit`, and Velocity merges.
+    pub fn reading(mut self, base_commit: String) -> Self {
+        self.reading_base = Some(base_commit);
+        self
     }
 
     /// Locks every theorem statement at the head each approval names (F17 statement lock).
@@ -224,7 +237,11 @@ impl PrDutyServer {
                     })?
                     .evidence()?,
             );
-            self.validate_proofs(&arguments.head)?;
+            if self.approves_by_reading(&arguments.head)? {
+                self.require_resolved_threads()?;
+            } else {
+                self.validate_proofs(&arguments.head)?;
+            }
             self.save_approval_lock(&arguments.head)?;
         }
         let receipt = self.client()?.execute(PullRequestOperation::Review {
@@ -246,6 +263,42 @@ impl PrDutyServer {
             },
         });
         Ok(serde_json::to_value(receipt)?)
+    }
+
+    /// Whether `head` can be approved without a check receipt: the review is by reading, the
+    /// agent ran no landing checks of its own, and the head changes no proof file. A head that
+    /// does is refused here with what it needs, because only a local `lake build` checks it.
+    fn approves_by_reading(&self, head: &str) -> Result<bool, PullRequestError> {
+        let Some(base) = &self.reading_base else {
+            return Ok(false);
+        };
+        if self
+            .checked
+            .as_ref()
+            .is_some_and(|checked| checked.head == head)
+        {
+            return Ok(false);
+        }
+        let place = self.statement_lock.as_ref().ok_or_else(|| {
+            PullRequestError::Invalid("Approval requires a registered review worktree".into())
+        })?;
+        match velocity_proofs::changes_proofs(&place.worktree, base, head) {
+            Ok(false) => Ok(true),
+            Ok(true) => Err(PullRequestError::Invalid("This head changes proof files, so it can't be approved by reading. Call pr_duty_prepare_landing, check out the head it returns, run `lake build` and the axiom audit there, record them with pr_duty_checked, then approve and merge with pr_duty_merge".into())),
+            Err(error) => Err(PullRequestError::Invalid(format!("Could not read what this head changes ({error}). Fetch the PR branch in the review worktree, then approve again"))),
+        }
+    }
+
+    /// Velocity can't merge a PR with an open thread, and after a review by reading no agent
+    /// is left to resolve one: the approval waits until its reviewer has.
+    fn require_resolved_threads(&self) -> Result<(), PullRequestError> {
+        let open = self.client()?.open_threads(self.number)?;
+        if open == 0 {
+            return Ok(());
+        }
+        Err(PullRequestError::Invalid(format!(
+            "{open} review thread(s) are open. Reply to and resolve each one whose finding is fixed or does not block, or request changes for one that blocks, then approve again"
+        )))
     }
 
     fn save_approval_lock(&self, head: &str) -> Result<(), PullRequestError> {
@@ -301,6 +354,12 @@ impl PrDutyServer {
 
     fn merge(&self, arguments: Value) -> Result<Value, PullRequestError> {
         let arguments: MergeArguments = serde_json::from_value(arguments)?;
+        if self.reading_base.is_some() && self.checked.is_none() {
+            return Err(PullRequestError::Invalid(format!(
+                "Velocity merges #{} itself once GitHub's checks pass on the head you approved. End your turn",
+                self.number
+            )));
+        }
         let checked = self.checked.as_ref().ok_or_else(|| {
             PullRequestError::Invalid(
                 "Run pr_duty_prepare_landing, required checks, then pr_duty_checked before merging"
@@ -364,18 +423,12 @@ impl PrDutyServer {
             .statement_lock
             .as_ref()
             .ok_or_else(|| PullRequestError::Invalid("Missing statement lock location".into()))?;
-        let result = (|| {
-            let lock =
-                velocity_proofs::load_statement_lock(&place.app_data, &place.project, self.number)?;
-            let current = velocity_proofs::statements_at(&place.worktree, head)?;
-            Ok::<_, velocity_proofs::ProofCheckError>(
-                lock.is_some_and(|lock| lock.changed_in(&current).is_empty()),
-            )
-        })();
-        if !matches!(result, Ok(true)) {
-            return Err(PullRequestError::Invalid("Statement lock missing, unreadable or changed: review and approve this head afresh".into()));
-        }
-        Ok(())
+        let place = crate::StatementLockPlace {
+            checkout: &place.worktree,
+            app_data: &place.app_data,
+            project: &place.project,
+        };
+        crate::require_statement_lock(place, self.number, head)
     }
 
     /// The feed is a convenience; a report that can't be written never undoes a decision.
@@ -392,8 +445,13 @@ impl ToolServer for PrDutyServer {
     }
 
     fn instructions(&self) -> String {
+        let decide = if self.reading_base.is_some() {
+            "and record your decision with pr_duty_review. Velocity merges the head you approve"
+        } else {
+            "record your decision with pr_duty_review, and merge an approved head with pr_duty_merge"
+        };
         format!(
-            "You are {}, holding the review claim on PR #{}. Read it with pr_duty_pull_request, record your decision with pr_duty_review, and merge an approved head with pr_duty_merge.",
+            "You are {}, holding the review claim on PR #{}. Read it with pr_duty_pull_request, {decide}.",
             self.reviewer, self.number
         )
     }

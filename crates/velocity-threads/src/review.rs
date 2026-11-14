@@ -20,6 +20,10 @@ use crate::launch::{
 /// so the server ships inside the app and needs no separate install.
 pub const PR_DUTY_SERVER_SWITCH: &str = "--pr-duty-mcp";
 
+/// Follows the server's arguments, with the review's base commit, when the review is by
+/// reading (F7 "Checks before merge").
+pub const READING_REVIEW_ARGUMENT: &str = "reading";
+
 /// Everything one review needs before anything runs.
 #[derive(Clone, Debug)]
 pub struct ReviewPlan {
@@ -112,6 +116,17 @@ pub struct ReviewServer<'a> {
     /// The app data folder holding the project's AIRC channel (the approval record).
     pub app_data: &'a Path,
     pub report: &'a Path,
+    /// The base commit a review by reading reads its diff against; `None` for a review that
+    /// runs the local checks.
+    pub reading_base: Option<&'a str>,
+}
+
+/// Where PR `number`'s `review-pr-<n>` worktree is kept, whether or not it exists now.
+pub fn review_worktree(roster: &PrDutyRoster, number: u32) -> Option<PathBuf> {
+    Location::new(&roster.project, &roster.worktrees)
+        .job_worktree(&JobKind::DutyReview(u64::from(number)))
+        .ok()
+        .flatten()
 }
 
 /// The session a review runs: unrestricted like every agent (Rule 1), in the review worktree,
@@ -125,7 +140,7 @@ pub fn review_session(plan: &ReviewPlan, worktree: PathBuf, server: ReviewServer
         DutyMergeMethod::MergeCommit => "merge",
     };
     let number = plan.subject.number().unwrap_or_default();
-    let stdio = McpServerStdio::new("velocity-pr-duty", server.executable).args(vec![
+    let mut arguments = vec![
         PR_DUTY_SERVER_SWITCH.to_owned(),
         worktree.display().to_string(),
         server.app_data.display().to_string(),
@@ -134,7 +149,11 @@ pub fn review_session(plan: &ReviewPlan, worktree: PathBuf, server: ReviewServer
         number.to_string(),
         method.to_owned(),
         server.report.display().to_string(),
-    ]);
+    ];
+    if let Some(base_commit) = server.reading_base {
+        arguments.extend([READING_REVIEW_ARGUMENT.to_owned(), base_commit.to_owned()]);
+    }
+    let stdio = McpServerStdio::new("velocity-pr-duty", server.executable).args(arguments);
     setup.shared_servers.push(McpServer::Stdio(stdio));
     setup
 }
