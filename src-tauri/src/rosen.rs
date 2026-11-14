@@ -25,6 +25,8 @@ pub(crate) struct ManagedRosen {
     following: std::sync::Mutex<BTreeSet<u32>>,
     /// Projects whose disk budget this run has sized.
     budgeted: std::sync::Mutex<BTreeSet<u32>>,
+    /// Held while a pass runs Rosen events' follow-ups (`rosen_events`).
+    pub(crate) follow_ups: tokio::sync::Mutex<()>,
 }
 
 /// How often every open Rosen thread is checked for a running watcher: one that ended,
@@ -39,6 +41,7 @@ pub(crate) fn initialize(application: &AppHandle) -> anyhow::Result<()> {
         watches: Watches::default(),
         following: std::sync::Mutex::new(BTreeSet::new()),
         budgeted: std::sync::Mutex::new(BTreeSet::new()),
+        follow_ups: tokio::sync::Mutex::new(()),
     });
     let handle = application.clone();
     tauri::async_runtime::spawn(async move {
@@ -360,12 +363,14 @@ async fn watch_open_threads(application: &AppHandle) {
     let Some(open) = open_threads(application) else {
         return;
     };
-    // Every project with an open Rosen thread is followed, whether or not its workspace is
-    // still on disk: Rosen deletes a landed change's workspace, and a land that happened
-    // while Velocity was closed is only read from the stream.
-    let projects: BTreeSet<u32> = open.iter().map(|(project, _)| *project).collect();
-    for project in projects {
+    // Every project with a Rosen thread is followed, merged ones too, whether or not its
+    // workspace is still on disk: Rosen deletes a landed change's workspace, a land that
+    // happened while Velocity was closed is only read from the stream, and a landed change
+    // can still be reverted after the tests that follow its land.
+    for project in followed_projects(application) {
         crate::rosen_events::follow(application, project);
+        // Follow-ups a failed step left: retried here as well as on reconnect.
+        crate::rosen_events::run_follow_ups(application, project).await;
     }
     for (project, root) in open {
         if root.is_dir() {
@@ -373,6 +378,29 @@ async fn watch_open_threads(application: &AppHandle) {
         }
     }
     crate::rosen_rebase::apply_pending(application).await;
+}
+
+/// Each Rosen project with a thread that has, or had, a Rosen change.
+fn followed_projects(application: &AppHandle) -> BTreeSet<u32> {
+    let Ok(store) = lock(
+        application.state::<ManagedStateStore>().inner(),
+        "persisted state",
+    ) else {
+        return BTreeSet::new();
+    };
+    store
+        .state()
+        .projects
+        .iter()
+        .filter(|project| project.version_control == VersionControl::Rosen)
+        .filter(|project| {
+            project
+                .threads
+                .iter()
+                .any(|thread| thread.rosen_change.is_some())
+        })
+        .map(|project| project.id)
+        .collect()
 }
 
 /// Each open Rosen thread's project and workspace root.
