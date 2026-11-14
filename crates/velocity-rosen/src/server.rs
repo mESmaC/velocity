@@ -4,6 +4,7 @@
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
+use std::sync::Arc;
 use std::time::Duration;
 
 use rosen_client::protocol::ErrorCode;
@@ -42,7 +43,14 @@ impl ProjectServer {
             .fold(0xcbf2_9ce4_8422_2325_u64, |hash, byte| {
                 (hash ^ u64::from(byte)).wrapping_mul(0x0100_0000_01b3)
             });
-        let endpoint = Endpoint::new(format!("velocity-rosen-{project}-{hash:016x}"));
+        let name = format!("velocity-rosen-{project}-{hash:016x}");
+        // A pipe name on Windows. Elsewhere a socket path, which must be absolute: the
+        // server runs from its data folder, Velocity from its own.
+        let endpoint = if cfg!(windows) {
+            Endpoint::new(name)
+        } else {
+            Endpoint::new(data_dir.join(format!("{name}.sock")).to_string_lossy())
+        };
         Self { endpoint, data_dir }
     }
 
@@ -135,6 +143,19 @@ impl ProjectServer {
         }
     }
 
+    /// Waits, a few seconds at most, until the server no longer accepts connections: its
+    /// shutdown is answered before it has drained and exited, and an update or a restart
+    /// must not meet the old server.
+    async fn wait_until_stopped(&self) {
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
+        while tokio::time::Instant::now() < deadline {
+            if let Err(ClientError::NotRunning(_)) = Client::connect(&self.endpoint).await {
+                return;
+            }
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        }
+    }
+
     /// Imports the project's history (Rosen R1), once per project. Its default branch
     /// becomes the base, and every land is pushed to its mirror.
     pub async fn import(&self, client: &Client, source: &ImportSource) -> Result<(), RosenError> {
@@ -189,7 +210,7 @@ impl ImportSource {
     /// tip and every push to it is a fast-forward (R1); a local checkout's own history
     /// otherwise, with no mirror.
     pub fn for_checkout(repository: &Path, branch: &str) -> Self {
-        let origin = origin_url(repository);
+        let origin = origin_url(repository).map(|url| absolute_remote(&url, repository));
         Self {
             source: origin
                 .clone()
@@ -198,6 +219,21 @@ impl ImportSource {
             mirror: origin,
         }
     }
+}
+
+/// `url` unchanged when it names a remote, or a local path made absolute against the
+/// checkout: the server resolves relative paths from its own data folder, not the
+/// checkout's. A remote has a scheme (`https://`) or is scp-like (`git@host:path`); a
+/// Windows drive path (`C:\...`) has its colon second and is local.
+fn absolute_remote(url: &str, repository: &Path) -> String {
+    let scp_like = url
+        .find(':')
+        .is_some_and(|colon| colon > 1 && !url[..colon].contains(['/', '\\']));
+    let path = Path::new(url);
+    if url.contains("://") || scp_like || path.is_absolute() {
+        return url.to_owned();
+    }
+    repository.join(path).to_string_lossy().into_owned()
 }
 
 fn origin_url(repository: &Path) -> Option<String> {
@@ -212,19 +248,22 @@ fn origin_url(repository: &Path) -> Option<String> {
     (output.status.success() && !url.is_empty()).then_some(url)
 }
 
-/// The servers Velocity has made ready this run. Making one ready is serialised, so two
-/// threads starting at once never race to start the server or import twice.
+/// The servers Velocity has made ready this run. Making one project's server ready is
+/// serialised, so two threads starting at once never race to start it or import twice;
+/// other projects' servers and the registry never wait on it.
 #[derive(Debug)]
 pub struct Servers {
     app_data: PathBuf,
-    ready: tokio::sync::Mutex<BTreeMap<u32, ProjectServer>>,
+    registry: std::sync::Mutex<BTreeMap<u32, ProjectServer>>,
+    starting: std::sync::Mutex<BTreeMap<u32, Arc<tokio::sync::Mutex<()>>>>,
 }
 
 impl Servers {
     pub fn new(app_data: PathBuf) -> Self {
         Self {
             app_data,
-            ready: tokio::sync::Mutex::new(BTreeMap::new()),
+            registry: std::sync::Mutex::new(BTreeMap::new()),
+            starting: std::sync::Mutex::new(BTreeMap::new()),
         }
     }
 
@@ -235,27 +274,46 @@ impl Servers {
         project: u32,
         source: &ImportSource,
     ) -> Result<ProjectServer, RosenError> {
-        let mut ready = self.ready.lock().await;
+        let start_lock = self
+            .starting
+            .lock()
+            .map(|mut starting| Arc::clone(starting.entry(project).or_default()))
+            .unwrap_or_default();
+        let _starting = start_lock.lock().await;
         let server = ProjectServer::new(&self.app_data, project);
         let client = server.connect().await?;
+        // Recorded before the import, so a server whose import fails is still stopped at
+        // exit.
+        if let Ok(mut registry) = self.registry.lock() {
+            registry.insert(project, server.clone());
+        }
         server.import(&client, source).await?;
-        ready.insert(project, server.clone());
         Ok(server)
     }
 
-    /// The project's server if this run already made it ready.
-    pub async fn get(&self, project: u32) -> Option<ProjectServer> {
-        self.ready.lock().await.get(&project).cloned()
+    fn registered(&self) -> Vec<ProjectServer> {
+        self.registry
+            .lock()
+            .map(|registry| registry.values().cloned().collect())
+            .unwrap_or_default()
+    }
+
+    /// Starts again every server this run used, after [`Self::shutdown_all`] when the
+    /// update it made way for didn't install. Watchers journal meanwhile and catch up.
+    pub async fn restart_all(&self) {
+        for server in self.registered() {
+            let _ = server.connect().await;
+        }
     }
 
     /// Stops every server this run started or used, so an update can replace their
     /// binaries. Agents' watchers journal offline until the next start (Rosen R2).
     pub async fn shutdown_all(&self) {
-        let servers: Vec<ProjectServer> = self.ready.lock().await.values().cloned().collect();
-        for server in servers {
+        for server in self.registered() {
             if let Ok(client) = Client::connect(server.endpoint()).await {
                 let _ = client.shutdown().await;
             }
+            server.wait_until_stopped().await;
         }
     }
 }

@@ -468,17 +468,13 @@ fn resume_message(
     delivered_snapshot(application, key)
 }
 
-/// Marks the thread's folder ready, saving its Rosen change. False when the thread was
-/// deleted meanwhile.
+/// Marks the thread's folder ready. False when the thread was deleted meanwhile.
 fn folder_ready(
     application: &AppHandle,
     key: ThreadKey,
     folder: &ThreadFolder,
     path: &str,
 ) -> bool {
-    if let Some(change) = &folder.rosen_change {
-        report(crate::rosen::record_change(application, key, change));
-    }
     let wanted = mark_worktree_ready(application, key, path, folder.failure.is_some());
     if let Some(change) = &folder.rosen_change
         && let Ok(mut runtimes) = lock(
@@ -505,6 +501,7 @@ async fn take_folder(
     key: ThreadKey,
     plan: &mut LaunchPlan,
 ) -> ThreadFolder {
+    let mut settled = None;
     if crate::rosen::uses_rosen(application, key.0) {
         // The title is settled meanwhile; a Rosen workspace keeps its first folder name.
         let titling = {
@@ -512,7 +509,7 @@ async fn take_folder(
             tauri::async_runtime::spawn(async move { settle_title(&application, key, &plan).await })
         };
         let taken = crate::rosen::take_workspace(application, key, &plan.worktree).await;
-        let _ = titling.await;
+        settled = Some(titling.await.ok().flatten());
         match taken {
             Ok(workspace) => {
                 plan.agent.env.extend(workspace.environment);
@@ -526,7 +523,7 @@ async fn take_folder(
             Err(error) => crate::rosen::fell_back(application, &error),
         }
     }
-    let (path, branch_name, failure) = match take_worktree(application, key, plan).await {
+    let (path, branch_name, failure) = match take_worktree(application, key, plan, settled).await {
         Ok(worktree) => (
             worktree.worktree_path,
             worktree.branch_name,
@@ -791,11 +788,13 @@ fn mark_worktree_ready(application: &AppHandle, key: ThreadKey, path: &str, fail
 
 /// Checks the worktree out while the title model answers; naming and setup wait for the
 /// title, at most F4's two seconds (`resolve_title` enforces the deadline). The checkout is a
-/// ready worktree from the warm pool when it has one (F5).
+/// ready worktree from the warm pool when it has one (F5). `settled` is the title's names
+/// when a Rosen attempt already asked for the title, so it is never asked twice.
 async fn take_worktree(
     application: &AppHandle,
     key: ThreadKey,
     plan: &LaunchPlan,
+    settled: Option<Option<WorktreeName>>,
 ) -> Result<TitledWorktree, String> {
     let (name_sender, name_receiver) = std::sync::mpsc::channel();
     let request = plan.worktree.clone();
@@ -810,7 +809,10 @@ async fn take_worktree(
             || name_receiver.recv().ok().flatten(),
         )
     });
-    let name = settle_title(application, key, plan).await;
+    let name = match settled {
+        Some(name) => name,
+        None => settle_title(application, key, plan).await,
+    };
     // Setup is waiting for this; if the checkout already failed, nobody is listening.
     let _ = name_sender.send(name);
     worktree.await.map_err(|error| error.to_string())

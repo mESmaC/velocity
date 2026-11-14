@@ -261,7 +261,8 @@ impl LiveTranscript {
                 TranscriptBlock::ToolGroup { steps } => Some(
                     steps
                         .iter()
-                        .filter(|step| step.verb != "Worktree")
+                        // The setup row, a worktree's or a Rosen workspace's, is no tool call.
+                        .filter(|step| step.verb != "Worktree" && step.verb != "Workspace")
                         .cloned()
                         .collect::<Vec<_>>(),
                 ),
