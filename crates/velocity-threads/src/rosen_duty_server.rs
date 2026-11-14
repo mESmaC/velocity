@@ -126,9 +126,12 @@ pub async fn check_out_review(
     launch: &RosenDutyLaunch,
 ) -> Result<MergeCheckout, String> {
     let reviewer = reviewer_name(&launch.nickname);
-    let checkout = duty::check_out_merge_result(server, &reviewer, &launch.change, &launch.folder)
-        .await
-        .map_err(|error| error.to_string())?;
+    // A review that runs the checks builds in its folder: it starts from a prepared tree.
+    let prepared = !launch.reading;
+    let checkout =
+        duty::check_out_merge_result(server, &reviewer, &launch.change, &launch.folder, prepared)
+            .await
+            .map_err(|error| error.to_string())?;
     if checkout.conflicts.is_empty() && !launch.reading {
         let request = launch.setup.request(&launch.folder);
         tokio::task::spawn_blocking(move || finish_worktree_setup(&request))
