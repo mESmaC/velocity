@@ -36,6 +36,7 @@ mod ready_pool;
 mod restart;
 pub mod reviews;
 mod rosen;
+mod rosen_events;
 mod shared_mcp;
 mod skills;
 mod state;

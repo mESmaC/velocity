@@ -138,7 +138,7 @@ fn resume_follow_through(
     Ok(DeliveryStatus::Pending)
 }
 
-fn stop_follow_through(application: &AppHandle, key: ThreadKey) -> Result<bool, String> {
+pub(crate) fn stop_follow_through(application: &AppHandle, key: ThreadKey) -> Result<bool, String> {
     let stopped = {
         let mut runtimes = lock(
             application.state::<ManagedThreads>().inner(),

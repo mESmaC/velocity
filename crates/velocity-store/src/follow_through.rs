@@ -140,7 +140,7 @@ pub(crate) fn merged_awaiting_cleanup(thread: &ThreadItem) -> bool {
 }
 
 /// A task is done when its PR merged (F8): the merged thread's tasks tick off (F10).
-fn finish_thread_tasks(state: &mut crate::PersistedState, project: u32, thread: u32) {
+pub(crate) fn finish_thread_tasks(state: &mut crate::PersistedState, project: u32, thread: u32) {
     let Some(project) = state.projects.iter_mut().find(|item| item.id == project) else {
         return;
     };

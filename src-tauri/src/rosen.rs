@@ -2,6 +2,7 @@
 //! workspaces from the project's own Rosen server, which Velocity starts; git worktrees
 //! are the fallback when the project chooses git or Rosen can't start.
 
+use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
@@ -19,6 +20,8 @@ use crate::threads::{lock, report};
 pub(crate) struct ManagedRosen {
     servers: Servers,
     watches: Watches,
+    /// Projects whose event stream a follower reads (F6).
+    following: std::sync::Mutex<BTreeSet<u32>>,
 }
 
 /// How often every open Rosen thread is checked for a running watcher: one that ended,
@@ -31,6 +34,7 @@ pub(crate) fn initialize(application: &AppHandle) -> anyhow::Result<()> {
     application.manage(ManagedRosen {
         servers: Servers::new(app_data),
         watches: Watches::default(),
+        following: std::sync::Mutex::new(BTreeSet::new()),
     });
     let handle = application.clone();
     tauri::async_runtime::spawn(async move {
@@ -63,8 +67,43 @@ pub(crate) fn uses_rosen(application: &AppHandle, project: u32) -> bool {
     .is_some_and(|choice| choice == VersionControl::Rosen)
 }
 
+/// Whether the servers are stopped for an update or exit, and must not be started.
+pub(crate) fn paused(application: &AppHandle) -> bool {
+    application
+        .try_state::<ManagedRosen>()
+        .is_none_or(|managed| managed.servers.stopped())
+}
+
+/// Records that a follower reads `project`'s events; false when one already does.
+pub(crate) fn begin_following(application: &AppHandle, project: u32) -> bool {
+    application
+        .try_state::<ManagedRosen>()
+        .and_then(|managed| {
+            managed
+                .following
+                .lock()
+                .ok()
+                .map(|mut following| following.insert(project))
+        })
+        .unwrap_or(false)
+}
+
+/// Records that `project`'s follower stopped, so a later Rosen thread starts another.
+pub(crate) fn end_following(application: &AppHandle, project: u32) {
+    if let Some(managed) = application.try_state::<ManagedRosen>()
+        && let Ok(mut following) = managed.following.lock()
+    {
+        following.remove(&project);
+    }
+}
+
+/// Stops the watcher on a workspace whose change has closed.
+pub(crate) async fn stop_watch(application: &AppHandle, root: &Path) {
+    application.state::<ManagedRosen>().watches.stop(root).await;
+}
+
 /// The project's server, started and imported.
-async fn server(application: &AppHandle, project: u32) -> Result<ProjectServer, String> {
+pub(crate) async fn server(application: &AppHandle, project: u32) -> Result<ProjectServer, String> {
     let source = {
         let store = lock(
             application.state::<ManagedStateStore>().inner(),
@@ -116,6 +155,7 @@ pub(crate) async fn take_workspace(
         let _ = velocity_rosen::abandon_change(&server, &agent, &workspace.change).await;
         return Err(error);
     }
+    crate::rosen_events::follow(application, key.0);
     let mut setup_request = request.clone();
     setup_request.worktree_path = workspace.root.clone();
     let setup = tauri::async_runtime::spawn_blocking(move || {
@@ -242,31 +282,48 @@ pub(crate) fn fell_back(application: &AppHandle, error: &str) {
 /// watcher: after a restart, so edits made while Velocity was closed are stored too, and
 /// after a watcher ended or failed to start.
 async fn watch_open_threads(application: &AppHandle) {
-    let open: Vec<(u32, PathBuf)> = match lock(
+    let Some(open) = open_threads(application) else {
+        return;
+    };
+    // Every project with an open Rosen thread is followed, whether or not its workspace is
+    // still on disk: Rosen deletes a landed change's workspace, and a land that happened
+    // while Velocity was closed is only read from the stream.
+    let projects: BTreeSet<u32> = open.iter().map(|(project, _)| *project).collect();
+    for project in projects {
+        crate::rosen_events::follow(application, project);
+    }
+    for (project, root) in open {
+        if root.is_dir() {
+            report(watch_thread(application, project, &root).await);
+        }
+    }
+}
+
+/// Each open Rosen thread's project and workspace root.
+fn open_threads(application: &AppHandle) -> Option<Vec<(u32, PathBuf)>> {
+    let store = lock(
         application.state::<ManagedStateStore>().inner(),
         "persisted state",
-    ) {
-        Ok(store) => store
-            .state()
-            .projects
-            .iter()
-            .filter(|project| project.version_control == VersionControl::Rosen)
-            .flat_map(|project| {
-                project
-                    .threads
-                    .iter()
-                    .filter(|thread| thread.rosen_change.is_some())
-                    .filter(|thread| thread.state != ThreadState::Merged)
-                    .filter_map(|thread| thread.worktree_path.as_deref())
-                    .map(|path| (project.id, PathBuf::from(path)))
-            })
-            .filter(|(_, root)| root.is_dir())
-            .collect(),
-        Err(_) => return,
-    };
-    for (project, root) in open {
-        report(watch_thread(application, project, &root).await);
-    }
+    )
+    .ok()?;
+    let open = store
+        .state()
+        .projects
+        .iter()
+        .filter(|project| project.version_control == VersionControl::Rosen)
+        .flat_map(|project| {
+            project
+                .threads
+                .iter()
+                .filter(|thread| thread.rosen_change.is_some())
+                .filter(|thread| thread.state != ThreadState::Merged)
+                .map(|thread| {
+                    let root = thread.worktree_path.as_deref().unwrap_or_default();
+                    (project.id, PathBuf::from(root))
+                })
+        })
+        .collect();
+    Some(open)
 }
 
 /// Starts the watcher on a Rosen thread's workspace unless one runs, or the servers are
