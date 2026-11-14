@@ -20,6 +20,22 @@ pub(crate) fn hidden_command(program: impl AsRef<OsStr>) -> Command {
     command
 }
 
+/// A hidden `Command` that runs below normal priority, as does everything it starts: a
+/// long check that must not slow the builds agents and the pre-land checks wait on.
+#[allow(clippy::disallowed_methods)]
+pub(crate) fn background_command(program: impl AsRef<OsStr>) -> Command {
+    let mut command = Command::new(program);
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        // Windows hands a below-normal parent's priority class to its children.
+        const BELOW_NORMAL_PRIORITY_CLASS: u32 = 0x0000_4000;
+        // Repeats CREATE_NO_WINDOW: creation flags replace the ones set before (#276).
+        command.creation_flags(CREATE_NO_WINDOW | BELOW_NORMAL_PRIORITY_CLASS);
+    }
+    command
+}
+
 /// A project's Rosen server, which outlives the call that starts it. It gets a hidden
 /// console of its own rather than none: every `git` it runs then shares that console,
 /// where a server with no console makes each git open a new window, and git sometimes

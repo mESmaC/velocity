@@ -57,6 +57,15 @@ pub fn conflict_paths(event: &Event) -> Vec<String> {
         .unwrap_or_default()
 }
 
+/// What the failing post-land check printed, as a `reverted` event carries it (R12).
+pub fn revert_output(event: &Event) -> Option<String> {
+    event
+        .detail
+        .get("output")
+        .and_then(|output| output.as_str())
+        .map(str::to_owned)
+}
+
 /// Every event of one project's server after a cursor: the project view, which stores no
 /// cursor of its own, so Velocity keeps it.
 pub struct EventStream {

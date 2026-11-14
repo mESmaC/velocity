@@ -1,5 +1,6 @@
 //! Follows each Rosen project's event stream (F6): a named snapshot moves its thread to
-//! review, a land marks it merged and stops its agent, and a revert reopens it. This takes
+//! review, a land marks it merged and stops its agent, and a revert reopens it, with its
+//! workspace and its agent. This takes
 //! the GitHub PR watcher's place for threads that work in Rosen workspaces.
 
 use std::path::PathBuf;
@@ -59,7 +60,21 @@ async fn follow_project(application: &AppHandle, project: u32) {
                                 .await;
                             }
                             Some((change, meaning)) => {
-                                report(take(application, project, event.seq, change, meaning).await)
+                                let output = velocity_rosen::revert_output(&event);
+                                let taken =
+                                    take(application, project, event.seq, change, meaning).await;
+                                report(match (taken, meaning) {
+                                    (Ok(Some(thread)), ChangeEvent::Reverted) => {
+                                        reopen_reverted(
+                                            application,
+                                            (project, thread),
+                                            change,
+                                            output.as_deref(),
+                                        )
+                                        .await
+                                    }
+                                    (taken, _) => taken.map(|_| ()),
+                                })
                             }
                             None => {}
                         }
@@ -79,30 +94,54 @@ async fn open(application: &AppHandle, project: u32, after: u64) -> Result<Event
         .map_err(|error| error.to_string())
 }
 
-/// Applies one event to its thread and shows the result.
+/// Applies one event to its thread and shows the result. Returns the thread working on the
+/// change, if one does.
 async fn take(
     application: &AppHandle,
     project: u32,
     seq: u64,
     change: &str,
     meaning: ChangeEvent,
-) -> Result<(), String> {
+) -> Result<Option<u32>, String> {
     let progress = match meaning {
         ChangeEvent::Named => RosenProgress::Named,
         ChangeEvent::Landed => RosenProgress::Landed,
         ChangeEvent::Reverted => RosenProgress::Reverted,
         // Handled by `rosen_rebase`: a rebase at the agent's step boundary, a conflict as a
         // message to it.
-        ChangeEvent::Rebased | ChangeEvent::Conflict => return Ok(()),
+        ChangeEvent::Rebased | ChangeEvent::Conflict => return Ok(None),
     };
     let thread = save(application, project, seq, change, progress)?;
     // A named change waits for a reviewer, and a land or a revert changes what PR duty and
     // its checker have to do: they look now, not at their next 30-second tick.
     crate::reviews::wake(application);
-    match (thread, meaning) {
-        (Some(thread), ChangeEvent::Landed) => finish_landed(application, (project, thread)).await,
-        _ => Ok(()),
+    if let (Some(thread), ChangeEvent::Landed) = (thread, meaning) {
+        finish_landed(application, (project, thread)).await?;
     }
+    Ok(thread)
+}
+
+/// Rosen reverted thread `key`'s landed change and reopened it (Rosen R12; F7 "After a
+/// land"). The workspace went when the change landed, so the thread gets one again at the
+/// same folder, at the reopened head, and its agent is resumed with what the failing
+/// post-land checks printed.
+async fn reopen_reverted(
+    application: &AppHandle,
+    key: ThreadKey,
+    change: &str,
+    output: Option<&str>,
+) -> Result<(), String> {
+    let Some(root) = workspace(application, key) else {
+        return Ok(());
+    };
+    let server = crate::rosen::server(application, key.0).await?;
+    let agent = velocity_rosen::agent_name(&root);
+    velocity_rosen::reopen_workspace(&server, &agent, change, &root)
+        .await
+        .map_err(|error| error.to_string())?;
+    let report = output.unwrap_or("Rosen kept no output for the failing run.");
+    let message = velocity_core::rosen_checker::reverted_message(change, report);
+    crate::threads::steer(application, key, &message).map(|_| ())
 }
 
 /// PR duty requested changes on thread `key`'s change `change` (F7): the thread goes back
