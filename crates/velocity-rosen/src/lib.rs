@@ -6,6 +6,8 @@
 //! unavailable or a project chooses git.
 
 mod agent;
+#[cfg(feature = "bundled")]
+mod bundled;
 mod process;
 mod server;
 mod workspace;

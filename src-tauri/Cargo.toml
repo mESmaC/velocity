@@ -8,6 +8,8 @@ default-run = "velocity-app"
 
 [features]
 custom-protocol = ["tauri/custom-protocol"]
+# Release builds carry Rosen's binaries inside the app (F5); see velocity-rosen's `bundled`.
+bundled-rosen = ["velocity-rosen/bundled"]
 
 [lib]
 name = "velocity_app_lib"
