@@ -12,10 +12,10 @@ use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
 use std::time::{Duration, Instant};
 
-use rosen_client::Client;
 use rosen_client::run_queue::{RunClass, RunQueue, Turn};
 
 use crate::duty::{self, MergeCheckout};
+use crate::policy::{CheckPolicy, policy_at};
 use crate::process::{background_command, hidden_command};
 use crate::workspace::session;
 use crate::{ProjectServer, RosenError};
@@ -46,57 +46,106 @@ pub struct FailedCommand {
     pub output: String,
 }
 
-/// The commands the project's `rosen.toml` names for its pre-land check set, as the base
-/// holds it. Empty when the project names none.
-pub async fn pre_land_commands(server: &ProjectServer) -> Result<Vec<String>, RosenError> {
-    let client = Client::connect(server.endpoint()).await?;
-    let config = client.project_config(None).await?.config;
-    Ok(config.checks.pre_land.commands)
+/// A merge result staged beside the check folder, with the policy its base holds.
+#[derive(Clone, Debug)]
+pub struct StagedMerge {
+    pub merge: MergeCheckout,
+    /// Read at `merge.base`, the base the check runs on: its commands are the ones to run
+    /// and its check set the one the receipt names, whatever lands meanwhile.
+    pub policy: CheckPolicy,
 }
 
-/// Writes `change`'s current merge result beside `folder`, ready for [`apply_staged`].
-/// Nothing is staged when the merge conflicts. A folder Velocity did not check out is
-/// never touched.
+/// Writes `change`'s current merge result beside `folder`, ready for [`apply_staged`], and
+/// reads the policy at its base. Nothing is staged when the merge conflicts. A folder
+/// Velocity did not check out is never touched.
 pub async fn stage_merge_result(
     server: &ProjectServer,
     change: &str,
     folder: &Path,
-) -> Result<MergeCheckout, RosenError> {
+) -> Result<StagedMerge, RosenError> {
     let staging = duty::claim_checkout(folder)?;
     let checkout = session(server, CHECKER)
         .await?
         .check_out_merge_result(change, &staging)
         .await?;
-    Ok(MergeCheckout {
+    let merge = MergeCheckout {
         head: checkout.merge.head.to_string(),
         base: checkout.merge.base.to_string(),
         conflicts: checkout.merge.conflicts,
-    })
+    };
+    let policy = policy_at(server, Some(&merge.base)).await?;
+    Ok(StagedMerge { merge, policy })
 }
 
-/// Brings `folder` to the staged merge result (blocking). A file whose bytes are already
-/// there is left alone with its modified time, so the build tool sees it as unchanged; a
-/// file the last result had and this one lacks is removed. Everything else in the folder
-/// is build output and stays.
+/// Brings `folder` to exactly the staged merge result (blocking). A file whose bytes are
+/// already there is left alone with its modified time, so the build tool sees it as
+/// unchanged; a file the last result had and this one lacks is removed. Everything else in
+/// the folder is build output and stays.
+///
+/// A check certifies the folder's sources, so they must be the merge result's and nothing
+/// more: a stale file the build still finds (a deleted module, say) can make a tree that
+/// fails to build pass. Any file that can't be removed stops the check, and stays listed
+/// so the next check removes it.
 pub fn apply_staged(folder: &Path) -> Result<(), RosenError> {
     let staging = duty::staging_folder(folder);
     let list = file_list(folder);
     let files = files_under(&staging)?;
+    let listed = match listed_files(&list)? {
+        Some(listed) => listed,
+        // Nothing says which files are the last result's and which are build output, so
+        // none of it can be trusted: one cold build is the price.
+        None => {
+            remove_entries(folder)?;
+            Vec::new()
+        }
+    };
+    // Every file this run may leave in the folder is listed before the folder changes, so a
+    // run cut off part way still removes the ones it should have next time.
+    let tracked: BTreeSet<&Path> = listed.iter().chain(&files).map(PathBuf::as_path).collect();
+    write_list(folder, tracked)?;
     let wanted: BTreeSet<&Path> = files.iter().map(PathBuf::as_path).collect();
-    for gone in listed_files(&list)
+    for gone in listed
         .iter()
         .filter(|path| !wanted.contains(path.as_path()))
     {
-        // Already gone is what was wanted.
-        let _ = std::fs::remove_file(folder.join(gone));
+        remove_tracked(&folder.join(gone))?;
     }
     for file in &files {
         let target = folder.join(file);
         place(&staging.join(file), &target).map_err(|source| io_error("write", &target, source))?;
     }
-    let lines: Vec<String> = files.iter().map(|file| slashed(file)).collect();
-    std::fs::write(&list, lines.join("\n")).map_err(|source| io_error("write", &list, source))?;
+    write_list(folder, files.iter().map(PathBuf::as_path))?;
     std::fs::remove_dir_all(&staging).map_err(|source| io_error("remove", &staging, source))
+}
+
+/// Removes a file the last merge result had. Only a file that is already gone counts as
+/// removed: one held open or refused is still in the folder for the build to find.
+fn remove_tracked(path: &Path) -> Result<(), RosenError> {
+    match std::fs::remove_file(path) {
+        Ok(()) => Ok(()),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(source) => Err(io_error("remove", path, source)),
+    }
+}
+
+/// Empties `folder`, keeping the folder itself.
+fn remove_entries(folder: &Path) -> Result<(), RosenError> {
+    let entries = match std::fs::read_dir(folder) {
+        Ok(entries) => entries,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+        Err(source) => return Err(io_error("read", folder, source)),
+    };
+    for entry in entries {
+        let entry = entry.map_err(|source| io_error("read", folder, source))?;
+        let path = entry.path();
+        let removed = if entry.file_type().is_ok_and(|kind| kind.is_dir()) {
+            std::fs::remove_dir_all(&path)
+        } else {
+            std::fs::remove_file(&path)
+        };
+        removed.map_err(|source| io_error("remove", &path, source))?;
+    }
+    Ok(())
 }
 
 /// Runs `commands` in order in `folder` through the platform shell (blocking), stopping at
@@ -276,13 +325,32 @@ fn file_list(folder: &Path) -> PathBuf {
     duty::sibling(folder, ".rosen-files")
 }
 
-fn listed_files(list: &Path) -> Vec<PathBuf> {
-    std::fs::read_to_string(list)
-        .unwrap_or_default()
-        .lines()
-        .filter(|line| !line.is_empty())
-        .map(PathBuf::from)
-        .collect()
+/// The files the list names, or `None` when there is no list.
+fn listed_files(list: &Path) -> Result<Option<Vec<PathBuf>>, RosenError> {
+    let text = match std::fs::read_to_string(list) {
+        Ok(text) => text,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(source) => return Err(io_error("read", list, source)),
+    };
+    Ok(Some(
+        text.lines()
+            .filter(|line| !line.is_empty())
+            .map(PathBuf::from)
+            .collect(),
+    ))
+}
+
+/// Replaces the folder's file list in one rename, so a run cut off while writing it
+/// leaves the whole old list or the whole new one.
+fn write_list<'a>(
+    folder: &Path,
+    files: impl IntoIterator<Item = &'a Path>,
+) -> Result<(), RosenError> {
+    let list = file_list(folder);
+    let next = duty::sibling(folder, ".rosen-files.next");
+    let lines: Vec<String> = files.into_iter().map(slashed).collect();
+    std::fs::write(&next, lines.join("\n")).map_err(|source| io_error("write", &next, source))?;
+    std::fs::rename(&next, &list).map_err(|source| io_error("write", &list, source))
 }
 
 fn slashed(path: &Path) -> String {
@@ -294,5 +362,61 @@ fn io_error(action: &'static str, path: &Path, source: std::io::Error) -> RosenE
         action,
         path: path.to_path_buf(),
         source,
+    }
+}
+
+#[cfg(all(test, windows))]
+mod tests {
+    use std::error::Error;
+    use std::fs::OpenOptions;
+    use std::os::windows::fs::OpenOptionsExt;
+
+    use super::*;
+
+    /// Read and write sharing, but no delete sharing: what an editor or a build holding
+    /// the file does, and what makes Windows refuse to remove it.
+    const SHARE_READ_WRITE: u32 = 0x1 | 0x2;
+
+    // Risk (audit of 59be908): a file the last merge result had and this one dropped was
+    // held open, so it could not be removed. The check went on with it in the folder and
+    // forgot it, and a module the change deleted still compiled: the receipt certified a
+    // tree that does not build. The check must stop, and the file stay listed for the next.
+    #[test]
+    fn a_dropped_file_that_cannot_be_removed_stops_the_check_and_stays_listed()
+    -> Result<(), Box<dyn Error>> {
+        let scratch = std::env::temp_dir().join(format!("velocity-apply-{}", std::process::id()));
+        let folder = scratch.join("pre-land-checks");
+        let staging = duty::staging_folder(&folder);
+        std::fs::create_dir_all(&folder)?;
+        std::fs::create_dir_all(&staging)?;
+        let main = "mod deleted_module; fn main() { deleted_module::works(); }\n";
+        let dropped = folder.join("deleted_module.rs");
+        std::fs::write(&dropped, "pub fn works() {}\n")?;
+        std::fs::write(folder.join("main.rs"), main)?;
+        std::fs::write(staging.join("main.rs"), main)?;
+        std::fs::write(file_list(&folder), "deleted_module.rs\nmain.rs")?;
+
+        let held = OpenOptions::new()
+            .read(true)
+            .share_mode(SHARE_READ_WRITE)
+            .open(&dropped)?;
+        let refused = apply_staged(&folder);
+        let listed_while_held = std::fs::read_to_string(file_list(&folder))?;
+        drop(held);
+        let applied = apply_staged(&folder);
+        let listed = std::fs::read_to_string(file_list(&folder))?;
+        let survived = dropped.exists();
+        std::fs::remove_dir_all(&scratch)?;
+
+        assert!(refused.is_err(), "a held file let the check go on");
+        assert!(
+            listed_while_held
+                .lines()
+                .any(|line| line == "deleted_module.rs")
+        );
+        applied?;
+        assert!(!survived, "the next check left the dropped file");
+        assert_eq!(listed, "main.rs");
+        Ok(())
     }
 }

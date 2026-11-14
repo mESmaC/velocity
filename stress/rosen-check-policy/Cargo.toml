@@ -1,0 +1,18 @@
+[package]
+name = "rosen-check-policy"
+version = "0.1.0"
+edition = "2024"
+publish = false
+
+# Runs a Rosen server in process, so it needs no Rosen binaries on the machine. Kept out of
+# the main workspace: rosen-server's dependencies would add a minute to every cold build of
+# the pre-land checks for one script.
+[dependencies]
+velocity-rosen = { path = "../../crates/velocity-rosen" }
+rosen-client = { git = "https://github.com/mESmaC/rosen", rev = "6a135befceb2796b47ba441e7e8c93b500feef40" }
+rosen-core = { git = "https://github.com/mESmaC/rosen", rev = "6a135befceb2796b47ba441e7e8c93b500feef40" }
+rosen-server = { git = "https://github.com/mESmaC/rosen", rev = "6a135befceb2796b47ba441e7e8c93b500feef40" }
+rosen-store = { git = "https://github.com/mESmaC/rosen", rev = "6a135befceb2796b47ba441e7e8c93b500feef40" }
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "time"] }
+
+[workspace]
