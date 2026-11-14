@@ -27,6 +27,16 @@ through it: the dev server runs until stopped and would hold the queue.
 Dot-source it to get Invoke-InBuildQueue for use inside another script
 (scripts/check.ps1 does this).
 
+On a machine with Rosen, the queue is Rosen's run queue (Rosen R3 "Run queue"):
+the same line Velocity's checker, the tests after a land, the warm pools'
+prepares and every agent's `rosen run` wait in, so the machine has one
+scheduler. The command runs through `rosen run`: landing checks in its
+`landing` class, everything else in `build`. The rosen program is the one
+VELOCITY_ROSEN_BIN names, else the first on PATH (Velocity puts the pinned one
+on its agents' PATH). Without Rosen, this script keeps its own queue, below.
+Beneath a Rosen turn (ROSEN_RUN_HELD is set) a command runs at once: it is
+part of that turn.
+
 .EXAMPLE
 pwsh -NoProfile -File scripts/build-queue.ps1 cargo build --workspace
 
@@ -43,6 +53,52 @@ $script:BuildQueueRegisterMutexName = "Global\velocity-build-queue-register$scri
 $script:BuildQueueFolder = Join-Path $env:LOCALAPPDATA "velocity\build-queue$script:BuildQueueSuffix"
 $script:BuildQueuePriorities = @{ landing = 0; ready = 1; normal = 2 }
 $script:BuildQueueHeld = $false
+# Rosen's run queue has no class between a land's checks and an agent's build.
+$script:BuildQueueRosenClasses = @{ landing = 'landing'; ready = 'build'; normal = 'build' }
+
+# The rosen program whose run queue this machine uses, or $null to keep this script's own.
+# The stress test of this script's own queue (VELOCITY_BUILD_QUEUE_INSTANCE) never uses it.
+function Get-BuildQueueRosen {
+    if ($env:VELOCITY_BUILD_QUEUE_INSTANCE) { return $null }
+    if ($env:VELOCITY_ROSEN_BIN) {
+        $named = Join-Path $env:VELOCITY_ROSEN_BIN 'rosen.exe'
+        if (Test-Path -LiteralPath $named) { return $named }
+    }
+    $found = Get-Command rosen -CommandType Application -ErrorAction SilentlyContinue | Select-Object -First 1
+    if ($found) { return $found.Source }
+    return $null
+}
+
+# Runs $Command in a turn of Rosen's run queue. `rosen run` holds the turn while
+# scripts/hold-run-turn.ps1, which it started, runs; that script ends when told to or when
+# this process dies, so a crashed check never keeps the turn. Its arguments name the work,
+# so the queue's line shows what holds the turn.
+function Invoke-InRosenTurn([string]$Rosen, [string]$Class, [string]$Description, [scriptblock]$Command) {
+    $mark = Join-Path ([System.IO.Path]::GetTempPath()) "velocity-turn-$PID-$([guid]::NewGuid().ToString('N'))"
+    $started = "$mark.started"
+    $release = "$mark.release"
+    $shell = (Get-Process -Id $PID).Path
+    $holdScript = Join-Path $PSScriptRoot 'hold-run-turn.ps1'
+    $quoted = { param($text) '"' + ($text -replace '"', "'") + '"' }
+    $holder = Start-Process -FilePath $Rosen -NoNewWindow -PassThru -ArgumentList @(
+        'run', '--class', $Class, '--', (& $quoted $shell), '-NoProfile', '-NonInteractive',
+        '-File', (& $quoted $holdScript), '-Started', (& $quoted $started), '-Release', (& $quoted $release),
+        '-Owner', $PID, '-For', (& $quoted $Description))
+    $previous = $env:ROSEN_RUN_HELD
+    try {
+        while (-not (Test-Path -LiteralPath $started)) {
+            if ($holder.HasExited) { throw "rosen run ended before its turn started (exit $($holder.ExitCode))" }
+            Start-Sleep -Milliseconds 200
+        }
+        $env:ROSEN_RUN_HELD = $Class
+        & $Command
+    } finally {
+        $env:ROSEN_RUN_HELD = $previous
+        New-Item -ItemType File -Path $release -Force | Out-Null
+        [void]$holder.WaitForExit(10000)
+        Remove-Item -LiteralPath $started, $release -ErrorAction SilentlyContinue
+    }
+}
 
 # Waits for a mutex, treating one its dead holder abandoned as acquired.
 function Wait-BuildQueueMutex([System.Threading.Mutex]$Mutex, [TimeSpan]$Timeout) {
@@ -178,8 +234,13 @@ function Invoke-InBuildQueue([string]$Description, [scriptblock]$Command, [strin
     if (-not $script:BuildQueuePriorities.ContainsKey($Priority)) {
         throw "Unknown build queue priority '$Priority'. Use landing, ready or normal."
     }
-    if (Test-BuildQueueHeldHere) {
+    if ((Test-BuildQueueHeldHere) -or $env:ROSEN_RUN_HELD) {
         & $Command
+        return
+    }
+    $rosen = Get-BuildQueueRosen
+    if ($rosen) {
+        Invoke-InRosenTurn $rosen $script:BuildQueueRosenClasses[$Priority] $Description $Command
         return
     }
     $mutex = [System.Threading.Mutex]::new($false, $script:BuildQueueMutexName)
@@ -222,6 +283,11 @@ if ($MyInvocation.InvocationName -ne '.') {
     }
     $commandName = $queueArguments[0]
     $commandArguments = @($queueArguments | Select-Object -Skip 1)
+    $rosen = Get-BuildQueueRosen
+    if ($rosen -and -not $env:ROSEN_RUN_HELD) {
+        & $rosen run --class $script:BuildQueueRosenClasses[$queuePriority] -- $commandName @commandArguments
+        exit $LASTEXITCODE
+    }
     $script:queuedExitCode = 0
     Invoke-InBuildQueue ($queueArguments -join ' ') {
         & $commandName @commandArguments
