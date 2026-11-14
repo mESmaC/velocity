@@ -34,6 +34,7 @@
     aircRoutingCommands,
     reportWindowError,
   } from './lib/ipc';
+  import { reuseUnchanged } from './lib/reuse-unchanged';
   import type {
     LayoutAction,
     LayoutSnapshot,
@@ -48,7 +49,9 @@
   import './lib/theme/duty.css';
   import './lib/theme/spec-interview.css';
 
-  let layout = $state<LayoutSnapshot | null>(null);
+  // Raw, not deep: Svelte would wrap every new snapshot, transcripts included, in fresh
+  // proxies (#321). Snapshots are replaced whole and never changed in place.
+  let layout = $state.raw<LayoutSnapshot | null>(null);
   const revision = $derived(layout?.revision ?? 0);
   let error = $state('');
   let latest: LayoutSnapshot | null = null;
@@ -112,7 +115,7 @@
     // Coalesce acknowledgements while typing so an older snapshot cannot replace
     // text entered since that request. All decisions still come from Rust.
     if (pending) return;
-    layout = latest;
+    layout = reuseUnchanged(layout, latest);
     const requested = intents.splice(0);
     void tick().then(() => requested.forEach(focusIntent));
   }
