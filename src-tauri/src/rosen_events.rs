@@ -2,13 +2,20 @@
 //! review, a land marks it merged and stops its agent, and a revert reopens it, with its
 //! workspace and its agent. This takes
 //! the GitHub PR watcher's place for threads that work in Rosen workspaces.
+//!
+//! An event is taken in one save: the thread's new state, the stream's cursor, and what the
+//! event leaves to do (a `RosenFollowUp`). The follow-ups run after that save and each is
+//! removed only when it is done, so a crash or a failed step never acknowledges unfinished
+//! work: the next pass, at start, on reconnect or every half minute, does it again. Every
+//! step can be repeated: a workspace that exists is kept, and a message already in the
+//! thread's saved transcript is not sent twice.
 
 use std::path::PathBuf;
 use std::time::Duration;
 
 use tauri::{AppHandle, Manager};
 use velocity_rosen::{ChangeEvent, EventStream};
-use velocity_store::rosen::RosenProgress;
+use velocity_store::rosen::{RosenFollowUp, RosenProgress};
 use velocity_threads::ThreadKey;
 
 use crate::layout::MainLayout;
@@ -41,6 +48,8 @@ async fn follow_project(application: &AppHandle, project: u32) {
             return;
         }
         if !crate::rosen::paused(application) {
+            // What a crash or a failed step left undone, before anything new.
+            run_follow_ups(application, project).await;
             match open(application, project, after).await {
                 Ok(mut stream) => {
                     while let Some(event) = stream.next().await {
@@ -61,20 +70,15 @@ async fn follow_project(application: &AppHandle, project: u32) {
                             }
                             Some((change, meaning)) => {
                                 let output = velocity_rosen::revert_output(&event);
-                                let taken =
-                                    take(application, project, event.seq, change, meaning).await;
-                                report(match (taken, meaning) {
-                                    (Ok(Some(thread)), ChangeEvent::Reverted) => {
-                                        reopen_reverted(
-                                            application,
-                                            (project, thread),
-                                            change,
-                                            output.as_deref(),
-                                        )
-                                        .await
-                                    }
-                                    (taken, _) => taken.map(|_| ()),
-                                })
+                                let taken = take(
+                                    application,
+                                    project,
+                                    (event.seq, change),
+                                    meaning,
+                                    output.as_deref(),
+                                );
+                                report(taken.map(|_| ()));
+                                run_follow_ups(application, project).await;
                             }
                             None => {}
                         }
@@ -94,42 +98,114 @@ async fn open(application: &AppHandle, project: u32, after: u64) -> Result<Event
         .map_err(|error| error.to_string())
 }
 
-/// Applies one event to its thread and shows the result. Returns the thread working on the
-/// change, if one does.
-async fn take(
+/// Takes one event in: its thread's new state, the stream's cursor and what is left to do,
+/// in one save. Returns the thread working on the change, if one does.
+fn take(
     application: &AppHandle,
     project: u32,
-    seq: u64,
-    change: &str,
+    (seq, change): (u64, &str),
     meaning: ChangeEvent,
+    output: Option<&str>,
 ) -> Result<Option<u32>, String> {
-    let progress = match meaning {
-        ChangeEvent::Named => RosenProgress::Named,
-        ChangeEvent::Landed => RosenProgress::Landed,
-        ChangeEvent::Reverted => RosenProgress::Reverted,
+    let (progress, message) = match meaning {
+        ChangeEvent::Named => (RosenProgress::Named, String::new()),
+        ChangeEvent::Landed => (RosenProgress::Landed, String::new()),
+        ChangeEvent::Reverted => {
+            let report = output.unwrap_or("Rosen kept no output for the failing run.");
+            let message = velocity_core::rosen_checker::reverted_message(change, report);
+            (RosenProgress::Reverted, message)
+        }
         // Handled by `rosen_rebase`: a rebase at the agent's step boundary, a conflict as a
         // message to it.
         ChangeEvent::Rebased | ChangeEvent::Conflict => return Ok(None),
     };
-    let thread = save(application, project, seq, change, progress)?;
+    let thread = save(application, project, (seq, change), (progress, &message))?;
     // A named change waits for a reviewer, and a land or a revert changes what PR duty and
     // its checker have to do: they look now, not at their next 30-second tick.
     crate::reviews::wake(application);
-    if let (Some(thread), ChangeEvent::Landed) = (thread, meaning) {
-        finish_landed(application, (project, thread)).await?;
-    }
     Ok(thread)
+}
+
+/// Runs what `project`'s Rosen events left to do, oldest first per thread. A step that fails
+/// stays, with the ones after it, for the next pass; nothing is dropped. One pass runs at a
+/// time across projects, so two never send one message.
+pub(crate) async fn run_follow_ups(application: &AppHandle, project: u32) {
+    let running = application.state::<crate::rosen::ManagedRosen>();
+    let _one_at_a_time = running.follow_ups.lock().await;
+    let pending = match lock(
+        application.state::<ManagedStateStore>().inner(),
+        "persisted state",
+    ) {
+        Ok(store) => store.rosen_follow_ups(project),
+        Err(error) => return report::<()>(Err(error)),
+    };
+    for (thread, change, follow_ups) in pending {
+        let key = (project, thread);
+        for follow_up in follow_ups {
+            let done = follow_up_once(application, key, change.as_deref(), &follow_up).await;
+            if let Err(error) = done.and_then(|()| finish(application, key, &follow_up)) {
+                report::<()>(Err(error));
+                break;
+            }
+        }
+    }
+}
+
+async fn follow_up_once(
+    application: &AppHandle,
+    key: ThreadKey,
+    change: Option<&str>,
+    follow_up: &RosenFollowUp,
+) -> Result<(), String> {
+    match follow_up {
+        RosenFollowUp::FinishLanded => finish_landed(application, key).await,
+        RosenFollowUp::Reopen { message, .. } => {
+            let Some(change) = change else {
+                return Ok(());
+            };
+            reopen_reverted(application, key, change).await?;
+            deliver(application, key, follow_up, message)
+        }
+        RosenFollowUp::Deliver { message, .. } => deliver(application, key, follow_up, message),
+    }
+}
+
+/// Sends the agent `message`, resumed first if it had ended, unless an earlier pass already
+/// did and was cut off before it could say so.
+fn deliver(
+    application: &AppHandle,
+    key: ThreadKey,
+    follow_up: &RosenFollowUp,
+    message: &str,
+) -> Result<(), String> {
+    let delivered = lock(
+        application.state::<ManagedStateStore>().inner(),
+        "persisted state",
+    )?
+    .rosen_follow_up_delivered(key.0, key.1, follow_up);
+    if delivered {
+        return Ok(());
+    }
+    crate::threads::steer(application, key, message).map(|_| ())
+}
+
+fn finish(application: &AppHandle, key: ThreadKey, done: &RosenFollowUp) -> Result<(), String> {
+    lock(
+        application.state::<ManagedStateStore>().inner(),
+        "persisted state",
+    )?
+    .finish_rosen_follow_up(key.0, key.1, done)
+    .map_err(|error| error.to_string())
 }
 
 /// Rosen reverted thread `key`'s landed change and reopened it (Rosen R12; F7 "After a
 /// land"). The workspace went when the change landed, so the thread gets one again at the
-/// same folder, at the reopened head, and its agent is resumed with what the failing
-/// post-land checks printed.
+/// same folder, at the reopened head; its agent is then resumed with what the failing
+/// post-land checks printed. A workspace already there is kept, so this can run again.
 async fn reopen_reverted(
     application: &AppHandle,
     key: ThreadKey,
     change: &str,
-    output: Option<&str>,
 ) -> Result<(), String> {
     let Some(root) = workspace(application, key) else {
         return Ok(());
@@ -147,13 +223,12 @@ async fn reopen_reverted(
         "thread sessions",
     )?
     .reopen(key);
-    let report = output.unwrap_or("Rosen kept no output for the failing run.");
-    let message = velocity_core::rosen_checker::reverted_message(change, report);
-    crate::threads::steer(application, key, &message).map(|_| ())
+    Ok(())
 }
 
 /// PR duty requested changes on thread `key`'s change `change` (F7): the thread goes back
-/// to fixing, and its agent gets `message`, resumed first if it had ended.
+/// to fixing, and its agent gets `message`, resumed first if it had ended. The message is
+/// saved with the state, and sent by the follow-up pass this starts.
 pub(crate) fn changes_requested(
     application: &AppHandle,
     key: ThreadKey,
@@ -161,22 +236,18 @@ pub(crate) fn changes_requested(
     message: &str,
 ) -> Result<(), String> {
     // Sequence 0 leaves the stream's cursor where it is: this is not one of its events.
-    save(
-        application,
-        key.0,
-        0,
-        change,
-        RosenProgress::ChangesRequested,
-    )?;
-    crate::threads::steer(application, key, message).map(|_| ())
+    let progress = (RosenProgress::ChangesRequested, message);
+    save(application, key.0, (0, change), progress)?;
+    let handle = application.clone();
+    tauri::async_runtime::spawn(async move { run_follow_ups(&handle, key.0).await });
+    Ok(())
 }
 
 fn save(
     application: &AppHandle,
     project: u32,
-    seq: u64,
-    change: &str,
-    progress: RosenProgress,
+    (seq, change): (u64, &str),
+    progress: (RosenProgress, &str),
 ) -> Result<Option<u32>, String> {
     let mut store = lock(
         application.state::<ManagedStateStore>().inner(),
@@ -194,8 +265,8 @@ fn save(
 }
 
 /// A landed thread's work is on the base, and Rosen deletes its workspace: its agent and
-/// watcher stop, and its AIRC claims are released. Run again for a replayed event, so a
-/// crash between the land and this cleanup is finished on the next start.
+/// watcher stop, and its AIRC claims are released. Each step can run again, so a crash
+/// between the land and this cleanup is finished on the next pass.
 async fn finish_landed(application: &AppHandle, key: ThreadKey) -> Result<(), String> {
     let handle = application.clone();
     let stopped = tauri::async_runtime::spawn_blocking(move || {
