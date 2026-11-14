@@ -989,6 +989,17 @@ impl ProjectItem {
         }
     }
 
+    /// Whether Rosen still serves this project (F5): it is the project's choice, or a thread
+    /// started in Rosen before the project switched to git still works, lands or is
+    /// verified there, so its event follower and post-land checks keep running.
+    pub fn rosen_in_use(&self) -> bool {
+        self.version_control == VersionControl::Rosen
+            || self
+                .threads
+                .iter()
+                .any(|thread| thread.rosen_change.is_some())
+    }
+
     /// Hand out the next task number, above every task saved now or before (F8).
     /// `None` once the numbers are exhausted.
     pub fn next_task_identifier(&mut self) -> Option<u32> {

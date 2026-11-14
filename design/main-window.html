@@ -2688,7 +2688,7 @@ const DRIVES = [
   { id:'D:', name:'Work',     kind:'NVMe SSD',  free:1430, total:1863 },
   { id:'E:', name:'External', kind:'USB 3 HDD', free:380,  total:931, slow:true },
 ];
-const WT = { drive:'D:', folder:'\\velocity\\worktrees', override:{}, delBranch:true,
+const WT = { drive:'D:', folder:'\\velocity\\worktrees', override:{}, git:{}, delBranch:true,
              shareCache:true, copy:'.env, .env.local', setup:'pnpm -C ui install', changed:false };
 const wtRoot = (P = state) => WT.override[P.name] || `${WT.drive}${WT.folder}\\${P.name}`;
 const wtLeaf = t => (t.branch || t.id).replace(/^vel\//, '').replace(/[\/\\]/g, '-');
@@ -2853,7 +2853,17 @@ function renderSettings() {
   if (SETP.page === 'skills') return renderSkills();
   const root = wtRoot(), ov = WT.override[state.name];
   const live = liveWorktrees().filter(w => !w.gone), need = live.reduce((n, w) => n + wtSize(w.t), 0);
+  const git = !!WT.git[state.name], other = state.threads.filter(t => t.status !== 'merged').length;
   $('#setMain').innerHTML = `
+    <section>
+      <div class="set-h">Version control</div>
+      <div class="set-d">How <b>${esc(state.name)}</b>'s agents get their folders and land their work. Rosen gives each agent a workspace and lands its change on the project's Rosen server; git gives each a worktree, a branch and a pull request. Rosen is the default; a project falls back to git on its own when Rosen can't make a workspace.</div>
+      <div class="checks">
+        <label class="check"><input type="radio" name="vcs" data-set="vcs" value="rosen" ${git ? '' : 'checked'}> Rosen workspaces, landed on the Rosen server</label>
+        <label class="check"><input type="radio" name="vcs" data-set="vcs" value="git" ${git ? 'checked' : ''}> Git worktrees and pull requests</label>
+      </div>
+      ${WT.vcsChanged && other ? `<div class="set-note">New threads use ${git ? 'git' : 'Rosen'}. The ${other} open threads keep ${git ? 'Rosen' : 'git'} until they land.</div>` : ''}
+    </section>
     <section>
       <div class="set-h">Worktree location</div>
       <div class="set-d">Every thread and every agent works in its own worktree, so parallel agents never touch each other's files. Each one is a full checkout: put them on a fast drive with room.</div>
@@ -2936,7 +2946,8 @@ $('#setMain').addEventListener('click', e => {
 });
 $('#setMain').addEventListener('change', e => {
   const k = e.target.dataset.set; if (!k) return;
-  if (k === 'ov') { if (e.target.checked) WT.override[state.name] = `${WT.drive}\\scratch\\${state.name}`; else delete WT.override[state.name]; WT.changed = true; }
+  if (k === 'vcs') { if (e.target.value === 'git') WT.git[state.name] = true; else delete WT.git[state.name]; WT.vcsChanged = true; }
+  else if (k === 'ov') { if (e.target.checked) WT.override[state.name] = `${WT.drive}\\scratch\\${state.name}`; else delete WT.override[state.name]; WT.changed = true; }
   else WT[k] = e.target.checked;
   renderSettings();
 });

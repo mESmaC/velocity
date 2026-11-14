@@ -1,7 +1,8 @@
 //! Persisted worktree preference edits and domain context (SPEC.md F5, F13).
 
 use super::{
-    ProjectItem, ReviewStage, StateStore, StoreError, ThreadItem, ThreadState, WorktreeRole,
+    ProjectItem, ReviewStage, StateStore, StoreError, ThreadItem, ThreadState, VersionControl,
+    WorktreeRole,
 };
 use std::path::Path;
 use velocity_core::worktree_settings::{
@@ -69,7 +70,30 @@ impl StateStore {
                         .collect()
                 })
                 .unwrap_or_default(),
+            uses_rosen: project
+                .is_none_or(|project| project.version_control == VersionControl::Rosen),
+            other_version_control_threads: project.map_or(0, other_version_control_threads),
         }
+    }
+
+    /// Sets project `project`'s version control (F5). Only new threads take it: an open
+    /// thread keeps the folder, change or PR it started with until it lands.
+    pub fn set_version_control(
+        &mut self,
+        project: u32,
+        choice: VersionControl,
+    ) -> Result<(), StoreError> {
+        let mut next = self.state.clone();
+        let Some(item) = next.projects.iter_mut().find(|item| item.id == project) else {
+            return Err(StoreError::WorktreeSetting(
+                "Select a project to choose its version control".into(),
+            ));
+        };
+        if item.version_control == choice {
+            return Ok(());
+        }
+        item.version_control = choice;
+        self.store_snapshot(next)
     }
 
     /// Settings → Worktrees as they apply to `project`, active or not (F5), so background
@@ -98,11 +122,22 @@ impl StateStore {
             WorktreeSettingsEdit::OverrideEnabled(_)
                 | WorktreeSettingsEdit::ProjectRoot(_)
                 | WorktreeSettingsEdit::SetupCommand(_)
+                | WorktreeSettingsEdit::UseRosen(_)
         ) && context.project_identifier != project_identifier
         {
             return Err(StoreError::WorktreeSetting(
                 "The selected project changed; retry this edit".into(),
             ));
+        }
+        if let WorktreeSettingsEdit::UseRosen(rosen) = edit {
+            require_project(&context)?;
+            let choice = if rosen {
+                VersionControl::Rosen
+            } else {
+                VersionControl::Git
+            };
+            let project = context.project_identifier.unwrap_or_default();
+            return self.set_version_control(project, choice).map(|()| false);
         }
         let edits_setup = matches!(edit, WorktreeSettingsEdit::SetupCommand(_));
         let change = preference_change(&context, edit)?;
@@ -228,7 +263,26 @@ fn preference_change(
             Change::SetupCommand(command)
         }
         Edit::ReadyCount(count) => Change::ReadyCount(count),
+        // `edit_worktree_settings` saves this on the project before it gets here.
+        Edit::UseRosen(_) => {
+            return Err(StoreError::WorktreeSetting(
+                "Version control is saved on the project".into(),
+            ));
+        }
     })
+}
+
+/// The open threads that started the other way from the project's choice: a Rosen change
+/// in a git project, or a git worktree in a Rosen project (its own fallback included).
+fn other_version_control_threads(project: &ProjectItem) -> usize {
+    let rosen = project.version_control == VersionControl::Rosen;
+    project
+        .threads
+        .iter()
+        .filter(|thread| thread.state != ThreadState::Merged)
+        .filter(|thread| thread.worktree_path.is_some())
+        .filter(|thread| thread.rosen_change.is_some() != rosen)
+        .count()
 }
 
 fn require_project(context: &WorktreeContext) -> Result<(), StoreError> {

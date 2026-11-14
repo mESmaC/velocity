@@ -415,18 +415,19 @@ impl PrDutyReviews {
     /// is its PRs, so its pass lists them first.
     async fn candidates(&self, roster: &PrDutyRoster) -> Result<Vec<ReviewCandidate>, String> {
         let rosen = roster.project.version_control == velocity_store::VersionControl::Rosen;
+        let rosen_threads = roster.project.rosen_in_use();
         let mut candidates = if rosen {
             self.listed_pull_requests(roster)
         } else {
-            self.pull_request_candidates(roster).await?
+            match self.pull_request_candidates(roster).await {
+                Ok(pull_requests) => pull_requests,
+                // A project that switched to git still reviews its open Rosen changes when
+                // its PRs can't be listed: it may have no GitHub remote at all.
+                Err(_) if rosen_threads => Vec::new(),
+                Err(error) => return Err(error),
+            }
         };
-        if rosen
-            || roster
-                .project
-                .threads
-                .iter()
-                .any(|thread| thread.rosen_change.is_some())
-        {
+        if rosen_threads {
             // A failed change lookup still leaves the PRs to review and land.
             match crate::rosen_review::change_candidates(&self.app_data, roster).await {
                 Ok(changes) => candidates.extend(changes),

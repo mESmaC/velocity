@@ -51,6 +51,39 @@
     <div class="worktree-settings-main">
       {#if view}
         <section>
+          <h2>Version control</h2>
+          <p class="worktree-description">
+            How <b>{view.project_name}</b>'s agents get their folders and land
+            their work. Rosen gives each agent a workspace and lands its change
+            on the project's Rosen server; git gives each a worktree, a branch
+            and a pull request. Rosen is the default; a project falls back to
+            git on its own when Rosen can't make a workspace.
+          </p>
+          <div class="worktree-checks">
+            <label class="worktree-check"
+              ><input
+                type="radio"
+                name="version-control"
+                checked={view.uses_rosen}
+                disabled={view.project_identifier === null}
+                onchange={() => edit({ UseRosen: true })}
+              />Rosen workspaces, landed on the Rosen server</label
+            >
+            <label class="worktree-check"
+              ><input
+                type="radio"
+                name="version-control"
+                checked={!view.uses_rosen}
+                disabled={view.project_identifier === null}
+                onchange={() => edit({ UseRosen: false })}
+              />Git worktrees and pull requests</label
+            >
+          </div>
+          {#if view.version_control_note}<p class="worktree-location-notice">
+              {view.version_control_note}
+            </p>{/if}
+        </section>
+        <section>
           <h2>Worktree location</h2>
           <p class="worktree-description">
             Every thread and every agent works in its own worktree, so parallel

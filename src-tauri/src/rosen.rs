@@ -11,7 +11,7 @@ use tauri::{AppHandle, Manager};
 use velocity_acp::client::{AgentLaunch, SessionSetup};
 use velocity_git::WorktreeSetupRequest;
 use velocity_rosen::{ImportSource, ProjectServer, Servers, Watches};
-use velocity_store::{ThreadItem, ThreadState, VersionControl};
+use velocity_store::{ProjectItem, ThreadItem, ThreadState, VersionControl};
 use velocity_threads::ThreadKey;
 
 use crate::state::ManagedStateStore;
@@ -78,7 +78,7 @@ pub(crate) fn mcp_server(root: &Path, environment: &[(String, String)]) -> Optio
     Some(McpServer::Stdio(server))
 }
 
-/// Whether `project`'s agents work in Rosen workspaces.
+/// Whether `project`'s new threads work in Rosen workspaces.
 pub(crate) fn uses_rosen(application: &AppHandle, project: u32) -> bool {
     lock(
         application.state::<ManagedStateStore>().inner(),
@@ -87,6 +87,18 @@ pub(crate) fn uses_rosen(application: &AppHandle, project: u32) -> bool {
     .ok()
     .and_then(|store| store.project(project).map(|item| item.version_control))
     .is_some_and(|choice| choice == VersionControl::Rosen)
+}
+
+/// Whether Rosen still serves `project`: its choice, or a Rosen thread from before it
+/// switched to git (F5).
+pub(crate) fn rosen_in_use(application: &AppHandle, project: u32) -> bool {
+    lock(
+        application.state::<ManagedStateStore>().inner(),
+        "persisted state",
+    )
+    .ok()
+    .and_then(|store| store.project(project).map(ProjectItem::rosen_in_use))
+    .unwrap_or(false)
 }
 
 /// Whether the servers are stopped for an update or exit, and must not be started.
@@ -392,7 +404,8 @@ fn followed_projects(application: &AppHandle) -> BTreeSet<u32> {
         .state()
         .projects
         .iter()
-        .filter(|project| project.version_control == VersionControl::Rosen)
+        // Whatever the project's choice now: its Rosen threads' lands and reverts still
+        // come through the stream after it switches to git.
         .filter(|project| {
             project
                 .threads
@@ -414,7 +427,7 @@ fn open_threads(application: &AppHandle) -> Option<Vec<(u32, PathBuf)>> {
         .state()
         .projects
         .iter()
-        .filter(|project| project.version_control == VersionControl::Rosen)
+        // A thread keeps Rosen after its project switches to git, until it lands.
         .flat_map(|project| {
             project
                 .threads

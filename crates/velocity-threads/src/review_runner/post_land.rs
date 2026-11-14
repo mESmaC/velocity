@@ -60,7 +60,8 @@ impl PrDutyReviews {
     /// Starts testing what landed on a Rosen project since its last green commit, unless a
     /// pass already runs for it. Off the tick: a run takes as long as the project's tests.
     pub(super) fn verify_landed<Host: ReviewHost>(&self, host: &Host, roster: &PrDutyRoster) {
-        if roster.project.version_control != velocity_store::VersionControl::Rosen {
+        // A project that switched to git still verifies what its Rosen threads landed.
+        if !roster.project.rosen_in_use() {
             return;
         }
         let Ok(root) = Location::new(&roster.project, &roster.worktrees).project_root() else {

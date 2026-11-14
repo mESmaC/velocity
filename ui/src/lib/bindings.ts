@@ -4780,7 +4780,9 @@ export type WorktreeRowView = {
 
 export type WorktreeSettings = WorktreeSettings_Serialize | WorktreeSettings_Deserialize;
 
-export type WorktreeSettingsEdit = ({ Root: string }) & { CopyFiles?: never; DeleteLocalBranch?: never; Drive?: never; Folder?: never; OverrideEnabled?: never; ProjectRoot?: never; ReadyCount?: never; SetupCommand?: never; ShareBuildCache?: never } | ({ Drive: string }) & { CopyFiles?: never; DeleteLocalBranch?: never; Folder?: never; OverrideEnabled?: never; ProjectRoot?: never; ReadyCount?: never; Root?: never; SetupCommand?: never; ShareBuildCache?: never } | ({ Folder: string }) & { CopyFiles?: never; DeleteLocalBranch?: never; Drive?: never; OverrideEnabled?: never; ProjectRoot?: never; ReadyCount?: never; Root?: never; SetupCommand?: never; ShareBuildCache?: never } | ({ OverrideEnabled: boolean }) & { CopyFiles?: never; DeleteLocalBranch?: never; Drive?: never; Folder?: never; ProjectRoot?: never; ReadyCount?: never; Root?: never; SetupCommand?: never; ShareBuildCache?: never } | ({ ProjectRoot: string }) & { CopyFiles?: never; DeleteLocalBranch?: never; Drive?: never; Folder?: never; OverrideEnabled?: never; ReadyCount?: never; Root?: never; SetupCommand?: never; ShareBuildCache?: never } | ({ DeleteLocalBranch: boolean }) & { CopyFiles?: never; Drive?: never; Folder?: never; OverrideEnabled?: never; ProjectRoot?: never; ReadyCount?: never; Root?: never; SetupCommand?: never; ShareBuildCache?: never } | ({ ShareBuildCache: boolean }) & { CopyFiles?: never; DeleteLocalBranch?: never; Drive?: never; Folder?: never; OverrideEnabled?: never; ProjectRoot?: never; ReadyCount?: never; Root?: never; SetupCommand?: never } | ({ CopyFiles: string }) & { DeleteLocalBranch?: never; Drive?: never; Folder?: never; OverrideEnabled?: never; ProjectRoot?: never; ReadyCount?: never; Root?: never; SetupCommand?: never; ShareBuildCache?: never } | ({ SetupCommand: string }) & { CopyFiles?: never; DeleteLocalBranch?: never; Drive?: never; Folder?: never; OverrideEnabled?: never; ProjectRoot?: never; ReadyCount?: never; Root?: never; ShareBuildCache?: never } | ({ ReadyCount: number }) & { CopyFiles?: never; DeleteLocalBranch?: never; Drive?: never; Folder?: never; OverrideEnabled?: never; ProjectRoot?: never; Root?: never; SetupCommand?: never; ShareBuildCache?: never };
+export type WorktreeSettingsEdit = ({ Root: string }) & { CopyFiles?: never; DeleteLocalBranch?: never; Drive?: never; Folder?: never; OverrideEnabled?: never; ProjectRoot?: never; ReadyCount?: never; SetupCommand?: never; ShareBuildCache?: never; UseRosen?: never } | ({ Drive: string }) & { CopyFiles?: never; DeleteLocalBranch?: never; Folder?: never; OverrideEnabled?: never; ProjectRoot?: never; ReadyCount?: never; Root?: never; SetupCommand?: never; ShareBuildCache?: never; UseRosen?: never } | ({ Folder: string }) & { CopyFiles?: never; DeleteLocalBranch?: never; Drive?: never; OverrideEnabled?: never; ProjectRoot?: never; ReadyCount?: never; Root?: never; SetupCommand?: never; ShareBuildCache?: never; UseRosen?: never } | ({ OverrideEnabled: boolean }) & { CopyFiles?: never; DeleteLocalBranch?: never; Drive?: never; Folder?: never; ProjectRoot?: never; ReadyCount?: never; Root?: never; SetupCommand?: never; ShareBuildCache?: never; UseRosen?: never } | ({ ProjectRoot: string }) & { CopyFiles?: never; DeleteLocalBranch?: never; Drive?: never; Folder?: never; OverrideEnabled?: never; ReadyCount?: never; Root?: never; SetupCommand?: never; ShareBuildCache?: never; UseRosen?: never } | ({ DeleteLocalBranch: boolean }) & { CopyFiles?: never; Drive?: never; Folder?: never; OverrideEnabled?: never; ProjectRoot?: never; ReadyCount?: never; Root?: never; SetupCommand?: never; ShareBuildCache?: never; UseRosen?: never } | ({ ShareBuildCache: boolean }) & { CopyFiles?: never; DeleteLocalBranch?: never; Drive?: never; Folder?: never; OverrideEnabled?: never; ProjectRoot?: never; ReadyCount?: never; Root?: never; SetupCommand?: never; UseRosen?: never } | ({ CopyFiles: string }) & { DeleteLocalBranch?: never; Drive?: never; Folder?: never; OverrideEnabled?: never; ProjectRoot?: never; ReadyCount?: never; Root?: never; SetupCommand?: never; ShareBuildCache?: never; UseRosen?: never } | ({ SetupCommand: string }) & { CopyFiles?: never; DeleteLocalBranch?: never; Drive?: never; Folder?: never; OverrideEnabled?: never; ProjectRoot?: never; ReadyCount?: never; Root?: never; ShareBuildCache?: never; UseRosen?: never } | ({ ReadyCount: number }) & { CopyFiles?: never; DeleteLocalBranch?: never; Drive?: never; Folder?: never; OverrideEnabled?: never; ProjectRoot?: never; Root?: never; SetupCommand?: never; ShareBuildCache?: never; UseRosen?: never } | 
+/**  The project's version control (F5): Rosen when true, git when false. */
+({ UseRosen: boolean }) & { CopyFiles?: never; DeleteLocalBranch?: never; Drive?: never; Folder?: never; OverrideEnabled?: never; ProjectRoot?: never; ReadyCount?: never; Root?: never; SetupCommand?: never; ShareBuildCache?: never };
 
 export type WorktreeSettingsView = WorktreeSettingsView_Serialize | WorktreeSettingsView_Deserialize;
 
@@ -4809,6 +4811,8 @@ export type WorktreeSettingsView_Deserialize = {
 	footer_drive: string,
 	location_notice: string,
 	can_prune: boolean,
+	uses_rosen: boolean,
+	version_control_note: string,
 };
 
 export type WorktreeSettingsView_Serialize = {
@@ -4836,6 +4840,8 @@ export type WorktreeSettingsView_Serialize = {
 	footer_drive: string,
 	location_notice: string,
 	can_prune: boolean,
+	uses_rosen: boolean,
+	version_control_note: string,
 };
 
 export type WorktreeSettings_Deserialize = {
