@@ -42,7 +42,14 @@ impl ProjectServer {
             .fold(0xcbf2_9ce4_8422_2325_u64, |hash, byte| {
                 (hash ^ u64::from(byte)).wrapping_mul(0x0100_0000_01b3)
             });
-        let endpoint = Endpoint::new(format!("velocity-rosen-{project}-{hash:016x}"));
+        let name = format!("velocity-rosen-{project}-{hash:016x}");
+        // A pipe name on Windows. Elsewhere a socket path, which must be absolute: the
+        // server runs from its data folder, Velocity from its own.
+        let endpoint = if cfg!(windows) {
+            Endpoint::new(name)
+        } else {
+            Endpoint::new(data_dir.join(format!("{name}.sock")).to_string_lossy())
+        };
         Self { endpoint, data_dir }
     }
 
@@ -135,6 +142,19 @@ impl ProjectServer {
         }
     }
 
+    /// Waits, a few seconds at most, until the server no longer accepts connections: its
+    /// shutdown is answered before it has drained and exited, and an update or a restart
+    /// must not meet the old server.
+    async fn wait_until_stopped(&self) {
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
+        while tokio::time::Instant::now() < deadline {
+            if let Err(ClientError::NotRunning(_)) = Client::connect(&self.endpoint).await {
+                return;
+            }
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        }
+    }
+
     /// Imports the project's history (Rosen R1), once per project. Its default branch
     /// becomes the base, and every land is pushed to its mirror.
     pub async fn import(&self, client: &Client, source: &ImportSource) -> Result<(), RosenError> {
@@ -189,7 +209,7 @@ impl ImportSource {
     /// tip and every push to it is a fast-forward (R1); a local checkout's own history
     /// otherwise, with no mirror.
     pub fn for_checkout(repository: &Path, branch: &str) -> Self {
-        let origin = origin_url(repository);
+        let origin = origin_url(repository).map(|url| absolute_remote(&url, repository));
         Self {
             source: origin
                 .clone()
@@ -198,6 +218,21 @@ impl ImportSource {
             mirror: origin,
         }
     }
+}
+
+/// `url` unchanged when it names a remote, or a local path made absolute against the
+/// checkout: the server resolves relative paths from its own data folder, not the
+/// checkout's. A remote has a scheme (`https://`) or is scp-like (`git@host:path`); a
+/// Windows drive path (`C:\...`) has its colon second and is local.
+fn absolute_remote(url: &str, repository: &Path) -> String {
+    let scp_like = url
+        .find(':')
+        .is_some_and(|colon| colon > 1 && !url[..colon].contains(['/', '\\']));
+    let path = Path::new(url);
+    if url.contains("://") || scp_like || path.is_absolute() {
+        return url.to_owned();
+    }
+    repository.join(path).to_string_lossy().into_owned()
 }
 
 fn origin_url(repository: &Path) -> Option<String> {
@@ -267,6 +302,7 @@ impl Servers {
             if let Ok(client) = Client::connect(server.endpoint()).await {
                 let _ = client.shutdown().await;
             }
+            server.wait_until_stopped().await;
         }
     }
 }
