@@ -12,6 +12,10 @@ pub struct WorktreeContext {
     pub preferences: WorktreePreferences,
     pub owners: Vec<WorktreeOwner>,
     pub merged_owners: Vec<u32>,
+    /// Whether the project's new threads work in Rosen (F5); true with no project open.
+    pub uses_rosen: bool,
+    /// The project's open threads that work the other way, which keep it until they land.
+    pub other_version_control_threads: usize,
 }
 
 #[derive(Clone)]
@@ -134,6 +138,8 @@ pub struct WorktreeSettingsView {
     pub footer_drive: String,
     pub location_notice: String,
     pub can_prune: bool,
+    pub uses_rosen: bool,
+    pub version_control_note: String,
 }
 
 #[cfg_attr(
@@ -151,6 +157,8 @@ pub enum WorktreeSettingsEdit {
     CopyFiles(String),
     SetupCommand(String),
     ReadyCount(u32),
+    /// The project's version control (F5): Rosen when true, git when false.
+    UseRosen(bool),
 }
 
 /// The path preview for a folder the user is still typing, before it is saved.
@@ -408,7 +416,30 @@ pub fn settings_view(
         location_notice: location_notice(&effective_root, &live, location_changed),
         can_prune: context.repository_path.is_some(),
         rows,
+        uses_rosen: context.uses_rosen,
+        version_control_note: version_control_note(context),
     }
+}
+
+/// What a switch of version control leaves as it was: open threads keep the way they
+/// started until they land (F5).
+fn version_control_note(context: &WorktreeContext) -> String {
+    let count = context.other_version_control_threads;
+    if count == 0 {
+        return String::new();
+    }
+    let (now, before) = if context.uses_rosen {
+        ("Rosen", "git")
+    } else {
+        ("git", "Rosen")
+    };
+    let keep = if count == 1 {
+        "thread keeps"
+    } else {
+        "threads keep"
+    };
+    let land = if count == 1 { "it lands" } else { "they land" };
+    format!("New threads use {now}. {count} open {keep} {before} until {land}.")
 }
 
 fn effective_project_root(context: &WorktreeContext) -> String {

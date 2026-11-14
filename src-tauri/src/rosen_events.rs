@@ -36,7 +36,7 @@ async fn follow_project(application: &AppHandle, project: u32) {
     .map(|store| store.rosen_event_cursor(project))
     .unwrap_or(0);
     loop {
-        if !crate::rosen::uses_rosen(application, project) {
+        if !crate::rosen::rosen_in_use(application, project) {
             crate::rosen::end_following(application, project);
             return;
         }
