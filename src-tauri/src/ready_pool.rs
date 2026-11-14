@@ -37,6 +37,10 @@ impl PoolHost for Host {
             .projects
             .iter()
             .filter(|project| project.spec_locked && !project.repository_path.trim().is_empty())
+            // A Rosen project's threads take workspaces from Rosen's own pool, which the
+            // project's prepare commands build in (Rosen R3). Git worktrees kept ready here
+            // would be prebuilt and never used; the rare fallback makes its worktree then.
+            .filter(|project| project.version_control != velocity_store::VersionControl::Rosen)
             .filter_map(|project| {
                 let preferences = store.worktree_preferences(project);
                 let pool = PoolProject::new(project, &preferences).ok()?;

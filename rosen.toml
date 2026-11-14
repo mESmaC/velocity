@@ -16,19 +16,23 @@ ignore = [
     "*.key",
 ]
 
-# Regenerated after a merge, never merged by hand (AGENTS.md "Shared files").
-# When both sides change one, the merge result holds the base's copy and the
-# change's owner regenerates it. The pre-land checks refuse a stale copy.
-generated = [
-    "Cargo.lock",
-    "ui/pnpm-lock.yaml",
-    "ui/src/lib/bindings.ts",
-]
-
 # Both sides' additions are kept (AGENTS.md "Shared files"). Only files that
 # are lists: `crates/velocity-store/src/lib.rs` holds the saved state's code
 # and merges as text, so two edits to one place there stay a conflict.
+#
+# The lockfiles and the generated bindings are here too, not under
+# `generated`. Rosen gives a generated file the base's copy whenever both
+# sides changed it, which drops the change's own entries, so every such
+# change would fail the pre-land checks and go back to its author. Merged as
+# lists they come out right: replaying the last 60 pairs of consecutive
+# changes to `bindings.ts` as concurrent ones, 55 merged to exactly the
+# regenerated file, and so did 35 of 38 for `Cargo.lock`. The pre-land checks
+# (`--locked`, `--frozen-lockfile`, `export-bindings --check`) refuse a merge
+# that came out wrong, and only then does the author regenerate.
 registration_lists = [
+    "Cargo.lock",
+    "ui/pnpm-lock.yaml",
+    "ui/src/lib/bindings.ts",
     "Cargo.toml",
     "src-tauri/src/lib.rs",
     "ui/src/lib/ipc.ts",

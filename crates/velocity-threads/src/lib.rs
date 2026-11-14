@@ -39,7 +39,7 @@ pub use dispatch::{DispatchError, IssueDispatchPlan, plan_issue_dispatch};
 pub use follow_through::DeliveryStatus;
 pub use launch::{
     LaunchError, LaunchPlan, WorktreeNaming, agent_launch, plan_launch,
-    plan_launch_with_preferences, title_worktree_name,
+    plan_launch_with_preferences, project_workspace_root, title_worktree_name,
 };
 pub use ready_pool::{PoolHost, PoolProject, PoolRow, PoolTicket, ReadyPools};
 pub use review::{PR_DUTY_SERVER_SWITCH, READING_REVIEW_ARGUMENT, ReviewPlan, plan_review};

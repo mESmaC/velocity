@@ -96,6 +96,9 @@ async fn take(
         ChangeEvent::Rebased | ChangeEvent::Conflict => return Ok(()),
     };
     let thread = save(application, project, seq, change, progress)?;
+    // A named change waits for a reviewer, and a land or a revert changes what PR duty and
+    // its checker have to do: they look now, not at their next 30-second tick.
+    crate::reviews::wake(application);
     match (thread, meaning) {
         (Some(thread), ChangeEvent::Landed) => finish_landed(application, (project, thread)).await,
         _ => Ok(()),

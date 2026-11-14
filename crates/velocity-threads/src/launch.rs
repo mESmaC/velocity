@@ -280,6 +280,14 @@ impl Location {
     }
 }
 
+/// The folder a project's workspaces are made in (Settings → Worktrees).
+pub fn project_workspace_root(
+    project: &ProjectItem,
+    worktrees: &WorktreePreferences,
+) -> Option<PathBuf> {
+    Location::new(project, worktrees).project_root().ok()
+}
+
 pub(crate) fn base_branch(project: &ProjectItem) -> String {
     if project.default_branch.trim().is_empty() {
         "master".into()
