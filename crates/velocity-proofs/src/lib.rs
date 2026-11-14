@@ -19,8 +19,8 @@ pub use axioms::{
 };
 pub use card::{CardInput, FixtureTable, LockState, build_card};
 pub use check::{
-    base_reference, changes_proofs, check_worktree, checkout_at, levels_between, proof_card,
-    statements_at,
+    base_reference, changes_proofs, check_build_tree, check_worktree, checkout_at, levels_between,
+    proof_card, statements_at,
 };
 pub use lean_source::{
     Placeholder, ProofFile, TheoremStatement, names_spec_section, placeholders, theorem_statements,
@@ -42,4 +42,6 @@ pub enum ProofCheckError {
     Io(#[from] std::io::Error),
     #[error("A statement lock is not valid JSON: {0}")]
     Json(#[from] serde_json::Error),
+    #[error("The change removes the Lake project's manifest, {0}: its proofs can't be built")]
+    RemovedProject(String),
 }

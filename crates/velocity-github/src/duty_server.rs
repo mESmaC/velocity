@@ -52,6 +52,35 @@ pub enum PrDutyReport {
         number: u32,
         reason: String,
     },
+    /// A Rosen change approved at `head` (F5): Rosen holds the approval.
+    ChangeApproved {
+        change: String,
+        head: String,
+    },
+    /// Changes requested on a Rosen change. `message` goes to its author's thread, which
+    /// fixes the work in its workspace and names it again.
+    ChangeChangesRequested {
+        change: String,
+        head: String,
+        message: String,
+    },
+    ChangeCommented {
+        change: String,
+    },
+    ChangeHeld {
+        change: String,
+        head: String,
+        reason: String,
+    },
+    ChangeLanded {
+        change: String,
+        commit: String,
+    },
+    /// Rosen refused to land the change for a reason a new check can't fix.
+    ChangeLandFailed {
+        change: String,
+        reason: String,
+    },
 }
 
 /// One reviewing agent's connection: its PR, its merge method and its report file.

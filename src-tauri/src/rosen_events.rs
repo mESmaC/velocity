@@ -83,6 +83,25 @@ async fn take(
     }
 }
 
+/// PR duty requested changes on thread `key`'s change `change` (F7): the thread goes back
+/// to fixing, and its agent gets `message`, resumed first if it had ended.
+pub(crate) fn changes_requested(
+    application: &AppHandle,
+    key: ThreadKey,
+    change: &str,
+    message: &str,
+) -> Result<(), String> {
+    // Sequence 0 leaves the stream's cursor where it is: this is not one of its events.
+    save(
+        application,
+        key.0,
+        0,
+        change,
+        RosenProgress::ChangesRequested,
+    )?;
+    crate::threads::steer(application, key, message).map(|_| ())
+}
+
 fn save(
     application: &AppHandle,
     project: u32,

@@ -37,7 +37,48 @@ pub fn check_worktree(
     };
     let changed = changed_proof_files(worktree, &folder, base, head)?;
     let levels = proof_levels(worktree, &folder, base, head)?;
-    if changed.is_empty() {
+    check_changed(worktree, folder, changed, levels, false)
+}
+
+/// Runs every check on the proof files among `changed_paths`, in `tree`: a Rosen change's
+/// merge result, written by Rosen as a plain build tree with no git to diff (F5, F17). The
+/// paths are the ones Rosen reports the change touches.
+pub fn check_build_tree(
+    tree: &Path,
+    changed_paths: &[String],
+) -> Result<ProofCheckReport, ProofCheckError> {
+    let Some(folder) = project_folder(tree) else {
+        // No project left in the merge result: fine for a project without proofs, but a
+        // change that deletes the manifest would otherwise pass with nothing built.
+        let manifests =
+            ["lakefile.lean", "lakefile.toml"].map(|name| format!("{PROJECT_FOLDER}/{name}"));
+        if let Some(removed) = changed_paths.iter().find(|path| manifests.contains(path)) {
+            return Err(ProofCheckError::RemovedProject(removed.clone()));
+        }
+        return Ok(ProofCheckReport::nothing_changed(None));
+    };
+    let prefix = format!("{folder}/");
+    // Any change in the project builds it: a deleted module or a lakefile edit can break
+    // modules that didn't change.
+    let rebuild = changed_paths.iter().any(|path| path.starts_with(&prefix));
+    // A deleted file is not in the tree: only what is there is scanned and audited.
+    let changed = changed_paths
+        .iter()
+        .filter(|path| path.starts_with(&prefix) && is_proof_source(path))
+        .filter(|path| tree.join(path).is_file())
+        .cloned()
+        .collect();
+    check_changed(tree, folder, changed, Vec::new(), rebuild)
+}
+
+fn check_changed(
+    worktree: &Path,
+    folder: String,
+    changed: Vec<String>,
+    levels: Vec<FeatureLevels>,
+    rebuild: bool,
+) -> Result<ProofCheckReport, ProofCheckError> {
+    if changed.is_empty() && !rebuild {
         let mut report = ProofCheckReport::nothing_changed(Some(folder));
         report.levels = levels;
         return Ok(report);

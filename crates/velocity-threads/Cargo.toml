@@ -12,6 +12,7 @@ workspace = true
 [dependencies]
 agent-client-protocol = "5.0.0"
 chrono = { version = "0.4", default-features = false, features = ["std"] }
+serde.workspace = true
 serde_json.workspace = true
 similar = "2.7"
 thiserror.workspace = true
@@ -21,6 +22,7 @@ velocity-acp = { path = "../velocity-acp" }
 velocity-airc = { path = "../velocity-airc" }
 velocity-core.workspace = true
 velocity-proofs.workspace = true
+velocity-rosen.workspace = true
 velocity-git.workspace = true
 velocity-github.workspace = true
 velocity-store.workspace = true

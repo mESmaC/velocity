@@ -92,25 +92,27 @@ impl PrDutyReviews {
                 .running
                 .iter()
                 .filter(|((owner, _), running)| *owner == project && !running.dismissed)
-                .map(|(_, running)| running.number)
+                .filter_map(|(_, running)| running.subject.number())
                 .collect();
             // A note belongs to one approved head: a new head or a new standing starts afresh.
             state.landing.retain(|(owner, number), note| {
                 *owner != project
                     || candidates.iter().any(|candidate| {
-                        candidate.number == *number
+                        pr_number(candidate) == *number
                             && candidate.head == note.head
                             && candidate.standing == ReviewStanding::Approved
                     })
             });
             let (approved, rest): (Vec<_>, Vec<_>) =
                 candidates.into_iter().partition(|candidate| {
-                    candidate.standing == ReviewStanding::Approved
+                    // A Rosen change is landed by its agent through Rosen, never here.
+                    candidate.subject.number().is_some()
+                        && candidate.standing == ReviewStanding::Approved
                         && !candidate.draft
-                        && !held.contains(&candidate.number)
+                        && !held.contains(&pr_number(candidate))
                         && !state
                             .landing
-                            .get(&(project, candidate.number))
+                            .get(&(project, pr_number(candidate)))
                             .is_some_and(|note| note.left_to_agent)
                 });
             let start = !approved.is_empty() && state.landing_projects.insert(project);
@@ -145,7 +147,7 @@ impl PrDutyReviews {
                 approver,
                 branch_kept,
             })) => {
-                self.landed(host, roster, candidate.number, &approver, branch_kept)
+                self.landed(host, roster, pr_number(candidate), &approver, branch_kept)
                     .await;
             }
             Ok(Ok(Step::Waiting { approver, landing })) => {
@@ -154,7 +156,7 @@ impl PrDutyReviews {
             Ok(Ok(Step::Refused { approver, reason })) => {
                 let message = velocity_core::scout_sweep::step_doing(&format!(
                     "Merge of #{} refused · {reason}",
-                    candidate.number
+                    pr_number(candidate)
                 ));
                 self.say_once(host, roster.project.id, candidate, &approver, message);
             }
@@ -172,7 +174,7 @@ impl PrDutyReviews {
     ) -> Result<Step, PullRequestError> {
         let repository = PathBuf::from(&roster.project.repository_path);
         let project = roster.project.id.to_string();
-        let (number, head) = (candidate.number, candidate.head.as_str());
+        let (number, head) = (pr_number(candidate), candidate.head.as_str());
         let record = ReviewRecord::open(&self.app_data, &project, LANDER)?;
         let approver = record
             .approved_by(number, head)
@@ -270,7 +272,8 @@ impl PrDutyReviews {
             return self.wake();
         }
         let base_branch = crate::launch::base_branch(&roster.project);
-        let Some(message) = landing_wait_message(candidate.number, &base_branch, landing) else {
+        let Some(message) = landing_wait_message(pr_number(candidate), &base_branch, landing)
+        else {
             self.note(project, candidate);
             return;
         };
@@ -279,7 +282,7 @@ impl PrDutyReviews {
         }
         if *landing == Landing::Conflicts {
             let app_data = self.app_data.clone();
-            let (number, head) = (candidate.number, candidate.head.clone());
+            let (number, head) = (pr_number(candidate), candidate.head.clone());
             // Appends one line to the project's AIRC channel; nothing waits on it.
             tokio::task::spawn_blocking(move || {
                 if let Ok(record) = ReviewRecord::open(&app_data, &project.to_string(), LANDER) {
@@ -296,14 +299,14 @@ impl PrDutyReviews {
         let mut state = self.lock();
         let note = state
             .landing
-            .entry((project, candidate.number))
+            .entry((project, pr_number(candidate)))
             .or_insert_with(|| LandingNote::new(&candidate.head, now));
         if now.saturating_sub(note.first_seen) < NO_CHECKS_GRACE {
             return false;
         }
         note.left_to_agent = true;
         if let Some(attempts) = state.attempted.get_mut(&project) {
-            attempts.remove(&candidate.number);
+            attempts.remove(&candidate.subject);
         }
         true
     }
@@ -312,7 +315,7 @@ impl PrDutyReviews {
         let now = self.epoch.elapsed();
         self.lock()
             .landing
-            .entry((project, candidate.number))
+            .entry((project, pr_number(candidate)))
             .or_insert_with(|| LandingNote::new(&candidate.head, now));
     }
 
@@ -331,7 +334,7 @@ impl PrDutyReviews {
             let mut state = self.lock();
             let note = state
                 .landing
-                .entry((project, candidate.number))
+                .entry((project, pr_number(candidate)))
                 .or_insert_with(|| LandingNote::new(&candidate.head, now));
             if note.said.as_deref() == Some(message.as_str()) {
                 return false;
@@ -363,4 +366,9 @@ impl LandingNote {
             left_to_agent: false,
         }
     }
+}
+
+/// The PR number of a candidate this module lands: only PRs reach it (`land_approved`).
+fn pr_number(candidate: &ReviewCandidate) -> u32 {
+    candidate.subject.number().unwrap_or_default()
 }
