@@ -92,13 +92,19 @@ pub(crate) async fn take_workspace(
     let workspace = velocity_rosen::create_workspace(&server, &agent, &request.worktree_path, None)
         .await
         .map_err(|error| error.to_string())?;
-    let managed = application.state::<ManagedRosen>();
-    if let Err(error) = managed
-        .watches
-        .start(&server, &agent, &workspace.root)
+    // An agent whose edits aren't watched, or a thread that doesn't record its change,
+    // would lose track of work: the change is abandoned and the thread falls back to git.
+    let kept = watch(application, &server, &workspace.root)
         .await
-    {
-        eprintln!("Rosen watcher for {}: {error}", workspace.root.display());
+        .and_then(|()| record_change(application, key, &workspace.change).map(|_| ()));
+    if let Err(error) = kept {
+        application
+            .state::<ManagedRosen>()
+            .watches
+            .stop(&workspace.root)
+            .await;
+        let _ = velocity_rosen::abandon_change(&server, &agent, &workspace.change).await;
+        return Err(error);
     }
     let mut setup_request = request.clone();
     setup_request.worktree_path = workspace.root.clone();
@@ -266,6 +272,14 @@ pub(crate) async fn shutdown_servers(application: &AppHandle) {
         return;
     };
     let _ = tokio::time::timeout(Duration::from_secs(3), managed.servers.shutdown_all()).await;
+}
+
+/// Starts the servers again when an update [`shutdown_servers`] made way for didn't
+/// install.
+pub(crate) async fn restart_servers(application: &AppHandle) {
+    if let Some(managed) = application.try_state::<ManagedRosen>() {
+        managed.servers.restart_all().await;
+    }
 }
 
 /// [`shutdown_servers`] for the exit event, which runs outside the async runtime.

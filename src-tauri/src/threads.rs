@@ -468,17 +468,13 @@ fn resume_message(
     delivered_snapshot(application, key)
 }
 
-/// Marks the thread's folder ready, saving its Rosen change. False when the thread was
-/// deleted meanwhile.
+/// Marks the thread's folder ready. False when the thread was deleted meanwhile.
 fn folder_ready(
     application: &AppHandle,
     key: ThreadKey,
     folder: &ThreadFolder,
     path: &str,
 ) -> bool {
-    if let Some(change) = &folder.rosen_change {
-        report(crate::rosen::record_change(application, key, change));
-    }
     let wanted = mark_worktree_ready(application, key, path, folder.failure.is_some());
     if let Some(change) = &folder.rosen_change
         && let Ok(mut runtimes) = lock(

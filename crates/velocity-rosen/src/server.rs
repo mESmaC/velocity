@@ -238,14 +238,25 @@ impl Servers {
         let mut ready = self.ready.lock().await;
         let server = ProjectServer::new(&self.app_data, project);
         let client = server.connect().await?;
-        server.import(&client, source).await?;
+        // Recorded before the import, so a server whose import fails is still stopped at
+        // exit.
         ready.insert(project, server.clone());
+        server.import(&client, source).await?;
         Ok(server)
     }
 
     /// The project's server if this run already made it ready.
     pub async fn get(&self, project: u32) -> Option<ProjectServer> {
         self.ready.lock().await.get(&project).cloned()
+    }
+
+    /// Starts again every server this run used, after [`Self::shutdown_all`] when the
+    /// update it made way for didn't install. Watchers journal meanwhile and catch up.
+    pub async fn restart_all(&self) {
+        let servers: Vec<ProjectServer> = self.ready.lock().await.values().cloned().collect();
+        for server in servers {
+            let _ = server.connect().await;
+        }
     }
 
     /// Stops every server this run started or used, so an update can replace their
