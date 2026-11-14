@@ -141,18 +141,28 @@ fn dispatch(window: &Window, action: LayoutAction) -> Result<LayoutSnapshot, Str
     if let Some(LayoutIntent::Navigation(NavigationIntent::Airc)) = &intent {
         crate::threads::report(crate::airc_modal::refresh(window.app_handle()));
     }
-    // Starting or steering a thread publishes its own newer snapshot.
-    let project = snapshot.project_identifier;
+    carry_out(window.app_handle(), intent, snapshot)
+}
+
+/// Starting or steering a thread publishes its own newer snapshot.
+fn carry_out(
+    application: &AppHandle,
+    intent: Option<LayoutIntent>,
+    snapshot: LayoutSnapshot,
+) -> Result<LayoutSnapshot, String> {
     match intent {
-        Some(intent @ LayoutIntent::SteerThread { .. }) => {
+        Some(
+            intent @ (LayoutIntent::SteerThread { .. } | LayoutIntent::RemoveQueuedMessage { .. }),
+        ) => {
             // The reducer has already cleared the composer and added the message. The
             // window draws nothing while a request is pending, so waiting here for the
             // agent, a resume and their saves left the message in the composer until the
-            // agent replied (#318).
-            steer_in_background(window.app_handle(), project, intent);
+            // agent replied (#318). Withdrawing a queued message goes through the same
+            // queue, so it never overtakes the send that put the message there.
+            steer_in_background(application, snapshot.project_identifier, intent);
             Ok(snapshot)
         }
-        Some(intent) => crate::threads::handle_intent(window.app_handle(), &intent)
+        Some(intent) => crate::threads::handle_intent(application, &intent)
             .map(|updated| updated.unwrap_or(snapshot)),
         None => Ok(snapshot),
     }
@@ -184,6 +194,18 @@ fn steer_in_background(application: &AppHandle, project: Option<u32>, intent: La
 }
 
 fn deliver_steer(application: &AppHandle, project: Option<u32>, intent: &LayoutIntent) {
+    if let LayoutIntent::RemoveQueuedMessage { identifier, index } = intent {
+        let removed = match project {
+            Some(project) => {
+                crate::threads::remove_queued_message(application, project, *identifier, *index)
+            }
+            None => Err("Select a project first".into()),
+        };
+        if let Err(error) = removed {
+            show_toast(application, error);
+        }
+        return;
+    }
     let LayoutIntent::SteerThread {
         identifier, prompt, ..
     } = intent
@@ -196,6 +218,10 @@ fn deliver_steer(application: &AppHandle, project: Option<u32>, intent: &LayoutI
         None => Err("Select or create a project first".into()),
     };
     let Err(error) = delivered else {
+        if let (Some(project), Ok(mut state)) = (project, application.state::<MainLayout>().lock())
+        {
+            state.message_delivered(project, *identifier, prompt);
+        }
         return;
     };
     // A steer error means the agent never got the message: a send that reached it reports
@@ -204,11 +230,19 @@ fn deliver_steer(application: &AppHandle, project: Option<u32>, intent: &LayoutI
     let Ok(mut state) = managed.lock() else {
         return;
     };
-    // After a project switch the composer belongs to another project; only say why.
-    if state.snapshot().project_identifier == project {
-        state.return_unsent_message(*identifier, prompt);
+    if let Some(project) = project {
+        state.return_unsent_message(project, *identifier, prompt);
     }
     state.show_toast(error, None);
+    crate::threads::report(publish(application, &state.snapshot(), None));
+}
+
+fn show_toast(application: &AppHandle, message: String) {
+    let managed = application.state::<MainLayout>();
+    let Ok(mut state) = managed.lock() else {
+        return;
+    };
+    state.show_toast(message, None);
     crate::threads::report(publish(application, &state.snapshot(), None));
 }
 
