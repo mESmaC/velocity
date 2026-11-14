@@ -144,6 +144,14 @@ impl ProjectServer {
         }
     }
 
+    /// Asks the server to exit, if one listens, and waits until it has.
+    async fn stop(&self) {
+        if let Ok(client) = Client::connect(&self.endpoint).await {
+            let _ = client.shutdown().await;
+        }
+        self.wait_until_stopped().await;
+    }
+
     /// Waits, a few seconds at most, until the server no longer accepts connections: its
     /// shutdown is answered before it has drained and exited, and an update or a restart
     /// must not meet the old server.
@@ -300,6 +308,11 @@ impl Servers {
         }
         let server = ProjectServer::new(&self.app_data, project);
         let client = server.connect().await?;
+        // Stopped while this start was connecting: the server it started goes too.
+        if self.stopped() {
+            server.stop().await;
+            return Err(RosenError::Stopped);
+        }
         // Recorded before the import, so a server whose import fails is still stopped at
         // exit.
         if let Ok(mut registry) = self.registry.lock() {
@@ -330,6 +343,13 @@ impl Servers {
     /// journal offline until the next start (Rosen R2).
     pub async fn shutdown_all(&self) {
         self.stopped.store(true, Ordering::SeqCst);
+        // The servers that started first, without their start locks: a long first import
+        // holds one, and stopping its server ends that import.
+        for server in self.registered() {
+            server.stop().await;
+        }
+        // Then, under its lock, each project that began to start, for a start that was
+        // still connecting. Such a start also stops its own server once connected.
         let projects: Vec<u32> = self
             .starting
             .lock()
@@ -338,11 +358,7 @@ impl Servers {
         for project in projects {
             let start_lock = self.start_lock(project);
             let _starting = start_lock.lock().await;
-            let server = ProjectServer::new(&self.app_data, project);
-            if let Ok(client) = Client::connect(server.endpoint()).await {
-                let _ = client.shutdown().await;
-            }
-            server.wait_until_stopped().await;
+            ProjectServer::new(&self.app_data, project).stop().await;
         }
     }
 }
