@@ -13,6 +13,7 @@ use std::process::{Child, Command, Stdio};
 use std::time::{Duration, Instant};
 
 use rosen_client::Client;
+use rosen_client::run_queue::{RunClass, RunQueue, Turn};
 
 use crate::duty::{self, MergeCheckout};
 use crate::process::{background_command, hidden_command};
@@ -30,7 +31,8 @@ const POLL: Duration = Duration::from_millis(250);
 pub enum Priority {
     /// A change waits to land on this run.
     Landing,
-    /// Nothing waits on this run: it yields to every other build on the machine.
+    /// Nothing waits on this run: it runs at low process priority, and waits its turn
+    /// behind the checks of a land and agents' own builds.
     Background,
 }
 
@@ -99,12 +101,17 @@ pub fn apply_staged(folder: &Path) -> Result<(), RosenError> {
 
 /// Runs `commands` in order in `folder` through the platform shell (blocking), stopping at
 /// the first that fails. `None` when every command passed.
+///
+/// The whole run takes one turn in the machine's run queue (Rosen R3 "Run queue"), so the
+/// checks of several projects, agents' own builds and the warm pools' prepares take turns
+/// instead of all compiling at once. Checks a land waits on are first in that line.
 pub fn run_commands(
     folder: &Path,
     commands: &[String],
     priority: Priority,
 ) -> Result<Option<FailedCommand>, RosenError> {
     let log = duty::sibling(folder, ".rosen-check.log");
+    let _turn = turn(folder, priority);
     for command in commands {
         let exit_code = match run_one(folder, command, &log, priority)? {
             Some(0) => continue,
@@ -118,6 +125,17 @@ pub fn run_commands(
         }));
     }
     Ok(None)
+}
+
+/// Waits for this run's turn. `None` when the queue can't be used: it only schedules, so
+/// the checks then run without waiting.
+fn turn(folder: &Path, priority: Priority) -> Option<Turn> {
+    let class = match priority {
+        Priority::Landing => RunClass::Landing,
+        Priority::Background => RunClass::Verify,
+    };
+    let note = format!("{} checks in {}", class.name(), folder.display());
+    RunQueue::machine().ok()?.turn(class, &note).ok()
 }
 
 /// The command's exit status, or `None` when it was stopped for running too long. A
