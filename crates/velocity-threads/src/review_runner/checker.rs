@@ -9,6 +9,7 @@
 
 use std::collections::BTreeSet;
 use std::path::PathBuf;
+use std::time::{Duration, Instant};
 
 use velocity_core::duty::{DutyEventKind, DutyFeedEvent};
 use velocity_core::merge_gate::ReviewMode;
@@ -69,7 +70,9 @@ impl PrDutyReviews {
             let held: BTreeSet<ReviewSubject> = state
                 .running
                 .iter()
-                .filter(|((owner, _), running)| *owner == project && !running.dismissed)
+                .filter(|((owner, _), running)| {
+                    *owner == project && !running.dismissed && !running.approved
+                })
                 .map(|(_, running)| running.subject.clone())
                 .collect();
             // A note belongs to one approved head: a new head or standing starts afresh.
@@ -166,10 +169,13 @@ impl<Host: ReviewHost> Check<'_, Host> {
     /// the current merge result. Asking before checking lands a prose-only change, or one
     /// whose receipt still counts, without a build.
     async fn run(&self) {
-        let mut checked = false;
+        let mut checked = None;
         for _ in 0..ROUNDS {
+            let asked = Instant::now();
             let (code, message) = match duty::land(&self.server, CHECKER, self.change).await {
-                Ok(LandOutcome::Landed { commit }) => return self.landed(&commit, checked),
+                Ok(LandOutcome::Landed { commit }) => {
+                    return self.landed(&commit, checked, asked.elapsed());
+                }
                 Ok(LandOutcome::Refused { code, message }) => (code, message),
                 // Rosen could not be reached: the next tick asks again.
                 Err(_) => return,
@@ -177,10 +183,11 @@ impl<Host: ReviewHost> Check<'_, Host> {
             match land_refusal(&code) {
                 // A conflict is found, with its files, when the merge result is staged.
                 LandRefusal::Receipt | LandRefusal::Conflict => {
+                    let started = Instant::now();
                     if !self.check().await {
                         return;
                     }
-                    checked = true;
+                    checked = Some(started.elapsed());
                 }
                 // The author moved the head: PR duty reviews the new one.
                 LandRefusal::Approval => return,
@@ -268,7 +275,7 @@ impl<Host: ReviewHost> Check<'_, Host> {
         false
     }
 
-    fn landed(&self, commit: &str, checked: bool) {
+    fn landed(&self, commit: &str, checked: Option<Duration>, land: Duration) {
         let project = self.roster.project.id;
         self.runner
             .lock()
@@ -276,7 +283,7 @@ impl<Host: ReviewHost> Check<'_, Host> {
             .remove(&(project, self.change.to_owned()));
         self.post(
             DutyEventKind::Merge,
-            landed_line(self.change, commit, checked),
+            landed_line(self.change, commit, checked, land),
         );
         // The next approved change is checked on the base this land made.
         self.runner.wake();

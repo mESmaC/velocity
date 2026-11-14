@@ -13,6 +13,7 @@
 
 mod checker;
 mod landing;
+mod listing;
 mod post_land;
 
 use std::collections::{BTreeMap, BTreeSet};
@@ -86,6 +87,9 @@ struct Running {
     /// Set once the review prompt is queued, so an AIRC message never becomes the first
     /// prompt, and cleared when the review is told to stop.
     delivering: bool,
+    /// A review by reading approved its Rosen change: the review is over but for its
+    /// session's last words, so Velocity's checker takes the change without waiting for them.
+    approved: bool,
 }
 
 /// Your instruction for a project's PR duty, and the agents that already have it.
@@ -120,6 +124,11 @@ struct RunnerState {
     verifying: BTreeMap<u32, post_land::VerifyNote>,
     /// The projects with a post-land pass running: one at a time in each folder.
     verifying_projects: BTreeSet<u32>,
+    /// The projects with a pass running, each with whether it was asked for again
+    /// meanwhile: a project is passed once at a time, and none waits for another.
+    passing: BTreeMap<u32, bool>,
+    /// Per Rosen project, its open PRs as GitHub last listed them.
+    listings: BTreeMap<u32, listing::Listing>,
 }
 
 /// The review runner. Cheap to clone; every clone drives the same reviews.
@@ -301,48 +310,78 @@ impl PrDutyReviews {
             tokio::spawn(self.clone().deliver_airc_forever());
         }
         loop {
-            self.tick(&host).await;
+            self.start_passes(&host);
             // Woken early or timed out: either way, look again.
             let _ = tokio::time::timeout(TICK, self.wake.notified()).await;
         }
     }
 
-    /// Claims a PR for every idle agent that has one to take, and settles idle cards.
+    /// Starts a pass for every project that has none running. Each project's pass runs on
+    /// its own, so a project waiting on GitHub holds up no other; one asked for while its
+    /// pass still runs is passed again as soon as that ends.
+    fn start_passes<Host: ReviewHost>(&self, host: &Host) {
+        let dismissals = self.lock().dismissals;
+        for roster in host.rosters() {
+            let project = roster.project.id;
+            {
+                let mut state = self.lock();
+                if let Some(again) = state.passing.get_mut(&project) {
+                    *again = true;
+                    continue;
+                }
+                state.passing.insert(project, false);
+            }
+            let (runner, host) = (self.clone(), host.clone());
+            tokio::spawn(async move {
+                runner.pass(&host, roster, dismissals).await;
+                if runner.lock().passing.remove(&project) == Some(true) {
+                    runner.wake();
+                }
+            });
+        }
+    }
+
+    /// One pass over every project, in turn: for a caller that drives the runner itself.
     pub async fn tick<Host: ReviewHost>(&self, host: &Host) {
         let dismissals = self.lock().dismissals;
         for roster in host.rosters() {
-            let idle: Vec<String> = {
-                let state = self.lock();
-                roster
-                    .agents
-                    .iter()
-                    .map(|agent| agent.nickname.clone())
-                    .filter(|nickname| {
-                        !state
-                            .running
-                            .contains_key(&(roster.project.id, nickname.clone()))
-                    })
-                    .collect()
-            };
-            if roster.paused || roster.agents.is_empty() {
-                settle_cards(host, &roster, &idle, None);
-                continue;
+            self.pass(host, roster, dismissals).await;
+        }
+    }
+
+    /// Claims a PR or change for every idle agent of one project that has one to take,
+    /// lands and checks its approved heads, and settles idle cards.
+    async fn pass<Host: ReviewHost>(&self, host: &Host, roster: PrDutyRoster, dismissals: u64) {
+        let idle: Vec<String> = {
+            let state = self.lock();
+            roster
+                .agents
+                .iter()
+                .map(|agent| agent.nickname.clone())
+                .filter(|nickname| {
+                    !state
+                        .running
+                        .contains_key(&(roster.project.id, nickname.clone()))
+                })
+                .collect()
+        };
+        if roster.paused || roster.agents.is_empty() {
+            return settle_cards(host, &roster, &idle, None);
+        }
+        self.verify_landed(host, &roster);
+        // Listed even when every agent is busy: approved heads land without one.
+        let candidates = self.candidates(&roster).await;
+        if self.lock().dismissals != dismissals {
+            // An agent left while PRs were listed: the dismissal's wake reads afresh.
+            return;
+        }
+        match candidates {
+            Ok(candidates) => {
+                let candidates = self.land_approved(host, &roster, candidates);
+                let candidates = self.check_approved(host, &roster, candidates);
+                self.claim_for_idle(host, &roster, &candidates, &idle);
             }
-            self.verify_landed(host, &roster);
-            // Listed even when every agent is busy: approved heads land without one.
-            let candidates = self.candidates(&roster).await;
-            if self.lock().dismissals != dismissals {
-                // An agent left while PRs were listed: the dismissal's wake reads afresh.
-                return;
-            }
-            match candidates {
-                Ok(candidates) => {
-                    let candidates = self.land_approved(host, &roster, candidates);
-                    let candidates = self.check_approved(host, &roster, candidates);
-                    self.claim_for_idle(host, &roster, &candidates, &idle);
-                }
-                Err(error) => settle_cards(host, &roster, &idle, Some(&error)),
-            }
+            Err(error) => settle_cards(host, &roster, &idle, Some(&error)),
         }
     }
 
@@ -368,14 +407,18 @@ impl PrDutyReviews {
     }
 
     /// The project's open PRs, each with where the approval record leaves its head, then its
-    /// Rosen changes in review. A Rosen project needs no GitHub remote: its PRs are left out
-    /// when they can't be listed.
+    /// Rosen changes in review.
+    ///
+    /// A Rosen project's work is in Rosen, so its pass never waits for GitHub: it takes the
+    /// PRs as last listed, which `listing` reads again off the pass, and none when they
+    /// can't be listed, since a Rosen project needs no GitHub remote. A git project's work
+    /// is its PRs, so its pass lists them first.
     async fn candidates(&self, roster: &PrDutyRoster) -> Result<Vec<ReviewCandidate>, String> {
         let rosen = roster.project.version_control == velocity_store::VersionControl::Rosen;
-        let mut candidates = match self.pull_request_candidates(roster).await {
-            Ok(candidates) => candidates,
-            Err(_) if rosen => Vec::new(),
-            Err(error) => return Err(error),
+        let mut candidates = if rosen {
+            self.listed_pull_requests(roster)
+        } else {
+            self.pull_request_candidates(roster).await?
         };
         if rosen
             || roster
@@ -484,6 +527,7 @@ impl PrDutyReviews {
                     dismissed: false,
                     airc_after: 0,
                     delivering: false,
+                    approved: false,
                 },
             );
             state
@@ -507,8 +551,16 @@ impl PrDutyReviews {
         tokio::spawn(async move {
             let key = review.key.clone();
             let runner = review.runner.clone();
+            let pull_request = review.candidate.subject.number().is_some();
             review.run(&host, inputs).await;
-            runner.lock().running.remove(&key);
+            {
+                let mut state = runner.lock();
+                state.running.remove(&key);
+                if pull_request {
+                    // The review changed where the PR stands: its listing is read again.
+                    state.listings.remove(&key.0);
+                }
+            }
             runner.wake();
         });
     }
@@ -994,6 +1046,15 @@ impl Review {
         outcome
     }
 
+    /// A review by reading approved its change: Velocity's checker may take it now, while
+    /// the agent's session says its last words and stops.
+    fn release_to_checker(&self) {
+        if let Some(running) = self.runner.lock().running.get_mut(&self.key) {
+            running.approved = true;
+        }
+        self.runner.wake();
+    }
+
     /// Adds the session's transcript updates to the agent's view of its review.
     fn record_transcript(&self, batch: &[AgentEvent]) {
         let mut state = self.runner.lock();
@@ -1051,6 +1112,9 @@ impl Review {
                 // leaves the head to be retried. A review by reading ends at its approval.
                 PrDutyReport::ChangeApproved { .. } => {
                     outcome.decided |= outcome.approval_decides;
+                    if outcome.approval_decides {
+                        self.release_to_checker();
+                    }
                 }
                 PrDutyReport::Merged { .. } | PrDutyReport::ChangeLanded { .. } => {
                     outcome.decided = true;

@@ -562,6 +562,13 @@ impl ThreadRuntimes {
         self.retired.contains(&key)
     }
 
+    /// Lets a thread stopped for its merge run sessions again: Rosen reverted its landed
+    /// change and reopened it (Rosen R12), so its agent has work to fix. Without this the
+    /// thread stays retired and every resume is refused.
+    pub fn reopen(&mut self, key: ThreadKey) {
+        self.retired.remove(&key);
+    }
+
     /// A stop was asked for and the agent has not exited yet.
     pub fn is_stopping(&self, key: ThreadKey) -> bool {
         self.stopping.contains_key(&key)

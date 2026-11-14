@@ -4,6 +4,8 @@
 //! decisions; the Rosen calls live in `velocity-rosen` and the passes that drive them in
 //! `velocity-threads`.
 
+use std::time::Duration;
+
 use crate::merge_gate::{ModeEvidence, ReviewMode, review_mode};
 use crate::pr_review::{short_change, short_commit};
 use crate::review_tier::ReviewTier;
@@ -113,19 +115,37 @@ pub fn conflict_line(change: &str, base_branch: &str) -> String {
     )
 }
 
-/// The feed line for a landed change. `checked` is false when Rosen needed no new receipt:
-/// a prose-only change, or one whose receipt still counted.
-pub fn landed_line(change: &str, commit: &str, checked: bool) -> String {
-    let how = if checked {
-        "pre-land checks passed"
-    } else {
-        "no new check needed"
+/// The feed line for a landed change, with how long its last check took and how long Rosen
+/// took to land it. `checked` is `None` when Rosen needed no new receipt: a prose-only
+/// change, or one whose receipt still counted.
+pub fn landed_line(
+    change: &str,
+    commit: &str,
+    checked: Option<Duration>,
+    land: Duration,
+) -> String {
+    let how = match checked {
+        Some(took) => format!("pre-land checks passed in {}", seconds(took)),
+        None => "no new check needed".to_owned(),
     };
     format!(
-        "Landed change {} · {} · {how}",
+        "Landed change {} · {} · {how} · land took {}",
         short_change(change),
-        short_commit(commit)
+        short_commit(commit),
+        seconds(land)
     )
+}
+
+/// A duration as the feed shows it: `0.07 s`, `9.8 s`, `104 s`.
+fn seconds(duration: Duration) -> String {
+    let seconds = duration.as_secs_f64();
+    if seconds < 1.0 {
+        format!("{seconds:.2} s")
+    } else if seconds < 60.0 {
+        format!("{seconds:.1} s")
+    } else {
+        format!("{seconds:.0} s")
+    }
 }
 
 /// The feed line for a land Rosen refused for a reason no check or author fixes.
@@ -162,8 +182,12 @@ pub fn verifying_line(commit: &str) -> String {
 }
 
 /// The feed line for a landed commit the post-land checks passed on.
-pub fn verified_line(commit: &str) -> String {
-    format!("Post-land checks passed on {}", short_commit(commit))
+pub fn verified_line(commit: &str, took: Duration) -> String {
+    format!(
+        "Post-land checks passed on {} in {}",
+        short_commit(commit),
+        seconds(took)
+    )
 }
 
 /// The feed line for a failed batch, while Rosen's bisection looks for the change.
