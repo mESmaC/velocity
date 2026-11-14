@@ -24,6 +24,7 @@ pub mod layout_guard;
 pub mod layout_state;
 pub mod layout_view;
 pub mod main_watch;
+pub mod merge_gate;
 pub mod navigation;
 pub mod new_project;
 pub mod pr_review;

@@ -55,7 +55,7 @@ impl PullRequestClient {
         Ok(threads)
     }
 
-    fn pull_request_connection<T: serde::de::DeserializeOwned>(
+    pub(crate) fn pull_request_connection<T: serde::de::DeserializeOwned>(
         &self,
         number: u32,
         field: &str,
@@ -104,8 +104,8 @@ impl PullRequestClient {
                 "Merge requires an open, ready, conflict-free PR at the reviewed head".into(),
             ));
         }
-        // F7 makes GitHub CI advisory. The duty runner validates the local
-        // merge result; UNSTABLE must not turn a red GitHub run into a gate.
+        // GitHub's checks gate a merge where Velocity lands the head (merge_gate.rs), not
+        // here: a reviewer that ran the local checks merges past a red or pending run (F7).
         if snapshot
             .review_threads
             .iter()

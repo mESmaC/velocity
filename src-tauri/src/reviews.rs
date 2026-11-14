@@ -12,25 +12,37 @@ use velocity_core::duty::DutyRole;
 use velocity_github::{MergeMethod, PrDutyServer, PullRequestClient, ReviewRecord};
 use velocity_interview::Interviews;
 use velocity_store::duty::PrDutyRoster;
-use velocity_threads::{PR_DUTY_SERVER_SWITCH, PrDutyReviews, ReviewChange, ReviewHost};
+use velocity_threads::{
+    PR_DUTY_SERVER_SWITCH, PrDutyReviews, READING_REVIEW_ARGUMENT, ReviewChange, ReviewHost,
+};
 
 use crate::duty::DutyEventPublished;
 use crate::layout::MainLayout;
 use crate::state::ManagedStateStore;
 use crate::threads::{lock, report};
 
-/// `velocity --pr-duty-mcp <worktree> <app-data> <project> <nick> <number> <method> <report>`:
-/// serve one review's MCP connection on stdin/stdout and exit. `false` when Velocity was
-/// started normally.
+/// `velocity --pr-duty-mcp <worktree> <app-data> <project> <nick> <number> <method> <report>`,
+/// then `reading <base-commit>` for a review by reading: serve one review's MCP connection on
+/// stdin/stdout and exit. `false` when Velocity was started normally.
 pub fn serve_pr_duty_server() -> anyhow::Result<bool> {
     let arguments: Vec<String> = std::env::args().skip(1).collect();
     if arguments.first().map(String::as_str) != Some(PR_DUTY_SERVER_SWITCH) {
         return Ok(false);
     }
-    let [_, worktree, app_data, project, nick, number, method, report] = arguments.as_slice()
+    let [
+        _,
+        worktree,
+        app_data,
+        project,
+        nick,
+        number,
+        method,
+        report,
+        reading @ ..,
+    ] = arguments.as_slice()
     else {
         anyhow::bail!(
-            "Usage: {PR_DUTY_SERVER_SWITCH} <worktree> <app-data> <project> <nick> <number> <merge-method> <report-file>"
+            "Usage: {PR_DUTY_SERVER_SWITCH} <worktree> <app-data> <project> <nick> <number> <merge-method> <report-file> [{READING_REVIEW_ARGUMENT} <base-commit>]"
         );
     };
     let number: u32 = number.parse().context("The PR number is not a number")?;
@@ -58,6 +70,11 @@ pub fn serve_pr_duty_server() -> anyhow::Result<bool> {
         PathBuf::from(app_data),
         project.clone(),
     );
+    if let [mode, base_commit] = reading
+        && mode == READING_REVIEW_ARGUMENT
+    {
+        server = server.reading(base_commit.clone());
+    }
     let input = BufReader::new(std::io::stdin().lock());
     let mut output = std::io::stdout().lock();
     server

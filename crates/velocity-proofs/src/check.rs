@@ -84,6 +84,21 @@ pub fn levels_between(
     }
 }
 
+/// Whether the PR changes any file in the Lake project between `base` and `head`, read from
+/// git without building anything. PR duty reviews such a PR with the local proof checks,
+/// never by reading alone (F7 "Checks before merge").
+pub fn changes_proofs(worktree: &Path, base: &str, head: &str) -> Result<bool, ProofCheckError> {
+    let Some(folder) = project_folder(worktree) else {
+        return Ok(false);
+    };
+    let range = format!("{base}...{head}");
+    let changed = git(
+        worktree,
+        &["diff", "--name-only", "-z", &range, "--", &folder],
+    )?;
+    Ok(!changed.is_empty())
+}
+
 /// The level each language reaches for every proof-list feature the PR touches (F17
 /// Confidence proof), read from the checkout's tracked files: the feature's translation and
 /// confidence proof, its fixture table, and the code outside the Lake project that reads it.

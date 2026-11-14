@@ -502,9 +502,11 @@ The watcher reads GitHub every 15 seconds, with one query per project that lists
 
 **Landing and rebases** (from Anthropic's Scion):
 
+The rest of this section is the landing of a PR reviewed with the local checks (F7 "Checks before merge"): a sensitive PR, a PR that changes proofs, or a PR on a project with no GitHub checks. A PR reviewed by reading skips it: Velocity merges its approved head once GitHub's checks pass, without updating its branch, and a merge never restarts another PR's checks.
+
 The PR duty MCP server exposes `pr_duty_prepare_landing` and `pr_duty_checked`. Prepare updates the PR branch through GitHub with an expected head and returns its exact head/base and required checks: full initially or on author/overlapping changes, build and lint for an unrelated moved base. The reviewer fetches that head, regenerates artifacts, runs those checks and records success with checked. Merge refuses a missing receipt or moved base. Only an exact two-parent base update carries the reviewer's approval. Updates and update failures post `updated`/`conflict` events. Merge notices target claimed paths and edited regions within three lines, excluding generated artifacts and scoped registration claims. At its next step the affected agent commits current edits and calls `airc_rebase`; Velocity updates only its registered checkout without rewriting history and posts `rebased` or `conflict`.
 
-- **No global merge queue or lock.** PR duty merges a PR as soon as it is approved and its local checks pass (F7), without waiting its turn behind other PRs.
+- **No global merge queue or lock.** A PR merges as soon as it is approved and its checks pass (F7), without waiting its turn behind other PRs.
 - **Targeted rebases.** When a PR merges, Velocity compares the merged change's files with each open agent's claimed files and edited files (§3.2).
   - Only agents with an overlap rebase straight away; each gets a `rebased` event.
   - Every other agent rebases once, at landing time, instead of after every merge.
@@ -544,34 +546,43 @@ Long-running roles. They appear under **On duty**, with an agent count (×N) and
 
 **PR duty:**
 - Claims unclaimed PRs, one PR per agent, so two agents never review the same one. The review claim goes through the AIRC lock (`airc_claim` on the PR), so it is atomic. Only its holder updates, approves or merges that PR. A finding that arrives after the PR merged is filed as an issue.
-- Runs the local checks, reviews the diff against SPEC.md and the Task List, leaves inline comments, requests changes or approves, then merges.
-- **Local checks decide, not GitHub CI.** PR duty runs the project's checks in its review worktree, on the PR merged onto the current `master`: format, build with locked dependencies, lint with zero warnings, the UI checks, and `lake build` with the axiom audit when `proofs/` changes (the commands come from AGENTS.md). It runs only the checks the PR's changes can affect: a docs-only PR builds nothing, a UI-only PR runs the UI checks, a Rust change runs the Rust checks and the UI checks its bindings feed. When they pass, the PR can merge.
-  - GitHub CI is advisory. A pending, red or stale run never holds up a PR whose local checks pass.
-  - **Why:** a merge queue stalled for an hour on CI that was red only because `master` had been broken. GitHub CI also costs money per run.
-  - Testing the merge result, not the PR head, also catches a PR that broke only after another PR merged.
+- Reviews the diff against SPEC.md and the Task List, leaves inline comments, and requests changes or approves. Velocity then merges the approved head.
+- **Checks before merge.** A reviewer reads a PR; it does not rebuild it. GitHub's checks build and test the head, and Velocity merges it once they pass.
+  - **Review by reading** is how a trivial or normal PR is reviewed when GitHub reports at least one check on its head. The agent reads the diff and the PR's conversation and records its decision. It runs no build, no tests and none of the project's local checks, even where the project's AGENTS.md tells PR duty to. Its session ends at its decision.
+  - **Velocity lands the approved head.** Every 30 seconds Velocity reads each approved head no agent holds and merges it when all of these hold: the PR is open, ready and still at the approved head; it merges cleanly; every GitHub check on the head has completed as success, neutral or skipped; and no review thread is open. No agent takes part, and the branch is not updated first.
+    - Checks still running: it waits and says nothing.
+    - A failed check: the feed says "Approved #n waits · GitHub checks failed (…)", and the PR waits for its author to push (F6 "Agent behaviour"). A re-run that passes on the same head merges it.
+    - A conflict with the base branch: a `conflict` event goes to the owning agent, which resolves it and pushes. The new head gets a review of the commits pushed since.
+    - An open review thread: the feed says so, and the head merges once the thread is resolved.
+    - The merge is the approver's: it needs the standing approval at exactly that head and a statement lock that still holds, and a refused merge posts a `failed` event, as below.
+  - **Local checks** are how these are reviewed instead: a sensitive PR (Tiered review), a PR that changes a file in the Lake project, and a PR whose head has no GitHub check, because nothing else would build it. The agent runs the project's checks in its review worktree on the PR merged onto the current `master` (the commands come from AGENTS.md), then approves and merges itself through the landing steps in F6. A pending, red or stale GitHub run does not hold such a PR up.
+  - An approved head whose GitHub checks never arrive is handed to an agent after 2 minutes: it runs the local checks and merges.
+  - With the "Checks pass" rule off, a review is by reading and Velocity merges on approval, without reading GitHub's checks.
+  - **Why:** PR duty agents spent 62% of their time rebuilding and retesting PRs that GitHub CI had already built, on the machine every other agent was compiling on, and 8% reading them. Each merge moved the base and restarted the other reviewers' checks: one PR was read in a minute and then checked four times over 40 minutes.
+  - **What it gives up:** two PRs that each pass can still break `master` together. GitHub CI on `master` and the Main watcher catch that after the merge, not before.
 - **Rules:**
   - **Never merge without an approving review** (locked).
   - **Never merge unless the proofs check** (F17; locked).
   - Review every theorem statement against the claim and SPEC.md.
-  - Local checks pass on the merge result before merge (locked). GitHub CI never blocks.
+  - Checks pass before merge: GitHub's checks on the approved head, or the local checks on the merge result where those apply (Checks before merge). Turning it off merges on approval.
   - Check against SPEC.md.
   - Re-review on new commits. A merge commit PR duty pushed to update the branch is not a new commit to review; only its conflict resolutions are.
   - Update branches with `master` (F6): allowed and encouraged, never by force-push.
   - Delete the branch after merge.
   - Merge method: Squash (default) / Rebase / Merge commit.
 - Each review runs in its own worktree (F5).
-- **How a review runs.** Every 30 seconds, and at once when PR duty starts, resumes or gets agents, each idle PR duty agent claims the oldest open, ready PR that needs work. A head with no decision gets a review; a head with a standing approval gets its checks and merge; a head with changes requested, or whose approved merge was refused, waits for its author to push. A head an agent already finished a session on rests: a decided head until it moves, an undecided one for 5 minutes, after which it is claimed again on its own (Rule 1: never a "needs you" state). Instructing PR duty ends every rest at once.
+- **How a review runs.** Every 30 seconds, and at once when PR duty starts, resumes or gets agents, each idle PR duty agent claims the oldest open, ready PR that needs work. A head with no decision gets a review; a head with a standing approval is landed by Velocity (Checks before merge), or by an agent that runs the local checks when no GitHub check arrives; a head with changes requested, or whose approved merge was refused, waits for its author to push. A head an agent already finished a session on rests: a decided head until it moves, an undecided one for 5 minutes, after which it is claimed again on its own (Rule 1: never a "needs you" state). Instructing PR duty ends every rest at once.
   - The claim posts a `claim` event and a `Reviewing · <nick>` comment on the PR, which the rail reads. Until `airc_claim` lands (M9), the review runner holds the lock itself; the agent's session ending posts `released`.
-  - A review lasts until its agent records a decision, not one turn. Its prompt tells the agent to run long commands (a cold build, `lake build`, the stress suite) in the foreground and never to end its turn before deciding. A turn that ends with no decision and no instruction of yours queued gets a reminder to carry on, or to say why it cannot decide; after 3 reminders the session stops and the head rests as above.
-  - A review runs in the PR's `review-pr-<n>` worktree: a detached checkout of the PR head with the base branch's tip merged in, so the checks run on the merge result. If that merge conflicts, the checkout stays at the PR head and the agent resolves the conflict or sends it back (F6).
-  - The agent records decisions only through Velocity's PR duty MCP tools, served by Velocity's own executable: `pr_duty_pull_request` reads the PR, `pr_duty_review` approves or requests changes at the head it checked (the approval record above), and `pr_duty_merge` merges the approved head with the role's merge method. The launcher fixes the agent's nick and its one PR, so it can't act on another agent's PR or record a decision as anyone else.
+  - A review lasts until its agent records a decision, not one turn. Its prompt tells the agent never to end its turn before deciding and, for a review with local checks, to run long commands (a cold build, `lake build`, the stress suite) in the foreground. A turn that ends with no decision and no instruction of yours queued gets a reminder to carry on, or to say why it cannot decide; after 3 reminders the session stops and the head rests as above.
+  - A review runs in the PR's `review-pr-<n>` worktree: a detached checkout of the PR head with the base branch's tip merged in, so the agent reads, and any local checks run on, the merge result. If that merge conflicts, the checkout stays at the PR head and the agent resolves the conflict or sends it back (F6).
+  - The agent records decisions only through Velocity's PR duty MCP tools, served by Velocity's own executable: `pr_duty_pull_request` reads the PR, `pr_duty_review` approves or requests changes at the head it checked (the approval record above), and `pr_duty_merge` merges the approved head with the role's merge method. In a review by reading, `pr_duty_review` approves without a check receipt, refuses while a review thread is open or when the head changes proof files (that head needs the local proof checks), and `pr_duty_merge` refuses: Velocity merges. The launcher fixes the agent's nick and its one PR, so it can't act on another agent's PR or record a decision as anyone else.
   - Its card shows `#n · <current step>`; the feed gets the claim, each approval, request for changes, merge or refused merge, and a review that ended without a decision, with when it is retried. A merged PR's review worktree is removed (Rule 5).
   - A message from the PR duty composer goes to each running review as its next message, and to each idle agent with its next claim.
 - **Approval record** (decided, Q28). Velocity records each approval itself, as an `approved` AIRC event naming the PR, the reviewer's nick and the head SHA it approved. That event is the approval Rule 4 requires.
   - GitHub's review state is advisory, like CI. Every agent shares your one GitHub login, which can't approve its own PRs, and Velocity never asks for a second account's credentials or an app key (F15).
   - PR duty merges only the head it approved (`gh pr merge --match-head-commit <sha>`), so a commit pushed after approval needs a new review.
   - A branch update PR duty made itself with no conflict resolution moves the approval to the new head (it is not a new commit to review, see Rules below). Any other push clears it.
-  - A `changes` event newer than the approval blocks the merge. PR duty mirrors each record on GitHub as a comment that starts "Approved at `<sha7>`" and gives a short reason for the approval, so people reading the PR see it. The reviewer that approved then merges.
+  - A `changes` event newer than the approval blocks the merge. PR duty mirrors each record on GitHub as a comment that starts "Approved at `<sha7>`" and gives a short reason for the approval, so people reading the PR see it. Velocity then merges on the approver's behalf, or the reviewer merges itself after local checks.
   - On a repository whose branch protection requires a GitHub approval, the merge fails and Velocity posts a `failed` event. It never bypasses the rule (`--admin`).
 - **Review the intent, not each line.** The reviewer checks the PR against its claim, its Task List item, issue or SPEC.md section, and AGENTS.md. Style is left to linters.
 - **Severity bar** (locked). A finding blocks a merge only for: data loss or corruption, a crash or hang, a §1 rule violation, a security hole, a failing local check, or the main path of the claimed piece not doing what its SPEC.md section says.
@@ -585,7 +596,7 @@ Long-running roles. They appear under **On duty**, with an agent count (×N) and
   - Is the cost model honest, and is the class of alternatives the one that matters?
 - **PR duty writes tests too.** When a reviewer doubts a claim a proof doesn't cover, it writes a stress script, runs it, and attaches the result to its comment.
 - **Tiered review** *(proposed)*. Velocity tiers each PR from its diff:
-  - **Trivial:** docs, comments or formatting. No proof needed. Approved once the local checks pass and the change matches its claim.
+  - **Trivial:** docs, comments or formatting. No proof needed. Approved once the change matches its claim.
   - **Normal:** everything else. Full review.
   - **Sensitive:** touches any path listed under "Sensitive paths" in AGENTS.md (e.g. migrations, worktree deletion, CI config, auth). Full review, plus the project's stress suite before merge (the stress command AGENTS.md names as the merge gate; a long benchmark or load run never is one), plus a confidence proof at the reference level for each proof-list feature it changes: a fixture table exported from the Lean model plus one test that checks the code against it. The code level is required only when an issue asks for a translation (F17, #142).
 
@@ -1149,11 +1160,11 @@ How the checks run *(proposed)*:
 
 - PR duty's MCP approval requires nonempty `proof_review` explanations of proof-list scope, theorem-statement review and confidence level (including why a check is inapplicable). Those explanations are mirrored with the review. Missing design proofs, off-list Lean and unmet tier requirements require changes; applicability and semantic correctness are judged by the reviewer.
 - `pr_duty_checked`, approval and merge run the executable proof gate in the registered review worktree at the prepared head/base. The checkout must match the committed content at that exact head, ignoring CRLF/LF-only differences from Windows generators; content changes and untracked files are refused. Failed builds, placeholders, disallowed axioms, unnamed spec sections and changed modules absent from the Lake build refuse the operation. An ordinary PR with no changed Lean skips Lake. An unreadable check result fails closed.
-- The statement lock is saved before publishing an approval. Merge also requires a readable lock with no changed or removed locked statement. A moved base requires preparation and checks again; GitHub CI remains advisory.
+- The statement lock is saved before publishing an approval. Merge also requires a readable lock with no changed or removed locked statement. For a PR reviewed with local checks, a moved base requires preparation and checks again.
 
 **Where it runs:**
 - Proofs and stress scripts run locally, in each agent's worktree, on the machine that already runs the agents.
-- GitHub CI runs build and lint only, and is advisory: it never blocks a merge (F7).
+- GitHub's checks gate the merge of a PR reviewed by reading (F7 "Checks before merge"). What they run is the project's choice.
 - Tests and stress scripts live in `stress/` (and the project's own test folder). Scouts run them on every sweep and the main watcher runs them after every merge. They never run in per-PR GitHub CI.
 
 **Proof card** (in the PR history, F6):
@@ -1178,7 +1189,8 @@ How the card is made *(proposed)*:
 - [ ] Every issue a scout files carries a failing test or stress script.
 - [ ] The proof card shows each language's level, and a model-only level is flagged when a stronger one exists.
 - [ ] Per-PR GitHub CI runs only build and lint.
-- [ ] A PR whose local checks pass on the merge result merges while its GitHub CI run is still pending or red.
+- [ ] A normal PR is approved without a build or test run by its reviewer, and merges once GitHub's checks on its head pass.
+- [ ] A sensitive PR whose local checks pass on the merge result merges while its GitHub CI run is still pending or red.
 
 ### F18 · Skills
 
@@ -1519,7 +1531,7 @@ Each milestone ends with a working app. PR duty checks an item off when it lands
 | Q18 | Should "keep going" be on by default? Built: off, which matches the prompt you use today (stop after the merge). | F16 |
 | Q19 | Decided: yes. The four providers are built first, then any ACP agent can be added by command and arguments (F15 Custom ACP agents). | F15, §3.2 |
 | Q20 | Decided: stall timeout 5 min (30 min for a running tool call; never in the build queue), grace period 10 min. A released agent's pushed branch is offered to the next claimer, never assigned (§2.2). | §2.2 |
-| Q21 | Decided: pre-merge GitHub CI is build and lint and only advisory, the local checks on the merge result decide the merge (F7), proofs are checked locally before merge, and tests and stress scripts run after the merge (F17). | F7, F17 |
+| Q21 | Decided, then revised: PR duty reviews by reading and GitHub's checks on the approved head decide the merge. The local checks on the merge result decide it only for a sensitive PR, a PR that changes proofs, or a project with no GitHub checks (F7 "Checks before merge"). Proofs are checked locally before merge, and stress scripts run after the merge (F17). | F7, F17 |
 | Q22 | Name for the "Main watcher" duty role. | F7 |
 | Q23 | Which code-level translators should ship besides Aeneas for Rust (C, C++, Python and others)? Until one exists for a language, that language tops out at the reference level. | F17 |
 | Q24 | Decided: no. The spec interview only proposes the proof list; each building agent writes its design proof after the code (Rule 8). | F3, F17 |
