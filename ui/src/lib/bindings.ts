@@ -1941,6 +1941,7 @@ export type LayoutSnapshot_Deserialize = {
 	revision: number,
 	project_identifier?: number | null,
 	project_name: string,
+	rosen_mirror?: MirrorState_Deserialize | null,
 	view: NavigationView,
 	settings_tab: string,
 	selected_thread: string | null,
@@ -1997,6 +1998,7 @@ export type LayoutSnapshot_Serialize = {
 	revision: number,
 	project_identifier: number | null,
 	project_name: string,
+	rosen_mirror: MirrorState_Serialize | null,
 	view: NavigationView,
 	settings_tab: string,
 	selected_thread: string | null,
@@ -2123,6 +2125,24 @@ export type MachinesView_Serialize = {
 export type MergeMethod = "SQUASH" | "REBASE" | "MERGE";
 
 export type MessageMode = "Open" | "HeadsDown" | "Quarantined";
+
+export type MirrorState = MirrorState_Serialize | MirrorState_Deserialize;
+
+export type MirrorState_Deserialize = {
+	rejected: boolean,
+	error: string,
+	/**  Decimal Unix milliseconds, preserved as a string across IPC. */
+	retry_at_ms?: string | null,
+	last_pushed_commit?: string | null,
+};
+
+export type MirrorState_Serialize = {
+	rejected: boolean,
+	error: string,
+	/**  Decimal Unix milliseconds, preserved as a string across IPC. */
+	retry_at_ms: string | null,
+	last_pushed_commit: string | null,
+};
 
 export type ModelCardView = {
 	provider: ProviderKind,
@@ -2602,6 +2622,8 @@ export type ProjectItem_Deserialize = {
 	goal_swarms?: GoalSwarmRecord_Deserialize[],
 	/**  Rosen or git for this project's agents (F5). Saved projects take Rosen. */
 	version_control?: VersionControl,
+	/**  Latest mirror failure, retained while the push remains unsuccessful (F5). */
+	rosen_mirror?: MirrorState_Deserialize | null,
 };
 
 export type ProjectItem_Serialize = {
@@ -2636,6 +2658,8 @@ export type ProjectItem_Serialize = {
 	goal_swarms: GoalSwarmRecord_Serialize[],
 	/**  Rosen or git for this project's agents (F5). Saved projects take Rosen. */
 	version_control: VersionControl,
+	/**  Latest mirror failure, retained while the push remains unsuccessful (F5). */
+	rosen_mirror: MirrorState_Serialize | null,
 };
 
 export type ProjectLabel = "local" | "github" | "speccing";

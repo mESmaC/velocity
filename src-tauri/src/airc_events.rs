@@ -82,6 +82,34 @@ pub(crate) fn post_event(
     Ok(posted)
 }
 
+/// One channel entry per rejection episode, also delivered to current duty agents.
+pub(crate) fn record_mirror_rejected(
+    application: &AppHandle,
+    project: u32,
+    sequence: u64,
+    name: &str,
+    state: &velocity_core::rosen_mirror::MirrorState,
+) -> Result<(), String> {
+    let channel = open_channel(application, project)?;
+    let recipients = channel
+        .presence()
+        .map_err(|error| error.to_string())?
+        .into_iter()
+        .filter(|member| member.joined && member.member.starts_with("duty-"))
+        .map(|member| member.nick)
+        .collect();
+    let last_pushed = state
+        .last_pushed_commit
+        .as_deref()
+        .unwrap_or("no accepted commit recorded");
+    let message = format!(
+        "{name}: Rosen mirror rejected · needs a person (mirror event {sequence}). Last mirrored commit: {last_pushed}.\n{}",
+        state.error,
+    );
+    let event = Event::new("failed", "velocity", &message).addressed_to(recipients);
+    post_event(application, project, event).map(|_| ())
+}
+
 /// Posts F6/F7 PR lifecycle events (`PR`, `pushed`, `merged` + Past work ledger)
 /// observed on `snapshot` relative to `before`.
 pub(crate) fn record_pull_request_observation(

@@ -640,6 +640,7 @@ impl LayoutState {
             revision: self.revision,
             project_identifier: self.data.project_identifier,
             project_name: self.data.project_name.clone(),
+            rosen_mirror: self.data.rosen_mirror.clone(),
             view: self.view,
             settings_tab: self.settings_tab.clone(),
             selected_thread: self.selected_thread,

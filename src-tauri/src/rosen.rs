@@ -459,7 +459,8 @@ async fn watch_open_threads(application: &AppHandle) {
     let Some(open) = open_threads(application) else {
         return;
     };
-    // Every project with a Rosen thread is followed, merged ones too, whether or not its
+    // Every Rosen project is followed, including ones with no threads, so a mirror
+    // failure is visible. Projects retaining Rosen threads are followed too, whether their
     // workspace is still on disk: Rosen deletes a landed change's workspace, a land that
     // happened while Velocity was closed is only read from the stream, and a landed change
     // can still be reverted after the tests that follow its land.
@@ -467,6 +468,7 @@ async fn watch_open_threads(application: &AppHandle) {
         crate::rosen_events::follow(application, project);
         // Follow-ups a failed step left: retried here as well as on reconnect.
         crate::rosen_events::run_follow_ups(application, project).await;
+        report(crate::rosen_mirror::refresh(application, project).await);
     }
     for (project, root) in open {
         if root.is_dir() {
@@ -476,7 +478,7 @@ async fn watch_open_threads(application: &AppHandle) {
     crate::rosen_rebase::apply_pending(application).await;
 }
 
-/// Each Rosen project with a thread that has, or had, a Rosen change.
+/// Every Rosen project, including ones with no threads whose mirror still needs watching.
 fn followed_projects(application: &AppHandle) -> BTreeSet<u32> {
     let Ok(store) = lock(
         application.state::<ManagedStateStore>().inner(),
@@ -488,14 +490,8 @@ fn followed_projects(application: &AppHandle) -> BTreeSet<u32> {
         .state()
         .projects
         .iter()
-        // Whatever the project's choice now: its Rosen threads' lands and reverts still
-        // come through the stream after it switches to git.
-        .filter(|project| {
-            project
-                .threads
-                .iter()
-                .any(|thread| thread.rosen_change.is_some())
-        })
+        // Retained Rosen threads still need their lands and reverts after switching to git.
+        .filter(|project| project.rosen_in_use())
         .map(|project| project.id)
         .collect()
 }

@@ -29,6 +29,7 @@ These hold for every feature. A feature that breaks one of them is wrong, whatev
 **Rosen rules** *(decided, #381; the project owner, 2026-11-14)*: "With rosen, pr agents become basically obsolete. They existed to help settle github work faster and cleaner. But with rosen, we care about speed. Then we can have agents that can swarm the project to look for issues and review the code and implementations, use lean to verify implementations, and so on, without blocking development."
 - A Rosen project here is one whose `rosen.toml` sets `review = "after-land"` (Rosen R7 and R8, rosen#365; Velocity #380). A git project keeps the wording above, and so does a Rosen project that keeps `review = "before-land"`, Rosen's default: there PR duty still reviews and Rosen still lands nothing without its approval and a receipt for its pre-land checks (F7 "A Rosen change").
 - What stays: no work is lost (Rosen's durability, and a revert never discards the author's work), every land's build and lint are verified with bisection and the automatic revert of a broken build, the full tests run after the land, and git projects work as before.
+- A failing or rejected Rosen mirror stays visible on its project until the next successful push; F5 specifies the project header, Settings, retry time and rejection notice (#402).
 
 ---
 

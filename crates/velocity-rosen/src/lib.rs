@@ -16,6 +16,7 @@ mod events;
 mod issue;
 pub mod machine_dispatch;
 pub mod machines;
+mod mirror;
 pub mod policy;
 pub mod post_land;
 mod process;
@@ -32,8 +33,10 @@ pub use conflicts::{conflict_message, has_open_conflicts};
 pub use events::{ChangeEvent, EventStream, change_event, conflict_paths, revert_output};
 pub use events::{IssueEvent, issue_event};
 pub use issue::{issue_build_coverage, record_issue};
+pub use mirror::{MirrorObservation, mirror_status};
 pub use rosen_client::Error as ClientError;
 pub use rosen_client::protocol::Event as ProjectEvent;
+pub use rosen_client::protocol::EventKind as ProjectEventKind;
 pub use server::{BINARY_FOLDER_ENV, ImportSource, ProjectServer, Servers, binary_folder};
 pub use stack::stack_workspace;
 pub use workspace::{
@@ -45,6 +48,10 @@ use std::path::PathBuf;
 /// Why Rosen could not do what Velocity asked.
 #[derive(Debug, thiserror::Error)]
 pub enum RosenError {
+    #[error("could not read Rosen mirror metadata: {0}")]
+    MirrorMetadata(#[from] rusqlite::Error),
+    #[error("invalid Rosen mirror event: {0}")]
+    MirrorData(String),
     #[error(
         "rosen-server was not found next to Velocity, in the folder {BINARY_FOLDER_ENV} names, or on PATH"
     )]

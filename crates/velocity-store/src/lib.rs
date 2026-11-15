@@ -56,6 +56,7 @@ pub mod provider_views;
 pub mod providers;
 pub mod rosen;
 pub mod rosen_issue;
+pub mod rosen_mirror;
 mod save_behind;
 pub mod shared_mcp;
 pub mod skills;
@@ -986,6 +987,19 @@ pub struct ProjectItem {
     #[serde(default)]
     #[specta(skip)]
     pub rosen_event_cursor: u64,
+    /// Latest mirror failure, retained while the push remains unsuccessful (F5).
+    #[serde(default)]
+    pub rosen_mirror: Option<velocity_core::rosen_mirror::MirrorState>,
+    #[serde(default)]
+    #[specta(skip)]
+    pub rosen_mirror_sequence: u64,
+    /// One rejection notice until the mirror succeeds, even if a retry fails transiently.
+    #[serde(default)]
+    #[specta(skip)]
+    pub rosen_mirror_rejection_sequence: Option<u64>,
+    #[serde(default)]
+    #[specta(skip)]
+    pub rosen_mirror_notices: Vec<rosen_mirror::MirrorRejection>,
 }
 
 /// The New project dialog's interview choices, kept until the spec interview
@@ -1029,6 +1043,10 @@ impl ProjectItem {
             last_task_identifier: 0,
             version_control: VersionControl::default(),
             rosen_event_cursor: 0,
+            rosen_mirror: None,
+            rosen_mirror_sequence: 0,
+            rosen_mirror_rejection_sequence: None,
+            rosen_mirror_notices: Vec::new(),
         }
     }
 

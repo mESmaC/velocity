@@ -113,6 +113,7 @@ pub struct LayoutData {
     /// The persisted project these rows belong to; keys the live thread overlay.
     pub project_identifier: Option<u32>,
     pub project_name: String,
+    pub rosen_mirror: Option<crate::rosen_mirror::MirrorState>,
     pub settled_expanded: bool,
     pub threads: Vec<ThreadEntry>,
     pub projects: Vec<PaletteItem>,
@@ -442,6 +443,7 @@ pub struct LayoutSnapshot {
     pub revision: u32,
     pub project_identifier: Option<u32>,
     pub project_name: String,
+    pub rosen_mirror: Option<crate::rosen_mirror::MirrorState>,
     pub view: NavigationView,
     pub settings_tab: String,
     #[cfg_attr(feature = "bindings", serde(with = "crate::ipc_number::optional"))]

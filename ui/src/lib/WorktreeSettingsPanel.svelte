@@ -4,13 +4,17 @@
     WorktreeSettingsView,
     WorktreeSettingsEdit,
     WorktreePathPreview,
+    MirrorState,
   } from './ipc';
   import './theme/worktrees.css';
   import SettingsNav from './SettingsNav.svelte';
+  import RosenMirror from './RosenMirror.svelte';
   import MachinesPanel from './MachinesPanel.svelte';
 
   let {
     view,
+    mirror,
+    projectIdentifier,
     error,
     notice,
     pruning,
@@ -22,6 +26,8 @@
     send,
   }: {
     view: WorktreeSettingsView | null;
+    mirror: MirrorState | null;
+    projectIdentifier: number | null;
     error: string;
     notice: string;
     pruning: boolean;
@@ -53,6 +59,11 @@
       {#if view}
         <section>
           <h2>Version control</h2>
+          <RosenMirror
+            state={view.project_identifier === projectIdentifier
+              ? mirror
+              : null}
+          />
           <p class="worktree-description">
             How <b>{view.project_name}</b>'s agents get their folders and land
             their work. Rosen gives each agent a workspace and lands its change

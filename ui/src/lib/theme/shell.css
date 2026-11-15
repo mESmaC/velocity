@@ -34,7 +34,7 @@ button:focus-visible {
 .app-shell {
   height: 100%;
   display: grid;
-  grid-template-rows: var(--titlebar-h) 1fr;
+  grid-template-rows: auto 1fr;
   /* Two faint pools of light behind the panes, on true black. */
   background: var(--ambient), var(--bg);
 }

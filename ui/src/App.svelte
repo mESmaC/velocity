@@ -362,6 +362,8 @@
                 swarm={layout.active_goal_swarm}
                 {send}
               />{:else if layout.view === 'Settings' && layout.settings_tab === 'worktrees'}<WorktreeSettings
+                mirror={layout.rosen_mirror}
+                projectIdentifier={layout.project_identifier}
                 {send}
               />{:else if layout.view === 'Settings' && layout.settings_tab === 'providers'}<ProvidersSettings
                 {send}

@@ -6,10 +6,19 @@
     WorktreeSettingsView,
     WorktreeSettingsEdit,
     WorktreePathPreview,
+    MirrorState,
   } from './ipc';
   import WorktreeSettingsPanel from './WorktreeSettingsPanel.svelte';
 
-  let { send }: { send: (action: LayoutAction) => void } = $props();
+  let {
+    send,
+    mirror,
+    projectIdentifier,
+  }: {
+    send: (action: LayoutAction) => void;
+    mirror: MirrorState | null;
+    projectIdentifier: number | null;
+  } = $props();
   let view = $state<WorktreeSettingsView | null>(null);
   let error = $state('');
   let notice = $state('');
@@ -102,6 +111,8 @@
 </script>
 
 <WorktreeSettingsPanel
+  {mirror}
+  {projectIdentifier}
   {view}
   {error}
   {notice}

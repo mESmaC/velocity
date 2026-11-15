@@ -36,6 +36,7 @@ pub(crate) fn read_model(state: &PersistedState) -> LayoutData {
     if let Some(project) = active_project(state) {
         data.project_identifier = Some(project.id);
         data.project_name = project.name.clone();
+        data.rosen_mirror = project.rosen_mirror.clone();
         data.settled_expanded = project.settled_expanded;
         let merged_today = project.merged_today as usize;
         let task_count = project.tasks.len();

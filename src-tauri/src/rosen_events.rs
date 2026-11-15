@@ -50,6 +50,7 @@ async fn follow_project(application: &AppHandle, project: u32) {
         if !crate::rosen::paused(application) {
             // What a crash or a failed step left undone, before anything new.
             run_follow_ups(application, project).await;
+            report(crate::rosen_mirror::refresh(application, project).await);
             match open(application, project, after).await {
                 Ok(mut stream) => {
                     while let Some(event) = stream.next().await {
@@ -72,6 +73,9 @@ async fn consume(
     project: u32,
     event: &velocity_rosen::ProjectEvent,
 ) -> Result<(), String> {
+    if event.kind == velocity_rosen::ProjectEventKind::Mirror {
+        report(crate::rosen_mirror::refresh(application, project).await);
+    }
     let evidence = velocity_rosen::issue_event(event);
     let has_evidence = evidence.is_some();
     if let Some((change, meaning)) = evidence {
