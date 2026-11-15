@@ -275,6 +275,7 @@ impl Channel {
             &checkout.branch,
             &checkout.base,
         )
+        .map(|_branch| ())
         .map_err(|error| Error::Invalid(error.to_string()))
     }
 }

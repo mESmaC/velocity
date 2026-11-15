@@ -38,6 +38,30 @@ pub fn verify_thread_worktree(
     verify_worktree(repository, path, branch)
 }
 
+/// A thread may move its own worktree to a new branch for its next piece (#347).
+/// Updating it still requires the thread's registered linked checkout of this
+/// repository, and returns the branch now checked out there.
+pub fn thread_worktree_branch(
+    repository: &Path,
+    path: &Path,
+    registered_branch: &str,
+) -> Result<String, MergedWorktreeError> {
+    // A missing or non-linked path keeps the registered branch, so the ownership
+    // checks below report why the checkout is not the thread's.
+    let branch = if path.is_absolute() && path.join(".git").is_file() {
+        git(path, &["branch", "--show-current"])?
+    } else {
+        registered_branch.to_owned()
+    };
+    if branch.is_empty() {
+        return Err(MergedWorktreeError::Ownership(
+            "The thread's worktree has no branch checked out; keeping it".into(),
+        ));
+    }
+    verify_thread_worktree(repository, path, &branch)?;
+    Ok(branch)
+}
+
 pub fn remove_merged_worktree(
     repository: &Path,
     path: &Path,

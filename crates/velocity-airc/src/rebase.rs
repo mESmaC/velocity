@@ -3,8 +3,9 @@ use crate::{Channel, Error, Event};
 use std::path::Path;
 
 impl Channel {
-    /// Only the launcher's registered checkout is updated; git preserves dirty work
-    /// and conflicts. The agent commits its current edits before invoking this tool.
+    /// Only the launcher's registered checkout is updated, on whichever branch the
+    /// thread has checked out there; git preserves dirty work and conflicts. The agent
+    /// commits its current edits before invoking this tool.
     pub fn rebase(&self, member: &str) -> Result<(), Error> {
         let entries = self.read(0)?;
         let checkout = entries
@@ -26,13 +27,13 @@ impl Channel {
             &checkout.base,
         );
         match result {
-            Ok(()) => {
+            Ok(branch) => {
                 self.post_event(Event::new(
                     "rebased",
                     nick,
                     &format!(
-                        "updated {} with {} without rewriting history",
-                        checkout.branch, checkout.base
+                        "updated {branch} with {} without rewriting history",
+                        checkout.base
                     ),
                 ))?;
                 Ok(())
