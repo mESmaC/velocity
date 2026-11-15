@@ -55,6 +55,7 @@ pub mod projects;
 pub mod provider_views;
 pub mod providers;
 pub mod rosen;
+pub mod rosen_issue;
 mod save_behind;
 pub mod shared_mcp;
 pub mod skills;
@@ -729,6 +730,10 @@ pub struct ThreadItem {
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     #[specta(skip)]
     pub rosen_follow_ups: Vec<rosen::RosenFollowUp>,
+    /// Issue effects survive event replay, failed GitHub calls and application restarts.
+    #[serde(default)]
+    #[specta(skip)]
+    pub rosen_issue: rosen_issue::IssueProgress,
     #[serde(default)]
     pub follow_through: Option<velocity_github::follow_through::FollowThrough>,
     /// Last AIRC message whose receiving turn completed (F14).
@@ -808,6 +813,7 @@ impl ThreadItem {
             interview: None,
             goal_member: None,
             rosen_follow_ups: Vec::new(),
+            rosen_issue: Default::default(),
         }
     }
 
@@ -850,6 +856,7 @@ impl ThreadItem {
             interview: None,
             goal_member: None,
             rosen_follow_ups: Vec::new(),
+            rosen_issue: Default::default(),
         }
         .normalize()
     }

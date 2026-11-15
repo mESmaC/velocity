@@ -653,7 +653,9 @@ async fn run_thread(
         key,
         SessionSetup::new(worktree_path, plan.bypass_modes),
     );
-    setup.preface = rosen_change.as_deref().map(velocity_rosen::workspace_note);
+    setup.preface = rosen_change
+        .as_deref()
+        .map(|change| crate::rosen_issue::workspace_note(&application, key, change));
     if rosen_change.is_some() {
         let server = crate::rosen::mcp_server(&setup.worktree, &plan.agent.env);
         setup.shared_servers.extend(server);

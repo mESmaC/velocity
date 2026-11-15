@@ -27,6 +27,7 @@ mod pull_requests;
 mod repository;
 mod repository_list;
 mod request_counter;
+mod rosen_issue;
 mod scout_directory;
 mod scout_evidence;
 mod scout_issues;

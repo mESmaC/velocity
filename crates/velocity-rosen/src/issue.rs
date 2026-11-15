@@ -1,0 +1,65 @@
+//! Issue identity on the server-owned change, before its agent starts (#386).
+use rosen_client::protocol::CommentTarget;
+
+use crate::{ProjectServer, RosenError, workspace::session};
+
+/// Landed commits covered by Rosen's last successful Build job. Test jobs use a separate
+/// prefix. Missing/old protocol support, no build result, and empty build sets prove nothing.
+pub async fn issue_build_coverage(
+    server: &ProjectServer,
+    commits: &[String],
+) -> Result<Vec<String>, RosenError> {
+    if commits.is_empty() {
+        return Ok(Vec::new());
+    }
+    let client = rosen_client::Client::connect(server.endpoint()).await?;
+    let Some(green) = client.post_land_build_next().await?.last_green else {
+        return Ok(Vec::new());
+    };
+    if client
+        .project_config(Some(green))
+        .await?
+        .config
+        .checks
+        .pre_land
+        .commands
+        .is_empty()
+    {
+        return Ok(Vec::new());
+    }
+    let mut covered = Vec::new();
+    for commit in commits {
+        let identifier = crate::policy::object(commit)?;
+        if client
+            .merge_base(commit, &green.to_string())
+            .await?
+            .merge_base
+            == Some(identifier)
+        {
+            covered.push(commit.clone());
+        }
+    }
+    Ok(covered)
+}
+
+/// Locked projects have SPEC.md (Rule 2). A resolved note on its first line records the
+/// source issue without naming unfinished work or leaving an open review discussion.
+pub async fn record_issue(
+    server: &ProjectServer,
+    agent: &str,
+    change: &str,
+    repository: &str,
+    number: u32,
+) -> Result<(), RosenError> {
+    let session = session(server, agent).await?;
+    let target = CommentTarget::Line {
+        path: "SPEC.md".into(),
+        line: 1,
+    };
+    let note = session.comment(change, target, format!(
+        "Velocity source issue: {repository}#{number}. The thread retains this association; \
+         its named snapshot uses the (#{number}) suffix."
+    ), None).await?;
+    session.resolve_thread(note.id).await?;
+    Ok(())
+}

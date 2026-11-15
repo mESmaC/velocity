@@ -7,6 +7,38 @@ use tokio::sync::mpsc;
 
 use crate::{ProjectServer, RosenError};
 
+/// Evidence used by the issue follower, separate from thread and checker state.
+pub enum IssueEvent<'a> {
+    Landed(&'a str),
+    /// Independent build-prefix evidence; never decoded from a Green notification.
+    BuildPassed(&'a str),
+    Reverted {
+        commit: Option<&'a str>,
+        reason: &'a str,
+    },
+}
+
+/// R12's green notifications certify tests, not builds. Build evidence comes only from
+/// [`crate::issue_build_coverage`], which reads the separate durable build prefix.
+pub fn issue_event(event: &Event) -> Option<(&str, IssueEvent<'_>)> {
+    let change = event.change.as_deref()?;
+    let commit = || event.detail.get("commit")?.as_str();
+    let meaning = match event.kind {
+        EventKind::Landed => IssueEvent::Landed(commit()?),
+        EventKind::Reverted => IssueEvent::Reverted {
+            commit: event.detail.get("culprit").and_then(|value| value.as_str()),
+            reason: event
+                .detail
+                .get("reason")
+                .and_then(|value| value.as_str())
+                .or_else(|| event.detail.get("output").and_then(|value| value.as_str()))
+                .unwrap_or("Rosen reverted the change after its build failed."),
+        },
+        _ => return None,
+    };
+    Some((change, meaning))
+}
+
 /// What happened to a change, as far as its thread is concerned.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ChangeEvent {

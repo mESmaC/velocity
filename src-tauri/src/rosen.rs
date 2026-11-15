@@ -232,9 +232,11 @@ pub(crate) async fn take_workspace(
         .map_err(|error| error.to_string())?;
     // An agent whose edits aren't watched, or a thread that doesn't record its change,
     // would lose track of work: the change is abandoned and the thread falls back to git.
-    let kept = watch(application, &server, &workspace.root)
-        .await
-        .and_then(|()| record_change(application, key, &workspace.change).map(|_| ()));
+    let kept =
+        crate::rosen_issue::record_source(application, key, &server, &agent, &workspace.change)
+            .await
+            .and(watch(application, &server, &workspace.root).await)
+            .and_then(|()| record_change(application, key, &workspace.change).map(|_| ()));
     if let Err(error) = kept {
         application
             .state::<ManagedRosen>()
@@ -331,7 +333,11 @@ pub(crate) fn prepare_resume(
         .env
         .extend(velocity_rosen::agent_environment(&server, &name, change));
     setup.shared_servers.extend(mcp_server(root, &agent.env));
-    setup.preface = Some(velocity_rosen::workspace_note(change));
+    setup.preface = Some(crate::rosen_issue::workspace_note(
+        application,
+        (project, thread.id),
+        change,
+    ));
     // The watcher started at launch may have failed; the agent's edits are stored only
     // while one runs.
     let handle = application.clone();

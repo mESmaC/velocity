@@ -39,6 +39,7 @@ mod restart;
 pub mod reviews;
 mod rosen;
 mod rosen_events;
+mod rosen_issue;
 mod rosen_rebase;
 mod shared_mcp;
 mod skills;

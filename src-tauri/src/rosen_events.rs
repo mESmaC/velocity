@@ -53,35 +53,11 @@ async fn follow_project(application: &AppHandle, project: u32) {
             match open(application, project, after).await {
                 Ok(mut stream) => {
                     while let Some(event) = stream.next().await {
-                        after = after.max(event.seq);
-                        match velocity_rosen::change_event(&event) {
-                            Some((change, ChangeEvent::Rebased)) => {
-                                crate::rosen_rebase::rebased(application, project, change).await;
-                            }
-                            Some((change, ChangeEvent::Conflict)) => {
-                                let paths = velocity_rosen::conflict_paths(&event);
-                                crate::rosen_rebase::conflicted(
-                                    application,
-                                    project,
-                                    change,
-                                    paths,
-                                )
-                                .await;
-                            }
-                            Some((change, meaning)) => {
-                                let output = velocity_rosen::revert_output(&event);
-                                let taken = take(
-                                    application,
-                                    project,
-                                    (event.seq, change),
-                                    meaning,
-                                    output.as_deref(),
-                                );
-                                report(taken.map(|_| ()));
-                                run_follow_ups(application, project).await;
-                            }
-                            None => {}
+                        if let Err(error) = consume(application, project, &event).await {
+                            report::<()>(Err(error));
+                            break;
                         }
+                        after = after.max(event.seq);
                     }
                 }
                 Err(error) => eprintln!("Rosen events for project {project}: {error}"),
@@ -89,6 +65,46 @@ async fn follow_project(application: &AppHandle, project: u32) {
         }
         tokio::time::sleep(RECONNECT).await;
     }
+}
+
+async fn consume(
+    application: &AppHandle,
+    project: u32,
+    event: &velocity_rosen::ProjectEvent,
+) -> Result<(), String> {
+    let evidence = velocity_rosen::issue_event(event);
+    let has_evidence = evidence.is_some();
+    if let Some((change, meaning)) = evidence {
+        crate::rosen_issue::observe(application, project, change, event.seq, meaning)?;
+    }
+    match velocity_rosen::change_event(event) {
+        Some((change, ChangeEvent::Rebased)) => {
+            crate::rosen_rebase::rebased(application, project, change).await;
+        }
+        Some((change, ChangeEvent::Conflict)) => {
+            crate::rosen_rebase::conflicted(
+                application,
+                project,
+                change,
+                velocity_rosen::conflict_paths(event),
+            )
+            .await;
+        }
+        Some((change, meaning)) => {
+            let output = velocity_rosen::revert_output(event);
+            take(
+                application,
+                project,
+                (event.seq, change),
+                meaning,
+                output.as_deref(),
+            )?;
+            run_follow_ups(application, project).await;
+        }
+        None if has_evidence => run_follow_ups(application, project).await,
+        None => {}
+    }
+    Ok(())
 }
 
 async fn open(application: &AppHandle, project: u32, after: u64) -> Result<EventStream, String> {
@@ -149,6 +165,7 @@ pub(crate) async fn run_follow_ups(application: &AppHandle, project: u32) {
             }
         }
     }
+    crate::rosen_issue::follow_up(application, project).await;
 }
 
 async fn follow_up_once(

@@ -13,6 +13,7 @@ mod conflicts;
 pub mod dispatch;
 pub mod duty;
 mod events;
+mod issue;
 pub mod policy;
 pub mod post_land;
 mod process;
@@ -26,7 +27,10 @@ pub use agent::{
 };
 pub use conflicts::{conflict_message, conflict_message_without_diff};
 pub use events::{ChangeEvent, EventStream, change_event, conflict_paths, revert_output};
+pub use events::{IssueEvent, issue_event};
+pub use issue::{issue_build_coverage, record_issue};
 pub use rosen_client::Error as ClientError;
+pub use rosen_client::protocol::Event as ProjectEvent;
 pub use server::{BINARY_FOLDER_ENV, ImportSource, ProjectServer, Servers, binary_folder};
 pub use stack::stack_workspace;
 pub use workspace::{AgentWorkspace, Watches, abandon_change, create_workspace, reopen_workspace};
