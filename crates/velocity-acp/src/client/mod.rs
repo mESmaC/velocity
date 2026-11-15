@@ -94,6 +94,10 @@ pub enum AgentEvent {
     },
     /// An update that is session state rather than transcript (see [`entry_class`]).
     SessionUpdate(SessionUpdate),
+    /// `true` before `session/load` replays a history the thread does not hold yet, `false`
+    /// once it is over. The user messages in between are history, not echoes of what the
+    /// thread just sent (#340).
+    HistoryReplay(bool),
     /// A message waits: "queued · sends when the current step finishes".
     Queued,
     /// Waiting for, or admitted to, a provider concurrency slot (F15).
@@ -308,7 +312,7 @@ async fn drive(
     setup: SessionSetup,
     mut inputs: UnboundedReceiver<AgentInput>,
 ) -> Result<(), agent_client_protocol::Error> {
-    let started = session::start_or_resume_session(&connection, &setup, &shared.replaying).await?;
+    let started = start_reporting_replay(&connection, &shared, &setup).await?;
     let session_id = started.session_id;
     let mut meter = turn_usage::UsageMeter::for_setup(&setup);
     let mut options = started.options;
@@ -359,6 +363,28 @@ async fn drive(
         };
         turn.apply(steering.step(input))?;
     }
+}
+
+/// Starts the session, bracketing it with [`AgentEvent::HistoryReplay`] when a loaded session
+/// will replay its history into the transcript. The bracket closes even when the start fails,
+/// so the thread never mistakes a later echo for history.
+async fn start_reporting_replay(
+    connection: &ConnectionTo<Agent>,
+    shared: &Shared,
+    setup: &SessionSetup,
+) -> Result<session::StartedSession, agent_client_protocol::Error> {
+    let replays_history = setup
+        .resume
+        .as_ref()
+        .is_some_and(|resume| resume.replay_history);
+    if replays_history {
+        shared.emit(AgentEvent::HistoryReplay(true));
+    }
+    let started = session::start_or_resume_session(connection, setup, &shared.replaying).await;
+    if replays_history {
+        shared.emit(AgentEvent::HistoryReplay(false));
+    }
+    started
 }
 
 /// Applies new run settings mid-session. A refused change is logged and leaves the session on

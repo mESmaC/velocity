@@ -75,6 +75,9 @@ struct ThreadRuntime {
     /// Client transcript chunks acknowledge inputs in FIFO order. Opening prompts are
     /// invisible here; steering stays visible until its own acknowledgement arrives.
     pending_inputs: VecDeque<PendingInput>,
+    /// Set while `session/load` replays history into the transcript: the user messages it
+    /// replays acknowledge none of the inputs above (#340).
+    replaying_history: bool,
     /// Velocity's deliveries for a parked thread, sent after its resume prompt (#231).
     held_notices: Vec<String>,
     busy: bool,
@@ -175,6 +178,7 @@ impl ThreadRuntimes {
                 transcript: LiveTranscript::new(worktree),
                 inputs,
                 pending_inputs: VecDeque::new(),
+                replaying_history: false,
                 held_notices: Vec::new(),
                 busy: true,
                 log_tail: VecDeque::new(),
@@ -200,6 +204,7 @@ impl ThreadRuntimes {
         let (inputs, receiver) = unbounded_channel();
         let _ = inputs.send(text_input(opening_prompt));
         thread.pending_inputs = VecDeque::from([PendingInput::Opening]);
+        thread.replaying_history = false;
         for message in thread.transcript.queued() {
             let _ = inputs.send(text_input(message));
             thread.pending_inputs.push_back(PendingInput::Steering);
@@ -243,6 +248,7 @@ impl ThreadRuntimes {
                 transcript: LiveTranscript::new(worktree),
                 inputs,
                 pending_inputs: VecDeque::from([PendingInput::Opening]),
+                replaying_history: false,
                 held_notices: Vec::new(),
                 busy: true,
                 log_tail: VecDeque::new(),
@@ -366,6 +372,7 @@ impl ThreadRuntimes {
         thread.transcript.new_session();
         thread.session_tool_start = thread.transcript.tool_steps().len();
         thread.pending_inputs = prompt.map(|_| PendingInput::Opening).into_iter().collect();
+        thread.replaying_history = false;
         for message in prompt
             .into_iter()
             .chain(thread.transcript.queued().iter().map(String::as_str))
@@ -644,7 +651,10 @@ impl ThreadRuntimes {
         thread.deliveries.apply(event);
         match event {
             AgentEvent::Transcript { placement, update } => {
-                if matches!(update, SessionUpdate::UserMessageChunk(_)) {
+                // A replayed user message is history: it must not clear a queued row
+                // whose message has not been sent yet (#340).
+                if matches!(update, SessionUpdate::UserMessageChunk(_)) && !thread.replaying_history
+                {
                     thread.busy = true;
                     match thread.pending_inputs.pop_front() {
                         Some(PendingInput::Steering) => thread.transcript.sent_queued(1),
@@ -681,6 +691,10 @@ impl ThreadRuntimes {
                 // Only the client's prompt chunks above remove queued rows.
                 thread.busy = false;
                 send_held(thread);
+            }
+            AgentEvent::HistoryReplay(replaying) => {
+                thread.replaying_history = *replaying;
+                return None;
             }
             AgentEvent::Log(line) => {
                 thread.log_tail.push_back(line.clone());
@@ -762,6 +776,7 @@ fn parked_runtime(worktree: &str, follows_pull_request: bool) -> ThreadRuntime {
         transcript: LiveTranscript::new(worktree),
         inputs,
         pending_inputs: VecDeque::new(),
+        replaying_history: false,
         held_notices: Vec::new(),
         busy: false,
         log_tail: VecDeque::new(),
@@ -924,6 +939,34 @@ fn message_to_ended_thread_survives_a_failed_resume() -> Result<(), SteerError> 
     runtimes.fail(key, "Could not load the session", "load failed");
     let mut second = runtimes.resume_parked(key, "checkout", None, false)?;
     assert!(second.try_recv().is_ok());
+    assert!(runtimes.view(key).is_some_and(|view| view.blocks.iter().any(|block|
+        matches!(block, velocity_core::thread_view_model::TranscriptBlock::UserMessage { text, queued: true } if text == "keep this"))));
+    Ok(())
+}
+
+// #340: a loaded session replaying an older record's history must not clear the queued row of
+// the message that resumed the thread; a session that ends before sending it leaves it queued.
+#[cfg(test)]
+#[test]
+fn replayed_history_keeps_the_resume_message_queued() -> Result<(), SteerError> {
+    use agent_client_protocol::v1::schema::ContentChunk;
+    let mut runtimes = ThreadRuntimes::default();
+    let key = (1, 2);
+    drop(runtimes.start(key, "checkout", "start"));
+    runtimes.session_ended(key);
+    let inputs = runtimes.resume_with_message(key, "checkout", "keep this", false)?;
+    let earlier = ContentChunk::new(ContentBlock::from("an earlier message".to_owned()));
+    runtimes.apply(key, &AgentEvent::HistoryReplay(true));
+    runtimes.apply(
+        key,
+        &AgentEvent::Transcript {
+            placement: velocity_acp::Placement::Added(0),
+            update: SessionUpdate::UserMessageChunk(earlier),
+        },
+    );
+    runtimes.apply(key, &AgentEvent::HistoryReplay(false));
+    drop(inputs);
+    runtimes.fail(key, "The agent stopped", "prompt failed");
     assert!(runtimes.view(key).is_some_and(|view| view.blocks.iter().any(|block|
         matches!(block, velocity_core::thread_view_model::TranscriptBlock::UserMessage { text, queued: true } if text == "keep this"))));
     Ok(())
