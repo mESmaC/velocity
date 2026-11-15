@@ -578,7 +578,8 @@ impl StateStore {
         self.update_duty(project, DutyRole::Scouts, change)
     }
 
-    /// [`Self::update_scouts`] for any duty role: PR duty's reviews report the same way.
+    /// [`Self::update_scouts`] for any duty role. Rosen's checker also reports here without
+    /// PR duty agents, creating a feed-only entry when the project has no PR duty role.
     pub fn update_duty(
         &mut self,
         project: u32,
@@ -586,15 +587,22 @@ impl StateStore {
         change: impl FnOnce(&mut DutyRoleEntry, &str) -> Vec<DutyFeedEvent>,
     ) -> Result<Option<Vec<DutyFeedEvent>>, ProjectError> {
         let mut next = self.state.clone();
-        let Some(item) = next
-            .projects
-            .iter_mut()
-            .find(|item| item.id == project)
-            .and_then(|item| item.duty_roles.iter_mut().find(|entry| entry.role == role))
-        else {
+        let Some(project) = next.projects.iter_mut().find(|item| item.id == project) else {
             return Ok(None);
         };
-        let mut entry = item.to_core();
+        let existing = project
+            .duty_roles
+            .iter()
+            .position(|entry| entry.role == role);
+        let mut entry = match existing {
+            Some(index) => project.duty_roles[index].to_core(),
+            // The checker and post-land workers run without a staffed role. Keep their
+            // feed in the existing persisted view, without starting any duty agents.
+            None if role == DutyRole::PrDuty && project.rosen_in_use() => {
+                DutyRoleEntry::new(next_project_entry_id(project) as usize, role)
+            }
+            None => return Ok(None),
+        };
         let events = change(&mut entry, &clock_timestamp());
         entry.feed.extend(events.iter().cloned());
         // Sweeps run for as long as the app does; the feed keeps the recent part.
@@ -602,10 +610,15 @@ impl StateStore {
         entry.feed.drain(..overflow);
         let fallback = self.state.settings.providers.default_provider;
         let updated = DutyRoleItem::from_core(entry, fallback);
-        if *item != updated {
-            *item = updated;
-            self.commit_duty_state(next)?;
+        if let Some(index) = existing {
+            if project.duty_roles[index] == updated {
+                return Ok(Some(events));
+            }
+            project.duty_roles[index] = updated;
+        } else {
+            project.duty_roles.push(updated);
         }
+        self.commit_duty_state(next)?;
         Ok(Some(events))
     }
 
