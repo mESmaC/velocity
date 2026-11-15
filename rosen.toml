@@ -3,6 +3,11 @@
 # a change, so an edit takes effect only once it lands. Unknown keys are
 # refused. `rosen config show` prints the configuration in force.
 
+# Changes land on a clean merge, with no approval or pre-land receipt. Build and lint
+# run after landing and revert only a broken build; test failures are recorded and
+# filed as issues (Rosen R7, R8, R12, #365; Velocity #380).
+review = "after-land"
+
 # Untracked paths snapshots skip, in .gitignore syntax. They rank below
 # .gitignore, which already covers build output. These keep credentials that
 # Velocity copies into a workspace, or a tool leaves there, out of every
