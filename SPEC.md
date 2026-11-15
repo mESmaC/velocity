@@ -33,6 +33,7 @@ These hold for every feature. A feature that breaks one of them is wrong, whatev
 - A failing or rejected Rosen mirror stays visible on its project until the next successful push; F5 specifies the project header, Settings, retry time and rejection notice (#402).
 - Discoveries can report problems in either Velocity or Rosen to their own repositories, with separate title matching and filing results (F14, #303).
 - Generated lockfiles and bindings are regenerated rather than line-merged; F5 specifies the commands in durable rebase notices, including rebases with no text conflicts (#404).
+- A Rosen project never falls back to a git worktree when workspace creation fails: transient errors retry Rosen for about a minute, and a lasting failure leaves the thread in `error` with the Rosen error and a retry action (F5, #407).
 - Switching from Rosen to git carries Rosen's landed base into the default branch before new worktrees or ready-pool slots start; divergent history is refused with an explanation (F5, #369).
 
 ---

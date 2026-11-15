@@ -74,6 +74,11 @@ impl StateStore {
         let mut next = self.state.clone();
         for project in &mut next.projects {
             for thread in &mut project.threads {
+                if thread.pending_rosen_launch.is_some()
+                    && thread.state == crate::ThreadState::Working
+                {
+                    thread.state = crate::ThreadState::Error;
+                }
                 // Copied only when a step needs clearing: the transcript is shared (#319).
                 if thread.transcript.iter().any(has_running_step) {
                     for block in std::sync::Arc::make_mut(&mut thread.transcript) {

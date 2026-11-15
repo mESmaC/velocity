@@ -4606,7 +4606,7 @@ export type ThreadItem_Serialize = {
 	goal_member: GoalThreadMember_Serialize | null,
 };
 
-export type ThreadMenuAction = "OpenWorktree" | "CopyWorktreePath" | "OpenPullRequest" | "Delete";
+export type ThreadMenuAction = "RetryWorkspace" | "OpenWorktree" | "CopyWorktreePath" | "OpenPullRequest" | "Delete";
 
 export type ThreadMenuEntry = ThreadMenuEntry_Serialize | ThreadMenuEntry_Deserialize;
 
@@ -4848,7 +4848,7 @@ export type UsageWindowView = {
 
 /**
  *  How a project's agents get their working folders (F5). Rosen is first-class; git
- *  worktrees are the fallback, used when the project chooses git or Rosen can't start.
+ *  worktrees are used only when the project chooses git; Rosen launches never fall back.
  */
 export type VersionControl = "rosen" | "git";
 

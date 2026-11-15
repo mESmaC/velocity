@@ -2,8 +2,8 @@
 //!
 //! Velocity starts and owns one Rosen server per project, imports the project's git
 //! repository into it with GitHub as the mirror, and gives each agent a Rosen change and
-//! workspace in place of a git worktree. Git worktrees stay as the fallback when Rosen is
-//! unavailable or a project chooses git.
+//! workspace in place of a git worktree. Git worktrees are used only when a project
+//! chooses git; Rosen failures retain a retryable launch.
 
 mod agent;
 #[cfg(feature = "bundled")]
@@ -21,6 +21,7 @@ mod mirror;
 pub mod policy;
 pub mod post_land;
 mod process;
+mod retry;
 pub mod review_swarm;
 mod server;
 mod stack;
@@ -38,13 +39,15 @@ pub use events::{IssueEvent, issue_event};
 pub use git_base::synchronize_git_base;
 pub use issue::{issue_build_coverage, record_issue};
 pub use mirror::{MirrorObservation, mirror_status};
+pub use retry::retry_workspace;
 pub use rosen_client::Error as ClientError;
 pub use rosen_client::protocol::Event as ProjectEvent;
 pub use rosen_client::protocol::EventKind as ProjectEventKind;
 pub use server::{BINARY_FOLDER_ENV, ImportSource, ProjectServer, Servers, binary_folder};
 pub use stack::stack_workspace;
 pub use workspace::{
-    AgentWorkspace, Watches, abandon_change, create_workspace, rebase_pending, reopen_workspace,
+    AgentWorkspace, Watches, abandon_change, create_workspace, create_workspace_retaining_change,
+    rebase_pending, reopen_workspace,
 };
 
 use std::path::PathBuf;
@@ -74,6 +77,11 @@ pub enum RosenError {
     InvalidId(String),
     #[error(transparent)]
     Client(#[from] rosen_client::Error),
+    #[error("created Rosen change {change} but could not prepare its workspace: {source}")]
+    WorkspaceNotCreated {
+        change: String,
+        source: Box<rosen_client::Error>,
+    },
     #[error("the watcher on {0} ended as it started")]
     WatchEnded(PathBuf),
     #[error("could not {action} {path}: {source}")]
