@@ -74,9 +74,11 @@ $postLand = @(Get-PostLandCommands)
 if ($postLand.Count -eq 0 -and (Test-Path -LiteralPath 'rosen.toml')) {
     Write-Host '==> Post-land tests: rosen.toml names none' -ForegroundColor Cyan
 }
-foreach ($command in $postLand) {
+# Not $command: the script block runs inside Invoke-Step, where that name (variables
+# ignore case) is its own $Command parameter, so Invoke-Expression got a script block.
+foreach ($postLandCommand in $postLand) {
     # Each is one line that runs the same from cmd, PowerShell and sh (rosen.toml).
-    Invoke-Step "Post-land: $command" { Invoke-Expression $command }
+    Invoke-Step "Post-land: $postLandCommand" { Invoke-Expression $postLandCommand }
 }
 
 Invoke-Step 'Stress: cargo run -p stress -- --all' { cargo run -p stress -- --all }
