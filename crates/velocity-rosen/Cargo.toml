@@ -20,5 +20,6 @@ bundled = []
 rosen-client = { git = "https://github.com/mESmaC/rosen", rev = "b740ab723b933d25dd6647833a5b17b1e75bff75" }
 # The model types the client does not re-export (snapshot kinds, review thread states).
 rosen-core = { git = "https://github.com/mESmaC/rosen", rev = "b740ab723b933d25dd6647833a5b17b1e75bff75" }
+serde.workspace = true
 thiserror.workspace = true
 tokio = { workspace = true, features = ["sync"] }
