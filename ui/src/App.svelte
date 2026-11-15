@@ -383,34 +383,52 @@
         >{/if}
     </div>{:else}<p class="empty" role="status">Opening workspace…</p>{/if}
 </div>
-{#if layout?.palette_open}<CommandPalette {layout} {send} />{/if}
-{#if layout?.new_project_open}<NewProjectDialog
-    {send}
-    submitRequests={newProjectSubmits}
-  />{/if}
-{#if layout?.duty_dialog_open}<DutyDialog
-    initialRole={layout.duty_dialog_role}
-    {send}
-    submitRequests={dutySubmits}
-    onResult={receive}
-  />{/if}
-{#if layout?.swarm_dialog}{#key `${layout.swarm_dialog.source}-${layout.swarm_dialog.into}`}<SwarmDialog
-      request={layout.swarm_dialog}
+{#if layout?.palette_open}<PaneBoundary name="command palette" {revision}
+    ><CommandPalette {layout} {send} /></PaneBoundary
+  >{/if}
+{#if layout?.new_project_open}<PaneBoundary name="new project" {revision}
+    ><NewProjectDialog
       {send}
-      submitRequests={swarmSubmits}
-      onResult={receive}
-    />{/key}{/if}
-{#if layout?.goal_dialog}{#key layout.goal_dialog.into}<GoalSwarmDialog
-      request={layout.goal_dialog}
+      submitRequests={newProjectSubmits}
+    /></PaneBoundary
+  >{/if}
+{#if layout?.duty_dialog_open}<PaneBoundary name="duty dialog" {revision}
+    ><DutyDialog
+      initialRole={layout.duty_dialog_role}
       {send}
-      submitRequests={goalSubmits}
+      submitRequests={dutySubmits}
       onResult={receive}
-    />{/key}{/if}
-{#if layout?.airc_open && layout.project_identifier !== null}{#key layout.project_identifier}<AircModal
-      project={layout.project_identifier}
-      {send}
-      onResult={receive}
-    />{/key}{/if}
+    /></PaneBoundary
+  >{/if}
+{#if layout?.swarm_dialog}{#key `${layout.swarm_dialog.source}-${layout.swarm_dialog.into}`}<PaneBoundary
+      name="swarm dialog"
+      {revision}
+      ><SwarmDialog
+        request={layout.swarm_dialog}
+        {send}
+        submitRequests={swarmSubmits}
+        onResult={receive}
+      /></PaneBoundary
+    >{/key}{/if}
+{#if layout?.goal_dialog}{#key layout.goal_dialog.into}<PaneBoundary
+      name="goal swarm dialog"
+      {revision}
+      ><GoalSwarmDialog
+        request={layout.goal_dialog}
+        {send}
+        submitRequests={goalSubmits}
+        onResult={receive}
+      /></PaneBoundary
+    >{/key}{/if}
+{#if layout?.airc_open && layout.project_identifier !== null}{#key layout.project_identifier}<PaneBoundary
+      name="AIRC"
+      {revision}
+      ><AircModal
+        project={layout.project_identifier}
+        {send}
+        onResult={receive}
+      /></PaneBoundary
+    >{/key}{/if}
 {#if threadMenu}<ThreadMenu
     menu={threadMenu.view}
     x={threadMenu.x}

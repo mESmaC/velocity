@@ -174,13 +174,13 @@
           <p class="cl-note" class:warn={view?.claims_warn}>
             {view?.claims_note ?? ''}
           </p>
-          {#each view?.claims ?? [] as claim (claim.nick + claim.task)}<div
+          {#each view?.claims ?? [] as claim, index (`${index}:${claim.nick}:${claim.task}`)}<div
               class="cl"
             >
               <span class="n {tone(claim.nick_tone)}">{claim.nick}</span><span
                 class="tk">{claim.task}</span
               ><span class="st">{claim.state}</span><span class="fs"
-                >{#each claim.files as file (file.path)}<code
+                >{#each claim.files as file, index (`${index}:${file.path}`)}<code
                     class:ov={file.overlap}>{file.path}</code
                   >{/each}</span
               >
@@ -224,7 +224,7 @@
         {#each view?.nick_groups ?? [] as group (group.label)}<div class="nk-h">
             {group.label}
           </div>
-          {#each group.rows as row (row.nick)}<button
+          {#each group.rows as row, index (`${index}:${row.nick}`)}<button
               class="nk"
               title="Mention {row.nick}"
               onclick={() => mention(row.nick)}
