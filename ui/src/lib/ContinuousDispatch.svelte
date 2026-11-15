@@ -12,9 +12,14 @@
   let view = $state<DispatchView | null>(null);
   let pending = $state(false);
   let error = $state<string | null>(null);
+  // The parent passes a field of the layout snapshot, which is replaced on every publish.
+  // Reading the prop in the effect would rerun it each time: the panel was cleared and
+  // refetched several times a second, and the sidebar below it jumped. A derived only
+  // changes when the project does.
+  const currentProject = $derived(projectIdentifier);
 
   $effect(() => {
-    const project = projectIdentifier;
+    const project = currentProject;
     view = null;
     error = null;
     if (project === null) return;
