@@ -56,7 +56,15 @@ pub fn remove_merged_worktree(
             "The project's checkout cannot be removed as a thread worktree".into(),
         ));
     }
-    let registered = registered_worktree(repository, path, branch)?;
+    let registered = listed_worktree(repository, path, branch)?;
+    if !registered && path.exists() {
+        // An interrupted `git worktree remove` left this folder (#293). While the file that
+        // stopped git is still held this fails, and a later pass retries.
+        if !is_removal_leftover(repository, path) {
+            return Err(not_registered());
+        }
+        std::fs::remove_dir_all(path_identity(path)?)?;
+    }
     if path.exists() {
         verify_deletion(repository, path, branch, true, false)?;
     }
@@ -135,6 +143,24 @@ fn registered_worktree(
     path: &Path,
     branch: &str,
 ) -> Result<bool, MergedWorktreeError> {
+    let registered = listed_worktree(repository, path, branch)?;
+    if !registered && path.exists() {
+        return Err(not_registered());
+    }
+    // A crash after removal but before the checkpoint must be safe to retry.
+    Ok(registered)
+}
+
+fn not_registered() -> MergedWorktreeError {
+    MergedWorktreeError::Ownership("The path is not registered to this repository".into())
+}
+
+/// Whether git lists `path` as a worktree on `branch`. Listed on another branch fails closed.
+fn listed_worktree(
+    repository: &Path,
+    path: &Path,
+    branch: &str,
+) -> Result<bool, MergedWorktreeError> {
     let identity = path_identity(path)?;
     let worktrees = git(repository, &["worktree", "list", "--porcelain", "-z"])?;
     for record in worktrees.split("\0\0") {
@@ -158,13 +184,53 @@ fn registered_worktree(
             "The registered worktree's branch changed; keeping it".into(),
         ));
     }
-    if path.exists() {
-        return Err(MergedWorktreeError::Ownership(
-            "The path is not registered to this repository".into(),
-        ));
-    }
-    // A crash after removal but before the checkpoint must be safe to retry.
     Ok(false)
+}
+
+/// What an interrupted `git worktree remove --force` leaves on Windows (#283, #293). Git
+/// deletes the checkout's `.git` file first, stops at a file another process still holds
+/// open, and drops the registration anyway. The folder is then no checkout: ownership checks
+/// would refuse it as unregistered for ever. Nothing of git is left in it to lose (the branch
+/// and its commits live in the repository), so the thread's own folder at its fixed path can
+/// go once the file is released. Fails closed: any `.git` entry below it, or the repository
+/// inside it, keeps it.
+pub fn is_removal_leftover(repository: &Path, worktree: &Path) -> bool {
+    match (
+        std::fs::canonicalize(repository),
+        std::fs::canonicalize(worktree),
+    ) {
+        // Canonical paths are `\\?\` paths on Windows, so the walk below has no length limit.
+        (Ok(repository), Ok(worktree)) => {
+            !repository.starts_with(&worktree) && !contains_git_entry(&worktree)
+        }
+        _ => false,
+    }
+}
+
+/// Whether a `.git` file or folder is anywhere under `folder`, links not followed. An
+/// unreadable folder counts as one.
+fn contains_git_entry(folder: &Path) -> bool {
+    let mut pending = Vec::from([folder.to_path_buf()]);
+    while let Some(directory) = pending.pop() {
+        let Ok(entries) = std::fs::read_dir(&directory) else {
+            return true;
+        };
+        for entry in entries {
+            let Ok(entry) = entry else {
+                return true;
+            };
+            if entry.file_name() == ".git" {
+                return true;
+            }
+            let Ok(kind) = entry.file_type() else {
+                return true;
+            };
+            if kind.is_dir() && !kind.is_symlink() {
+                pending.push(entry.path());
+            }
+        }
+    }
+    false
 }
 
 fn path_identity(path: &Path) -> Result<PathBuf, MergedWorktreeError> {
@@ -255,4 +321,63 @@ pub fn verify_deletion(
         ));
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // Risk (#293): after a `git worktree remove --force` interrupted by a held file, the
+    // merged thread's folder was refused as unregistered on every pass and never removed.
+    // The leftover and its branch must go, but a folder still holding any `.git` stays.
+    #[test]
+    fn merged_cleanup_removes_an_interrupted_removal_leftover()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let root = std::env::temp_dir().join(format!("velocity-293-{}", std::process::id()));
+        let repository = root.join("repository");
+        let worktree = root.join("worktrees").join("leftover");
+        std::fs::create_dir_all(&repository)?;
+        let git = |arguments: &[&str]| -> Result<(), Box<dyn std::error::Error>> {
+            let identity = [
+                "-c",
+                "user.name=velocity",
+                "-c",
+                "user.email=velocity@example.com",
+            ];
+            let status = crate::command::hidden_command("git")
+                .current_dir(&repository)
+                .args(identity)
+                .args(arguments)
+                .status()?;
+            if status.success() {
+                Ok(())
+            } else {
+                Err("git failed".into())
+            }
+        };
+        git(&["init", "-q"])?;
+        git(&["commit", "-q", "--allow-empty", "-m", "base"])?;
+        git(&[
+            "worktree",
+            "add",
+            "-q",
+            "-b",
+            "vel/leftover",
+            &worktree.display().to_string(),
+        ])?;
+        // What git leaves: no `.git` file, no registration, the rest of the folder.
+        std::fs::remove_file(worktree.join(".git"))?;
+        std::fs::remove_dir_all(repository.join(".git").join("worktrees"))?;
+        std::fs::create_dir_all(worktree.join("held").join(".git"))?;
+        let kept = remove_merged_worktree(&repository, &worktree, "vel/leftover", true);
+        let kept_folder = worktree.is_dir();
+        std::fs::remove_dir_all(worktree.join("held"))?;
+        let removed = remove_merged_worktree(&repository, &worktree, "vel/leftover", true);
+        let removed_folder = !worktree.exists();
+        let branch_gone = git(&["show-ref", "--verify", "refs/heads/vel/leftover"]).is_err();
+        std::fs::remove_dir_all(&root)?;
+        assert!(kept.is_err() && kept_folder);
+        assert!(removed.is_ok() && removed_folder && branch_gone);
+        Ok(())
+    }
 }
