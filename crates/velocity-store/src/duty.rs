@@ -215,6 +215,11 @@ pub struct DutyDialogDefaults {
     pub main_watcher_exists: bool,
     pub pr_rules: PrDutyRuleSettings,
     pub scout_rules: ScoutRuleSettings,
+    /// The active project uses Rosen and reviews after the land (`rosen.toml`
+    /// `review = "after-land"`), so the dialog doesn't offer PR duty (F7, #381). Only Rosen
+    /// can say, so the window's command fills it in.
+    #[serde(default)]
+    pub lands_without_review: bool,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, Type)]
@@ -314,6 +319,7 @@ impl StateStore {
             scout_rules: existing_scouts
                 .map(|item| item.scout_rules.clone())
                 .unwrap_or_default(),
+            lands_without_review: false,
         }
     }
 

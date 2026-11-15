@@ -47,6 +47,7 @@ pub use ready_pool::{PoolHost, PoolProject, PoolRow, PoolTicket, ReadyPools};
 pub use review::{PR_DUTY_SERVER_SWITCH, READING_REVIEW_ARGUMENT, ReviewPlan, plan_review};
 pub use review_runner::{PrDutyReviews, ReviewChange, ReviewHost};
 pub use rosen_duty_server::{ROSEN_DUTY_SERVER_SWITCH, RosenDutyServer};
+pub use rosen_review::lands_without_review;
 pub use runtime::{
     RunningSession, SessionInputs, SteerError, StopOutcome, ThreadKey, ThreadProgress,
     ThreadRuntimes, spawn_session,

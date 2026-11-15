@@ -870,6 +870,12 @@ export type DutyDialogDefaults_Deserialize = {
 	main_watcher_exists: boolean,
 	pr_rules: PrDutyRuleSettings,
 	scout_rules: ScoutRuleSettings,
+	/**
+	 *  The active project uses Rosen and reviews after the land (`rosen.toml`
+	 *  `review = "after-land"`), so the dialog doesn't offer PR duty (F7, #381). Only Rosen
+	 *  can say, so the window's command fills it in.
+	 */
+	lands_without_review?: boolean,
 };
 
 export type DutyDialogDefaults_Serialize = {
@@ -888,6 +894,12 @@ export type DutyDialogDefaults_Serialize = {
 	main_watcher_exists: boolean,
 	pr_rules: PrDutyRuleSettings,
 	scout_rules: ScoutRuleSettings,
+	/**
+	 *  The active project uses Rosen and reviews after the land (`rosen.toml`
+	 *  `review = "after-land"`), so the dialog doesn't offer PR duty (F7, #381). Only Rosen
+	 *  can say, so the window's command fills it in.
+	 */
+	lands_without_review: boolean,
 };
 
 export type DutyEventKind = "merge" | "approve" | "changes" | "wait" | "file" | "sweep" | "claim" | "skip" | "task" | "you";

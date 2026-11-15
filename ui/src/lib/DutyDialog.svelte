@@ -131,6 +131,7 @@
         speed = loaded.speed;
         prRules = loaded.pr_rules;
         scoutRules = loaded.scout_rules;
+        if (loaded.lands_without_review && role === 'pr_duty') role = 'scouts';
       })
       .catch(report);
     return () => {
@@ -174,6 +175,13 @@
     if (role === 'scouts') return defaults.scouts_exists;
     return defaults.main_watcher_exists;
   }
+
+  // A Rosen project that reviews after the land has no approval for PR duty to give (F7).
+  const offeredRoles = $derived(
+    defaults?.lands_without_review
+      ? roles.filter(([value]) => value !== 'pr_duty')
+      : roles,
+  );
 
   const selectedRole = $derived(
     roles.find(([value]) => value === role) ?? roles[0],
@@ -232,7 +240,7 @@
       <fieldset class="field">
         <legend class="label">Role</legend>
         <div class="role-cards" role="group" aria-label="Role">
-          {#each roles as [value, icon, name, desc] (value)}
+          {#each offeredRoles as [value, icon, name, desc] (value)}
             <button
               type="button"
               class="role-card"
@@ -245,6 +253,13 @@
             </button>
           {/each}
         </div>
+        {#if defaults?.lands_without_review}
+          <div class="hint">
+            This project's rosen.toml sets review = "after-land": Velocity lands
+            each change once it merges cleanly, with no approval, so PR duty
+            isn't offered. Builds, tests and review follow the land.
+          </div>
+        {/if}
       </fieldset>
 
       <div class="field">

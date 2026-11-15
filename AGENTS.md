@@ -35,6 +35,7 @@ Your job is working functionality. Proofs, tests and docs support it; they never
 - Proofs: `lake build` in `proofs/`. Run it before every push that changes `proofs/`.
 - Proof toolchain setup (Windows + Ubuntu WSL): `powershell -File proofs/scripts/Setup-Toolchain.ps1`.
 - Charon and Aeneas (only when an issue asks for a translation): `powershell -File proofs/scripts/Export-Rust.ps1 -CratePath crates/<crate> -Feature <Feature> -StartFrom crate::<module>`. This runs pinned `charon cargo --preset=aeneas` then `aeneas -backend lean`; complete the confidence proof and run `lake build` afterwards. See `proofs/README.md`.
+- Release gate: `pwsh -NoProfile -File scripts/release-gate.ps1`, on the release commit. It requires no open `release-blocker` issue, the post-land tests in `rosen.toml`, `cargo run -p stress -- --all`, and `lake build` with the axiom audit (SPEC.md F7 "The release gate"). The release workflow runs it before it builds anything.
 - Stress: `cargo run -p stress -- --all`. Scouts and PR duty agents only. To run one script, name it: `cargo run -p stress -- pr86-read-overlap` (`--list` shows the names). A named run skips the workspace tests and UI build that `--all` adds.
 - UI type check: `pnpm -C ui check` (svelte-check). Zero errors and zero warnings.
 - UI lint: `pnpm -C ui lint`. Zero warnings.
@@ -104,7 +105,7 @@ SPEC.md §1 overrides everything else. Never build any of these:
 Lean proves a few algorithms where a mistake loses work or breaks coordination. It never blocks implementation, and most pieces have no Lean.
 - Write Lean only for features on the proof list in SPEC.md F17: claim lock, targeted rebases and landing, worktree deletion, goal swarm work choice, and stall detection and claim release. Every other piece ships with no Lean.
 - If you think a feature belongs on the proof list, file an issue. Never write a proof for a feature that isn't on it.
-- For a proof-list feature, write the code first. Then, in the same PR, write `proofs/<Feature>/Design.lean`. It states exactly three theorems:
+- For a proof-list feature, write the code first. Then, in the same PR, write `proofs/<Feature>/Design.lean`. On a Rosen project whose `rosen.toml` sets `review = "after-land"`, the Lean follows the land instead: proof agents write and check it in a later change (SPEC.md §1 Rule 8), and the release gate's `lake build` holds every release to it. It states exactly three theorems:
   - `correct`: the model meets the SPEC.md section it implements. Name that section in the file.
   - `cost_bound`: its cost stays within a bound, under a cost model the file defines.
   - `optimal`: no alternative in a class the theorem states costs less.
@@ -179,7 +180,7 @@ Most merge conflicts come from a few files every feature touches. Keep your edit
 - **Silent conflicts:** after merging `master`, a build error in code neither side edited (a struct gained a field, a function was renamed) is a merge conflict. Fix it in the merge commit.
 
 ## Sensitive paths
-PR duty tiers every change and PR (SPEC.md F7 Tiered review). A change or PR that touches a path listed here is sensitive: full review, `cargo run -p stress -- --all` on the merge result before merge, and a confidence proof at the reference level (a fixture table exported from the Lean model plus one Rust test that checks the implementation against it) for any proof-list feature it changes. The code level (an Aeneas translation) is required only when an issue asks for one (#142). A PR that changes only docs, comments or formatting is trivial: approve it once `scripts/check.ps1` passes and the change matches its claim. Every other PR gets the full review. Every tier needs an approving review.
+PR duty tiers every change and PR (SPEC.md F7 Tiered review). On a Rosen project whose `rosen.toml` sets `review = "after-land"`, a sensitive change gets no review before it lands: it lands on a clean merge like every change, and goes first in the review queue after the land. Everywhere else, a change or PR that touches a path listed here is sensitive: full review, `cargo run -p stress -- --all` on the merge result before merge, and a confidence proof at the reference level (a fixture table exported from the Lean model plus one Rust test that checks the implementation against it) for any proof-list feature it changes. The code level (an Aeneas translation) is required only when an issue asks for one (#142). A PR that changes only docs, comments or formatting is trivial: approve it once `scripts/check.ps1` passes and the change matches its claim. Every other PR gets the full review. Every tier needs an approving review.
 - `rosen.toml`: the project's Rosen configuration; it names the checks a land needs, the sensitive paths and the mirror remote. Keep its `sensitive` list the same as the list in this file. Its `registration_lists` also holds the generated files, for the reason it gives.
 - `crates/velocity-store/`: saved state; a mistake loses `state.json`.
 - `crates/velocity-git/src/lifecycle.rs`, `crates/velocity-git/src/merged_worktree.rs`, `crates/velocity-git/src/review.rs`: worktree deletion.
@@ -196,6 +197,7 @@ One piece, one change (or one PR).
 - Every file you write is on the Rosen server within 2 seconds; there is nothing to push. `rosen status` shows what is stored and whether the server has rebased your change; `rosen diff` shows your change.
 - When the work runs end to end and its checks pass (`scripts/check.ps1` covers what your change can affect), name it: `rosen commit -m "<what changed, the §7 item or issue, the theorems proved>"`. That is your request for review. End your turn.
 - PR duty reviews your change's merge result onto `master`, and Velocity runs `rosen.toml`'s pre-land checks on that exact tree before it lands it. Never approve or land your own change (`rosen review approve`, `rosen receipt submit`, `rosen land`).
+- When `rosen.toml` sets `review = "after-land"` (SPEC.md §1 Rosen rules), no one reviews before the land and no check holds it: Velocity lands your change as soon as it merges cleanly onto `master`. Build and lint it through `rosen run` before you name it: the build and lint run again right after the land, and a change that breaks them is reverted. Review, scouting, the full tests and Lean follow the land; a full test your change fails is filed as a `post-land-failure` issue, not reverted. Your task is finished when your change lands.
 - Requested changes and failed pre-land checks come back to you as a message. Fix them, then name the work again with `rosen commit -m`.
 - A conflict with `master`: run `rosen rebase`, combine both sides between the conflict markers, run `rosen resolve <file>` for each file, then `rosen commit -m` again.
 - After a land, the post-land checks run the full tests. If your change broke them, Rosen reverts it and Velocity reopens your workspace with the failing output. Your work is kept: fix it and name it again.
@@ -214,6 +216,7 @@ One piece, one change (or one PR).
 - If the PR is closed without merging, report why in your thread and keep your worktree.
 
 ## If you are on PR duty
+- PR duty is for git projects, and for Rosen projects whose `rosen.toml` keeps `review = "before-land"`. On a Rosen project that sets `review = "after-land"`, Velocity lands changes with no approval; PR duty there reviews only the project's GitHub PRs.
 - For a Rosen change, Velocity gives you the review claim, a folder holding the change's merge result and the `rosen_duty_*` tools, and its prompt says which checks you run. Record every decision with `rosen_duty_review`. Velocity runs the pre-land checks and lands. The review rules and Review severity below apply; the GitHub steps (labels, holds, `gh`, branch updates) do not.
 - For a GitHub PR, everything below applies.
 - Hold one open, ready PR at a time. To take one: pick a ready PR without the `reviewing` label, or one whose hold is stale (below), add the label (`gh pr edit <n> --add-label reviewing`), comment "Reviewing · <your worktree slug>", then read the PR's comments again. If another agent's "Reviewing" comment is earlier than yours and its hold is live, leave the label and pick another PR.

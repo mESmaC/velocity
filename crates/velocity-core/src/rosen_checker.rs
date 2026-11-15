@@ -84,7 +84,7 @@ pub fn check_failed_message(change: &str, base: &str, failed: &FailedCheck) -> S
 /// What the author's agent is told when its approved change no longer merges onto the base.
 pub fn conflict_message(change: &str, base_branch: &str, files: &[String]) -> String {
     format!(
-        "Your approved Rosen change `{}` no longer merges onto `{base_branch}`: it conflicts in {}. Run `rosen rebase` in your workspace, combine both sides between the conflict markers, run `rosen resolve <file>` for each file, then name the work again with `rosen commit -m \"<what changed>\"` so PR duty reviews it again.\n",
+        "Your Rosen change `{}` no longer merges onto `{base_branch}`: it conflicts in {}. Run `rosen rebase` in your workspace, combine both sides between the conflict markers, run `rosen resolve <file>` for each file, then name the work again with `rosen commit -m \"<what changed>\"` so it lands again under the project's review policy.\n",
         short_change(change),
         files.join(", "),
     )

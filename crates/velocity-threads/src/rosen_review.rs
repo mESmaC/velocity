@@ -18,6 +18,20 @@ use velocity_store::{ReviewStage, ThreadState};
 use crate::review::{ReviewPlan, plan_change_review};
 use crate::rosen_duty_server::{RosenDutyLaunch, check_out_review};
 
+/// Whether project `project` lands its changes with no review first: its `rosen.toml` at the
+/// current base sets `review = "after-land"` (#380). A project that uses no Rosen, or whose
+/// policy Rosen can't say, reviews before the land, as Rosen enforces when it says nothing
+/// else. The Duty dialog leaves PR duty out for such a project (F7, #381).
+pub async fn lands_without_review(app_data: &Path, project: u32, uses_rosen: bool) -> bool {
+    if !uses_rosen {
+        return false;
+    }
+    let server = ProjectServer::new(app_data, project);
+    velocity_rosen::post_land::after_land(&server)
+        .await
+        .unwrap_or(false)
+}
+
 /// The project's Rosen changes in review, each with whether Rosen holds an approval at its
 /// head.
 pub(crate) async fn change_candidates(

@@ -33,12 +33,24 @@ impl DutyEventPublished {
 pub async fn get_duty_dialog_defaults(
     application: AppHandle,
 ) -> Result<DutyDialogDefaults, String> {
-    crate::layout::off_ui_thread(move || {
-        let store = application.state::<ManagedStateStore>();
+    let reader = application.clone();
+    let (mut defaults, project) = crate::layout::off_ui_thread(move || {
+        let store = reader.state::<ManagedStateStore>();
         let store = store.lock().map_err(|error| error.to_string())?;
-        Ok(store.duty_dialog_defaults())
+        let project = store
+            .active_project()
+            .map(|project| (project.id, project.rosen_in_use()));
+        Ok((store.duty_dialog_defaults(), project))
     })
-    .await
+    .await?;
+    // Only Rosen says whether the project reviews after the land (F7, #381).
+    if let (Some((project, uses_rosen)), Ok(app_data)) =
+        (project, application.path().app_data_dir())
+    {
+        defaults.lands_without_review =
+            velocity_threads::lands_without_review(&app_data, project, uses_rosen).await;
+    }
+    Ok(defaults)
 }
 
 /// What a PR duty agent's latest review session showed (F7), for the Duty view's session

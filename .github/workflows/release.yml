@@ -15,6 +15,8 @@ on:
 
 permissions:
   contents: write
+  # The release gate lists open release-blocker issues.
+  issues: read
 
 concurrency:
   group: release
@@ -27,8 +29,51 @@ env:
   MANIFEST_TAG: updater
 
 jobs:
+  # The release is the gate (SPEC.md F7 "The release gate", #381): on a Rosen project no
+  # approval gates a land, so nothing is built or published until the release commit passes
+  # the post-land tests, the stress suite and the proofs, with no release-blocker open.
+  gate:
+    name: Release gate
+    runs-on: windows-latest
+    timeout-minutes: 300
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ env.TAG }}
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10.34.9
+      - name: Install pinned Rust toolchain
+        run: rustup show active-toolchain
+      - name: Install UI dependencies
+        run: pnpm -C ui install --frozen-lockfile
+      # elan installs the toolchain proofs/lean-toolchain pins on first use; Mathlib's
+      # built files come from its cache rather than a build from source.
+      - name: Install Lean
+        shell: pwsh
+        run: |
+          Invoke-WebRequest -UseBasicParsing -Uri https://raw.githubusercontent.com/leanprover/elan/master/elan-init.ps1 -OutFile "$env:RUNNER_TEMP\elan-init.ps1"
+          & "$env:RUNNER_TEMP\elan-init.ps1" -NoPrompt 1 -DefaultToolchain none
+          if ($LASTEXITCODE -ne 0) { throw "Could not install elan" }
+          "$env:USERPROFILE\.elan\bin" >> $env:GITHUB_PATH
+      - name: Fetch Mathlib's cache
+        shell: pwsh
+        working-directory: proofs
+        run: |
+          lake exe cache get
+          if ($LASTEXITCODE -ne 0) { throw "Could not fetch Mathlib's cache" }
+      - name: Run the release gate
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: pwsh -NoProfile -File scripts/release-gate.ps1 -Repository ${{ github.repository }}
+
   release:
     name: Build, sign and publish
+    needs: gate
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v4
