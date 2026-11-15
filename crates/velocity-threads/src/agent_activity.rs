@@ -151,6 +151,7 @@ fn stalled(thread: &ThreadItem, settings: &AgentSettings, now: u64, queued_build
 }
 
 /// Tool rows retain the queue command while it waits and runs; neither counts as silence.
+/// `rosen run` is the machine-wide queue every agent is told to use (#308).
 pub fn in_build_queue(blocks: &[velocity_core::thread_view_model::TranscriptBlock]) -> bool {
     use velocity_core::thread_view_model::TranscriptBlock;
     let start = blocks
@@ -161,7 +162,9 @@ pub fn in_build_queue(blocks: &[velocity_core::thread_view_model::TranscriptBloc
         TranscriptBlock::ToolGroup { steps } => steps.iter().any(|step| {
             let command = step.argument.replace('\\', "/");
             step.running
-                && (command.contains("build-queue.ps1") || command.contains("scripts/check.ps1"))
+                && (command.contains("build-queue.ps1")
+                    || command.contains("scripts/check.ps1")
+                    || command.contains("rosen run"))
         }),
         _ => false,
     })

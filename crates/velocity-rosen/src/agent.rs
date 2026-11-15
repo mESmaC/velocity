@@ -41,15 +41,36 @@ pub fn agent_environment(
             String::from("velocity-starts-the-rosen-server"),
         ),
     ]);
-    if let Ok(folder) = binary_folder() {
-        let existing = std::env::var_os("PATH").unwrap_or_default();
-        let folders = std::iter::once(folder).chain(std::env::split_paths(&existing));
-        if let Ok(path) = std::env::join_paths(folders) {
-            environment.push((String::from("PATH"), path.to_string_lossy().into_owned()));
-        }
+    let existing = std::env::var_os("PATH").unwrap_or_default();
+    if let Some(path) = path_with_rosen(&existing.to_string_lossy()) {
+        environment.push((String::from("PATH"), path));
     }
     environment
 }
+
+/// `existing` (a `PATH` value) with Rosen's folder first, so the agent's shell finds
+/// `rosen`. `None` when the `rosen` program isn't found.
+pub fn path_with_rosen(existing: &str) -> Option<String> {
+    let folder = binary_folder().ok()?;
+    let folders = std::iter::once(folder).chain(std::env::split_paths(existing));
+    let path = std::env::join_paths(folders).ok()?;
+    Some(path.to_string_lossy().into_owned())
+}
+
+/// What an agent whose folder is not a Rosen workspace, such as a git worktree in any
+/// project, is told with its first message (F5 "Build queue", #308): `rosen run` waits in
+/// the machine's run queue (Rosen R3) whatever folder it runs in, so builds from every
+/// project take turns in one line. A Rosen workspace's [`workspace_note`] says the same.
+pub fn run_queue_note() -> &'static str {
+    RUN_QUEUE_NOTE
+}
+
+const RUN_QUEUE_NOTE: &str = "[Velocity] Run every heavy build, test and lint (compile, test, \
+     clippy, a project's full local checks) through `rosen run -- <command>`, such as \
+     `rosen run -- cargo build -p <crate>`: builds on this machine, from every project, take \
+     turns in one queue, so yours has the cores when it runs. A PR duty landing check runs \
+     first with `rosen run --class landing -- <command>`. Use it in place of any build queue \
+     script your instructions name. Never run a long-lived dev server through it.";
 
 /// Rosen's own MCP server for an agent (Rosen R10 `rosen mcp`): its commands as tools.
 #[derive(Clone, Debug, PartialEq, Eq)]

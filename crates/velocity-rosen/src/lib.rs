@@ -18,7 +18,10 @@ mod process;
 mod server;
 mod workspace;
 
-pub use agent::{McpCommand, agent_environment, agent_name, mcp_command, workspace_note};
+pub use agent::{
+    McpCommand, agent_environment, agent_name, mcp_command, path_with_rosen, run_queue_note,
+    workspace_note,
+};
 pub use conflicts::{conflict_message, conflict_message_without_diff};
 pub use events::{ChangeEvent, EventStream, change_event, conflict_paths, revert_output};
 pub use rosen_client::Error as ClientError;

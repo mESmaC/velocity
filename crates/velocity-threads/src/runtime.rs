@@ -859,10 +859,11 @@ impl SessionShutdown {
 /// Starts the agent in the worktree and runs its session until the inputs close or the
 /// agent exits.
 pub fn spawn_session(
-    agent: AgentLaunch,
-    setup: SessionSetup,
+    mut agent: AgentLaunch,
+    mut setup: SessionSetup,
     inputs: UnboundedReceiver<AgentInput>,
 ) -> RunningSession {
+    crate::run_queue::with_run_queue(&mut agent, &mut setup);
     let (events, event_receiver) = unbounded_channel();
     let (finished, outcome) = oneshot::channel();
     let shutdown = SessionShutdown::default();

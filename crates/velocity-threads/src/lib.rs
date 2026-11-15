@@ -22,6 +22,7 @@ pub mod review_runner;
 pub mod rosen_duty_server;
 mod rosen_duty_tools;
 mod rosen_review;
+mod run_queue;
 pub mod runtime;
 pub mod shared_mcp;
 pub mod swarm;

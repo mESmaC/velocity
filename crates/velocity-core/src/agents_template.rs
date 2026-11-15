@@ -58,6 +58,7 @@ SPEC.md defines what to build. The project Task List defines what is left.
 - For a project with a pinned Lean project, run `lake build` in `proofs/` before pushing proof changes.
 - Run the project's local checks on the merge result before marking a PR ready. Lint reports zero warnings.
 - Build and check only what your change can affect. A change to docs or SPEC.md needs no build. A change to one part, such as the UI or one package, needs that part's checks, not the whole project's. Never run a build or check again when nothing it covers changed since it last passed.
+- Run every heavy build, test and lint through Velocity's machine-wide build queue: `rosen run -- <command>`. PR duty's landing check runs with `rosen run --class landing -- <command>`. Never run a long-lived dev server through it.
 
 ## Code
 - Keep functions under 60 lines. Split anything longer.
