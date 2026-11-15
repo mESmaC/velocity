@@ -61,8 +61,10 @@
   --sans: -apple-system, BlinkMacSystemFont, "SF Pro Text", "Inter", "Segoe UI Variable Text", system-ui, sans-serif;
   --mono: "SF Mono", "JetBrains Mono", ui-monospace, "Cascadia Code", Consolas, monospace;
 
-  --sidebar-w: 236px;
-  --rail-w: 236px;
+  /* The side panes grow with the window: the transcript is capped at 720px, so a wide
+     window's spare width goes to the panes instead of empty margin around the chat. */
+  --sidebar-w: clamp(200px, 24vw, 480px);
+  --rail-w: clamp(200px, 24vw, 480px);
   --titlebar-h: 38px;
 }
 
