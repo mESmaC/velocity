@@ -1,11 +1,6 @@
-//! Checking and landing approved Rosen changes (SPEC.md F7 "Checks before merge"; Rosen R8
-//! and §9 "Build queue"). A review by reading ends at its approval, so Velocity does the rest
-//! itself: it runs the project's pre-land commands on the change's merge result, submits the
-//! receipt and asks Rosen to land.
-//!
-//! One pass runs per project, one change at a time. Each land moves the base under every
-//! other receipt, so a second checker would only build merge results that are stale by the
-//! time it finishes; one checker's receipt is always for the base it lands on.
+//! Landing Rosen changes (SPEC.md F7; Rosen R8). After-land projects land named work
+//! without checks or approvals. Before-land projects keep the serial checker: approved
+//! changes run their pre-land commands on the merge result and submit a receipt.
 
 use std::collections::BTreeSet;
 use std::path::PathBuf;
@@ -24,7 +19,7 @@ use velocity_rosen::duty::{self, LandOutcome};
 use velocity_store::duty::PrDutyRoster;
 
 use super::landing::LANDER;
-use super::{PrDutyReviews, ReviewHost};
+use super::{PrDutyReviews, ReviewHost, check_feed};
 use crate::launch::Location;
 use crate::rosen_review::mode_under;
 
@@ -64,6 +59,7 @@ impl PrDutyReviews {
         host: &Host,
         roster: &PrDutyRoster,
         candidates: Vec<ReviewCandidate>,
+        after_land: bool,
     ) -> Vec<ReviewCandidate> {
         let project = roster.project.id;
         let (approved, rest, start) = {
@@ -82,18 +78,19 @@ impl PrDutyReviews {
                     || candidates.iter().any(|candidate| {
                         change_of(candidate) == Some(change.as_str())
                             && candidate.head == note.head
-                            && candidate.standing == ReviewStanding::Approved
+                            && (after_land || candidate.standing == ReviewStanding::Approved)
                     })
             });
             let (approved, rest): (Vec<_>, Vec<_>) =
                 candidates.into_iter().partition(|candidate| {
                     change_of(candidate).is_some_and(|change| {
-                        candidate.standing == ReviewStanding::Approved
-                            && !held.contains(&candidate.subject)
-                            && !state
-                                .checking
-                                .get(&(project, change.to_owned()))
-                                .is_some_and(|note| note.left_to_agent)
+                        (after_land || candidate.standing == ReviewStanding::Approved)
+                            && (after_land || !held.contains(&candidate.subject))
+                            && (after_land
+                                || !state
+                                    .checking
+                                    .get(&(project, change.to_owned()))
+                                    .is_some_and(|note| note.left_to_agent))
                     })
                 });
             let start = !approved.is_empty() && state.checking_projects.insert(project);
@@ -123,18 +120,24 @@ impl PrDutyReviews {
         let server = ProjectServer::new(&self.app_data, roster.project.id);
         // A first look at the current base, so a change only an agent can check never waits
         // for a staging; the policy at the base the checks run on decides again below.
-        let mode = crate::rosen_review::change_mode(&server, change, ReviewWork::Review);
-        match mode.await {
-            Ok((_, ReviewMode::Reading)) => {}
-            Ok((_, ReviewMode::LocalChecks)) => {
-                return self.leave_change_to_agent(
-                    roster.project.id,
-                    &candidate.subject,
-                    &candidate.head,
-                );
-            }
-            // Rosen could not be read: the next tick looks again.
+        let after_land = match velocity_rosen::post_land::after_land(&server).await {
+            Ok(after_land) => after_land,
             Err(_) => return,
+        };
+        if !after_land {
+            let mode = crate::rosen_review::change_mode(&server, change, ReviewWork::Review);
+            match mode.await {
+                Ok((_, ReviewMode::Reading)) => {}
+                Ok((_, ReviewMode::LocalChecks)) => {
+                    return self.leave_change_to_agent(
+                        roster.project.id,
+                        &candidate.subject,
+                        &candidate.head,
+                    );
+                }
+                // Rosen could not be read: the next tick looks again.
+                Err(_) => return,
+            }
         }
         let check = Check {
             runner: self,
@@ -188,6 +191,19 @@ impl<Host: ReviewHost> Check<'_, Host> {
             match land_refusal(&code) {
                 // A conflict is found, with its files, when the merge result is staged.
                 LandRefusal::Receipt | LandRefusal::Conflict => {
+                    // A mode change or an older server must never turn an optimistic land
+                    // into a build gate. The author resolves conflicts; no check runs here.
+                    if velocity_rosen::post_land::after_land(&self.server)
+                        .await
+                        .unwrap_or(true)
+                    {
+                        if land_refusal(&code) == LandRefusal::Conflict {
+                            self.report_conflicts().await;
+                        } else {
+                            self.say_once(DutyEventKind::Wait, refused_line(self.change, &message));
+                        }
+                        return;
+                    }
                     let started = Instant::now();
                     if !self.check().await {
                         return;
@@ -228,6 +244,12 @@ impl<Host: ReviewHost> Check<'_, Host> {
             // A new head since the approval: Rosen has voided it.
             return false;
         }
+        if velocity_rosen::post_land::after_land_at(&self.server, Some(&staged.base))
+            .await
+            .unwrap_or(true)
+        {
+            return false;
+        }
         // The policy that counts is the one at the base the checks run on: a land since the
         // first look may have made this change sensitive, or changed the commands.
         let paths = match duty::changed_paths(&self.server, self.change).await {
@@ -245,30 +267,68 @@ impl<Host: ReviewHost> Check<'_, Host> {
             return false;
         }
         let commands = policy.commands;
+        self.run_checks(folder, staged, commands).await
+    }
+
+    async fn run_checks(
+        &self,
+        folder: PathBuf,
+        staged: duty::MergeCheckout,
+        commands: Vec<String>,
+    ) -> bool {
         self.post(
             DutyEventKind::Wait,
             checking_line(self.change, &staged.base),
         );
         let ran = tokio::task::spawn_blocking(move || {
             checker::apply_staged(&folder)?;
-            checker::run_commands(&folder, &commands, Priority::Landing)
+            check_feed::run_commands(&folder, &commands, Priority::Landing)
         })
         .await;
         match ran {
             // The receipt names the check set the staged base holds: the commands just run.
-            Ok(Ok(None)) => self.submit_receipt(&staged.head, &staged.base).await,
-            Ok(Ok(Some(failed))) => {
+            Ok(Ok((None, suffix))) => {
+                if !suffix.is_empty() {
+                    self.post(
+                        DutyEventKind::Approve,
+                        format!("Checks passed for change {}{suffix}", self.change),
+                    );
+                }
+                self.submit_receipt(&staged.head, &staged.base).await
+            }
+            Ok(Ok((Some(failed), suffix))) => {
                 let failed = FailedCheck {
                     command: failed.command,
                     exit_code: failed.exit_code,
                     output: failed.output,
                 };
                 let message = check_failed_message(self.change, &staged.base, &failed);
-                self.send_back(&message, check_failed_line(self.change, &failed.command));
+                let line = format!(
+                    "{}{suffix}",
+                    check_failed_line(self.change, &failed.command)
+                );
+                self.send_back(&message, line);
                 false
             }
             Ok(Err(error)) => self.could_not_check(&error.to_string()),
             Err(error) => self.could_not_check(&error.to_string()),
+        }
+    }
+
+    async fn report_conflicts(&self) {
+        let Some(folder) = self.folder() else {
+            return;
+        };
+        let Ok(staged) = checker::stage_merge_result(&self.server, self.change, &folder).await
+        else {
+            return;
+        };
+        if !staged.merge.conflicts.is_empty() {
+            let base_branch = crate::launch::base_branch(&self.roster.project);
+            self.send_back(
+                &conflict_message(self.change, &base_branch, &staged.merge.conflicts),
+                conflict_line(self.change, &base_branch),
+            );
         }
     }
 
@@ -297,6 +357,24 @@ impl<Host: ReviewHost> Check<'_, Host> {
 
     fn landed(&self, commit: &str, checked: Option<Duration>, land: Duration) {
         let project = self.roster.project.id;
+        let generation = self
+            .roster
+            .project
+            .threads
+            .iter()
+            .find(|thread| thread.id == self.thread)
+            .map(|thread| thread.rosen_progress_generation);
+        if let Some(generation) = generation
+            && let Err(error) = self.host.change_landed(project, self.change, generation)
+        {
+            self.say_once(
+                DutyEventKind::Wait,
+                format!(
+                    "Landed change {} · thread checkpoint waits: {error}",
+                    self.change
+                ),
+            );
+        }
         self.runner
             .lock()
             .checking

@@ -4,6 +4,8 @@
 //! changes by the git checkout's AGENTS.md. A policy landing in between let the checker run
 //! the old commands on the newer base and certify them, and left a newly sensitive path
 //! reviewed by reading.
+//! Dependency update (#380): the in-process server and velocity-rosen use the same Rosen
+//! revision so their endpoint and protocol types agree. The policy assertions stay intact.
 //!
 //! This lands a `rosen.toml` change between two checks of another change, with a stale
 //! AGENTS.md beside the project, and requires that:

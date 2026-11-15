@@ -710,6 +710,11 @@ pub struct ThreadItem {
     /// The Rosen change the thread works on, when its workspace came from Rosen (F5).
     #[serde(default)]
     pub rosen_change: Option<String>,
+    /// Lifecycle generation acknowledged by an optimistic land reply. Every progress
+    /// update advances it, so a delayed reply cannot overwrite later recovery or naming.
+    #[serde(default)]
+    #[specta(skip)]
+    pub rosen_progress_generation: u64,
     /// What the thread's Rosen events still ask Velocity to do, oldest first (F5): saved
     /// with the event that asked, and removed once done, so a crash never loses it.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -768,6 +773,7 @@ impl ThreadItem {
             worktree_path_id: None,
             pull_request_number: None,
             rosen_change: None,
+            rosen_progress_generation: 0,
             follow_through: None,
             airc_cursor: 0,
             dependency_wait: None,
@@ -807,6 +813,7 @@ impl ThreadItem {
             worktree_path_id: None,
             pull_request_number: None,
             rosen_change: None,
+            rosen_progress_generation: 0,
             follow_through: None,
             airc_cursor: 0,
             dependency_wait: None,

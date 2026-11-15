@@ -21,6 +21,14 @@ use velocity_threads::{PrDutyReviews, ReviewChange, ReviewHost};
 struct Host(Arc<Mutex<StateStore>>);
 
 impl ReviewHost for Host {
+    fn change_landed(&self, project: u32, change: &str, generation: u64) -> Result<(), String> {
+        let mut store = self.0.lock().map_err(|error| error.to_string())?;
+        store
+            .checkpoint_rosen_land(project, change, generation)
+            .map(|_| ())
+            .map_err(|error| error.to_string())
+    }
+
     fn rosters(&self) -> Vec<PrDutyRoster> {
         self.0
             .lock()
@@ -65,7 +73,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let instruction = arguments.next();
     let mut store = StateStore::load_or_default(folder.clone())?;
     let project = store.active_project().ok_or("no active project")?.id;
-    if store.pr_duty_rosters().is_empty() {
+    if !store.state().projects.iter().any(|project| {
+        project
+            .duty_roles
+            .iter()
+            .any(|role| role.role == DutyRole::PrDuty)
+    }) {
         // The same request the start dialog sends: one PR duty agent with the default rules.
         let request: StartDutyRequest = serde_json::from_value(serde_json::json!({
             "role": "pr_duty", "agent_count": 1, "provider": provider, "model_name": null,

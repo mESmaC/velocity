@@ -9,9 +9,12 @@
 use std::path::Path;
 
 use rosen_client::protocol::{
-    BisectJob, BisectResult, BisectState, LogRequest, PostLandJob, PostLandWork,
+    BisectJob, BisectResult, BisectState, ErrorCode, LogRequest, PostLandJob, PostLandWork,
 };
 use rosen_client::{Client, ObjectId};
+use rosen_core::project_config::ReviewMode;
+
+pub use rosen_client::protocol::CheckKind;
 
 use crate::{ProjectServer, RosenError, duty};
 
@@ -19,7 +22,11 @@ use crate::{ProjectServer, RosenError, duty};
 #[derive(Clone, Debug)]
 pub struct Batch {
     pub commit: String,
-    /// The post-land check set the project's `rosen.toml` held at that commit.
+    pub kind: CheckKind,
+    /// This land used or enabled after-land mode. A mode-changing land still needs
+    /// verification even when its own configuration turns the mode off.
+    pub after_land: bool,
+    /// The build or test check set the project's `rosen.toml` held at that commit.
     pub commands: Vec<String>,
     job: PostLandJob,
 }
@@ -36,9 +43,14 @@ pub struct Step {
 pub enum Bisection {
     /// Rosen wants this commit tested next.
     Step(Step),
-    /// One change failed twice where its parent passed: Rosen has landed its revert and
-    /// reopened it for its owner.
-    Culprit { change: String, commit: String },
+    /// One change failed twice where its parent passed. Rosen either reverted it or
+    /// recorded a test failure, according to the policy that authorised its land.
+    Culprit {
+        change: String,
+        commit: String,
+        kind: CheckKind,
+        reverted: bool,
+    },
     /// The results contradict each other, so no change is blamed and nothing is reverted.
     Unconfirmed,
 }
@@ -46,7 +58,76 @@ pub enum Bisection {
 /// The batch to test now; `None` when every landed commit is covered.
 pub async fn next_batch(server: &ProjectServer) -> Result<Option<Batch>, RosenError> {
     let client = Client::connect(server.endpoint()).await?;
-    Ok(batch(client.post_land_next().await?))
+    batch(&client, client.post_land_next().await?).await
+}
+
+/// The independent fast-build prefix. Before-land projects keep their existing build gate.
+pub async fn next_build_batch(server: &ProjectServer) -> Result<Option<Batch>, RosenError> {
+    let client = Client::connect(server.endpoint()).await?;
+    Ok(batch(&client, client.post_land_build_next().await?)
+        .await?
+        .filter(|batch| batch.after_land))
+}
+
+/// The current base's landing policy, never a checkout's possibly stale configuration.
+pub async fn after_land(server: &ProjectServer) -> Result<bool, RosenError> {
+    after_land_at(server, None).await
+}
+
+pub async fn after_land_at(server: &ProjectServer, base: Option<&str>) -> Result<bool, RosenError> {
+    let client = Client::connect(server.endpoint()).await?;
+    let at = base.map(crate::policy::object).transpose()?;
+    Ok(client.project_config(at).await?.config.review == ReviewMode::AfterLand)
+}
+
+/// Confirmed, non-reverting test failures retained by Rosen, including across restarts.
+pub async fn test_failures(server: &ProjectServer) -> Result<Vec<TestFailure>, RosenError> {
+    let client = Client::connect(server.endpoint()).await?;
+    let failures = match client.post_land_failures(None).await {
+        Ok(failures) => failures,
+        // Older before-land servers have no inventory request; their verifier still runs.
+        Err(rosen_client::Error::Server(error)) if error.code == ErrorCode::UnknownRequest => {
+            return Ok(Vec::new());
+        }
+        Err(error) => return Err(error.into()),
+    };
+    let mut reports = Vec::new();
+    for failure in failures
+        .into_iter()
+        .filter(|failure| failure.kind == CheckKind::Test && failure.revert.is_none())
+    {
+        // A before-land failure is recorded before its revert completes. Only the policy
+        // that authorised its land can distinguish it from a non-reverting test failure.
+        let request = LogRequest {
+            at: Some(failure.commit.to_string()),
+            limit: Some(1),
+            ..LogRequest::default()
+        };
+        let history = client.log(request).await?;
+        let parent = history
+            .entries
+            .first()
+            .and_then(|entry| entry.parents.first())
+            .ok_or_else(|| RosenError::InvalidId(failure.commit.to_string()))?;
+        if client.project_config(Some(*parent)).await?.config.review != ReviewMode::AfterLand {
+            continue;
+        }
+        reports.push(TestFailure {
+            session: failure.session,
+            change: failure.change,
+            commit: failure.commit.to_string(),
+            output: failure.output,
+        });
+    }
+    Ok(reports)
+}
+
+#[derive(Clone, Debug)]
+pub struct TestFailure {
+    pub session: i64,
+    pub change: String,
+    pub commit: String,
+    pub output: String,
 }
 
 /// Every command passed on the batch's commit: it and every land before it are green.
@@ -67,7 +148,7 @@ pub async fn batch_failed(
     let state = client
         .post_land_failed(batch.job.clone(), output.to_owned())
         .await?;
-    Ok(bisection(state))
+    bisection(&client, state).await
 }
 
 /// Reports what the commands did on a bisection step's commit.
@@ -83,7 +164,7 @@ pub async fn step_result(
         passed,
         output: output.to_owned(),
     };
-    Ok(bisection(client.bisect_submit(result).await?))
+    bisection(&client, client.bisect_submit(result).await?).await
 }
 
 /// Writes landed commit `commit`'s tree beside `folder`, ready for
@@ -114,24 +195,55 @@ pub async fn stage_commit(
     Ok(())
 }
 
-fn batch(work: PostLandWork) -> Option<Batch> {
-    work.job.map(|job| Batch {
+async fn batch(client: &Client, work: PostLandWork) -> Result<Option<Batch>, RosenError> {
+    let Some(job) = work.job else {
+        return Ok(None);
+    };
+    let policy = client.project_config(Some(job.commit)).await?;
+    let request = LogRequest {
+        at: Some(job.commit.to_string()),
+        limit: Some(1),
+        ..LogRequest::default()
+    };
+    let history = client.log(request).await?;
+    let parent = history
+        .entries
+        .first()
+        .and_then(|entry| entry.parents.first())
+        .ok_or_else(|| RosenError::InvalidId(job.commit.to_string()))?;
+    let authorising = client.project_config(Some(*parent)).await?;
+    Ok(Some(Batch {
         commit: job.commit.to_string(),
+        kind: job.kind,
+        after_land: policy.config.review == ReviewMode::AfterLand
+            || authorising.config.review == ReviewMode::AfterLand,
         commands: job.check_set.commands.clone(),
         job,
-    })
+    }))
 }
 
-fn bisection(state: BisectState) -> Bisection {
-    match (state.culprit, state.job) {
-        (Some(culprit), _) => Bisection::Culprit {
-            change: culprit.change,
-            commit: culprit.commit.to_string(),
-        },
+async fn bisection(client: &Client, state: BisectState) -> Result<Bisection, RosenError> {
+    let kind = state.kind;
+    Ok(match (state.culprit, state.job) {
+        (Some(culprit), _) => {
+            let reverted = kind == CheckKind::Build
+                || client
+                    .project_config(Some(culprit.parent))
+                    .await?
+                    .config
+                    .review
+                    != ReviewMode::AfterLand;
+            Bisection::Culprit {
+                change: culprit.change,
+                commit: culprit.commit.to_string(),
+                kind,
+                reverted,
+            }
+        }
         (None, Some(job)) if !state.flaky => Bisection::Step(Step {
             commit: job.commit.to_string(),
             job,
         }),
         _ => Bisection::Unconfirmed,
-    }
+    })
 }

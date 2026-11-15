@@ -150,6 +150,10 @@ pub fn instruct(application: &AppHandle, role: DutyRole, instruction: &str) {
 struct TauriReviewHost(AppHandle);
 
 impl ReviewHost for TauriReviewHost {
+    fn change_landed(&self, project: u32, change: &str, generation: u64) -> Result<(), String> {
+        crate::rosen_events::record_landed(&self.0, project, change, generation)
+    }
+
     fn rosters(&self) -> Vec<PrDutyRoster> {
         lock(
             self.0.state::<ManagedStateStore>().inner(),

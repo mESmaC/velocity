@@ -43,6 +43,22 @@ pub(crate) struct PullRequestCommand {
 }
 
 impl PullRequestCommand {
+    /// A Rosen project can have a GitHub mirror without a local git checkout. Keep gh's
+    /// working directory short and pass the validated repository explicitly to its API.
+    #[track_caller]
+    pub(crate) fn for_repository(repository: &crate::RepositoryName) -> Self {
+        Self {
+            directory: std::env::temp_dir()
+                .ancestors()
+                .last()
+                .unwrap_or(Path::new("."))
+                .to_path_buf(),
+            caller: Location::caller(),
+            origin: repository.full_name(),
+            created_at: Instant::now(),
+        }
+    }
+
     #[track_caller]
     pub fn new(directory: &Path) -> Result<(Self, String), PullRequestError> {
         let caller = Location::caller();

@@ -4392,7 +4392,7 @@ dependencies = [
 [[package]]
 name = "rosen-client"
 version = "0.1.0"
-source = "git+https://github.com/mESmaC/rosen?rev=56ca3c3904788b3ac10b872d438f5867cafb801c#56ca3c3904788b3ac10b872d438f5867cafb801c"
+source = "git+https://github.com/mESmaC/rosen?rev=950736fef08fcde2071c78fa97260621abb9feb0#950736fef08fcde2071c78fa97260621abb9feb0"
 dependencies = [
  "atomicwrites",
  "base64 0.22.1",
@@ -4400,6 +4400,7 @@ dependencies = [
  "mdns-sd",
  "notify",
  "reflink-copy",
+ "ring",
  "rosen-core",
  "rosen-platform",
  "rosen-protocol",
@@ -4417,7 +4418,7 @@ dependencies = [
 [[package]]
 name = "rosen-core"
 version = "0.1.0"
-source = "git+https://github.com/mESmaC/rosen?rev=56ca3c3904788b3ac10b872d438f5867cafb801c#56ca3c3904788b3ac10b872d438f5867cafb801c"
+source = "git+https://github.com/mESmaC/rosen?rev=950736fef08fcde2071c78fa97260621abb9feb0#950736fef08fcde2071c78fa97260621abb9feb0"
 dependencies = [
  "serde",
  "sha1",
@@ -4427,7 +4428,7 @@ dependencies = [
 [[package]]
 name = "rosen-platform"
 version = "0.1.0"
-source = "git+https://github.com/mESmaC/rosen?rev=56ca3c3904788b3ac10b872d438f5867cafb801c#56ca3c3904788b3ac10b872d438f5867cafb801c"
+source = "git+https://github.com/mESmaC/rosen?rev=950736fef08fcde2071c78fa97260621abb9feb0#950736fef08fcde2071c78fa97260621abb9feb0"
 dependencies = [
  "libc",
  "windows-sys 0.61.2",
@@ -4436,7 +4437,7 @@ dependencies = [
 [[package]]
 name = "rosen-protocol"
 version = "0.1.0"
-source = "git+https://github.com/mESmaC/rosen?rev=56ca3c3904788b3ac10b872d438f5867cafb801c#56ca3c3904788b3ac10b872d438f5867cafb801c"
+source = "git+https://github.com/mESmaC/rosen?rev=950736fef08fcde2071c78fa97260621abb9feb0#950736fef08fcde2071c78fa97260621abb9feb0"
 dependencies = [
  "base64 0.22.1",
  "libc",
@@ -4451,7 +4452,7 @@ dependencies = [
 [[package]]
 name = "rosen-store"
 version = "0.1.0"
-source = "git+https://github.com/mESmaC/rosen?rev=56ca3c3904788b3ac10b872d438f5867cafb801c#56ca3c3904788b3ac10b872d438f5867cafb801c"
+source = "git+https://github.com/mESmaC/rosen?rev=950736fef08fcde2071c78fa97260621abb9feb0#950736fef08fcde2071c78fa97260621abb9feb0"
 dependencies = [
  "atomicwrites",
  "flate2",

@@ -14,6 +14,7 @@ mod issues;
 mod landing;
 pub mod mcp_stdio;
 mod merge_gate;
+pub mod post_land_failures;
 mod proof_gate;
 mod pull_request_command;
 mod pull_request_files;

@@ -226,6 +226,30 @@ async fn reopen_reverted(
     Ok(())
 }
 
+/// Checkpoint the land reply before another checker pass can read a stale review roster.
+pub(crate) fn record_landed(
+    application: &AppHandle,
+    project: u32,
+    change: &str,
+    generation: u64,
+) -> Result<(), String> {
+    // Keep the cursor unchanged so the event follower still takes the land. Checkpointing
+    // closes the gap before the follower catches up, but only for the lifecycle generation
+    // captured with this named work. A newer event or fixing state must win a delayed reply.
+    let mut store = lock(
+        application.state::<ManagedStateStore>().inner(),
+        "persisted state",
+    )?;
+    store
+        .checkpoint_rosen_land(project, change, generation)
+        .map_err(|error| error.to_string())?;
+    publish_progress(application, &store)?;
+    drop(store);
+    let handle = application.clone();
+    tauri::async_runtime::spawn(async move { run_follow_ups(&handle, project).await });
+    Ok(())
+}
+
 /// PR duty requested changes on thread `key`'s change `change` (F7): the thread goes back
 /// to fixing, and its agent gets `message`, resumed first if it had ended. The message is
 /// saved with the state, and sent by the follow-up pass this starts.
@@ -256,12 +280,20 @@ fn save(
     let thread = store
         .save_rosen_progress(project, seq, change, progress)
         .map_err(|error| error.to_string())?;
+    publish_progress(application, &store)?;
+    Ok(thread)
+}
+
+fn publish_progress(
+    application: &AppHandle,
+    store: &velocity_store::StateStore,
+) -> Result<(), String> {
     let layout_state = application.state::<MainLayout>();
     let mut layout = lock(layout_state.inner(), "layout")?;
     store.refresh_follow_through_layout(&mut layout);
     let state = layout.snapshot();
     crate::layout::publish(application, &state, None)?;
-    Ok(thread)
+    Ok(())
 }
 
 /// A landed thread's work is on the base, and Rosen deletes its workspace: its agent and

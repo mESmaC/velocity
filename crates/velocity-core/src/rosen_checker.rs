@@ -169,10 +169,16 @@ pub fn failed_check_report(failed: &FailedCheck) -> String {
 /// What the author's agent is told when Rosen reverted its landed change. `report` is what
 /// the checker gave Rosen for the failing run ([`failed_check_report`]).
 pub fn reverted_message(change: &str, report: &str) -> String {
+    // Bound the diagnostic body without dropping the command and status when a full
+    // output tail is present. The author needs those to reproduce the failed build.
+    let output = match report.split_once("\n\n") {
+        Some((header, output)) => format!("{header}\n\n{}", tail(output)),
+        None => tail(report).to_owned(),
+    };
     format!(
-        "Your Rosen change `{}` landed, then failed the project's post-land checks (rosen.toml), the full tests. It failed twice where the commit before it passed, so Rosen reverted it on the base and reopened it. Your work is kept: this workspace holds it again on the current base. What the failing run printed:\n\n{}\n\nFix it here and run that command yourself until it passes. Then name the work again with `rosen commit -m \"<what changed>\"` so PR duty reviews it and it lands again. If the failure is the machine's and not your change's (a missing tool, a full disk), say so in your thread instead of changing code.\n",
+        "Your Rosen change `{}` landed, then failed the project's post-land checks (rosen.toml). It failed twice where the commit before it passed, so Rosen reverted it on the base and reopened it. Your work is kept: this workspace holds it again on the current base. What the failing run printed:\n\n{}\n\nFix it here and run that command yourself until it passes. Then name the work again with `rosen commit -m \"<what changed>\"` so it lands again under the project's review policy. If the failure is the machine's and not your change's (a missing tool, a full disk), say so in your thread instead of changing code.\n",
         short_change(change),
-        tail(report),
+        output,
     )
 }
 

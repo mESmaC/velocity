@@ -74,6 +74,46 @@ impl StateStore {
         change: &str,
         (progress, message): (RosenProgress, &str),
     ) -> Result<Option<u32>, StoreError> {
+        // Cursor-zero callers have no event ordering. A land reply must instead carry
+        // the generation it acknowledged through checkpoint_rosen_land.
+        if seq == 0 && progress == RosenProgress::Landed {
+            return Ok(None);
+        }
+        self.record_rosen_progress(project, seq, change, (progress, message))
+    }
+
+    /// Checkpoint the named work the checker landed only while its saved lifecycle is
+    /// unchanged. A newer event or fixing state owns its follow-ups and tasks instead.
+    pub fn checkpoint_rosen_land(
+        &mut self,
+        project: u32,
+        change: &str,
+        generation: u64,
+    ) -> Result<Option<u32>, StoreError> {
+        let current = self.project(project).and_then(|project| {
+            project.threads.iter().find(|thread| {
+                thread.rosen_change.as_deref() == Some(change)
+                    && thread.rosen_progress_generation == generation
+                    && thread.state == ThreadState::Review
+                    && matches!(
+                        thread.review_stage,
+                        Some(ReviewStage::Review | ReviewStage::Approved)
+                    )
+            })
+        });
+        if current.is_none() {
+            return Ok(None);
+        }
+        self.record_rosen_progress(project, 0, change, (RosenProgress::Landed, ""))
+    }
+
+    fn record_rosen_progress(
+        &mut self,
+        project: u32,
+        seq: u64,
+        change: &str,
+        (progress, message): (RosenProgress, &str),
+    ) -> Result<Option<u32>, StoreError> {
         let mut next = self.state.clone();
         let Some(item) = next.projects.iter_mut().find(|item| item.id == project) else {
             return Ok(None);
@@ -88,6 +128,7 @@ impl StateStore {
             return Ok(None);
         };
         let identifier = thread.id;
+        thread.rosen_progress_generation = thread.rosen_progress_generation.saturating_add(1);
         let reverted = progress == RosenProgress::Reverted && thread.state == ThreadState::Merged;
         let landed = apply_progress(thread, progress);
         queue_follow_up(thread, progress, message);
@@ -224,6 +265,87 @@ mod tests {
 
     use super::*;
     use crate::ProjectItem;
+
+    // Risk (#380 review): an in-flight land reply arrives after a revert, or even after
+    // recovery and a new named head. Neither reply may complete reopened work or erase
+    // the saved recovery. A current land must still checkpoint normally after a restart.
+    #[test]
+    fn delayed_land_checkpoint_preserves_recovery_after_reload()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let unique = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)?
+            .as_nanos();
+        let directory = std::env::temp_dir().join(format!("velocity-land-checkpoint-{unique}"));
+        let mut store = checkpoint_store(&directory)?;
+        let captured = store.state.projects[0].threads[0].rosen_progress_generation;
+        store.checkpoint_rosen_land(1, "abc", captured)?;
+        store.save_rosen_progress(1, 10, "abc", (RosenProgress::Landed, ""))?;
+        store.save_rosen_progress(
+            1,
+            11,
+            "abc",
+            (RosenProgress::Reverted, "cargo build failed"),
+        )?;
+        let mut store = StateStore::load_or_default(&directory)?;
+        let recovery = store.rosen_follow_ups(1);
+        store.checkpoint_rosen_land(1, "abc", captured)?;
+        assert_eq!(
+            store.state.projects[0].threads[0].review_stage,
+            Some(ReviewStage::Fixing)
+        );
+        assert_eq!(
+            store.state.projects[0].tasks[0].state,
+            crate::TaskState::Now
+        );
+        assert_eq!(store.rosen_follow_ups(1), recovery);
+        for (thread, _, steps) in recovery {
+            for step in steps {
+                store.finish_rosen_follow_up(1, thread, &step)?;
+            }
+        }
+        store.save_rosen_progress(1, 12, "abc", (RosenProgress::Named, ""))?;
+        let mut store = StateStore::load_or_default(&directory)?;
+        store.checkpoint_rosen_land(1, "abc", captured)?;
+        assert_eq!(
+            store.state.projects[0].threads[0].review_stage,
+            Some(ReviewStage::Review)
+        );
+        let current = store.state.projects[0].threads[0].rosen_progress_generation;
+        store.checkpoint_rosen_land(1, "abc", current)?;
+        assert_eq!(
+            store.state.projects[0].threads[0].state,
+            ThreadState::Merged
+        );
+        assert_eq!(
+            store.state.projects[0].tasks[0].state,
+            crate::TaskState::Done
+        );
+        assert_eq!(store.rosen_event_cursor(1), 12);
+        std::fs::remove_dir_all(directory)?;
+        Ok(())
+    }
+
+    fn checkpoint_store(directory: &std::path::Path) -> Result<StateStore, StoreError> {
+        let mut store = StateStore::load_or_default(directory)?;
+        let mut project = ProjectItem::new(1, "One".into(), r"C:\project one".into());
+        project.spec_locked = true;
+        let mut thread = ThreadItem::new(4, "Work".into());
+        thread.rosen_change = Some("abc".into());
+        thread.state = ThreadState::Review;
+        thread.review_stage = Some(ReviewStage::Review);
+        project.threads.push(thread);
+        let mut task = crate::TaskItem::new(
+            7,
+            "Do".into(),
+            crate::TaskState::Now,
+            crate::TaskAttribution::User,
+        );
+        task.assigned_thread_id = Some(4);
+        project.tasks.push(task);
+        store.state.projects = vec![project];
+        store.store_snapshot(store.state.clone())?;
+        Ok(store)
+    }
 
     // Risk (audit of 59be908, finding b): a revert's cursor and state were saved before its
     // workspace, runtime and message were redone, so a crash in between acknowledged the

@@ -11,10 +11,12 @@
 //! the pre-land checks on an approved Rosen change and lands it, and `post_land` runs the
 //! full tests on what landed.
 
+mod check_feed;
 mod checker;
 mod landing;
 mod listing;
 mod post_land;
+mod post_land_issues;
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
@@ -69,6 +71,11 @@ pub trait ReviewHost: Clone + Send + Sync + 'static {
     /// PR duty requested changes on thread `thread`'s Rosen change: the thread goes back to
     /// fixing, and its agent gets `message` (F5). A PR's author reads them on GitHub instead.
     fn changes_requested(&self, project: u32, thread: u32, change: &str, message: &str);
+    /// Checkpoint a successful Rosen land before the checker schedules again. The event
+    /// follower still owns its cursor and cleanup; a stale review roster must not submit
+    /// the same named work again if verification reopens it in the meantime.
+    /// `generation` belongs to the named work in the roster; later progress invalidates it.
+    fn change_landed(&self, project: u32, change: &str, generation: u64) -> Result<(), String>;
 }
 
 type AgentKey = (u32, String);
@@ -146,9 +153,11 @@ struct RunnerState {
     /// The projects with a checker pass running: one build at a time in each check folder.
     checking_projects: BTreeSet<u32>,
     /// Per project, what Velocity has said about the landed batch it last tested.
-    verifying: BTreeMap<u32, post_land::VerifyNote>,
+    verifying: BTreeMap<(u32, &'static str), post_land::VerifyNote>,
     /// The projects with a post-land pass running: one at a time in each folder.
-    verifying_projects: BTreeSet<u32>,
+    verifying_projects: BTreeSet<(u32, &'static str)>,
+    reporting_projects: BTreeSet<u32>,
+    reporting_notes: BTreeMap<u32, String>,
     /// The projects with a pass running, each with whether it was asked for again
     /// meanwhile: a project is passed once at a time, and none waits for another.
     passing: BTreeMap<u32, bool>,
@@ -372,23 +381,20 @@ impl PrDutyReviews {
     /// Claims a PR or change for every idle agent of one project that has one to take,
     /// lands and checks its approved heads, and settles idle cards.
     async fn pass<Host: ReviewHost>(&self, host: &Host, roster: PrDutyRoster, dismissals: u64) {
-        let idle: Vec<String> = {
-            let state = self.lock();
-            roster
-                .agents
-                .iter()
-                .map(|agent| agent.nickname.clone())
-                .filter(|nickname| {
-                    !state
-                        .running
-                        .contains_key(&(roster.project.id, nickname.clone()))
-                })
-                .collect()
-        };
+        let idle = self.idle_review_agents(&roster);
+        let after_land = self.project_after_land(&roster).await;
+        // Verification checks each land's policy too: turning after-land off must not
+        // strand the last unchecked land or a durable failure report.
+        self.verify_landed(host, &roster);
         if roster.paused || roster.agents.is_empty() {
+            if after_land
+                && let Ok(candidates) =
+                    crate::rosen_review::change_candidates(&self.app_data, &roster).await
+            {
+                self.check_approved(host, &roster, candidates, true);
+            }
             return settle_cards(host, &roster, &idle, None);
         }
-        self.verify_landed(host, &roster);
         // Listed even when every agent is busy: approved heads land without one.
         let candidates = self.candidates(&roster).await;
         if self.lock().dismissals != dismissals {
@@ -404,11 +410,35 @@ impl PrDutyReviews {
                     self.stop_closed(host, &roster, &candidates);
                 }
                 let candidates = self.land_approved(host, &roster, candidates);
-                let candidates = self.check_approved(host, &roster, candidates);
+                let candidates = self.check_approved(host, &roster, candidates, after_land);
                 self.claim_for_idle(host, &roster, &candidates, &idle);
             }
             Err(error) => settle_cards(host, &roster, &idle, Some(&error)),
         }
+    }
+
+    fn idle_review_agents(&self, roster: &PrDutyRoster) -> Vec<String> {
+        let state = self.lock();
+        roster
+            .agents
+            .iter()
+            .map(|agent| agent.nickname.clone())
+            .filter(|nickname| {
+                !state
+                    .running
+                    .contains_key(&(roster.project.id, nickname.clone()))
+            })
+            .collect()
+    }
+
+    async fn project_after_land(&self, roster: &PrDutyRoster) -> bool {
+        if !roster.project.rosen_in_use() {
+            return false;
+        }
+        let server = velocity_rosen::ProjectServer::new(&self.app_data, roster.project.id);
+        velocity_rosen::post_land::after_land(&server)
+            .await
+            .unwrap_or(false)
     }
 
     /// Gives each idle agent a PR that needs one, and settles the cards of the rest.

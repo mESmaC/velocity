@@ -496,7 +496,8 @@ impl StateStore {
     }
 
     /// Every project's Scouts role, for the sweep runner (F7), paused ones included so their
-    /// cards still say so.
+    /// cards still say so. Rosen projects without a role are included with no agents: their
+    /// after-land build and test workers must run independently of PR duty (#380).
     pub fn scout_rosters(&self) -> Vec<ScoutRoster> {
         self.state
             .projects
@@ -522,14 +523,17 @@ impl StateStore {
             .projects
             .iter()
             .filter_map(|project| {
-                let role = find_role(project, DutyRole::PrDuty)?;
+                let role = find_role(project, DutyRole::PrDuty);
+                if role.is_none() && !project.rosen_in_use() {
+                    return None;
+                }
                 Some(PrDutyRoster {
                     settings: self.state.settings.clone(),
                     project: project.clone(),
                     worktrees: self.worktree_preferences(project),
-                    paused: role.paused,
-                    rules: role.pr_rules.clone(),
-                    agents: role.agents.clone(),
+                    paused: role.is_some_and(|role| role.paused),
+                    rules: role.map(|role| role.pr_rules.clone()).unwrap_or_default(),
+                    agents: role.map(|role| role.agents.clone()).unwrap_or_default(),
                 })
             })
             .collect()

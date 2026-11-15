@@ -17,8 +17,8 @@ bundled = []
 
 [dependencies]
 # Pinned to a reviewed Rosen commit; move the pin deliberately, like any toolchain pin.
-rosen-client = { git = "https://github.com/mESmaC/rosen", rev = "56ca3c3904788b3ac10b872d438f5867cafb801c" }
+rosen-client = { git = "https://github.com/mESmaC/rosen", rev = "950736fef08fcde2071c78fa97260621abb9feb0" }
 # The model types the client does not re-export (snapshot kinds, review thread states).
-rosen-core = { git = "https://github.com/mESmaC/rosen", rev = "56ca3c3904788b3ac10b872d438f5867cafb801c" }
+rosen-core = { git = "https://github.com/mESmaC/rosen", rev = "950736fef08fcde2071c78fa97260621abb9feb0" }
 thiserror.workspace = true
 tokio = { workspace = true, features = ["sync"] }
