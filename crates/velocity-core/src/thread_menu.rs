@@ -17,8 +17,6 @@ pub struct ThreadMenuFacts {
     pub pull_request_number: Option<u32>,
     /// The agent's process is set up or running in this app session.
     pub agent_running: bool,
-    /// A failed Rosen launch that can retry its workspace setup.
-    pub retry_workspace: bool,
     /// Bytes on disk under the worktree, when it exists and could be measured.
     pub worktree_bytes: Option<u64>,
 }
@@ -32,7 +30,6 @@ impl ThreadMenuFacts {
             worktree_path: None,
             pull_request_number: None,
             agent_running: false,
-            retry_workspace: false,
             worktree_bytes: None,
         }
     }
@@ -44,7 +41,6 @@ impl ThreadMenuFacts {
 )]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ThreadMenuAction {
-    RetryWorkspace,
     OpenWorktree,
     CopyWorktreePath,
     OpenPullRequest,
@@ -87,13 +83,6 @@ pub fn thread_menu(facts: &ThreadMenuFacts) -> Option<Vec<ThreadMenuEntry>> {
         .as_deref()
         .filter(|path| owns_worktree(facts.state, Some(path)) && facts.worktree_bytes.is_some());
     let mut entries = Vec::new();
-    if facts.retry_workspace && facts.state == ThreadState::Error && !facts.agent_running {
-        entries.push(item(
-            ThreadMenuAction::RetryWorkspace,
-            "Retry Rosen workspace",
-            None,
-        ));
-    }
     if let Some(path) = worktree {
         entries.push(item(
             ThreadMenuAction::OpenWorktree,

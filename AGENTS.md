@@ -9,7 +9,7 @@ You are building Velocity: a Rust + Tauri desktop IDE that runs many coding agen
 
 ## Where you work
 - Velocity's projects, this one included, use Rosen by default (F5, `spec/F5-worktrees/README.md` and its rule files). Your thread works in a Rosen workspace by default: Velocity's first message says so and names your change. Follow "In a Rosen workspace" below.
-- When the project chooses git, your folder is a git worktree. Follow "In a git worktree" below. A Rosen project never falls back to git: workspace failures retry Rosen, then leave a retryable thread error (#407).
+- Git is the fallback: when the project uses git, or Rosen can't make a workspace, your folder is a git worktree. Follow "In a git worktree" below.
 - A Rosen workspace has a `.rosen` folder at its root and no `.git`.
 
 ## Implementation first

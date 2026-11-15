@@ -39,7 +39,6 @@ pub mod transcript_view;
 pub mod watch;
 pub mod watch_runner;
 pub mod work_pool;
-pub mod workspace_retry;
 
 pub use deletion::{Deletion, DeletionError, DeletionPlan, PendingDeletions, plan_deletion};
 pub use dispatch::{DispatchError, IssueDispatchPlan, plan_issue_dispatch};

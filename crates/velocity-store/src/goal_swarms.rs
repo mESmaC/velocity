@@ -18,8 +18,7 @@ use crate::issues::{ThreadIssue, issue_thread};
 use crate::swarm_dialog::provider_model_name;
 use crate::threads::{NewThread, ThreadError};
 use crate::{
-    EffortLevel, ProjectItem, ProviderKind, Settings, SpeedMode, StateStore, TaskState, ThreadItem,
-    ThreadState,
+    EffortLevel, ProjectItem, ProviderKind, Settings, SpeedMode, StateStore, TaskState, ThreadState,
 };
 
 const FEED_LIMIT: usize = 200;
@@ -147,31 +146,6 @@ pub struct GoalSwarmRecord {
     pub members: Vec<GoalSwarmMember>,
     #[serde(default)]
     pub feed: Vec<GoalFeedEvent>,
-}
-
-impl GoalAgentSlot {
-    /// Restores a choosing member's launch after a failed Rosen workspace setup.
-    pub fn for_thread(project: &ProjectItem, thread: &ThreadItem) -> Option<Self> {
-        let membership = thread
-            .goal_member
-            .as_ref()
-            .filter(|member| member.choosing)?;
-        let swarm = project
-            .goal_swarms
-            .iter()
-            .find(|swarm| swarm.id == membership.swarm_id)?;
-        Some(Self {
-            swarm_id: swarm.id,
-            prompt: swarm.prompt.clone(),
-            sources: swarm.sources,
-            nick: membership.nick.clone(),
-            provider: thread.provider,
-            model_name: thread.model_name.clone(),
-            effort: thread.effort,
-            speed: thread.preferred_speed,
-            keep_going: swarm.keep_going,
-        })
-    }
 }
 
 impl GoalSwarmRecord {

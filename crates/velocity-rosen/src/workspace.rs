@@ -55,23 +55,6 @@ pub async fn create_workspace(
     root: &Path,
     on: Option<&str>,
 ) -> Result<AgentWorkspace, RosenError> {
-    match create_workspace_retaining_change(server, agent, root, on).await {
-        Err(RosenError::WorkspaceNotCreated { change, source }) => {
-            let _ = abandon_change(server, agent, &change).await;
-            Err(RosenError::Client(*source))
-        }
-        result => result,
-    }
-}
-
-/// Like `create_workspace`, but retains an allocated change on failure so a thread can
-/// save its identity and retry `reopen_workspace` without creating a second change.
-pub async fn create_workspace_retaining_change(
-    server: &ProjectServer,
-    agent: &str,
-    root: &Path,
-    on: Option<&str>,
-) -> Result<AgentWorkspace, RosenError> {
     let session = session(server, agent).await?;
     if let Some(parent) = root.parent() {
         std::fs::create_dir_all(parent).map_err(|source| RosenError::Io {
@@ -92,10 +75,8 @@ pub async fn create_workspace_retaining_change(
             prepared: created.report.prepared,
         }),
         Err(rosen_client::Error::WorkspaceNotCreated { change, source }) => {
-            Err(RosenError::WorkspaceNotCreated {
-                change: change.to_string(),
-                source,
-            })
+            let _ = session.abandon(&change.to_string()).await;
+            Err(RosenError::Client(*source))
         }
         Err(error) => Err(error.into()),
     }

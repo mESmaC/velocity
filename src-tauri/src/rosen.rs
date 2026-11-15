@@ -1,6 +1,6 @@
 //! Rosen workspaces for threads (F5). A project's agents get Rosen changes and
 //! workspaces from the project's own Rosen server, which Velocity starts; git worktrees
-//! are used only when the project chooses git. Failed Rosen launches stay retryable.
+//! are the fallback when the project chooses git or Rosen can't start.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
@@ -255,33 +255,37 @@ fn free_bytes(folder: &Path) -> Option<u64> {
         .map(|drive| drive.free_bytes)
 }
 
-/// Creates or recovers the thread's workspace, retrying transient Rosen failures (F5).
+/// Creates the thread's change and workspace at the folder its worktree would have had,
+/// starts its watcher, and runs the per-agent setup there. An error means Rosen could not
+/// give the thread a workspace, and the launch falls back to a git worktree.
 pub(crate) async fn take_workspace(
-    application: &AppHandle,
-    key: ThreadKey,
-    request: &WorktreeSetupRequest,
-) -> Result<ThreadWorkspace, String> {
-    velocity_rosen::retry_workspace(|| async {
-        if crate::threads::setup_no_longer_wanted(application, key) {
-            return Err("The Rosen workspace launch was cancelled".into());
-        }
-        take_workspace_once(application, key, request).await
-    })
-    .await
-}
-
-async fn take_workspace_once(
     application: &AppHandle,
     key: ThreadKey,
     request: &WorktreeSetupRequest,
 ) -> Result<ThreadWorkspace, String> {
     let server = server(application, key.0).await?;
     let agent = velocity_rosen::agent_name(&request.worktree_path);
-    let workspace = acquire_workspace(application, key, request, &server, &agent).await?;
+    let workspace = velocity_rosen::create_workspace(&server, &agent, &request.worktree_path, None)
+        .await
+        .map_err(|error| error.to_string())?;
     // Install local ignore rules and links before the first watcher can store them.
     let setup = finish_setup(application, key.0, request, &workspace.root).await;
-    crate::rosen_issue::record_source(application, key, &server, &agent, &workspace.change).await?;
-    watch(application, &server, &workspace.root).await?;
+    // An agent whose edits aren't watched, or a thread that doesn't record its change,
+    // would lose track of work: the change is abandoned and the thread falls back to git.
+    let kept =
+        crate::rosen_issue::record_source(application, key, &server, &agent, &workspace.change)
+            .await
+            .and(watch(application, &server, &workspace.root).await)
+            .and_then(|()| record_change(application, key, &workspace.change).map(|_| ()));
+    if let Err(error) = kept {
+        application
+            .state::<ManagedRosen>()
+            .watches
+            .stop(&workspace.root)
+            .await;
+        let _ = velocity_rosen::abandon_change(&server, &agent, &workspace.change).await;
+        return Err(error);
+    }
     crate::rosen_events::follow(application, key.0);
     Ok(ThreadWorkspace {
         environment: velocity_rosen::agent_environment(&server, &agent, &workspace.change),
@@ -289,114 +293,6 @@ async fn take_workspace_once(
         root: workspace.root,
         setup,
     })
-}
-
-async fn acquire_workspace(
-    application: &AppHandle,
-    key: ThreadKey,
-    request: &WorktreeSetupRequest,
-    server: &ProjectServer,
-    agent: &str,
-) -> Result<velocity_rosen::AgentWorkspace, String> {
-    let existing = lock(
-        application.state::<ManagedStateStore>().inner(),
-        "persisted state",
-    )?
-    .follow_through_thread(key.0, key.1)
-    .map_err(|error| error.to_string())?
-    .1
-    .rosen_change;
-    let created = if let Some(change) = existing {
-        velocity_rosen::reopen_workspace(server, agent, &change, &request.worktree_path)
-            .await
-            .map_err(|error| error.to_string())?;
-        Ok(velocity_rosen::AgentWorkspace::new(
-            change,
-            request.worktree_path.clone(),
-            "reopened",
-            false,
-        ))
-    } else {
-        velocity_rosen::create_workspace_retaining_change(
-            server,
-            agent,
-            &request.worktree_path,
-            None,
-        )
-        .await
-    };
-    keep_workspace(application, key, server, agent, created).await
-}
-
-async fn keep_workspace(
-    application: &AppHandle,
-    key: ThreadKey,
-    server: &ProjectServer,
-    agent: &str,
-    created: Result<velocity_rosen::AgentWorkspace, velocity_rosen::RosenError>,
-) -> Result<velocity_rosen::AgentWorkspace, String> {
-    // Record even a partially created workspace before returning a retryable error.
-    let change = match &created {
-        Ok(workspace) => &workspace.change,
-        Err(velocity_rosen::RosenError::WorkspaceNotCreated { change, .. }) => change,
-        Err(error) => return Err(error.to_string()),
-    };
-    match record_change(application, key, change) {
-        Ok(true) => created.map_err(|error| error.to_string()),
-        saved => {
-            let _ = velocity_rosen::abandon_change(server, agent, change).await;
-            Err(saved
-                .err()
-                .unwrap_or_else(|| "The thread was deleted during Rosen workspace creation".into()))
-        }
-    }
-}
-
-/// Save the opening prompt before workspace creation, so even a restart can retry it.
-pub(crate) fn begin_launch(
-    application: &AppHandle,
-    key: ThreadKey,
-    prompt: &str,
-) -> Result<(), String> {
-    let mut store = lock(
-        application.state::<ManagedStateStore>().inner(),
-        "persisted state",
-    )?;
-    let (project, thread) = store
-        .follow_through_thread(key.0, key.1)
-        .map_err(|error| error.to_string())?;
-    if project.version_control != VersionControl::Rosen && thread.pending_rosen_launch.is_none() {
-        return Ok(());
-    }
-    store
-        .update_thread(key.0, key.1, |thread| {
-            thread
-                .pending_rosen_launch
-                .get_or_insert_with(|| prompt.to_owned());
-        })
-        .map(|_| ())
-        .map_err(|error| error.to_string())
-}
-
-pub(crate) fn launch_pending(application: &AppHandle, key: ThreadKey) -> Result<bool, String> {
-    let store = lock(
-        application.state::<ManagedStateStore>().inner(),
-        "persisted state",
-    )?;
-    let (_, thread) = store
-        .follow_through_thread(key.0, key.1)
-        .map_err(|error| error.to_string())?;
-    Ok(thread.pending_rosen_launch.is_some())
-}
-
-pub(crate) fn finish_launch(application: &AppHandle, key: ThreadKey) -> Result<(), String> {
-    lock(
-        application.state::<ManagedStateStore>().inner(),
-        "persisted state",
-    )?
-    .update_thread(key.0, key.1, |thread| thread.pending_rosen_launch = None)
-    .map(|_| ())
-    .map_err(|error| error.to_string())
 }
 
 /// Path-dependent setup stays outside Rosen's prepared template. Even an unprepared take
@@ -511,11 +407,6 @@ pub(crate) fn prepare_resume(
     agent: &mut AgentLaunch,
     setup: &mut SessionSetup,
 ) -> Option<Result<(), String>> {
-    if thread.pending_rosen_launch.is_some() {
-        return Some(Err(
-            "Retry Rosen workspace from the thread's right-click menu".into(),
-        ));
-    }
     let change = thread.rosen_change.as_deref()?;
     let root = Path::new(thread.worktree_path.as_deref()?);
     if !root.is_dir() {
@@ -565,6 +456,17 @@ pub(crate) async fn abandon_unstarted(
     velocity_rosen::abandon_change(&server, &agent, change)
         .await
         .map_err(|error| error.to_string())
+}
+
+/// Tells you a thread fell back to a git worktree, and why.
+pub(crate) fn fell_back(application: &AppHandle, error: &str) {
+    let message =
+        format!("Rosen couldn't make a workspace, so this thread uses a git worktree: {error}");
+    eprintln!("{message}");
+    report(
+        crate::thread_menu::update_layout(application, |layout| layout.show_toast(message, None))
+            .map(|_| ()),
+    );
 }
 
 /// Watches the workspace of every Rosen thread whose change is still open and has no
@@ -628,9 +530,6 @@ fn open_threads(application: &AppHandle) -> Option<Vec<(u32, PathBuf)>> {
                 .threads
                 .iter()
                 .filter(|thread| thread.rosen_change.is_some())
-                // Ownership is saved before setup; its launch starts the first watcher
-                // after installing ignores and links. Do not watch a partial workspace.
-                .filter(|thread| thread.pending_rosen_launch.is_none())
                 .filter(|thread| thread.state != ThreadState::Merged)
                 .map(|thread| {
                     let root = thread.worktree_path.as_deref().unwrap_or_default();

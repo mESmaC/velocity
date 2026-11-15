@@ -684,7 +684,7 @@ pub enum WorktreeRole {
 }
 
 /// How a project's agents get their working folders (F5). Rosen is first-class; git
-/// worktrees are used only when the project chooses git; Rosen launches never fall back.
+/// worktrees are the fallback, used when the project chooses git or Rosen can't start.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize, Type)]
 #[serde(rename_all = "snake_case")]
 pub enum VersionControl {
@@ -718,10 +718,6 @@ pub struct ThreadItem {
     /// The Rosen change the thread works on, when its workspace came from Rosen (F5).
     #[serde(default)]
     pub rosen_change: Option<String>,
-    /// Original prompt until Rosen workspace setup succeeds; retained for manual retry.
-    #[serde(default)]
-    #[specta(skip)]
-    pub pending_rosen_launch: Option<String>,
     /// Lifecycle generation acknowledged by an optimistic land reply. Every progress
     /// update advances it, so a delayed reply cannot overwrite later recovery or naming.
     #[serde(default)]
@@ -792,7 +788,6 @@ impl ThreadItem {
             worktree_path_id: None,
             pull_request_number: None,
             rosen_change: None,
-            pending_rosen_launch: None,
             rosen_progress_generation: 0,
             goal_stack: None,
             follow_through: None,
@@ -836,7 +831,6 @@ impl ThreadItem {
             worktree_path_id: None,
             pull_request_number: None,
             rosen_change: None,
-            pending_rosen_launch: None,
             rosen_progress_generation: 0,
             goal_stack: None,
             follow_through: None,

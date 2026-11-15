@@ -140,7 +140,6 @@ pub async fn get_thread_menu(
     .map_err(|error| error.to_string())?;
     let message_mode = thread_message_mode(&application, project_identifier, thread_identifier)?;
     let facts = ThreadMenuFacts {
-        retry_workspace: thread.pending_rosen_launch.is_some(),
         worktree_path: thread.worktree_path,
         pull_request_number: thread.pull_request_number,
         agent_running,
@@ -179,10 +178,6 @@ pub async fn run_thread_menu_action(
     let (repository, thread) = find_thread(&application, project_identifier, thread_identifier)?;
     let worktree = thread.worktree_path.clone().unwrap_or_default();
     match action {
-        ThreadMenuAction::RetryWorkspace => {
-            crate::threads::retry_workspace(&application, (project_identifier, thread_identifier))
-                .await
-        }
         ThreadMenuAction::OpenWorktree => application
             .opener()
             .open_path(worktree, None::<&str>)
