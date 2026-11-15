@@ -4392,32 +4392,6 @@ dependencies = [
 [[package]]
 name = "rosen-client"
 version = "0.1.0"
-source = "git+https://github.com/mESmaC/rosen?rev=dd08271d4405aa31b397304f1f4ecff9fb59d057#dd08271d4405aa31b397304f1f4ecff9fb59d057"
-dependencies = [
- "atomicwrites",
- "base64 0.22.1",
- "ignore",
- "mdns-sd",
- "notify",
- "reflink-copy",
- "ring",
- "rosen-core 0.1.0 (git+https://github.com/mESmaC/rosen?rev=dd08271d4405aa31b397304f1f4ecff9fb59d057)",
- "rosen-platform 0.1.0 (git+https://github.com/mESmaC/rosen?rev=dd08271d4405aa31b397304f1f4ecff9fb59d057)",
- "rosen-protocol 0.1.0 (git+https://github.com/mESmaC/rosen?rev=dd08271d4405aa31b397304f1f4ecff9fb59d057)",
- "rosen-store 0.1.0 (git+https://github.com/mESmaC/rosen?rev=dd08271d4405aa31b397304f1f4ecff9fb59d057)",
- "rustls",
- "same-file",
- "serde",
- "serde_json",
- "sha2 0.10.9",
- "thiserror 2.0.21",
- "tokio",
- "tokio-rustls",
-]
-
-[[package]]
-name = "rosen-client"
-version = "0.1.0"
 source = "git+https://github.com/mESmaC/rosen?rev=f18bbc545844904b97cb6668e2a242fc3727cc1f#f18bbc545844904b97cb6668e2a242fc3727cc1f"
 dependencies = [
  "atomicwrites",
@@ -4427,10 +4401,10 @@ dependencies = [
  "notify",
  "reflink-copy",
  "ring",
- "rosen-core 0.1.0 (git+https://github.com/mESmaC/rosen?rev=f18bbc545844904b97cb6668e2a242fc3727cc1f)",
- "rosen-platform 0.1.0 (git+https://github.com/mESmaC/rosen?rev=f18bbc545844904b97cb6668e2a242fc3727cc1f)",
- "rosen-protocol 0.1.0 (git+https://github.com/mESmaC/rosen?rev=f18bbc545844904b97cb6668e2a242fc3727cc1f)",
- "rosen-store 0.1.0 (git+https://github.com/mESmaC/rosen?rev=f18bbc545844904b97cb6668e2a242fc3727cc1f)",
+ "rosen-core",
+ "rosen-platform",
+ "rosen-protocol",
+ "rosen-store",
  "rustls",
  "same-file",
  "serde",
@@ -4444,32 +4418,11 @@ dependencies = [
 [[package]]
 name = "rosen-core"
 version = "0.1.0"
-source = "git+https://github.com/mESmaC/rosen?rev=dd08271d4405aa31b397304f1f4ecff9fb59d057#dd08271d4405aa31b397304f1f4ecff9fb59d057"
-dependencies = [
- "serde",
- "sha1",
- "toml 0.9.12+spec-1.1.0",
-]
-
-[[package]]
-name = "rosen-core"
-version = "0.1.0"
 source = "git+https://github.com/mESmaC/rosen?rev=f18bbc545844904b97cb6668e2a242fc3727cc1f#f18bbc545844904b97cb6668e2a242fc3727cc1f"
 dependencies = [
  "serde",
  "sha1",
  "toml 0.9.12+spec-1.1.0",
-]
-
-[[package]]
-name = "rosen-platform"
-version = "0.1.0"
-source = "git+https://github.com/mESmaC/rosen?rev=dd08271d4405aa31b397304f1f4ecff9fb59d057#dd08271d4405aa31b397304f1f4ecff9fb59d057"
-dependencies = [
- "getrandom 0.3.4",
- "libc",
- "rustix 1.1.6",
- "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -4486,27 +4439,12 @@ dependencies = [
 [[package]]
 name = "rosen-protocol"
 version = "0.1.0"
-source = "git+https://github.com/mESmaC/rosen?rev=dd08271d4405aa31b397304f1f4ecff9fb59d057#dd08271d4405aa31b397304f1f4ecff9fb59d057"
-dependencies = [
- "base64 0.22.1",
- "libc",
- "rosen-core 0.1.0 (git+https://github.com/mESmaC/rosen?rev=dd08271d4405aa31b397304f1f4ecff9fb59d057)",
- "rosen-platform 0.1.0 (git+https://github.com/mESmaC/rosen?rev=dd08271d4405aa31b397304f1f4ecff9fb59d057)",
- "serde",
- "serde_json",
- "tokio",
- "windows-sys 0.61.2",
-]
-
-[[package]]
-name = "rosen-protocol"
-version = "0.1.0"
 source = "git+https://github.com/mESmaC/rosen?rev=f18bbc545844904b97cb6668e2a242fc3727cc1f#f18bbc545844904b97cb6668e2a242fc3727cc1f"
 dependencies = [
  "base64 0.22.1",
  "libc",
- "rosen-core 0.1.0 (git+https://github.com/mESmaC/rosen?rev=f18bbc545844904b97cb6668e2a242fc3727cc1f)",
- "rosen-platform 0.1.0 (git+https://github.com/mESmaC/rosen?rev=f18bbc545844904b97cb6668e2a242fc3727cc1f)",
+ "rosen-core",
+ "rosen-platform",
  "serde",
  "serde_json",
  "tokio",
@@ -4516,31 +4454,11 @@ dependencies = [
 [[package]]
 name = "rosen-store"
 version = "0.1.0"
-source = "git+https://github.com/mESmaC/rosen?rev=dd08271d4405aa31b397304f1f4ecff9fb59d057#dd08271d4405aa31b397304f1f4ecff9fb59d057"
-dependencies = [
- "atomicwrites",
- "flate2",
- "rosen-core 0.1.0 (git+https://github.com/mESmaC/rosen?rev=dd08271d4405aa31b397304f1f4ecff9fb59d057)",
-]
-
-[[package]]
-name = "rosen-store"
-version = "0.1.0"
-source = "git+https://github.com/mESmaC/rosen?rev=dd08271d4405aa31b397304f1f4ecff9fb59d057#dd08271d4405aa31b397304f1f4ecff9fb59d057"
-dependencies = [
- "atomicwrites",
- "flate2",
- "rosen-core 0.1.0 (git+https://github.com/mESmaC/rosen?rev=dd08271d4405aa31b397304f1f4ecff9fb59d057)",
-]
-
-[[package]]
-name = "rosen-store"
-version = "0.1.0"
 source = "git+https://github.com/mESmaC/rosen?rev=f18bbc545844904b97cb6668e2a242fc3727cc1f#f18bbc545844904b97cb6668e2a242fc3727cc1f"
 dependencies = [
  "atomicwrites",
  "flate2",
- "rosen-core 0.1.0 (git+https://github.com/mESmaC/rosen?rev=f18bbc545844904b97cb6668e2a242fc3727cc1f)",
+ "rosen-core",
 ]
 
 [[package]]
@@ -6494,7 +6412,7 @@ version = "0.1.0"
 dependencies = [
  "chrono",
  "notify",
- "rosen-client 0.1.0 (git+https://github.com/mESmaC/rosen?rev=dd08271d4405aa31b397304f1f4ecff9fb59d057)",
+ "rosen-client",
  "serde",
  "serde_json",
  "specta",
@@ -6648,8 +6566,8 @@ dependencies = [
 name = "velocity-rosen"
 version = "0.1.0"
 dependencies = [
- "rosen-client 0.1.0 (git+https://github.com/mESmaC/rosen?rev=f18bbc545844904b97cb6668e2a242fc3727cc1f)",
- "rosen-core 0.1.0 (git+https://github.com/mESmaC/rosen?rev=f18bbc545844904b97cb6668e2a242fc3727cc1f)",
+ "rosen-client",
+ "rosen-core",
  "serde",
  "serde_json",
  "specta",

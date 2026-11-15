@@ -15,7 +15,7 @@ bindings = ["dep:specta"]
 [dependencies]
 chrono = { version = "0.4", default-features = false, features = ["clock"] }
 notify = "8.2"
-rosen-client = { git = "https://github.com/mESmaC/rosen", rev = "dd08271d4405aa31b397304f1f4ecff9fb59d057" }
+rosen-client = { git = "https://github.com/mESmaC/rosen", rev = "f18bbc545844904b97cb6668e2a242fc3727cc1f" }
 serde.workspace = true
 serde_json.workspace = true
 specta = { workspace = true, optional = true }
