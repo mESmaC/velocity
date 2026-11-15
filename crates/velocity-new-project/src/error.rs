@@ -7,6 +7,8 @@ use velocity_store::projects::ProjectError;
 /// Why Create stopped. Every message is shown to the user in the dialog.
 #[derive(Debug, Error)]
 pub enum NewProjectError {
+    #[error("Could not read the project spec: {0}")]
+    Spec(std::io::Error),
     #[error("Choose a folder for the project")]
     NoFolder,
     #[error("Use a full path, starting with a drive letter: {0}")]

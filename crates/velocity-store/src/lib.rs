@@ -927,6 +927,8 @@ pub struct ProjectItem {
     pub repository_path: String,
     pub default_branch: String,
     pub github_remote: Option<String>,
+    /// Root spec file, historically SPEC.md. Readers also include Markdown under spec/;
+    /// keeping the saved path preserves existing projects and their configured root.
     pub spec_path: String,
     pub spec_locked: bool,
     /// Completed F16 pieces retained after their merged thread history is deleted.

@@ -23,3 +23,4 @@ rosen-core = { git = "https://github.com/mESmaC/rosen", rev = "b740ab723b933d25d
 serde.workspace = true
 thiserror.workspace = true
 tokio = { workspace = true, features = ["sync"] }
+velocity-spec.workspace = true
