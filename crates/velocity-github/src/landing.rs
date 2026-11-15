@@ -1,8 +1,19 @@
 //! Optimistic F6 landing: every check receipt is tied to both the PR head and base.
-use crate::{PullRequestClient, PullRequestError};
+use crate::{PullRequestClient, PullRequestError, PullRequestState};
 use serde::Serialize;
 use serde_json::{Value, json};
 use velocity_core::landing::{CheckScope, check_scope};
+
+/// A closed or merged PR's branch is dead: updating it with its base, or telling its owner
+/// to resolve a conflict there, only leads to a push nothing lands (#344).
+fn require_open(number: u32, state: PullRequestState) -> Result<(), PullRequestError> {
+    if state == PullRequestState::Open {
+        return Ok(());
+    }
+    Err(PullRequestError::Invalid(format!(
+        "#{number} is no longer open ({state:?}): there is nothing to land. Release it and end your turn"
+    )))
+}
 
 #[derive(Clone, Debug, Serialize)]
 pub(crate) struct LandingCheckpoint {
@@ -30,6 +41,7 @@ impl PullRequestClient {
         previous: Option<&LandingCheckpoint>,
     ) -> Result<LandingCheckpoint, PullRequestError> {
         let before = self.snapshot(number)?.pull_request;
+        require_open(number, before.state)?;
         let base = self.base_head(number)?;
         let behind = self.behind(&base, &before.head_ref_oid)?;
         let overlap = match previous {
