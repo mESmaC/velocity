@@ -85,6 +85,7 @@ Your job is working functionality. Proofs, tests and docs support it; they never
 - Use the IPC names in §3.1, `spec/3.1-ipc/`. If you need a new command or event, add it to your feature's file there in the same PR. Keep one list entry per command or event; shared descriptions can follow a group of entries.
 - Put logic you prove in pure, synchronous functions in the crates. Keep I/O, async and Tauri at the edges, so the logic can be checked against fixture tables (see Proofs).
 - Handle Windows paths everywhere: drive letters, spaces, backslashes and paths over 260 characters. Windows 11 is the primary platform.
+- Rosen dependencies inherit `rosen-client` and `rosen-core` from `[workspace.dependencies]`; new consumers use the existing pin, and pin updates move both entries together.
 - Comment code whose purpose isn't clear from reading it. Explain why, not what.
 - Add every new field on a saved record in `velocity-store` with `#[serde(default)]`, so an existing `state.json` still loads.
 - Build a struct that another module defines through a function that module provides (`new`, `Default`, a builder), never a full struct literal. If none exists, add one in that module. A field another PR adds then can't break your code after a clean merge.
@@ -173,7 +174,7 @@ In a git worktree, claims are draft PRs:
 
 ## Shared files
 Most merge conflicts come from a few files every feature touches. Keep your edits to them conflict-free:
-- **In Rosen**, `rosen.toml`'s `registration_lists` holds the generated files and registration lists below, and Rosen merges them by keeping both sides' additions. The pre-land checks (`--locked`, `--frozen-lockfile`, `export-bindings --check`) refuse a merge that came out wrong; then regenerate in your workspace and name the work again.
+- **In Rosen**, `rosen.toml` lists generated artifacts under `generated` and only registration lists under `registration_lists`. Rosen never line-merges generated artifacts. When it reports `regenerate`, regenerate `Cargo.lock` with `cargo metadata --format-version 1`, `ui/pnpm-lock.yaml` with `pnpm -C ui install --lockfile-only`, and `ui/src/lib/bindings.ts` with `pnpm -C ui bindings`, from the project root, then name the work again. Locked checks (`--locked`, `--frozen-lockfile`, `export-bindings --check`) reject stale base copies after a land.
 - **Generated files:** `ui/src/lib/bindings.ts`, `Cargo.lock` and `ui/pnpm-lock.yaml`. Never resolve a conflict in them by hand. After `scripts/Setup-DevMachine.ps1`, `git merge origin/master` keeps master's copy without stopping. Then regenerate and commit: `pnpm -C ui bindings`, `cargo build --workspace` for `Cargo.lock`, `pnpm -C ui install` for `pnpm-lock.yaml`. `scripts/check.ps1` fails if you forget.
 - **Registration lists:** `collect_commands!`, `collect_events!`, `.typ` and `.constant` in `src-tauri/src/lib.rs`, the `mod` lines in each crate's `lib.rs`, and the dependency and member lists in `Cargo.toml`. Add your lines inside your module's group. A new module's group goes in alphabetical order, never at the end: two PRs that both append at the end always conflict.
 - Edits to generated files and registration lists never need a "shares" note (Coordination).
@@ -185,7 +186,7 @@ Most merge conflicts come from a few files every feature touches. Keep your edit
 
 ## Sensitive paths
 PR duty tiers every change and PR (F7, `spec/F7-duty-agents/pr-duty-tiered-review.md` and its rule files). On a Rosen project whose `rosen.toml` sets `review = "after-land"`, a sensitive change gets no review before it lands: it lands on a clean merge like every change, and goes first in the review queue after the land. Everywhere else, a change or PR that touches a path listed here is sensitive: full review, `cargo run -p stress -- --all` on the merge result before merge, and a confidence proof at the reference level (a fixture table exported from the Lean model plus one Rust test that checks the implementation against it) for any proof-list feature it changes. The code level (an Aeneas translation) is required only when an issue asks for one (#142). A PR that changes only docs, comments or formatting is trivial: approve it once `scripts/check.ps1` passes and the change matches its claim. Every other PR gets the full review. Every tier needs an approving review.
-- `rosen.toml`: the project's Rosen configuration; it names the checks a land needs, the sensitive paths and the mirror remote. Keep its `sensitive` list the same as the list in this file. Its `registration_lists` also holds the generated files, for the reason it gives.
+- `rosen.toml`: the project's Rosen configuration; it names the checks a land needs, the sensitive paths and the mirror remote. Keep its `sensitive` list the same as the list in this file. Generated artifacts belong only in `generated`; registration lists belong in `registration_lists`.
 - `crates/velocity-store/`: saved state; a mistake loses `state.json`.
 - `crates/velocity-git/src/lifecycle.rs`, `crates/velocity-git/src/merged_worktree.rs`, `crates/velocity-git/src/review.rs`: worktree deletion.
 - `crates/velocity-airc/src/claims.rs`: the claim lock.

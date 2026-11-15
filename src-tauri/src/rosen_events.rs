@@ -83,13 +83,15 @@ async fn consume(
     }
     match velocity_rosen::change_event(event) {
         Some((change, ChangeEvent::Rebased)) => {
-            crate::rosen_rebase::rebased(application, project, change).await;
-            lock(
-                application.state::<ManagedStateStore>().inner(),
-                "persisted state",
-            )?
-            .save_rosen_cursor(project, event.seq)
-            .map_err(|error| error.to_string())?;
+            crate::rosen_rebase::rebased(
+                application,
+                project,
+                change,
+                event.seq,
+                &velocity_rosen::regenerate_paths(event),
+            )
+            .await?;
+            run_follow_ups(application, project).await;
         }
         Some((change, ChangeEvent::Conflict)) => {
             crate::rosen_rebase::conflicted(
@@ -206,8 +208,10 @@ async fn follow_up_once(
     change: Option<&str>,
     follow_up: &RosenFollowUp,
 ) -> Result<bool, String> {
-    if let RosenFollowUp::Conflict { message, .. } = follow_up {
-        return deliver_conflict(application, key, change, follow_up, message).await;
+    if let RosenFollowUp::Conflict { message, .. } | RosenFollowUp::Regenerate { message, .. } =
+        follow_up
+    {
+        return deliver_rebase_notice(application, key, change, follow_up, message).await;
     }
     match follow_up {
         RosenFollowUp::FinishLanded => finish_landed(application, key).await,
@@ -219,14 +223,14 @@ async fn follow_up_once(
             deliver(application, key, follow_up, message)
         }
         RosenFollowUp::Deliver { message, .. } => deliver(application, key, follow_up, message),
-        RosenFollowUp::Conflict { .. } => Ok(()),
+        RosenFollowUp::Conflict { .. } | RosenFollowUp::Regenerate { .. } => Ok(()),
     }
     .map(|()| true)
 }
 
 /// Recheck current server state, since a queued event may already have been resolved.
 /// Failures and busy turns leave the notice pending rather than steering an old basis.
-async fn deliver_conflict(
+async fn deliver_rebase_notice(
     application: &AppHandle,
     key: ThreadKey,
     change: Option<&str>,
@@ -245,22 +249,32 @@ async fn deliver_conflict(
         return Ok(true);
     }
     let server = crate::rosen::server(application, key.0).await?;
-    if !velocity_rosen::has_open_conflicts(&server, change)
-        .await
-        .map_err(|error| error.to_string())?
-    {
+    if !rebase_notice_pending(&server, change, follow_up).await? {
         return Ok(true);
     }
     if !crate::rosen_rebase::apply_at_boundary(application, key).await {
         return Ok(false);
     }
-    if velocity_rosen::has_open_conflicts(&server, change)
-        .await
-        .map_err(|error| error.to_string())?
-    {
+    if rebase_notice_pending(&server, change, follow_up).await? {
         deliver(application, key, follow_up, message)?;
     }
     Ok(true)
+}
+
+async fn rebase_notice_pending(
+    server: &velocity_rosen::ProjectServer,
+    change: &str,
+    follow_up: &RosenFollowUp,
+) -> Result<bool, String> {
+    if matches!(follow_up, RosenFollowUp::Regenerate { .. }) {
+        // Generated-only rebases have no conflict records to use as a delivery gate.
+        velocity_rosen::change_standing(server, change)
+            .await
+            .map(|standing| standing.open)
+    } else {
+        velocity_rosen::has_open_conflicts(server, change).await
+    }
+    .map_err(|error| error.to_string())
 }
 
 /// Sends the agent `message`, resumed first if it had ended, unless an earlier pass already

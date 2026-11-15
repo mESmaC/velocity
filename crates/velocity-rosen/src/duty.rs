@@ -111,8 +111,23 @@ pub async fn change_overview(
 pub struct MergeCheckout {
     pub head: String,
     pub base: String,
-    /// Files that did not merge; the folder is left empty when there are any.
+    /// Paths needing the author's repair: conflicts or generated files to regenerate.
     pub conflicts: Vec<String>,
+}
+
+impl MergeCheckout {
+    /// Never certify a base copy of a generated file as the change's merged artifact.
+    pub(crate) fn from_result(merge: rosen_client::protocol::MergeResultAnswer) -> Self {
+        let mut conflicts = merge.conflicts;
+        conflicts.extend(merge.regenerate);
+        conflicts.sort();
+        conflicts.dedup();
+        Self {
+            head: merge.head.to_string(),
+            base: merge.base.to_string(),
+            conflicts,
+        }
+    }
 }
 
 /// Writes `change`'s current merge result onto the base into `folder`, replacing what an
@@ -144,11 +159,7 @@ pub async fn check_out_merge_result(
         session.check_out_merge_result(change, &staging).await?
     };
     replace_entries(folder, &staging)?;
-    Ok(MergeCheckout {
-        head: checkout.merge.head.to_string(),
-        base: checkout.merge.base.to_string(),
-        conflicts: checkout.merge.conflicts,
-    })
+    Ok(MergeCheckout::from_result(checkout.merge))
 }
 
 /// Makes `folder` a checkout of Velocity's, with nothing staged beside it, and returns

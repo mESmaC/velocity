@@ -76,9 +76,18 @@ pub fn change_event(event: &Event) -> Option<(&str, ChangeEvent)> {
 
 /// The files a `conflict` event names (R5).
 pub fn conflict_paths(event: &Event) -> Vec<String> {
+    event_paths(event, "paths")
+}
+
+/// Generated files whose base copies must be regenerated after a rebase (R5).
+pub fn regenerate_paths(event: &Event) -> Vec<String> {
+    event_paths(event, "regenerate")
+}
+
+fn event_paths(event: &Event, key: &str) -> Vec<String> {
     event
         .detail
-        .get("paths")
+        .get(key)
         .and_then(|paths| paths.as_array())
         .map(|paths| {
             paths

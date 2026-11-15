@@ -78,11 +78,7 @@ pub async fn stage_merge_result(
         .await?
         .check_out_merge_result(change, &staging)
         .await?;
-    let merge = MergeCheckout {
-        head: checkout.merge.head.to_string(),
-        base: checkout.merge.base.to_string(),
-        conflicts: checkout.merge.conflicts,
-    };
+    let merge = MergeCheckout::from_result(checkout.merge);
     let policy = policy_at(server, Some(&merge.base)).await?;
     Ok(StagedMerge { merge, policy })
 }

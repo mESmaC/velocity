@@ -83,11 +83,30 @@ pub fn check_failed_message(change: &str, base: &str, failed: &FailedCheck) -> S
 
 /// What the author's agent is told when its approved change no longer merges onto the base.
 pub fn conflict_message(change: &str, base_branch: &str, files: &[String]) -> String {
-    format!(
-        "Your Rosen change `{}` no longer merges onto `{base_branch}`: it conflicts in {}. Run `rosen rebase` in your workspace, combine both sides between the conflict markers, run `rosen resolve <file>` for each file, then name the work again with `rosen commit -m \"<what changed>\"` so it lands again under the project's review policy.\n",
+    let mut message = format!(
+        "Your Rosen change `{}` needs repair before merging onto `{base_branch}`: {}. Run `rosen rebase` in your workspace. Combine both sides of text conflict markers; regenerate generated artifacts on the combined inputs using the commands below. Run `rosen resolve <file>` for each remaining conflict, then name the work again with `rosen commit -m \"<what changed>\"` so it lands again under the project's review policy.\n",
         short_change(change),
         files.join(", "),
-    )
+    );
+    message.push_str(&regeneration_instructions(files));
+    message
+}
+
+/// Generated files need their generators on the combined inputs, never a line merge.
+pub fn regeneration_instructions(paths: &[String]) -> String {
+    let mut message = String::new();
+    for path in paths {
+        let command = match path.replace('\\', "/").as_str() {
+            "Cargo.lock" => "cargo metadata --format-version 1",
+            "ui/pnpm-lock.yaml" => "pnpm -C ui install --lockfile-only",
+            "ui/src/lib/bindings.ts" => "pnpm -C ui bindings",
+            _ => continue,
+        };
+        message.push_str(&format!(
+            "Regenerate `{path}`: run `{command}` from the project root.\n"
+        ));
+    }
+    message
 }
 
 /// The feed line while the checks run.

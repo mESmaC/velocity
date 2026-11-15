@@ -29,8 +29,10 @@ pub use agent::{
     McpCommand, agent_environment, agent_name, mcp_command, path_with_rosen, run_queue_note,
     workspace_note,
 };
-pub use conflicts::{conflict_message, has_open_conflicts};
-pub use events::{ChangeEvent, EventStream, change_event, conflict_paths, revert_output};
+pub use conflicts::{conflict_message, has_open_conflicts, regeneration_message};
+pub use events::{
+    ChangeEvent, EventStream, change_event, conflict_paths, regenerate_paths, revert_output,
+};
 pub use events::{IssueEvent, issue_event};
 pub use issue::{issue_build_coverage, record_issue};
 pub use mirror::{MirrorObservation, mirror_status};

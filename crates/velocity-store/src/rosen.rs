@@ -43,6 +43,13 @@ pub enum RosenFollowUp {
         #[serde(default)]
         mark: usize,
     },
+    /// Apply the rebased head before asking for regeneration, even without conflicts.
+    Regenerate {
+        #[serde(default)]
+        message: String,
+        #[serde(default)]
+        mark: usize,
+    },
 }
 
 impl RosenFollowUp {
@@ -52,7 +59,8 @@ impl RosenFollowUp {
             Self::FinishLanded => None,
             Self::Reopen { message, .. }
             | Self::Deliver { message, .. }
-            | Self::Conflict { message, .. } => Some(message),
+            | Self::Conflict { message, .. }
+            | Self::Regenerate { message, .. } => Some(message),
         }
     }
 
@@ -63,7 +71,8 @@ impl RosenFollowUp {
     pub fn delivered(&self, thread: &ThreadItem) -> bool {
         let (Self::Reopen { message, mark }
         | Self::Deliver { message, mark }
-        | Self::Conflict { message, mark }) = self
+        | Self::Conflict { message, mark }
+        | Self::Regenerate { message, mark }) = self
         else {
             return false;
         };
@@ -83,6 +92,28 @@ impl StateStore {
         change: &str,
         message: &str,
     ) -> Result<(), StoreError> {
+        self.save_rosen_rebase_notice(project, seq, change, message, false)
+    }
+
+    /// Save generated-file work with the rebase cursor, including conflict-free rebases.
+    pub fn save_rosen_regeneration(
+        &mut self,
+        project: u32,
+        seq: u64,
+        change: &str,
+        message: &str,
+    ) -> Result<(), StoreError> {
+        self.save_rosen_rebase_notice(project, seq, change, message, true)
+    }
+
+    fn save_rosen_rebase_notice(
+        &mut self,
+        project: u32,
+        seq: u64,
+        change: &str,
+        message: &str,
+        regeneration: bool,
+    ) -> Result<(), StoreError> {
         let mut next = self.state.clone();
         let Some(item) = next.projects.iter_mut().find(|item| item.id == project) else {
             return Ok(());
@@ -94,18 +125,28 @@ impl StateStore {
         if let Some(thread) = item.threads.iter_mut().find(|thread| {
             thread.rosen_change.as_deref() == Some(change) && thread.state != ThreadState::Merged
         }) {
-            thread
-                .rosen_follow_ups
-                .retain(|pending| !matches!(pending, RosenFollowUp::Conflict { .. }));
-            thread.rosen_follow_ups.push(RosenFollowUp::Conflict {
-                message: message.to_owned(),
-                mark: thread.transcript.len(),
-            });
+            // Regeneration is cumulative: later rebases may omit still-pending files.
+            // A text-conflict notice must not discard that work either.
+            let notice = if regeneration {
+                RosenFollowUp::Regenerate {
+                    message: message.to_owned(),
+                    mark: thread.transcript.len(),
+                }
+            } else {
+                thread
+                    .rosen_follow_ups
+                    .retain(|pending| !matches!(pending, RosenFollowUp::Conflict { .. }));
+                RosenFollowUp::Conflict {
+                    message: message.to_owned(),
+                    mark: thread.transcript.len(),
+                }
+            };
+            thread.rosen_follow_ups.push(notice);
         }
         self.store_snapshot(next)
     }
 
-    /// Rebases need no saved action: the periodic pass reads the current workspace basis.
+    /// Rebases without regeneration need no saved action: the periodic pass reads the basis.
     /// Their cursor still advances so reconnecting never replays older conflict events.
     pub fn save_rosen_cursor(&mut self, project: u32, seq: u64) -> Result<(), StoreError> {
         if seq <= self.rosen_event_cursor(project) {

@@ -17,10 +17,10 @@ bindings = ["dep:specta"]
 bundled = []
 
 [dependencies]
-# Pinned to a reviewed Rosen commit; move the pin deliberately, like any toolchain pin.
-rosen-client = { git = "https://github.com/mESmaC/rosen", rev = "f18bbc545844904b97cb6668e2a242fc3727cc1f" }
+# Pinned together in workspace.dependencies; move the pins deliberately.
+rosen-client.workspace = true
 # The model types the client does not re-export (snapshot kinds, review thread states).
-rosen-core = { git = "https://github.com/mESmaC/rosen", rev = "f18bbc545844904b97cb6668e2a242fc3727cc1f" }
+rosen-core.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 # Read-only R1/R9 mirror observations; matches the pinned Rosen metadata schema.

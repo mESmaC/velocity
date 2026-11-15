@@ -16,10 +16,30 @@ use crate::threads::{ManagedThreads, lock};
 
 /// Rosen rebased `change`: its thread's workspace takes the new head at the agent's next
 /// step boundary, which may be now.
-pub(crate) async fn rebased(application: &AppHandle, project: u32, change: &str) {
+pub(crate) async fn rebased(
+    application: &AppHandle,
+    project: u32,
+    change: &str,
+    sequence: u64,
+    regenerate: &[String],
+) -> Result<(), String> {
+    {
+        let mut store = lock(
+            application.state::<ManagedStateStore>().inner(),
+            "persisted state",
+        )?;
+        if regenerate.is_empty() {
+            store.save_rosen_cursor(project, sequence)
+        } else {
+            let message = velocity_rosen::regeneration_message(sequence, regenerate);
+            store.save_rosen_regeneration(project, sequence, change, &message)
+        }
+        .map_err(|error| error.to_string())?;
+    }
     if let Some(key) = thread_of(application, project, change) {
         apply_at_boundary(application, key).await;
     }
+    Ok(())
 }
 
 /// Applies the waiting rebase of every open Rosen thread whose agent is at a step boundary.

@@ -9,3 +9,8 @@
   The message identifies the conflict event and files, explains the applied markers and asks the agent to preserve both changes, run `rosen resolve` on each remaining conflicted file, then name the work again with `rosen commit -m`.
   Resolve snapshots the workspace first.
   Rosen takes resolved snapshots of already conflicted files directly without nesting markers, and refuses both resolution and landing while conflict markers remain, even if all conflict records were cleared (rosen#383).
+  Generated artifacts belong in `rosen.toml`'s `generated` list, never in `registration_lists` (#404).
+  A rebase's `regenerate` paths get their own durable notice, saved with the event cursor and delivered only after the rebased head reaches the workspace at a turn boundary, even when there are no text conflicts.
+  A later text-conflict notice does not replace pending regeneration work; delivered notices are not repeated and a closed change gets no regeneration notice.
+  The notice names `cargo metadata --format-version 1` for `Cargo.lock`, `pnpm -C ui install --lockfile-only` for `ui/pnpm-lock.yaml`, and `pnpm -C ui bindings` for `ui/src/lib/bindings.ts`, run from the project root before naming the work again.
+  Other generated paths use their project's generator.
