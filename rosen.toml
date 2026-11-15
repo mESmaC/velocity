@@ -76,30 +76,20 @@ sensitive = [
 # unit, read from the manifests at the base. `ui/`, `proofs/` and `scripts/`
 # lie in no unit, so a change to them counts as reaching every unit.
 
-# Build and lint on the exact merge result, before a land: the steps
-# .github/workflows/build.yml runs. Each command is one line that runs the
-# same from cmd, PowerShell and sh.
-#
-# `scripts/check-ui.mjs` is the UI's install, build, type check and lint. They
-# read nothing outside `ui/`, so the script skips them when they already
-# passed in the checker's folder on exactly the same `ui/` files: about eight
-# seconds saved on every change that touches only Rust. It runs before the
-# Rust build, which embeds `ui/dist`.
+# Fast build set; #380 runs checks.pre_land after landing in after-land mode.
+# The script compares this folder with its last successful inputs, checks the
+# changed crates and their reverse dependencies, and checks bindings/UI only
+# when their inputs changed. Separate targets share sccache, never Cargo locks.
 [checks.pre_land]
 commands = [
-    "cargo fmt --all -- --check",
-    "node scripts/check-ui.mjs",
-    "cargo build --workspace --locked",
-    "cargo run --locked -p velocity-app --bin export-bindings -- --check",
-    "cargo clippy --workspace --all-targets --locked -- -D warnings",
+    "node scripts/check-fast.mjs",
 ]
 
-# The full tests, on landed commits in batches. A commit that fails them
-# twice while its parent passes is reverted.
+# The full set, on landed commits in batches. In after-land mode #380 reports
+# test failures without reverting; #381 requires this set green for a release.
 [checks.post_land]
 commands = [
-    "node scripts/check-ui.mjs",
-    "cargo test --workspace --locked",
+    "node scripts/check-full.mjs",
 ]
 
 # Ready workspaces each machine's daemon keeps at the base tip. On a ReFS

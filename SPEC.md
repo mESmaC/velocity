@@ -560,6 +560,39 @@ Long-running roles. They appear under **On duty**, with an agent count (×N) and
 - **Composer:** instructs every agent in the role.
 - **Dismiss and Stop.** Each agent card has a × (shown on hover or focus) that dismisses that agent at once, with no confirmation (§1). Its running session stops, which ends its agent's process tree; a PR it was reviewing is released (the AIRC `released` event, the `reviewing` label removed if an agent added one, and a `Released · <nick>` comment on the PR) and doesn't rest, so the next idle PR duty agent can claim it on its next tick. The agent leaves the role in `state.json` and the feed gets "Dismissed <nick>". **Stop** in the header dismisses every agent and removes the role from "On duty"; the view goes Home, as it does for a deleted thread. Both survive a restart. A later + Agent takes the lowest free nick numbers, so a dismissed agent's nick can be reused. Worktrees the agent used stay on disk. There is no Undo: + Agent or starting the role again brings agents back.
 
+**Velocity's fast build set (#387).** `rosen.toml` keeps the fast commands in `checks.pre_land` and the full commands in `checks.post_land`; in after-land mode the build checker runs the former after each land (see below). `node scripts/check-fast.mjs` runs locked `cargo check` and clippy on changed crates and their transitive reverse dependencies, including optional, build and target-specific dependencies. Each check folder compares its inputs with its last successful run, so batching, deleted files and a bisection going backwards are covered. A missing or incompatible record, a workspace manifest, lockfile, toolchain, Cargo configuration or checker-script change checks all crates. Embedded files count against their owning crate. Bindings use a conservative fingerprint of Rust declarations, command signatures, registration code, embedded interface inputs, generated bindings, manifests and the toolchain. Ordinary function-body changes do not export bindings again; macros, manual schema computation, custom build scripts and unrecognised syntax retain broader inputs. UI install, build, type check and lint run only when UI inputs (including bindings) change, or the folder needs its initial UI build. The previous checkpoint is removed before the selected checks execute; only a complete pass writes its replacement. The full set also checks formatting, links the workspace, checks crates independently and runs all workspace tests.
+
+Every folder keeps its own Cargo target and Cargo's default incremental compilation for workspace crates; agents and check folders share sccache for cacheable registry and git dependencies. Installed sccache 0.19 retains the working directory in Rust keys, so cross-folder workspace-crate hits are not assumed. The build feed includes the fast script's elapsed time and cache hit/miss delta, labelled as a machine-wide delta because other agents can share the cache. No cacheable requests is reported explicitly, as is an unavailable cache; counters are never reset. Target: a warm fast run for one changed crate under 60 seconds, excluding its run-queue wait. `node scripts/measure-checks.mjs` replays the latest 20 first-parent landed trees in order, with a separate warm-up parent, fixed old commands and separate persistent before/after folders. The replay takes one `rosen run` turn, records its queue wait separately, and saves each sample's execution time, commit, cache report and log under `target/`.
+
+**Measured check times (#387, 2026-11-14–15).** The last 20 first-parent lands at `f87b0696` were replayed after warm-up parent `14cc9d01`, on a Windows Core Ultra 7 265F with Rust 1.99.0, Node 24.18.0, pnpm 10.34.9 and sccache 0.19.0. Before uses the former pre-land commands: formatting, UI checks, locked workspace build, bindings export and workspace clippy. Fast uses the final scripts with default incremental compilation. All 20 pairs passed. Seconds exclude run-queue waits and tree checkout. The separate fast warm-up took 117.3 s and reported 72.8% machine cache hits (617 hits, 231 misses).
+
+| Land (commit) | Before (s) | Fast (s) |
+| --- | ---: | ---: |
+| #362 (1f2d72af) | 77.9 | 53.9 |
+| #363 (e5e520a6) | 59.2 | 62.1 |
+| #364 (59be9087) | 64.7 | 37.0 |
+| #365 (02677cca) | 122.0 | 43.2 † |
+| #366 (8ee74749) | 6.8 ‡ | 48.2 |
+| #367 (b3a2273e) | 82.0 | 54.2 |
+| #368 (e282bdd2) | 5.1 | 0.7 |
+| #370 (df63df22) | 125.3 | 29.0 † |
+| #371 (c8446472) | 34.8 | 1.6 |
+| #374 (6a42be41) | 11.4 | 1.1 |
+| #340 (3f005afe) | 60.8 | 42.2 |
+| #349 (1ab4f6ee) | 30.6 | 50.7 |
+| #355 (2f64cf8f) | 27.2 | 11.4 |
+| #372 (c819091e) | 71.7 | 87.7 |
+| #344 (4b4c817f) | 33.5 | 21.9 |
+| #293 (2be10da1) | 32.6 | 20.8 |
+| #308 (3516b181) | 37.4 | 67.0 |
+| #356 (8791d748) | 36.3 | 63.3 |
+| #354 (75dd7422) | 29.7 | 67.6 |
+| #347 (f87b0696) | 31.4 | 36.4 |
+
+Across these 20 runs, mean time was **49.0 → 40.0 s**, median **35.6 → 42.7 s**, and maximum **125.3 → 87.7 s**; 15 fast runs finished under 60 s. Some changes were slower. † These two fast timings are retries after interrupted compilations and benefit from partially built artifacts; they understate first-attempt cost. ‡ This baseline already had compiled artifacts from an interrupted pilot. Other completed baseline measurements were retained rather than rebuilt. Concurrent builds, upgrades and changing thread budgets varied the cache and CPU conditions. Both sets also encountered incremental-directory access-denied notes ([Rosen #381](https://github.com/mESmaC/rosen/issues/381)); run-client lifetime failures are tracked in [Rosen #382](https://github.com/mESmaC/rosen/issues/382). The raw pair timings and these limits are retained so the aggregate is not treated as a uniform speedup.
+
+A separate fresh function-body edit in `velocity-updates`, on the fully checked merge tree, completed in **10.2 s** (10.10 s in the feed). It selected only `velocity-updates` and its reverse dependent `velocity-app`, with bindings and UI both skipped. The edit was restored byte-for-byte afterward; this meets the warm one-crate target on this run.
+
 **PR duty:**
 - **For git projects** (#381). A Rosen project that sets `review = "after-land"` has no approval for PR duty to give (§1 Rosen rules): the Duty dialog doesn't offer PR duty there and says why, and Velocity lands its changes with no PR duty agent (A Rosen change, below). An existing PR duty role on such a project reviews only its GitHub PRs. Review, scouting and Lean follow the land without blocking it (#382, §1 Rule 8). A Rosen project that keeps `review = "before-land"` keeps PR duty as below.
 - Claims unclaimed PRs, one PR per agent, so two agents never review the same one. The review claim goes through the AIRC lock (`airc_claim` on the PR), so it is atomic. Only its holder updates, approves or merges that PR. A finding that arrives after the PR merged is filed as an issue.
