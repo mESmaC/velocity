@@ -75,11 +75,13 @@ pub struct ScoutSweeps {
     reports: PathBuf,
     /// The project's AIRC channel, passed to every sweep's agent (F14).
     airc: Option<AircLaunch>,
+    review_swarms: crate::review_swarm::ReviewSwarms,
 }
 
 impl ScoutSweeps {
     pub fn new(scout_server: PathBuf, reports: PathBuf) -> Self {
         Self {
+            review_swarms: crate::review_swarm::ReviewSwarms::new(scout_server.clone(), &reports),
             state: Arc::default(),
             wake: Arc::new(Notify::new()),
             scout_server,
@@ -90,6 +92,7 @@ impl ScoutSweeps {
 
     /// Gives every sweep's agent the project's AIRC channel under its scout nick (F14).
     pub fn with_airc(mut self, airc: AircLaunch) -> Self {
+        self.review_swarms.airc = Some(airc.clone());
         self.airc = Some(airc);
         self
     }
@@ -102,6 +105,7 @@ impl ScoutSweeps {
     /// Delivers your instruction from the Duty view's composer (F7: it instructs every agent
     /// in the role). A running sweep gets it as its next message; idle scouts sweep with it.
     pub fn instruct(&self, project: u32, instruction: &str) {
+        self.review_swarms.instruct(project, instruction);
         let mut state = self.lock();
         let mut delivered = BTreeSet::new();
         for ((owner, nickname), (input, pending)) in state.running.iter_mut() {
@@ -122,6 +126,7 @@ impl ScoutSweeps {
     /// Dismisses `scout` (F7): stops its running sweep's session, which kills the agent's
     /// process tree. Call it after the scout left the saved roster.
     pub fn dismiss(&self, project: u32, scout: &str) {
+        self.review_swarms.dismiss(project, scout);
         let mut state = self.lock();
         state.dismissals = state.dismissals.wrapping_add(1);
         if let Some((input, _)) = state.running.get(&(project, scout.to_owned())) {
@@ -133,7 +138,12 @@ impl ScoutSweeps {
 
     /// Scouts whose sweeps are running.
     pub fn running(&self) -> BTreeSet<ScoutKey> {
-        self.lock().running.keys().cloned().collect()
+        self.lock()
+            .running
+            .keys()
+            .cloned()
+            .chain(self.review_swarms.running())
+            .collect()
     }
 
     /// Runs until the app exits.
@@ -148,49 +158,70 @@ impl ScoutSweeps {
     /// Starts every due sweep once, and settles idle cards.
     pub async fn tick<Host: SweepHost>(&self, host: &Host) {
         let dismissals = self.lock().dismissals;
-        for roster in host.rosters() {
+        let rosters = host.rosters();
+        self.review_swarms.retain(&rosters);
+        for roster in rosters {
+            if roster.project.rosen_in_use() {
+                let server = velocity_rosen::ProjectServer::new(
+                    &self.review_swarms.app_data,
+                    roster.project.id,
+                );
+                match velocity_rosen::post_land::after_land(&server).await {
+                    Ok(true) => {
+                        self.review_swarms.schedule(host, &roster);
+                        continue;
+                    }
+                    Ok(false) => {}
+                    // A failed policy read must never start a git sweep in a Rosen folder.
+                    Err(_) => continue,
+                }
+            }
             let base = self.base_commit(&roster).await;
             if self.lock().dismissals != dismissals {
                 // A scout left while the tip was read: the dismissal's wake reads afresh.
                 return;
             }
-            let instruction = self.lock().instructions.remove(&roster.project.id);
-            for (index, scout) in roster.scouts.iter().enumerate() {
-                let key = (roster.project.id, scout.nickname.clone());
-                let running = self.lock().running.contains_key(&key);
-                let schedule = SweepSchedule {
-                    cadence: roster.rules.cadence,
-                    paused: roster.paused,
-                    running,
-                    last: scout.sweep.as_ref(),
-                    now: unix_now(),
-                    base_commit: base.as_deref(),
-                    // Only a sweep the runner started marks the card busy, and finishing
-                    // clears it, so a busy card it isn't running was cut off by an exit.
-                    interrupted: scout.busy && !running,
-                };
-                let instructed = instruction
-                    .as_ref()
-                    .filter(|wanted| !wanted.delivered.contains(&scout.nickname))
-                    .filter(|_| !roster.paused && !running)
-                    .map(|wanted| wanted.text.clone());
-                let reason = match &instructed {
-                    Some(_) => Some(SweepReason::Instruction),
-                    None => sweep_due(&schedule),
-                };
-                match reason {
-                    Some(reason) => {
-                        let brief = SweepStart {
-                            index,
-                            reason,
-                            instruction: instructed,
-                            base_hint: base.clone(),
-                        };
-                        self.start(host, &roster, brief);
-                    }
-                    None if !running => settle_card(host, &roster, scout),
-                    None => {}
+            self.start_due(host, &roster, base);
+        }
+    }
+
+    fn start_due<Host: SweepHost>(&self, host: &Host, roster: &ScoutRoster, base: Option<String>) {
+        let instruction = self.lock().instructions.remove(&roster.project.id);
+        for (index, scout) in roster.scouts.iter().enumerate() {
+            let key = (roster.project.id, scout.nickname.clone());
+            let running = self.lock().running.contains_key(&key);
+            let schedule = SweepSchedule {
+                cadence: roster.rules.cadence,
+                paused: roster.paused,
+                running,
+                last: scout.sweep.as_ref(),
+                now: unix_now(),
+                base_commit: base.as_deref(),
+                // Only a sweep the runner started marks the card busy, and finishing
+                // clears it, so a busy card it isn't running was cut off by an exit.
+                interrupted: scout.busy && !running,
+            };
+            let instructed = instruction
+                .as_ref()
+                .filter(|wanted| !wanted.delivered.contains(&scout.nickname))
+                .filter(|_| !roster.paused && !running)
+                .map(|wanted| wanted.text.clone());
+            let reason = match &instructed {
+                Some(_) => Some(SweepReason::Instruction),
+                None => sweep_due(&schedule),
+            };
+            match reason {
+                Some(reason) => {
+                    let brief = SweepStart {
+                        index,
+                        reason,
+                        instruction: instructed,
+                        base_hint: base.clone(),
+                    };
+                    self.start(host, roster, brief);
                 }
+                None if !running => settle_card(host, roster, scout),
+                None => {}
             }
         }
     }

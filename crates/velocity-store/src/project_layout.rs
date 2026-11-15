@@ -131,7 +131,7 @@ fn duty_entry(item: &DutyRoleItem, merged_today: usize) -> ThreadEntry {
             agent_count: core_entry.agents.len(),
             paused: core_entry.paused,
         },
-        title: core_entry.role.title().into(),
+        title: core_entry.title().into(),
         metadata,
         view: NavigationView::Duty,
         detail: None,
