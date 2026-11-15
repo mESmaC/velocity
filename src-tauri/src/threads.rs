@@ -336,6 +336,7 @@ pub(crate) fn start_planned_with_selection(
     select: bool,
 ) -> Result<LayoutSnapshot, String> {
     let key = (plan.project, thread);
+    crate::rosen::begin_launch(application, key, &plan.prompt)?;
     let inputs = {
         let mut runtimes = lock(
             application.state::<ManagedThreads>().inner(),
@@ -367,6 +368,7 @@ pub(crate) fn start_goal_member(
     thread: u32,
 ) -> Result<(), String> {
     let key = (plan.project_id, thread);
+    crate::rosen::begin_launch(application, key, &plan.slot.prompt)?;
     lock(
         application.state::<ManagedThreads>().inner(),
         "thread sessions",
@@ -376,6 +378,64 @@ pub(crate) fn start_goal_member(
     let handle = application.clone();
     tauri::async_runtime::spawn(async move { run_goal_member(handle, key, plan).await });
     Ok(())
+}
+
+/// Retries only failed workspace launches; it never resumes an agent in a git checkout.
+pub(crate) async fn retry_workspace(application: &AppHandle, key: ThreadKey) -> Result<(), String> {
+    let action = action_lock(application, key)?;
+    let _guard = action.lock_owned().await;
+    if lock(
+        application.state::<ManagedThreads>().inner(),
+        "thread sessions",
+    )?
+    .is_live(key)
+    {
+        return Err("The thread is already running".into());
+    }
+    let plan = plan_workspace_retry(application, key)?;
+    match plan {
+        velocity_threads::workspace_retry::WorkspaceRetry::Thread(plan) => {
+            start_planned_with_selection(application, *plan, key.1, false).map(|_| ())
+        }
+        velocity_threads::workspace_retry::WorkspaceRetry::Goal(plan) => {
+            start_goal_member(application, *plan, key.1)?;
+            refresh(application, key, false).map(|_| ())
+        }
+    }
+}
+
+fn plan_workspace_retry(
+    application: &AppHandle,
+    key: ThreadKey,
+) -> Result<velocity_threads::workspace_retry::WorkspaceRetry, String> {
+    let mut store = lock(
+        application.state::<ManagedStateStore>().inner(),
+        "persisted state",
+    )?;
+    let (project, thread) = store
+        .follow_through_thread(key.0, key.1)
+        .map_err(|error| error.to_string())?;
+    if thread.state != ThreadState::Error || thread.pending_rosen_launch.is_none() {
+        return Err("This thread has no failed Rosen workspace launch".into());
+    }
+    let preferences = store.worktree_preferences(&project);
+    let plan = velocity_threads::workspace_retry::plan_retry(
+        &project,
+        &thread,
+        &preferences,
+        &store.settings(),
+    )
+    .map_err(|error| error.to_string())?;
+    store
+        .reclaim_agent_work(key.0, key.1)
+        .map_err(|error| error.to_string())?;
+    store
+        .update_thread(key.0, key.1, |thread| {
+            thread.state = ThreadState::Working;
+            thread.activity = AgentActivity::Executing;
+        })
+        .map_err(|error| error.to_string())?;
+    Ok(plan)
 }
 
 /// A message for a running thread: sent at once when idle, queued while busy (Rule 1).
@@ -554,7 +614,7 @@ fn folder_ready(
 }
 
 /// The folder a new thread's agent works in: a Rosen workspace, or a git worktree when
-/// the project uses git or Rosen couldn't make one (F5).
+/// the project chooses git (F5). A failed Rosen launch never takes a git worktree.
 struct ThreadFolder {
     path: PathBuf,
     branch_name: Option<String>,
@@ -566,30 +626,25 @@ async fn take_folder(
     application: &AppHandle,
     key: ThreadKey,
     plan: &mut LaunchPlan,
-) -> ThreadFolder {
-    let mut settled = None;
-    if crate::rosen::uses_rosen(application, key.0) {
+) -> Result<ThreadFolder, String> {
+    if crate::rosen::launch_pending(application, key)? {
         // The title is settled meanwhile; a Rosen workspace keeps its first folder name.
         let titling = {
             let (application, plan) = (application.clone(), plan.clone());
             tauri::async_runtime::spawn(async move { settle_title(&application, key, &plan).await })
         };
         let taken = crate::rosen::take_workspace(application, key, &plan.worktree).await;
-        settled = Some(titling.await.ok().flatten());
-        match taken {
-            Ok(workspace) => {
-                plan.agent.env.extend(workspace.environment);
-                return ThreadFolder {
-                    path: workspace.root,
-                    branch_name: plan.worktree.branch_name.clone(),
-                    failure: workspace.setup.err(),
-                    rosen_change: Some(workspace.change),
-                };
-            }
-            Err(error) => crate::rosen::fell_back(application, &error),
-        }
+        let _ = titling.await;
+        let workspace = taken?;
+        plan.agent.env.extend(workspace.environment);
+        return Ok(ThreadFolder {
+            path: workspace.root,
+            branch_name: plan.worktree.branch_name.clone(),
+            failure: workspace.setup.err(),
+            rosen_change: Some(workspace.change),
+        });
     }
-    let (path, branch_name, failure) = match take_worktree(application, key, plan, settled).await {
+    let (path, branch_name, failure) = match take_worktree(application, key, plan).await {
         Ok(worktree) => (
             worktree.worktree_path,
             worktree.branch_name,
@@ -601,12 +656,12 @@ async fn take_folder(
             Some(error),
         ),
     };
-    ThreadFolder {
+    Ok(ThreadFolder {
         path,
         branch_name,
         failure,
         rosen_change: None,
-    }
+    })
 }
 
 async fn run_thread(
@@ -615,7 +670,17 @@ async fn run_thread(
     mut plan: LaunchPlan,
     inputs: SessionInputs,
 ) {
-    let folder = take_folder(&application, key, &mut plan).await;
+    let folder = match take_folder(&application, key, &mut plan).await {
+        Ok(folder) => folder,
+        Err(error) => {
+            return fail(
+                &application,
+                key,
+                "Could not create the Rosen workspace",
+                &error,
+            );
+        }
+    };
     let path = folder.path.display().to_string();
     // A thread deleted while its worktree was being created starts no agent (F12).
     if !folder_ready(&application, key, &folder, &path) {
@@ -626,21 +691,17 @@ async fn run_thread(
         }
         return remove_deleted_worktree(plan.worktree.repository_root, folder.path).await;
     }
-    let ThreadFolder {
-        path: worktree_path,
-        branch_name,
-        failure,
-        rosen_change,
-    } = folder;
     report(record_names(
         &application,
         key,
         &path,
-        branch_name.as_deref(),
+        folder.branch_name.as_deref(),
     ));
-    if let Some(detail) = failure {
-        // The worktree is kept for a failed thread (F5).
-        return fail(&application, key, "Could not set up the worktree", &detail);
+    if let Some(detail) = &folder.failure {
+        return fail(&application, key, "Could not set up the worktree", detail);
+    }
+    if !finish_workspace_launch(&application, key) {
+        return;
     }
     if setup_no_longer_wanted(&application, key) {
         if let Ok(mut runtimes) = lock(
@@ -651,6 +712,22 @@ async fn run_thread(
         }
         return;
     }
+    run_thread_session(application, key, plan, inputs, folder).await;
+}
+
+async fn run_thread_session(
+    application: AppHandle,
+    key: ThreadKey,
+    plan: LaunchPlan,
+    inputs: SessionInputs,
+    folder: ThreadFolder,
+) {
+    let ThreadFolder {
+        path: worktree_path,
+        branch_name,
+        rosen_change,
+        ..
+    } = folder;
     report(refresh(&application, key, false));
     let mut setup = with_run_settings(
         &application,
@@ -675,7 +752,17 @@ async fn run_thread(
 }
 
 async fn run_goal_member(application: AppHandle, key: ThreadKey, mut plan: GoalMemberPlan) {
-    let folder = take_goal_folder(&application, key, &mut plan).await;
+    let folder = match take_goal_folder(&application, key, &mut plan).await {
+        Ok(folder) => folder,
+        Err(error) => {
+            return fail(
+                &application,
+                key,
+                "Could not create the Rosen workspace",
+                &error,
+            );
+        }
+    };
     let worktree_path = folder.path.clone();
     let branch_name = folder.branch_name.clone().unwrap_or_default();
     let path = worktree_path.display().to_string();
@@ -685,6 +772,9 @@ async fn run_goal_member(application: AppHandle, key: ThreadKey, mut plan: GoalM
     report(record_names(&application, key, &path, Some(&branch_name)));
     if let Some(detail) = &folder.failure {
         return fail(&application, key, "Could not set up the worktree", detail);
+    }
+    if !finish_workspace_launch(&application, key) {
+        return;
     }
     report(refresh(&application, key, false));
     match run_goal_choice(&application, key, &plan, &folder, &branch_name).await {
@@ -708,34 +798,40 @@ async fn run_goal_member(application: AppHandle, key: ThreadKey, mut plan: GoalM
     }
 }
 
+fn finish_workspace_launch(application: &AppHandle, key: ThreadKey) -> bool {
+    match crate::rosen::finish_launch(application, key) {
+        Ok(()) => true,
+        Err(error) => {
+            fail(application, key, "Could not record workspace setup", &error);
+            false
+        }
+    }
+}
+
 async fn take_goal_folder(
     application: &AppHandle,
     key: ThreadKey,
     plan: &mut GoalMemberPlan,
-) -> ThreadFolder {
-    if crate::rosen::uses_rosen(application, key.0) {
-        match crate::rosen::take_workspace(application, key, &plan.worktree).await {
-            Ok(workspace) => {
-                plan.agent.env.extend(workspace.environment);
-                return ThreadFolder {
-                    path: workspace.root,
-                    branch_name: plan.worktree.branch_name.clone(),
-                    failure: workspace.setup.err(),
-                    rosen_change: Some(workspace.change),
-                };
-            }
-            Err(error) => crate::rosen::fell_back(application, &error),
-        }
+) -> Result<ThreadFolder, String> {
+    if crate::rosen::launch_pending(application, key)? {
+        let workspace = crate::rosen::take_workspace(application, key, &plan.worktree).await?;
+        plan.agent.env.extend(workspace.environment);
+        return Ok(ThreadFolder {
+            path: workspace.root,
+            branch_name: plan.worktree.branch_name.clone(),
+            failure: workspace.setup.err(),
+            rosen_change: Some(workspace.change),
+        });
     }
     let pools = crate::ready_pool::pools(application);
     let (path, branch, failure) =
         setup_goal_worktree(application, pools, key.0, &plan.worktree).await;
-    ThreadFolder {
+    Ok(ThreadFolder {
         path,
         branch_name: Some(branch),
         failure,
         rosen_change: None,
-    }
+    })
 }
 
 async fn discard_goal_folder(
@@ -951,13 +1047,11 @@ fn mark_worktree_ready(application: &AppHandle, key: ThreadKey, path: &str, fail
 
 /// Checks the worktree out while the title model answers; naming and setup wait for the
 /// title, at most F4's two seconds (`resolve_title` enforces the deadline). The checkout is a
-/// ready worktree from the warm pool when it has one (F5). `settled` is the title's names
-/// when a Rosen attempt already asked for the title, so it is never asked twice.
+/// ready worktree from the warm pool when it has one (F5).
 async fn take_worktree(
     application: &AppHandle,
     key: ThreadKey,
     plan: &LaunchPlan,
-    settled: Option<Option<WorktreeName>>,
 ) -> Result<TitledWorktree, String> {
     let (name_sender, name_receiver) = std::sync::mpsc::channel();
     let mut request = plan.worktree.clone();
@@ -977,10 +1071,7 @@ async fn take_worktree(
             || name_receiver.recv().ok().flatten(),
         ))
     });
-    let name = match settled {
-        Some(name) => name,
-        None => settle_title(application, key, plan).await,
-    };
+    let name = settle_title(application, key, plan).await;
     // Setup is waiting for this; if the checkout already failed, nobody is listening.
     let _ = name_sender.send(name);
     worktree.await.map_err(|error| error.to_string())?
@@ -1054,7 +1145,7 @@ fn record_names(
     .map_err(|error| error.to_string())
 }
 
-fn setup_no_longer_wanted(application: &AppHandle, key: ThreadKey) -> bool {
+pub(crate) fn setup_no_longer_wanted(application: &AppHandle, key: ThreadKey) -> bool {
     let merged = lock(
         application.state::<ManagedStateStore>().inner(),
         "persisted state",

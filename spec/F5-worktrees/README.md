@@ -1,9 +1,10 @@
 <!-- split-spec: {"order":523,"kind":"markdown","indentation":0} -->
 ### F5 · Worktrees
 
-**Rosen first, git as the fallback (decided, #331).**
+**Rosen first, git by project choice (decided, #331, #407).**
 Rosen (`github.com/mESmaC/rosen`) is Velocity's first-class version control.
-Each project's agents work in Rosen changes and workspaces; git worktrees are the fallback, used when a project chooses git or Rosen can't make a workspace.
+Each project's agents work in Rosen changes and workspaces; git worktrees are used only when a project chooses git.
+A Rosen project never falls back to git when its server or workspace creation fails (#407).
 A project's choice is saved with it and defaults to Rosen.
 Settings → Worktrees → Version control switches it for the selected project (`set_worktree_settings` with `UseRosen`).
 Only new threads take the new choice: an open thread keeps the Rosen change or git worktree and PR it started with until it lands, and the page says how many do.
