@@ -10,6 +10,7 @@ pub mod agent_activity;
 pub mod agent_tasks;
 pub mod airc_members;
 pub mod build_gate;
+pub mod build_repairs;
 pub mod claim_piece;
 pub mod continuous_dispatch;
 pub mod deleted_worktrees;
@@ -928,6 +929,10 @@ impl ThreadItem {
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, Type)]
 pub struct ProjectItem {
+    /// Fix-forward ownership survives restart and deletion of settled thread history.
+    #[serde(default)]
+    #[specta(skip)]
+    pub build_repairs: Vec<build_repairs::BuildRepair>,
     pub id: u32,
     pub name: String,
     pub location_kind: ProjectLocationKind,
@@ -1022,6 +1027,7 @@ pub struct PendingInterview {
 impl ProjectItem {
     pub fn new(identifier: u32, name: String, repository_path: String) -> Self {
         Self {
+            build_repairs: Vec::new(),
             id: identifier,
             name,
             repository_path,

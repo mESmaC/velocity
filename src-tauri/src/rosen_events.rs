@@ -73,6 +73,14 @@ async fn consume(
     project: u32,
     event: &velocity_rosen::ProjectEvent,
 ) -> Result<(), String> {
+    if matches!(
+        event.kind,
+        velocity_rosen::ProjectEventKind::PostLandFailure
+            | velocity_rosen::ProjectEventKind::RevertRefused
+    ) {
+        // The independent repair worker reads durable evidence, even while a build runs.
+        crate::reviews::wake(application);
+    }
     if event.kind == velocity_rosen::ProjectEventKind::Mirror {
         report(crate::rosen_mirror::refresh(application, project).await);
     }

@@ -6,6 +6,7 @@
 //! chooses git; Rosen failures retain a retryable launch.
 
 mod agent;
+pub mod build_repairs;
 #[cfg(feature = "bundled")]
 mod bundled;
 pub mod checker;
@@ -55,6 +56,8 @@ use std::path::PathBuf;
 /// Why Rosen could not do what Velocity asked.
 #[derive(Debug, thiserror::Error)]
 pub enum RosenError {
+    #[error("could not read Rosen build repair evidence: {0}")]
+    BuildRepairData(String),
     #[error("could not synchronize git with Rosen's base: {0}")]
     GitBase(String),
     #[error("could not read Rosen mirror metadata: {0}")]

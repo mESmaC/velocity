@@ -11,6 +11,7 @@
 //! the pre-land checks on an approved Rosen change and lands it, and `post_land` runs the
 //! full tests on what landed.
 
+mod build_repairs;
 mod check_feed;
 mod checker;
 mod landing;
@@ -61,8 +62,13 @@ const AIRC_DELIVERY: Duration = Duration::from_secs(1);
 /// A change to a project's PR duty: given the feed's timestamp, it returns the events to post.
 pub type ReviewChange = Box<dyn FnOnce(&mut DutyRoleEntry, &str) -> Vec<DutyFeedEvent> + Send>;
 
+pub use build_repairs::BuildRepairs;
+
 /// Where the runner saves and shows what reviews do: the store, the window and its events.
 pub trait ReviewHost: Clone + Send + Sync + 'static {
+    /// Atomically retain each culprit's thread identity before launching it. Repeated
+    /// observations must resume pending launches rather than allocate another thread.
+    fn repair_builds(&self, project: u32, observation: BuildRepairs) -> Result<(), String>;
     /// Every project's PR duty role.
     fn rosters(&self) -> Vec<PrDutyRoster>;
     /// Applies `change` to the project's PR duty, appends and publishes the events it returns,
@@ -166,6 +172,8 @@ struct RunnerState {
     verifying_projects: BTreeSet<(u32, &'static str)>,
     reporting_projects: BTreeSet<u32>,
     reporting_notes: BTreeMap<u32, String>,
+    repairing_projects: BTreeMap<u32, bool>,
+    repair_deadlines: BTreeMap<u32, u64>,
     /// The projects with a pass running, each with whether it was asked for again
     /// meanwhile: a project is passed once at a time, and none waits for another.
     passing: BTreeMap<u32, bool>,
@@ -360,6 +368,9 @@ impl PrDutyReviews {
         let dismissals = self.lock().dismissals;
         for roster in host.rosters() {
             let project = roster.project.id;
+            if roster.project.rosen_in_use() {
+                self.repair_builds(host, project);
+            }
             {
                 let mut state = self.lock();
                 if let Some(again) = state.passing.get_mut(&project) {
@@ -382,6 +393,9 @@ impl PrDutyReviews {
     pub async fn tick<Host: ReviewHost>(&self, host: &Host) {
         let dismissals = self.lock().dismissals;
         for roster in host.rosters() {
+            if roster.project.rosen_in_use() {
+                self.repair_builds(host, roster.project.id);
+            }
             self.pass(host, roster, dismissals).await;
         }
     }

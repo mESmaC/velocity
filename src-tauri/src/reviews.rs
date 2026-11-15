@@ -150,6 +150,24 @@ pub fn instruct(application: &AppHandle, role: DutyRole, instruction: &str) {
 struct TauriReviewHost(AppHandle);
 
 impl ReviewHost for TauriReviewHost {
+    fn repair_builds(
+        &self,
+        project: u32,
+        observation: velocity_threads::review_runner::BuildRepairs,
+    ) -> Result<(), String> {
+        lock(
+            self.0.state::<ManagedStateStore>().inner(),
+            "persisted state",
+        )?
+        .close_build_repairs(project, &observation.settled)
+        .map_err(|error| error.to_string())?;
+        for failure in observation.pending {
+            // A failure launching one culprit must not hide a later, independent break.
+            report(self.start_build_repair(project, &failure));
+        }
+        Ok(())
+    }
+
     fn change_landed(&self, project: u32, change: &str, generation: u64) -> Result<(), String> {
         crate::rosen_events::record_landed(&self.0, project, change, generation)
     }
@@ -180,6 +198,52 @@ impl ReviewHost for TauriReviewHost {
 }
 
 impl TauriReviewHost {
+    fn start_build_repair(
+        &self,
+        project: u32,
+        failure: &velocity_rosen::build_repairs::BuildFailure,
+    ) -> Result<(), String> {
+        let planned = {
+            let mut store = lock(
+                self.0.state::<ManagedStateStore>().inner(),
+                "persisted state",
+            )?;
+            let existing = store.project(project).and_then(|project| {
+                project
+                    .build_repairs
+                    .iter()
+                    .find(|repair| repair.commit == failure.commit)
+                    .map(|repair| (project.id, repair.thread))
+            });
+            if let Some(key) = existing
+                && lock(
+                    self.0.state::<crate::threads::ManagedThreads>().inner(),
+                    "thread sessions",
+                )?
+                .is_live(key)
+            {
+                return Ok(());
+            }
+            let planned =
+                velocity_threads::build_repairs::prepare_repair(&mut store, project, failure)?;
+            if let Some((_, thread)) = &planned {
+                store
+                    .update_thread(project, *thread, |thread| {
+                        thread.state = velocity_store::ThreadState::Working;
+                        thread.activity = velocity_store::AgentActivity::Executing;
+                    })
+                    .map_err(|error| error.to_string())?;
+            }
+            planned
+        };
+        if let Some((plan, thread)) = planned {
+            // Persist the thread identity and opening prompt before any process starts.
+            crate::state::save_now(&self.0)?;
+            crate::threads::start_planned_with_selection(&self.0, plan, thread, false)?;
+        }
+        Ok(())
+    }
+
     /// Saves, then republishes the window when the project is the one on screen.
     fn save(&self, project: u32, change: ReviewChange) -> Result<bool, String> {
         let store_state = self.0.state::<ManagedStateStore>();

@@ -143,7 +143,11 @@ impl<Host: ReviewHost> Verify<Host> {
             }
         };
         let Some(failed) = failed else {
-            return match post_land::batch_passed(&self.server, batch).await {
+            let result = post_land::batch_passed(&self.server, batch).await;
+            if result.is_ok() && batch.kind == CheckKind::Build {
+                self.runner.wake();
+            }
+            return match result {
                 Ok(()) if batch.commands.is_empty() => true,
                 Ok(()) => {
                     let line = verified_line(&batch.commit, started.elapsed());
@@ -176,14 +180,9 @@ impl<Host: ReviewHost> Verify<Host> {
                     change,
                     commit,
                     reverted,
-                    ..
+                    kind,
                 }) => {
-                    if reverted {
-                        self.reverted(&change, &commit);
-                    } else {
-                        self.say(DutyEventKind::Wait, format!("Post-land test failure in change {change} ({commit}) · recorded for issue reporting · nothing reverted"));
-                        self.runner.wake();
-                    }
+                    self.culprit(&change, &commit, kind, reverted);
                     return;
                 }
                 Ok(Bisection::Unconfirmed) => {
@@ -209,6 +208,18 @@ impl<Host: ReviewHost> Verify<Host> {
             };
             self.step_feed(&step.commit, passed, &suffix);
             state = post_land::step_result(&self.server, &step, passed, &output).await;
+        }
+    }
+
+    fn culprit(&self, change: &str, commit: &str, kind: CheckKind, reverted: bool) {
+        if reverted {
+            self.reverted(change, commit);
+        } else if kind == CheckKind::Test {
+            self.say(DutyEventKind::Wait, format!("Post-land test failure in change {change} ({commit}) · recorded for issue reporting · nothing reverted"));
+            self.runner.wake();
+        } else {
+            self.say(DutyEventKind::Changes, format!("Build culprit {commit} in change {change} remains on the base · fix-forward scheduling will inspect Rosen's revert evidence"));
+            self.runner.wake();
         }
     }
 

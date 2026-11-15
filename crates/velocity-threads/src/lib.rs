@@ -5,6 +5,7 @@
 
 pub mod agent_activity;
 pub mod agent_tasks;
+pub mod build_repairs;
 pub mod continuous_dispatch;
 pub mod deletion;
 pub mod dependencies;

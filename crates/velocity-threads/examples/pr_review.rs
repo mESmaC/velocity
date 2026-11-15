@@ -21,6 +21,22 @@ use velocity_threads::{PrDutyReviews, ReviewChange, ReviewHost};
 struct Host(Arc<Mutex<StateStore>>);
 
 impl ReviewHost for Host {
+    fn repair_builds(
+        &self,
+        project: u32,
+        observation: velocity_threads::review_runner::BuildRepairs,
+    ) -> Result<(), String> {
+        self.0
+            .lock()
+            .map_err(|error| error.to_string())?
+            .close_build_repairs(project, &observation.settled)
+            .map_err(|error| error.to_string())?;
+        if !observation.pending.is_empty() {
+            return Err("Start Velocity to launch the pending fix-forward build threads".into());
+        }
+        Ok(())
+    }
+
     fn change_landed(&self, project: u32, change: &str, generation: u64) -> Result<(), String> {
         let mut store = self.0.lock().map_err(|error| error.to_string())?;
         store

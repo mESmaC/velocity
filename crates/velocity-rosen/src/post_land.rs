@@ -232,13 +232,17 @@ async fn bisection(client: &Client, state: BisectState) -> Result<Bisection, Ros
     let kind = state.kind;
     Ok(match (state.culprit, state.job) {
         (Some(culprit), _) => {
-            let reverted = kind == CheckKind::Build
-                || client
-                    .project_config(Some(culprit.parent))
-                    .await?
-                    .config
-                    .review
-                    != ReviewMode::AfterLand;
+            // A build requests an inverse, but an overlapping later land can refuse it.
+            // Only the durable failure record proves Rosen actually reverted it.
+            let reverted = client
+                .post_land_failures(Some(culprit.change.clone()))
+                .await?
+                .iter()
+                .any(|failure| {
+                    failure.commit == culprit.commit
+                        && failure.kind == kind
+                        && failure.revert.is_some()
+                });
             Bisection::Culprit {
                 change: culprit.change,
                 commit: culprit.commit.to_string(),
