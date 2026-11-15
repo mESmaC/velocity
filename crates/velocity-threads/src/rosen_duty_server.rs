@@ -15,7 +15,7 @@ use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
-use velocity_git::{WorktreeSetupRequest, default_settings, finish_worktree_setup};
+use velocity_git::{WorktreeSetupRequest, default_settings};
 use velocity_github::PrDutyReport;
 use velocity_github::mcp_stdio::{ToolServer, append_report};
 use velocity_rosen::ProjectServer;
@@ -67,6 +67,11 @@ impl RosenDutyLaunch {
         self.reading = reading;
         self
     }
+
+    pub fn with_skills(mut self, skills: velocity_core::skills::ProjectSkills) -> Self {
+        self.setup.skills = skills;
+        self
+    }
 }
 
 /// The per-agent setup a fresh checkout of the merge result gets, as a worktree does (F5):
@@ -80,6 +85,8 @@ pub struct FolderSetup {
     pub share_build_cache: bool,
     pub copy_untracked_files: bool,
     pub run_setup_command: bool,
+    #[serde(default)]
+    pub skills: velocity_core::skills::ProjectSkills,
 }
 
 impl FolderSetup {
@@ -93,6 +100,7 @@ impl FolderSetup {
             share_build_cache: request.settings.share_build_cache,
             copy_untracked_files: request.settings.copy_untracked_files,
             run_setup_command: request.settings.run_setup_command,
+            skills: velocity_core::skills::ProjectSkills::default(),
         }
     }
 
@@ -134,10 +142,14 @@ pub async fn check_out_review(
             .map_err(|error| error.to_string())?;
     if checkout.conflicts.is_empty() && !launch.reading {
         let request = launch.setup.request(&launch.folder);
-        tokio::task::spawn_blocking(move || finish_worktree_setup(&request))
-            .await
-            .map_err(|error| error.to_string())?
-            .map_err(|error| format!("The review folder's setup failed: {error}"))?;
+        let app_data = launch.app_data.clone();
+        let skills = launch.setup.skills.clone();
+        tokio::task::spawn_blocking(move || {
+            velocity_skills::workspace::finish_workspace_setup(&app_data, &skills, &request)
+        })
+        .await
+        .map_err(|error| error.to_string())?
+        .map_err(|error| format!("The review folder's setup failed: {error}"))?;
     }
     Ok(checkout)
 }

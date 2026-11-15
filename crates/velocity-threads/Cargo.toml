@@ -24,6 +24,7 @@ velocity-airc = { path = "../velocity-airc" }
 velocity-core.workspace = true
 velocity-proofs.workspace = true
 velocity-rosen.workspace = true
+velocity-skills = { path = "../velocity-skills" }
 velocity-spec.workspace = true
 velocity-git.workspace = true
 velocity-github.workspace = true

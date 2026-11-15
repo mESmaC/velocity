@@ -97,6 +97,15 @@ impl ProjectServer {
         Ok(())
     }
 
+    /// Raises this machine's pool target for a swarm, retaining the project's configured
+    /// standing pool. The caller retains its largest launch target across concurrent swarms.
+    pub async fn reserve_pool(&self, count: usize) -> Result<(), RosenError> {
+        let client = self.connect().await?;
+        let standing = client.base_config().await?.warm_pool.size as usize;
+        client.set_pool_size(count.max(standing)).await?;
+        Ok(())
+    }
+
     /// Connects to the server, starting it first when none listens.
     pub async fn connect(&self) -> Result<Client, RosenError> {
         match Client::connect(&self.endpoint).await {

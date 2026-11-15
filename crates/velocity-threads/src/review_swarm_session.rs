@@ -137,6 +137,7 @@ impl Job {
         launch.change = workspace.change;
         launch.save(&self.runner.job_path(key))?;
         let _ = std::fs::remove_file(&launch.completion);
+        self.prepare_workspace(launch).await?;
         let watches = Watches::default();
         watches
             .start(server, &key.1, &launch.workspace)
@@ -151,6 +152,32 @@ impl Job {
             return Ok(());
         }
         Err("unfinished proof or fix retained; name the work or resolve its merge conflict".into())
+    }
+
+    async fn prepare_workspace(&self, launch: &SwarmLaunch) -> Result<(), String> {
+        let marker = launch.workspace.join(".rosen/velocity-setup");
+        if marker.is_file() {
+            return Ok(());
+        }
+        let preferences = &self.roster.worktrees;
+        let request = velocity_git::WorktreeSetupRequest::detached(
+            self.roster.project.repository_path.clone().into(),
+            launch.workspace.clone(),
+            String::new(),
+            crate::launch::setup_settings(preferences),
+            preferences.copy_files.clone(),
+            preferences.setup_command.clone(),
+            launch.workspace.join("target"),
+        );
+        let app_data = self.runner.app_data.clone();
+        let skills = self.roster.project.skills.clone();
+        tokio::task::spawn_blocking(move || {
+            velocity_skills::workspace::finish_workspace_setup(&app_data, &skills, &request)
+                .map_err(|error| error.to_string())?;
+            std::fs::write(marker, b"complete\n").map_err(|error| error.to_string())
+        })
+        .await
+        .map_err(|error| error.to_string())?
     }
 
     async fn session<Host: SweepHost>(

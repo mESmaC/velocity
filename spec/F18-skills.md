@@ -49,11 +49,12 @@ Any other repo that follows the Agent Skills standard can be added.
 | Kimi Code | both `.kimi-code/skills/` and `.agents/skills/` (unverified, Q26) |
 
 The provider-to-folder mapping is a data table in `velocity-skills`, not code, so a later correction changes one row.
-Kimi Code's folder is unverified, so Velocity links into both folders: the links are junctions listed in `.git/info/exclude`, so the second folder costs nothing and never reaches a commit.
+Kimi Code's folder is unverified, so Velocity links into both folders: the links are junctions excluded from version control, so the second folder costs nothing and never reaches a commit.
 When Kimi's folder is confirmed, the extra row is dropped, and Velocity removes its own links and exclude lines from a folder no provider uses any more.
 
 - **Linked** (default): each enabled skill is a directory junction (Windows) or symlink into the library, created in every worktree and in the main checkout the spec interview uses.
   Those paths are listed in the repo's `.git/info/exclude`, so they never reach a commit or a PR.
+  - **Rosen workspaces (#272):** links are made after the take, before the setup command, alongside existing skills without replacing them. Each provider's skills folder gets exact local `.gitignore` rules for Velocity's links; a newly created ignore file excludes itself too. Existing ignore files are preserved and supplemented. These rules survive a rebase without putting the links in a snapshot. Pack MCP discovery identifies Rosen workspaces through the project's saved workspace root or thread path, so enabled servers reach Rosen agents without a git checkout.
 - **Committed** (per project): the enabled skills are copied into the repo at the pinned commit, for collaborators who don't use Velocity.
   Updating the pin then goes through a PR like any other change.
 - **Skills you installed yourself** are left alone (§3.2 Tool access).

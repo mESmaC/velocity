@@ -101,6 +101,16 @@ pub(crate) fn pools(application: &AppHandle) -> Option<ReadyPools> {
 
 /// A swarm or goal swarm is starting `count` agents in `project` (F5 Swarm launches).
 pub(crate) fn reserve(application: &AppHandle, project: u32, count: usize) {
+    if crate::rosen::uses_rosen(application, project) {
+        // Launch callers run off the UI thread. Finish sizing before any member takes a
+        // workspace, rather than racing a detached reservation against its first take.
+        if let Err(error) =
+            tauri::async_runtime::block_on(crate::rosen::reserve_pool(application, project, count))
+        {
+            eprintln!("Rosen warm pool reservation: {error}");
+        }
+        return;
+    }
     if let Some(pools) = pools(application) {
         pools.reserve(project, u32::try_from(count).unwrap_or(u32::MAX));
     }

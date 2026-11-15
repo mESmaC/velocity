@@ -2,7 +2,7 @@
 //! workspaces from the project's own Rosen server, which Velocity starts; git worktrees
 //! are the fallback when the project chooses git or Rosen can't start.
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
@@ -25,6 +25,8 @@ pub(crate) struct ManagedRosen {
     following: std::sync::Mutex<BTreeSet<u32>>,
     /// Projects whose disk budget this run has sized.
     budgeted: std::sync::Mutex<BTreeSet<u32>>,
+    /// Largest swarm requested this run. A later, smaller launch must not shrink its pool.
+    pool_sizes: tokio::sync::Mutex<BTreeMap<u32, usize>>,
     /// Held while a pass runs Rosen events' follow-ups (`rosen_events`).
     pub(crate) follow_ups: tokio::sync::Mutex<()>,
 }
@@ -41,6 +43,7 @@ pub(crate) fn initialize(application: &AppHandle) -> anyhow::Result<()> {
         watches: Watches::default(),
         following: std::sync::Mutex::new(BTreeSet::new()),
         budgeted: std::sync::Mutex::new(BTreeSet::new()),
+        pool_sizes: tokio::sync::Mutex::new(BTreeMap::new()),
         follow_ups: tokio::sync::Mutex::new(()),
     });
     let handle = application.clone();
@@ -206,6 +209,24 @@ async fn size_disk_budget(server: &ProjectServer, workspaces: PathBuf) {
     }
 }
 
+/// A swarm launch raises the local daemon's target before its agents take workspaces.
+pub(crate) async fn reserve_pool(
+    application: &AppHandle,
+    project: u32,
+    count: usize,
+) -> Result<(), String> {
+    let server = server(application, project).await?;
+    let managed = application.state::<ManagedRosen>();
+    let mut sizes = managed.pool_sizes.lock().await;
+    let wanted = count.max(sizes.get(&project).copied().unwrap_or(0));
+    server
+        .reserve_pool(wanted)
+        .await
+        .map_err(|error| error.to_string())?;
+    sizes.insert(project, wanted);
+    Ok(())
+}
+
 /// The free bytes of the drive `folder` is on.
 fn free_bytes(folder: &Path) -> Option<u64> {
     let folder = folder.to_string_lossy().to_lowercase();
@@ -230,6 +251,8 @@ pub(crate) async fn take_workspace(
     let workspace = velocity_rosen::create_workspace(&server, &agent, &request.worktree_path, None)
         .await
         .map_err(|error| error.to_string())?;
+    // Install local ignore rules and links before the first watcher can store them.
+    let setup = finish_setup(application, key.0, request, &workspace.root).await;
     // An agent whose edits aren't watched, or a thread that doesn't record its change,
     // would lose track of work: the change is abandoned and the thread falls back to git.
     let kept =
@@ -247,20 +270,72 @@ pub(crate) async fn take_workspace(
         return Err(error);
     }
     crate::rosen_events::follow(application, key.0);
-    let mut setup_request = request.clone();
-    setup_request.worktree_path = workspace.root.clone();
-    let setup = tauri::async_runtime::spawn_blocking(move || {
-        velocity_git::finish_worktree_setup(&setup_request).map(|_| ())
-    })
-    .await
-    .map_err(|error| error.to_string())
-    .and_then(|setup| setup.map_err(|error| error.to_string()));
     Ok(ThreadWorkspace {
         environment: velocity_rosen::agent_environment(&server, &agent, &workspace.change),
         change: workspace.change,
         root: workspace.root,
         setup,
     })
+}
+
+/// Path-dependent setup stays outside Rosen's prepared template. Even an unprepared take
+/// gets these steps; a failed setup retains the change and prevents the agent from starting.
+async fn finish_setup(
+    application: &AppHandle,
+    project: u32,
+    request: &WorktreeSetupRequest,
+    root: &Path,
+) -> Result<(), String> {
+    let application = application.clone();
+    let mut request = request.clone();
+    request.worktree_path = root.to_path_buf();
+    tauri::async_runtime::spawn_blocking(move || setup_once(&application, project, &request))
+        .await
+        .map_err(|error| error.to_string())?
+}
+
+/// Kept under Rosen's local metadata, so a rebase preserves completion but a reopened or
+/// stacked workspace runs setup at its new path. Failure leaves the marker absent for retry.
+fn setup_once(
+    application: &AppHandle,
+    project: u32,
+    request: &WorktreeSetupRequest,
+) -> Result<(), String> {
+    let marker = request.worktree_path.join(".rosen/velocity-setup");
+    if marker.is_file() {
+        return Ok(());
+    }
+    crate::skills::setup_workspace(application, project, request)?;
+    std::fs::write(marker, b"complete\n").map_err(|error| error.to_string())
+}
+
+fn setup_resumed_workspace(
+    application: &AppHandle,
+    project: u32,
+    root: &Path,
+) -> Result<(), String> {
+    let request = {
+        let store = lock(
+            application.state::<ManagedStateStore>().inner(),
+            "persisted state",
+        )?;
+        let item = store.project(project).ok_or("Unknown project")?;
+        let preferences = store.worktree_preferences(item);
+        let mut settings = velocity_git::default_settings();
+        settings.share_build_cache = preferences.share_build_cache;
+        settings.copy_untracked_files = !preferences.copy_files.trim().is_empty();
+        settings.run_setup_command = !preferences.setup_command.trim().is_empty();
+        WorktreeSetupRequest::detached(
+            PathBuf::from(&item.repository_path),
+            root.to_path_buf(),
+            String::new(),
+            settings,
+            preferences.copy_files.clone(),
+            preferences.setup_command.clone(),
+            root.join("target"),
+        )
+    };
+    setup_once(application, project, &request)
 }
 
 /// Saves the change the thread works on, so deletion abandons it and a restart watches
@@ -322,6 +397,9 @@ pub(crate) fn prepare_resume(
             "Rosen workspace {} is missing",
             root.display()
         )));
+    }
+    if let Err(error) = setup_resumed_workspace(application, project, root) {
+        return Some(Err(error));
     }
     let app_data = match application.path().app_data_dir() {
         Ok(folder) => folder,

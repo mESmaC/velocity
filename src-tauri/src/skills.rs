@@ -39,27 +39,24 @@ pub fn initialize(application: &AppHandle) -> anyhow::Result<()> {
     Ok(())
 }
 
-/// The switched-on packs' MCP servers for an agent starting in `folder` (F18, §3.2): the
-/// folder's main checkout picks the project, and the project's skill choices pick the servers.
+/// The switched-on packs' MCP servers for an agent starting in `folder` (F18, §3.2).
+/// Saved workspace paths identify Rosen agents without invoking git in their workspace.
 fn shared_servers(
     application: &AppHandle,
     folder: &std::path::Path,
 ) -> Vec<velocity_acp::client::SharedServer> {
-    let Ok(checkout) = velocity_git::main_checkout(folder) else {
+    let Ok(folder) = std::fs::canonicalize(folder) else {
         return Vec::new();
     };
-    let choices = {
-        let state = application.state::<ManagedStateStore>();
-        let Ok(store) = state.lock() else {
-            return Vec::new();
-        };
-        let project = store.state().projects.iter().find(|project| {
-            std::fs::canonicalize(&project.repository_path).is_ok_and(|path| path == checkout)
-        });
-        match project {
-            Some(project) => project.skills.clone(),
-            None => return Vec::new(),
+    let choices = choices_for_folder(application, &folder).or_else(|| {
+        if folder.join(".rosen").is_dir() {
+            return None;
         }
+        let checkout = velocity_git::main_checkout(&folder).ok()?;
+        choices_for_folder(application, &checkout)
+    });
+    let Some(choices) = choices else {
+        return Vec::new();
     };
     let library = application.state::<ManagedSkillLibrary>();
     let Ok(library) = library.lock().map(|library| library.clone()) else {
@@ -71,6 +68,54 @@ fn shared_servers(
             velocity_acp::client::SharedServer::new(server.name, server.command, server.arguments)
         })
         .collect()
+}
+
+fn choices_for_folder(
+    application: &AppHandle,
+    folder: &std::path::Path,
+) -> Option<velocity_core::skills::ProjectSkills> {
+    let state = application.state::<ManagedStateStore>();
+    let store = state.lock().ok()?;
+    let project = store.state().projects.iter().find(|project| {
+        std::fs::canonicalize(&project.repository_path).is_ok_and(|path| path == folder)
+            || velocity_threads::project_workspace_root(
+                project,
+                &store.worktree_preferences(project),
+            )
+            .and_then(|root| std::fs::canonicalize(root).ok())
+            .is_some_and(|root| folder.starts_with(root))
+            || project.threads.iter().any(|thread| {
+                thread
+                    .worktree_path
+                    .as_ref()
+                    .and_then(|path| std::fs::canonicalize(path).ok())
+                    .is_some_and(|path| path == folder)
+            })
+    })?;
+    Some(project.skills.clone())
+}
+
+/// The per-agent part of F18, at a Rosen workspace's final path, before setup runs.
+pub(crate) fn setup_workspace(
+    application: &AppHandle,
+    project: u32,
+    request: &velocity_git::WorktreeSetupRequest,
+) -> Result<(), String> {
+    let choices = {
+        let state = application.state::<ManagedStateStore>();
+        let store = crate::threads::lock(state.inner(), "persisted state")?;
+        store
+            .project(project)
+            .ok_or("Unknown project")?
+            .skills
+            .clone()
+    };
+    let app_data = application
+        .path()
+        .app_data_dir()
+        .map_err(|error| error.to_string())?;
+    velocity_skills::workspace::finish_workspace_setup(&app_data, &choices, request)
+        .map_err(|error| error.to_string())
 }
 
 #[tauri::command]

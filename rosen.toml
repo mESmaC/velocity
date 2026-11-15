@@ -104,6 +104,8 @@ size = 8
 # workspace unprepared.
 [prepare]
 commands = [
+    # The elan lake proxy installs proofs/lean-toolchain before fetching Mathlib's cache.
+    "cd proofs && lake exe cache get",
     "pnpm -C ui install",
     "pnpm -C ui build",
     "cargo build --workspace",

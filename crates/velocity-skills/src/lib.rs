@@ -16,6 +16,7 @@ pub mod rea;
 mod requirements;
 pub mod settings;
 pub mod suggestions;
+pub mod workspace;
 
 use std::path::PathBuf;
 use thiserror::Error;
@@ -74,4 +75,6 @@ pub enum SkillLibraryError {
     ToolFailed { tool: String, output: String },
     #[error(transparent)]
     Git(#[from] velocity_git::GitError),
+    #[error(transparent)]
+    Worktree(#[from] velocity_git::WorktreeError),
 }

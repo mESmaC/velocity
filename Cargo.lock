@@ -6578,6 +6578,7 @@ dependencies = [
 name = "velocity-skills"
 version = "0.1.0"
 dependencies = [
+ "junction",
  "serde",
  "serde_json",
  "specta",
@@ -6625,6 +6626,7 @@ dependencies = [
  "velocity-github",
  "velocity-proofs",
  "velocity-rosen",
+ "velocity-skills",
  "velocity-spec",
  "velocity-store",
 ]

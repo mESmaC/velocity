@@ -146,6 +146,7 @@ pub(crate) async fn prepare_change(review: ChangeReview<'_>) -> Result<PreparedC
     let server = ProjectServer::new(review.app_data, review.roster.project.id);
     let (tier, mode) = change_mode(&server, review.change, review.work).await?;
     let launch = RosenDutyLaunch::for_review(review.app_data, &plan, review.change, review.report)
+        .with_skills(review.roster.project.skills.clone())
         .by_reading(mode == ReviewMode::Reading);
     let checkout = check_out_review(&server, &launch).await?;
     let launch_file = review.report.with_extension("rosen.json");

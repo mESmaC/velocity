@@ -17,6 +17,9 @@ velocity-git.workspace = true
 velocity-core = { path = "../velocity-core" }
 velocity-spec.workspace = true
 
+[target.'cfg(windows)'.dependencies]
+junction = "2.1.0"
+
 [dev-dependencies]
 velocity-acp = { path = "../velocity-acp" }
 
