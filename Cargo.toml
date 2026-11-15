@@ -28,8 +28,8 @@ rust-version = "1.99"
 [workspace.dependencies]
 anyhow = "1.0"
 # All Rosen consumers inherit these pins so one workspace cannot mix revisions.
-rosen-client = { git = "https://github.com/mESmaC/rosen", rev = "f18bbc545844904b97cb6668e2a242fc3727cc1f" }
-rosen-core = { git = "https://github.com/mESmaC/rosen", rev = "f18bbc545844904b97cb6668e2a242fc3727cc1f" }
+rosen-client = { git = "https://github.com/mESmaC/rosen", rev = "63220cb9176c657117ae76ef92fa303e8758ab79" }
+rosen-core = { git = "https://github.com/mESmaC/rosen", rev = "63220cb9176c657117ae76ef92fa303e8758ab79" }
 serde = { version = "1.0", features = ["derive", "rc"] }
 serde_json = "1.0"
 specta = { version = "=2.0.0-rc.26", features = ["derive", "function"] }

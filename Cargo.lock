@@ -4424,7 +4424,7 @@ dependencies = [
 [[package]]
 name = "rosen-client"
 version = "0.1.0"
-source = "git+https://github.com/mESmaC/rosen?rev=f18bbc545844904b97cb6668e2a242fc3727cc1f#f18bbc545844904b97cb6668e2a242fc3727cc1f"
+source = "git+https://github.com/mESmaC/rosen?rev=63220cb9176c657117ae76ef92fa303e8758ab79#63220cb9176c657117ae76ef92fa303e8758ab79"
 dependencies = [
  "atomicwrites",
  "base64 0.22.1",
@@ -4450,7 +4450,7 @@ dependencies = [
 [[package]]
 name = "rosen-core"
 version = "0.1.0"
-source = "git+https://github.com/mESmaC/rosen?rev=f18bbc545844904b97cb6668e2a242fc3727cc1f#f18bbc545844904b97cb6668e2a242fc3727cc1f"
+source = "git+https://github.com/mESmaC/rosen?rev=63220cb9176c657117ae76ef92fa303e8758ab79#63220cb9176c657117ae76ef92fa303e8758ab79"
 dependencies = [
  "serde",
  "sha1",
@@ -4460,7 +4460,7 @@ dependencies = [
 [[package]]
 name = "rosen-platform"
 version = "0.1.0"
-source = "git+https://github.com/mESmaC/rosen?rev=f18bbc545844904b97cb6668e2a242fc3727cc1f#f18bbc545844904b97cb6668e2a242fc3727cc1f"
+source = "git+https://github.com/mESmaC/rosen?rev=63220cb9176c657117ae76ef92fa303e8758ab79#63220cb9176c657117ae76ef92fa303e8758ab79"
 dependencies = [
  "getrandom 0.3.4",
  "libc",
@@ -4471,7 +4471,7 @@ dependencies = [
 [[package]]
 name = "rosen-protocol"
 version = "0.1.0"
-source = "git+https://github.com/mESmaC/rosen?rev=f18bbc545844904b97cb6668e2a242fc3727cc1f#f18bbc545844904b97cb6668e2a242fc3727cc1f"
+source = "git+https://github.com/mESmaC/rosen?rev=63220cb9176c657117ae76ef92fa303e8758ab79#63220cb9176c657117ae76ef92fa303e8758ab79"
 dependencies = [
  "base64 0.22.1",
  "libc",
@@ -4486,7 +4486,7 @@ dependencies = [
 [[package]]
 name = "rosen-store"
 version = "0.1.0"
-source = "git+https://github.com/mESmaC/rosen?rev=f18bbc545844904b97cb6668e2a242fc3727cc1f#f18bbc545844904b97cb6668e2a242fc3727cc1f"
+source = "git+https://github.com/mESmaC/rosen?rev=63220cb9176c657117ae76ef92fa303e8758ab79#63220cb9176c657117ae76ef92fa303e8758ab79"
 dependencies = [
  "atomicwrites",
  "flate2",
