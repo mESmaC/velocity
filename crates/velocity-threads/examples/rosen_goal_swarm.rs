@@ -23,7 +23,8 @@ use velocity_store::{
     TaskItem, TaskState, ThreadState,
 };
 use velocity_threads::goal_swarm::{
-    ClaimPhaseOutcome, KeepGoingOutcome, choose_and_claim, evaluate_keep_going, plan_goal_member,
+    ClaimPhaseOutcome, KeepGoingOutcome, choose_and_claim_with, evaluate_keep_going,
+    plan_goal_member,
 };
 
 type Outcome<T = ()> = Result<T, Box<dyn std::error::Error>>;
@@ -182,7 +183,10 @@ fn claim_together(store: &Mutex<StateStore>, channel: &Channel, members: &[Membe
             let barrier = &barrier;
             workers.push(scope.spawn(move || -> Result<(), String> {
                 barrier.wait();
-                let outcome = choose_and_claim(
+                // The first unclaimed piece, as keep-going below picks it. Since #314 the
+                // goal-prompt chooser starts the member's real agent; this smoke covers Rosen
+                // stacking, landing, restart and revert, and must run where no agent is signed in.
+                let outcome = choose_and_claim_with(
                     store,
                     channel,
                     1,
@@ -191,6 +195,7 @@ fn claim_together(store: &Mutex<StateStore>, channel: &Channel, members: &[Membe
                     &member.workspace.root,
                     &member.branch,
                     "10:01",
+                    velocity_threads::work_pool::read_work_pool,
                 )
                 .map_err(|e| e.to_string())?;
                 let ClaimPhaseOutcome::Claimed(work) = outcome else {
