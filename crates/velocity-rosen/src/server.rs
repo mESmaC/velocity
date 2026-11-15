@@ -406,7 +406,13 @@ impl Servers {
 /// a release of Velocity, then beside Velocity's executable, then the first `PATH` folder
 /// that has them.
 pub fn binary_folder() -> Result<PathBuf, RosenError> {
-    let server = executable("rosen-server");
+    program_folder("rosen-server").ok_or(RosenError::MissingBinary)
+}
+
+/// Queue commands need only the CLI: a git project may have `rosen run` installed
+/// without a Rosen server. Use the same configured and bundled locations for both.
+pub(crate) fn program_folder(program: &str) -> Option<PathBuf> {
+    let program = executable(program);
     let configured = std::env::var_os(BINARY_FOLDER_ENV).map(PathBuf::from);
     #[cfg(feature = "bundled")]
     let configured = configured.or_else(crate::bundled::folder);
@@ -420,8 +426,7 @@ pub fn binary_folder() -> Result<PathBuf, RosenError> {
         .into_iter()
         .chain(beside_app)
         .chain(on_path)
-        .find(|folder| folder.join(&server).is_file())
-        .ok_or(RosenError::MissingBinary)
+        .find(|folder| folder.join(&program).is_file())
 }
 
 fn executable(name: &str) -> String {

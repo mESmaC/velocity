@@ -19,6 +19,7 @@ mod probe;
 mod process;
 mod program_path;
 pub mod rewrite;
+mod run_queue;
 mod session;
 mod shared;
 mod sign_in;
@@ -200,6 +201,7 @@ async fn run_admitted_session(
     events: UnboundedSender<AgentEvent>,
 ) -> Result<(), ClientError> {
     let mut setup = setup;
+    setup.preface = run_queue::preface(&launch, setup.preface.take());
     // Meter availability must never prevent starting an agent.
     let _ = live_limits::prepare(&mut launch).await;
     // Velocity's own servers come first in the setup, so a clash keeps them (session_servers).

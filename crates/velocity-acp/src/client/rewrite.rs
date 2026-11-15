@@ -21,12 +21,13 @@ pub enum RewriteError {
 
 pub async fn rewrite(
     mut launch: AgentLaunch,
-    setup: SessionSetup,
+    mut setup: SessionSetup,
     prompt: String,
 ) -> Result<String, RewriteError> {
     // The Claude SDK reads its model from the inherited launch environment, including
     // adapters predating ACP config options. Credentials remain in its OAuth store.
     launch.env.push(("ANTHROPIC_MODEL".into(), "haiku".into()));
+    setup.preface = super::run_queue::preface(&launch, setup.preface.take());
     let mut agent = process::spawn_agent(&launch, &setup.worktree)?;
     let result = tokio::time::timeout(
         std::time::Duration::from_secs(60),
@@ -63,11 +64,9 @@ async fn request(
     let result = handlers::register(Client.v1(), &shared)
         .connect_with(transport, async move |connection: ConnectionTo<Agent>| {
             let identifier = session::start_session(&connection, &setup).await?;
+            let content = super::run_queue::prompt_content(setup.preface, prompt);
             connection
-                .send_request(PromptRequest::new(
-                    identifier,
-                    vec![ContentBlock::from(prompt)],
-                ))
+                .send_request(PromptRequest::new(identifier, content))
                 .block_task()
                 .await?;
             let mut response = String::new();

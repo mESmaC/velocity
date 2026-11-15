@@ -20,6 +20,7 @@ tokio-util = { version = "0.7.20", features = ["compat"] }
 toml = "1.2"
 velocity-airc.workspace = true
 velocity-graph.workspace = true
+velocity-rosen.workspace = true
 
 [target.'cfg(windows)'.dependencies]
 keyring = { version = "3", features = ["windows-native"] }

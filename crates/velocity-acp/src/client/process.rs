@@ -109,18 +109,23 @@ pub async fn stop_agent(agent: &mut AgentProcess) -> std::io::Result<()> {
 
 /// Gives the process the folders installed since Velocity started (`search_path`), so an
 /// agent installed meanwhile finds its own runtime, such as a new `node`. A command that sets
-/// its own `PATH` keeps it.
+/// its own `PATH` keeps it, with Rosen's folder first so both the provider's shell and
+/// ACP terminals can run the machine-wide queue command (#308).
 fn extend_search_path(command: &mut Command) {
-    let sets_path = command
+    let own_path = command
         .as_std()
         .get_envs()
-        .any(|(name, _)| name.eq_ignore_ascii_case("PATH"));
-    if sets_path {
+        .find(|(name, _)| name.eq_ignore_ascii_case("PATH"))
+        .map(|(_, value)| value.map(OsStr::to_owned));
+    let path = match own_path {
+        Some(Some(existing)) => super::run_queue::search_path(Some(existing)),
+        Some(None) => None,
+        None => search_path(),
+    };
+    let Some(path) = path else {
         return;
-    }
-    if let Some(path) = search_path() {
-        command.env("PATH", path);
-    }
+    };
+    command.env("PATH", path);
 }
 
 /// A `Command` that opens no console window. Velocity's release build is a windowed app, so on

@@ -2,7 +2,8 @@
 
 use std::path::{Path, PathBuf};
 
-use crate::{ProjectServer, binary_folder};
+use crate::ProjectServer;
+use crate::server::program_folder;
 
 /// The names of the environment variables that tell `rosen` which server, agent and
 /// change it acts for.
@@ -51,7 +52,7 @@ pub fn agent_environment(
 /// `existing` (a `PATH` value) with Rosen's folder first, so the agent's shell finds
 /// `rosen`. `None` when the `rosen` program isn't found.
 pub fn path_with_rosen(existing: &str) -> Option<String> {
-    let folder = binary_folder().ok()?;
+    let folder = program_folder("rosen")?;
     let folders = std::iter::once(folder).chain(std::env::split_paths(existing));
     let path = std::env::join_paths(folders).ok()?;
     Some(path.to_string_lossy().into_owned())
@@ -85,9 +86,7 @@ pub struct McpCommand {
 /// `environment` ([`agent_environment`]). `None` when the `rosen` program isn't found: the
 /// agent then has the CLI's failure to tell it so, not a server that can't start.
 pub fn mcp_command(root: &Path, environment: &[(String, String)]) -> Option<McpCommand> {
-    let program = binary_folder()
-        .ok()?
-        .join(format!("rosen{}", std::env::consts::EXE_SUFFIX));
+    let program = program_folder("rosen")?.join(format!("rosen{}", std::env::consts::EXE_SUFFIX));
     program.is_file().then(|| McpCommand {
         program,
         arguments: vec![

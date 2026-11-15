@@ -126,7 +126,8 @@ async fn title_turn(
         .await?;
     let options = session.config_options.unwrap_or_default();
     config::apply_settings(connection, &session.session_id, options, &request.settings).await?;
-    let prompt = vec![ContentBlock::from(request.prompt.clone())];
+    let preface = super::run_queue::preface(&request.launch, None);
+    let prompt = super::run_queue::prompt_content(preface, request.prompt.clone());
     connection
         .send_request(PromptRequest::new(session.session_id, prompt))
         .block_task()

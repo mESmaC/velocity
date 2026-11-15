@@ -73,7 +73,8 @@ pub fn program_found(program: &str) -> bool {
 /// installed `node`.
 pub fn search_path() -> Option<OsString> {
     let current = std::env::var_os("PATH");
-    merged_search_path(current.clone(), &installed_folders()).or(current)
+    let path = merged_search_path(current.clone(), &installed_folders()).or(current);
+    super::run_queue::search_path(path)
 }
 
 /// `current` followed by every folder of `extra` it doesn't already hold, or `None` when it
