@@ -88,10 +88,14 @@ impl StateStore {
             return Ok(None);
         };
         let identifier = thread.id;
+        let reverted = progress == RosenProgress::Reverted && thread.state == ThreadState::Merged;
         let landed = apply_progress(thread, progress);
         queue_follow_up(thread, progress, message);
         if landed {
             crate::follow_through::finish_thread_tasks(&mut next, project, identifier);
+        }
+        if reverted {
+            crate::follow_through::reopen_thread_tasks(&mut next, project, identifier);
         }
         self.store_snapshot(next)?;
         Ok(Some(identifier))
@@ -269,6 +273,38 @@ mod tests {
         reloaded.finish_rosen_follow_up(1, 4, follow_up)?;
         let finished = StateStore::load_or_default(&directory)?;
         assert!(finished.rosen_follow_ups(1).is_empty());
+        std::fs::remove_dir_all(&directory)?;
+        Ok(())
+    }
+    // Risk (#354): a revert left the landed thread's tasks done and its SPEC section built,
+    // so the work pool hid work that was no longer on the base.
+    #[test]
+    fn a_revert_reopens_the_lands_tasks_and_section() -> Result<(), Box<dyn std::error::Error>> {
+        let directory =
+            std::env::temp_dir().join(format!("velocity-rosen-revert-{}", std::process::id()));
+        let _ignored = std::fs::remove_dir_all(&directory);
+        let mut store = StateStore::load_or_default(&directory)?;
+        let mut project = ProjectItem::new(1, "One".into(), r"C:\project one".into());
+        let mut task = crate::TaskItem::new(
+            7,
+            "Do".into(),
+            crate::TaskState::Now,
+            crate::TaskAttribution::User,
+        );
+        task.assigned_thread_id = Some(4);
+        project.tasks.push(task);
+        let mut thread = ThreadItem::new(4, "Work".into());
+        thread.rosen_change = Some("abc".into());
+        thread.spec_section = Some("Features / Durable work".into());
+        project.threads.push(thread);
+        store.state.projects = vec![project];
+        store.save_rosen_progress(1, 1, "abc", (RosenProgress::Landed, ""))?;
+        store.save_rosen_progress(1, 2, "abc", (RosenProgress::Reverted, "fix it"))?;
+
+        let project = &store.state.projects[0];
+        assert_eq!(project.tasks[0].state, crate::TaskState::Now);
+        assert_eq!(project.tasks[0].assigned_thread_id, Some(4));
+        assert!(project.built_spec_sections.is_empty());
         std::fs::remove_dir_all(&directory)?;
         Ok(())
     }
