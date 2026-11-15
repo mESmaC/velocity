@@ -59,7 +59,7 @@ pub use ready_pool::{
     scan_ready_slots, take_ready_worktree,
 };
 pub use repository::{
-    GitError, commit_file, current_branch, folder_is_occupied, initialize_repository,
+    GitError, commit_file, commit_files, current_branch, folder_is_occupied, initialize_repository,
     is_repository, main_checkout, opened_project_default_branch, publish_instructions,
 };
 pub use review::{ReviewCheckout, prepare_review_worktree, remove_review_worktree, review_tier};

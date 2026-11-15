@@ -15,6 +15,7 @@ specta = { workspace = true, optional = true }
 thiserror.workspace = true
 velocity-git.workspace = true
 velocity-core = { path = "../velocity-core" }
+velocity-spec.workspace = true
 
 [dev-dependencies]
 velocity-acp = { path = "../velocity-acp" }

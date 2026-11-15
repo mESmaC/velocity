@@ -47,6 +47,7 @@ Your job is working functionality. Proofs, tests and docs support it; they never
 - `src-tauri/`: the Tauri app. Tauri commands and events only: it calls into the crates below and holds no logic of its own.
 - `crates/velocity-core/`: state, projects, threads, tasks, settings. No Tauri, no I/O.
 - `crates/velocity-store/`: JSON persistence store (`state.json`) for projects, threads, tasks and settings.
+- `crates/velocity-spec/`: shared project spec discovery (`SPEC.md` plus Markdown recursively under `spec/`) and heading IDs.
 - `crates/velocity-git/`: git and worktrees.
 - `crates/velocity-acp/`: the ACP client and agent processes.
 - `crates/velocity-airc/`: claims, events, ledgers and the AIRC MCP server.

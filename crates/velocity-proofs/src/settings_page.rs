@@ -19,12 +19,16 @@ pub fn proofs_settings(
     repository: &Path,
     stress_diff_input_count: u32,
 ) -> Result<ProofsSettingsView, ProofCheckError> {
-    let spec = match std::fs::read_to_string(repository.join("SPEC.md")) {
-        Ok(text) => Some(text),
+    let spec = match velocity_spec::ProjectSpec::read_default(repository) {
+        Ok(spec) => Some(spec),
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => None,
         Err(error) => return Err(error.into()),
     };
-    let proof_list = spec.as_deref().and_then(proof_list_from_spec);
+    let proof_list = spec.as_ref().and_then(|spec| {
+        spec.files
+            .iter()
+            .find_map(|file| proof_list_from_spec(&file.markdown))
+    });
     let (lake_project, design_proofs) = match tracked_design_levels(repository)? {
         Some((folder, features)) => {
             let entries = features

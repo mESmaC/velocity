@@ -2530,6 +2530,10 @@ export type ProjectItem_Deserialize = {
 	repository_path: string,
 	default_branch: string,
 	github_remote?: string | null,
+	/**
+	 *  Root spec file, historically SPEC.md. Readers also include Markdown under spec/;
+	 *  keeping the saved path preserves existing projects and their configured root.
+	 */
 	spec_path: string,
 	spec_locked: boolean,
 	/**  Completed F16 pieces retained after their merged thread history is deleted. */
@@ -2560,6 +2564,10 @@ export type ProjectItem_Serialize = {
 	repository_path: string,
 	default_branch: string,
 	github_remote: string | null,
+	/**
+	 *  Root spec file, historically SPEC.md. Readers also include Markdown under spec/;
+	 *  keeping the saved path preserves existing projects and their configured root.
+	 */
 	spec_path: string,
 	spec_locked: boolean,
 	/**  Completed F16 pieces retained after their merged thread history is deleted. */
