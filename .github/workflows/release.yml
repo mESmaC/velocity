@@ -71,6 +71,26 @@ jobs:
         run: |
           lake exe cache get
           if ($LASTEXITCODE -ne 0) { throw "Could not fetch Mathlib's cache" }
+      # The stress suite creates projects and commits in them, as a developer machine does;
+      # a fresh runner has no git identity, so those commits failed (pr7-create-save).
+      - name: Give git an identity for the gate's test commits
+        shell: pwsh
+        run: |
+          git config --global user.name "Velocity release gate"
+          git config --global user.email "release-gate@velocity.invalid"
+      # Stress scripts start real Rosen servers (pr4-goal-stack-crash failed with
+      # MissingBinary). Build the pinned Rosen the release carries and point Velocity at it.
+      - name: Build Rosen for the gate
+        shell: pwsh
+        run: |
+          $pin = 'rosen-client = \{ git = "([^"]+)", rev = "([0-9a-f]{40})" \}'
+          $manifest = @('Cargo.toml', 'crates/velocity-rosen/Cargo.toml') | ForEach-Object { Get-Content -Raw $_ } | Where-Object { $_ -match $pin } | Select-Object -First 1
+          if (-not $manifest -or $manifest -notmatch $pin) { throw "No pinned rosen-client in Cargo.toml or crates/velocity-rosen/Cargo.toml" }
+          $root = "$env:RUNNER_TEMP\rosen"
+          cargo install --locked --git $Matches[1] --rev $Matches[2] --root $root rosen-server rosen-cli
+          if ($LASTEXITCODE -ne 0) { throw "Could not build Rosen" }
+          "VELOCITY_ROSEN_BIN=$root\bin" >> $env:GITHUB_ENV
+          "$root\bin" >> $env:GITHUB_PATH
       - name: Run the release gate
         shell: pwsh
         env:
