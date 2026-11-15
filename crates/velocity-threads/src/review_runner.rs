@@ -79,7 +79,8 @@ struct Running {
     input: UnboundedSender<AgentInput>,
     pending: usize,
     subject: ReviewSubject,
-    /// Its agent was dismissed (F7): the session is stopping and the PR is already released.
+    /// Its review was stopped from outside: its agent was dismissed (F7), or its PR closed
+    /// (#349). The session is stopping and the PR is already released.
     dismissed: bool,
     /// The last AIRC line looked at for this review (F14): the channel's tip at its claim,
     /// so an earlier review's messages are never replayed into this one.
@@ -90,6 +91,30 @@ struct Running {
     /// A review by reading approved its Rosen change: the review is over but for its
     /// session's last words, so Velocity's checker takes the change without waiting for them.
     approved: bool,
+    /// The review merged its own PR, so the PR leaving the open list is its doing, not a
+    /// close to stop it for.
+    merged: bool,
+}
+
+impl Running {
+    /// Stops the review's session, which kills its agent's process tree, and marks it
+    /// stopped so it neither releases nor rests its subject again. `None` when it already was.
+    fn stop(&mut self) -> Option<ReviewSubject> {
+        if self.dismissed {
+            return None;
+        }
+        self.dismissed = true;
+        self.delivering = false;
+        let _ = self.input.send(AgentInput::Stop);
+        Some(self.subject.clone())
+    }
+}
+
+/// A pass's work: its candidates, and whether their PRs are all the project's open PRs, so
+/// a held PR missing from them was closed or merged (#349).
+struct Listed {
+    candidates: Vec<ReviewCandidate>,
+    all_open: bool,
 }
 
 /// Your instruction for a project's PR duty, and the agents that already have it.
@@ -235,12 +260,7 @@ impl PrDutyReviews {
         let subject = state
             .running
             .get_mut(&(project, nickname.to_owned()))
-            .filter(|running| !running.dismissed)
-            .map(|running| {
-                running.dismissed = true;
-                let _ = running.input.send(AgentInput::Stop);
-                running.subject.clone()
-            });
+            .and_then(Running::stop);
         if let Some(subject) = &subject
             && let Some(attempts) = state.attempted.get_mut(&project)
         {
@@ -376,7 +396,13 @@ impl PrDutyReviews {
             return;
         }
         match candidates {
-            Ok(candidates) => {
+            Ok(Listed {
+                candidates,
+                all_open,
+            }) => {
+                if all_open {
+                    self.stop_closed(host, &roster, &candidates);
+                }
                 let candidates = self.land_approved(host, &roster, candidates);
                 let candidates = self.check_approved(host, &roster, candidates);
                 self.claim_for_idle(host, &roster, &candidates, &idle);
@@ -413,20 +439,22 @@ impl PrDutyReviews {
     /// PRs as last listed, which `listing` reads again off the pass, and none when they
     /// can't be listed, since a Rosen project needs no GitHub remote. A git project's work
     /// is its PRs, so its pass lists them first.
-    async fn candidates(&self, roster: &PrDutyRoster) -> Result<Vec<ReviewCandidate>, String> {
+    async fn candidates(&self, roster: &PrDutyRoster) -> Result<Listed, String> {
         let rosen = roster.project.version_control == velocity_store::VersionControl::Rosen;
         let rosen_threads = roster.project.rosen_in_use();
-        let mut candidates = if rosen {
+        let listed = if rosen {
             self.listed_pull_requests(roster)
         } else {
             match self.pull_request_candidates(roster).await {
-                Ok(pull_requests) => pull_requests,
+                Ok(pull_requests) => Some(pull_requests),
                 // A project that switched to git still reviews its open Rosen changes when
                 // its PRs can't be listed: it may have no GitHub remote at all.
-                Err(_) if rosen_threads => Vec::new(),
+                Err(_) if rosen_threads => None,
                 Err(error) => return Err(error),
             }
         };
+        let all_open = listed.is_some();
+        let mut candidates = listed.unwrap_or_default();
         if rosen_threads {
             // A failed change lookup still leaves the PRs to review and land.
             match crate::rosen_review::change_candidates(&self.app_data, roster).await {
@@ -435,7 +463,66 @@ impl PrDutyReviews {
                 Err(_) => {}
             }
         }
-        Ok(candidates)
+        Ok(Listed {
+            candidates,
+            all_open,
+        })
+    }
+
+    /// Stops each review whose PR is no longer open (#349): closed or merged by someone
+    /// else, it has nothing left to review, and its agent is wanted for the PRs that wait.
+    /// The claim is released and the feed says why; the agent claims again once its
+    /// session has ended.
+    fn stop_closed<Host: ReviewHost>(
+        &self,
+        host: &Host,
+        roster: &PrDutyRoster,
+        candidates: &[ReviewCandidate],
+    ) {
+        let project = roster.project.id;
+        let open: BTreeSet<u32> = candidates
+            .iter()
+            .filter_map(|candidate| candidate.subject.number())
+            .collect();
+        let stopped: Vec<(String, u32)> = self
+            .lock()
+            .running
+            .iter_mut()
+            .filter(|((owner, _), running)| *owner == project && !running.merged)
+            .filter(|(_, running)| {
+                let number = running.subject.number();
+                number.is_some_and(|number| !open.contains(&number))
+            })
+            .filter_map(|((_, nickname), running)| {
+                let number = running.stop()?.number()?;
+                Some((nickname.clone(), number))
+            })
+            .collect();
+        for (nickname, number) in stopped {
+            let (app_data, agent) = (self.app_data.clone(), nickname.clone());
+            // The AIRC `released` event; a closed PR needs no label or comment.
+            tokio::task::spawn_blocking(move || {
+                ReviewRecord::open(&app_data, &project.to_string(), &agent)
+                    .and_then(|record| record.release(number))
+            });
+            let message = format!("Stopped reviewing #{number} · it is no longer open");
+            host.update(
+                project,
+                Box::new(move |entry, timestamp| {
+                    let paused = entry.paused;
+                    if let Some(card) = card_mut(entry, &nickname) {
+                        card.busy = false;
+                        card.doing = review_idle_doing(paused);
+                    }
+                    vec![DutyFeedEvent::new(
+                        timestamp,
+                        &nickname,
+                        DutyEventKind::Skip,
+                        message,
+                    )]
+                }),
+            );
+        }
     }
 
     async fn pull_request_candidates(
@@ -529,6 +616,7 @@ impl PrDutyReviews {
                     airc_after: 0,
                     delivering: false,
                     approved: false,
+                    merged: false,
                 },
             );
             state
@@ -1120,6 +1208,9 @@ impl Review {
                 PrDutyReport::Merged { .. } | PrDutyReport::ChangeLanded { .. } => {
                     outcome.decided = true;
                     outcome.merged = true;
+                    if let Some(running) = self.runner.lock().running.get_mut(&self.key) {
+                        running.merged = true;
+                    }
                 }
                 PrDutyReport::ChangeChangesRequested {
                     change, message, ..

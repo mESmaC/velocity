@@ -25,13 +25,18 @@ pub(super) struct Listing {
     read: Option<Instant>,
     /// A read is under way.
     reading: bool,
+    /// The last read failed, so its empty list says nothing about which PRs are open.
+    failed: bool,
 }
 
 impl PrDutyReviews {
     /// The project's open PRs as last listed, and a new listing started when that one is
-    /// no longer fresh. Empty before the first listing, when the last one is stale, and
-    /// when GitHub can't be read.
-    pub(super) fn listed_pull_requests(&self, roster: &PrDutyRoster) -> Vec<ReviewCandidate> {
+    /// no longer fresh. `None` before the first listing, when the last one is stale, and
+    /// when GitHub can't be read: the pass then has no PRs, and no list of the open ones.
+    pub(super) fn listed_pull_requests(
+        &self,
+        roster: &PrDutyRoster,
+    ) -> Option<Vec<ReviewCandidate>> {
         let project = roster.project.id;
         let (candidates, read_again) = {
             let mut state = self.lock();
@@ -39,12 +44,8 @@ impl PrDutyReviews {
             let age = listing.read.map(|read| read.elapsed());
             let read_again = !listing.reading && age.is_none_or(|age| age > FRESH);
             listing.reading |= read_again;
-            let usable = age.is_some_and(|age| age <= STALE);
-            let candidates = if usable {
-                listing.candidates.clone()
-            } else {
-                Vec::new()
-            };
+            let usable = !listing.failed && age.is_some_and(|age| age <= STALE);
+            let candidates = usable.then(|| listing.candidates.clone());
             (candidates, read_again)
         };
         if read_again {
@@ -56,16 +57,16 @@ impl PrDutyReviews {
 
     async fn read_listing(&self, roster: &PrDutyRoster) {
         // A Rosen project needs no GitHub remote: one that can't be listed has no PRs.
-        let listed = self
-            .pull_request_candidates(roster)
-            .await
-            .unwrap_or_default();
+        let listed = self.pull_request_candidates(roster).await;
+        let failed = listed.is_err();
+        let listed = listed.unwrap_or_default();
         let changed = {
             let mut state = self.lock();
             let listing = state.listings.entry(roster.project.id).or_default();
             let changed = listing.candidates != listed;
             listing.candidates = listed;
             listing.read = Some(Instant::now());
+            listing.failed = failed;
             listing.reading = false;
             changed
         };
