@@ -77,12 +77,35 @@ pub fn plan_issue_dispatch(
     accept_recommendation: bool,
 ) -> Result<IssueDispatchPlan, DispatchError> {
     require_launch(store.state(), LaunchRequest::IssueDispatch)?;
-    let project = store
+    let _project = store
         .active_project()
         .filter(|project| project.id == project_identifier)
         .ok_or_else(|| {
             DispatchError::Invalid("The selected project changed; dispatch again".into())
         })?;
+    plan_project_issue_dispatch(
+        store,
+        project_identifier,
+        repository,
+        issue,
+        accept_recommendation,
+    )
+}
+
+/// Background dispatch uses the named project, even while another project is selected.
+pub fn plan_project_issue_dispatch(
+    store: &StateStore,
+    project_identifier: u32,
+    repository: &str,
+    issue: &GitHubIssue,
+    accept_recommendation: bool,
+) -> Result<IssueDispatchPlan, DispatchError> {
+    let project = store
+        .project(project_identifier)
+        .ok_or_else(|| DispatchError::Invalid("The project was removed".into()))?;
+    if !project.spec_locked {
+        return Err(LaunchBlocked::LockSpecFirst.into());
+    }
     if issue.state != IssueState::Open {
         return Err(DispatchError::Invalid(format!(
             "Issue #{} is closed",
@@ -97,10 +120,15 @@ pub fn plan_issue_dispatch(
         }
         .into());
     }
-    let prompt = dispatch_prompt(repository, issue, accept_recommendation)?;
+    let prompt = dispatch_prompt(
+        repository,
+        issue,
+        accept_recommendation,
+        project.version_control,
+    )?;
     let mut launch = crate::launch::plan_named_launch(
         project,
-        &store.worktree_context().preferences,
+        &store.worktree_preferences(project),
         &store.settings(),
         &prompt,
         &issue.title,
@@ -118,6 +146,7 @@ fn dispatch_prompt(
     repository: &str,
     issue: &GitHubIssue,
     accept: bool,
+    version_control: velocity_store::VersionControl,
 ) -> Result<String, DispatchError> {
     let scope = if accept {
         let question = SpecQuestion::from_body(&issue.body);
@@ -138,8 +167,18 @@ fn dispatch_prompt(
     } else {
         "Implement this issue end to end, following AGENTS.md and SPEC.md. Read its evidence before editing.".into()
     };
+    if version_control == velocity_store::VersionControl::Rosen {
+        return Ok(rosen_dispatch_prompt(&scope, repository, issue));
+    }
     Ok(format!(
         "{scope}\n\nIssue {repository}#{}: {}\n{}\n\n{}\n\nYou already have your own worktree and branch. Open a PR against the project's default branch with Fixes #{} in its description. Watch it until it merges, fix failed checks, answer every review comment, resolve addressed threads and re-request review. Never merge your own PR. Messages received while busy are queued.",
         issue.number, issue.title, issue.url, issue.body, issue.number
     ))
+}
+
+fn rosen_dispatch_prompt(scope: &str, repository: &str, issue: &GitHubIssue) -> String {
+    format!(
+        "{scope}\n\nIssue {repository}#{}: {}\n{}\n\n{}\n\nFollow the workspace note Velocity gave you. In a Rosen workspace, claim the files you edit and run builds and checks through rosen run -- <command>. When done, name the work with rosen commit -m \"<one-line summary> (#{})\" and end your turn. If Velocity fell back to a git worktree, follow AGENTS.md's ordinary PR flow and watch the PR until it merges. Never close or comment on the issue. If there is no work to change, explain why and end your turn.",
+        issue.number, issue.title, issue.url, issue.body, issue.number
+    )
 }

@@ -149,6 +149,29 @@ pub(crate) fn stop_follow_through(application: &AppHandle, key: ThreadKey) -> Re
         }
         runtimes.stop(key)
     };
+    finish_stopping(application, key, stopped)
+}
+
+/// Continuous dispatch must not discard a message queued since it inspected the diff.
+pub(crate) fn stop_idle_thread(application: &AppHandle, key: ThreadKey) -> Result<bool, String> {
+    let stopped = {
+        let mut runtimes = lock(
+            application.state::<ManagedThreads>().inner(),
+            "thread sessions",
+        )?;
+        if !runtimes.is_at_step_boundary(key) {
+            return Ok(false);
+        }
+        runtimes.stop(key)
+    };
+    finish_stopping(application, key, stopped)
+}
+
+fn finish_stopping(
+    application: &AppHandle,
+    key: ThreadKey,
+    stopped: StopOutcome,
+) -> Result<bool, String> {
     match stopped {
         StopOutcome::NotRunning => {}
         StopOutcome::SettingUp => return Ok(false),
@@ -304,6 +327,15 @@ pub(crate) fn start_planned(
     plan: LaunchPlan,
     thread: u32,
 ) -> Result<LayoutSnapshot, String> {
+    start_planned_with_selection(application, plan, thread, true)
+}
+
+pub(crate) fn start_planned_with_selection(
+    application: &AppHandle,
+    plan: LaunchPlan,
+    thread: u32,
+    select: bool,
+) -> Result<LayoutSnapshot, String> {
     let key = (plan.project, thread);
     let inputs = {
         let mut runtimes = lock(
@@ -316,7 +348,7 @@ pub(crate) fn start_planned(
         }
         inputs
     };
-    let snapshot = refresh(application, key, true)?;
+    let snapshot = refresh(application, key, select)?;
     emit_status(application, key);
     let handle = application.clone();
     tauri::async_runtime::spawn(async move { run_thread(handle, key, plan, inputs).await });
@@ -451,6 +483,10 @@ fn resume_message(
     key: ThreadKey,
     prompt: &str,
 ) -> Result<LayoutSnapshot, String> {
+    let lease = action_lock(application, key)?;
+    let _guard = lease
+        .try_lock()
+        .map_err(|_| "The thread is still changing sessions; retry the message".to_owned())?;
     let store = lock(
         application.state::<ManagedStateStore>().inner(),
         "persisted state",

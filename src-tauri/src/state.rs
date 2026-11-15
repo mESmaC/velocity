@@ -26,6 +26,8 @@ pub fn initialize(application: &AppHandle) -> anyhow::Result<Vec<velocity_thread
         );
     }
     let interrupted = velocity_threads::restart::interrupted_turns(store.state());
+    // Persist before resetting activity, so a second startup cannot forget recovery.
+    store.reserve_startup_recovery(&interrupted)?;
     store.reset_disconnected_threads()?;
     application
         .state::<crate::threads::ManagedThreads>()

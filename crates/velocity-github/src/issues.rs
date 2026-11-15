@@ -7,7 +7,7 @@ use serde_json::json;
 use crate::{GitHubIssue, IssueInventory, PullRequestClient, PullRequestError};
 
 const ISSUE_FIELDS: &str = "id number title body url state author { login }
-    createdAt updatedAt closedAt labels(first:100) { nodes { name } totalCount }";
+    createdAt updatedAt closedAt milestone { number } labels(first:100) { nodes { name } totalCount }";
 
 /// Uses the same signed-in gh transport and long-path repository discovery as
 /// PRs. No credential, shell, or provider-specific path is introduced here.
@@ -81,6 +81,15 @@ impl IssueClient {
     pub fn discover(directory: &Path) -> Result<Self, PullRequestError> {
         Ok(Self {
             transport: PullRequestClient::discover(directory)?,
+            directory: std::fs::canonicalize(directory)?,
+        })
+    }
+
+    /// A Rosen project can keep its GitHub identity without a Git checkout.
+    #[track_caller]
+    pub fn for_repository(directory: &Path, repository: &str) -> Result<Self, PullRequestError> {
+        Ok(Self {
+            transport: PullRequestClient::for_repository(repository)?,
             directory: std::fs::canonicalize(directory)?,
         })
     }

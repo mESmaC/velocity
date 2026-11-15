@@ -199,3 +199,5 @@ export * from './ipc/work-pool';
 export * from './ipc/airc-routing';
 
 export * from './ipc/tasks';
+
+export * from './ipc/continuous-dispatch';

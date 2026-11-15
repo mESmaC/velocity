@@ -12,6 +12,7 @@ mod airc_events;
 mod airc_modal;
 mod build_gate;
 mod code_graph;
+mod continuous_dispatch;
 mod diagnostics;
 pub mod duty;
 mod follow_through;
@@ -72,6 +73,8 @@ fn bindings() -> Builder<tauri::Wry> {
         code_graph::get_code_graph,
         code_graph::set_code_graph,
         code_graph::reset_code_graph_usage,
+        continuous_dispatch::get_continuous_dispatch,
+        continuous_dispatch::set_continuous_dispatch,
         window::get_window_state,
         window::minimize_window,
         window::toggle_maximize_window,
@@ -286,6 +289,7 @@ pub fn run() -> anyhow::Result<()> {
             kept_worktrees::initialize(application.handle());
             github_requests::initialize(application.handle());
             issue_panel::initialize(application.handle());
+            continuous_dispatch::initialize(application.handle());
             worktree_settings::initialize(application.handle())?;
             ready_pool::initialize(application.handle())?;
             pull_request_panel::initialize(application.handle());

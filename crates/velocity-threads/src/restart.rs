@@ -46,5 +46,63 @@ pub fn turn_interrupted(thread: &ThreadItem) -> bool {
         && thread.interview.is_none()
         && thread.agent_session.is_some()
         && thread.worktree_path.is_some()
-        && (mid_turn || (queued && thread.activity == AgentActivity::Idle))
+        && (thread.startup_recovery_pending
+            || mid_turn
+            || (queued && thread.activity == AgentActivity::Idle))
+}
+
+// Risk (#384): another exit after the startup reset must not forget an interrupted
+// turn with no queued row. Its slot stays reserved until recovery resumes it.
+#[cfg(test)]
+#[test]
+fn startup_recovery_survives_reset_and_another_restart() -> Result<(), Box<dyn std::error::Error>> {
+    let (directory, mut store) = interrupted_store()?;
+    let interrupted = interrupted_turns(store.state());
+    assert_eq!(interrupted, vec![(1, 1)]);
+    store.reserve_startup_recovery(&interrupted)?;
+    store.reset_disconnected_threads()?;
+    drop(store);
+    let mut loaded = velocity_store::StateStore::load_or_default(&directory)?;
+    assert_eq!(interrupted_turns(loaded.state()), interrupted);
+    let thread = &loaded.project(1).ok_or("missing project")?.threads[0];
+    assert_eq!(thread.activity, AgentActivity::Idle);
+    assert!(!velocity_store::continuous_dispatch::can_finish_empty_dispatch(thread));
+    let mut runtimes = crate::ThreadRuntimes::default();
+    runtimes.restore(loaded.state());
+    let lease = runtimes.action_lock((1, 1));
+    let _guard = lease.try_lock()?;
+    let mut inputs = runtimes.resume_parked((1, 1), "checkout", Some(CONTINUE_PROMPT), false)?;
+    loaded.update_thread(1, 1, |thread| {
+        thread.activity = AgentActivity::Thinking;
+        thread.startup_recovery_pending = false;
+    })?;
+    assert!(inputs.try_recv().is_ok());
+    assert!(!runtimes.is_at_step_boundary((1, 1)));
+    assert!(
+        !velocity_store::continuous_dispatch::can_finish_empty_dispatch(
+            &loaded.project(1).ok_or("missing project")?.threads[0]
+        )
+    );
+    std::fs::remove_dir_all(directory)?;
+    Ok(())
+}
+
+#[cfg(test)]
+fn interrupted_store()
+-> Result<(std::path::PathBuf, velocity_store::StateStore), Box<dyn std::error::Error>> {
+    let directory =
+        std::env::temp_dir().join(format!("velocity-384-recovery-{}", std::process::id()));
+    std::fs::create_dir_all(&directory)?;
+    let mut state = PersistedState::default();
+    let mut project = velocity_store::ProjectItem::new(1, "restart".into(), "checkout".into());
+    let mut thread = ThreadItem::new(1, "interrupted".into());
+    thread.agent_session = Some("earlier-session".into());
+    thread.worktree_path = Some("checkout".into());
+    thread.activity = AgentActivity::Thinking;
+    thread.supervision.turns = 1;
+    project.threads.push(thread);
+    state.projects.push(project);
+    std::fs::write(directory.join("state.json"), serde_json::to_vec(&state)?)?;
+    let store = velocity_store::StateStore::load_or_default(&directory)?;
+    Ok((directory, store))
 }

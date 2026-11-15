@@ -10,6 +10,7 @@ mod agent;
 mod bundled;
 pub mod checker;
 mod conflicts;
+pub mod dispatch;
 pub mod duty;
 mod events;
 pub mod policy;

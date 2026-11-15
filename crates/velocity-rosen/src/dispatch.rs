@@ -1,0 +1,49 @@
+//! Confirm a turn ended without work before continuous dispatch frees its slot.
+use crate::{ProjectServer, RosenError};
+use rosen_client::{ChangeState, Client, protocol::DiffRequest};
+
+/// Named work still belongs to the landing lifecycle, including a prose-only change.
+/// Snapshot the final files first: the watcher may still be uploading the last step.
+pub async fn ended_without_changes(
+    server: &ProjectServer,
+    change: &str,
+    root: &std::path::Path,
+) -> Result<bool, RosenError> {
+    let client = Client::connect(server.endpoint()).await?;
+    let record = client.change_show(change).await?.change;
+    if record.state != ChangeState::Open {
+        return Ok(false);
+    }
+    crate::workspace::session(server, &record.owner.to_string())
+        .await?
+        .snapshot(root, None)
+        .await?;
+    let record = client.change_show(change).await?.change;
+    if record.state != ChangeState::Open
+        || record
+            .snapshots
+            .iter()
+            .any(|snapshot| matches!(snapshot.kind, rosen_core::SnapshotKind::Named(_)))
+    {
+        return Ok(false);
+    }
+    let diff = client
+        .diff(DiffRequest {
+            to: Some(change.into()),
+            context: Some(0),
+            ..DiffRequest::default()
+        })
+        .await?;
+    Ok(diff.files.is_empty())
+}
+
+/// Idempotent cleanup: a crash after abandoning but before saving its acknowledgement
+/// must not leave a completed thread holding claims forever.
+pub async fn abandon_finished(server: &ProjectServer, change: &str) -> Result<(), RosenError> {
+    let client = Client::connect(server.endpoint()).await?;
+    let record = client.change_show(change).await?.change;
+    if !record.state.is_closed() {
+        crate::abandon_change(server, &record.owner.to_string(), change).await?;
+    }
+    Ok(())
+}

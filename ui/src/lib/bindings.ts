@@ -27,6 +27,8 @@ export const commands = {
 	setCodeGraph: (projectIdentifier: number, enabled: boolean) => __TAURI_INVOKE<GraphComparison>("set_code_graph", { projectIdentifier, enabled }),
 	/**  Clears both sides' totals, so a comparison starts fresh. */
 	resetCodeGraphUsage: (projectIdentifier: number) => __TAURI_INVOKE<GraphComparison>("reset_code_graph_usage", { projectIdentifier }),
+	getContinuousDispatch: (projectIdentifier: number) => __TAURI_INVOKE<DispatchView_Serialize>("get_continuous_dispatch", { projectIdentifier }),
+	setContinuousDispatch: (projectIdentifier: number, slots: number, paused: boolean) => __TAURI_INVOKE<DispatchView_Serialize>("set_continuous_dispatch", { projectIdentifier, slots, paused }),
 	getWindowState: () => __TAURI_INVOKE<WindowStateChanged>("get_window_state"),
 	minimizeWindow: () => __TAURI_INVOKE<null>("minimize_window"),
 	toggleMaximizeWindow: () => __TAURI_INVOKE<null>("toggle_maximize_window"),
@@ -561,6 +563,32 @@ export type ComparisonSide = {
 	note: string,
 };
 
+export type ContinuousDispatch = ContinuousDispatch_Serialize | ContinuousDispatch_Deserialize;
+
+export type ContinuousDispatch_Deserialize = {
+	slots?: number,
+	paused?: boolean,
+	/**
+	 *  Do not send an unchanged open issue to another agent after a no-change result or
+	 *  while GitHub still shows an issue whose change just landed.
+	 */
+	attempts?: DispatchAttempt_Deserialize[],
+	/**  Empty threads whose stopped workspace and claims still need cleanup. */
+	cleanup?: number[],
+};
+
+export type ContinuousDispatch_Serialize = {
+	slots: number,
+	paused: boolean,
+	/**
+	 *  Do not send an unchanged open issue to another agent after a no-change result or
+	 *  while GitHub still shows an issue whose change just landed.
+	 */
+	attempts: DispatchAttempt_Serialize[],
+	/**  Empty threads whose stopped workspace and claims still need cleanup. */
+	cleanup: number[],
+};
+
 export type CoverageItem = {
 	/**  Position in the Covers list; `OutlineAction::AddCoverage` names an item by it. */
 	item: number,
@@ -743,6 +771,47 @@ export type DiscoveredSkill_Serialize = {
 export type DismissDutyAgentRequest = {
 	role: DutyRole,
 	nickname: string,
+};
+
+export type DispatchAttempt = DispatchAttempt_Serialize | DispatchAttempt_Deserialize;
+
+export type DispatchAttempt_Deserialize = {
+	repository?: string,
+	number?: number,
+	updated_at?: string,
+};
+
+export type DispatchAttempt_Serialize = {
+	repository: string,
+	number: number,
+	updated_at: string,
+};
+
+export type DispatchIssue = {
+	number: number,
+	title: string,
+};
+
+export type DispatchView = DispatchView_Serialize | DispatchView_Deserialize;
+
+export type DispatchView_Deserialize = {
+	project_identifier?: number | null,
+	available: boolean,
+	slots: number,
+	busy: number,
+	paused: boolean,
+	next: DispatchIssue[],
+	error?: string | null,
+};
+
+export type DispatchView_Serialize = {
+	project_identifier: number | null,
+	available: boolean,
+	slots: number,
+	busy: number,
+	paused: boolean,
+	next: DispatchIssue[],
+	error: string | null,
 };
 
 export type DutyAgentCard = {
@@ -2447,6 +2516,7 @@ export type ProjectItem_Deserialize = {
 	built_spec_sections?: string[],
 	skills?: ProjectSkills_Deserialize,
 	settled_expanded?: boolean,
+	continuous_dispatch?: ContinuousDispatch_Deserialize,
 	active_thread_id?: number | null,
 	merged_today: number,
 	tasks: TaskItem_Deserialize[],
@@ -2476,6 +2546,7 @@ export type ProjectItem_Serialize = {
 	built_spec_sections: string[],
 	skills: ProjectSkills_Serialize,
 	settled_expanded: boolean,
+	continuous_dispatch: ContinuousDispatch_Serialize,
 	active_thread_id: number | null,
 	merged_today: number,
 	tasks: TaskItem_Serialize[],

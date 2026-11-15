@@ -27,6 +27,21 @@ fn resume(application: &AppHandle, key: ThreadKey) -> Result<(), String> {
     // session itself when none runs; holding it means only one of the two starts a session.
     let lease = crate::threads::action_lock(application, key)?;
     let _guard = lease.blocking_lock();
+    let result = resume_session(application, key);
+    lock(
+        application
+            .state::<crate::state::ManagedStateStore>()
+            .inner(),
+        "persisted state",
+    )?
+    .update_thread(key.0, key.1, |thread| {
+        thread.startup_recovery_pending = false
+    })
+    .map_err(|error| error.to_string())?;
+    result
+}
+
+fn resume_session(application: &AppHandle, key: ThreadKey) -> Result<(), String> {
     if session_running(application, key)? {
         return Ok(());
     }

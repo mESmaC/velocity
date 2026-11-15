@@ -26,6 +26,13 @@ pub struct GitHubIssue {
     #[serde(default)]
     pub labels: Vec<String>,
     pub scout: Option<String>,
+    #[serde(default)]
+    pub milestone: Option<IssueMilestone>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, Type)]
+pub struct IssueMilestone {
+    pub number: u32,
 }
 
 impl GitHubIssue {

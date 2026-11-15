@@ -1,4 +1,5 @@
 <script lang="ts">
+  import ContinuousDispatch from './ContinuousDispatch.svelte';
   import Icon from './Icon.svelte';
   import UsageModal from './UsageModal.svelte';
   import UpdatesModal from './UpdatesModal.svelte';
@@ -107,6 +108,12 @@
                 ><Icon name="plus" /></button
               >{:else}<span>{group.count}</span>{/if}
           </div>{/if}
+        {#if group.group === 'Duty'}
+          <ContinuousDispatch
+            projectIdentifier={layout.project_identifier}
+            compact
+          />
+        {/if}
         {#if group.group === 'Duty' && group.rows.length === 0}
           <button
             class="duty-empty"

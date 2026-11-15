@@ -60,13 +60,28 @@ impl PullRequestClient {
     #[track_caller]
     pub fn discover(directory: &Path) -> Result<Self, PullRequestError> {
         let (command, repository) = PullRequestCommand::new(directory)?;
+        Self::read_identity(command, &repository)
+    }
+
+    #[track_caller]
+    pub fn for_repository(repository: &str) -> Result<Self, PullRequestError> {
+        let repository = crate::RepositoryName::parse(repository)
+            .map_err(|error| PullRequestError::Invalid(error.to_string()))?;
+        let command = PullRequestCommand::for_repository(&repository);
+        Self::read_identity(command, &repository.full_name())
+    }
+
+    fn read_identity(
+        command: PullRequestCommand,
+        repository: &str,
+    ) -> Result<Self, PullRequestError> {
         let identity: RepositoryIdentity = command.read(&[
             "repo",
             "view",
             "--json",
             "nameWithOwner,defaultBranchRef",
             "--",
-            &repository,
+            repository,
         ])?;
         let (owner, name) = identity
             .name_with_owner

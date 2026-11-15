@@ -1,4 +1,5 @@
 <script lang="ts">
+  import ContinuousDispatch from './ContinuousDispatch.svelte';
   import { tick } from 'svelte';
   import Composer from './Composer.svelte';
   import Icon from './Icon.svelte';
@@ -182,6 +183,7 @@
 
   <div class="transcript" bind:this={transcriptEl} aria-live="polite">
     <div class="transcript-inner">
+      <ContinuousDispatch projectIdentifier={layout.project_identifier} />
       <div>
         <div class="section-h">Rules</div>
         <div class="rule-chips">

@@ -106,6 +106,10 @@ fn park(application: &AppHandle, key: ThreadKey) -> Result<(), String> {
 
 /// Ends the wait the way the parked `airc_wait` call would have, then resumes the session.
 fn wake(application: &AppHandle, key: ThreadKey, channel: &Channel) -> Result<(), String> {
+    let lease = crate::threads::action_lock(application, key)?;
+    let Ok(_guard) = lease.try_lock() else {
+        return Ok(());
+    };
     // A wait record that cannot be read still resumes the agent: it re-reads its claims.
     let ended = match channel.wake_parked(&member(key)) {
         Ok(None) => return Ok(()),

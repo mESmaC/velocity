@@ -11,6 +11,7 @@ pub mod agent_tasks;
 pub mod airc_members;
 pub mod build_gate;
 pub mod claim_piece;
+pub mod continuous_dispatch;
 pub mod deleted_worktrees;
 pub mod follow_through;
 
@@ -691,6 +692,10 @@ pub enum VersionControl {
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, Type)]
 pub struct ThreadItem {
+    /// A turn interrupted by startup, retained until its resume starts or fails.
+    #[serde(default)]
+    #[specta(skip)]
+    pub startup_recovery_pending: bool,
     #[serde(default)]
     pub supervision: agent_activity::Supervision,
     pub id: u32,
@@ -780,6 +785,7 @@ impl ThreadItem {
             agent_session: None,
             provider_queued: false,
             transcript: Default::default(),
+            startup_recovery_pending: false,
             supervision: Default::default(),
             review_stage: None,
             task_ids: Vec::new(),
@@ -820,6 +826,7 @@ impl ThreadItem {
             agent_session: None,
             provider_queued: false,
             transcript: Default::default(),
+            startup_recovery_pending: false,
             supervision: Default::default(),
             review_stage: None,
             task_ids: Vec::new(),
@@ -916,6 +923,8 @@ pub struct ProjectItem {
     pub skills: velocity_core::skills::ProjectSkills,
     #[serde(default)]
     pub settled_expanded: bool,
+    #[serde(default)]
+    pub continuous_dispatch: continuous_dispatch::ContinuousDispatch,
     pub active_thread_id: Option<u32>,
     pub merged_today: u32,
     pub tasks: Vec<TaskItem>,
@@ -980,6 +989,7 @@ impl ProjectItem {
             built_spec_sections: Vec::new(),
             skills: velocity_core::skills::ProjectSkills::default(),
             settled_expanded: false,
+            continuous_dispatch: continuous_dispatch::ContinuousDispatch::default(),
             active_thread_id: None,
             merged_today: 0,
             tasks: Vec::new(),
