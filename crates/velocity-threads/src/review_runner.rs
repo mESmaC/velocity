@@ -95,11 +95,11 @@ struct Running {
     /// Set once the review prompt is queued, so an AIRC message never becomes the first
     /// prompt, and cleared when the review is told to stop.
     delivering: bool,
-    /// A review by reading approved its Rosen change: the review is over but for its
-    /// session's last words, so Velocity's checker takes the change without waiting for them.
+    /// A review by reading approved its subject: the review is over but for its
+    /// session's last words, so a PR leaving the open list must not stop it.
     approved: bool,
-    /// The review merged its own PR, so the PR leaving the open list is its doing, not a
-    /// close to stop it for.
+    /// The review or Velocity merged its PR, so the PR leaving the open list is its
+    /// doing, not a close to stop it for.
     merged: bool,
 }
 
@@ -527,7 +527,9 @@ impl PrDutyReviews {
             .lock()
             .running
             .iter_mut()
-            .filter(|((owner, _), running)| *owner == project && !running.merged)
+            .filter(|((owner, _), running)| {
+                *owner == project && !running.approved && !running.merged
+            })
             .filter(|(_, running)| {
                 let number = running.subject.number();
                 number.is_some_and(|number| !open.contains(&number))
@@ -791,8 +793,8 @@ struct Outcome {
     decided: bool,
     merged: bool,
     failure: Option<String>,
-    /// The review is of a Rosen change by reading: its approval is its decision, since
-    /// Velocity's checker lands the approved head.
+    /// The review is by reading: its approval is its decision, since Velocity lands
+    /// the approved head.
     approval_decides: bool,
 }
 
@@ -1025,10 +1027,7 @@ impl Review {
         };
         if self.runner.dismissed(&self.key) {
             // Dismissed while the worktree or the proofs were prepared: no session starts.
-            if let Some(launch_file) = &prepared.launch_file {
-                let _ = std::fs::remove_file(launch_file);
-                crate::rosen_review::remove_folder(prepared.worktree.clone()).await;
-            }
+            self.clean_worktree(host, &prepared, false).await;
             return Outcome::default();
         }
         let mut setup = match &prepared.launch_file {
@@ -1047,39 +1046,62 @@ impl Review {
         let _ = self
             .input
             .send(text(&format!("{}{proofs}", self.prompt(&prepared))));
-        {
-            let mut state = self.runner.lock();
-            if let Some(running) = state.running.get_mut(&self.key) {
-                running.delivering = true;
-            }
-            let worktree = prepared.worktree.display().to_string();
-            state.transcripts.insert(
-                self.key.clone(),
-                LiveTranscript::restore(&worktree, Vec::new()),
-            );
-        }
+        self.start_transcript(&prepared.worktree);
         let session = crate::spawn_session(prepared.plan.agent.clone(), setup, inputs);
-        let reading_change = prepared.launch_file.is_some() && prepared.mode == ReviewMode::Reading;
-        let outcome = self.follow(host, session, &report, reading_change).await;
+        let approval_decides = prepared.mode == ReviewMode::Reading;
+        let outcome = self.follow(host, session, &report, approval_decides).await;
         // Recorded while the claim is still held, so no tick can claim the head in between.
         self.remember(&prepared.head, outcome.decided);
         let _ = std::fs::remove_file(&report);
+        self.clean_worktree(host, &prepared, outcome.merged).await;
+        outcome
+    }
+
+    fn start_transcript(&self, worktree: &Path) {
+        let mut state = self.runner.lock();
+        if let Some(running) = state.running.get_mut(&self.key) {
+            running.delivering = true;
+        }
+        state.transcripts.insert(
+            self.key.clone(),
+            LiveTranscript::restore(&worktree.display().to_string(), Vec::new()),
+        );
+    }
+
+    /// Rule 5 also covers a PR merged outside this session. Check after its process tree
+    /// has stopped; a missing listing alone cannot distinguish a merge from a close.
+    async fn clean_worktree<Host: ReviewHost>(
+        &self,
+        host: &Host,
+        prepared: &Prepared,
+        merged: bool,
+    ) {
         if let Some(launch_file) = &prepared.launch_file {
             let _ = std::fs::remove_file(launch_file);
             crate::rosen_review::remove_folder(prepared.worktree.clone()).await;
-        } else if outcome.merged {
-            // Rule 5: the review worktree goes as soon as its PR merges.
-            let repository = prepared.plan.worktree.repository_root.clone();
-            let worktree = prepared.worktree.clone();
-            let removed = tokio::task::spawn_blocking(move || {
-                velocity_git::remove_review_worktree(&repository, &worktree)
-            })
-            .await;
-            if matches!(removed, Ok(Ok(()))) {
-                keep_worktree(host, &self.key, &prepared.worktree, false);
-            }
+            return;
         }
-        outcome
+        let Some(number) = self.candidate.subject.number() else {
+            return;
+        };
+        let runner = self.runner.clone();
+        let repository = prepared.plan.worktree.repository_root.clone();
+        let worktree = prepared.worktree.clone();
+        let removed = tokio::task::spawn_blocking(move || {
+            let merged = merged
+                || runner
+                    .client(&repository)
+                    .and_then(|client| client.get(number))
+                    .is_ok_and(|pull_request| pull_request.state == PullRequestState::Merged);
+            if !merged {
+                return Ok(false);
+            }
+            velocity_git::remove_review_worktree(&repository, &worktree).map(|()| true)
+        })
+        .await;
+        if matches!(removed, Ok(Ok(true))) {
+            keep_worktree(host, &self.key, &prepared.worktree, false);
+        }
     }
 
     /// The head this session reviewed rests: until it moves if the session decided, and for
@@ -1188,9 +1210,9 @@ impl Review {
         outcome
     }
 
-    /// A review by reading approved its change: Velocity's checker may take it now, while
-    /// the agent's session says its last words and stops.
-    fn release_to_checker(&self) {
+    /// A review by reading approved its subject: preserve that decision while the
+    /// agent's session says its last words and stops. Rosen's checker may take it now.
+    fn record_approval(&self) {
         let mut state = self.runner.lock();
         if let Some(running) = state.running.get_mut(&self.key) {
             running.approved = true;
@@ -1259,10 +1281,11 @@ impl Review {
                 PrDutyReport::Commented { .. } | PrDutyReport::ChangeCommented { .. } => {}
                 // An agent that runs the checks itself also lands: its approval alone
                 // leaves the head to be retried. A review by reading ends at its approval.
-                PrDutyReport::ChangeApproved { .. } => {
-                    outcome.decided |= outcome.approval_decides;
+                PrDutyReport::Approved { .. } | PrDutyReport::ChangeApproved { .. } => {
+                    outcome.decided |=
+                        outcome.approval_decides || matches!(report, PrDutyReport::Approved { .. });
                     if outcome.approval_decides {
-                        self.release_to_checker();
+                        self.record_approval();
                     }
                 }
                 PrDutyReport::Merged { .. } | PrDutyReport::ChangeLanded { .. } => {

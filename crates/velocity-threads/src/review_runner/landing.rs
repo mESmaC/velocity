@@ -220,7 +220,15 @@ impl PrDutyReviews {
         branch_kept: bool,
     ) {
         let project = roster.project.id;
-        self.lock().landing.remove(&(project, number));
+        {
+            let mut state = self.lock();
+            state.landing.remove(&(project, number));
+            for ((owner, _), running) in &mut state.running {
+                if *owner == project && running.subject.number() == Some(number) {
+                    running.merged = true;
+                }
+            }
+        }
         let mut removed = None;
         if let Some(worktree) = review_worktree(roster, number) {
             let repository = PathBuf::from(&roster.project.repository_path);
