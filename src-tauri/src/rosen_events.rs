@@ -155,12 +155,25 @@ fn take(
 pub(crate) async fn run_follow_ups(application: &AppHandle, project: u32) {
     let running = application.state::<crate::rosen::ManagedRosen>();
     let _one_at_a_time = running.follow_ups.lock().await;
-    let pending = match lock(
-        application.state::<ManagedStateStore>().inner(),
-        "persisted state",
-    ) {
-        Ok(store) => store.rosen_follow_ups(project),
-        Err(error) => return report::<()>(Err(error)),
+    let handle = application.clone();
+    let pending = match tauri::async_runtime::spawn_blocking(move || {
+        let pending = lock(
+            handle.state::<ManagedStateStore>().inner(),
+            "persisted state",
+        )?
+        .rosen_follow_ups(project);
+        // Ordinary saves are deferred. Flush after reading the pending work so every
+        // step we run has its cursor and retry record on disk before any side effect.
+        if !pending.is_empty() {
+            crate::state::save_now(&handle)?;
+        }
+        Ok::<_, String>(pending)
+    })
+    .await
+    {
+        Ok(Ok(pending)) => pending,
+        Ok(Err(error)) => return report::<()>(Err(error)),
+        Err(error) => return report::<()>(Err(error.to_string())),
     };
     for (thread, change, follow_ups) in pending {
         let key = (project, thread);
@@ -283,7 +296,7 @@ async fn reopen_reverted(
     key: ThreadKey,
     change: &str,
 ) -> Result<(), String> {
-    let Some(root) = workspace(application, key) else {
+    let Some(root) = workspace(application, key)? else {
         return Ok(());
     };
     let server = crate::rosen::server(application, key.0).await?;
@@ -385,23 +398,21 @@ async fn finish_landed(application: &AppHandle, key: ThreadKey) -> Result<(), St
     if !stopped {
         return Err("The landed thread's agent is still starting; it was left running".into());
     }
-    if let Some(root) = workspace(application, key) {
+    if let Some(root) = workspace(application, key)? {
         crate::rosen::stop_watch(application, &root).await;
     }
     crate::airc_claims::release(application, key)?;
     crate::goal_swarm::run_keep_going(application, key.0, key.1).await
 }
 
-fn workspace(application: &AppHandle, key: ThreadKey) -> Option<PathBuf> {
+fn workspace(application: &AppHandle, key: ThreadKey) -> Result<Option<PathBuf>, String> {
     let store = lock(
         application.state::<ManagedStateStore>().inner(),
         "persisted state",
-    )
-    .ok()?;
-    let thread = store
-        .project(key.0)?
-        .threads
-        .iter()
-        .find(|thread| thread.id == key.1)?;
-    thread.worktree_path.as_deref().map(PathBuf::from)
+    )?;
+    Ok(store
+        .project(key.0)
+        .and_then(|project| project.threads.iter().find(|thread| thread.id == key.1))
+        .and_then(|thread| thread.worktree_path.as_deref())
+        .map(PathBuf::from))
 }
