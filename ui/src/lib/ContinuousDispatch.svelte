@@ -27,7 +27,12 @@
     const load = async () => {
       try {
         const next = await continuousDispatchCommands.get(project);
-        if (!stopped && !pending) view = next;
+        if (!stopped && !pending) {
+          view = next;
+          // A failed read is only current until the next one succeeds. Right after
+          // startup the server is not up yet, and that error stayed on the panel.
+          error = null;
+        }
       } catch (reason) {
         if (!stopped) error = String(reason);
       }
