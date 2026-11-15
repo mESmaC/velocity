@@ -241,7 +241,18 @@ pub fn export_bindings() -> anyhow::Result<()> {
         .context("Could not normalize the generated bindings")
 }
 
+fn application_environment() -> tauri::Env {
+    let mut environment = tauri::Env::default();
+    // Tauri's updater forwards these arguments to both setup and MSI replacements.
+    environment.args_os = std::env::args_os()
+        .take(1)
+        .chain(velocity_updates::supervision::application_arguments())
+        .collect();
+    environment
+}
+
 pub fn run() -> anyhow::Result<()> {
+    let recovery = velocity_updates::supervision::RecoveryConnection::connect()?;
     #[cfg(debug_assertions)]
     export_bindings()?;
     updates::wait_after_portable_update();
@@ -269,6 +280,8 @@ pub fn run() -> anyhow::Result<()> {
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_clipboard_manager::init())
         .plugin(tauri_plugin_updater::Builder::new().build())
+        .manage(application_environment())
+        .manage(recovery)
         .manage(agents::ManagedAgents::default())
         .manage(goal_swarm::GoalSwarmPool::default())
         .manage(layout::MainLayout::default())
@@ -316,6 +329,13 @@ pub fn run() -> anyhow::Result<()> {
         .run(|application, event| {
             // Nothing can stop the exit now; a failed save is logged like any other.
             if matches!(event, tauri::RunEvent::Exit) {
+                use tauri::Manager;
+                if let Err(error) = application
+                    .state::<velocity_updates::supervision::RecoveryConnection>()
+                    .set_intentional_exit(true)
+                {
+                    diagnostics::record("recovery", &error.to_string());
+                }
                 if let Err(error) = state::save_now(application) {
                     eprintln!("{error}");
                 }

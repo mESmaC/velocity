@@ -178,20 +178,39 @@ async fn install(application: &AppHandle) -> Result<(), String> {
         )
         .await
         .map_err(|error| format!("Could not download the update: {error}"))?;
+    install_download(application, kind, &update, &bytes).await
+}
+
+async fn install_download(
+    application: &AppHandle,
+    kind: InstallKind,
+    update: &Update,
+    bytes: &[u8],
+) -> Result<(), String> {
     set_state(application, |state| state.phase = UpdatePhase::Installing);
     // The installer exits Velocity without an exit event, so save first, and don't
     // install over changes that couldn't be saved.
     crate::state::save_now(application)
         .map_err(|error| format!("{error}. The update was not installed."))?;
     crate::rosen::shutdown_servers(application).await;
+    let recovery = application.state::<velocity_updates::supervision::RecoveryConnection>();
+    if let Err(error) = recovery.set_intentional_exit(true) {
+        crate::rosen::restart_servers(application).await;
+        return Err(format!(
+            "Could not hand off recovery to the update: {error}"
+        ));
+    }
     let installed = match kind {
-        InstallKind::Portable => restart_portable(application, &bytes),
+        InstallKind::Portable => restart_portable(application, bytes),
         // Launches the installer and exits Velocity; it only returns on failure.
         InstallKind::Nsis | InstallKind::Msi => update
-            .install(&bytes)
+            .install(bytes)
             .map_err(|error| format!("Could not start the installer: {error}")),
     };
     if installed.is_err() {
+        if let Err(error) = recovery.set_intentional_exit(false) {
+            crate::diagnostics::record("recovery", &error.to_string());
+        }
         crate::rosen::restart_servers(application).await;
     }
     installed

@@ -1,10 +1,11 @@
 //! Velocity's own updates (SPEC.md F1 "Updates"): how this copy was installed, the update
-//! state the footer panel shows, and replacing a running portable executable. Checking,
-//! downloading and verifying go through the Tauri updater in `src-tauri`; nothing here
-//! talks to the network.
+//! state the footer panel shows, replacing a running portable executable, and supervising
+//! the application so a fatal process exit resumes saved agent work (#397). Checking,
+//! downloading and verifying releases go through the Tauri updater in `src-tauri`.
 mod install_kind;
 mod portable;
 mod status;
+pub mod supervision;
 
 pub use install_kind::{InstallKind, classify, detect};
 pub use portable::{

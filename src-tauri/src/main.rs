@@ -25,5 +25,8 @@ fn main() -> anyhow::Result<()> {
     if velocity_app_lib::graph_access::serve_graph_server()? {
         return Ok(());
     }
+    if velocity_updates::supervision::supervise()? {
+        return Ok(());
+    }
     velocity_app_lib::run()
 }

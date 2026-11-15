@@ -85,7 +85,7 @@ pub const REPLACED_MARKER: &str = "VELOCITY_REPLACED_PREVIOUS";
 /// this copy to exit before it opens its window ([`wait_for_previous`]).
 pub fn relaunch(executable: &Path) -> std::io::Result<()> {
     hidden_command(executable)
-        .args(std::env::args_os().skip(1))
+        .args(super::supervision::application_arguments())
         .env(REPLACED_MARKER, "1")
         .spawn()
         .map(drop)
@@ -94,7 +94,7 @@ pub fn relaunch(executable: &Path) -> std::io::Result<()> {
 /// A `Command` that opens no console window (#232); clippy's `disallowed_methods` rejects a
 /// bare `Command::new`. Velocity itself is a windowed app, so its own window is unaffected.
 #[allow(clippy::disallowed_methods)]
-fn hidden_command(program: impl AsRef<std::ffi::OsStr>) -> std::process::Command {
+pub(crate) fn hidden_command(program: impl AsRef<std::ffi::OsStr>) -> std::process::Command {
     let mut command = std::process::Command::new(program);
     #[cfg(windows)]
     {
