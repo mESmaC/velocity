@@ -13,10 +13,8 @@ on:
         description: Existing tag to release, e.g. v0.1.0-beta.2
         required: true
 
-permissions:
-  contents: write
-  # The release gate lists open release-blocker issues.
-  issues: read
+# Each job grants only the repository access it needs.
+permissions: {}
 
 concurrency:
   group: release
@@ -34,6 +32,10 @@ jobs:
   # the post-land tests, the stress suite and the proofs, with no release-blocker open.
   gate:
     name: Release gate
+    permissions:
+      contents: read
+      # The release gate lists open release-blocker issues.
+      issues: read
     runs-on: windows-latest
     timeout-minutes: 300
     steps:
@@ -74,6 +76,8 @@ jobs:
   release:
     name: Build, sign and publish
     needs: gate
+    permissions:
+      contents: write
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v4

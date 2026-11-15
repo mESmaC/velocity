@@ -697,6 +697,7 @@ A separate fresh function-body edit in `velocity-updates`, on the fully checked 
   - `cargo run -p stress -- --all` passing;
   - `lake build` in `proofs/` passing, with the axiom audit (only `propext`, `Classical.choice` and `Quot.sound`);
   - no open issue labelled `release-blocker`.
+  The release gate's GitHub token has only `contents: read` and `issues: read`; only the publishing job receives `contents: write` (#393).
 - **Landing ticks the plan.** When PR duty lands a PR for a §7-style checklist item, it ticks the item in the same branch update it makes before merging. Authors never tick it, so PRs don't all edit the same checklist lines.
 
 **Main watcher** *(role name proposed)*: a duty role that watches `master` after merges, modelled on Anthropic's "superfan" agents.
