@@ -34,6 +34,7 @@ These hold for every feature. A feature that breaks one of them is wrong, whatev
 - Discoveries can report problems in either Velocity or Rosen to their own repositories, with separate title matching and filing results (F14, #303).
 - Generated lockfiles and bindings are regenerated rather than line-merged; F5 specifies the commands in durable rebase notices, including rebases with no text conflicts (#404).
 - A Rosen project never falls back to a git worktree when workspace creation fails: transient errors retry Rosen for about a minute, and a lasting failure leaves the thread in `error` with the Rosen error and a retry action (F5, #407).
+- Rosen AIRC record acknowledgements and dependency subscriptions replay from an explicit cursor so simultaneous Goal Swarm setup cannot miss its own events; record event waits fail after 30 seconds (F14, #409).
 - Switching from Rosen to git carries Rosen's landed base into the default branch before new worktrees or ready-pool slots start; divergent history is refused with an explanation (F5, #369).
 
 ---

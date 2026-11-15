@@ -195,11 +195,14 @@ A refused file claim releases a piece newly taken by that call, while an existin
 The Claims view reads current server pieces and paths.
 Velocity's observed events, registered checkouts, task requests and results, and per-line delivery acknowledgements are versioned records in the server's Past work ledger; the adapter projects them into their original feed kinds instead of showing their envelopes as Past work.
 Velocity keeps no local Rosen channel log, claims, modes, presence or ledger copy.
+Record appends capture the server event cursor before writing and replay from that explicit cursor after the append response, matching the returned ledger entry to its event sequence (#409).
+A ping is not a subscription barrier; simultaneous Goal Swarm setup must not miss its own checkout records.
+If the stored record's event does not arrive within 30 seconds, the call reports the stored ledger identifier and asks the caller to read the channel before retrying, without automatically repeating the write.
 
 Rosen's project feed and targeted subscriptions use the server's single R9 event log.
 Their delivery cursors advance independently and only after handling; per-line acknowledgements let status notices pass pending input without losing or replaying it.
 Message audiences and heads-down/quarantine decisions come from the server; idle and PR updates release held messages.
-Dependency calls subscribe before inspecting path waits and retain the original 20 minute deadline across reconnects and parking.
+Dependency calls subscribe from an explicit server cursor before recording or inspecting path waits and retain the original 20 minute deadline across reconnects and parking.
 Path releases wake them even when the holder runs on another machine.
 A holder's machine publishes its closed, failed or deleted lifecycle to the shared channel; a member absent from another machine's local thread list is never treated as deleted.
 Rosen applies workspace updates at step boundaries, so waking a Rosen wait never runs git.

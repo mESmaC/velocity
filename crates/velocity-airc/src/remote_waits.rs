@@ -101,10 +101,10 @@ impl Remote {
         cancelled: impl Fn() -> bool + Sync,
     ) -> Result<serde_json::Value, Error> {
         self.run(async |client| {
-            // Subscribe before recording, then inspect server state. No release can
-            // fall between an empty read and the subscription.
-            let mut events = client.subscribe(None).await?;
-            client.ping().await?;
+            // An explicit cursor also replays releases while Rosen starts its
+            // subscription task; a ping cannot establish that task's starting point.
+            let after = client.status().await?.last_event;
+            let mut events = client.subscribe(Some(after)).await?;
             let record = self.begin_wait(member, holder, file)?;
             let started = chrono::DateTime::parse_from_rfc3339(&record.time)
                 .map_err(|error| Error::Invalid(error.to_string()))?;

@@ -3,7 +3,8 @@ use crate::{
     Entry, Error, Presence,
     channel::{DiscoveryIssue, entry},
 };
-use rosen_client::protocol::channel::{AppendEntry, SendMessage};
+use rosen_client::protocol::EventKind;
+use rosen_client::protocol::channel::{AppendEntry, ChannelEvent, SendMessage};
 use rosen_client::{Client, Endpoint};
 use serde::de::DeserializeOwned;
 use serde_json::json;
@@ -293,20 +294,25 @@ impl Remote {
         let request: AppendEntry =
             wire(json!({"ledger":"past_work","author":{"kind":"user"},"text":text}))?;
         self.run(async |client| {
-            let mut events = client.subscribe(None).await?;
-            // A request/response barrier ensures the subscription is installed before append.
-            client.ping().await?;
+            // Ping does not wait for Rosen's subscription task to capture "now".
+            // Replay from before the write so concurrent appends cannot be skipped.
+            let after = client.status().await?.last_event;
             let stored = client.ledger_append(request).await?;
-            loop {
-                let event = events.recv().await.ok_or(rosen_client::Error::Disconnected)?;
-                if event.kind != rosen_client::protocol::EventKind::Channel { continue; }
-                let line: rosen_client::protocol::channel::ChannelEvent = serde_json::from_value(event.detail)?;
-                if matches!(line, rosen_client::protocol::channel::ChannelEvent::Ledger { entry } if entry.seq == stored.seq) {
-                    let mut record = record.clone();
-                    record.sequence = event.seq;
-                    return Ok(record);
-                }
-            }
+            let sequence = tokio::time::timeout(
+                std::time::Duration::from_secs(30),
+                record_sequence(&client, after, stored.seq),
+            )
+            .await
+            .map_err(|_| {
+                Error::Invalid(format!(
+                    "Rosen record {} is stored, but its event was not received within 30 seconds; \
+                     read the channel before retrying",
+                    stored.seq
+                ))
+            })??;
+            let mut record = record.clone();
+            record.sequence = sequence;
+            Ok(record)
         })
     }
 
@@ -346,6 +352,25 @@ impl Remote {
 
     pub(crate) fn record(&self, kind: &str, member: &str, nick: &str, text: &str) -> Entry {
         entry(&[], kind, member, nick, text)
+    }
+}
+
+async fn record_sequence(client: &Client, after: u64, ledger_sequence: u64) -> Result<u64, Error> {
+    // Subscribe after the append response: a forwarding daemon reports watermark
+    // zero, so replay may fill the event buffer and block that response otherwise.
+    let mut events = client.subscribe(Some(after)).await?;
+    loop {
+        let event = events
+            .recv()
+            .await
+            .ok_or(rosen_client::Error::Disconnected)?;
+        if event.kind != EventKind::Channel {
+            continue;
+        }
+        let line: ChannelEvent = serde_json::from_value(event.detail)?;
+        if matches!(line, ChannelEvent::Ledger { entry } if entry.seq == ledger_sequence) {
+            return Ok(event.seq);
+        }
     }
 }
 
