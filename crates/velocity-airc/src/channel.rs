@@ -182,13 +182,19 @@ impl Channel {
     }
 
     pub fn read(&self, after: u64) -> Result<Vec<Entry>, Error> {
-        let entries = {
-            let storage = Storage::open(&self.directory)?;
-            storage.snapshot()?
-        };
+        let entries = self.snapshot()?;
         // Copy only the requested tail, after releasing the writer's lock.
         let start = entries.partition_point(|entry| entry.sequence <= after);
         Ok(entries[start..].to_vec())
+    }
+
+    /// Immutable routing context, shared with the log tail rather than cloned per agent.
+    pub(crate) fn snapshot(&self) -> Result<std::sync::Arc<Vec<Entry>>, Error> {
+        Storage::open(&self.directory)?.snapshot()
+    }
+
+    pub fn tip(&self) -> Result<u64, Error> {
+        Ok(self.snapshot()?.last().map_or(0, |entry| entry.sequence))
     }
 
     pub fn presence(&self) -> Result<Vec<Presence>, Error> {

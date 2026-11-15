@@ -91,7 +91,7 @@ struct Running {
     dismissed: bool,
     /// The last AIRC line looked at for this review (F14): the channel's tip at its claim,
     /// so an earlier review's messages are never replayed into this one.
-    airc_after: u64,
+    airc: ReviewDelivery,
     /// Set once the review prompt is queued, so an AIRC message never becomes the first
     /// prompt, and cleared when the review is told to stop.
     delivering: bool,
@@ -101,6 +101,14 @@ struct Running {
     /// The review merged its own PR, so the PR leaving the open list is its doing, not a
     /// close to stop it for.
     merged: bool,
+}
+
+/// Membership is discovered from joins after the claim, then kept for this session.
+#[derive(Clone, Default)]
+struct ReviewDelivery {
+    after: u64,
+    member_after: u64,
+    nick: Option<String>,
 }
 
 impl Running {
@@ -414,6 +422,126 @@ impl PrDutyReviews {
                 self.claim_for_idle(host, &roster, &candidates, &idle);
             }
             Err(error) => settle_cards(host, &roster, &idle, Some(&error)),
+<<<<<<< ours
+||||||| base
+        }
+    }
+
+    /// Attempts only suppress re-review of currently open work. Closed subjects
+    /// otherwise accumulate forever in a long-running duty roster.
+    fn prune_attempts(
+        &self,
+        roster: &PrDutyRoster,
+        candidates: &[ReviewCandidate],
+        all_open: bool,
+    ) {
+        let project = roster.project.id;
+        let mut state = self.lock();
+        let mut open: BTreeSet<_> = candidates
+            .iter()
+            .map(|entry| entry.subject.clone())
+            .collect();
+        open.extend(
+            state
+                .running
+                .iter()
+                .filter(|((owner, _), _)| *owner == project)
+                .map(|(_, running)| running.subject.clone()),
+        );
+        // A PR listing can succeed while the Rosen server is unavailable. The
+        // saved review threads still protect their attempts in that case.
+        open.extend(
+            roster
+                .project
+                .threads
+                .iter()
+                .filter(|thread| thread.state == velocity_store::ThreadState::Review)
+                .filter_map(|thread| {
+                    thread
+                        .rosen_change
+                        .as_ref()
+                        .map(|change| ReviewSubject::Change {
+                            thread: thread.id,
+                            change: change.clone(),
+                        })
+                }),
+        );
+        if let Some(attempts) = state.attempted.get_mut(&project) {
+            attempts.retain(|subject, _| {
+                open.contains(subject) || (!all_open && subject.number().is_some())
+            });
+=======
+        }
+    }
+
+    fn idle_review_agents(&self, roster: &PrDutyRoster) -> Vec<String> {
+        let state = self.lock();
+        roster
+            .agents
+            .iter()
+            .map(|agent| agent.nickname.clone())
+            .filter(|nickname| {
+                !state
+                    .running
+                    .contains_key(&(roster.project.id, nickname.clone()))
+            })
+            .collect()
+    }
+
+    async fn project_after_land(&self, roster: &PrDutyRoster) -> bool {
+        if !roster.project.rosen_in_use() {
+            return false;
+        }
+        let server = velocity_rosen::ProjectServer::new(&self.app_data, roster.project.id);
+        velocity_rosen::post_land::after_land(&server)
+            .await
+            .unwrap_or(false)
+    }
+
+    /// Attempts only suppress re-review of currently open work. Closed subjects
+    /// otherwise accumulate forever in a long-running duty roster.
+    fn prune_attempts(
+        &self,
+        roster: &PrDutyRoster,
+        candidates: &[ReviewCandidate],
+        all_open: bool,
+    ) {
+        let project = roster.project.id;
+        let mut state = self.lock();
+        let mut open: BTreeSet<_> = candidates
+            .iter()
+            .map(|entry| entry.subject.clone())
+            .collect();
+        open.extend(
+            state
+                .running
+                .iter()
+                .filter(|((owner, _), _)| *owner == project)
+                .map(|(_, running)| running.subject.clone()),
+        );
+        // A PR listing can succeed while the Rosen server is unavailable. The
+        // saved review threads still protect their attempts in that case.
+        open.extend(
+            roster
+                .project
+                .threads
+                .iter()
+                .filter(|thread| thread.state == velocity_store::ThreadState::Review)
+                .filter_map(|thread| {
+                    thread
+                        .rosen_change
+                        .as_ref()
+                        .map(|change| ReviewSubject::Change {
+                            thread: thread.id,
+                            change: change.clone(),
+                        })
+                }),
+        );
+        if let Some(attempts) = state.attempted.get_mut(&project) {
+            attempts.retain(|subject, _| {
+                open.contains(subject) || (!all_open && subject.number().is_some())
+            });
+>>>>>>> theirs
         }
     }
 
@@ -643,7 +771,7 @@ impl PrDutyReviews {
                     pending: 0,
                     subject: candidate.subject.clone(),
                     dismissed: false,
-                    airc_after: 0,
+                    airc: ReviewDelivery::default(),
                     delivering: false,
                     approved: false,
                     merged: false,
@@ -695,44 +823,54 @@ impl PrDutyReviews {
     }
 
     fn deliver_airc(&self) {
-        let reviews: Vec<(AgentKey, ReviewSubject, u64)> = self
+        let reviews: Vec<_> = self
             .lock()
             .running
             .iter()
             .filter(|(_, running)| running.delivering && !running.dismissed)
-            .map(|(key, running)| (key.clone(), running.subject.clone(), running.airc_after))
+            .map(|(key, running)| (key.clone(), running.input.clone(), running.airc.clone()))
             .collect();
-        for (key, subject, after) in reviews {
-            let Some(cursor) = self.deliver_to(&key, &subject, after) else {
-                continue;
-            };
+        for (key, input, mut delivery) in reviews {
+            // Discovery survives a failed drain too. The delivery cursor changes
+            // only on success, so an I/O error still retries unacknowledged input.
+            let _ = self.deliver_to(&key, &input, &mut delivery);
             if let Some(running) = self.lock().running.get_mut(&key)
-                && running.subject == subject
+                && running.input.same_channel(&input)
             {
-                running.airc_after = running.airc_after.max(cursor);
+                running.airc = delivery;
             }
         }
     }
 
-    /// Delivers targeted messages after `after` to the review of `subject`: each is queued
-    /// as the session's next prompt and answered in its own turn. Returns the new cursor.
-    fn deliver_to(&self, key: &AgentKey, subject: &ReviewSubject, after: u64) -> Option<u64> {
-        let channel = Channel::open(&self.app_data, &key.0.to_string()).ok()?;
-        let member = duty_member(&key.1);
-        // Only the review's own AIRC server joins: a join made here would outlive its session.
-        let nick = channel
-            .presence()
-            .ok()?
-            .into_iter()
-            .find(|presence| presence.member == member && presence.joined)?
-            .nick;
+    /// Only joins since the claim are searched while waiting for the MCP member.
+    /// Once known, its nick and delivery cursor survive every one-second tick.
+    fn deliver_to(
+        &self,
+        key: &AgentKey,
+        input: &UnboundedSender<AgentInput>,
+        delivery: &mut ReviewDelivery,
+    ) -> Result<(), velocity_airc::Error> {
+        let channel = Channel::open(&self.app_data, &key.0.to_string())?;
+        if delivery.nick.is_none() {
+            let member = duty_member(&key.1);
+            let tail = channel.read(delivery.member_after)?;
+            delivery.member_after = tail
+                .last()
+                .map_or(delivery.member_after, |entry| entry.sequence);
+            delivery.nick = tail
+                .iter()
+                .rev()
+                .find(|entry| entry.member == member && entry.kind == "join")
+                .map(|entry| entry.nick.clone());
+        }
+        let Some(nick) = &delivery.nick else {
+            return Ok(());
+        };
         let deliver = |_: &str, message: &str| -> Result<bool, String> {
             let mut state = self.lock();
-            let Some(running) = state
-                .running
-                .get_mut(key)
-                .filter(|running| running.subject == *subject && running.delivering)
-            else {
+            let Some(running) = state.running.get_mut(key).filter(|running| {
+                running.input.same_channel(input) && running.delivering && !running.dismissed
+            }) else {
                 return Ok(false);
             };
             if running.input.send(text(message)).is_err() {
@@ -741,18 +879,22 @@ impl PrDutyReviews {
             running.pending += 1;
             Ok(true)
         };
-        velocity_airc::deliver_targeted(&channel, &nick, after, false, deliver).ok()
+        delivery.after =
+            velocity_airc::deliver_targeted(&channel, nick, delivery.after, false, deliver)?;
+        Ok(())
     }
 
-    /// Starts a review's AIRC cursor at the channel's tip, as its claim is posted.
+    /// Starts a review's cursor at the tip without copying the channel history.
     fn start_airc_cursor(&self, key: &AgentKey) {
         let tip = Channel::open(&self.app_data, &key.0.to_string())
-            .and_then(|channel| channel.read(0))
-            .ok()
-            .and_then(|entries| entries.last().map(|entry| entry.sequence))
+            .and_then(|channel| channel.tip())
             .unwrap_or(0);
         if let Some(running) = self.lock().running.get_mut(key) {
-            running.airc_after = tip;
+            running.airc = ReviewDelivery {
+                after: tip,
+                member_after: tip,
+                nick: None,
+            };
         }
     }
 

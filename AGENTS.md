@@ -53,6 +53,7 @@ Your job is working functionality. Proofs, tests and docs support it; they never
 - `crates/velocity-github/`: GitHub through `gh`.
 - `crates/velocity-graph/`: the code graph (F19): tree-sitter symbols, files and subsystems with their links, the per-project parse cache, and the `velocity-graph` MCP tools every agent gets.
 - `crates/velocity-threads/`: starting build threads from the composer (F4): the thread's name and worktree plan, its live agent session, and the transcript the thread view shows.
+- `crates/velocity-supervisor/`: desktop process recovery after a fatal exit (#395): a separate supervisor, bounded retry delays, and distinguishing a supervised worker from an installer or portable update's relaunch.
 - `crates/velocity-updates/`: Velocity's own updates (F1 Updates): how this copy was installed (setup, MSI or portable), the Updates panel's state, and replacing a running portable executable.
 - `crates/velocity-new-project/`: Create in the New project dialog (F2): resolves the request and runs the planned git, `gh` and store steps.
 - `crates/velocity-proofs/`: the proof checks (F17): `lake build`, the `sorry`/`admit` scan, the axiom audit, the design proof's SPEC.md section, and the statement lock PR duty's approvals take.

@@ -45,6 +45,7 @@ velocity-proofs.workspace = true
 velocity-rosen.workspace = true
 velocity-skills = { workspace = true, features = ["bindings"] }
 velocity-store.workspace = true
+velocity-supervisor.workspace = true
 velocity-github.workspace = true
 velocity-threads.workspace = true
 velocity-updates = { workspace = true, features = ["bindings"] }
