@@ -59,6 +59,9 @@ The git lifecycle described below remains the fallback.
   - Next to the buttons is a preview of the nicks, for example `sol-1…6 · argon-1…2 · fable-1…2`.
   - Example: 10 agents = 6 GPT-6.1 Sol High + 2 Gemini 4 Argon High + 2 Fable 5.1 High.
 - **Limits:** one line per provider in the mix: agent count, share of the window used, and the reset time when 60% or more is used (F15).
+- **Work sources:** independent Task List, Issues and Unbuilt spec sections switches, all on by default.
+  At least one must be on.
+  The choices are saved with the swarm; + Agents and every Keep going round inherit them.
 - **Pool:** "They choose from N unclaimed pieces: x Task List · y issues · z unbuilt SPEC.md sections."
   If there are more agents than pieces, it says how many will find nothing and leave.
 - **Options:**
@@ -82,8 +85,12 @@ Rust applies the edit, restores the "rest" rule and draws the dialog again.
    Gets a nick such as `sol-3` and a worktree named after it, then reads AGENTS.md and SPEC.md.
    State: **choosing work**.
 2.
-   Reads the AIRC claims board and picks an unclaimed piece.
-   The pool is:
+   Receives the user's prompt before any piece is claimed.
+   Its chosen model reads the prompt, AGENTS.md, the project spec and the current AIRC claims board, and inspects issue bodies/comments or references as needed to pick an unclaimed piece that satisfies the prompt.
+   Velocity validates the returned piece against the enabled, unclaimed inventory before acquiring its atomic claim.
+   A failed or malformed choice reports an error; it never falls back to unrelated first-available work.
+   If nothing matches the prompt, the agent leaves without a claim.
+   Only enabled sources contribute to the pool:
    - open Task List items, except drafts and items another agent is already on;
    - open issues, except owner-decision questions and `release-blocker` issues, using the same eligibility rule as continuous dispatch (F8);
    - SPEC.md sections nobody has built.
@@ -91,7 +98,7 @@ Rust applies the edit, restores the "rest" rule and draws the dialog again.
    Claims it with `airc_claim`.
    - **Granted:** it renames its branch for the piece (`vel/<slug>`, or `vel/issue-<n>`), posts its claim with files, and continues.
    - **Refused** (another agent claimed the piece after this agent read the board): a `refused` event names the holder.
-     The agent re-reads the board and claims the first open piece, which posts a `claim` event.
+     The agent re-reads the board and re-evaluates the same prompt against the refreshed enabled inventory before trying another matching piece.
      No message is needed.
    - **Nothing left:** a `left` event is posted; the agent removes its worktree and leaves.
 4.
@@ -107,6 +114,9 @@ The lock is what makes that safe.
 The losers pick again within one step instead of duplicating work.
 
 **Work inventory.**
+A goal swarm reads only its enabled sources, including its pool preview and board, so a failure in a disabled source cannot prevent choosing work.
+Counts and PR duty capacity use the enabled pool.
+The project-wide `get_work_pool` inventory continues to include every source.
 `get_work_pool` and the `velocity-threads` `work_pool` example read the same project-scoped inventory.
 Draft/done tasks, ownerless now tasks, closed issues, owner-decision questions (including unlabelled decision requests) and `release-blocker` issues are omitted using the continuous-dispatch eligibility rule (F8); owned work stays visible but does not count as available.
 Failed/closed owners retain their pieces.
@@ -143,8 +153,10 @@ Its members nest under it like swarm members, and each member is titled by the p
 **Acceptance:**
 - One action starts N agents with the exact mix and efforts chosen.
   Each runs in its own worktree on the configured drive.
+- Agents receive and evaluate the same prompt before claiming, including after a refusal and in each Keep going round.
+  Tasks-only and issues-only choices exclude every other source from selection and the board.
 - No two agents ever hold a claim on the same piece.
-  A refused claim shows in AIRC, and that agent claims something else within one step.
+  A refused claim shows in AIRC, and that agent chooses another matching piece from a refreshed pool.
 - Every agent's work ends in a merged PR (or a held claim on failure), and its worktree is deleted on merge.
 - With more agents than pieces, the extras leave without making a worktree change or a PR.
 - Keep going: an agent that finishes takes the next open piece until the pool is empty.

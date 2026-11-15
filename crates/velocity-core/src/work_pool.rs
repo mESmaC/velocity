@@ -2,6 +2,49 @@
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeSet;
 
+/// Inventory sources a goal swarm may choose from, retained for every round.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "bindings", derive(specta::Type))]
+pub struct WorkSources {
+    pub tasks: bool,
+    pub issues: bool,
+    pub sections: bool,
+}
+
+impl Default for WorkSources {
+    fn default() -> Self {
+        Self {
+            tasks: true,
+            issues: true,
+            sections: true,
+        }
+    }
+}
+
+impl WorkSources {
+    pub fn includes(self, key: &WorkKey) -> bool {
+        match key {
+            WorkKey::Task { .. } => self.tasks,
+            WorkKey::Issue { .. } => self.issues,
+            WorkKey::Spec { .. } => self.sections,
+        }
+    }
+
+    pub fn is_empty(self) -> bool {
+        !self.tasks && !self.issues && !self.sections
+    }
+
+    pub fn filter(self, pool: WorkPool) -> WorkPool {
+        WorkPool::new(
+            pool.project_identifier,
+            pool.pieces
+                .into_iter()
+                .filter(|piece| self.includes(&piece.key))
+                .collect(),
+        )
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 #[cfg_attr(feature = "bindings", derive(specta::Type))]
 #[serde(tag = "kind", rename_all = "snake_case")]

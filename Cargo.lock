@@ -4526,6 +4526,16 @@ dependencies = [
 [[package]]
 name = "rosen-store"
 version = "0.1.0"
+source = "git+https://github.com/mESmaC/rosen?rev=dd08271d4405aa31b397304f1f4ecff9fb59d057#dd08271d4405aa31b397304f1f4ecff9fb59d057"
+dependencies = [
+ "atomicwrites",
+ "flate2",
+ "rosen-core 0.1.0 (git+https://github.com/mESmaC/rosen?rev=dd08271d4405aa31b397304f1f4ecff9fb59d057)",
+]
+
+[[package]]
+name = "rosen-store"
+version = "0.1.0"
 source = "git+https://github.com/mESmaC/rosen?rev=f18bbc545844904b97cb6668e2a242fc3727cc1f#f18bbc545844904b97cb6668e2a242fc3727cc1f"
 dependencies = [
  "atomicwrites",

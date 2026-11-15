@@ -13,6 +13,7 @@ use velocity_core::goal_swarm::{GoalEventKind, GoalFeedEvent, PoolCounts};
 use velocity_core::goal_swarm_view::GoalClaimsBoard;
 use velocity_core::layout_view::LayoutSnapshot;
 use velocity_core::swarm::{self, PullRequestStep, SwarmEventKind};
+use velocity_core::work_pool::WorkSources;
 use velocity_github::follow_through::FollowThrough;
 use velocity_store::duty::{StartDutyRequest, clock_timestamp};
 use velocity_store::goal_swarm_dialog::{
@@ -59,7 +60,10 @@ pub async fn get_goal_swarm_dialog(
 /// come from GitHub and sections from `SPEC.md`, so the read runs off the UI thread.
 #[tauri::command]
 #[specta::specta]
-pub async fn read_goal_swarm_pool(application: AppHandle) -> Result<(), String> {
+pub async fn read_goal_swarm_pool(
+    application: AppHandle,
+    sources: Option<WorkSources>,
+) -> Result<(), String> {
     let project = lock(
         application.state::<ManagedStateStore>().inner(),
         "persisted state",
@@ -69,7 +73,7 @@ pub async fn read_goal_swarm_pool(application: AppHandle) -> Result<(), String> 
     .ok_or("Select or create a project first")?;
     let identifier = project.id;
     let read = tauri::async_runtime::spawn_blocking(move || {
-        velocity_threads::work_pool::read_work_pool(&project)
+        velocity_threads::work_pool::read_selected_work_pool(&project, sources.unwrap_or_default())
     })
     .await
     .map_err(|error| error.to_string())?;
@@ -98,6 +102,8 @@ pub async fn launch_goal_swarm(
                 &application,
                 request.project_identifier,
                 &request.mix,
+                request.sources,
+                None,
             ));
         }
         let (swarm_id, slots, mix_summary) = {
@@ -142,6 +148,8 @@ pub async fn add_goal_agents(
                 &application,
                 request.project_identifier,
                 &request.mix,
+                WorkSources::default(),
+                Some(request.swarm_identifier),
             ));
         }
         let slots = lock(
@@ -178,8 +186,14 @@ pub async fn get_goal_swarm_board(
     .active_project()
     .cloned()
     .ok_or("Select or create a project first")?;
+    let sources = project
+        .goal_swarms
+        .iter()
+        .find(|swarm| swarm.id == swarm_identifier)
+        .map(|swarm| swarm.sources)
+        .ok_or("The goal swarm no longer exists")?;
     let read = tauri::async_runtime::spawn_blocking(move || {
-        velocity_threads::work_pool::read_display_work_pool(&project)
+        velocity_threads::work_pool::read_selected_display_work_pool(&project, sources)
     })
     .await
     .map_err(|error| error.to_string())?
@@ -263,9 +277,14 @@ fn ensure_pr_duty(
     application: &AppHandle,
     project_id: u32,
     mix: &[GoalMixRow],
+    sources: WorkSources,
+    into: Option<u32>,
 ) -> Result<(), String> {
     let agents: u32 = mix.iter().fold(0, |sum, row| sum.saturating_add(row.count));
-    let query = GoalSwarmDialogQuery::with_choices(GoalSwarmChoices::new(agents, mix.to_vec()));
+    let mut choices = GoalSwarmChoices::new(agents, mix.to_vec());
+    choices.sources = sources;
+    let mut query = GoalSwarmDialogQuery::with_choices(choices);
+    query.into = into;
     let pool = cached_pool(application, Some(project_id))?;
     let shortfall = lock(
         application.state::<ManagedStateStore>().inner(),
@@ -456,7 +475,12 @@ pub(crate) async fn run_keep_going(
             project_id,
             merged_thread,
             &clock_timestamp(),
-            velocity_threads::work_pool::read_work_pool,
+            |project| {
+                let sources =
+                    velocity_store::goal_swarms::thread_goal_swarm(project, merged_thread)
+                        .map_or_else(WorkSources::default, |(swarm, _)| swarm.sources);
+                velocity_threads::work_pool::read_selected_work_pool(project, sources)
+            },
         )
         .map_err(|error| error.to_string())
     })

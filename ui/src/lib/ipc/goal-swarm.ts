@@ -1,4 +1,5 @@
 import { commands } from '../bindings';
+import type { WorkSources } from '../bindings';
 
 export type {
   AddGoalAgentsRequest,
@@ -16,7 +17,8 @@ export type {
   GoalMixRowView,
   GoalMixSegment,
   GoalModelOption,
-  GoalSwarmChoices,
+  GoalSwarmChoices_Serialize as GoalSwarmChoices,
+  WorkSources,
   GoalSwarmDialog_Serialize as GoalSwarmDialog,
   LaunchGoalSwarmRequest,
 } from '../bindings';
@@ -24,7 +26,8 @@ export type {
 // Goal swarm dialog, launch, + Agents and the view's claims board (SPEC.md F16).
 export const goalSwarmCommands = {
   dialog: commands.getGoalSwarmDialog,
-  readPool: commands.readGoalSwarmPool,
+  readPool: (sources: WorkSources | null = null) =>
+    commands.readGoalSwarmPool(sources),
   launch: commands.launchGoalSwarm,
   addAgents: commands.addGoalAgents,
   board: (swarm: string) => commands.getGoalSwarmBoard(Number(swarm)),

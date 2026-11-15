@@ -9,6 +9,7 @@ use serde::{Deserialize, Serialize};
 use specta::Type;
 use velocity_core::goal_swarm::{self, Mix, MixEdit, MixRow, PoolCounts, PoolLine};
 use velocity_core::state::resolve_effective_speed;
+use velocity_core::work_pool::WorkSources;
 
 use crate::swarm_dialog::{pr_duty, provider_model_name};
 use crate::{EffortLevel, ProjectItem, ProviderKind, Settings, SpeedMode, StateStore};
@@ -39,11 +40,17 @@ impl GoalMixRow {
 pub struct GoalSwarmChoices {
     pub agents: u32,
     pub rows: Vec<GoalMixRow>,
+    #[serde(default)]
+    pub sources: WorkSources,
 }
 
 impl GoalSwarmChoices {
     pub fn new(agents: u32, rows: Vec<GoalMixRow>) -> Self {
-        Self { agents, rows }
+        Self {
+            agents,
+            rows,
+            sources: WorkSources::default(),
+        }
     }
 }
 
@@ -59,6 +66,7 @@ pub enum GoalMixEdit {
     RemoveRow { index: u32 },
     AddRow,
     EvenSplit,
+    SetSources { sources: WorkSources },
 }
 
 /// `choices: None` asks for the defaults: every agent on the default model.
@@ -66,6 +74,8 @@ pub enum GoalMixEdit {
 pub struct GoalSwarmDialogQuery {
     pub choices: Option<GoalSwarmChoices>,
     pub edit: Option<GoalMixEdit>,
+    #[serde(default)]
+    pub into: Option<u32>,
 }
 
 impl GoalSwarmDialogQuery {
@@ -73,6 +83,7 @@ impl GoalSwarmDialogQuery {
         Self {
             choices: Some(choices),
             edit: None,
+            into: None,
         }
     }
 }
@@ -166,18 +177,14 @@ impl StateStore {
         let settings = &self.state.settings;
         let mix = edited_mix(settings, query);
         let agents = mix.agents;
+        let sources = dialog_sources(project, query);
         let preferences = self.worktree_context().preferences;
         let root = preferences.project_override.unwrap_or(preferences.root);
-        let (pool_line, pool_note, pull_requests) = pool_view(pool, agents);
+        let (pool_line, pool_note, pull_requests) = pool_view(pool, agents, sources);
         let rosen = project.version_control == crate::VersionControl::Rosen;
-        let (pr_duty_label, pr_duty_shortfall) = if rosen {
-            (None, 0)
-        } else {
-            pr_duty(
-                project,
-                usize::try_from(pull_requests).unwrap_or(usize::MAX),
-            )
-        };
+        let (pr_duty_label, pr_duty_shortfall) = selected_pr_duty(project, pull_requests);
+        let mut choices = choices(&mix);
+        choices.sources = sources;
         let (workspace_rule, completion_rule, keep_going_label) = lifecycle_text(project, &root);
         Some(GoalSwarmDialog {
             workspace_rule,
@@ -204,26 +211,68 @@ impl StateStore {
             pr_duty_shortfall,
             summary: summary(settings, &mix),
             launch_label: goal_swarm::launch_label(agents),
-            launch_note: crate::build_gate::require_launch(
-                &self.state,
-                crate::build_gate::LaunchRequest::GoalSwarm,
-            )
-            .err()
-            .map(|error| error.to_string()),
-            choices: choices(&mix),
+            launch_note: goal_launch_note(&self.state, sources),
+            choices,
         })
     }
 }
 
-fn pool_view(pool: &GoalPool, agents: u32) -> (Option<PoolLine>, Option<String>, u32) {
+fn goal_launch_note(state: &crate::PersistedState, sources: WorkSources) -> Option<String> {
+    if sources.is_empty() {
+        return Some("Choose at least one work source".into());
+    }
+    crate::build_gate::require_launch(state, crate::build_gate::LaunchRequest::GoalSwarm)
+        .err()
+        .map(|error| error.to_string())
+}
+
+fn selected_pr_duty(project: &ProjectItem, pull_requests: u32) -> (Option<String>, u32) {
+    if project.version_control == crate::VersionControl::Rosen {
+        (None, 0)
+    } else {
+        pr_duty(
+            project,
+            usize::try_from(pull_requests).unwrap_or(usize::MAX),
+        )
+    }
+}
+
+fn dialog_sources(project: &ProjectItem, query: &GoalSwarmDialogQuery) -> WorkSources {
+    if let Some(swarm) = query
+        .into
+        .and_then(|id| project.goal_swarms.iter().find(|swarm| swarm.id == id))
+    {
+        return swarm.sources;
+    }
+    match query.edit {
+        Some(GoalMixEdit::SetSources { sources }) => sources,
+        _ => query
+            .choices
+            .as_ref()
+            .map_or_else(WorkSources::default, |choices| choices.sources),
+    }
+}
+
+fn pool_view(
+    pool: &GoalPool,
+    agents: u32,
+    sources: WorkSources,
+) -> (Option<PoolLine>, Option<String>, u32) {
     match pool {
         GoalPool::Reading => (None, Some("Reading the work pool\u{2026}".into()), 0),
         GoalPool::Failed(error) => (None, Some(error.clone()), 0),
-        GoalPool::Read(counts) => (
-            Some(goal_swarm::pool_line(*counts, agents)),
-            None,
-            counts.new_pull_requests(agents),
-        ),
+        GoalPool::Read(counts) => {
+            let selected = PoolCounts::new(
+                if sources.tasks { counts.tasks } else { 0 },
+                if sources.issues { counts.issues } else { 0 },
+                if sources.sections { counts.sections } else { 0 },
+            );
+            (
+                Some(goal_swarm::pool_line(selected, agents)),
+                None,
+                selected.new_pull_requests(agents),
+            )
+        }
     }
 }
 
@@ -294,6 +343,7 @@ fn apply(mix: &mut Mix<MixModel>, edit: GoalMixEdit, fallback: MixModel, usable:
         }
     };
     let counted = match edit {
+        GoalMixEdit::SetSources { .. } => None,
         GoalMixEdit::SetAgents { count } => Some(MixEdit::SetAgents(count)),
         GoalMixEdit::StepAgents { up } => Some(MixEdit::StepAgents { up }),
         GoalMixEdit::StepRow { index, up } => Some(MixEdit::StepRow {
@@ -527,6 +577,7 @@ pub(crate) fn mix_rows_summary(settings: &Settings, rows: &[GoalMixRow]) -> Stri
 
 fn choices(mix: &Mix<MixModel>) -> GoalSwarmChoices {
     GoalSwarmChoices {
+        sources: WorkSources::default(),
         agents: mix.agents,
         rows: mix
             .rows

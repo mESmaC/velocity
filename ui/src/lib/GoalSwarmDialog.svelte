@@ -12,6 +12,7 @@
     GoalSwarmDialog,
     LayoutAction,
     LayoutSnapshot,
+    WorkSources,
   } from './ipc';
   import './theme/new-project.css';
   import './theme/goal-swarm.css';
@@ -35,6 +36,12 @@
     ['max', 'Max'],
   ];
 
+  const workSources: [keyof WorkSources, string][] = [
+    ['tasks', 'Task List'],
+    ['issues', 'Issues'],
+    ['sections', 'Unbuilt spec sections'],
+  ];
+
   let dialogElement: HTMLDialogElement;
   let view = $state<GoalSwarmDialog | null>(null);
   // `null` asks Rust for the defaults; afterwards it echoes the choices it drew.
@@ -54,11 +61,8 @@
     handledSubmits = submitRequests;
     dialogElement.showModal();
     draw();
-    // The pool is read from GitHub and SPEC.md; the dialog is usable meanwhile.
-    goalSwarmCommands
-      .readPool()
-      .then(() => draw())
-      .catch(report);
+    // The pool is read after the saved source choices; the dialog is usable meanwhile.
+    refreshPool();
     return () => {
       if (previous instanceof HTMLElement && previous.isConnected)
         previous.focus();
@@ -71,7 +75,53 @@
 
   function draw(edit: GoalMixEdit | null = null) {
     queue = queue
-      .then(() => goalSwarmCommands.dialog({ choices, edit }))
+      .then(() =>
+        goalSwarmCommands.dialog({
+          choices,
+          edit,
+          into: request.into === null ? null : Number(request.into),
+        }),
+      )
+      .then((next) => {
+        view = next;
+        choices = next.choices;
+        error = '';
+      })
+      .catch(report);
+    if (edit?.kind === 'set_sources') refreshPool();
+  }
+
+  function setSource(source: keyof WorkSources, checked: boolean) {
+    // Read the latest choices when this edit reaches the queue, so quick toggles compose.
+    queue = queue
+      .then(async () => {
+        if (!view) return;
+        const next = await goalSwarmCommands.dialog({
+          choices,
+          edit: {
+            kind: 'set_sources',
+            sources: { ...view.choices.sources, [source]: checked },
+          },
+          into: request.into === null ? null : Number(request.into),
+        });
+        view = next;
+        choices = next.choices;
+        error = '';
+      })
+      .catch(report);
+    refreshPool();
+  }
+
+  function refreshPool() {
+    queue = queue
+      .then(() => goalSwarmCommands.readPool(view?.choices.sources ?? null))
+      .then(() =>
+        goalSwarmCommands.dialog({
+          choices,
+          edit: null,
+          into: request.into === null ? null : Number(request.into),
+        }),
+      )
       .then((next) => {
         view = next;
         choices = next.choices;
@@ -105,6 +155,7 @@
           ? await goalSwarmCommands.launch({
               project_identifier: view.project_identifier,
               prompt,
+              sources: view.choices.sources,
               mix: view.choices.rows,
               keep_going: keepGoing,
               add_pr_duty: addPrDutyAgents,
@@ -325,6 +376,21 @@
       </div>
 
       <div class="field">
+        <span class="label">Choose work from</span>
+        <div class="checks">
+          {#each workSources as [source, label] (source)}
+            <label class="check">
+              <input
+                type="checkbox"
+                checked={view?.choices.sources[source] ?? true}
+                disabled={!view || request.into !== null}
+                onchange={(event) =>
+                  setSource(source, event.currentTarget.checked)}
+              />
+              {label}
+            </label>
+          {/each}
+        </div>
         {#if view?.pool}<div class="gs-pool" class:warn={view.pool.spare}>
             They choose from <b>{view.pool.pieces}</b>: {view.pool.sources}
             {#if view.pool.spare}<b class="sp">{view.pool.spare}</b>{/if}

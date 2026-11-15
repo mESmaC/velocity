@@ -10,10 +10,9 @@ use velocity_git::{TitledWorktree, WorktreeName};
 use velocity_github::follow_through::AgentFollowUp;
 use velocity_store::build_gate::{LaunchRequest, require_launch};
 use velocity_store::duty::clock_timestamp;
-use velocity_store::goal_swarms::GoalAgentSlot;
 use velocity_store::{AgentActivity, ThreadState};
 use velocity_threads::goal_swarm::{
-    ClaimPhaseOutcome, ClaimedGoalWork, GoalMemberPlan, choose_and_claim,
+    ClaimPhaseOutcome, ClaimedGoalWork, GoalMemberPlan, choose_and_claim_selecting,
 };
 use velocity_threads::{
     DeliveryStatus, LaunchPlan, RunningSession, SessionInputs, StopOutcome, ThreadKey,
@@ -683,7 +682,7 @@ async fn run_goal_member(application: AppHandle, key: ThreadKey, mut plan: GoalM
         return fail(&application, key, "Could not set up the worktree", detail);
     }
     report(refresh(&application, key, false));
-    match run_goal_choice(&application, key, &plan.slot, &worktree_path, &branch_name).await {
+    match run_goal_choice(&application, key, &plan, &folder, &branch_name).await {
         Ok(ClaimPhaseOutcome::Left { left_entry, .. }) => {
             if folder.rosen_change.is_some() {
                 discard_goal_folder(&application, key, &plan, &folder).await;
@@ -793,16 +792,43 @@ fn mark_choosing_worktree(application: &AppHandle, key: ThreadKey, path: &str) -
     .unwrap_or(false)
 }
 
+fn goal_selector(
+    application: &AppHandle,
+    key: ThreadKey,
+    plan: &GoalMemberPlan,
+    folder: &ThreadFolder,
+) -> velocity_threads::goal_selection::GoalSelector {
+    let mut setup = with_run_settings(
+        application,
+        key,
+        SessionSetup::new(folder.path.clone(), plan.bypass_modes.clone()),
+    );
+    setup.airc = crate::airc_access::managed(application)
+        .map(|airc| airc.thread(key.0, key.1, &folder.path));
+    if let Some(change) = &folder.rosen_change {
+        setup.preface = Some(velocity_rosen::workspace_note(change));
+        setup
+            .shared_servers
+            .extend(crate::rosen::mcp_server(&folder.path, &plan.agent.env));
+    }
+    velocity_threads::goal_selection::GoalSelector::new(
+        plan.agent.clone(),
+        setup,
+        plan.slot.prompt.clone(),
+    )
+}
+
 async fn run_goal_choice(
     application: &AppHandle,
     key: ThreadKey,
-    slot: &GoalAgentSlot,
-    worktree_path: &std::path::Path,
+    plan: &GoalMemberPlan,
+    folder: &ThreadFolder,
     branch_name: &str,
 ) -> Result<ClaimPhaseOutcome, String> {
     let handle = application.clone();
-    let slot = slot.clone();
-    let worktree = worktree_path.to_path_buf();
+    let slot = plan.slot.clone();
+    let worktree = folder.path.clone();
+    let selector = goal_selector(application, key, plan, folder);
     let branch = branch_name.to_owned();
     tauri::async_runtime::spawn_blocking(move || {
         let data = handle
@@ -812,7 +838,7 @@ async fn run_goal_choice(
         let channel = velocity_airc::Channel::open(&data, &key.0.to_string())
             .map_err(|error| error.to_string())?;
         let store = handle.state::<ManagedStateStore>();
-        choose_and_claim(
+        choose_and_claim_selecting(
             store.inner(),
             &channel,
             key.0,
@@ -821,6 +847,8 @@ async fn run_goal_choice(
             &worktree,
             &branch,
             &clock_timestamp(),
+            |project| velocity_threads::work_pool::read_selected_work_pool(project, slot.sources),
+            |pool, flags| selector.choose(pool, flags),
         )
         .map_err(|error| error.to_string())
     })

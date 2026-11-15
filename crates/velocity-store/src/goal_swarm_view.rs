@@ -144,6 +144,7 @@ pub fn goal_claims_board(
     let pieces: Vec<BoardPiece> = pool
         .pieces
         .iter()
+        .filter(|piece| swarm.sources.includes(&piece.key))
         .map(|piece| {
             let holder = piece
                 .thread_identifier

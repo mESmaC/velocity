@@ -124,7 +124,7 @@ export const commands = {
 	 *  Reads the active project's work pool for the pool line and the PR duty check. Issues
 	 *  come from GitHub and sections from `SPEC.md`, so the read runs off the UI thread.
 	 */
-	readGoalSwarmPool: () => __TAURI_INVOKE<null>("read_goal_swarm_pool"),
+	readGoalSwarmPool: (sources: WorkSources | null) => __TAURI_INVOKE<null>("read_goal_swarm_pool", { sources }),
 	/**  Starts all N goal swarm agents at once on one prompt and the chosen model mix (F16). */
 	launchGoalSwarm: (request: LaunchGoalSwarmRequest_Deserialize) => __TAURI_INVOKE<LayoutSnapshot_Serialize>("launch_goal_swarm", { request }),
 	/**  `+ Agents`: starts more agents on an existing goal swarm's prompt (F16). */
@@ -1283,7 +1283,7 @@ export type GoalLimitLine = {
 	warn: boolean,
 };
 
-export type GoalMixEdit = { kind: "set_agents"; count: number } | { kind: "step_agents"; up: boolean } | { kind: "step_row"; index: number; up: boolean } | { kind: "set_model"; index: number; provider: ProviderKind } | { kind: "set_effort"; index: number; effort: EffortLevel } | { kind: "toggle_fast"; index: number } | { kind: "remove_row"; index: number } | { kind: "add_row" } | { kind: "even_split" };
+export type GoalMixEdit = { kind: "set_agents"; count: number } | { kind: "step_agents"; up: boolean } | { kind: "step_row"; index: number; up: boolean } | { kind: "set_model"; index: number; provider: ProviderKind } | { kind: "set_effort"; index: number; effort: EffortLevel } | { kind: "toggle_fast"; index: number } | { kind: "remove_row"; index: number } | { kind: "add_row" } | { kind: "even_split" } | { kind: "set_sources"; sources: WorkSources };
 
 /**
  *  One mix row as the window holds it: a provider's model, its effort and speed, and how
@@ -1322,9 +1322,20 @@ export type GoalModelOption = {
 };
 
 /**  The user's choices. The first row is "the rest". */
-export type GoalSwarmChoices = {
+export type GoalSwarmChoices = GoalSwarmChoices_Serialize | GoalSwarmChoices_Deserialize;
+
+/**  The user's choices. The first row is "the rest". */
+export type GoalSwarmChoices_Deserialize = {
 	agents: number,
 	rows: GoalMixRow[],
+	sources?: WorkSources,
+};
+
+/**  The user's choices. The first row is "the rest". */
+export type GoalSwarmChoices_Serialize = {
+	agents: number,
+	rows: GoalMixRow[],
+	sources: WorkSources,
 };
 
 export type GoalSwarmDialog = GoalSwarmDialog_Serialize | GoalSwarmDialog_Deserialize;
@@ -1334,14 +1345,16 @@ export type GoalSwarmDialogQuery = GoalSwarmDialogQuery_Serialize | GoalSwarmDia
 
 /**  `choices: None` asks for the defaults: every agent on the default model. */
 export type GoalSwarmDialogQuery_Deserialize = {
-	choices?: GoalSwarmChoices | null,
+	choices?: GoalSwarmChoices_Deserialize | null,
 	edit?: GoalMixEdit | null,
+	into?: number | null,
 };
 
 /**  `choices: None` asks for the defaults: every agent on the default model. */
 export type GoalSwarmDialogQuery_Serialize = {
-	choices: GoalSwarmChoices | null,
+	choices: GoalSwarmChoices_Serialize | null,
 	edit: GoalMixEdit | null,
+	into: number | null,
 };
 
 export type GoalSwarmDialog_Deserialize = {
@@ -1353,7 +1366,7 @@ export type GoalSwarmDialog_Deserialize = {
 	channel: string,
 	worktree_root: string,
 	default_branch: string,
-	choices: GoalSwarmChoices,
+	choices: GoalSwarmChoices_Deserialize,
 	quick_picks: number[],
 	worktrees_hint: string,
 	models: GoalModelOption[],
@@ -1381,7 +1394,7 @@ export type GoalSwarmDialog_Serialize = {
 	channel: string,
 	worktree_root: string,
 	default_branch: string,
-	choices: GoalSwarmChoices,
+	choices: GoalSwarmChoices_Serialize,
 	quick_picks: number[],
 	worktrees_hint: string,
 	models: GoalModelOption[],
@@ -1434,6 +1447,7 @@ export type GoalSwarmRecord = GoalSwarmRecord_Serialize | GoalSwarmRecord_Deseri
 export type GoalSwarmRecord_Deserialize = {
 	id: number,
 	prompt: string,
+	sources?: WorkSources,
 	keep_going?: boolean,
 	started: string,
 	mix_summary?: string,
@@ -1445,6 +1459,7 @@ export type GoalSwarmRecord_Deserialize = {
 export type GoalSwarmRecord_Serialize = {
 	id: number,
 	prompt: string,
+	sources: WorkSources,
 	keep_going: boolean,
 	started: string,
 	mix_summary: string,
@@ -1814,6 +1829,7 @@ export type LaunchGoalSwarmRequest = LaunchGoalSwarmRequest_Serialize | LaunchGo
 export type LaunchGoalSwarmRequest_Deserialize = {
 	project_identifier: number,
 	prompt: string,
+	sources?: WorkSources,
 	mix: GoalMixRow[],
 	keep_going?: boolean,
 	add_pr_duty?: boolean,
@@ -1822,6 +1838,7 @@ export type LaunchGoalSwarmRequest_Deserialize = {
 export type LaunchGoalSwarmRequest_Serialize = {
 	project_identifier: number,
 	prompt: string,
+	sources: WorkSources,
 	mix: GoalMixRow[],
 	keep_going: boolean,
 	add_pr_duty: boolean,
@@ -4845,6 +4862,13 @@ export type WorkPool_Serialize = {
 	available_tasks: number,
 	available_issues: number,
 	available_sections: number,
+};
+
+/**  Inventory sources a goal swarm may choose from, retained for every round. */
+export type WorkSources = {
+	tasks: boolean,
+	issues: boolean,
+	sections: boolean,
 };
 
 export type WorkedSummaryView = WorkedSummaryView_Serialize | WorkedSummaryView_Deserialize;

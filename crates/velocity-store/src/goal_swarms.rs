@@ -10,7 +10,7 @@ use specta::Type;
 use velocity_core::goal_swarm::{
     self, DEFAULT_PROMPT, GoalEventKind, GoalFeedEvent, MAXIMUM_AGENTS,
 };
-use velocity_core::work_pool::{WorkKey, WorkPiece};
+use velocity_core::work_pool::{WorkKey, WorkPiece, WorkSources};
 
 use crate::build_gate::{LaunchRequest, require_launch};
 use crate::goal_swarm_dialog::{GoalMixRow, mix_rows_summary, used_nick_numbers};
@@ -28,6 +28,8 @@ pub const CHOOSING_THREAD_TITLE: &str = "Choosing work in AIRC";
 pub struct LaunchGoalSwarmRequest {
     pub project_identifier: u32,
     pub prompt: String,
+    #[serde(default)]
+    pub sources: WorkSources,
     pub mix: Vec<GoalMixRow>,
     #[serde(default)]
     pub keep_going: bool,
@@ -46,6 +48,7 @@ impl LaunchGoalSwarmRequest {
         Self {
             project_identifier,
             prompt,
+            sources: WorkSources::default(),
             mix,
             keep_going,
             add_pr_duty,
@@ -118,6 +121,7 @@ pub struct GoalSwarmMember {
 pub struct GoalAgentSlot {
     pub swarm_id: u32,
     pub prompt: String,
+    pub sources: WorkSources,
     pub nick: String,
     pub provider: ProviderKind,
     pub model_name: String,
@@ -131,6 +135,8 @@ pub struct GoalAgentSlot {
 pub struct GoalSwarmRecord {
     pub id: u32,
     pub prompt: String,
+    #[serde(default)]
+    pub sources: WorkSources,
     #[serde(default)]
     pub keep_going: bool,
     pub started: String,
@@ -173,6 +179,11 @@ impl StateStore {
     ) -> Result<(u32, Vec<GoalAgentSlot>), ThreadError> {
         require_goal_gate(&self.state, request.project_identifier)?;
         let rows = validated_rows(&request.mix, &self.state.settings)?;
+        if request.sources.is_empty() {
+            return Err(ThreadError::InvalidLaunch(
+                "Choose at least one work source".into(),
+            ));
+        }
         let prompt = normalized_prompt(&request.prompt);
         let mut next = self.state.clone();
         let swarm_id =
@@ -184,6 +195,7 @@ impl StateStore {
             project,
             swarm_id,
             &prompt,
+            request.sources,
             request.keep_going,
             &rows,
         );
@@ -196,6 +208,7 @@ impl StateStore {
         let record = GoalSwarmRecord {
             id: swarm_id,
             prompt,
+            sources: request.sources,
             keep_going: request.keep_going,
             started: timestamp.clone(),
             mix_summary: summary,
@@ -223,11 +236,11 @@ impl StateStore {
         let mut next = self.state.clone();
         let settings = next.settings.clone();
         let project = project_mut(&mut next, request.project_identifier)?;
-        let (prompt, keep_going) = project
+        let (prompt, sources, keep_going) = project
             .goal_swarms
             .iter()
             .find(|swarm| swarm.id == request.swarm_identifier)
-            .map(|swarm| (swarm.prompt.clone(), swarm.keep_going))
+            .map(|swarm| (swarm.prompt.clone(), swarm.sources, swarm.keep_going))
             .ok_or(ThreadError::UnknownThread {
                 project: request.project_identifier,
                 thread: request.swarm_identifier,
@@ -237,6 +250,7 @@ impl StateStore {
             project,
             request.swarm_identifier,
             &prompt,
+            sources,
             keep_going,
             &rows,
         );
@@ -408,6 +422,7 @@ impl StateStore {
         let next_slot = swarm.keep_going.then(|| GoalAgentSlot {
             swarm_id: swarm.id,
             prompt: swarm.prompt.clone(),
+            sources: swarm.sources,
             nick: member.nick.clone(),
             provider: member.provider,
             model_name: member.model_name.clone(),
@@ -471,6 +486,7 @@ fn build_slots(
     project: &ProjectItem,
     swarm_id: u32,
     prompt: &str,
+    sources: WorkSources,
     keep_going: bool,
     rows: &[GoalMixRow],
 ) -> (Vec<GoalSwarmMember>, Vec<GoalAgentSlot>) {
@@ -502,6 +518,7 @@ fn build_slots(
             slots.push(GoalAgentSlot {
                 swarm_id,
                 prompt: prompt.to_owned(),
+                sources,
                 nick,
                 provider: row.provider,
                 model_name: model_name.clone(),

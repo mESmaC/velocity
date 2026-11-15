@@ -4,7 +4,7 @@ use std::path::{Path, PathBuf};
 use std::sync::{LazyLock, Mutex, PoisonError};
 use std::time::{Duration, Instant};
 use thiserror::Error;
-use velocity_core::work_pool::{WorkKey, WorkPiece, WorkPool, spec_files_pieces};
+use velocity_core::work_pool::{WorkKey, WorkPiece, WorkPool, WorkSources, spec_files_pieces};
 use velocity_github::{GitHubIssue, IssueClient};
 use velocity_spec::ProjectSpec;
 use velocity_store::issues::{ThreadIssue, issue_thread};
@@ -38,25 +38,52 @@ static OPEN_ISSUES: LazyLock<Mutex<HashMap<PathBuf, CachedIssues>>> =
 /// before starting work. Failure to read a source fails the snapshot, never shows
 /// a partial pool as if it were complete. The open issues are always read fresh.
 pub fn read_work_pool(project: &ProjectItem) -> Result<WorkPool, WorkPoolError> {
-    read_pool(project, Duration::ZERO)
+    read_selected_work_pool(project, WorkSources::default())
+}
+
+/// Read only the enabled sources for a goal swarm's claims board.
+pub fn read_selected_display_work_pool(
+    project: &ProjectItem,
+    sources: WorkSources,
+) -> Result<WorkPool, WorkPoolError> {
+    read_pool(project, DISPLAY_ISSUE_AGE, sources)
 }
 
 /// `read_work_pool` for display only: open issues read in the last minute are reused.
 /// Never choose or claim work from this pool.
 pub fn read_display_work_pool(project: &ProjectItem) -> Result<WorkPool, WorkPoolError> {
-    read_pool(project, DISPLAY_ISSUE_AGE)
+    read_pool(project, DISPLAY_ISSUE_AGE, WorkSources::default())
 }
 
-fn read_pool(project: &ProjectItem, issue_age: Duration) -> Result<WorkPool, WorkPoolError> {
+pub fn read_selected_work_pool(
+    project: &ProjectItem,
+    sources: WorkSources,
+) -> Result<WorkPool, WorkPoolError> {
+    read_pool(project, Duration::ZERO, sources)
+}
+
+fn read_pool(
+    project: &ProjectItem,
+    issue_age: Duration,
+    sources: WorkSources,
+) -> Result<WorkPool, WorkPoolError> {
     if !project.spec_locked {
         return Ok(WorkPool::new(project.id, Vec::new()));
     }
-    let mut pieces = task_pieces(project);
+    let mut pieces = if sources.tasks {
+        task_pieces(project)
+    } else {
+        Vec::new()
+    };
     let checkout = Path::new(&project.repository_path);
-    pieces.extend(issue_pieces(project, checkout, issue_age)?);
-    pieces.extend(held_rosen_issues(project));
-    let spec = ProjectSpec::read(checkout, Path::new(&project.spec_path))?;
-    pieces.extend(available_spec_pieces(project, &spec));
+    if sources.issues {
+        pieces.extend(issue_pieces(project, checkout, issue_age)?);
+        pieces.extend(held_rosen_issues(project));
+    }
+    if sources.sections {
+        let spec = ProjectSpec::read(checkout, Path::new(&project.spec_path))?;
+        pieces.extend(available_spec_pieces(project, &spec));
+    }
     for piece in &mut pieces {
         let prior = project.threads.iter().rev().find(|thread| {
             thread.supervision.released
