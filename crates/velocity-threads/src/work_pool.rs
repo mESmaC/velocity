@@ -5,7 +5,7 @@ use std::sync::{LazyLock, Mutex, PoisonError};
 use std::time::{Duration, Instant};
 use thiserror::Error;
 use velocity_core::work_pool::{WorkKey, WorkPiece, WorkPool, spec_files_pieces};
-use velocity_github::{GitHubIssue, IssueClient, IssueState};
+use velocity_github::{GitHubIssue, IssueClient};
 use velocity_spec::ProjectSpec;
 use velocity_store::issues::{ThreadIssue, issue_thread};
 use velocity_store::{ProjectItem, TaskState, ThreadState};
@@ -87,12 +87,12 @@ fn issue_pieces(
     let mut pieces = Vec::new();
     if IssueClient::has_origin(checkout)? {
         let (repository, issues) = open_issues(checkout, issue_age)?;
-        // A spec-question only waits on the owner's answer: an agent handed one finds
-        // nothing to build and holds the claim with no PR (#356). Accepting its answer
-        // is the user's step (F9 Accept), so the pool leaves questions out.
+        // Unlabelled owner questions can also leave an agent holding a claim with
+        // nothing to build (#389). Use the dispatch filter so both sources of work
+        // wait for the owner's answer, including before a question is labelled.
         for issue in issues
             .iter()
-            .filter(|issue| issue.state == IssueState::Open && !issue.is_spec_question())
+            .filter(|issue| crate::continuous_dispatch::actionable(issue))
         {
             let assignment = ThreadIssue::new(repository.clone(), issue.number);
             if project.completed_goal_issues.iter().any(|completed| {

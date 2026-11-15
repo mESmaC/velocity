@@ -43,15 +43,20 @@ impl DispatchView {
     }
 }
 
-/// Excludes owner questions even before somebody labels them (#356). Explicit human
-/// labels always win; an implementation issue can still quote an earlier decision.
+/// Shared automatic-work eligibility for continuous dispatch and the F16 work pool.
+/// Owner questions wait for an answer even before somebody labels them (#356, #389).
 pub fn actionable(issue: &GitHubIssue) -> bool {
     if issue.state != IssueState::Open
         || issue.is_spec_question()
         || issue.labels.iter().any(|label| {
-            ["needs-decision", "release-blocker", "owner-decision"]
-                .iter()
-                .any(|skip| label.eq_ignore_ascii_case(skip))
+            [
+                "needs-decision",
+                "needs-owner",
+                "release-blocker",
+                "owner-decision",
+            ]
+            .iter()
+            .any(|skip| label.eq_ignore_ascii_case(skip))
         })
     {
         return false;
