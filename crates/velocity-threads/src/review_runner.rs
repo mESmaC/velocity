@@ -1191,9 +1191,16 @@ impl Review {
     /// A review by reading approved its change: Velocity's checker may take it now, while
     /// the agent's session says its last words and stops.
     fn release_to_checker(&self) {
-        if let Some(running) = self.runner.lock().running.get_mut(&self.key) {
+        let mut state = self.runner.lock();
+        if let Some(running) = state.running.get_mut(&self.key) {
             running.approved = true;
         }
+        // A fresh approval has saved a new statement lock, so a previous lock failure
+        // must not leave this same head permanently assigned to a reviewer.
+        if let ReviewSubject::Change { change, .. } = &self.candidate.subject {
+            state.checking.remove(&(self.key.0, change.clone()));
+        }
+        drop(state);
         self.runner.wake();
     }
 

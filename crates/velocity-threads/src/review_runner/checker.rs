@@ -37,6 +37,8 @@ pub(super) struct CheckNote {
     said: Option<String>,
     /// Velocity can't check this head itself: an agent runs the local checks and lands it.
     left_to_agent: bool,
+    /// Landing found no usable statement lock: this head needs approval again.
+    statement_review: bool,
 }
 
 /// One approved change, while the pass works on it.
@@ -105,7 +107,26 @@ impl PrDutyReviews {
                 runner.lock().checking_projects.remove(&project);
             });
         }
-        rest
+        self.restart_statement_reviews(project, rest)
+    }
+
+    fn restart_statement_reviews(
+        &self,
+        project: u32,
+        mut candidates: Vec<ReviewCandidate>,
+    ) -> Vec<ReviewCandidate> {
+        let state = self.lock();
+        for candidate in &mut candidates {
+            if let Some(change) = change_of(candidate)
+                && state
+                    .checking
+                    .get(&(project, change.to_owned()))
+                    .is_some_and(|note| note.head == candidate.head && note.statement_review)
+            {
+                candidate.standing = ReviewStanding::Unreviewed;
+            }
+        }
+        candidates
     }
 
     async fn check_one<Host: ReviewHost>(
@@ -179,6 +200,9 @@ impl<Host: ReviewHost> Check<'_, Host> {
     async fn run(&self) {
         let mut checked = None;
         for _ in 0..ROUNDS {
+            if !self.statement_lock_holds().await {
+                return;
+            }
             let asked = Instant::now();
             let (code, message) = match duty::land(&self.server, CHECKER, self.change).await {
                 Ok(LandOutcome::Landed { commit }) => {
@@ -219,6 +243,75 @@ impl<Host: ReviewHost> Check<'_, Host> {
                 }
             }
         }
+    }
+
+    /// Reading reviews still lock their statements. Check a fresh merge result even when
+    /// Rosen already has a receipt, so the automatic lander cannot bypass the F17 lock.
+    /// After-land projects deliberately have no approval gate.
+    async fn statement_lock_holds(&self) -> bool {
+        match velocity_rosen::post_land::after_land(&self.server).await {
+            Ok(true) => return true,
+            Ok(false) => {}
+            Err(error) => return self.could_not_check(&error.to_string()),
+        }
+        let Some(folder) = self.folder() else {
+            return false;
+        };
+        let staged = match checker::stage_merge_result(&self.server, self.change, &folder).await {
+            Ok(staged) => staged.merge,
+            Err(error) => return self.could_not_check(&error.to_string()),
+        };
+        if staged.head != self.head {
+            return false;
+        }
+        if !staged.conflicts.is_empty() {
+            let base_branch = crate::launch::base_branch(&self.roster.project);
+            self.send_back(
+                &conflict_message(self.change, &base_branch, &staged.conflicts),
+                conflict_line(self.change, &base_branch),
+            );
+            return false;
+        }
+        let app_data = self.runner.app_data.clone();
+        let project = self.roster.project.id.to_string();
+        let change = self.change.to_owned();
+        let held = tokio::task::spawn_blocking(move || {
+            checker::apply_staged(&folder).map_err(|error| error.to_string())?;
+            let current = velocity_proofs::statements_in_tree(&folder, &staged.head)
+                .map_err(|error| error.to_string())?;
+            velocity_proofs::require_change_statement_lock(&app_data, &project, &change, &current)
+                .map_err(|error| error.to_string())
+        })
+        .await;
+        let reason = match held {
+            Ok(Ok(())) => return true,
+            Ok(Err(error)) => error,
+            Err(error) => error.to_string(),
+        };
+        self.review_statement_lock_again(&reason);
+        false
+    }
+
+    fn review_statement_lock_again(&self, reason: &str) {
+        // Leave a missing or changed lock to an agent for a fresh approval, as for a head
+        // whose proof changes now require local checks instead of a reading review.
+        self.runner.leave_change_to_agent(
+            self.roster.project.id,
+            &ReviewSubject::Change {
+                thread: self.thread,
+                change: self.change.to_owned(),
+            },
+            self.head,
+        );
+        if let Some(note) = self
+            .runner
+            .lock()
+            .checking
+            .get_mut(&(self.roster.project.id, self.change.to_owned()))
+        {
+            note.statement_review = true;
+        }
+        self.say_once(DutyEventKind::Wait, refused_line(self.change, reason));
     }
 
     /// Runs the pre-land commands on the change's current merge result and submits the
@@ -427,6 +520,7 @@ impl CheckNote {
             head: head.to_owned(),
             said: None,
             left_to_agent: false,
+            statement_review: false,
         }
     }
 }

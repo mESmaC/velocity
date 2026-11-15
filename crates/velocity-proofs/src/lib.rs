@@ -29,10 +29,13 @@ pub use levels::{
     FeatureEvidence, FeatureLevels, LanguageLevel, ProofLevel, feature_evidence, feature_levels,
     fixture_name, language_of, strongest_available, touched_features,
 };
-pub use lock_store::{load_statement_lock, save_statement_lock};
+pub use lock_store::{
+    load_change_statement_lock, load_statement_lock, require_change_statement_lock,
+    save_change_statement_lock, save_statement_lock,
+};
 pub use report::{CheckStep, ProofCheckReport};
 pub use settings_page::proofs_settings;
-pub use statement_lock::StatementLock;
+pub use statement_lock::{StatementLock, statements_in_tree};
 
 #[derive(Debug, thiserror::Error)]
 pub enum ProofCheckError {
@@ -42,6 +45,8 @@ pub enum ProofCheckError {
     Io(#[from] std::io::Error),
     #[error("A statement lock is not valid JSON: {0}")]
     Json(#[from] serde_json::Error),
+    #[error("Statement lock: {0}; review and approve this head afresh")]
+    StatementLock(String),
     #[error("The change removes the Lake project's manifest, {0}: its proofs can't be built")]
     RemovedProject(String),
 }

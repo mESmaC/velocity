@@ -312,7 +312,7 @@ impl RosenDutyServer {
         Ok(json!({"recorded": true, "head": arguments.head}))
     }
 
-    fn approve(&self, arguments: &ReviewArguments) -> Result<(), String> {
+    fn approve(&mut self, arguments: &ReviewArguments) -> Result<(), String> {
         let proof = arguments
             .proof_review
             .as_ref()
@@ -332,6 +332,7 @@ impl RosenDutyServer {
         {
             return Err("Prepare the merge result, run the checks and record them with rosen_duty_checked before approving".into());
         }
+        self.save_approval_lock(&arguments.head)?;
         let (server, reviewer) = (&self.server, self.reviewer.as_str());
         let (change, head) = (self.launch.change.as_str(), arguments.head.as_str());
         self.block_on(async {
@@ -339,6 +340,34 @@ impl RosenDutyServer {
                 .await
                 .map_err(|error| error.to_string())
         })
+    }
+
+    fn save_approval_lock(&mut self, head: &str) -> Result<(), String> {
+        // Reading sessions have no prepared checkpoint in this server. Refresh from Rosen
+        // so the lock cannot be attributed to a newer head than the folder actually holds.
+        if self.launch.reading {
+            self.prepare_landing()?;
+        }
+        if self
+            .prepared
+            .as_ref()
+            .is_none_or(|(prepared, _)| prepared != head)
+            || (!self.launch.reading && self.prepared != self.checked)
+        {
+            return Err(
+                "Prepare and review this head's conflict-free merge result before approving".into(),
+            );
+        }
+        let lock = velocity_proofs::statements_in_tree(&self.launch.folder, head)
+            .map_err(|error| format!("Could not read theorem statements: {error}"))?;
+        // Persist before publishing: a failed write must leave no new approval standing.
+        velocity_proofs::save_change_statement_lock(
+            &self.launch.app_data,
+            &self.launch.project.to_string(),
+            &self.launch.change,
+            &lock,
+        )
+        .map_err(|error| format!("Could not save statement lock: {error}"))
     }
 
     fn post_comments(&self, comments: &[LineComment]) -> Result<(), String> {
@@ -359,9 +388,12 @@ impl RosenDutyServer {
     fn prepare_landing(&mut self) -> Result<Value, String> {
         // A failed refresh must not leave the previous merge result certifiable.
         self.prepared = None;
+        self.checked = None;
         let (server, launch) = (&self.server, &self.launch);
         let checkout = self.block_on(async { check_out_review(server, launch).await })?;
-        self.prepared = Some((checkout.head.clone(), checkout.base.clone()));
+        if checkout.conflicts.is_empty() {
+            self.prepared = Some((checkout.head.clone(), checkout.base.clone()));
+        }
         Ok(json!({
             "head": checkout.head,
             "base": checkout.base,
@@ -421,12 +453,19 @@ impl RosenDutyServer {
     fn land(&self, arguments: Value) -> Result<Value, String> {
         let arguments: Land =
             serde_json::from_value(arguments).map_err(|error| error.to_string())?;
+        if self.current_head()? != arguments.head {
+            return Err("The change has a new head: review and approve that head afresh".into());
+        }
         if self
             .checked
             .as_ref()
             .is_none_or(|(head, _)| *head != arguments.head)
+            || self.prepared != self.checked
         {
             return Err("Record your checks on this head with rosen_duty_checked first".into());
+        }
+        if let Err(error) = self.validate_statement_lock(&arguments.head) {
+            return self.refused(self.launch.change.clone(), "statement_lock", &error);
         }
         let (server, reviewer) = (&self.server, self.reviewer.as_str());
         let change = self.launch.change.clone();
@@ -445,6 +484,18 @@ impl RosenDutyServer {
             }
             LandOutcome::Refused { code, message } => self.refused(change, &code, &message),
         }
+    }
+
+    fn validate_statement_lock(&self, head: &str) -> Result<(), String> {
+        let current = velocity_proofs::statements_in_tree(&self.launch.folder, head)
+            .map_err(|error| format!("Could not read theorem statements: {error}"))?;
+        velocity_proofs::require_change_statement_lock(
+            &self.launch.app_data,
+            &self.launch.project.to_string(),
+            &self.launch.change,
+            &current,
+        )
+        .map_err(|error| error.to_string())
     }
 
     /// A refusal a new check can fix is the agent's to retry; any other ends the review.
