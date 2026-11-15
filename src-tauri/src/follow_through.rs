@@ -4,7 +4,7 @@ use std::path::Path;
 use std::thread;
 use std::time::Duration;
 use tauri::{AppHandle, Emitter, Manager};
-use velocity_git::remove_merged_worktree;
+use velocity_git::remove_merged_worktree_with_checkpoint;
 use velocity_github::follow_through_poll::{
     ListedPullRequest, PollChoice, PollThread, SnapshotCache,
 };
@@ -232,7 +232,7 @@ fn observe(
     }
     checkpoint(application, key, &snapshot, watch.clone())?;
     if snapshot.pull_request.state == PullRequestState::Merged {
-        finish_merged(application, hooks, project, thread, &mut watch);
+        finish_merged(application, hooks, project, thread, &snapshot, &mut watch);
     } else {
         deliver_pending(application, hooks, key, &snapshot, &mut watch)?;
     }
@@ -313,6 +313,7 @@ fn finish_merged(
     hooks: &Hooks,
     project: &ProjectItem,
     thread: &ThreadItem,
+    snapshot: &PullRequestSnapshot,
     watch: &mut velocity_github::follow_through::FollowThrough,
 ) {
     watch.pending.clear();
@@ -322,7 +323,7 @@ fn finish_merged(
     let key = (project.id, thread.id);
     match (hooks.stop)(application, key).and_then(|stopped| {
         if stopped {
-            cleanup(project, thread, application)?;
+            cleanup(project, thread, application, snapshot, watch)?;
             crate::airc_claims::release(application, key)
         } else {
             Err("Waiting for the agent session to stop before removing its worktree".into())
@@ -445,6 +446,8 @@ fn cleanup(
     project: &ProjectItem,
     thread: &ThreadItem,
     application: &AppHandle,
+    snapshot: &PullRequestSnapshot,
+    watch: &mut velocity_github::follow_through::FollowThrough,
 ) -> Result<(), String> {
     let path = Path::new(
         thread
@@ -459,11 +462,22 @@ fn cleanup(
         .settings()
         .worktrees
         .delete_local_branch_on_merge;
-    remove_merged_worktree(
+    remove_merged_worktree_with_checkpoint(
         Path::new(&project.repository_path),
         path,
         &thread.branch_name,
         delete_branch,
+        watch.worktree_removal_started,
+        || {
+            let mut started = watch.clone();
+            started.worktree_removal_started = true;
+            checkpoint(application, (project.id, thread.id), snapshot, started)?;
+            // Normal checkpoints save behind. This one must reach state.json before
+            // git can remove `.git` and the registration, including across a crash.
+            crate::state::save_now(application)?;
+            watch.worktree_removal_started = true;
+            Ok(())
+        },
     )
     .map_err(|error| error.to_string())
 }

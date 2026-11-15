@@ -45,8 +45,9 @@ pub use manager::{
     validate_worktree_path_length,
 };
 pub use merged_worktree::{
-    MergedWorktreeError, is_removal_leftover, remove_merged_worktree, remove_untouched_worktree,
-    verify_deletion, verify_thread_worktree,
+    MergedWorktreeError, is_removal_leftover, remove_merged_worktree,
+    remove_merged_worktree_with_checkpoint, remove_untouched_worktree, verify_deletion,
+    verify_thread_worktree,
 };
 pub use path_scheme::{
     JobKind, LocationConfig, WorktreeLeaf, WorktreePath, can_allocate_leaf, effective_root,

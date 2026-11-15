@@ -42,6 +42,10 @@ pub struct FollowThrough {
     pub pending: Vec<AgentFollowUp>,
     pub observed: BTreeMap<String, String>,
     pub worktree_deleted: bool,
+    /// F6 may finish an unregistered leftover only after a verified removal started (#383).
+    #[serde(default)]
+    #[specta(skip)]
+    pub worktree_removal_started: bool,
     pub cleanup_error: Option<String>,
     pub coding_tool_count: Option<u32>,
     pub coding_file_count: Option<u32>,
