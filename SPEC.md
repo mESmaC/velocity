@@ -150,6 +150,7 @@ F5, F7 and §3.1 have a README for their introduction and separate files for the
 - [spec/F3-spec-interview.md](spec/F3-spec-interview.md)
 - [spec/F4-threads-and-composer.md](spec/F4-threads-and-composer.md)
 - [spec/F5-worktrees/README.md](spec/F5-worktrees/README.md)
+- [spec/F5-worktrees/headless-machines.md](spec/F5-worktrees/headless-machines.md)
 - [spec/F5-worktrees/rosen-the-project-s-server.md](spec/F5-worktrees/rosen-the-project-s-server.md)
 - [spec/F5-worktrees/rosen-a-thread-s-workspace.md](spec/F5-worktrees/rosen-a-thread-s-workspace.md)
 - [spec/F5-worktrees/rosen-stored-as-the-agent-writes.md](spec/F5-worktrees/rosen-stored-as-the-agent-writes.md)

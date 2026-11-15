@@ -42,7 +42,7 @@ velocity-graph = { workspace = true, features = ["bindings"] }
 velocity-core = { workspace = true, features = ["bindings"] }
 velocity-new-project.workspace = true
 velocity-proofs.workspace = true
-velocity-rosen.workspace = true
+velocity-rosen = { workspace = true, features = ["bindings"] }
 velocity-skills = { workspace = true, features = ["bindings"] }
 velocity-store.workspace = true
 velocity-github.workspace = true

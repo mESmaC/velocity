@@ -10,6 +10,7 @@ publish = false
 workspace = true
 
 [features]
+bindings = ["dep:specta"]
 # Builds Rosen's binaries into Velocity, for releases: the release workflow names them in
 # VELOCITY_ROSEN_SERVER_EXE and VELOCITY_ROSEN_CLI_EXE. Development builds find them
 # through VELOCITY_ROSEN_BIN or PATH instead.
@@ -21,6 +22,8 @@ rosen-client = { git = "https://github.com/mESmaC/rosen", rev = "f18bbc545844904
 # The model types the client does not re-export (snapshot kinds, review thread states).
 rosen-core = { git = "https://github.com/mESmaC/rosen", rev = "f18bbc545844904b97cb6668e2a242fc3727cc1f" }
 serde.workspace = true
+serde_json.workspace = true
+specta = { workspace = true, optional = true }
 thiserror.workspace = true
 tokio = { workspace = true, features = ["sync"] }
 velocity-spec.workspace = true

@@ -16,6 +16,7 @@ The rest of this section describes git worktrees, which still back every job tha
 Rule files:
 
 - [The project's server](rosen-the-project-s-server.md)
+- [Headless machines](headless-machines.md)
 - [A thread's workspace](rosen-a-thread-s-workspace.md)
 - [Stored as the agent writes](rosen-stored-as-the-agent-writes.md)
 - [What the agent is told](rosen-what-the-agent-is-told.md)

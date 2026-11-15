@@ -14,6 +14,8 @@ pub mod dispatch;
 pub mod duty;
 mod events;
 mod issue;
+pub mod machine_dispatch;
+pub mod machines;
 pub mod policy;
 pub mod post_land;
 mod process;
@@ -51,6 +53,8 @@ pub enum RosenError {
     Start(String),
     #[error("Rosen's servers are stopped for an update or exit")]
     Stopped,
+    #[error("{0}")]
+    Machine(String),
     #[error("{0} is not a valid Rosen agent name")]
     AgentName(String),
     #[error("{0} is not a commit or tree id")]

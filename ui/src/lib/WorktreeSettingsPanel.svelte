@@ -7,6 +7,7 @@
   } from './ipc';
   import './theme/worktrees.css';
   import SettingsNav from './SettingsNav.svelte';
+  import MachinesPanel from './MachinesPanel.svelte';
 
   let {
     view,
@@ -286,6 +287,11 @@
             >
           </div>
         </section>
+        {#if view.uses_rosen && view.project_identifier !== null}
+          {#key view.project_identifier}<MachinesPanel
+              project={view.project_identifier}
+            />{/key}
+        {/if}
         <section>
           <h2>Live worktrees</h2>
           <p class="worktree-description">

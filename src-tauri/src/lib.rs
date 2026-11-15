@@ -21,10 +21,12 @@ mod github_requests;
 mod goal_stack;
 mod goal_swarm;
 pub mod graph_access;
+pub mod headless;
 mod interview;
 mod issue_panel;
 mod kept_worktrees;
 pub mod layout;
+mod machines;
 pub mod main_watch;
 mod new_project;
 mod parking;
@@ -86,6 +88,12 @@ fn bindings() -> Builder<tauri::Wry> {
         state::set_settings,
         layout::get_layout_state,
         layout::dispatch_layout,
+        machines::get_machines,
+        machines::enable_machine_listener,
+        machines::create_machine_join_key,
+        machines::approve_machine,
+        machines::revoke_machine,
+        machines::dispatch_to_machine,
         projects::list_projects,
         projects::switch_project,
         proofs_settings::get_proofs_settings,

@@ -1,6 +1,9 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 fn main() -> anyhow::Result<()> {
+    if velocity_app_lib::headless::serve()? {
+        return Ok(());
+    }
     // Sweeps start Velocity's own executable as each scout's MCP server (F7).
     if velocity_app_lib::sweeps::serve_scout_server()? {
         return Ok(());

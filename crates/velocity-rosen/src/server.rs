@@ -156,12 +156,31 @@ impl ProjectServer {
         if let Some(folder) = &self.warm_pool_dir {
             command.arg("--warm-pool-dir").arg(folder);
         }
+        self.add_listener(&mut command)?;
         command
             .current_dir(&self.data_dir)
             .stdin(Stdio::null())
             .stdout(log)
             .stderr(error_log);
         Ok(command)
+    }
+
+    fn add_listener(&self, command: &mut Command) -> Result<(), RosenError> {
+        let listen_path = self.data_dir.join("velocity-listen");
+        match std::fs::read_to_string(&listen_path) {
+            Ok(address) => {
+                command.arg("--listen").arg(address.trim());
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(source) => {
+                return Err(RosenError::Io {
+                    action: "read",
+                    path: listen_path,
+                    source,
+                });
+            }
+        }
+        Ok(())
     }
 
     async fn wait_until_listening(&self, child: &mut Child) -> Result<Client, RosenError> {
@@ -192,7 +211,7 @@ impl ProjectServer {
     }
 
     /// Asks the server to exit, if one listens, and waits until it has.
-    async fn stop(&self) {
+    pub(crate) async fn stop(&self) {
         if let Ok(client) = Client::connect(&self.endpoint).await {
             let _ = client.shutdown().await;
         }

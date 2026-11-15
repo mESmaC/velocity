@@ -42,6 +42,12 @@ export const commands = {
 	setSettings: (settings: Settings_Deserialize) => __TAURI_INVOKE<Settings_Serialize>("set_settings", { settings }),
 	getLayoutState: () => __TAURI_INVOKE<LayoutSnapshot_Serialize>("get_layout_state"),
 	dispatchLayout: (action: LayoutAction_Deserialize) => __TAURI_INVOKE<LayoutSnapshot_Serialize>("dispatch_layout", { action }),
+	getMachines: (projectIdentifier: number) => __TAURI_INVOKE<MachinesView_Serialize>("get_machines", { projectIdentifier }),
+	enableMachineListener: (projectIdentifier: number, address: string) => __TAURI_INVOKE<null>("enable_machine_listener", { projectIdentifier, address }),
+	createMachineJoinKey: (projectIdentifier: number, address: string, expiresInSeconds: number, uses: number, role: Role) => __TAURI_INVOKE<string>("create_machine_join_key", { projectIdentifier, address, expiresInSeconds, uses, role }),
+	approveMachine: (projectIdentifier: number, machine: string) => __TAURI_INVOKE<null>("approve_machine", { projectIdentifier, machine }),
+	revokeMachine: (projectIdentifier: number, machine: string) => __TAURI_INVOKE<null>("revoke_machine", { projectIdentifier, machine }),
+	dispatchToMachine: (projectIdentifier: number, machine: string, prompt: string) => __TAURI_INVOKE<string>("dispatch_to_machine", { projectIdentifier, machine, prompt }),
 	listProjects: () => __TAURI_INVOKE<ProjectList>("list_projects"),
 	switchProject: (identifier: number) => __TAURI_INVOKE<LayoutSnapshot_Serialize>("switch_project", { identifier }),
 	getProofsSettings: (projectIdentifier: number) => __TAURI_INVOKE<ProofsSettingsView_Serialize>("get_proofs_settings", { projectIdentifier }),
@@ -2073,6 +2079,30 @@ export type LintKind =
 /**  A word with no standard an agent can check ("clean", "good"). */
 "Vague";
 
+export type Machine = {
+	id: string,
+	name: string,
+	role: Role,
+	status: string,
+	last_contact: string,
+	running_agents: string[],
+	dispatch_ready: boolean,
+};
+
+export type MachinesView = MachinesView_Serialize | MachinesView_Deserialize;
+
+export type MachinesView_Deserialize = {
+	machines: Machine[],
+	listener?: string | null,
+	recent_dispatch: string[],
+};
+
+export type MachinesView_Serialize = {
+	machines: Machine[],
+	listener: string | null,
+	recent_dispatch: string[],
+};
+
 export type MergeMethod = "SQUASH" | "REBASE" | "MERGE";
 
 export type MessageMode = "Open" | "HeadsDown" | "Quarantined";
@@ -3591,6 +3621,8 @@ export type RewriteView_Serialize = {
 	pending: boolean,
 	note: string | null,
 };
+
+export type Role = "agent" | "checker";
 
 export type ScoutCadence = "once" | "every_thirty_minutes" | "after_every_merge";
 
