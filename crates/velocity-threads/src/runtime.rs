@@ -338,6 +338,18 @@ impl ThreadRuntimes {
         self.resume_parked(key, worktree, None, follows_pull_request)
     }
 
+    /// Keeps a message for an ended thread's next session without starting one. An agent at
+    /// its provider's limit resumes at the reset (§2.2), and that resume sends it after its
+    /// opening prompt, like any queued message, so nothing sent meanwhile is lost (#355).
+    pub fn hold_for_resume(&mut self, key: ThreadKey, message: &str) -> Result<(), SteerError> {
+        if self.is_live(key) || self.retired.contains(&key) {
+            return Err(SteerError::NoSession);
+        }
+        let thread = self.threads.get_mut(&key).ok_or(SteerError::NoSession)?;
+        thread.transcript.queue(message);
+        Ok(())
+    }
+
     fn ensure_resumable(&self, key: ThreadKey) -> Result<(), SteerError> {
         let live = self.is_live(key);
         let input_open = self

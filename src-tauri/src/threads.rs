@@ -458,14 +458,40 @@ fn resume_message(
     let (_, thread) = store
         .follow_through_thread(key.0, key.1)
         .map_err(|error| error.to_string())?;
-    if thread.activity == AgentActivity::AtLimit {
-        return Err("This agent will resume when its limit resets".into());
-    }
     drop(store);
+    if thread.activity == AgentActivity::AtLimit {
+        return hold_until_reset(application, key, prompt);
+    }
     // The message is queued in the runtime, behind any messages queued before, and the
     // session opens with that queue; nothing is lost if it ends before the agent reads it.
     crate::parking::resume_with_message(application, key, prompt)?;
     delivered_snapshot(application, key)
+}
+
+/// An agent at its limit resumes on its own at the reset (§2.2), so a message for it, from
+/// you or from PR duty's requested changes, is queued for that resume rather than refused:
+/// a refusal would leave the agent to resume without it (#355). The queued row is saved
+/// with the transcript, so it survives a restart and is not sent twice.
+fn hold_until_reset(
+    application: &AppHandle,
+    key: ThreadKey,
+    prompt: &str,
+) -> Result<LayoutSnapshot, String> {
+    lock(
+        application.state::<ManagedThreads>().inner(),
+        "thread sessions",
+    )?
+    .hold_for_resume(key, prompt)
+    .map_err(|_| "This agent will resume when its limit resets".to_owned())?;
+    report(save_activity(
+        application,
+        key,
+        AgentActivity::AtLimit,
+        None,
+    ));
+    let snapshot = delivered_snapshot(application, key);
+    emit_status(application, key);
+    snapshot
 }
 
 /// Marks the thread's folder ready. False when the thread was deleted meanwhile.
