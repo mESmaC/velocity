@@ -64,23 +64,29 @@
     aria-label="Continuous dispatch"
   >
     <div class="section-h">Continuous dispatch</div>
-    <label>
+    <!-- The reference's stepper, as in the PR duty dialog. A number field was 24px wide and
+         the browser's spin arrows took most of it, so the count was cut off. -->
+    <div class="dispatch-target">
       Keep
-      <input
-        type="number"
-        min="0"
-        step="1"
-        aria-label="Keep N agents busy"
-        value={view.slots}
-        disabled={pending}
-        onkeydown={(event) => {
-          if (event.key === 'Enter') event.currentTarget.blur();
-        }}
-        onchange={(event) =>
-          void update(event.currentTarget.valueAsNumber, view?.paused ?? false)}
-      />
+      <div class="stepper" role="group" aria-label="Agents to keep busy">
+        <button
+          type="button"
+          aria-label="Fewer agents"
+          disabled={pending || view.slots === 0}
+          onclick={() => view && void update(view.slots - 1, view.paused)}
+          >−</button
+        >
+        <span>{view.slots}</span>
+        <button
+          type="button"
+          aria-label="More agents"
+          disabled={pending}
+          onclick={() => view && void update(view.slots + 1, view.paused)}
+          >+</button
+        >
+      </div>
       agents busy
-    </label>
+    </div>
     <div class="dispatch-status">
       <span
         >{view.busy} busy · {view.slots} slots{view.paused
@@ -122,20 +128,34 @@
   .compact {
     margin-bottom: var(--duty-agents-gap);
   }
-  label,
+  .dispatch-target,
   .dispatch-status {
     display: flex;
     align-items: center;
     gap: var(--duty-agents-gap);
     margin-bottom: var(--duty-agents-gap);
   }
-  input {
-    width: var(--duty-stepper-button-width);
-    min-width: var(--duty-stepper-count-min-width);
-    color: var(--text);
-    background: var(--surface-3);
+  .stepper {
+    display: inline-flex;
+    align-items: center;
     border: var(--duty-stepper-border);
     border-radius: var(--duty-stepper-border-radius);
+  }
+  .stepper button {
+    width: var(--duty-stepper-button-width);
+    height: var(--duty-stepper-button-height);
+    color: var(--text-2);
+  }
+  .stepper button:hover:not(:disabled) {
+    color: var(--text);
+    background: var(--surface-3);
+  }
+  .stepper button:disabled {
+    color: var(--muted);
+  }
+  .stepper span {
+    min-width: var(--duty-stepper-count-min-width);
+    text-align: center;
     font: var(--duty-stepper-count-font);
   }
   .dispatch-status {
