@@ -1,5 +1,7 @@
 # Risk: Unicode folding must not merge two distinct Windows directories into
 # one inventory row, size-cache entry or footer count. No agent/worktree is deleted.
+# Updated after #370: WorktreeContext gained uses_rosen and other_version_control_threads;
+# the harness sets them to a git project with no other threads, which leaves the risk as it was.
 $ErrorActionPreference = 'Stop'
 $repositoryRoot = [IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..'))
 $fixtureRoot = Join-Path $repositoryRoot ('.tools\pr22-distinct-' + [Guid]::NewGuid().ToString('N').Substring(0, 8))
@@ -36,6 +38,7 @@ fn owner(identifier: u32, path: &Path) -> WorktreeOwner {
 fn context(root: &Path, upper: &Path, lower: &Path) -> WorktreeContext {
     WorktreeContext { revision: 0, project_identifier: Some(1), project_name: "project".into(),
         repository_path: None, merged_owners: vec![], owners: vec![owner(1, upper), owner(2, lower)],
+        uses_rosen: false, other_version_control_threads: 0,
         preferences: WorktreePreferences { root: root.to_string_lossy().into_owned(),
             project_override: None, delete_local_branch: true, share_build_cache: true,
             copy_files: String::new(), setup_command: String::new(), ready_count: 4 } }

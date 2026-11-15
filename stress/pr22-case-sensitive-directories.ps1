@@ -1,3 +1,5 @@
+# Updated after #370: WorktreeContext gained uses_rosen and other_version_control_threads;
+# the harness sets them to a git project with no other threads, which leaves the risk as it was.
 # Risk: Windows per-directory case sensitivity (fsutil setCaseSensitiveInfo, set by WSL on
 # folders it creates) keeps `Api` and `api` as two directories. Two projects whose names
 # differ only in ASCII case then own two distinct worktrees under one root (F5 path rule
@@ -48,6 +50,7 @@ fn owner(identifier: u32, path: &Path) -> WorktreeOwner {
 fn context(root: &Path, upper: &Path, lower: &Path) -> WorktreeContext {
     WorktreeContext { revision: 0, project_identifier: Some(1), project_name: "Api".into(),
         repository_path: None, merged_owners: vec![], owners: vec![owner(1, upper), owner(2, lower)],
+        uses_rosen: false, other_version_control_threads: 0,
         preferences: WorktreePreferences { root: root.to_string_lossy().into_owned(),
             project_override: None, delete_local_branch: true, share_build_cache: true,
             copy_files: String::new(), setup_command: String::new(), ready_count: 4 } }

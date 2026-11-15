@@ -3,13 +3,16 @@
 # so it must hand the lock over in arrival order (by priority, SPEC.md F5), never
 # run two builds at once, and never stall when a holder or a waiter is killed.
 # It runs on its own queue instance, so it never touches the swarm's real queue.
+# Updated after #367: beneath a Rosen run queue turn (ROSEN_RUN_HELD) build-queue.ps1
+# runs a command at once, as part of that turn. `stress --all` runs under one, so this
+# test clears it to exercise its own queue's ordering, as it clears the queue owner.
 $ErrorActionPreference = 'Stop'
 $repositoryRoot = [IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..'))
 $queueScript = Join-Path $repositoryRoot 'scripts\build-queue.ps1'
 $instance = "stress-213-$PID"
 $env:VELOCITY_BUILD_QUEUE_INSTANCE = $instance
 # The stress runner holds the real queue; this test's queue is a different one.
-Remove-Item Env:VELOCITY_BUILD_QUEUE_OWNER -ErrorAction SilentlyContinue
+Remove-Item Env:VELOCITY_BUILD_QUEUE_OWNER, Env:ROSEN_RUN_HELD -ErrorAction SilentlyContinue
 $queueFolder = Join-Path $env:LOCALAPPDATA "velocity\build-queue-$instance"
 $work = Join-Path ([IO.Path]::GetTempPath()) "velocity-$instance"
 New-Item -ItemType Directory -Force -Path $work | Out-Null
