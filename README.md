@@ -53,8 +53,9 @@ that handles those.
 - **Project panels.** A Task List, issues and pull requests, and an editor for
   the project's `AGENTS.md`.
 
-`SPEC.md` describes every feature in full, and `design/main-window.html` is the
-reference UI: open it in a browser to see the whole app with simulated data.
+`SPEC.md` indexes the full feature descriptions under `spec/`, and
+`design/main-window.html` is the reference UI: open it in a browser to see the
+whole app with simulated data.
 
 ## Before you use it
 
@@ -106,9 +107,11 @@ You need:
 | `design/` | The reference UI. |
 | `scripts/` | Development tooling: the local checks and the build queue. |
 
-`SPEC.md` says what Velocity should do. `AGENTS.md` says how work on this
-repository is done. Most of the code is written by coding agents following
-those two files, many of them running in Velocity itself.
+`SPEC.md` and the Markdown files under `spec/` say what Velocity should do.
+`SPEC.md` keeps the rules, concepts and a complete file index; features have
+their own files, and F5, F7 and §3.1 IPC have folders for their rules or features.
+`AGENTS.md` says how work on this repository is done. Most of the code is written
+by coding agents following that guidance, many of them running in Velocity itself.
 
 ## Building from source
 
@@ -139,8 +142,21 @@ The Lean proofs have their own setup; see
 
 ## Contributing
 
-Read `SPEC.md` and `AGENTS.md` first. `AGENTS.md` is written for coding agents,
-but its rules for code, checks and pull requests apply to everyone.
+Read `AGENTS.md` and `SPEC.md` first, then follow the spec's file index.
+The build order is in `spec/7-implementation-order.md`, open questions in
+`spec/8-open-questions.md`, and the proof list in
+`spec/F17-proofs-and-adversarial-testing.md`.
+`AGENTS.md` is written for coding agents, but its rules for code, checks and
+pull requests apply to everyone.
+
+Start an agent with: "Read AGENTS.md and SPEC.md, follow the spec/ file index,
+then start dev."
+
+The spec move can be replayed on a newer monolithic base with
+`node scripts/split-spec.mjs`; an optional checkout path selects another folder.
+`node scripts/split-spec.mjs --join` recovers the moved text in source order,
+turning the IPC lists back into table rows and omitting the generated index
+and navigation headings. Only whitespace and the IPC presentation change.
 
 ## License
 

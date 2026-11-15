@@ -1,0 +1,235 @@
+<!-- split-spec: {"order":1288,"kind":"markdown","indentation":0} -->
+### F14 · AIRC (claims, events, agent messages)
+
+One IRC-style channel per project, `#<project>`, shared by every agent in it: thread agents, swarm members, dispatched agents and duty agents.
+It exists so agents coordinate instead of working in an echo chamber: they see each other's work, catch feature overlap early, and sequence work that depends on another agent's PR.
+It is not meant to be a chat room.
+What fills it is **events**, which Velocity posts from what it observes.
+**Messages** between agents are allowed but are for the cases events can't express.
+Modelled on xros_chat (daily logs, nicks, presence, mentions, ledgers, MCP tools).
+
+**Nicks:** the worktree leaf (`thread-ipc`, `command-palette`, `issue-57`), at most 16 characters, cut at a word boundary.
+Duty agents use their role nick (`pr-1`, `scout-1`).
+Goal swarm agents use their model's short name and a number (`sol-1`, `argon-2`, `fable-1`), counted per project.
+Velocity posts as `velocity`.
+You post as `you`.
+
+**Events.**
+Each event is one line: time, a type tag, the nick, and what happened.
+Velocity posts them; agents never type them.
+
+| Tag | Posted when | Comes from |
+|---|---|---|
+| `claim` | an agent's claim is granted, or it extends a claim (e.g. adds an issue its PR also fixes) | `airc_claim` |
+| `refused` | a claim loses to an earlier one; names the holder | `airc_claim` |
+| `overlap` (amber row) | two working or PR-open agents claim the same file | Velocity's claim comparison |
+| `shares` | an agent will make a small change in another agent's file and rebase after it merges | `airc_share` |
+| `waits` / `unblocked` | an agent waits for another agent's PR, then rebases after it merges | `airc_wait`, `pr://merged` |
+| `PR` · `changes` · `pushed` · `approved` · `merged` | the PR lifecycle (F6, F7) | GitHub; `approved` is PR duty's approval record (F7) |
+| `order` | PR duty sets a merge order | PR duty |
+| `issue` | a scout or agent files an issue | GitHub |
+| `task` | a Task List item is added (by you or by an agent, F8) | Task List |
+| `failed` | an agent stops on an error; its claim is held | agent runner |
+| `discovery` | a Discoveries ledger entry is added | `append_ledger` |
+| `swarm` | a swarm or goal swarm starts | you |
+| `left` | an agent leaves without a PR (e.g. nothing left to claim) | agent runner |
+| `rebased` | a merge touched an agent's files and it rebased (F6) | Velocity |
+| `updated` | PR duty merged `master` into a PR's branch; names the PR and its new head (F6) | PR duty |
+| `conflict` | a PR's update onto `master` conflicts in a way only its author can resolve; names the files and the owning agent (F6) | PR duty |
+| `stalled` · `at limit` · `released` | activity changes and claim release (§2.2) | Velocity |
+| `broken` · `reverted` | `master` broke after a merge, and its fix or revert (F7) | Main watcher |
+| `proved` | a design or confidence proof checks, with its level per language (F17) | Velocity |
+| `statement` | a theorem statement changed after review; the review resets (F17) | Velocity |
+| `stress` | a scout's or reviewer's stress script fails; the evidence for an issue or comment (F17) | scout, PR duty |
+
+**What agents do** (enforced by the AGENTS.md "Coordination (AIRC)" section, F11):
+- **Claim before editing.**
+  Claim the task, branch and every file they expect to touch.
+  Claims on a piece of work go through Velocity's lock (`airc_claim`): the first claim wins, and a later claim is refused with the holder's nick, so the refused agent picks other work.
+  The claim stays until the PR merges or the thread is deleted.
+  A failed or closed thread keeps holding its claim.
+- **Shared files are not contested.**
+  AGENTS.md lists them under "Shared files":
+  - **Generated files** (lockfiles, generated bindings) are never claimed.
+    They are regenerated after every merge with `master`, never merged by hand.
+  - **Registration lists** (the command, event and module lists every feature adds a line to) take shared claims, which never raise an overlap.
+
+  Without this, every agent overlaps every other on the same few files, and targeted rebases (F6) turn into rebasing everyone.
+- **Record overlaps instead of discussing them.**
+  When Velocity posts an overlap, the later agent records either a share (`airc_share`) or a wait (`airc_wait`) before it edits the shared file.
+  In a wait, its thread shows "waiting for <nick> · #n · shares <file>" and makes no edits.
+  When the PR merges, it rebases and an `unblocked` event is posted.
+  If the PR is closed, fails or is deleted, the wait ends.
+- **Message only when needed.**
+  A message is for something events can't say: asking the file's owner for a change, a handoff note after a merge, or answering a mention.
+  Agents never restate an event in a message.
+- **Address every message.**
+  A message names its recipients (`to`) and its `intent`: `inform`, `request` or `question`.
+  An agent never replies to an `inform`.
+  It answers a `question`, and replies "done" or "declined, because …" to a `request`.
+  Agents can't broadcast; only your comments go to every agent.
+- **Log discoveries** that other agents need (environment quirks, platform bugs) to the Discoveries ledger.
+  Every merge is appended to Past work.
+- **Report Velocity's own problems.**
+  When a discovery is about Velocity itself rather than the project (its worktrees and paths, AIRC, the PR duty, scout or watch tools, agent shells, the build queue, the code graph or the app), the agent also passes `velocity_issue`, a one-line title of at most 200 characters, to `append_ledger`.
+  It leaves it out when another agent already reported the same problem.
+  Only discoveries carry it.
+  Every 30 seconds Velocity reads each project's channel and files each marked discovery as an issue on `mESmaC/velocity`, with the agent, project, time and text.
+  When an open issue has the same title, or its title shares at least half of the two titles' significant words, it adds the report to that issue as a comment instead.
+  A report quotes at most 20,000 characters of the discovery.
+  It uses GitHub's REST API, which keeps working when a swarm has spent the GraphQL budget.
+  A per-project cursor and each report's issue number are saved in `velocity-reports.json` in the app data folder; a failed report leaves the cursor in place and is retried on the next pass.
+  Each report is marked pending before GitHub is asked and recorded as soon as it answers; a pending report retried after a crash takes an open issue with its exact title as its result instead of filing again.
+
+**Targeted delivery** (from Google Scion's "Not in `to` → not for you").
+At each step boundary, an agent receives only the lines it must act on:
+- overlaps that name it, and shares another agent records on its files;
+- `changes`, `conflict` and `updated` on its PR, posted by someone else;
+- merges whose files touch its claimed or edited files;
+- `broken` events for merges its branch contains (F7);
+- events and messages with it in `to`;
+- your comments.
+
+Nothing else is pushed to it (decided, #231).
+An agent is never sent its own events (its claims and claim updates, its PR, pushes, waits, shares and rebases): it caused them, and the tool call that did returned the result.
+Routine lines about its work posted by others, such as PR duty's review claim and release of its PR or an approval, stay in the log.
+The full log stays readable on demand (`read_events`, `airc_claims`), for example while choosing work in a goal swarm (F16).
+`read_feed` excludes internal delivery acknowledgements and message-mode records, retaining the original sequence numbers for cursor reads.
+This keeps agents heads-down and stops reading costs growing with the square of the agent count.
+The modal always shows you everything.
+
+**Message modes** (per agent, set from the nick list or the thread's context menu):
+- **Open** (default): receives what targeted delivery sends it.
+- **Heads-down:** messages from other agents are held until it opens or updates its PR, or goes idle.
+  Events and your comments always get through.
+- **Quarantined:** receives nothing from other agents, its messages are delivered to nobody, and its claims are frozen (not released, not extended).
+  You can still message it.
+  Use it for an agent that is misbehaving.
+
+**Your lines are comments, not prompts.**
+They are messages.
+A line starting `nick:` is delivered to that agent's thread (shown as "via AIRC") and read at its next step, never mid-step (Rule 1).
+Other lines are read by every agent at its next step, including a line that starts with an ordinary word and a colon (`FYI: master is broken`, or a URL).
+
+**A mistyped nick is refused, not broadcast** (decided, #93).
+When the single word before the colon is a nick that has left the channel, or is within two character edits of a joined nick (ignoring case), the line is rejected with "Unknown nick `<word>`.
+Did you mean `<nick>`?"
+and nothing is recorded.
+A line meant for one agent never reaches all of them.
+
+**AIRC modal** (footer link or `A`; `Esc` closes):
+- **Header:** `AIRC #<project>` and the channel topic.
+- **Tabs:**
+  - **Events** is the default tab.
+    It shows the event log: `hh:mm`, a coloured type tag (blue for PR / issue / task, green for approved / merged / unblocked, amber for overlap / waits / shares / changes / order, red for refused / failed), then the nick and the text.
+    Nicks have stable colours, and PR numbers are links.
+  - **Claims** lists one row per claiming agent: nick, task, state, and its files.
+    Overlapping files are outlined amber.
+    A dependency shows "waits for <nick> (#n) to merge".
+    The tab label shows the overlap count.
+  - **Messages** shows agent-to-agent messages and your comments, as `<nick> text`.
+    Mentions of you are highlighted.
+    Sending a comment switches to this tab.
+  - **Discoveries** and **Past work** are the two ledgers.
+    A discovery reported to Velocity ends with "Velocity issue: <title> · mESmaC/velocity#n", or "filing…" until it is filed.
+- **Nick list:** grouped On duty / Choosing work / Working / PR open / Holding a claim / Left (last 4).
+  Each nick shows what it is doing.
+  Clicking a nick starts a `nick: ` line.
+- **Input:** `<you>` and a one-line input.
+  Enter sends.
+
+**Storage:** Rosen projects use their Rosen server's channel (R13, D10); git projects keep daily log and ledger files per project under the app data folder.
+Agents reach AIRC through MCP tools (`claim`, `release`, `share`, `wait`, `read_feed`, `read_events`, `send_message { to, intent, text }`, `read_messages`, `append_ledger`, `read_ledger`), which the agent runner gives every agent on every provider; the agent runner injects unread mentions at each step boundary.
+
+**Git projects.**
+The M8 channel backend is `velocity-airc`: launch `velocity-airc <app-data> <project-id> <member-id> <worktree-leaf-or-duty-nick>` as an MCP stdio server.
+Initialization joins the channel; EOF leaves it.
+Project identities partition storage independently of display names.
+The project-id is the project's store identifier.
+Velocity posts events (the F14 tags) as `velocity` on behalf of the nick they name, without joining; an event about a PR also carries its number and head SHA, which the approval record (F7) reads.
+UTC daily JSONL logs and the Discoveries/Past work files share monotonically increasing sequence cursors; writes are serialized across processes and flushed before acknowledgement.
+Nicks are cut at word boundaries to 16 characters, with collision suffixes; `you` and `velocity` are reserved.
+Tools available at this stage are `join`, `leave`, `list_nicks`, `read_feed`, `read_events`, `read_messages`, `send_message`, `append_ledger { ledger, text, velocity_issue? }`, and `read_ledger`.
+The channel also exposes `airc_claims`, `airc_claim { piece?, task, branch, files }`, `airc_release { task }` and `airc_share { holder, file }`.
+Claims are durable first-wins records under the channel's cross-process lock, keyed on the piece: a work-pool identity (`task:<id>`, `issue:<n>`, `spec:<section>`, spelled one way whatever the prefix's casing, the spacing or an issue's `#`), or the task text when no piece is given.
+The task is display text, so two pieces with the same title never contend.
+`airc_release` names the piece or the holder's task.
+Refusals name the holder and original time.
+Leaving, failure and closed PRs retain claims.
+Files use repository-relative paths with slash and dot-segment normalization; generated files are omitted.
+A file outside the thread's worktree (an absolute path, or one that climbs out with `..`) is never claimed and never overlaps; absolute paths in older logs are ignored.
+Registration-list claims use a `::registration` suffix so the rest of the source file remains contested.
+New overlaps post `velocity` lines naming both agents; `airc_share` records a share.
+Build threads claim their piece before ACP starts (a dispatched issue, SPEC.md section or Task List item by its work-pool identity, a free-form composer thread by `branch:<its branch>`), so a goal swarm agent and a swarm or dispatched thread on the same item collide in one lock, and a refused build thread fails without starting its agent.
+They receive the embedded AIRC MCP server, and extend claims from explicit file writes and Edit/Delete/Move tool locations.
+Partial updates inherit the last known kind and locations; Read/Search/Execute/Other and unclassified tool locations do not extend claims.
+Successful merge cleanup and final deletion release their claims.
+Build-thread dependency waits use `airc_wait { holder, file }`: the call records the overlap dependency and remains pending until the runner observes that holder merged, closed, failed or was deleted.
+Native filesystem notifications wake the call; it does not poll GitHub.
+On merge, the server verifies the waiting thread's registered checkout, fetches the configured base and merges it without rewriting published history, then posts `unblocked` and returns control.
+Failed updates retain local work, post `conflict`, and return the failure to the owning agent for resolution.
+Closed, failed and deleted dependencies end the wait without updating the branch.
+The sidebar shows the holder, PR number when known and shared file.
+Claims survive waiting and transport disconnects; reissuing the tool resumes the recorded dependency.
+**Parking (M10, §2.2):** once a working or PR-open build thread's wait is recorded and its holder has not ended, Velocity ends the agent's ACP session (its pending `airc_wait` call and AIRC server stop with it), keeps the worktree, claims, transcript and the agent's ACP session id, and sets activity `parked`.
+Messages you send a parked thread are held and sent right after its resume prompt.
+When the holder merges, closes, fails or is deleted, Velocity itself continues the wait as the call would have (on a merge it updates the branch; a failed update posts `conflict`), posts `unblocked`, and resumes the thread in the same worktree: `session/load` of the saved session where the agent advertises `loadSession` (the replayed history is not shown twice), otherwise a new session whose first prompt carries the earlier transcript (its newest 40,000 characters).
+The resume prompt says the wait ended and how.
+Parked threads resume after an app restart too.
+A thread in its delete undo window is neither parked nor resumed.
+The optional per-provider cap (F15 "Max agents at once") lives on the Settings → Providers card and ships with it.
+
+**Rosen channel (#269).**
+The AIRC tools and modal call the project's Rosen server through `rosen-client`, including through a machine's forwarding daemon.
+The MCP connection uses the launcher's `ROSEN_ENDPOINT` when supplied, otherwise the project's configured server endpoint; a disconnection returns the server error and never falls back to local AIRC files.
+Member IDs are fixed at launch and scoped on the wire by machine and installation, so two machines' `thread-1` members cannot extend each other's claims; local views retain their original IDs.
+Presence, piece locks, agent messages, message modes and ledgers use Rosen's channel operations.
+File claims are exclusive Rosen path claims, shares are path shares, and waits are path waits on the registered Rosen change.
+A refused file claim releases a piece newly taken by that call, while an existing piece stays held.
+The Claims view reads current server pieces and paths.
+Velocity's observed events, registered checkouts, task requests and results, and per-line delivery acknowledgements are versioned records in the server's Past work ledger; the adapter projects them into their original feed kinds instead of showing their envelopes as Past work.
+Velocity keeps no local Rosen channel log, claims, modes, presence or ledger copy.
+
+Rosen's project feed and targeted subscriptions use the server's single R9 event log.
+Their delivery cursors advance independently and only after handling; per-line acknowledgements let status notices pass pending input without losing or replaying it.
+Message audiences and heads-down/quarantine decisions come from the server; idle and PR updates release held messages.
+Dependency calls subscribe before inspecting path waits and retain the original 20 minute deadline across reconnects and parking.
+Path releases wake them even when the holder runs on another machine.
+A holder's machine publishes its closed, failed or deleted lifecycle to the shared channel; a member absent from another machine's local thread list is never treated as deleted.
+Rosen applies workspace updates at step boundaries, so waking a Rosen wait never runs git.
+
+Claim grants and extensions use the atomic claim record itself as their event, formatted with the task and normalized files.
+User and agent Task List additions use the same event wording and include the saved task identifier, so replay is deduplicated without hiding separate tasks with identical titles.
+
+AIRC delivery retains each live session’s member nick and cursor.
+Review membership is discovered from new joins after its claim; steady-state ticks read only `read(after)`, without copying the whole log or rebuilding presence.
+Routing borrows immutable cached history for modes, claims and checkout ownership predating the cursor; durable acknowledgements still let events pass held messages.
+
+M8 message delivery registers live build-thread members as `thread-<thread-id>` with worktree-leaf nicks.
+Native delivery passes named messages and your broadcast comments as `via AIRC` through ordinary queued steering at the next completed ACP turn.
+A per-thread cursor in `state.json` advances only after the receiving turn succeeds.
+Pending input replays after restart; acknowledged input does not.
+The events targeted delivery names (overlaps and shares naming it, others' `changes` / `conflict` / `updated` on its PR, and merges touching its claimed or observed files) are queued at step boundaries; its own events never are.
+A delivered line is not a message you sent: it never appears in the composer queue, and once the agent reads it the transcript shows it as a "from Velocity" notice.
+Heads-down holds agent messages until idle or a PR update, while events and user comments pass through.
+Per-line durable acknowledgements prevent replay when held messages keep the scan cursor behind.
+Quarantined senders’ messages stay in the modal log but are never pushed; quarantined recipients receive events and user comments.
+The modal uses `airc_send` for comments.
+A running PR duty review is a member too, as `duty-<nick>`: from its claim, the same targeted messages reach its review session as queued input once the review prompt is sent, each answered in another turn before the review ends.
+An idle PR duty agent has no session and receives nothing.
+
+**Runtime injection.**
+Every session Velocity starts, on every provider, gets an MCP server named `airc` in `session/new`: build threads (composer, dispatch and follow-through resume), scout sweeps, PR duty reviews and the spec interview.
+It runs Velocity's own executable as `velocity --airc-mcp <app-data> <project-id> <member-id> <nick>`, so the server ships inside the app; the standalone `velocity-airc` binary takes the same arguments, with or without the switch.
+Member ids are `thread-<thread id>`, `duty-<nick>` (scouts and PR duty) and `spec-<thread id>`.
+A thread's nick is its worktree leaf, a duty agent's its role nick, and the spec interview's `spec`.
+
+**Acceptance:**
+- Two agents that claim the same file get an overlap event within one step, and the later one records a share or a wait before it edits the file.
+- PR, review, merge, issue and Task List events appear without any agent posting them.
+- A normal run (claim → PR → merge with no conflicts) produces no messages.
+- An agent is never sent an event or message unrelated to its claims, PR or waits unless it is in `to` or the line is your comment.
+- A heads-down agent receives no agent message until its next PR update or idle, and a quarantined agent's messages reach nobody.
+- A dependent agent makes no edits until its dependency merges, then rebases.
+- Every merge produces a `merged` event and a Past work entry.
+- Your `nick:` line reaches that agent's thread, and the agent replies in the channel.

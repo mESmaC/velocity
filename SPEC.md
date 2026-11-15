@@ -111,1557 +111,261 @@ The native supervisor checks live build threads once a second. Its defaulted che
 
 ---
 
-## 3. Architecture
-
-- **Shell:** Tauri v2, frameless window (`decorations: false`) with a custom title bar. Drag regions use `data-tauri-drag-region`; the window controls are custom. The window keeps the system frame shadow (`shadow: true`) and a dark window theme, so on Windows 11 it has the system's rounded corners and dark 1 px border; maximized, it fills the work area with square corners.
-- **Frontend:** runs in the webview: Svelte 5 + TypeScript on Vite (no SvelteKit), built with pnpm. Command and event types are generated from Rust with `tauri-specta`. All visual values come from the reference UI: its `:root` is copied exactly, and missing values are copied from its winning CSS declarations into supplemental reference tokens (§6).
-- **Backend (Rust)** owns:
-  - agent processes
-  - git and worktrees
-  - GitHub access
-  - the file system
-  - persisted state
-
-  The frontend never runs a shell command. It calls Tauri commands and subscribes to events.
-- **Agent providers:** Anthropic (Claude Code), Codex, Antigravity and Kimi Code. Every provider signs in with OAuth on your own subscription, the way T3 Code does. Velocity talks to each provider's own agent over ACP (§3.2) and never asks for or stores an API key (F15). Each agent records its provider, model, effort (Low / Medium / High / Max) and speed (Regular / Fast, F15).
-- **GitHub:** issues, PRs, reviews, CI checks and merges.
-
-### 3.1 IPC *(proposed names)*
-
-| Kind | Name | Purpose |
-|---|---|---|
-| command | `get_window_state`, `minimize_window`, `toggle_maximize_window`, `close_window` | native main-window state and custom title-bar controls |
-| command | `log_window_error { source, message }` | Appends an error the window caught to `velocity.log` in the app data folder: a pane that failed to render (each main pane recovers on its own and redraws from the next snapshot), an uncaught exception or an unhandled promise rejection. Panics and background thread failures go to the same file, which keeps one older copy (`velocity.old.log`) past 1 MB. |
-| command | `get_layout_state`, `dispatch_layout { action }` | `Navigation(Board)` shows the Board or leaves it, and `Navigation(Focus)` returns to the selected thread or Home; the snapshot's `board` lists the lanes and cards. Backend-owned main-window projection, search, palette selection, Alt hints, contextual keyboard dispatch and navigation requests. Build intents are gated from the persisted active project's spec lock before publication; snapshots carry launch eligibility, rejection notices and draft-task hints. |
-| command | `list_projects`, `create_project`, `switch_project` | projects |
-| command | `get_new_project_defaults`, `pick_project_folder`, `create_project { request }` | New project dialog (F2): default folders, interview effort, speed and model from Settings; the native folder picker; Create, which refuses before anything runs or sets the project up, registers it, switches to it and records its spec interview |
-| command | `open_project { request }`, `get_github_repositories { query, refresh }` | Open project in the switcher (F2): opens a local checkout where it is, or clones one of your GitHub repositories (or opens its existing clone in the target folder), registers it and switches to it; the repository picker's list from signed-in `gh` (repositories you own and those of organisations you belong to), read once and searched in Rust, re-read when `refresh` is set |
-| command | `list_threads`, `start_thread`, `send_message`, `delete_thread` | threads. `start_thread` and `send_message` are the composer's `StartPrompt` and `SteerThread` intents from `dispatch_layout`; `RemoveQueuedMessage { identifier, index }` withdraws a queued message the agent has not read (F4): the backend checks the launch gate afresh, records a `working` thread, creates its worktree on `vel/<slug>` (the message slug until thread titles land), starts the provider's ACP agent there and streams its transcript into `layout://state`. Messages to a busy agent are queued (Rule 1). `dispatch_layout` returns as soon as the reducer has cleared the composer and added the message to the thread, live transcript included; the message is then handed to the agent on one background thread, in the order sent and to the project it was written in (withdrawing a queued message goes through the same queue, so it never overtakes the send that put the message there), and a send that never reaches the agent goes back to the composer with a toast saying why (#318). Every command that takes a lock or does I/O runs off the window's UI thread (#286). |
-| command | `list_pull_requests { project_identifier }`, `get_pull_request { project_identifier, number }`, `dispatch_pull_request { project_identifier, operation }` | GitHub through signed-in `gh`: paginated PR snapshots and typed create, review, comment, reply, resolve, review-request, merge and close operations. Create accepts `base_branch` (the project's configured branch), defaulting to GitHub's default branch. Approve and request changes follow F7's approval record (Q28): each needs a reason, records an `approved` / `changes` event (PR number, reviewer nick, head SHA) in the project's AIRC channel, and mirrors it on GitHub as a review starting "Approved at `<sha7>`" (a comment review when the login authored the PR, which GitHub refuses to approve). Window commands record as `you`. Merge requires that record: the latest approval with no newer `changes`, at exactly the head being merged, which is sent to GitHub as the expected head. GitHub's review state is not consulted. A refused merge posts a `failed` event; a merged same-repository topic branch is deleted. CI is advisory (F7). F6 observes same-repository PRs by the thread's immutable branch, including a PR closed or merged between observations. An open draft claim leaves its thread working until the PR is marked ready; a closed draft still reports closure. The native watcher checkpoints its history and pending agent notifications in `state.json`, queues changed CI/review/conflict information at agent step boundaries, and publishes the thread lifecycle. Closing preserves the checkout and branches; confirmed merges stop the agent and remove its verified registered worktree through the existing F5 lifecycle plan, retrying cleanup errors. Before forced removal begins, the watcher durably records `worktree_removal_started` next to `worktree_deleted` in `state.json`, after the F17 deletion gate verifies ownership and absence of uncommitted, untracked or unpushed work. Only that record permits retrying an unregistered leftover folder, and only while it contains no `.git` entry and does not contain the project checkout; an unregistered folder without that record is kept. The live rail uses the independent `pr://panel` projection below. |
-| command | `get_pull_request_panel`, `open_project_pull_request { project_identifier, number }` | Backend-owned active-project PR rail. Native refresh reads all open PRs, the current head's aggregate CI, line counts, review decision, review tier (F7, read from the PR's diff once per head against the checkout's AGENTS.md) and the first explicit claim comment: `Reviewing · <nick>` names a PR duty agent, a bare `Reviewing` its author. A row opens its owning thread (recorded PR identity, then an unassigned matching branch from the same repository), otherwise GitHub in the browser. Clicks validate project identity. |
-| command | `get_thread_menu { thread_identifier }`, `run_thread_menu_action { project_identifier, thread_identifier, action }`, `delete_thread { project_identifier, thread_identifier }`, `delete_swarm { project_identifier, swarm_identifier }`, `undo_delete_thread { deletion }` | Sidebar right-click menu and Delete with Undo (F12). The backend builds the menu from saved state, the agent session and the worktree's measured size; on a swarm or goal swarm row it is the one Delete entry, and the menu says `swarm`. Actions: open the worktree in Explorer, copy its path (with a toast), open the PR in the browser. `delete_thread` hides the thread at once and publishes a toast carrying the deletion's Undo token on `layout://state`. Nothing is touched for 5 s. Then the backend stops the agent, removes the worktree (the worktree lifecycle's `UserDeletedThread`), closes any open PR, returns the thread's tasks to todo and drops its record. The record always goes: a worktree that cannot be removed yet (its agent still exiting, a file still held open, or F5's verification keeping it) is saved on the project in `state.json` and retried in the background every 30 s, verified again each time, and the toast says why; a PR that will not close is reported the same way. `delete_swarm` does this for a swarm or goal swarm and all its members under one Undo token, then removes the swarm's record; `undo_delete_thread` undoes either. |
-| command | `get_launch_eligibility { request }` | UI eligibility for the active project, read from the backend state. No project/lock flag is accepted from the frontend. Launch handlers check the guard afresh before worktree or agent effects (Rule 2, F3). |
-| command | `get_duty_dialog_defaults { project_id }`, `get_duty_agent_transcript { nickname }`, `start_duty { request }`, `pause_duty { request }`, `add_duty_agents { request }`, `dismiss_duty_agent { request }`, `stop_duty { request }` | Duty view, start dialog defaults, start/pause/resume, add-agents, dismiss-agent and stop-role lifecycle for PR duty, Scouts and the Main watcher, persisted on the project in `state.json` and broadcast over `duty://event`, and a PR duty agent's latest review session (F7) |
-| command | `get_issue_panel`, `open_project_issue { project_identifier, number }`, `dispatch_issue { project_identifier, number, accept_recommendation }`, `toggle_issue_expanded { number }` | Active-project issue rail (F9). Rows start collapsed; `toggle_issue_expanded` expands or collapses one row and the expanded set lives in the snapshot. Native refresh reads open issues, labels, scout attribution and spec-question recommendations. Opening an assigned issue selects its thread; otherwise it opens GitHub. Dispatch re-reads the issue, checks the saved spec lock and atomically records issue ownership before starting the ordinary worktree/ACP lifecycle. Accept scopes that thread to the recommended one-line proposed SPEC.md answer. |
-| command | `get_swarm_dialog { query }`, `launch_swarm { request }`, `add_to_swarm { request }` | Swarm (F10). `get_swarm_dialog` draws the dialog in Rust from the user's choices: source counts, open items (taken items and draft tasks shown but unselectable), launchable models with the round-robin split, the PR duty capacity offer and the footer. `launch_swarm` checks the launch gate afresh, records the swarm on the project in `state.json`, then for each item atomically adds a member thread on `vel/<task-slug>` or `vel/issue-<n>` (a task becomes Now with its thread) and starts its worktree and ACP agent; `add_to_swarm` does the same into an existing swarm. Optionally starts or tops up PR duty. Members are ordinary threads: a member's merge marks its task done, and the other members whose changed files overlap the merged PR's files get a queued rebase notice. A message from the swarm composer is queued to every working or in-review member. |
-| command | `get_continuous_dispatch { project_identifier }`, `set_continuous_dispatch { project_identifier, slots, paused }` | F8 per-project continuous dispatch settings and Duty projection: slot count, busy count, pause state, next five issues and source errors. Rosen projects only; ownership and attempted issue version are saved atomically before the ordinary background thread launch. |
-| command | `get_work_pool { project_identifier }` | F16 read-only work inventory: open tasks, open GitHub issues and unfinished spec entries, with saved thread owners and separate available counts. The native adapter reads sources off the UI thread; source errors fail the snapshot. |
-| command | `get_goal_swarm_dialog { query }`, `read_goal_swarm_pool` | Goal swarm dialog (F16). `get_goal_swarm_dialog` draws the dialog in Rust from the user's choices with one edit applied: the agent count (1–30), the mix rows with "the rest", the split bar, the nick preview, one limits line per provider, the pool line and the PR duty capacity offer. `read_goal_swarm_pool` reads the active project's work pool off the UI thread for the pool line and the capacity check; the dialog shows the previous read meanwhile. |
-| command | `launch_goal_swarm { request }`, `add_goal_agents { request }` | Goal swarm launch and `+ Agents` (F16). Checks the launch gate afresh, allocates project-scoped `<nick>` slots on the chosen model mix, optionally starts or tops up PR duty, creates each member's `<nick>` worktree in `choosing work`, claims an unclaimed piece atomically in AIRC (retrying within one step on refusal), renames the branch for the claimed piece before starting the ACP session, removes untouched worktrees and posts `left` when nothing remains, and spawns the next round after merge when `keep_going` is on. |
-| command | `get_goal_swarm_board { swarm_identifier }` | Goal swarm view claims board (F16). Reads the active project's work pool off the UI thread, then joins it with saved claims: claimed pieces first with the holder's nick and state (working, the AIRC dependency wait, `#n · <review stage>`, failed or closed · claim held), open pieces next, and the pieces this swarm merged last with `merged #n`. The rest of the view (header, prompt bubble, segment bar, one card per agent, activity) arrives on `layout://state` as `active_goal_swarm`, with a `board_revision` that changes whenever a claim, PR or merge could move the board; the window reads the board again then. The goal swarm's sidebar row (`goal: true`) nests its agents' threads; `AddGoalAgents` opens the dialog on the swarm's prompt for `add_goal_agents`, and a message from the goal swarm composer is queued to every working or in-review agent. |
-| command | `add_task { project_identifier, title }`, `list_tasks { project_identifier }` | F8 project Task List. Adding saves a user-attributed draft before lock or todo after lock, without changing SPEC.md. The add input and `/task` use the same store path through `dispatch_layout`. `layout://state` carries per-task states, owning-thread status and attribution links. |
-| command | `read_agents_md`, `write_agents_md`, `tighten_rule { project_identifier, identifier }` | AGENTS.md. F11 rewrites use the normal unrestricted Claude ACP client in the project checkout, with the Haiku model selected through the Claude SDK launch environment and whole-file context. Late results are discarded after edits, Undo or save; invalid responses and failures retain the original rule with an explanation. |
-| command | `read_agents_md { project_identifier }`, `reload_agents_md { project_identifier }`, `edit_agents_md { project_identifier, action }`, `write_agents_md { project_identifier }` | F11 outliner: read the checkout's real AGENTS.md, apply section/rule and structural keyboard edits in Rust, and save/commit only that file. Snapshots include the exact Markdown, rule count, dirty state and focus target. Unsupported Markdown is preserved verbatim. Saving rejects external changes and keeps the draft; Discard draft and reload explicitly replaces the draft with the current disk file without writing or committing. Reload failures keep the draft. A failed commit or push can be retried. Remote projects fetch and merge the default branch without rewriting history before pushing; a conflict names the files and stops publication, and a rejected push keeps the local commit for retry. Local projects without origin keep local commits. The default AGENTS.md template uses the same publication path. Snapshots also carry each rule's live lint marks (hedge, modal, vague; never inside inline code), the Flagged list and the Covers checklist; `AddCoverage { item }` inserts a missing topic's bullets after the last rule of its section, or in a new section at the end. |
-| command | `get_settings`, `set_settings`, `list_worktrees`, `prune_worktrees` | settings |
-| command | `set_worktree_settings { edit, project_identifier }`, `preview_worktree_folder { folder }`, `browse_worktree_folder` | persist a worktree preference edit, or the project's version control (`UseRosen`, F5); preview the path for a folder still being typed, without saving it; select a location through the native folder picker |
-| command | `list_providers`, `provider_sign_in { provider }`, `provider_sign_out { provider }`, `install_provider { provider }`, `set_provider_settings { edit }` | Settings → Providers (F15), drawn in Rust. At startup and after each sign-in the backend starts each provider's ACP agent with no prompt: `initialize` gives its sign-in methods, `session/new` succeeds when its login holds (`auth_required` when it doesn't), and its model option lists the models; each model is selected once to read whether it offers a fast mode. The answers are saved in `state.json` as the provider catalog, so pickers are right before the agents answer again. Sign in runs the agent's own login: ACP `authenticate`, or a terminal method's command with no console window; methods that take an API key or bill an API account are never chosen. Sign out (Cancel while waiting) is Velocity's own record *(proposed)*: the agent's login is left alone, so your CLI stays signed in. `install_provider` runs a built-in provider's fixed install steps (F15 Install) for an agent that isn't installed; `provider_sign_out` cancels it while it runs. `set_provider_settings` shows or hides a model chip, sets the optional per-provider concurrency cap, and sets the default model, effort and speed for new threads and the thread title model. |
-| command | `set_provider_command { provider, command }`, `add_custom_agent { name, command }`, `remove_custom_agent { provider }` | ACP agent commands in Settings → Providers (F15). A provider is `claude`, `codex`, `antigravity`, `kimi` or `custom-<id>` for an agent you added. `set_provider_command` takes the program and its arguments as one line (double quotes around a word with spaces, backslashes kept as typed); `null` resets a built-in provider to its built-in command. Add an ACP agent takes a name (not one already in use) and a command, with no environment or key field, and saves it in `state.json`. Removing an added agent drops what was read from it; its threads keep their records, new work can't start on it, and a default or title model on it returns to the built-in default. Each change asks the agent again over ACP with its new command; running agents keep the command they started with. An added agent is offered the known bypass modes (`bypassPermissions`, `agent-full-access`, `full-access`, `yolo`) and has no limit source. Codex selects `agent-full-access` (current codex-acp) or `full-access` (older builds), and starts with `INITIAL_AGENT_MODE=agent-full-access`, because codex-acp otherwise opens every session in its sandboxed `agent` mode whatever your Codex config says. |
-| command | `edit_shared_mcp_servers { edit }` | Settings → Agents → shared MCP servers (§3.2 Tool access). `Add { name, target }` reads `target` as an `http://` or `https://` URL, or else as a command line; `Remove { name }` drops one. Names use letters, digits, `-` and `_`, are unique ignoring case, and may not start with `velocity` (Velocity's own servers). Returns the saved list, which `get_settings` also carries as `agents.shared_mcp_servers`. |
-| command | `get_code_graph { project_identifier }`, `set_code_graph { project_identifier, enabled }`, `reset_code_graph_usage { project_identifier }` | The usage modal's Code graph section (F19 Measuring it): the project's switch and the comparison of its graph-on and graph-off totals, worked out in Rust. `set_code_graph` applies to agents started afterwards; `reset_code_graph_usage` clears both sides' totals and starts counting again. Each returns the section's new view. |
-| command | `get_model_menu { project_identifier, thread_identifier? }`, `choose_model { project_identifier, thread_identifier?, choice }` | The composer's model menu (F4), drawn in Rust: signed-in providers with their models and limit, signed-out ones as "Sign in with …", effort and speed. On the home composer a pick changes the defaults. On a thread it is saved on the thread and sent to a live session as `session/set_config_option`, which applies from its next turn and never cancels the running one. A running thread stays on its provider's agent, so other providers' models are listed but not selectable there. |
-| command | `get_proofs_settings { project_identifier }` | Settings → Proofs (F13, F17), read from the project's checkout without building: SPEC.md's proof list (a `Proof list` heading, or the list under a line ending `proof list:`), each tracked `proofs/<Feature>/Design.lean` with the level each language reaches, each language's code-level translator and strongest level, and the stress-diff input count. The count is saved with `set_settings`; scout sweeps diff at least that many inputs per feature against its compiled model. |
-| command | `get_skill_settings { project_identifier }`, `set_skill_settings { project_identifier, edit }` | F18 project pack switches and bundle selections, saved atomically; pinned-manifest skill counts, estimated description tokens and detected requirements |
-| command | `get_skill_library`, `install_skill_pack`, `check_skill_pack_update`, `confirm_skill_pack_update` | skill pack library (F18): built-in and custom Agent Skills packs cloned with `core.symlinks=true`, pinned to a commit in `skills-library.json`, update diff preview of `SKILL.md` files, scripts and data, and explicit pin confirmation |
-| command | `generate_design_system { project_identifier, regenerate }`; `details` on each `get_skill_settings` card | built-in pack specifics (F18). `generate_design_system` runs UI UX Pro Max's `search.py --design-system --persist` (with `--force` on Regenerate) in the main checkout, queried from SPEC.md's opening sentence, then commits `design-system/<project>/` and, while MASTER.md exists, the AGENTS.md rule under `## UI`, each on its own. Each card's `details` carries UI UX Pro Max's design system row (while on) and REA's shared MCP server (while on); Game dev skills' engine line is the project scan's (F18 Suggestions). Bundle chips count the skills each bundle's folders hold at the pinned commit; folders the pack tracks as git links are mirrors and never count or link twice. Every `session/new`, whatever role starts it, adds the switched-on packs' MCP servers of the session folder's project (its main checkout, found through `git --git-common-dir`) after Settings → Agents' shared servers, with the same rule that an agent's own entry of that name wins, so REA reaches every new agent of every provider once it is on. |
-| command | `set_airc_message_mode { project_identifier, nick, mode }` | Set Open, HeadsDown or Quarantined from the AIRC nick list. Modes persist in the channel log; quarantine freezes claim extension and release. |
-| command | `airc_send { project_identifier, text }` | Your F14 comment in a registered project channel. An exact `nick:` prefix targets that member. A single-word prefix that is a likely mistyped nick (a nick that left, or one within two character edits of a joined nick, ignoring case) is rejected with the closest nick named. Every other comment broadcasts to active thread members, including one that starts with an ordinary word and a colon. Delivery uses ordinary queued steering and never cancels a running turn. |
-| command | `get_airc_modal { project_identifier }` | The F14 AIRC modal's view, built in Rust from the active project's channel and saved thread and duty state: tab counts (Claims adds its overlap count), tagged and toned event rows, messages with mentions of you, the claims board with overlapping files of working and PR-open agents, both ledgers, and the grouped nick list. `A`, the palette and the footer link open the modal through `dispatch_layout` (`airc_open` on `layout://state`); `Esc` closes it. Comments go through `airc_send`. |
-| command | `airc_events { project_identifier, after }`, `airc_messages { project_identifier, after }`, `airc_send`, `airc_claims`, `airc_claim`, `airc_release`, `airc_share`, `airc_wait`, `airc_ledger { project_identifier, ledger, after }` | AIRC (agents get the same as MCP tools). `airc_events` returns only F14 event log entries (`EVENT_TAGS`, including `discovery` notices); `airc_messages` returns only agent messages and user comments; `airc_ledger` reads `discovery` or `past_work`. `airc_claim` is atomic: it returns `granted`, or `refused { holder, since }` |
-| command | `dispatch_layout` with `ToggleSettled` | Toggle the active project's saved Settled group expansion. |
-| command | `dispatch_layout` with `Navigation(Answer(n))`, `Navigation(Lock)`, `Navigation(SpecFile)`, `Navigation(Grill)`, `SteerThread` on a spec thread, and `ToggleProofListEntry(index)` | spec interview (F3): answer `1`–`4` or in your own words, Lock spec & publish tasks, open SPEC.md, Keep grilling, and switch a proposed proof-list entry. The backend carries these out; the interview's phase, question, decisions and proof list arrive on `active_thread.interview` in `layout://state`. |
-| event | `thread://status`, `thread://step` | thread state and tool steps: `thread://status` carries a thread's state and activity (§2.1, §2.2) whenever either changes; `thread://step` carries the thread's newest transcript block after each agent update |
-| event | `window://state` | native maximize/restore state, including changes made by the operating system |
-| event | `layout://state`, `layout://intent` | ordered main-window snapshots and typed navigation requests for feature owners; no shell commands cross IPC. Agent output reaches the window at most ten times a second: a streamed burst that changes nothing saved replaces only its thread's live transcript and is published only when that thread is open or its titling pulse changes, and every change in between is coalesced into the next snapshot (#319). |
-| event | `project://selected` | persisted project selection and refreshed switcher rows, paired with the selected project's `layout://state` snapshot |
-| event | `pr://opened`, `pr://ci`, `pr://review`, `pr://merged`, `pr://closed` | F6 lifecycle snapshots: project/thread identifiers, PR number, stage and worktree-deleted status. `pr://merged` follows successful worktree cleanup; the layout carries the history and review cards. |
-| event | `pr://panel` | Ordered active-project PR panel snapshots, refreshed natively after project selection and at 30-second intervals. Loading and failed refreshes are explicit; failed refreshes retain the last rows with the error. The UI never polls GitHub. A refresh is one list query however many PRs are open: the project's GitHub client is kept between refreshes, a PR's comments (for its reviewer claim) are read again only when its update time or comment count moved, and its diff (for its review tier) only when its head moved. |
-| event | `duty://event`, `swarm://event` | activity feeds. `swarm://event` carries the project and swarm identifiers and one feed line (time, actor, kind, message); the swarm view itself arrives on `layout://state` as `active_swarm`. |
-| event | `issue://panel` | Ordered active-project issue snapshots, refreshed natively on project selection and every 30 seconds, with owning-thread state updated from saved changes. Failed refreshes retain the previous rows with the error. A refresh reads the open-issue count and the most recently updated open issue, and reads the open issues in full only when either moved, and at least every 10 minutes; the project's GitHub client is kept between refreshes. |
-| event | `worktree://created`, `worktree://deleted` | worktree lifecycle |
-| event | `worktree://inventory` | cached live worktree rows, sizes, drive capacity and settings; metadata measurements run outside the UI thread |
-| event | `airc://modal` | The active project's AIRC modal view, published only while the modal is open and when it changed. Agents write the channel from their own MCP processes, so Velocity reads it once a second. Lines are marked read while the modal is open; the footer unread badge (amber when an unread line is an overlap or a failure) arrives on `layout://state`. |
-| event | `airc://event`, `airc://message`, `airc://overlap` | AIRC events, agent messages and overlap detection |
-| event | `provider://status` | Settings → Providers whenever a provider's sign-in state, models or limit changes. Limits are read every 5 minutes and updated from live Claude and Codex reports during turns (F15 Limit sources); both ride on the same event. The footer meter and the home model pill update on `layout://state`. |
-| command | `get_update_status`, `check_for_update`, `install_update` | Velocity's own updates (F1 Updates): the Updates modal's view; a check now; download, verify, install and restart. Each returns the modal's view, and failures show in it. |
-| event | `update://status` | the Updates modal and the footer button whenever a check, download or install moves on (F1 Updates) |
-
-
-### 3.2 Agent protocol: ACP
-
-Velocity is an **ACP (Agent Client Protocol) client**, as T3 Code, Zed and most other code editors are. Every agent runs as a subprocess that speaks ACP: JSON-RPC 2.0 over stdio.
-- **One process per thread**, launched in that thread's worktree.
-- **Client:** the Rust backend, using the `agent-client-protocol` crate.
-- **Provider code:** everything provider-specific is just which command to launch. The four providers differ in nothing else.
-
-| Provider | ACP agent |
-|---|---|
-| Anthropic | Claude Code through the `claude-agent-acp` adapter (npm `@agentclientprotocol/claude-agent-acp`). Its former name, `claude-code-acp`, is deprecated and fails every prompt on a current Claude Code config (#46). |
-| Codex | Codex through the `codex-acp` adapter (npm `@agentclientprotocol/codex-acp`) |
-| Kimi Code | Kimi CLI's own ACP mode (`kimi acp`) |
-| Antigravity | Google's own Antigravity agent: `agy acp` (Antigravity CLI 1.5.0 or later) |
-| Custom | any ACP agent you add in Settings → Providers: a command and its arguments (F15) |
-
-**Antigravity** (decided, Q14). Velocity launches the `agy` on your `PATH` with your own `~/.gemini` profile, as it launches the other three agents (Tool access, below), and selects the agent's `yolo` mode when the session starts (Rule 1). Sign-in is the agent's own Google login, through `authenticate` or `agy acp --login`. The model list comes from your Antigravity account. Velocity doesn't download or pin a runtime of its own, doesn't give the agent a separate profile, and never presents itself to the agent as another client.
-
-How Velocity's features map onto ACP:
-
-| Velocity | ACP |
-|---|---|
-| Sign in (F15) | `initialize` returns the agent's `authMethods`. `authenticate` runs that agent's own OAuth login in your browser. Tokens stay in the agent's credential store. |
-| Start a thread | Spawn the agent with your own config loaded (Tool access, below), and call `session/new` with `cwd` set to the thread's worktree and `mcpServers` set to AIRC plus your shared MCP servers. |
-| AIRC tools for every agent (F14) | The AIRC MCP server is passed in `session/new`, so every provider gets the same tools with no per-provider setup. |
-| Prompt, queued steering (Rule 1) | `session/prompt`. A steering message sent mid-turn is queued and sent as the next prompt when the turn ends. |
-| `Esc` interrupt | `session/cancel` |
-| Transcript, tool steps, diffs (F4) | `session/update` notifications: message chunks, `tool_call` / `tool_call_update` (kind, status, file locations, diff content) and plan updates |
-| Slash menu (F4) | `available_commands_update` |
-| Unrestricted agents, no approval UI (Rule 1) | Velocity answers every `session/request_permission` at once with the agent's allow-always option. Where an agent offers a bypass mode, `session/set_mode` selects it when the session starts. Permission requests are never shown to you. |
-| Model, effort and speed | The agent's session model and config options where it exposes them, otherwise launch arguments. Whether a model has a fast mode is read from the agent's config options, not hard-coded. |
-| File edits and claims (F14) | Velocity advertises the `fs` and `terminal` client capabilities, with relative paths resolved against the thread's worktree. They are not confined to it (Tool access). Edits and tool-call file locations feed the diff view and the claim checker. If an agent edits a file it hasn't claimed, the file is added to its claim, an overlap check runs, and a `claim` event is posted. |
-| Resume after a restart | The transcript and ACP session id are saved in `state.json` and visible on reopening. Closing Velocity stops every running turn. When Velocity starts again, each build thread (swarm and goal swarm members included) whose turn was cut off, or whose queued messages were still unread, continues by itself with no message from you: it resumes with `session/load`, where the agent supports it, otherwise a new session receives the earlier transcript, and is told Velocity restarted, that a command it was running was stopped, and to continue where it left off. Your queued messages follow in order. A thread cut off before its agent's session started (worktree setup, goal swarm work choice) has nothing to continue and stays idle. A resume that fails (its worktree is gone, its agent can't start) fails the thread with the reason. Parked and at-limit threads resume on their own wake-ups (§2.2). Sending the next message to an idle thread resumes it the same way: the message is queued behind any earlier unread ones and the queue opens the new session. It shows as queued until the agent reads it, so a session that ends first (parked, restarted after a stall, stopped, or failing to load) sends it again on its next resume. Replayed history is not duplicated when a local transcript exists; older records with only a session id recover the provider?s replayed history when available. Saved process activity resets to idle (except parked and at-limit recovery) until the resume starts; an idle working thread appears under Done and is not counted as running. It returns to Running when it resumes; its worktree and PR watcher stay. PR duty claims PRs again as soon as Velocity starts, so a review a restart stopped is taken again; a scout sweep or main watch a restart stopped runs again (F7). |
-| Fatal process exit (#397) | A small supervisor launches the window and backend in a child process. An unexpected exit, including an abort or external termination, starts a replacement automatically; its ordinary startup resumes interrupted build threads and restarts PR duty, scouts and main watches as above. Closing the window deliberately stops the supervisor too. An update hands recovery to its replacement launcher; a failed installation re-enables recovery. Exit intent travels over a private loopback connection rather than relying on exit codes. Recovery waits 1, 2, 4, 8 and 16 seconds between attempts, then stops after five unsuccessful restarts; five minutes of continuous running resets this budget. Launch failures share the budget. The supervisor records failures and exhausted retries in `%TEMP%\velocity-recovery-<launcher-pid>.log`. MCP server invocations bypass supervision. |
-| Subscription limits (F15) | Not part of ACP. They are read per provider (F15 Limit sources). |
-
-**Tool access.** Every agent gets every tool, whatever its role: threads, swarm and goal swarm members, PR duty, scouts, the main watcher and spec interviews. Velocity adds tools and never removes any.
-- **Built-in tools:** each provider's agent keeps its whole native toolset (shell, file read/write/edit, search, web search and fetch, subagents, todo/plan, and anything else it ships). Velocity never passes an allow-list or deny-list, and never starts an agent in a restricted or read-only mode.
-- **Your own config:** each agent is launched so it loads your user and project config as it would in a terminal: its MCP servers, skills, slash commands, hooks and instruction files (`CLAUDE.md`, `AGENTS.md`). Velocity doesn't launch agents in an isolated or empty config.
-- **Skills:** the project's enabled skill packs (F18) are linked into every agent's worktree, in the folder its provider reads, on top of your own skills.
-- **Shared MCP servers** (Settings → Agents): servers listed here are passed to every agent of every provider in `session/new`, so one list reaches all four providers. When a name is also in an agent's own config, the agent's own entry wins. A server is a command the agent starts (stdio) or a URL (streamable HTTP); it has no environment or header field, so a server that needs a credential reads it from your environment or signs in itself. An HTTP server is sent only to agents that advertise HTTP MCP support in `initialize`. Velocity reads the server names in the files each agent loads (Claude Code: `~/.claude.json` and its entry for the folder, and `.mcp.json`; Codex: `config.toml` in `CODEX_HOME` or `~/.codex`, and `.codex/config.toml`; Antigravity: `~/.gemini/settings.json`, `~/.gemini/antigravity/mcp_config.json` and `.gemini/settings.json`; Kimi Code: `~/.kimi-code/mcp.json` and `~/.kimi/mcp.json`) and leaves a clashing shared server out of `session/new`. New agents get the list; running agents keep the servers they started with.
-- **AIRC:** always passed (F14).
-- **Code graph:** the `velocity-graph` server is always passed, beside AIRC (F19).
-- **Shell, network, toolchains:** the shell runs as you, with your `PATH`, toolchains (cargo, lake, node, python…), credentials and network. There is no sandbox or container.
-- **GitHub:** agents use your signed-in `gh` and git credentials to push, open PRs, review, comment and merge (merging stays PR duty's job, Rule 4).
-- **Worktree:** the working directory, not a jail. Agents can read anything on the machine, such as other repos, docs and caches. Their edits belong in their own worktree (AGENTS.md); edits elsewhere aren't blocked.
-- **Permissions:** answered allow-always as above (Rule 1).
-
-**Accept when:**
-- [ ] Every agent's tool list, as reported in its first `tool_call`s and available commands, matches the same agent run in a terminal with the same config, plus AIRC and the shared MCP servers.
-- [ ] A shared MCP server added in Settings → Agents is available to new agents of all four providers without per-provider setup.
-- [ ] No role, including duty agents and spec interviews, runs with fewer tools than a thread.
-
-### 3.3 Prior art: Scion
-
-Two projects called Scion informed how agents collaborate in Velocity and how their work lands fast.
-- **Anthropic's Scion** ([design post](https://www.anthropic.com/engineering/redesigning-source-control); an independent reimplementation is [CarterT27/scion](https://github.com/CarterT27/scion)) is source control rebuilt for agent-scale merging. It runs at over 30,000 merges a day.
-- **Google's Scion** ([GoogleCloudPlatform/scion](https://github.com/googlecloudplatform/scion)) orchestrates teams of agents.
-
-| Idea | From | Where in Velocity |
-|---|---|---|
-| Each agent receives only what concerns it; messages carry `to` and `intent`; "Not in `to` → not for you" | Google | F14 targeted delivery |
-| Status notices always get through; agent messages respect per-agent modes (heads-down, quarantine) | Google | F14 |
-| No global merge lock: optimistic landing; the agent that owns a change fixes its conflicts | Anthropic | F6 landing |
-| Rebase only the agents a merge affects | Anthropic (claims are Velocity's own) | F6 landing |
-| One base clone, cheap worktrees per agent, shared cache | both | F5 warm pool |
-| Activity separate from lifecycle; stall detection; limits that release work | Google | §2.2 |
-| Event-driven wake of waiting agents (notification subscriptions); parking to free slots | Google | §2.2 |
-| Review intent, not lines; tiered review by risk | Anthropic | F7 |
-| Post-merge testing, and agents that watch one area of the system | Anthropic | F7 Main watcher |
-
-**Not adopted:**
-- **A lead agent with silent workers** (Google's documented team pattern). Velocity's goal swarm has no leader and coordinates through locked claims instead (F16).
-- **A global merge queue.** Anthropic dropped theirs at agent scale.
-- **Containers per agent.** Worktrees give enough isolation for now.
-
----
-
-## 4. Features
-
-### F1 · Main window
-
-There are two views of the same work, switched from the title bar or with `B`:
-- **Focus:** one thread in depth, in three columns:
-  - **left:** sidebar, 236 px
-  - **middle:** the main view
-  - **right:** a rail, 236 px
-- **Board:** every thread at once, as cards in lanes, in place of all three columns (see Board below).
-
-**Title bar:**
-- **Brand and project switcher:** a dropdown listing every project. Each entry shows whether it is local or on GitHub, or "speccing" if its spec isn't locked yet.
-  - Switching restores that project's saved active thread, sidebar and rail context, clears transient search and input, and closes the dropdown. The last active project and each project's active thread survive restart. Unknown project IDs leave the current selection unchanged.
-  - Below the list: New project… (F2), Open folder… and Open from GitHub… (F2 Open project).
-- **View switch:** a Focus | Board segmented control, shown once a project is open.
-- **Pulse:** live counts, each shown only when it is non-zero:
-  - on duty
-  - in spec
-  - running
-  - PRs watched
-  - failed
-  - merged today
-- A `Ctrl K` button that opens the palette.
-- The window controls.
-
-**Board:**
-- Lanes read left to right as a pipeline. Each has a title, a count and its cards:
-  - **Up next:** tasks nobody has started (todo or draft), then open issues. It is drawn as a dashed outline, because this work isn't in the pipeline yet, and it has a Swarm button when it holds anything.
-  - **Running:** swarms, spec interviews, working threads and failed threads. A failed card is tinted red.
-  - **In review:** threads whose PR is open.
-  - **Finished:** threads that merged, are done, or closed without merging.
-  - **On duty:** duty agents, in a last lane shown only when any exist. They are not work items.
-- The four pipeline lanes always show, with a one-line note when empty, so the pipeline keeps its shape.
-- A thread card shows the thread's state icon and colour, its title and the same meta line as its sidebar row. The selected thread's card has the accent selection.
-- Clicking a thread card opens that thread and returns to Focus. Task and issue cards are not clickable yet.
-- The lanes are computed in Rust from the sidebar groups, the Task List and the issue list, so the Board never disagrees with the Focus view.
-
-**Sidebar:**
-- search (`/`) and a new-thread button
-- the thread groups (§2.1)
-- a footer with settings, usage, updates, a live worktree count ("8 on D:", click → Settings · Worktrees) and a subscription-limit meter: one bar per signed-in provider, filled to the share of its limit used, coloured by provider. The usage button and the meter both open the usage modal (F15 Usage modal). There is no dollar spend: every provider runs on a subscription.
-  - **Updates:** Velocity checks its GitHub Releases for a newer version 30 seconds after it starts, every 6 hours, and when you press Check for updates. While one is available, the Updates button turns accent-coloured. It opens the Updates modal, a centred dialog like the usage modal (Esc or a click outside closes it), which shows the new version, its release notes, how this copy was installed (setup, MSI or portable), how many agents are mid-turn, and **Restart to update**. Restarting stops running turns; worktrees and transcripts are kept, and each stopped turn continues by itself when Velocity starts again (§3.2 Resume after a restart). Every download is verified against Velocity's release signing key, with the version bound into the signature, before anything runs. Setup and MSI copies run their installer, which restarts Velocity. A portable copy replaces its own executable and starts again. Installing an update restarts Velocity only when you press the button; fatal process exits recover automatically (§3.2). There is one channel: the newest release, betas included. A `v*` tag publishes a release (`.github/workflows/release.yml`); development builds check only when asked and never install. A failed check or download shows in the modal, not as a window error.
-
-**Rail:** three panels: Task List, Open Pull Requests, Open Issues. Below them are footer links: AIRC (F14), with an unread badge that turns amber when an overlap is unread, and AGENTS.md.
-
-**Home (empty) view:** a composer and quick chips:
-
-| Chip | Key |
-|---|---|
-| Dispatch an issue | `I` |
-| Resume last thread | `R` |
-| Fan out ×3 | `F` |
-| Put an agent on PR duty | `V` |
-| Send scouts | `S` |
-| Swarm the Task List | `W` |
-
-**Command palette** (`Ctrl+K`): fuzzy search over commands, projects, threads and issues. Commands:
-- new thread
-- new project
-- edit AGENTS.md
-- add task
-- settings
-- dispatch issue
-- fan out
-- PR duty
-- scouts
-- swarm the Task List
-- swarm the issues
-
-**Accept when:**
-- [ ] Window is frameless and can be dragged by the title bar. The custom window controls work.
-- [ ] Pulse updates live from events and hides zero counts.
-- [ ] Holding `Alt` shows numbers on threads, and `Alt+1`–`9` jumps to that thread.
-- [ ] Every keyboard shortcut in §5 works.
-
-### F2 · New project
-
-**Project spec layout (#400).** Velocity reads the project's root `SPEC.md` plus all Markdown (`.md`, case-insensitive) files recursively under `spec/` as one spec, including section folders' `README.md` files. The root is read first, then folder files in relative-path order; directory symlinks are not followed. A project with only `SPEC.md` behaves as before, and a `spec/` folder can supply a spec when the root file is absent. The saved `spec_path` continues to name the root file (default `SPEC.md`); configured roots still include the project's `spec/` files. Sections are identified by their heading IDs, such as F5, §3.1 and R8, whichever file holds them. All spec consumers use this layout: work inventory and goal swarms, Proofs settings and design-proof references, design-system generation, opening projects, the interview and Rosen's source-issue notes. New projects still start with a single `SPEC.md`.
-
-`Ctrl+Shift+N` opens a dialog with:
-- **Location:**
-  - **Local folder:** a path and Browse… (native picker via `tauri-plugin-dialog`). One option: "create the folder and run `git init` if needed".
-  - **GitHub:** New repo or Existing repo; `github.com/<owner>/<name>`; Private or Public; and a "clone to" path.
-- **Model for the interview:** model cards plus effort and speed.
-- **What are you building?** A free-text brief.
-- **Create & start interview** (`Ctrl+Enter`).
-
-**Accept when:**
-- [ ] Create sets up the project (folder / `git init` / repo / clone), switches to it, and starts the spec interview thread straight away.
-- [ ] Esc cancels; nothing is created.
-
-**Open project** (in the project switcher, F1): opens a project that already exists, without the dialog.
-- **Open folder…:** the native folder picker. The folder must already be a git repository; it is opened where it is, nothing is cloned or initialised. When its `origin` is on GitHub, the project is shown as a GitHub project.
-- **Open from GitHub…:** the dropdown shows your repositories in place of the project list: those you own and those of organisations you belong to, read through signed-in `gh`, most recently updated first. A search box filters them by name and description; typing an `owner/name` that is not in the list offers it as its own row. A "Clone to" folder (default: your home folder) sets where the clone goes, `<clone to>/<name>`. Choosing a repository clones it there, or opens the clone already in that folder when its `origin` is that repository.
-- **The spec:** a project that already has `SPEC.md` at its root opens with its spec locked, so build work can start at once. A project without one starts its spec interview, as Create does (Rule 2), using Settings' default model, effort and speed and no brief. The interview's scan reads the existing code; it waits for a provider sign-in if none is signed in.
-- The existing spec can also be supplied by `spec/` Markdown files (Project spec layout above); Open reads all sources before adopting it.
-- Opening refuses, before anything is cloned, a folder that is already a project, a folder that is not a git repository, a repository `gh` cannot see, and a clone folder that is occupied by something else. As with Create, a missing AGENTS.md is added from the default template and committed (F11).
-
-**Accept when:**
-- [ ] Open folder… opens a git checkout from the native picker and switches to it.
-- [ ] Open from GitHub… lists your and your organisations' repositories, searchable, and opens the chosen one by cloning it or by opening its existing clone.
-- [ ] A project with `SPEC.md` opens with its spec locked; one without starts the spec interview.
-
-### F3 · Spec interview
-
-1. **Scan:** the agent reads the folder or repo and lists what it found as tool steps. It works in the main checkout and gets **no worktree**.
-   - The scan also suggests skill packs for the project (F18): UI UX Pro Max when it finds a UI, and Game dev skills when it finds a game engine. Suggestions are switched on unless you turn them off.
-   - When UI UX Pro Max is on and the project has a UI, the interview asks the design questions it needs (product type, audience, mood) and generates the design system before the spec locks.
-2. **Ask:** one question at a time.
-   - Each question has a short "why it matters", up to 4 options (one marked *recommended*, answered with keys `1`–`4`), and a free-text answer box.
-   - Each answer is recorded as a decision (key: value) and can add draft tasks to the Task List. Draft tasks show with a dashed icon.
-   - The agent keeps asking until nothing is ambiguous.
-3. **Ready:** a spec card lists every decision.
-   - **Proof list:** the card proposes which features get Lean proofs (F17), and you edit it before locking. Most projects list a handful; UI and plumbing never appear on it.
-   - **Lock spec & publish tasks** (`L`): commits the root spec and `spec/` sources together and pushes to the remote default branch before locking, turns the draft tasks into real tasks, and marks the thread done.
-   - **SPEC.md** (`S`): opens the file.
-   - **Keep grilling** (`G`): asks more questions.
-4. **How the agent reports structure:** the interview runs on any provider, so the prompt carries the whole protocol. The agent ends each reply with a fenced `velocity-interview` JSON block: the scan summary (first reply), the draft tasks the last answer adds, and either the next question (`key`, `text`, `why`, up to 4 options, one recommended) or `ready` with the proposed proof list. Velocity hides the block from the transcript. A reply without one leaves the question open for a free-text answer. The agent reads the whole spec (F2) and preserves an existing split layout. Lock writes the edited proof list into its owning source file, or adds `## Proof list` to the root (the first source when no root exists), before committing all sources without flattening them. After a restart, an interview resumes on your next message from its saved decisions (§3.2 Resume after a restart).
-
-**Accept when:**
-- [ ] No build thread, swarm or dispatch can start on a project whose spec is unlocked. Swarm marks draft tasks "lock the spec first".
-- [ ] Locking commits and pushes SPEC.md before it publishes the tasks.
-- [ ] The Task List counter shows `draft · N` before lock and `done/total` after.
-
-### F4 · Threads and composer
-
-- **Sending from the home composer** starts a thread. It gets a worktree from `master`, a branch `vel/<slug>`, and starts at once.
-- **Thread titles:** the title model (Settings → Providers → Thread titles, F15) names the thread from your first message, as a short imperative title.
-  - Velocity asks for the title while it takes a worktree from the warm pool (F5). Both finish in under a second with the default model, so the branch and worktree are named from the title (`vel/<title-slug>`) before the agent starts.
-  - Until the title arrives, the sidebar shows the first words of your message, pulsing, and the header shows "titling · <model>".
-  - If the title model fails or takes longer than 2 seconds, the slug of your message is kept.
-  - Threads are titled once, from the first message. Later messages don't retitle them.
-  - Swarm, goal swarm and dispatched threads take their item's title and don't call the title model.
-- **Thread header:**
-  - title
-  - branch
-  - worktree path (click → open in Explorer)
-  - +/− line counts and age
-  - Diff (`D`), Editor (`E`), and `PR #n ↗` once a PR exists
-- **Transcript:** user message, agent messages, tool steps (verb, argument, result, running indicator) and diffs. User and agent messages render sanitized GitHub-flavoured markdown (headings, lists, links, tables and fenced code), with emphasis shown upright. Threads and spec interviews open at the latest content and follow streamed output and new question cards while at the bottom; scrolling up suspends following until the reader returns to the bottom. Scrollbars use the reference's slim glass thumb.
-- **Composer:**
-  - `Enter` sends, `Shift+Enter` adds a new line, `Esc` leaves the box.
-  - Model pill (provider, model, effort, and "· Fast" when Fast is on), attach, mic. The pill opens a menu grouped by provider: each signed-in provider with its models and limit used, each signed-out provider as a "Sign in with …" row, and effort and speed at the bottom. On a running thread, a new model or speed applies from the next message.
-  - A message sent while the agent is busy shows "queued · sends when the current step finishes" and a `remove` link. The message stays with Velocity, not the agent, until the turn ends, so `remove` withdraws it (the `RemoveQueuedMessage` intent). The messages queued during a turn go to the agent together as its next prompt. Lines Velocity delivers to the agent (F14, PR follow-through) never join this queue; the transcript shows them as "from Velocity" notices once read.
-  - A message the agent never received (no session to resume, a missing worktree) leaves the transcript and goes back to the composer as you typed it, with the error, but only while its thread is still open and the composer is still empty. A message the agent received never comes back to the composer, even if saving or redrawing the thread fails afterwards.
-- **Slash menu:** `/task`, `/fanout 3`, `/review`, `/compact`, `/model`, followed by the active session's advertised commands and descriptions (`available_commands_update`, §3.2), filtered by the typed prefix. Selecting an agent command inserts `/<name>` for the next prompt. Advertisements are scoped to the project and thread and cleared when its session is replaced.
-- **Skill menu:** typing `$` lists the project's enabled skills with a one-line description each, filtered as you type. Picking one inserts `$<skill>`, and the agent is told to load that skill for this message. The transcript shows each skill an agent loads as a tool step ("Skill · ui-ux-pro-max").
-- **Fan out** (`F`): the same prompt goes to 3 models in 3 worktrees.
-
-**Accept when:**
-- [ ] Messages never interrupt a running agent; they are queued (Rule 1).
-- [ ] A finished task opens its own PR. There is no "Ship PR" button or `/ship` command.
-
-### F5 · Worktrees
-
-**Rosen first, git as the fallback (decided, #331).** Rosen (`github.com/mESmaC/rosen`) is Velocity's first-class version control. Each project's agents work in Rosen changes and workspaces; git worktrees are the fallback, used when a project chooses git or Rosen can't make a workspace. A project's choice is saved with it and defaults to Rosen. Settings → Worktrees → Version control switches it for the selected project (`set_worktree_settings` with `UseRosen`). Only new threads take the new choice: an open thread keeps the Rosen change or git worktree and PR it started with until it lands, and the page says how many do. A project that switches to git keeps its Rosen event follower and post-land checks while any of its threads has a Rosen change, so a change that landed before the switch is still verified, and reverted and reopened if it breaks. The ready worktree pool fills for a project once it uses git, and stops for one that uses Rosen. The rest of this section describes git worktrees, which still back every job that has not moved to Rosen yet.
-
-- **The project's server.** Velocity starts and owns one Rosen server per project, on this machine, with its data in `%APPDATA%\dev.velocity.ide\rosen\<project>` and its own named pipe. A release carries `rosen-server` and `rosen` inside Velocity, built from the Rosen commit Velocity pins, and unpacks them on first use into `%LOCALAPPDATA%\velocity-rosen\<content hash>`, so the portable download has them and an update never overwrites a running server. A development build finds them in the folder `VELOCITY_ROSEN_BIN` names, beside Velocity's executable, or on `PATH`. The first time, it imports the project's history from the checkout's `origin` (the checkout itself when it has none), and `origin` becomes the mirror every land is pushed to (Rosen R1). Velocity stops the servers it started when it exits and before an update installs, so their binaries can be replaced.
-- **A thread's workspace.** A new thread gets a Rosen change and a workspace at the folder its worktree would have had, from Rosen's warm pool when it has one ready (Rosen R3). Velocity starts each project's Rosen server with its warm pool in `.rosen-pool`, among the project's workspaces, because Rosen hands out a ready workspace by renaming it and that works only within one volume. Velocity keeps no git worktrees ready for a Rosen project. Once per run it raises Rosen's workspace disk budget to what is charged now plus 80% of the free space on that volume: Rosen's default of 100 GiB counts every pooled and taken workspace in full, and a request over it waits. Its agent's Rosen name is that folder's name. The first transcript step is `Workspace · <path> · Rosen change <id> from master`. Velocity then runs the per-agent setup steps below (untracked files, build cache, setup command), which Rosen leaves to whoever takes a workspace.
-- **Stored as the agent writes.** Velocity runs a write-through watcher on each open workspace, so every write is on the Rosen server within 2 seconds. Every 30 seconds it starts a watcher on any open workspace that has none, after a restart or when one ended or failed to start; a watcher's first snapshot covers the whole workspace, so edits made meanwhile are stored then. A resumed thread starts its watcher at once. There is nothing to commit or push.
-- **What the agent is told.** The agent's process gets `ROSEN_ENDPOINT`, `ROSEN_AGENT`, `ROSEN_CHANGE` and Rosen's folder on `PATH`, so the `rosen` CLI reaches the project's server as that agent, on its change. Its session also gets Rosen's own MCP server, `rosen mcp --workspace <folder>` (Rosen R10), which offers the same commands as tools; it is left out when the `rosen` program isn't found. Its first prompt, and a resumed session's, starts with a note that is not shown in the transcript: the folder is a Rosen workspace, not a git checkout, so git branch, commit, push and PR steps don't apply; `rosen commit -m` names the work. The note also tells the agent to run every build and test through `rosen run -- <command>`, which waits for its turn in the machine's run queue (Rosen R3) behind the checks a land waits on, in place of any build queue script its instructions name.
-- **Deleting the thread** abandons its change. Rosen then deletes the workspace under its deletion guard, which keeps it while any edit there is not stored on the server (Rosen R4).
-- **Followed through Rosen's events (F6).** Velocity follows each Rosen project's event stream (Rosen R9) in place of the GitHub PR watcher, which no longer follows Rosen threads. A named snapshot (`rosen commit -m`) moves the thread to review. A land marks it merged and ticks off its tasks; its agent and watcher stop and its AIRC claims are released, and Rosen deletes the workspace. A post-land revert (Rosen R12) puts it back in review, stage fixing, reopens its tasks and its SPEC section as its open work until it lands again, gives it a workspace again at the same folder, at the reopened change's head, lets its thread run sessions again (the land had stopped them for good), and resumes its agent with what the failing checks printed (F7 "After a land"). Velocity lands the change: as soon as it merges cleanly when the project reviews after the land, otherwise after PR duty's review and the pre-land checks (F7 "A Rosen change"). The note a Rosen workspace's agent gets says the same. Velocity saves the stream's cursor with each event that moves a thread, together with what the event leaves to do (a land's cleanup; a revert's workspace and message; a request for changes' message), and removes that work only once it is done. Before running pending work it flushes that snapshot to disk even when ordinary saves are deferred; a failed save or workspace lookup keeps cleanup pending (#353). A crash or a failed step therefore never acknowledges unfinished work: it is redone when the follower starts or reconnects and every half minute, and a message already in the thread's saved transcript is not sent again. Every Rosen project with a thread that has a change is followed, merged threads included, so a revert after a restart is heard even when nothing else in the project is open.
-- **Issues carried by Rosen changes (#386).** An issue dispatch keeps its repository and number on the thread and records a resolved source-issue note on its Rosen change, anchored to SPEC.md; the agent is told to keep the `(#N)` suffix in its named snapshot. After Rosen reports the land and a successful post-land build covering that land, Velocity closes the issue with a comment naming the landed commit's full SHA, that it landed through Rosen, that the build passed after the land, and that the GitHub mirror carries it. Closure waits until GitHub's mirror branch contains that commit. Test green events never complete an issue. The follower reads Rosen's separate durable build-success prefix, requires its build check set to contain commands, and verifies that the landed SHA is an ancestor of the successful build's commit. Without that protocol or a covering build success, closure remains pending. A revert cancels a pending close and reopens the issue with the culprit SHA and the revert's reason. These effects belong to the Rosen event follower, not the checker; they survive restarts, retry failed GitHub calls and mirror lag every half minute, and reuse their comments when replayed. Swarms with Close issues switched off leave their issues open.
-- **Rebases at the step boundary (#271, #398).** When a land moves the base under a change that overlaps it, Rosen rebases the change on the server (Rosen R2, R5). Velocity writes the rebased head into the workspace only at the agent's step boundary: between turns, or while no session runs, never under a running step. The boundary is reserved during application: new messages and notices to a live session stay queued, and an ended session cannot resume until it finishes. Its watcher stops, the head is written, and the watcher starts again. Velocity does not snapshot an unapplied workspace immediately before this write: a snapshot replaces an already conflicted file directly, so resending the old file could hide the markers before the agent sees them. Unstored edits or pending offline snapshots refuse application; the watcher stores them and application retries at a later boundary. Whether a rebase waits is read from Rosen (the change's head against the workspace's last stored tree) on the `rebased` event, at the end of each turn and every 30 seconds, so a refused rebase, or one that arrived while Velocity was closed, is applied at the next check. The bundled Rosen includes rosen#383: manual `rosen rebase` also works while the watcher is open, under the snapshot writer lock, and the watcher reloads its basis afterwards (#377). This replaces `airc_rebase` for Rosen threads.
-  - **AIRC rebase tool (#396).** AIRC omits `airc_rebase` from the tools offered on a project with `rosen.toml`. A direct call explains that Rosen applies rebases at step boundaries, without running git or posting a `conflict` event. Git projects keep the tool and its existing behaviour.
-  - **A conflict (#379, #390, #398)** moves the change onto the new base with a rebased head that can contain conflict markers. Velocity saves the conflict event's sequence and notice together, then waits for a turn boundary and verifies that the workspace has taken the current head before sending the notice. A busy agent is never told to resolve an unapplied workspace. Failed application or delivery stays pending across reconnects and restarts, retried at turn end and every 30 seconds. Replayed events and notices already in the saved transcript are not sent again; a notice is discarded if the server's conflicts were resolved or the change closed meanwhile. The message identifies the conflict event and files, explains the applied markers and asks the agent to preserve both changes, run `rosen resolve` on each remaining conflicted file, then name the work again with `rosen commit -m`. Resolve snapshots the workspace first. Rosen takes resolved snapshots of already conflicted files directly without nesting markers, and refuses both resolution and landing while conflict markers remain, even if all conflict records were cleared (rosen#383).
-- **Falling back.** When the server can't start or the workspace can't be made, the thread takes a git worktree as below, and a notice names the reason.
-
-**Lifecycle (decided):**
-
-| When | What happens |
-|---|---|
-| A thread starts, or any agent starts a job (PR duty review, scout sweep, swarm member, dispatched issue) | Create a worktree from `master`. Its first transcript step is `Worktree · <path> · created from master`. |
-| Its PR merges | Delete the worktree. Delete the local branch too if that setting is on (default on). Log both as steps with the space freed. |
-| Its PR is closed without merging | **Keep** the worktree. No automatic expiry. |
-| The thread fails | **Keep** the worktree. |
-| The user deletes the thread | Delete the thread and its worktree together (F12). |
-| Spec interview | No worktree. |
-
-Deletion verifies the saved owning branch and registered checkout and refuses while uncommitted changes remain or commits are not reachable from a remote ref. A failed verification keeps the checkout and reports why.
-
-A worktree's path is fixed when it is created. Changing the location setting affects only worktrees created afterwards.
-
-**Path:** `<drive><folder>\<project>\<branch-without-vel/>`, e.g. `D:\velocity\worktrees\velocity\command-palette`. Duty jobs use `review-pr-<n>` and `<agent>-sweep`.
-
-**Settings → Worktrees:**
-- **Location:**
-  - a drive picker showing each drive's name, type, used bar and free space (slow drives get a warning)
-  - a folder field with Browse…
-  - a live path preview
-  - a per-project override ("Use a different location for <project>")
-  - a notice when the location changed while worktrees exist
-- **Lifecycle:** the two always-on rules shown locked; "delete the local branch too"; a read-only explanation of the closed, failed and spec rules.
-- **New worktree setup:**
-  - untracked files to copy (default `.env, .env.local`)
-  - a command to run after creation, saved per project (empty by default; Velocity itself can use `pnpm -C ui install`). Clearing it skips the command. Older saved global commands remain a fallback, except the former built-in `pnpm -C ui install` default, which is ignored until explicitly set for a project.
-  - "share the Rust build cache between a project's worktrees" (default on): agents, setup commands and the pool's prebuilds get `RUSTC_WRAPPER=sccache` when sccache is installed and no wrapper is set, and each worktree builds in its own `target` folder
-
-  The agent starts only after setup finishes.
-- **Live worktrees:** one row per worktree: state dot, path, owner, size and state (working / PR #n / failed · kept / closed · kept / review / sweep / ready / ready · building). Warm pool worktrees are listed with the owner "warm pool" and count toward the header and the footer. Just-deleted rows show briefly, crossed out. The header shows the count, total size and free space on the drive. **Prune orphans** runs `git worktree prune`. Clicking a row opens its thread.
-
-**Warm pool (speed):**
-- **One base clone.** Velocity keeps one base clone per project, and every worktree is a `git worktree add` from it, so only the first worktree pays for a clone.
-- **Ready-made worktrees.** Velocity keeps a few worktrees ready at the tip of `master` with setup already done: files copied, shared build cache linked, the project prebuilt. The count is 4 by default and set by "Keep N worktrees ready" on this page; 0 turns the pool off. Only projects whose spec is locked keep a pool (Rule 2).
-  - A ready worktree is a detached checkout at `<project root>\.ready-<n>`. No thread slug starts with a dot, so it never takes a thread's name. A `velocity-ready` file in its git admin folder (outside the checkout) records its base commit and whether its prebuild finished, so after a restart finished ones rejoin the pool and interrupted ones are removed and made again.
-  - **The setup command runs after the take**, at the thread's own path *(proposed, #128)*. On Windows `pnpm install` links packages with absolute junctions, which point back into the pool folder once the worktree moves, and the next `pnpm install` there aborts. A cargo `target` folder has no such paths and stays fresh across the move.
-- **Taking one.** A new thread or agent takes a ready worktree, renames it to its path, and creates its branch there. If `master` has moved since the worktree was made, it fast-forwards first, which is cheap. The take is marked under the pool's lock, so two threads never get the same worktree. A take that fails falls back to a fresh checkout; no ready worktree, likewise.
-- **Refilling.** The pool refills in the background. Ready worktrees fast-forward after each merge to `master`, then re-run setup only if the dependency manifests changed, and build the project at the new tip, so an agent's first build compiles only what it changes. A merge that can't change the build keeps a slot's prebuild: a slot built at the old tip stays built when the merge touched only prose and repository metadata (Markdown, reStructuredText, AsciiDoc, license and notice files, `.github/`). A license or notice file is one named `LICENSE` or `NOTICE`, optionally with a `-` or `_` qualifier, and with no extension or a prose one (`LICENSE-MIT`, `NOTICE.txt`); `NoticeBanner.svelte` or `licenses.json` is source. Both sides of a rename count. Any other file, or a diff that can't be read, rebuilds, and so does a slot whose prebuild failed, whatever the merge touched.
-  - Built *(proposed)*: one worker makes, removes and catches up ready worktrees one at a time. It fetches the base branch every minute and at once when Velocity sees a merge, and uses `origin`'s tip when it can be fetched. A second worker prebuilds one worktree at a time, below normal priority so agents' own builds go first: `cargo build --workspace` in the worktree's own `target` folder, when the checkout is a Cargo project and "share the Rust build cache" is on. A prebuild that fails is not retried until `master` moves. Setup re-runs at every take, so no manifest check is needed.
-- **Skills.** Pool setup links the project's enabled skills into the worktree (F18), so an agent never starts without them.
-- **Lean.** Pool setup installs the project's pinned Lean toolchain (`lean-toolchain`, through elan) and runs `lake exe cache get`. Mathlib's built files live in the shared build cache, so a worktree never rebuilds them.
-  - Built: the prebuild worker does it for each Lake project (a `lean-toolchain` and a lakefile) at the checkout's root or in a top-level folder such as `proofs/`, before the Cargo build and whether or not the Rust build cache is shared. Mathlib's cache tool keeps its downloads in one machine-wide folder, so only the first worktree on a machine downloads Mathlib and later ones unpack it. Before Lake runs, each package pinned in `lake-manifest.json` that the worktree lacks is cloned locally from another checkout of the repository that has the pinned commit (the main checkout first), with the manifest's URL as `origin`, so Lake uses it instead of cloning Mathlib's history again. A failed step is not retried until `master` moves, like the Cargo prebuild.
-- **Swarm launches.** Launching a swarm or goal swarm tops the pool up to its agent count. Agents that find no ready worktree wait for one rather than racing each other on setup. They wait at most 2 minutes, then make their own *(proposed)*. Worktrees added beyond the setting are taken as soon as they are checked out, without a prebuild.
-- **Build queue** *(proposed)*. Velocity runs agents' heavy builds (compile, test, lint, the PR duty landing check) through one machine-wide queue, one build at a time at full machine resources. Builds run side by side split the cores and memory and all finish late together; run one at a time, the first in line finishes in a fraction of the time and the average wait drops. Order: landing checks first, then checks before a PR is marked ready, then everything else, first come, first served within each. A build a change can't affect never enters the queue: a docs-only change builds nothing, and a change to one part (the UI, one crate or package, the proofs) runs that part's checks, not the whole project's. Agents are told the same (F11 default AGENTS.md): build only what the change needs, and never rerun a build or check when nothing it covers changed since it passed. The footer shows the running build and the queue. Long-running dev servers never hold the queue. Until Velocity runs builds itself, `scripts/build-queue.ps1` is the stand-in (`-Priority landing|ready|normal`; `scripts/check.ps1` passes `ready` by default, PR duty passes `landing`). On a machine with Rosen it takes its turn in Rosen's run queue (Rosen R3), the one line Velocity's pre- and post-land checks, Rosen's warm pool prepares and agents' `rosen run` builds already wait in: `landing` runs in Rosen's `landing` class, `ready` and `normal` in `build`. The rosen program is the one `VELOCITY_ROSEN_BIN` names, else the first on `PATH`. Beneath a turn (`ROSEN_RUN_HELD` set, as Velocity's checks set it on their commands) it runs the command at once, since it is part of that turn. Without Rosen it keeps its own line of tickets and a named machine-wide lock, both released by Windows when their holder exits, so a crashed build or a killed waiter never holds up the line. Agents of every project go through the one line, whatever their AGENTS.md says (#308): every agent Velocity starts outside a Rosen workspace, such as one in a git worktree, gets Rosen's folder first on its `PATH` and a note ahead of its first prompt, not shown in the transcript, telling it to run every heavy build, test and lint through `rosen run -- <command>` (a landing check with `--class landing`) in place of any build queue script its instructions name. `rosen run` waits in the machine's run queue whatever folder it runs in. The shared ACP client supplies the note to every prompted agent, including spec interviews, AGENTS.md rewrites and thread-title helpers, on initial launch and resume. Rosen's folder is also included when resolving executables and starting ACP terminals: a provider using Velocity's `terminal/create` capability can run the same command as one using its own shell, even when Rosen is bundled rather than installed on the user's PATH. A terminal with its own PATH keeps its entries after Rosen's folder. Queue discovery requires only the Rosen CLI, so git projects can use it without installing or starting a Rosen server. A tool call running `rosen run` counts as waiting in the build queue, so it is never stalled. Nothing changes when the `rosen` program isn't found.
-  - The run queue's classes overlap on purpose. One run per class at a time, machine-wide: a landing check, an agent's build, the tests after a land and a warm pool prepare can all run at once, the less important ones at below-normal process priority so the landing check gets the cores first. Two projects' landing checks on one machine take turns in the one `landing` class, so a second project's land waits for the first's check. Process priority shares the CPU, not memory or the disk: overlapping runs still contend for those.
-
-**Guards** (from Google Scion's worktree work):
-- Velocity is the only thing that creates worktrees, and agents never run `git worktree add` themselves (AGENTS.md; the default template says so, F11).
-- The pool removes only its own ready worktrees: a registered, detached checkout under a `.ready-<n>` name. A thread's worktree is never removed through it.
-- Deleting a worktree removes only that worktree's own entry. A repo-wide `git worktree prune` runs only from the **Prune orphans** button.
-- Worktree folder names are unique per project, never generic names like `workspace`.
-- A slug made from a title (a model title, a Task List item or a SPEC section) is at most 40 characters. A longer one keeps its first words and ends in `-` and six hex digits of a hash of the whole slug, so two long titles still get different names and the worktree, branch and git admin paths stay well under Windows' 260-character limit (#275). Titles themselves are never cut.
-
-**Accept when:**
-- [ ] With a ready worktree in the pool, an agent starts working within 5 seconds of being launched.
-- [ ] Two agents never share a worktree.
-- [ ] Every merge deletes its worktree within one event cycle.
-- [ ] Closed and failed threads keep their worktree until the thread is deleted.
-- [ ] Changing the location never moves or breaks existing worktrees.
-- [ ] Sharing the build cache uses one compiler cache shared by every worktree (sccache as `RUSTC_WRAPPER` for Rust) and a separate target folder per worktree *(proposed mechanism)*. A shared `CARGO_TARGET_DIR` is not used: cargo locks it, so agents would build one at a time.
-- [ ] Two agents' heavy builds never run at the same time, a landing check never waits behind a lower-priority build, and the footer shows the running build and the queue *(proposed)*.
-
-### F6 · PR follow-through
-
-When the task is done, the agent opens a PR. The PR description links the Task List item or says `Fixes #n`. The thread moves to **PR open · watching**. A thread in a Rosen workspace opens no PR: its project's Rosen events follow it instead (F5).
-
-Draft claims keep the coding transcript until the PR is ready. The watcher follows the thread's same-repository branch and excludes historical PRs from earlier uses of that branch. New review work is saved before delivery and remains pending until its ACP prompt completes; after a restart it resumes in the retained worktree. The PR author's own progress replies remain in history without prompting another response. Merge cleanup and explicit deletion (F12) share the thread's lifecycle lock and wait for confirmed shutdown of its agent and owned terminals before removing the checkout.
-
-Merge cleanup first verifies the registered worktree through F5's ownership and F17's deletion gate, including uncommitted, untracked and unpushed work. It saves `worktree_removal_started` beside `worktree_deleted` in `state.json` before starting forced removal, flushing that checkpoint even when ordinary saves are deferred. A retry may delete an unregistered folder only with that saved record, no `.git` entry anywhere below it, and no project checkout inside it. Without the record, it keeps the folder and reports the cleanup error (#383).
-
-The watcher reads GitHub every 15 seconds, with one query per project that lists the open PRs and the most recently closed or merged ones. The query also reads the fields that show a change: the update time; the comment, review and thread counts; each thread's resolved state; and the head's checks. A PR is read in full only when those fields moved since its last full read, when Velocity has not read it since starting, and every 30 minutes while it is open, which catches an edited inline review comment. A PR with more than 100 review threads or head checks has the rest read on each pass, so every thread and check is compared. A thread whose PR it does not follow, such as a draft claim, costs no request, and neither does a PR whose head is not the thread's branch until the list shows it changed. The repository's identity is kept between passes and read again when the checkout's `origin` changes, which is checked locally each pass, and every 30 minutes. Every `gh` call is counted by the code that made it, including the browser, new-project and repository-list calls, and the totals are written to `github-requests.log` in the app data folder each minute.
-
-- **PR track** under the header: Task done → Proved → PR #n → CI → Review → Merged → Worktree deleted. A closed PR shows: … → Closed without merging → Worktree kept.
-- **The transcript switches to the PR history:**
-  - the coding work, collapsed to one line ("N tool calls · N files · +a −d · proved" with a Show work button)
-  - PR opened, then the **proof card** (F17), CI results and reviewer claims
-  - **review comments** as cards with file:line and open / ✓ resolved
-  - the fix steps (edit, prove, push, reply) and "re-requested review"
-  - approval, then a merged card
-- **Agent behaviour:**
-  - If the local checks or CI fail on its own change, fix and push.
-  - Answer every review comment: either fix and push, or reply with the reason. Then resolve the thread and re-request review.
-  - If the PR is closed without merging, report why in the thread.
-- **Status line:** "watching PR #n · <stage> · answers new comments as they arrive", or "addressing N open review comment(s)".
-- **Sidebar meta:** `#n` plus the stage label in the stage colour: checking / in review / addressing review / approved · merging. Once GitHub reports the merge, the label reads merged · deleting worktree until cleanup finishes and the thread settles as merged.
-
-**Landing and rebases** (from Anthropic's Scion):
-
-The rest of this section is the landing of a PR reviewed with the local checks (F7 "Checks before merge"): a sensitive PR, a PR that changes proofs, or a PR on a project with no GitHub checks. A PR reviewed by reading skips it: Velocity merges its approved head once GitHub's checks pass, without updating its branch, and a merge never restarts another PR's checks.
-
-The PR duty MCP server exposes `pr_duty_prepare_landing` and `pr_duty_checked`. Prepare refuses a PR that is no longer open, so a closed PR's branch is never updated and its owner gets no `conflict` event; on an open PR it updates the branch through GitHub with an expected head and returns its exact head/base and required checks: full initially or on author/overlapping changes, build and lint for an unrelated moved base. The reviewer fetches that head, regenerates artifacts, runs those checks and records success with checked. Merge refuses a missing receipt or moved base. Only an exact two-parent base update carries the reviewer's approval. Updates and update failures post `updated`/`conflict` events. Merge notices target claimed paths and edited regions within three lines, excluding generated artifacts and scoped registration claims. At its next step the affected agent commits current edits and calls `airc_rebase`; Velocity updates only its registered checkout, on whichever branch the thread has checked out there (a thread may move to a new branch for its next piece), without rewriting history and posts `rebased` or `conflict`.
-
-- **No global merge queue or lock.** A PR merges as soon as it is approved and its checks pass (F7), without waiting its turn behind other PRs.
-- **Targeted rebases.** When a PR merges, Velocity compares the merged change's files with each open agent's claimed files and edited files (§3.2).
-  - Only agents with an overlap rebase straight away; each gets a `rebased` event.
-  - Every other agent rebases once, at landing time, instead of after every merge.
-  - Generated files and registration lists (AGENTS.md "Shared files", F14) never count as an overlap. Generated files are regenerated, and registration lists take both sides' additions.
-  - For edited files, an overlap means the changed regions touch or sit within a few lines of each other, not just that both changes are in the same file *(proposed)*.
-- **PR duty updates branches.** PR duty agents are allowed, and encouraged, to update any open PR's branch with `master`. They don't wait for the authoring agent to rebase.
-  - **When:** whenever a PR they are reviewing or about to merge is behind `master`, and again just before merging.
-  - **How:** a merge of `master` into the PR branch (`gh pr update-branch`, or a merge commit pushed to the branch). PR duty never force-pushes and never rewrites the author's commits, so the author's history and open review threads stay intact. Each update posts an `updated` event naming the PR and the new head.
-  - **Why:** waiting for each author to notice and rebase was the main source of landing delays. The author may be busy, rate-limited or paused, and every merge to `master` restarted the wait.
-  - **The author** gets the `updated` event in its thread and pulls before it pushes again, so its next push builds on PR duty's update instead of being rejected.
-- **Landing on a moved `master`.** PR duty updates the branch with `master` just before merging, then runs the checks on the merge result, not on the old PR head.
-  - **`master` unchanged since the checks ran:** PR duty merges.
-  - **No overlapping files:** if it applies cleanly and none of its files changed on `master` since the checks ran, PR duty rebuilds the merge result (incremental build and lint) and merges. It skips only the rest of the checks. A clean textual merge can still break the build: a field one PR adds to a struct breaks another PR's struct literal in a file the first PR never touched.
-  - **Overlapping files, clean apply:** if files changed on `master` but the update applies cleanly, the checks run again first.
-  - **Conflict PR duty can resolve:** when both sides are clear and the resolution keeps both changes as written (imports, lists, neighbouring hunks, lockfiles regenerated), PR duty resolves it in its review worktree, pushes the merge commit and re-runs the checks.
-  - **Conflict that needs the author:** when resolving would mean choosing between two behaviours, the PR goes straight back to its own agent, with a `conflict` event naming the files. The agent resolves the conflict and pushes, then PR duty re-checks only the changed hunks and merges. A conflict is never routed through you.
-- **Merge order** (`order` events, F7) is set only for PRs that overlap each other. Unrelated PRs never wait on each other.
-
-**Accept when:**
-- [ ] A merge rebases only the open agents whose claimed or edited files it touched.
-- [ ] A PR that falls behind `master` is updated by PR duty without waiting for its author, and the author's commits are never rewritten.
-- [ ] A conflict at landing reaches the owning agent within one event cycle and is resolved without user input.
-- [ ] A comment from a PR duty agent reaches the authoring thread automatically and is acted on without user input.
-- [ ] The thread is not finished until `pr://merged`.
-
-### F7 · Duty agents
-
-Long-running roles. They appear under **On duty**, with an agent count (×N) and a one-line summary. Start one from the home chips (`V`, `S`), the palette, or the + on the group. The start dialog sets role, number of agents (1–4), model, effort, speed and role-specific rules. Its model cards are every signed-in provider's model, starting on the default for new threads, and Effort and Speed start at Settings' defaults. Every session the agents run (PR duty reviews, scout sweeps, Main watcher watches) runs on that model, effort and speed. An agent saved before effort and speed could be chosen uses Settings' defaults. Starting a role that already exists adds agents to it; agents already on the role keep their own model.
-
-**Duty view:**
-- **Rules:** chips. Hard rules are shown locked.
-- **Agents:** one card per agent with its model and what it is doing now.
-- **Activity:** a timestamped feed.
-- **Header actions:** Pause/Resume, Stop, + Agent, Rules.
-- **Composer:** instructs every agent in the role.
-- **Dismiss and Stop.** Each agent card has a × (shown on hover or focus) that dismisses that agent at once, with no confirmation (§1). Its running session stops, which ends its agent's process tree; a PR it was reviewing is released (the AIRC `released` event, the `reviewing` label removed if an agent added one, and a `Released · <nick>` comment on the PR) and doesn't rest, so the next idle PR duty agent can claim it on its next tick. The agent leaves the role in `state.json` and the feed gets "Dismissed <nick>". **Stop** in the header dismisses every agent and removes the role from "On duty"; the view goes Home, as it does for a deleted thread. Both survive a restart. A later + Agent takes the lowest free nick numbers, so a dismissed agent's nick can be reused. Worktrees the agent used stay on disk. There is no Undo: + Agent or starting the role again brings agents back.
-
-**Velocity's fast build set (#387).** `rosen.toml` keeps the fast commands in `checks.pre_land` and the full commands in `checks.post_land`; in after-land mode the build checker runs the former after each land (see below). `node scripts/check-fast.mjs` runs locked `cargo check` and clippy on changed crates and their transitive reverse dependencies, including optional, build and target-specific dependencies. Each check folder compares its inputs with its last successful run, so batching, deleted files and a bisection going backwards are covered. A missing or incompatible record, a workspace manifest, lockfile, toolchain, Cargo configuration or checker-script change checks all crates. Embedded files count against their owning crate. Bindings use a conservative fingerprint of Rust declarations, command signatures, registration code, embedded interface inputs, generated bindings, manifests and the toolchain. Ordinary function-body changes do not export bindings again; macros, manual schema computation, custom build scripts and unrecognised syntax retain broader inputs. UI install, build, type check and lint run only when UI inputs (including bindings) change, or the folder needs its initial UI build. The previous checkpoint is removed before the selected checks execute; only a complete pass writes its replacement. The full set also checks formatting, links the workspace, checks crates independently and runs all workspace tests.
-
-Every folder keeps its own Cargo target and Cargo's default incremental compilation for workspace crates; agents and check folders share sccache for cacheable registry and git dependencies. Installed sccache 0.19 retains the working directory in Rust keys, so cross-folder workspace-crate hits are not assumed. The build feed includes the fast script's elapsed time and cache hit/miss delta, labelled as a machine-wide delta because other agents can share the cache. No cacheable requests is reported explicitly, as is an unavailable cache; counters are never reset. Target: a warm fast run for one changed crate under 60 seconds, excluding its run-queue wait. `node scripts/measure-checks.mjs` replays the latest 20 first-parent landed trees in order, with a separate warm-up parent, fixed old commands and separate persistent before/after folders. The replay takes one `rosen run` turn, records its queue wait separately, and saves each sample's execution time, commit, cache report and log under `target/`.
-
-**Measured check times (#387, 2026-11-14–15).** The last 20 first-parent lands at `f87b0696` were replayed after warm-up parent `14cc9d01`, on a Windows Core Ultra 7 265F with Rust 1.99.0, Node 24.18.0, pnpm 10.34.9 and sccache 0.19.0. Before uses the former pre-land commands: formatting, UI checks, locked workspace build, bindings export and workspace clippy. Fast uses the final scripts with default incremental compilation. All 20 pairs passed. Seconds exclude run-queue waits and tree checkout. The separate fast warm-up took 117.3 s and reported 72.8% machine cache hits (617 hits, 231 misses).
-
-| Land (commit) | Before (s) | Fast (s) |
-| --- | ---: | ---: |
-| #362 (1f2d72af) | 77.9 | 53.9 |
-| #363 (e5e520a6) | 59.2 | 62.1 |
-| #364 (59be9087) | 64.7 | 37.0 |
-| #365 (02677cca) | 122.0 | 43.2 † |
-| #366 (8ee74749) | 6.8 ‡ | 48.2 |
-| #367 (b3a2273e) | 82.0 | 54.2 |
-| #368 (e282bdd2) | 5.1 | 0.7 |
-| #370 (df63df22) | 125.3 | 29.0 † |
-| #371 (c8446472) | 34.8 | 1.6 |
-| #374 (6a42be41) | 11.4 | 1.1 |
-| #340 (3f005afe) | 60.8 | 42.2 |
-| #349 (1ab4f6ee) | 30.6 | 50.7 |
-| #355 (2f64cf8f) | 27.2 | 11.4 |
-| #372 (c819091e) | 71.7 | 87.7 |
-| #344 (4b4c817f) | 33.5 | 21.9 |
-| #293 (2be10da1) | 32.6 | 20.8 |
-| #308 (3516b181) | 37.4 | 67.0 |
-| #356 (8791d748) | 36.3 | 63.3 |
-| #354 (75dd7422) | 29.7 | 67.6 |
-| #347 (f87b0696) | 31.4 | 36.4 |
-
-Across these 20 runs, mean time was **49.0 → 40.0 s**, median **35.6 → 42.7 s**, and maximum **125.3 → 87.7 s**; 15 fast runs finished under 60 s. Some changes were slower. † These two fast timings are retries after interrupted compilations and benefit from partially built artifacts; they understate first-attempt cost. ‡ This baseline already had compiled artifacts from an interrupted pilot. Other completed baseline measurements were retained rather than rebuilt. Concurrent builds, upgrades and changing thread budgets varied the cache and CPU conditions. Both sets also encountered incremental-directory access-denied notes ([Rosen #381](https://github.com/mESmaC/rosen/issues/381)); run-client lifetime failures are tracked in [Rosen #382](https://github.com/mESmaC/rosen/issues/382). The raw pair timings and these limits are retained so the aggregate is not treated as a uniform speedup.
-
-A separate fresh function-body edit in `velocity-updates`, on the fully checked merge tree, completed in **10.2 s** (10.10 s in the feed). It selected only `velocity-updates` and its reverse dependent `velocity-app`, with bindings and UI both skipped. The edit was restored byte-for-byte afterward; this meets the warm one-crate target on this run.
-
-**PR duty:**
-- **For git projects** (#381). A Rosen project that sets `review = "after-land"` has no approval for PR duty to give (§1 Rosen rules): the Duty dialog doesn't offer PR duty there and says why, and Velocity lands its changes with no PR duty agent (A Rosen change, below). An existing PR duty role on such a project reviews only its GitHub PRs. Review, scouting and Lean follow the land without blocking it (#382, §1 Rule 8). A Rosen project that keeps `review = "before-land"` keeps PR duty as below.
-- Claims unclaimed PRs, one PR per agent, so two agents never review the same one. The review claim goes through the AIRC lock (`airc_claim` on the PR), so it is atomic. Only its holder updates, approves or merges that PR. A finding that arrives after the PR merged is filed as an issue.
-- Reviews the diff against SPEC.md and the Task List, leaves inline comments, and requests changes or approves. Velocity then merges the approved head.
-- **Checks before merge.** These gates apply to git PRs and Rosen projects with `review = "before-land"` (the default). A Rosen project with `review = "after-land"` has no build, receipt or approval gate at land time: its named changes land on a clean merge, and Velocity verifies builds and tests afterwards as described below. Authors still build and lint their work through `rosen run` before naming it. A reviewer reads a PR; it does not rebuild it. GitHub's checks build and test the head, and Velocity merges it once they pass.
-  - **Review by reading** is how a trivial or normal PR is reviewed when GitHub reports at least one check on its head. The agent reads the diff and the PR's conversation and records its decision. It runs no build, no tests and none of the project's local checks, even where the project's AGENTS.md tells PR duty to. Its session ends at its decision.
-  - **Velocity lands the approved head.** Every 30 seconds Velocity reads each approved head no agent holds and merges it when all of these hold: the PR is open, ready and still at the approved head; it merges cleanly; every GitHub check on the head has completed as success, neutral or skipped; and no review thread is open. No agent takes part, and the branch is not updated first.
-    - Checks still running: it waits and says nothing.
-    - A failed check: the feed says "Approved #n waits · GitHub checks failed (…)", and the PR waits for its author to push (F6 "Agent behaviour"). A re-run that passes on the same head merges it.
-    - A conflict with the base branch: a `conflict` event goes to the owning agent, which resolves it and pushes. The new head gets a review of the commits pushed since.
-    - An open review thread: the feed says so, and the head merges once the thread is resolved.
-    - The merge is the approver's: it needs the standing approval at exactly that head and a statement lock that still holds, and a refused merge posts a `failed` event, as below.
-  - **Local checks** are how these are reviewed instead: a sensitive PR (Tiered review), a PR that changes a file in the Lake project, and a PR whose head has no GitHub check, because nothing else would build it. The agent runs the project's checks in its review worktree on the PR merged onto the current `master` (the commands come from AGENTS.md), then approves and merges itself through the landing steps in F6. A pending, red or stale GitHub run does not hold such a PR up.
-  - An approved head whose GitHub checks never arrive is handed to an agent after 2 minutes: it runs the local checks and merges.
-  - With the "Checks pass" rule off, a review is by reading and Velocity merges on approval, without reading GitHub's checks.
-  - **Why:** PR duty agents spent 62% of their time rebuilding and retesting PRs that GitHub CI had already built, on the machine every other agent was compiling on, and 8% reading them. Each merge moved the base and restarted the other reviewers' checks: one PR was read in a minute and then checked four times over 40 minutes.
-  - **What it gives up:** two PRs that each pass can still break `master` together. GitHub CI on `master` and the Main watcher catch that after the merge, not before.
-- **Rules:**
-  - **Never merge without an approving review** (locked).
-  - **Never merge unless the proofs check** (F17; locked).
-  - Review every theorem statement against the claim and SPEC.md.
-  - Checks pass before merge: GitHub's checks on the approved head, or the local checks on the merge result where those apply (Checks before merge). Turning it off merges on approval.
-  - Check against SPEC.md.
-  - Re-review on new commits. A merge commit PR duty pushed to update the branch is not a new commit to review; only its conflict resolutions are.
-  - Update branches with `master` (F6): allowed and encouraged, never by force-push.
-  - Delete the branch after merge.
-  - Merge method: Squash (default) / Rebase / Merge commit.
-- Each review runs in its own worktree (F5).
-- **How a review runs.** Every 30 seconds, and at once when PR duty starts, resumes or gets agents or a Rosen change is named, lands or is reverted, each idle PR duty agent claims the oldest open, ready PR that needs work. A head with no decision gets a review; a head with a standing approval is landed by Velocity (Checks before merge), or by an agent that runs the local checks when no GitHub check arrives; a head with changes requested, or whose approved merge was refused, waits for its author to push. A head an agent already finished a session on rests: a decided head until it moves, an undecided one for 5 minutes, after which it is claimed again on its own (Rule 1: never a "needs you" state). Instructing PR duty ends every rest at once.
-  - **Projects never wait for each other, and Rosen work never waits for GitHub.** Each project is passed on its own, so one waiting on GitHub holds up no other; a project asked for again while its pass runs is passed again as soon as that ends. A Rosen project's pass does not list its PRs: it takes them as GitHub last listed them, and a listing is read again off the pass when it is older than 20 seconds or a PR's review ends. A listing older than 2 minutes is not acted on. A git project's pass lists its PRs first, since they are its work. Every `gh` call is stopped after 120 seconds, so a hung request ends as a failed one.
-  - The claim posts a `claim` event and a `Reviewing · <nick>` comment on the PR, which the rail reads. Until `airc_claim` lands (M9), the review runner holds the lock itself; the agent's session ending posts `released`.
-  - A review lasts until its agent records a decision, not one turn. Its prompt tells the agent never to end its turn before deciding and, for a review with local checks, to run long commands (a cold build, `lake build`, the stress suite) in the foreground. A turn that ends with no decision and no instruction of yours queued gets a reminder to carry on, or to say why it cannot decide; after 3 reminders the session stops and the head rests as above.
-  - A review whose PR is closed or merged by someone else stops on the next pass: a held PR missing from the open PRs as listed means it is no longer open. Its session stops, its claim is released (the AIRC `released` event) and the feed gets "Stopped reviewing #n · it is no longer open", so the agent takes other work instead of checking a PR that can no longer land. A listing that failed or is too old to act on stops nothing.
-  - A review runs in the PR's `review-pr-<n>` worktree: a detached checkout of the PR head with the base branch's tip merged in, so the agent reads, and any local checks run on, the merge result. If that merge conflicts, the checkout stays at the PR head and the agent resolves the conflict or sends it back (F6).
-  - The agent records decisions only through Velocity's PR duty MCP tools, served by Velocity's own executable: `pr_duty_pull_request` reads the PR, `pr_duty_review` approves or requests changes at the head it checked (the approval record above), and `pr_duty_merge` merges the approved head with the role's merge method. In a review by reading, `pr_duty_review` approves without a check receipt, refuses while a review thread is open or when the head changes proof files (that head needs the local proof checks), and `pr_duty_merge` refuses: Velocity merges. The launcher fixes the agent's nick and its one PR, so it can't act on another agent's PR or record a decision as anyone else.
-  - Its card shows `#n · <current step>`; the feed gets the claim, each approval, request for changes, merge or refused merge, and a review that ended without a decision, with when it is retried. A merged PR's review worktree is removed (Rule 5).
-  - A message from the PR duty composer goes to each running review as its next message, and to each idle agent with its next claim.
-  - **A Rosen change** (F5) follows the `review` setting in the base's `rosen.toml`. In `after-land` mode the checker asks Rosen to land a named change without running any pre-land command or submitting a receipt. A conflict goes back to its author; a receipt refusal never starts a build in this mode. Review and full tests do not block another land. In `before-land` mode it is claimed like a PR once its thread names its work, after the project's PRs, and Rosen requires an approval at the change's head and a receipt for its merge result. The reading and local-check review paths below describe that mode.
-    - **Reviewed by reading** when the project's `rosen.toml` names pre-land commands and the change is not sensitive and does not touch `proofs/`. The commands and the sensitive paths are the policy Rosen reads from `rosen.toml` at the base, never from the change or from a git checkout's AGENTS.md, which can be older than the base; while Rosen can't say what the policy is, the change waits for the next tick. The agent reads the change and records its decision with `rosen_duty_change` and `rosen_duty_review`, its only tools. It builds nothing, its approval needs no receipt from it, and its session ends at its decision.
-    - **Velocity checks and lands the approved head** (Rosen §9 "Build queue"). One checker runs per project, one change at a time, oldest first, as `velocity-checker`:
-      - It asks Rosen to land the change first. A prose-only change, or one whose receipt still counts, lands with no build.
-      - When Rosen wants a receipt, it brings the project's `pre-land-checks` folder to the change's merge result and runs the pre-land commands there, in order, through the platform shell. The folder is kept from one check to the next, and only files that differ are rewritten, so each build compiles what changed since the last one. A command may run for an hour.
-      - The commands, the check set the receipt names and the change's tier are read at the base of that merge result. A policy land between the first look and the check therefore counts: a change it made sensitive goes to an agent's local checks instead.
-      - The folder holds exactly the merge result's files, plus build output. A file the last result had and this one lacks is removed; one that can't be removed, such as a file another program holds open, stops the check, which is retried on the next tick, and stays listed so that check removes it.
-      - Every command passed: it submits the receipt for that exact head and base and asks Rosen to land again. The feed says "Landed change …", with how long the checks and the land took.
-      - A successful land is checkpointed as merged before the checker schedules again, only while the thread still represents the same named work. A later lifecycle event or fixing state wins over a delayed land reply: its recovery message, pending follow-ups and reopened tasks are preserved, even across a restart. The event still owns the cursor and cleanup, but a stale review roster cannot re-submit reverted work while that event catches up.
-      - It takes a change at its approval, without waiting for the reviewing agent's session to say its last words and stop.
-      - Each check takes one turn in the machine's run queue (Rosen R3 "Run queue"), in its first class, so the checks of several projects never compile at once and no check waits behind an agent's build, the tests after a land or a warm pool's prepare. The feed's time for a check includes its wait.
-      - A command failed: the author's thread gets the command, its exit status and the end of its output, and goes back to review, stage fixing, as for requested changes.
-      - The merge conflicts: the author's thread is told which files, and how to rebase and resolve them.
-      - The checks could not run at all, or Rosen refuses the land for another reason: the feed says why once, the change stays approved, and the next tick tries again.
-      - This serial checker is retained for `before-land` projects. `after-land` projects never enter it.
-    - **After a land, Velocity verifies builds and runs the full tests** (Rosen R12, #380). In `after-land` mode these are independent passes that run even without active PR duty agents or while PR duty is paused. In `before-land` mode the full-test pass retains today's PR duty schedule and revert policy; builds remain before landing, and `recheck = "merge"` also runs build/lint after landing, independently of PR duty pause or staffing (#391).
-      - Checker and post-land messages remain visible without a PR duty role (#392): the first update creates a saved, zero-agent PR duty feed entry under On duty. It starts no agents and retains the latest 200 events across restarts. Existing roles keep their agents, rules and pause state; projects or other duty roles removed during a run are not recreated.
-      - **Fast builds in `after-land` mode:** Rosen offers the newest base commit not covered by its build prefix, batching lands that arrive together. Velocity brings `post-land-builds` to that commit and runs its `rosen.toml` pre-land commands (build and lint, targeting 1–3 minutes). Velocity preserves Rosen's offered check kind, commands and priority: `landing` runs in the foreground queue class and `verify` runs below normal priority in the background class. Merge-mode build jobs use `landing`, ahead of full tests. The independent build worker handles build jobs that Rosen offers before tests through `post_land_next`, so the test worker never runs them as tests (#391). Passed and failed build feed lines include the fast script's elapsed time and cache delta from `target/.velocity-checks/feed.txt` when present; the optional report is bounded and never affects the verdict.
-      - **Full tests:** the project's `rosen.toml` post-land commands run on the newest landed commit no full run has covered, in `post-land-checks`. Both folders keep build output and rewrite only changed sources, as `pre-land-checks` does. Full tests run at below-normal priority in the queue's `verify` class: a run starts when no foreground build is running or waiting, or after two minutes, and once started it never holds one of them back.
-      - Every command passed: that commit and every land before it are green. Changes that landed during the run make the next batch, so one run covers many lands.
-      - A command failed: Velocity gives Rosen the command, its exit status and the end of its output, then tests each commit Rosen names with the failed batch's commands and priority, so a build bisection runs build/lint rather than full tests. Rosen halves the commits since the last green one until a single change is left, and wants that change to fail a second time and the commit before it to pass.
-      - A confirmed **build** failure is reverted on the base by Rosen and reopened. The feed names it, its thread goes back to review, stage fixing, with a workspace, the command, its exit status and the end of its output (F5 "Followed through Rosen's events"), and no other change is touched. Reverts never rewrite history or discard the author's work. The revert is a land: the next run checks it.
-      - A confirmed **test** failure in `after-land` mode is retained by Rosen as a `post-land-failure`, with its culprit, and never reverted. Velocity files an issue on the project's GitHub repository labelled `post-land-failure`, containing the command, exit status, output, culprit change and commit, and its saved thread. A later occurrence for the same culprit and command/status comments on the existing open issue, including when diagnostic timings or paths differ. Stable occurrence markers prevent a retry after a crash from posting twice; a durable outbox retries GitHub outages independently of verification and landing. In `before-land` mode a confirmed test failure still reverts and reopens its culprit as before. Full tests gate releases (#381), not lands in `after-land` mode.
-      - The results contradict each other, such as a test that fails only sometimes or a failure every commit has: nothing is reverted, the feed says so, and the batch is tried again after the next land. The same holds when Rosen refuses a result, such as a revert that no longer merges.
-      - The checks could not run at all: the feed says why once, and the next tick tries again. Rosen keeps a bisection across restarts, so a pass picks it up where it stopped.
-      - A project with no post-land commands has nothing to fail: its lands are marked green without a run.
-    - **Reviewed with the local checks** otherwise: a sensitive change, one that touches `proofs/`, or a project whose `rosen.toml` names no pre-land commands. The rest of this list describes that review.
-    - The review runs in the project's `review-change-<thread>-<nickname>` folder: the change's merge result onto the base, written by Rosen, with the per-agent setup a worktree gets (a review by reading gets no setup). It is a plain build tree, not a git checkout, and it is removed when the review ends. A review that runs the checks gets the folder from Rosen's warm pool when it can (Rosen R3): a ready workspace brought to the merge result, with the build output its prepare left, so the review's first build compiles what the change touched and not the whole project. A review by reading gets the files alone and takes nothing from the pool.
-    - **Checks in a plain merge tree (#394, #378, #388).** `scripts/check.ps1` accepts `-ChangedPathsFile`, a UTF-8 list of root-relative changed paths, one per line, including deletions. Without that list or a local `.git`, it runs every check; `-Full` never needs change detection. Bindings are checked against regenerated content without Git, and Git line-ending cleanup runs only in a Git checkout. The stress runner locates the Velocity workspace from its current directory or an ancestor at run time, including when a warm-pool binary is reused, and runs every script and workspace check in that tree. Git-specific stress evidence creates isolated fixtures from that tree's sources; the merge tree needs no synthetic Git history. These PowerShell checks require PowerShell 7 (`pwsh`) on the duty machine's PATH.
-    - The agent works only through PR duty's Rosen MCP tools, served by Velocity's own executable: `rosen_duty_change` reads the change (diff, named snapshots, review threads), `rosen_duty_prepare_landing` writes its current merge result into the folder, `rosen_duty_checked` submits the receipt for that exact head and base once the proofs check on it (F17; `lake build` and the audits when the change touches the Lake project), `rosen_duty_review` approves (in Rosen, after the receipt), requests changes, comments or holds, and `rosen_duty_land` lands the approved head. The agent approves and lands as `pr-duty-<nick>`.
-    - Requested changes go to the author's thread as a message and put it back in review, stage fixing; its line comments open Rosen review threads. Once it names its work again, it is reviewed again.
-    - A land Rosen refuses because the base moved needs a fresh merge result, checks and receipt; any other refusal ends the review with a feed line.
-- **Approval record** (decided, Q28). Velocity records each approval itself, as an `approved` AIRC event naming the PR, the reviewer's nick and the head SHA it approved. That event is the approval Rule 4 requires.
-  - GitHub's review state is advisory, like CI. Every agent shares your one GitHub login, which can't approve its own PRs, and Velocity never asks for a second account's credentials or an app key (F15).
-  - PR duty merges only the head it approved (`gh pr merge --match-head-commit <sha>`), so a commit pushed after approval needs a new review.
-  - A branch update PR duty made itself with no conflict resolution moves the approval to the new head (it is not a new commit to review, see Rules below). Any other push clears it.
-  - A `changes` event newer than the approval blocks the merge. PR duty mirrors each record on GitHub as a comment that starts "Approved at `<sha7>`" and gives a short reason for the approval, so people reading the PR see it. Velocity then merges on the approver's behalf, or the reviewer merges itself after local checks.
-  - On a repository whose branch protection requires a GitHub approval, the merge fails and Velocity posts a `failed` event. It never bypasses the rule (`--admin`).
-- **Review the intent, not each line.** The reviewer checks the PR against its claim, its Task List item, issue or SPEC.md section, and AGENTS.md. Style is left to linters.
-- **Severity bar** (locked). A finding blocks a merge only for: data loss or corruption, a crash or hang, a §1 rule violation, a security hole, a failing local check, or the main path of the claimed piece not doing what its SPEC.md section says.
-  - Everything else (edge cases on rare inputs, display miscounts, naming, polish) is filed as an issue with its evidence, linked from an approving review, and goes back to the pool for scouts and other agents.
-  - Every blocking finding goes in the first review. Later rounds review only the commits pushed since, and block only on findings in those commits or on new data loss or a crash.
-  - When a reviewer is unsure whether a finding blocks, it does not block.
-  - **Why:** one PR took 14 hours and five review rounds, each blocking on a narrower display edge case than the last, while the PRs queued behind it fell into conflict with every merge.
-- **Review the statements, not the proofs.** Lean has already checked every proof. The reviewer's job is whether the right thing was proven (F17).
-  - Does each statement say what the SPEC.md section says?
-  - Do its hypotheses exclude real inputs?
-  - Is the cost model honest, and is the class of alternatives the one that matters?
-- **PR duty writes tests too.** When a reviewer doubts a claim a proof doesn't cover, it writes a stress script, runs it, and attaches the result to its comment.
-- **Tiered review** *(proposed)*. Velocity tiers each PR from its diff:
-  - **Trivial:** docs, comments or formatting. No proof needed. Approved once the change matches its claim.
-  - **Normal:** everything else. Full review.
-  - **Sensitive:** touches any path listed under "Sensitive paths" in AGENTS.md (e.g. migrations, worktree deletion, CI config, auth). Full review, plus the project's stress suite before merge (the stress command AGENTS.md names as the merge gate; a long benchmark or load run never is one), plus a confidence proof at the reference level for each proof-list feature it changes: a fixture table exported from the Lean model plus one test that checks the code against it. The code level is required only when an issue asks for a translation (F17, #142).
-
-  - **Reading the diff:** a change counts as docs, comments or formatting only when Velocity can show it: docs files, whole-line comments, and whitespace that never joins two tokens or sits inside a string. Anything else (an unknown file type, a binary, a rename, a mode change) makes the PR normal.
-  - **Sensitive paths:** each bullet of the AGENTS.md section lists paths, folders or globs as inline code (`*` within a folder, `**` across folders). A review reads the list from the base branch's AGENTS.md, so a PR can't lower its own tier.
-
-  The tier shows on the rail PR row. Every tier still needs an approving review, so "never merge without approval" holds. On a Rosen project that reviews after the land, no tier is reviewed before the land: a sensitive change lands on a clean merge like every other, and goes first in the review queue after it.
-- **The release gate** (#381). On a Rosen project the release, not the land, is where everything is held to the full bar, like Scion's tests before a deploy (§3.3). `scripts/release-gate.ps1` runs on the release commit and stops at the first failure; the release workflow runs it before it builds anything, so a tag that fails it publishes nothing. Cutting a release requires:
-  - the post-land full tests green on the release commit: the `[checks.post_land]` commands of its `rosen.toml`;
-  - `cargo run -p stress -- --all` passing;
-  - `lake build` in `proofs/` passing, with the axiom audit (only `propext`, `Classical.choice` and `Quot.sound`);
-  - no open issue labelled `release-blocker`.
-  The release gate's GitHub token has only `contents: read` and `issues: read`; only the publishing job receives `contents: write` (#393).
-- **Landing ticks the plan.** When PR duty lands a PR for a §7-style checklist item, it ticks the item in the same branch update it makes before merging. Authors never tick it, so PRs don't all edit the same checklist lines.
-
-**Main watcher** *(role name proposed)*: a duty role that watches `master` after merges, modelled on Anthropic's "superfan" agents.
-- After each merge it runs every scout test and stress script (F17). Pre-merge CI is only build and lint, and the proofs are checked locally.
-- When `master` breaks, it bisects the recent merges, posts a `broken` event naming the merge, and opens either a fix PR or a revert PR. That PR goes through PR duty like any other; the watcher never pushes to `master`.
-- Targeted delivery (F14) tells only the agents whose branches contain the breaking merge.
-- It tracks flaky tests and files issues for them.
-- Rule: **Never push to `master`; every fix or revert is a PR** (locked).
-- **How a watch runs.** Start it from the duty start dialog, the palette ("Put an agent on main watch…") or the + on the On duty group. It has no settings beyond its locked rules; the commands it runs come from AGENTS.md.
-  - The runner reads the base branch's tip on the remote at most once a minute. When the tip moves past the last watched commit (and once when the role starts), one idle watcher takes the new tip. The others stand by, so a merge that lands mid-watch goes to the next idle watcher and no tip is watched twice. Pausing lets a running watch finish and starts none. A watch that closing Velocity stopped runs again on the current tip when Velocity starts, unless the role is paused.
-  - A watch is one agent turn in the watcher's own `<watcher>-sweep` worktree (F5), a detached checkout of that tip, reset before each watch. Its card shows the agent's current step; the feed gets the watch's start, each verdict, and a watch that ended without one.
-  - The watcher records verdicts only through Velocity's watch MCP tools, served by Velocity's own executable with the watcher's nick and tip fixed by the launcher: `watch_green`; `watch_broken` (the breaking merge, its PR, the failing command and output), which checks the commit is on the base branch at the watched tip and, when the project has a GitHub repository, that the PR merged, then posts the `broken` event bound to that commit; and `watch_pull_request`, which checks the fix or revert is an open PR against the base branch and posts a `PR` or `reverted` event. A project with no GitHub repository gets the pushed branch named in the watch's summary.
-  - Flaky tests are filed through the scouts' `scout_issues` and `scout_file` tools (never duplicates, failing evidence attached), signed with the watcher's nick.
-  - A message from the Main watcher composer goes to the running watch as its next message; with none running, the next idle watcher watches the tip again with it.
-
-**Review swarm on after-land Rosen projects (#382):**
-- The Scouts duty slot becomes **Review swarm** when the base's `rosen.toml` sets `review = "after-land"`. Start it from the Duty dialog or the Scouts shortcut; existing saved scout rosters join this mode too. It runs alongside build threads, with no PR duty required. Git and before-land projects keep Scouts below.
-- A worker claims the oldest unreviewed landed change through Rosen's channel, with sensitive changes first. It reads the exact landed diff, the author's named snapshots, the referenced issue and the implemented SPEC section, and checks every implementation claim. A channel review claim names the change and landed commit; it holds no source path or landing lock. Workers claim paths and issues before writing proofs or fixes.
-- Findings use `scout_issues` and `scout_file`: open and closed duplicate checks, an executed failing reproduction and attached output. A channel claim serialises publication across workers. A worker may instead write a fix-forward change. It never reverts by hand; R12 owns recovery, and in after-land mode only a broken build is reverted.
-- For each affected F17 proof-list feature, the worker writes or updates `proofs/<Feature>/Design.lean` and the exported fixture table, with the implementation's fixture check. `review_swarm_complete` requires the feature's design and fixtures and runs `lake build`, the placeholder scan, SPEC-section check and axiom audit in the machine's background `verify` queue. Model/code gaps become issues with evidence. Proofs and fixes are ordinary named Rosen changes; they land through the same after-land policy, with no approval or receipt. A failed proof never delays another land.
-- Completion is durable. Velocity marks the target `reviewed` or `issues filed` only after a completion report and after any named proof or fix-forward work lands. An ended or failed session alone never marks coverage. Interrupted workspaces and pending acknowledgements resume after restart; unfinished edits are kept. A reverted and relanded target is a new review incarnation.
-- **Coverage, not gates:** the duty header and sidebar show the number of unreviewed landed changes, the oldest age and the configured review window. The roster caps concurrent provider sessions; adding or dismissing agents changes that cap. Velocity starts more of those workers as the backlog grows or approaches its window. The Duty dialog's review-window choices reuse saved cadence settings: **1m** (after every merge), **30m** (periodic), or **30m · scout once** (once). Reviews drain continuously in every mode; cadence controls idle scouting. When no review remains, a worker scouts adversarially in its own Rosen workspace. Instructions reach running workers at their next message, and later work follows the latest instruction. Pause finishes in-flight work and starts no new work; Stop or Dismiss stops the corresponding sessions and releases their review claims.
-- This runner is independent of the landing checker. Reading coverage, launching workers, filing findings and checking Lean never become land prerequisites. The release gate remains responsible for full tests and proofs.
-
-**Scouts:**
-- **Assume every part of the application is broken and will fail, then prove it.** Scouts write the project's tests and stress scripts (F17). Building agents don't.
-- Sweep the repo: run the stress scripts against the code and against the Lean reference models, run lint, read SPEC.md and the proofs, and file issues.
-- Focus areas: Bugs, Stress, Proof gaps, Spec drift, Performance, Security, Dead code, UX.
-  - **Stress:** load, concurrency, malformed input, resource exhaustion, crash and restart.
-  - **Proof gaps:** features with no proof, statements weaker than SPEC.md, hypotheses that exclude real inputs, and languages stuck at the model level.
-- **Rules:**
-  - **Never file duplicates** (checks open and closed issues; locked).
-  - **No issue without evidence:** a failing test or stress script, attached (locked).
-  - Label issues for dispatch.
-- Sweep: Once / Every 30 m / After every merge.
-  - Each scout sweeps once when it joins, then on this cadence. "After every merge" sweeps when the base branch's tip on the remote moves. Pausing lets running sweeps finish and starts none. A sweep that closing Velocity stopped runs again when Velocity starts, unless the role is paused.
-  - A sweep is one agent turn in the scout's own `<scout>-sweep` worktree (F5), a detached checkout of the base branch's tip, reset before each sweep. Its card shows the agent's current step; the feed gets the sweep's start and end and each filing.
-  - Scouts file only through Velocity's scout MCP tools: `scout_issues` (every open and closed issue, which the scout compares its finding against) and `scout_file` (runs the reproduction, which must fail, attaches the script and its output, refuses duplicates, and signs the issue with the scout's name).
-  - A message from the Scouts composer goes to every running sweep as its next message; idle scouts start a sweep that follows it.
-  - `scout_compare` runs implementation and compiled Lean reference driver scripts in the scout checkout, with identical UTF-8 cases on stdin (up to 48000 bytes). Both drivers must exit successfully; stdout is compared byte for byte, so adapters normalize output. It returns both outputs and diagnostics. A missing toolchain or failed driver is an execution error, never a model disagreement. Scouts preserve disagreeing inputs in a failing script and use `scout_file` to attach executed evidence and check duplicates. This backend-only tool never accepts commands from the frontend.
-- Issues they file show their name in the Issues panel.
-
-**Accept when:**
-- [ ] Pausing finishes in-flight reviews and claims nothing new.
-- [ ] Rail PR rows show the review state and the claiming agent.
-
-### F8 · Task List
-
-**Continuous issue dispatch (Rosen projects):** Each project can save **Keep N agents busy** (off at 0) and a pause state. Velocity fills free slots with ordinary build threads on the default model, using the issue title and the issue-dispatch prompt. The work inventory excludes claimed issues, owner-decision questions (labelled `spec-question`, `needs-decision`, `needs-owner` or `owner-decision`, or explicitly requesting a decision in their title or body) and `release-blocker` issues. Issues are ordered by milestone number (no milestone last), then oldest first. Working and awaiting-land build threads count toward N; a land or an ended turn with no named work and an empty Rosen diff frees its slot. Failed and closed threads free capacity but retain issue ownership. An unchanged issue already dispatched is not dispatched again just because its agent found no changes or its GitHub issue has not closed yet; editing the issue makes it eligible again once unclaimed. Dispatch continues across project switches and app restarts. Interrupted startup recovery reserves its threads before background dispatch starts. Empty-thread retirement excludes unread queued messages and rechecks saved state under the same lifecycle lease as resumption. The sidebar's Duty controls and each Duty view show the slot and busy counts and Pause/Resume; the Duty view also shows the next five available issues. Pausing stops new starts and leaves existing threads running. The saved spec lock still applies.
-
-The project-scoped list in the top-right panel.
-- **States:** draft (before spec lock), todo, now (an agent is on it), done (its PR merged).
-- **The counter** shows `done/total`.
-
-**Adding tasks (decided):**
-- **You:**
-  - an always-visible "Add a task" input pinned under the list (Enter adds and keeps focus)
-  - `T` from anywhere
-  - the + in the panel header
-  - `/task <title>` in any composer
-  - the palette
-- **Agents:** they have full create, read, update and delete over the Task List through `task_list`, `task_add`, `task_update` and `task_delete` (#309). They read it at any time, and add, change or remove tasks **only when your message asks them to** (e.g. "add these to the task list: X, Y", "mark 3 done", "drop task 5"). Otherwise they file issues. This rule is written in AGENTS.md.
-- **Agent tool runtime:** the Task List tools are served by the AIRC MCP server injected into every agent session. Its instructions say to change the list only for an explicit user request; otherwise file issues. Only the native store owner writes `state.json`:
-  - `task_list` returns each task's number, title, state, owning thread with its live state, and who added it. It reads a snapshot the store owner publishes in the project's channel on every pass (about once a second), and before it answers any change, so a change the agent just made is always in it.
-  - `task_add { title }`, `task_update { task, title?, state? }` (state `todo` or `done`) and `task_delete { task }` queue a durable project-scoped request under the launcher's identity. The store owner applies it, saves the result with thread attribution (duty agents link to their role) and posts a `task` event. The tool waits up to 5 s for the answer and returns it: the saved task, or why it was refused. Past that it returns the queued request sequence, and `read_feed` carries the answer. Request identities prevent duplicate adds after a crash/restart.
-  - An added task is a draft before lock and todo afterward. Every task stays a draft until the spec is locked, so a state change needs a locked spec. A task an agent is on (now) can be marked done but not reopened. Reopening a done task frees it from the thread that finished it, so that thread's merge cannot close it again. Deleting a task drops it from any thread that lists it; the thread keeps running.
-  - None of them edits SPEC.md or starts an interview.
-- Tasks not created by the spec show who added them: "added by you", or "added by <thread>", which links to that thread.
-- Tasks added before the spec is locked are drafts.
-- **After the spec is locked** (decided, Q6): a task you or an agent adds goes straight to todo and stays outside SPEC.md. Adding a task never starts an interview and never edits SPEC.md. When the work changes behaviour SPEC.md describes, the building agent updates SPEC.md in its own PR (AGENTS.md).
-
-**Live state:** a task with an agent shows that agent's state (agent working / agent idle / #n · in review / merged · #n), linked to its thread. Agent idle means its turn ended before its PR is followed, such as a draft claim not yet marked ready.
-
-**Accept when:**
-- [ ] Re-rendering the list never takes focus from the add-task input.
-- [ ] New tasks scroll into view.
-
-> The full meaning of the Task List is still to be explained by the user (§8). Do not add task fields or behaviour beyond this section.
-
-### F9 · Issues and dispatch
-
-- **The Issues panel** lists open GitHub issues: number, title, label and the scout that filed it.
-- **Questions** *(proposed)*: issues labelled `spec-question` are open SPEC.md §8 questions an agent ran into. They show as their own group at the top of the panel, sorted by how many pieces each one blocks. Each row shows the filer's recommended answer when expanded.
-- **Collapsed rows**: every row starts collapsed to its title line and label line, so a long list stays scrollable. Clicking a row (or Enter, Space, →/←) expands it to show the recommendation and blocked count for a question, or the opening paragraph of the issue body, with an Open button that opens the issue (or its thread, once dispatched). Which rows are expanded is per project and survives refreshes.
-  - **Accept** opens a one-line SPEC.md PR that records the answer as *(proposed)*. PR duty lands it as Trivial (F7), and the blocked pieces become claimable.
-  - Agents never wait on a question: they file it and claim other work (Rule 1).
-  - **Why:** unanswered questions, not code, were what kept most of a milestone unclaimable.
-- **Dispatch** (hover button, `I`, or the palette): starts one agent on the issue, in its own worktree, with the normal lifecycle. The issue stays listed with its agent's live state until the PR merges, which closes it.
-  - `I` opens the palette filtered to issues. Dispatched threads keep the issue title and use `vel/issue-<n>` (with a unique suffix when needed), without calling the title model. Their saved issue identity includes the repository; repeat dispatch opens the owning thread. Deleting that thread frees the issue after Undo expires (F12).
-  - A question's recommended answer is read from a `Recommended answer:` or `Recommendation:` paragraph; its `Blocks:` bullet list supplies the blocked-item count. Questions without a recorded recommendation stay readable on GitHub. Accept starts the normal agent lifecycle with a prompt limited to the one-line proposed SPEC answer and its PR.
-
-### F10 · Swarm
-
-One agent per open item, all started at the same time, each in its own worktree. Open it with the **Swarm** buttons on the Task List and Issues panels, `W`, the home chip, or the palette.
-
-**Swarm dialog:**
-- **Source:** Task List · N, Issues · N, or Both · N.
-- **Items:** checkboxes, all open items checked by default, with Select all/none. Items that already have an agent, and draft tasks, are shown but can't be selected.
-- **Models:** choose one or several. Several are assigned round-robin, and the split is shown ("3 on Opus · 3 on Sonnet · 3 on Codex").
-- **Rules:**
-  - Each agent opens a PR and watches it until it merges (locked, from AGENTS.md).
-  - Each agent gets its own worktree under the configured location (locked).
-  - Rebase only when a merged PR touches your files, otherwise once at landing (locked, F6).
-  - Close each issue when its PR merges (default on).
-- **PR duty capacity:** aim for about 1 reviewer per 3 open PRs. If PR duty is short, offer "Add N agents to PR duty"; if nobody is on PR duty, offer to start it. Without a reviewer, PRs wait as "needs a reviewer".
-- **Footer:** "N worktrees on D: · all start now". Launch with `Ctrl+Enter`.
-
-**Swarm in the sidebar:** one row under **Swarms**, with ×N, a segmented progress bar (working / in PR / fixing / merged) and counts. Member threads are listed under it, indented, only while the swarm or one of its members is selected. They are not listed in the other groups. ×N and the counts follow live members only (choosing, working, PR open, addressing review): merged, closed, failed and deleted members drop out, a member being deleted drops out at once, and a swarm with no live member left reads "finished". Right-clicking the row deletes the swarm (F12).
-
-**Swarm view:**
-- **Header:** N agents · N worktrees live · start time · merged/total. **+ Items** adds open items to this swarm.
-- A big progress bar plus a legend.
-- **Agent cards:**
-  - the item (task, or issue #n)
-  - a 5-dot track: work · PR · CI · review · merged
-  - what it is doing now
-  - agent id, model and +/−
-
-  Click a card to open that agent's thread.
-- **Activity:** PR opened, changes requested, comment resolved, merged (task done / issue closed), "N affected agents rebased after #n", conflicts, stalls, and "Swarm finished · all N PRs merged".
-- **Composer:** a message goes to every agent still working; each picks it up at its next step.
-
-**Merging a member** ticks its task done or closes its issue, removes the PR from the rail, deletes the worktree, and rebases only the members whose files it touched (F6).
-
-**Accept when:**
-- [ ] All selected agents start immediately, unless a provider concurrency cap is set (F15, off by default; §8 Q4).
-- [ ] Deleting a member returns its task to todo, or frees its issue.
-
-### F11 · AGENTS.md editor
-
-Open it from the rail link or the palette. It reads and writes the repo's `AGENTS.md`.
-
-- **An outliner, not a text editor:**
-  - sections (`##`) with bullet rules and one level of sub-rules
-  - inline code shown as code (backticks visible only while editing)
-  - saved as plain markdown
-  - a **Markdown** toggle shows the exact file agents read
-- **Enter submits a bullet:**
-  - A fast model *(proposed: Haiku 5.5)* rewrites it as a direct rule, using the whole file as context (e.g. it reuses the commands from `## Commands`).
-  - The edit lands at once, with no approval, and the cursor moves to a new bullet. You keep typing while it works.
-  - It can:
-    - **tighten** ("You should probably keep functions under 60 lines." → "Keep functions under 60 lines. Split anything longer.")
-    - **expand** short notes ("no unwrap" → "Never call `unwrap()` or `expect()` outside tests.")
-    - **split** a bullet with two rules into two
-  - If it cannot work out what a vague word means, it leaves the bullet flagged and says what is missing ("say what 'clean' means").
-  - Every rewritten bullet shows "was ~~original~~ · **Undo**" until you save.
-- **Instruction sections:** the new-project template and Covers **Add** share the complete Implementation first, Proofs, and Tests and docs bullets, including F17's theorem limits and fixture rules. Covers retains the reference's heading checks; adding a topic already covered leaves the draft unchanged. These are editable instructions, not approval gates.
-- **Live lint while typing:** marks hedges (should probably, maybe, try to, where possible, as needed, consider), "should", and vague words (clean, good, nice, appropriate, reasonable, properly, etc.).
-  - **The lint advises; it never blocks** (decided, Q8). It marks the words and lists them under Flagged. It never stops typing, saving or committing.
-  - **AGENTS.md changes in a PR:** when a line the PR changed in AGENTS.md trips the lint, PR duty rewrites that line as a direct rule in the branch update it makes before merging (the same tighten rewrite as Enter), and says so in its review. It never requests changes for wording alone. A vague word it can't resolve becomes an issue (F7 severity bar).
-- **Side panel:**
-  - **Covers:** commands (build, proofs, lint); implementation first; proofs: proof list only, after the code; tests and docs: low priority; scope; PR: monitor until merged; PR: address every review comment; definition of done; hard "never" list. Each missing item has **Add**, which inserts editable bullets into the right section.
-  - **Flagged:** the list, with **Tighten all**.
-  - a key legend
-- **Keys:**
-
-  | Key | Action |
-  |---|---|
-  | `Enter` | submit |
-  | `Shift+Enter` | new bullet, kept exactly as typed |
-  | `Tab` / `Shift+Tab` | indent / outdent |
-  | `Alt+↑/↓` | move bullet |
-  | `Backspace` on an empty bullet | delete it |
-  | `↑/↓` at the start/end of a bullet | move to the previous/next bullet |
-  | `## Name` + `Enter` | new section |
-  | `Ctrl+S` | save and commit |
-
-- **Leaving a bullet** you changed also submits it.
-- **External edits:** Save rejects a changed disk file and keeps your draft. Copy any edits you want to retain from Markdown, then choose **Discard draft and reload** to load the current file and resume editing and saving. Reload discards pending rewrites and never writes or commits; a read failure preserves the draft.
-
-**Default installation:** New project setup installs the F11 template in the main checkout when `AGENTS.md` is absent and commits that file alone before registering the project and starting its interview. Existing files (including empty files), directories and symbolic links are preserved. The template is installed atomically, so concurrent setup cannot replace instructions. Installation or commit failures stop setup and report the error; created instructions remain available for recovery. On retry, a regular AGENTS.md whose bytes still match the generated default template is committed before registration, even when it was already present; custom instructions, directories and symbolic links remain untouched. The interview continues to write only SPEC.md (Q7). The template includes implementation-first, proof-list-only, scope, PR follow-through, Task List, AIRC, shared-file and review-severity rules. Project-specific commands are filled in from the project's manifests and spec rather than assuming Rust or a frontend stack.
-
-**The default AGENTS.md** includes these rules:
-- Opening the PR does not finish the task; monitor it until it merges.
-- Address every PR duty comment.
-- Add to the Task List only when the user asks; otherwise file an issue.
-- Review severity: what blocks a merge, and that everything else becomes an issue (F7).
-- Shared files: the project's generated files and registration lists, and how to merge them (F14).
-- Build queue: run every heavy build, test and lint through `rosen run -- <command>`, the machine-wide queue (F5).
-
-**Accept when:**
-- [ ] Saving commits and pushes AGENTS.md; agents pick it up on their next task.
-- [ ] Undo restores your exact original wording, including removing any split-off bullet.
-
-### F12 · Thread context menu and delete
-
-Right-clicking a thread in the sidebar opens a menu:
-- Open worktree in Explorer
-- Copy worktree path
-- Open PR #n on GitHub
-- **Delete …** (shown in red)
-
-The delete label depends on the thread:
-- **Delete thread and worktree**, with what it will do underneath: "stops the agent · closes PR #n · 247 MB freed"
-- **Delete swarm and its N worktrees** (swarm row)
-- **Delete thread** (merged threads, whose worktree is already gone, and spec threads)
-
-Duty threads have no delete entry.
-
-Deleting a swarm or goal swarm row deletes every member's thread as below, under one toast and one Undo, then removes the swarm and closes its view.
-
-Delete is **immediate, with no confirmation** (decided).
-1. The thread disappears and a toast offers **Undo** for 5 s.
-2. When the 5 s are up:
-   - the agent is stopped;
-   - the worktree is deleted;
-   - any open PR is closed;
-   - a linked task goes back to todo, or a linked issue becomes free again.
-
-   The thread is gone either way. A worktree that can't be removed yet (the agent is still exiting or a file is still open) is retried in the background until it goes, and one that F5's verification keeps stays on disk; the toast says which.
-
-**Accept when:**
-- [ ] Undo within 5 s restores everything exactly.
-- [ ] After 5 s nothing remains on disk.
-
-### F13 · Settings
-
-Open with the footer gear, `Ctrl+,`, the palette, the footer worktree count (→ Worktrees) or the usage panel's Settings · Providers link (F15 Usage panel). Pages: **Worktrees** (F5), **Providers** (F15: sign-in, default model, effort and speed for new threads, and the thread title model), **Skills** (F18), **Agents** and **Proofs**. Proofs holds the project's proof list, the code-level translator for each language when an issue asks for one (Rust: Aeneas), and the stress-diff input count (F17). Agents holds the shared MCP servers passed to every agent (§3.2 Tool access), the per-agent caps (max turns, max duration; off by default), the stall timeout (5 min, and 30 min for a running tool call) and the claim-release grace period (10 min) from §2.2. The rest of the Agents page is unspecified. There is no Keys page: every provider signs in with OAuth.
-
-### F14 · AIRC (claims, events, agent messages)
-
-One IRC-style channel per project, `#<project>`, shared by every agent in it: thread agents, swarm members, dispatched agents and duty agents. It exists so agents coordinate instead of working in an echo chamber: they see each other's work, catch feature overlap early, and sequence work that depends on another agent's PR. It is not meant to be a chat room. What fills it is **events**, which Velocity posts from what it observes. **Messages** between agents are allowed but are for the cases events can't express. Modelled on xros_chat (daily logs, nicks, presence, mentions, ledgers, MCP tools).
-
-**Nicks:** the worktree leaf (`thread-ipc`, `command-palette`, `issue-57`), at most 16 characters, cut at a word boundary. Duty agents use their role nick (`pr-1`, `scout-1`). Goal swarm agents use their model's short name and a number (`sol-1`, `argon-2`, `fable-1`), counted per project. Velocity posts as `velocity`. You post as `you`.
-
-**Events.** Each event is one line: time, a type tag, the nick, and what happened. Velocity posts them; agents never type them.
-
-| Tag | Posted when | Comes from |
-|---|---|---|
-| `claim` | an agent's claim is granted, or it extends a claim (e.g. adds an issue its PR also fixes) | `airc_claim` |
-| `refused` | a claim loses to an earlier one; names the holder | `airc_claim` |
-| `overlap` (amber row) | two working or PR-open agents claim the same file | Velocity's claim comparison |
-| `shares` | an agent will make a small change in another agent's file and rebase after it merges | `airc_share` |
-| `waits` / `unblocked` | an agent waits for another agent's PR, then rebases after it merges | `airc_wait`, `pr://merged` |
-| `PR` · `changes` · `pushed` · `approved` · `merged` | the PR lifecycle (F6, F7) | GitHub; `approved` is PR duty's approval record (F7) |
-| `order` | PR duty sets a merge order | PR duty |
-| `issue` | a scout or agent files an issue | GitHub |
-| `task` | a Task List item is added (by you or by an agent, F8) | Task List |
-| `failed` | an agent stops on an error; its claim is held | agent runner |
-| `discovery` | a Discoveries ledger entry is added | `append_ledger` |
-| `swarm` | a swarm or goal swarm starts | you |
-| `left` | an agent leaves without a PR (e.g. nothing left to claim) | agent runner |
-| `rebased` | a merge touched an agent's files and it rebased (F6) | Velocity |
-| `updated` | PR duty merged `master` into a PR's branch; names the PR and its new head (F6) | PR duty |
-| `conflict` | a PR's update onto `master` conflicts in a way only its author can resolve; names the files and the owning agent (F6) | PR duty |
-| `stalled` · `at limit` · `released` | activity changes and claim release (§2.2) | Velocity |
-| `broken` · `reverted` | `master` broke after a merge, and its fix or revert (F7) | Main watcher |
-| `proved` | a design or confidence proof checks, with its level per language (F17) | Velocity |
-| `statement` | a theorem statement changed after review; the review resets (F17) | Velocity |
-| `stress` | a scout's or reviewer's stress script fails; the evidence for an issue or comment (F17) | scout, PR duty |
-
-**What agents do** (enforced by the AGENTS.md "Coordination (AIRC)" section, F11):
-- **Claim before editing.** Claim the task, branch and every file they expect to touch. Claims on a piece of work go through Velocity's lock (`airc_claim`): the first claim wins, and a later claim is refused with the holder's nick, so the refused agent picks other work. The claim stays until the PR merges or the thread is deleted. A failed or closed thread keeps holding its claim.
-- **Shared files are not contested.** AGENTS.md lists them under "Shared files":
-  - **Generated files** (lockfiles, generated bindings) are never claimed. They are regenerated after every merge with `master`, never merged by hand.
-  - **Registration lists** (the command, event and module lists every feature adds a line to) take shared claims, which never raise an overlap.
-
-  Without this, every agent overlaps every other on the same few files, and targeted rebases (F6) turn into rebasing everyone.
-- **Record overlaps instead of discussing them.** When Velocity posts an overlap, the later agent records either a share (`airc_share`) or a wait (`airc_wait`) before it edits the shared file. In a wait, its thread shows "waiting for <nick> · #n · shares <file>" and makes no edits. When the PR merges, it rebases and an `unblocked` event is posted. If the PR is closed, fails or is deleted, the wait ends.
-- **Message only when needed.** A message is for something events can't say: asking the file's owner for a change, a handoff note after a merge, or answering a mention. Agents never restate an event in a message.
-- **Address every message.** A message names its recipients (`to`) and its `intent`: `inform`, `request` or `question`. An agent never replies to an `inform`. It answers a `question`, and replies "done" or "declined, because …" to a `request`. Agents can't broadcast; only your comments go to every agent.
-- **Log discoveries** that other agents need (environment quirks, platform bugs) to the Discoveries ledger. Every merge is appended to Past work.
-- **Report Velocity's own problems.** When a discovery is about Velocity itself rather than the project (its worktrees and paths, AIRC, the PR duty, scout or watch tools, agent shells, the build queue, the code graph or the app), the agent also passes `velocity_issue`, a one-line title of at most 200 characters, to `append_ledger`. It leaves it out when another agent already reported the same problem. Only discoveries carry it. Every 30 seconds Velocity reads each project's channel and files each marked discovery as an issue on `mESmaC/velocity`, with the agent, project, time and text. When an open issue has the same title, or its title shares at least half of the two titles' significant words, it adds the report to that issue as a comment instead. A report quotes at most 20,000 characters of the discovery. It uses GitHub's REST API, which keeps working when a swarm has spent the GraphQL budget. A per-project cursor and each report's issue number are saved in `velocity-reports.json` in the app data folder; a failed report leaves the cursor in place and is retried on the next pass. Each report is marked pending before GitHub is asked and recorded as soon as it answers; a pending report retried after a crash takes an open issue with its exact title as its result instead of filing again.
-
-**Targeted delivery** (from Google Scion's "Not in `to` → not for you"). At each step boundary, an agent receives only the lines it must act on:
-- overlaps that name it, and shares another agent records on its files;
-- `changes`, `conflict` and `updated` on its PR, posted by someone else;
-- merges whose files touch its claimed or edited files;
-- `broken` events for merges its branch contains (F7);
-- events and messages with it in `to`;
-- your comments.
-
-Nothing else is pushed to it (decided, #231). An agent is never sent its own events (its claims and claim updates, its PR, pushes, waits, shares and rebases): it caused them, and the tool call that did returned the result. Routine lines about its work posted by others, such as PR duty's review claim and release of its PR or an approval, stay in the log. The full log stays readable on demand (`read_events`, `airc_claims`), for example while choosing work in a goal swarm (F16). `read_feed` excludes internal delivery acknowledgements and message-mode records, retaining the original sequence numbers for cursor reads. This keeps agents heads-down and stops reading costs growing with the square of the agent count. The modal always shows you everything.
-
-**Message modes** (per agent, set from the nick list or the thread's context menu):
-- **Open** (default): receives what targeted delivery sends it.
-- **Heads-down:** messages from other agents are held until it opens or updates its PR, or goes idle. Events and your comments always get through.
-- **Quarantined:** receives nothing from other agents, its messages are delivered to nobody, and its claims are frozen (not released, not extended). You can still message it. Use it for an agent that is misbehaving.
-
-**Your lines are comments, not prompts.** They are messages. A line starting `nick:` is delivered to that agent's thread (shown as "via AIRC") and read at its next step, never mid-step (Rule 1). Other lines are read by every agent at its next step, including a line that starts with an ordinary word and a colon (`FYI: master is broken`, or a URL).
-
-**A mistyped nick is refused, not broadcast** (decided, #93). When the single word before the colon is a nick that has left the channel, or is within two character edits of a joined nick (ignoring case), the line is rejected with "Unknown nick `<word>`. Did you mean `<nick>`?" and nothing is recorded. A line meant for one agent never reaches all of them.
-
-**AIRC modal** (footer link or `A`; `Esc` closes):
-- **Header:** `AIRC #<project>` and the channel topic.
-- **Tabs:**
-  - **Events** is the default tab. It shows the event log: `hh:mm`, a coloured type tag (blue for PR / issue / task, green for approved / merged / unblocked, amber for overlap / waits / shares / changes / order, red for refused / failed), then the nick and the text. Nicks have stable colours, and PR numbers are links.
-  - **Claims** lists one row per claiming agent: nick, task, state, and its files. Overlapping files are outlined amber. A dependency shows "waits for <nick> (#n) to merge". The tab label shows the overlap count.
-  - **Messages** shows agent-to-agent messages and your comments, as `<nick> text`. Mentions of you are highlighted. Sending a comment switches to this tab.
-  - **Discoveries** and **Past work** are the two ledgers. A discovery reported to Velocity ends with "Velocity issue: <title> · mESmaC/velocity#n", or "filing…" until it is filed.
-- **Nick list:** grouped On duty / Choosing work / Working / PR open / Holding a claim / Left (last 4). Each nick shows what it is doing. Clicking a nick starts a `nick: ` line.
-- **Input:** `<you>` and a one-line input. Enter sends.
-
-**Storage:** Rosen projects use their Rosen server's channel (R13, D10); git projects keep daily log and ledger files per project under the app data folder. Agents reach AIRC through MCP tools (`claim`, `release`, `share`, `wait`, `read_feed`, `read_events`, `send_message { to, intent, text }`, `read_messages`, `append_ledger`, `read_ledger`), which the agent runner gives every agent on every provider; the agent runner injects unread mentions at each step boundary.
-
-**Git projects.** The M8 channel backend is `velocity-airc`: launch `velocity-airc <app-data> <project-id> <member-id> <worktree-leaf-or-duty-nick>` as an MCP stdio server. Initialization joins the channel; EOF leaves it. Project identities partition storage independently of display names. The project-id is the project's store identifier. Velocity posts events (the F14 tags) as `velocity` on behalf of the nick they name, without joining; an event about a PR also carries its number and head SHA, which the approval record (F7) reads. UTC daily JSONL logs and the Discoveries/Past work files share monotonically increasing sequence cursors; writes are serialized across processes and flushed before acknowledgement. Nicks are cut at word boundaries to 16 characters, with collision suffixes; `you` and `velocity` are reserved. Tools available at this stage are `join`, `leave`, `list_nicks`, `read_feed`, `read_events`, `read_messages`, `send_message`, `append_ledger { ledger, text, velocity_issue? }`, and `read_ledger`. The channel also exposes `airc_claims`, `airc_claim { piece?, task, branch, files }`, `airc_release { task }` and `airc_share { holder, file }`. Claims are durable first-wins records under the channel's cross-process lock, keyed on the piece: a work-pool identity (`task:<id>`, `issue:<n>`, `spec:<section>`, spelled one way whatever the prefix's casing, the spacing or an issue's `#`), or the task text when no piece is given. The task is display text, so two pieces with the same title never contend. `airc_release` names the piece or the holder's task. Refusals name the holder and original time. Leaving, failure and closed PRs retain claims. Files use repository-relative paths with slash and dot-segment normalization; generated files are omitted. A file outside the thread's worktree (an absolute path, or one that climbs out with `..`) is never claimed and never overlaps; absolute paths in older logs are ignored. Registration-list claims use a `::registration` suffix so the rest of the source file remains contested. New overlaps post `velocity` lines naming both agents; `airc_share` records a share. Build threads claim their piece before ACP starts (a dispatched issue, SPEC.md section or Task List item by its work-pool identity, a free-form composer thread by `branch:<its branch>`), so a goal swarm agent and a swarm or dispatched thread on the same item collide in one lock, and a refused build thread fails without starting its agent. They receive the embedded AIRC MCP server, and extend claims from explicit file writes and Edit/Delete/Move tool locations. Partial updates inherit the last known kind and locations; Read/Search/Execute/Other and unclassified tool locations do not extend claims. Successful merge cleanup and final deletion release their claims. Build-thread dependency waits use `airc_wait { holder, file }`: the call records the overlap dependency and remains pending until the runner observes that holder merged, closed, failed or was deleted. Native filesystem notifications wake the call; it does not poll GitHub. On merge, the server verifies the waiting thread's registered checkout, fetches the configured base and merges it without rewriting published history, then posts `unblocked` and returns control. Failed updates retain local work, post `conflict`, and return the failure to the owning agent for resolution. Closed, failed and deleted dependencies end the wait without updating the branch. The sidebar shows the holder, PR number when known and shared file. Claims survive waiting and transport disconnects; reissuing the tool resumes the recorded dependency. **Parking (M10, §2.2):** once a working or PR-open build thread's wait is recorded and its holder has not ended, Velocity ends the agent's ACP session (its pending `airc_wait` call and AIRC server stop with it), keeps the worktree, claims, transcript and the agent's ACP session id, and sets activity `parked`. Messages you send a parked thread are held and sent right after its resume prompt. When the holder merges, closes, fails or is deleted, Velocity itself continues the wait as the call would have (on a merge it updates the branch; a failed update posts `conflict`), posts `unblocked`, and resumes the thread in the same worktree: `session/load` of the saved session where the agent advertises `loadSession` (the replayed history is not shown twice), otherwise a new session whose first prompt carries the earlier transcript (its newest 40,000 characters). The resume prompt says the wait ended and how. Parked threads resume after an app restart too. A thread in its delete undo window is neither parked nor resumed. The optional per-provider cap (F15 "Max agents at once") lives on the Settings → Providers card and ships with it.
-
-**Rosen channel (#269).** The AIRC tools and modal call the project's Rosen server through `rosen-client`, including through a machine's forwarding daemon. The MCP connection uses the launcher's `ROSEN_ENDPOINT` when supplied, otherwise the project's configured server endpoint; a disconnection returns the server error and never falls back to local AIRC files. Member IDs are fixed at launch and scoped on the wire by machine and installation, so two machines' `thread-1` members cannot extend each other's claims; local views retain their original IDs. Presence, piece locks, agent messages, message modes and ledgers use Rosen's channel operations. File claims are exclusive Rosen path claims, shares are path shares, and waits are path waits on the registered Rosen change. A refused file claim releases a piece newly taken by that call, while an existing piece stays held. The Claims view reads current server pieces and paths. Velocity's observed events, registered checkouts, task requests and results, and per-line delivery acknowledgements are versioned records in the server's Past work ledger; the adapter projects them into their original feed kinds instead of showing their envelopes as Past work. Velocity keeps no local Rosen channel log, claims, modes, presence or ledger copy.
-
-Rosen's project feed and targeted subscriptions use the server's single R9 event log. Their delivery cursors advance independently and only after handling; per-line acknowledgements let status notices pass pending input without losing or replaying it. Message audiences and heads-down/quarantine decisions come from the server; idle and PR updates release held messages. Dependency calls subscribe before inspecting path waits and retain the original 20 minute deadline across reconnects and parking. Path releases wake them even when the holder runs on another machine. A holder's machine publishes its closed, failed or deleted lifecycle to the shared channel; a member absent from another machine's local thread list is never treated as deleted. Rosen applies workspace updates at step boundaries, so waking a Rosen wait never runs git.
-
-Claim grants and extensions use the atomic claim record itself as their event, formatted with the task and normalized files. User and agent Task List additions use the same event wording and include the saved task identifier, so replay is deduplicated without hiding separate tasks with identical titles.
-
-AIRC delivery retains each live session’s member nick and cursor. Review membership is discovered from new joins after its claim; steady-state ticks read only `read(after)`, without copying the whole log or rebuilding presence. Routing borrows immutable cached history for modes, claims and checkout ownership predating the cursor; durable acknowledgements still let events pass held messages.
-
-M8 message delivery registers live build-thread members as `thread-<thread-id>` with worktree-leaf nicks. Native delivery passes named messages and your broadcast comments as `via AIRC` through ordinary queued steering at the next completed ACP turn. A per-thread cursor in `state.json` advances only after the receiving turn succeeds. Pending input replays after restart; acknowledged input does not. The events targeted delivery names (overlaps and shares naming it, others' `changes` / `conflict` / `updated` on its PR, and merges touching its claimed or observed files) are queued at step boundaries; its own events never are. A delivered line is not a message you sent: it never appears in the composer queue, and once the agent reads it the transcript shows it as a "from Velocity" notice. Heads-down holds agent messages until idle or a PR update, while events and user comments pass through. Per-line durable acknowledgements prevent replay when held messages keep the scan cursor behind. Quarantined senders’ messages stay in the modal log but are never pushed; quarantined recipients receive events and user comments. The modal uses `airc_send` for comments. A running PR duty review is a member too, as `duty-<nick>`: from its claim, the same targeted messages reach its review session as queued input once the review prompt is sent, each answered in another turn before the review ends. An idle PR duty agent has no session and receives nothing.
-
-**Runtime injection.** Every session Velocity starts, on every provider, gets an MCP server named `airc` in `session/new`: build threads (composer, dispatch and follow-through resume), scout sweeps, PR duty reviews and the spec interview. It runs Velocity's own executable as `velocity --airc-mcp <app-data> <project-id> <member-id> <nick>`, so the server ships inside the app; the standalone `velocity-airc` binary takes the same arguments, with or without the switch. Member ids are `thread-<thread id>`, `duty-<nick>` (scouts and PR duty) and `spec-<thread id>`. A thread's nick is its worktree leaf, a duty agent's its role nick, and the spec interview's `spec`.
-
-**Acceptance:**
-- Two agents that claim the same file get an overlap event within one step, and the later one records a share or a wait before it edits the file.
-- PR, review, merge, issue and Task List events appear without any agent posting them.
-- A normal run (claim → PR → merge with no conflicts) produces no messages.
-- An agent is never sent an event or message unrelated to its claims, PR or waits unless it is in `to` or the line is your comment.
-- A heads-down agent receives no agent message until its next PR update or idle, and a quarantined agent's messages reach nobody.
-- A dependent agent makes no edits until its dependency merges, then rebases.
-- Every merge produces a `merged` event and a Past work entry.
-- Your `nick:` line reaches that agent's thread, and the agent replies in the channel.
-
-### F15 · Providers (OAuth)
-
-Four providers: **Anthropic** (Claude Code agent), **Codex** (Codex CLI agent), **Antigravity** and **Kimi Code** (Kimi CLI agent). Every one signs in with OAuth on your own subscription, the way T3 Code does. Velocity talks to each one's agent over ACP (§3.2) and uses that agent's own login. It never asks for, shows or stores an API key, and tokens stay in each provider's own credential store. Any other ACP agent can be added beside the four (Custom ACP agents, below).
-
-**Settings → Providers** has one card per provider:
-- Its mark, its name, "runs <agent> over ACP · OAuth", and the ACP agent command (e.g. `claude-agent-acp · stdio`). The command and its arguments can be edited, with Reset to return to the built-in one *(proposed)*: adapters get renamed (#46), and you may run a build of your own.
-- **Status:**
-  - **Signed in** shows the plan and how many agents are on it.
-  - **Waiting** shows "Waiting for you to finish signing in at <site>…" with Cancel.
-  - **Not signed in** means the provider's models are hidden from every picker.
-  - **Not installed** is checked again whenever Settings → Providers opens. Installing an agent while Velocity runs needs no restart; its card and models update when the check finishes. Velocity finds an agent by your saved `PATH` as well as the one it started with, so a folder an installer just added counts, and agents it starts get that `PATH` too.
-  - **Install** (#221) on a not-installed built-in provider installs its agent from the provider's own published package, for your user, with no console window. The card shows "Installing <agent>…" with Cancel, which stops the install and everything it started. When it finishes, the agent is checked again, and a toast says to sign in, or lists its models when its login already holds. A failed install keeps Not installed and shows the last lines of the installer's output, with Install offered again. Reopening Providers checks the agent again but keeps those lines; a new install, Cancel, a changed command or the agent being found clears them. Install is offered only while the card runs its built-in command; an agent you added, or a command you changed, installs outside Velocity.
-
-    | Provider | Windows | macOS and Linux |
-    |---|---|---|
-    | Anthropic | `npm install --global @agentclientprotocol/claude-agent-acp` | the same |
-    | Codex | `npm install --global @agentclientprotocol/codex-acp` | the same |
-    | Kimi Code | winget `MoonshotAI.KimiCodeCLI` | `https://code.kimi.com/kimi-code/install.sh` |
-    | Antigravity | winget `Google.AntigravityCLI` | `https://antigravity.google/cli/install.sh` |
-
-    On Windows a machine with no npm gets winget's `OpenJS.NodeJS.LTS` first. Elsewhere a missing npm fails with a message to install Node.js 22 or later. winget's "already installed" counts as success.
-- **Sign in with Claude / ChatGPT / Google / Kimi:** opens the provider's OAuth page in your browser. When the login completes, the card flips to signed in by itself and a toast lists the models now available.
-- **Sign out:** agents already running on that provider keep their session until they finish. New work can't use it. When the default for new threads is signed out, new threads, spec interviews and the duty dialog start on the first signed-in provider in card order and its model; with no provider signed in, nothing new starts and the launch says to sign in. Swarm and goal swarm launches refuse a provider signed out since its dialog was drawn, never swapping it. Sign out is recorded by Velocity and leaves the agent's own login alone *(proposed)*, so signing in again needs no browser while that login holds.
-- **Limit:** a bar showing the share of the current subscription window used (5-hour, daily, weekly, whatever the provider reports) and when it resets.
-  - **At the limit** (decided, Q15): agents on that provider wait for the reset and resume by themselves (§2.2). Work never moves to another provider automatically. The pickers keep listing the provider with its limit bar, so you choose where new work goes.
-- **Max agents at once** (off by default): a cap on concurrently running agents for this provider.
-  - Agents over the cap wait as "queued · <provider>" and start when a slot frees.
-  - Parked agents (§2.2) don't hold a slot, so waiting on another PR never blocks new work.
-  - The card accepts a positive whole number; empty means off. Caps apply across projects and roles, including resumed sessions. Queued agents start in provider queue order. Raising or clearing a cap wakes the queue immediately; lowering it lets running agents finish before admitting more.
-- **Models:** chips that are read from the provider after sign-in. Clicking a chip hides that model from the pickers or shows it again.
-
-**Default for new threads:** one model card per available model, plus effort and speed. A new thread starts on it. Spec interviews, duty agents and swarms choose their models in their own dialogs.
-
-**Speed: Regular or Fast.**
-- **Where available.** Some models offer a fast mode, which answers sooner, as Claude Code's fast mode does for Opus. Velocity reads whether a model has one from its agent over ACP (§3.2) and offers Fast only there.
-- **Where it's set:** everywhere effort is chosen. That covers the composer menu, the defaults above, the thread title model, the new-project interview model, and each goal swarm mix row (F16). The duty and swarm dialogs use the default speed.
-- **Models without a fast mode.** On those models the Speed control is greyed out and says "<model> has no fast mode". A thread set to Fast that switches to such a model runs at Regular, and goes back to Fast if it switches back.
-- **Shown:** the model pill and agent cards add "· Fast" when it is on.
-- **Limits** (decided, Q25): fast mode uses the subscription limit a little faster. Providers count it inside their ordinary usage, with no category of its own, so the limit bar shows it with no special handling.
-
-**Limit sources** (decided, Q14). ACP doesn't carry subscription limits. Each provider's own usage report is read outside ACP, with the login its agent already holds, from the same sources T3 Code reads. Velocity never stores a token for this.
-
-| Provider | Where it reports its limits |
-|---|---|
-| Anthropic | Claude Code's usage report (the 5-hour and weekly windows), and the rate-limit events it sends during a turn |
-| Codex | `account/rateLimits/read` on Codex's app server, and its rate-limit notifications |
-| Antigravity | Google's `retrieveUserQuotaSummary` report for the agent's signed-in account, falling back to `fetchAvailableModels` for older accounts. Uses the native agent's Windows `gemini:antigravity` credential; an expired token is refreshed by a prompt-free ACP probe through the configured agent. Tokens stay in the agent's credential store. The fullest enabled quota window supplies the bar and reset time; older per-model reports without a duration say "reported quota". |
-| Kimi Code, custom agents | no known source |
-
-- A provider with no source, or whose read fails, shows "limit not reported". Nothing else depends on the bar.
-- Live Claude rate-limit metadata and Codex app-server notifications update the same saved meter immediately. Codex's Node ACP adapter is launched with a bundled preloader that observes its app-server output without changing the RPC stream or the installed adapter. Five-minute reads remain the fallback; a read started before a live update cannot replace that newer report. Reports contain only subscription windows, never context-token usage.
-- `at limit` (§2.2) never comes from the bar. It is set when an agent's turn fails with its provider's usage-limit error, which carries the reset time when the provider gives one.
-- Every window a report carries is saved with the reading (Claude's 5-hour and weekly, and its per-model weekly windows; Codex's primary and secondary). The fullest one is the headline that the meter, the cards and the pickers show. A live event names only its own window, so the other saved windows keep their last read until the next full read.
-
-**Usage modal.** The footer usage button and the limit meter open a modal, like AIRC's: a centred window over a dimmed, blurred scrim. It holds the usage limits, laid out like T3 Code's, and the project's code graph section (F19 Measuring it). Rust draws its rows; the limits update while it is open whenever a limit changes (`layout://state`).
-- **Title:** "Usage limits".
-- **A section per signed-in provider,** in card order: its icon, name and plan (`Max`, `Pro`).
-- **A row per subscription window,** shortest first: the window (`5-hour`, `Weekly`) and "resets in 1d 10h" on one line, then a bar of the share left in the provider's colour and "61% left". The tooltip adds the share used and, when the provider gives the window's length and reset time, the share of the window's time left: where even spending would put the bar.
-- **A provider with no window to show** (no source, or a failed read) says "No limits reported." With no provider signed in, the panel says "No provider is signed in."
-- **Code graph** (F19): the active project's On/Off switch and the comparison of its turns with the graph on and off. With no project open, it says so.
-- **Settings · Providers** at the bottom opens that page.
-- Clicking the scrim or Esc closes it. Its body scrolls when it is taller than the window allows.
-
-**Custom ACP agents** (decided, Q19). The four providers are built first. After them, **Add an ACP agent** takes a name, a command and its arguments, as Zed does.
-- The agent gets its own card and works like a built-in provider everywhere a model is chosen. Its models and fast mode are read over ACP, and it runs unrestricted with every tool (Rule 1, §3.2).
-- It signs in through `authenticate` when it offers an auth method. An agent that offers none counts as signed in once `initialize` succeeds.
-- The form has no field for an environment variable or a key. The agent inherits your environment, as every agent does.
-
-**Thread titles:**
-- **Default:** GPT-6 Luna · Low · Fast.
-- **Settings:** model cards (signed-in providers only), effort and speed, and a "Reset to GPT-6 Luna · Low · Fast" button when changed.
-- **When its provider is signed out:** the section says so, and titles use the first signed-in model at Low until it signs in again.
-
-**Everywhere a model is chosen** (new project, duty dialog, swarm, goal swarm, composer menu, thread titles), only signed-in providers' models are listed. Each signed-out provider shows as a dashed "Sign in" card. Clicking it opens Settings → Providers and starts that provider's sign-in.
-
-**Acceptance:**
-- No screen anywhere accepts an API key.
-- Signing in through the browser updates Velocity without a restart or a manual refresh.
-- A signed-out provider's models never appear as selectable.
-- A swarm can mix models from several providers, assigned round-robin.
-- A goal swarm runs exactly the count you set on each model.
-
-### F16 · Goal swarm
-
-**Rosen projects.** Every member takes its own Rosen workspace from the project's warm pool, with git worktrees as the F5 fallback when Rosen cannot start. Work choice and the atomic AIRC piece lock are unchanged. Rosen members keep their change identity when they claim a piece; they never create or rename a git branch, open a PR or start a PR watcher. The goal dialog offers no PR duty capacity on a Rosen project. Its locked context names the piece, tells the agent to claim files in Rosen, build and lint through `rosen run`, and finish by naming its work with `rosen commit`.
-
-A named member change uses the ordinary Rosen landing path, including `review = "after-land"` (F7); goal swarms add no review or check gate. The task is finished on `landed`. That event ticks its tasks and records its built SPEC section, updates the board and activity feed, stops its session and watcher, releases its AIRC claim, and starts the next round in a fresh workspace when Keep going is on. `reverted` restores the unfinished tasks and reopens the section only when no other merged thread built it, including deleted history (#376). It keeps ownership with the original thread, updates the board and resumes that thread in its reopened workspace. These state changes and the event cursor save together and survive restart.
-
-A Rosen goal member's `airc_wait` on another member's claimed file becomes a stacked change (Rosen D19) after its session stops: Velocity snapshots its work, creates a child on the holder's unlanded change and continues the same task and transcript there. The original change is retained until the replacement identity, workspace path and stack handoff are durable in state.json, including when saves are deferred. A failed save retains the original; cleanup retries must pass the same save barrier before abandoning it through Rosen's deletion guard. A copy that overlaps the dependency's edits, changes a nonregular file, or cannot be made safely keeps the original task waiting; on the holder's land it continues through Rosen's rebase, without a git checkout update. A second dependency outside the current stack waits for its land. The parent must land before the child; Rosen rebases its descendants. The board and cards show named, fixing and landed changes, with a claim → named → landed track and landed-change counts.
-
-Each Keep going round has a distinct workspace path, retaining its nick as the folder leaf. A later revert can therefore reopen an earlier round without touching the next round's files. Landed issue completions are saved locally, surviving history deletion, so Keep going cannot select an issue again while GitHub's mirror catches up. A revert removes that completion and shows the original claim even if GitHub has already closed the issue. The git lifecycle described below remains the fallback.
-
-**What it is:**
-- Your T3 Code routine as one action. Today you open 5–20 threads by hand and paste the same prompt into each: read AGENTS.md and start dev, push a branch, open a PR, watch it, keep the worktree on a given drive, remove it after the merge.
-- A goal swarm starts all of those agents at once, with one prompt and the model mix you choose.
-- It differs from a Swarm (F10) in one way: nobody assigns work. Each agent decides what to build, and AIRC (F14) keeps two agents off the same piece.
-
-**Dialog** (`G`, the "Goal swarm" starter chip, or the palette):
-- **Prompt:** every agent gets exactly this text. The default is `Read AGENTS.md and start dev.`; text typed in the empty composer prefills it.
-- **Velocity adds to every agent** (locked):
-  - its own worktree under the worktree root (F5), removed after its PR merges;
-  - commit, push, open a PR against the default branch, and watch it until it merges (AGENTS.md);
-  - join `#<project>` and claim work before editing, where the first claim wins;
-  - implement and run first; then prove only features on the project's proof list (Rule 8, F17).
-
-  These replace the lifecycle half of the hand-written prompt. The worktree drive comes from Settings → Worktrees, not from the prompt.
-- **Agents:** a stepper from 1 to 30, with quick picks 3 / 5 / 10 / 20. All of them start at once.
-- **Mix:** one row per model.
-  - Each row has a model picker (signed-in providers only, F15), effort (Low / Med / High / Max), a Fast toggle (greyed out when the model has no fast mode) and a count.
-  - The first row is "the rest". It absorbs the difference, so the rows always add up to the agent count.
-  - Raising another row takes one agent from the rest; if the rest is empty, it raises the total.
-  - Buttons: **Add a model** and **Even split**.
-  - A bar above the rows shows the split in provider colours.
-  - Next to the buttons is a preview of the nicks, for example `sol-1…6 · argon-1…2 · fable-1…2`.
-  - Example: 10 agents = 6 GPT-6.1 Sol High + 2 Gemini 4 Argon High + 2 Fable 5.1 High.
-- **Limits:** one line per provider in the mix: agent count, share of the window used, and the reset time when 60% or more is used (F15).
-- **Pool:** "They choose from N unclaimed pieces: x Task List · y issues · z unbuilt SPEC.md sections." If there are more agents than pieces, it says how many will find nothing and leave.
-- **Options:**
-  - **Keep going** (off by default): after its PR merges, an agent claims the next unclaimed piece in a fresh worktree instead of stopping.
-  - **PR duty capacity:** the same check as the Swarm dialog (one reviewer per 3 open PRs).
-- **Launch N agents** (`Ctrl+Enter`).
-
-**Dialog state.** The window holds only the choices (the agent count and the mix rows) and sends them back with one edit. Rust applies the edit, restores the "rest" rule and draws the dialog again.
-- **Models:** until Settings → Providers lists each provider's models (F15), the picker offers one model per launchable provider, as the Swarm dialog does. Fast stays selectable; a session on a model without a fast mode runs at Regular.
-- **Nicks:** a model's short name is the last plain word of its name, in lower case (`sol`, `argon`, `fable`). The preview numbers on from the highest number that name has used in the project.
-- **Limits:** a line carries its provider's agent count, and adds the share used and the reset time once the provider reports them (Q14).
-- **Pool and PR duty:** both use the work pool read when the dialog opens. PR duty is sized for the PRs the launch can open: the smaller of the agent count and the unclaimed pieces, plus the PRs already open.
-
-**What each agent does:**
-1. Gets a nick such as `sol-3` and a worktree named after it, then reads AGENTS.md and SPEC.md. State: **choosing work**.
-2. Reads the AIRC claims board and picks an unclaimed piece. The pool is:
-   - open Task List items, except drafts and items another agent is already on;
-   - open issues, except owner-decision questions and `release-blocker` issues, using the same eligibility rule as continuous dispatch (F8);
-   - SPEC.md sections nobody has built.
-3. Claims it with `airc_claim`.
-   - **Granted:** it renames its branch for the piece (`vel/<slug>`, or `vel/issue-<n>`), posts its claim with files, and continues.
-   - **Refused** (another agent claimed the piece after this agent read the board): a `refused` event names the holder. The agent re-reads the board and claims the first open piece, which posts a `claim` event. No message is needed.
-   - **Nothing left:** a `left` event is posted; the agent removes its worktree and leaves.
-4. From here it is an ordinary thread (F4–F6). It settles overlaps and dependency waits in AIRC (F14), opens a PR, watches it until PR duty merges it, and its worktree is deleted. Merging ticks the task, closes the issue, or records the SPEC.md section as built in the project's state. Velocity records it at landing; the agent's PR never edits SPEC.md to mark it, so PRs don't all touch SPEC.md.
-5. With keep going on, the same nick goes back to step 2.
-
-Agents launched together read the board within seconds of each other, so several often want the same piece. The lock is what makes that safe. The losers pick again within one step instead of duplicating work.
-
-**Work inventory.** `get_work_pool` and the `velocity-threads` `work_pool` example read the same project-scoped inventory. Draft/done tasks, ownerless now tasks, closed issues, owner-decision questions (including unlabelled decision requests) and `release-blocker` issues are omitted using the continuous-dispatch eligibility rule (F8); owned work stays visible but does not count as available. Failed/closed owners retain their pieces. Unlocked projects return an empty pool. SPEC.md's Implementation order/Implementation plan checklist supplies unfinished entries when present; otherwise checklist-bearing Markdown sections supply one piece each. Fenced examples are ignored. Spec identities use heading context and entry text rather than line offsets. A thread's defaulted `spec_section` identity retains ownership and records completion when merged, without editing SPEC.md; deleting merged history retains the identity in the project's defaulted `built_spec_sections`. Completion evidence from deleted merged threads is saved separately with the deletion, so reverting a different thread cannot erase it, including after a restart (#376). Selection, atomic claims and launch remain separate §7 items.
-
-For a split spec (F2), the implementation-plan preference applies across all source files. Each file is parsed independently, so headings and fenced examples do not leak into the next file. Without a plan, a checklist-bearing section uses its nearest heading ID (F5, §3.1 or R8) as its identity, falling back to heading context for unnumbered sections, and its source path as its reference. Single-file projects retain their existing work identities.
-
-**Sidebar:** one row under Swarms, with a target icon, "Goal · <prompt>", ×<agents> and the segment bar. Its members nest under it like swarm members, and each member is titled by the piece it claimed.
-
-**Goal swarm view:**
-- **Header:** title, "<n> agents · one prompt", start time, PRs merged. Buttons: **AIRC** and **+ Agents** (more agents on the same prompt).
-- **Prompt bubble:** "goal swarm · the same prompt to all <n> · <mix>".
-- **Segment bar:** one segment per agent (choosing, working, PR open, addressing review, merged, failed), plus "<n> waiting on another agent's PR".
-- **Claims board:** every piece in the pool, in three groups:
-  - claimed pieces first, with the holder's nick and state (working, "waits for <nick> · #n", "#n · in review", failed · claim held);
-  - open pieces next;
-  - pieces this swarm merged last, struck through, with "merged #n".
-- **Agents:** one card per agent showing nick, model, effort (and "Fast" when on), claimed piece, the claim → PR → CI → review → merged track, and what it is doing. Clicking a card opens that thread.
-- **Activity:** claims, refusals, PRs, waits, merges and leaves.
-- **Composer:** messages every agent in the swarm (read at its next step, Rule 1).
-
-**Acceptance:**
-- One action starts N agents with the exact mix and efforts chosen. Each runs in its own worktree on the configured drive.
-- No two agents ever hold a claim on the same piece. A refused claim shows in AIRC, and that agent claims something else within one step.
-- Every agent's work ends in a merged PR (or a held claim on failure), and its worktree is deleted on merge.
-- With more agents than pieces, the extras leave without making a worktree change or a PR.
-- Keep going: an agent that finishes takes the next open piece until the pool is empty.
-
----
-
-### F17 · Proofs and adversarial testing
-
-**Why:** assume everything fails. Tests written by the agent that wrote the code cost CI money, slow the builder down, and check what the builder already believed. So the work is split:
-- **Builders prove.** Lean proves the design is right and the code matches it.
-- **Breakers test.** Scouts and PR duty, whose job is to find failure, write every test and stress script.
-
-Lean is the proving ground, not the test suite.
-
-| Who | Writes | Never writes |
-|---|---|---|
-| Building agents (threads, swarms, goal swarms) | Code first; then proofs for proof-list features, and a targeted test only for a critical contract | Test suites, stress scripts, Lean for anything off the proof list |
-| Scouts | Tests, stress scripts, issues with evidence | Fixes |
-| PR duty | Reviews of theorem statements, stress scripts to back a doubt | Proofs for the author |
-| Main watcher | Nothing new. It runs every test and stress script after each merge. | |
-
-**Which features get proofs.** Only the features on the project's **proof list**: design decisions where a mistake loses work, corrupts data or breaks coordination, and where there is a real choice between designs.
-- **On the list:** algorithms, concurrency and coordination, data integrity, and anything destructive.
-- **Never on the list:** UI, layout, styling, configuration, persistence formats, IPC, provider sign-in and toolchain glue. These ship with no Lean.
-- **Who sets it:** the spec interview (F3) proposes the list and SPEC.md records it. Adding a feature takes your decision; an agent that thinks one belongs files an issue.
-- **Why:** proving every feature turned Lean into a test suite. On Velocity's own first milestones, Lean grew to 43% of the repo, with theorems about single keyboard shortcuts and token values, while implementation stalled.
-
-Velocity's own proof list:
-
-| Feature | SPEC | What could go wrong |
-|---|---|---|
-| Claim lock | F14 | two agents hold the same piece or file |
-| Targeted rebases and landing | F6 | an affected agent isn't rebased, or a merge drops a change |
-| Worktree deletion | F5, F12 | a worktree with unpushed work, or another thread's, is deleted |
-| Goal swarm work choice | F16 | a piece is taken twice, or an agent leaves while a piece is unclaimed |
-| Stall detection and claim release | §2.2 | a live agent's claims are released, or a dead agent's never are |
-
-**Implementation first.** Proofs never block building. The agent builds and runs the feature, then writes its proofs in the same PR. Implementation stays the larger part of every PR: proofs, tests and docs together are smaller than the code, and PR duty requests changes when they aren't.
-
-On after-land Rosen projects, proof-list verification follows the implementation's land in the Review swarm (F7, #382). Its proof changes land independently, and its completion report is tied to the checked source tree. Lean and review coverage never gate another land; full tests, `lake build` and the axiom audit gate the release.
-
-**Design proof** (`proofs/<Feature>/Design.lean`, after the code, in the same PR, for every feature on the proof list):
-- **Exactly three theorems:** `correct`, `cost_bound` and `optimal`, below. Lemmas are allowed only as steps toward them.
-- **No theorem about a single behaviour, case, key, value or example.** That is a test, and PR duty requests changes.
-- **Size tripwire:** a design proof over 300 lines means the model is too detailed. The agent stops and files an issue.
-- **Model:** the feature as Lean definitions: its state, its operations and the SPEC.md section it implements, stated as a `Spec` predicate.
-- **`correct`:** the design meets `Spec` on every input.
-- **`cost_bound`:** its cost stays within a bound, under a cost model the file defines (steps, allocations, rebases, round trips, whatever the feature spends).
-- **`optimal`:** no alternative in a stated class meets `Spec` at a lower cost.
-- **"Could not be any better" is proven against something stated.** Optimality only holds for a named cost model and a named class of alternatives. A proof against an unstated alternative proves nothing, so the statement must name both. "Cleanest" isn't a theorem; the reviewer judges it.
-
-Example, from Velocity itself (F6):
-
-```lean
--- proofs/TargetedRebase/Design.lean
-theorem correct : ∀ m bs, ConflictFreeAtLanding (targeted m bs)
-theorem cost_bound : ∀ m bs, rebases (targeted m bs) ≤ (bs.filter (touches m)).length
-theorem optimal : ∀ strat ∈ RebaseStrategies,
-    (∀ m bs, ConflictFreeAtLanding (strat m bs)) →
-    ∀ m bs, rebases (targeted m bs) ≤ rebases (strat m bs)
-```
-
-**Confidence proof** (`proofs/<Feature>/Confidence.lean`, after the code): proves what was built matches the design. Each language in the change reaches the strongest level available to it:
-
-| Level | How | Available for |
-|---|---|---|
-| **code** (on request) | A translator turns the code into Lean, and the proof shows the translated code refines the design model. | Any language with a translator set for the project. Rust ships with Aeneas (its safe subset). More translators are added per language in Settings → Proofs (Q23). |
-| **reference** (default) | The Lean model exports a compact fixture table, and one test checks the code against it. For larger input spaces, the model is compiled (Lean 4 compiles to C) and exported with `@[export]`. Scouts' stress scripts run the code and the model on the same inputs and diff the outputs. C and C++ link the model directly. Python, TypeScript and every other language call it through their FFI or a small process. | Every language |
-| **model** | Only the design is proven. The PR is flagged, and scouts treat it as a proof gap. | Every language |
-
-**How Velocity reads the level** *(proposed)*. For each proof-list feature a PR touches (a file in `proofs/<Feature>/`, its root module or its fixture table, where `<Feature>/Design.lean` exists), Velocity reads the checkout without building anything:
-- **code** for Rust when `proofs/<Feature>/Generated/` holds the Aeneas translation and `proofs/<Feature>/Confidence.lean` exists;
-- **reference** for each language whose tracked code outside `proofs/` names the feature's fixture table `proofs/fixtures/<feature>.tsv` (the folder name in kebab case: `TargetedRebase` → `targeted-rebase`), a test or a stress driver;
-- **model** otherwise, listed for each language the PR changes, or once with no language when it changes no code.
-
-A language's strongest level is code where a translator exists (Rust: Aeneas) and reference everywhere else until Q23 adds translators. The levels go on the proof check report and into PR duty's prompt with the other checks, one line per feature and language with its evidence. A model-only level where a stronger one is available is flagged there and never fails the checks.
-
-**Generated translations** (Aeneas output) are marked generated in `.gitattributes`, so they stay out of language statistics and PR diffs.
-
-**Bug fixes:** no design proof. In a proof-list feature, the confidence proof must cover the input the scout's evidence failed on. Elsewhere, a fix has no Lean. The fixing agent copies the scout's script into `stress/` unchanged as part of its PR. Copying isn't writing: Velocity checks the file matches the issue's attachment byte for byte.
-
-**What Velocity checks** (in the PR's worktree, before PR duty sees it, and again on every push):
-- `lake build` succeeds for the PR's proof files.
-- No `sorry` or `admit`.
-- `#print axioms` lists only `propext`, `Classical.choice` and `Quot.sound`. This also catches `native_decide`, which adds an axiom of its own, and any `axiom` declaration.
-- **Statement lock.** When PR duty approves, Velocity hashes every theorem statement. If a statement changes afterwards, the approval is withdrawn, the review restarts and a `statement` event is posted. Weakening a statement until its proof goes through is the cheat this catches.
-- The design proof names the spec section it covers. Existing `SPEC.md F5` or `SPEC.md §3.1` references keep working when the section moves. Direct `spec/` file references name an existing source and a heading ID in the project spec, either explicitly or in the source filename (for example `spec/F5-worktrees.md`). Proofs settings reads the proof list from whichever source file holds it.
-
-How the checks run *(proposed)*:
-- **Where and when.** Every PR duty review of a new head runs them in the `review-pr-<n>` worktree (the PR merged onto the base branch), before the agent's turn starts. A push is a new head, so the checks run again on every push. The results open the review's prompt; a failure is named there for PR duty to request changes on.
-- **Which files.** The `.lean` files the PR adds or modifies under `proofs/` (from the merge base to the head). A PR that changes none skips the checks.
-- **Build.** A project on Mathlib runs `lake exe cache get` first, so no worktree compiles Mathlib from source. Then `lake build`.
-- **Axiom audit.** `#print axioms` in a file covers only what its author chose to print, so Velocity elaborates its own audit file with `lake lean`: it imports a changed module and lists the axioms of every declaration it defines. Each changed module gets its own audit file, because modules that are fine alone can clash when imported together (two `Export.lean` files each define the top-level `main` their `lean_exe` needs).
-- **Statement lock.** Approving through the PR duty MCP server hashes every `theorem` statement under `proofs/` at the approved head (read from git, not the checkout; comments and whitespace don't count) and keeps the hashes in the app data folder per PR. The approval is refused if the statements can't be read. When a later head changes or removes a locked statement, the `statement` event clears that approval in the approval record (as a `changes` event does), and the review's prompt restarts it as a full review of every theorem statement rather than a later round.
-- **Rosen statement lock** (#351). On a before-land project, `rosen_duty_review` reads those statements from the review folder's conflict-free merge result and saves the lock in app data per project and change id before publishing approval. Reading reviews refresh that folder from Rosen at the head being approved; local-check reviews require the prepared and checked merge result. Lake's `.lake/` output and dependencies are excluded. `rosen_duty_land` and Velocity's automatic lander for reading reviews both refuse a missing, unreadable or wrong-head lock, or a changed or removed locked statement in the landing tree, and require fresh review and approval. Rosen already voids approval when the change's head moves. After-land projects keep landing without approvals or statement-lock gates.
-
-**Merge gate:**
-- PR duty can't merge until the proofs check (locked, F7).
-- A missing design proof on a proof-list feature blocks the merge.
-- Lean for a feature off the list, or a theorem about a single behaviour, gets changes requested.
-- A confidence proof at the model level for a language that has a stronger level available is flagged on the proof card and left to the reviewer. Sensitive paths need the reference level: a fixture table exported from the Lean model plus one test that checks the code against it. The code level (Rust: an Aeneas translation) is required only when an issue asks for one (F7, #142).
-
-- PR duty's MCP approval requires nonempty `proof_review` explanations of proof-list scope, theorem-statement review and confidence level (including why a check is inapplicable). Those explanations are mirrored with the review. Missing design proofs, off-list Lean and unmet tier requirements require changes; applicability and semantic correctness are judged by the reviewer.
-- `pr_duty_checked`, approval and merge run the executable proof gate in the registered review worktree at the prepared head/base. The checkout must match the committed content at that exact head, ignoring CRLF/LF-only differences from Windows generators; content changes and untracked files are refused. Failed builds, placeholders, disallowed axioms, unnamed spec sections and changed modules absent from the Lake build refuse the operation. An ordinary PR with no changed Lean skips Lake. An unreadable check result fails closed.
-- The statement lock is saved before publishing an approval. Merge also requires a readable lock with no changed or removed locked statement. For a PR reviewed with local checks, a moved base requires preparation and checks again.
-
-**Where it runs:**
-- Proofs and stress scripts run locally, in each agent's worktree, on the machine that already runs the agents.
-- GitHub's checks gate the merge of a PR reviewed by reading (F7 "Checks before merge"). What they run is the project's choice.
-- Tests and stress scripts live in `stress/` (and the project's own test folder). Scouts run them on every sweep and the main watcher runs them after every merge. They never run in per-PR GitHub CI.
-
-**Proof card** (in the PR history, F6):
-- the proof folder, and "N theorems proved";
-- the four checks, each ticked: lake build; no sorry or admit; standard axioms; statements locked at review;
-- every theorem: Design or Confidence, its name and its statement;
-- the level reached per language, e.g. "Rust · reference · fixture table checked by one test", "TypeScript · reference · scouts diff 10,000 stress inputs against it".
-
-How the card is made *(proposed)*:
-- **Where and when.** For each new head of a thread's open PR, Velocity runs the checks above in the background in the thread's own worktree, once that worktree is checked out at exactly the head with no edits under `proofs/` (otherwise the next observation retries). The card sits under "PR opened" in the PR history; a PR that touches no proof file, fixture table or proof-list feature has no card.
-- **Track.** The "Proved" step runs while the head is unchecked, is done when the checks pass and fails when one fails. It reads "No proofs" when the PR changes nothing to prove. A pass ticks "· proved" on the collapsed work line and posts a `proved` event naming the proof folders, the theorem count and each language's level.
-- **Statement lock check.** Pending until PR duty approves that exact head, then ticked.
-- **Levels.** One row per feature and language, read as "How Velocity reads the level" says; a flagged model-only level is shown in amber. A PR that changes only a proof-list feature's fixture table still gets a card, with its fixture rows and levels.
-- **`stress` events.** Each issue a scout files posts a `stress` event naming its evidence script.
-
-**Accept when:**
-- [ ] A building agent's PR adds tests only for critical contracts, and its implementation outweighs its proofs, tests and docs together.
-- [ ] A proof-list feature's PR can't merge without a design proof that checks.
-- [ ] A PR for a feature off the proof list contains no Lean.
-- [ ] A PR whose proofs use `sorry`, `admit`, `native_decide` or a new axiom can't merge.
-- [ ] Changing a theorem statement after approval withdraws the approval and posts a `statement` event.
-- [ ] Every issue a scout files carries a failing test or stress script.
-- [ ] The proof card shows each language's level, and a model-only level is flagged when a stronger one exists.
-- [ ] Per-PR GitHub CI runs only build and lint.
-- [ ] A normal PR is approved without a build or test run by its reviewer, and merges once GitHub's checks on its head pass.
-- [ ] A sensitive PR whose local checks pass on the merge result merges while its GitHub CI run is still pending or red.
-
-### F18 · Skills
-
-**What it is:** first-class support for skill packs: installed once, kept on a pinned commit, switched on per project, and given to every agent of every provider. Four packs are built in. Any other repo that follows the Agent Skills standard can be added.
-
-| Pack | Repo | What it is | Shape | Needs |
-|---|---|---|---|---|
-| **UI UX Pro Max** | [nextlevelbuilder/ui-ux-pro-max-skill](https://github.com/nextlevelbuilder/ui-ux-pro-max-skill) (MIT) | Design intelligence: 80 styles, 192 palettes, 74 font pairings, 25 chart types, 120 UX rules, guidelines for 22 stacks, behind a local BM25 search (`scripts/search.py`). | 1 skill, CSV data, stdlib Python | Python 3 |
-| **claude-skills** | [alirezarezvani/claude-skills](https://github.com/alirezarezvani/claude-skills) (MIT) | 410 skills in domain bundles (engineering, product, marketing, research, regulatory, C-level, finance and more), with 807 stdlib-only Python tools and reference docs. | many skills, in bundles | Python 3 |
-| **Game dev skills** | [gamedev-skills/awesome-gamedev-agent-skills](https://github.com/gamedev-skills/awesome-gamedev-agent-skills) (Apache-2.0) | 77 playbooks for engines (Godot, Unity, Unreal, Bevy, Phaser, three.js and more), disciplines, genres and workflows (game jam, Steam and itch.io publishing). A router skill detects the engine and loads only the matching skills. | many skills, router | none |
-| **REA** | [morluto/rea](https://github.com/morluto/rea) (MIT) | Reverse engineering for agents: native binaries, Electron/JS apps, .NET, Android APKs, websites, firmware, packet captures. Findings come with evidence and unknowns. | MCP server + investigation skill + CLI | Node 22+; optional Ghidra, Hopper, IDA, Rizin, objdump |
-
-**Library:**
-- Velocity keeps one library of packs on your machine. A pack is a git clone pinned to a commit.
-- **Updates:** Velocity checks for new commits and shows the diff of `SKILL.md` files, scripts and data before moving the pin. A pack never updates silently, because a skill is instructions every agent follows.
-- **Windows:** packs are cloned with `core.symlinks=true` and their Python runs with `PYTHONUTF8=1`. claude-skills needs both, or its mirror folders check out as pointer files.
-- **Velocity's own installer:** Velocity installs packs itself instead of running each pack's installer (`npx skills add`, `uipro init`, `rea-agents setup`, Claude plugin marketplaces). One install then reaches all four providers, and nothing edits each agent's own config.
-
-**Per project** (Settings → Skills, scoped to the current project):
-- A switch per pack, plus bundle chips for packs that have bundles: claude-skills by domain, and Game dev skills by engine, discipline, genre and workflow.
-- **Context budget:** a meter shows how many skills are on and roughly how many tokens of skill descriptions every agent loads at start. It turns amber above 150 skills. claude-skills defaults to Engineering only for this reason.
-- **Suggestions** from the project scan (F3), switched on automatically:
-  - UI UX Pro Max when a UI is found: web frameworks in `package.json`, Tailwind, SwiftUI, Flutter or Compose files.
-  - Game dev skills (the router plus the detected engine's bundle) when an engine is found: `project.godot`, `*.uproject`, `ProjectSettings/`, or a Bevy, Phaser, PixiJS or three.js dependency.
-
-  Velocity re-checks after every merge, so a project that gains a UI later gets the suggestion then.
-  A suggested pack that is not installed says **Install to turn on**. Its switch can decline the suggestion before installation; that choice survives later scans and installation. Installing a selected pack activates it automatically. Turning a declined pack back on requires installation.
-- **Requirements:** each card shows what the pack needs and whether it's found, e.g. "✓ Python 3.12", "· Ghidra optional · not found". Detection is cached for the app session, so switches and bundle clicks reuse the results; restart Velocity to detect newly installed tools. Optional tools are found by their launcher names on PATH, including Windows PATHEXT launchers such as `ghidraRun.bat` and `idat64.exe`/`ida64.exe`.
-
-**Where agents find them:**
-
-| Provider | Folder |
-|---|---|
-| Claude Code | `.claude/skills/` |
-| Codex, Antigravity | `.agents/skills/` |
-| Kimi Code | both `.kimi-code/skills/` and `.agents/skills/` (unverified, Q26) |
-
-The provider-to-folder mapping is a data table in `velocity-skills`, not code, so a later correction changes one row. Kimi Code's folder is unverified, so Velocity links into both folders: the links are junctions listed in `.git/info/exclude`, so the second folder costs nothing and never reaches a commit. When Kimi's folder is confirmed, the extra row is dropped, and Velocity removes its own links and exclude lines from a folder no provider uses any more.
-
-- **Linked** (default): each enabled skill is a directory junction (Windows) or symlink into the library, created in every worktree and in the main checkout the spec interview uses. Those paths are listed in the repo's `.git/info/exclude`, so they never reach a commit or a PR.
-- **Committed** (per project): the enabled skills are copied into the repo at the pinned commit, for collaborators who don't use Velocity. Updating the pin then goes through a PR like any other change.
-- **Skills you installed yourself** are left alone (§3.2 Tool access). Velocity's links sit next to them. If a name clashes, your own skill wins and the card says so.
-
-**Every role gets them:** threads, swarm and goal swarm members, PR duty, scouts, the main watcher and spec interviews all see the same enabled skills. Skills add knowledge; they never remove a tool.
-
-**Pack specifics:**
-- **UI UX Pro Max: design system.**
-  - **Generate** runs its search with `--design-system --persist` and writes `design-system/<project>/MASTER.md`, plus page overrides. The design system is committed like SPEC.md.
-  - While it exists, AGENTS.md gets the rule "Before any UI work, read `design-system/<project>/MASTER.md`. Use only its colours, type and spacing." (F11).
-  - Scouts treat UI that breaks the design system as spec drift.
-- **claude-skills: Python tools.** Its scripts run with your Python 3 and need no installs. Agents call them from the linked skill folder.
-- **Game dev skills: router.** The router skill is always on with the pack. Engine bundles are exclusive (only the detected engine's bundle is suggested); disciplines, genres and workflows add on.
-- **REA: MCP server.**
-  - Turning REA on registers its MCP server in Velocity's shared MCP servers (§3.2), so every agent of every provider gets REA's tools with no per-agent setup. Its investigation skill is linked like any other.
-  - Analysis runs locally, under your user, inside the agent's worktree.
-  - The card says REA is for software you own or are authorized to examine, and that commercial engines (IDA, Hopper, JEB) need your own licences.
-
-**Accept when:**
-- [ ] Turning a pack on makes its skills available to the next agent of every signed-in provider, with no per-provider step.
-- [ ] Linked skills never appear in `git status` or in a PR.
-- [ ] A pack's pin moves only after its diff is shown, and only when you confirm.
-- [ ] Turning REA on gives every new agent REA's MCP tools.
-- [ ] The `$` menu lists exactly the project's enabled skills.
-- [ ] Opening a Godot project suggests the router and the Godot bundle, and opening a Svelte app suggests UI UX Pro Max.
-
-### F19 · Code graph
-
-**What it is:** Velocity maps each project's code into a graph of symbols, files and subsystems. Every agent queries it through tools, so it finds the right code with fewer searches and reads only the lines that matter. The aim is less digging: fewer tool calls and fewer tokens per task at the same accuracy. It is built into Velocity, needs no install, and keeps one graph per project for all of the project's agents. Inspired by [Graphify](https://github.com/Graphify-Labs/graphify) (#277). Its accuracy rules come from the A.TXY address memory in MCL4-COE and `elem`: route hard, process soft.
-
-**Accuracy rules:**
-- **Exact or a classified failure.** A lookup returns one exact record, or `ambiguous` (with every candidate), `missing` (with the nearest names) or `stale`. It never guesses between candidates, and a name that matches several symbols is never resolved to one of them.
-- **The graph points; the agent reads.** Every record gives its file, line range and signature, so the agent opens exactly those lines. The graph never stands in for the source.
-- **Never stale.** Every record carries the hash of the source span it came from, and the graph the hash of every file. Before an answer leaves, the files it names are hashed again; a file that changed is re-indexed and the answer is made again from the new records.
-- **Every edge says how it was found.** `extracted` edges are explicit in the source: a definition's container, an import, a call to a name defined in the same file or imported into it, a path-qualified call (`Type::new`, `module::run`). `inferred` edges are resolved by name across the packages the caller's package depends on, with one candidate. A name that matches several definitions is `ambiguous`, kept with its candidates. A method call on a receiver whose type the calling code never names is `unconfirmed`. Programs and impact never follow `ambiguous` or `unconfirmed` links unless asked.
-- **No guessing by common names.** Several rules keep name matches from inventing links (after Graphify's resolver):
-  - A standard type name (`String`, `Result`, `Error`) links only to a definition in the same file or an imported one.
-  - A standard method name (`get`, `len`, `join`, `push`) on a receiver of unknown type links to nothing.
-  - Test, example and stress code is never a candidate for production code.
-  - In JavaScript and TypeScript, a name links only through a definition in the file or an import.
-  - A call inside a macro's arguments is `inferred` at best.
-- **No tool is restricted (Rule 1).** Agents keep Read, Grep and the shell. The tools' instructions say when the graph is the better path (finding a symbol, its callers, what a change affects) and when it isn't (strings, literals, config values, build output).
-- **No model in the index.** Parsing and resolution are deterministic (tree-sitter), so building the graph spends no subscription usage. Docs are read for structure only.
-
-**What it holds** (planes, after A.TXY):
-
-| Plane | Records | Links |
-|---|---|---|
-| 1 · Symbols | functions, methods, types (struct, enum, trait, class, interface), constants, macros, Markdown headings | UP to the file; `calls`, `implements`, `references`; `implements` from a trait method's implementation to its declaration; `calls` from frontend code into a Tauri command (`commands.checkForUpdate`, `invoke("check_for_update")`); `mentions` from a doc heading to the code its section names in backticks |
-| 2 · Files | each tracked source and Markdown file | UP to the subsystem, DOWN to its symbols; `imports` to the files and the symbols it imports (through `export * from` barrels) |
-| 3 · Subsystems | workspace members and packages (Cargo members, `package.json` workspaces and packages, Go modules) and otherwise top-level folders | DOWN to their files; `depends` from the manifests |
-
-- **Languages:** Rust, TypeScript, JavaScript, Svelte (its script blocks), Python, Go, C#, Java, C and C++, plus Markdown headings. Other files are listed at plane 2 with no symbols.
-- **Left out:** files git ignores, files git doesn't track, and the project's generated files (lockfiles and generated bindings, as AIRC's claims leave them out, F14).
-- **Addresses:** each record has a short address such as `1.k3f9q`: its plane, then base-36 characters from a hash of its path, qualified name and kind. An address stays the same while the symbol keeps its name and file, so an agent can pass it back in later calls. A moved or renamed symbol returns `stale` with the record's new address when one matches.
-
-**Building and keeping it current:**
-- **Parse cache.** Velocity keeps one parse cache per project in the app data folder: each file's symbols and references, keyed by a hash of the file's content, the parser version and Velocity's version. It is an append-only log of checksummed records, shared by every agent of the project, so a file is parsed once whatever worktree or commit it appears in. A torn or corrupt record at the end of the log is dropped and that file is parsed again. The log is compacted when it grows past twice the size of the records still in use. A large parse (a new project, a cold cache) runs under the project's build lock, so a swarm's agents starting together parse once and the rest read the cache.
-- **Each agent's graph.** An agent's tools hash every file in its worktree that git tracks or doesn't ignore, take what the cache already holds, parse the rest, and resolve names across the whole set. A file watcher picks up the agent's edits as it works, and the span check catches anything the watcher missed.
-- **Warming.** After each merge to the base branch, Velocity parses the files the merge changed, read from git at the new tip, in the background below normal priority on the trigger that catches up the warm pool (F5). New agents then start with a full cache.
-- **Speed:** a query answers in under 50 ms on a 100,000-line project. Building the graph for such a project takes under 10 s with an empty cache and under 1 s with a full one.
-
-**Agent tools.** Every session Velocity starts, on every provider and in every role, gets an MCP server named `velocity-graph` in `session/new`, beside `airc` (§3.2, F14). The name carries Velocity's reserved prefix, so it never clashes with a server of your own, such as Graphify's. It runs Velocity's own executable as `velocity --graph-mcp <app-data> <project-id> <worktree>`.
-
-| Tool | Does |
-|---|---|
-| `graph_find { query, plane?, kind?, limit? }` | Ranks candidates for a name or a plain-language description. Matching is by words, with camelCase and snake_case split, word stems and rarer words weighted higher. A record's score scales with the square of the share of the query's words it matches. An exact name ranks first, then names that start with the query. Tests, examples and docs rank lower unless the query asks for them. Returns addresses with kind, name, file:line and signature. A result that is the only exact match for the name is marked `exact`. |
-| `graph_read { target, source? }` | One record by address or exact name: signature, doc summary, file and lines, its UP chain, its DOWN children by name, and its links grouped by relation with their counts. `source: true` adds the source lines themselves, so the agent doesn't need a separate read. Fails as the accuracy rules say. |
-| `graph_impact { targets, depth? }` | What depends on symbols or files, followed transitively through calls, implementations, type uses, imports and doc mentions (2 hops by default, at most 6). A type brings its methods and a file its symbols, and an implementation of a trait method brings the callers of the trait method. A hub (a record with at least the 99th percentile of incoming links, and at least 50) is listed but not followed. `ambiguous` and `unconfirmed` links are listed only as direct leads. The answer is grouped by subsystem with depth, and links found in the source are listed apart from leads to check. It says that no dependents doesn't prove code unused. |
-| `graph_run { program }` | A pointer program of up to 16 steps, run in one call over one register: `FIND`, `AT`, `READ`, `UP`, `DOWN`, `FOLLOW <relation> [in\|out] [all]`, `FILTER <kind\|plane\|path glob\|name>`, `PATH <target>`, `COUNT`, `SOURCE`. Returns the result and a one-line audit for each step (what it did and how many records it held). `PATH` lists each hop with its relation and provenance, and the path's confidence: that of its weakest hop. It never passes through a hub. For example, `FIND "approval record"; FOLLOW calls in; FILTER path crates/velocity-github/**; COUNT` replaces several searches and reads with one call. |
-
-- **Budget.** Every answer is capped at 8,000 characters. A cut answer says so on its first line, with how much was kept and how to narrow it.
-- **Instructions.** The server's MCP instructions state when the graph is the better path (where something lives, what calls it, what a change affects) and when grep is (exact text), that a record's lines are what to read, and that `inferred`, `ambiguous` and `unconfirmed` links are leads to check. They are written as facts, not orders: imperative rules read like prompt injection and get ignored.
-- **Session-start map.** When the index is ready within 1.5 s of the agent connecting, the instructions end with a map of about 250 tokens: the worktree, its file and symbol counts, its biggest subsystems and its most-used symbols with their addresses.
-
-**Measuring it.** The graph exists to save time and tokens without costing accuracy, so Velocity measures that, in total rather than per thread.
-- **The switch.** Each project has a code graph switch, on by default, in the usage modal. Agents started while it is off get no `velocity-graph` server; agents already running keep what they started with. It is saved with the project's graph in the app data folder, and warming skips a project whose graph is off.
-- **Totals.** Every turn of every agent, in every role, adds its tokens and its working time to the project's totals for the side it ran on: the graph on or off. Tokens are what the agent reports when the turn ends (ACP's turn usage, which agents report as running session totals, so each turn adds the difference). A turn whose agent reports none still counts its time. Writes are serialized, so agents finishing together never lose a turn.
-- **The comparison** (usage modal, Code graph): for each side, its turns, tokens per turn, time per turn, total tokens and total time. Once each side has at least 10 turns, a line states the difference, such as "With the graph, a turn used 23% fewer tokens and took 18% less time". Before that it says how many turns each side still needs. **Reset counts** clears both sides and starts again; the modal shows when counting began.
-- **Reading it.** If turns with the graph use no fewer tokens and no less time, the graph does not pay for itself and the default turns off. Lookup accuracy (did the graph return the right record), record integrity (did the record match the source) and task outcome stay separate measures.
-
-**Velocity's own uses** (later, built on the graph):
-- **AIRC overlaps by symbol** (F14): two agents editing different functions in one file don't overlap. An agent changing a symbol another agent's claimed work calls is told.
-- **Swarm split** (F10, F16): work items are grouped by the subsystems their likely code falls in, so concurrent agents collide less.
-- **PR duty** (F7): a review starts from the change's impact set: the changed symbols, and what depends on them.
-
-**Accept when:**
-- [ ] Every new agent of every provider has the graph tools with no per-provider setup.
-- [ ] A name defined more than once returns `ambiguous` with every candidate, never one of them.
-- [ ] After an agent edits a file, the next query answers from the edited file, never from an older parse.
-- [ ] After a merge to the base branch, only the files it changed are parsed.
-- [ ] A query answers in under 50 ms on a 100,000-line project.
-- [ ] The usage modal compares tokens and time per turn for the active project with the graph on and off, and its switch decides whether new agents get the graph.
-
-## 5. Keyboard map
-
-| Key | Where | Action |
-|---|---|---|
-| `Ctrl+K` | anywhere | command palette |
-| `Ctrl+N` | anywhere | new thread |
-| `Ctrl+Shift+N` | anywhere | new project |
-| `Ctrl+,` | anywhere | settings |
-| `Alt` (hold) / `Alt+1–9` | anywhere | show thread numbers / jump to thread |
-| `/` | not typing | search threads |
-| `T` | not typing | focus "Add a task" |
-| `W` | not typing | swarm dialog |
-| `G` | not typing, outside a spec interview | goal swarm dialog |
-| `A` | not typing | AIRC |
-| `B` | not typing | show the Board, or return to Focus |
-| `Esc` | anywhere | close overlay / menu |
-| `Ctrl+Enter` | dialogs | create / start / launch |
-| `I` `R` `F` `V` `S` | home view | dispatch, resume, fan out, PR duty, scouts |
-| `1–4`, `L` `S` `G` | spec interview | answer; lock, SPEC.md, keep grilling |
-| `D`, `E` | thread | diff, editor |
-| `Ctrl+S` and the outliner keys | AGENTS.md | see F11 |
-
----
-
-## 6. Visual language
-
-- **Base:** OLED, Apple-inspired **graphite** with glassy panes. Black is true black.
-  - **Window:** opaque `#000`. There is no desktop show-through (no Mica, Acrylic or vibrancy) because true black is the point.
-    - Two faint pools of light sit behind the panes (`--ambient`: the accent at the top-left, the duty violet at the bottom-right) so the glass has something to refract. Everything else stays black.
-  - **Layout:**
-    - The sidebar is one floating glass pane, and each rail panel is its own pane.
-    - The main column has no panel: content sits straight on the window.
-    - The thread header has two lines: the title (20 px) with Diff and Editor as pill buttons beside it, and the meta line (branch, worktree, diff counts, time) under it.
-  - **Materials:**
-    - Panes are smoked glass:
-      - a translucent top-lit fill `rgba(255,255,255,.072)` → `.034`, plus a faint top-left sheen, over `blur(36px) saturate(1.7)` of whatever is behind the pane;
-      - a 1px `rgba(255,255,255,.14)` edge and a 1px inner top highlight at 20%;
-      - a soft `0 18px 50px rgba(0,0,0,.55)` lift, so panes float.
-    - The composer takes an accent edge and a 3px accent ring on focus; chips brighten their rim on hover.
-    - Popovers, menus, dialogs and toasts are frosted glass: `rgba(44,44,48,.72)` → `rgba(26,26,28,.80)` with `blur(48px) saturate(1.9)` over the content beneath them. The scrim dims to `rgba(0,0,0,.5)` and blurs.
-    - Cards in the content area take a faint top-lit fill and a `rgba(255,255,255,.09)` hairline. Tool steps sit together in one such card, and the running step is an accent-tinted row.
-  - **Shape:** corner radii 6 / 10 / 14 px. The sidebar is 22 px, rail panels 20 px, the composer 24 px, thread rows 12 px, dialogs 18 px, menus 12 px. Pills and toasts are fully round.
-  - **Controls:** the accent is ion blue `#6a8dff`, used for the selected thread, focus rings, checkboxes, the primary button, the send button and anything running. `--accent-soft` (16%) fills and `--accent-line` (46%) rims are its two tints.
-    - Thread rows are source-list rows. The selection is a small accent-tinted lozenge with an accent rim, not an outlined box.
-    - Segmented controls use a sliding raised segment, and buttons are subtle raised gradients.
-    - The send button is an accent filled circle with a black arrow, and shortcuts are keycaps.
-  - **Type:** SF Pro / system UI, falling back to Inter (bundled), with SF Mono falling back to JetBrains Mono for code and meta.
-    - There are no italics anywhere, including placeholders.
-    - Hierarchy comes from weight and the label greys: titles `#fff`, primary `#f5f5f7`, secondary `#b4b4bd`, tertiary `#8a8a91`. The tertiary grey still passes 4.5:1 on black.
-- **State colours:** panes stay neutral. Colour marks three things only: the selection and primary action (the accent), the state a thread is in, and the provider that runs it. A state's colour appears on its title-bar count (a tinted pill), its sidebar group label and its row icon.
-
-  | Colour | Use |
-  |---|---|
-  | ok `#5fd08a` | merged / done |
-  | warn `#f0b651` | PR open · watching / CI / fixing |
-  | err `#ff7369` | failed / changes requested |
-  | accent `#6a8dff` | running |
-  | info `#8fb4e8` | spec |
-  | duty `#b79cff` | duty agents |
-  | swarm `#5fd4c4` | swarm |
-  | claude `#d97757` · codex `#e9e9e9` · agy `#8ab4f8` · kimi `#f08fb8` | provider marks (Anthropic, Codex, Antigravity, Kimi Code) |
-
-- **Motion (#226):** gentle and quick, one system for the whole app. Nothing bounces, overshoots or calls attention to itself.
-  - The `--motion-*` tokens in `reference.css` set four durations: quick 120 ms, fast 150 ms, base 180 ms and slow 260 ms. The 150 and 180 ms values come from the reference's toggle and toast. They also set two curves: an ease-out for things arriving and an ease-in for things leaving, which use the quick duration. Travel is 4 px and scale starts at 0.97.
-  - Menus and popovers (the model picker, the thread context menu, the slash menu, the project switcher) fade and grow in and out. Modal dialogs (the palette, AIRC, usage, New project, Duty and the swarm dialogs) fade and grow in, and their scrim fades with them. They close at once, so focus and keys come back without waiting.
-  - New rows rise 4 px into place: sidebar threads, tasks, issues, an issue's expanded detail, tool steps and other transcript blocks. Rows leave at once, so a list never shows old and new rows together. The toast rises in and fades out.
-  - The arriving view rises into place when switching between thread, board, swarm, duty, settings and settings tabs.
-  - Buttons, pills and rows ease their colour on hover and focus. Compact controls (pills, buttons, segmented controls) sink to 0.97 while pressed; full-width rows only change colour. Status dots and icons ease between state colours. The usage and limit bars fill when they appear and when their value changes.
-  - Motion never delays input or reading. Agent text appears at once, typing never waits, and a backend update never restarts an animation: entry motion runs only when an element is inserted.
-  - Only `opacity` and `transform` animate, apart from the small bars' fill, so nothing reflows.
-  - With `prefers-reduced-motion`, nothing moves or scales and the bars don't fill. Short fades stay.
-- Base tokens are copied exactly from the mockup's `:root` into `ui/src/lib/theme/tokens.css`. Values missing from `:root` are copied from the reference's winning CSS declarations into `ui/src/lib/theme/reference.css` (user-authorized in #12). Components use the token files; the reference is read-only. The Rust theme module mirrors the base tokens.
-- Fonts are bundled locally in the app. The mockup uses a CDN only for convenience.
-
----
-
-## 7. Implementation order
-
-Each milestone ends with a working app. PR duty checks an item off when it lands that item's PR (F7).
-
-**Bootstrap prerequisite** (AGENTS.md Proofs, F17)
-- [x] Pinned Lake project, Lean 4, Mathlib, Charon and Aeneas, with documented setup and extraction commands
-
-**M1 · Shell**
-- [x] Tauri v2 app, frameless window, title bar, drag regions, window controls (F1)
-- [x] Design tokens → theme module; bundled fonts
-- [x] Three-column layout, sidebar groups, rail panels, pulse, palette, keyboard map (F1, §5)
-- [x] Persisted state: projects, threads, tasks, settings
-
-**M2 · Projects and spec**
-- [x] Project store and switcher (F1)
-- [x] New-project dialog: local (git init) and GitHub (new/existing, visibility, clone) (F2)
-- [x] Open project from the switcher: a local folder or one of your GitHub repositories; an existing SPEC.md locks the spec (F2)
-- [x] Spec interview: scan, ask, ready, lock; SPEC.md written and committed; draft → published tasks (F3)
-- [x] Gate: no build work on unlocked projects (Rule 2)
-
-**M3 · Threads and worktrees**
-- [x] Agent runner: providers, models, effort, speed (Regular / Fast where the agent offers it), full permissions, queued steering (Rule 1, F4, F15)
-- [x] Thread titles from the title model (default GPT-6 Luna · Low · Fast), in parallel with taking a worktree; branch named from the title (F4, F15)
-- [x] ACP client (`agent-client-protocol`): spawn per thread, `session/new` in the worktree with AIRC as an MCP server, updates → transcript, auto-allow permissions, cancel, queued prompts, `fs`/`terminal` rooted at the worktree but not confined to it, full tool access with your config loaded and shared MCP servers (§3.2)
-- [x] ACP agents for Claude Code (`claude-agent-acp`), Codex (`codex-acp`), Kimi Code (`kimi acp`) and Antigravity (`agy acp`), each using its own OAuth login through `authenticate`; Settings → Providers, model menu, limit meter (F15)
-- [x] Custom ACP agents: Add an ACP agent (name, command, arguments), and an editable command on each provider card (F15)
-- [x] Worktree manager: create / delete / prune, path scheme, setup step (copy files, run command, shared build cache) (F5)
-- [x] Thread view: transcript, tool steps, diffs, header with worktree path, composer, slash menu (F4)
-- [x] Settings → Worktrees, including the live list and the footer count (F5, F13)
-
-**M4 · PR loop**
-- [x] GitHub integration: open PR, CI checks, reviews, comments, merge, close
-  - [x] Live Open Pull Requests rail: real project PRs, CI, line counts, review state, reviewer claims and owning-thread navigation (F6/F7)
-- [x] PR follow-through: track, PR history, auto-response to review comments, merge → worktree delete (F6)
-- [x] Closed-without-merge state with the worktree kept (F5, F6)
-- [x] Right-click menu and delete with 5 s undo (F12)
-
-**M5 · Duty agents**
-- [x] PR duty: claiming, review against SPEC.md, request changes, approve, merge; never merge unapproved; approval record bound to the head SHA; severity bar (Rule 4, F7, Q28)
-- [x] Scouts: sweeps, issue filing with repro, de-duplication (F7)
-  - [x] GitHub issue inventory (open and closed), executed failure evidence, duplicate assessment, dispatch labels and scout attribution; runnable backend filing path
-- [x] Duty view, start dialog, pause/resume, add agents (F7)
-
-**M6 · Task List, issues, swarm**
-- [x] Task List: states, add input, `T`, `/task`, palette, attribution, live agent state (F8)
-- [x] Agent `task_add` tool, used only when asked (F8)
-- [x] Issues panel and single dispatch (F9)
-- [x] Swarm: dialog, launch, PR duty capacity, sidebar row, view, broadcast, + Items, rebase on merge, task done / issue close (F10)
-
-**M7 · AGENTS.md**
-- [x] Outliner editor with markdown round-trip (F11)
-- [x] Live lint, coverage checks with Add (F11)
-- [x] Rewrite agent on Enter: tighten / expand / split / flag, with Undo (F11)
-- [x] Default AGENTS.md template with the PR, Task List and AIRC rules (F11)
-
-**M8 · AIRC**
-- [x] Channel per project: log files, nicks, join/leave, MCP tools for agents (F14)
-- [x] Claims from each agent's first step; overlap detection and `velocity` lines (F14)
-- [x] Dependency wait → rebase → continue in the agent runner (F14)
-- [x] Mention delivery to threads at step boundaries; your comments (F14)
-- [x] Event log posted by Velocity from claims, GitHub and the Task List; agent messages kept separate (F14)
-- [x] Modal: Events (default), Claims, Messages, Discoveries, Past work, nick list, unread badge, `A` (F14)
-
-**M9 · Goal swarm**
-- [x] Atomic claim lock: `airc_claim` / `airc_release`, refusal lines, held claims on failure (F14, F16)
-- [x] AIRC MCP server injected into every provider's agent runtime (F14, F16)
-- [x] Work pool: open Task List items, open issues, unbuilt SPEC.md sections (F16)
-- [x] Dialog: prompt, count, model mix with "the rest", effort and speed per row, limits, pool size, PR duty capacity, keep going (F16)
-- [x] Launch, choosing → claimed → normal lifecycle, leave when nothing is left, keep going (F16)
-- [x] Goal swarm view: claims board, one card per agent, activity; sidebar row (F16)
-
-**M10 · Throughput** (§3.3)
-- [x] Agent activity, stall detection with nudge then restart, per-agent caps, claim release after the grace period (§2.2)
-- [x] Parking: end the session on `airc_wait`, resume on the subscribed `merged` event; optional provider concurrency cap (§2.2, F15)
-- [x] Targeted AIRC delivery, message envelope (`to`, `intent`), heads-down and quarantine modes (F14)
-- [x] Targeted rebases, optimistic landing, conflicts sent back to the owning agent; rebuild the merge result whenever `master` moved; Shared files exempt from overlaps (F6, F14)
-- [x] Warm worktree pool from one base clone, prebuilt at the tip of `master` with a shared compiler cache; worktree guards (F5)
-- [x] PR duty tiered review and intent review; Sensitive paths in AGENTS.md (F7)
-- [x] Main watcher duty role: post-merge suite, bisect, fix or revert PR (F7)
-
-**M11 · Proofs** (F17)
-- [x] Lean toolchain and Mathlib cache in the warm pool (F5)
-- [x] Proof checks in the worktree: `lake build`, no `sorry`/`admit`, axiom audit, statement lock and review reset
-- [x] Proof card on the PR, "Proved" on the PR track, `proved`/`statement`/`stress` events
-- [x] Merge gate in PR duty; statement review; tiers updated (F7)
-- [x] Scouts: assume-it-fails sweeps, evidence required, Stress and Proof gaps focus areas, stress runs against Lean reference models
-- [x] Levels per language: reference by default (fixture table plus one test; compiled Lean model through FFI for stress), code on request (Aeneas for Rust), model
-- [x] AGENTS.md: Implementation first, Proofs, and Tests and docs sections; Covers check (F11)
-
-**M12 · Skills** (F18)
-- [x] Skill library: clone and pin packs, update with a diff, Windows symlink and UTF-8 handling
-- [x] Settings → Skills: per-project switches, bundles, context budget, requirements, add any Agent Skills repo
-- [ ] Link enabled skills into every worktree and the spec checkout per provider folder; `.git/info/exclude`; committed mode
-- [x] Built-in packs: UI UX Pro Max (design system and AGENTS.md rule), claude-skills (bundles), Game dev skills (router and engine detection), REA (shared MCP server)
-- [x] Project scan suggestions (F3), re-checked after merges
-- [x] `$` skill menu in the composer; skill loads shown as tool steps (F4)
-
-**M13 · Releases and updates** (F1)
-- [x] In-app updates: signed releases from `v*` tags, the update check and Updates panel, Restart to update for setup, MSI and portable copies
-
-**M14 · Code graph** (F19)
-- [x] Code graph index: tree-sitter symbols, files and subsystems with addresses, span hashes and edge provenance; the per-project parse cache, warmed after merges
-- [x] `velocity-graph` MCP server in every session: `graph_find`, `graph_read`, `graph_impact` and `graph_run` over each agent's worktree view, with the span check (§3.2)
-- [x] Per-project switch, and the graph on/off comparison of tokens and time per turn in the usage modal (F15 Usage modal)
-- [ ] AIRC overlaps by symbol, swarm split by subsystem, and PR duty's impact set
-
----
-
-## 8. Open questions
-
-| # | Question | Blocks |
-|---|---|---|
-| Q1 | What is the full meaning of the Task List? (The user will explain.) | anything beyond F8 |
-| Q2 | How is "the implementation matches the spec exactly" verified? | a spec-check feature |
-| Q3 | Final names for "duty", "PR duty" and "Scouts". | labels only |
-| Q4 | Does a swarm ever cap how many agents run at once, or always start everything? Built: everything starts. A per-provider cap is specified, off by default (F15). | F10 |
-| Q5 | Does a running swarm pick up items added after launch? (Built: no.) | F10 |
-| Q6 | Decided: it stays outside SPEC.md. Adding a task never starts an interview; a PR that changes specified behaviour updates SPEC.md itself (F8). | F3, F8 |
-| Q7 | Decided: no. The spec interview writes SPEC.md only; AGENTS.md comes from F11. | F3, F11 |
-| Q8 | Decided: the lint only advises. PR duty tightens a hedged line in an AGENTS.md change itself and never blocks on wording (F11). | F11 |
-| Q10 | Ghost-text autocomplete while typing in AGENTS.md? (It would take Tab from indent.) | F11 |
-| Q11 | Decided: Svelte 5 + TypeScript on Vite, built with pnpm (§3). | M1 |
-| Q12 | Should AIRC be one channel per project, or one shared channel across projects (as in xros_chat)? Built: per project. | F14 |
-| Q13 | Should agents be able to schedule jobs for each other through AIRC (xros_chat job queues)? | F14 |
-| Q14 | Decided: Antigravity runs Google's own agent, `agy acp` (§3.2). Limits are read per provider outside ACP, from the sources T3 Code reads (F15 Limit sources). | F15, §3.2 |
-| Q15 | Decided: it waits for the reset and resumes by itself, as T3 Code does. Work never moves to another provider automatically (§2.2, F15). | F15, F10, F16 |
-| Q16 | May goal swarm agents claim work outside the Task List, issues and SPEC.md (split a large item, or claim something they found)? Built: no. | F16 |
-| Q17 | When there are more agents than unclaimed pieces, should the extras leave (built), or pair up on existing pieces (tests, review)? | F16 |
-| Q18 | Should "keep going" be on by default? Built: off, which matches the prompt you use today (stop after the merge). | F16 |
-| Q19 | Decided: yes. The four providers are built first, then any ACP agent can be added by command and arguments (F15 Custom ACP agents). | F15, §3.2 |
-| Q20 | Decided: stall timeout 5 min (30 min for a running tool call; never in the build queue), grace period 10 min. A released agent's pushed branch is offered to the next claimer, never assigned (§2.2). | §2.2 |
-| Q21 | Decided, then revised: PR duty reviews by reading and GitHub's checks on the approved head decide the merge. The local checks on the merge result decide it only for a sensitive PR, a PR that changes proofs, or a project with no GitHub checks (F7 "Checks before merge"). Proofs are checked locally before merge, and stress scripts run after the merge (F17). | F7, F17 |
-| Q22 | Name for the "Main watcher" duty role. | F7 |
-| Q23 | Which code-level translators should ship besides Aeneas for Rust (C, C++, Python and others)? Until one exists for a language, that language tops out at the reference level. | F17 |
-| Q24 | Decided: no. The spec interview only proposes the proof list; each building agent writes its design proof after the code (Rule 8). | F3, F17 |
-| Q25 | Decided: yes, a little faster. Providers count it inside their ordinary usage, with no category of its own (F15). | F15 |
-| Q26 | Decided: Claude Code reads `.claude/skills/`; Codex and Antigravity read `.agents/skills/`, the Agent Skills standard folder both packs' docs name. Kimi Code's folder is unverified, so Velocity links into both `.kimi-code/skills/` and `.agents/skills/` until it is confirmed, then drops the extra row. The mapping is a data table in `velocity-skills`, so a correction changes one row (F18, #161). | F18 |
-| Q27 | Should "Add a skill pack" also search the skills.sh registry, or take only GitHub repos? | F18 |
-| Q28 | Decided: Velocity's own approval record bound to the head SHA, mirrored on GitHub as an "Approved at `<sha7>`" comment with a short reason; the approving reviewer then squash merges (F7, #42). Velocity's own repository uses the PR duty GitHub App (AGENTS.md). | M4 approve/merge, F7 |
+<!-- split-spec index -->
+
+## Spec file index
+
+Velocity reads this file and Markdown recursively under `spec/` as one spec.
+Section IDs (including F5, F7 and §3.1) are unchanged.
+§7 is in `spec/7-implementation-order.md`; §8 is in `spec/8-open-questions.md`.
+F5, F7 and §3.1 have a README for their introduction and separate files for their rules or each feature's IPC.
+
+- [spec/3-architecture.md](spec/3-architecture.md)
+- [spec/3.1-ipc/README.md](spec/3.1-ipc/README.md)
+- [spec/3.1-ipc/F1.md](spec/3.1-ipc/F1.md)
+- [spec/3.1-ipc/F2.md](spec/3.1-ipc/F2.md)
+- [spec/3.1-ipc/F4.md](spec/3.1-ipc/F4.md)
+- [spec/3.1-ipc/F6.md](spec/3.1-ipc/F6.md)
+- [spec/3.1-ipc/F12.md](spec/3.1-ipc/F12.md)
+- [spec/3.1-ipc/F3.md](spec/3.1-ipc/F3.md)
+- [spec/3.1-ipc/F7.md](spec/3.1-ipc/F7.md)
+- [spec/3.1-ipc/F9.md](spec/3.1-ipc/F9.md)
+- [spec/3.1-ipc/F10.md](spec/3.1-ipc/F10.md)
+- [spec/3.1-ipc/F8.md](spec/3.1-ipc/F8.md)
+- [spec/3.1-ipc/F16.md](spec/3.1-ipc/F16.md)
+- [spec/3.1-ipc/F11.md](spec/3.1-ipc/F11.md)
+- [spec/3.1-ipc/F13.md](spec/3.1-ipc/F13.md)
+- [spec/3.1-ipc/F5.md](spec/3.1-ipc/F5.md)
+- [spec/3.1-ipc/F15.md](spec/3.1-ipc/F15.md)
+- [spec/3.1-ipc/3.2.md](spec/3.1-ipc/3.2.md)
+- [spec/3.1-ipc/F19.md](spec/3.1-ipc/F19.md)
+- [spec/3.1-ipc/F17.md](spec/3.1-ipc/F17.md)
+- [spec/3.1-ipc/F18.md](spec/3.1-ipc/F18.md)
+- [spec/3.1-ipc/F14.md](spec/3.1-ipc/F14.md)
+- [spec/3.2-agent-protocol-acp.md](spec/3.2-agent-protocol-acp.md)
+- [spec/3.3-prior-art-scion.md](spec/3.3-prior-art-scion.md)
+- [spec/4-features.md](spec/4-features.md)
+- [spec/F1-main-window.md](spec/F1-main-window.md)
+- [spec/F2-new-project.md](spec/F2-new-project.md)
+- [spec/F3-spec-interview.md](spec/F3-spec-interview.md)
+- [spec/F4-threads-and-composer.md](spec/F4-threads-and-composer.md)
+- [spec/F5-worktrees/README.md](spec/F5-worktrees/README.md)
+- [spec/F5-worktrees/rosen-the-project-s-server.md](spec/F5-worktrees/rosen-the-project-s-server.md)
+- [spec/F5-worktrees/rosen-a-thread-s-workspace.md](spec/F5-worktrees/rosen-a-thread-s-workspace.md)
+- [spec/F5-worktrees/rosen-stored-as-the-agent-writes.md](spec/F5-worktrees/rosen-stored-as-the-agent-writes.md)
+- [spec/F5-worktrees/rosen-what-the-agent-is-told.md](spec/F5-worktrees/rosen-what-the-agent-is-told.md)
+- [spec/F5-worktrees/rosen-deleting-the-thread.md](spec/F5-worktrees/rosen-deleting-the-thread.md)
+- [spec/F5-worktrees/rosen-followed-through-rosen-s-events.md](spec/F5-worktrees/rosen-followed-through-rosen-s-events.md)
+- [spec/F5-worktrees/rosen-issues-carried-by-rosen-changes.md](spec/F5-worktrees/rosen-issues-carried-by-rosen-changes.md)
+- [spec/F5-worktrees/rosen-rebases-at-the-step-boundary.md](spec/F5-worktrees/rosen-rebases-at-the-step-boundary.md)
+- [spec/F5-worktrees/rosen-rebases-at-the-step-boundary-airc-rebase-tool.md](spec/F5-worktrees/rosen-rebases-at-the-step-boundary-airc-rebase-tool.md)
+- [spec/F5-worktrees/rosen-rebases-at-the-step-boundary-a-conflict.md](spec/F5-worktrees/rosen-rebases-at-the-step-boundary-a-conflict.md)
+- [spec/F5-worktrees/rosen-falling-back.md](spec/F5-worktrees/rosen-falling-back.md)
+- [spec/F5-worktrees/lifecycle.md](spec/F5-worktrees/lifecycle.md)
+- [spec/F5-worktrees/path.md](spec/F5-worktrees/path.md)
+- [spec/F5-worktrees/settings-worktrees.md](spec/F5-worktrees/settings-worktrees.md)
+- [spec/F5-worktrees/settings-worktrees-location.md](spec/F5-worktrees/settings-worktrees-location.md)
+- [spec/F5-worktrees/settings-worktrees-location-a-drive-picker-showing-each-drive.md](spec/F5-worktrees/settings-worktrees-location-a-drive-picker-showing-each-drive.md)
+- [spec/F5-worktrees/settings-worktrees-location-a-folder-field-with-browse.md](spec/F5-worktrees/settings-worktrees-location-a-folder-field-with-browse.md)
+- [spec/F5-worktrees/settings-worktrees-location-a-live-path-preview.md](spec/F5-worktrees/settings-worktrees-location-a-live-path-preview.md)
+- [spec/F5-worktrees/settings-worktrees-location-a-per-project-override.md](spec/F5-worktrees/settings-worktrees-location-a-per-project-override.md)
+- [spec/F5-worktrees/settings-worktrees-location-a-notice-when-the-location-changed.md](spec/F5-worktrees/settings-worktrees-location-a-notice-when-the-location-changed.md)
+- [spec/F5-worktrees/settings-worktrees-lifecycle.md](spec/F5-worktrees/settings-worktrees-lifecycle.md)
+- [spec/F5-worktrees/settings-worktrees-new-worktree-setup.md](spec/F5-worktrees/settings-worktrees-new-worktree-setup.md)
+- [spec/F5-worktrees/settings-worktrees-new-worktree-setup-untracked-files-to-copy.md](spec/F5-worktrees/settings-worktrees-new-worktree-setup-untracked-files-to-copy.md)
+- [spec/F5-worktrees/settings-worktrees-new-worktree-setup-a-command-to-run-after-creation.md](spec/F5-worktrees/settings-worktrees-new-worktree-setup-a-command-to-run-after-creation.md)
+- [spec/F5-worktrees/settings-worktrees-new-worktree-setup-share-the-rust-build-cache-between.md](spec/F5-worktrees/settings-worktrees-new-worktree-setup-share-the-rust-build-cache-between.md)
+- [spec/F5-worktrees/settings-worktrees-live-worktrees.md](spec/F5-worktrees/settings-worktrees-live-worktrees.md)
+- [spec/F5-worktrees/warm-pool.md](spec/F5-worktrees/warm-pool.md)
+- [spec/F5-worktrees/warm-pool-one-base-clone.md](spec/F5-worktrees/warm-pool-one-base-clone.md)
+- [spec/F5-worktrees/warm-pool-ready-made-worktrees.md](spec/F5-worktrees/warm-pool-ready-made-worktrees.md)
+- [spec/F5-worktrees/warm-pool-ready-made-worktrees-a-ready-worktree-is-a-detached.md](spec/F5-worktrees/warm-pool-ready-made-worktrees-a-ready-worktree-is-a-detached.md)
+- [spec/F5-worktrees/warm-pool-ready-made-worktrees-the-setup-command-runs-after-the.md](spec/F5-worktrees/warm-pool-ready-made-worktrees-the-setup-command-runs-after-the.md)
+- [spec/F5-worktrees/warm-pool-taking-one.md](spec/F5-worktrees/warm-pool-taking-one.md)
+- [spec/F5-worktrees/warm-pool-refilling.md](spec/F5-worktrees/warm-pool-refilling.md)
+- [spec/F5-worktrees/warm-pool-refilling-built.md](spec/F5-worktrees/warm-pool-refilling-built.md)
+- [spec/F5-worktrees/warm-pool-skills.md](spec/F5-worktrees/warm-pool-skills.md)
+- [spec/F5-worktrees/warm-pool-lean.md](spec/F5-worktrees/warm-pool-lean.md)
+- [spec/F5-worktrees/warm-pool-lean-built.md](spec/F5-worktrees/warm-pool-lean-built.md)
+- [spec/F5-worktrees/warm-pool-swarm-launches.md](spec/F5-worktrees/warm-pool-swarm-launches.md)
+- [spec/F5-worktrees/warm-pool-build-queue.md](spec/F5-worktrees/warm-pool-build-queue.md)
+- [spec/F5-worktrees/warm-pool-build-queue-the-run-queue-s-classes-overlap.md](spec/F5-worktrees/warm-pool-build-queue-the-run-queue-s-classes-overlap.md)
+- [spec/F5-worktrees/guards.md](spec/F5-worktrees/guards.md)
+- [spec/F5-worktrees/guards-velocity-is-the-only-thing-that.md](spec/F5-worktrees/guards-velocity-is-the-only-thing-that.md)
+- [spec/F5-worktrees/guards-the-pool-removes-only-its-own.md](spec/F5-worktrees/guards-the-pool-removes-only-its-own.md)
+- [spec/F5-worktrees/guards-deleting-a-worktree-removes-only-that.md](spec/F5-worktrees/guards-deleting-a-worktree-removes-only-that.md)
+- [spec/F5-worktrees/guards-worktree-folder-names-are-unique-per.md](spec/F5-worktrees/guards-worktree-folder-names-are-unique-per.md)
+- [spec/F5-worktrees/guards-a-slug-made-from-a-title.md](spec/F5-worktrees/guards-a-slug-made-from-a-title.md)
+- [spec/F5-worktrees/accept-when.md](spec/F5-worktrees/accept-when.md)
+- [spec/F5-worktrees/accept-when-with-a-ready-worktree-in-the.md](spec/F5-worktrees/accept-when-with-a-ready-worktree-in-the.md)
+- [spec/F5-worktrees/accept-when-two-agents-never-share-a-worktree.md](spec/F5-worktrees/accept-when-two-agents-never-share-a-worktree.md)
+- [spec/F5-worktrees/accept-when-every-merge-deletes-its-worktree-within.md](spec/F5-worktrees/accept-when-every-merge-deletes-its-worktree-within.md)
+- [spec/F5-worktrees/accept-when-closed-and-failed-threads-keep-their.md](spec/F5-worktrees/accept-when-closed-and-failed-threads-keep-their.md)
+- [spec/F5-worktrees/accept-when-changing-the-location-never-moves-or.md](spec/F5-worktrees/accept-when-changing-the-location-never-moves-or.md)
+- [spec/F5-worktrees/accept-when-sharing-the-build-cache-uses-one.md](spec/F5-worktrees/accept-when-sharing-the-build-cache-uses-one.md)
+- [spec/F5-worktrees/accept-when-two-agents-heavy-builds-never-run.md](spec/F5-worktrees/accept-when-two-agents-heavy-builds-never-run.md)
+- [spec/F6-pr-follow-through.md](spec/F6-pr-follow-through.md)
+- [spec/F7-duty-agents/README.md](spec/F7-duty-agents/README.md)
+- [spec/F7-duty-agents/duty-view.md](spec/F7-duty-agents/duty-view.md)
+- [spec/F7-duty-agents/duty-view-rules.md](spec/F7-duty-agents/duty-view-rules.md)
+- [spec/F7-duty-agents/duty-view-agents.md](spec/F7-duty-agents/duty-view-agents.md)
+- [spec/F7-duty-agents/duty-view-activity.md](spec/F7-duty-agents/duty-view-activity.md)
+- [spec/F7-duty-agents/duty-view-header-actions.md](spec/F7-duty-agents/duty-view-header-actions.md)
+- [spec/F7-duty-agents/duty-view-composer.md](spec/F7-duty-agents/duty-view-composer.md)
+- [spec/F7-duty-agents/duty-view-dismiss-and-stop.md](spec/F7-duty-agents/duty-view-dismiss-and-stop.md)
+- [spec/F7-duty-agents/velocity-s-fast-build-set.md](spec/F7-duty-agents/velocity-s-fast-build-set.md)
+- [spec/F7-duty-agents/measured-check-times.md](spec/F7-duty-agents/measured-check-times.md)
+- [spec/F7-duty-agents/pr-duty.md](spec/F7-duty-agents/pr-duty.md)
+- [spec/F7-duty-agents/pr-duty-for-git-projects.md](spec/F7-duty-agents/pr-duty-for-git-projects.md)
+- [spec/F7-duty-agents/pr-duty-claims-unclaimed-prs-one-pr-per.md](spec/F7-duty-agents/pr-duty-claims-unclaimed-prs-one-pr-per.md)
+- [spec/F7-duty-agents/pr-duty-reviews-the-diff-against-spec-md.md](spec/F7-duty-agents/pr-duty-reviews-the-diff-against-spec-md.md)
+- [spec/F7-duty-agents/pr-duty-checks-before-merge.md](spec/F7-duty-agents/pr-duty-checks-before-merge.md)
+- [spec/F7-duty-agents/pr-duty-checks-before-merge-review-by-reading.md](spec/F7-duty-agents/pr-duty-checks-before-merge-review-by-reading.md)
+- [spec/F7-duty-agents/pr-duty-checks-before-merge-velocity-lands-the-approved-head.md](spec/F7-duty-agents/pr-duty-checks-before-merge-velocity-lands-the-approved-head.md)
+- [spec/F7-duty-agents/pr-duty-checks-before-merge-velocity-lands-the-approved-head-checks-still-running.md](spec/F7-duty-agents/pr-duty-checks-before-merge-velocity-lands-the-approved-head-checks-still-running.md)
+- [spec/F7-duty-agents/pr-duty-checks-before-merge-velocity-lands-the-approved-head-a-failed-check.md](spec/F7-duty-agents/pr-duty-checks-before-merge-velocity-lands-the-approved-head-a-failed-check.md)
+- [spec/F7-duty-agents/pr-duty-checks-before-merge-velocity-lands-the-approved-head-a-conflict-with-the-base-branch.md](spec/F7-duty-agents/pr-duty-checks-before-merge-velocity-lands-the-approved-head-a-conflict-with-the-base-branch.md)
+- [spec/F7-duty-agents/pr-duty-checks-before-merge-velocity-lands-the-approved-head-an-open-review-thread.md](spec/F7-duty-agents/pr-duty-checks-before-merge-velocity-lands-the-approved-head-an-open-review-thread.md)
+- [spec/F7-duty-agents/pr-duty-checks-before-merge-velocity-lands-the-approved-head-the-merge-is-the-approver-s.md](spec/F7-duty-agents/pr-duty-checks-before-merge-velocity-lands-the-approved-head-the-merge-is-the-approver-s.md)
+- [spec/F7-duty-agents/pr-duty-checks-before-merge-local-checks.md](spec/F7-duty-agents/pr-duty-checks-before-merge-local-checks.md)
+- [spec/F7-duty-agents/pr-duty-checks-before-merge-an-approved-head-whose-github-checks.md](spec/F7-duty-agents/pr-duty-checks-before-merge-an-approved-head-whose-github-checks.md)
+- [spec/F7-duty-agents/pr-duty-checks-before-merge-with-the-checks-pass-rule-off.md](spec/F7-duty-agents/pr-duty-checks-before-merge-with-the-checks-pass-rule-off.md)
+- [spec/F7-duty-agents/pr-duty-checks-before-merge-why.md](spec/F7-duty-agents/pr-duty-checks-before-merge-why.md)
+- [spec/F7-duty-agents/pr-duty-checks-before-merge-what-it-gives-up.md](spec/F7-duty-agents/pr-duty-checks-before-merge-what-it-gives-up.md)
+- [spec/F7-duty-agents/pr-duty-rules.md](spec/F7-duty-agents/pr-duty-rules.md)
+- [spec/F7-duty-agents/pr-duty-rules-never-merge-without-an-approving-review.md](spec/F7-duty-agents/pr-duty-rules-never-merge-without-an-approving-review.md)
+- [spec/F7-duty-agents/pr-duty-rules-never-merge-unless-the-proofs-check.md](spec/F7-duty-agents/pr-duty-rules-never-merge-unless-the-proofs-check.md)
+- [spec/F7-duty-agents/pr-duty-rules-review-every-theorem-statement-against-the.md](spec/F7-duty-agents/pr-duty-rules-review-every-theorem-statement-against-the.md)
+- [spec/F7-duty-agents/pr-duty-rules-checks-pass-before-merge.md](spec/F7-duty-agents/pr-duty-rules-checks-pass-before-merge.md)
+- [spec/F7-duty-agents/pr-duty-rules-check-against-spec-md.md](spec/F7-duty-agents/pr-duty-rules-check-against-spec-md.md)
+- [spec/F7-duty-agents/pr-duty-rules-re-review-on-new-commits.md](spec/F7-duty-agents/pr-duty-rules-re-review-on-new-commits.md)
+- [spec/F7-duty-agents/pr-duty-rules-update-branches-with-master.md](spec/F7-duty-agents/pr-duty-rules-update-branches-with-master.md)
+- [spec/F7-duty-agents/pr-duty-rules-delete-the-branch-after-merge.md](spec/F7-duty-agents/pr-duty-rules-delete-the-branch-after-merge.md)
+- [spec/F7-duty-agents/pr-duty-rules-merge-method.md](spec/F7-duty-agents/pr-duty-rules-merge-method.md)
+- [spec/F7-duty-agents/pr-duty-each-review-runs-in-its-own.md](spec/F7-duty-agents/pr-duty-each-review-runs-in-its-own.md)
+- [spec/F7-duty-agents/pr-duty-how-a-review-runs.md](spec/F7-duty-agents/pr-duty-how-a-review-runs.md)
+- [spec/F7-duty-agents/pr-duty-how-a-review-runs-projects-never-wait-for-each-other.md](spec/F7-duty-agents/pr-duty-how-a-review-runs-projects-never-wait-for-each-other.md)
+- [spec/F7-duty-agents/pr-duty-how-a-review-runs-the-claim-posts-a-claim-event-nick-comment-on-the-pr-which.md](spec/F7-duty-agents/pr-duty-how-a-review-runs-the-claim-posts-a-claim-event-nick-comment-on-the-pr-which.md)
+- [spec/F7-duty-agents/pr-duty-how-a-review-runs-a-review-lasts-until-its-agent.md](spec/F7-duty-agents/pr-duty-how-a-review-runs-a-review-lasts-until-its-agent.md)
+- [spec/F7-duty-agents/pr-duty-how-a-review-runs-a-review-whose-pr-is-closed.md](spec/F7-duty-agents/pr-duty-how-a-review-runs-a-review-whose-pr-is-closed.md)
+- [spec/F7-duty-agents/pr-duty-how-a-review-runs-a-review-runs-in-the-pr.md](spec/F7-duty-agents/pr-duty-how-a-review-runs-a-review-runs-in-the-pr.md)
+- [spec/F7-duty-agents/pr-duty-how-a-review-runs-the-agent-records-decisions-only-through.md](spec/F7-duty-agents/pr-duty-how-a-review-runs-the-agent-records-decisions-only-through.md)
+- [spec/F7-duty-agents/pr-duty-how-a-review-runs-its-card-shows-n-current-step-the-feed-gets-the.md](spec/F7-duty-agents/pr-duty-how-a-review-runs-its-card-shows-n-current-step-the-feed-gets-the.md)
+- [spec/F7-duty-agents/pr-duty-how-a-review-runs-a-message-from-the-pr-duty.md](spec/F7-duty-agents/pr-duty-how-a-review-runs-a-message-from-the-pr-duty.md)
+- [spec/F7-duty-agents/pr-duty-how-a-review-runs-a-rosen-change.md](spec/F7-duty-agents/pr-duty-how-a-review-runs-a-rosen-change.md)
+- [spec/F7-duty-agents/pr-duty-how-a-review-runs-a-rosen-change-reviewed-by-reading.md](spec/F7-duty-agents/pr-duty-how-a-review-runs-a-rosen-change-reviewed-by-reading.md)
+- [spec/F7-duty-agents/pr-duty-how-a-review-runs-a-rosen-change-velocity-checks-and-lands-the-approved.md](spec/F7-duty-agents/pr-duty-how-a-review-runs-a-rosen-change-velocity-checks-and-lands-the-approved.md)
+- [spec/F7-duty-agents/pr-duty-how-a-review-runs-a-rosen-ch-and-lands-the-approved-it-asks-rosen-to-land-the-f39eb6c5.md](spec/F7-duty-agents/pr-duty-how-a-review-runs-a-rosen-ch-and-lands-the-approved-it-asks-rosen-to-land-the-f39eb6c5.md)
+- [spec/F7-duty-agents/pr-duty-how-a-review-runs-a-rosen-ch-lands-the-approved-when-rosen-wants-a-receipt-it-101b5029.md](spec/F7-duty-agents/pr-duty-how-a-review-runs-a-rosen-ch-lands-the-approved-when-rosen-wants-a-receipt-it-101b5029.md)
+- [spec/F7-duty-agents/pr-duty-how-a-review-runs-a-rosen-ch-ands-the-approved-the-commands-the-check-set-the-81d5073a.md](spec/F7-duty-agents/pr-duty-how-a-review-runs-a-rosen-ch-ands-the-approved-the-commands-the-check-set-the-81d5073a.md)
+- [spec/F7-duty-agents/pr-duty-how-a-review-runs-a-rosen-ch--the-approved-the-folder-holds-exactly-the-merge-3173977f.md](spec/F7-duty-agents/pr-duty-how-a-review-runs-a-rosen-ch--the-approved-the-folder-holds-exactly-the-merge-3173977f.md)
+- [spec/F7-duty-agents/pr-duty-how-a-review-runs-a-rosen-change-velocity-checks-and-lands-the-approved-every-command-passed.md](spec/F7-duty-agents/pr-duty-how-a-review-runs-a-rosen-change-velocity-checks-and-lands-the-approved-every-command-passed.md)
+- [spec/F7-duty-agents/pr-duty-how-a-review-runs-a-rosen-ch-he-approved-a-successful-land-is-checkpointed-as-2dae756e.md](spec/F7-duty-agents/pr-duty-how-a-review-runs-a-rosen-ch-he-approved-a-successful-land-is-checkpointed-as-2dae756e.md)
+- [spec/F7-duty-agents/pr-duty-how-a-review-runs-a-rosen-ch--and-lands-the-approved-it-takes-a-change-at-its-ef1e5b5e.md](spec/F7-duty-agents/pr-duty-how-a-review-runs-a-rosen-ch--and-lands-the-approved-it-takes-a-change-at-its-ef1e5b5e.md)
+- [spec/F7-duty-agents/pr-duty-how-a-review-runs-a-rosen-ch--lands-the-approved-each-check-takes-one-turn-in-1f184113.md](spec/F7-duty-agents/pr-duty-how-a-review-runs-a-rosen-ch--lands-the-approved-each-check-takes-one-turn-in-1f184113.md)
+- [spec/F7-duty-agents/pr-duty-how-a-review-runs-a-rosen-change-velocity-checks-and-lands-the-approved-a-command-failed.md](spec/F7-duty-agents/pr-duty-how-a-review-runs-a-rosen-change-velocity-checks-and-lands-the-approved-a-command-failed.md)
+- [spec/F7-duty-agents/pr-duty-how-a-review-runs-a-rosen-change-velocity-checks-and-lands-the-approved-the-merge-conflicts.md](spec/F7-duty-agents/pr-duty-how-a-review-runs-a-rosen-change-velocity-checks-and-lands-the-approved-the-merge-conflicts.md)
+- [spec/F7-duty-agents/pr-duty-how-a-review-runs-a-rosen-ch-d-lands-the-approved-the-checks-could-not-run-at-e6a8c2dc.md](spec/F7-duty-agents/pr-duty-how-a-review-runs-a-rosen-ch-d-lands-the-approved-the-checks-could-not-run-at-e6a8c2dc.md)
+- [spec/F7-duty-agents/pr-duty-how-a-review-runs-a-rosen-ch-the-approved-this-serial-checker-is-retained-for-6520576b.md](spec/F7-duty-agents/pr-duty-how-a-review-runs-a-rosen-ch-the-approved-this-serial-checker-is-retained-for-6520576b.md)
+- [spec/F7-duty-agents/pr-duty-how-a-review-runs-a-rosen-change-after-a-land-velocity-verifies-builds.md](spec/F7-duty-agents/pr-duty-how-a-review-runs-a-rosen-change-after-a-land-velocity-verifies-builds.md)
+- [spec/F7-duty-agents/pr-duty-how-a-review-runs-a-rosen-ch-ies-builds-checker-and-post-land-messages-remain-0d35a4d4.md](spec/F7-duty-agents/pr-duty-how-a-review-runs-a-rosen-ch-ies-builds-checker-and-post-land-messages-remain-0d35a4d4.md)
+- [spec/F7-duty-agents/pr-duty-how-a-review-runs-a-rosen-ch-y-verifies-builds-fast-builds-in-after-land-mode-b5d1a96c.md](spec/F7-duty-agents/pr-duty-how-a-review-runs-a-rosen-ch-y-verifies-builds-fast-builds-in-after-land-mode-b5d1a96c.md)
+- [spec/F7-duty-agents/pr-duty-how-a-review-runs-a-rosen-change-after-a-land-velocity-verifies-builds-full-tests.md](spec/F7-duty-agents/pr-duty-how-a-review-runs-a-rosen-change-after-a-land-velocity-verifies-builds-full-tests.md)
+- [spec/F7-duty-agents/pr-duty-how-a-review-runs-a-rosen-change-after-a-land-velocity-verifies-builds-every-command-passed.md](spec/F7-duty-agents/pr-duty-how-a-review-runs-a-rosen-change-after-a-land-velocity-verifies-builds-every-command-passed.md)
+- [spec/F7-duty-agents/pr-duty-how-a-review-runs-a-rosen-change-after-a-land-velocity-verifies-builds-a-command-failed.md](spec/F7-duty-agents/pr-duty-how-a-review-runs-a-rosen-change-after-a-land-velocity-verifies-builds-a-command-failed.md)
+- [spec/F7-duty-agents/pr-duty-how-a-review-runs-a-rosen-change-after-a-land-velocity-verifies-builds-build.md](spec/F7-duty-agents/pr-duty-how-a-review-runs-a-rosen-change-after-a-land-velocity-verifies-builds-build.md)
+- [spec/F7-duty-agents/pr-duty-how-a-review-runs-a-rosen-change-after-a-land-velocity-verifies-builds-test.md](spec/F7-duty-agents/pr-duty-how-a-review-runs-a-rosen-change-after-a-land-velocity-verifies-builds-test.md)
+- [spec/F7-duty-agents/pr-duty-how-a-review-runs-a-rosen-ch-es-builds-the-results-contradict-each-other-such-c87369f4.md](spec/F7-duty-agents/pr-duty-how-a-review-runs-a-rosen-ch-es-builds-the-results-contradict-each-other-such-c87369f4.md)
+- [spec/F7-duty-agents/pr-duty-how-a-review-runs-a-rosen-ch-city-verifies-builds-the-checks-could-not-run-at-2238b38e.md](spec/F7-duty-agents/pr-duty-how-a-review-runs-a-rosen-ch-city-verifies-builds-the-checks-could-not-run-at-2238b38e.md)
+- [spec/F7-duty-agents/pr-duty-how-a-review-runs-a-rosen-ch-city-verifies-builds-a-project-with-no-post-land-0aca7f21.md](spec/F7-duty-agents/pr-duty-how-a-review-runs-a-rosen-ch-city-verifies-builds-a-project-with-no-post-land-0aca7f21.md)
+- [spec/F7-duty-agents/pr-duty-how-a-review-runs-a-rosen-change-reviewed-with-the-local-checks.md](spec/F7-duty-agents/pr-duty-how-a-review-runs-a-rosen-change-reviewed-with-the-local-checks.md)
+- [spec/F7-duty-agents/pr-duty-how-a-review-runs-a-rosen-change-the-review-runs-in-the-project.md](spec/F7-duty-agents/pr-duty-how-a-review-runs-a-rosen-change-the-review-runs-in-the-project.md)
+- [spec/F7-duty-agents/pr-duty-how-a-review-runs-a-rosen-change-checks-in-a-plain-merge-tree.md](spec/F7-duty-agents/pr-duty-how-a-review-runs-a-rosen-change-checks-in-a-plain-merge-tree.md)
+- [spec/F7-duty-agents/pr-duty-how-a-review-runs-a-rosen-change-the-agent-works-only-through-pr.md](spec/F7-duty-agents/pr-duty-how-a-review-runs-a-rosen-change-the-agent-works-only-through-pr.md)
+- [spec/F7-duty-agents/pr-duty-how-a-review-runs-a-rosen-change-requested-changes-go-to-the-author.md](spec/F7-duty-agents/pr-duty-how-a-review-runs-a-rosen-change-requested-changes-go-to-the-author.md)
+- [spec/F7-duty-agents/pr-duty-how-a-review-runs-a-rosen-change-a-land-rosen-refuses-because-the.md](spec/F7-duty-agents/pr-duty-how-a-review-runs-a-rosen-change-a-land-rosen-refuses-because-the.md)
+- [spec/F7-duty-agents/pr-duty-approval-record.md](spec/F7-duty-agents/pr-duty-approval-record.md)
+- [spec/F7-duty-agents/pr-duty-approval-record-github-s-review-state-is-advisory.md](spec/F7-duty-agents/pr-duty-approval-record-github-s-review-state-is-advisory.md)
+- [spec/F7-duty-agents/pr-duty-approval-record-pr-duty-merges-only-the-head.md](spec/F7-duty-agents/pr-duty-approval-record-pr-duty-merges-only-the-head.md)
+- [spec/F7-duty-agents/pr-duty-approval-record-a-branch-update-pr-duty-made.md](spec/F7-duty-agents/pr-duty-approval-record-a-branch-update-pr-duty-made.md)
+- [spec/F7-duty-agents/pr-duty-approval-record-a-changes-event-newer-than-the.md](spec/F7-duty-agents/pr-duty-approval-record-a-changes-event-newer-than-the.md)
+- [spec/F7-duty-agents/pr-duty-approval-record-on-a-repository-whose-branch-protection.md](spec/F7-duty-agents/pr-duty-approval-record-on-a-repository-whose-branch-protection.md)
+- [spec/F7-duty-agents/pr-duty-review-the-intent-not-each-line.md](spec/F7-duty-agents/pr-duty-review-the-intent-not-each-line.md)
+- [spec/F7-duty-agents/pr-duty-severity-bar.md](spec/F7-duty-agents/pr-duty-severity-bar.md)
+- [spec/F7-duty-agents/pr-duty-severity-bar-everything-else-is-filed-as-an.md](spec/F7-duty-agents/pr-duty-severity-bar-everything-else-is-filed-as-an.md)
+- [spec/F7-duty-agents/pr-duty-severity-bar-every-blocking-finding-goes-in-the.md](spec/F7-duty-agents/pr-duty-severity-bar-every-blocking-finding-goes-in-the.md)
+- [spec/F7-duty-agents/pr-duty-severity-bar-when-a-reviewer-is-unsure-whether.md](spec/F7-duty-agents/pr-duty-severity-bar-when-a-reviewer-is-unsure-whether.md)
+- [spec/F7-duty-agents/pr-duty-severity-bar-why.md](spec/F7-duty-agents/pr-duty-severity-bar-why.md)
+- [spec/F7-duty-agents/pr-duty-review-the-statements-not-the-proofs.md](spec/F7-duty-agents/pr-duty-review-the-statements-not-the-proofs.md)
+- [spec/F7-duty-agents/pr-duty-review-the-statements-not-the-proofs-does-each-statement-say-what-the.md](spec/F7-duty-agents/pr-duty-review-the-statements-not-the-proofs-does-each-statement-say-what-the.md)
+- [spec/F7-duty-agents/pr-duty-review-the-statements-not-the-proofs-do-its-hypotheses-exclude-real-inputs.md](spec/F7-duty-agents/pr-duty-review-the-statements-not-the-proofs-do-its-hypotheses-exclude-real-inputs.md)
+- [spec/F7-duty-agents/pr-duty-review-the-statements-not-the-proofs-is-the-cost-model-honest-and.md](spec/F7-duty-agents/pr-duty-review-the-statements-not-the-proofs-is-the-cost-model-honest-and.md)
+- [spec/F7-duty-agents/pr-duty-pr-duty-writes-tests-too.md](spec/F7-duty-agents/pr-duty-pr-duty-writes-tests-too.md)
+- [spec/F7-duty-agents/pr-duty-tiered-review.md](spec/F7-duty-agents/pr-duty-tiered-review.md)
+- [spec/F7-duty-agents/pr-duty-tiered-review-trivial.md](spec/F7-duty-agents/pr-duty-tiered-review-trivial.md)
+- [spec/F7-duty-agents/pr-duty-tiered-review-normal.md](spec/F7-duty-agents/pr-duty-tiered-review-normal.md)
+- [spec/F7-duty-agents/pr-duty-tiered-review-sensitive.md](spec/F7-duty-agents/pr-duty-tiered-review-sensitive.md)
+- [spec/F7-duty-agents/pr-duty-tiered-review-reading-the-diff.md](spec/F7-duty-agents/pr-duty-tiered-review-reading-the-diff.md)
+- [spec/F7-duty-agents/pr-duty-tiered-review-sensitive-paths.md](spec/F7-duty-agents/pr-duty-tiered-review-sensitive-paths.md)
+- [spec/F7-duty-agents/pr-duty-the-release-gate.md](spec/F7-duty-agents/pr-duty-the-release-gate.md)
+- [spec/F7-duty-agents/pr-duty-the-release-gate-the-post-land-full-tests-green.md](spec/F7-duty-agents/pr-duty-the-release-gate-the-post-land-full-tests-green.md)
+- [spec/F7-duty-agents/pr-duty-the-release-gate-cargo-run-p-stress-all-passing.md](spec/F7-duty-agents/pr-duty-the-release-gate-cargo-run-p-stress-all-passing.md)
+- [spec/F7-duty-agents/pr-duty-the-release-gate-lake-build-in-proofs-passing-with.md](spec/F7-duty-agents/pr-duty-the-release-gate-lake-build-in-proofs-passing-with.md)
+- [spec/F7-duty-agents/pr-duty-the-release-gate-no-open-issue-labelled-release-blocker.md](spec/F7-duty-agents/pr-duty-the-release-gate-no-open-issue-labelled-release-blocker.md)
+- [spec/F7-duty-agents/pr-duty-landing-ticks-the-plan.md](spec/F7-duty-agents/pr-duty-landing-ticks-the-plan.md)
+- [spec/F7-duty-agents/main-watcher.md](spec/F7-duty-agents/main-watcher.md)
+- [spec/F7-duty-agents/main-watcher-after-each-merge-it-runs-every.md](spec/F7-duty-agents/main-watcher-after-each-merge-it-runs-every.md)
+- [spec/F7-duty-agents/main-watcher-when-master-breaks-it-bisects-the.md](spec/F7-duty-agents/main-watcher-when-master-breaks-it-bisects-the.md)
+- [spec/F7-duty-agents/main-watcher-targeted-delivery-tells-only-the-agents.md](spec/F7-duty-agents/main-watcher-targeted-delivery-tells-only-the-agents.md)
+- [spec/F7-duty-agents/main-watcher-it-tracks-flaky-tests-and-files.md](spec/F7-duty-agents/main-watcher-it-tracks-flaky-tests-and-files.md)
+- [spec/F7-duty-agents/main-watcher-never-push-to-master-every-fix.md](spec/F7-duty-agents/main-watcher-never-push-to-master-every-fix.md)
+- [spec/F7-duty-agents/main-watcher-how-a-watch-runs.md](spec/F7-duty-agents/main-watcher-how-a-watch-runs.md)
+- [spec/F7-duty-agents/main-watcher-how-a-watch-runs-the-runner-reads-the-base-branch.md](spec/F7-duty-agents/main-watcher-how-a-watch-runs-the-runner-reads-the-base-branch.md)
+- [spec/F7-duty-agents/main-watcher-how-a-watch-runs-a-watch-is-one-agent-turn.md](spec/F7-duty-agents/main-watcher-how-a-watch-runs-a-watch-is-one-agent-turn.md)
+- [spec/F7-duty-agents/main-watcher-how-a-watch-runs-the-watcher-records-verdicts-only-through.md](spec/F7-duty-agents/main-watcher-how-a-watch-runs-the-watcher-records-verdicts-only-through.md)
+- [spec/F7-duty-agents/main-watcher-how-a-watch-runs-flaky-tests-are-filed-through-the.md](spec/F7-duty-agents/main-watcher-how-a-watch-runs-flaky-tests-are-filed-through-the.md)
+- [spec/F7-duty-agents/main-watcher-how-a-watch-runs-a-message-from-the-main-watcher.md](spec/F7-duty-agents/main-watcher-how-a-watch-runs-a-message-from-the-main-watcher.md)
+- [spec/F7-duty-agents/review-swarm-on-after-land-rosen.md](spec/F7-duty-agents/review-swarm-on-after-land-rosen.md)
+- [spec/F7-duty-agents/review-swarm-on-after-land-rosen-review-swarm.md](spec/F7-duty-agents/review-swarm-on-after-land-rosen-review-swarm.md)
+- [spec/F7-duty-agents/review-swarm-on-after-land-rosen-a-worker-claims-the-oldest-unreviewed.md](spec/F7-duty-agents/review-swarm-on-after-land-rosen-a-worker-claims-the-oldest-unreviewed.md)
+- [spec/F7-duty-agents/review-swarm-on-after-land-rosen-findings-use-scout-issues-and-scout.md](spec/F7-duty-agents/review-swarm-on-after-land-rosen-findings-use-scout-issues-and-scout.md)
+- [spec/F7-duty-agents/review-swarm-on-after-land-rosen-for-each-affected-f17-proof-list.md](spec/F7-duty-agents/review-swarm-on-after-land-rosen-for-each-affected-f17-proof-list.md)
+- [spec/F7-duty-agents/review-swarm-on-after-land-rosen-completion-is-durable.md](spec/F7-duty-agents/review-swarm-on-after-land-rosen-completion-is-durable.md)
+- [spec/F7-duty-agents/review-swarm-on-after-land-rosen-coverage-not-gates.md](spec/F7-duty-agents/review-swarm-on-after-land-rosen-coverage-not-gates.md)
+- [spec/F7-duty-agents/review-swarm-on-after-land-rosen-this-runner-is-independent-of-the.md](spec/F7-duty-agents/review-swarm-on-after-land-rosen-this-runner-is-independent-of-the.md)
+- [spec/F7-duty-agents/scouts.md](spec/F7-duty-agents/scouts.md)
+- [spec/F7-duty-agents/scouts-assume-every-part-of-the-application.md](spec/F7-duty-agents/scouts-assume-every-part-of-the-application.md)
+- [spec/F7-duty-agents/scouts-sweep-the-repo.md](spec/F7-duty-agents/scouts-sweep-the-repo.md)
+- [spec/F7-duty-agents/scouts-focus-areas.md](spec/F7-duty-agents/scouts-focus-areas.md)
+- [spec/F7-duty-agents/scouts-focus-areas-stress.md](spec/F7-duty-agents/scouts-focus-areas-stress.md)
+- [spec/F7-duty-agents/scouts-focus-areas-proof-gaps.md](spec/F7-duty-agents/scouts-focus-areas-proof-gaps.md)
+- [spec/F7-duty-agents/scouts-rules.md](spec/F7-duty-agents/scouts-rules.md)
+- [spec/F7-duty-agents/scouts-rules-never-file-duplicates.md](spec/F7-duty-agents/scouts-rules-never-file-duplicates.md)
+- [spec/F7-duty-agents/scouts-rules-no-issue-without-evidence.md](spec/F7-duty-agents/scouts-rules-no-issue-without-evidence.md)
+- [spec/F7-duty-agents/scouts-rules-label-issues-for-dispatch.md](spec/F7-duty-agents/scouts-rules-label-issues-for-dispatch.md)
+- [spec/F7-duty-agents/scouts-sweep.md](spec/F7-duty-agents/scouts-sweep.md)
+- [spec/F7-duty-agents/scouts-sweep-each-scout-sweeps-once-when-it.md](spec/F7-duty-agents/scouts-sweep-each-scout-sweeps-once-when-it.md)
+- [spec/F7-duty-agents/scouts-sweep-a-sweep-is-one-agent-turn.md](spec/F7-duty-agents/scouts-sweep-a-sweep-is-one-agent-turn.md)
+- [spec/F7-duty-agents/scouts-sweep-scouts-file-only-through-velocity-s.md](spec/F7-duty-agents/scouts-sweep-scouts-file-only-through-velocity-s.md)
+- [spec/F7-duty-agents/scouts-sweep-a-message-from-the-scouts-composer.md](spec/F7-duty-agents/scouts-sweep-a-message-from-the-scouts-composer.md)
+- [spec/F7-duty-agents/scouts-sweep-scout-compare-runs-implementation-and-compiled.md](spec/F7-duty-agents/scouts-sweep-scout-compare-runs-implementation-and-compiled.md)
+- [spec/F7-duty-agents/scouts-issues-they-file-show-their-name.md](spec/F7-duty-agents/scouts-issues-they-file-show-their-name.md)
+- [spec/F7-duty-agents/accept-when.md](spec/F7-duty-agents/accept-when.md)
+- [spec/F7-duty-agents/accept-when-pausing-finishes-in-flight-reviews-and.md](spec/F7-duty-agents/accept-when-pausing-finishes-in-flight-reviews-and.md)
+- [spec/F7-duty-agents/accept-when-rail-pr-rows-show-the-review.md](spec/F7-duty-agents/accept-when-rail-pr-rows-show-the-review.md)
+- [spec/F8-task-list.md](spec/F8-task-list.md)
+- [spec/F9-issues-and-dispatch.md](spec/F9-issues-and-dispatch.md)
+- [spec/F10-swarm.md](spec/F10-swarm.md)
+- [spec/F11-agents-md-editor.md](spec/F11-agents-md-editor.md)
+- [spec/F12-thread-context-menu-and-delete.md](spec/F12-thread-context-menu-and-delete.md)
+- [spec/F13-settings.md](spec/F13-settings.md)
+- [spec/F14-airc-claims-events-agent-messages.md](spec/F14-airc-claims-events-agent-messages.md)
+- [spec/F15-providers-oauth.md](spec/F15-providers-oauth.md)
+- [spec/F16-goal-swarm.md](spec/F16-goal-swarm.md)
+- [spec/F17-proofs-and-adversarial-testing.md](spec/F17-proofs-and-adversarial-testing.md)
+- [spec/F18-skills.md](spec/F18-skills.md)
+- [spec/F19-code-graph.md](spec/F19-code-graph.md)
+- [spec/5-keyboard-map.md](spec/5-keyboard-map.md)
+- [spec/6-visual-language.md](spec/6-visual-language.md)
+- [spec/7-implementation-order.md](spec/7-implementation-order.md)
+- [spec/8-open-questions.md](spec/8-open-questions.md)
