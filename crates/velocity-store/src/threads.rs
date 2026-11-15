@@ -222,9 +222,8 @@ pub(crate) fn remove_thread_record(
     let removed = item.threads.remove(position);
     if removed.state == crate::ThreadState::Merged
         && let Some(section) = &removed.spec_section
-        && !item.built_spec_sections.contains(section)
     {
-        item.built_spec_sections.push(section.clone());
+        item.retain_deleted_thread_spec_section(section);
     }
     for task in &mut item.tasks {
         if task.assigned_thread_id == Some(thread) || removed.task_ids.contains(&task.id) {

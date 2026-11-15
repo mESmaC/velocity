@@ -37,13 +37,13 @@ pub(crate) fn apply(project: &mut ProjectItem, identifier: u32, progress: RosenP
         return;
     };
     let change = thread.rosen_change.clone().unwrap_or_default();
-    let section = thread.spec_section.clone();
     let task_ids = thread.task_ids.clone();
     let issue = thread.issue.clone();
     if let Some(issue) = issue {
         record_issue_completion(project, issue, progress);
     }
     if progress == RosenProgress::Reverted {
+        // The shared follow-through path reopens SPEC work while preserving other builds.
         // A revert restores ownership even when the nick already took its next round.
         for task in &mut project.tasks {
             if task_ids.contains(&task.id) || task.assigned_thread_id == Some(identifier) {
@@ -51,9 +51,6 @@ pub(crate) fn apply(project: &mut ProjectItem, identifier: u32, progress: RosenP
                 task.assigned_thread_id = Some(identifier);
             }
         }
-        project
-            .built_spec_sections
-            .retain(|built| Some(built) != section.as_ref());
     }
     record_activity(project, goal.swarm_id, &goal.nick, &change, progress);
 }

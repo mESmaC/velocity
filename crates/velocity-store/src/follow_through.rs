@@ -164,8 +164,8 @@ pub(crate) fn finish_thread_tasks(state: &mut crate::PersistedState, project: u3
 
 /// Undoes [`finish_thread_tasks`] when a landed change is reverted (Rosen R12): the work is
 /// no longer on the base, so the thread's tasks are its open work again, and its SPEC
-/// section is unbuilt unless another merged thread built it too. The thread fixes the change
-/// itself, so it keeps owning its tasks.
+/// section is unbuilt unless another merged thread built it too, including deleted history.
+/// The thread fixes the change itself, so it keeps owning its tasks.
 pub(crate) fn reopen_thread_tasks(state: &mut crate::PersistedState, project: u32, thread: u32) {
     let Some(project) = state.projects.iter_mut().find(|item| item.id == project) else {
         return;
@@ -187,11 +187,14 @@ pub(crate) fn reopen_thread_tasks(state: &mut crate::PersistedState, project: u3
     let Some(section) = spec_section else {
         return;
     };
-    let built_elsewhere = project.threads.iter().any(|item| {
-        item.id != thread
-            && item.state == ThreadState::Merged
-            && item.spec_section.as_ref() == Some(&section)
-    });
+    let built_elsewhere = project
+        .deleted_thread_built_spec_sections
+        .contains(&section)
+        || project.threads.iter().any(|item| {
+            item.id != thread
+                && item.state == ThreadState::Merged
+                && item.spec_section.as_ref() == Some(&section)
+        });
     if !built_elsewhere {
         project
             .built_spec_sections

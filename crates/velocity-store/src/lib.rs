@@ -934,6 +934,10 @@ pub struct ProjectItem {
     /// Completed F16 pieces retained after their merged thread history is deleted.
     #[serde(default)]
     pub built_spec_sections: Vec<String>,
+    /// Completion evidence from deleted merged threads cannot be inferred from live history.
+    #[serde(default)]
+    #[specta(skip)]
+    pub(crate) deleted_thread_built_spec_sections: Vec<String>,
     /// Landed goal issues stay completed while the GitHub mirror catches up, and
     /// after merged thread history is deleted. A revert removes the completion.
     #[serde(default)]
@@ -1007,6 +1011,7 @@ impl ProjectItem {
             spec_path: "SPEC.md".into(),
             spec_locked: false,
             built_spec_sections: Vec::new(),
+            deleted_thread_built_spec_sections: Vec::new(),
             completed_goal_issues: Vec::new(),
             skills: velocity_core::skills::ProjectSkills::default(),
             settled_expanded: false,
@@ -1053,7 +1058,41 @@ impl ProjectItem {
         Some(next)
     }
 
+    pub(crate) fn retain_deleted_thread_spec_section(&mut self, section: &str) {
+        if !self
+            .deleted_thread_built_spec_sections
+            .iter()
+            .any(|built| built == section)
+        {
+            self.deleted_thread_built_spec_sections
+                .push(section.to_owned());
+        }
+        if !self
+            .built_spec_sections
+            .iter()
+            .any(|built| built == section)
+        {
+            self.built_spec_sections.push(section.to_owned());
+        }
+    }
+
     pub fn normalize(mut self) -> Self {
+        // Older snapshots kept deleted merges only in built_spec_sections. With no live
+        // merged contributor, that completion must remain independent of later reverts.
+        let retained_sections: Vec<_> = self
+            .built_spec_sections
+            .iter()
+            .filter(|section| {
+                !self.threads.iter().any(|thread| {
+                    thread.state == ThreadState::Merged
+                        && thread.spec_section.as_ref() == Some(section)
+                })
+            })
+            .cloned()
+            .collect();
+        for section in retained_sections {
+            self.retain_deleted_thread_spec_section(&section);
+        }
         let spec_locked = self.spec_locked;
         self.tasks = self
             .tasks
