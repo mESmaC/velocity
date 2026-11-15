@@ -3,7 +3,7 @@
 Runs every local check PR duty needs before approving (AGENTS.md), in one command.
 
 .DESCRIPTION
-Run it on the merge result: the PR branch with the current master merged in.
+Run it on the merge result: a Rosen build tree or the PR branch with master merged in.
 It stops at the first failing check and exits non-zero.
 
 It runs only the checks the change can affect, judged from the files changed
@@ -17,7 +17,10 @@ cannot affect the Rust build never enters it:
 - Proofs (lake build, axiom audit): proofs/.
 A docs-only change (SPEC.md, AGENTS.md, README, stress scripts) runs nothing.
 A path the script does not recognise, such as this script, the build queue or a
-new folder, runs everything. So does -Full.
+new folder, runs everything. So does -Full. In a tree without .git, pass
+-ChangedPathsFile with the merge result's changed paths (one root-relative path
+per line, including deletions). Without that list, every check runs. An empty
+list explicitly means no paths changed. PowerShell 7 (pwsh) is required.
 
 .EXAMPLE
 pwsh -NoProfile -File scripts/check.ps1
@@ -30,10 +33,15 @@ pwsh -NoProfile -File scripts/check.ps1 -Plan
 
 .EXAMPLE
 pwsh -NoProfile -File scripts/check.ps1 -Priority landing
+
+.EXAMPLE
+pwsh -NoProfile -File scripts/check.ps1 -ChangedPathsFile changed-paths.txt -Priority landing
 #>
 param(
     # The branch the change detection compares against.
     [string]$Base = 'origin/master',
+    # Explicit change detection for a Rosen merge result, without Git metadata.
+    [string]$ChangedPathsFile,
     # Run every check, whatever changed.
     [switch]$Full,
     # Print the changed paths and the checks they would run, then stop.
@@ -44,6 +52,10 @@ param(
     [string]$Priority = 'ready'
 )
 $ErrorActionPreference = 'Stop'
+if ($ChangedPathsFile) {
+    # Resolve against the caller's directory before moving to the checked tree.
+    $ChangedPathsFile = $ExecutionContext.SessionState.Path.GetUnresolvedProviderPathFromPSPath($ChangedPathsFile)
+}
 $checkoutPath = Split-Path -Parent $PSScriptRoot
 # pnpm resolves Windows drive aliases and junctions before launching Cargo.
 # Use the same physical path for every check, or Cargo gives the same package
@@ -53,6 +65,7 @@ if ($LASTEXITCODE -ne 0 -or -not $physicalCheckoutPath) {
     throw "Could not resolve the physical checkout path: $checkoutPath"
 }
 Set-Location -LiteralPath $physicalCheckoutPath
+$gitCheckout = Test-Path -LiteralPath (Join-Path $physicalCheckoutPath '.git')
 
 # Vite's Windows path probe runs `net use`. With Java's bin folders ahead of
 # System32 on PATH, `net` resolves to Java's net.dll and the build never exits
@@ -67,6 +80,7 @@ $env:Path = (Join-Path $env:SystemRoot 'System32') + ';' + $env:Path
 # sees no change (#224). Put back the ones whose content is unchanged, so a run
 # leaves the worktree as it found it. A real change shows in git diff and stays.
 function Restore-LineEndingRewrites {
+    if (-not $gitCheckout) { return }
     $rewritten = @(git -c core.quotePath=false status --porcelain --untracked-files=no -- ui/src/lib/bindings.ts proofs/fixtures |
             ForEach-Object { $_.Substring(3) })
     foreach ($path in $rewritten) {
@@ -89,17 +103,30 @@ function Invoke-Check([string]$Name, [scriptblock]$Command) {
     }
 }
 
-$mergeBase = git merge-base $Base HEAD
-if ($LASTEXITCODE -ne 0 -or -not $mergeBase) {
-    throw "Could not find the merge base with $Base. Run git fetch origin first."
+$changedPaths = @()
+if ($Full) {
+    # Full checks never need version-control metadata, even in a Git checkout.
+} elseif ($ChangedPathsFile) {
+    $changedPaths = @(Get-Content -LiteralPath $ChangedPathsFile -Encoding utf8 |
+            Where-Object { $_ } | ForEach-Object { $_.Replace('\', '/') } | Sort-Object -Unique)
+} elseif ($gitCheckout) {
+    $mergeBase = git merge-base $Base HEAD
+    if ($LASTEXITCODE -ne 0 -or -not $mergeBase) {
+        throw "Could not find the merge base with $Base. Run git fetch origin first, or pass -Full or -ChangedPathsFile."
+    }
+    # Compare content after line-ending conversion (#224), including untracked
+    # files. A rename lists its new path.
+    $trackedPaths = @(git -c core.quotePath=false diff --name-only $mergeBase)
+    if ($LASTEXITCODE -ne 0) { throw 'Could not list changed tracked paths.' }
+    $untrackedPaths = @(git -c core.quotePath=false ls-files --others --exclude-standard)
+    if ($LASTEXITCODE -ne 0) { throw 'Could not list untracked paths.' }
+    $changedPaths = @($trackedPaths + $untrackedPaths | Where-Object { $_ } | Sort-Object -Unique)
+} else {
+    # A duty folder is a merge tree, not a Rosen workspace or Git checkout.
+    # Never infer an empty change from missing metadata, or borrow another tree.
+    Write-Host '==> No Git metadata or changed-path list; running every check.' -ForegroundColor Cyan
+    $Full = $true
 }
-# Tracked files that differ from the merge base, committed or not, plus untracked
-# files. git diff compares content after line-ending conversion, so a file
-# rewritten with other line endings and nothing else is not a change (#224);
-# git status would list it. A rename lists its new path.
-$changedPaths = @(git -c core.quotePath=false diff --name-only $mergeBase) +
-    @(git -c core.quotePath=false ls-files --others --exclude-standard) |
-    Where-Object { $_ } | Sort-Object -Unique
 
 function Test-Changed([string[]]$Patterns) {
     foreach ($path in $changedPaths) {
@@ -157,14 +184,16 @@ if ($rustChanged) {
         $changedCrates = (cargo metadata --no-deps --format-version 1 --locked | ConvertFrom-Json).packages |
             Where-Object { $_.manifest_path -like '*crates*' } |
             Where-Object {
+                if ($runAll) { return $true }
                 $crateFolder = 'crates/' + (Split-Path -Leaf (Split-Path -Parent $_.manifest_path)) + '/'
                 $changedPaths | Where-Object { $_.StartsWith($crateFolder) }
             }
         foreach ($crate in $changedCrates) {
             Invoke-Check "Builds alone: $($crate.name)" { cargo check -p $crate.name --locked }
         }
-        Invoke-Check 'Regenerate IPC bindings' { pnpm -C ui bindings }
-        Invoke-Check 'Bindings are committed' { git diff --exit-code -- ui/src/lib/bindings.ts }
+        # The exporter compares the supplied file to regenerated content, ignoring
+        # CRLF, so stale bindings fail in both Git and Rosen trees.
+        Invoke-Check 'IPC bindings match Rust' { cargo run --locked -p velocity-app --bin export-bindings -- --check }
         Invoke-Check 'Clippy' { cargo clippy --workspace --all-targets --locked -- -D warnings }
     }
 } else {

@@ -210,8 +210,17 @@ fn event_bindings(builder: Builder<tauri::Wry>) -> Builder<tauri::Wry> {
         .error_handling(tauri_specta::ErrorHandlingMode::Throw)
 }
 
-/// Manifest-relative, so the export also works from a checkout with spaces.
+/// A warm-pool exporter must write into the tree being checked, even when its
+/// binary was compiled in the template. The debug app can also start outside a
+/// checkout, where its original manifest still identifies its source tree.
 fn bindings_path() -> std::path::PathBuf {
+    if let Ok(directory) = std::env::current_dir()
+        && let Some(root) = directory.ancestors().find(|path| {
+            path.join("src-tauri/Cargo.toml").is_file() && path.join("ui/src/lib").is_dir()
+        })
+    {
+        return root.join("ui/src/lib/bindings.ts");
+    }
     Path::new(env!("CARGO_MANIFEST_DIR")).join("../ui/src/lib/bindings.ts")
 }
 

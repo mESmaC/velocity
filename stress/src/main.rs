@@ -1,9 +1,9 @@
 mod discovery;
 mod runner;
+mod workspace;
 
 use std::{
     error::Error,
-    path::Path,
     process::{Command, ExitCode},
 };
 
@@ -23,10 +23,8 @@ fn start() -> Result<bool, Box<dyn Error>> {
     if arguments.is_empty() {
         return Err("Usage: cargo run -p stress -- --all | --list | <script name>...".into());
     }
-    let root = Path::new(env!("CARGO_MANIFEST_DIR"))
-        .parent()
-        .ok_or("Missing workspace root")?;
-    let mut entries = discovery::discover(root)?;
+    let root = workspace::root()?;
+    let mut entries = discovery::discover(&root)?;
     if entries.is_empty() {
         return Err("No stress evidence discovered".into());
     }
@@ -34,11 +32,11 @@ fn start() -> Result<bool, Box<dyn Error>> {
     // adds, so checking one script does not hold the build queue for the whole suite.
     let named = arguments != ["--all"] && arguments != ["--list"];
     if named {
-        entries = discovery::select(root, entries, &arguments)?;
+        entries = discovery::select(&root, entries, &arguments)?;
     }
     if arguments == ["--list"] {
         for entry in entries {
-            println!("{}", entry.strip_prefix(root)?.display());
+            println!("{}", entry.strip_prefix(&root)?.display());
         }
         return Ok(true);
     }
@@ -52,6 +50,7 @@ fn start() -> Result<bool, Box<dyn Error>> {
         || std::env::var_os("ROSEN_RUN_HELD").is_some();
     if !in_queue {
         return Ok(Command::new("pwsh")
+            .current_dir(&root)
             .args(["-NoProfile", "-File"])
             .arg(root.join("scripts/build-queue.ps1"))
             .arg(std::env::current_exe()?)
@@ -59,5 +58,5 @@ fn start() -> Result<bool, Box<dyn Error>> {
             .status()?
             .success());
     }
-    Ok(runner::run(root, &entries, !named))
+    Ok(runner::run(&root, &entries, !named))
 }
