@@ -13,10 +13,6 @@ pub(super) fn run_commands(
     commands: &[String],
     priority: Priority,
 ) -> Result<(Option<FailedCommand>, String), RosenError> {
-    if priority == Priority::Background {
-        return checker::run_commands(folder, commands, priority)
-            .map(|failed| (failed, String::new()));
-    }
     let fresh = match std::fs::remove_file(folder.join("target/.velocity-checks/feed.txt")) {
         Ok(()) => true,
         Err(error) => error.kind() == std::io::ErrorKind::NotFound,

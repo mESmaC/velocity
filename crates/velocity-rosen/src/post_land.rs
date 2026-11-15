@@ -12,17 +12,19 @@ use rosen_client::protocol::{
     BisectJob, BisectResult, BisectState, ErrorCode, LogRequest, PostLandJob, PostLandWork,
 };
 use rosen_client::{Client, ObjectId};
-use rosen_core::project_config::ReviewMode;
+use rosen_core::project_config::{RecheckMode, ReviewMode};
 
-pub use rosen_client::protocol::CheckKind;
+pub use rosen_client::protocol::{CheckKind, CheckPriority};
 
 use crate::{ProjectServer, RosenError, duty};
 
-/// The newest landed commit no full run has covered yet, and the commands to run on it.
+/// The newest landed commit this check kind has not covered, and the commands to run on it.
 #[derive(Clone, Debug)]
 pub struct Batch {
     pub commit: String,
     pub kind: CheckKind,
+    /// Rosen's run-queue class, preserved independently of the check kind.
+    pub priority: CheckPriority,
     /// This land used or enabled after-land mode. A mode-changing land still needs
     /// verification even when its own configuration turns the mode off.
     pub after_land: bool,
@@ -61,12 +63,15 @@ pub async fn next_batch(server: &ProjectServer) -> Result<Option<Batch>, RosenEr
     batch(&client, client.post_land_next().await?).await
 }
 
-/// The independent fast-build prefix. Before-land projects keep their existing build gate.
+/// The independent build prefix, including merge-mode checks after a before-land gate.
 pub async fn next_build_batch(server: &ProjectServer) -> Result<Option<Batch>, RosenError> {
     let client = Client::connect(server.endpoint()).await?;
+    // Merge mode can route post_land_next to builds even on a before-land project.
+    // Its build worker must advance that prefix so the test worker can receive tests.
+    let merge = client.project_config(None).await?.config.recheck == RecheckMode::Merge;
     Ok(batch(&client, client.post_land_build_next().await?)
         .await?
-        .filter(|batch| batch.after_land))
+        .filter(|batch| batch.after_land || merge || batch.priority == CheckPriority::Landing))
 }
 
 /// The current base's landing policy, never a checkout's possibly stale configuration.
@@ -215,6 +220,7 @@ async fn batch(client: &Client, work: PostLandWork) -> Result<Option<Batch>, Ros
     Ok(Some(Batch {
         commit: job.commit.to_string(),
         kind: job.kind,
+        priority: job.priority,
         after_land: policy.config.review == ReviewMode::AfterLand
             || authorising.config.review == ReviewMode::AfterLand,
         commands: job.check_set.commands.clone(),

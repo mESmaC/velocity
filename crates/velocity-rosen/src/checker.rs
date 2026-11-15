@@ -12,6 +12,7 @@ use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
 use std::time::{Duration, Instant};
 
+use rosen_client::protocol::CheckPriority;
 use rosen_client::run_queue::{self, RunClass, RunQueue, Turn};
 
 use crate::duty::{self, MergeCheckout};
@@ -29,11 +30,20 @@ const POLL: Duration = Duration::from_millis(250);
 /// How much of the machine a run of commands may take.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Priority {
-    /// A change waits to land on this run.
+    /// A landing check or an urgent post-land build repair.
     Landing,
     /// Nothing waits on this run: it runs at low process priority, and waits its turn
     /// behind the checks of a land and agents' own builds.
     Background,
+}
+
+impl From<CheckPriority> for Priority {
+    fn from(priority: CheckPriority) -> Self {
+        match priority {
+            CheckPriority::Landing => Self::Landing,
+            CheckPriority::Verify => Self::Background,
+        }
+    }
 }
 
 /// A check command that did not pass.

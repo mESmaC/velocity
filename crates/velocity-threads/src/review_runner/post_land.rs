@@ -1,8 +1,9 @@
 //! Post-land verification of a Rosen project (SPEC.md F7 "After a land"; Rosen R12 and §9
-//! "Build queue"). Independent build and test passes batch the newest lands. In after-land
-//! mode builds run ahead of background tests, with no check at land time. Rosen bisects
+//! "Build queue"). Independent build and test passes batch the newest lands. Merge-mode
+//! builds run ahead of background tests; after-land mode has no check at land time. Rosen bisects
 //! failures, reverts build breaks and retains test failures for the issue reporter. A
-//! before-land project keeps its existing test-failure reverts and PR duty schedule.
+//! before-land project keeps its existing test-failure reverts and PR duty schedule;
+//! merge-mode build checks also run after landing with Rosen's requested priority.
 
 use std::collections::BTreeSet;
 use std::path::PathBuf;
@@ -14,7 +15,7 @@ use velocity_core::rosen_checker::{
     verified_line, verify_failed_line, verify_stopped_line, verifying_line,
 };
 use velocity_rosen::ProjectServer;
-use velocity_rosen::checker::{self, Priority};
+use velocity_rosen::checker;
 use velocity_rosen::post_land::{self, Batch, Bisection, CheckKind};
 use velocity_store::duty::PrDutyRoster;
 
@@ -119,6 +120,8 @@ impl<Host: ReviewHost> Verify<Host> {
             if self.kind == CheckKind::Test && !batch.after_land && !self.legacy_tests {
                 return;
             }
+            // Rosen may offer a merge-mode build here; the independent build worker
+            // owns its folder and advances that prefix before tests are offered.
             if batch.kind != self.kind || self.settled(&batch.commit) || !self.verify(&batch).await
             {
                 return;
@@ -134,7 +137,7 @@ impl<Host: ReviewHost> Verify<Host> {
             (None, String::new())
         } else {
             self.say(DutyEventKind::Wait, verifying_line(&batch.commit));
-            match self.test(&batch.commit, &batch.commands).await {
+            match self.test(&batch.commit, batch).await {
                 Ok(failed) => failed,
                 Err(why) => return self.stopped(&batch.commit, &why),
             }
@@ -192,7 +195,9 @@ impl<Host: ReviewHost> Verify<Host> {
                 }
             };
             self.say(DutyEventKind::Wait, bisecting_line(&step.commit));
-            let (passed, output, suffix) = match self.test(&step.commit, &batch.commands).await {
+            // Keep the failed job's immutable check set and priority: a build
+            // bisection must never substitute the project's full-test commands.
+            let (passed, output, suffix) = match self.test(&step.commit, batch).await {
                 Ok((None, suffix)) => (true, String::new(), suffix),
                 Ok((Some(failed), suffix)) => (false, failed_check_report(&failed), suffix),
                 // Rosen keeps the bisection: the next pass fails the batch again and
@@ -230,22 +235,22 @@ impl<Host: ReviewHost> Verify<Host> {
     async fn test(
         &self,
         commit: &str,
-        commands: &[String],
+        batch: &Batch,
     ) -> Result<(Option<FailedCheck>, String), String> {
         post_land::stage_commit(&self.server, commit, &self.folder)
             .await
             .map_err(|error| error.to_string())?;
-        let (folder, commands) = (self.folder.clone(), commands.to_vec());
-        // Build recovery goes ahead of the background full tests, so a broken base is
-        // repaired promptly even while another project's long test suite is running.
-        let priority = if self.kind == CheckKind::Build {
-            Priority::Landing
-        } else {
-            Priority::Background
-        };
+        let (folder, commands) = (self.folder.clone(), batch.commands.clone());
+        let priority = batch.priority.into();
+        let kind = batch.kind;
         let ran = tokio::task::spawn_blocking(move || {
             checker::apply_staged(&folder)?;
-            check_feed::run_commands(&folder, &commands, priority)
+            if kind == CheckKind::Build {
+                check_feed::run_commands(&folder, &commands, priority)
+            } else {
+                checker::run_commands(&folder, &commands, priority)
+                    .map(|failed| (failed, String::new()))
+            }
         })
         .await;
         match ran {
