@@ -1,5 +1,5 @@
 //! Native F14 message edge: queued input, persistent acknowledgement and user comments.
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 
 use tauri::{AppHandle, Manager};
 use velocity_airc::Channel;
@@ -21,6 +21,7 @@ pub fn initialize(application: &AppHandle) {
     let application = application.clone();
     std::thread::spawn(move || {
         let mut left = Left::new();
+        let mut members = Members::new();
         let mut pass: u64 = 0;
         loop {
             pass = pass.wrapping_add(1);
@@ -30,7 +31,7 @@ pub fn initialize(application: &AppHandle) {
             if pass.is_multiple_of(LEFT_RECHECK_PASSES) {
                 left.clear();
             }
-            if let Err(error) = cycle(&application, &mut left) {
+            if let Err(error) = cycle(&application, &mut left, &mut members) {
                 eprintln!("Velocity AIRC delivery: {error}");
             }
             std::thread::sleep(std::time::Duration::from_secs(1));
@@ -41,10 +42,12 @@ pub fn initialize(application: &AppHandle) {
 /// Threads whose member this loop has already taken out of the channel. A stopped thread
 /// leaves once, not every second: each leave locks and reads the channel (#322).
 type Left = BTreeSet<velocity_threads::ThreadKey>;
+/// Each native join is retained only for its current agent session.
+type Members = BTreeMap<velocity_threads::ThreadKey, (String, String)>;
 
 const LEFT_RECHECK_PASSES: u64 = 30;
 
-fn cycle(application: &AppHandle, left: &mut Left) -> Result<(), String> {
+fn cycle(application: &AppHandle, left: &mut Left, members: &mut Members) -> Result<(), String> {
     // Transcripts are shared, not copied, so this clone copies thread records only.
     let projects = lock(
         application.state::<ManagedStateStore>().inner(),
@@ -53,8 +56,13 @@ fn cycle(application: &AppHandle, left: &mut Left) -> Result<(), String> {
     .state()
     .projects
     .clone();
+    members.retain(|(project, thread), _| {
+        projects
+            .iter()
+            .any(|item| item.id == *project && item.threads.iter().any(|item| item.id == *thread))
+    });
     for project in projects {
-        if let Err(error) = project_cycle(application, &project, left) {
+        if let Err(error) = project_cycle(application, &project, left, members) {
             eprintln!("Velocity AIRC project {}: {error}", project.id);
         }
     }
@@ -65,6 +73,7 @@ fn project_cycle(
     application: &AppHandle,
     project: &ProjectItem,
     left: &mut Left,
+    members: &mut Members,
 ) -> Result<(), String> {
     // One handle for the whole pass: opening resolves and creates the folder each time.
     let channel = channel(application, project.id)?;
@@ -87,7 +96,7 @@ fn project_cycle(
     crate::agent_activity::cycle(application, project, &channel)?;
     crate::parking::cycle(application, project, &channel);
     for thread in &project.threads {
-        if let Err(error) = deliver(application, (project.id, thread), &channel, left) {
+        if let Err(error) = deliver(application, (project.id, thread), &channel, left, members) {
             eprintln!("Velocity AIRC thread {}: {error}", thread.id);
         }
     }
@@ -99,17 +108,23 @@ fn deliver(
     (project, thread): (u32, &ThreadItem),
     channel: &Channel,
     left: &mut Left,
+    members: &mut Members,
 ) -> Result<(), String> {
     let key = (project, thread.id);
     let member = format!("thread-{}", key.1);
-    let (live, setting_up) = {
+    let (live, setting_up, session) = {
         let runtimes = lock(
             application.state::<ManagedThreads>().inner(),
             "thread sessions",
         )?;
-        (runtimes.is_live(key), runtimes.is_setting_up(key))
+        (
+            runtimes.is_live(key),
+            runtimes.is_setting_up(key),
+            runtimes.session_identifier(key),
+        )
     };
     if !live {
+        members.remove(&key);
         if left.contains(&key) {
             return Ok(());
         }
@@ -124,24 +139,54 @@ fn deliver(
     let Some(path) = &thread.worktree_path else {
         return Ok(());
     };
+    let session = session.ok_or("Missing live AIRC session")?;
+    let nick = member_nick(channel, key, &member, path, &session, members)?;
+    deliver_pending(application, key, thread, channel, &nick)
+}
+
+fn member_nick(
+    channel: &Channel,
+    key: velocity_threads::ThreadKey,
+    member: &str,
+    path: &str,
+    session: &str,
+    members: &mut Members,
+) -> Result<String, String> {
+    if let Some((known_session, nick)) = members.get(&key)
+        && known_session == session
+    {
+        return Ok(nick.clone());
+    }
     let nick = channel
-        .join(&member, path)
+        .join(member, path)
         .map_err(|error| error.to_string())?;
+    members.insert(key, (session.to_owned(), nick.clone()));
+    Ok(nick)
+}
+
+fn deliver_pending(
+    application: &AppHandle,
+    key: velocity_threads::ThreadKey,
+    thread: &ThreadItem,
+    channel: &Channel,
+    nick: &str,
+) -> Result<(), String> {
+    let member = format!("thread-{}", key.1);
     let cursor = velocity_airc::deliver_targeted(
         channel,
-        &nick,
+        nick,
         channel
             .delivery_cursor(&member, thread.airc_cursor)
             .map_err(|error| error.to_string())?,
         thread.activity == velocity_store::AgentActivity::Idle,
         |identifier, message| {
-            lock(
+            let status = lock(
                 application.state::<ManagedThreads>().inner(),
                 "thread sessions",
             )?
             .deliver_follow_up(key, identifier, message)
-            .map(|status| status == DeliveryStatus::Delivered)
-            .map_err(|error| error.to_string())
+            .map_err(|error| error.to_string())?;
+            Ok(status == DeliveryStatus::Delivered)
         },
     )
     .map_err(|error| error.to_string())?;

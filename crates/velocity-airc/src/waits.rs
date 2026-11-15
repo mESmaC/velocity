@@ -63,19 +63,19 @@ pub struct WaitEnded {
 impl Channel {
     pub fn register_checkout(&self, member: &str, checkout: Checkout) -> Result<(), Error> {
         let storage = Storage::open(&self.directory)?;
-        let entries = storage.read()?;
+        let entries = storage.snapshot()?;
         let mut record = entry(&entries, "checkout", member, member, "thread checkout");
         record.checkout = Some(checkout);
         storage.append(&record)
     }
 
     pub fn dependency_waits(&self) -> Result<Vec<DependencyWait>, Error> {
-        Ok(active_waits(&self.read(0)?).into_values().collect())
+        Ok(active_waits(&self.snapshot()?).into_values().collect())
     }
 
     pub fn begin_wait(&self, member: &str, holder: &str, file: &str) -> Result<Entry, Error> {
         let storage = Storage::open(&self.directory)?;
-        let entries = storage.read()?;
+        let entries = storage.snapshot()?;
         let claims = crate::claims::claims(&entries);
         let own = claims
             .iter()
@@ -115,7 +115,7 @@ impl Channel {
         number: Option<u32>,
     ) -> Result<(), Error> {
         let storage = Storage::open(&self.directory)?;
-        let entries = storage.read()?;
+        let entries = storage.snapshot()?;
         if entries
             .iter()
             .rev()
@@ -174,7 +174,8 @@ impl Channel {
             if cancelled() {
                 return Err(Error::Invalid("AIRC connection ended while waiting".into()));
             }
-            if let Some(ended) = holder_end(&self.read(0)?, dependency) {
+            let ended = holder_end(&self.snapshot()?, dependency);
+            if let Some(ended) = ended {
                 return self.continue_wait(member, dependency, &ended);
             }
             receive_change(&receiver, &cancelled, deadline)?;
@@ -203,7 +204,7 @@ impl Channel {
             Err(error) => format!("{UPDATE_FAILED}: {error}"),
         };
         let storage = Storage::open(&self.directory)?;
-        let entries = storage.read()?;
+        let entries = storage.snapshot()?;
         let mut record = entry(&entries, "unblocked", "velocity", &dependency.nick, &text);
         record.dependency = Some(dependency.clone());
         record.pull_request = ended.pull_request;
@@ -219,7 +220,7 @@ impl Channel {
     }
 
     pub fn wait_state(&self, member: &str) -> Result<WaitState, Error> {
-        let entries = self.read(0)?;
+        let entries = self.snapshot()?;
         let Some(dependency) = active_waits(&entries).remove(member) else {
             return Ok(WaitState::NotWaiting);
         };
@@ -234,21 +235,27 @@ impl Channel {
     /// Velocity does this before resuming it. `None` while the holder's work is still open.
     /// A wait the call already ended before the session stopped is reported as it ended.
     pub fn wake_parked(&self, member: &str) -> Result<Option<WaitEnded>, Error> {
-        let entries = self.read(0)?;
+        let entries = self.snapshot()?;
         let mut failure = None;
         if let Some(dependency) = active_waits(&entries).remove(member) {
             let Some(ended) = holder_end(&entries, &dependency) else {
                 return Ok(None);
             };
+            drop(entries);
             failure = self.continue_wait(member, &dependency, &ended).err();
         }
-        let unblocked = self.read(0)?.into_iter().rev().find(|entry| {
-            entry.kind == "unblocked"
-                && entry
-                    .dependency
-                    .as_ref()
-                    .is_some_and(|dependency| dependency.member == member)
-        });
+        let unblocked = self
+            .snapshot()?
+            .iter()
+            .rev()
+            .find(|entry| {
+                entry.kind == "unblocked"
+                    && entry
+                        .dependency
+                        .as_ref()
+                        .is_some_and(|dependency| dependency.member == member)
+            })
+            .cloned();
         match (unblocked, failure) {
             (Some(entry), _) => Ok(Some(WaitEnded {
                 update_failed: entry.text.starts_with(UPDATE_FAILED),
@@ -261,11 +268,11 @@ impl Channel {
 
     fn update_checkout(&self, member: &str) -> Result<(), Error> {
         let checkout = self
-            .read(0)?
-            .into_iter()
+            .snapshot()?
+            .iter()
             .rev()
             .find(|entry| entry.member == member && entry.checkout.is_some())
-            .and_then(|entry| entry.checkout)
+            .and_then(|entry| entry.checkout.clone())
             .ok_or_else(|| {
                 Error::Invalid("Runner did not register this thread's checkout".into())
             })?;
