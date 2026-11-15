@@ -1166,6 +1166,7 @@ export type GoalAgentCard = GoalAgentCard_Serialize | GoalAgentCard_Deserialize;
  *  track and what it is doing.
  */
 export type GoalAgentCard_Deserialize = {
+	track_label: string,
 	/**  The thread a click opens. */
 	identifier: string,
 	nick: string,
@@ -1185,6 +1186,7 @@ export type GoalAgentCard_Deserialize = {
  *  track and what it is doing.
  */
 export type GoalAgentCard_Serialize = {
+	track_label: string,
 	/**  The thread a click opens. */
 	identifier: string,
 	nick: string,
@@ -1337,6 +1339,9 @@ export type GoalSwarmDialogQuery_Serialize = {
 };
 
 export type GoalSwarmDialog_Deserialize = {
+	workspace_rule: string,
+	completion_rule: string,
+	keep_going_label: string,
 	project_identifier: number,
 	/**  The project's AIRC channel, `#<project>`. */
 	channel: string,
@@ -1362,6 +1367,9 @@ export type GoalSwarmDialog_Deserialize = {
 };
 
 export type GoalSwarmDialog_Serialize = {
+	workspace_rule: string,
+	completion_rule: string,
+	keep_going_label: string,
 	project_identifier: number,
 	/**  The project's AIRC channel, `#<project>`. */
 	channel: string,

@@ -668,34 +668,79 @@ async fn run_thread(
     pump(&application, key, session).await;
 }
 
-async fn run_goal_member(application: AppHandle, key: ThreadKey, plan: GoalMemberPlan) {
-    let pools = crate::ready_pool::pools(&application);
-    let (worktree_path, branch_name, failure) =
-        setup_goal_worktree(pools, key.0, &plan.worktree).await;
+async fn run_goal_member(application: AppHandle, key: ThreadKey, mut plan: GoalMemberPlan) {
+    let folder = take_goal_folder(&application, key, &mut plan).await;
+    let worktree_path = folder.path.clone();
+    let branch_name = folder.branch_name.clone().unwrap_or_default();
     let path = worktree_path.display().to_string();
     if !mark_choosing_worktree(&application, key, &path) {
-        return remove_deleted_worktree(plan.worktree.repository_root, worktree_path).await;
+        return discard_goal_folder(&application, key, &plan, &folder).await;
     }
     report(record_names(&application, key, &path, Some(&branch_name)));
-    if let Some(detail) = failure {
-        return fail(&application, key, "Could not set up the worktree", &detail);
+    if let Some(detail) = &folder.failure {
+        return fail(&application, key, "Could not set up the worktree", detail);
     }
     report(refresh(&application, key, false));
     match run_goal_choice(&application, key, &plan.slot, &worktree_path, &branch_name).await {
         Ok(ClaimPhaseOutcome::Left { left_entry, .. }) => {
+            if folder.rosen_change.is_some() {
+                discard_goal_folder(&application, key, &plan, &folder).await;
+            }
             finish_goal_left(&application, key, left_entry);
         }
         Ok(ClaimPhaseOutcome::Claimed(claimed)) => {
-            finish_goal_claimed(&application, key, plan, worktree_path, &path, *claimed).await;
+            finish_goal_claimed(&application, key, plan, folder, &path, *claimed).await;
         }
         Err(error) => {
             if !mark_choosing_worktree(&application, key, &path) {
                 let _ = crate::airc_claims::release(&application, key);
-                remove_deleted_worktree(plan.worktree.repository_root, worktree_path).await;
+                discard_goal_folder(&application, key, &plan, &folder).await;
             } else {
                 fail(&application, key, "Could not choose work", &error);
             }
         }
+    }
+}
+
+async fn take_goal_folder(
+    application: &AppHandle,
+    key: ThreadKey,
+    plan: &mut GoalMemberPlan,
+) -> ThreadFolder {
+    if crate::rosen::uses_rosen(application, key.0) {
+        match crate::rosen::take_workspace(application, key, &plan.worktree).await {
+            Ok(workspace) => {
+                plan.agent.env.extend(workspace.environment);
+                return ThreadFolder {
+                    path: workspace.root,
+                    branch_name: plan.worktree.branch_name.clone(),
+                    failure: workspace.setup.err(),
+                    rosen_change: Some(workspace.change),
+                };
+            }
+            Err(error) => crate::rosen::fell_back(application, &error),
+        }
+    }
+    let pools = crate::ready_pool::pools(application);
+    let (path, branch, failure) = setup_goal_worktree(pools, key.0, &plan.worktree).await;
+    ThreadFolder {
+        path,
+        branch_name: Some(branch),
+        failure,
+        rosen_change: None,
+    }
+}
+
+async fn discard_goal_folder(
+    application: &AppHandle,
+    key: ThreadKey,
+    plan: &GoalMemberPlan,
+    folder: &ThreadFolder,
+) {
+    if let Some(change) = &folder.rosen_change {
+        report(crate::rosen::abandon_unstarted(application, key.0, &folder.path, change).await);
+    } else if folder.path.exists() {
+        remove_deleted_worktree(plan.worktree.repository_root.clone(), folder.path.clone()).await;
     }
 }
 
@@ -807,7 +852,7 @@ async fn finish_goal_claimed(
     application: &AppHandle,
     key: ThreadKey,
     plan: GoalMemberPlan,
-    worktree_path: PathBuf,
+    folder: ThreadFolder,
     path: &str,
     claimed: ClaimedGoalWork,
 ) {
@@ -819,7 +864,7 @@ async fn finish_goal_claimed(
     .and_then(|mut runtimes| runtimes.begin_claimed_session(key, path, &claimed.prompt));
     let Some(inputs) = inputs else {
         let _ = crate::airc_claims::release(application, key);
-        remove_deleted_worktree(plan.worktree.repository_root, worktree_path).await;
+        discard_goal_folder(application, key, &plan, &folder).await;
         return;
     };
     report(crate::airc_modal::refresh(application));
@@ -828,8 +873,17 @@ async fn finish_goal_claimed(
     let mut setup = with_run_settings(
         application,
         key,
-        SessionSetup::new(worktree_path, plan.bypass_modes),
+        SessionSetup::new(folder.path, plan.bypass_modes),
     );
+    setup.preface = folder
+        .rosen_change
+        .as_deref()
+        .map(velocity_rosen::workspace_note);
+    if folder.rosen_change.is_some() {
+        setup
+            .shared_servers
+            .extend(crate::rosen::mcp_server(&setup.worktree, &plan.agent.env));
+    }
     setup.airc = crate::airc_access::managed(application)
         .map(|airc| airc.thread(key.0, key.1, &setup.worktree));
     let session = spawn_session(plan.agent, setup, inputs);

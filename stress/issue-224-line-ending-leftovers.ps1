@@ -3,11 +3,16 @@
 # change detection took them for Rust and proof changes and ran every step on
 # each later run. A line-ending-only rewrite must not count, a real change to
 # the same files must, and an unrecognised path must still run everything.
-# Runs check.ps1 -Plan (detection only, no builds) in a throwaway shared clone.
+# Updated for Rosen merge trees (#385): seed a throwaway Git fixture from the
+# reviewed scripts, bindings and fixtures; the outer tree needs no Git metadata.
+# Runs the same check.ps1 -Plan cases (detection only, no builds).
 $ErrorActionPreference = 'Stop'
 $repositoryRoot = [IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..'))
-$fixture = Join-Path ([IO.Path]::GetTempPath()) "velocity-issue-224-$PID"
-$headCommit = git -C $repositoryRoot rev-parse HEAD
+Import-Module (Join-Path $PSScriptRoot 'git-fixture.psm1') -Force
+$paths = @('.gitattributes', 'scripts/check.ps1', 'scripts/build-queue.ps1', 'ui/src/lib/bindings.ts') +
+    @(Get-ChildItem -LiteralPath (Join-Path $repositoryRoot 'proofs/fixtures') -Filter '*.tsv' |
+        ForEach-Object { "proofs/fixtures/$($_.Name)" })
+$fixture = New-StressGitFixture $repositoryRoot $paths
 
 function Invoke-Git { git -C $fixture @args; if ($LASTEXITCODE -ne 0) { throw "git $args failed" } }
 
@@ -27,12 +32,6 @@ function Write-WithLf([string]$RelativePath) {
 }
 
 try {
-    git -c core.autocrlf=true clone --quiet --shared --no-checkout $repositoryRoot $fixture
-    Invoke-Git config core.autocrlf true
-    Invoke-Git checkout --quiet --detach $headCommit
-    # Test this checkout's own scripts, whatever is committed.
-    Copy-Item -LiteralPath (Join-Path $repositoryRoot 'scripts\check.ps1') -Destination (Join-Path $fixture 'scripts\check.ps1') -Force
-    Invoke-Git -c user.name=stress -c user.email=stress@example.invalid commit --quiet --allow-empty -am 'scripts under test'
     Assert-Plan 'clean worktree' 'rust=False ui=False proofs=False'
 
     Write-WithLf 'ui/src/lib/bindings.ts'
@@ -57,5 +56,5 @@ try {
     Assert-Plan 'untracked unrecognised path' 'rust=True ui=True proofs=True'
     Write-Host 'All check.ps1 change detection cases passed.'
 } finally {
-    if (Test-Path -LiteralPath $fixture) { Remove-Item -LiteralPath $fixture -Recurse -Force }
+    Remove-StressGitFixture $fixture
 }

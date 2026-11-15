@@ -1,4 +1,6 @@
 //! Headless check of the M9 Goal swarm view and sidebar row (`SPEC.md` F16).
+//! Updated for #264: settled members leave the swarm row. Check all four cards plus
+//! three live sidebar members and the merged member in Settled, so none is lost.
 //!
 //! Launches a goal swarm in a scratch `state.json`, moves its agents through choosing,
 //! claimed, waiting, in review and merged, then prints what the window would draw: the
@@ -44,6 +46,7 @@ fn run(root: &std::path::Path) -> Outcome {
     check_sidebar(&snapshot, swarm)?;
     check_view(&snapshot)?;
     check_board(&store, swarm, &threads)?;
+    check_settled(&mut layout, threads[2])?;
     layout.apply(LayoutAction::AddGoalAgents(swarm as usize));
     let dialog = layout
         .snapshot()
@@ -75,6 +78,7 @@ fn seeded_store(root: &std::path::Path) -> Outcome<StateStore> {
     let mut persisted = PersistedState::default();
     persisted.settings.worktrees.location_root = Some(root.join("wt").display().to_string());
     let mut project = ProjectItem::new(1, "veloc".into(), root.join("repo").display().to_string());
+    project.version_control = velocity_store::VersionControl::Git;
     project.spec_locked = true;
     for (id, text) in [(1, "Claims board"), (2, "Agent cards")] {
         project.tasks.push(TaskItem::new(
@@ -197,23 +201,51 @@ fn check_sidebar(snapshot: &LayoutSnapshot, swarm: u32) -> Outcome {
         row.title == "Goal · Read AGENTS.md and start dev",
         "row title",
     )?;
-    ensure(row.agents == 4, "×4 agents")?;
+    ensure(row.agents == 3, "×3 live agents")?;
     ensure(
         row.segments
             == [
                 SwarmStage::PullRequest,
                 SwarmStage::Working,
-                SwarmStage::Merged,
                 SwarmStage::Choosing,
             ],
-        "one segment per agent",
+        "one segment per live agent",
     )?;
     let members: Vec<_> = group.rows.iter().filter(|row| row.member).collect();
-    ensure(members.len() == 4, "members nest under the goal row")?;
+    ensure(members.len() == 3, "live members nest under the goal row")?;
     ensure(
         members[0].title == "Claims board",
         "members titled by their piece",
     )
+}
+
+fn check_settled(layout: &mut LayoutState, merged_thread: u32) -> Outcome {
+    let snapshot = layout.snapshot();
+    let settled = snapshot
+        .groups
+        .iter()
+        .find(|group| group.group == ThreadGroup::Settled)
+        .ok_or("no Settled group")?;
+    ensure(
+        settled.collapsed && settled.count == 1 && settled.rows.is_empty(),
+        "one collapsed settled member",
+    )?;
+    layout.apply(LayoutAction::ToggleSettled);
+    let snapshot = layout.snapshot();
+    let settled = snapshot
+        .groups
+        .iter()
+        .find(|group| group.group == ThreadGroup::Settled)
+        .ok_or("no expanded Settled group")?;
+    ensure(
+        settled
+            .rows
+            .iter()
+            .any(|row| row.identifier == merged_thread as usize),
+        "merged member retained in Settled",
+    )?;
+    layout.apply(LayoutAction::ToggleSettled);
+    Ok(())
 }
 
 fn check_view(snapshot: &LayoutSnapshot) -> Outcome {

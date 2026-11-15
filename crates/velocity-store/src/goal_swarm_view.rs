@@ -35,6 +35,14 @@ fn goal_swarm_entry(project: &ProjectItem, swarm: &GoalSwarmRecord) -> GoalSwarm
         .iter()
         .filter_map(|member| agent_progress(project, member))
         .collect();
+    entry.rosen = if entry.agents.is_empty() {
+        project.version_control == crate::VersionControl::Rosen
+    } else {
+        entry
+            .agents
+            .iter()
+            .any(|agent| agent.rosen_change.is_some())
+    };
     entry.merged_pull_requests = merged_threads(project, swarm).len();
     entry.feed = swarm.feed.clone();
     entry
@@ -56,6 +64,7 @@ fn agent_progress(project: &ProjectItem, member: &GoalSwarmMember) -> Option<Goa
         thread.id as usize,
         provider_color(member.provider),
     );
+    agent.rosen_change = thread.rosen_change.clone();
     agent.model_name = member.model_name.clone();
     agent.effort_label = effort_label(member.effort).into();
     agent.fast = member.speed == SpeedMode::Fast;
@@ -68,7 +77,7 @@ fn agent_progress(project: &ProjectItem, member: &GoalSwarmMember) -> Option<Goa
     agent.review_stage = thread.review_stage.map(Into::into);
     agent.pull_request_number = thread.pull_request_number;
     agent.activity_label = thread_metadata(thread);
-    agent.waiting = thread.dependency_wait.clone();
+    agent.waiting = dependency_label(project, thread);
     Some(agent)
 }
 
@@ -139,34 +148,37 @@ pub fn goal_claims_board(
             let holder = piece
                 .thread_identifier
                 .and_then(|identifier| find_thread(project, identifier))
-                .map(claim_holder);
+                .map(|thread| claim_holder(project, thread));
             BoardPiece::new(piece.key.clone(), &piece.title, holder)
         })
         .collect();
     let merged: Vec<MergedPiece> = merged_threads(project, swarm)
         .into_iter()
         .map(|(thread, nick)| {
-            MergedPiece::new(
+            let mut piece = MergedPiece::new(
                 thread_piece(thread),
                 &thread.title,
                 nick,
                 thread.pull_request_number,
-            )
+            );
+            piece.rosen_change = thread.rosen_change.clone();
+            piece
         })
         .collect();
     Some(claims_board(&pieces, &merged))
 }
 
 /// Goal agents go by their nick; other threads by the AIRC member name they join as.
-fn claim_holder(thread: &ThreadItem) -> ClaimHolder {
+fn claim_holder(project: &ProjectItem, thread: &ThreadItem) -> ClaimHolder {
     let nick = thread
         .goal_member
         .as_ref()
         .map_or_else(|| format!("thread-{}", thread.id), |goal| goal.nick.clone());
     let mut holder = ClaimHolder::new(&nick, thread.state.into());
+    holder.rosen_change = thread.rosen_change.clone();
     holder.review_stage = thread.review_stage.map(Into::into);
     holder.pull_request_number = thread.pull_request_number;
-    holder.waiting = thread.dependency_wait.clone();
+    holder.waiting = dependency_label(project, thread);
     holder
 }
 
@@ -182,5 +194,20 @@ fn thread_piece(thread: &ThreadItem) -> Option<WorkKey> {
     }
     thread.spec_section.as_ref().map(|section| WorkKey::Spec {
         section: section.clone(),
+    })
+}
+
+fn dependency_label(project: &ProjectItem, thread: &ThreadItem) -> Option<String> {
+    thread.dependency_wait.clone().or_else(|| {
+        let stack = thread.goal_stack.as_ref()?;
+        let parent = project.threads.iter().find(|parent| {
+            parent.rosen_change.as_deref() == Some(&stack.parent)
+                && parent.state != ThreadState::Merged
+        })?;
+        let nick = parent
+            .goal_member
+            .as_ref()
+            .map_or(parent.title.as_str(), |goal| &goal.nick);
+        Some(format!("stacked on {nick} · {}", stack.parent))
     })
 }

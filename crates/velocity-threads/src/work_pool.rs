@@ -52,28 +52,8 @@ fn read_pool(project: &ProjectItem, issue_age: Duration) -> Result<WorkPool, Wor
     }
     let mut pieces = task_pieces(project);
     let checkout = Path::new(&project.repository_path);
-    if IssueClient::has_origin(checkout)? {
-        let (repository, issues) = open_issues(checkout, issue_age)?;
-        // A spec-question only waits on the owner's answer: an agent handed one finds
-        // nothing to build and holds the claim with no PR (#356). Accepting its answer
-        // is the user's step (F9 Accept), so the pool leaves questions out.
-        for issue in issues
-            .iter()
-            .filter(|issue| issue.state == IssueState::Open && !issue.is_spec_question())
-        {
-            let assignment = ThreadIssue::new(repository.clone(), issue.number);
-            let owner = issue_thread(project, &assignment).map(|thread| thread.id);
-            pieces.push(WorkPiece::new(
-                WorkKey::Issue {
-                    repository: repository.to_lowercase(),
-                    number: issue.number,
-                },
-                issue.title.clone(),
-                issue.url.clone(),
-                owner,
-            ));
-        }
-    }
+    pieces.extend(issue_pieces(project, checkout, issue_age)?);
+    pieces.extend(held_rosen_issues(project));
     let path = checkout.join(&project.spec_path);
     let markdown = std::fs::read_to_string(extended_windows_path(&path))?;
     pieces.extend(available_spec_pieces(project, &markdown));
@@ -97,6 +77,73 @@ fn read_pool(project: &ProjectItem, issue_age: Duration) -> Result<WorkPool, Wor
         }
     }
     Ok(WorkPool::new(project.id, pieces))
+}
+
+fn issue_pieces(
+    project: &ProjectItem,
+    checkout: &Path,
+    issue_age: Duration,
+) -> Result<Vec<WorkPiece>, WorkPoolError> {
+    let mut pieces = Vec::new();
+    if IssueClient::has_origin(checkout)? {
+        let (repository, issues) = open_issues(checkout, issue_age)?;
+        // A spec-question only waits on the owner's answer: an agent handed one finds
+        // nothing to build and holds the claim with no PR (#356). Accepting its answer
+        // is the user's step (F9 Accept), so the pool leaves questions out.
+        for issue in issues
+            .iter()
+            .filter(|issue| issue.state == IssueState::Open && !issue.is_spec_question())
+        {
+            let assignment = ThreadIssue::new(repository.clone(), issue.number);
+            if project.completed_goal_issues.iter().any(|completed| {
+                completed.number == assignment.number
+                    && completed
+                        .repository
+                        .eq_ignore_ascii_case(&assignment.repository)
+            }) {
+                continue;
+            }
+            let owner = issue_thread(project, &assignment).map(|thread| thread.id);
+            pieces.push(WorkPiece::new(
+                WorkKey::Issue {
+                    repository: repository.to_lowercase(),
+                    number: issue.number,
+                },
+                issue.title.clone(),
+                issue.url.clone(),
+                owner,
+            ));
+        }
+    }
+    Ok(pieces)
+}
+
+fn held_rosen_issues(project: &ProjectItem) -> Vec<WorkPiece> {
+    project
+        .threads
+        .iter()
+        .filter_map(|thread| {
+            let issue = thread.issue.as_ref()?;
+            if thread.rosen_change.is_none()
+                || thread.goal_member.is_none()
+                || thread.supervision.released
+                || matches!(thread.state, ThreadState::Merged | ThreadState::Done)
+            {
+                return None;
+            }
+            // A reverted issue can already be closed in the mirror. Its original thread
+            // still owns the fix and must stay visible on the board until it lands again.
+            Some(WorkPiece::new(
+                WorkKey::Issue {
+                    repository: issue.repository.to_lowercase(),
+                    number: issue.number,
+                },
+                thread.title.clone(),
+                format!("{}#{}", issue.repository, issue.number),
+                Some(thread.id),
+            ))
+        })
+        .collect()
 }
 
 /// The checkout's repository and its open issues, no older than `issue_age`. Only open issues

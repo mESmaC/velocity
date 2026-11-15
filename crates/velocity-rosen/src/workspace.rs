@@ -23,6 +23,17 @@ pub struct AgentWorkspace {
     pub prepared: bool,
 }
 
+impl AgentWorkspace {
+    pub fn new(change: String, root: PathBuf, method: &'static str, prepared: bool) -> Self {
+        Self {
+            change,
+            root,
+            method,
+            prepared,
+        }
+    }
+}
+
 pub(crate) async fn session(server: &ProjectServer, agent: &str) -> Result<Session, RosenError> {
     let agent = rosen_client::identity::parse_agent(agent)
         .map_err(|_| RosenError::AgentName(agent.to_owned()))?;

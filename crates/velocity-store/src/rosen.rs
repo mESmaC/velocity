@@ -118,6 +118,9 @@ impl StateStore {
         let Some(item) = next.projects.iter_mut().find(|item| item.id == project) else {
             return Ok(None);
         };
+        if seq != 0 && seq <= item.rosen_event_cursor {
+            return Ok(None);
+        }
         item.rosen_event_cursor = item.rosen_event_cursor.max(seq);
         let thread = item
             .threads
@@ -132,6 +135,7 @@ impl StateStore {
         let reverted = progress == RosenProgress::Reverted && thread.state == ThreadState::Merged;
         let landed = apply_progress(thread, progress);
         queue_follow_up(thread, progress, message);
+        crate::goal_rosen::apply(item, identifier, progress);
         if landed {
             crate::follow_through::finish_thread_tasks(&mut next, project, identifier);
         }

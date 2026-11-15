@@ -17,6 +17,7 @@ const FEED_SHOWN: usize = 40;
 /// One goal swarm agent's current thread, as the store reads it from `state.json`.
 #[derive(Clone, Debug)]
 pub struct GoalAgentProgress {
+    pub rosen_change: Option<String>,
     pub nick: String,
     /// The agent's current thread: its choosing thread, or the piece it claimed.
     pub thread_identifier: usize,
@@ -40,6 +41,7 @@ impl GoalAgentProgress {
     /// A choosing agent; the store fills in what its saved thread says.
     pub fn new(nick: &str, thread_identifier: usize, provider: ProviderColor) -> Self {
         Self {
+            rosen_change: None,
             nick: nick.to_owned(),
             thread_identifier,
             provider,
@@ -77,6 +79,7 @@ impl GoalAgentProgress {
 /// A goal swarm's sidebar row and view, as the store reads it.
 #[derive(Clone, Debug)]
 pub struct GoalSwarmEntry {
+    pub rosen: bool,
     pub identifier: usize,
     pub title: String,
     pub prompt: String,
@@ -92,6 +95,7 @@ pub struct GoalSwarmEntry {
 impl GoalSwarmEntry {
     pub fn new(identifier: usize, prompt: &str, started_label: &str, keep_going: bool) -> Self {
         Self {
+            rosen: false,
             identifier,
             title: crate::goal_swarm::goal_swarm_title(prompt),
             prompt: prompt.to_owned(),
@@ -112,6 +116,7 @@ impl GoalSwarmEntry {
 )]
 #[derive(Clone, Debug)]
 pub struct GoalAgentCard {
+    pub track_label: String,
     /// The thread a click opens.
     #[cfg_attr(feature = "bindings", serde(with = "crate::ipc_number"))]
     #[cfg_attr(feature = "bindings", specta(type = String))]
@@ -188,6 +193,9 @@ fn legend(agents: &[GoalAgentProgress]) -> Vec<SwarmLegendItem> {
 /// claim · PR · CI · review · merged, as the reference's `gcCard` lights them.
 pub fn goal_track(agent: &GoalAgentProgress) -> Vec<TrackStep> {
     use TrackStep::{Done, Failed, Running, Todo};
+    if agent.rosen_change.is_some() {
+        return rosen_track(agent);
+    }
     if agent.stage() == SwarmStage::Choosing {
         return vec![Running, Todo, Todo, Todo, Todo];
     }
@@ -219,10 +227,34 @@ pub fn goal_track(agent: &GoalAgentProgress) -> Vec<TrackStep> {
     vec![Done, opened, checks, review, landed]
 }
 
+fn rosen_track(agent: &GoalAgentProgress) -> Vec<TrackStep> {
+    use TrackStep::{Done, Failed, Running, Todo};
+    match agent.stage() {
+        SwarmStage::Choosing => vec![Running, Todo, Todo],
+        SwarmStage::Merged => vec![Done, Done, Done],
+        SwarmStage::Failed | SwarmStage::Fixing => vec![Done, Failed, Todo],
+        SwarmStage::PullRequest => vec![Done, Done, Running],
+        SwarmStage::Working => vec![Done, Running, Todo],
+    }
+}
+
 /// The card's "what it is doing now" line.
 pub fn goal_doing(agent: &GoalAgentProgress) -> String {
     if agent.activity_label == "stalled" || agent.activity_label.starts_with("at limit") {
         return agent.activity_label.clone();
+    }
+    if let Some(change) = &agent.rosen_change {
+        return match agent.stage() {
+            SwarmStage::Choosing => "reading the claims board".into(),
+            SwarmStage::Working => agent
+                .waiting
+                .clone()
+                .unwrap_or_else(|| agent.activity_label.clone()),
+            SwarmStage::Merged => format!("landed · {change}"),
+            SwarmStage::Failed => "failed · claim held".into(),
+            SwarmStage::Fixing => format!("fixing · {change}"),
+            SwarmStage::PullRequest => format!("named · {change}"),
+        };
     }
     let number = agent.pull_request_number.unwrap_or_default();
     match agent.stage() {
@@ -253,6 +285,11 @@ fn review_label(stage: Option<ReviewStage>) -> &'static str {
 
 pub fn goal_card(agent: &GoalAgentProgress) -> GoalAgentCard {
     GoalAgentCard {
+        track_label: if agent.rosen_change.is_some() {
+            "claim · named · landed".into()
+        } else {
+            "claim · PR · CI · review · merged".into()
+        },
         identifier: agent.thread_identifier,
         nick: agent.nick.clone(),
         nick_tone: nick_tone(&agent.nick),
@@ -292,21 +329,27 @@ pub fn mix_label(agents: &[GoalAgentProgress]) -> String {
 /// The sidebar row's ×N and meta line: "2 choosing · 3 working · 1 PR open",
 /// counting live agents only, or "finished" once none is left at work.
 pub fn goal_row_summary(agents: &[GoalAgentProgress]) -> (usize, String) {
-    crate::swarm::row_summary(&goal_segments(agents))
+    let (count, summary) = crate::swarm::row_summary(&goal_segments(agents));
+    if agents.iter().all(|agent| agent.rosen_change.is_some()) {
+        (
+            count,
+            summary
+                .replace("PR open", "named")
+                .replace("merged", "landed"),
+        )
+    } else {
+        (count, summary)
+    }
 }
 
 pub fn project_goal_swarm_view(entry: &GoalSwarmEntry) -> GoalSwarmViewSnapshot {
     let total = entry.agents.len();
     let waits = entry.agents.iter().filter(|agent| agent.waits()).count();
     let merged = entry.merged_pull_requests;
-    let keep_going = if entry.keep_going {
-        " · keep going"
-    } else {
-        ""
-    };
-    let finished = if goal_segments(&entry.agents)
-        .into_iter()
-        .any(crate::swarm::is_live)
+    let finished = if entry
+        .agents
+        .iter()
+        .any(|agent| crate::swarm::is_live(agent.stage()))
     {
         ""
     } else {
@@ -317,15 +360,23 @@ pub fn project_goal_swarm_view(entry: &GoalSwarmEntry) -> GoalSwarmViewSnapshot 
         title: entry.title.clone(),
         agents_label: format!("{total} agent{} · one prompt{finished}", plural(total)),
         started_label: format!("started {}", entry.started_label),
-        merged_label: (merged > 0).then(|| format!("{merged} PR{} merged", plural(merged))),
+        merged_label: (merged > 0).then(|| {
+            if entry.rosen {
+                format!("{merged} change{} landed", plural(merged))
+            } else {
+                format!("{merged} PR{} merged", plural(merged))
+            }
+        }),
         prompt: entry.prompt.clone(),
-        prompt_label: format!(
-            "goal swarm · the same prompt to all {total} · {}{keep_going}",
-            mix_label(&entry.agents)
-        ),
+        prompt_label: goal_prompt_label(entry, total),
         segments: goal_segments(&entry.agents),
-        legend: legend(&entry.agents),
-        waiting_label: (waits > 0).then(|| format!("{waits} waiting on another agent's PR")),
+        legend: goal_legend(&entry.agents, entry.rosen),
+        waiting_label: (waits > 0).then(|| {
+            format!(
+                "{waits} waiting on another agent's {}",
+                if entry.rosen { "change" } else { "PR" }
+            )
+        }),
         cards: entry.agents.iter().map(goal_card).collect(),
         feed: entry
             .feed
@@ -335,9 +386,44 @@ pub fn project_goal_swarm_view(entry: &GoalSwarmEntry) -> GoalSwarmViewSnapshot 
             .rev()
             .cloned()
             .collect(),
-        composer_placeholder: "Message every agent in this goal swarm, e.g. \u{201c}leave the composer alone until #42 merges\u{201d}".into(),
+        composer_placeholder: if entry.rosen {
+            "Message every agent in this goal swarm".into()
+        } else {
+            "Message every agent in this goal swarm, e.g. leave the composer alone until #42 merges"
+                .into()
+        },
         board_revision: board_revision(entry),
     }
+}
+
+fn goal_prompt_label(entry: &GoalSwarmEntry, total: usize) -> String {
+    let keep_going = if entry.keep_going {
+        " · keep going"
+    } else {
+        ""
+    };
+    format!(
+        "goal swarm · the same prompt to all {total} · {}{keep_going}",
+        mix_label(&entry.agents)
+    )
+}
+
+fn goal_legend(agents: &[GoalAgentProgress], rosen: bool) -> Vec<SwarmLegendItem> {
+    legend(agents)
+        .into_iter()
+        .map(|mut item| {
+            if rosen {
+                let label = match item.stage {
+                    SwarmStage::PullRequest => "named",
+                    SwarmStage::Fixing => "fixing",
+                    SwarmStage::Merged => "landed",
+                    other => other.label(),
+                };
+                item.label = format!("{} {label}", item.count);
+            }
+            item
+        })
+        .collect()
 }
 
 fn board_revision(entry: &GoalSwarmEntry) -> String {
@@ -346,20 +432,23 @@ fn board_revision(entry: &GoalSwarmEntry) -> String {
         .iter()
         .map(|agent| {
             format!(
-                "{}:{:?}:{:?}:{}",
+                "{}:{:?}:{:?}:{:?}:{:?}:{:?}",
                 agent.thread_identifier,
                 agent.stage(),
                 agent.pull_request_number,
-                agent.waits()
+                agent.waiting,
+                agent.review_stage,
+                agent.rosen_change
             )
         })
         .collect();
-    format!("{}|{}", entry.feed.len(), agents.join(","))
+    format!("{:?}|{}", entry.feed.last(), agents.join(","))
 }
 
 /// Who holds a claimed piece, read from the holder's saved thread.
 #[derive(Clone, Debug)]
 pub struct ClaimHolder {
+    pub rosen_change: Option<String>,
     pub nick: String,
     pub state: ThreadState,
     pub review_stage: Option<ReviewStage>,
@@ -370,6 +459,7 @@ pub struct ClaimHolder {
 impl ClaimHolder {
     pub fn new(nick: &str, state: ThreadState) -> Self {
         Self {
+            rosen_change: None,
             nick: nick.to_owned(),
             state,
             review_stage: None,
@@ -400,6 +490,7 @@ impl BoardPiece {
 /// A piece this swarm merged: struck through at the end of the board.
 #[derive(Clone, Debug)]
 pub struct MergedPiece {
+    pub rosen_change: Option<String>,
     pub key: Option<WorkKey>,
     pub title: String,
     pub nick: String,
@@ -411,6 +502,7 @@ impl MergedPiece {
         Self {
             key,
             title: title.to_owned(),
+            rosen_change: None,
             nick: nick.to_owned(),
             pull_request_number: number,
         }
@@ -530,6 +622,22 @@ fn claimed_row(piece: &BoardPiece) -> GoalBoardRow {
 }
 
 fn holder_status(holder: &ClaimHolder) -> (String, BoardRowState) {
+    if let Some(change) = &holder.rosen_change {
+        let status = match holder.state {
+            ThreadState::Review if holder.review_stage == Some(ReviewStage::Fixing) => {
+                format!("fixing · {change}")
+            }
+            ThreadState::Review => format!("named · {change}"),
+            ThreadState::Error | ThreadState::Closed => "failed · claim held".into(),
+            _ => holder.waiting.clone().unwrap_or_else(|| "working".into()),
+        };
+        let state = match holder.state {
+            ThreadState::Error | ThreadState::Closed => BoardRowState::Failed,
+            _ if holder.waiting.is_some() => BoardRowState::Waiting,
+            _ => BoardRowState::Claimed,
+        };
+        return (status, state);
+    }
     let number = holder.pull_request_number.unwrap_or_default();
     match holder.state {
         ThreadState::Review => (
@@ -555,9 +663,14 @@ fn merged_row(piece: &MergedPiece) -> GoalBoardRow {
         reference: piece.key.as_ref().map(reference_of).unwrap_or_default(),
         holder: piece.nick.clone(),
         holder_tone: Some(nick_tone(&piece.nick)),
-        status: piece
-            .pull_request_number
-            .map_or_else(|| "merged".into(), |number| format!("merged #{number}")),
+        status: piece.rosen_change.as_ref().map_or_else(
+            || {
+                piece
+                    .pull_request_number
+                    .map_or_else(|| "merged".into(), |number| format!("merged #{number}"))
+            },
+            |change| format!("landed {change}"),
+        ),
         state: BoardRowState::Merged,
     }
 }

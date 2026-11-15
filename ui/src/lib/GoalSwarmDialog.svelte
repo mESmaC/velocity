@@ -160,16 +160,12 @@
         <div class="checks">
           <label class="check locked">
             <input type="checkbox" checked disabled />
-            <span
-              >Its own worktree under <code>{view?.worktree_root ?? ''}</code>,
-              removed after its PR merges</span
-            >
+            <span>{view?.workspace_rule ?? ''}</span>
             <span class="lockt"><Icon name="lock" /> always</span>
           </label>
           <label class="check locked">
             <input type="checkbox" checked disabled />
-            Commit, push its branch, open a PR against {view?.default_branch ??
-              ''}, watch it until it merges
+            {view?.completion_rule ?? ''}
             <span class="lockt"><Icon name="lock" /> AGENTS.md</span>
           </label>
           <label class="check locked">
@@ -336,8 +332,7 @@
         <div class="checks">
           {#if request.into === null}<label class="check">
               <input type="checkbox" bind:checked={keepGoing} />
-              Keep going: after its PR merges, an agent claims the next unclaimed
-              piece instead of stopping
+              {view?.keep_going_label ?? ''}
             </label>{/if}
           {#if view?.pr_duty_label && view.pr_duty_shortfall > 0}<label
               class="check"

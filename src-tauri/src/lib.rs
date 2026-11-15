@@ -18,6 +18,7 @@ pub mod duty;
 mod follow_through;
 mod github;
 mod github_requests;
+mod goal_stack;
 mod goal_swarm;
 pub mod graph_access;
 mod interview;

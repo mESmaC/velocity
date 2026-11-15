@@ -312,7 +312,8 @@ async fn finish_landed(application: &AppHandle, key: ThreadKey) -> Result<(), St
     if let Some(root) = workspace(application, key) {
         crate::rosen::stop_watch(application, &root).await;
     }
-    crate::airc_claims::release(application, key)
+    crate::airc_claims::release(application, key)?;
+    crate::goal_swarm::run_keep_going(application, key.0, key.1).await
 }
 
 fn workspace(application: &AppHandle, key: ThreadKey) -> Option<PathBuf> {

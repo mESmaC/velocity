@@ -189,7 +189,7 @@
                 >
               </span>
               <span class="ttl" title={card.title}>{card.title}</span>
-              <span class="sc-track" title="claim · PR · CI · review · merged">
+              <span class="sc-track" title={card.track_label}>
                 {#each card.track as step, index (index)}{#if index > 0}<b
                     ></b>{/if}<i class={step}></i>{/each}
               </span>

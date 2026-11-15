@@ -269,6 +269,11 @@ impl Channel {
             .ok_or_else(|| {
                 Error::Invalid("Runner did not register this thread's checkout".into())
             })?;
+        if Path::new(&checkout.worktree).join(".rosen").exists() {
+            // Rosen rebases stacked children when the parent lands. Velocity applies
+            // the pending head at the session's step boundary, never through git.
+            return Ok(());
+        }
         velocity_git::continue_after_dependency(
             Path::new(&checkout.repository),
             Path::new(&checkout.worktree),

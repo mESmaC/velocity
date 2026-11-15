@@ -1,4 +1,6 @@
 //! End-to-end headless verification of M9 Goal Swarm Launch (`SPEC.md` F16, `#73`).
+//! Git fallback fixture: the current deletion guard requires remote reachability, so
+//! the seed is pushed to a local bare origin before merged cleanup is exercised.
 //!
 //! Run through the build queue:
 //! `pwsh -NoProfile -File scripts/build-queue.ps1 cargo run -p velocity-threads --example goal_swarm`
@@ -84,6 +86,7 @@ fn setup_harness() -> Outcome<Harness> {
     persisted.settings.worktrees.setup_command = String::new();
     persisted.settings.worktrees.copy_files = String::new();
     let mut project = ProjectItem::new(1, "veloc".into(), repository.display().to_string());
+    project.version_control = velocity_store::VersionControl::Git;
     project.default_branch = "master".into();
     project.spec_locked = true;
     project.tasks.push(TaskItem::new(
@@ -122,6 +125,13 @@ fn init_git_repository(repository: &Path) -> Outcome {
     )?;
     run_git(repository, &["add", "SPEC.md"])?;
     run_git(repository, &["commit", "-m", "Initial spec"])?;
+    let remote = repository
+        .with_file_name("origin.git")
+        .display()
+        .to_string();
+    run_git(repository, &["init", "--bare", &remote])?;
+    run_git(repository, &["remote", "add", "origin", &remote])?;
+    run_git(repository, &["push", "-u", "origin", "master"])?;
     Ok(())
 }
 

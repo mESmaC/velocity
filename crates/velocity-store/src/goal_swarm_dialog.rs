@@ -114,6 +114,9 @@ pub struct GoalLimitLine {
 
 #[derive(Clone, Debug, Serialize, Deserialize, Type)]
 pub struct GoalSwarmDialog {
+    pub workspace_rule: String,
+    pub completion_rule: String,
+    pub keep_going_label: String,
     pub project_identifier: u32,
     /// The project's AIRC channel, `#<project>`.
     pub channel: String,
@@ -165,25 +168,30 @@ impl StateStore {
         let agents = mix.agents;
         let preferences = self.worktree_context().preferences;
         let root = preferences.project_override.unwrap_or(preferences.root);
-        let (pool_line, pool_note, pull_requests) = match pool {
-            GoalPool::Reading => (None, Some("Reading the work pool\u{2026}".into()), 0),
-            GoalPool::Failed(error) => (None, Some(error.clone()), 0),
-            GoalPool::Read(counts) => (
-                Some(goal_swarm::pool_line(*counts, agents)),
-                None,
-                counts.new_pull_requests(agents),
-            ),
+        let (pool_line, pool_note, pull_requests) = pool_view(pool, agents);
+        let rosen = project.version_control == crate::VersionControl::Rosen;
+        let (pr_duty_label, pr_duty_shortfall) = if rosen {
+            (None, 0)
+        } else {
+            pr_duty(
+                project,
+                usize::try_from(pull_requests).unwrap_or(usize::MAX),
+            )
         };
-        let (pr_duty_label, pr_duty_shortfall) = pr_duty(
-            project,
-            usize::try_from(pull_requests).unwrap_or(usize::MAX),
-        );
+        let (workspace_rule, completion_rule, keep_going_label) = lifecycle_text(project, &root);
         Some(GoalSwarmDialog {
+            workspace_rule,
+            completion_rule,
+            keep_going_label,
             project_identifier: project.id,
             channel: format!("#{}", project.name),
             default_branch: project.default_branch.clone(),
             quick_picks: goal_swarm::QUICK_PICKS.to_vec(),
-            worktrees_hint: goal_swarm::worktrees_hint(agents, &root),
+            worktrees_hint: if rosen {
+                format!("{agents} Rosen workspaces")
+            } else {
+                goal_swarm::worktrees_hint(agents, &root)
+            },
             worktree_root: root,
             models: model_options(settings),
             segments: segments(settings, &mix),
@@ -204,6 +212,34 @@ impl StateStore {
             .map(|error| error.to_string()),
             choices: choices(&mix),
         })
+    }
+}
+
+fn pool_view(pool: &GoalPool, agents: u32) -> (Option<PoolLine>, Option<String>, u32) {
+    match pool {
+        GoalPool::Reading => (None, Some("Reading the work pool\u{2026}".into()), 0),
+        GoalPool::Failed(error) => (None, Some(error.clone()), 0),
+        GoalPool::Read(counts) => (
+            Some(goal_swarm::pool_line(*counts, agents)),
+            None,
+            counts.new_pull_requests(agents),
+        ),
+    }
+}
+
+fn lifecycle_text(project: &ProjectItem, root: &str) -> (String, String, String) {
+    if project.version_control == crate::VersionControl::Rosen {
+        (
+            format!("Its own Rosen workspace under {root}, removed after its change lands"),
+            "Claim files, build and lint, then name its work with rosen commit; its task is done when the change lands".into(),
+            "Keep going: after its change lands, an agent claims the next unclaimed piece in a fresh workspace".into(),
+        )
+    } else {
+        (
+            format!("Its own worktree under {root}, removed after its PR merges"),
+            format!("Commit, push its branch, open a PR against {}, and watch it until it merges", project.default_branch),
+            "Keep going: after its PR merges, an agent claims the next unclaimed piece in a fresh worktree".into(),
+        )
     }
 }
 

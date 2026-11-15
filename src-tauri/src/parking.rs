@@ -61,6 +61,9 @@ fn step(
         session_running,
         wait,
     };
+    if crate::goal_stack::continue_wait(application, key, thread, channel)? {
+        return Ok(());
+    }
     match parking_action(input) {
         ParkingAction::Park => park(application, key),
         ParkingAction::Wake => wake(application, key, channel),
@@ -116,6 +119,9 @@ fn wake(application: &AppHandle, key: ThreadKey, channel: &Channel) -> Result<()
         Ok(Some(ended)) => Some(ended),
         Err(_) => None,
     };
+    // A Rosen dependency must be visible before the agent starts its next step.
+    // The server's rebase may have arrived while this session was parked.
+    tauri::async_runtime::block_on(crate::rosen_rebase::apply_at_boundary(application, key));
     if let Err(error) = resume(application, key, &resume_prompt(ended.as_ref())) {
         crate::threads::fail(
             application,

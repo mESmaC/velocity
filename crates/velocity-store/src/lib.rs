@@ -46,6 +46,7 @@ use velocity_core::state::{
 };
 
 pub mod duty;
+pub mod goal_rosen;
 pub mod goal_swarm_dialog;
 pub mod goal_swarm_view;
 pub mod goal_swarms;
@@ -720,6 +721,9 @@ pub struct ThreadItem {
     #[serde(default)]
     #[specta(skip)]
     pub rosen_progress_generation: u64,
+    #[serde(default)]
+    #[specta(skip)]
+    pub goal_stack: Option<goal_rosen::GoalStack>,
     /// What the thread's Rosen events still ask Velocity to do, oldest first (F5): saved
     /// with the event that asked, and removed once done, so a crash never loses it.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -779,6 +783,7 @@ impl ThreadItem {
             pull_request_number: None,
             rosen_change: None,
             rosen_progress_generation: 0,
+            goal_stack: None,
             follow_through: None,
             airc_cursor: 0,
             dependency_wait: None,
@@ -820,6 +825,7 @@ impl ThreadItem {
             pull_request_number: None,
             rosen_change: None,
             rosen_progress_generation: 0,
+            goal_stack: None,
             follow_through: None,
             airc_cursor: 0,
             dependency_wait: None,
@@ -919,6 +925,11 @@ pub struct ProjectItem {
     /// Completed F16 pieces retained after their merged thread history is deleted.
     #[serde(default)]
     pub built_spec_sections: Vec<String>,
+    /// Landed goal issues stay completed while the GitHub mirror catches up, and
+    /// after merged thread history is deleted. A revert removes the completion.
+    #[serde(default)]
+    #[specta(skip)]
+    pub completed_goal_issues: Vec<issues::ThreadIssue>,
     #[serde(default)]
     pub skills: velocity_core::skills::ProjectSkills,
     #[serde(default)]
@@ -987,6 +998,7 @@ impl ProjectItem {
             spec_path: "SPEC.md".into(),
             spec_locked: false,
             built_spec_sections: Vec::new(),
+            completed_goal_issues: Vec::new(),
             skills: velocity_core::skills::ProjectSkills::default(),
             settled_expanded: false,
             continuous_dispatch: continuous_dispatch::ContinuousDispatch::default(),

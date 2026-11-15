@@ -333,7 +333,7 @@ fn spawn_goal_slot(
             .project(project_id)
             .cloned()
             .ok_or("The selected project no longer exists")?;
-        let worktrees = store.worktree_context().preferences;
+        let worktrees = store.worktree_preferences(&project);
         let settings = store.settings();
         let plan = plan_goal_member(&project, &worktrees, &settings, slot)
             .map_err(|error| error.to_string())?;
@@ -436,7 +436,7 @@ pub(crate) fn record_pull_request_observation(
     }
 }
 
-async fn run_keep_going(
+pub(crate) async fn run_keep_going(
     application: &AppHandle,
     project_id: u32,
     merged_thread: u32,

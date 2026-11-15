@@ -10,6 +10,7 @@ mod process;
 mod protocol;
 mod rebase;
 mod routing;
+mod stack;
 mod storage;
 mod tail;
 mod task_tools;

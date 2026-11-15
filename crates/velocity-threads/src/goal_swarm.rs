@@ -127,9 +127,7 @@ pub fn plan_goal_member(
         nick_taken(project, &repository, &location, candidate)
     })
     .ok_or_else(|| LaunchError::NamesExhausted(slot.nick.clone()))?;
-    let worktree_path = location
-        .job_worktree(&velocity_git::JobKind::Branch(leaf.clone()))?
-        .ok_or(WorktreeError::EmptyLeafName)?;
+    let worktree_path = member_workspace_path(project, &location, &leaf, &slot.nick)?;
     let shared_target = location.project_root()?.join(SHARED_TARGET_FOLDER);
     let branch_name = format!("vel/{leaf}");
     // A provider you signed out of since the mix was chosen is refused, never swapped (F15).
@@ -299,6 +297,9 @@ pub fn goal_agent_prompt(
     worktree_path: &Path,
     branch_name: &str,
 ) -> String {
+    if worktree_path.join(".rosen").exists() {
+        return rosen_goal_prompt(slot, project, piece, worktree_path);
+    }
     let default_branch = base_branch(project);
     let piece_instructions = match &piece.key {
         WorkKey::Task { identifier } => format!(
@@ -331,6 +332,35 @@ pub fn goal_agent_prompt(
     )
 }
 
+fn rosen_goal_prompt(
+    slot: &GoalAgentSlot,
+    project: &ProjectItem,
+    piece: &WorkPiece,
+    workspace: &Path,
+) -> String {
+    let read_issue = match &piece.key {
+        WorkKey::Issue { repository, number } => {
+            format!("Read the issue first with `gh issue view {number} --repo {repository}`. ")
+        }
+        _ => String::new(),
+    };
+    format!(
+        "{}\n\n---\nVelocity goal swarm context (SPEC.md F16):\n\
+         - Nick: `{}` in `#{}`; workspace: `{}`.\n\
+         - Claimed piece: {} ({}). {read_issue}Name this piece in your Rosen snapshot summary.\n\
+         - This is a Rosen workspace. Claim files with `rosen claim`, record overlaps with `rosen share`, and name completed work with `rosen commit -m \"<summary>\"`, then end your turn. The task is done when the change lands.\n\
+         - Run builds and tests through `rosen run -- <command>`.\n\
+         - Read `airc_claims` for work ownership. If this task depends on another member's work, call `airc_wait` with its holder and file. Velocity continues your work on a stacked change (Rosen D19); the parent must land first.\n\
+         - Implement and run first. Follow the project's proof-list instructions.",
+        slot.prompt,
+        slot.nick,
+        project.name,
+        workspace.display(),
+        piece.title,
+        piece.reference
+    )
+}
+
 fn pick_index(forced_index: Option<usize>, flags: &[bool]) -> Option<usize> {
     let chosen = match forced_index {
         Some(index) if flags.get(index).copied().unwrap_or(false) => ChoiceDecision::Claim(index),
@@ -352,20 +382,7 @@ impl ClaimContext<'_> {
         let Some((project, planned_branch)) = self.reserve_store_claim(piece, &key)? else {
             return Ok(None);
         };
-        let repository = Path::new(&project.repository_path);
-        let final_branch =
-            match rename_worktree_branch(repository, self.initial_branch, &planned_branch) {
-                Ok(()) => planned_branch,
-                Err(_) => {
-                    sync_fallback_branch(
-                        self.store,
-                        self.project_id,
-                        self.thread_id,
-                        self.initial_branch,
-                    )?;
-                    self.initial_branch.to_owned()
-                }
-            };
+        let final_branch = self.settle_branch(&project, planned_branch)?;
         register_and_join(
             self.channel,
             &self.member,
@@ -410,6 +427,36 @@ impl ClaimContext<'_> {
         }))
     }
 
+    fn settle_branch(
+        &self,
+        project: &ProjectItem,
+        planned: String,
+    ) -> Result<String, GoalSwarmError> {
+        if project
+            .threads
+            .iter()
+            .any(|thread| thread.id == self.thread_id && thread.rosen_change.is_some())
+        {
+            return Ok(planned);
+        }
+        match rename_worktree_branch(
+            Path::new(&project.repository_path),
+            self.initial_branch,
+            &planned,
+        ) {
+            Ok(()) => Ok(planned),
+            Err(_) => {
+                sync_fallback_branch(
+                    self.store,
+                    self.project_id,
+                    self.thread_id,
+                    self.initial_branch,
+                )?;
+                Ok(self.initial_branch.to_owned())
+            }
+        }
+    }
+
     fn reserve_store_claim(
         &self,
         piece: &WorkPiece,
@@ -423,7 +470,15 @@ impl ClaimContext<'_> {
             .project(self.project_id)
             .cloned()
             .ok_or(ThreadError::UnknownProject(self.project_id))?;
-        let target_branch = unique_piece_branch(&project, piece, self.initial_branch);
+        let rosen = project
+            .threads
+            .iter()
+            .any(|thread| thread.id == self.thread_id && thread.rosen_change.is_some());
+        let target_branch = if rosen {
+            self.initial_branch.to_owned()
+        } else {
+            unique_piece_branch(&project, piece, self.initial_branch)
+        };
         if guard
             .claim_goal_piece(
                 self.project_id,
@@ -482,12 +537,18 @@ impl ClaimContext<'_> {
         mut feed_events: Vec<GoalFeedEvent>,
     ) -> Result<ClaimPhaseOutcome, GoalSwarmError> {
         let _ = self.channel.leave(&self.member);
-        remove_untouched_worktree(
-            Path::new(&project.repository_path),
-            self.worktree_path,
-            self.initial_branch,
-            &base_branch(project),
-        )?;
+        if !project
+            .threads
+            .iter()
+            .any(|thread| thread.id == self.thread_id && thread.rosen_change.is_some())
+        {
+            remove_untouched_worktree(
+                Path::new(&project.repository_path),
+                self.worktree_path,
+                self.initial_branch,
+                &base_branch(project),
+            )?;
+        }
         {
             let mut guard = self
                 .store
@@ -652,13 +713,40 @@ fn nick_taken(project: &ProjectItem, repository: &Path, location: &Location, slu
     let branch = format!("vel/{slug}");
     let folder_taken = match location.job_worktree(&velocity_git::JobKind::Branch(slug.to_owned()))
     {
-        Ok(path) => path.is_some_and(|path| path.exists()),
+        Ok(path) => path.is_some_and(|path| {
+            path.exists()
+                || (project.version_control == velocity_store::VersionControl::Rosen
+                    && path
+                        .parent()
+                        .is_some_and(|parent| parent.join(".rounds").join(slug).exists()))
+        }),
         Err(WorktreeError::ReservedLeafName(_)) => true,
         Err(_) => false,
     };
     folder_taken
         || project.threads.iter().any(|thread| {
-            thread.state != velocity_store::ThreadState::Merged && thread.branch_name == branch
+            (project.version_control == velocity_store::VersionControl::Rosen
+                || thread.state != velocity_store::ThreadState::Merged)
+                && thread.branch_name == branch
         })
-        || local_branch_exists(repository, &branch)
+        || (project.version_control == velocity_store::VersionControl::Git
+            && local_branch_exists(repository, &branch))
+}
+
+fn member_workspace_path(
+    project: &ProjectItem,
+    location: &Location,
+    leaf: &str,
+    nick: &str,
+) -> Result<PathBuf, WorktreeError> {
+    let path = location
+        .job_worktree(&velocity_git::JobKind::Branch(leaf.into()))?
+        .ok_or(WorktreeError::EmptyLeafName)?;
+    // A landed round can reopen after a build break. Never reuse its directory for
+    // the next round, and keep the nick as the leaf so AIRC's identity stays stable.
+    if project.version_control == velocity_store::VersionControl::Rosen && leaf != nick {
+        Ok(path.with_file_name(".rounds").join(leaf).join(nick))
+    } else {
+        Ok(path)
+    }
 }
