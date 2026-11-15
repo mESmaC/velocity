@@ -197,7 +197,7 @@ impl Watches {
     }
 
     /// Writes the server's rebase of the change into its workspace at `root` (Rosen R2), if
-    /// one is waiting: stops the watcher, stores a final snapshot of the workspace, writes
+    /// one is waiting: stops the watcher, writes
     /// the change's rebased head and starts the watcher again. Call it at the agent's step
     /// boundary, when nothing writes there. Rosen refuses, leaving the workspace as it was,
     /// while an edit there is not stored. Returns the head now in the workspace, or `None`
@@ -240,7 +240,10 @@ impl Watches {
             return Ok(None);
         }
         self.stop(root).await;
-        session.snapshot(root, None).await?;
+        // Do not resend the old workspace before exposing the rebase. Open-conflict
+        // files take a snapshot verbatim, so that would replace their marked head with
+        // the unapplied version. Unstored edits refuse application and the restarted
+        // watcher stores them before the next boundary retries.
         Ok(Some(session.apply_rebase(root).await?.to_string()))
     }
 
@@ -281,6 +284,14 @@ fn unmark(set: &Mutex<BTreeSet<PathBuf>>, root: &Path) {
 /// the server rebased it (R2), and that lasts until the rebase is applied, across restarts.
 /// The workspace's marker names the tree of its last stored snapshot, which is the change's
 /// head unless the server moved it.
+pub async fn rebase_pending(
+    server: &ProjectServer,
+    agent: &str,
+    root: &Path,
+) -> Result<bool, RosenError> {
+    rebase_waiting(&session(server, agent).await?, root).await
+}
+
 async fn rebase_waiting(session: &Session, root: &Path) -> Result<bool, RosenError> {
     let marker =
         rosen_client::snapshot::WorkspaceMarker::read(root).map_err(|source| RosenError::Io {

@@ -30,52 +30,80 @@ pub(crate) async fn apply_pending(application: &AppHandle) {
 }
 
 /// Applies `key`'s waiting rebase, if there is one and its agent is at a step boundary.
-pub(crate) async fn apply_at_boundary(application: &AppHandle, key: ThreadKey) {
-    if crate::rosen::paused(application) || !at_step_boundary(application, key) {
-        return;
+pub(crate) async fn apply_at_boundary(application: &AppHandle, key: ThreadKey) -> bool {
+    if crate::rosen::paused(application) {
+        return false;
     }
     let Some(root) = workspace(application, key) else {
-        return;
+        return false;
     };
-    // Unstored edits, or the server is away: the workspace is as it was, and the rebase
-    // still waits on the server for the next ask.
-    if let Err(error) = crate::rosen::apply_rebase(application, key.0, &root).await {
-        eprintln!("Rosen rebase for thread {}: {error}", key.1);
-    }
-}
-
-/// Rosen could not merge `change` onto the moved base: `paths` conflict. Nothing is
-/// written to the workspace; the change stays on its old base until its agent makes those
-/// files merge, so the agent is told what the base changed in them, as its next message.
-pub(crate) async fn conflicted(
-    application: &AppHandle,
-    project: u32,
-    change: &str,
-    paths: Vec<String>,
-) {
-    let Some(key) = thread_of(application, project, change) else {
-        return;
-    };
-    let message = match crate::rosen::server(application, project).await {
-        Ok(server) => velocity_rosen::conflict_message(&server, change, &paths)
-            .await
-            .map_err(|error| error.to_string()),
-        Err(error) => Err(error),
-    };
-    let message = message
-        .inspect_err(|error| eprintln!("Rosen conflict diff for thread {}: {error}", key.1))
-        .ok();
-    // Without the base's diff the agent still hears which files conflict.
-    let message = message.unwrap_or_else(|| velocity_rosen::conflict_message_without_diff(&paths));
-    crate::threads::report(crate::threads::steer(application, key, &message).map(|_| ()));
-}
-
-fn at_step_boundary(application: &AppHandle, key: ThreadKey) -> bool {
-    lock(
+    if !lock(
         application.state::<ManagedThreads>().inner(),
         "thread sessions",
     )
-    .is_ok_and(|runtimes| runtimes.is_at_step_boundary(key))
+    .is_ok_and(|mut runtimes| runtimes.begin_workspace_update(key))
+    {
+        return false;
+    }
+    let applied = apply_current_head(application, key, &root).await;
+    let boundary = lock(
+        application.state::<ManagedThreads>().inner(),
+        "thread sessions",
+    )
+    .is_ok_and(|mut runtimes| {
+        runtimes.finish_workspace_update(key);
+        runtimes.is_at_step_boundary(key)
+    });
+    applied && boundary
+}
+
+async fn apply_current_head(
+    application: &AppHandle,
+    key: ThreadKey,
+    root: &std::path::Path,
+) -> bool {
+    // Unstored edits, or the server is away: the workspace is as it was, and the rebase
+    // still waits on the server for the next ask.
+    if let Err(error) = crate::rosen::apply_rebase(application, key.0, root).await {
+        eprintln!("Rosen rebase for thread {}: {error}", key.1);
+        return false;
+    }
+    // None from apply_rebase can mean another application or watcher startup held it.
+    // Do not promise the agent it can edit until the marker actually names the head.
+    let current = async {
+        let server = crate::rosen::server(application, key.0).await?;
+        let agent = velocity_rosen::agent_name(root);
+        velocity_rosen::rebase_pending(&server, &agent, root)
+            .await
+            .map(|pending| !pending)
+            .map_err(|error| error.to_string())
+    }
+    .await;
+    match current {
+        Ok(current) => current,
+        Err(error) => {
+            eprintln!("Rosen workspace basis for thread {}: {error}", key.1);
+            false
+        }
+    }
+}
+
+/// Record a conflict before acknowledging its event. Delivery waits in the durable
+/// follow-up queue until the rebased head is visible at a turn boundary.
+pub(crate) fn conflicted(
+    application: &AppHandle,
+    project: u32,
+    change: &str,
+    sequence: u64,
+    paths: Vec<String>,
+) -> Result<(), String> {
+    let message = velocity_rosen::conflict_message(sequence, &paths);
+    lock(
+        application.state::<ManagedStateStore>().inner(),
+        "persisted state",
+    )?
+    .save_rosen_conflict(project, sequence, change, &message)
+    .map_err(|error| error.to_string())
 }
 
 /// The open thread working on `change` in `project`.

@@ -50,8 +50,8 @@ pub enum ChangeEvent {
     /// The server rebased the change onto a newer base (R2): its workspace takes the new
     /// head at the agent's next step boundary.
     Rebased,
-    /// The change did not merge onto the moved base and stays on its old one; the
-    /// conflicts are stored on the server and [`conflict_paths`] names their files (R5).
+    /// The rebased head holds conflicts; [`conflict_paths`] names their files (R5).
+    /// Apply the head at a turn boundary before asking the agent to resolve them.
     Conflict,
 }
 

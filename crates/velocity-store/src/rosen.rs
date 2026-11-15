@@ -36,6 +36,13 @@ pub enum RosenFollowUp {
     Reopen { message: String, mark: usize },
     /// PR duty sent the change back: its agent gets `message`.
     Deliver { message: String, mark: usize },
+    /// Apply the current head at a turn boundary before delivering this conflict notice.
+    Conflict {
+        #[serde(default)]
+        message: String,
+        #[serde(default)]
+        mark: usize,
+    },
 }
 
 impl RosenFollowUp {
@@ -43,7 +50,9 @@ impl RosenFollowUp {
     pub fn message(&self) -> Option<&str> {
         match self {
             Self::FinishLanded => None,
-            Self::Reopen { message, .. } | Self::Deliver { message, .. } => Some(message),
+            Self::Reopen { message, .. }
+            | Self::Deliver { message, .. }
+            | Self::Conflict { message, .. } => Some(message),
         }
     }
 
@@ -52,7 +61,10 @@ impl RosenFollowUp {
     /// and sending it again would give the agent the same work twice. A message still queued
     /// there is sent by the restart's resume (SPEC.md §3.2).
     pub fn delivered(&self, thread: &ThreadItem) -> bool {
-        let (Self::Reopen { message, mark } | Self::Deliver { message, mark }) = self else {
+        let (Self::Reopen { message, mark }
+        | Self::Deliver { message, mark }
+        | Self::Conflict { message, mark }) = self
+        else {
             return false;
         };
         thread.transcript.iter().skip(*mark).any(
@@ -62,6 +74,51 @@ impl RosenFollowUp {
 }
 
 impl StateStore {
+    /// Save a conflict notice with its event cursor, without sending it to a busy agent
+    /// whose workspace still holds the old basis. Superseded pending notices coalesce.
+    pub fn save_rosen_conflict(
+        &mut self,
+        project: u32,
+        seq: u64,
+        change: &str,
+        message: &str,
+    ) -> Result<(), StoreError> {
+        let mut next = self.state.clone();
+        let Some(item) = next.projects.iter_mut().find(|item| item.id == project) else {
+            return Ok(());
+        };
+        if seq <= item.rosen_event_cursor {
+            return Ok(());
+        }
+        item.rosen_event_cursor = seq;
+        if let Some(thread) = item.threads.iter_mut().find(|thread| {
+            thread.rosen_change.as_deref() == Some(change) && thread.state != ThreadState::Merged
+        }) {
+            thread
+                .rosen_follow_ups
+                .retain(|pending| !matches!(pending, RosenFollowUp::Conflict { .. }));
+            thread.rosen_follow_ups.push(RosenFollowUp::Conflict {
+                message: message.to_owned(),
+                mark: thread.transcript.len(),
+            });
+        }
+        self.store_snapshot(next)
+    }
+
+    /// Rebases need no saved action: the periodic pass reads the current workspace basis.
+    /// Their cursor still advances so reconnecting never replays older conflict events.
+    pub fn save_rosen_cursor(&mut self, project: u32, seq: u64) -> Result<(), StoreError> {
+        if seq <= self.rosen_event_cursor(project) {
+            return Ok(());
+        }
+        let mut next = self.state.clone();
+        if let Some(item) = next.projects.iter_mut().find(|item| item.id == project) {
+            item.rosen_event_cursor = seq;
+            self.store_snapshot(next)?;
+        }
+        Ok(())
+    }
+
     /// Applies one event of `project`'s Rosen stream to the thread working on `change`, and
     /// saves the stream's cursor `seq` with it, so a restart resumes after it. What the event
     /// leaves to do is saved in the same snapshot as a [`RosenFollowUp`]; `message` is the one

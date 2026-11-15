@@ -1053,9 +1053,11 @@ pub(crate) async fn pump(application: &AppHandle, key: ThreadKey, mut session: R
         {
             // A turn's end is the agent's step boundary: a rebase Rosen made meanwhile
             // is written into its workspace now, before its next turn reads it.
+            crate::rosen_rebase::apply_at_boundary(application, key).await;
+            // Land cleanup can wait for this pump to acknowledge session shutdown.
             let handle = application.clone();
             tauri::async_runtime::spawn(async move {
-                crate::rosen_rebase::apply_at_boundary(&handle, key).await;
+                crate::rosen_events::run_follow_ups(&handle, key.0).await;
             });
         }
     }

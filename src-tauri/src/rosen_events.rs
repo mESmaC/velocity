@@ -80,15 +80,22 @@ async fn consume(
     match velocity_rosen::change_event(event) {
         Some((change, ChangeEvent::Rebased)) => {
             crate::rosen_rebase::rebased(application, project, change).await;
+            lock(
+                application.state::<ManagedStateStore>().inner(),
+                "persisted state",
+            )?
+            .save_rosen_cursor(project, event.seq)
+            .map_err(|error| error.to_string())?;
         }
         Some((change, ChangeEvent::Conflict)) => {
             crate::rosen_rebase::conflicted(
                 application,
                 project,
                 change,
+                event.seq,
                 velocity_rosen::conflict_paths(event),
-            )
-            .await;
+            )?;
+            run_follow_ups(application, project).await;
         }
         Some((change, meaning)) => {
             let output = velocity_rosen::revert_output(event);
@@ -158,10 +165,18 @@ pub(crate) async fn run_follow_ups(application: &AppHandle, project: u32) {
     for (thread, change, follow_ups) in pending {
         let key = (project, thread);
         for follow_up in follow_ups {
-            let done = follow_up_once(application, key, change.as_deref(), &follow_up).await;
-            if let Err(error) = done.and_then(|()| finish(application, key, &follow_up)) {
-                report::<()>(Err(error));
-                break;
+            match follow_up_once(application, key, change.as_deref(), &follow_up).await {
+                Ok(true) => {
+                    if let Err(error) = finish(application, key, &follow_up) {
+                        report::<()>(Err(error));
+                        break;
+                    }
+                }
+                Ok(false) => break,
+                Err(error) => {
+                    report::<()>(Err(error));
+                    break;
+                }
             }
         }
     }
@@ -173,18 +188,62 @@ async fn follow_up_once(
     key: ThreadKey,
     change: Option<&str>,
     follow_up: &RosenFollowUp,
-) -> Result<(), String> {
+) -> Result<bool, String> {
+    if let RosenFollowUp::Conflict { message, .. } = follow_up {
+        return deliver_conflict(application, key, change, follow_up, message).await;
+    }
     match follow_up {
         RosenFollowUp::FinishLanded => finish_landed(application, key).await,
         RosenFollowUp::Reopen { message, .. } => {
             let Some(change) = change else {
-                return Ok(());
+                return Ok(true);
             };
             reopen_reverted(application, key, change).await?;
             deliver(application, key, follow_up, message)
         }
         RosenFollowUp::Deliver { message, .. } => deliver(application, key, follow_up, message),
+        RosenFollowUp::Conflict { .. } => Ok(()),
     }
+    .map(|()| true)
+}
+
+/// Recheck current server state, since a queued event may already have been resolved.
+/// Failures and busy turns leave the notice pending rather than steering an old basis.
+async fn deliver_conflict(
+    application: &AppHandle,
+    key: ThreadKey,
+    change: Option<&str>,
+    follow_up: &RosenFollowUp,
+    message: &str,
+) -> Result<bool, String> {
+    let Some(change) = change else {
+        return Ok(true);
+    };
+    if lock(
+        application.state::<ManagedStateStore>().inner(),
+        "persisted state",
+    )?
+    .rosen_follow_up_delivered(key.0, key.1, follow_up)
+    {
+        return Ok(true);
+    }
+    let server = crate::rosen::server(application, key.0).await?;
+    if !velocity_rosen::has_open_conflicts(&server, change)
+        .await
+        .map_err(|error| error.to_string())?
+    {
+        return Ok(true);
+    }
+    if !crate::rosen_rebase::apply_at_boundary(application, key).await {
+        return Ok(false);
+    }
+    if velocity_rosen::has_open_conflicts(&server, change)
+        .await
+        .map_err(|error| error.to_string())?
+    {
+        deliver(application, key, follow_up, message)?;
+    }
+    Ok(true)
 }
 
 /// Sends the agent `message`, resumed first if it had ended, unless an earlier pass already

@@ -108,6 +108,8 @@ pub struct ThreadRuntimes {
     shutdown_failures: BTreeSet<ThreadKey>,
     /// Threads whose session was ended for parking and not yet resumed (§2.2).
     parked: BTreeSet<ThreadKey>,
+    /// Inputs stay queued while Rosen writes a rebased head between turns.
+    workspace_updates: BTreeSet<ThreadKey>,
     actions: BTreeMap<ThreadKey, Arc<tokio::sync::Mutex<()>>>,
     transcript_saves: crate::transcript_saves::TranscriptSaves,
 }
@@ -290,7 +292,7 @@ impl ThreadRuntimes {
     /// thread shows it as a notice once read. It never joins your composer queue, so it
     /// never leaves a row there you cannot clear (#231).
     fn notify(&mut self, key: ThreadKey, message: &str) -> Result<(), SteerError> {
-        let parked = self.parked.contains(&key);
+        let parked = self.parked.contains(&key) || self.workspace_updates.contains(&key);
         let thread = self.threads.get_mut(&key).ok_or(SteerError::NoSession)?;
         if parked {
             thread.held_notices.push(message.to_owned());
@@ -356,7 +358,11 @@ impl ThreadRuntimes {
             .threads
             .get(&key)
             .is_some_and(|thread| !thread.inputs.is_closed());
-        if live && input_open || self.retired.contains(&key) || self.stopping.contains_key(&key) {
+        if live && input_open
+            || self.retired.contains(&key)
+            || self.stopping.contains_key(&key)
+            || self.workspace_updates.contains(&key)
+        {
             return Err(SteerError::NoSession);
         }
         Ok(())
@@ -475,7 +481,9 @@ impl ThreadRuntimes {
             thread.transcript.queue(prompt);
             return Ok(());
         }
-        if thread.busy && thread.phase == SessionPhase::Running {
+        if self.workspace_updates.contains(&key)
+            || thread.busy && thread.phase == SessionPhase::Running
+        {
             if thread.inputs.is_closed() {
                 return Err(SteerError::NoSession);
             }
@@ -558,7 +566,7 @@ impl ThreadRuntimes {
     /// has ended or finished its turn with no pending inputs.
     /// Velocity changes files only here, never under a running step (Rosen rebases, F5).
     pub fn is_at_step_boundary(&self, key: ThreadKey) -> bool {
-        if self.stopping.contains_key(&key) {
+        if self.stopping.contains_key(&key) || self.workspace_updates.contains(&key) {
             return false;
         }
         self.threads.get(&key).is_none_or(|thread| {
@@ -569,6 +577,34 @@ impl ThreadRuntimes {
                     SessionPhase::SettingUp => false,
                 }
         })
+    }
+
+    /// Reserve the boundary before asynchronous I/O, so a new prompt cannot start an
+    /// editing tool while Rosen is writing files. No running turn is interrupted.
+    pub fn begin_workspace_update(&mut self, key: ThreadKey) -> bool {
+        self.is_at_step_boundary(key) && self.workspace_updates.insert(key)
+    }
+
+    /// Release inputs even when application failed: edits stay on disk and a later
+    /// boundary retries. Ended and parked sessions retain their messages for resume.
+    pub fn finish_workspace_update(&mut self, key: ThreadKey) {
+        if !self.workspace_updates.remove(&key) || self.parked.contains(&key) {
+            return;
+        }
+        let Some(thread) = self.threads.get_mut(&key) else {
+            return;
+        };
+        if thread.phase != SessionPhase::Running || thread.busy {
+            return;
+        }
+        send_held(thread);
+        for notice in std::mem::take(&mut thread.held_notices) {
+            if thread.inputs.send(text_input(&notice)).is_ok() {
+                thread.pending_inputs.push_back(PendingInput::Notice);
+            } else {
+                thread.held_notices.push(notice);
+            }
+        }
     }
 
     pub fn is_setting_up(&self, key: ThreadKey) -> bool {
@@ -703,7 +739,9 @@ impl ThreadRuntimes {
                 // A delayed turn end cannot acknowledge inputs sent after that turn.
                 // Only the client's prompt chunks above remove queued rows.
                 thread.busy = false;
-                send_held(thread);
+                if !self.workspace_updates.contains(&key) {
+                    send_held(thread);
+                }
             }
             AgentEvent::HistoryReplay(replaying) => {
                 thread.replaying_history = *replaying;
