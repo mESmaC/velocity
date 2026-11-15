@@ -427,6 +427,28 @@ fn build_claim(
     }
 }
 
+// The adapter constructs this module's record through its owning module.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn from_server(
+    member: &str,
+    nick: &str,
+    piece: &str,
+    task: &str,
+    branch: &str,
+    files: Vec<String>,
+    since: String,
+) -> Claim {
+    Claim {
+        member: member.into(),
+        nick: nick.into(),
+        piece: piece.into(),
+        task: task.into(),
+        branch: branch.into(),
+        files,
+        since,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     // Concurrent builders must never both acquire the same piece; durable ownership
@@ -478,27 +500,5 @@ mod tests {
             );
         }
         Ok(())
-    }
-}
-
-// The adapter constructs this module's record through its owning module.
-#[allow(clippy::too_many_arguments)]
-pub(crate) fn from_server(
-    member: &str,
-    nick: &str,
-    piece: &str,
-    task: &str,
-    branch: &str,
-    files: Vec<String>,
-    since: String,
-) -> Claim {
-    Claim {
-        member: member.into(),
-        nick: nick.into(),
-        piece: piece.into(),
-        task: task.into(),
-        branch: branch.into(),
-        files,
-        since,
     }
 }

@@ -62,10 +62,10 @@
 
   onMount(() => {
     void refresh().catch(report);
-    const timer = setInterval(() => {
+    const timer = globalThis.setInterval(() => {
       if (!busy) void refresh().catch(report);
     }, 5000);
-    return () => clearInterval(timer);
+    return () => globalThis.clearInterval(timer);
   });
 </script>
 
@@ -210,7 +210,9 @@
   {#if view && !view.machines.length}<p class="worktree-description">
       No machines enrolled.
     </p>{/if}
-  {#each view?.recent_dispatch ?? [] as result}<p class="worktree-description">
+  {#each view?.recent_dispatch ?? [] as result, index (index)}<p
+      class="worktree-description"
+    >
       {result}
     </p>{/each}
   {#if error}<p class="worktree-message error" role="alert">{error}</p>{/if}

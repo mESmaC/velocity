@@ -268,7 +268,7 @@ async fn rebase_notice_pending(
 ) -> Result<bool, String> {
     if matches!(follow_up, RosenFollowUp::Regenerate { .. }) {
         // Generated-only rebases have no conflict records to use as a delivery gate.
-        velocity_rosen::change_standing(server, change)
+        velocity_rosen::duty::change_standing(server, change)
             .await
             .map(|standing| standing.open)
     } else {

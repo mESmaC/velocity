@@ -73,7 +73,7 @@ fn options(arguments: &[String]) -> anyhow::Result<BTreeMap<String, String>> {
         "Every machine option needs a value"
     );
     let mut options = BTreeMap::new();
-    for pair in arguments.chunks_exact(2) {
+    for pair in arguments.as_chunks::<2>().0 {
         anyhow::ensure!(
             matches!(
                 pair[0].as_str(),

@@ -1,4 +1,3 @@
-pub mod machine_worker;
 //! Starting and running build threads (SPEC.md F4, F5, §3.2): a thread's name and worktree,
 //! its agent session, the live transcript the thread view shows, and deleting it (F12).
 
@@ -14,6 +13,7 @@ pub mod follow_through;
 pub mod goal_selection;
 pub mod goal_swarm;
 pub mod launch;
+pub mod machine_worker;
 pub mod naming;
 pub mod parking;
 mod process;
