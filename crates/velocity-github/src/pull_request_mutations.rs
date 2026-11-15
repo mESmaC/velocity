@@ -175,7 +175,7 @@ impl PullRequestClient {
         comments: &[NewReviewComment],
     ) -> Result<(), PullRequestError> {
         let pull_request = self.get(number)?;
-        if pull_request.head_ref_oid != head {
+        if self.current_head(number)? != head {
             return Err(PullRequestError::Invalid(
                 "PR head changed; review the new commit".into(),
             ));

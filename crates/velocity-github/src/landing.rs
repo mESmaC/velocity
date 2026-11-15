@@ -34,39 +34,38 @@ impl PullRequestClient {
         )
     }
 
+    /// Read the branch target: GitHub's cached headRefOid can lag a pushed commit (#350).
+    /// A missing/deleted ref is an error; its cached PR head is never a safe fallback.
+    pub(crate) fn current_head(&self, number: u32) -> Result<String, PullRequestError> {
+        let query = "query($owner:String!,$name:String!,$number:Int!) { repository(owner:$owner,name:$name) { pullRequest(number:$number) { headRef { target { oid } } } } }";
+        self.graphql_at(
+            query,
+            self.variables(number),
+            "/data/repository/pullRequest/headRef/target/oid",
+        )
+    }
+
     /// GitHub merges the current base into the head without rewriting author commits.
     pub(crate) fn prepare_landing(
         &self,
         number: u32,
         previous: Option<&LandingCheckpoint>,
     ) -> Result<LandingCheckpoint, PullRequestError> {
-        let before = self.snapshot(number)?.pull_request;
-        require_open(number, before.state)?;
+        require_open(number, self.get(number)?.state)?;
+        let before = self.current_head(number)?;
         let base = self.base_head(number)?;
-        let behind = self.behind(&base, &before.head_ref_oid)?;
         let overlap = match previous {
             Some(prior) if prior.base != base => self.base_overlap(&prior.base, &base, number)?,
             _ => false,
         };
-        if behind {
-            let endpoint = format!("repos/{}/pulls/{number}/update-branch", self.repository);
-            if let Err(error) = self.command.api::<Value>(
-                "PUT",
-                &endpoint,
-                &json!({"expected_head_sha": before.head_ref_oid}),
-            ) {
-                if let Some(record) = &self.review_record {
-                    record.conflict(number, &before.head_ref_oid, &error.to_string())?;
-                }
-                return Err(error);
-            }
-        }
-        let head = self.snapshot(number)?.pull_request.head_ref_oid;
-        let clean_update = self.clean_base_update(&before.head_ref_oid, &head, &base)?;
+        self.update_branch(number, &base, &before)?;
+        require_open(number, self.get(number)?.state)?;
+        let head = self.current_head(number)?;
+        let clean_update = self.clean_base_update(&before, &head, &base)?;
         let scope = previous.map_or(CheckScope::Full, |prior| {
             // An automatic clean base merge contains no new author work.
             check_scope(
-                prior.head == before.head_ref_oid && clean_update,
+                prior.head == before && clean_update,
                 prior.base == base,
                 overlap,
             )
@@ -76,7 +75,7 @@ impl PullRequestClient {
                 "Branch update is pending; prepare landing again before checking".into(),
             ));
         }
-        self.carry_clean_approval(number, &before.head_ref_oid, &head, &base)?;
+        self.carry_clean_approval(number, &before, &head, &base)?;
         Ok(LandingCheckpoint {
             head,
             base,
@@ -87,6 +86,35 @@ impl PullRequestClient {
             }
             .into(),
         })
+    }
+
+    fn update_branch(&self, number: u32, base: &str, head: &str) -> Result<(), PullRequestError> {
+        if !self.behind(base, head)? {
+            return Ok(());
+        }
+        let endpoint = format!("repos/{}/pulls/{number}/update-branch", self.repository);
+        if let Err(error) =
+            self.command
+                .api::<Value>("PUT", &endpoint, &json!({"expected_head_sha": head}))
+        {
+            // A concurrent push can make update-branch fail even after the base is merged.
+            // Re-read the ref before sending the author a conflict that no longer exists.
+            require_open(number, self.get(number)?.state)?;
+            let current = self.current_head(number)?;
+            if !self.behind(base, &current)? {
+                return Ok(());
+            }
+            if current != head {
+                return Err(PullRequestError::Invalid(
+                    "PR head moved during branch update; prepare landing again".into(),
+                ));
+            }
+            if let Some(record) = &self.review_record {
+                record.conflict(number, head, &error.to_string())?;
+            }
+            return Err(error);
+        }
+        Ok(())
     }
 
     fn behind(&self, base: &str, head: &str) -> Result<bool, PullRequestError> {

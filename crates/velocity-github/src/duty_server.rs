@@ -333,12 +333,7 @@ impl PrDutyServer {
         if head != prepared.head
             || base != prepared.base
             || self.client()?.base_head(self.number)? != base
-            || self
-                .client()?
-                .snapshot(self.number)?
-                .pull_request
-                .head_ref_oid
-                != head
+            || self.client()?.current_head(self.number)? != head
         {
             return Err(PullRequestError::Invalid(
                 "Head or base moved: prepare and check again".into(),
@@ -407,9 +402,11 @@ impl PrDutyServer {
                     "Prepare landing and run pr_duty_checked before approving or merging".into(),
                 )
             })?;
-        if self.client()?.base_head(self.number)? != checked.base {
+        if self.client()?.base_head(self.number)? != checked.base
+            || self.client()?.current_head(self.number)? != head
+        {
             return Err(PullRequestError::Invalid(
-                "Base moved: prepare landing and check again".into(),
+                "Head or base moved: prepare landing and check again".into(),
             ));
         }
         let place = self.statement_lock.as_ref().ok_or_else(|| {

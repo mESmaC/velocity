@@ -97,7 +97,7 @@ impl PullRequestClient {
         let pull_request = &snapshot.pull_request;
         if pull_request.state != PullRequestState::Open
             || pull_request.is_draft
-            || pull_request.head_ref_oid != head
+            || self.current_head(pull_request.number)? != head
             || pull_request.merge_state_status == "DIRTY"
         {
             return Err(PullRequestError::Invalid(

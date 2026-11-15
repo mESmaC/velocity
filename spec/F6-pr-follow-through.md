@@ -49,7 +49,10 @@ A PR reviewed by reading skips it: Velocity merges its approved head once GitHub
 
 The PR duty MCP server exposes `pr_duty_prepare_landing` and `pr_duty_checked`.
 Prepare refuses a PR that is no longer open, so a closed PR's branch is never updated and its owner gets no `conflict` event; on an open PR it updates the branch through GitHub with an expected head and returns its exact head/base and required checks: full initially or on author/overlapping changes, build and lint for an unrelated moved base.
+The head and base come from the live branch targets, even when GitHub's cached PR head or base lags a pushed commit (#350).
+Prepare skips the branch update when the live head already contains the current base; after a failed update it re-reads the head before reporting a conflict, accepting a concurrent update that already contains the base and requiring another prepare if the head moved but remains behind.
 The reviewer fetches that head, regenerates artifacts, runs those checks and records success with checked.
+Checked, approval and merge validate the live head; a missing branch or a new author commit cannot reuse a receipt or approval for an older head.
 Merge refuses a missing receipt or moved base.
 Only an exact two-parent base update carries the reviewer's approval.
 Updates and update failures post `updated`/`conflict` events.
