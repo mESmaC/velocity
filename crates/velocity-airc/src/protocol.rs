@@ -69,7 +69,10 @@ fn respond(
         },
         "ping" => json!({}),
         _ if !*initialized => return Some(failure(id, -32600, "Initialize first")),
-        "tools/list" => json!({"tools":tool_list()}),
+        "tools/list" => match channel.is_rosen_project(member) {
+            Ok(rosen) => json!({"tools":tool_list(rosen)}),
+            Err(error) => return Some(failure(id, -32603, &error.to_string())),
+        },
         "tools/call" => {
             let parameters = &request["params"];
             match call(channel, member, nick, parameters, connected) {
@@ -176,7 +179,7 @@ fn read_filtered(
     Ok(serde_json::to_value(entries)?)
 }
 
-fn tool_list() -> Vec<Value> {
+fn tool_list(rosen: bool) -> Vec<Value> {
     let empty = json!({});
     let cursor = json!({"after":{"type":"integer","minimum":0}});
     let mut tools = vec![
@@ -215,7 +218,9 @@ fn tool_list() -> Vec<Value> {
     tools.extend(crate::task_tools::tools());
     tools.extend(writing_tools());
     tools.extend(claim_tools());
-    tools.push(tool("airc_rebase", "Bring your registered branch up to date without rewriting history. Commit current edits first, then call this on a targeted merge notice or at landing. Velocity posts rebased on success or conflict on failure; resolve conflicts in your own worktree, regenerate artifacts and check before pushing.", json!({}), &[]));
+    if !rosen {
+        tools.push(tool("airc_rebase", "Bring your registered branch up to date without rewriting history. Commit current edits first, then call this on a targeted merge notice or at landing. Velocity posts rebased on success or conflict on failure; resolve conflicts in your own worktree, regenerate artifacts and check before pushing.", json!({}), &[]));
+    }
     tools.push(tool("airc_wait", "Wait for a file holder. This call stays pending until its dependency ends; do not edit meanwhile. Velocity may park you while you wait: it ends your session to free a provider slot and resumes it when the dependency ends, with the outcome as your next message. On merge Velocity updates your branch before you continue; resolve any reported conflict before continuing.", json!({"holder":{"type":"string"},"file":{"type":"string"}}), &["holder", "file"]));
     tools
 }
