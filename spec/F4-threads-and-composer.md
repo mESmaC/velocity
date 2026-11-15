@@ -2,7 +2,7 @@
 ### F4 · Threads and composer
 
 - **Sending from the home composer** starts a thread.
-  It gets a worktree from `master`, a branch `vel/<slug>`, and starts at once.
+  It gets a worktree from the project's default branch (`master` when unset), a branch `vel/<slug>`, and starts at once.
 - **Thread titles:** the title model (Settings → Providers → Thread titles, F15) names the thread from your first message, as a short imperative title.
   - Velocity asks for the title while it takes a worktree from the warm pool (F5).
     Both finish in under a second with the default model, so the branch and worktree are named from the title (`vel/<title-slug>`) before the agent starts.

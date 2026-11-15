@@ -50,6 +50,7 @@ enum EntryView {
 #[derive(Clone, Debug)]
 pub struct LiveTranscript {
     worktree: String,
+    base_branch: String,
     history: Vec<TranscriptBlock>,
     entries: Vec<EntryView>,
     /// `acp_entries[i]` is where ACP transcript entry `i` sits in `entries`.
@@ -60,10 +61,16 @@ pub struct LiveTranscript {
 impl LiveTranscript {
     /// A thread whose worktree is being created and set up (F5).
     pub fn new(worktree: &str) -> Self {
+        Self::on_base(worktree, "master")
+    }
+
+    /// Keep the launch's base branch while the title and setup state change (F5).
+    pub fn on_base(worktree: &str, base_branch: &str) -> Self {
         LiveTranscript {
             worktree: worktree.to_owned(),
+            base_branch: base_branch.to_owned(),
             history: Vec::new(),
-            entries: Vec::from([EntryView::Setup(setup_step(worktree, true))]),
+            entries: Vec::from([EntryView::Setup(setup_step(worktree, base_branch, true))]),
             acp_entries: Vec::new(),
             queued: Vec::new(),
         }
@@ -92,7 +99,7 @@ impl LiveTranscript {
     pub fn rename_worktree(&mut self, worktree: &str) {
         worktree.clone_into(&mut self.worktree);
         if let Some(EntryView::Setup(step)) = self.entries.first_mut() {
-            *step = setup_step(worktree, true);
+            *step = setup_step(worktree, &self.base_branch, true);
         }
     }
 
@@ -100,7 +107,7 @@ impl LiveTranscript {
     pub fn worktree_ready(&mut self) {
         let worktree = self.worktree.clone();
         if let Some(EntryView::Setup(step)) = self.entries.first_mut() {
-            *step = setup_step(&worktree, false);
+            *step = setup_step(&worktree, &self.base_branch, false);
         }
     }
 
@@ -108,10 +115,10 @@ impl LiveTranscript {
     pub fn rosen_workspace_ready(&mut self, change: &str) {
         let worktree = self.worktree.clone();
         if let Some(EntryView::Setup(step)) = self.entries.first_mut() {
-            *step = setup_step(&worktree, false);
+            *step = setup_step(&worktree, &self.base_branch, false);
             step.verb = "Workspace".into();
             let short: String = change.chars().take(8).collect();
-            step.result_text = format!("Rosen change {short} from master");
+            step.result_text = format!("Rosen change {short} from {}", self.base_branch);
         }
     }
 
@@ -278,15 +285,15 @@ impl LiveTranscript {
     }
 }
 
-fn setup_step(worktree: &str, running: bool) -> ToolStepRow {
+fn setup_step(worktree: &str, base_branch: &str, running: bool) -> ToolStepRow {
     ToolStepRow {
         running,
         verb: "Worktree".into(),
         argument: worktree.to_owned(),
         result_text: if running {
-            "creating from master".into()
+            format!("creating from {base_branch}")
         } else {
-            "created from master".into()
+            format!("created from {base_branch}")
         },
     }
 }

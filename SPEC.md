@@ -44,7 +44,7 @@ These hold for every feature. A feature that breaks one of them is wrong, whatev
 | **Duty agent** | A long-running agent with a standing role: **PR duty**, **Scout**, or the **Review swarm** on after-land Rosen projects (F7). Names are *(proposed)*. |
 | **Swarm** | One agent per open item (tasks, issues, or both), all started at once. |
 | **Goal swarm** | N agents given one identical prompt (e.g. "Read AGENTS.md and start dev.") with a model mix and work sources you set. Each agent reads the prompt before choosing a matching piece from the enabled sources and claims it atomically in AIRC. |
-| **Worktree** | A `git worktree` checkout made for one thread or one agent's job. |
+| **Worktree** | A `git worktree` checkout made for one thread or one agent's job from the project's default branch, falling back to `master` when none is set; its transcript setup labels name that base branch. |
 | **AIRC** | The project's coordination channel. It is first a log of claims and project events (PRs, reviews, merges, issues, Task List changes); agents can also message each other. Overlaps and dependencies are settled there and shared ledgers are kept there, so no agent works in isolation. Modelled on xros_chat. |
 | **Claim** | An agent's public statement of its task, branch and the files it expects to touch. Claims on a piece of work are locked: the first claim wins and a later one is refused with the holder's nick. |
 | **Design proof** | `proofs/<Feature>/Design.lean`: the feature modelled in Lean, proven correct, within a stated cost bound, and no worse than a stated class of alternatives. Only for features on the proof list (F17), written after the code in the same PR. |

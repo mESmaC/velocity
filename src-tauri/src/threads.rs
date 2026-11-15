@@ -341,7 +341,12 @@ pub(crate) fn start_planned_with_selection(
             application.state::<ManagedThreads>().inner(),
             "thread sessions",
         )?;
-        let inputs = runtimes.start(key, &plan.thread.worktree_path, &plan.prompt);
+        let inputs = runtimes.start_on_base(
+            key,
+            &plan.thread.worktree_path,
+            &plan.prompt,
+            &plan.worktree.base_ref,
+        );
         if plan.title.request.is_some() {
             runtimes.set_titling(key, Some(plan.title.model_name.clone()));
         }
@@ -366,7 +371,7 @@ pub(crate) fn start_goal_member(
         application.state::<ManagedThreads>().inner(),
         "thread sessions",
     )?
-    .start_choosing(key, &plan.thread.worktree_path);
+    .start_choosing(key, &plan.thread.worktree_path, &plan.worktree.base_ref);
     emit_status(application, key);
     let handle = application.clone();
     tauri::async_runtime::spawn(async move { run_goal_member(handle, key, plan).await });

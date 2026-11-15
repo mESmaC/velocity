@@ -165,7 +165,7 @@ impl ThreadRuntimes {
     /// Registers a goal swarm member in its choosing work phase before an ACP session
     /// starts (SPEC.md F16). Steering messages sent meanwhile queue behind the claimed
     /// piece's opening prompt once [Self::begin_claimed_session] runs.
-    pub fn start_choosing(&mut self, key: ThreadKey, worktree: &str) {
+    pub fn start_choosing(&mut self, key: ThreadKey, worktree: &str, base_branch: &str) {
         self.retired.remove(&key);
         self.shutdown_failures.remove(&key);
         let (inputs, _unused) = unbounded_channel();
@@ -177,7 +177,7 @@ impl ThreadRuntimes {
                 follows_pull_request: false,
                 session_tool_start: 0,
                 deliveries: Deliveries::default(),
-                transcript: LiveTranscript::new(worktree),
+                transcript: LiveTranscript::on_base(worktree, base_branch),
                 inputs,
                 pending_inputs: VecDeque::new(),
                 replaying_history: false,
@@ -234,6 +234,17 @@ impl ThreadRuntimes {
         worktree: &str,
         prompt: &str,
     ) -> UnboundedReceiver<AgentInput> {
+        self.start_on_base(key, worktree, prompt, "master")
+    }
+
+    /// Starts a planned thread with the same base branch its checkout uses (F5).
+    pub fn start_on_base(
+        &mut self,
+        key: ThreadKey,
+        worktree: &str,
+        prompt: &str,
+        base_branch: &str,
+    ) -> UnboundedReceiver<AgentInput> {
         self.retired.remove(&key);
         self.shutdown_failures.remove(&key);
         let (inputs, receiver) = unbounded_channel();
@@ -247,7 +258,7 @@ impl ThreadRuntimes {
                 follows_pull_request: false,
                 session_tool_start: 0,
                 deliveries: Deliveries::default(),
-                transcript: LiveTranscript::new(worktree),
+                transcript: LiveTranscript::on_base(worktree, base_branch),
                 inputs,
                 pending_inputs: VecDeque::from([PendingInput::Opening]),
                 replaying_history: false,
