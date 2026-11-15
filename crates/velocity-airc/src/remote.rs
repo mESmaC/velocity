@@ -1,5 +1,8 @@
 //! Rosen owns channel state. This adapter retains only connection configuration.
-use crate::{Entry, Error, Presence, channel::entry};
+use crate::{
+    Entry, Error, Presence,
+    channel::{DiscoveryIssue, entry},
+};
 use rosen_client::protocol::channel::{AppendEntry, SendMessage};
 use rosen_client::{Client, Endpoint};
 use serde::de::DeserializeOwned;
@@ -13,6 +16,29 @@ pub(crate) struct Remote {
 }
 
 pub(crate) const RECORD_PREFIX: &str = "velocity-airc/v1:";
+
+// The pinned Rosen protocol only has velocity_issue. Keep Rosen reports in its durable
+// discovery ledger with agent authorship until the protocol supports a native field.
+pub(crate) const DISCOVERY_PREFIX: &str = "velocity-airc/discovery/v1:";
+
+#[derive(serde::Serialize, serde::Deserialize)]
+pub(crate) struct RosenDiscovery {
+    pub text: String,
+    pub rosen_issue: String,
+}
+
+impl RosenDiscovery {
+    fn encode(text: &str, title: String) -> Result<String, Error> {
+        let discovery = Self {
+            text: text.into(),
+            rosen_issue: title,
+        };
+        Ok(format!(
+            "{DISCOVERY_PREFIX}{}",
+            serde_json::to_string(&discovery)?
+        ))
+    }
+}
 
 pub(crate) fn wire<T: DeserializeOwned>(value: serde_json::Value) -> Result<T, Error> {
     Ok(serde_json::from_value(value)?)
@@ -234,10 +260,16 @@ impl Remote {
         member: &str,
         ledger: &str,
         text: &str,
-        issue: Option<String>,
+        issue: Option<DiscoveryIssue>,
     ) -> Result<(), Error> {
+        crate::channel::require_text(text)?;
+        let (text, velocity_issue) = match issue {
+            Some(DiscoveryIssue::Velocity(title)) => (text.to_owned(), Some(title)),
+            Some(DiscoveryIssue::Rosen(title)) => (RosenDiscovery::encode(text, title)?, None),
+            None => (text.to_owned(), None),
+        };
         let request: AppendEntry = wire(
-            json!({"ledger":ledger,"author":{"kind":"agent","member":self.member(member)},"text":text,"velocity_issue":issue}),
+            json!({"ledger":ledger,"author":{"kind":"agent","member":self.member(member)},"text":text,"velocity_issue":velocity_issue}),
         )?;
         self.run(async |client| {
             client.ledger_append(request).await?;

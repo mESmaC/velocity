@@ -118,6 +118,16 @@ fn ledger_entry(stored: rosen_client::protocol::channel::LedgerEntry) -> Result<
     );
     record.time = time(stored.time);
     record.velocity_issue = stored.velocity_issue;
+    if record.kind == "discovery"
+        && record.velocity_issue.is_none()
+        && let Some(discovery) = record
+            .text
+            .strip_prefix(crate::remote::DISCOVERY_PREFIX)
+            .and_then(|text| serde_json::from_str::<crate::remote::RosenDiscovery>(text).ok())
+    {
+        record.text = discovery.text;
+        record.rosen_issue = Some(discovery.rosen_issue);
+    }
     Ok(record)
 }
 

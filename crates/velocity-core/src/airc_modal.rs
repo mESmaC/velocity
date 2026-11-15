@@ -23,6 +23,7 @@ pub struct AircRecord {
     /// A discovery about Velocity itself: its issue title, and the Velocity issue it was
     /// reported on once that is done.
     velocity_issue: Option<(String, Option<u32>)>,
+    rosen_issue: Option<(String, Option<u32>)>,
 }
 
 impl AircRecord {
@@ -38,6 +39,7 @@ impl AircRecord {
             to: Vec::new(),
             is_event: false,
             velocity_issue: None,
+            rosen_issue: None,
         }
     }
 
@@ -54,6 +56,11 @@ impl AircRecord {
 
     pub fn with_velocity_issue(mut self, title: &str, issue: Option<u32>) -> Self {
         self.velocity_issue = Some((title.into(), issue));
+        self
+    }
+
+    pub fn with_rosen_issue(mut self, title: &str, issue: Option<u32>) -> Self {
+        self.rosen_issue = Some((title.into(), issue));
         self
     }
 
@@ -571,20 +578,22 @@ fn message_line(record: &AircRecord, nicks: &BTreeSet<String>) -> AircLineView {
 fn ledger_line(record: &AircRecord, nicks: &BTreeSet<String>) -> AircLineView {
     let mut view = line(record, "", AircTone::Neutral, "");
     view.spans = spans(&record.text, nicks);
-    if let Some((title, issue)) = &record.velocity_issue {
-        let filed = issue.map_or_else(
-            || "filing…".to_owned(),
-            |number| format!("{VELOCITY_REPOSITORY}#{number}"),
-        );
-        view.spans.push(AircSpan::Text(format!(
-            " · Velocity issue: {title} · {filed}"
-        )));
+    for (tool, repository, report) in [
+        ("Velocity", "mESmaC/velocity", &record.velocity_issue),
+        ("Rosen", "mESmaC/rosen", &record.rosen_issue),
+    ] {
+        if let Some((title, issue)) = report {
+            let filed = issue.map_or_else(
+                || "filing…".to_owned(),
+                |number| format!("{repository}#{number}"),
+            );
+            view.spans.push(AircSpan::Text(format!(
+                " · {tool} issue: {title} · {filed}"
+            )));
+        }
     }
     view
 }
-
-/// Velocity's own repository, where discoveries about Velocity are filed.
-const VELOCITY_REPOSITORY: &str = "mESmaC/velocity";
 
 /// F14: blue for PR / issue / task, green for approved / merged / unblocked, amber for
 /// overlap / waits / shares / changes / order, red for refused / failed.

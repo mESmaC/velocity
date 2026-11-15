@@ -63,7 +63,7 @@ fn respond(
                 *initialized = true;
                 json!({"protocolVersion":"2025-11-25","capabilities":{"tools":{}},
                         "serverInfo":{"name":"velocity-airc","version":env!("CARGO_PKG_VERSION")},
-                        "instructions":format!("You joined this project's AIRC channel as {nick}. Read airc_claims before choosing work. Call airc_claim with the task, branch and every file BEFORE editing, and with piece set to the work item's identity (task:<id>, issue:<number> or spec:<section>) when it has one; on refusal the holder is named, so re-read airc_claims and claim the first open piece. Extend your existing task claim to add files. Record airc_share or a dependency wait before editing an overlapping file. Messages require named recipients and an intent. task_list reads the project Task List at any time. Use task_add, task_update and task_delete ONLY when the user explicitly asks you to add, change or remove Task List items; otherwise file issues. Task List changes never edit SPEC.md or start an interview. A discovery about Velocity itself (its worktrees, AIRC, duty tools, agent shells, build queue or app), not this project, goes in append_ledger with velocity_issue set, and Velocity files it on its own repository.")})
+                        "instructions":format!("You joined this project's AIRC channel as {nick}. Read airc_claims before choosing work. Call airc_claim with the task, branch and every file BEFORE editing, and with piece set to the work item's identity (task:<id>, issue:<number> or spec:<section>) when it has one; on refusal the holder is named, so re-read airc_claims and claim the first open piece. Extend your existing task claim to add files. Record airc_share or a dependency wait before editing an overlapping file. Messages require named recipients and an intent. task_list reads the project Task List at any time. Use task_add, task_update and task_delete ONLY when the user explicitly asks you to add, change or remove Task List items; otherwise file issues. Task List changes never edit SPEC.md or start an interview. A discovery about Velocity itself (its worktrees, AIRC, duty tools, agent shells, build queue or app), not this project, goes in append_ledger with velocity_issue set, and Velocity files it on its own repository. A discovery about Rosen itself (its server, workspaces, durability, claims, rebases or landing) uses rosen_issue instead and is filed on mESmaC/rosen. Use only one issue field and read discoveries first to avoid reporting the same problem twice.")})
             }
             Err(error) => return Some(failure(id, -32603, &error.to_string())),
         },
@@ -130,20 +130,7 @@ fn call(
         name @ ("read_feed" | "read_events" | "read_messages" | "read_ledger") => {
             read_filtered(channel, name, arguments, after)
         }
-        "append_ledger" => {
-            let velocity_issue = arguments
-                .get("velocity_issue")
-                .and_then(Value::as_str)
-                .map(str::to_owned);
-            let reported = velocity_issue.is_some();
-            channel.append_ledger_entry(
-                member,
-                ledger(arguments)?,
-                text(arguments, "text")?,
-                velocity_issue,
-            )?;
-            Ok(json!({"appended":true,"velocity_issue":reported}))
-        }
+        "append_ledger" => append_ledger(channel, member, arguments),
         "send_message" => {
             let recipients = serde_json::from_value(arguments["to"].clone())?;
             channel.message(
@@ -156,6 +143,28 @@ fn call(
         }
         _ => Err(Error::Invalid("Unknown AIRC tool".into())),
     }
+}
+
+fn append_ledger(channel: &Channel, member: &str, arguments: &Value) -> Result<Value, Error> {
+    let title = |name: &str| {
+        arguments
+            .get(name)
+            .and_then(Value::as_str)
+            .filter(|title| !title.trim().is_empty())
+            .map(str::to_owned)
+    };
+    let velocity_issue = title("velocity_issue");
+    let rosen_issue = title("rosen_issue");
+    let reported_velocity = velocity_issue.is_some();
+    let reported_rosen = rosen_issue.is_some();
+    channel.append_ledger_report(
+        member,
+        ledger(arguments)?,
+        text(arguments, "text")?,
+        velocity_issue,
+        rosen_issue,
+    )?;
+    Ok(json!({"appended":true,"velocity_issue":reported_velocity,"rosen_issue":reported_rosen}))
 }
 
 fn read_filtered(
@@ -238,10 +247,12 @@ fn writing_tools() -> Vec<Value> {
         ),
         tool(
             "append_ledger",
-            "Record a discovery or past work. When a discovery is a problem in Velocity itself (its worktrees and paths, AIRC, the PR duty, scout or watch tools, agent shells and sandboxes, the build queue, the code graph, or the app) rather than in this project's code, also pass velocity_issue: a one-line issue title. Velocity then files it on its own repository, or adds it to an open issue about the same problem. Read the discoveries first, and leave velocity_issue out when another agent already reported the same Velocity problem.",
+            "Record a discovery or past work. When a discovery is a problem in Velocity itself (its worktrees and paths, AIRC, the PR duty, scout or watch tools, agent shells and sandboxes, the build queue, the code graph, or the app) rather than in this project's code, also pass velocity_issue: a one-line issue title. Velocity then files it on its own repository, or adds it to an open issue about the same problem. For a problem in Rosen itself (its server, workspaces, durability, claims, rebases or landing), pass rosen_issue instead to file on mESmaC/rosen. Use only one issue field. Read the discoveries first and omit the issue field when another agent already reported the same problem.",
             json!({"ledger":ledger,"text":string.clone(),
                 "velocity_issue":{"type":"string","minLength":1,"maxLength":200,
-                    "description":"Only for a discovery about Velocity itself: the issue title"}}),
+                    "description":"Only for a discovery about Velocity itself: the issue title"},
+                "rosen_issue":{"type":"string","minLength":1,"maxLength":200,
+                    "description":"Only for a discovery about Rosen itself: the issue title; cannot be combined with velocity_issue"}}),
             &["ledger", "text"],
         ),
         tool(

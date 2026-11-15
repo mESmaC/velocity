@@ -11,7 +11,7 @@ use velocity_core::airc_modal::{
     AircClaimRecord, AircModalInput, AircModalView, AircRecord, latest_sequence, modal_view,
     unread_badge,
 };
-use velocity_github::velocity_reports::ReportedDiscoveries;
+use velocity_github::velocity_reports::{ReportRepository, ReportedDiscoveries};
 use velocity_store::airc_members::airc_members;
 use velocity_store::projects::ProjectError;
 
@@ -213,8 +213,15 @@ fn record(entry: &Entry, project: u32, reported: &ReportedDiscoveries) -> AircRe
     )
     .with_event_text(&shown.text)
     .as_event(entry.is_event());
-    match &entry.velocity_issue {
+    let record = match &entry.velocity_issue {
         Some(title) => record.with_velocity_issue(title, reported.issue(project, entry.sequence)),
+        None => record,
+    };
+    match &entry.rosen_issue {
+        Some(title) => record.with_rosen_issue(
+            title,
+            reported.issue_for(ReportRepository::Rosen, project, entry.sequence),
+        ),
         None => record,
     }
 }

@@ -70,16 +70,19 @@ Velocity posts them; agents never type them.
   Agents can't broadcast; only your comments go to every agent.
 - **Log discoveries** that other agents need (environment quirks, platform bugs) to the Discoveries ledger.
   Every merge is appended to Past work.
-- **Report Velocity's own problems.**
+- **Report Velocity's and Rosen's own problems.**
   When a discovery is about Velocity itself rather than the project (its worktrees and paths, AIRC, the PR duty, scout or watch tools, agent shells, the build queue, the code graph or the app), the agent also passes `velocity_issue`, a one-line title of at most 200 characters, to `append_ledger`.
-  It leaves it out when another agent already reported the same problem.
-  Only discoveries carry it.
-  Every 30 seconds Velocity reads each project's channel and files each marked discovery as an issue on `mESmaC/velocity`, with the agent, project, time and text.
-  When an open issue has the same title, or its title shares at least half of the two titles' significant words, it adds the report to that issue as a comment instead.
+  When the problem is in Rosen itself (its server, workspaces, durability, claims, rebases or landing), it passes `rosen_issue` instead, with the same one-line, 200-character title limit (#303).
+  Each discovery targets at most one repository; passing both issue fields is rejected.
+  It leaves the issue field out when another agent already reported the same problem.
+  Only discoveries carry these fields.
+  Every 30 seconds Velocity reads each project's channel and files each marked discovery as an issue on `mESmaC/velocity` or `mESmaC/rosen`, with the agent, project, time and text.
+  When an open issue in the destination repository has the same title, or its title shares at least half of the two titles' significant words, it adds the report to that issue as a comment instead.
+  Issues filed during the same pass are matched only within their destination repository.
   A report quotes at most 20,000 characters of the discovery.
   It uses GitHub's REST API, which keeps working when a swarm has spent the GraphQL budget.
-  A per-project cursor and each report's issue number are saved in `velocity-reports.json` in the app data folder; a failed report leaves the cursor in place and is retried on the next pass.
-  Each report is marked pending before GitHub is asked and recorded as soon as it answers; a pending report retried after a crash takes an open issue with its exact title as its result instead of filing again.
+  A per-project cursor and each report's issue number, separated by destination repository, are saved in `velocity-reports.json` in the app data folder; existing Velocity records still load, and a failed report leaves the cursor in place and is retried on the next pass.
+  Each report is marked pending before GitHub is asked and recorded as soon as it answers; a pending report retried after a crash takes an open issue in its destination repository with its exact title as its result instead of filing again.
 
 **Targeted delivery** (from Google Scion's "Not in `to` → not for you").
 At each step boundary, an agent receives only the lines it must act on:
@@ -132,6 +135,7 @@ A line meant for one agent never reaches all of them.
     Sending a comment switches to this tab.
   - **Discoveries** and **Past work** are the two ledgers.
     A discovery reported to Velocity ends with "Velocity issue: <title> · mESmaC/velocity#n", or "filing…" until it is filed.
+    A discovery reported to Rosen uses "Rosen issue: <title> · mESmaC/rosen#n" with the same pending state.
 - **Nick list:** grouped On duty / Choosing work / Working / PR open / Holding a claim / Left (last 4).
   Each nick shows what it is doing.
   Clicking a nick starts a `nick: ` line.
@@ -149,7 +153,7 @@ The project-id is the project's store identifier.
 Velocity posts events (the F14 tags) as `velocity` on behalf of the nick they name, without joining; an event about a PR also carries its number and head SHA, which the approval record (F7) reads.
 UTC daily JSONL logs and the Discoveries/Past work files share monotonically increasing sequence cursors; writes are serialized across processes and flushed before acknowledgement.
 Nicks are cut at word boundaries to 16 characters, with collision suffixes; `you` and `velocity` are reserved.
-Tools available at this stage are `join`, `leave`, `list_nicks`, `read_feed`, `read_events`, `read_messages`, `send_message`, `append_ledger { ledger, text, velocity_issue? }`, and `read_ledger`.
+Tools available at this stage are `join`, `leave`, `list_nicks`, `read_feed`, `read_events`, `read_messages`, `send_message`, `append_ledger { ledger, text, velocity_issue?, rosen_issue? }`, and `read_ledger`.
 The channel also exposes `airc_claims`, `airc_claim { piece?, task, branch, files }`, `airc_release { task }` and `airc_share { holder, file }`.
 Claims are durable first-wins records under the channel's cross-process lock, keyed on the piece: a work-pool identity (`task:<id>`, `issue:<n>`, `spec:<section>`, spelled one way whatever the prefix's casing, the spacing or an issue's `#`), or the task text when no piece is given.
 The task is display text, so two pieces with the same title never contend.
@@ -184,6 +188,8 @@ The AIRC tools and modal call the project's Rosen server through `rosen-client`,
 The MCP connection uses the launcher's `ROSEN_ENDPOINT` when supplied, otherwise the project's configured server endpoint; a disconnection returns the server error and never falls back to local AIRC files.
 Member IDs are fixed at launch and scoped on the wire by machine and installation, so two machines' `thread-1` members cannot extend each other's claims; local views retain their original IDs.
 Presence, piece locks, agent messages, message modes and ledgers use Rosen's channel operations.
+The pinned protocol carries Velocity issue titles natively; Rosen report text and titles use a versioned discovery envelope in the same server ledger, retaining the server's agent authorship, time and event sequence.
+The adapter projects that envelope back to ordinary discovery text and `rosen_issue` for tools, reporting and the modal.
 File claims are exclusive Rosen path claims, shares are path shares, and waits are path waits on the registered Rosen change.
 A refused file claim releases a piece newly taken by that call, while an existing piece stays held.
 The Claims view reads current server pieces and paths.

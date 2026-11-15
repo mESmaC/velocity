@@ -1,17 +1,22 @@
-//! Velocity issues from agents' discoveries (F14 Discoveries). An agent marks a discovery
-//! that is about Velocity itself with `velocity_issue`; this edge reads every project's
-//! channel every 30 seconds and files each marked discovery on Velocity's repository, or adds
+//! Tool issues from agents' discoveries (F14 Discoveries). An agent marks a discovery
+//! with `velocity_issue` or `rosen_issue`; this edge reads every project's channel every
+//! 30 seconds and files each marked discovery on its destination repository, or adds
 //! it to the open issue about the same problem. What it reported is saved in the app data
 //! folder, so a restart neither loses nor repeats a report.
+use std::collections::BTreeMap;
 use std::path::Path;
 use std::time::Duration;
 
 use tauri::{AppHandle, Manager};
-use velocity_airc::Channel;
-use velocity_github::velocity_reports::{self, DiscoveryReport, ReportedDiscoveries};
+use velocity_airc::{Channel, Entry};
+use velocity_github::velocity_reports::{
+    self, DiscoveryReport, ReportRepository, ReportedDiscoveries,
+};
 
 use crate::state::ManagedStateStore;
 use crate::threads::lock;
+
+type FiledIssues = BTreeMap<ReportRepository, Vec<(u32, String)>>;
 
 const PASS_INTERVAL: Duration = Duration::from_secs(30);
 
@@ -20,7 +25,7 @@ pub fn initialize(application: &AppHandle) {
     std::thread::spawn(move || {
         loop {
             if let Err(error) = report_all(&application) {
-                eprintln!("Velocity issue reports: {error}");
+                eprintln!("Discovery issue reports: {error}");
             }
             std::thread::sleep(PASS_INTERVAL);
         }
@@ -47,12 +52,12 @@ fn report_all(application: &AppHandle) -> Result<(), String> {
     let mut saved = ReportedDiscoveries::load(&app_data).map_err(|error| error.to_string())?;
     // Issues filed in this pass, which GitHub's issue list may not show yet. A pass is
     // long enough apart from the next that the list has caught up by then.
-    let mut filed = Vec::new();
+    let mut filed = FiledIssues::new();
     for (project, name) in projects {
         // One project's failure (gh signed out, offline) leaves its cursor where it was, so
         // the next pass retries; the other projects still report.
         if let Err(error) = report_project(&app_data, (project, &name), &mut saved, &mut filed) {
-            eprintln!("Velocity issue reports for project {name}: {error}");
+            eprintln!("Discovery issue reports for project {name}: {error}");
         }
     }
     Ok(())
@@ -65,7 +70,7 @@ fn report_project(
     app_data: &Path,
     (project, name): (u32, &str),
     saved: &mut ReportedDiscoveries,
-    filed: &mut Vec<(u32, String)>,
+    filed: &mut FiledIssues,
 ) -> Result<(), String> {
     let cursor = saved.projects.get(&project).map_or(0, |item| item.cursor);
     let channel =
@@ -75,33 +80,23 @@ fn report_project(
         return Ok(());
     };
     for entry in &entries {
-        let Some(title) = entry
-            .velocity_issue
-            .as_ref()
-            .filter(|_| entry.kind == "discovery")
-        else {
+        let Some((repository, title)) = destination(entry) else {
             continue;
         };
         let reports = saved.projects.entry(project).or_default();
         let retry = reports.pending == Some(entry.sequence);
         reports.pending = Some(entry.sequence);
         saved.save(app_data).map_err(|error| error.to_string())?;
-        let outcome = velocity_reports::report(
-            &DiscoveryReport {
-                title: title.clone(),
-                text: entry.text.clone(),
-                nick: entry.nick.clone(),
-                project: name.to_owned(),
-                time: entry.time.clone(),
-            },
-            filed,
+        let report = DiscoveryReport::new(title, &entry.text, &entry.nick, name, &entry.time);
+        let outcome = velocity_reports::report_to(
+            repository,
+            &report,
+            filed.entry(repository).or_default(),
             retry,
         )
         .map_err(|error| error.to_string())?;
         let reports = saved.projects.entry(project).or_default();
-        reports.issues.insert(entry.sequence, outcome.issue());
-        reports.cursor = entry.sequence;
-        reports.pending = None;
+        reports.record_issue(repository, entry.sequence, outcome.issue());
         saved.save(app_data).map_err(|error| error.to_string())?;
     }
     let reports = saved.projects.entry(project).or_default();
@@ -110,4 +105,18 @@ fn report_project(
         saved.save(app_data).map_err(|error| error.to_string())?;
     }
     Ok(())
+}
+
+fn destination(entry: &Entry) -> Option<(ReportRepository, &str)> {
+    if entry.kind != "discovery" {
+        return None;
+    }
+    if let Some(title) = entry.rosen_issue.as_deref() {
+        Some((ReportRepository::Rosen, title))
+    } else {
+        entry
+            .velocity_issue
+            .as_deref()
+            .map(|title| (ReportRepository::Velocity, title))
+    }
 }

@@ -44,9 +44,17 @@ pub struct Entry {
     /// gave. Velocity files it on its own repository.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub velocity_issue: Option<String>,
+    /// A discovery about Rosen itself, filed on mESmaC/rosen.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub rosen_issue: Option<String>,
     /// The task and fields a `task_update_request` or `task_delete_request` names (F8).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub task_change: Option<crate::TaskChange>,
+}
+
+pub(crate) enum DiscoveryIssue {
+    Velocity(String),
+    Rosen(String),
 }
 
 /// Event tags Velocity posts from what it observes (F14). Agents never type them.
@@ -365,31 +373,54 @@ impl Channel {
         text: &str,
         velocity_issue: Option<String>,
     ) -> Result<(), Error> {
+        self.append_ledger_report(member, ledger, text, velocity_issue, None)
+    }
+
+    /// Reports a discovery to one of the tools' repositories, keeping project discoveries
+    /// unmarked. The existing Velocity-only entry point remains compatible.
+    pub fn append_ledger_report(
+        &self,
+        member: &str,
+        ledger: &str,
+        text: &str,
+        velocity_issue: Option<String>,
+        rosen_issue: Option<String>,
+    ) -> Result<(), Error> {
         if !matches!(ledger, "discovery" | "past_work") {
             return Err(Error::Invalid(
                 "Ledger must be discovery or past_work".into(),
             ));
         }
-        let velocity_issue = velocity_issue
-            .map(|title| title.trim().to_owned())
-            .filter(|title| !title.is_empty());
-        if velocity_issue.is_some() && ledger != "discovery" {
+        let velocity_issue = velocity_issue.filter(|title| !title.trim().is_empty());
+        let rosen_issue = rosen_issue.filter(|title| !title.trim().is_empty());
+        if velocity_issue.is_some() && rosen_issue.is_some() {
             return Err(Error::Invalid(
-                "Only a discovery can be reported as a Velocity issue".into(),
+                "Choose either velocity_issue or rosen_issue".into(),
             ));
         }
-        if velocity_issue
-            .as_ref()
-            .is_some_and(|title| title.contains(['\r', '\n']) || title.chars().count() > 200)
-        {
+        let issue = match (velocity_issue, rosen_issue) {
+            (Some(title), _) => Some(DiscoveryIssue::Velocity(title.trim().into())),
+            (_, Some(title)) => Some(DiscoveryIssue::Rosen(title.trim().into())),
+            _ => None,
+        };
+        if issue.is_some() && ledger != "discovery" {
             return Err(Error::Invalid(
-                "The Velocity issue title must be one line of at most 200 characters".into(),
+                "Only a discovery can be reported as a Velocity or Rosen issue".into(),
+            ));
+        }
+        let title = match &issue {
+            Some(DiscoveryIssue::Velocity(title) | DiscoveryIssue::Rosen(title)) => Some(title),
+            None => None,
+        };
+        if title.is_some_and(|title| title.contains(['\r', '\n']) || title.chars().count() > 200) {
+            return Err(Error::Invalid(
+                "The issue title must be one line of at most 200 characters".into(),
             ));
         }
         if let Some(remote) = &self.remote {
-            return remote.ledger(member, ledger, text, velocity_issue);
+            return remote.ledger(member, ledger, text, issue);
         }
-        self.post_with(member, ledger, text, Vec::new(), None, velocity_issue)
+        self.post_with(member, ledger, text, Vec::new(), None, issue)
     }
 
     /// Velocity records a Past work ledger entry (for example on every merge, F14)
@@ -457,7 +488,7 @@ impl Channel {
         text: &str,
         to: Vec<String>,
         intent: Option<String>,
-        velocity_issue: Option<String>,
+        issue: Option<DiscoveryIssue>,
     ) -> Result<(), Error> {
         require_text(text)?;
         let storage = Storage::open(self)?;
@@ -480,7 +511,11 @@ impl Channel {
         let mut record = entry(&entries, kind, member, &active.nick, text);
         record.to = to;
         record.intent = intent;
-        record.velocity_issue = velocity_issue;
+        match issue {
+            Some(DiscoveryIssue::Velocity(title)) => record.velocity_issue = Some(title),
+            Some(DiscoveryIssue::Rosen(title)) => record.rosen_issue = Some(title),
+            None => {}
+        }
         storage.append(&record)
     }
 }
@@ -505,6 +540,7 @@ pub(crate) fn entry(entries: &[Entry], kind: &str, member: &str, nick: &str, tex
         acknowledged: None,
         files: Vec::new(),
         velocity_issue: None,
+        rosen_issue: None,
         task_change: None,
     }
 }

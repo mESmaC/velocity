@@ -1,6 +1,6 @@
-//! Velocity issues from agents' discoveries (F14 Discoveries): a discovery an agent marks as
-//! being about Velocity itself is filed on Velocity's own repository. A report that matches an
-//! open issue's problem is added to that issue as a comment instead of opening another.
+//! Tool issues from agents' discoveries (F14 Discoveries): marked discoveries are filed on
+//! Velocity's or Rosen's repository, keeping each destination's issues separate. A report
+//! that matches an open issue's problem is added to that issue as a comment instead of opening another.
 //! Everything goes through GitHub's REST API, which keeps working when a swarm has spent the
 //! GraphQL budget.
 
@@ -15,6 +15,23 @@ use crate::pull_request_command::PullRequestError;
 
 /// Where Velocity's own issues live.
 pub const VELOCITY_REPOSITORY: &str = "mESmaC/velocity";
+pub const ROSEN_REPOSITORY: &str = "mESmaC/rosen";
+
+/// A discovery reports a problem in one of the tools, independently of the project using it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub enum ReportRepository {
+    Velocity,
+    Rosen,
+}
+
+impl ReportRepository {
+    pub fn repository(self) -> &'static str {
+        match self {
+            Self::Velocity => VELOCITY_REPOSITORY,
+            Self::Rosen => ROSEN_REPOSITORY,
+        }
+    }
+}
 
 /// The app data file that records what Velocity has reported.
 pub const REPORTS_FILE: &str = "velocity-reports.json";
@@ -28,9 +45,9 @@ const QUOTED_TEXT_LIMIT: usize = 20_000;
 /// either title) describe the same problem.
 const SAME_PROBLEM: f64 = 0.5;
 
-const STOP_WORDS: [&str; 22] = [
+const STOP_WORDS: [&str; 23] = [
     "the", "and", "for", "with", "that", "this", "from", "into", "when", "are", "but", "not",
-    "its", "has", "can", "after", "before", "every", "all", "any", "some", "velocity",
+    "its", "has", "can", "after", "before", "every", "all", "any", "some", "velocity", "rosen",
 ];
 
 /// One discovery to report.
@@ -44,6 +61,18 @@ pub struct DiscoveryReport {
     pub project: String,
     /// When it was recorded (RFC 3339).
     pub time: String,
+}
+
+impl DiscoveryReport {
+    pub fn new(title: &str, text: &str, nick: &str, project: &str, time: &str) -> Self {
+        Self {
+            title: title.into(),
+            text: text.into(),
+            nick: nick.into(),
+            project: project.into(),
+            time: time.into(),
+        }
+    }
 }
 
 /// What reporting did.
@@ -79,10 +108,24 @@ pub struct ProjectReports {
     /// Discovery sequence → the Velocity issue it was filed on or added to.
     #[serde(default)]
     pub issues: BTreeMap<u64, u32>,
+    /// Discovery sequence → the Rosen issue. Existing Velocity records still load unchanged.
+    #[serde(default)]
+    pub rosen_issues: BTreeMap<u64, u32>,
     /// The discovery being reported, saved before GitHub is asked. Still set on the next pass
     /// means the last attempt may have reached GitHub without being recorded.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub pending: Option<u64>,
+}
+
+impl ProjectReports {
+    pub fn record_issue(&mut self, repository: ReportRepository, sequence: u64, issue: u32) {
+        match repository {
+            ReportRepository::Velocity => self.issues.insert(sequence, issue),
+            ReportRepository::Rosen => self.rosen_issues.insert(sequence, issue),
+        };
+        self.cursor = sequence;
+        self.pending = None;
+    }
 }
 
 impl ReportedDiscoveries {
@@ -109,7 +152,21 @@ impl ReportedDiscoveries {
 
     /// The issue a project's discovery was reported on, if it has been.
     pub fn issue(&self, project: u32, sequence: u64) -> Option<u32> {
-        self.projects.get(&project)?.issues.get(&sequence).copied()
+        self.issue_for(ReportRepository::Velocity, project, sequence)
+    }
+
+    pub fn issue_for(
+        &self,
+        repository: ReportRepository,
+        project: u32,
+        sequence: u64,
+    ) -> Option<u32> {
+        let reports = self.projects.get(&project)?;
+        let issues = match repository {
+            ReportRepository::Velocity => &reports.issues,
+            ReportRepository::Rosen => &reports.rosen_issues,
+        };
+        issues.get(&sequence).copied()
     }
 }
 
@@ -125,7 +182,19 @@ pub fn report(
     filed: &mut Vec<(u32, String)>,
     retry: bool,
 ) -> Result<ReportOutcome, PullRequestError> {
-    let mut open = open_issues()?;
+    report_to(ReportRepository::Velocity, report, filed, retry)
+}
+
+/// Like `report`, for a specific tool. The caller keeps a separate `filed` list per
+/// repository so identical issue numbers or titles across repositories never collide.
+pub fn report_to(
+    repository: ReportRepository,
+    report: &DiscoveryReport,
+    filed: &mut Vec<(u32, String)>,
+    retry: bool,
+) -> Result<ReportOutcome, PullRequestError> {
+    let repository = repository.repository();
+    let mut open = open_issues(repository)?;
     for issue in filed.iter() {
         if !open.iter().any(|(number, _)| *number == issue.0) {
             open.push(issue.clone());
@@ -144,7 +213,7 @@ pub fn report(
         );
         run(&[
             "api",
-            &format!("repos/{VELOCITY_REPOSITORY}/issues/{number}/comments"),
+            &format!("repos/{repository}/issues/{number}/comments"),
             "-f",
             &format!("body={body}"),
             "--jq",
@@ -152,6 +221,12 @@ pub fn report(
         ])?;
         return Ok(ReportOutcome::Joined(number));
     }
+    let number = file_issue(repository, report)?;
+    filed.push((number, report.title.clone()));
+    Ok(ReportOutcome::Filed(number))
+}
+
+fn file_issue(repository: &str, report: &DiscoveryReport) -> Result<u32, PullRequestError> {
     let body = format!(
         "Reported by an agent from an AIRC discovery.\n\n- **Agent:** `{}`\n- **Project:** `{}`\n- **Recorded:** {}\n\n{}\n",
         report.nick,
@@ -161,7 +236,7 @@ pub fn report(
     );
     let number = run(&[
         "api",
-        &format!("repos/{VELOCITY_REPOSITORY}/issues"),
+        &format!("repos/{repository}/issues"),
         "-f",
         &format!("title={}", report.title),
         "-f",
@@ -169,20 +244,18 @@ pub fn report(
         "--jq",
         ".number",
     ])?;
-    let number: u32 = number
+    number
         .trim()
         .parse()
-        .map_err(|_| PullRequestError::Missing("the new issue's number".into()))?;
-    filed.push((number, report.title.clone()));
-    Ok(ReportOutcome::Filed(number))
+        .map_err(|_| PullRequestError::Missing("the new issue's number".into()))
 }
 
-/// Velocity's open issues (not pull requests), as number and title.
-fn open_issues() -> Result<Vec<(u32, String)>, PullRequestError> {
+/// The destination's open issues (not pull requests), as number and title.
+fn open_issues(repository: &str) -> Result<Vec<(u32, String)>, PullRequestError> {
     let output = run(&[
         "api",
         "--paginate",
-        &format!("repos/{VELOCITY_REPOSITORY}/issues?state=open&per_page=100"),
+        &format!("repos/{repository}/issues?state=open&per_page=100"),
         "--jq",
         ".[] | select(.pull_request == null) | \"\\(.number)\\t\\(.title)\"",
     ])?;

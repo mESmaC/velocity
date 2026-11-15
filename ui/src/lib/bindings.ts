@@ -1035,6 +1035,8 @@ export type Entry_Deserialize = {
 	 *  gave. Velocity files it on its own repository.
 	 */
 	velocity_issue?: string | null,
+	/**  A discovery about Rosen itself, filed on mESmaC/rosen. */
+	rosen_issue?: string | null,
 	/**  The task and fields a `task_update_request` or `task_delete_request` names (F8). */
 	task_change?: TaskChange_Deserialize | null,
 };
@@ -1068,6 +1070,8 @@ export type Entry_Serialize = {
 	 *  gave. Velocity files it on its own repository.
 	 */
 	velocity_issue?: string,
+	/**  A discovery about Rosen itself, filed on mESmaC/rosen. */
+	rosen_issue?: string,
 	/**  The task and fields a `task_update_request` or `task_delete_request` names (F8). */
 	task_change?: TaskChange_Serialize,
 };
