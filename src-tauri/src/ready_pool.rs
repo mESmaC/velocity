@@ -52,6 +52,19 @@ impl PoolHost for Host {
     /// Settings → Worktrees re-reads its rows every second; nothing to push.
     fn changed(&self) {}
 
+    fn base_tip(&self, project: &PoolProject) -> Result<Option<String>, String> {
+        let synchronized = crate::rosen::git_base(
+            &self.application,
+            project.identifier,
+            &project.repository_root,
+            &project.base_branch,
+        )?;
+        Ok(synchronized.or_else(|| {
+            velocity_git::sweep_base(&project.repository_root, &project.base_branch)
+                .map(|(_, commit)| commit)
+        }))
+    }
+
     /// Parses what the merge changed into the project's graph cache (F19 Warming), unless a
     /// warming run for the project is still going: it covers the same tip.
     fn slot_at_tip(&self, project: u32, slot: &Path) {

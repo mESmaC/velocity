@@ -31,6 +31,7 @@ These hold for every feature. A feature that breaks one of them is wrong, whatev
 - What stays: no work is lost (Rosen's durability, and a revert never discards the author's work), every land's build and lint are verified with bisection and the automatic revert of a broken build, the full tests run after the land, and git projects work as before.
 - A failing or rejected Rosen mirror stays visible on its project until the next successful push; F5 specifies the project header, Settings, retry time and rejection notice (#402).
 - Generated lockfiles and bindings are regenerated rather than line-merged; F5 specifies the commands in durable rebase notices, including rebases with no text conflicts (#404).
+- Switching from Rosen to git carries Rosen's landed base into the default branch before new worktrees or ready-pool slots start; divergent history is refused with an explanation (F5, #369).
 
 ---
 

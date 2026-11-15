@@ -296,6 +296,19 @@ pub(crate) fn base_branch(project: &ProjectItem) -> String {
     }
 }
 
+/// Duty checkouts use the same landed history as build threads, including on a
+/// mirror-less project whose git pool is disabled. Call on a blocking worker.
+pub(crate) fn resolve_git_base(app_data: &Path, project: &ProjectItem) -> Result<String, String> {
+    let repository = Path::new(&project.repository_path);
+    let branch = base_branch(project);
+    let server = velocity_rosen::ProjectServer::new(app_data, project.id);
+    let synchronized = velocity_rosen::synchronize_git_base(&server, repository, &branch)
+        .map_err(|error| error.to_string())?;
+    synchronized
+        .or_else(|| velocity_git::sweep_base(repository, &branch).map(|(_, commit)| commit))
+        .ok_or_else(|| format!("Could not find the base branch `{branch}`"))
+}
+
 /// A slug is taken when a thread, a local branch or a folder already uses it (F5 Guards).
 fn slug_taken(project: &ProjectItem, repository: &Path, location: &Location, slug: &str) -> bool {
     let branch = format!("vel/{slug}");

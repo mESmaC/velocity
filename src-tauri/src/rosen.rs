@@ -104,6 +104,23 @@ pub(crate) fn rosen_in_use(application: &AppHandle, project: u32) -> bool {
     .unwrap_or(false)
 }
 
+/// Git launches and pool refreshes must carry forward lands even without a mirror.
+/// Runs on their blocking workers; projects Rosen never imported are unchanged.
+pub(crate) fn git_base(
+    application: &AppHandle,
+    project: u32,
+    repository: &Path,
+    branch: &str,
+) -> Result<Option<String>, String> {
+    let app_data = application
+        .path()
+        .app_data_dir()
+        .map_err(|error| error.to_string())?;
+    let server = ProjectServer::new(&app_data, project);
+    velocity_rosen::synchronize_git_base(&server, repository, branch)
+        .map_err(|error| error.to_string())
+}
+
 /// Whether the servers are stopped for an update or exit, and must not be started.
 pub(crate) fn paused(application: &AppHandle) -> bool {
     application

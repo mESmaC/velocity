@@ -13,6 +13,7 @@ mod conflicts;
 pub mod dispatch;
 pub mod duty;
 mod events;
+mod git_base;
 mod issue;
 pub mod machine_dispatch;
 pub mod machines;
@@ -34,6 +35,7 @@ pub use events::{
     ChangeEvent, EventStream, change_event, conflict_paths, regenerate_paths, revert_output,
 };
 pub use events::{IssueEvent, issue_event};
+pub use git_base::synchronize_git_base;
 pub use issue::{issue_build_coverage, record_issue};
 pub use mirror::{MirrorObservation, mirror_status};
 pub use rosen_client::Error as ClientError;
@@ -50,6 +52,8 @@ use std::path::PathBuf;
 /// Why Rosen could not do what Velocity asked.
 #[derive(Debug, thiserror::Error)]
 pub enum RosenError {
+    #[error("could not synchronize git with Rosen's base: {0}")]
+    GitBase(String),
     #[error("could not read Rosen mirror metadata: {0}")]
     MirrorMetadata(#[from] rusqlite::Error),
     #[error("invalid Rosen mirror event: {0}")]

@@ -241,10 +241,10 @@ impl MainWatches {
         {
             return commit.clone();
         }
-        let repository = PathBuf::from(&roster.project.repository_path);
-        let branch = crate::launch::base_branch(&roster.project);
+        let app_data = self.app_data.clone();
+        let project_item = roster.project.clone();
         let commit = tokio::task::spawn_blocking(move || {
-            velocity_git::sweep_base(&repository, &branch).map(|(_, commit)| commit)
+            crate::launch::resolve_git_base(&app_data, &project_item).ok()
         })
         .await
         .ok()

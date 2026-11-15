@@ -919,10 +919,7 @@ impl Review {
                 .iter()
                 .find(|agent| agent.nickname == nickname)
                 .ok_or("The agent left PR duty")?;
-            let repository = PathBuf::from(&roster.project.repository_path);
-            let branch = crate::launch::base_branch(&roster.project);
-            let (_, base_commit) = velocity_git::sweep_base(&repository, &branch)
-                .ok_or_else(|| format!("Could not find the base branch `{branch}`"))?;
+            let base_commit = crate::launch::resolve_git_base(&runner.app_data, &roster.project)?;
             let plan = plan_review(&roster, agent, number, &base_commit)
                 .map_err(|error| error.to_string())?;
             let checkout = velocity_git::prepare_review_worktree(&plan.worktree, number)

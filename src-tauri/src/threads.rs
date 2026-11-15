@@ -728,7 +728,8 @@ async fn take_goal_folder(
         }
     }
     let pools = crate::ready_pool::pools(application);
-    let (path, branch, failure) = setup_goal_worktree(pools, key.0, &plan.worktree).await;
+    let (path, branch, failure) =
+        setup_goal_worktree(application, pools, key.0, &plan.worktree).await;
     ThreadFolder {
         path,
         branch_name: Some(branch),
@@ -752,17 +753,24 @@ async fn discard_goal_folder(
 
 /// The agent's worktree, from the warm pool when it has one ready (F5).
 async fn setup_goal_worktree(
+    application: &AppHandle,
     pools: Option<velocity_threads::ReadyPools>,
     project: u32,
     request: &velocity_git::WorktreeSetupRequest,
 ) -> (PathBuf, String, Option<String>) {
-    let owned = request.clone();
+    let mut owned = request.clone();
+    let application = application.clone();
     let setup = move || {
-        let ticket = pools.and_then(|pools| pools.take(project));
+        let tip = synchronize_git_request(&application, project, &mut owned)?;
+        let mut ticket = pools.and_then(|pools| pools.take(project));
+        if let (Some(ticket), Some(tip)) = (&mut ticket, tip) {
+            ticket.ready.tip = Some(tip);
+        }
         velocity_git::execute_pooled_worktree_setup(
             &owned,
             ticket.as_ref().map(|ticket| &ticket.ready),
         )
+        .map_err(|error| error.to_string())
     };
     match tauri::async_runtime::spawn_blocking(setup).await {
         Ok(Ok(outcome)) => (
@@ -952,17 +960,22 @@ async fn take_worktree(
     settled: Option<Option<WorktreeName>>,
 ) -> Result<TitledWorktree, String> {
     let (name_sender, name_receiver) = std::sync::mpsc::channel();
-    let request = plan.worktree.clone();
+    let mut request = plan.worktree.clone();
     let pools = crate::ready_pool::pools(application);
     let project = key.0;
+    let handle = application.clone();
     let worktree = tauri::async_runtime::spawn_blocking(move || {
+        let tip = synchronize_git_request(&handle, project, &mut request)?;
         // Held until the checkout is done: dropping it frees the slot for the next one.
-        let ticket = pools.and_then(|pools| pools.take(project));
-        velocity_git::execute_titled_pooled_setup(
+        let mut ticket = pools.and_then(|pools| pools.take(project));
+        if let (Some(ticket), Some(tip)) = (&mut ticket, tip) {
+            ticket.ready.tip = Some(tip);
+        }
+        Ok::<_, String>(velocity_git::execute_titled_pooled_setup(
             &request,
             ticket.as_ref().map(|ticket| &ticket.ready),
             || name_receiver.recv().ok().flatten(),
-        )
+        ))
     });
     let name = match settled {
         Some(name) => name,
@@ -970,7 +983,24 @@ async fn take_worktree(
     };
     // Setup is waiting for this; if the checkout already failed, nobody is listening.
     let _ = name_sender.send(name);
-    worktree.await.map_err(|error| error.to_string())
+    worktree.await.map_err(|error| error.to_string())?
+}
+
+fn synchronize_git_request(
+    application: &AppHandle,
+    project: u32,
+    request: &mut velocity_git::WorktreeSetupRequest,
+) -> Result<Option<String>, String> {
+    let tip = crate::rosen::git_base(
+        application,
+        project,
+        &request.repository_root,
+        &request.base_ref,
+    )?;
+    if let Some(tip) = &tip {
+        request.base_ref = tip.clone();
+    }
+    Ok(tip)
 }
 
 /// Asks the title model, shows the title it settles on, and returns the names the worktree

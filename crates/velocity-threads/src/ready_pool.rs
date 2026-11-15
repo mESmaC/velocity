@@ -87,6 +87,11 @@ impl PoolProject {
 pub trait PoolHost: Send + Sync + 'static {
     /// The projects that keep a pool now, with their Settings → Worktrees.
     fn projects(&self) -> Vec<(PoolProject, WorktreePreferences)>;
+    /// Resolve the checkout tip, allowing the app to synchronize former Rosen projects.
+    /// A failure disables takes and refills until a later refresh succeeds.
+    fn base_tip(&self, project: &PoolProject) -> Result<Option<String>, String> {
+        Ok(sweep_base(&project.repository_root, &project.base_branch).map(|(_, commit)| commit))
+    }
     /// A slot was made, built, taken or removed: Settings → Worktrees lists them.
     fn changed(&self);
     /// A ready worktree now sits at the base tip, made or caught up after a merge: the code
@@ -222,6 +227,7 @@ impl ReadyPools {
         loop {
             let pool = pools.get_mut(&project)?;
             let project_root = pool.project.as_ref()?.project_root.clone();
+            pool.tip.as_ref()?;
             if let Some(index) = choose_ready(&pool.slots, pool.tip.as_deref()) {
                 pool.set_state(index, SlotState::Taken);
                 pool.reserved = pool.reserved().saturating_sub(1);
@@ -291,7 +297,7 @@ impl ReadyPools {
                 self.scan(&project);
                 worked = true;
             }
-            self.fetch_tips();
+            self.fetch_tips(host);
             while let Some((project, work)) = self.next_checkout() {
                 self.run_checkout(host, &project, work);
                 host.changed();
@@ -391,7 +397,7 @@ impl ReadyPools {
     }
 
     /// Fetches the base branch of every pooled project that hasn't been fetched lately.
-    fn fetch_tips(&self) {
+    fn fetch_tips(&self, host: &dyn PoolHost) {
         let due: Vec<PoolProject> = self
             .lock()
             .values()
@@ -400,13 +406,19 @@ impl ReadyPools {
             .filter_map(|pool| pool.project.clone())
             .collect();
         for project in due {
-            let tip = sweep_base(&project.repository_root, &project.base_branch)
-                .map(|(_, commit)| commit);
+            let tip = match host.base_tip(&project) {
+                Ok(tip) => tip,
+                Err(error) => {
+                    eprintln!(
+                        "Velocity warm pool base for {}: {error}",
+                        project.identifier
+                    );
+                    None
+                }
+            };
             if let Some(pool) = self.lock().get_mut(&project.identifier) {
                 pool.fetched = Some(Instant::now());
-                if tip.is_some() {
-                    pool.tip = tip;
-                }
+                pool.tip = tip;
             }
         }
     }

@@ -238,10 +238,10 @@ impl ScoutSweeps {
         {
             return commit.clone();
         }
-        let repository = PathBuf::from(&roster.project.repository_path);
-        let branch = crate::launch::base_branch(&roster.project);
+        let app_data = self.review_swarms.app_data.clone();
+        let project_item = roster.project.clone();
         let commit = tokio::task::spawn_blocking(move || {
-            velocity_git::sweep_base(&repository, &branch).map(|(_, commit)| commit)
+            crate::launch::resolve_git_base(&app_data, &project_item).ok()
         })
         .await
         .ok()
@@ -352,13 +352,11 @@ impl Sweep {
     async fn prepare(&self) -> Result<(SweepPlan, PathBuf, Option<String>), String> {
         let roster = self.roster.clone();
         let index = self.start.index;
+        let app_data = self.runner.review_swarms.app_data.clone();
         tokio::task::spawn_blocking(move || {
             let scout = roster.scouts.get(index).ok_or("The scout left")?;
-            let repository = PathBuf::from(&roster.project.repository_path);
-            let branch = crate::launch::base_branch(&roster.project);
-            let (base_ref, commit) = velocity_git::sweep_base(&repository, &branch)
-                .ok_or_else(|| format!("Could not find the base branch `{branch}`"))?;
-            let plan = plan_sweep(&roster, scout, &base_ref).map_err(|error| error.to_string())?;
+            let commit = crate::launch::resolve_git_base(&app_data, &roster.project)?;
+            let plan = plan_sweep(&roster, scout, &commit).map_err(|error| error.to_string())?;
             let worktree = velocity_git::prepare_sweep_worktree(&plan.worktree)
                 .map_err(|error| error.to_string())?;
             Ok((plan, worktree, Some(commit)))
