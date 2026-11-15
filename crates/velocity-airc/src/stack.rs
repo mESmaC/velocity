@@ -10,7 +10,7 @@ impl Channel {
         else {
             return Ok(());
         };
-        let storage = Storage::open(&self.directory)?;
+        let storage = Storage::open(self)?;
         let entries = storage.read()?;
         let mut record = entry(&entries, "unblocked", "velocity", &wait.nick, message);
         record.dependency = Some(wait);

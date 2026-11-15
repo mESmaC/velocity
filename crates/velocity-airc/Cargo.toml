@@ -15,9 +15,12 @@ bindings = ["dep:specta"]
 [dependencies]
 chrono = { version = "0.4", default-features = false, features = ["clock"] }
 notify = "8.2"
+rosen-client = { git = "https://github.com/mESmaC/rosen", rev = "dd08271d4405aa31b397304f1f4ecff9fb59d057" }
 serde.workspace = true
 serde_json.workspace = true
 specta = { workspace = true, optional = true }
 thiserror.workspace = true
+tokio = { workspace = true, features = ["rt-multi-thread"] }
 velocity-git = { path = "../velocity-git" }
 velocity-graph.workspace = true
+velocity-rosen.workspace = true

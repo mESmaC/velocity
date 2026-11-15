@@ -38,10 +38,13 @@ pub fn serve_stdio(arguments: &[OsString]) -> Result<(), Error> {
             .map(str::to_owned)
             .ok_or_else(|| Error::Invalid(format!("Invalid {what}")))
     };
-    let channel = Channel::open(
-        &PathBuf::from(app_data),
-        &text(project, "project identity")?,
-    )?;
+    let channel = match std::env::var("ROSEN_ENDPOINT") {
+        Ok(endpoint) => Channel::at_endpoint(&PathBuf::from(app_data), &endpoint),
+        Err(_) => Channel::open(
+            &PathBuf::from(app_data),
+            &text(project, "project identity")?,
+        )?,
+    };
     serve(
         &channel,
         &text(member, "member identity")?,

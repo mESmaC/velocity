@@ -158,14 +158,45 @@ pub struct Presence {
     pub joined: bool,
 }
 
+impl Presence {
+    pub(crate) fn new(member: String, nick: String, joined: bool) -> Self {
+        Self {
+            member,
+            nick,
+            joined,
+        }
+    }
+}
+
 pub struct Channel {
+    pub(crate) remote: Option<crate::remote::Remote>,
     pub(crate) directory: PathBuf,
 }
 
 impl Channel {
+    /// Rosen channels never fall back to a machine-local copy on disconnection.
+    pub fn server_backed(&self) -> bool {
+        self.remote.is_some()
+    }
+
+    /// The same server endpoint (a local daemon on a remote machine included) gives
+    /// every host one channel authority. This never creates local channel files.
+    pub fn at_endpoint(app_data: &Path, endpoint: &str) -> Self {
+        Self {
+            directory: PathBuf::new(),
+            remote: Some(crate::remote::Remote::new(app_data, endpoint.into())),
+        }
+    }
+
     /// Project identity, not display name, partitions channels even for same-name projects.
     pub fn open(app_data: &Path, project: &str) -> Result<Self, Error> {
         require_text(project)?;
+        if let Some(remote) = crate::remote::Remote::for_project(app_data, project)? {
+            return Ok(Self {
+                directory: PathBuf::new(),
+                remote: Some(remote),
+            });
+        }
         let key: String = project
             .as_bytes()
             .iter()
@@ -178,10 +209,16 @@ impl Channel {
         }
         directory.push("channel");
         std::fs::create_dir_all(&directory)?;
-        Ok(Self { directory })
+        Ok(Self {
+            directory,
+            remote: None,
+        })
     }
 
     pub fn read(&self, after: u64) -> Result<Vec<Entry>, Error> {
+        if let Some(remote) = &self.remote {
+            return remote.read(after);
+        }
         let entries = self.snapshot()?;
         // Copy only the requested tail, after releasing the writer's lock.
         let start = entries.partition_point(|entry| entry.sequence <= after);
@@ -190,19 +227,23 @@ impl Channel {
 
     /// Immutable routing context, shared with the log tail rather than cloned per agent.
     pub(crate) fn snapshot(&self) -> Result<std::sync::Arc<Vec<Entry>>, Error> {
-        Storage::open(&self.directory)?.snapshot()
+        Storage::open(self)?.snapshot()
     }
 
     pub fn tip(&self) -> Result<u64, Error> {
+        if let Some(remote) = &self.remote {
+            return remote.tip();
+        }
         Ok(self.snapshot()?.last().map_or(0, |entry| entry.sequence))
     }
 
     pub fn presence(&self) -> Result<Vec<Presence>, Error> {
-        Ok(
-            presence(&self.read_presence_log(&Storage::open(&self.directory)?)?)
-                .into_values()
-                .collect(),
-        )
+        if let Some(remote) = &self.remote {
+            return remote.presence();
+        }
+        Ok(presence(&self.read_presence_log(&Storage::open(self)?)?)
+            .into_values()
+            .collect())
     }
 
     pub fn join(&self, member: &str, requested_nick: &str) -> Result<String, Error> {
@@ -215,8 +256,11 @@ impl Channel {
         requested_nick: &str,
         session: bool,
     ) -> Result<String, Error> {
+        if let Some(remote) = &self.remote {
+            return remote.join(member, requested_nick);
+        }
         require_text(member)?;
-        let storage = Storage::open(&self.directory)?;
+        let storage = Storage::open(self)?;
         let entries = self.read_presence_log(&storage)?;
         let members = presence(&entries);
         if let Some(previous) = members.get(member).filter(|member| member.joined) {
@@ -241,7 +285,10 @@ impl Channel {
     }
 
     pub fn leave(&self, member: &str) -> Result<(), Error> {
-        let storage = Storage::open(&self.directory)?;
+        if let Some(remote) = &self.remote {
+            return remote.leave(member);
+        }
+        let storage = Storage::open(self)?;
         let entries = self.read_presence_log(&storage)?;
         if let Some(active) = presence(&entries)
             .get(member)
@@ -260,8 +307,11 @@ impl Channel {
 
     /// Exact nicks target one member; likely mistyped nicks never silently broadcast.
     pub fn comment(&self, text: &str) -> Result<Entry, Error> {
+        if let Some(remote) = &self.remote {
+            return remote.comment(text);
+        }
         require_text(text)?;
-        let storage = Storage::open(&self.directory)?;
+        let storage = Storage::open(self)?;
         let entries = self.read_presence_log(&storage)?;
         let mut record = entry(&entries, "message", "you", "you", text);
         if let Some((nickname, body)) = text.split_once(':') {
@@ -291,6 +341,9 @@ impl Channel {
         intent: &str,
         text: &str,
     ) -> Result<(), Error> {
+        if let Some(remote) = &self.remote {
+            return remote.message(member, to, intent, text);
+        }
         if !matches!(intent, "inform" | "request" | "question") || to.is_empty() {
             return Err(Error::Invalid(
                 "Messages require recipients and inform/request/question intent".into(),
@@ -333,6 +386,9 @@ impl Channel {
                 "The Velocity issue title must be one line of at most 200 characters".into(),
             ));
         }
+        if let Some(remote) = &self.remote {
+            return remote.ledger(member, ledger, text, velocity_issue);
+        }
         self.post_with(member, ledger, text, Vec::new(), None, velocity_issue)
     }
 
@@ -341,7 +397,7 @@ impl Channel {
     pub fn record_past_work(&self, nick_name: &str, text: &str) -> Result<Entry, Error> {
         require_text(nick_name)?;
         require_text(text)?;
-        let storage = Storage::open(&self.directory)?;
+        let storage = Storage::open(self)?;
         let entries = self.read_presence_log(&storage)?;
         let record = entry(
             &entries,
@@ -350,6 +406,9 @@ impl Channel {
             &nick(nick_name, 16),
             text,
         );
+        if let Some(remote) = &self.remote {
+            return remote.append_record(&record);
+        }
         storage.append(&record)?;
         Ok(record)
     }
@@ -362,13 +421,20 @@ impl Channel {
         }
         require_text(&event.nick)?;
         require_text(&event.text)?;
-        let storage = Storage::open(&self.directory)?;
+        let storage = Storage::open(self)?;
         let entries = self.read_presence_log(&storage)?;
         let mut record = entry(&entries, &event.tag, "velocity", &event.nick, &event.text);
         record.pull_request = event.pull_request;
         record.head = event.head;
         record.to = event.recipients;
         record.files = event.files;
+        if let Some(remote) = &self.remote {
+            let result = remote.append_record(&record)?;
+            if matches!(record.kind.as_str(), "PR" | "pushed" | "updated") {
+                remote.release_held(&record.nick)?;
+            }
+            return Ok(result);
+        }
         storage.append(&record)?;
         Ok(record)
     }
@@ -394,7 +460,7 @@ impl Channel {
         velocity_issue: Option<String>,
     ) -> Result<(), Error> {
         require_text(text)?;
-        let storage = Storage::open(&self.directory)?;
+        let storage = Storage::open(self)?;
         let entries = self.read_presence_log(&storage)?;
         let members = presence(&entries);
         let active = members

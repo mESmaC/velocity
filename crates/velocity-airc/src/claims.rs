@@ -85,6 +85,9 @@ pub fn claims(entries: &[Entry]) -> Vec<Claim> {
 
 impl Channel {
     pub fn claims(&self) -> Result<Vec<Claim>, Error> {
+        if let Some(remote) = &self.remote {
+            return remote.claims();
+        }
         Ok(claims(&self.read(0)?))
     }
 
@@ -115,8 +118,11 @@ impl Channel {
         {
             return Err(Error::Invalid("Claims need a task and branch".into()));
         }
+        if let Some(remote) = &self.remote {
+            return remote.claim_work(member, piece, task, branch, files);
+        }
         let key = piece_key(if piece.trim().is_empty() { task } else { piece });
-        let storage = Storage::open(&self.directory)?;
+        let storage = Storage::open(self)?;
         let mut entries = storage.read()?;
         crate::routing::require_unfrozen(&entries, member)?;
         let nick = active_nick(&entries, member)?;
@@ -159,7 +165,10 @@ impl Channel {
     }
 
     pub fn release_with_note(&self, member: &str, task: &str, note: &str) -> Result<(), Error> {
-        let storage = Storage::open(&self.directory)?;
+        if let Some(remote) = &self.remote {
+            return remote.release(member, task, note);
+        }
+        let storage = Storage::open(self)?;
         let entries = storage.read()?;
         crate::routing::require_unfrozen(&entries, member)?;
         let key = piece_key(task);
@@ -184,7 +193,10 @@ impl Channel {
     }
 
     pub fn share(&self, member: &str, holder: &str, file: &str) -> Result<(), Error> {
-        let storage = Storage::open(&self.directory)?;
+        if let Some(remote) = &self.remote {
+            return remote.share(member, holder, file);
+        }
+        let storage = Storage::open(self)?;
         let entries = storage.read()?;
         crate::routing::require_unfrozen(&entries, member)?;
         let nick = active_nick(&entries, member)?;
@@ -466,5 +478,27 @@ mod tests {
             );
         }
         Ok(())
+    }
+}
+
+// The adapter constructs this module's record through its owning module.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn from_server(
+    member: &str,
+    nick: &str,
+    piece: &str,
+    task: &str,
+    branch: &str,
+    files: Vec<String>,
+    since: String,
+) -> Claim {
+    Claim {
+        member: member.into(),
+        nick: nick.into(),
+        piece: piece.into(),
+        task: task.into(),
+        branch: branch.into(),
+        files,
+        since,
     }
 }

@@ -34,7 +34,10 @@ pub(crate) fn require_unfrozen(entries: &[Entry], member: &str) -> Result<(), Er
 
 impl Channel {
     pub fn set_message_mode(&self, nick: &str, mode: MessageMode) -> Result<(), Error> {
-        let storage = Storage::open(&self.directory)?;
+        if let Some(remote) = &self.remote {
+            return remote.set_mode(nick, mode);
+        }
+        let storage = Storage::open(self)?;
         let entries = storage.read()?;
         let member = self.presence_from_entries(&entries, nick)?;
         let mut record = entry(
@@ -58,7 +61,7 @@ impl Channel {
     }
 
     pub(crate) fn acknowledge(&self, nick: &str, sequence: u64) -> Result<(), Error> {
-        let storage = Storage::open(&self.directory)?;
+        let storage = Storage::open(self)?;
         let entries = storage.snapshot()?;
         let mut record = entry(
             &entries,

@@ -122,11 +122,14 @@ impl Channel {
         text: &str,
         change: Option<TaskChange>,
     ) -> Result<u64, Error> {
-        let storage = Storage::open(&self.directory)?;
+        let storage = Storage::open(self)?;
         let entries = storage.read()?;
         let presence = self.task_author_nick(member, &entries)?;
         let mut record = entry(&entries, kind, member, &presence, text);
         record.task_change = change;
+        if let Some(remote) = &self.remote {
+            return remote.append_record(&record).map(|record| record.sequence);
+        }
         storage.append(&record)?;
         Ok(record.sequence)
     }
@@ -144,7 +147,7 @@ impl Channel {
     pub fn pending_tasks(&self) -> Result<Vec<Entry>, Error> {
         // The app asks every second for every project: share the cached log rather than
         // copy it, and look answers up in a set rather than rescan the log per request.
-        let entries = Storage::open(&self.directory)?.snapshot()?;
+        let entries = Storage::open(self)?.snapshot()?;
         let answered: std::collections::HashSet<u64> = entries
             .iter()
             .filter(|result| result.kind == "task_result")
@@ -170,7 +173,7 @@ impl Channel {
     }
 
     pub fn finish_task(&self, request: &Entry, result: &str) -> Result<(), Error> {
-        let storage = Storage::open(&self.directory)?;
+        let storage = Storage::open(self)?;
         let entries = storage.read()?;
         if entries
             .iter()
@@ -186,6 +189,19 @@ impl Channel {
     /// Save the Task List the store owner just read, for `task_list`. Writes only when the
     /// list changed, through a temporary file, so a reader never sees half a list.
     pub fn publish_task_list(&self, rows: &[TaskListRow]) -> Result<bool, Error> {
+        if let Some(remote) = &self.remote {
+            if self.task_list()? == rows {
+                return Ok(false);
+            }
+            let record = remote.record(
+                "task_list",
+                "velocity",
+                "velocity",
+                &serde_json::to_string(rows)?,
+            );
+            remote.append_record(&record)?;
+            return Ok(true);
+        }
         let path = self.directory.join(TASK_LIST_FILE);
         let bytes = serde_json::to_vec_pretty(rows)?;
         if std::fs::read(&path).is_ok_and(|saved| saved == bytes) {
@@ -199,6 +215,15 @@ impl Channel {
 
     /// The Task List as the store owner last published it; empty before its first pass.
     pub fn task_list(&self) -> Result<Vec<TaskListRow>, Error> {
+        if let Some(remote) = &self.remote {
+            return remote
+                .read(0)?
+                .iter()
+                .rev()
+                .find(|record| record.kind == "task_list")
+                .map(|record| serde_json::from_str(&record.text).map_err(Error::from))
+                .unwrap_or_else(|| Ok(Vec::new()));
+        }
         let path = self.directory.join(TASK_LIST_FILE);
         // The owner replaces the file by rename; Windows can refuse a read for that instant.
         for attempt in 0..5 {

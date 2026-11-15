@@ -154,7 +154,7 @@ fn read_active(
             .dependency_waits()
             .map_err(|error| error.to_string())?
     };
-    let claims = claim_records(&entries, &waits);
+    let claims = claim_records(channel.claims().map_err(|error| error.to_string())?, &waits);
     // The badge never shows report results. Without the saved record, marked discoveries
     // read "filing…" until it can be read.
     let reported = if unread_only {
@@ -179,10 +179,10 @@ fn read_active(
 }
 
 fn claim_records(
-    entries: &[Entry],
+    claims: Vec<velocity_airc::Claim>,
     waits: &[velocity_airc::waits::DependencyWait],
 ) -> Vec<AircClaimRecord> {
-    velocity_airc::claims::claims(entries)
+    claims
         .into_iter()
         .map(|claim| {
             let waiting = waits.iter().find(|wait| wait.member == claim.member);

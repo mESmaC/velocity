@@ -9,6 +9,11 @@ mod presence;
 mod process;
 mod protocol;
 mod rebase;
+mod remote;
+mod remote_claims;
+mod remote_delivery;
+mod remote_events;
+mod remote_waits;
 mod routing;
 mod stack;
 mod storage;
@@ -34,4 +39,6 @@ pub enum Error {
     Json(#[from] serde_json::Error),
     #[error("{0}")]
     Invalid(String),
+    #[error("Rosen AIRC: {0}")]
+    Rosen(#[from] rosen_client::Error),
 }

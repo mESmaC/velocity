@@ -1,18 +1,27 @@
 use std::fs::{File, OpenOptions};
 use std::io::{Read, Seek, SeekFrom, Write};
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::sync::Arc;
 
-use crate::{Entry, Error};
+use crate::{Channel, Entry, Error, remote::Remote};
 
 pub(crate) struct Storage {
     directory: PathBuf,
     // The handle owns the cross-process lock for the whole read/modify/append operation.
-    _lock: File,
+    _lock: Option<File>,
+    remote: Option<Remote>,
 }
 
 impl Storage {
-    pub(crate) fn open(directory: &Path) -> Result<Self, Error> {
+    pub(crate) fn open(channel: &Channel) -> Result<Self, Error> {
+        if let Some(remote) = &channel.remote {
+            return Ok(Self {
+                directory: PathBuf::new(),
+                _lock: None,
+                remote: Some(remote.clone()),
+            });
+        }
+        let directory = &channel.directory;
         std::fs::create_dir_all(directory)?;
         let lock = OpenOptions::new()
             .create(true)
@@ -22,7 +31,8 @@ impl Storage {
         lock.lock()?;
         Ok(Self {
             directory: directory.into(),
-            _lock: lock,
+            _lock: Some(lock),
+            remote: None,
         })
     }
 
@@ -31,12 +41,18 @@ impl Storage {
     }
 
     pub(crate) fn snapshot(&self) -> Result<Arc<Vec<Entry>>, Error> {
+        if let Some(remote) = &self.remote {
+            return remote.read(0).map(Arc::new);
+        }
         // The cross-process lock is already held: offsets only observe committed,
         // stable files and mutations still allocate their sequence atomically.
         crate::tail::snapshot(&self.directory)
     }
 
     pub(crate) fn append(&self, entry: &Entry) -> Result<(), Error> {
+        if let Some(remote) = &self.remote {
+            return remote.append_record(entry).map(|_| ());
+        }
         let date = chrono::Utc::now().format("%Y-%m-%d");
         let filename = match entry.kind.as_str() {
             "discovery" => "discoveries.jsonl".to_owned(),

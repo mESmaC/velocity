@@ -30,10 +30,13 @@ impl Channel {
             .open(path)?)
     }
 
-    pub(crate) fn connect(&self, member: &str) -> Result<File, Error> {
+    pub(crate) fn connect(&self, member: &str) -> Result<Option<File>, Error> {
+        if self.remote.is_some() {
+            return Ok(None);
+        }
         // Serialize reconnect and reconciliation so an old join cannot borrow the new
         // connection's lock and keep a stale nick alive.
-        let storage = Storage::open(&self.directory)?;
+        let storage = Storage::open(self)?;
         let legacy_session = self.session_path(member)?.exists();
         let connection = self.session_file(member)?;
         connection.try_lock().map_err(|error| {
@@ -53,11 +56,14 @@ impl Channel {
         {
             append_disconnect(&storage, &mut entries, &previous)?;
         }
-        Ok(connection)
+        Ok(Some(connection))
     }
 
     pub(crate) fn read_presence_log(&self, storage: &Storage) -> Result<Vec<Entry>, Error> {
         let mut entries = storage.read()?;
+        if self.remote.is_some() {
+            return Ok(entries);
+        }
         let mut latest = std::collections::BTreeMap::new();
         for record in &entries {
             if matches!(record.kind.as_str(), "join" | "leave") {

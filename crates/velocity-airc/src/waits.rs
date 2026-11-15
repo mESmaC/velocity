@@ -62,9 +62,19 @@ pub struct WaitEnded {
 
 impl Channel {
     pub fn register_checkout(&self, member: &str, checkout: Checkout) -> Result<(), Error> {
-        let storage = Storage::open(&self.directory)?;
+        let storage = Storage::open(self)?;
         let entries = storage.snapshot()?;
         let mut record = entry(&entries, "checkout", member, member, "thread checkout");
+        if self.remote.is_some() {
+            let metadata = Path::new(&checkout.worktree).join(".rosen/workspace.json");
+            if metadata.is_file() {
+                let value: serde_json::Value = serde_json::from_slice(&std::fs::read(metadata)?)?;
+                record.head = value
+                    .get("change")
+                    .and_then(|value| value.as_str())
+                    .map(str::to_owned);
+            }
+        }
         record.checkout = Some(checkout);
         storage.append(&record)
     }
@@ -74,7 +84,10 @@ impl Channel {
     }
 
     pub fn begin_wait(&self, member: &str, holder: &str, file: &str) -> Result<Entry, Error> {
-        let storage = Storage::open(&self.directory)?;
+        if let Some(remote) = &self.remote {
+            return remote.begin_wait(member, holder, file);
+        }
+        let storage = Storage::open(self)?;
         let entries = storage.snapshot()?;
         let claims = crate::claims::claims(&entries);
         let own = claims
@@ -114,7 +127,7 @@ impl Channel {
         outcome: &str,
         number: Option<u32>,
     ) -> Result<(), Error> {
-        let storage = Storage::open(&self.directory)?;
+        let storage = Storage::open(self)?;
         let entries = storage.snapshot()?;
         if entries
             .iter()
@@ -145,8 +158,11 @@ impl Channel {
         member: &str,
         holder: &str,
         file: &str,
-        cancelled: impl Fn() -> bool,
+        cancelled: impl Fn() -> bool + Sync,
     ) -> Result<serde_json::Value, Error> {
+        if let Some(remote) = &self.remote {
+            return remote.wait_until(self, member, holder, file, cancelled);
+        }
         let (sender, receiver) = std::sync::mpsc::channel();
         let mut watcher =
             notify::recommended_watcher(move |result: notify::Result<notify::Event>| {
@@ -182,7 +198,7 @@ impl Channel {
         }
     }
 
-    fn continue_wait(
+    pub(crate) fn continue_wait(
         &self,
         member: &str,
         dependency: &DependencyWait,
@@ -203,7 +219,7 @@ impl Channel {
             ),
             Err(error) => format!("{UPDATE_FAILED}: {error}"),
         };
-        let storage = Storage::open(&self.directory)?;
+        let storage = Storage::open(self)?;
         let entries = storage.snapshot()?;
         let mut record = entry(&entries, "unblocked", "velocity", &dependency.nick, &text);
         record.dependency = Some(dependency.clone());
@@ -224,6 +240,12 @@ impl Channel {
         let Some(dependency) = active_waits(&entries).remove(member) else {
             return Ok(WaitState::NotWaiting);
         };
+        if let Some(remote) = &self.remote {
+            if holder_end(&entries, &dependency).is_some() {
+                return Ok(WaitState::HolderEnded);
+            }
+            return remote.wait_state(member, &dependency);
+        }
         Ok(match holder_end(&entries, &dependency) {
             Some(_) => WaitState::HolderEnded,
             None => WaitState::Waiting,
@@ -238,8 +260,23 @@ impl Channel {
         let entries = self.snapshot()?;
         let mut failure = None;
         if let Some(dependency) = active_waits(&entries).remove(member) {
-            let Some(ended) = holder_end(&entries, &dependency) else {
-                return Ok(None);
+            let ended = if let Some(remote) = &self.remote {
+                if self.wait_state(member)? != WaitState::HolderEnded {
+                    return Ok(None);
+                }
+                holder_end(&entries, &dependency).unwrap_or_else(|| {
+                    remote.record(
+                        "dependency_end",
+                        &dependency.holder,
+                        &dependency.holder_nick,
+                        "dependency released",
+                    )
+                })
+            } else {
+                let Some(ended) = holder_end(&entries, &dependency) else {
+                    return Ok(None);
+                };
+                ended
             };
             drop(entries);
             failure = self.continue_wait(member, &dependency, &ended).err();
@@ -292,7 +329,7 @@ impl Channel {
     }
 }
 
-fn active_waits(entries: &[Entry]) -> BTreeMap<String, DependencyWait> {
+pub(crate) fn active_waits(entries: &[Entry]) -> BTreeMap<String, DependencyWait> {
     let mut waits = BTreeMap::new();
     for entry in entries {
         if let Some(dependency) = &entry.dependency {
@@ -308,7 +345,7 @@ fn active_waits(entries: &[Entry]) -> BTreeMap<String, DependencyWait> {
 
 /// The holder's `dependency_end`, counting only ends after its current checkout so an
 /// earlier run of the same member never ends a new wait.
-fn holder_end(entries: &[Entry], dependency: &DependencyWait) -> Option<Entry> {
+pub(crate) fn holder_end(entries: &[Entry], dependency: &DependencyWait) -> Option<Entry> {
     let checkout = entries
         .iter()
         .rev()
@@ -348,7 +385,7 @@ fn expired_wait(entries: &[Entry], dependency: &DependencyWait) -> Option<Entry>
     Some(ended)
 }
 
-fn reject_cycle(
+pub(crate) fn reject_cycle(
     waits: &BTreeMap<String, DependencyWait>,
     member: &str,
     holder: &str,
@@ -408,4 +445,20 @@ fn blocked_wait_expires_from_durable_timestamp() {
         holder_end(&[waiting], &dependency)
             .is_some_and(|ended| ended.text.contains("wait expired"))
     );
+}
+
+pub(crate) fn dependency(
+    member: &str,
+    nick: &str,
+    holder: &str,
+    holder_nick: &str,
+    file: &str,
+) -> DependencyWait {
+    DependencyWait {
+        member: member.into(),
+        nick: nick.into(),
+        holder: holder.into(),
+        holder_nick: holder_nick.into(),
+        file: file.into(),
+    }
 }

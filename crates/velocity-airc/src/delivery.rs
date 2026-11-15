@@ -5,6 +5,9 @@ impl Channel {
     /// A new thread starts at its own join, never at historical broadcast comments.
     /// Rejoining after restart keeps the original membership's lower bound.
     pub fn delivery_cursor(&self, member: &str, saved: u64) -> Result<u64, Error> {
+        if let Some(remote) = &self.remote {
+            return remote.delivery_cursor(member, saved);
+        }
         if saved != 0 {
             return Ok(saved);
         }
@@ -45,6 +48,9 @@ pub fn deliver_targeted(
     idle: bool,
     mut deliver: impl FnMut(&str, &str) -> Result<bool, String>,
 ) -> Result<u64, Error> {
+    if channel.server_backed() {
+        return crate::remote_delivery::deliver(channel, nick, after, idle, deliver);
+    }
     let mut cursor = after;
     let mut held = false;
     for (sequence, delivery) in pending(channel, nick, after, idle)? {
@@ -111,7 +117,7 @@ fn pending(
         .collect())
 }
 
-fn routed(
+pub(crate) fn routed(
     entry: &Entry,
     nick: &str,
     entries: &[Entry],
