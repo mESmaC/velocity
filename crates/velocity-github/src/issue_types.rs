@@ -28,6 +28,16 @@ pub struct GitHubIssue {
     pub scout: Option<String>,
 }
 
+impl GitHubIssue {
+    /// Whether the issue is labelled `spec-question`: an open SPEC.md §8 question that
+    /// waits on the owner's answer (F9), so it holds no build work of its own.
+    pub fn is_spec_question(&self) -> bool {
+        self.labels
+            .iter()
+            .any(|label| label.eq_ignore_ascii_case("spec-question"))
+    }
+}
+
 /// The agent compares a finding against this entire inventory, including closed
 /// issues. Filing refreshes it so a newly filed or edited issue is not missed.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, Type)]

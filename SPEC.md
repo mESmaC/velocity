@@ -1063,7 +1063,7 @@ Four providers: **Anthropic** (Claude Code agent), **Codex** (Codex CLI agent), 
 1. Gets a nick such as `sol-3` and a worktree named after it, then reads AGENTS.md and SPEC.md. State: **choosing work**.
 2. Reads the AIRC claims board and picks an unclaimed piece. The pool is:
    - open Task List items, except drafts and items another agent is already on;
-   - open issues;
+   - open issues, except `spec-question` issues, which wait on your answer (F9) and hold nothing to build;
    - SPEC.md sections nobody has built.
 3. Claims it with `airc_claim`.
    - **Granted:** it renames its branch for the piece (`vel/<slug>`, or `vel/issue-<n>`), posts its claim with files, and continues.
@@ -1074,7 +1074,7 @@ Four providers: **Anthropic** (Claude Code agent), **Codex** (Codex CLI agent), 
 
 Agents launched together read the board within seconds of each other, so several often want the same piece. The lock is what makes that safe. The losers pick again within one step instead of duplicating work.
 
-**Work inventory.** `get_work_pool` and the `velocity-threads` `work_pool` example read the same project-scoped inventory. Draft/done tasks, ownerless now tasks and closed issues are omitted; owned work stays visible but does not count as available. Failed/closed owners retain their pieces. Unlocked projects return an empty pool. SPEC.md's Implementation order/Implementation plan checklist supplies unfinished entries when present; otherwise checklist-bearing Markdown sections supply one piece each. Fenced examples are ignored. Spec identities use heading context and entry text rather than line offsets. A thread's defaulted `spec_section` identity retains ownership and records completion when merged, without editing SPEC.md; deleting merged history retains the identity in the project's defaulted `built_spec_sections`. Selection, atomic claims and launch remain separate §7 items.
+**Work inventory.** `get_work_pool` and the `velocity-threads` `work_pool` example read the same project-scoped inventory. Draft/done tasks, ownerless now tasks, closed issues and `spec-question` issues are omitted; owned work stays visible but does not count as available. Failed/closed owners retain their pieces. Unlocked projects return an empty pool. SPEC.md's Implementation order/Implementation plan checklist supplies unfinished entries when present; otherwise checklist-bearing Markdown sections supply one piece each. Fenced examples are ignored. Spec identities use heading context and entry text rather than line offsets. A thread's defaulted `spec_section` identity retains ownership and records completion when merged, without editing SPEC.md; deleting merged history retains the identity in the project's defaulted `built_spec_sections`. Selection, atomic claims and launch remain separate §7 items.
 
 **Sidebar:** one row under Swarms, with a target icon, "Goal · <prompt>", ×<agents> and the segment bar. Its members nest under it like swarm members, and each member is titled by the piece it claimed.
 
