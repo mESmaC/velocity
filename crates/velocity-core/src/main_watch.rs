@@ -4,7 +4,7 @@
 //! One watcher takes each new tip of the base branch. The others stand by, so a merge that
 //! lands while a watch runs is taken by the next idle watcher instead of waiting its turn.
 
-use crate::scout_sweep::{SweepRecord, step_doing};
+use crate::scout_sweep::{SweepRecord, feed_line};
 
 /// How many merges a first watch bisects over when nothing was watched before it.
 pub const FIRST_WATCH_DEPTH: usize = 20;
@@ -196,7 +196,7 @@ pub fn verdict_message(base: &str, tip: &str, verdict: &WatchVerdict) -> String 
                 Some(number) => format!("{} (#{number})", short_commit(commit)),
                 None => short_commit(commit).to_owned(),
             };
-            step_doing(&format!("{base} broken by {merge} · {command}"))
+            feed_line(&format!("{base} broken by {merge} · {command}"))
         }
         WatchVerdict::Repair {
             number,
@@ -213,7 +213,7 @@ pub fn verdict_message(base: &str, tip: &str, verdict: &WatchVerdict) -> String 
 /// The feed line a finished watch posts, when its verdicts didn't already say it all.
 pub fn watch_finished_message(tip: &str, verdicts: usize, failure: Option<&str>) -> Option<String> {
     match failure {
-        Some(failure) => Some(step_doing(&format!(
+        Some(failure) => Some(feed_line(&format!(
             "Watch of {} stopped · {failure}",
             short_commit(tip)
         ))),

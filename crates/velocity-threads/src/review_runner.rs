@@ -1371,7 +1371,7 @@ fn report_event(timestamp: &str, nickname: &str, report: PrDutyReport) -> Option
         }
         PrDutyReport::MergeFailed { number, reason } => (
             DutyEventKind::Wait,
-            velocity_core::scout_sweep::step_doing(&format!(
+            velocity_core::scout_sweep::feed_line(&format!(
                 "Merge of #{number} refused · {reason}"
             )),
         ),
@@ -1381,7 +1381,7 @@ fn report_event(timestamp: &str, nickname: &str, report: PrDutyReport) -> Option
             reason,
         } => (
             DutyEventKind::Wait,
-            velocity_core::scout_sweep::step_doing(&format!(
+            velocity_core::scout_sweep::feed_line(&format!(
                 "Held #{number} at {} · {reason}",
                 short_commit(&head)
             )),
@@ -1425,7 +1425,7 @@ fn change_report_event(
         ),
         PrDutyReport::ChangeLandFailed { change, reason } => (
             DutyEventKind::Wait,
-            velocity_core::scout_sweep::step_doing(&format!(
+            velocity_core::scout_sweep::feed_line(&format!(
                 "Land of change {} refused · {reason}",
                 short_change(&change)
             )),
@@ -1436,7 +1436,7 @@ fn change_report_event(
             reason,
         } => (
             DutyEventKind::Wait,
-            velocity_core::scout_sweep::step_doing(&format!(
+            velocity_core::scout_sweep::feed_line(&format!(
                 "Held change {} at {} · {reason}",
                 short_change(&change),
                 short_commit(&head)

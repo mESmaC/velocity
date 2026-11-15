@@ -9,7 +9,7 @@ use std::time::Duration;
 use crate::merge_gate::{ModeEvidence, ReviewMode, review_mode};
 use crate::pr_review::{short_change, short_commit};
 use crate::review_tier::ReviewTier;
-use crate::scout_sweep::step_doing;
+use crate::scout_sweep::feed_line;
 
 /// The folder a project's Lake project lives in (F17).
 const PROOFS_FOLDER: &str = "proofs/";
@@ -101,7 +101,7 @@ pub fn checking_line(change: &str, base: &str) -> String {
 
 /// The feed line for a change sent back over a failed check.
 pub fn check_failed_line(change: &str, command: &str) -> String {
-    step_doing(&format!(
+    feed_line(&format!(
         "Checks failed on change {} · `{command}` · sent back to its author",
         short_change(change)
     ))
@@ -150,7 +150,7 @@ fn seconds(duration: Duration) -> String {
 
 /// The feed line for a land Rosen refused for a reason no check or author fixes.
 pub fn refused_line(change: &str, reason: &str) -> String {
-    step_doing(&format!(
+    feed_line(&format!(
         "Land of change {} refused · {reason}",
         short_change(change)
     ))
@@ -192,7 +192,7 @@ pub fn verified_line(commit: &str, took: Duration) -> String {
 
 /// The feed line for a failed batch, while Rosen's bisection looks for the change.
 pub fn verify_failed_line(commit: &str, command: &str) -> String {
-    step_doing(&format!(
+    feed_line(&format!(
         "Post-land checks failed on {} · `{command}` · finding the change that broke it",
         short_commit(commit)
     ))
@@ -222,7 +222,7 @@ pub fn unconfirmed_line(commit: &str) -> String {
 
 /// The feed line for post-land checks that could not run or report.
 pub fn verify_stopped_line(commit: &str, reason: &str) -> String {
-    step_doing(&format!(
+    feed_line(&format!(
         "Post-land checks on {} stopped · {reason}",
         short_commit(commit)
     ))

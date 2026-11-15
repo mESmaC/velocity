@@ -276,6 +276,13 @@ pub fn step_doing(title: &str) -> String {
     }
 }
 
+/// A Duty feed line, kept whole. The feed is a log, so unlike a card's [`step_doing`] line
+/// it is never clipped: the end of a refusal is usually its reason (#372). Line breaks and
+/// runs of spaces fold into single spaces so the entry stays one line.
+pub fn feed_line(text: &str) -> String {
+    text.split_whitespace().collect::<Vec<_>>().join(" ")
+}
+
 fn clip(text: &str) -> String {
     if text.chars().count() <= DOING_LIMIT {
         return text.to_owned();

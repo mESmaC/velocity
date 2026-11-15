@@ -8,7 +8,7 @@ use std::time::Duration;
 use crate::duty::{DutyMergeMethod, PrDutyRuleSettings};
 use crate::merge_gate::ReviewMode;
 use crate::review_tier::{ReviewTier, TierAssessment};
-use crate::scout_sweep::step_doing;
+use crate::scout_sweep::{feed_line, step_doing};
 
 /// Where Velocity's approval record (F7, Q28) leaves a PR's current head.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -458,7 +458,7 @@ pub fn review_finished_message(
     match (failure, decided) {
         (Some(failure), _) => Some(format!(
             "Review of {label} stopped · {}",
-            step_doing(failure)
+            feed_line(failure)
         )),
         (None, false) => Some(format!(
             "Released {label} without a decision · retrying in {} min",

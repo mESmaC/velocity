@@ -154,7 +154,7 @@ impl PrDutyReviews {
                 self.waits(host, roster, candidate, &approver, &landing);
             }
             Ok(Ok(Step::Refused { approver, reason })) => {
-                let message = velocity_core::scout_sweep::step_doing(&format!(
+                let message = velocity_core::scout_sweep::feed_line(&format!(
                     "Merge of #{} refused · {reason}",
                     pr_number(candidate)
                 ));
