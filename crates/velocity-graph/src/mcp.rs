@@ -14,7 +14,9 @@ use serde_json::{Value, json};
 
 use crate::Error;
 use crate::index::Index;
-use crate::tools::Tools;
+use crate::status::WorkspaceStatus;
+use crate::tools::{CallError, Tools};
+use crate::usage::record_tool;
 
 /// The switch that makes Velocity's executable serve the graph.
 pub const SERVER_SWITCH: &str = "--graph-mcp";
@@ -29,8 +31,9 @@ const USAGE: &str = "Usage: <app-data> <project-id> <worktree>";
 
 /// Folders whose changes never matter to the graph: build output and dependencies, which git
 /// ignores anyway. Skipping them here saves a listing per build.
-const NOISE: [&str; 9] = [
+const NOISE: [&str; 10] = [
     ".git",
+    ".rosen",
     "target",
     "node_modules",
     ".svelte-kit",
@@ -82,6 +85,7 @@ struct Connection {
     root: PathBuf,
     cache: PathBuf,
     dirty: Arc<Mutex<HashSet<String>>>,
+    status: Arc<WorkspaceStatus>,
     /// Signalled once the background build finished; taken by the first `initialize`.
     built: Mutex<Option<mpsc::Receiver<()>>>,
 }
@@ -95,31 +99,53 @@ pub fn serve(
     mut output: impl Write,
 ) -> Result<(), Error> {
     let (signal, built) = mpsc::channel();
-    let connection = Connection {
+    let status = Arc::new(WorkspaceStatus::track(&cache, &root));
+    let connection = Arc::new(Connection {
         tools: Arc::new(OnceLock::new()),
         root,
         cache,
         dirty: Arc::default(),
+        status,
         built: Mutex::new(Some(built)),
-    };
+    });
+    let (changes, pending) = mpsc::sync_channel(1);
+    let watcher = watch(&connection, changes);
     let builder = {
-        let (tools, root, cache) = (
+        let (tools, root, cache, dirty, status) = (
             connection.tools.clone(),
             connection.root.clone(),
             connection.cache.clone(),
+            connection.dirty.clone(),
+            connection.status.clone(),
         );
         std::thread::spawn(move || {
-            tools.get_or_init(|| build(&root, &cache));
+            let result = tools.get_or_init(|| build(&root, &cache));
+            let dirty = dirty.lock().unwrap_or_else(|error| error.into_inner());
+            status.mark(result.is_ok() && dirty.is_empty());
             let _ = signal.send(());
         })
     };
-    // Kept alive for the connection; a watcher that can't start leaves the staleness check
-    // to catch edits.
-    let _watcher = watch(&connection.root, connection.dirty.clone());
+    let updater = {
+        let connection = connection.clone();
+        std::thread::spawn(move || catch_up(&connection, pending))
+    };
+    let result = serve_requests(input, &mut output, &connection);
+    drop(watcher);
+    let _ = updater.join();
+    // A connection can end while building; let its parses reach the cache.
+    let _ = builder.join();
+    result
+}
+
+fn serve_requests(
+    input: impl BufRead,
+    output: &mut impl Write,
+    connection: &Connection,
+) -> Result<(), Error> {
     for line in input.lines() {
         let line = line?;
         let response = match serde_json::from_str::<Value>(&line) {
-            Ok(request) => respond(&request, &connection),
+            Ok(request) => respond(&request, connection),
             Err(_) => Some(failure(Value::Null, -32700, "Parse error")),
         };
         if let Some(response) = response {
@@ -127,9 +153,6 @@ pub fn serve(
             output.flush()?;
         }
     }
-    // A connection that ends while the index is still building (a session stopped early) lets
-    // the build finish, so its parses reach the cache.
-    let _ = builder.join();
     Ok(())
 }
 
@@ -175,13 +198,24 @@ fn build(root: &Path, cache: &Path) -> Result<Mutex<Tools>, String> {
     }
 }
 
-fn watch(root: &Path, dirty: Arc<Mutex<HashSet<String>>>) -> Option<notify::RecommendedWatcher> {
-    let base = root.to_path_buf();
+fn watch(
+    connection: &Arc<Connection>,
+    changes: mpsc::SyncSender<()>,
+) -> Option<notify::RecommendedWatcher> {
+    let connection = connection.clone();
+    let root = connection.root.clone();
     let mut watcher = notify::recommended_watcher(move |event: notify::Result<notify::Event>| {
         let Ok(event) = event else { return };
-        let mut dirty = dirty.lock().unwrap_or_else(|poison| poison.into_inner());
+        if event.kind.is_access() {
+            return;
+        }
+        let mut dirty = connection
+            .dirty
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        let was_clean = dirty.is_empty();
         for path in event.paths {
-            let Ok(relative) = path.strip_prefix(&base) else {
+            let Ok(relative) = path.strip_prefix(&connection.root) else {
                 continue;
             };
             let relative = relative.to_string_lossy().replace('\\', "/");
@@ -189,10 +223,28 @@ fn watch(root: &Path, dirty: Arc<Mutex<HashSet<String>>>) -> Option<notify::Reco
                 dirty.insert(relative);
             }
         }
+        if was_clean && !dirty.is_empty() {
+            connection.status.mark(false);
+            let _ = changes.try_send(());
+        }
     })
     .ok()?;
-    watcher.watch(root, RecursiveMode::Recursive).ok()?;
+    watcher.watch(&root, RecursiveMode::Recursive).ok()?;
     Some(watcher)
+}
+
+fn catch_up(connection: &Connection, pending: mpsc::Receiver<()>) {
+    while pending.recv().is_ok() {
+        // Group events from one save or build. A call still refreshes its own view immediately.
+        std::thread::sleep(Duration::from_millis(150));
+        let tools = connection
+            .tools
+            .get_or_init(|| build(&connection.root, &connection.cache));
+        if let Ok(tools) = tools {
+            let mut tools = tools.lock().unwrap_or_else(|error| error.into_inner());
+            let _ = refresh(&mut tools, connection);
+        }
+    }
 }
 
 fn respond(request: &Value, connection: &Connection) -> Option<Value> {
@@ -248,29 +300,50 @@ fn call(parameters: &Value, connection: &Connection) -> Value {
         .tools
         .get_or_init(|| build(&connection.root, &connection.cache));
     let result = match tools {
-        Ok(tools) => {
+        Ok(tools) => std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
             let mut tools = tools.lock().unwrap_or_else(|poison| poison.into_inner());
-            let changed: Vec<String> = connection
-                .dirty
-                .lock()
-                .unwrap_or_else(|poison| poison.into_inner())
-                .drain()
-                .collect();
-            // One request that trips a bug fails alone; the agent keeps its graph.
-            std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                tools
-                    .refresh(&changed)
-                    .map_err(|error| error.to_string())
-                    .and_then(|()| tools.call(name, &parameters["arguments"]))
-            }))
-            .unwrap_or_else(|_| Err("the code graph failed on this request".to_owned()))
-        }
-        Err(error) => Err(format!("the code graph could not be built: {error}")),
+            refresh(&mut tools, connection)?;
+            tools.measured_call(name, &parameters["arguments"])
+        }))
+        .unwrap_or_else(|_| Err("the code graph failed on this request".into())),
+        Err(error) => Err(format!("the code graph could not be built: {error}").into()),
     };
-    match result {
-        Ok(text) => json!({"content": [{"type": "text", "text": text}]}),
-        Err(text) => json!({"isError": true, "content": [{"type": "text", "text": text}]}),
+    let (text, outcome, failed) = match result {
+        Ok((text, outcome)) => (text, outcome, false),
+        Err(CallError { message, outcome }) => (message, outcome, true),
+    };
+    record_tool(&connection.cache, name, outcome);
+    if failed {
+        json!({"isError": true, "content": [{"type": "text", "text": text}]})
+    } else {
+        json!({"content": [{"type": "text", "text": text}]})
     }
+}
+
+fn refresh(tools: &mut Tools, connection: &Connection) -> Result<(), CallError> {
+    let changed: Vec<String> = connection
+        .dirty
+        .lock()
+        .unwrap_or_else(|error| error.into_inner())
+        .drain()
+        .collect();
+    if changed.is_empty() {
+        return Ok(());
+    }
+    if let Err(error) = tools.refresh(&changed) {
+        connection
+            .dirty
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .extend(changed);
+        return Err(error.to_string().into());
+    }
+    let dirty = connection
+        .dirty
+        .lock()
+        .unwrap_or_else(|error| error.into_inner());
+    connection.status.mark(dirty.is_empty());
+    Ok(())
 }
 
 fn failure(id: Value, code: i32, message: &str) -> Value {

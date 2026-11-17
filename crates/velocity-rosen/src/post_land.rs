@@ -257,3 +257,44 @@ async fn bisection(client: &Client, state: BisectState) -> Result<Bisection, Ros
         _ => Bisection::Unconfirmed,
     })
 }
+
+/// The immutable Rosen base snapshot used by the code graph.
+pub struct BaseSnapshot {
+    client: Client,
+    commit: String,
+    tree: ObjectId,
+}
+
+impl BaseSnapshot {
+    pub async fn read(server: &ProjectServer) -> Result<Self, RosenError> {
+        let client = server.connect().await?;
+        let request = LogRequest {
+            at: None,
+            paths: Vec::new(),
+            limit: Some(1),
+        };
+        let entry = client
+            .log(request)
+            .await?
+            .entries
+            .into_iter()
+            .next()
+            .ok_or_else(|| RosenError::InvalidId("base has no commits".into()))?;
+        Ok(Self {
+            client,
+            commit: entry.commit.to_string(),
+            tree: entry.tree,
+        })
+    }
+
+    pub fn commit(&self) -> &str {
+        &self.commit
+    }
+
+    pub async fn materialise(&self, folder: &Path) -> Result<(), RosenError> {
+        self.client
+            .materialise_tree(self.tree, folder, Default::default())
+            .await?;
+        Ok(())
+    }
+}

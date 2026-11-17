@@ -234,3 +234,35 @@
 .usage-verdict {
   overflow-wrap: anywhere;
 }
+
+.usage-state {
+  color: var(--text);
+}
+.usage-state[data-state='Ready'] {
+  color: var(--ok);
+}
+.usage-state[data-state='Failed'] {
+  color: var(--err);
+}
+.usage-index-progress {
+  display: block;
+  width: 100%;
+  height: var(--providers-bar-height);
+  accent-color: var(--ok);
+}
+.usage-graph-details {
+  padding-block: var(--usage-graph-details-padding);
+}
+.usage-graph-details summary {
+  padding: var(--providers-menu-item-padding);
+  font: var(--providers-meta-font);
+  color: var(--text-2);
+  cursor: pointer;
+}
+.usage-graph-details .usage-compare th:first-child {
+  white-space: normal;
+  overflow-wrap: anywhere;
+}
+.usage-graph-status .usage-note {
+  overflow-wrap: anywhere;
+}

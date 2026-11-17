@@ -1793,3 +1793,7 @@
   --polish-inset-background: rgba(255, 255, 255, 0.03);
   --polish-selection-background: rgba(106, 141, 255, 0.45);
 }
+
+:root {
+  --usage-graph-details-padding: 4px;
+}

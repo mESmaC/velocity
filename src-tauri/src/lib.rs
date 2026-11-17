@@ -79,6 +79,8 @@ fn bindings() -> Builder<tauri::Wry> {
         code_graph::get_code_graph,
         code_graph::set_code_graph,
         code_graph::reset_code_graph_usage,
+        code_graph::graph_status,
+        code_graph::retry_graph_index,
         continuous_dispatch::get_continuous_dispatch,
         continuous_dispatch::set_continuous_dispatch,
         window::get_window_state,

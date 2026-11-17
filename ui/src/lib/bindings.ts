@@ -27,6 +27,8 @@ export const commands = {
 	setCodeGraph: (projectIdentifier: number, enabled: boolean) => __TAURI_INVOKE<GraphComparison>("set_code_graph", { projectIdentifier, enabled }),
 	/**  Clears both sides' totals, so a comparison starts fresh. */
 	resetCodeGraphUsage: (projectIdentifier: number) => __TAURI_INVOKE<GraphComparison>("reset_code_graph_usage", { projectIdentifier }),
+	graphStatus: (projectIdentifier: number) => __TAURI_INVOKE<GraphStatus_Serialize>("graph_status", { projectIdentifier }),
+	retryGraphIndex: (projectIdentifier: number) => __TAURI_INVOKE<GraphStatus_Serialize>("retry_graph_index", { projectIdentifier }),
 	getContinuousDispatch: (projectIdentifier: number) => __TAURI_INVOKE<DispatchView_Serialize>("get_continuous_dispatch", { projectIdentifier }),
 	setContinuousDispatch: (projectIdentifier: number, slots: number, paused: boolean) => __TAURI_INVOKE<DispatchView_Serialize>("set_continuous_dispatch", { projectIdentifier, slots, paused }),
 	getWindowState: () => __TAURI_INVOKE<WindowStateChanged>("get_window_state"),
@@ -467,6 +469,16 @@ export type AircTabView = {
 
 /**  The type tag's colour family (F14: blue, green, amber, red). */
 export type AircTone = "Neutral" | "Claim" | "Info" | "Positive" | "Warning" | "Danger" | "Muted";
+
+export type BaseCoverage = {
+	commit: string,
+	updated: string,
+	languages: LanguageCoverage[],
+	skipped: SkippedFiles[],
+	hit_rate: string,
+	parser: number,
+	build: string,
+};
 
 export type BoardCard = BoardCard_Serialize | BoardCard_Deserialize;
 
@@ -1566,6 +1578,34 @@ export type GraphComparison = {
 	verdict: string,
 	/**  Whether the verdict compares the two sides (both have enough turns). */
 	conclusive: boolean,
+	tokens_delta: string,
+	time_delta: string,
+};
+
+export type GraphStatus = GraphStatus_Serialize | GraphStatus_Deserialize;
+
+export type GraphStatus_Deserialize = {
+	state: IndexState,
+	detail: string,
+	progress?: number | null,
+	base?: BaseCoverage | null,
+	catching_up: string[],
+	cache_size: string,
+	tools: ToolUsageRow[],
+	access: string,
+	threads: ThreadUsageRow[],
+};
+
+export type GraphStatus_Serialize = {
+	state: IndexState,
+	detail: string,
+	progress: number | null,
+	base: BaseCoverage | null,
+	catching_up: string[],
+	cache_size: string,
+	tools: ToolUsageRow[],
+	access: string,
+	threads: ThreadUsageRow[],
 };
 
 /**  A model you hid from the pickers by clicking its chip (F15 Models). */
@@ -1573,6 +1613,8 @@ export type HiddenModel = {
 	provider: ProviderKind,
 	model: string,
 };
+
+export type IndexState = "Indexing" | "Ready" | "Stale" | "Failed";
 
 export type InlineText = InlineText_Serialize | InlineText_Deserialize;
 
@@ -1825,6 +1867,13 @@ export type KeyboardInput = {
 	alt: boolean,
 	meta_held: boolean,
 	typing: boolean,
+};
+
+export type LanguageCoverage = {
+	language: string,
+	files: number,
+	symbols: number,
+	edges: number,
 };
 
 /**  A language's code-level translator, and the strongest level its code can reach. */
@@ -4198,6 +4247,11 @@ export type SkillsSettingsView_Serialize = {
 	budget_warning: boolean,
 };
 
+export type SkippedFiles = {
+	reason: string,
+	files: number,
+};
+
 export type SlashCommandItem = {
 	command: string,
 	description: string,
@@ -4792,6 +4846,15 @@ export type ThreadStepRecorded_Serialize = {
 	block: TranscriptBlock_Serialize,
 };
 
+export type ThreadUsageRow = {
+	key: string,
+	name: string,
+	input: string,
+	cached_input: string,
+	output: string,
+	raw_reads: string,
+};
+
 /**
  *  The bottom-centre toast. `identifier` changes with every new toast so the window can
  *  time it out; one with `undo_deletion` offers Undo until that deletion lands (F12).
@@ -4823,6 +4886,13 @@ export type ToolStepRow = {
 	verb: string,
 	argument: string,
 	result_text: string,
+};
+
+export type ToolUsageRow = {
+	name: string,
+	calls: string,
+	exact: string,
+	classified: string,
 };
 
 /**  One dot of a card's work · PR · CI · review · merged track. */

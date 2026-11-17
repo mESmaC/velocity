@@ -12,6 +12,36 @@ use crate::index::Index;
 use crate::program::run;
 use crate::query::{Lookup, failure, impact, line, lookup, read, within_budget};
 use crate::search::Search;
+use crate::usage::ToolOutcome;
+
+pub(crate) struct CallError {
+    pub message: String,
+    pub outcome: ToolOutcome,
+}
+
+impl CallError {
+    pub fn classified(message: String) -> Self {
+        Self {
+            message,
+            outcome: ToolOutcome::Classified,
+        }
+    }
+}
+
+impl From<String> for CallError {
+    fn from(message: String) -> Self {
+        Self {
+            message,
+            outcome: ToolOutcome::Other,
+        }
+    }
+}
+
+impl From<&str> for CallError {
+    fn from(message: &str) -> Self {
+        message.to_owned().into()
+    }
+}
 
 /// Lines of source one record may show.
 const SOURCE_LINES: usize = 150;
@@ -27,6 +57,7 @@ struct Draft {
     text: String,
     files: Vec<String>,
     source: Vec<usize>,
+    outcome: ToolOutcome,
 }
 
 impl Tools {
@@ -125,6 +156,16 @@ Most used: {}.",
     /// Runs tool `name`. An `Err` is a failure the agent should read (ambiguous, missing,
     /// stale, a bad argument), not a fault.
     pub fn call(&mut self, name: &str, arguments: &Value) -> Result<String, String> {
+        self.measured_call(name, arguments)
+            .map(|(text, _)| text)
+            .map_err(|error| error.message)
+    }
+
+    pub(crate) fn measured_call(
+        &mut self,
+        name: &str,
+        arguments: &Value,
+    ) -> Result<(String, ToolOutcome), CallError> {
         let mut draft = self.draft(name, arguments)?;
         let files: Vec<&str> = draft.files.iter().map(String::as_str).collect();
         let stale = self.index.stale(&files);
@@ -136,10 +177,10 @@ Most used: {}.",
         for record in draft.source {
             text.push_str(&self.source(record));
         }
-        Ok(within_budget(text))
+        Ok((within_budget(text), draft.outcome))
     }
 
-    fn draft(&self, name: &str, arguments: &Value) -> Result<Draft, String> {
+    fn draft(&self, name: &str, arguments: &Value) -> Result<Draft, CallError> {
         match name {
             "graph_find" => Ok(self.find(arguments)),
             "graph_read" => self.read(arguments),
@@ -151,9 +192,10 @@ Most used: {}.",
                     text: outcome.text,
                     files: outcome.files,
                     source: outcome.source,
+                    outcome: outcome.accuracy,
                 })
             }
-            other => Err(format!("unknown graph tool `{other}`")),
+            other => Err(format!("unknown graph tool `{other}`").into()),
         }
     }
 
@@ -175,6 +217,13 @@ Most used: {}.",
         if hits.is_empty() {
             let _ = writeln!(text, "nothing matches `{query}`");
         }
+        let outcome = if hits.is_empty() {
+            ToolOutcome::Classified
+        } else if hits.iter().any(|hit| hit.exact) {
+            ToolOutcome::Exact
+        } else {
+            ToolOutcome::Other
+        };
         for hit in hits {
             let marker = if hit.exact { "  [exact]" } else { "" };
             let _ = writeln!(text, "{}{marker}", line(graph, hit.record));
@@ -184,20 +233,22 @@ Most used: {}.",
             text,
             files,
             source: Vec::new(),
+            outcome,
         }
     }
 
-    fn read(&self, arguments: &Value) -> Result<Draft, String> {
+    fn read(&self, arguments: &Value) -> Result<Draft, CallError> {
         let graph = &self.index.graph;
         let target = text(arguments, "target")?;
         let record = match lookup(graph, &self.search, target) {
             Lookup::Found(record) => record,
-            other => return Err(failure(graph, target, &other)),
+            other => return Err(CallError::classified(failure(graph, target, &other))),
         };
         let with_source = arguments["source"].as_bool().unwrap_or(false);
         Ok(Draft {
             text: read(graph, record),
             files: vec![graph.records[record].path.clone()],
+            outcome: ToolOutcome::Exact,
             source: if with_source {
                 vec![record]
             } else {
@@ -206,7 +257,7 @@ Most used: {}.",
         })
     }
 
-    fn impact(&self, arguments: &Value) -> Result<Draft, String> {
+    fn impact(&self, arguments: &Value) -> Result<Draft, CallError> {
         let graph = &self.index.graph;
         let targets: Vec<String> = match &arguments["targets"] {
             Value::String(one) => vec![one.clone()],
@@ -221,7 +272,7 @@ Most used: {}.",
         for target in &targets {
             match lookup(graph, &self.search, target) {
                 Lookup::Found(record) => records.push(record),
-                other => return Err(failure(graph, target, &other)),
+                other => return Err(CallError::classified(failure(graph, target, &other))),
             }
         }
         let depth = arguments["depth"].as_u64().unwrap_or(2).clamp(1, 6) as usize;
@@ -233,6 +284,11 @@ Most used: {}.",
             text: impact(graph, &records, depth),
             files,
             source: Vec::new(),
+            outcome: if records.is_empty() {
+                ToolOutcome::Other
+            } else {
+                ToolOutcome::Exact
+            },
         })
     }
 

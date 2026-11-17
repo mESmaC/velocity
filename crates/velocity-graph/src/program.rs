@@ -7,6 +7,8 @@ use std::fmt::Write;
 use crate::graph::{Graph, Provenance, Relation};
 use crate::query::{Lookup, failure, hub_threshold, line, lookup, short};
 use crate::search::Search;
+use crate::tools::CallError;
+use crate::usage::ToolOutcome;
 
 const STEP_LIMIT: usize = 16;
 /// Records a set may hold before later steps refuse to fan out further.
@@ -25,14 +27,15 @@ pub struct Outcome {
     pub files: Vec<String>,
     /// `SOURCE` asked for these records' lines; the caller reads them after the check.
     pub source: Vec<usize>,
+    pub accuracy: ToolOutcome,
 }
 
-pub fn run(graph: &Graph, search: &Search, program: &str) -> Result<Outcome, String> {
+pub fn run(graph: &Graph, search: &Search, program: &str) -> Result<Outcome, CallError> {
     let steps = split_steps(program);
     if steps.is_empty() || steps.len() > STEP_LIMIT {
-        return Err(format!(
-            "a program has 1 to {STEP_LIMIT} steps separated by `;` or new lines"
-        ));
+        return Err(
+            format!("a program has 1 to {STEP_LIMIT} steps separated by `;` or new lines").into(),
+        );
     }
     let mut register = Register::Empty;
     let mut audit = String::new();
@@ -45,8 +48,12 @@ pub fn run(graph: &Graph, search: &Search, program: &str) -> Result<Outcome, Str
         };
         let arguments = &words[1..];
         last.clone_from(&operation);
-        register = apply(graph, search, &operation, arguments, register, &mut extra)
-            .map_err(|error| format!("{audit}step {} `{step}`: {error}", number + 1))?;
+        register = apply(graph, search, &operation, arguments, register, &mut extra).map_err(
+            |mut error| {
+                error.message = format!("{audit}step {} `{step}`: {}", number + 1, error.message);
+                error
+            },
+        )?;
         let _ = writeln!(audit, "{}. {step} → {}", number + 1, describe(&register));
     }
     let mut text = audit;
@@ -85,6 +92,13 @@ pub fn run(graph: &Graph, search: &Search, program: &str) -> Result<Outcome, Str
         text,
         files,
         source: extra.source,
+        accuracy: if extra.missing {
+            ToolOutcome::Classified
+        } else if extra.exact && !extra.fuzzy {
+            ToolOutcome::Exact
+        } else {
+            ToolOutcome::Other
+        },
     })
 }
 
@@ -92,6 +106,9 @@ pub fn run(graph: &Graph, search: &Search, program: &str) -> Result<Outcome, Str
 /// path's hops.
 #[derive(Default)]
 struct Extra {
+    exact: bool,
+    missing: bool,
+    fuzzy: bool,
     source: Vec<usize>,
     notes: Vec<String>,
 }
@@ -103,18 +120,27 @@ fn apply(
     arguments: &[String],
     register: Register,
     extra: &mut Extra,
-) -> Result<Register, String> {
+) -> Result<Register, CallError> {
     let set = || match &register {
         Register::Set(records) => Ok(records.clone()),
         _ => Err("needs a set of records first (FIND or AT)".to_owned()),
     };
     Ok(match operation {
-        "FIND" => Register::Set(find(graph, search, arguments)?),
+        "FIND" => {
+            let (records, exact) = find(graph, search, arguments)?;
+            extra.exact |= exact;
+            extra.missing |= records.is_empty();
+            extra.fuzzy |= !exact;
+            Register::Set(records)
+        }
         "AT" => {
             let target = arguments.join(" ");
             match lookup(graph, search, &target) {
-                Lookup::Found(record) => Register::Set(vec![record]),
-                other => return Err(failure(graph, &target, &other)),
+                Lookup::Found(record) => {
+                    extra.exact = true;
+                    Register::Set(vec![record])
+                }
+                other => return Err(CallError::classified(failure(graph, &target, &other))),
             }
         }
         "UP" => Register::Set(dedup(
@@ -130,6 +156,7 @@ fn apply(
         "PATH" => {
             let (chain, note) = path(graph, search, &set()?, &arguments.join(" "))?;
             extra.notes.push(note);
+            extra.exact = true;
             Register::Set(chain)
         }
         "COUNT" => Register::Count(set()?.len()),
@@ -143,24 +170,26 @@ fn apply(
         other => {
             return Err(format!(
                 "unknown step `{other}`; use FIND, AT, UP, DOWN, FOLLOW, FILTER, PATH, COUNT, SOURCE"
-            ));
+            ).into());
         }
     })
 }
 
 /// `FIND "text" [limit]`: the best matches, as `graph_find` ranks them.
-fn find(graph: &Graph, search: &Search, arguments: &[String]) -> Result<Vec<usize>, String> {
+fn find(
+    graph: &Graph,
+    search: &Search,
+    arguments: &[String],
+) -> Result<(Vec<usize>, bool), CallError> {
     let query = arguments.first().ok_or("FIND needs a query")?;
     let limit = arguments
         .get(1)
         .and_then(|limit| limit.parse().ok())
         .unwrap_or(10usize)
         .min(50);
-    Ok(search
-        .find(graph, query, limit, |_| true)
-        .into_iter()
-        .map(|hit| hit.record)
-        .collect())
+    let hits = search.find(graph, query, limit, |_| true);
+    let exact = hits.iter().any(|hit| hit.exact);
+    Ok((hits.into_iter().map(|hit| hit.record).collect(), exact))
 }
 
 fn describe(register: &Register) -> String {
@@ -275,11 +304,11 @@ fn path(
     search: &Search,
     records: &[usize],
     target: &str,
-) -> Result<(Vec<usize>, String), String> {
+) -> Result<(Vec<usize>, String), CallError> {
     let start = *records.first().ok_or("PATH needs a starting record")?;
     let goal = match lookup(graph, search, target) {
         Lookup::Found(record) => record,
-        other => return Err(failure(graph, target, &other)),
+        other => return Err(CallError::classified(failure(graph, target, &other))),
     };
     let mut previous: Vec<Option<(usize, String, Provenance)>> = vec![None; graph.records.len()];
     let mut queue = VecDeque::from([start]);
@@ -305,7 +334,8 @@ fn path(
             "no path from {} to {} without ambiguous links",
             short(graph, start),
             short(graph, goal)
-        ));
+        )
+        .into());
     }
     let mut hops: Vec<Hop> = Vec::new();
     let mut at = goal;

@@ -2,10 +2,12 @@
   import PaneState from './PaneState.svelte';
   import { onMount } from 'svelte';
   import Icon from './Icon.svelte';
+  import GraphStatusView from './GraphStatus.svelte';
   import { pop } from './motion';
   import { codeGraphCommands } from './ipc';
   import type {
     GraphComparison,
+    GraphStatus,
     LayoutAction,
     ProviderColor,
     ProviderUsage,
@@ -30,7 +32,10 @@
 
   let dialog: HTMLDialogElement;
   let graph = $state<GraphComparison | null>(null);
+  let status = $state<GraphStatus | null>(null);
   let busy = $state(false);
+  let statusError = $state('');
+  let revision = $state(0);
   let error = $state('');
 
   const icons: Record<ProviderColor, string> = {
@@ -44,28 +49,81 @@
   onMount(() => {
     const previous = document.activeElement;
     dialog.showModal();
-    if (project !== null) void run(codeGraphCommands.comparison(project));
     return () => {
       if (previous instanceof HTMLElement && previous.isConnected)
         previous.focus();
     };
   });
 
-  async function run(request: Promise<GraphComparison>) {
+  $effect(() => {
+    const identifier = project;
+    if (identifier === null) return;
+    let cancelled = false;
+    let timer: ReturnType<typeof setTimeout>;
+    async function refresh(identifier: number) {
+      try {
+        const results = await Promise.allSettled([
+          codeGraphCommands.comparison(identifier),
+          codeGraphCommands.status(identifier),
+        ]);
+        if (cancelled || busy) return;
+        const [comparison, index] = results;
+        if (comparison.status === 'fulfilled') {
+          graph = comparison.value;
+        } else {
+          error = String(comparison.reason);
+        }
+        if (index.status === 'fulfilled') {
+          status = index.value;
+          statusError = '';
+        } else {
+          statusError = String(index.reason);
+        }
+      } finally {
+        if (!cancelled)
+          timer = setTimeout(() => void refresh(identifier), 2000);
+      }
+    }
+    const refreshRevision = revision;
+    void refresh(identifier);
+    return () => {
+      cancelled = true;
+      clearTimeout(timer);
+      if (revision === refreshRevision) {
+        graph = null;
+        status = null;
+      }
+    };
+  });
+
+  async function run(request: Promise<GraphComparison | GraphStatus>) {
+    const identifier = project;
     busy = true;
     try {
-      graph = await request;
+      const updated = await request;
+      if (project !== identifier) return;
+      if ('enabled' in updated) {
+        graph = updated;
+      } else {
+        status = updated;
+        statusError = '';
+      }
       error = '';
     } catch (failure) {
       error = String(failure);
     } finally {
       busy = false;
+      revision += 1;
     }
   }
 
   function setEnabled(enabled: boolean) {
     if (project === null || graph?.enabled === enabled) return;
     void run(codeGraphCommands.setEnabled(project, enabled));
+  }
+
+  function retry() {
+    if (project !== null) void run(codeGraphCommands.retry(project));
   }
 
   function reset() {
@@ -175,13 +233,26 @@
             agents keep what they started with. Each turn's tokens and working time
             count toward the side it ran on.
           </p>
-          <table class="usage-compare">
+          {#if status && !statusError}
+            <GraphStatusView {status} {retry} {busy} enabled={graph.enabled} />
+          {:else if statusError}
+            <div class="usage-graph-foot">
+              <span role="status">{statusError}</span>
+              <button class="usage-button" disabled={busy} onclick={retry}
+                >Retry</button
+              >
+            </div>
+          {:else}
+            <p class="usage-note" role="status">Checking the graph index…</p>
+          {/if}
+          <table class="usage-compare" aria-label="Graph on and off comparison">
             <thead>
               <tr>
                 <th scope="col"></th>
                 {#each graph.sides as side (side.label)}<th scope="col"
                     >{side.label}</th
                   >{/each}
+                <th scope="col">Change</th>
               </tr>
             </thead>
             <tbody>
@@ -189,30 +260,35 @@
                 <th scope="row">Turns</th>
                 {#each graph.sides as side (side.label)}<td>{side.turns}</td
                   >{/each}
+                <td>—</td>
               </tr>
               <tr>
                 <th scope="row">Tokens per turn</th>
                 {#each graph.sides as side (side.label)}<td title={side.note}
                     >{side.tokens_per_turn}</td
                   >{/each}
+                <td>{graph.tokens_delta}</td>
               </tr>
               <tr>
                 <th scope="row">Time per turn</th>
                 {#each graph.sides as side (side.label)}<td
                     >{side.time_per_turn}</td
                   >{/each}
+                <td>{graph.time_delta}</td>
               </tr>
               <tr>
                 <th scope="row">Total tokens</th>
                 {#each graph.sides as side (side.label)}<td
                     >{side.total_tokens}</td
                   >{/each}
+                <td>—</td>
               </tr>
               <tr>
                 <th scope="row">Total time</th>
                 {#each graph.sides as side (side.label)}<td
                     >{side.total_time}</td
                   >{/each}
+                <td>—</td>
               </tr>
             </tbody>
           </table>

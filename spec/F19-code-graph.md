@@ -62,7 +62,9 @@ Its accuracy rules come from the A.TXY address memory in MCL4-COE and `elem`: ro
   A large parse (a new project, a cold cache) runs under the project's build lock, so a swarm's agents starting together parse once and the rest read the cache.
 - **Each agent's graph.**
   An agent's tools hash every file in its worktree that git tracks or doesn't ignore, take what the cache already holds, parse the rest, and resolve names across the whole set.
-  A file watcher picks up the agent's edits as it works, and the span check catches anything the watcher missed.
+  In Rosen workspaces, the index walks the workspace files using the working tree's ignore rules.
+  A file watcher batches edits and refreshes the workspace graph in the background.
+  A tool call refreshes pending changes before answering, and the span check catches edits the watcher missed.
 - **Warming.**
   After each merge to the base branch, Velocity parses the files the merge changed, read from git at the new tip, in the background below normal priority on the trigger that catches up the warm pool (F5).
   New agents then start with a full cache.
@@ -91,20 +93,30 @@ It runs Velocity's own executable as `velocity --graph-mcp <app-data> <project-i
   When the index is ready within 1.5 s of the agent connecting, the instructions end with a map of about 250 tokens: the workspace, its file and symbol counts, its biggest subsystems and its most-used symbols with their addresses.
 
 **Measuring it.**
-The graph exists to save time and tokens without costing accuracy, so Velocity measures that, in total rather than per thread.
+The graph exists to save time and tokens without costing accuracy, so Velocity measures it per project and shows reported token counts by thread.
 - **The switch.**
   Each project has a code graph switch, on by default, in the usage modal.
   Agents started while it is off get no `velocity-graph` server; agents already running keep what they started with.
   It is saved with the project's graph in the app data folder, and warming skips a project whose graph is off.
+- **Index status.**
+  Opening Usage checks the active project's base commit and starts a background index if the graph is enabled and the indexed base differs.
+  The panel shows Indexing with progress, Ready, Stale, or Failed with the indexing error and Retry.
+  It retains the most recent successful base coverage, including its commit and update time, files and symbols by parser, edges by source language, and counts of skipped files by reason.
+  It also shows active thread workspaces that are indexing or refreshing, the shared parse log's size on disk, and the share of parses reused from cache during the last base update.
+- **Tool calls.**
+  Each tool shows its calls and the shares that resolved an exact lookup or returned a classified lookup failure.
+  Ranked matches and request errors are also counted in the total.
+  The modal compares graph calls with raw source reads and searches observed in ACP tool events, and shows input, cached input, output and observed raw reads by thread workspace.
+  Availability of raw read counts and token totals depends on the events and turn usage the provider reports.
 - **Totals.**
   Every turn of every agent, in every role, adds its tokens and its working time to the project's totals for the side it ran on: the graph on or off.
   Tokens are what the agent reports when the turn ends (ACP's turn usage, which agents report as running session totals, so each turn adds the difference).
   A turn whose agent reports none still counts its time.
   Writes are serialized, so agents finishing together never lose a turn.
 - **The comparison** (usage modal, Code graph): for each side, its turns, tokens per turn, time per turn, total tokens and total time.
-  Once each side has at least 10 turns, a line states the difference, such as "With the graph, a turn used 23% fewer tokens and took 18% less time".
+  Once each side has at least 10 turns, the modal shows the percentage change from graph off to graph on beside each per-turn average, with a sentence explaining the change.
   Before that it says how many turns each side still needs.
-  **Reset counts** clears both sides and starts again; the modal shows when counting began.
+  **Reset counts** clears both sides, tool calls and workspace usage, and starts counting again.
 - **Reading it.**
   If turns with the graph use no fewer tokens and no less time, the graph does not pay for itself and the default turns off.
   Lookup accuracy (did the graph return the right record), record integrity (did the record match the source) and task outcome stay separate measures.
@@ -121,4 +133,5 @@ The graph exists to save time and tokens without costing accuracy, so Velocity m
 - [ ] After an agent edits a file, the next query answers from the edited file, never from an older parse.
 - [ ] After a merge to the base, only the files it changed are parsed.
 - [ ] A query answers in under 50 ms on a 100,000-line project.
+- [ ] The usage modal reports the active project's graph health, base freshness, coverage, cache and tool usage, and can retry a failed base index.
 - [ ] The usage modal compares tokens and time per turn for the active project with the graph on and off, and its switch decides whether new agents get the graph.

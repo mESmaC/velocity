@@ -127,6 +127,7 @@ struct Shared {
     /// Set while `session/load` replays history the thread's transcript already shows.
     replaying: AtomicBool,
     account: u32,
+    code_reads: Mutex<turn_usage::CodeReads>,
 }
 
 impl Shared {
@@ -139,6 +140,7 @@ impl Shared {
             events,
             replaying: AtomicBool::new(false),
             account: 0,
+            code_reads: Mutex::default(),
         }
     }
 
@@ -149,6 +151,10 @@ impl Shared {
 
     fn record(&self, update: SessionUpdate) {
         live_limits::observe_account(self.account, &update);
+        self.code_reads
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .observe(&update);
         match entry_class(&update) {
             Some(_) if self.replaying.load(Ordering::Acquire) => {}
             Some(class) => {
@@ -225,6 +231,7 @@ async fn run_admitted_session(
         events,
         replaying: AtomicBool::new(false),
         account: launch.account,
+        code_reads: Mutex::default(),
     });
     let result = connect_agent(&mut agent, Arc::clone(&shared), setup, inputs).await;
     let terminals_stopped = shared.terminals.stop_all().await;
@@ -331,6 +338,11 @@ async fn drive(
     let started = start_reporting_replay(&connection, &shared, &setup).await?;
     let session_id = started.session_id;
     let mut meter = turn_usage::UsageMeter::for_setup(&setup);
+    shared
+        .code_reads
+        .lock()
+        .unwrap_or_else(PoisonError::into_inner)
+        .start();
     let mut options = started.options;
     shared.emit(AgentEvent::SessionStarted {
         session_id: session_id.clone(),
@@ -364,7 +376,8 @@ async fn drive(
             },
             Some(report) = turn_ended.recv() => {
                 if let Some(meter) = meter.as_mut() {
-                    meter.record(&report);
+                    let reads = shared.code_reads.lock().unwrap_or_else(PoisonError::into_inner).take_count();
+                    meter.record(&report, reads);
                 }
                 let paused = setup.pause_on_subscription_limit
                     && report.outcome.as_ref().is_err_and(|error| subscription_limit_error(error));

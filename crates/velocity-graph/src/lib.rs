@@ -15,6 +15,7 @@ mod program;
 mod query;
 mod resolve;
 mod search;
+pub mod status;
 mod subsystems;
 mod svelte;
 mod text;

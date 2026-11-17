@@ -2,6 +2,7 @@
 //! adds its tokens and working time to the project's totals for the graph on or off, and the
 //! usage modal compares the two sides.
 
+use std::collections::BTreeMap;
 use std::fs::{File, OpenOptions};
 use std::path::{Path, PathBuf};
 
@@ -93,6 +94,10 @@ pub struct ProjectUsage {
     /// When the totals started (RFC 3339): first use or the last reset.
     #[serde(default)]
     pub since: String,
+    #[serde(default)]
+    tools: BTreeMap<String, ToolTotals>,
+    #[serde(default)]
+    workspaces: BTreeMap<String, WorkspaceUsage>,
 }
 
 fn enabled_by_default() -> bool {
@@ -106,18 +111,24 @@ impl Default for ProjectUsage {
             on: Totals::default(),
             off: Totals::default(),
             since: String::new(),
+            tools: BTreeMap::new(),
+            workspaces: BTreeMap::new(),
         }
     }
 }
 
-fn folder(app_data: &Path, project: &str) -> PathBuf {
+pub(crate) fn folder(app_data: &Path, project: &str) -> PathBuf {
     app_data.join("graph").join(project)
 }
 
 /// The project's saved switch and totals; a missing or unreadable file is the defaults (the
 /// graph on, nothing counted).
 pub fn read(app_data: &Path, project: &str) -> ProjectUsage {
-    std::fs::read(folder(app_data, project).join("usage.json"))
+    read_folder(&folder(app_data, project))
+}
+
+fn read_folder(folder: &Path) -> ProjectUsage {
+    std::fs::read(folder.join("usage.json"))
         .ok()
         .and_then(|bytes| serde_json::from_slice(&bytes).ok())
         .unwrap_or_default()
@@ -139,6 +150,16 @@ pub fn record(
     graph_on: bool,
     turn: TurnUsage,
 ) -> Result<(), Error> {
+    record_turn(app_data, project, graph_on, turn, None)
+}
+
+pub fn record_turn(
+    app_data: &Path,
+    project: &str,
+    graph_on: bool,
+    turn: TurnUsage,
+    workspace: Option<(&Path, u64)>,
+) -> Result<(), Error> {
     update(app_data, project, |usage| {
         if usage.since.is_empty() {
             usage.since = now();
@@ -147,6 +168,21 @@ pub fn record(
             usage.on.add(turn);
         } else {
             usage.off.add(turn);
+        }
+        if let Some((path, raw_reads)) = workspace {
+            let meter = usage
+                .workspaces
+                .entry(crate::status::workspace_key(path))
+                .or_insert_with(|| WorkspaceUsage {
+                    name: path
+                        .file_name()
+                        .unwrap_or(path.as_os_str())
+                        .to_string_lossy()
+                        .into_owned(),
+                    ..WorkspaceUsage::default()
+                });
+            meter.totals.add(turn);
+            meter.raw_reads += raw_reads;
         }
     })
     .map(drop)
@@ -157,6 +193,8 @@ pub fn reset(app_data: &Path, project: &str) -> Result<ProjectUsage, Error> {
     update(app_data, project, |usage| {
         usage.on = Totals::default();
         usage.off = Totals::default();
+        usage.tools.clear();
+        usage.workspaces.clear();
         usage.since = now();
     })
 }
@@ -183,10 +221,16 @@ fn update(
     project: &str,
     change: impl FnOnce(&mut ProjectUsage),
 ) -> Result<ProjectUsage, Error> {
-    let folder = folder(app_data, project);
-    std::fs::create_dir_all(&folder)?;
-    let lock = lock(&folder)?;
-    let mut usage = read(app_data, project);
+    update_folder(&folder(app_data, project), change)
+}
+
+fn update_folder(
+    folder: &Path,
+    change: impl FnOnce(&mut ProjectUsage),
+) -> Result<ProjectUsage, Error> {
+    std::fs::create_dir_all(folder)?;
+    let lock = lock(folder)?;
+    let mut usage = read_folder(folder);
     change(&mut usage);
     let temporary = folder.join("usage.json.tmp");
     std::fs::write(&temporary, serde_json::to_vec_pretty(&usage)?)?;
@@ -217,6 +261,8 @@ pub struct GraphComparison {
     pub verdict: String,
     /// Whether the verdict compares the two sides (both have enough turns).
     pub conclusive: bool,
+    pub tokens_delta: String,
+    pub time_delta: String,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -246,6 +292,8 @@ impl GraphComparison {
             sides,
             verdict,
             conclusive,
+            tokens_delta: delta(&usage.on, &usage.off, Totals::tokens_per_turn),
+            time_delta: delta(&usage.on, &usage.off, Totals::seconds_per_turn),
         }
     }
 }
@@ -326,6 +374,17 @@ fn change(with: Option<f64>, without: Option<f64>, less: &str, more: &str) -> Op
     })
 }
 
+fn delta(on: &Totals, off: &Totals, average: impl Fn(&Totals) -> Option<f64>) -> String {
+    match (average(on), average(off)) {
+        (Some(on_value), Some(off_value))
+            if on.turns >= MINIMUM_TURNS && off.turns >= MINIMUM_TURNS && off_value > 0.0 =>
+        {
+            format!("{:+.0}%", (on_value / off_value - 1.0) * 100.0)
+        }
+        _ => "—".into(),
+    }
+}
+
 /// `950`, `61.2k`, `2.6M`.
 fn count(value: u64) -> String {
     match value {
@@ -343,5 +402,126 @@ fn duration(seconds: f64) -> String {
         format!("{} min", (seconds / 60.0).round())
     } else {
         format!("{:.1} h", seconds / 3600.0)
+    }
+}
+
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+struct WorkspaceUsage {
+    name: String,
+    totals: Totals,
+    raw_reads: u64,
+}
+
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+struct ToolTotals {
+    calls: u64,
+    exact: u64,
+    classified: u64,
+}
+
+#[derive(Clone, Copy, Default)]
+pub(crate) enum ToolOutcome {
+    Exact,
+    Classified,
+    #[default]
+    Other,
+}
+
+const GRAPH_TOOLS: [&str; 4] = ["graph_find", "graph_read", "graph_impact", "graph_run"];
+
+pub(crate) fn record_tool(folder: &Path, name: &str, outcome: ToolOutcome) {
+    if GRAPH_TOOLS.contains(&name) {
+        let _ = update_folder(folder, |usage| {
+            let tool = usage.tools.entry(name.into()).or_default();
+            tool.calls += 1;
+            match outcome {
+                ToolOutcome::Exact => tool.exact += 1,
+                ToolOutcome::Classified => tool.classified += 1,
+                ToolOutcome::Other => {}
+            }
+        });
+    }
+}
+
+#[derive(Serialize)]
+#[cfg_attr(feature = "bindings", derive(specta::Type))]
+pub struct ToolUsageRow {
+    pub name: String,
+    pub calls: String,
+    pub exact: String,
+    pub classified: String,
+}
+
+#[derive(Serialize)]
+#[cfg_attr(feature = "bindings", derive(specta::Type))]
+pub struct ThreadUsageRow {
+    pub key: String,
+    pub name: String,
+    pub input: String,
+    pub cached_input: String,
+    pub output: String,
+    pub raw_reads: String,
+}
+
+impl ProjectUsage {
+    pub(crate) fn tool_rows(&self) -> Vec<ToolUsageRow> {
+        GRAPH_TOOLS
+            .into_iter()
+            .map(|name| {
+                let totals = self.tools.get(name).cloned().unwrap_or_default();
+                ToolUsageRow {
+                    name: name.into(),
+                    calls: totals.calls.to_string(),
+                    exact: share(totals.exact, totals.calls),
+                    classified: share(totals.classified, totals.calls),
+                }
+            })
+            .collect()
+    }
+
+    pub(crate) fn access_summary(&self) -> String {
+        let calls: u64 = self.tools.values().map(|tool| tool.calls).sum();
+        let reads: u64 = self
+            .workspaces
+            .values()
+            .map(|workspace| workspace.raw_reads)
+            .sum();
+        format!("{calls} graph calls · {reads} observed raw code reads and searches")
+    }
+
+    pub(crate) fn thread_rows(&self, workspaces: &[(PathBuf, String)]) -> Vec<ThreadUsageRow> {
+        let names: BTreeMap<_, _> = workspaces
+            .iter()
+            .map(|(path, name)| (crate::status::workspace_key(path), name))
+            .collect();
+        self.workspaces
+            .iter()
+            .map(|(key, workspace)| {
+                let tokens = &workspace.totals.tokens;
+                let reported = |value| {
+                    if workspace.totals.turns_with_tokens == 0 {
+                        "—".into()
+                    } else {
+                        count(value)
+                    }
+                };
+                ThreadUsageRow {
+                    key: key.clone(),
+                    name: names.get(key).copied().unwrap_or(&workspace.name).clone(),
+                    input: reported(tokens.input),
+                    cached_input: reported(tokens.cached_read),
+                    output: reported(tokens.output),
+                    raw_reads: workspace.raw_reads.to_string(),
+                }
+            })
+            .collect()
+    }
+}
+
+pub(crate) fn share(part: u64, total: u64) -> String {
+    if total == 0 {
+        "—".into()
+    } else {
+        format!("{:.0}%", part as f64 / total as f64 * 100.0)
     }
 }
