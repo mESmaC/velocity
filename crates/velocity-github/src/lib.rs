@@ -55,6 +55,7 @@ pub use repository::{
 };
 pub use repository_list::{GitHubRepository, checkout_repository, list_your_repositories};
 pub use request_counter::{RequestTotal, request_totals};
+pub use rosen_issue::RosenIssueEffect;
 pub use scout_evidence::Reproduction;
 pub use scout_issues::{ScoutFinding, ScoutIssueError, ScoutIssueOutcome};
 pub use scout_reference::{ReferenceComparison, ReferenceComparisonResult};

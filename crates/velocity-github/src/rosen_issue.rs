@@ -1,10 +1,69 @@
-//! Issue completion follows Rosen's build evidence, with GitHub confirming the mirror.
+//! GitHub comments and the durable effects of landed Rosen issue work.
 use serde::Deserialize;
 use serde_json::{Value, json};
 
 use crate::{IssueClient, IssueState, PullRequestError};
 
+const READY_LABEL: &str = "ready-to-close";
+
+pub enum RosenIssueEffect<'a> {
+    Landed { change: &'a str },
+    Reviewed { by: &'a str },
+    Watcher,
+    Reverted { reason: &'a str },
+}
+
 impl IssueClient {
+    pub fn post_issue_progress(
+        &self,
+        number: u32,
+        byline: &str,
+        body: &str,
+        ready: bool,
+    ) -> Result<String, PullRequestError> {
+        let issue = self.read_issue(number)?;
+        if ready {
+            self.label_issue_ready(number)?;
+        }
+        let heading = if ready { "Ready to close · " } else { "" };
+        self.add_issue_comment(&issue.id, &format!("{heading}{byline}\n\n{body}"))
+    }
+
+    fn label_issue_ready(&self, number: u32) -> Result<(), PullRequestError> {
+        let labels = format!("repos/{}/labels", self.repository());
+        let label = format!("{labels}/{READY_LABEL}");
+        if self
+            .transport
+            .command
+            .read::<Value>(&["api", &label])
+            .is_err()
+            && let Err(error) =
+                self.transport
+                    .command
+                    .api::<Value>("POST", &labels, &json!({"name": READY_LABEL}))
+        {
+            // Another commenter can create the repository label at the same time.
+            self.transport
+                .command
+                .read::<Value>(&["api", &label])
+                .map_err(|_| error)?;
+        }
+        let endpoint = format!("repos/{}/issues/{number}/labels", self.repository());
+        let _: Value =
+            self.transport
+                .command
+                .api("POST", &endpoint, &json!({"labels": [READY_LABEL]}))?;
+        Ok(())
+    }
+
+    fn add_issue_comment(&self, subject: &str, body: &str) -> Result<String, PullRequestError> {
+        self.transport.graphql_at(
+            "mutation($input:AddCommentInput!) { addComment(input:$input) { commentEdge { node { url } } } }",
+            json!({"input":{"subjectId":subject,"body":body}}),
+            "/data/addComment/commentEdge/node/url",
+        )
+    }
+
     /// Applies one saved Rosen event effect. A lagging mirror leaves the close pending.
     pub fn follow_rosen_issue(
         &self,
@@ -12,33 +71,59 @@ impl IssueClient {
         number: u32,
         commit: &str,
         sequence: u64,
-        revert: Option<&str>,
+        effect: RosenIssueEffect<'_>,
     ) -> Result<bool, PullRequestError> {
         if !self.repository().eq_ignore_ascii_case(repository) {
             return Err(PullRequestError::Invalid(
                 "The thread's issue repository differs from the project's mirror".into(),
             ));
         }
-        if revert.is_none() && !self.rosen_commit_mirrored(commit)? {
+        let state = match effect {
+            RosenIssueEffect::Landed { .. } => None,
+            RosenIssueEffect::Reviewed { .. } | RosenIssueEffect::Watcher => {
+                Some(IssueState::Closed)
+            }
+            RosenIssueEffect::Reverted { .. } => Some(IssueState::Open),
+        };
+        if state == Some(IssueState::Closed) && !self.rosen_commit_mirrored(commit)? {
             return Ok(false);
         }
-        let (kind, body) = match revert {
-            Some(reason) => (
-                "reopen",
-                format!(
-                    "Rosen reverted landed commit `{commit}`. Reopening this issue.\n\nReason:\n\n{reason}"
-                ),
+        let (kind, body) = match effect {
+            RosenIssueEffect::Landed { change } => (
+                "landed",
+                format!("Velocity · Rosen change `{change}` landed as commit `{commit}`."),
             ),
-            None => (
+            RosenIssueEffect::Reverted { reason } => {
+                let end = reason.floor_char_boundary(32_000);
+                let output = &reason[..end];
+                let truncated = if end < reason.len() {
+                    "\n\n[Output truncated.]"
+                } else {
+                    ""
+                };
+                (
+                    "reopen",
+                    format!(
+                        "Rosen reverted landed commit `{commit}`. Reopening this issue.\n\n{output}{truncated}"
+                    ),
+                )
+            }
+            RosenIssueEffect::Reviewed { by } => (
                 "close",
                 format!(
-                    "Landed through Rosen as `{commit}`. The build passed after the land on a base \
-                 including this commit. The GitHub mirror carries it."
+                    "Velocity review swarm · `{by}` reviewed Rosen commit `{commit}` and confirmed it addresses this issue."
+                ),
+            ),
+            RosenIssueEffect::Watcher => (
+                "close",
+                format!(
+                    "Velocity main watcher · Rosen commit `{commit}` passed its post-land build. \
+                     The 30-minute review window elapsed without review coverage."
                 ),
             ),
         };
         let marker = format!("<!-- velocity-rosen-issue:{kind}:{commit}:{sequence} -->");
-        self.sync_rosen_issue(number, &marker, &body, revert.is_some())?;
+        self.sync_rosen_issue(number, &marker, &body, state)?;
         Ok(true)
     }
 
@@ -79,19 +164,30 @@ impl IssueClient {
         number: u32,
         marker: &str,
         body: &str,
-        reopen: bool,
+        state: Option<IssueState>,
     ) -> Result<(), PullRequestError> {
         let issue = self.read_issue(number)?;
         if !self.has_rosen_comment(number, marker)? {
-            let _: Value = self.transport.graphql_at(
-                "mutation($input:AddCommentInput!) { addComment(input:$input) { commentEdge { node { id } } } }",
-                json!({"input":{"subjectId":issue.id,"body":format!("{body}\n\n{marker}")}}),
-                "/data/addComment",
-            )?;
+            self.add_issue_comment(&issue.id, &format!("{body}\n\n{marker}"))?;
         }
-        if (issue.state == IssueState::Open) == reopen {
+        if state.is_some()
+            && issue
+                .labels
+                .iter()
+                .any(|label| label.eq_ignore_ascii_case(READY_LABEL))
+        {
+            let endpoint = format!(
+                "repos/{}/issues/{number}/labels/{READY_LABEL}",
+                self.repository()
+            );
+            self.transport
+                .command
+                .text(&["api", "--method", "DELETE", &endpoint])?;
+        }
+        let Some(state) = state.filter(|state| *state != issue.state) else {
             return Ok(());
-        }
+        };
+        let reopen = state == IssueState::Open;
         let mutation = if reopen {
             "mutation($input:ReopenIssueInput!) { reopenIssue(input:$input) { issue { id } } }"
         } else {

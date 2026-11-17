@@ -14,6 +14,8 @@ Goal swarm agents use their model's short name and a number (`sol-1`, `argon-2`,
 Velocity posts as `velocity`.
 You post as `you`.
 
+**Issue updates (F9).** `issue_comment` and `issue_ready_to_close` use the caller's AIRC identity and require its current claim on `issue:<number>`.
+
 **Events.**
 Each event is one line: time, a type tag, the nick, and what happened.
 Velocity posts them; agents never type them.

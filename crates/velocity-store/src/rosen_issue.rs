@@ -10,8 +10,10 @@ pub struct IssueProgress {
     sequence: u64,
     #[serde(default)]
     landed: Option<String>,
+    #[serde(default, alias = "verified")]
+    close_queued: bool,
     #[serde(default)]
-    verified: bool,
+    green_since: Option<u64>,
     #[serde(default)]
     last_reverted: Option<String>,
     #[serde(default)]
@@ -26,9 +28,27 @@ pub struct IssueAction {
     pub commit: String,
     #[serde(default)]
     pub sequence: u64,
-    /// None closes after a build pass; Some reopens with the revert's reason.
+    /// Some reopens with the revert's evidence. Older pending actions default to a close.
     #[serde(default)]
     pub revert: Option<String>,
+    #[serde(default)]
+    pub land_comment: bool,
+}
+
+impl IssueAction {
+    fn new(issue: &ThreadIssue, commit: &str, sequence: u64) -> Self {
+        Self {
+            issue: Some(issue.clone()),
+            commit: commit.into(),
+            sequence,
+            revert: None,
+            land_comment: false,
+        }
+    }
+
+    pub fn is_close(&self) -> bool {
+        !self.land_comment && self.revert.is_none()
+    }
 }
 
 pub enum IssueObservation<'a> {
@@ -41,7 +61,13 @@ pub enum IssueObservation<'a> {
 }
 
 impl IssueProgress {
-    fn observe(&mut self, sequence: u64, issue: &ThreadIssue, event: IssueObservation<'_>) {
+    fn observe(
+        &mut self,
+        sequence: u64,
+        issue: &ThreadIssue,
+        event: IssueObservation<'_>,
+        close_enabled: bool,
+    ) {
         if sequence <= self.sequence {
             return;
         }
@@ -51,14 +77,24 @@ impl IssueProgress {
                 if self.last_reverted.as_deref() == Some(commit) {
                     return;
                 }
-                if self.landed.as_deref() != Some(commit) {
-                    self.verified = false;
+                if self.landed.as_deref() == Some(commit) {
+                    return;
                 }
+                self.close_queued = close_enabled;
+                self.green_since = None;
                 self.landed = Some(commit.into());
+                let mut action = IssueAction::new(issue, commit, sequence);
+                action.land_comment = true;
+                self.pending.push(action);
+                if close_enabled {
+                    self.pending.push(IssueAction::new(issue, commit, sequence));
+                }
                 return;
             }
             IssueObservation::BuildPassed(commit) => {
-                self.confirm_build(issue, commit);
+                if close_enabled {
+                    self.confirm_build(issue, commit);
+                }
                 return;
             }
             IssueObservation::Reverted { commit, reason } => {
@@ -74,32 +110,50 @@ impl IssueProgress {
                     return;
                 }
                 let commit = commit.to_owned();
-                self.pending.retain(|action| action.revert.is_some());
+                self.pending.retain(|action| !action.is_close());
                 self.last_reverted = Some(commit.clone());
                 self.landed = None;
+                self.green_since = None;
+                if !close_enabled {
+                    return;
+                }
                 (commit, Some(reason.into()))
             }
         };
-        self.pending.push(IssueAction {
-            issue: Some(issue.clone()),
-            commit,
-            sequence,
-            revert,
-        });
+        let mut action = IssueAction::new(issue, &commit, sequence);
+        action.revert = revert;
+        self.pending.push(action);
     }
 
     fn confirm_build(&mut self, issue: &ThreadIssue, commit: &str) {
-        if self.landed.as_deref() != Some(commit) || self.verified {
+        if self.landed.as_deref() != Some(commit) {
             return;
         }
-        self.verified = true;
-        self.pending.push(IssueAction {
-            issue: Some(issue.clone()),
-            commit: commit.into(),
-            sequence: self.sequence,
-            revert: None,
-        });
+        // Legacy pending closes must spend the full review window after upgrading.
+        self.green_since.get_or_insert_with(unix_seconds);
+        if !self.close_queued {
+            self.close_queued = true;
+            self.pending
+                .push(IssueAction::new(issue, commit, self.sequence));
+        }
     }
+
+    pub fn watcher_due(&self) -> bool {
+        const REVIEW_WINDOW: u64 = 30 * 60;
+        self.green_since
+            .is_some_and(|green| unix_seconds().saturating_sub(green) >= REVIEW_WINDOW)
+    }
+}
+
+fn unix_seconds() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs()
+}
+
+fn close_enabled(project: &crate::ProjectItem, thread: u32) -> bool {
+    crate::swarms::thread_swarm(project, thread).is_none_or(|(swarm, _)| swarm.close_issues)
 }
 
 impl StateStore {
@@ -109,14 +163,14 @@ impl StateStore {
             project
                 .threads
                 .iter()
-                .filter(|thread| thread.issue.is_some() && thread.rosen_change.is_some())
                 .filter(|thread| {
-                    !thread.rosen_issue.verified
-                        || thread
-                            .rosen_issue
-                            .pending
-                            .iter()
-                            .any(|action| action.revert.is_none())
+                    thread.issue.is_some()
+                        && thread.rosen_change.is_some()
+                        && close_enabled(project, thread.id)
+                })
+                .filter(|thread| {
+                    !thread.rosen_issue.close_queued
+                        || thread.rosen_issue.pending.iter().any(IssueAction::is_close)
                 })
                 .filter_map(|thread| {
                     thread
@@ -168,18 +222,10 @@ impl StateStore {
         let thread = project
             .threads
             .iter()
-            .find(|thread| thread.rosen_change.as_deref() == Some(change));
-        let Some(thread) = thread else { return Ok(()) };
-        if crate::swarms::thread_swarm(project, thread.id)
-            .is_some_and(|(swarm, _)| !swarm.close_issues)
-        {
-            return Ok(());
-        }
-        let thread = project
-            .threads
-            .iter_mut()
-            .find(|thread| thread.rosen_change.as_deref() == Some(change));
-        let Some(thread) = thread else { return Ok(()) };
+            .position(|thread| thread.rosen_change.as_deref() == Some(change));
+        let Some(index) = thread else { return Ok(()) };
+        let close_enabled = close_enabled(project, project.threads[index].id);
+        let thread = &mut project.threads[index];
         let Some(issue) = &thread.issue else {
             return Ok(());
         };
@@ -194,7 +240,9 @@ impl StateStore {
         {
             thread.rosen_issue.landed = Some((*commit).into());
         }
-        thread.rosen_issue.observe(sequence, issue, event);
+        thread
+            .rosen_issue
+            .observe(sequence, issue, event, close_enabled);
         self.store_snapshot(next)
     }
 
@@ -241,7 +289,10 @@ mod tests {
         let second = "b".repeat(40);
         record(&mut store, 1, Landed(&first))?;
         record(&mut store, 2, BuildPassed(&second))?;
-        assert!(pending(&store).is_empty());
+        let landed = pending(&store);
+        assert_eq!(landed.len(), 2);
+        assert!(landed[0].land_comment);
+        store.finish_rosen_issue(1, 4, &landed[0])?;
         store.confirm_rosen_issue_build(1, 4, &first)?;
         store = StateStore::load_or_default(&directory)?;
         let close = pending(&store);
@@ -253,6 +304,11 @@ mod tests {
         );
         store.confirm_rosen_issue_build(1, 4, &first)?;
         assert_eq!(pending(&store), close);
+        assert!(
+            store
+                .project(1)
+                .is_some_and(|project| !project.threads[0].rosen_issue.watcher_due())
+        );
         store.finish_rosen_issue(1, 4, &close[0])?;
         record(
             &mut store,
@@ -280,10 +336,12 @@ mod tests {
         store.confirm_rosen_issue_build(1, 4, &second)?;
         store = StateStore::load_or_default(&directory)?;
         let completed = pending(&store);
-        assert_eq!(completed.len(), 2);
+        assert_eq!(completed.len(), 3);
         assert_eq!(completed[0], reopened[0]);
         assert_eq!(completed[1].commit, second);
-        assert!(completed[1].revert.is_none());
+        assert!(completed[1].land_comment);
+        assert_eq!(completed[2].commit, second);
+        assert!(completed[2].is_close());
         assert!(directory.starts_with(std::env::temp_dir()));
         std::fs::remove_dir_all(directory)?;
         Ok(())

@@ -101,6 +101,7 @@ pub fn watch_prompt(brief: &WatchBrief) -> String {
         short_commit(brief.tip),
     );
     prompt.push_str(WATCH_STEPS);
+    prompt.push_str("For a Rosen source issue, use Velocity's watcher follow-through. It closes on behalf of the main watcher after R12 is green for 30 minutes and review has neither claimed nor objected to the land. Review swarm confirmations take precedence.\n");
     prompt.push_str(&bisect_steps(brief));
     prompt.push_str(&repair_steps(base));
     if let Some(instruction) = brief.instruction {

@@ -193,7 +193,8 @@ async fn install_download(
     crate::state::save_now(application)
         .map_err(|error| format!("{error}. The update was not installed."))?;
     crate::rosen::shutdown_servers(application).await;
-    let recovery = application.state::<velocity_updates::supervision::RecoveryConnection>();
+    let recovery =
+        application.state::<std::sync::Arc<velocity_updates::supervision::RecoveryConnection>>();
     if let Err(error) = recovery.set_intentional_exit(true) {
         crate::rosen::restart_servers(application).await;
         return Err(format!(

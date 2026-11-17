@@ -4,6 +4,7 @@ pub mod claims;
 mod comment;
 mod delivery;
 mod event_log;
+mod issue_tools;
 mod launch;
 mod presence;
 mod process;
@@ -26,8 +27,10 @@ pub use channel::{Channel, EVENT_TAGS, Entry, Event, Presence};
 pub use claims::{Claim, ClaimResult, piece_key};
 pub use delivery::deliver_targeted;
 pub use delivery::{deliver_messages, message_for};
+pub use issue_tools::IssueUpdate;
 pub use launch::{
-    CONTINUOUS_DISPATCH_ARGUMENT, SERVER_NAME, SERVER_SWITCH, serve_stdio, server_arguments,
+    CONTINUOUS_DISPATCH_ARGUMENT, SERVER_NAME, SERVER_SWITCH, serve_stdio, serve_stdio_with_issues,
+    server_arguments,
 };
 pub use protocol::serve;
 pub use routing::{MessageMode, mode_for};

@@ -2,7 +2,11 @@
 use std::path::PathBuf;
 
 use tauri::{AppHandle, Manager};
-use velocity_rosen::IssueEvent;
+use velocity_github::RosenIssueEffect;
+use velocity_rosen::{
+    IssueEvent,
+    review_swarm::{self, IssueCloser, IssueReviews},
+};
 use velocity_store::rosen_issue::{IssueAction, IssueObservation};
 
 use crate::state::ManagedStateStore;
@@ -45,10 +49,10 @@ pub(crate) fn workspace_note(application: &AppHandle, key: (u32, u32), change: &
     {
         note.push_str(&format!(
             "\n\nThis change implements {}#{}. Record its issue number in the named snapshot: \
-             `rosen commit -m \"<one-line summary> (#{})\"`. Velocity handles issue \
-             follow-through, honoring the swarm's Close issues option. It closes the issue \
-             after the landed change's build passes and its mirror carries the commit, \
-             and reopens it if Rosen reverts it. Leave issue follow-through to Velocity.",
+             `rosen commit -m \"<one-line summary> (#{})\"`. Use the AIRC issue_comment tool \
+             when you start, when a finding changes the plan, and when blocked. Use \
+             issue_ready_to_close to post completion evidence and flag the issue for independent \
+             review. Leave the issue open. Velocity announces the land.",
             issue.repository, issue.number, issue.number,
         ));
     }
@@ -89,31 +93,71 @@ pub(crate) async fn follow_up(application: &AppHandle, project: u32) {
         Ok(pending) => pending,
         Err(error) => return report::<()>(Err(error)),
     };
-    for (thread, directory, actions) in pending {
-        for action in actions {
-            if action.revert.is_none() && !covered.contains(&action.commit) {
-                break;
-            }
-            let (directory, work) = (directory.clone(), action.clone());
-            let done = tauri::async_runtime::spawn_blocking(move || synchronize(directory, work))
-                .await
-                .map_err(|error| error.to_string())
-                .and_then(|result| result);
-            match done {
-                Ok(true) => {
-                    if let Err(error) = finish(application, project, thread, &action) {
-                        report::<()>(Err(error));
-                        break;
-                    }
-                }
-                Ok(false) => break,
-                Err(error) => {
-                    report::<()>(Err(error));
-                    break;
-                }
+    let reviews = if pending
+        .iter()
+        .any(|thread| thread.actions.iter().any(IssueAction::is_close))
+    {
+        match issue_reviews(application, project).await {
+            Ok(reviews) => Some(reviews),
+            Err(error) => {
+                report::<()>(Err(error));
+                None
             }
         }
+    } else {
+        None
+    };
+    for thread in pending {
+        if let Err(error) =
+            follow_thread(application, project, thread, reviews.as_ref(), &covered).await
+        {
+            report::<()>(Err(error));
+        }
     }
+}
+
+async fn follow_thread(
+    application: &AppHandle,
+    project: u32,
+    thread: Pending,
+    reviews: Option<&IssueReviews>,
+    covered: &[String],
+) -> Result<(), String> {
+    for action in &thread.actions {
+        let closer = if action.is_close() {
+            let Some(closer) = reviews.and_then(|reviews| {
+                let watcher_due = thread.watcher_due && covered.contains(&action.commit);
+                reviews.closer(&thread.change, &action.commit, watcher_due)
+            }) else {
+                break;
+            };
+            Some(closer)
+        } else {
+            None
+        };
+        let (directory, change, work) = (
+            thread.directory.clone(),
+            thread.change.clone(),
+            action.clone(),
+        );
+        let done = tauri::async_runtime::spawn_blocking(move || {
+            synchronize(directory, &change, work, closer)
+        })
+        .await
+        .map_err(|error| error.to_string())??;
+        if !done {
+            break;
+        }
+        finish(application, project, thread.id, action)?;
+    }
+    Ok(())
+}
+
+async fn issue_reviews(application: &AppHandle, project: u32) -> Result<IssueReviews, String> {
+    let server = crate::rosen::server(application, project).await?;
+    review_swarm::issue_reviews(&server)
+        .await
+        .map_err(|error| error.to_string())
 }
 
 async fn confirm_builds(application: &AppHandle, project: u32) -> Result<Vec<String>, String> {
@@ -147,9 +191,15 @@ async fn confirm_builds(application: &AppHandle, project: u32) -> Result<Vec<Str
     Ok(covered)
 }
 
-type Pending = Vec<(u32, PathBuf, Vec<IssueAction>)>;
+struct Pending {
+    id: u32,
+    directory: PathBuf,
+    change: String,
+    watcher_due: bool,
+    actions: Vec<IssueAction>,
+}
 
-fn pending(application: &AppHandle, project: u32) -> Result<Pending, String> {
+fn pending(application: &AppHandle, project: u32) -> Result<Vec<Pending>, String> {
     let store = lock(
         application.state::<ManagedStateStore>().inner(),
         "persisted state",
@@ -161,29 +211,43 @@ fn pending(application: &AppHandle, project: u32) -> Result<Pending, String> {
         .threads
         .iter()
         .filter(|thread| !thread.rosen_issue.pending.is_empty())
-        .map(|thread| {
-            (
-                thread.id,
-                PathBuf::from(&project.repository_path),
-                thread.rosen_issue.pending.clone(),
-            )
+        .filter_map(|thread| {
+            Some(Pending {
+                id: thread.id,
+                directory: PathBuf::from(&project.repository_path),
+                change: thread.rosen_change.clone()?,
+                watcher_due: thread.rosen_issue.watcher_due(),
+                actions: thread.rosen_issue.pending.clone(),
+            })
         })
         .collect())
 }
 
-fn synchronize(directory: PathBuf, action: IssueAction) -> Result<bool, String> {
+fn synchronize(
+    directory: PathBuf,
+    change: &str,
+    action: IssueAction,
+    closer: Option<IssueCloser>,
+) -> Result<bool, String> {
     let Some(issue) = &action.issue else {
         return Ok(true);
     };
-    let client =
-        velocity_github::IssueClient::discover(&directory).map_err(|error| error.to_string())?;
+    let effect = match (action.revert.as_deref(), closer.as_ref()) {
+        (Some(reason), _) => RosenIssueEffect::Reverted { reason },
+        (_, Some(IssueCloser::Reviewer(by))) => RosenIssueEffect::Reviewed { by },
+        (_, Some(IssueCloser::Watcher)) => RosenIssueEffect::Watcher,
+        _ if action.land_comment => RosenIssueEffect::Landed { change },
+        _ => return Ok(false),
+    };
+    let client = velocity_github::IssueClient::for_repository(&directory, &issue.repository)
+        .map_err(|error| error.to_string())?;
     client
         .follow_rosen_issue(
             &issue.repository,
             issue.number,
             &action.commit,
             action.sequence,
-            action.revert.as_deref(),
+            effect,
         )
         .map_err(|error| error.to_string())
 }

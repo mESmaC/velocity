@@ -1,6 +1,27 @@
-use crate::{Channel, Error};
+use crate::{
+    Channel, Error,
+    issue_tools::{self, IssueHandler},
+};
 use serde_json::{Value, json};
 use std::io::{BufRead, Write};
+
+#[derive(Default)]
+pub(crate) struct ToolOptions<'a> {
+    continuous_dispatch: bool,
+    issue_handler: Option<&'a IssueHandler<'a>>,
+}
+
+impl<'a> ToolOptions<'a> {
+    pub(crate) fn new(
+        continuous_dispatch: bool,
+        issue_handler: Option<&'a IssueHandler<'a>>,
+    ) -> Self {
+        Self {
+            continuous_dispatch,
+            issue_handler,
+        }
+    }
+}
 
 /// Serve one agent connection. Identity is supplied by the launcher, not tool arguments.
 pub fn serve(
@@ -10,16 +31,23 @@ pub fn serve(
     input: impl BufRead + Send + 'static,
     output: impl Write + Send + 'static,
 ) -> Result<(), Error> {
-    serve_with_origin(channel, member, requested_nick, input, output, false)
+    serve_with_options(
+        channel,
+        member,
+        requested_nick,
+        input,
+        output,
+        ToolOptions::default(),
+    )
 }
 
-pub(crate) fn serve_with_origin(
+pub(crate) fn serve_with_options(
     channel: &Channel,
     member: &str,
     requested_nick: &str,
     input: impl BufRead + Send + 'static,
     output: impl Write + Send + 'static,
-    continuous_dispatch: bool,
+    options: ToolOptions<'_>,
 ) -> Result<(), Error> {
     let _connection = channel.connect(member)?;
     let connected = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true));
@@ -37,7 +65,7 @@ pub(crate) fn serve_with_origin(
                     &request,
                     &mut initialized,
                     &connected,
-                    continuous_dispatch,
+                    &options,
                 ),
                 Err(_) => Some(failure(Value::Null, -32700, "Parse error")),
             };
@@ -73,7 +101,7 @@ fn respond(
     request: &Value,
     initialized: &mut bool,
     connected: &std::sync::atomic::AtomicBool,
-    continuous_dispatch: bool,
+    options: &ToolOptions<'_>,
 ) -> Option<Value> {
     let id = request.get("id").cloned().unwrap_or(Value::Null);
     let method = request.get("method").and_then(Value::as_str);
@@ -87,19 +115,26 @@ fn respond(
                 *initialized = true;
                 json!({"protocolVersion":"2025-11-25","capabilities":{"tools":{}},
                         "serverInfo":{"name":"velocity-airc","version":env!("CARGO_PKG_VERSION")},
-                        "instructions":instructions(&nick, continuous_dispatch)})
+                        "instructions":instructions(&nick, options.continuous_dispatch)})
             }
             Err(error) => return Some(failure(id, -32603, &error.to_string())),
         },
         "ping" => json!({}),
         _ if !*initialized => return Some(failure(id, -32600, "Initialize first")),
         "tools/list" => match channel.is_rosen_project(member) {
-            Ok(rosen) => json!({"tools":tool_list(rosen, continuous_dispatch)}),
+            Ok(rosen) => json!({"tools":tool_list(rosen, options)}),
             Err(error) => return Some(failure(id, -32603, &error.to_string())),
         },
         "tools/call" => {
             let parameters = &request["params"];
-            match call(channel, member, nick, parameters, connected) {
+            match call(
+                channel,
+                member,
+                nick,
+                parameters,
+                connected,
+                options.issue_handler,
+            ) {
                 Ok(value) => json!({"content":[{"type":"text","text":value.to_string()}]}),
                 Err(error) => {
                     json!({"isError":true,"content":[{"type":"text","text":error.to_string()}]})
@@ -117,6 +152,7 @@ fn call(
     nick: &str,
     parameters: &Value,
     connected: &std::sync::atomic::AtomicBool,
+    issue_handler: Option<&IssueHandler<'_>>,
 ) -> Result<Value, Error> {
     let arguments = &parameters["arguments"];
     let after = arguments
@@ -144,6 +180,9 @@ fn call(
         ),
         name if crate::task_tools::TASK_TOOLS.contains(&name) => {
             crate::task_tools::call(channel, member, name, arguments)
+        }
+        name @ ("issue_comment" | "issue_ready_to_close") => {
+            issue_tools::call(channel, member, name, arguments, issue_handler)
         }
         "join" => Ok(json!({"nick":channel.join_with_session(member, nick, true)?})),
         "leave" => {
@@ -212,7 +251,7 @@ fn read_filtered(
     Ok(serde_json::to_value(entries)?)
 }
 
-fn tool_list(rosen: bool, continuous_dispatch: bool) -> Vec<Value> {
+fn tool_list(rosen: bool, options: &ToolOptions<'_>) -> Vec<Value> {
     let empty = json!({});
     let cursor = json!({"after":{"type":"integer","minimum":0}});
     let mut tools = vec![
@@ -248,7 +287,10 @@ fn tool_list(rosen: bool, continuous_dispatch: bool) -> Vec<Value> {
             &[],
         ),
     ];
-    tools.extend(crate::task_tools::tools(continuous_dispatch));
+    tools.extend(crate::task_tools::tools(options.continuous_dispatch));
+    if options.issue_handler.is_some() {
+        tools.extend(issue_tools::tools());
+    }
     tools.extend(writing_tools());
     tools.extend(claim_tools());
     if !rosen {

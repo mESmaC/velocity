@@ -160,8 +160,13 @@ fn dispatch_prompt(
                 "This question has no recommended answer to accept".into(),
             ));
         }
+        let delivery = if version_control == velocity_store::VersionControl::Rosen {
+            "Name the Rosen change after making that one-line edit."
+        } else {
+            "Route the one-line PR through normal PR duty review as Trivial."
+        };
         format!(
-            "The user accepts this recommended answer: {}\nOpen a one-line SPEC.md PR recording that answer as *(proposed)* in the relevant §8 question. Change only that decision line; do not implement the blocked items. Route the PR through normal PR duty review as Trivial.",
+            "The user accepts this recommended answer: {}\nRecord the answer as *(proposed)* in the relevant §8 question. Change only that decision line. {delivery}",
             question.recommendation
         )
     } else {
@@ -171,14 +176,14 @@ fn dispatch_prompt(
         return Ok(rosen_dispatch_prompt(&scope, repository, issue));
     }
     Ok(format!(
-        "{scope}\n\nIssue {repository}#{}: {}\n{}\n\n{}\n\nYou already have your own worktree and branch. Open a PR against the project's default branch with Fixes #{} in its description. Watch it until it merges, fix failed checks, answer every review comment, resolve addressed threads and re-request review. Never merge your own PR. Messages received while busy are queued.",
+        "{scope}\n\nIssue {repository}#{}: {}\n{}\n\n{}\n\nUse issue_comment for starting work, findings that change the plan, and blockers.\n\nYou already have your own worktree and branch. Open a PR against the project's default branch with Fixes #{} in its description. Watch it until it merges, fix failed checks, answer every review comment, resolve addressed threads and re-request review. Never merge your own PR. Messages received while busy are queued.",
         issue.number, issue.title, issue.url, issue.body, issue.number
     ))
 }
 
 fn rosen_dispatch_prompt(scope: &str, repository: &str, issue: &GitHubIssue) -> String {
     format!(
-        "{scope}\n\nIssue {repository}#{}: {}\n{}\n\n{}\n\nFollow the workspace note Velocity gave you. In a Rosen workspace, claim the files you edit and run builds and checks through rosen run -- <command>. When done, name the work with rosen commit -m \"<one-line summary> (#{})\" and end your turn. If Velocity fell back to a git worktree, follow AGENTS.md's ordinary PR flow and watch the PR until it merges. Never close or comment on the issue. If there is no work to change, explain why and end your turn.",
-        issue.number, issue.title, issue.url, issue.body, issue.number
+        "{scope}\n\nIssue {repository}#{}: {}\n{}\n\n{}\n\nFollow the Rosen workspace note Velocity gave you. If there is no work to change, explain why and end your turn.",
+        issue.number, issue.title, issue.url, issue.body
     )
 }

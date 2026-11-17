@@ -29,9 +29,10 @@ pub fn issue_event(event: &Event) -> Option<(&str, IssueEvent<'_>)> {
             commit: event.detail.get("culprit").and_then(|value| value.as_str()),
             reason: event
                 .detail
-                .get("reason")
+                .get("output")
                 .and_then(|value| value.as_str())
-                .or_else(|| event.detail.get("output").and_then(|value| value.as_str()))
+                .filter(|output| !output.trim().is_empty())
+                .or_else(|| event.detail.get("reason").and_then(|value| value.as_str()))
                 .unwrap_or("Rosen reverted the change after its build failed."),
         },
         _ => return None,

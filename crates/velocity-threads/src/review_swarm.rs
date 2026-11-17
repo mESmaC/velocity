@@ -201,7 +201,7 @@ impl ReviewSwarms {
             .await
             .map_err(|error| error.to_string())?;
         for target in pending {
-            let piece = format!("review:{}:{}", target.change, target.commit);
+            let piece = review_swarm::review_piece(&target.change, &target.commit);
             if review_swarm::claim(&member, &piece, &target.summary)
                 .await
                 .map_err(|error| error.to_string())?

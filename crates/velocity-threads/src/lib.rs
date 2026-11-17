@@ -13,6 +13,7 @@ pub mod dispatch;
 pub mod follow_through;
 pub mod goal_selection;
 pub mod goal_swarm;
+pub mod issue_activity;
 pub mod launch;
 pub mod machine_worker;
 pub mod naming;

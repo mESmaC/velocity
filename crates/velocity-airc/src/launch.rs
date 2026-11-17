@@ -4,7 +4,7 @@
 use std::ffi::OsString;
 use std::path::{Path, PathBuf};
 
-use crate::{Channel, Error};
+use crate::{Channel, Error, IssueUpdate, protocol::ToolOptions};
 
 /// The switch that makes Velocity's own executable serve AIRC, so the server ships inside
 /// the app and needs no separate install.
@@ -33,6 +33,22 @@ pub fn server_arguments(app_data: &Path, project: &str, member: &str, nick: &str
 /// Serves one agent's connection on stdin/stdout from [`server_arguments`]: joins on
 /// `initialize`, leaves at end of input.
 pub fn serve_stdio(arguments: &[OsString]) -> Result<(), Error> {
+    serve_stdio_inner(arguments, None)
+}
+
+pub fn serve_stdio_with_issues(
+    arguments: &[OsString],
+    handler: impl Fn(&Path, &str, IssueUpdate<'_>) -> Result<String, Error>,
+) -> Result<(), Error> {
+    serve_stdio_inner(arguments, Some(&handler))
+}
+
+type StdioIssueHandler<'a> = dyn Fn(&Path, &str, IssueUpdate<'_>) -> Result<String, Error> + 'a;
+
+fn serve_stdio_inner(
+    arguments: &[OsString],
+    handler: Option<&StdioIssueHandler<'_>>,
+) -> Result<(), Error> {
     let [app_data, project, member, nick, options @ ..] = arguments else {
         return Err(Error::Invalid(USAGE.into()));
     };
@@ -49,12 +65,11 @@ pub fn serve_stdio(arguments: &[OsString]) -> Result<(), Error> {
             .map(str::to_owned)
             .ok_or_else(|| Error::Invalid(format!("Invalid {what}")))
     };
+    let app_data = PathBuf::from(app_data);
+    let project = text(project, "project identity")?;
     let channel = match std::env::var("ROSEN_ENDPOINT") {
-        Ok(endpoint) => Channel::at_endpoint(&PathBuf::from(app_data), &endpoint),
-        Err(_) => Channel::open(
-            &PathBuf::from(app_data),
-            &text(project, "project identity")?,
-        )?,
+        Ok(endpoint) => Channel::at_endpoint(&app_data, &endpoint),
+        Err(_) => Channel::open(&app_data, &project)?,
     }
     .with_member_scope(
         scope
@@ -62,12 +77,20 @@ pub fn serve_stdio(arguments: &[OsString]) -> Result<(), Error> {
             .map(|scope| text(scope, "member scope"))
             .transpose()?,
     );
-    crate::protocol::serve_with_origin(
+    let update = |request: IssueUpdate<'_>| {
+        handler.ok_or_else(|| Error::Invalid("No GitHub issue transport".into()))?(
+            &app_data, &project, request,
+        )
+    };
+    crate::protocol::serve_with_options(
         &channel,
         &text(member, "member identity")?,
         &text(nick, "nick")?,
         std::io::BufReader::new(std::io::stdin()),
         std::io::stdout(),
-        continuous_dispatch,
+        ToolOptions::new(
+            continuous_dispatch,
+            handler.map(|_| &update as &crate::issue_tools::IssueHandler<'_>),
+        ),
     )
 }

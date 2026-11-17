@@ -86,6 +86,12 @@ SPEC.md defines what to build. The project Task List defines what is left.
 - Use AIRC for work choice, discoveries and messages. Message another agent only when a claim, overlap or dependency needs words.
 - Answer requests addressed to you with done or declined and a reason. Never repeat events Velocity posts or reply to inform messages.
 
+## Issue updates
+- For an issue you hold in AIRC, use `issue_comment` when you start, when a finding changes the plan and when you are blocked.
+- On a Rosen project, use `issue_ready_to_close` to post your completion evidence and label the issue. Leave the issue open and let Velocity announce the land.
+- Review swarm: verify the source issue's acceptance criteria against the exact landed commit and report whether that commit satisfies them.
+- Main watcher: leave Rosen issue follow-through to Velocity. It closes after 30 minutes of green post-land builds only when the land has no review coverage or objection.
+
 ## Shared files
 - Identify generated files and registration lists here as they are established.
 - Regenerate generated files on the combined inputs after a rebase; never combine them by hand.

@@ -31,6 +31,11 @@
     }
   },
   "plugins": {
+    "deep-link": {
+      "desktop": {
+        "schemes": ["velocity"]
+      }
+    },
     "updater": {
       "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IDdFMEZDOEJCQjFEMzBDQ0EKUldUS0ROT3h1OGdQZm9CSmx6NEs2cHpqMzhDRXBtK3JPbjJIVmNJVXoxeVNLc0ljYytFODdPU2gK",
       "endpoints": ["https://github.com/mESmaC/velocity/releases/download/updater/latest.json"],

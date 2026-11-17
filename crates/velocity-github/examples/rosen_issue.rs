@@ -1,7 +1,7 @@
 //! Run the Rosen issue follow-up transport without a window. Used with a fake gh for
 //! a smoke run; normal calls use the same OAuth transport as the application's follower.
 use std::path::Path;
-use velocity_github::IssueClient;
+use velocity_github::{IssueClient, RosenIssueEffect};
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let arguments: Vec<_> = std::env::args().skip(1).collect();
@@ -21,7 +21,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         number.parse()?,
         commit,
         if reopen { 2 } else { 1 },
-        reopen.then_some(reason.as_str()),
+        if reopen {
+            RosenIssueEffect::Reverted { reason }
+        } else {
+            RosenIssueEffect::Watcher
+        },
     )?;
     if !done {
         println!("Pending: the mirror has not carried the land yet");

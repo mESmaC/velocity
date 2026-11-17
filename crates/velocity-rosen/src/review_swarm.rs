@@ -18,6 +18,67 @@ pub struct LandedChange {
     pub summary: String,
 }
 
+pub fn review_piece(change: &str, commit: &str) -> String {
+    format!("review:{change}:{commit}")
+}
+
+pub enum IssueCloser {
+    Reviewer(String),
+    Watcher,
+}
+
+pub struct IssueReviews {
+    claims: std::collections::HashSet<String>,
+    lands: std::collections::HashMap<(String, String), IssueReview>,
+}
+
+struct IssueReview {
+    state: ReviewedState,
+    reviewer: Option<String>,
+}
+
+impl IssueReviews {
+    pub fn closer(&self, change: &str, commit: &str, watcher_due: bool) -> Option<IssueCloser> {
+        let review = self.lands.get(&(change.into(), commit.into()))?;
+        match review.state {
+            ReviewedState::Reviewed => review.reviewer.clone().map(IssueCloser::Reviewer),
+            ReviewedState::Unreviewed
+                if watcher_due && !self.claims.contains(&review_piece(change, commit)) =>
+            {
+                Some(IssueCloser::Watcher)
+            }
+            _ => None,
+        }
+    }
+}
+
+pub async fn issue_reviews(server: &ProjectServer) -> Result<IssueReviews, RosenError> {
+    let client = Client::connect(server.endpoint()).await?;
+    // A worker records its verdict before giving up its claim. Read in this order so
+    // a worker completing between the two reads cannot look like an uncovered land.
+    let claims = client
+        .pieces()
+        .await?
+        .into_iter()
+        .map(|claim| claim.piece)
+        .collect();
+    let lands = client
+        .review_landed(None)
+        .await?
+        .into_iter()
+        .map(|land| {
+            (
+                (land.change.to_string(), land.commit.to_string()),
+                IssueReview {
+                    state: land.state,
+                    reviewer: land.by.map(|by| by.to_string()),
+                },
+            )
+        })
+        .collect();
+    Ok(IssueReviews { claims, lands })
+}
+
 /// Rosen returns oldest first; stable partitioning puts sensitive work first without
 /// replacing age with a local discovery timestamp after an app restart.
 pub async fn unreviewed(server: &ProjectServer) -> Result<Vec<LandedChange>, RosenError> {
@@ -272,4 +333,45 @@ pub fn verify<T>(folder: &Path, check: impl FnOnce() -> T) -> Result<T, RosenErr
         )
         .map_err(source_error)?;
     Ok(check())
+}
+
+#[cfg(test)]
+mod issue_closure_tests {
+    use super::*;
+
+    // #441 / #416: a green build closed an issue before anyone verified its acceptance criteria.
+    #[test]
+    fn watcher_waits_for_review_and_respects_objections_to_this_land() {
+        let land = ("change".into(), "first-land".into());
+        let evidence = |state, claims| IssueReviews {
+            claims,
+            lands: [(
+                land.clone(),
+                IssueReview {
+                    state,
+                    reviewer: Some("scout-1".into()),
+                },
+            )]
+            .into_iter()
+            .collect(),
+        };
+        let unclaimed = evidence(ReviewedState::Unreviewed, Default::default());
+        assert!(unclaimed.closer("change", "first-land", false).is_none());
+        assert!(matches!(
+            unclaimed.closer("change", "first-land", true),
+            Some(IssueCloser::Watcher)
+        ));
+        let active = evidence(
+            ReviewedState::Unreviewed,
+            [review_piece("change", "first-land")].into_iter().collect(),
+        );
+        assert!(active.closer("change", "first-land", true).is_none());
+        let objected = evidence(ReviewedState::IssuesFiled, Default::default());
+        assert!(objected.closer("change", "first-land", true).is_none());
+        let reviewed = evidence(ReviewedState::Reviewed, Default::default());
+        assert!(
+            matches!(reviewed.closer("change", "first-land", false), Some(IssueCloser::Reviewer(by)) if by == "scout-1")
+        );
+        assert!(reviewed.closer("change", "later-land", true).is_none());
+    }
 }

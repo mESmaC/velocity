@@ -122,7 +122,12 @@ fn member_work(
                 .ok_or_else(|| {
                     DispatchError::Invalid(format!("Issue #{number} is closed or has an agent"))
                 })?;
-            let prompt = issue_prompt(repository, issue, request.close_issues);
+            let prompt = issue_prompt(
+                repository,
+                issue,
+                request.close_issues,
+                project.version_control,
+            );
             let owner = ThreadIssue::new(repository.into(), number);
             (
                 issue.title.clone(),
@@ -143,7 +148,19 @@ fn task_prompt(task: &str) -> String {
     )
 }
 
-fn issue_prompt(repository: &str, issue: &OpenIssue, close: bool) -> String {
+fn issue_prompt(
+    repository: &str,
+    issue: &OpenIssue,
+    close: bool,
+    version_control: velocity_store::VersionControl,
+) -> String {
+    let scope = format!(
+        "Your swarm item is issue {repository}#{}: {}. Read its description and evidence, then implement it end to end following AGENTS.md and SPEC.md.",
+        issue.number, issue.title
+    );
+    if version_control == velocity_store::VersionControl::Rosen {
+        return format!("{scope}\n\nFollow the Rosen workspace note Velocity gave you.");
+    }
     let link = if close {
         format!("Write Fixes #{} in the PR description.", issue.number)
     } else {
@@ -153,7 +170,7 @@ fn issue_prompt(repository: &str, issue: &OpenIssue, close: bool) -> String {
         )
     };
     format!(
-        "You are one agent in a swarm: one agent per open item, all working at once, each in its own worktree. Your item is issue {repository}#{}: {}\n\nRead it first with `gh issue view {}`, including its evidence. Implement it end to end, following AGENTS.md and SPEC.md. {link}\n\n{LIFECYCLE}",
-        issue.number, issue.title, issue.number
+        "{scope}\n\nRead it with `gh issue view {}`. Use issue_comment for starting work, findings that change the plan, and blockers. {link}\n\n{LIFECYCLE}",
+        issue.number
     )
 }

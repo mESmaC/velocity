@@ -330,7 +330,7 @@ pub fn goal_agent_prompt(
             piece.title
         ),
         WorkKey::Issue { repository, number } => format!(
-            "GitHub issue {repository}#{number}: {}\nRead it first with `gh issue view {number}`, including its evidence, and write `Fixes #{number}` in your PR description.",
+            "GitHub issue {repository}#{number}: {}\nRead it first with `gh issue view {number}`, including its evidence, and write `Fixes #{number}` in your PR description. Use issue_comment for starting work, findings that change the plan, and blockers.",
             piece.title
         ),
         WorkKey::Spec { section } => format!(

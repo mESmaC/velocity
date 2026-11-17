@@ -24,6 +24,8 @@ pub(crate) struct SwarmLaunch {
     pub workspace: PathBuf,
     pub change: String,
     pub repository: Option<String>,
+    #[serde(default)]
+    pub source_issue: Option<velocity_store::issues::ThreadIssue>,
     pub report: PathBuf,
     pub completion: PathBuf,
     #[serde(default)]
@@ -43,7 +45,7 @@ impl SwarmLaunch {
     pub fn piece_for(nickname: &str, target: Option<&LandedChange>) -> String {
         target.map_or_else(
             || format!("scout:{nickname}"),
-            |target| format!("review:{}:{}", target.change, target.commit),
+            |target| review_swarm::review_piece(&target.change, &target.commit),
         )
     }
 }
@@ -51,6 +53,8 @@ impl SwarmLaunch {
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub(crate) struct Completion {
     pub issues_filed: bool,
+    #[serde(default)]
+    pub source_issue_satisfied: Option<bool>,
     pub summary: String,
     /// The model must identify proof-list applicability even when the list is empty.
     pub proof_assessment: String,
@@ -110,6 +114,7 @@ impl ReviewSwarmServer {
                 .map_err(|error| error.to_string())?;
             Ok(json!({"change": target.change, "commit": target.commit,
                 "summary": target.summary, "named_snapshots": overview.named, "diff": diff,
+                "source_issue": self.launch.source_issue,
                 "instruction": "Read the referenced issue and SPEC section; verify every claim against the code"}))
         })
     }
@@ -151,6 +156,11 @@ impl ReviewSwarmServer {
         if completion.summary.trim().is_empty() || completion.proof_assessment.trim().is_empty() {
             return Err("Explain the review and its applicability to SPEC.md's proof list".into());
         }
+        if self.launch.source_issue.is_some() && completion.source_issue_satisfied.is_none() {
+            return Err(
+                "Report whether this land meets the source issue's acceptance criteria".into(),
+            );
+        }
         let reports = read_scout_reports(&self.launch.report, 0)
             .map(|(reports, _)| reports)
             .unwrap_or_default();
@@ -170,7 +180,7 @@ impl ReviewSwarmServer {
                 &self.launch.workspace,
             ))
             .map_err(|error| error.to_string())?;
-        if !completion.issues_filed {
+        if !completion.issues_filed && completion.source_issue_satisfied != Some(false) {
             self.check_proofs(&completion.proof_features)?;
         }
         completion.head = self
@@ -185,10 +195,34 @@ impl ReviewSwarmServer {
         if completion.head != head {
             return Err("Sources changed during verification; complete again".into());
         }
+        self.record_source_objection(&server, &completion)?;
         write_record(&self.launch.completion, &completion)?;
         Ok(
             json!({"recorded": true, "instruction": "Name any proof or fix work with rosen commit, then end your turn. Velocity records coverage after that work lands."}),
         )
+    }
+
+    fn record_source_objection(
+        &self,
+        server: &ProjectServer,
+        completion: &Completion,
+    ) -> Result<(), String> {
+        // A rejected source issue must stay open even if this reviewer's own
+        // repair has a conflict or its session is interrupted before finishing.
+        if self.launch.source_issue.is_some()
+            && completion.source_issue_satisfied == Some(false)
+            && let Some(target) = &self.launch.target
+        {
+            self.runtime
+                .block_on(review_swarm::mark(
+                    server,
+                    &self.launch.nickname,
+                    target,
+                    true,
+                ))
+                .map_err(|error| error.to_string())?;
+        }
+        Ok(())
     }
 
     fn check_proofs(&self, features: &[String]) -> Result<(), String> {
@@ -271,6 +305,7 @@ impl ToolServer for ReviewSwarmServer {
         tools.push(json!({"name": "review_swarm_complete", "description": "Record a finished review or sweep. Proof features require Design.lean, fixtures, lake build and axiom audit. Coverage is applied after any named fix or proof lands.",
             "inputSchema": {"type": "object", "properties": {
                 "issues_filed": {"type": "boolean"}, "summary": {"type": "string"},
+                "source_issue_satisfied": {"type": "boolean", "description": "Required when review_swarm_change identifies a source issue. True only when the landed implementation meets that issue's acceptance criteria."},
                 "proof_assessment": {"type": "string", "description": "Which F17 proof-list features this touches, or why none apply"},
                 "proof_features": {"type": "array", "items": {"type": "string"}, "description": "Every affected feature's folder under proofs/"}},
                 "required": ["issues_filed", "summary", "proof_assessment", "proof_features"], "additionalProperties": false}}));
@@ -310,6 +345,14 @@ impl SwarmLaunch {
             app_data: runner.app_data.clone(),
             project: roster.project.id,
             nickname,
+            source_issue: target.as_ref().and_then(|target| {
+                roster
+                    .project
+                    .threads
+                    .iter()
+                    .find(|thread| thread.rosen_change.as_deref() == Some(&target.change))
+                    .and_then(|thread| thread.issue.clone())
+            }),
             target,
             workspace: root.join(format!("review-{}", roster.scouts[index].nickname)),
             change: String::new(),

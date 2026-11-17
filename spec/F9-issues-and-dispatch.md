@@ -22,11 +22,16 @@ The Work panel uses change and land vocabulary for Rosen projects.
 **Issue follow-through.** Velocity's Rosen follower supplies the land and verified-build evidence and posts the land update (F5, Issues carried by Rosen changes).
 Under the #441 decision, the review swarm closes the issue after confirming that the landed change meets the issue's acceptance criteria.
 The main watcher handles closure after 30 minutes from verified post-land build success if no reviewer has covered that land; an objection rules out the fallback.
-Closure waits for the qualifying build and for the GitHub mirror to contain the landed commit, and honours **Close issues**.
-The authoring agent can post progress and mark the issue ready to close; closure belongs to review and watcher roles.
-A revert cancels pending closure and reopens an issue closed by the follow-through, with the culprit output or reason.
+Closure waits for the GitHub mirror to contain the landed commit and honours **Close issues**.
+A revert cancels pending closure and reopens the issue with the culprit output or reason.
 Discussion and closure happen asynchronously alongside the Work projection and landing.
-#441 delivers the comment and closure roles; the existing F5 follower handles closure until that change ships.
+
+**Issue comments (#441).** AIRC's `issue_comment { issue, body }` posts on any project issue the calling agent currently holds.
+The comment includes the agent's nick and a link to its saved Velocity thread when it has one.
+Agents comment when starting, when a finding changes the plan and when blocked.
+On Rosen, Velocity posts the land comment with the change ID and commit.
+The author can call `issue_ready_to_close { issue, body }` to post completion evidence and add the `ready-to-close` label.
+The author leaves the issue open for the review swarm or main watcher (F7).
 
 **Git projects.** The existing Issues panel and dispatch apply while git project mode is supported.
 

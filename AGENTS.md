@@ -155,6 +155,7 @@ In a Rosen workspace, claims are Rosen's:
 - Before you edit anything, claim every file you expect to touch: `rosen claim <paths>`. The first claim wins; a refusal names the change that holds the path. Pick other work, or record `rosen share <paths>` when you must edit a held file, or `rosen wait <paths>` when you need its change landed first.
 - Claims are released when your change lands or is abandoned; `rosen release <paths>` gives one up sooner.
 - There is no claim PR, `[claim]` title or "shares" note: Rosen records all of it.
+- Use AIRC `issue_comment` when you start a claimed issue, when a finding changes the plan or when you are blocked. Use `issue_ready_to_close` to post completion evidence and label the issue. Leave the issue open and let Velocity post the land comment.
 
 In a git worktree, claims are draft PRs:
 - Before you edit anything, claim your piece:

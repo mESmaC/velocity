@@ -315,8 +315,10 @@ impl Job {
                 "session ended without review_swarm_complete; coverage remains unreviewed".into(),
             );
         };
+        let objected = completion.issues_filed
+            || (launch.source_issue.is_some() && completion.source_issue_satisfied != Some(true));
         if let Some(target) = &launch.target {
-            review_swarm::mark(server, &key.1, target, completion.issues_filed)
+            review_swarm::mark(server, &key.1, target, objected)
                 .await
                 .map_err(|error| error.to_string())?;
         }
@@ -327,8 +329,8 @@ impl Job {
             false,
             format!(
                 "{} · {}",
-                if completion.issues_filed {
-                    "issues filed"
+                if objected {
+                    "findings remain"
                 } else {
                     "reviewed"
                 },
@@ -455,7 +457,7 @@ fn prompt(launch: &SwarmLaunch, roster: &ScoutRoster, instruction: Option<&str>)
     );
     format!(
         "You are {}, a Review swarm duty agent. {work}\n\n\
-        Read AGENTS.md and SPEC.md, call review_swarm_change, and read every referenced issue. \
+        Read AGENTS.md and SPEC.md, call review_swarm_change, and read every referenced issue with its comments and evidence. \
         Check the implementation end to end against each claim and its SPEC section. \
         Reviews never gate, delay or revert a land. Do not approve, submit receipts or revert by hand; R12 owns build recovery. \
         File findings through scout_issues and scout_file, with executed failing evidence and duplicate checks. \
@@ -467,7 +469,8 @@ fn prompt(launch: &SwarmLaunch, roster: &ScoutRoster, instruction: Option<&str>)
         File model/code gaps with evidence. review_swarm_complete runs lake build and the axiom audit for the named features, \
         in the background verify queue; all other heavy runs use rosen run --class verify -- <command>. \
         A proof or fix is an ordinary Rosen change, with no review gate.\n\n\
-        Call review_swarm_complete with your summary, proof assessment and feature folders; set issues_filed if findings remain. \
+        For a source issue, check its acceptance criteria against the exact landed commit. In review_swarm_complete, report source_issue_satisfied as true when the land meets those criteria and false otherwise. Velocity closes issues on behalf of the review swarm after a positive verdict. A negative verdict keeps the issue open for follow-up. \
+        Call review_swarm_complete with your summary, proof assessment and feature folders; set issues_filed when you filed or identified findings through scout_file. \
         Name any proof, stress script or fix with rosen commit -m, then end the turn. \
         Velocity lands that named work through the ordinary policy, then records the reviewed/issues filed state. \
         On a resumed workspace, finish the kept work and resolve any Rosen merge conflicts before completing.\n\n{}",

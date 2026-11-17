@@ -52,6 +52,7 @@ mod swarm_deletion;
 mod swarm_rebase;
 pub mod sweeps;
 mod tasks;
+mod thread_links;
 mod thread_menu;
 mod threads;
 mod updates;
@@ -271,7 +272,9 @@ fn application_environment() -> tauri::Env {
 }
 
 pub fn run() -> anyhow::Result<()> {
-    let recovery = velocity_updates::supervision::RecoveryConnection::connect()?;
+    let recovery =
+        std::sync::Arc::new(velocity_updates::supervision::RecoveryConnection::connect()?);
+    let setup_recovery = recovery.clone();
     #[cfg(debug_assertions)]
     export_bindings()?;
     updates::wait_after_portable_update();
@@ -294,13 +297,21 @@ pub fn run() -> anyhow::Result<()> {
         threads::ThreadStepRecorded,
         updates::UpdateStatusChanged
     ]);
-    tauri::Builder::default()
+    let builder = tauri::Builder::default()
+        .plugin(tauri_plugin_single_instance::init(
+            |application, arguments, _| {
+                for argument in arguments {
+                    thread_links::open(application, &argument);
+                }
+            },
+        ))
+        .plugin(tauri_plugin_deep_link::init())
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_clipboard_manager::init())
         .plugin(tauri_plugin_updater::Builder::new().build())
         .manage(application_environment())
-        .manage(recovery)
+        .manage(recovery.clone())
         .manage(agents::ManagedAgents::default())
         .manage(goal_swarm::GoalSwarmPool::default())
         .manage(layout::MainLayout::default())
@@ -312,6 +323,7 @@ pub fn run() -> anyhow::Result<()> {
         .manage(thread_menu::ManagedDeletions::default())
         .invoke_handler(bindings.invoke_handler())
         .setup(move |application| {
+            setup_recovery.set_intentional_exit(false)?;
             bindings.mount_events(application);
             diagnostics::initialize(application.handle());
             let interrupted = state::initialize(application.handle())?;
@@ -337,29 +349,36 @@ pub fn run() -> anyhow::Result<()> {
             updates::initialize(application.handle());
             velocity_reports::initialize(application.handle());
             restart::resume_interrupted(application.handle(), interrupted);
+            thread_links::initialize(application.handle());
             Ok(())
         })
         .on_window_event(|window, event| {
             window::on_window_event(window, event);
             worktree_settings::on_window_event(window, event);
-        })
-        .build(tauri::generate_context!())
-        .context("Could not run Velocity")?
-        .run(|application, event| {
-            // Nothing can stop the exit now; a failed save is logged like any other.
-            if matches!(event, tauri::RunEvent::Exit) {
-                use tauri::Manager;
-                if let Err(error) = application
-                    .state::<velocity_updates::supervision::RecoveryConnection>()
-                    .set_intentional_exit(true)
-                {
-                    diagnostics::record("recovery", &error.to_string());
-                }
-                if let Err(error) = state::save_now(application) {
-                    eprintln!("{error}");
-                }
-                rosen::shutdown(application);
-            }
         });
+    // The single-instance plugin exits before setup when it hands off a URL or launch.
+    recovery.set_intentional_exit(true)?;
+    let application = builder
+        .build(tauri::generate_context!())
+        .inspect_err(|_| {
+            let _ = recovery.set_intentional_exit(false);
+        })
+        .context("Could not run Velocity")?;
+    application.run(|application, event| {
+        // Nothing can stop the exit now; a failed save is logged like any other.
+        if matches!(event, tauri::RunEvent::Exit) {
+            use tauri::Manager;
+            if let Err(error) = application
+                .state::<std::sync::Arc<velocity_updates::supervision::RecoveryConnection>>()
+                .set_intentional_exit(true)
+            {
+                diagnostics::record("recovery", &error.to_string());
+            }
+            if let Err(error) = state::save_now(application) {
+                eprintln!("{error}");
+            }
+            rosen::shutdown(application);
+        }
+    });
     Ok(())
 }
