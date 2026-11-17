@@ -427,7 +427,13 @@ pub(crate) enum ToolOutcome {
     Other,
 }
 
-const GRAPH_TOOLS: [&str; 4] = ["graph_find", "graph_read", "graph_impact", "graph_run"];
+const GRAPH_TOOLS: [&str; 5] = [
+    "graph_find",
+    "graph_read",
+    "graph_impact",
+    "graph_run",
+    "graph_overlaps",
+];
 
 pub(crate) fn record_tool(folder: &Path, name: &str, outcome: ToolOutcome) {
     if GRAPH_TOOLS.contains(&name) {

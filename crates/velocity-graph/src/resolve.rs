@@ -283,6 +283,7 @@ fn fits(reference: ReferenceKind, symbol: SymbolKind, precise: bool, qualified: 
         ReferenceKind::Type | ReferenceKind::Implementation => symbol.type_like(),
         ReferenceKind::Mention => symbol != SymbolKind::Heading,
         ReferenceKind::FileMention | ReferenceKind::Command => false,
+        ReferenceKind::Component => symbol == SymbolKind::Component,
     }
 }
 
@@ -398,7 +399,8 @@ impl Scope<'_, '_> {
             | ReferenceKind::Method
             | ReferenceKind::Macro
             | ReferenceKind::MacroArgument
-            | ReferenceKind::Command => Relation::Calls,
+            | ReferenceKind::Command
+            | ReferenceKind::Component => Relation::Calls,
             ReferenceKind::Type => Relation::References,
             ReferenceKind::Implementation => Relation::Implements,
             ReferenceKind::Mention | ReferenceKind::FileMention => Relation::Mentions,
@@ -442,6 +444,23 @@ impl Scope<'_, '_> {
             return self.command(&reference.name);
         }
         let precise = self.precise();
+        if self.javascript()
+            && reference.qualifier.is_none()
+            && let Some(import) = self.import_named(&reference.name)
+        {
+            let targets = self.javascript_targets(import, None);
+            return pick(
+                &targets
+                    .into_iter()
+                    .filter(|candidate| {
+                        matches!(self.graph().records[*candidate].kind, RecordKind::Symbol(kind)
+                    if fits(reference.kind, kind, precise, false))
+                    })
+                    .collect::<Vec<_>>(),
+                Provenance::Extracted,
+            );
+        }
+        let in_tests = self.in_tests || self.graph().records[self.source(reference)].test;
         let candidates: Vec<usize> = self
             .context
             .symbols
@@ -456,9 +475,7 @@ impl Scope<'_, '_> {
                 _ => false,
             })
             // Production code never calls into tests, examples or stress scripts.
-            .filter(|candidate| {
-                self.in_tests || !is_test_path(&self.graph().records[*candidate].path)
-            })
+            .filter(|candidate| in_tests || !self.graph().records[*candidate].test)
             .collect();
         if candidates.is_empty() {
             return Vec::new();
@@ -513,6 +530,12 @@ impl Scope<'_, '_> {
             return Some(pick(&of_type, Provenance::Extracted));
         }
         if let Some(import) = self.import_named(qualifier) {
+            if self.javascript() {
+                return Some(pick(
+                    &self.javascript_targets(import, Some(&reference.name)),
+                    Provenance::Extracted,
+                ));
+            }
             let in_module = self.import_scope(import, candidates, false);
             return Some(pick(&in_module, Provenance::Extracted));
         }
@@ -545,7 +568,7 @@ impl Scope<'_, '_> {
                 None => Vec::new(),
             };
         }
-        let files = self.reexported_files(self.module_files(&import.source), &import.name);
+        let files = self.module_files(&import.source);
         candidates
             .iter()
             .copied()
@@ -553,37 +576,63 @@ impl Scope<'_, '_> {
             .collect()
     }
 
-    /// `files` and every file they pass `name` on from (`export * from`, `export { name }
-    /// from`), up to three barrels deep.
-    fn reexported_files(&self, files: Vec<String>, name: &str) -> Vec<String> {
-        let mut all = files.clone();
-        let mut frontier = files;
-        for _ in 0..3 {
-            let mut next = Vec::new();
-            for path in &frontier {
-                let Some(file) = self.context.files.get(path.as_str()) else {
-                    continue;
-                };
-                let folder = path.rsplit_once('/').map_or("", |(folder, _)| folder);
-                for import in
-                    file.parse.imports.iter().filter(|import| {
-                        import.reexport && (import.name == "*" || import.name == name)
-                    })
-                {
-                    for target in module_files_from(self.context, folder, &import.source) {
-                        if !all.contains(&target) {
-                            all.push(target.clone());
-                            next.push(target);
-                        }
+    fn javascript_targets(&self, import: &Import, member: Option<&str>) -> Vec<usize> {
+        let name = member.unwrap_or_else(|| import.original.as_deref().unwrap_or(&import.name));
+        let mut pending: Vec<_> = self
+            .module_files(&import.source)
+            .into_iter()
+            .map(|path| (path, name.to_owned()))
+            .collect();
+        let mut seen = HashSet::new();
+        let mut targets = Vec::new();
+        while let Some((path, name)) = pending.pop() {
+            if !seen.insert((path.clone(), name.clone())) {
+                continue;
+            }
+            let Some(file) = self.context.files.get(path.as_str()) else {
+                continue;
+            };
+            let Some(&record) = self.graph().by_path.get(&path) else {
+                continue;
+            };
+            let records = &self.graph().records;
+            let direct: Vec<_> = records[record]
+                .down
+                .iter()
+                .copied()
+                .filter(|symbol| {
+                    let symbol = &records[*symbol];
+                    if name == "default" {
+                        symbol.kind == RecordKind::Symbol(SymbolKind::Component)
+                    } else {
+                        symbol.name == name
                     }
+                })
+                .collect();
+            let explicit = file
+                .parse
+                .imports
+                .iter()
+                .any(|import| import.reexport && import.name == name);
+            if !explicit && !direct.is_empty() {
+                targets.extend(direct);
+                continue;
+            }
+            for import in file.parse.imports.iter().filter(|import| import.reexport) {
+                if import.name == name || (!explicit && name != "default" && import.name == "*") {
+                    let upstream = import.original.as_deref().unwrap_or(&name);
+                    pending.extend(
+                        module_files_from(self.context, &path, &import.source)
+                            .into_iter()
+                            .map(|target| (target, upstream.to_owned())),
+                    );
                 }
             }
-            if next.is_empty() {
-                break;
-            }
-            frontier = next;
         }
-        all
+        targets.retain(|candidate| self.in_tests || !self.graph().records[*candidate].test);
+        targets.sort_unstable();
+        targets.dedup();
+        targets
     }
 
     /// A Rust path qualifier (`crate::claims`, `velocity_git::lifecycle`, `claims`).
@@ -879,7 +928,11 @@ impl Scope<'_, '_> {
                 .flatten()
                 .copied()
                 .collect();
-            let targets = self.import_scope(import, &candidates, true);
+            let targets = if self.javascript() {
+                self.javascript_targets(import, None)
+            } else {
+                self.import_scope(import, &candidates, true)
+            };
             edges.extend(pick(&targets, Provenance::Extracted).into_iter().map(
                 |(to, provenance)| Edge {
                     from: self.record,
@@ -922,6 +975,20 @@ impl Scope<'_, '_> {
 
     /// The project files a JavaScript, TypeScript or Python module specifier names.
     fn module_files(&self, specifier: &str) -> Vec<String> {
+        if self.javascript() {
+            return module_files_from(self.context, &self.file.path, specifier);
+        }
+        if self.file.language == Some(Language::Lean) {
+            let module = format!("{}.lean", specifier.replace('.', "/"));
+            let suffix = format!("/{module}");
+            return self
+                .graph()
+                .by_path
+                .keys()
+                .filter(|path| **path == module || path.ends_with(&suffix))
+                .cloned()
+                .collect();
+        }
         let folder = self
             .file
             .path
@@ -984,11 +1051,21 @@ impl Scope<'_, '_> {
 }
 
 /// The project files a relative JavaScript specifier names from `folder`.
-fn module_files_from(context: &Context, folder: &str, specifier: &str) -> Vec<String> {
-    if !specifier.starts_with('.') {
+fn module_files_from(context: &Context, importing: &str, specifier: &str) -> Vec<String> {
+    let base = if let Some(rest) = specifier.strip_prefix("$lib/") {
+        let Some(&file) = context.graph.by_path.get(importing) else {
+            return Vec::new();
+        };
+        let package = &context.graph.records[context.graph.records[file].subsystem].path;
+        join(package, &format!("src/lib/{rest}"))
+    } else if specifier.starts_with('.') {
+        join(
+            importing.rsplit_once('/').map_or("", |(folder, _)| folder),
+            specifier,
+        )
+    } else {
         return Vec::new();
-    }
-    let base = join(folder, specifier);
+    };
     const ENDINGS: [&str; 8] = [
         "",
         ".ts",

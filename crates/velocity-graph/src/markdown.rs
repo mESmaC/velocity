@@ -77,6 +77,7 @@ fn sections(source: &str, headings: &[Heading]) -> Vec<Definition> {
                 container: None,
                 trait_name: None,
                 command: false,
+                test: false,
                 start_line: heading.line,
                 end_line: end_line.max(heading.line),
                 start_byte: heading.byte as u32,

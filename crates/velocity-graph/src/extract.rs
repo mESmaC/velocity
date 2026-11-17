@@ -30,6 +30,10 @@ pub enum SymbolKind {
     Module,
     Macro,
     Constant,
+    Component,
+    Field,
+    Variant,
+    Theorem,
     Heading,
 }
 
@@ -44,6 +48,10 @@ impl SymbolKind {
             Self::Module => "mod",
             Self::Macro => "macro",
             Self::Constant => "const",
+            Self::Component => "component",
+            Self::Field => "field",
+            Self::Variant => "variant",
+            Self::Theorem => "theorem",
             Self::Heading => "section",
         }
     }
@@ -52,7 +60,7 @@ impl SymbolKind {
     pub fn callable(self) -> bool {
         matches!(
             self,
-            Self::Function | Self::Method | Self::Macro | Self::Class
+            Self::Function | Self::Method | Self::Macro | Self::Class | Self::Variant
         )
     }
 
@@ -76,6 +84,8 @@ pub struct Definition {
     /// A Rust function marked `#[tauri::command]`: the frontend reaches it by name.
     #[serde(default)]
     pub command: bool,
+    #[serde(default)]
+    pub test: bool,
     pub start_line: u32,
     pub end_line: u32,
     pub start_byte: u32,
@@ -87,6 +97,41 @@ pub struct Definition {
     pub span_hash: String,
     /// A Markdown heading's level; 0 for code.
     pub level: u8,
+}
+
+impl Definition {
+    pub(crate) fn at(
+        source: &str,
+        start: usize,
+        end: usize,
+        name: String,
+        kind: SymbolKind,
+    ) -> Self {
+        let start_line = source[..start]
+            .bytes()
+            .filter(|byte| *byte == b'\n')
+            .count() as u32
+            + 1;
+        let span = &source[start..end];
+        let trimmed = span.trim_end();
+        Self {
+            name,
+            kind,
+            container: None,
+            trait_name: None,
+            command: false,
+            test: false,
+            start_line,
+            end_line: start_line + trimmed.bytes().filter(|byte| *byte == b'\n').count() as u32,
+            start_byte: start as u32,
+            end_byte: (start + trimmed.len()) as u32,
+            name_byte: start as u32,
+            signature: signature(source, start, end),
+            doc: String::new(),
+            span_hash: digest(trimmed.as_bytes()),
+            level: 0,
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -110,6 +155,7 @@ pub enum ReferenceKind {
     /// A frontend call into a Tauri command: `commands.checkForUpdate` (tauri-specta) or
     /// `invoke("check_for_update")`.
     Command,
+    Component,
 }
 
 /// One use of a name.
@@ -124,10 +170,24 @@ pub struct Reference {
     pub byte: u32,
 }
 
+impl Reference {
+    pub(crate) fn at(name: &str, kind: ReferenceKind, line: u32, byte: usize) -> Self {
+        Self {
+            name: name.to_owned(),
+            kind,
+            qualifier: None,
+            from_type: None,
+            line,
+            byte: byte as u32,
+        }
+    }
+}
+
 /// Reads `source` as `language`.
 pub fn extract(language: Language, source: &str) -> FileParse {
     match language {
         Language::Markdown => crate::markdown::extract(source),
+        Language::Lean => crate::lean::extract(source),
         Language::Svelte => crate::svelte::scripts(source)
             .into_iter()
             .map(|(offset, line, script)| {
@@ -135,7 +195,7 @@ pub fn extract(language: Language, source: &str) -> FileParse {
                 shift(&mut parse, offset, line);
                 parse
             })
-            .fold(FileParse::default(), merge),
+            .fold(crate::svelte::markup(source), merge),
         _ => extract_code(language, source),
     }
 }
@@ -247,6 +307,7 @@ impl<'source> Collector<'source> {
                 || name.starts_with("reference.")
                 || name == "container"
                 || name == "import"
+                || name == "import.default"
                 || name == "reexport"
             {
                 role = Some((name, capture.node));
@@ -262,8 +323,9 @@ impl<'source> Collector<'source> {
                 self.reference(&role["reference.".len()..], &captures);
             }
             Some(("container", node)) => self.container(node, &captures),
-            Some(("import", node)) => self.import(node, &captures, false),
-            Some(("reexport", node)) => self.import(node, &captures, true),
+            Some((role @ ("import" | "import.default" | "reexport"), node)) => {
+                self.import(node, &captures, role)
+            }
             _ => {}
         }
     }
@@ -284,6 +346,8 @@ impl<'source> Collector<'source> {
             "module" | "namespace" => SymbolKind::Module,
             "macro" => SymbolKind::Macro,
             "constant" => SymbolKind::Constant,
+            "field" => SymbolKind::Field,
+            "variant" => SymbolKind::Variant,
             _ => SymbolKind::Class,
         };
         let name_byte = name_node.start_byte() as u32;
@@ -302,6 +366,7 @@ impl<'source> Collector<'source> {
             command: self.language == Language::Rust
                 && kind == SymbolKind::Function
                 && tauri_command(&self.lines, start_line as usize),
+            test: self.language == Language::Rust && rust_test(node, self.source),
             start_line,
             end_line: node.end_position().row as u32 + 1,
             start_byte: start as u32,
@@ -385,7 +450,8 @@ impl<'source> Collector<'source> {
         });
     }
 
-    fn import(&mut self, node: Node, captures: &HashMap<&str, Node>, reexport: bool) {
+    fn import(&mut self, node: Node, captures: &HashMap<&str, Node>, role: &str) {
+        let reexport = role == "reexport";
         let line = node.start_position().row as u32 + 1;
         if let Some(path) = captures.get("import.path") {
             self.imports.extend(rust_use_tree(self.text(*path), line));
@@ -407,8 +473,18 @@ impl<'source> Collector<'source> {
             name.split('.').next().unwrap_or(name)
         };
         self.imports.push(Import {
-            name: local.to_owned(),
+            name: captures
+                .get("import.alias")
+                .map_or(local, |node| self.text(*node))
+                .to_owned(),
             source: source.to_owned(),
+            original: if role == "import.default" {
+                Some("default".into())
+            } else {
+                captures
+                    .contains_key("import.alias")
+                    .then(|| local.to_owned())
+            },
             line,
             reexport,
         });
@@ -450,7 +526,10 @@ impl<'source> Collector<'source> {
             .definitions
             .values()
             .filter(|definition| {
-                matches!(definition.kind, SymbolKind::Class | SymbolKind::Interface)
+                matches!(
+                    definition.kind,
+                    SymbolKind::Class | SymbolKind::Interface | SymbolKind::Variant
+                )
             })
             .map(|definition| {
                 (
@@ -470,7 +549,10 @@ impl<'source> Collector<'source> {
             }))
             .collect();
         for definition in self.definitions.values_mut() {
-            if !matches!(definition.kind, SymbolKind::Function | SymbolKind::Method) {
+            if !matches!(
+                definition.kind,
+                SymbolKind::Function | SymbolKind::Method | SymbolKind::Field | SymbolKind::Variant
+            ) {
                 continue;
             }
             let innermost = types
@@ -480,11 +562,41 @@ impl<'source> Collector<'source> {
                 })
                 .min_by_key(|(start, end, _, _)| end - start);
             if let Some((_, _, name, trait_name)) = innermost {
-                definition.kind = SymbolKind::Method;
+                if matches!(definition.kind, SymbolKind::Function | SymbolKind::Method) {
+                    definition.kind = SymbolKind::Method;
+                }
                 definition.container = Some(name.clone());
                 definition.trait_name = trait_name.clone();
             }
         }
+    }
+}
+
+fn rust_test(mut node: Node, source: &str) -> bool {
+    loop {
+        let mut sibling = node.prev_named_sibling();
+        while let Some(attribute) = sibling {
+            if attribute.kind() == "attribute_item" {
+                let text = attribute.utf8_text(source.as_bytes()).unwrap_or_default();
+                let compact: String = text
+                    .chars()
+                    .filter(|character| !character.is_whitespace())
+                    .collect();
+                if matches!(
+                    compact.as_str(),
+                    "#[cfg(test)]" | "#[test]" | "#[tokio::test]"
+                ) {
+                    return true;
+                }
+            } else if !matches!(attribute.kind(), "line_comment" | "block_comment") {
+                break;
+            }
+            sibling = attribute.prev_named_sibling();
+        }
+        let Some(parent) = node.parent() else {
+            return false;
+        };
+        node = parent;
     }
 }
 
@@ -516,7 +628,11 @@ fn priority(kind: SymbolKind) -> u8 {
         SymbolKind::Method => 4,
         SymbolKind::Function | SymbolKind::Macro => 3,
         SymbolKind::Class | SymbolKind::Interface | SymbolKind::Type | SymbolKind::Module => 2,
-        SymbolKind::Constant => 1,
+        SymbolKind::Constant
+        | SymbolKind::Field
+        | SymbolKind::Variant
+        | SymbolKind::Component
+        | SymbolKind::Theorem => 1,
         SymbolKind::Heading => 0,
     }
 }

@@ -105,12 +105,12 @@ fn launch(application: &AppHandle, request: LaunchSwarmRequest) -> Result<Layout
     )?
     .open_swarm(&request, clock_timestamp())
     .map_err(|error| error.to_string())?;
-    let assignments = swarm::round_robin(request.items.len(), request.providers.len());
+    let assignments = swarm_assignments(application, &request, &issues)?;
     // Members take ready worktrees one by one instead of all checking out at once (F5).
     crate::ready_pool::reserve(application, request.project_identifier, request.items.len());
     let mut started = 0;
     let mut refused = Vec::new();
-    for (item, provider) in request.items.iter().zip(assignments) {
+    for (subsystem, (item, provider)) in assignments {
         let provider = request.providers[provider];
         match start_member(
             application,
@@ -118,8 +118,9 @@ fn launch(application: &AppHandle, request: LaunchSwarmRequest) -> Result<Layout
             swarm,
             &repository,
             &issues,
-            *item,
+            item,
             provider,
+            subsystem.as_deref(),
         ) {
             Ok(()) => started += 1,
             Err(error) => refused.push(error),
@@ -127,6 +128,48 @@ fn launch(application: &AppHandle, request: LaunchSwarmRequest) -> Result<Layout
     }
     record_launch(application, &request, swarm, started);
     finish_launch(application, &request, swarm, started, &refused)
+}
+
+type SwarmAssignment = (Option<String>, (SwarmItem, usize));
+
+fn swarm_assignments(
+    application: &AppHandle,
+    request: &LaunchSwarmRequest,
+    issues: &[OpenIssue],
+) -> Result<Vec<SwarmAssignment>, String> {
+    let project = lock(
+        application.state::<ManagedStateStore>().inner(),
+        "persisted state",
+    )?
+    .project(request.project_identifier)
+    .cloned()
+    .ok_or("The selected project no longer exists")?;
+    let graph = (request.items.len() > 1)
+        .then(|| crate::code_graph::subsystem_map(application, &project))
+        .flatten();
+    let providers = swarm::round_robin(request.items.len(), request.providers.len());
+    let tagged = request
+        .items
+        .iter()
+        .copied()
+        .zip(providers)
+        .map(|(item, provider)| {
+            let title = match item {
+                SwarmItem::Task(id) => project
+                    .tasks
+                    .iter()
+                    .find(|task| task.id == id)
+                    .map(|task| task.text.as_str()),
+                SwarmItem::Issue(number) => issues
+                    .iter()
+                    .find(|issue| issue.number == number)
+                    .map(|issue| issue.title.as_str()),
+            };
+            let subsystem = title.and_then(|title| graph.as_ref()?.classify(title));
+            (subsystem, (item, provider))
+        })
+        .collect();
+    Ok(velocity_graph::coordination::spread(tagged))
 }
 
 /// The Issues panel's last read of open issues, which the dialog was drawn from (F9).
@@ -209,6 +252,7 @@ fn add_pr_duty(application: &AppHandle, request: &LaunchSwarmRequest) -> Result<
     Ok(())
 }
 
+#[allow(clippy::too_many_arguments)]
 fn start_member(
     application: &AppHandle,
     request: &LaunchSwarmRequest,
@@ -217,8 +261,9 @@ fn start_member(
     issues: &[OpenIssue],
     item: SwarmItem,
     provider: velocity_store::ProviderKind,
+    subsystem: Option<&str>,
 ) -> Result<(), String> {
-    let (plan, thread) = {
+    let (mut plan, thread) = {
         let mut store = lock(
             application.state::<ManagedStateStore>().inner(),
             "persisted state",
@@ -236,6 +281,9 @@ fn start_member(
             .map_err(|error| error.to_string())?;
         (plan.launch, thread)
     };
+    if let Some(subsystem) = subsystem {
+        plan.prompt.push_str(&format!("\n\nThe code graph suggests `{subsystem}` as a starting point for this item. Verify against the issue or task and source."));
+    }
     crate::threads::start_planned(application, plan, thread).map(|_| ())
 }
 

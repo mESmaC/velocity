@@ -6655,11 +6655,14 @@ dependencies = [
  "crc32fast",
  "ignore",
  "notify",
+ "rosen-client",
+ "rosen-core",
  "serde",
  "serde_json",
  "sha2 0.10.9",
  "specta",
  "thiserror 2.0.21",
+ "tokio",
  "tree-sitter",
  "tree-sitter-c",
  "tree-sitter-c-sharp",
@@ -6670,6 +6673,7 @@ dependencies = [
  "tree-sitter-python",
  "tree-sitter-rust",
  "tree-sitter-typescript",
+ "velocity-rosen",
 ]
 
 [[package]]
@@ -6780,6 +6784,7 @@ dependencies = [
  "velocity-core",
  "velocity-git",
  "velocity-github",
+ "velocity-graph",
  "velocity-proofs",
  "velocity-rosen",
  "velocity-skills",

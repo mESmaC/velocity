@@ -11,6 +11,9 @@ pub struct Import {
     /// Where it comes from: a Rust path (`crate::claims::Claim`), a JavaScript module specifier
     /// (`./ipc/updates`) or a Python module.
     pub source: String,
+    /// The upstream name when the import is aliased or is a default import.
+    #[serde(default)]
+    pub original: Option<String>,
     pub line: u32,
     /// `export ... from` (JavaScript) or `pub use` (Rust): the name is passed on to the
     /// file's own importers.
@@ -57,6 +60,7 @@ fn expand(prefix: String, tree: &str, line: u32, imports: &mut Vec<Import>) {
     imports.push(Import {
         name: name.to_owned(),
         source: full.to_owned(),
+        original: None,
         line,
         reexport: false,
     });

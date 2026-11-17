@@ -7,11 +7,51 @@ use std::path::PathBuf;
 use tauri::{AppHandle, Manager};
 use velocity_graph::usage::{self, GraphComparison};
 
+pub(crate) fn follow_rosen_base(
+    application: &AppHandle,
+    project: u32,
+) -> Option<std::sync::mpsc::SyncSender<()>> {
+    let data = app_data(application).ok()?;
+    let (wake, lands) = std::sync::mpsc::sync_channel(1);
+    let endpoint = velocity_rosen::ProjectServer::new(&data, project)
+        .endpoint()
+        .clone();
+    let project = project.to_string();
+    let cache = data.join("graph").join(&project);
+    std::thread::spawn(move || {
+        let mut index = None;
+        while lands.recv().is_ok() {
+            if usage::enabled(&data, &project) {
+                index = velocity_graph::Index::warm_base(endpoint.clone(), &cache, index).ok();
+            }
+        }
+    });
+    Some(wake)
+}
+
 fn app_data(application: &AppHandle) -> Result<PathBuf, String> {
     application
         .path()
         .app_data_dir()
         .map_err(|error| format!("Could not find the application data folder: {error}"))
+}
+
+pub(crate) fn subsystem_map(
+    application: &AppHandle,
+    project: &velocity_store::ProjectItem,
+) -> Option<velocity_graph::coordination::SubsystemMap> {
+    let data = app_data(application).ok()?;
+    usage::enabled(&data, &project.id.to_string())
+        .then(|| {
+            velocity_graph::coordination::subsystem_map(
+                &data,
+                project.id,
+                std::path::Path::new(&project.repository_path),
+                project.version_control == velocity_store::VersionControl::Rosen,
+            )
+            .ok()
+        })
+        .flatten()
 }
 
 /// The usage modal's code graph section for a project: its switch and the comparison.
@@ -124,8 +164,14 @@ impl ProjectGraph {
 }
 
 enum Base {
-    Git { root: PathBuf, commit: String },
-    Rosen(BaseSnapshot),
+    Git {
+        root: PathBuf,
+        commit: String,
+    },
+    Rosen {
+        commit: String,
+        server: velocity_rosen::ProjectServer,
+    },
 }
 
 impl Base {
@@ -139,7 +185,10 @@ impl Base {
             let base = BaseSnapshot::read(&server)
                 .await
                 .map_err(|error| error.to_string())?;
-            return Ok(Self::Rosen(base));
+            return Ok(Self::Rosen {
+                commit: base.commit().to_owned(),
+                server,
+            });
         }
         let root = project.root.clone();
         let branch = project.branch.clone();
@@ -157,23 +206,18 @@ impl Base {
 
     fn commit(&self) -> &str {
         match self {
-            Self::Git { commit, .. } => commit,
-            Self::Rosen(base) => base.commit(),
+            Self::Git { commit, .. } | Self::Rosen { commit, .. } => commit,
         }
     }
 
-    async fn stage(self, folder: PathBuf) -> Result<(), String> {
+    fn index(self, job: &BaseJob) -> Result<(), velocity_graph::Error> {
         match self {
             Self::Git { root, commit } => {
-                crate::layout::off_ui_thread(move || {
-                    stage_git_base(&root, &commit, &folder).map_err(|error| error.to_string())
-                })
-                .await
+                let staging = tempfile::tempdir()?;
+                stage_git_base(&root, &commit, staging.path())?;
+                job.index(&staging.path().join("tree"))
             }
-            Self::Rosen(base) => base
-                .materialise(&folder.join("tree"))
-                .await
-                .map_err(|error| error.to_string()),
+            Self::Rosen { server, .. } => job.index_rosen(server.endpoint().clone()),
         }
     }
 }
@@ -200,21 +244,14 @@ async fn observe_graph(
     })
     .await?;
     if let Some(job) = job {
-        tauri::async_runtime::spawn(index_base(base, job));
+        index_base(base, job);
     }
     Ok(view)
 }
 
-async fn index_base(base: Base, job: BaseJob) {
-    let staging = match tempfile::tempdir() {
-        Ok(staging) => staging,
-        Err(error) => return job.fail(error.to_string()),
-    };
-    if let Err(error) = base.stage(staging.path().to_path_buf()).await {
-        return job.fail(error);
-    }
+fn index_base(base: Base, job: BaseJob) {
     tauri::async_runtime::spawn_blocking(move || {
-        let result = std::panic::catch_unwind(|| job.index(&staging.path().join("tree")));
+        let result = std::panic::catch_unwind(|| base.index(&job));
         match result {
             Ok(Ok(())) => {}
             Ok(Err(error)) => job.fail(error.to_string()),

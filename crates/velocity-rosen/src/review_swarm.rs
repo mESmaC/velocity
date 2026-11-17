@@ -110,7 +110,7 @@ pub async fn unreviewed(server: &ProjectServer) -> Result<Vec<LandedChange>, Ros
     Ok(changes)
 }
 
-async fn landed_diff_record(
+pub async fn landed_diff_record(
     server: &ProjectServer,
     target: &LandedChange,
 ) -> Result<rosen_client::protocol::Diff, RosenError> {
@@ -142,6 +142,10 @@ pub async fn landed_diff(
     target: &LandedChange,
 ) -> Result<String, RosenError> {
     Ok(duty::unified(&landed_diff_record(server, target).await?))
+}
+
+pub fn format_landed_diff(diff: &rosen_client::protocol::Diff) -> String {
+    duty::unified(diff)
 }
 
 pub async fn landed_paths(

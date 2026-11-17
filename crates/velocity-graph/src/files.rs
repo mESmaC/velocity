@@ -7,7 +7,7 @@ use std::process::Stdio;
 
 use crate::Error;
 use crate::language::Language;
-use crate::text::digest;
+use rosen_core::ObjectId;
 
 /// Files over this size are listed with no symbols: they are data, not code an agent reads.
 const PARSE_LIMIT: usize = 1024 * 1024;
@@ -25,9 +25,6 @@ pub struct SourceFile {
 
 /// Every file git tracks or doesn't ignore under `root`.
 pub fn list(root: &Path) -> Result<Vec<String>, Error> {
-    if root.join(".rosen/workspace.json").is_file() {
-        return walk(root, true);
-    }
     let output = hidden_command("git")
         .arg("-C")
         .arg(root)
@@ -55,12 +52,11 @@ pub fn list(root: &Path) -> Result<Vec<String>, Error> {
     Ok(paths)
 }
 
-/// Rosen workspaces have no git index. Respect working-tree ignore rules there;
-/// a materialized base tree already consists exclusively of tracked files.
-pub fn walk(root: &Path, respect_ignores: bool) -> Result<Vec<String>, Error> {
+/// A staged Git base already consists exclusively of tracked files.
+pub fn walk(root: &Path) -> Result<Vec<String>, Error> {
     let mut walker = ignore::WalkBuilder::new(root);
     walker
-        .standard_filters(respect_ignores)
+        .standard_filters(false)
         .hidden(false)
         .require_git(false)
         .filter_entry(|entry| !matches!(entry.file_name().to_str(), Some(".git" | ".rosen")));
@@ -183,7 +179,15 @@ pub fn inspect(root: &Path, path: &str) -> (Option<SourceFile>, Option<&'static 
     let Ok(bytes) = std::fs::read(root.join(path)) else {
         return (None, Some("Missing or unreadable"));
     };
-    let hash = digest(&bytes);
+    let hash = ObjectId::hash_object("blob", &bytes).to_string();
+    from_blob(path, hash, bytes)
+}
+
+pub fn from_blob(
+    path: &str,
+    hash: String,
+    bytes: Vec<u8>,
+) -> (Option<SourceFile>, Option<&'static str>) {
     let recognized = Language::of(path);
     let mut skip = if bytes.iter().take(8000).any(|byte| *byte == 0) {
         Some("Binary")
@@ -194,9 +198,13 @@ pub fn inspect(root: &Path, path: &str) -> (Option<SourceFile>, Option<&'static 
     } else {
         None
     };
-    let text = if skip.is_none() {
+    let language = skip.is_none().then_some(recognized).flatten();
+    let manifest = skip == Some("No parser") && crate::subsystems::is_manifest(path);
+    let text = if language.is_some() || manifest {
         match String::from_utf8(bytes) {
-            Ok(text) if generated_text(&text) => return (None, Some("Generated")),
+            Ok(text) if language.is_some() && generated_text(&text) => {
+                return (None, Some("Generated"));
+            }
             Ok(text) => Some(text),
             Err(_) => {
                 skip = Some("Invalid UTF-8");
@@ -209,7 +217,7 @@ pub fn inspect(root: &Path, path: &str) -> (Option<SourceFile>, Option<&'static 
     (
         Some(SourceFile {
             path: path.to_owned(),
-            language: text.as_ref().and(recognized),
+            language: text.as_ref().and(language),
             hash,
             text,
         }),
@@ -218,7 +226,7 @@ pub fn inspect(root: &Path, path: &str) -> (Option<SourceFile>, Option<&'static 
 }
 
 /// Lockfiles: generated, and never worth an agent's reading.
-fn generated_name(path: &str) -> bool {
+pub fn generated_name(path: &str) -> bool {
     let name = path.rsplit('/').next().unwrap_or(path);
     matches!(
         name,
@@ -231,6 +239,20 @@ fn generated_name(path: &str) -> bool {
             | "go.sum"
             | "uv.lock"
     )
+}
+
+pub fn git_blob(root: &Path, base: &str, path: &str) -> Option<String> {
+    let output = hidden_command("git")
+        .arg("-C")
+        .arg(root)
+        .args(["show", "--end-of-options", &format!("{base}:{path}")])
+        .output()
+        .ok()?;
+    output
+        .status
+        .success()
+        .then(|| String::from_utf8(output.stdout).ok())
+        .flatten()
 }
 
 /// A file that says in its first lines that a tool wrote it (tauri-specta bindings,

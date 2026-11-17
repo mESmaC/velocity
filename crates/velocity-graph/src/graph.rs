@@ -60,6 +60,7 @@ pub struct Record {
     pub trait_name: Option<String>,
     /// A Tauri command the frontend reaches by name.
     pub command: bool,
+    pub test: bool,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -153,6 +154,7 @@ pub struct Graph {
     pub outgoing: Vec<Vec<usize>>,
     pub incoming: Vec<Vec<usize>>,
     pub by_address: HashMap<String, usize>,
+    pub(crate) stale_addresses: HashMap<String, usize>,
     /// Lower-cased names and qualified names to records.
     pub by_name: HashMap<String, Vec<usize>>,
     pub by_path: HashMap<String, usize>,
@@ -205,6 +207,7 @@ impl Graph {
             records,
             edges: Vec::new(),
             by_address,
+            stale_addresses: HashMap::new(),
             by_name,
             by_path,
             file_hashes: files
@@ -213,6 +216,45 @@ impl Graph {
                 .collect(),
             subsystems,
         }
+    }
+
+    pub(crate) fn track_stale_addresses(&mut self, previous: &Self) {
+        if previous.records.is_empty() {
+            return;
+        }
+        let mut candidates = HashMap::new();
+        for (index, record) in self.records.iter().enumerate().filter(|(_, record)| {
+            record.kind.plane() < 3 && !previous.by_address.contains_key(&record.address)
+        }) {
+            for key in relocation_keys(record) {
+                candidates
+                    .entry(key)
+                    .and_modify(|index| *index = None)
+                    .or_insert(Some(index));
+            }
+        }
+        let replacement = |record: &Record| {
+            self.by_address.get(&record.address).copied().or_else(|| {
+                relocation_keys(record)
+                    .into_iter()
+                    .find_map(|key| candidates.get(&key).copied().flatten())
+            })
+        };
+        let prior = previous
+            .stale_addresses
+            .iter()
+            .map(|(address, index)| (address, &previous.records[*index]));
+        self.stale_addresses = previous
+            .records
+            .iter()
+            .map(|record| (&record.address, record))
+            .chain(prior)
+            .filter(|(address, _)| !self.by_address.contains_key(*address))
+            .filter_map(|(address, record)| {
+                replacement(record).map(|index| (address.clone(), index))
+            })
+            .take(4096)
+            .collect();
     }
 
     /// Keeps the best-found edge per (from, to, relation) and indexes both directions.
@@ -242,4 +284,22 @@ impl Graph {
             .get(&name.to_lowercase())
             .map_or(&[], Vec::as_slice)
     }
+}
+
+fn relocation_keys(record: &Record) -> Vec<(RecordKind, String, String)> {
+    if record.kind.plane() == 3 {
+        return Vec::new();
+    }
+    let mut keys = vec![(record.kind, String::new(), record.span_hash.clone())];
+    if record.kind.plane() == 1
+        && !record.signature.is_empty()
+        && record.signature.contains(&record.name)
+    {
+        keys.push((
+            record.kind,
+            record.path.clone(),
+            record.signature.replacen(&record.name, "\0", 1),
+        ));
+    }
+    keys
 }

@@ -19,6 +19,7 @@ pub enum Language {
     C,
     Cpp,
     Markdown,
+    Lean,
 }
 
 impl Language {
@@ -39,6 +40,7 @@ impl Language {
             // `.h` is shared by C and C++; the C++ grammar reads both.
             "h" | "hh" | "hpp" | "hxx" | "cc" | "cpp" | "cxx" => Self::Cpp,
             "md" | "markdown" => Self::Markdown,
+            "lean" => Self::Lean,
             _ => return None,
         })
     }
@@ -56,7 +58,7 @@ impl Language {
             Self::CSharp => tree_sitter_c_sharp::LANGUAGE.into(),
             Self::C => tree_sitter_c::LANGUAGE.into(),
             Self::Cpp => tree_sitter_cpp::LANGUAGE.into(),
-            Self::Markdown => return None,
+            Self::Markdown | Self::Lean => return None,
         })
     }
 
@@ -86,7 +88,7 @@ impl Language {
             Self::CSharp => tree_sitter_c_sharp::TAGS_QUERY.to_owned(),
             Self::C => tree_sitter_c::TAGS_QUERY.to_owned(),
             Self::Cpp => tree_sitter_cpp::TAGS_QUERY.to_owned(),
-            Self::Markdown => String::new(),
+            Self::Markdown | Self::Lean => String::new(),
         }
     }
 

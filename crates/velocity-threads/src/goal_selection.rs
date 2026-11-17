@@ -16,6 +16,7 @@ pub struct GoalSelector {
     launch: AgentLaunch,
     setup: SessionSetup,
     prompt: String,
+    subsystems: Option<(velocity_graph::coordination::SubsystemMap, usize)>,
 }
 
 #[derive(Deserialize)]
@@ -36,7 +37,17 @@ impl GoalSelector {
             launch,
             setup,
             prompt,
+            subsystems: None,
         }
+    }
+
+    pub fn with_subsystems(
+        mut self,
+        map: velocity_graph::coordination::SubsystemMap,
+        member: usize,
+    ) -> Self {
+        self.subsystems = Some((map, member));
+        self
     }
 
     pub fn for_member(
@@ -61,7 +72,12 @@ impl GoalSelector {
             .enable_all()
             .build()
             .map_err(selection_error)?;
-        let reply = runtime.block_on(self.ask(selection_prompt(&self.prompt, pool, flags)))?;
+        let reply = runtime.block_on(self.ask(selection_prompt(
+            &self.prompt,
+            pool,
+            flags,
+            self.subsystems.as_ref(),
+        )))?;
         let selection = parse_selection(&reply)?;
         match selection.piece {
             SelectedPiece::None(()) => Ok(None),
@@ -119,11 +135,33 @@ async fn collect_reply(
     Err("The goal selection session ended without a choice".into())
 }
 
-fn selection_prompt(goal: &str, pool: &WorkPool, flags: &[bool]) -> String {
-    let candidates: Vec<_> = pool.pieces.iter().zip(flags).filter(|(_, open)| **open)
-        .map(|(piece, _)| serde_json::json!({
+fn selection_prompt(
+    goal: &str,
+    pool: &WorkPool,
+    flags: &[bool],
+    subsystems: Option<&(velocity_graph::coordination::SubsystemMap, usize)>,
+) -> String {
+    let areas: Vec<_> = pool
+        .pieces
+        .iter()
+        .map(|piece| subsystems.and_then(|(map, _)| map.classify(&piece.title)))
+        .collect();
+    let distinct: Vec<_> = areas
+        .iter()
+        .filter_map(Option::as_deref)
+        .collect::<std::collections::BTreeSet<_>>()
+        .into_iter()
+        .collect();
+    let preferred = subsystems
+        .and_then(|(_, member)| distinct.get(member.checked_rem(distinct.len())?).copied());
+    let candidates: Vec<_> = pool.pieces.iter().zip(areas.iter()).zip(flags).filter(|(_, open)| **open)
+        .map(|((piece, subsystem), _)| serde_json::json!({
             "piece": piece.key.claim_piece(), "title": piece.title, "reference": piece.reference,
+            "subsystem": subsystem,
         })).collect();
+    let preference = preferred.map_or_else(String::new, |area| format!(
+        "The code graph groups candidate work by subsystem. When several pieces fit the goal equally well, prefer `{area}` so members can work in different subsystems. Confirm the likely area from the source.\n"
+    ));
     format!(
         "{goal}\n\n---\nVelocity goal swarm: choosing work, before claiming (F16).\n\
          Read the user's goal above first. It governs which work to choose. Read AGENTS.md and the project spec, \
@@ -132,7 +170,7 @@ fn selection_prompt(goal: &str, pool: &WorkPool, flags: &[bool]) -> String {
          Velocity will acquire the atomic claim and send the implementation prompt after your choice.\n\
          Choose only from this currently unclaimed inventory, already filtered to the user's work sources. \
          If another member takes your choice, you will be asked again with a refreshed inventory. \
-         If none fits the user's goal, choose null. Never substitute unrelated work.\n\
+         If none fits the user's goal, choose null. Never substitute unrelated work.\n{preference}\
          Return only a JSON object {{\"piece\":\"<exact piece key>\"}} or {{\"piece\":null}}.\n\
          Inventory: {}",
         serde_json::Value::Array(candidates)

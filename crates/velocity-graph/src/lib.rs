@@ -3,17 +3,20 @@
 
 mod build;
 mod cache;
+pub mod coordination;
 mod extract;
 mod files;
 mod graph;
 mod imports;
 mod index;
 mod language;
+mod lean;
 mod markdown;
 mod mcp;
 mod program;
 mod query;
 mod resolve;
+mod rosen;
 mod search;
 pub mod status;
 mod subsystems;
@@ -39,6 +42,8 @@ pub enum Error {
     Json(#[from] serde_json::Error),
     #[error("code graph: git failed: {0}")]
     Git(String),
+    #[error("code graph: Rosen failed: {0}")]
+    Rosen(#[from] rosen_client::Error),
     #[error("{0}")]
     Invalid(String),
 }

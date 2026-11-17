@@ -36,6 +36,7 @@ pub(crate) fn follow(application: &AppHandle, project: u32) {
 }
 
 async fn follow_project(application: &AppHandle, project: u32) {
+    let warm = crate::code_graph::follow_rosen_base(application, project);
     let mut after = lock(
         application.state::<ManagedStateStore>().inner(),
         "persisted state",
@@ -55,7 +56,18 @@ async fn follow_project(application: &AppHandle, project: u32) {
             match open(application, project, after).await {
                 Ok(mut stream) => {
                     connection_state(application, project, false);
+                    if let Some(warm) = &warm {
+                        let _ = warm.try_send(());
+                    }
                     while let Some(event) = stream.next().await {
+                        if matches!(
+                            event.kind,
+                            velocity_rosen::ProjectEventKind::Landed
+                                | velocity_rosen::ProjectEventKind::Reverted
+                        ) && let Some(warm) = &warm
+                        {
+                            let _ = warm.try_send(());
+                        }
                         if let Err(error) = consume(application, project, &event).await {
                             report::<()>(Err(error));
                             break;

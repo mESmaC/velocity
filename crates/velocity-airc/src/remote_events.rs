@@ -294,6 +294,19 @@ pub(crate) async fn read_events(
         let mut projected = event_entries(&event)?;
         if let Some(nick) = nick {
             target_project_event(&event, nick, &mut projected);
+            if event.kind == EventKind::Claim
+                && projected.iter().any(|record| record.kind == "overlap")
+                && let Ok(Some(detail)) = tokio::time::timeout(
+                    std::time::Duration::from_millis(750),
+                    overlap_symbols(client, &event),
+                )
+                .await
+            {
+                let text = detail.to_string();
+                for record in &mut projected {
+                    record.text.clone_from(&text);
+                }
+            }
         }
         records.extend(projected);
         if tip != 0 && event.seq >= tip {
@@ -301,6 +314,25 @@ pub(crate) async fn read_events(
         }
     }
     Ok(records)
+}
+
+async fn overlap_symbols(client: &Client, event: &Event) -> Option<serde_json::Value> {
+    let mut detail = event.detail.clone();
+    let requester = event.change.as_deref()?;
+    let overlaps = detail.get_mut("overlaps")?.as_array_mut()?;
+    for overlap in overlaps.iter_mut().take(8) {
+        let parsed: rosen_client::protocol::OverlapRecord =
+            serde_json::from_value(overlap.clone()).ok()?;
+        let symbols =
+            velocity_graph::coordination::rosen_overlap_symbols(client, requester, &parsed).await;
+        if symbols
+            .as_object()
+            .is_some_and(|symbols| !symbols.is_empty())
+        {
+            overlap["symbols"] = symbols;
+        }
+    }
+    Some(detail)
 }
 
 fn target_project_event(event: &Event, nick: &str, records: &mut [Entry]) {

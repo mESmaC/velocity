@@ -264,8 +264,26 @@ fn post_overlaps(
     for other in held.iter().filter(|other| other.member != claim.member) {
         for file in claim.files.iter().filter(|file| !shared_registration(file)) {
             if other.files.contains(file) && !previous.is_some_and(|old| old.files.contains(file)) {
+                let symbols = |member: &str| {
+                    entries
+                        .iter()
+                        .rev()
+                        .find(|record| record.member == member && record.checkout.is_some())
+                        .and_then(|record| record.checkout.as_ref())
+                        .map(|checkout| {
+                            velocity_graph::coordination::git_changes(
+                                std::path::Path::new(&checkout.worktree),
+                                &checkout.base,
+                                file,
+                            )
+                        })
+                        .unwrap_or_default()
+                };
+                let theirs = symbols(&other.member);
+                let ours = symbols(&claim.member);
+                let detail = symbol_overlap(&ours, &theirs);
                 let text = format!(
-                    "{} overlaps {} on {file}; record a share or wait before editing",
+                    "{} overlaps {} on {file}{detail}; record a share or wait before editing",
                     claim.nick, other.nick
                 );
                 let record = entry(entries, "overlap", "velocity", &claim.nick, &text);
@@ -275,6 +293,29 @@ fn post_overlaps(
         }
     }
     Ok(())
+}
+
+pub(crate) fn symbol_overlap(ours: &[String], theirs: &[String]) -> String {
+    let shared: Vec<_> = ours
+        .iter()
+        .filter(|symbol| theirs.contains(symbol))
+        .cloned()
+        .collect();
+    if !shared.is_empty() {
+        format!(" (both edited {})", shared.join(", "))
+    } else if !ours.is_empty() && !theirs.is_empty() {
+        format!(
+            " (edited symbols differ: {} / {})",
+            ours.join(", "),
+            theirs.join(", ")
+        )
+    } else if !theirs.is_empty() {
+        format!(" (holder edited {})", theirs.join(", "))
+    } else if !ours.is_empty() {
+        format!(" (requester edited {})", ours.join(", "))
+    } else {
+        String::new()
+    }
 }
 
 /// Claims use repository-relative paths. Preserve case: Windows directories may be

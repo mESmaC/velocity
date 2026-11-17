@@ -10,6 +10,8 @@
 (function_signature_item name: (identifier) @name) @definition.function
 (const_item name: (identifier) @name) @definition.constant
 (static_item name: (identifier) @name) @definition.constant
+(field_declaration name: (field_identifier) @name) @definition.field
+(enum_variant name: (identifier) @name) @definition.variant
 
 ; Impl blocks name the type their methods belong to, and the trait they implement.
 (impl_item trait: (_) @container.trait type: (_) @container.name) @container

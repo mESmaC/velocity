@@ -110,10 +110,22 @@ impl ReviewSwarmServer {
         self.runtime.block_on(async {
             let overview = velocity_rosen::duty::change_overview(&server, &target.change).await
                 .map_err(|error| error.to_string())?;
-            let diff = review_swarm::landed_diff(&server, target).await
+            let diff = review_swarm::landed_diff_record(&server, target).await
                 .map_err(|error| error.to_string())?;
+            let text = review_swarm::format_landed_diff(&diff);
+            let endpoint = server.endpoint().clone();
+            let cache = self.launch.app_data.join("graph").join(self.launch.project.to_string());
+            let impact = tokio::task::spawn_blocking(move || {
+                let impact = |revision: String, before| {
+                    velocity_graph::Index::open_revision(endpoint.clone(), &revision, &cache)
+                        .map(|index| velocity_graph::coordination::review_impact(&index, &diff, before))
+                        .unwrap_or_else(|error| format!("Graph impact unavailable: {error}"))
+                };
+                json!({"before": impact(diff.from.to_string(), true),
+                    "landed": impact(diff.to.to_string(), false)})
+            }).await.map_err(|error| error.to_string())?;
             Ok(json!({"change": target.change, "commit": target.commit,
-                "summary": target.summary, "named_snapshots": overview.named, "diff": diff,
+                "summary": target.summary, "named_snapshots": overview.named, "diff": text, "graph_impact": impact,
                 "source_issue": self.launch.source_issue,
                 "instruction": "Read the referenced issue and SPEC section; verify every claim against the code"}))
         })

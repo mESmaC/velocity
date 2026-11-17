@@ -64,9 +64,19 @@ impl Builder {
         self.records[subsystem].down.push(file_index);
         let mut ordinals: HashMap<String, u32> = HashMap::new();
         for definition in &file.parse.definitions {
+            let name = if definition.kind == crate::SymbolKind::Component {
+                name.trim_end_matches(".svelte")
+            } else {
+                &definition.name
+            };
+            let separator = if file.language == Some(crate::Language::Lean) {
+                "."
+            } else {
+                "::"
+            };
             let qualified = definition.container.as_ref().map_or_else(
-                || definition.name.clone(),
-                |container| format!("{container}::{}", definition.name),
+                || name.to_owned(),
+                |container| format!("{container}{separator}{name}"),
             );
             let base = format!("1|{}|{qualified}|{:?}", file.path, definition.kind);
             let ordinal = ordinals.entry(base.clone()).or_insert(0);
@@ -75,7 +85,7 @@ impl Builder {
             let record = Record {
                 address: String::new(),
                 kind: RecordKind::Symbol(definition.kind),
-                name: definition.name.clone(),
+                name: name.to_owned(),
                 qualified,
                 path: file.path.clone(),
                 start_line: definition.start_line,
@@ -91,6 +101,7 @@ impl Builder {
                 container: definition.container.clone(),
                 trait_name: definition.trait_name.clone(),
                 command: definition.command,
+                test: definition.test || crate::search::is_test_path(&file.path),
             };
             let symbol = self.push(record, key);
             // `down` of a file lines up with its parse's definitions; resolution relies on it.
@@ -156,6 +167,7 @@ fn blank(kind: RecordKind, name: &str, path: &str) -> Record {
         container: None,
         trait_name: None,
         command: false,
+        test: crate::search::is_test_path(path),
     }
 }
 

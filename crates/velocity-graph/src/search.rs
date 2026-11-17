@@ -92,7 +92,7 @@ impl Search {
                     || record.qualified.to_lowercase() == lowered;
                 let mut score = self.word_score(graph, index, &wanted, &terms)
                     + name_bonus(record, &lowered, exact);
-                if !tests_wanted && (is_test_path(&record.path) || is_doc(record)) {
+                if !tests_wanted && (record.test || is_doc(record)) {
                     score *= 0.3;
                 }
                 (score > 0.5).then_some(Hit {

@@ -994,6 +994,23 @@ async fn run_goal_choice(
         let channel = velocity_airc::Channel::open(&data, &key.0.to_string())
             .map_err(|error| error.to_string())?;
         let store = handle.state::<ManagedStateStore>();
+        let project = lock(store.inner(), "persisted state")?
+            .project(key.0)
+            .cloned();
+        let selector = match project.as_ref().and_then(|project| {
+            let swarm = project
+                .goal_swarms
+                .iter()
+                .find(|swarm| swarm.id == slot.swarm_id)?;
+            let member = swarm
+                .members
+                .iter()
+                .position(|member| member.nick == slot.nick)?;
+            Some((crate::code_graph::subsystem_map(&handle, project)?, member))
+        }) {
+            Some((map, member)) => selector.with_subsystems(map, member),
+            None => selector,
+        };
         choose_and_claim_selecting(
             store.inner(),
             &channel,

@@ -87,6 +87,7 @@ Rust applies the edit, restores the "rest" rule and draws the dialog again.
 2.
    Receives the user's prompt before any piece is claimed.
    Its chosen model reads the prompt, AGENTS.md, the project spec and the current AIRC claims board, and inspects issue bodies/comments or references as needed to pick an unclaimed piece that satisfies the prompt.
+   The code graph groups candidate work by likely subsystem and gives different workers a preference to break ties among equally suitable pieces (F19).
    Velocity validates the returned piece against the enabled, unclaimed inventory before acquiring its atomic claim.
    A failed or malformed choice reports an error; it never falls back to unrelated first-available work.
    If nothing matches the prompt, the agent leaves without a claim.

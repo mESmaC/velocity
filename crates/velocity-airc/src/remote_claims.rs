@@ -165,12 +165,24 @@ impl Remote {
         let holder = holders
             .first()
             .ok_or_else(|| Error::Invalid("Rosen refused paths without a holder".into()))?;
+        let path = std::slice::from_ref(&holder.requested);
+        let ours = velocity_graph::coordination::rosen_changes(client, change, path).await;
+        let theirs = velocity_graph::coordination::rosen_changes(
+            client,
+            &holder.held.change.to_string(),
+            path,
+        )
+        .await;
+        let detail = crate::claims::symbol_overlap(
+            ours.get(&holder.requested).map_or(&[], Vec::as_slice),
+            theirs.get(&holder.requested).map_or(&[], Vec::as_slice),
+        );
         let mut record = self.record(
             "overlap",
             "velocity",
             &held.nick,
             &format!(
-                "{} overlaps {} on {}; record a share or wait before editing",
+                "{} overlaps {} on {}{detail}; record a share or wait before editing",
                 held.nick, holder.held.owner, holder.requested
             ),
         );

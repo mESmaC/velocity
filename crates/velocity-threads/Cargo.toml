@@ -28,6 +28,7 @@ velocity-skills = { path = "../velocity-skills" }
 velocity-spec.workspace = true
 velocity-git.workspace = true
 velocity-github.workspace = true
+velocity-graph.workspace = true
 velocity-store.workspace = true
 
 [dev-dependencies]

@@ -19,8 +19,8 @@
 ((call_expression function: (identifier) @function arguments: (arguments . (string (string_fragment) @name))) @reference.command
   (#eq? @function "invoke"))
 
-(import_statement (import_clause (named_imports (import_specifier name: (identifier) @import.name))) source: (string (string_fragment) @import.source)) @import
-(import_statement (import_clause (identifier) @import.name) source: (string (string_fragment) @import.source)) @import
+(import_statement (import_clause (named_imports (import_specifier name: (identifier) @import.name alias: (identifier)? @import.alias))) source: (string (string_fragment) @import.source)) @import
+(import_statement (import_clause (identifier) @import.name) source: (string (string_fragment) @import.source)) @import.default
 (import_statement (import_clause (namespace_import (identifier) @import.name)) source: (string (string_fragment) @import.source)) @import
-(export_statement (export_clause (export_specifier name: (identifier) @import.name)) source: (string (string_fragment) @import.source)) @reexport
+(export_statement (export_clause (export_specifier name: (identifier) @import.name alias: (identifier)? @import.alias)) source: (string (string_fragment) @import.source)) @reexport
 (export_statement "*" source: (string (string_fragment) @import.source)) @reexport

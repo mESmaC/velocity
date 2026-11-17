@@ -166,6 +166,8 @@ Files use repository-relative paths with slash and dot-segment normalization; ge
 A file outside the thread's workspace (an absolute path, or one that climbs out with `..`) is never claimed and never overlaps; absolute paths in older logs are ignored.
 Registration-list claims use a `::registration` suffix so the rest of the source file remains contested.
 New overlaps post `velocity` lines naming both agents; `airc_share` records a share.
+When edits are available, notices include symbol details from AIRC worktrees or Rosen snapshots, with the symbols both agents edited called out (F19).
+In a Rosen workspace, `graph_overlaps` gives the same details for live path overlaps.
 Build threads claim their piece before ACP starts (a dispatched issue, SPEC.md section or Task List item by its work-pool identity, a free-form composer thread by `branch:<its branch>`), so a goal swarm agent and a swarm or dispatched thread on the same item collide in one lock, and a refused build thread fails without starting its agent.
 They receive the embedded AIRC MCP server, and extend claims from explicit file writes and Edit/Delete/Move tool locations.
 Partial updates inherit the last known kind and locations; Read/Search/Execute/Other and unclassified tool locations do not extend claims.

@@ -10,6 +10,7 @@ Open it with the **Swarm** buttons on the Task List and Issues panels, `W`, the 
   Items that already have an agent, and draft tasks, are shown but can't be selected.
 - **Models:** choose one or several.
   Several are assigned round-robin, and the split is shown ("3 on Opus · 3 on Sonnet · 3 on Codex").
+  Launches interleave groups from the code graph's likely subsystems (F19), and each classified item gets its subsystem as a starting hint.
 - **Rules:**
   - Each agent opens a PR and watches it until it lands (locked, from AGENTS.md).
   - Each agent gets its own workspace under the configured location (locked).

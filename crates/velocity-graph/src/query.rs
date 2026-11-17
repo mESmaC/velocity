@@ -20,16 +20,16 @@ pub enum Lookup {
     /// Nothing has this name; the nearest names are given.
     Missing(Vec<usize>),
     /// An address no record has any more: the code it named changed.
-    Stale,
+    Stale(Option<usize>),
 }
 
 pub fn lookup(graph: &Graph, search: &Search, target: &str) -> Lookup {
     let target = target.trim().trim_matches('`');
     if is_address(target) {
-        return graph
-            .by_address
-            .get(target)
-            .map_or(Lookup::Stale, |found| Lookup::Found(*found));
+        return graph.by_address.get(target).map_or_else(
+            || Lookup::Stale(graph.stale_addresses.get(target).copied()),
+            |found| Lookup::Found(*found),
+        );
     }
     let path = target.trim_start_matches("./").replace('\\', "/");
     if let Some(found) = graph.by_path.get(&path) {
@@ -98,7 +98,14 @@ pub fn failure(graph: &Graph, target: &str, lookup: &Lookup) -> String {
                 let _ = writeln!(out, "{}", line(graph, *candidate));
             }
         }
-        Lookup::Stale => {
+        Lookup::Stale(Some(current)) => {
+            let _ = writeln!(
+                out,
+                "stale: {target} moved or was renamed. Current record: {}",
+                line(graph, *current)
+            );
+        }
+        Lookup::Stale(None) => {
             let _ = writeln!(
                 out,
                 "stale: no record has address {target} now; the code it named was renamed, moved or deleted. Find it again with graph_find."
@@ -120,7 +127,11 @@ pub fn line(graph: &Graph, index: usize) -> String {
             record.path,
             record.start_line,
             record.end_line,
-            record.signature
+            if record.test {
+                format!("{} [test]", record.signature)
+            } else {
+                record.signature.clone()
+            }
         ),
         RecordKind::File => format!(
             "{} file {}  ({} symbols)",

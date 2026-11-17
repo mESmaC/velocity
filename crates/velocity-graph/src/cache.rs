@@ -5,7 +5,7 @@
 
 use std::collections::HashMap;
 use std::fs::{File, OpenOptions};
-use std::io::Write;
+use std::io::{Seek, Write};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
@@ -16,11 +16,7 @@ use crate::extract::FileParse;
 use crate::language::Language;
 
 /// Bump when extraction changes, so every cached parse is redone.
-pub const PARSER_VERSION: u32 = 5;
-
-/// The log is rewritten with only live entries once it passes this size and twice the live
-/// size.
-const COMPACT_AFTER: u64 = 64 * 1024 * 1024;
+pub const PARSER_VERSION: u32 = 8;
 
 #[derive(Serialize, Deserialize)]
 struct Frame {
@@ -28,44 +24,55 @@ struct Frame {
     parse: FileParse,
 }
 
+type Entries = HashMap<String, (Arc<FileParse>, u64)>;
+
 pub struct Cache {
     log: PathBuf,
-    entries: HashMap<String, (Arc<FileParse>, u64)>,
+    entries: Entries,
+    verified_len: u64,
+    observed_len: u64,
 }
 
 /// The cache key of a file's parse.
 pub fn key(hash: &str, language: Language) -> String {
     // The build's version too: a grammar upgrade changes parses without touching
     // `PARSER_VERSION` (Graphify #4236), and a release re-parses once.
-    let build = env!("CARGO_PKG_VERSION");
-    format!("{PARSER_VERSION}:{build}:{language:?}:{hash}")
+    format!("{}{language:?}:{hash}", version())
+}
+
+fn version() -> String {
+    format!("{PARSER_VERSION}:{}:", env!("CARGO_PKG_VERSION"))
 }
 
 impl Cache {
     /// The cache under `folder`. A missing or unreadable log is an empty cache.
     pub fn open(folder: &Path) -> Self {
         let log = folder.join("parses.log");
-        let entries = std::fs::read(&log)
-            .map(|bytes| read_frames(&bytes))
-            .unwrap_or_default();
-        Self { log, entries }
-    }
-
-    /// Drops every parse in memory but `live`'s. The log on disk keeps them all.
-    pub fn retain(&mut self, live: &[String]) {
-        let live: std::collections::HashSet<&String> = live.iter().collect();
-        self.entries.retain(|key, _| live.contains(key));
+        let mut cache = Self {
+            log,
+            entries: HashMap::new(),
+            verified_len: 0,
+            observed_len: 0,
+        };
+        cache.reload();
+        cache
     }
 
     /// Reads the log again, picking up what other agents appended since it was opened.
     pub fn reload(&mut self) {
-        if let Ok(bytes) = std::fs::read(&self.log) {
-            self.entries.extend(read_frames(&bytes));
+        if self.size() != self.observed_len
+            && let Ok(bytes) = std::fs::read(&self.log)
+        {
+            (self.entries, self.verified_len) = read_frames(&bytes);
+            self.observed_len = bytes.len() as u64;
         }
     }
 
-    /// The project's build lock, held while one agent parses many files (see
-    /// `Index::load`). Separate from the append lock, which the holder still takes to write.
+    pub fn size(&self) -> u64 {
+        std::fs::metadata(&self.log).map_or(0, |metadata| metadata.len())
+    }
+
+    /// Serializes cache misses, log writes and compaction across workspaces.
     pub fn build_lock(&self) -> Result<File, Error> {
         if let Some(folder) = self.log.parent() {
             std::fs::create_dir_all(folder)?;
@@ -83,65 +90,50 @@ impl Cache {
         self.entries.get(key).map(|(parse, _)| parse.clone())
     }
 
-    /// Appends new parses under the log's lock, so two agents' writes never interleave.
+    /// Appends new parses while the caller holds the build lock.
     pub fn append(&mut self, parses: &[(String, Arc<FileParse>)]) -> Result<(), Error> {
         if parses.is_empty() {
             return Ok(());
         }
-        let mut bytes = Vec::new();
-        for (key, parse) in parses {
-            let frame = frame(key, parse)?;
-            self.entries
-                .insert(key.clone(), (parse.clone(), frame.len() as u64));
-            bytes.extend(frame);
-        }
-        if let Some(folder) = self.log.parent() {
-            std::fs::create_dir_all(folder)?;
-        }
-        let lock = self.lock()?;
+        self.reload();
         let mut log = OpenOptions::new()
-            .create(true)
-            .append(true)
-            .open(&self.log)?;
-        log.write_all(&bytes)?;
-        log.flush()?;
-        drop(lock);
-        Ok(())
-    }
-
-    /// Rewrites the log with only the parses in `live` when it has grown well past them.
-    pub fn compact(&mut self, live: &[String]) -> Result<(), Error> {
-        let size = std::fs::metadata(&self.log).map_or(0, |metadata| metadata.len());
-        let live_size: u64 = live
-            .iter()
-            .filter_map(|key| self.entries.get(key).map(|(_, size)| *size))
-            .sum();
-        if size < COMPACT_AFTER || size < live_size * 2 {
-            return Ok(());
-        }
-        let mut bytes = Vec::new();
-        for key in live {
-            if let Some((parse, _)) = self.entries.get(key) {
-                bytes.extend(frame(key, parse)?);
-            }
-        }
-        let lock = self.lock()?;
-        let temporary = self.log.with_extension("log.tmp");
-        std::fs::write(&temporary, &bytes)?;
-        std::fs::rename(&temporary, &self.log)?;
-        drop(lock);
-        Ok(())
-    }
-
-    /// An exclusive lock on a file beside the log, released when the returned file closes.
-    fn lock(&self) -> Result<File, Error> {
-        let lock = OpenOptions::new()
             .create(true)
             .truncate(false)
             .write(true)
-            .open(self.log.with_extension("lock"))?;
-        lock.lock()?;
-        Ok(lock)
+            .open(&self.log)?;
+        log.set_len(self.verified_len)?;
+        log.seek(std::io::SeekFrom::End(0))?;
+        for (key, parse) in parses {
+            if self.entries.contains_key(key) {
+                continue;
+            }
+            let frame = frame(key, parse)?;
+            log.write_all(&frame)?;
+            self.entries
+                .insert(key.clone(), (parse.clone(), frame.len() as u64));
+            self.verified_len += frame.len() as u64;
+        }
+        log.flush()?;
+        self.observed_len = self.verified_len;
+        Ok(())
+    }
+
+    /// Rewrites the log with unique parses for the current parser version.
+    pub fn compact(&mut self) -> Result<(), Error> {
+        let live_size: u64 = self.entries.values().map(|(_, size)| *size).sum();
+        if self.observed_len <= live_size * 2 {
+            return Ok(());
+        }
+        let mut bytes = Vec::new();
+        for (key, (parse, _)) in &self.entries {
+            bytes.extend(frame(key, parse)?);
+        }
+        let temporary = self.log.with_extension("log.tmp");
+        std::fs::write(&temporary, &bytes)?;
+        std::fs::rename(&temporary, &self.log)?;
+        self.observed_len = bytes.len() as u64;
+        self.verified_len = self.observed_len;
+        Ok(())
     }
 }
 
@@ -159,8 +151,9 @@ fn frame(key: &str, parse: &FileParse) -> Result<Vec<u8>, Error> {
 }
 
 /// Every whole, valid frame up to the first torn or corrupt one.
-fn read_frames(bytes: &[u8]) -> HashMap<String, (Arc<FileParse>, u64)> {
+fn read_frames(bytes: &[u8]) -> (Entries, u64) {
     let mut entries = HashMap::new();
+    let version = version();
     let mut offset = 0usize;
     while let Some(header) = bytes.get(offset..offset + 8) {
         let length = u32::from_le_bytes([header[0], header[1], header[2], header[3]]) as usize;
@@ -174,8 +167,10 @@ fn read_frames(bytes: &[u8]) -> HashMap<String, (Arc<FileParse>, u64)> {
         let Ok(frame) = serde_json::from_slice::<Frame>(body) else {
             break;
         };
-        entries.insert(frame.key, (Arc::new(frame.parse), (length + 8) as u64));
+        if frame.key.starts_with(&version) {
+            entries.insert(frame.key, (Arc::new(frame.parse), (length + 8) as u64));
+        }
         offset += length + 8;
     }
-    entries
+    (entries, offset as u64)
 }

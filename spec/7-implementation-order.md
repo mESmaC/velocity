@@ -104,6 +104,6 @@ PR duty checks an item off when it lands that item's PR (F7).
 - [x] Code graph index: tree-sitter symbols, files and subsystems with addresses, span hashes and edge provenance; the per-project parse cache, warmed after lands
 - [x] `velocity-graph` MCP server in every session: `graph_find`, `graph_read`, `graph_impact` and `graph_run` over each agent's workspace view, with the span check (§3.2)
 - [x] Per-project switch, and the graph on/off comparison of tokens and time per turn in the usage modal (F15 Usage modal)
-- [ ] AIRC overlaps by symbol, swarm split by subsystem, and PR duty's impact set
+- [x] AIRC and Rosen overlaps by symbol, swarm split by subsystem, and the review swarm's graph impact set
 
 ---

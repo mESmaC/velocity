@@ -91,9 +91,7 @@ impl Tools {
             .collect();
         let more = subsystems.len().saturating_sub(12);
         let mut used: Vec<usize> = (0..records.len())
-            .filter(|index| {
-                code(&records[*index]) && !crate::search::is_test_path(&records[*index].path)
-            })
+            .filter(|index| code(&records[*index]) && !records[*index].test)
             .filter(|index| !crate::resolve::is_standard_name(&records[*index].name))
             .collect();
         used.sort_by_key(|index| std::cmp::Reverse(graph.incoming[*index].len()));
@@ -135,6 +133,12 @@ Most used: {}.",
     /// Re-reads `paths` (known files that changed) and lists the worktree again when a path
     /// is new to the index.
     pub fn refresh(&mut self, paths: &[String]) -> Result<(), Error> {
+        if self.index.is_rosen() {
+            if self.index.refresh_snapshot()? {
+                self.rebuild_search();
+            }
+            return Ok(());
+        }
         let (known, unknown): (Vec<String>, Vec<String>) = paths
             .iter()
             .cloned()
@@ -147,10 +151,14 @@ Most used: {}.",
             changed |= self.index.refresh_listing()?;
         }
         if changed {
-            let previous = std::mem::replace(&mut self.search, Search::empty());
-            self.search = Search::new(&self.index.graph, Some(previous));
+            self.rebuild_search();
         }
         Ok(())
+    }
+
+    fn rebuild_search(&mut self) {
+        let previous = std::mem::replace(&mut self.search, Search::empty());
+        self.search = Search::new(&self.index.graph, Some(previous));
     }
 
     /// Runs tool `name`. An `Err` is a failure the agent should read (ambiguous, missing,
@@ -166,6 +174,24 @@ Most used: {}.",
         name: &str,
         arguments: &Value,
     ) -> Result<(String, ToolOutcome), CallError> {
+        if name == "graph_overlaps" {
+            let paths = arguments
+                .get("paths")
+                .cloned()
+                .unwrap_or_else(|| serde_json::json!([]));
+            let paths =
+                serde_json::from_value(paths).map_err(|error| format!("Invalid paths: {error}"))?;
+            let overlaps = self
+                .index
+                .rosen_overlaps(paths)
+                .map_err(|error| error.to_string())?;
+            return Ok((within_budget(overlaps.to_string()), ToolOutcome::Other));
+        }
+        if self.index.is_rosen() {
+            self.refresh(&[]).map_err(|error| error.to_string())?;
+            let draft = self.draft(name, arguments)?;
+            return Ok(self.render(draft));
+        }
         let mut draft = self.draft(name, arguments)?;
         let files: Vec<&str> = draft.files.iter().map(String::as_str).collect();
         let stale = self.index.stale(&files);
@@ -173,11 +199,15 @@ Most used: {}.",
             self.refresh(&stale).map_err(|error| error.to_string())?;
             draft = self.draft(name, arguments)?;
         }
+        Ok(self.render(draft))
+    }
+
+    fn render(&self, draft: Draft) -> (String, ToolOutcome) {
         let mut text = draft.text;
         for record in draft.source {
             text.push_str(&self.source(record));
         }
-        Ok((within_budget(text), draft.outcome))
+        (within_budget(text), draft.outcome)
     }
 
     fn draft(&self, name: &str, arguments: &Value) -> Result<Draft, CallError> {
@@ -298,7 +328,7 @@ Most used: {}.",
         if record.kind == RecordKind::Subsystem {
             return String::new();
         }
-        let Ok(content) = std::fs::read_to_string(self.index.root().join(&record.path)) else {
+        let Ok(content) = self.index.source(&record.path) else {
             return format!("(could not read {})\n", record.path);
         };
         let (start, end) = match record.kind {

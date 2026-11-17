@@ -193,25 +193,44 @@ impl BaseJob {
     pub fn index(&self, snapshot: &Path) -> Result<(), Error> {
         self.update("Scanning tracked files", None);
         let index = Index::open_snapshot(snapshot, &self.cache, |done, total| {
-            let mut latest = self
-                .progress
-                .lock()
-                .unwrap_or_else(|error| error.into_inner());
-            if done < *latest {
-                return;
-            }
-            *latest = done;
-            let detail = if done == total {
-                "Resolving graph edges".into()
-            } else {
-                format!("{done} / {total} files processed")
-            };
-            let percent = (done * 100).checked_div(total).unwrap_or(100);
-            self.update(&detail, Some(percent as u32));
+            self.progress(done, total)
         })?;
+        self.store_coverage(&index)
+    }
+
+    pub fn index_rosen(&self, endpoint: rosen_client::Endpoint) -> Result<(), Error> {
+        self.update("Reading the Rosen base tree", None);
+        let index = Index::open_revision_with_progress(
+            endpoint,
+            &self.commit,
+            &self.cache,
+            |done, total| self.progress(done, total),
+        )?;
+        self.store_coverage(&index)
+    }
+
+    fn progress(&self, done: usize, total: usize) {
+        let mut latest = self
+            .progress
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        if done < *latest {
+            return;
+        }
+        *latest = done;
+        let detail = if done == total {
+            "Resolving graph edges".into()
+        } else {
+            format!("{done} / {total} files processed")
+        };
+        let percent = (done * 100).checked_div(total).unwrap_or(100);
+        self.update(&detail, Some(percent as u32));
+    }
+
+    fn store_coverage(&self, index: &Index) -> Result<(), Error> {
         write_json(
             &self.cache.join("base-coverage.json"),
-            &self.coverage(&index),
+            &self.coverage(index),
         )
     }
 

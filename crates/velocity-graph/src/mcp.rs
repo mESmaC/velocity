@@ -6,10 +6,12 @@ use std::collections::HashSet;
 use std::ffi::OsString;
 use std::io::{BufRead, Write};
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, Mutex, OnceLock, mpsc};
+use std::sync::{Arc, Mutex, mpsc};
 use std::time::Duration;
 
 use notify::{RecursiveMode, Watcher};
+use rosen_client::Endpoint;
+use rosen_client::snapshot::WorkspaceMarker;
 use serde_json::{Value, json};
 
 use crate::Error;
@@ -65,15 +67,25 @@ pub fn serve_stdio(arguments: &[OsString]) -> Result<(), Error> {
         .to_str()
         .ok_or_else(|| Error::Invalid("Invalid project identity".into()))?;
     let cache = PathBuf::from(app_data).join("graph").join(project);
-    serve(
+    let endpoint = std::env::var("ROSEN_ENDPOINT")
+        .ok()
+        .map(Endpoint::new)
+        .or_else(|| {
+            let project = project.parse().ok()?;
+            Some(
+                velocity_rosen::ProjectServer::new(Path::new(app_data), project)
+                    .endpoint()
+                    .clone(),
+            )
+        });
+    serve_with_endpoint(
         PathBuf::from(worktree),
         cache,
+        endpoint,
         std::io::BufReader::new(std::io::stdin()),
         std::io::stdout(),
     )
 }
-
-type Shared = Arc<OnceLock<Result<Mutex<Tools>, String>>>;
 
 /// How long `initialize` waits for the index, so the session-start map can go out with the
 /// instructions. With a warm cache a build takes a fraction of this.
@@ -81,11 +93,12 @@ const MAP_WAIT: Duration = Duration::from_millis(1500);
 
 /// One agent's connection.
 struct Connection {
-    tools: Shared,
+    tools: Mutex<Option<Tools>>,
     root: PathBuf,
     cache: PathBuf,
-    dirty: Arc<Mutex<HashSet<String>>>,
-    status: Arc<WorkspaceStatus>,
+    endpoint: Option<Endpoint>,
+    dirty: Mutex<HashSet<String>>,
+    status: WorkspaceStatus,
     /// Signalled once the background build finished; taken by the first `initialize`.
     built: Mutex<Option<mpsc::Receiver<()>>>,
 }
@@ -96,32 +109,40 @@ pub fn serve(
     root: PathBuf,
     cache: PathBuf,
     input: impl BufRead,
+    output: impl Write,
+) -> Result<(), Error> {
+    let endpoint = std::env::var("ROSEN_ENDPOINT").ok().map(Endpoint::new);
+    serve_with_endpoint(root, cache, endpoint, input, output)
+}
+
+fn serve_with_endpoint(
+    root: PathBuf,
+    cache: PathBuf,
+    endpoint: Option<Endpoint>,
+    input: impl BufRead,
     mut output: impl Write,
 ) -> Result<(), Error> {
     let (signal, built) = mpsc::channel();
-    let status = Arc::new(WorkspaceStatus::track(&cache, &root));
+    let status = WorkspaceStatus::track(&cache, &root);
     let connection = Arc::new(Connection {
-        tools: Arc::new(OnceLock::new()),
+        tools: Mutex::default(),
         root,
         cache,
-        dirty: Arc::default(),
+        endpoint,
+        dirty: Mutex::default(),
         status,
         built: Mutex::new(Some(built)),
     });
     let (changes, pending) = mpsc::sync_channel(1);
     let watcher = watch(&connection, changes);
     let builder = {
-        let (tools, root, cache, dirty, status) = (
-            connection.tools.clone(),
-            connection.root.clone(),
-            connection.cache.clone(),
-            connection.dirty.clone(),
-            connection.status.clone(),
-        );
+        let connection = connection.clone();
         std::thread::spawn(move || {
-            let result = tools.get_or_init(|| build(&root, &cache));
-            let dirty = dirty.lock().unwrap_or_else(|error| error.into_inner());
-            status.mark(result.is_ok() && dirty.is_empty());
+            let mut tools = connection
+                .tools
+                .lock()
+                .unwrap_or_else(|error| error.into_inner());
+            let _ = ensure_tools(&connection, &mut tools);
             let _ = signal.send(());
         })
     };
@@ -190,12 +211,36 @@ pub fn warm_stdio(arguments: &[OsString]) -> Result<(), Error> {
 
 /// Builds the index. A panic in a parser becomes an error the tools report, rather than the
 /// end of the agent's graph server.
-fn build(root: &Path, cache: &Path) -> Result<Mutex<Tools>, String> {
-    match std::panic::catch_unwind(|| Index::open(root, cache)) {
-        Ok(Ok(index)) => Ok(Mutex::new(Tools::new(index))),
+fn build(root: &Path, cache: &Path, endpoint: Option<Endpoint>) -> Result<Tools, String> {
+    match std::panic::catch_unwind(|| Index::open_workspace(root, cache, endpoint)) {
+        Ok(Ok(index)) => Ok(Tools::new(index)),
         Ok(Err(error)) => Err(error.to_string()),
         Err(_) => Err("the indexer stopped on an internal error".to_owned()),
     }
+}
+
+fn ensure_tools<'tools>(
+    connection: &Connection,
+    tools: &'tools mut Option<Tools>,
+) -> Result<&'tools mut Tools, CallError> {
+    if tools.is_none() {
+        *tools = Some(
+            build(
+                &connection.root,
+                &connection.cache,
+                connection.endpoint.clone(),
+            )
+            .map_err(|error| format!("the code graph could not be built: {error}"))?,
+        );
+        let dirty = connection
+            .dirty
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        connection.status.mark(dirty.is_empty());
+    }
+    tools
+        .as_mut()
+        .ok_or_else(|| "the code graph is unavailable".into())
 }
 
 fn watch(
@@ -203,7 +248,12 @@ fn watch(
     changes: mpsc::SyncSender<()>,
 ) -> Option<notify::RecommendedWatcher> {
     let connection = connection.clone();
-    let root = connection.root.clone();
+    let rosen_workspace = WorkspaceMarker::path(&connection.root).is_file();
+    let (root, mode) = if rosen_workspace {
+        (connection.root.join(".rosen"), RecursiveMode::NonRecursive)
+    } else {
+        (connection.root.clone(), RecursiveMode::Recursive)
+    };
     let mut watcher = notify::recommended_watcher(move |event: notify::Result<notify::Event>| {
         let Ok(event) = event else { return };
         if event.kind.is_access() {
@@ -215,6 +265,15 @@ fn watch(
             .unwrap_or_else(|error| error.into_inner());
         let was_clean = dirty.is_empty();
         for path in event.paths {
+            if rosen_workspace {
+                if path
+                    .file_name()
+                    .is_some_and(|name| name == "workspace.json")
+                {
+                    dirty.insert(String::from(".rosen/workspace.json"));
+                }
+                continue;
+            }
             let Ok(relative) = path.strip_prefix(&connection.root) else {
                 continue;
             };
@@ -229,7 +288,7 @@ fn watch(
         }
     })
     .ok()?;
-    watcher.watch(&root, RecursiveMode::Recursive).ok()?;
+    watcher.watch(&root, mode).ok()?;
     Some(watcher)
 }
 
@@ -237,12 +296,12 @@ fn catch_up(connection: &Connection, pending: mpsc::Receiver<()>) {
     while pending.recv().is_ok() {
         // Group events from one save or build. A call still refreshes its own view immediately.
         std::thread::sleep(Duration::from_millis(150));
-        let tools = connection
+        let mut tools = connection
             .tools
-            .get_or_init(|| build(&connection.root, &connection.cache));
-        if let Ok(tools) = tools {
-            let mut tools = tools.lock().unwrap_or_else(|error| error.into_inner());
-            let _ = refresh(&mut tools, connection);
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        if let Ok(tools) = ensure_tools(connection, &mut tools) {
+            let _ = refresh(tools, connection);
         }
     }
 }
@@ -280,13 +339,12 @@ fn instructions(connection: &Connection) -> String {
     if let Some(built) = built {
         let _ = built.recv_timeout(MAP_WAIT);
     }
-    let map = match connection.tools.get() {
-        Some(Ok(tools)) => tools
-            .lock()
-            .unwrap_or_else(|poison| poison.into_inner())
-            .map(),
-        _ => String::new(),
-    };
+    let map = connection
+        .tools
+        .try_lock()
+        .ok()
+        .and_then(|tools| tools.as_ref().map(Tools::map))
+        .unwrap_or_default();
     if map.is_empty() {
         INSTRUCTIONS.to_owned()
     } else {
@@ -296,18 +354,16 @@ fn instructions(connection: &Connection) -> String {
 
 fn call(parameters: &Value, connection: &Connection) -> Value {
     let name = parameters["name"].as_str().unwrap_or_default();
-    let tools = connection
-        .tools
-        .get_or_init(|| build(&connection.root, &connection.cache));
-    let result = match tools {
-        Ok(tools) => std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            let mut tools = tools.lock().unwrap_or_else(|poison| poison.into_inner());
-            refresh(&mut tools, connection)?;
-            tools.measured_call(name, &parameters["arguments"])
-        }))
-        .unwrap_or_else(|_| Err("the code graph failed on this request".into())),
-        Err(error) => Err(format!("the code graph could not be built: {error}").into()),
-    };
+    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        let mut tools = connection
+            .tools
+            .lock()
+            .unwrap_or_else(|poison| poison.into_inner());
+        let tools = ensure_tools(connection, &mut tools)?;
+        refresh(tools, connection)?;
+        tools.measured_call(name, &parameters["arguments"])
+    }))
+    .unwrap_or_else(|_| Err("the code graph failed on this request".into()));
     let (text, outcome, failed) = match result {
         Ok((text, outcome)) => (text, outcome, false),
         Err(CallError { message, outcome }) => (message, outcome, true),
@@ -353,6 +409,12 @@ fn failure(id: Value, code: i32, message: &str) -> Value {
 fn tool_list() -> Vec<Value> {
     vec![
         tool(
+            "graph_overlaps",
+            "Live Rosen path overlaps, with the edited symbols in each change and any symbols edited by both. Empty paths checks this workspace's claims and edits.",
+            json!({"paths": {"type": "array", "items": {"type": "string"}}}),
+            &[],
+        ),
+        tool(
             "graph_find",
             "Rank symbols, files and subsystems for a name or a plain-language description. Each result: address, kind, name, file:lines, signature. [exact] marks the only record with exactly that name.",
             json!({
@@ -377,7 +439,7 @@ fn tool_list() -> Vec<Value> {
             "What depends on symbols or files, followed transitively through calls, implementations, type uses, imports and doc mentions, grouped by subsystem with depth. A type brings its methods, and a trait method implementation brings the callers of the trait method. Links found in the source are listed apart from leads to check. No dependents does not prove code unused: dynamic calls and copies are invisible to the graph, so grep a distinctive literal before deleting.",
             json!({
                 "targets": {"oneOf": [{"type": "string"}, {"type": "array", "items": {"type": "string"}}], "description": "Addresses, names or paths"},
-                "depth": {"type": "integer", "minimum": 1, "maximum": 6, "description": "Hops to follow (default 3)"},
+                "depth": {"type": "integer", "minimum": 1, "maximum": 6, "description": "Hops to follow (default 2)"},
             }),
             &["targets"],
         ),

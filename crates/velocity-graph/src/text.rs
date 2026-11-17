@@ -5,7 +5,7 @@ use sha2::{Digest, Sha256};
 const SIGNATURE_LIMIT: usize = 200;
 const DOC_LIMIT: usize = 200;
 
-/// A hex digest of `bytes`, 32 characters (128 bits): the parse cache key and span hashes.
+/// A hex digest of `bytes`, 32 characters (128 bits), for source spans.
 pub fn digest(bytes: &[u8]) -> String {
     let hash = Sha256::digest(bytes);
     hash.iter()
@@ -26,7 +26,7 @@ pub fn signature(source: &str, start: usize, end: usize) -> String {
                 let brace = text.find('{').unwrap_or(text.len());
                 let semicolon = text.find(';').map_or(text.len(), |at| at + 1);
                 let arrow = text.find("=>").map_or(text.len(), |at| at + 2);
-                &text[..brace.min(semicolon).min(arrow).min(600)]
+                &text[..text.floor_char_boundary(brace.min(semicolon).min(arrow).min(600))]
             } else {
                 &text[..stop]
             }
