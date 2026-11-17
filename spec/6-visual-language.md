@@ -10,7 +10,7 @@
   - **Layout:**
     - The sidebar is one floating glass pane, and each rail panel is its own pane.
     - The main column has no panel: content sits straight on the window.
-    - The thread header has two lines: the title (20 px) with Diff and Editor as pill buttons beside it, and the meta line (branch, worktree, diff counts, time) under it.
+    - The thread header has two lines: the title (20 px) with Diff and Editor as pill buttons beside it, and the meta line (branch, workspace, diff counts, time) under it.
   - **Materials:**
     - Panes are smoked glass:
       - a translucent top-lit fill `rgba(255,255,255,.072)` → `.034`, plus a faint top-left sheen, over `blur(36px) saturate(1.7)` of whatever is behind the pane;
@@ -41,7 +41,7 @@
   | Colour | Use |
   |---|---|
   | ok `#5fd08a` | merged / done |
-  | warn `#f0b651` | PR open · watching / CI / fixing |
+  | warn `#f0b651` | named · watching / CI / fixing |
   | err `#ff7369` | failed / changes requested |
   | accent `#6a8dff` | running |
   | info `#8fb4e8` | spec |
@@ -71,6 +71,10 @@
   - Only `opacity` and `transform` animate, apart from the small bars' fill, so nothing reflows.
   - With `prefers-reduced-motion`, nothing moves or scales and the bars don't fill.
     Short fades stay.
+- **Long content and controls (#415):** long titles, project names, tool arguments and results, and diff paths truncate within their pane and expose the full value in a tooltip.
+  Code and diffs scroll inside their own cards; prose and error details wrap long paths without widening a pane.
+  Dialog bodies scroll within the window while the header and action footer remain visible.
+  Keyboard focus keeps the accent ring on raised controls, disabled actions are dimmed, and Settings navigation uses the shared hover state.
 - Base tokens are copied exactly from the mockup's `:root` into `ui/src/lib/theme/tokens.css`.
   Values missing from `:root` are copied from the reference's winning CSS declarations into `ui/src/lib/theme/reference.css` (user-authorized in #12).
   Components use the token files; the reference is read-only.
@@ -79,3 +83,15 @@
   The mockup uses a CDN only for convenience.
 
 ---
+
+### Pane states (#416)
+
+Sidebar threads, Changes / pull requests, Issues, every AIRC tab, Machines, Settings → Workspaces / Providers / Skills, the first transcript update and Usage share one pane-state component.
+Loading shows neutral skeleton rows with an accessible loading label.
+Empty copy names what is missing and how to add it or select its project; an empty search says that no threads match.
+Failures name the affected data and one recovery action, never backend JSON, stack traces or command stderr.
+GitHub authentication failures direct the user to `gh auth login` and Retry.
+Retry refetches data, and failed reads retry every five seconds while mounted; automatic retries never replay actions that mutate data.
+A failed agent response offers a manual Retry through its existing workspace retry or thread continuation action.
+A network loss shows an offline state and retries reads on return.
+The Rosen event follower publishes its connection state per project; affected panes show Reconnecting while it retries, retain their last snapshot, and recover when the stream opens again without restarting Velocity.

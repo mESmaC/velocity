@@ -18,7 +18,8 @@
   overflow-y: auto;
   padding: var(--swarm-items-padding);
   border: var(--swarm-items-border);
-  border-radius: var(--r-sm);
+  border-radius: var(--polish-inset-radius);
+  background: var(--polish-inset-background);
 }
 .sw-it {
   display: grid;
@@ -37,7 +38,7 @@
 }
 .sw-it input {
   margin: 0;
-  accent-color: var(--swarm-item-accent);
+  accent-color: var(--accent);
 }
 .sw-it .ttl,
 .sw-card .ttl,
@@ -136,12 +137,13 @@
   padding: var(--swarm-card-padding);
   text-align: left;
   border: var(--swarm-card-border);
-  border-radius: var(--r-md);
-  background: var(--surface);
+  border-radius: var(--polish-card-radius);
+  background: var(--polish-card-background);
+  box-shadow: var(--polish-card-shadow);
 }
 .sw-card:hover {
-  border-color: var(--line);
-  background: var(--surface-2);
+  border-color: var(--polish-card-hover-border);
+  background: var(--polish-card-hover-background);
 }
 .sw-card.merged {
   border-color: var(--swarm-card-merged-border-color);

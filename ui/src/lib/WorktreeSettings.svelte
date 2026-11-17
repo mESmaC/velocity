@@ -30,6 +30,15 @@
   let pending = 0;
   let queue = Promise.resolve();
 
+  async function refresh() {
+    try {
+      receive(await worktreeCommands.list());
+      error = '';
+    } catch (reason) {
+      report(reason);
+    }
+  }
+
   function report(reason: unknown) {
     error = reason instanceof Error ? reason.message : String(reason);
   }
@@ -111,6 +120,7 @@
 </script>
 
 <WorktreeSettingsPanel
+  retry={refresh}
   {mirror}
   {projectIdentifier}
   {view}

@@ -295,7 +295,7 @@ fn row_presentation(owner: &WorktreeOwner) -> (String, WorktreeRowTone) {
     match owner.status {
         WorktreeDisplayStatus::Working => ("working".into(), WorktreeRowTone::Working),
         WorktreeDisplayStatus::PullRequest(number) => (
-            format!("PR #{number}"),
+            format!("change #{number}"),
             if owner.fixing {
                 WorktreeRowTone::Fixing
             } else {
@@ -308,7 +308,7 @@ fn row_presentation(owner: &WorktreeOwner) -> (String, WorktreeRowTone) {
         WorktreeDisplayStatus::Sweep => ("sweep".into(), WorktreeRowTone::Duty),
         WorktreeDisplayStatus::Ready => ("ready".into(), WorktreeRowTone::Duty),
         WorktreeDisplayStatus::Prebuilding => ("ready · building".into(), WorktreeRowTone::Duty),
-        WorktreeDisplayStatus::Deleted => ("deleted · merged".into(), WorktreeRowTone::Deleted),
+        WorktreeDisplayStatus::Deleted => ("deleted · landed".into(), WorktreeRowTone::Deleted),
     }
 }
 
@@ -483,7 +483,7 @@ fn location_notice(root: &str, owners: &[&WorktreeOwner], changed: bool) -> Stri
     }
     let count = owners.len();
     format!(
-        "New worktrees go to {root}. The {count} that exist stay where they are until their PRs merge."
+        "New workspaces go to {root}. The {count} that exist stay where they are until their changes land."
     )
 }
 

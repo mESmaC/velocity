@@ -18,7 +18,7 @@
     class:on={current === 'worktrees'}
     aria-current={current === 'worktrees' ? 'page' : undefined}
     onclick={() => send({ Request: { SettingsTab: 'worktrees' } })}
-    >Worktrees</button
+    >Workspaces</button
   >
   <button
     class:on={current === 'providers'}

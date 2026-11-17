@@ -1320,7 +1320,7 @@
   --swarm-grid-gap: 6px;
   --swarm-card-gap: 7px;
   --swarm-card-padding: 9px 10px;
-  --swarm-card-border: 1px solid var(--line-mid);
+  --swarm-card-border: 1px solid rgba(255, 255, 255, 0.09);
   --swarm-card-merged-border-color: #2f4a2c;
   --swarm-card-fixing-border-color: #5c4a28;
   --swarm-card-heading-gap: 6px;
@@ -1771,4 +1771,25 @@
   );
   --usage-modal-button-box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.1);
   --usage-modal-button-hover-border-color: rgba(255, 255, 255, 0.18);
+}
+
+/* #415: winning reference declarations for cards (1063–1065), inset lists
+   (1070), focus (the :root ring), and disabled buttons (.np .btn:disabled). */
+:root {
+  --polish-card-radius: 12px;
+  --polish-card-background: linear-gradient(
+    180deg,
+    rgba(255, 255, 255, 0.05),
+    rgba(255, 255, 255, 0.025)
+  );
+  --polish-card-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.05);
+  --polish-card-hover-border: rgba(255, 255, 255, 0.17);
+  --polish-card-hover-background: linear-gradient(
+    180deg,
+    rgba(255, 255, 255, 0.08),
+    rgba(255, 255, 255, 0.04)
+  );
+  --polish-inset-radius: 8px;
+  --polish-inset-background: rgba(255, 255, 255, 0.03);
+  --polish-selection-background: rgba(106, 141, 255, 0.45);
 }

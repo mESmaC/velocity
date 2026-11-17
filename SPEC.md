@@ -15,15 +15,15 @@ These hold for every feature. A feature that breaks one of them is wrong, whatev
 
 1. **Agents never wait for approval.** Every agent runs with full permissions (bypass / yolo / unrestricted) until it finishes. Every agent also has its full toolset: all of its provider's built-in tools, your MCP servers and skills, the shell, the network and GitHub (§3.2 Tool access). Velocity has no approval prompts, no plan-approval gates and no "needs you" states. Messages sent to a busy agent are queued and picked up at its next step. They never interrupt it.
 2. **The spec comes first.** Every new project starts with a spec interview. No build work starts until the spec is locked.
-3. **A task is finished when its PR is merged, not when the code is written.** An agent opens a PR, then watches it until it merges. It fixes CI and answers every review comment as it arrives.
-   - **On a Rosen project** (F5, Rosen rules below): a task is finished when its change lands. The agent names its work (`rosen commit -m`), and fixes what a conflict or a post-land revert sends back to it.
-4. **Never merge without approval.** Only a PR duty agent that approved a PR merges it.
-   - **On a Rosen project:** no approval gates a land. A named change lands as soon as it merges cleanly onto the base; the fast build and lint run right after the land and revert a change that breaks them, and the full tests follow and file a failure as an issue (F7 "A Rosen change"). Review happens after the land, by agents that review, scout and verify landed code without blocking development (#382). The release is the gate (F7 "The release gate").
-   - PR landing with local checks uses the live head and base branch targets when GitHub's cached PR record lags; checks and approval stay bound to the exact live head (F6, #350).
-5. **One worktree per unit of work.** Every thread and every agent works in its own git worktree. The worktree is deleted as soon as that work's PR merges. PR duty also removes its review worktree after a confirmed merge by someone else, once its review session has stopped (F7).
-   - **On a Rosen project:** one Rosen workspace per unit of work. Every thread and every agent works in its own Rosen change and workspace, which Rosen deletes when the change lands or is abandoned.
+3. **A task is finished when its change lands.** The agent names its work (`rosen commit -m`) and repairs anything a stored conflict or post-land revert sends back to it.
+   - **Legacy GitHub projects:** an agent opens a PR, watches it until it merges, fixes CI and answers every review comment.
+4. **Landing follows the project's review policy.** On an after-land Rosen project, no approval gates a land: a named change lands as soon as it combines cleanly with the base. Fast build and lint checks follow the land and revert a broken build; full tests file failures as issues. Review, scouting and proof verification follow the land without blocking development (#382). The release is the gate (F7).
+   - **Before-land Rosen projects:** review and pre-land checks gate the land (F7).
+   - **Legacy GitHub projects:** never merge without approval. Only the PR duty agent that approved a PR merges it. Local checks use the live head and base branch when GitHub's cached record lags; checks and approval stay bound to that exact head (F6, #350).
+5. **One workspace per unit of work.** Every thread and agent has its own Rosen change and workspace. Rosen deletes the workspace when the change lands or is abandoned.
+   - **Legacy GitHub projects:** each job has its own git worktree, deleted after its PR merges. PR duty removes its review worktree after a confirmed merge once its review session has stopped (F7).
 6. **AGENTS.md is direct and explicit.** Hedged or vague wording counts as a defect.
-7. **Agents coordinate in AIRC through claims, not conversation.** Every agent claims its work and files, records a share or a wait when it needs a file another agent claimed, and waits for a PR it depends on to merge. Agents can message each other, but only when a claim, overlap or dependency needs words. A dependency wait is not an approval gate (Rule 1).
+7. **Agents coordinate through claims, not conversation.** AIRC coordinates work choice and project events; Rosen records path claims with claim, share and wait. Every agent claims its work and paths and waits for a dependency change to land before rebasing. Agents can message each other, but only when a claim, overlap or dependency needs words. A dependency wait is not an approval gate (Rule 1).
 8. **Implementation first.** Agents build working functionality before anything else. Features on the project's proof list are proven in Lean after their code, in the same PR (F17); everything else ships with no Lean. Tests and docs are low priority: a building agent adds a test only for a critical contract, and scouts and PR duty write the adversarial tests. Only the agents whose job is to break things write tests and stress scripts: scouts and PR duty. Lean is the proving ground, not the test suite.
    - **On a Rosen project:** Lean for a proof-list feature follows its land, written and checked by proof agents. It no longer has to be in the same change. The release gate's `lake build` and axiom audit hold every release to it.
 
@@ -42,18 +42,25 @@ These hold for every feature. A feature that breaks one of them is wrong, whatev
 
 ## 2. Concepts
 
+**Rosen vocabulary (#417):** workspace; change; automatic snapshot or named snapshot (`rosen commit -m`); name the change; land; base; stored conflict (`rosen resolve`); land history; abandoned; pre-land and post-land checks (green, culprit, reverted); path claims (`rosen claim`, `rosen share`, `rosen wait`).
+GitHub terminology applies to literal GitHub operations, issues and the git mirror.
+The migration is phased by the owner decision on #417: UI copy and spec wording first; Rust, saved fields and IPC names migrate with #421 (status pane), #422 (thread view), #423 (workspaces) and #424 (PR duty), then a final sweep follows their lands.
+Until those changes land, code names, wire values and the §3.1 command/event spellings below remain the implemented names; renamed saved fields accept their old names with `#[serde(alias)]`.
+The existing GitHub workflow sections describe the legacy git backend while those changes replace it.
+
+
 | Term | Meaning |
 |---|---|
-| **Project** | A local folder or GitHub repo. It owns threads, a Task List, PRs, issues, AGENTS.md and SPEC.md. Velocity holds several projects and you switch between them. |
-| **Thread** | One agent working on one piece of work, in its own worktree. |
+| **Project** | A local folder or GitHub repo. It owns threads, a Task List, changes, issues, AGENTS.md and SPEC.md. Velocity holds several projects and you switch between them. |
+| **Thread** | One agent working on one piece of work, in its own workspace. |
 | **Spec interview** | The first thread of a new project. It interviews you and produces SPEC.md plus the first Task List. |
 | **Task List** | The project-level list of work, shown in the top-right panel. It is never a per-thread plan. |
 | **Duty agent** | A long-running agent with a standing role: **PR duty**, **Scout**, or the **Review swarm** on after-land Rosen projects (F7). Names are *(proposed)*. |
 | **Swarm** | One agent per open item (tasks, issues, or both), all started at once. |
 | **Goal swarm** | N agents given one identical prompt (e.g. "Read AGENTS.md and start dev.") with a model mix and work sources you set. Each agent reads the prompt before choosing a matching piece from the enabled sources and claims it atomically in AIRC. |
-| **Worktree** | A `git worktree` checkout made for one thread or one agent's job from the project's default branch, falling back to `master` when none is set; its transcript setup labels name that base branch. |
-| **AIRC** | The project's coordination channel. It is first a log of claims and project events (PRs, reviews, merges, issues, Task List changes); agents can also message each other. Overlaps and dependencies are settled there and shared ledgers are kept there, so no agent works in isolation. Modelled on xros_chat. |
-| **Claim** | An agent's public statement of its task, branch and the files it expects to touch. Claims on a piece of work are locked: the first claim wins and a later one is refused with the holder's nick. |
+| **Workspace** | A Rosen workspace for one thread or agent, attached to its own change from the project base. |
+| **AIRC** | The project's coordination channel. It is first a log of claims and project events (changes, reviews, lands, issues, Task List changes); agents can also message each other. Overlaps and dependencies are settled there and shared ledgers are kept there, so no agent works in isolation. Modelled on xros_chat. |
+| **Claim** | An agent's public statement of its task, change and the paths it expects to touch. Claims on a piece of work are locked: the first claim wins and a later one is refused with the holder's nick. |
 | **Design proof** | `proofs/<Feature>/Design.lean`: the feature modelled in Lean, proven correct, within a stated cost bound, and no worse than a stated class of alternatives. Only for features on the proof list (F17), written after the code in the same PR. |
 | **Confidence proof** | Ties what was built to the design model. By default, the model exports a fixture table and one test checks the code against it; a code translation runs only when an issue asks for it. "Don't state your confidence; prove it." |
 | **Proof level** | How firmly a language's code is tied to the proven model: **code** (the code itself is translated into Lean and proven), **reference** (the code is stress-tested against the compiled Lean model) or **model** (only the design is proven). |
@@ -66,14 +73,14 @@ These hold for every feature. A feature that breaks one of them is wrong, whatev
 |---|---|---|
 | `draft` | (top, unnamed) | New thread, not sent yet. |
 | `spec` | Spec interview | Interview in progress. Phases: `scan` → `ask` → `ready` → `locked`. |
-| `working` | Running | Agent works in its worktree; an idle conversation can resume on the next message (§3.2). |
-| `review` | PR open · watching | PR is open; the agent watches it. Stages: `ci`, `review`, `fixing`, `approved`. |
-| `error` | Failed | Agent stopped on an error. Its worktree is kept. |
-| `closed` | Settled | PR closed without merging. Its worktree is kept. |
+| `working` | Running | Agent works in its workspace; an idle conversation can resume on the next message (§3.2). |
+| `review` | named · watching | PR is open; the agent watches it. Stages: `ci`, `review`, `fixing`, `approved`. |
+| `error` | Failed | Agent stopped on an error. Its workspace is kept. |
+| `closed` | Settled | PR abandoned. Its workspace is kept. |
 | `done` | Settled | Spec locked (spec threads only). |
-| `merged` | Settled | PR merged and worktree deleted. The thread is finished. |
+| `merged` | Settled | PR merged and workspace deleted. The thread is finished. |
 
-The sidebar shows groups in this order: draft, On duty, Swarms, Spec interview, Running, PR open · watching, Failed, Settled. Settled is collapsed by default, shows its count and a chevron, and is the only collapsible group. Its expanded state is saved per project. Finished swarm members move there immediately; idle working threads and failures stay in their active groups. Search reveals matching settled threads even while collapsed. Empty groups are hidden, except "On duty", which shows a "start one" button when empty.
+The sidebar shows groups in this order: draft, On duty, Swarms, Spec interview, Running, named · watching, Failed, Settled. Settled is collapsed by default, shows its count and a chevron, and is the only collapsible group. Its expanded state is saved per project. Finished swarm members move there immediately; idle working threads and failures stay in their active groups. Search reveals matching settled threads even while collapsed. Empty groups are hidden, except "On duty", which shows a "start one" button when empty.
 
 Command errors clear after four seconds or the next successful dispatch. Key reports (`Keyboard`, `NumberHints`) don't count as a dispatch here: Enter's own key report would otherwise hide a failed send's error at once. Backend launch notices remain visible while set.
 
@@ -85,7 +92,7 @@ A thread's state (§2.1) says where it is in its lifecycle. Its **activity** say
 |---|---|---|
 | `thinking` | The agent is producing output. | ACP message chunks |
 | `executing` | A tool call is running. | ACP `tool_call` |
-| `parked` | The agent is waiting on another agent's PR (`airc_wait`). Its ACP session is ended to free a provider slot, and its worktree and claims are kept. | `airc_wait` |
+| `parked` | The agent is waiting on another agent's PR (`airc_wait`). Its ACP session is ended to free a provider slot, and its workspace and claims are kept. | `airc_wait` |
 | `stalled` | No ACP update for the stall timeout (below) while not parked. | Velocity |
 | `at limit` | The agent hit a per-agent cap or its provider's subscription limit. This stays set until the agent resumes. | Velocity, provider |
 | `idle` | The agent's turn ended and nothing is queued. | ACP turn end |
@@ -100,18 +107,18 @@ Both timeouts are set in Settings → Agents (F13).
 
 **Stall handling:**
 1. Velocity sends one prompt: "No output for 5 minutes. Continue, or say what is blocking you."
-2. If there is still no update after another 5 minutes, Velocity cancels the turn and restarts the session in the same worktree from its transcript. The agent keeps its claims.
+2. If there is still no update after another 5 minutes, Velocity cancels the turn and restarts the session in the same workspace from its transcript. The agent keeps its claims.
 3. Each step posts a `stalled` event.
 
 **Limits and claim release:**
 - **Per-agent caps:** max turns and max duration, set in Settings → Agents (F13). Off by default.
 - **Hitting a limit:** when an agent hits a cap or its provider's limit, its activity becomes `at limit`.
-- **Release after a grace period:** if an agent stays `at limit`, or its thread has failed (§2.1 `error`), for 10 minutes (decided, Q20; set in Settings → Agents), Velocity releases its claims. It posts a `released` event and the piece goes back to the pool (F16). The worktree is still kept (F5).
+- **Release after a grace period:** if an agent stays `at limit`, or its thread has failed (§2.1 `error`), for 10 minutes (decided, Q20; set in Settings → Agents), Velocity releases its claims. It posts a `released` event and the piece goes back to the pool (F16). The workspace is still kept (F5).
 - **An open PR keeps its claims** *(proposed)*. A thread with an open PR is never released. PR duty can still land that PR, and a second agent on the piece would open a duplicate.
-- **Prior work is offered, never assigned** (decided, Q20). When the released agent pushed a branch, the `released` event names the branch and its last pushed commit. The work pool shows them on the piece, and the agent that claims it next is told "<nick> left work on `<branch>` at `<sha7>`". That agent starts in its own fresh worktree from `master` as always (Rule 5) and decides whether to merge the branch in. The released agent's worktree stays with its thread.
+- **Prior work is offered, never assigned** (decided, Q20). When the released agent pushed a branch, the `released` event names the branch and its last pushed commit. The work pool shows them on the piece, and the agent that claims it next is told "<nick> left work on `<branch>` at `<sha7>`". That agent starts in its own fresh workspace from `master` as always (Rule 5) and decides whether to merge the branch in. The released agent's workspace stays with its thread.
 - **At a provider's limit, the agent waits for the reset** (decided, Q15), as T3 Code does. Velocity never moves a thread, queued work or new work to another provider. The thread shows the window that ran out and when it resets, and Velocity resumes the session at the reset with no action from you. When the provider reports no reset time, Velocity retries every 15 minutes *(proposed)*. You can change the thread's model by hand at any time (F4). The piece itself still moves on: the grace period above returns it to the pool, where an agent on any provider can claim it.
-- **Resuming after a release** *(proposed)*: an agent whose claims were released claims its piece again before it continues. If another agent holds the piece by then, the thread fails with "piece taken by <nick>" and keeps its worktree.
-- **Closed PRs:** a closed PR keeps its claims until you delete the thread. Closing is a decision someone made, so it isn't treated as a failure.
+- **Resuming after a release** *(proposed)*: an agent whose claims were released claims its piece again before it continues. If another agent holds the piece by then, the thread fails with "piece taken by <nick>" and keeps its workspace.
+- **Closed changes:** a closed PR keeps its claims until you delete the thread. Closing is a decision someone made, so it isn't treated as a failure.
 
 The native supervisor checks live build threads once a second. Its defaulted checkpoint in `state.json` retains completed turns, the session start, the last ACP update at a durable transition, the nudge, and the unavailability grace deadline. The exact live ACP heartbeat stays in memory; streaming batches do not write supervision checkpoints. Streaming batches save the live transcript to `state.json` at most once every 5 seconds per thread, and always at the end of a turn, so copying every chunk of every agent into the store no longer starves the window (#273). A change to saved state only updates memory; a background writer saves the newest state to `state.json` at most once a second, copying it under the store lock and serializing and writing it outside the lock, as compact JSON, and once more as Velocity exits or hands over to an installer (#285, #320). A crash loses at most the last second of changes, and mid-turn at most those last seconds of transcript. Session start, turn end, nudge and the first subsequent ACP update persist checkpoints; a resumed session starts a fresh silence clock. Recovery stops the owned ACP session and resumes in the registered checkout through the existing load/transcript path. Caps end the session; raising or disabling the cap resumes it. A usage-limit turn error retains the provider and retries after its reported reset, or every 15 minutes when none is reported. Released Task List ownership is returned to todo; issues and SPEC pieces become available again. Optional prior pushed work is shown in the pool. Resumption must win the atomic claim again before starting ACP, and fails with the holder named if the piece was taken.
 

@@ -275,8 +275,9 @@
         {#if defaults?.lands_without_review}
           <div class="hint">
             This project's rosen.toml sets review = "after-land": Velocity lands
-            each change once it merges cleanly, with no approval, so PR duty
-            isn't offered. Builds, tests and review follow the land.
+            each change once it combines cleanly with the base, with no
+            approval, so PR duty isn't offered. Builds, tests and review follow
+            the land.
           </div>
         {/if}
       </fieldset>

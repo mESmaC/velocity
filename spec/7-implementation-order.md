@@ -20,21 +20,21 @@ PR duty checks an item off when it lands that item's PR (F7).
 - [x] Spec interview: scan, ask, ready, lock; SPEC.md written and committed; draft → published tasks (F3)
 - [x] Gate: no build work on unlocked projects (Rule 2)
 
-**M3 · Threads and worktrees**
+**M3 · Threads and workspaces**
 - [x] Agent runner: providers, models, effort, speed (Regular / Fast where the agent offers it), full permissions, queued steering (Rule 1, F4, F15)
-- [x] Thread titles from the title model (default GPT-6 Luna · Low · Fast), in parallel with taking a worktree; branch named from the title (F4, F15)
-- [x] ACP client (`agent-client-protocol`): spawn per thread, `session/new` in the worktree with AIRC as an MCP server, updates → transcript, auto-allow permissions, cancel, queued prompts, `fs`/`terminal` rooted at the worktree but not confined to it, full tool access with your config loaded and shared MCP servers (§3.2)
+- [x] Thread titles from the title model (default GPT-6 Luna · Low · Fast), in parallel with taking a workspace; branch named from the title (F4, F15)
+- [x] ACP client (`agent-client-protocol`): spawn per thread, `session/new` in the workspace with AIRC as an MCP server, updates → transcript, auto-allow permissions, cancel, queued prompts, `fs`/`terminal` rooted at the workspace but not confined to it, full tool access with your config loaded and shared MCP servers (§3.2)
 - [x] ACP agents for Claude Code (`claude-agent-acp`), Codex (`codex-acp`), Kimi Code (`kimi acp`) and Antigravity (`agy acp`), each using its own OAuth login through `authenticate`; Settings → Providers, model menu, limit meter (F15)
 - [x] Custom ACP agents: Add an ACP agent (name, command, arguments), and an editable command on each provider card (F15)
-- [x] Worktree manager: create / delete / prune, path scheme, setup step (copy files, run command, shared build cache) (F5)
-- [x] Thread view: transcript, tool steps, diffs, header with worktree path, composer, slash menu (F4)
-- [x] Settings → Worktrees, including the live list and the footer count (F5, F13)
+- [x] Workspace manager: create / delete / prune, path scheme, setup step (copy files, run command, shared build cache) (F5)
+- [x] Thread view: transcript, tool steps, diffs, header with workspace path, composer, slash menu (F4)
+- [x] Settings → Workspaces, including the live list and the footer count (F5, F13)
 
 **M4 · PR loop**
 - [x] GitHub integration: open PR, CI checks, reviews, comments, merge, close
-  - [x] Live Open Pull Requests rail: real project PRs, CI, line counts, review state, reviewer claims and owning-thread navigation (F6/F7)
-- [x] PR follow-through: track, PR history, auto-response to review comments, merge → worktree delete (F6)
-- [x] Closed-without-merge state with the worktree kept (F5, F6)
+  - [x] Live Open Changes rail: real project changes, CI, line counts, review state, reviewer claims and owning-thread navigation (F6/F7)
+- [x] PR follow-through: track, land history, auto-response to review comments, merge → workspace delete (F6)
+- [x] Closed-without-merge state with the workspace kept (F5, F6)
 - [x] Right-click menu and delete with 5 s undo (F12)
 
 **M5 · Duty agents**
@@ -76,13 +76,13 @@ PR duty checks an item off when it lands that item's PR (F7).
 - [x] Parking: end the session on `airc_wait`, resume on the subscribed `merged` event; optional provider concurrency cap (§2.2, F15)
 - [x] Targeted AIRC delivery, message envelope (`to`, `intent`), heads-down and quarantine modes (F14)
 - [x] Targeted rebases, optimistic landing, conflicts sent back to the owning agent; rebuild the merge result whenever `master` moved; Shared files exempt from overlaps (F6, F14)
-- [x] Warm worktree pool from one base clone, prebuilt at the tip of `master` with a shared compiler cache; worktree guards (F5)
+- [x] Warm workspace pool from one base clone, prebuilt at the tip of `master` with a shared compiler cache; workspace guards (F5)
 - [x] PR duty tiered review and intent review; Sensitive paths in AGENTS.md (F7)
 - [x] Main watcher duty role: post-merge suite, bisect, fix or revert PR (F7)
 
 **M11 · Proofs** (F17)
 - [x] Lean toolchain and Mathlib cache in the warm pool (F5)
-- [x] Proof checks in the worktree: `lake build`, no `sorry`/`admit`, axiom audit, statement lock and review reset
+- [x] Proof checks in the workspace: `lake build`, no `sorry`/`admit`, axiom audit, statement lock and review reset
 - [x] Proof card on the PR, "Proved" on the PR track, `proved`/`statement`/`stress` events
 - [x] Merge gate in PR duty; statement review; tiers updated (F7)
 - [x] Scouts: assume-it-fails sweeps, evidence required, Stress and Proof gaps focus areas, stress runs against Lean reference models
@@ -94,15 +94,15 @@ PR duty checks an item off when it lands that item's PR (F7).
 - [x] Settings → Skills: per-project switches, bundles, context budget, requirements, add any Agent Skills repo
 - [ ] Link enabled skills into every worktree and the spec checkout per provider folder; `.git/info/exclude`; committed mode
 - [x] Built-in packs: UI UX Pro Max (design system and AGENTS.md rule), claude-skills (bundles), Game dev skills (router and engine detection), REA (shared MCP server)
-- [x] Project scan suggestions (F3), re-checked after merges
+- [x] Project scan suggestions (F3), re-checked after lands
 - [x] `$` skill menu in the composer; skill loads shown as tool steps (F4)
 
 **M13 · Releases and updates** (F1)
 - [x] In-app updates: signed releases from `v*` tags, the update check and Updates panel, Restart to update for setup, MSI and portable copies
 
 **M14 · Code graph** (F19)
-- [x] Code graph index: tree-sitter symbols, files and subsystems with addresses, span hashes and edge provenance; the per-project parse cache, warmed after merges
-- [x] `velocity-graph` MCP server in every session: `graph_find`, `graph_read`, `graph_impact` and `graph_run` over each agent's worktree view, with the span check (§3.2)
+- [x] Code graph index: tree-sitter symbols, files and subsystems with addresses, span hashes and edge provenance; the per-project parse cache, warmed after lands
+- [x] `velocity-graph` MCP server in every session: `graph_find`, `graph_read`, `graph_impact` and `graph_run` over each agent's workspace view, with the span check (§3.2)
 - [x] Per-project switch, and the graph on/off comparison of tokens and time per turn in the usage modal (F15 Usage modal)
 - [ ] AIRC overlaps by symbol, swarm split by subsystem, and PR duty's impact set
 

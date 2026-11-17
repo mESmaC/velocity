@@ -188,7 +188,7 @@
 
       <div class="field">
         <div class="row2 spread">
-          <span class="label">Items · one agent and one worktree each</span>
+          <span class="label">Items · one agent and one workspace each</span>
           <button
             type="button"
             class="mini"
@@ -251,25 +251,25 @@
         <div class="checks">
           <label class="check locked">
             <input type="checkbox" checked disabled />
-            Each agent opens a PR and watches it until it merges
+            Each agent names its change; Velocity handles landing
             <span class="lockt"><Icon name="lock" /> AGENTS.md</span>
           </label>
           <label class="check locked">
             <input type="checkbox" checked disabled />
             <span
-              >Each agent works in its own worktree under <code
+              >Each agent works in its own workspace under <code
                 >{view?.worktree_root ?? ''}</code
-              >, deleted when its PR merges</span
+              >, deleted when its change lands</span
             >
             <span class="lockt"><Icon name="lock" /> always</span>
           </label>
           <label class="check">
             <input type="checkbox" bind:checked={rebaseOnMerge} />
-            Rebase a member when another swarm PR that touches its files merges
+            Rebase a member when another swarm change that touches its files lands
           </label>
           {#if source !== 'tasks'}<label class="check">
               <input type="checkbox" bind:checked={closeIssues} />
-              Close each issue when its PR merges
+              Close each issue when its change lands
             </label>{/if}
           {#if view?.pr_duty_label && view.pr_duty_shortfall > 0}<label
               class="check"

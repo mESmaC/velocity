@@ -50,6 +50,7 @@ pub async fn get_pull_request_panel(
         let store = application.state::<ManagedStateStore>();
         let panel = application.state::<PullRequestPanel>();
         let project = selected_project(&store)?;
+        refresh(&application, project.clone(), &mut PanelReader::default())?;
         let mut panel = panel.lock().map_err(|error| error.to_string())?;
         panel.select(project.map(|project| project.identifier));
         Ok(panel.clone())

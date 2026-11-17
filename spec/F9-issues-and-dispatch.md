@@ -12,7 +12,7 @@
     PR duty lands it as Trivial (F7), and the blocked pieces become claimable.
   - Agents never wait on a question: they file it and claim other work (Rule 1).
   - **Why:** unanswered questions, not code, were what kept most of a milestone unclaimable.
-- **Dispatch** (hover button, `I`, or the palette): starts one agent on the issue, in its own worktree, with the normal lifecycle.
+- **Dispatch** (hover button, `I`, or the palette): starts one agent on the issue, in its own workspace, with the normal lifecycle.
   The issue stays listed with its agent's live state until the PR merges, which closes it.
   - `I` opens the palette filtered to issues.
     Dispatched threads keep the issue title and use `vel/issue-<n>` (with a unique suffix when needed), without calling the title model.

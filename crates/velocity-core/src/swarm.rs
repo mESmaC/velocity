@@ -72,7 +72,7 @@ impl SwarmStage {
         match self {
             Self::Choosing => "choosing work",
             Self::Working => "working",
-            Self::PullRequest => "PR open",
+            Self::PullRequest => "named",
             Self::Fixing => "addressing review",
             Self::Merged => "merged",
             Self::Failed => "failed",
@@ -256,16 +256,16 @@ pub fn member_doing(member: &MemberProgress) -> String {
     let number = member.pull_request_number.unwrap_or_default();
     match member_stage(member.state, member.review_stage) {
         SwarmStage::Choosing | SwarmStage::Working => member.activity_label.clone(),
-        SwarmStage::Merged => format!("merged · PR #{number}"),
+        SwarmStage::Merged => format!("landed · change #{number}"),
         SwarmStage::Failed if member.state == ThreadState::Closed => {
-            format!("PR #{number} closed · worktree kept")
+            format!("change #{number} closed · workspace kept")
         }
-        SwarmStage::Failed => "failed · worktree kept".into(),
-        SwarmStage::Fixing => format!("PR #{number} · addressing review"),
+        SwarmStage::Failed => "failed · workspace kept".into(),
+        SwarmStage::Fixing => format!("change #{number} · addressing review"),
         SwarmStage::PullRequest => match member.review_stage {
-            Some(ReviewStage::ContinuousIntegration) => format!("PR #{number} · waiting on CI"),
-            Some(ReviewStage::Approved) => format!("PR #{number} · approved · merging"),
-            _ => format!("PR #{number} · in review"),
+            Some(ReviewStage::ContinuousIntegration) => format!("change #{number} · waiting on CI"),
+            Some(ReviewStage::Approved) => format!("change #{number} · approved · landing"),
+            _ => format!("change #{number} · in review"),
         },
     }
 }
@@ -359,7 +359,7 @@ pub fn project_swarm_view(entry: &SwarmEntry) -> SwarmViewSnapshot {
         title: entry.title.clone(),
         agents_label: if live {
             format!(
-                "{total} agent{} · {} worktree{} live",
+                "{total} agent{} · {} workspace{} live",
                 if total == 1 { "" } else { "s" },
                 total - merged,
                 if total - merged == 1 { "" } else { "s" }
@@ -371,7 +371,7 @@ pub fn project_swarm_view(entry: &SwarmEntry) -> SwarmViewSnapshot {
             )
         },
         started_label: format!("started {}", entry.started_label),
-        merged_label: (merged > 0).then(|| format!("{merged}/{total} merged")),
+        merged_label: (merged > 0).then(|| format!("{merged}/{total} landed")),
         segments: segments(&entry.members),
         legend: stage_counts(&entry.members),
         cards: entry.members.iter().map(member_card).collect(),
@@ -485,11 +485,11 @@ pub fn pull_request_event(
     if merged(after) && !previous.is_some_and(merged) {
         return Some((
             SwarmEventKind::Merged,
-            format!("merged #{number} · {finished_item}"),
+            format!("landed #{number} · {finished_item}"),
         ));
     }
     if previous.is_none() {
-        return Some((SwarmEventKind::Opened, format!("opened PR #{number}")));
+        return Some((SwarmEventKind::Opened, format!("opened change #{number}")));
     }
     match after.stage {
         "fixing" if !was("fixing") => Some((
@@ -502,7 +502,7 @@ pub fn pull_request_event(
         )),
         "closed" if !was("closed") => Some((
             SwarmEventKind::Failed,
-            format!("PR #{number} closed without merging · worktree kept"),
+            format!("change #{number} abandoned · workspace kept"),
         )),
         _ => None,
     }

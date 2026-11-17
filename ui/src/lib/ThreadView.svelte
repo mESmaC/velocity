@@ -1,9 +1,11 @@
 <script lang="ts">
+  import PaneState from './PaneState.svelte';
   import Composer from './Composer.svelte';
   import Icon from './Icon.svelte';
   import PullRequestHistory from './PullRequestHistory.svelte';
   import TranscriptBlocks from './TranscriptBlocks.svelte';
   import { followTranscript } from './follow-transcript';
+  import { threadMenuCommands } from './ipc';
   import type {
     LayoutAction,
     LayoutSnapshot,
@@ -18,12 +20,46 @@
     thread: ThreadDetailSnapshot;
     send: (action: LayoutAction) => void;
   } = $props();
+  async function retryResponse() {
+    const project = layout.project_identifier;
+    const identifier = thread.identifier;
+    const menu = await threadMenuCommands.get(Number(identifier));
+    if (
+      !menu ||
+      menu.project_identifier !== project ||
+      layout.project_identifier !== project ||
+      thread.identifier !== identifier
+    )
+      return;
+    const workspace = menu.entries.some(
+      (entry) =>
+        typeof entry !== 'string' && entry.Item.action === 'RetryWorkspace',
+    );
+    if (workspace) {
+      await threadMenuCommands.run(
+        menu.project_identifier,
+        Number(identifier),
+        'RetryWorkspace',
+      );
+    } else {
+      send({
+        Request: {
+          SteerThread: {
+            identifier,
+            prompt:
+              'Continue from the last update and retry the failed operation.',
+            queued: false,
+          },
+        },
+      });
+    }
+  }
 </script>
 
 <section class="thread-view" aria-label={thread.title}>
   <header class="thread-head">
     <h1>
-      <span class="title-text">{thread.title}</span>
+      <span class="title-text" title={thread.title}>{thread.title}</span>
       {#if thread.titling}
         <span class="ttl-chip">titling · {thread.title_model_name}</span>
       {/if}
@@ -49,7 +85,7 @@
         </button>
       {:else if thread.worktree_chip === 'Deleted'}
         <span class="wt gone" title={thread.worktree_path}>
-          <Icon name="folder" />worktree deleted
+          <Icon name="folder" />workspace deleted
         </span>
       {/if}
       <span class="add">+{thread.added}</span>
@@ -71,7 +107,7 @@
         <button
           type="button"
           class="btn"
-          title="Open worktree in editor"
+          title="Open workspace in editor"
           onclick={() => send({ Request: { Navigation: 'Editor' } })}
         >
           Editor <kbd>E</kbd>
@@ -87,7 +123,7 @@
               Request: { OpenPullRequest: thread.pull_request_number ?? '0' },
             })}
         >
-          PR #{thread.pull_request_number} ↗
+          GitHub PR #{thread.pull_request_number} ↗
         </button>
       {/if}
     </div>
@@ -100,6 +136,21 @@
 
   <div class="transcript" use:followTranscript={thread.identifier}>
     <div class="transcript-inner">
+      <PaneState
+        name="Transcript"
+        rosen
+        loading={thread.agent_busy &&
+          !thread.blocks.some(
+            (block) =>
+              block.AgentMessage ||
+              block.ToolGroup ||
+              block.Diff ||
+              block.ErrorCard ||
+              block.Decision,
+          )}
+        empty={!thread.blocks.length && !thread.agent_busy}
+        message="No updates yet · Send a message to start."
+      />
       {#if thread.worked_summary && thread.transcript_mode !== 'FullTranscript'}
         <div class="worked">
           <Icon name="check" />
@@ -123,6 +174,7 @@
       {#if thread.transcript_mode !== 'CollapsedWithPrHistory'}
         <TranscriptBlocks
           blocks={thread.blocks}
+          retry={thread.agent_busy ? undefined : retryResponse}
           removeQueued={(index) =>
             send({
               Request: {

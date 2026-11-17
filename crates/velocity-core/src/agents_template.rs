@@ -16,15 +16,15 @@ pub fn default_agents_markdown(project_name: &str) -> String {
 
 pub(crate) const IMPLEMENTATION_RULES: &[&str] = &[
     "- Build the feature first, end to end, then run it and see it work.",
-    "- Implementation is the larger part of every PR. Proofs, tests and docs together stay smaller than the implementation code.",
-    "- Only after the feature works, add the proofs, tests or docs it needs in the same PR.",
+    "- Implementation is the larger part of every change. Proofs, tests and docs together stay smaller than the implementation code.",
+    "- Only after the feature works, add the proofs, tests or docs it needs in the same change.",
     "- Lockfiles and generated files count on neither side of the implementation size comparison.",
     "- Never claim only proofs, tests or docs while implementation work in the milestone is unclaimed.",
 ];
 
 pub(crate) const PROOF_RULES: &[&str] = &[
     "- Write Lean only for features on the proof list in SPEC.md. Every other piece ships with no Lean.",
-    "- For a proof-list feature, write the code first. Then write `proofs/<Feature>/Design.lean` in the same PR with exactly three theorems:",
+    "- For a proof-list feature, write the code first. Then write `proofs/<Feature>/Design.lean` in the same change with exactly three theorems:",
     "  - `correct`: the model meets the SPEC.md section it implements; name that section.",
     "  - `cost_bound`: its cost stays within a bound, under a cost model the theorem states.",
     "  - `optimal`: no alternative in a class the theorem states costs less.",
@@ -42,7 +42,7 @@ pub(crate) const PROOF_RULES: &[&str] = &[
 
 pub(crate) const TESTS_AND_DOCS_RULES: &[&str] = &[
     "- Default: add no tests. Add a targeted test only for a critical contract identified in SPEC.md, with its risk in a comment.",
-    "- Scouts and PR duty agents write the adversarial tests and stress scripts.",
+    "- Scouts and review agents write the adversarial tests and stress scripts.",
     "- Update SPEC.md when behaviour changes.",
     "- Tests and docs are low priority; add them only after the feature works and only where they pay for themselves.",
     "- Never add a test suite for a whole module or a test that restates the implementation.",
@@ -54,77 +54,70 @@ const DEFAULT_AGENTS_BODY: &str = r#"Read this file in full before you start any
 SPEC.md defines what to build. The project Task List defines what is left.
 
 ## Commands
-- Read the project's build, run and lint commands from its manifests and SPEC.md before running them. Record those commands here when they are established.
-- For a project with a pinned Lean project, run `lake build` in `proofs/` before pushing proof changes.
-- Run the project's local checks on the merge result before marking a PR ready. Lint reports zero warnings.
-- Build and check only what your change can affect. A change to docs or SPEC.md needs no build. A change to one part, such as the UI or one package, needs that part's checks, not the whole project's. Never run a build or check again when nothing it covers changed since it last passed.
-- Run every heavy build, test and lint through Velocity's machine-wide build queue: `rosen run -- <command>`. PR duty's landing check runs with `rosen run --class landing -- <command>`. Never run a long-lived dev server through it.
+- Read the project's build, run and lint commands from its manifests and SPEC.md. Record those commands here when established.
+- Run builds, tests and lint through `rosen run -- <command>`. Never run a long-lived dev server through the queue.
+- Check only what your change affects before naming it. Lint reports zero warnings. Never repeat a passed check unless its inputs changed.
+- Run `lake build` in `proofs/` when changing a pinned Lean project.
 
 ## Code
 - Keep functions under 60 lines. Split anything longer.
 - Name functions, types and variables for what they do.
-- Comment code whose purpose is not clear from reading it. Explain why, not what.
+- Comment code whose purpose is unclear. Explain why.
 
 ## Scope
 - Work only on the piece you claimed.
-- If you find an unrelated problem, file an issue for it. Do not fix it in your PR.
-- Add to the Task List only when the user asks. Otherwise, file an issue.
-- Update SPEC.md when behaviour changes. Never change a product decision yourself; file an issue when the spec contradicts itself.
+- File unrelated problems as issues. Add to the Task List only when the user asks.
+- Update SPEC.md when behaviour changes. File an issue when the spec contradicts itself; never change a product decision yourself.
 
 ## Implementation first
 {implementation_first}
 
 ## Proofs
 {proofs}
+- When `rosen.toml` sets `review = "after-land"`, proof agents write and check Lean after the land; the release gate checks it before release.
 
 ## Tests and docs
 {tests_and_docs}
 
-## Coordination (AIRC)
-- Before editing, claim your task, branch and every file you expect to touch in AIRC.
-- If your claim is refused, pick different unclaimed work.
-- Before editing a file another agent claimed, record a share or a wait in AIRC.
-- If your work depends on another PR, record a wait; continue and rebase when it merges.
-- Message another agent only when a claim, overlap or dependency needs words. Never repeat events Velocity posts.
-- Answer AIRC questions addressed to you. Reply to requests with done or declined and a reason. Never reply to inform messages.
-- Log discoveries other agents need in the Discoveries ledger.
+## Coordination (Rosen path claims and AIRC)
+- Before editing, claim every path you expect to touch with `rosen claim <paths>`.
+- Record `rosen share <paths>` before editing a held path, or `rosen wait <paths>` when its change must land first.
+- Use AIRC for work choice, discoveries and messages. Message another agent only when a claim, overlap or dependency needs words.
+- Answer requests addressed to you with done or declined and a reason. Never repeat events Velocity posts or reply to inform messages.
 
 ## Shared files
-- Identify generated files and registration lists for this project here as they are established.
-- Regenerate generated files after a merge. Never merge them by hand.
-- Keep both additions to shared registration lists, inside each module's group.
+- Identify generated files and registration lists here as they are established.
+- Regenerate generated files on the combined inputs after a rebase; never combine them by hand.
+- Keep both additions to registration lists inside each module's group.
 
 ## Sensitive paths
-- PR duty gives a PR that touches a path listed here the sensitive review: full review, the project's stress suite (the stress command under Commands marked as the merge gate) on the merge result before merge, and a confidence proof at the reference level for each proof-list feature it changes. Code level is required only when an issue asks for one. A long benchmark or load run is never a merge gate.
-- List one path, folder or glob per bullet, as inline code, followed by why it is sensitive. Add migrations, worktree deletion and auth code as they are established.
-- `.github/workflows/`: CI config.
+- List sensitive paths here with the risk each protects, including saved-state migrations, workspace deletion and authentication.
+- Follow the project's review and check policy in `rosen.toml`. In after-land mode, reviews and full tests follow the land; a broken build is reverted and a test failure becomes an issue.
 
-## Pull requests
-- One piece, one branch, one PR. Name the branch `vel/<task-name>`.
-- Use your thread's own worktree. Velocity creates and removes it. Never run `git worktree add`, `git worktree remove` or `git worktree prune` yourself.
-- Describe what changed, why, the theorems proved and the Task List item or issue it completes.
-- Opening the PR does not finish the task. Monitor it until it is merged.
-- Fix failing checks on your change and push.
-- Address every PR duty comment: fix and push, or reply with the reason. Resolve each thread and re-request review after fixes.
-- Pull before every push; PR duty can update the branch. Never force-push.
-- If the PR closes without merging, report why in your thread and keep the worktree.
-- Never merge your own PR. Only the PR duty agent that approved a PR merges it.
+## Changes and workspaces
+- One piece, one change. Use the Rosen workspace Velocity created for your thread. Never delete it or move its files out.
+- Every write is stored automatically within two seconds. `rosen status` shows stored work and `rosen diff` shows the change.
+- When the piece works and its checks pass, name the change with `rosen commit -m "<what changed and the issue or SPEC section>"` and end your turn. Velocity handles landing.
+- The task is finished when the change lands.
+- Address every review comment: fix and name the change again, or reply with the reason.
+- Never approve, submit a receipt for, or land your own change.
+- Resolve a stored conflict with `rosen rebase`, edit the conflict markers, regenerate generated files, run `rosen resolve <file>` for each conflict, check and name the change again.
+- If post-land build checks revert your change, your work remains in the reopened workspace. Fix the reported failure, check and name it again.
+- If the change is abandoned, report why in your thread.
 
 ## Review severity
-- Block only data loss or corruption, a crash or hang, a security hole, a SPEC.md product-rule violation, a failing local check, or the claimed feature's main path failing its spec.
-- File other findings as issues with evidence, link them in the review and approve.
-- Put every blocking finding in the first review. Later rounds review new commits and block only findings in those commits or new data loss or a crash.
-- When unsure whether a finding blocks, file an issue; do not block.
+- Report data loss, a crash or hang, a security hole, a product-rule violation, a failing check or the claimed main path failing its spec with evidence.
+- File other findings as issues. Follow the project's before-land or after-land review policy.
 
 ## Done means
 - The piece meets SPEC.md and has been run successfully.
-- The required local checks pass on the merge result and the required proofs check.
-- The PR is merged and Velocity has removed its worktree.
+- The required local checks pass.
+- The change lands and its post-land build passes. Velocity handles issue follow-through.
 
 ## Never
 - Never wait for a plan or tool approval. Run with full permissions and the provider's full toolset.
 - Never start build work before the project spec is locked.
-- Never push directly to the project's base branch.
-- Never commit secrets, tokens or `.env` files.
+- Never modify the base directly or land your own change.
+- Never include secrets, tokens or `.env` files in snapshots.
 - Never skip, delete or weaken a scout's failing script to make checks pass.
 "#;

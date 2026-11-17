@@ -100,9 +100,9 @@
       <button
         class="pill"
         type="button"
-        title="Worktree for this thread"
+        title="Workspace for this thread"
         onclick={() => send({ Request: { SettingsTab: 'worktrees' } })}
-        ><Icon name="branch" /><i>new worktree</i></button
+        ><Icon name="branch" /><i>new workspace</i></button
       >
     {/if}
     <span class="spacer"></span>

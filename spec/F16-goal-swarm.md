@@ -31,7 +31,7 @@ The git lifecycle described below remains the fallback.
 
 **What it is:**
 - Your T3 Code routine as one action.
-  Today you open 5–20 threads by hand and paste the same prompt into each: read AGENTS.md and start dev, push a branch, open a PR, watch it, keep the worktree on a given drive, remove it after the merge.
+  Today you open 5–20 threads by hand and paste the same prompt into each: read AGENTS.md and start dev, push a branch, open a PR, watch it, keep the workspace on a given drive, remove it after the merge.
 - A goal swarm starts all of those agents at once, with one prompt and the model mix you choose.
 - It differs from a Swarm (F10) in one way: nobody assigns work.
   Each agent decides what to build, and AIRC (F14) keeps two agents off the same piece.
@@ -40,13 +40,13 @@ The git lifecycle described below remains the fallback.
 - **Prompt:** every agent gets exactly this text.
   The default is `Read AGENTS.md and start dev.`; text typed in the empty composer prefills it.
 - **Velocity adds to every agent** (locked):
-  - its own worktree under the worktree root (F5), removed after its PR merges;
-  - commit, push, open a PR against the default branch, and watch it until it merges (AGENTS.md);
+  - its own workspace under the workspace root (F5), removed after its PR merges;
+  - commit, push, open a PR against the base, and watch it until it lands (AGENTS.md);
   - join `#<project>` and claim work before editing, where the first claim wins;
   - implement and run first; then prove only features on the project's proof list (Rule 8, F17).
 
   These replace the lifecycle half of the hand-written prompt.
-  The worktree drive comes from Settings → Worktrees, not from the prompt.
+  The workspace drive comes from Settings → Workspaces, not from the prompt.
 - **Agents:** a stepper from 1 to 30, with quick picks 3 / 5 / 10 / 20.
   All of them start at once.
 - **Mix:** one row per model.
@@ -65,7 +65,7 @@ The git lifecycle described below remains the fallback.
 - **Pool:** "They choose from N unclaimed pieces: x Task List · y issues · z unbuilt SPEC.md sections."
   If there are more agents than pieces, it says how many will find nothing and leave.
 - **Options:**
-  - **Keep going** (off by default): after its PR merges, an agent claims the next unclaimed piece in a fresh worktree instead of stopping.
+  - **Keep going** (off by default): after its PR merges, an agent claims the next unclaimed piece in a fresh workspace instead of stopping.
   - **PR duty capacity:** the same check as the Swarm dialog (one reviewer per 3 open PRs).
 - **Launch N agents** (`Ctrl+Enter`).
 
@@ -82,7 +82,7 @@ Rust applies the edit, restores the "rest" rule and draws the dialog again.
 
 **What each agent does:**
 1.
-   Gets a nick such as `sol-3` and a worktree named after it, then reads AGENTS.md and SPEC.md.
+   Gets a nick such as `sol-3` and a workspace named after it, then reads AGENTS.md and SPEC.md.
    State: **choosing work**.
 2.
    Receives the user's prompt before any piece is claimed.
@@ -100,12 +100,12 @@ Rust applies the edit, restores the "rest" rule and draws the dialog again.
    - **Refused** (another agent claimed the piece after this agent read the board): a `refused` event names the holder.
      The agent re-reads the board and re-evaluates the same prompt against the refreshed enabled inventory before trying another matching piece.
      No message is needed.
-   - **Nothing left:** a `left` event is posted; the agent removes its worktree and leaves.
+   - **Nothing left:** a `left` event is posted; the agent removes its workspace and leaves.
 4.
    From here it is an ordinary thread (F4–F6).
    It settles overlaps and dependency waits in AIRC (F14), opens a PR, watches it until PR duty merges it, and its worktree is deleted.
    Merging ticks the task, closes the issue, or records the SPEC.md section as built in the project's state.
-   Velocity records it at landing; the agent's PR never edits SPEC.md to mark it, so PRs don't all touch SPEC.md.
+   Velocity records it at landing; the agent's PR never edits SPEC.md to mark it, so changes don't all touch SPEC.md.
 5.
    With keep going on, the same nick goes back to step 2.
 
@@ -137,28 +137,28 @@ Single-file projects retain their existing work identities.
 Its members nest under it like swarm members, and each member is titled by the piece it claimed.
 
 **Goal swarm view:**
-- **Header:** title, "<n> agents · one prompt", start time, PRs merged.
+- **Header:** title, "<n> agents · one prompt", start time, changes merged.
   Buttons: **AIRC** and **+ Agents** (more agents on the same prompt).
 - **Prompt bubble:** "goal swarm · the same prompt to all <n> · <mix>".
-- **Segment bar:** one segment per agent (choosing, working, PR open, addressing review, merged, failed), plus "<n> waiting on another agent's PR".
+- **Segment bar:** one segment per agent (choosing, working, named, addressing review, merged, failed), plus "<n> waiting on another agent's PR".
 - **Claims board:** every piece in the pool, in three groups:
   - claimed pieces first, with the holder's nick and state (working, "waits for <nick> · #n", "#n · in review", failed · claim held);
   - open pieces next;
   - pieces this swarm merged last, struck through, with "merged #n".
 - **Agents:** one card per agent showing nick, model, effort (and "Fast" when on), claimed piece, the claim → PR → CI → review → merged track, and what it is doing.
   Clicking a card opens that thread.
-- **Activity:** claims, refusals, PRs, waits, merges and leaves.
+- **Activity:** claims, refusals, changes, waits, merges and leaves.
 - **Composer:** messages every agent in the swarm (read at its next step, Rule 1).
 
 **Acceptance:**
 - One action starts N agents with the exact mix and efforts chosen.
-  Each runs in its own worktree on the configured drive.
+  Each runs in its own workspace on the configured drive.
 - Agents receive and evaluate the same prompt before claiming, including after a refusal and in each Keep going round.
   Tasks-only and issues-only choices exclude every other source from selection and the board.
 - No two agents ever hold a claim on the same piece.
   A refused claim shows in AIRC, and that agent chooses another matching piece from a refreshed pool.
-- Every agent's work ends in a merged PR (or a held claim on failure), and its worktree is deleted on merge.
-- With more agents than pieces, the extras leave without making a worktree change or a PR.
+- Every agent's work ends in a merged PR (or a held claim on failure), and its workspace is deleted on merge.
+- With more agents than pieces, the extras leave without making a workspace change or a PR.
 - Keep going: an agent that finishes takes the next open piece until the pool is empty.
 
 ---

@@ -1,4 +1,5 @@
 <script lang="ts">
+  import PaneState from './PaneState.svelte';
   import type {
     LayoutAction,
     WorktreeSettingsView,
@@ -23,6 +24,7 @@
     edit,
     browse,
     prune,
+    retry,
     send,
   }: {
     view: WorktreeSettingsView | null;
@@ -36,6 +38,7 @@
     edit: (change: WorktreeSettingsEdit) => void;
     browse: () => Promise<void>;
     prune: () => Promise<void>;
+    retry: () => Promise<void>;
     send: (action: LayoutAction) => void;
   } = $props();
 
@@ -48,7 +51,7 @@
   }
 </script>
 
-<section class="worktree-settings" aria-label="Worktrees settings">
+<section class="worktree-settings" aria-label="Workspaces settings">
   <header class="worktree-settings-head">
     <h1>Settings</h1>
     <span>applies to every project</span>
@@ -56,6 +59,14 @@
   <div class="worktree-settings-body">
     <SettingsNav current="worktrees" {send} />
     <div class="worktree-settings-main">
+      <PaneState
+        name="Workspaces"
+        rosen
+        network={false}
+        loading={!view}
+        {error}
+        {retry}
+      />
       {#if view}
         <section>
           <h2>Version control</h2>
@@ -65,11 +76,10 @@
               : null}
           />
           <p class="worktree-description">
-            How <b>{view.project_name}</b>'s agents get their folders and land
-            their work. Rosen gives each agent a workspace and lands its change
-            on the project's Rosen server; git gives each a worktree, a branch
-            and a pull request. Rosen is the default; a project falls back to
-            git on its own when Rosen can't make a workspace.
+            Each agent gets its own workspace and change. Rosen stores edits
+            automatically and lands named changes on the project base. A Rosen
+            failure retries, then leaves a retryable thread error. The legacy
+            GitHub workflow is used only when selected for the project.
           </p>
           <div class="worktree-checks">
             <label class="worktree-check"
@@ -88,7 +98,7 @@
                 checked={!view.uses_rosen}
                 disabled={view.project_identifier === null}
                 onchange={() => edit({ UseRosen: false })}
-              />Git worktrees and pull requests</label
+              />Legacy GitHub workflow</label
             >
           </div>
           {#if view.version_control_note}<p class="worktree-location-notice">
@@ -96,9 +106,9 @@
             </p>{/if}
         </section>
         <section>
-          <h2>Worktree location</h2>
+          <h2>Workspace location</h2>
           <p class="worktree-description">
-            Every thread and every agent works in its own worktree, so parallel
+            Every thread and every agent works in its own workspace, so parallel
             agents never touch each other's files. Each one is a full checkout:
             put them on a fast drive with room.
           </p>
@@ -136,7 +146,7 @@
           <div class="worktree-location-input">
             <label class="worktree-input"
               ><span>{view.drive}</span><input
-                aria-label="Worktree folder"
+                aria-label="Workspace folder"
                 value={view.folder}
                 spellcheck="false"
                 onkeydown={blurOnEscape}
@@ -152,7 +162,7 @@
           <div class="worktree-path-preview">
             {preview?.preview_root ?? view.preview_root}<span
               >&lt;project&gt;</span
-            >{view.separator}<span>&lt;branch&gt;</span><br /><small
+            >{view.separator}<span>&lt;change&gt;</span><br /><small
               >e.g. {preview?.example_path ?? view.example_path}</small
             >
           </div>
@@ -168,7 +178,7 @@
             >
             {#if view.project_override !== null}<label class="worktree-input"
                 ><input
-                  aria-label="Project worktree location"
+                  aria-label="Project workspace location"
                   value={view.project_override}
                   spellcheck="false"
                   onkeydown={blurOnEscape}
@@ -184,11 +194,11 @@
         <section>
           <h2>Lifecycle</h2>
           <p class="worktree-description">
-            A worktree lives exactly as long as its work.
+            A workspace lives exactly as long as its work.
           </p>
           <div class="worktree-checks">
             <label class="worktree-check locked"
-              ><input type="checkbox" checked disabled />Create a worktree
+              ><input type="checkbox" checked disabled />Create a workspace
               whenever a thread starts or any agent starts working
               <span class="worktree-lock"
                 ><svg viewBox="0 0 16 16" aria-hidden="true"
@@ -200,7 +210,7 @@
             >
             <label class="worktree-check locked"
               ><input type="checkbox" checked disabled />Delete it as soon as
-              its PR merges
+              its change lands
               <span class="worktree-lock"
                 ><svg viewBox="0 0 16 16" aria-hidden="true"
                   ><rect x="3.5" y="7" width="9" height="6.5" rx="1" /><path
@@ -215,27 +225,27 @@
                 checked={view.delete_local_branch}
                 onchange={(event) =>
                   edit({ DeleteLocalBranch: event.currentTarget.checked })}
-              />Delete the local branch too</label
+              />Legacy git: delete the local branch too</label
             >
           </div>
           <div class="worktree-setting-row lifecycle-first">
-            <span>PR closed without merging</span><span class="hint"
-              >worktree kept · right-click the thread → Delete removes both</span
+            <span>Change abandoned</span><span class="hint"
+              >workspace kept · right-click the thread → Delete removes both</span
             >
           </div>
           <div class="worktree-setting-row">
             <span>Thread failed</span><span class="hint"
-              >worktree kept · same: delete the thread to remove it</span
+              >workspace kept · same: delete the thread to remove it</span
             >
           </div>
           <div class="worktree-setting-row">
             <span>Spec interview</span><span class="hint"
-              >no worktree · it only reads the repo and writes SPEC.md</span
+              >no workspace · it only reads the repo and writes SPEC.md</span
             >
           </div>
         </section>
         <section>
-          <h2>New worktree setup</h2>
+          <h2>New workspace setup</h2>
           <p class="worktree-description">
             Runs before the agent starts, so it never works in a half-set-up
             checkout.
@@ -275,7 +285,7 @@
                 checked={view.share_build_cache}
                 onchange={(event) =>
                   edit({ ShareBuildCache: event.currentTarget.checked })}
-              />Share the Rust build cache between a project's worktrees</label
+              />Share the Rust build cache between a project's workspaces</label
             ><span class="hint"
               >{view.share_build_cache
                 ? 'no cold builds · ≈2 GB less each'
@@ -283,7 +293,7 @@
             >
           </div>
           <div class="worktree-setting-row">
-            <label for="worktree-ready">Keep N worktrees ready</label><label
+            <label for="worktree-ready">Keep N workspaces ready</label><label
               class="worktree-input"
               ><input
                 id="worktree-ready"
@@ -304,9 +314,9 @@
             />{/key}
         {/if}
         <section>
-          <h2>Live worktrees</h2>
+          <h2>Live workspaces</h2>
           <p class="worktree-description">
-            Every worktree Velocity created and hasn't deleted yet.
+            Every workspace Velocity created and hasn't deleted yet.
           </p>
           <div class="worktree-summary">
             <span>{view.live_count} live · {view.total_size}</span><span
@@ -332,16 +342,18 @@
               ><span class="state">{row.label}</span>
             </button>
           {/each}
-          {#if view.rows.length === 0}<p class="worktree-description">
-              No live worktrees.
-            </p>{/if}
+          <PaneState
+            name="Workspaces"
+            network={false}
+            empty={view.rows.length === 0}
+            message="No live workspaces · Start a thread to create one."
+          />
           <p class="worktree-size-note">
             Sizes exclude linked directories and shared build caches outside the
-            worktree.
+            workspace.
           </p>
         </section>
-      {:else}<p class="worktree-description">Reading worktrees…</p>{/if}
-      {#if error}<p class="worktree-message error" role="alert">{error}</p>{/if}
+      {/if}
       {#if notice}<p class="worktree-message" role="status">{notice}</p>{/if}
     </div>
   </div>

@@ -1,13 +1,15 @@
 <script lang="ts">
-  import Icon from './Icon.svelte';
+  import PaneState from './PaneState.svelte';
   import Markdown from './Markdown.svelte';
   import { rise } from './motion';
   import type { DiffLineRole, TranscriptBlock } from './ipc';
   let {
     blocks,
     removeQueued,
+    retry,
   }: {
     blocks: TranscriptBlock[];
+    retry?: () => void | Promise<void>;
     /** Withdraws the queued message at this position among the queued rows (F4). */
     removeQueued?: (index: number) => void;
   } = $props();
@@ -64,16 +66,18 @@
           {:else}
             <span class="ok">✓</span>
           {/if}
-          <span class="verb">{step.verb}</span>
-          <span class="arg">{step.argument}</span>
-          <span class="res">{step.result_text}</span>
+          <span class="verb" title={step.verb}>{step.verb}</span>
+          <span class="arg" title={step.argument}>{step.argument}</span>
+          <span class="res" title={step.result_text}>{step.result_text}</span>
         </div>
       {/each}
     </div>
   {:else if block.Diff}
     <div class="diff" in:rise>
       <div class="diff-h">
-        <span>{block.Diff.block.file_path}</span>
+        <span class="diff-path" title={block.Diff.block.file_path}
+          >{block.Diff.block.file_path}</span
+        >
         <span>
           <span class="add">+{block.Diff.block.added}</span>
           <span class="del">−{block.Diff.block.deleted}</span>
@@ -93,12 +97,12 @@
       <span>{block.StatusLine.text}</span>
     </div>
   {:else if block.ErrorCard}
-    <div class="err-card" role="alert" in:rise>
-      <div class="ah">
-        <Icon name="alert" />{block.ErrorCard.card.headline}
-      </div>
-      <pre>{block.ErrorCard.card.detail}</pre>
-    </div>
+    <PaneState
+      name="Agent response"
+      error={block.ErrorCard.card.detail || block.ErrorCard.card.headline}
+      {retry}
+      automatic={false}
+    />
   {:else if block.Decision}
     <div class="qa" in:rise>
       <div class="q">{block.Decision.question}</div>

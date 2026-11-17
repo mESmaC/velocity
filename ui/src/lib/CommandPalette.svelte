@@ -71,10 +71,11 @@
         >
           <button
             class:sel={String(index) === layout.palette_selection}
+            title={item.label}
             tabindex="-1"
             onclick={() => choose(index)}
-            >{item.label}<span class="palette-group"
-              >{item.shortcut || item.group}</span
+            ><span class="palette-label">{item.label}</span><span
+              class="palette-group">{item.shortcut || item.group}</span
             ></button
           >
         </li>{/each}

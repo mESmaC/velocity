@@ -167,7 +167,7 @@
       {:else if interview.phase === 'Locked'}
         <div class="spec-card locked">
           <div class="ah">
-            <Icon name="check" /> Spec locked · SPEC.md committed · {interview.task_count}
+            <Icon name="check" /> Spec locked · SPEC.md saved as a snapshot · {interview.task_count}
             tasks published
           </div>
           <div class="msg-agent">

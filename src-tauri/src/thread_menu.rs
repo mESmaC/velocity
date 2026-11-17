@@ -195,7 +195,9 @@ pub async fn run_thread_menu_action(
             show_toast(&application, format!("Copied {worktree}"), None)
         }
         ThreadMenuAction::OpenPullRequest => {
-            let number = thread.pull_request_number.ok_or("The thread has no PR")?;
+            let number = thread
+                .pull_request_number
+                .ok_or("The thread has no change")?;
             tauri::async_runtime::spawn_blocking(move || {
                 PullRequestClient::discover(&repository)?.open_in_browser(number)
             })
@@ -240,7 +242,7 @@ pub(crate) fn delete_thread_now(
     let message = format!(
         "Deleted “{}”{}",
         thread.title,
-        if worktree { " and its worktree" } else { "" }
+        if worktree { " and its workspace" } else { "" }
     );
     begin_deletion(
         &application,
@@ -450,13 +452,13 @@ async fn run_effects(
         };
         if let Err(error) = &removed {
             problems.push(format!(
-                "its worktree is kept until it can be removed ({error})"
+                "its workspace is kept until it can be removed ({error})"
             ));
         }
         if let Some(number) = plan.close_pull_request
             && let Err(error) = close_pull_request(&plan.repository, number)
         {
-            problems.push(format!("its PR stays open ({error})"));
+            problems.push(format!("its change stays open ({error})"));
         }
         (removed.err().and(kept), problems)
     })

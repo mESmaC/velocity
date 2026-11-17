@@ -1,4 +1,5 @@
 <script lang="ts">
+  import PaneState from './PaneState.svelte';
   import { onMount } from 'svelte';
   import Icon from './Icon.svelte';
   import { pop } from './motion';
@@ -98,6 +99,7 @@
     <div class="usage-modal-body">
       <section aria-label="Usage limits">
         <div class="usage-title">Usage limits</div>
+        <PaneState name="Usage" />
         {#each providers as provider (provider.provider + provider.name)}
           <section class="usage-provider">
             <div class="usage-provider-head">
@@ -125,10 +127,18 @@
                 </div>
               </div>
             {/each}
-            {#if provider.note}<p class="usage-note">{provider.note}</p>{/if}
+            <PaneState
+              name={provider.name}
+              empty={!provider.windows.length}
+              message="No limits reported yet · Usage refreshes automatically."
+            />
           </section>
         {:else}
-          <p class="usage-note">No provider is signed in.</p>
+          <PaneState
+            name="Usage"
+            empty
+            message="No provider is signed in · Open Settings → Providers."
+          />
         {/each}
       </section>
       <hr />
@@ -221,7 +231,15 @@
             >
           </div>
         {/if}
-        {#if error}<p class="usage-note" role="alert">{error}</p>{/if}
+        <PaneState
+          name="Code graph usage"
+          {error}
+          loading={project !== null && !graph}
+          retry={() =>
+            project === null
+              ? undefined
+              : run(codeGraphCommands.comparison(project))}
+        />
       </section>
       <hr />
       <button class="usage-link" onclick={openProviders}

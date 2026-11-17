@@ -206,10 +206,12 @@
 
 <button
   class="project-select"
-  title="Switch project"
+  title={name ? `Switch project � ${name}` : 'Switch project'}
   aria-haspopup="menu"
   popovertarget="project-menu"
-  >{name || 'Open project'}<Icon name="chevron" /></button
+  ><span class="project-name">{name || 'Open project'}</span><Icon
+    name="chevron"
+  /></button
 >
 <div
   bind:this={menu}

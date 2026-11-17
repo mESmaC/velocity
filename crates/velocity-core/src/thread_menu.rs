@@ -97,12 +97,12 @@ pub fn thread_menu(facts: &ThreadMenuFacts) -> Option<Vec<ThreadMenuEntry>> {
     if let Some(path) = worktree {
         entries.push(item(
             ThreadMenuAction::OpenWorktree,
-            "Open worktree in Explorer",
+            "Open workspace in Explorer",
             Some(path.to_owned()),
         ));
         entries.push(item(
             ThreadMenuAction::CopyWorktreePath,
-            "Copy worktree path",
+            "Copy workspace path",
             None,
         ));
     }
@@ -111,7 +111,7 @@ pub fn thread_menu(facts: &ThreadMenuFacts) -> Option<Vec<ThreadMenuEntry>> {
     {
         entries.push(item(
             ThreadMenuAction::OpenPullRequest,
-            &format!("Open PR #{number} on GitHub"),
+            &format!("Open GitHub PR #{number}"),
             None,
         ));
     }
@@ -121,7 +121,7 @@ pub fn thread_menu(facts: &ThreadMenuFacts) -> Option<Vec<ThreadMenuEntry>> {
     entries.push(ThreadMenuEntry::Item {
         action: ThreadMenuAction::Delete,
         label: if worktree.is_some() {
-            "Delete thread and worktree"
+            "Delete thread and workspace"
         } else {
             "Delete thread"
         }
@@ -162,8 +162,8 @@ pub fn swarm_menu(facts: &SwarmMenuFacts) -> Vec<ThreadMenuEntry> {
     }
     match facts.open_pull_requests.as_slice() {
         [] => {}
-        [number] => parts.push(format!("closes PR #{number}")),
-        numbers => parts.push(format!("closes {} open PRs", numbers.len())),
+        [number] => parts.push(format!("closes change #{number}")),
+        numbers => parts.push(format!("closes {} named changes", numbers.len())),
     }
     if facts.worktrees > 0 {
         parts.push(format!("{} freed", size_label(facts.worktree_bytes)));
@@ -172,11 +172,11 @@ pub fn swarm_menu(facts: &SwarmMenuFacts) -> Vec<ThreadMenuEntry> {
     vec![ThreadMenuEntry::Item {
         action: ThreadMenuAction::Delete,
         label: format!(
-            "Delete swarm and its {worktrees} worktree{}",
+            "Delete swarm and its {worktrees} workspace{}",
             if worktrees == 1 { "" } else { "s" }
         ),
         detail: Some(if parts.is_empty() {
-            "worktree already deleted".into()
+            "workspace already deleted".into()
         } else {
             parts.join(" · ")
         }),
@@ -193,7 +193,7 @@ fn item(action: ThreadMenuAction, label: &str, detail: Option<String>) -> Thread
     }
 }
 
-/// "stops the agent · closes PR #n · 247 MB freed", or why nothing is freed.
+/// "stops the agent · closes change #n · 247 MB freed", or why nothing is freed.
 fn delete_detail(facts: &ThreadMenuFacts, worktree: bool) -> String {
     let mut parts = Vec::new();
     if facts.agent_running {
@@ -202,7 +202,7 @@ fn delete_detail(facts: &ThreadMenuFacts, worktree: bool) -> String {
     if has_open_pull_request(facts.state, facts.pull_request_number)
         && let Some(number) = facts.pull_request_number
     {
-        parts.push(format!("closes PR #{number}"));
+        parts.push(format!("closes change #{number}"));
     }
     if worktree && let Some(bytes) = facts.worktree_bytes {
         parts.push(format!("{} freed", size_label(bytes)));
@@ -210,9 +210,9 @@ fn delete_detail(facts: &ThreadMenuFacts, worktree: bool) -> String {
     if !parts.is_empty() {
         parts.join(" · ")
     } else if facts.state == ThreadState::Spec {
-        "no worktree · SPEC.md stays".into()
+        "no workspace · SPEC.md stays".into()
     } else {
-        "worktree already deleted".into()
+        "workspace already deleted".into()
     }
 }
 

@@ -1,4 +1,5 @@
 <script lang="ts">
+  import PaneState from './PaneState.svelte';
   import { onMount } from 'svelte';
   import Icon from './Icon.svelte';
   import { rise } from './motion';
@@ -128,6 +129,18 @@
     </div>
   </div>
   <div class="panel-body" aria-busy={!panel || panel.loading}>
+    <PaneState
+      name="Issues"
+      loading={!panel || panel.loading}
+      empty={!panel?.rows.length}
+      error={error || panel?.error || ''}
+      retry={refresh}
+      message={panel?.project_identifier == null
+        ? 'Select a project.'
+        : panel.repository === ''
+          ? 'Local project · no GitHub remote.'
+          : 'No open issues.'}
+    />
     {#each panel?.rows ?? [] as row, index (row.number)}
       {#if row.question && index === 0}<div class="issue-group label">
           Questions
@@ -175,7 +188,7 @@
               (row.question !== null && !row.question.recommendation)}
             title={layout.build_block_reason ??
               (row.question
-                ? 'Open a SPEC.md PR with this answer'
+                ? 'Open a SPEC.md change with this answer'
                 : 'Spin up an agent on this issue')}
             onclick={() =>
               act(row.number, row.question ? 'accept' : 'dispatch')}
@@ -211,21 +224,6 @@
           </div>
         {/if}
       </div>
-    {:else}
-      {#if !error && !panel?.error}
-        <p class="empty">
-          {!panel || panel.loading
-            ? 'Loading issues…'
-            : panel.project_identifier === null
-              ? 'Select a project to see its issues.'
-              : panel.repository === ''
-                ? 'Local project · no GitHub remote yet.'
-                : 'No open issues.'}
-        </p>
-      {/if}
     {/each}
-    {#if error || panel?.error}<p class="empty issue-error" role="status">
-        {error || panel?.error}
-      </p>{/if}
   </div>
 </section>

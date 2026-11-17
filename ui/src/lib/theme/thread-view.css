@@ -127,7 +127,7 @@
   box-shadow: var(--thread-btn-box-shadow);
   white-space: nowrap;
 }
-.btn:hover {
+.btn:hover:not(:disabled) {
   border-color: var(--thread-btn-hover-border-color);
   background: var(--thread-btn-hover-background);
 }
@@ -137,7 +137,7 @@
   color: var(--thread-btn-primary-color);
   box-shadow: var(--thread-btn-primary-box-shadow);
 }
-.btn.primary:hover {
+.btn.primary:hover:not(:disabled) {
   background: var(--thread-btn-primary-hover-background);
 }
 .btn kbd {
@@ -153,7 +153,7 @@
   color: var(--text);
   white-space: nowrap;
 }
-.mini:hover {
+.mini:hover:not(:disabled) {
   border-color: var(--line);
   background: var(--surface-3);
 }
@@ -766,4 +766,29 @@
 }
 .msg-agent {
   min-width: 0;
+}
+
+/* Keep wide output local to its card; paths must never widen the main column. */
+.tool .res,
+.diff-path {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.diff-h > :last-child {
+  flex: none;
+}
+.err-card pre,
+.status-line,
+.worked {
+  overflow-wrap: anywhere;
+}
+.slash-menu .mono,
+.slash-menu .desc {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }

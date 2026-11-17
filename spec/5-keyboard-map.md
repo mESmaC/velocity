@@ -16,9 +16,12 @@
 | `B` | not typing | show the Board, or return to Focus |
 | `Esc` | anywhere | close overlay / menu |
 | `Ctrl+Enter` | dialogs | create / start / launch |
-| `I` `R` `F` `V` `S` | home view | dispatch, resume, fan out, PR duty, scouts |
+| `I` `R` `F` `V` `S` | home view | dispatch, resume, fan out, post-land review swarm, scouts |
 | `1–4`, `L` `S` `G` | spec interview | answer; lock, SPEC.md, keep grilling |
 | `D`, `E` | thread | diff, editor |
+| `Ctrl+Alt+J` | thread | open the first subagent transcript |
+| `Alt+↑`, `Alt+↓` | subagent panel | previous / next subagent |
+| `Esc` | subagent panel | close and return focus to the spawning card |
 | `Ctrl+S` and the outliner keys | AGENTS.md | see F11 |
 
 ---

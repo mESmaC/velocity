@@ -27,8 +27,8 @@
         onmouseenter={() => send({ SlashSelect: String(index) })}
         onclick={() => send('SlashComplete')}
       >
-        <span class="mono">{item.command}</span>
-        <span class="desc">{item.description}</span>
+        <span class="mono" title={item.command}>{item.command}</span>
+        <span class="desc" title={item.description}>{item.description}</span>
       </button>
     {/each}
   </div>

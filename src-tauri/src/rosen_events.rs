@@ -44,6 +44,7 @@ async fn follow_project(application: &AppHandle, project: u32) {
     .unwrap_or(0);
     loop {
         if !crate::rosen::rosen_in_use(application, project) {
+            connection_state(application, project, false);
             crate::rosen::end_following(application, project);
             return;
         }
@@ -53,6 +54,7 @@ async fn follow_project(application: &AppHandle, project: u32) {
             report(crate::rosen_mirror::refresh(application, project).await);
             match open(application, project, after).await {
                 Ok(mut stream) => {
+                    connection_state(application, project, false);
                     while let Some(event) = stream.next().await {
                         if let Err(error) = consume(application, project, &event).await {
                             report::<()>(Err(error));
@@ -64,7 +66,20 @@ async fn follow_project(application: &AppHandle, project: u32) {
                 Err(error) => eprintln!("Rosen events for project {project}: {error}"),
             }
         }
+        connection_state(application, project, true);
         tokio::time::sleep(RECONNECT).await;
+    }
+}
+
+fn connection_state(application: &AppHandle, project: u32, reconnecting: bool) {
+    if let Ok(mut layout) = lock(application.state::<MainLayout>().inner(), "layout")
+        && layout.set_rosen_reconnecting(project, reconnecting)
+    {
+        report(crate::layout::publish(
+            application,
+            &layout.snapshot(),
+            None,
+        ));
     }
 }
 

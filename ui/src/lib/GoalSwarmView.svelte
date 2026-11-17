@@ -65,7 +65,7 @@
   }
 
   // The board joins the work pool (GitHub issues, SPEC.md) with saved claims, so it is
-  // read again whenever a claim, PR or merge moves the swarm. Every layout snapshot brings a
+  // read again whenever a claim, change or land moves the swarm. Every layout snapshot brings a
   // new `swarm` object, many a second while agents stream, so the effect tracks these two
   // values: a derived string only wakes the effect when it actually changes.
   const swarmIdentifier = $derived(swarm.identifier);

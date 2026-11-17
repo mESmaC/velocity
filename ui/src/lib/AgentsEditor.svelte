@@ -128,7 +128,7 @@
         await receive(await agentsCommands.save(project));
         if (active)
           showNotice(
-            'AGENTS.md saved and committed · agents pick it up on their next task',
+            'AGENTS.md saved as a snapshot · agents pick it up on their next task',
           );
       })
       .catch(report)
@@ -304,7 +304,7 @@
             >move the bullet</span
           >
           <kbd>## </kbd><span>start a new section</span>
-          <span><kbd>Ctrl</kbd><kbd>S</kbd></span><span>save and commit</span>
+          <span><kbd>Ctrl</kbd><kbd>S</kbd></span><span>save and snapshot</span>
         </div>
       </div>
     </aside>

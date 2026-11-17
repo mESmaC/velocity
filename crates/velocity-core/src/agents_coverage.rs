@@ -42,7 +42,7 @@ const TOPICS: &[Topic] = &[
         section: "Commands",
         rules: &[
             "- Build: `…`",
-            "- Proofs: `lake build` in `proofs/`. Run it before every push.",
+            "- Proofs: `lake build` in `proofs/`. Run it before naming the change.",
             "- Lint: `…`. Zero warnings.",
         ],
     },
@@ -70,34 +70,34 @@ const TOPICS: &[Topic] = &[
         section: "Scope",
         rules: &[
             "- Work only on the piece you claimed.",
-            "- If you find an unrelated problem, file an issue for it. Do not fix it in your PR.",
+            "- If you find an unrelated problem, file an issue for it. Do not fix it in your change.",
         ],
     },
     Topic {
-        title: "PR: monitor until merged",
+        title: "Change: monitor until landed",
         detect: Detect::Phrase(&[
-            "until merged",
-            "until it is merged",
-            "until it's merged",
-            "until it\u{2019}s merged",
+            "until it lands",
+            "when the change lands",
+            "until it's landed",
+            "until it\u{2019}s landed",
         ]),
-        section: "Pull requests",
+        section: "Changes",
         rules: &[
-            "- Opening the PR does not finish the task. Monitor it until it is merged.",
-            "  - Fix failing checks on your change and push.",
+            "- Naming the change does not finish the task. Monitor it until it lands.",
+            "  - Fix failing checks and name the change again.",
         ],
     },
     Topic {
-        title: "PR: address every review comment",
+        title: "Change: address every review comment",
         detect: Detect::Phrase(&[
             "address every comment",
             "address every review comment",
             "address every pr duty comment",
         ]),
-        section: "Pull requests",
+        section: "Changes",
         rules: &[
-            "- Address every PR duty comment: fix and push, or reply with the reason. Resolve each thread.",
-            "- After pushing fixes, re-request review.",
+            "- Address every review comment: fix and name the change again, or reply with the reason.",
+            "- After fixes, check and name the change again.",
         ],
     },
     Topic {
@@ -106,8 +106,8 @@ const TOPICS: &[Topic] = &[
         section: "Done means",
         rules: &[
             "- The piece meets SPEC.md and has been run successfully.",
-            "- The required local checks pass on the merge result and the required proofs check.",
-            "- The PR is merged.",
+            "- The required local checks pass on the combined result and the required proofs check.",
+            "- The change lands.",
         ],
     },
     Topic {
@@ -115,10 +115,10 @@ const TOPICS: &[Topic] = &[
         detect: Detect::Word("AIRC"),
         section: "Coordination (AIRC)",
         rules: &[
-            "- Before editing, claim your task, branch and every file you expect to touch in AIRC.",
+            "- Before editing, claim every path you expect to touch with `rosen claim <paths>`.",
             "- If your claim is refused, pick different unclaimed work.",
-            "- Before editing a file another agent claimed, record a share or a wait in AIRC.",
-            "- If your work depends on another PR, record a wait; continue and rebase when it merges.",
+            "- Before editing a file another agent claimed, record `rosen share <paths>` or `rosen wait <paths>`.",
+            "- If your work depends on another change, record a wait; continue and rebase when it lands.",
             "- Message another agent only when a claim, overlap or dependency needs words. Never repeat events Velocity posts.",
         ],
     },
@@ -127,10 +127,10 @@ const TOPICS: &[Topic] = &[
         detect: Detect::Section("never"),
         section: "Never",
         rules: &[
-            "- Never push directly to the project's base branch.",
-            "- Never merge your own PR. PR duty agents merge.",
+            "- Never modify the base directly.",
+            "- Never approve or land your own change. Velocity handles landing.",
             "- Never skip, delete or weaken a failing test to make checks pass.",
-            "- Never commit secrets, tokens or `.env` files.",
+            "- Never include secrets, tokens or `.env` files in snapshots.",
         ],
     },
 ];

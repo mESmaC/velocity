@@ -1,4 +1,5 @@
 <script lang="ts">
+  import PaneState from './PaneState.svelte';
   import SettingsNav from './SettingsNav.svelte';
   import {
     skillSettingsCommands,
@@ -28,6 +29,7 @@
     const identifier = projectIdentifier;
     const request = ++generation;
     view = null;
+    error = '';
     preview = null;
     if (identifier !== null) {
       skillSettingsCommands
@@ -57,6 +59,7 @@
     const result = await skillSettingsCommands.read(identifier);
     if (projectIdentifier !== identifier) return;
     view = result;
+    error = '';
   }
   function edit(change: SkillSettingsEdit) {
     const identifier = projectIdentifier;
@@ -111,7 +114,17 @@
   <div class="worktree-settings-body">
     <SettingsNav current="skills" {send} />
     <div class="worktree-settings-main">
-      {#if error}<p role="alert">{error}</p>{/if}
+      <PaneState
+        name="Skills"
+        {error}
+        loading={projectIdentifier !== null && !view}
+        empty={projectIdentifier === null}
+        message="Select a project to configure skills."
+        retry={() => {
+          const identifier = projectIdentifier;
+          if (identifier !== null) return run(() => refresh(identifier));
+        }}
+      />
       {#if view}
         <section>
           <h2>Skills for {view.project_name}</h2>
@@ -287,11 +300,7 @@
             {/if}
             <button onclick={() => (preview = null)}>Close</button>
           </section>{/if}
-      {:else}<p>
-          {projectIdentifier === null
-            ? 'Select a project to configure skills.'
-            : 'Loading skills…'}
-        </p>{/if}
+      {/if}
     </div>
   </div>
 </section>

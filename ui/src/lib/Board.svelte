@@ -24,7 +24,7 @@
   const emptyLane: Record<string, string> = {
     UpNext: 'No tasks or issues are waiting.',
     Running: 'No agents are running.',
-    InReview: 'No pull requests are open.',
+    InReview: 'No changes are open.',
     Finished: 'Nothing has finished yet.',
     OnDuty: 'No agents are on duty.',
   };

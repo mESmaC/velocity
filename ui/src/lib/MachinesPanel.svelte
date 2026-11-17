@@ -1,4 +1,5 @@
 <script lang="ts">
+  import PaneState from './PaneState.svelte';
   import { onMount } from 'svelte';
   import { machineCommands } from './ipc';
   import type { MachinesView, MachineRole } from './ipc';
@@ -19,7 +20,10 @@
   async function refresh() {
     const selected = project;
     const next = await machineCommands.list(selected);
-    if (project === selected) view = next;
+    if (project === selected) {
+      view = next;
+      error = '';
+    }
   }
 
   function report(reason: unknown) {
@@ -71,6 +75,15 @@
 
 <section aria-label="Headless machines">
   <h2>Machines</h2>
+  <PaneState
+    name="Machines"
+    rosen
+    loading={!view}
+    empty={view?.machines.length === 0}
+    message="No machines enrolled · Create a join key to connect one."
+    {error}
+    retry={() => refresh().catch(report)}
+  />
   <p class="worktree-description">
     One join key enrolls a headless machine in Rosen and Velocity dispatch.
     Provider sign-ins and tools come from the machine's existing OS account.
@@ -207,14 +220,11 @@
       <p class="worktree-description">{machine.running_agents.join(', ')}</p>
     {/if}
   {/each}
-  {#if view && !view.machines.length}<p class="worktree-description">
-      No machines enrolled.
-    </p>{/if}
   {#each view?.recent_dispatch ?? [] as result, index (index)}<p
       class="worktree-description"
     >
       {result}
     </p>{/each}
-  {#if error}<p class="worktree-message error" role="alert">{error}</p>{/if}
+
   {#if notice}<p class="worktree-message" role="status">{notice}</p>{/if}
 </section>

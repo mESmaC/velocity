@@ -34,7 +34,7 @@ Velocity's own proof list:
 |---|---|---|
 | Claim lock | F14 | two agents hold the same piece or file |
 | Targeted rebases and landing | F6 | an affected agent isn't rebased, or a merge drops a change |
-| Worktree deletion | F5, F12 | a worktree with unpushed work, or another thread's, is deleted |
+| Workspace deletion | F5, F12 | a workspace with unpushed work, or another thread's, is deleted |
 | Goal swarm work choice | F16 | a piece is taken twice, or an agent leaves while a piece is unclaimed |
 | Stall detection and claim release | §2.2 | a live agent's claims are released, or a dead agent's never are |
 
@@ -124,7 +124,7 @@ How the checks run *(proposed)*:
   The `.lean` files the PR adds or modifies under `proofs/` (from the merge base to the head).
   A PR that changes none skips the checks.
 - **Build.**
-  A project on Mathlib runs `lake exe cache get` first, so no worktree compiles Mathlib from source.
+  A project on Mathlib runs `lake exe cache get` first, so no workspace compiles Mathlib from source.
   Then `lake build`.
 - **Axiom audit.**
   `#print axioms` in a file covers only what its author chose to print, so Velocity elaborates its own audit file with `lake lean`: it imports a changed module and lists the axioms of every declaration it defines.
@@ -152,7 +152,7 @@ How the checks run *(proposed)*:
 - PR duty's MCP approval requires nonempty `proof_review` explanations of proof-list scope, theorem-statement review and confidence level (including why a check is inapplicable).
   Those explanations are mirrored with the review.
   Missing design proofs, off-list Lean and unmet tier requirements require changes; applicability and semantic correctness are judged by the reviewer.
-- `pr_duty_checked`, approval and merge run the executable proof gate in the registered review worktree at the prepared head/base.
+- `pr_duty_checked`, approval and merge run the executable proof gate in the registered review workspace at the prepared head/base.
   The checkout must match the committed content at that exact head, ignoring CRLF/LF-only differences from Windows generators; content changes and untracked files are refused.
   Failed builds, placeholders, disallowed axioms, unnamed spec sections and changed modules absent from the Lake build refuse the operation.
   An ordinary PR with no changed Lean skips Lake.
@@ -162,14 +162,14 @@ How the checks run *(proposed)*:
   For a PR reviewed with local checks, a moved base requires preparation and checks again.
 
 **Where it runs:**
-- Proofs and stress scripts run locally, in each agent's worktree, on the machine that already runs the agents.
+- Proofs and stress scripts run locally, in each agent's workspace, on the machine that already runs the agents.
 - GitHub's checks gate the merge of a PR reviewed by reading (F7 "Checks before merge").
   What they run is the project's choice.
 - Tests and stress scripts live in `stress/` (and the project's own test folder).
-  Scouts run them on every sweep and the main watcher runs them after every merge.
+  Scouts run them on every sweep and the main watcher runs them after every land.
   They never run in per-PR GitHub CI.
 
-**Proof card** (in the PR history, F6):
+**Proof card** (in the land history, F6):
 - the proof folder, and "N theorems proved";
 - the four checks, each ticked: lake build; no sorry or admit; standard axioms; statements locked at review;
 - every theorem: Design or Confidence, its name and its statement;
@@ -177,8 +177,8 @@ How the checks run *(proposed)*:
 
 How the card is made *(proposed)*:
 - **Where and when.**
-  For each new head of a thread's open PR, Velocity runs the checks above in the background in the thread's own worktree, once that worktree is checked out at exactly the head with no edits under `proofs/` (otherwise the next observation retries).
-  The card sits under "PR opened" in the PR history; a PR that touches no proof file, fixture table or proof-list feature has no card.
+  For each new head of a thread's named change, Velocity runs the checks above in the background in the thread's own workspace, once that workspace is checked out at exactly the head with no edits under `proofs/` (otherwise the next observation retries).
+  The card sits under "PR opened" in the land history; a PR that touches no proof file, fixture table or proof-list feature has no card.
 - **Track.**
   The "Proved" step runs while the head is unchecked, is done when the checks pass and fails when one fails.
   It reads "No proofs" when the PR changes nothing to prove.

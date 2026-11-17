@@ -406,11 +406,11 @@ fn finish_goal_launch(
     let plural = if started == 1 { "" } else { "s" };
     let toast = if launched {
         format!(
-            "{started} agent{plural} launched \u{00b7} {started} worktree{plural} \u{00b7} they're claiming work in AIRC"
+            "{started} agent{plural} launched \u{00b7} {started} workspace{plural} \u{00b7} they're claiming work in AIRC"
         )
     } else {
         format!(
-            "Added {started} agent{plural} \u{00b7} {started} worktree{plural} \u{00b7} claiming work in AIRC"
+            "Added {started} agent{plural} \u{00b7} {started} workspace{plural} \u{00b7} claiming work in AIRC"
         )
     };
     layout.show_toast(toast, None);
@@ -524,7 +524,7 @@ fn member_pr_context(
     .ok()?;
     let (swarm, nick) = thread_goal_swarm(store.project(project)?, thread.id)?;
     let finished = if let Some(issue) = &thread.issue {
-        format!("issue #{} merged", issue.number)
+        format!("issue #{} landed", issue.number)
     } else if !thread.task_ids.is_empty() {
         "task done".into()
     } else if thread.spec_section.is_some() {
@@ -568,7 +568,7 @@ pub(crate) fn record_member_failed(application: &AppHandle, key: (u32, u32), hea
         &clock_timestamp(),
         &nick,
         GoalEventKind::Failed,
-        format!("{nick}: {headline} \u{00b7} worktree kept"),
+        format!("{nick}: {headline} \u{00b7} workspace kept"),
     );
     report(record_event_and_publish(
         application,

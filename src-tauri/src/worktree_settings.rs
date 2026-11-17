@@ -79,7 +79,7 @@ fn publish(application: &AppHandle, view: WorktreeSettingsView) {
         eprintln!("{error}");
     }
     if let Err(error) = (WorktreeInventoryChanged { state: view }).emit(application) {
-        eprintln!("Could not publish worktree inventory: {error}");
+        eprintln!("Could not publish workspace inventory: {error}");
     }
 }
 
@@ -87,7 +87,7 @@ fn publish_layout(application: &AppHandle, view: &WorktreeSettingsView) -> anyho
     let state = application.state::<MainLayout>();
     let mut layout = state
         .lock()
-        .map_err(|error| anyhow::anyhow!("Could not update worktree footer: {error}"))?;
+        .map_err(|error| anyhow::anyhow!("Could not update workspace footer: {error}"))?;
     if layout.set_worktree_summary(view) {
         LayoutStateChanged {
             state: layout.snapshot(),
@@ -157,7 +157,7 @@ fn save_worktree_settings(
     let view = runtime
         .snapshot(&with_pool(application, context))
         .map_err(|error| error.to_string())?;
-    // "Keep N worktrees ready", the location or the files to copy may have changed.
+    // "Keep N workspaces ready", the location or the files to copy may have changed.
     crate::ready_pool::wake(application, project_identifier);
     publish(application, view.clone());
     Ok(view)
@@ -220,5 +220,5 @@ pub async fn prune_worktrees(store: State<'_, ManagedStateStore>) -> Result<Stri
     .await
     .map_err(|error| error.to_string())?
     .map_err(|error| error.to_string())?;
-    Ok("Orphaned worktree registrations pruned".into())
+    Ok("Orphaned workspace registrations pruned".into())
 }

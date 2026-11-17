@@ -244,7 +244,7 @@ fn restart(application: &AppHandle, key: ThreadKey, channel: &Channel) -> Result
         channel,
         key,
         "stalled",
-        "Still silent after nudge; restarting in the same worktree",
+        "Still silent after nudge; restarting in the same workspace",
     )?;
     crate::parking::resume(
         application,
@@ -282,9 +282,9 @@ fn release(application: &AppHandle, key: ThreadKey, channel: &Channel) -> Result
     .release_agent_work(key.0, key.1, pushed)
     .map_err(|error| error.to_string())?;
     let note = if thread.worktree_path.is_some() {
-        "Piece returned to the pool; worktree kept"
+        "Piece returned to the pool; workspace kept"
     } else {
-        "Piece returned to the pool; setup left no worktree"
+        "Piece returned to the pool; setup left no workspace"
     };
     post(channel, key, "released", note)?;
     publish(application, key)

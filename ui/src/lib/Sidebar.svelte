@@ -1,4 +1,5 @@
 <script lang="ts">
+  import PaneState from './PaneState.svelte';
   import ContinuousDispatch from './ContinuousDispatch.svelte';
   import Icon from './Icon.svelte';
   import UsageModal from './UsageModal.svelte';
@@ -86,11 +87,19 @@
     >
   </div>
   <nav class="thread-groups" aria-label="Thread groups">
+    <PaneState
+      name="Threads"
+      rosen
+      empty={!layout.groups.some((group) => group.rows.length)}
+      message={layout.search
+        ? 'No threads match your search.'
+        : 'No threads yet · Start a new thread.'}
+    />
     {#each layout.groups as group (group.group)}
       <section aria-label={group.title || 'Drafts'}>
         {#if group.group === 'Settled'}
           <button
-            class="group-h"
+            class="group-h settled-toggle"
             aria-expanded={!group.collapsed}
             onclick={() => send('ToggleSettled')}
           >
@@ -148,6 +157,7 @@
                 >{/if}
               {#if row.metadata}<span
                   class="t-meta"
+                  title={row.metadata}
                   style:color={row.metadata === 'stalled' ||
                   row.metadata.startsWith('at limit')
                     ? 'var(--warn)'
@@ -201,7 +211,7 @@
     <span class="spacer"></span>
     <button
       class="worktree-indicator"
-      title="Settings · Worktrees"
+      title="Settings · Workspaces"
       onclick={() => send({ Request: { SettingsTab: 'worktrees' } })}
       ><Icon name="folder" />{layout.worktree_label}</button
     >

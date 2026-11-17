@@ -97,7 +97,7 @@ fn resume_follow_through(
     if thread.activity == AgentActivity::AtLimit {
         return Ok(DeliveryStatus::Pending);
     }
-    let path = thread.worktree_path.as_deref().ok_or("Missing worktree")?;
+    let path = thread.worktree_path.as_deref().ok_or("Missing workspace")?;
     let (mut agent, bypass_modes) =
         agent_launch(&settings, thread.provider).map_err(|error| error.to_string())?;
     let mut setup = SessionSetup::new(path.into(), bypass_modes)
@@ -181,7 +181,7 @@ fn finish_stopping(
         StopOutcome::Stopping(ended) => tauri::async_runtime::block_on(async move {
             tokio::time::timeout(velocity_threads::deletion::AGENT_EXIT_WAIT, ended).await
         })
-        .map_err(|_| "The agent is still stopping; its worktree was kept".to_owned())?
+        .map_err(|_| "The agent is still stopping; its workspace was kept".to_owned())?
         .map_err(|error| format!("Agent shutdown was not confirmed: {error}"))?,
     }
     if lock(
@@ -282,7 +282,7 @@ fn open_pull_request(application: &AppHandle, number: usize) -> Result<(), Strin
             if !project.threads.iter().any(|thread| {
                 thread.pull_request_number.map(|value| value as usize) == Some(number)
             }) {
-                return Err("The PR does not belong to a thread in this project".into());
+                return Err("The change does not belong to a thread in this project".into());
             }
             std::path::PathBuf::from(&project.repository_path)
         };
@@ -698,7 +698,7 @@ async fn run_thread(
         folder.branch_name.as_deref(),
     ));
     if let Some(detail) = &folder.failure {
-        return fail(&application, key, "Could not set up the worktree", detail);
+        return fail(&application, key, "Could not set up the workspace", detail);
     }
     if !finish_workspace_launch(&application, key) {
         return;
@@ -771,7 +771,7 @@ async fn run_goal_member(application: AppHandle, key: ThreadKey, mut plan: GoalM
     }
     report(record_names(&application, key, &path, Some(&branch_name)));
     if let Some(detail) = &folder.failure {
-        return fail(&application, key, "Could not set up the worktree", detail);
+        return fail(&application, key, "Could not set up the workspace", detail);
     }
     if !finish_workspace_launch(&application, key) {
         return;

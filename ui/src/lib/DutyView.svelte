@@ -153,10 +153,10 @@
     <div class="meta" aria-label="Duty metadata">
       <span>{duty.agent_count_label}</span>
       {#if duty.role === 'pr_duty'}
-        <span>{duty.open_pull_request_count} open PRs</span>
-        <span class="add">{duty.merged_today} merged today</span>
+        <span>{duty.open_pull_request_count} named changes</span>
+        <span class="add">{duty.merged_today} landed today</span>
       {:else if duty.role === 'main_watcher'}
-        <span>after every merge</span>
+        <span>after every land</span>
         <span>{duty.issues_filed} flaky tests filed</span>
       {:else}
         <span>{duty.issues_filed} issues filed</span>

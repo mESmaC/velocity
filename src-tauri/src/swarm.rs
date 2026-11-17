@@ -302,7 +302,7 @@ fn finish_launch(
         layout.close_swarm_dialog_and_select(swarm as usize);
     }
     let mut message = format!(
-        "{started} agent{} launched · {started} worktrees · all running",
+        "{started} agent{} launched · {started} workspaces · all running",
         if started == 1 { "" } else { "s" }
     );
     if let Some(first) = refused.first() {
@@ -480,7 +480,7 @@ fn announce_finished(application: &AppHandle, project: u32, swarm: u32) -> Resul
     if !finished {
         return Ok(());
     }
-    let message = format!("Swarm finished · all {count} PRs merged");
+    let message = format!("Swarm finished · all {count} changes landed");
     let event = SwarmFeedEvent::new(
         &clock_timestamp(),
         "swarm",
@@ -492,7 +492,7 @@ fn announce_finished(application: &AppHandle, project: u32, swarm: u32) -> Resul
         application.state::<MainLayout>().inner(),
         "main-window state",
     )?;
-    layout.show_toast(format!("{title} finished · {count} PRs merged"), None);
+    layout.show_toast(format!("{title} finished · {count} changes landed"), None);
     crate::layout::publish(application, &layout.snapshot(), None)
 }
 
@@ -508,7 +508,7 @@ pub(crate) fn record_member_failed(application: &AppHandle, key: (u32, u32), hea
                 key.0,
                 key.1,
                 SwarmEventKind::Failed,
-                format!("{headline} · worktree kept"),
+                format!("{headline} · workspace kept"),
                 &clock_timestamp(),
             )
             .map_err(|error| error.to_string())

@@ -8,6 +8,11 @@ export default typescript.config(
   javascript.configs.recommended,
   ...typescript.configs.recommended,
   ...svelte.configs['flat/recommended'],
+  // Rune modules contain TypeScript, rather than component markup.
+  {
+    files: ['**/*.svelte.ts'],
+    languageOptions: { parser: typescript.parser },
+  },
   {
     files: ['**/*.svelte'],
     languageOptions: {

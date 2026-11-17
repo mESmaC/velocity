@@ -48,7 +48,7 @@
         <h2>Agent activity and recovery</h2>
         <p class="worktree-description">
           Silent agents receive a nudge, then restart in their existing
-          worktree. Parked agents and builds in the queue never count as
+          workspace. Parked agents and builds in the queue never count as
           stalled.
         </p>
         {#if settings}
@@ -111,8 +111,8 @@
             ></label
           >
           <p class="worktree-description">
-            Failed agents and agents at a cap keep their worktrees. Open and
-            closed PRs keep their claims.
+            Failed agents and agents at a cap keep their workspaces. Open and
+            closed changes keep their claims.
           </p>
           <button
             class="worktree-button"

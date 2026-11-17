@@ -1,5 +1,7 @@
 <script lang="ts">
   import { onMount, tick } from 'svelte';
+  import { paneConnection } from './lib/pane-state.svelte';
+  import PaneState from './lib/PaneState.svelte';
   import TitleBar from './lib/TitleBar.svelte';
   import Board from './lib/Board.svelte';
   import Sidebar from './lib/Sidebar.svelte';
@@ -52,8 +54,12 @@
   // Raw, not deep: Svelte would wrap every new snapshot, transcripts included, in fresh
   // proxies (#321). Snapshots are replaced whole and never changed in place.
   let layout = $state.raw<LayoutSnapshot | null>(null);
+  $effect(() => {
+    paneConnection.rosenReconnecting = layout?.rosen_reconnecting ?? false;
+  });
   const revision = $derived(layout?.revision ?? 0);
   let error = $state('');
+  let startupError = $state('');
   let latest: LayoutSnapshot | null = null;
   let pending = 0;
   let newProjectSubmits = $state(0);
@@ -270,6 +276,7 @@
   }
 
   onMount(() => {
+    paneConnection.online = window.navigator.onLine;
     let active = true;
     const stops: (() => void)[] = [];
     async function start() {
@@ -296,6 +303,7 @@
       if (active) receive(snapshot);
     }
     void start().catch((reason: unknown) => {
+      startupError = String(reason);
       reportWindowError('startup', reason);
       report(reason);
     });
@@ -308,6 +316,8 @@
 </script>
 
 <svelte:window
+  ononline={() => (paneConnection.online = true)}
+  onoffline={() => (paneConnection.online = false)}
   onkeydown={keydown}
   onkeyup={(event) => {
     if (event.key === 'Alt') send({ NumberHints: 'AltUp' });
@@ -381,7 +391,21 @@
         <PaneBoundary name="rail" {revision}
           ><Rail {layout} {send} /></PaneBoundary
         >{/if}
-    </div>{:else}<p class="empty" role="status">Opening workspace…</p>{/if}
+    </div>{:else}<PaneState
+      name="Threads"
+      loading
+      error={startupError}
+      retry={async () => {
+        try {
+          receive(await layoutCommands.getState());
+          startupError = '';
+          clearError();
+        } catch (reason) {
+          startupError = String(reason);
+          report(reason);
+        }
+      }}
+    />{/if}
 </div>
 {#if layout?.palette_open}<PaneBoundary name="command palette" {revision}
     ><CommandPalette {layout} {send} /></PaneBoundary

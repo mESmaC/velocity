@@ -3,10 +3,16 @@
   import { pop } from './motion';
   import Icon from './Icon.svelte';
   import ProviderSignInCards from './ProviderSignInCards.svelte';
-  import { newProjectCommands } from './ipc';
+  import {
+    newProjectCommands,
+    providerCommands,
+    onProviders,
+    providerIcon,
+  } from './ipc';
   import type {
     EffortLevel,
     LayoutAction,
+    ModelCardView,
     NewProjectDefaults,
     ProjectLocationRequest,
     RepositoryVisibility,
@@ -33,6 +39,8 @@
   let dialog: HTMLDialogElement;
   let briefInput: HTMLElement;
   let defaults = $state<NewProjectDefaults | null>(null);
+  let models = $state<ModelCardView[]>([]);
+  let modelName = $state<string | null>(null);
   let where = $state<'local' | 'github'>('local');
   let githubKind = $state<'new' | 'existing'>('new');
   let folder = $state('');
@@ -49,6 +57,20 @@
 
   onMount(() => {
     const previous = document.activeElement;
+    let active = true;
+    const listening = onProviders((event) => {
+      if (active) models = event.payload.view.defaults.cards;
+    });
+    void listening.catch(report);
+    void providerCommands
+      .list()
+      .then((view) => {
+        if (active) {
+          models = view.defaults.cards;
+          modelName ??= models.find((model) => model.selected)?.model ?? null;
+        }
+      })
+      .catch(report);
     handledSubmits = submitRequests;
     dialog.showModal();
     briefInput.focus();
@@ -63,6 +85,8 @@
       })
       .catch(report);
     return () => {
+      active = false;
+      void listening.then((stop) => stop()).catch(report);
       if (previous instanceof HTMLElement && previous.isConnected)
         previous.focus();
     };
@@ -115,7 +139,7 @@
     try {
       await newProjectCommands.create({
         location: location(),
-        model_name: defaults?.model_name ?? null,
+        model_name: modelName ?? defaults?.model_name ?? null,
         effort,
         speed,
         brief,
@@ -256,13 +280,22 @@
           role="group"
           aria-labelledby="new-project-model-label"
         >
-          {#if defaults?.model_name}<button
-              class="model-card on"
-              aria-pressed="true"
-              ><span class="mh">{defaults.model_name}</span><span class="md"
-                >{defaults.provider_name}</span
-              ></button
-            >{:else if defaults}<p class="np-note">
+          {#each models as model (`${model.provider}:${model.model}`)}
+            <button
+              type="button"
+              class="model-card"
+              class:on={modelName === model.model}
+              aria-pressed={modelName === model.model}
+              title={`${model.model} · ${model.note}`}
+              onclick={() => (modelName = model.model)}
+            >
+              <span class="mh"
+                ><Icon name={providerIcon(model.provider)} />{model.model}</span
+              >
+              <span class="md">{model.note}</span>
+            </button>
+          {/each}
+          {#if defaults && models.length === 0}<p class="np-note">
               No provider is signed in yet. The interview uses the model you
               choose in Settings · Providers once one is.
             </p>{/if}

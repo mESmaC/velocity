@@ -41,6 +41,7 @@ pub async fn get_issue_panel(application: AppHandle) -> Result<IssuePanelSnapsho
     crate::layout::off_ui_thread(move || {
         let panel = application.state::<IssuePanel>();
         let project = selected_project(&application)?;
+        refresh(&application, project.clone(), &mut IssueReader::default())?;
         let mut panel = lock(panel.inner(), "issues")?;
         panel.select(project.map(|project| project.identifier));
         Ok(panel.clone())

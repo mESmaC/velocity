@@ -226,6 +226,11 @@
   font-size: var(--usage-modal-button-font-size);
   color: var(--text);
 }
-.usage-button:hover {
+.usage-button:hover:not(:disabled) {
   border-color: var(--usage-modal-button-hover-border-color);
+}
+
+.usage-note,
+.usage-verdict {
+  overflow-wrap: anywhere;
 }

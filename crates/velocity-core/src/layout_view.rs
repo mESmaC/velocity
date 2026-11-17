@@ -441,6 +441,8 @@ pub enum LayoutAction {
 #[derive(Clone, Debug)]
 pub struct LayoutSnapshot {
     pub revision: u32,
+    /// The selected project's Rosen event stream is reconnecting.
+    pub rosen_reconnecting: bool,
     pub project_identifier: Option<u32>,
     pub project_name: String,
     pub rosen_mirror: Option<crate::rosen_mirror::MirrorState>,

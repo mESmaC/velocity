@@ -551,7 +551,7 @@ pub fn initial_worktree_step_group(worktree_path: &str, base_branch: &str) -> Ve
         .map(|kind| match kind {
             ToolStepKind::WorktreeCreated => ToolStepRow {
                 running: matches!(ToolStepStatus::Completed, ToolStepStatus::Running),
-                verb: "Worktree".into(),
+                verb: "Workspace".into(),
                 argument: worktree_path.into(),
                 result_text: format!("created from {base_branch}"),
             },
@@ -587,11 +587,11 @@ pub fn project_thread_detail(entry: &ThreadDetailEntry) -> ThreadDetailSnapshot 
         };
     let pill = thread_view::project_model_pill(entry.requested_fast, entry.model_has_fast_mode);
     let placeholder = match (entry.pull_request_number, entry.lifecycle) {
-        (Some(_), ThreadLifecycle::Merged) => "Thread finished · PR merged".into(),
+        (Some(_), ThreadLifecycle::Merged) => "Thread finished · change landed".into(),
         (Some(_), ThreadLifecycle::Closed) => {
-            "PR closed · tell the agent to reopen it, or carry on in this worktree".into()
+            "change closed · tell the agent to reopen it, or carry on in this workspace".into()
         }
-        (Some(pr), _) => format!("Steer while it watches PR #{pr}"),
+        (Some(pr), _) => format!("Steer while it watches change #{pr}"),
         (None, _) => "Steer, queue a follow-up, or / for commands".into(),
     };
     ThreadDetailSnapshot {

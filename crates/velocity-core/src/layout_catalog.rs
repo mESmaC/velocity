@@ -19,9 +19,9 @@ pub const PULSE: [(PulseKind, &str); 6] = [
     (PulseKind::Duty, "on duty"),
     (PulseKind::Spec, "in spec"),
     (PulseKind::Running, "running"),
-    (PulseKind::Watching, "PRs watched"),
+    (PulseKind::Watching, "changes watched"),
     (PulseKind::Failed, "failed"),
-    (PulseKind::MergedToday, "merged today"),
+    (PulseKind::MergedToday, "landed today"),
 ];
 
 pub fn group_title(group: ThreadGroup) -> &'static str {
@@ -31,11 +31,11 @@ pub fn group_title(group: ThreadGroup) -> &'static str {
         ThreadGroup::Swarm => "Swarms",
         ThreadGroup::Spec => "Spec interview",
         ThreadGroup::Working => "Running",
-        ThreadGroup::Review => "PR open · watching",
+        ThreadGroup::Review => "Named · waiting to land",
         ThreadGroup::Error => "Failed",
-        ThreadGroup::Closed => "Closed · not merged",
+        ThreadGroup::Closed => "Abandoned",
         ThreadGroup::Done => "Done",
-        ThreadGroup::Merged => "Merged",
+        ThreadGroup::Merged => "Landed",
         ThreadGroup::Settled => "Settled",
     }
 }
@@ -54,7 +54,7 @@ const COMMANDS: [(&str, &str, CommandTarget); 16] = {
         ("New project…", "Ctrl Shift N", Navigation(NewProject)),
         ("Edit AGENTS.md", "file", Settings("agents")),
         ("Add a task to the Task List", "T", Navigation(Task)),
-        ("Settings · Worktrees", "Ctrl ,", Settings("worktrees")),
+        ("Settings · Workspaces", "Ctrl ,", Settings("worktrees")),
         ("Settings · Providers (sign in)", "", Settings("providers")),
         ("Settings · Proofs", "", Settings("proofs")),
         ("AIRC · agent chat", "A", Navigation(Airc)),

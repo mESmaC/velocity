@@ -8,18 +8,20 @@
 .worktree-settings-head {
   display: flex;
   align-items: center;
-  gap: var(--worktrees-head-gap);
-  padding: var(--worktrees-head-padding);
-  border-bottom: var(--worktrees-head-border);
+  flex-wrap: wrap;
+  gap: var(--glass-head-row-gap);
+  padding: var(--thread-head-padding);
+  border-bottom: var(--thread-head-border-bottom);
 }
 .worktree-settings-head h1 {
   margin: var(--worktrees-zero);
-  font-size: var(--worktrees-head-font-size);
+  font-size: var(--thread-head-h1-font-size);
   font-weight: var(--worktrees-head-font-weight);
-  letter-spacing: var(--worktrees-head-letter-spacing);
+  letter-spacing: var(--thread-head-h1-letter-spacing);
   color: var(--worktrees-title-color);
 }
 .worktree-settings-head > span {
+  flex: var(--glass-head-meta-flex);
   font: var(--worktrees-meta-font);
   color: var(--muted);
 }
@@ -183,7 +185,7 @@
   background: var(--worktrees-button-background);
   box-shadow: var(--worktrees-button-shadow);
 }
-.worktree-button:not(.mini):hover {
+.worktree-button:not(.mini):hover:not(:disabled) {
   border-color: var(--worktrees-button-hover-border);
   background: var(--worktrees-button-hover-background);
 }
@@ -398,4 +400,13 @@
 }
 .worktree-settings-main::-webkit-scrollbar-track {
   background: var(--worktrees-transparent);
+}
+
+.worktree-settings-nav button:hover:not(:disabled):not(.on) {
+  color: var(--text);
+  background: var(--surface-3);
+}
+.worktree-settings-head,
+.worktree-settings-body {
+  min-width: 0;
 }

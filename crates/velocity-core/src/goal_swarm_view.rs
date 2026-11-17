@@ -151,7 +151,7 @@ pub struct GoalSwarmViewSnapshot {
     pub prompt_label: String,
     pub segments: Vec<SwarmStage>,
     pub legend: Vec<SwarmLegendItem>,
-    /// "<n> waiting on another agent's PR".
+    /// "<n> waiting on another agent's change".
     pub waiting_label: Option<String>,
     pub cards: Vec<GoalAgentCard>,
     pub feed: Vec<GoalFeedEvent>,
@@ -263,13 +263,13 @@ pub fn goal_doing(agent: &GoalAgentProgress) -> String {
             .waiting
             .clone()
             .unwrap_or_else(|| agent.activity_label.clone()),
-        SwarmStage::Merged => format!("merged · PR #{number}"),
+        SwarmStage::Merged => format!("landed · change #{number}"),
         SwarmStage::Failed if agent.state == ThreadState::Closed => {
-            format!("PR #{number} closed · claim held")
+            format!("change #{number} closed · claim held")
         }
         SwarmStage::Failed => "failed · claim held".into(),
         SwarmStage::Fixing | SwarmStage::PullRequest => {
-            format!("PR #{number} · {}", review_label(agent.review_stage))
+            format!("change #{number} · {}", review_label(agent.review_stage))
         }
     }
 }
@@ -278,7 +278,7 @@ fn review_label(stage: Option<ReviewStage>) -> &'static str {
     match stage {
         Some(ReviewStage::ContinuousIntegration) => "waiting on CI",
         Some(ReviewStage::Fixing) => "addressing review",
-        Some(ReviewStage::Approved) => "approved · merging",
+        Some(ReviewStage::Approved) => "approved · landing",
         Some(ReviewStage::Review) | None => "in review",
     }
 }
@@ -288,7 +288,7 @@ pub fn goal_card(agent: &GoalAgentProgress) -> GoalAgentCard {
         track_label: if agent.rosen_change.is_some() {
             "claim · named · landed".into()
         } else {
-            "claim · PR · CI · review · merged".into()
+            "claim · change · CI · review · landed".into()
         },
         identifier: agent.thread_identifier,
         nick: agent.nick.clone(),
@@ -326,17 +326,12 @@ pub fn mix_label(agents: &[GoalAgentProgress]) -> String {
         .join(" · ")
 }
 
-/// The sidebar row's ×N and meta line: "2 choosing · 3 working · 1 PR open",
+/// The sidebar row's ×N and meta line: "2 choosing · 3 working · 1 named",
 /// counting live agents only, or "finished" once none is left at work.
 pub fn goal_row_summary(agents: &[GoalAgentProgress]) -> (usize, String) {
     let (count, summary) = crate::swarm::row_summary(&goal_segments(agents));
     if agents.iter().all(|agent| agent.rosen_change.is_some()) {
-        (
-            count,
-            summary
-                .replace("PR open", "named")
-                .replace("merged", "landed"),
-        )
+        (count, summary.replace("merged", "landed"))
     } else {
         (count, summary)
     }
@@ -360,23 +355,12 @@ pub fn project_goal_swarm_view(entry: &GoalSwarmEntry) -> GoalSwarmViewSnapshot 
         title: entry.title.clone(),
         agents_label: format!("{total} agent{} · one prompt{finished}", plural(total)),
         started_label: format!("started {}", entry.started_label),
-        merged_label: (merged > 0).then(|| {
-            if entry.rosen {
-                format!("{merged} change{} landed", plural(merged))
-            } else {
-                format!("{merged} PR{} merged", plural(merged))
-            }
-        }),
+        merged_label: (merged > 0).then(|| format!("{merged} change{} landed", plural(merged))),
         prompt: entry.prompt.clone(),
         prompt_label: goal_prompt_label(entry, total),
         segments: goal_segments(&entry.agents),
         legend: goal_legend(&entry.agents, entry.rosen),
-        waiting_label: (waits > 0).then(|| {
-            format!(
-                "{waits} waiting on another agent's {}",
-                if entry.rosen { "change" } else { "PR" }
-            )
-        }),
+        waiting_label: (waits > 0).then(|| format!("{waits} waiting on another agent's change")),
         cards: entry.agents.iter().map(goal_card).collect(),
         feed: entry
             .feed
@@ -389,7 +373,7 @@ pub fn project_goal_swarm_view(entry: &GoalSwarmEntry) -> GoalSwarmViewSnapshot 
         composer_placeholder: if entry.rosen {
             "Message every agent in this goal swarm".into()
         } else {
-            "Message every agent in this goal swarm, e.g. leave the composer alone until #42 merges"
+            "Message every agent in this goal swarm, e.g. leave the composer alone until #42 lands"
                 .into()
         },
         board_revision: board_revision(entry),
@@ -565,7 +549,7 @@ pub struct GoalClaimsBoard {
 }
 
 /// The claims board (F16): claimed pieces with holder and state, then open pieces, then
-/// the pieces this swarm merged, struck through with "merged #n".
+/// the pieces this swarm merged, struck through with "landed #n".
 pub fn claims_board(pieces: &[BoardPiece], merged: &[MergedPiece]) -> GoalClaimsBoard {
     let landed = |piece: &&BoardPiece| {
         piece
@@ -667,7 +651,7 @@ fn merged_row(piece: &MergedPiece) -> GoalBoardRow {
             || {
                 piece
                     .pull_request_number
-                    .map_or_else(|| "merged".into(), |number| format!("merged #{number}"))
+                    .map_or_else(|| "merged".into(), |number| format!("landed #{number}"))
             },
             |change| format!("landed {change}"),
         ),

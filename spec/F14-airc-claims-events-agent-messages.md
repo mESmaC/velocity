@@ -8,7 +8,7 @@ What fills it is **events**, which Velocity posts from what it observes.
 **Messages** between agents are allowed but are for the cases events can't express.
 Modelled on xros_chat (daily logs, nicks, presence, mentions, ledgers, MCP tools).
 
-**Nicks:** the worktree leaf (`thread-ipc`, `command-palette`, `issue-57`), at most 16 characters, cut at a word boundary.
+**Nicks:** the workspace leaf (`thread-ipc`, `command-palette`, `issue-57`), at most 16 characters, cut at a word boundary.
 Duty agents use their role nick (`pr-1`, `scout-1`).
 Goal swarm agents use their model's short name and a number (`sol-1`, `argon-2`, `fable-1`), counted per project.
 Velocity posts as `velocity`.
@@ -51,7 +51,7 @@ Velocity posts them; agents never type them.
 - **Shared files are not contested.**
   AGENTS.md lists them under "Shared files":
   - **Generated files** (lockfiles, generated bindings) are never claimed.
-    They are regenerated after every merge with `master`, never merged by hand.
+    They are regenerated after every land with `master`, never merged by hand.
   - **Registration lists** (the command, event and module lists every feature adds a line to) take shared claims, which never raise an overlap.
 
   Without this, every agent overlaps every other on the same few files, and targeted rebases (F6) turn into rebasing everyone.
@@ -136,7 +136,7 @@ A line meant for one agent never reaches all of them.
   - **Discoveries** and **Past work** are the two ledgers.
     A discovery reported to Velocity ends with "Velocity issue: <title> · mESmaC/velocity#n", or "filing…" until it is filed.
     A discovery reported to Rosen uses "Rosen issue: <title> · mESmaC/rosen#n" with the same pending state.
-- **Nick list:** grouped On duty / Choosing work / Working / PR open / Holding a claim / Left (last 4).
+- **Nick list:** grouped On duty / Choosing work / Working / named / Holding a claim / Left (last 4).
   Each nick shows what it is doing.
   Clicking a nick starts a `nick: ` line.
 - **Input:** `<you>` and a one-line input.
@@ -159,9 +159,9 @@ Claims are durable first-wins records under the channel's cross-process lock, ke
 The task is display text, so two pieces with the same title never contend.
 `airc_release` names the piece or the holder's task.
 Refusals name the holder and original time.
-Leaving, failure and closed PRs retain claims.
+Leaving, failure and closed changes retain claims.
 Files use repository-relative paths with slash and dot-segment normalization; generated files are omitted.
-A file outside the thread's worktree (an absolute path, or one that climbs out with `..`) is never claimed and never overlaps; absolute paths in older logs are ignored.
+A file outside the thread's workspace (an absolute path, or one that climbs out with `..`) is never claimed and never overlaps; absolute paths in older logs are ignored.
 Registration-list claims use a `::registration` suffix so the rest of the source file remains contested.
 New overlaps post `velocity` lines naming both agents; `airc_share` records a share.
 Build threads claim their piece before ACP starts (a dispatched issue, SPEC.md section or Task List item by its work-pool identity, a free-form composer thread by `branch:<its branch>`), so a goal swarm agent and a swarm or dispatched thread on the same item collide in one lock, and a refused build thread fails without starting its agent.
@@ -175,9 +175,9 @@ Failed updates retain local work, post `conflict`, and return the failure to the
 Closed, failed and deleted dependencies end the wait without updating the branch.
 The sidebar shows the holder, PR number when known and shared file.
 Claims survive waiting and transport disconnects; reissuing the tool resumes the recorded dependency.
-**Parking (M10, §2.2):** once a working or PR-open build thread's wait is recorded and its holder has not ended, Velocity ends the agent's ACP session (its pending `airc_wait` call and AIRC server stop with it), keeps the worktree, claims, transcript and the agent's ACP session id, and sets activity `parked`.
+**Parking (M10, §2.2):** once a working or PR-open build thread's wait is recorded and its holder has not ended, Velocity ends the agent's ACP session (its pending `airc_wait` call and AIRC server stop with it), keeps the workspace, claims, transcript and the agent's ACP session id, and sets activity `parked`.
 Messages you send a parked thread are held and sent right after its resume prompt.
-When the holder merges, closes, fails or is deleted, Velocity itself continues the wait as the call would have (on a merge it updates the branch; a failed update posts `conflict`), posts `unblocked`, and resumes the thread in the same worktree: `session/load` of the saved session where the agent advertises `loadSession` (the replayed history is not shown twice), otherwise a new session whose first prompt carries the earlier transcript (its newest 40,000 characters).
+When the holder merges, closes, fails or is deleted, Velocity itself continues the wait as the call would have (on a merge it updates the branch; a failed update posts `conflict`), posts `unblocked`, and resumes the thread in the same workspace: `session/load` of the saved session where the agent advertises `loadSession` (the replayed history is not shown twice), otherwise a new session whose first prompt carries the earlier transcript (its newest 40,000 characters).
 The resume prompt says the wait ended and how.
 Parked threads resume after an app restart too.
 A thread in its delete undo window is neither parked nor resumed.
@@ -234,7 +234,7 @@ Every session Velocity starts, on every provider, gets an MCP server named `airc
 It runs Velocity's own executable as `velocity --airc-mcp <app-data> <project-id> <member-id> <nick> <member-scope>`, so the server ships inside the app; the standalone `velocity-airc` binary takes the same arguments, with or without the switch.
 Four-argument standalone launches remain supported and derive their scope locally.
 Member ids are `thread-<thread id>`, `duty-<nick>` (scouts and PR duty) and `spec-<thread id>`.
-A thread's nick is its worktree leaf, a duty agent's its role nick, and the spec interview's `spec`.
+A thread's nick is its workspace leaf, a duty agent's its role nick, and the spec interview's `spec`.
 
 **Acceptance:**
 - Two agents that claim the same file get an overlap event within one step, and the later one records a share or a wait before it edits the file.

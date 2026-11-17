@@ -329,7 +329,7 @@ pub fn pool_line(pool: PoolCounts, agents: u32) -> PoolLine {
     }
 }
 
-/// "10 worktrees on D:", or without the drive when the root has none.
+/// "10 workspaces on D:", or without the drive when the root has none.
 pub fn worktrees_hint(agents: u32, worktree_root: &str) -> String {
     let drive: String = worktree_root.chars().take(2).collect();
     let place = if drive.ends_with(':') {
@@ -337,7 +337,7 @@ pub fn worktrees_hint(agents: u32, worktree_root: &str) -> String {
     } else {
         String::new()
     };
-    format!("{agents} worktree{}{place}", plural(agents))
+    format!("{agents} workspace{}{place}", plural(agents))
 }
 
 pub fn launch_label(agents: u32) -> String {

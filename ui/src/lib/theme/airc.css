@@ -374,3 +374,8 @@
   border-color: var(--line-dim);
   border-radius: var(--r-sm);
 }
+
+.cl .fs code {
+  max-width: var(--layout-item-width);
+  overflow-wrap: anywhere;
+}

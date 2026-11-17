@@ -1,4 +1,4 @@
-#### Settings → Worktrees · New worktree setup · a command to run after creation, saved per project (empty by default; Velocity itself can use pnpm -C ui install)
+#### Settings → Workspaces · New workspace setup · a command to run after creation, saved per project (empty by default; Velocity itself can use pnpm -C ui install)
 
 <!-- split-spec: {"order":657,"kind":"markdown","indentation":2} -->
 - a command to run after creation, saved per project (empty by default; Velocity itself can use `pnpm -C ui install`).

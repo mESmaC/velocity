@@ -56,7 +56,7 @@ Its accuracy rules come from the A.TXY address memory in MCL4-COE and `elem`: ro
 **Building and keeping it current:**
 - **Parse cache.**
   Velocity keeps one parse cache per project in the app data folder: each file's symbols and references, keyed by a hash of the file's content, the parser version and Velocity's version.
-  It is an append-only log of checksummed records, shared by every agent of the project, so a file is parsed once whatever worktree or commit it appears in.
+  It is an append-only log of checksummed records, shared by every agent of the project, so a file is parsed once whatever workspace or commit it appears in.
   A torn or corrupt record at the end of the log is dropped and that file is parsed again.
   The log is compacted when it grows past twice the size of the records still in use.
   A large parse (a new project, a cold cache) runs under the project's build lock, so a swarm's agents starting together parse once and the rest read the cache.
@@ -88,7 +88,7 @@ It runs Velocity's own executable as `velocity --graph-mcp <app-data> <project-i
   The server's MCP instructions state when the graph is the better path (where something lives, what calls it, what a change affects) and when grep is (exact text), that a record's lines are what to read, and that `inferred`, `ambiguous` and `unconfirmed` links are leads to check.
   They are written as facts, not orders: imperative rules read like prompt injection and get ignored.
 - **Session-start map.**
-  When the index is ready within 1.5 s of the agent connecting, the instructions end with a map of about 250 tokens: the worktree, its file and symbol counts, its biggest subsystems and its most-used symbols with their addresses.
+  When the index is ready within 1.5 s of the agent connecting, the instructions end with a map of about 250 tokens: the workspace, its file and symbol counts, its biggest subsystems and its most-used symbols with their addresses.
 
 **Measuring it.**
 The graph exists to save time and tokens without costing accuracy, so Velocity measures that, in total rather than per thread.
@@ -119,6 +119,6 @@ The graph exists to save time and tokens without costing accuracy, so Velocity m
 - [ ] Every new agent of every provider has the graph tools with no per-provider setup.
 - [ ] A name defined more than once returns `ambiguous` with every candidate, never one of them.
 - [ ] After an agent edits a file, the next query answers from the edited file, never from an older parse.
-- [ ] After a merge to the base branch, only the files it changed are parsed.
+- [ ] After a merge to the base, only the files it changed are parsed.
 - [ ] A query answers in under 50 ms on a 100,000-line project.
 - [ ] The usage modal compares tokens and time per turn for the active project with the graph on and off, and its switch decides whether new agents get the graph.

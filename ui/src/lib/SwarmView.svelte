@@ -77,7 +77,7 @@
 
       <div>
         <div class="section-h">
-          Agents · one per item, each in its own worktree
+          Agents · one per item, each in its own workspace
         </div>
         <div class="sw-grid">
           {#each swarm.cards as card (card.identifier)}

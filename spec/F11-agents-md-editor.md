@@ -32,7 +32,7 @@ It reads and writes the repo's `AGENTS.md`.
     It never requests changes for wording alone.
     A vague word it can't resolve becomes an issue (F7 severity bar).
 - **Side panel:**
-  - **Covers:** commands (build, proofs, lint); implementation first; proofs: proof list only, after the code; tests and docs: low priority; scope; PR: monitor until merged; PR: address every review comment; definition of done; hard "never" list.
+  - **Covers:** commands (build, proofs, lint); implementation first; proofs: proof list only, after the code; tests and docs: low priority; scope; Change: follow until landed; Change: address every review comment; definition of done; hard "never" list.
     Each missing item has **Add**, which inserts editable bullets into the right section.
   - **Flagged:** the list, with **Tighten all**.
   - a key legend
@@ -47,7 +47,7 @@ It reads and writes the repo's `AGENTS.md`.
   | `Backspace` on an empty bullet | delete it |
   | `↑/↓` at the start/end of a bullet | move to the previous/next bullet |
   | `## Name` + `Enter` | new section |
-  | `Ctrl+S` | save and commit |
+  | `Ctrl+S` | save and snapshot |
 
 - **Leaving a bullet** you changed also submits it.
 - **External edits:** Save rejects a changed disk file and keeps your draft.
@@ -60,17 +60,21 @@ The template is installed atomically, so concurrent setup cannot replace instruc
 Installation or commit failures stop setup and report the error; created instructions remain available for recovery.
 On retry, a regular AGENTS.md whose bytes still match the generated default template is committed before registration, even when it was already present; custom instructions, directories and symbolic links remain untouched.
 The interview continues to write only SPEC.md (Q7).
-The template includes implementation-first, proof-list-only, scope, PR follow-through, Task List, AIRC, shared-file and review-severity rules.
+The template includes implementation-first, proof-list-only, scope, change follow-through, Task List, AIRC, shared-file and review-severity rules.
 Project-specific commands are filled in from the project's manifests and spec rather than assuming Rust or a frontend stack.
 
 **The default AGENTS.md** includes these rules:
-- Opening the PR does not finish the task; monitor it until it merges.
-- Address every PR duty comment.
+- Name the change with `rosen commit -m`, then Velocity handles landing; the task finishes when the change lands.
+- Resolve stored conflicts with `rosen rebase` and `rosen resolve`, and repair a reopened change after a post-land revert.
 - Add to the Task List only when the user asks; otherwise file an issue.
-- Review severity: what blocks a merge, and that everything else becomes an issue (F7).
-- Shared files: the project's generated files and registration lists, and how to merge them (F14).
+- Review severity: the project's review policy, and that everything else becomes an issue (F7).
+- Shared files: the project's generated files and registration lists, and how to regenerate them on combined inputs (F14).
 - Build queue: run every heavy build, test and lint through `rosen run -- <command>`, the machine-wide queue (F5).
 
 **Accept when:**
 - [ ] Saving commits and pushes AGENTS.md; agents pick it up on their next task.
 - [ ] Undo restores your exact original wording, including removing any split-off bullet.
+
+The default template teaches Rosen workspaces, automatic snapshots, named changes, path claims and landing only.
+Covers Add inserts the same Rosen instructions and never adds git commands or a GitHub PR workflow.
+The legacy git-backed AGENTS.md save/publication implementation retains literal GitHub semantics until its owning migration changes it (#417).

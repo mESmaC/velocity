@@ -29,7 +29,8 @@ button {
 }
 button:focus-visible {
   outline: none;
-  box-shadow: var(--focus);
+  /* Keep the ring when a raised control supplies its own shadow. */
+  box-shadow: var(--focus) !important;
 }
 .app-shell {
   height: 100%;
@@ -115,4 +116,16 @@ button:focus-visible {
 }
 ::-webkit-scrollbar-corner {
   background: var(--worktrees-transparent);
+}
+
+::selection {
+  background: var(--polish-selection-background);
+}
+button:disabled {
+  opacity: var(--new-project-button-disabled-opacity);
+  cursor: default;
+}
+select:focus-visible {
+  outline: none;
+  box-shadow: var(--focus);
 }

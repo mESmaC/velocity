@@ -1,4 +1,5 @@
 <script lang="ts">
+  import PaneState from './PaneState.svelte';
   import { onMount, tick } from 'svelte';
   import { pop } from './motion';
   import {
@@ -58,12 +59,16 @@
     dialog.showModal();
     input.focus();
     void onAircModal((event) => {
-      if (event.payload.project_identifier === project)
+      if (event.payload.project_identifier === project) {
         view = event.payload.view;
-    }).then((unlisten) => {
-      if (active) stop = unlisten;
-      else unlisten();
-    });
+        error = '';
+      }
+    })
+      .then((unlisten) => {
+        if (active) stop = unlisten;
+        else unlisten();
+      })
+      .catch(report);
     aircModalCommands
       .view(project)
       .then((next) => (view ??= next))
@@ -81,6 +86,15 @@
     if (pinned)
       void tick().then(() => main?.scrollTo({ top: main.scrollHeight }));
   });
+
+  async function refresh() {
+    try {
+      view = await aircModalCommands.view(project);
+      error = '';
+    } catch (reason) {
+      report(reason);
+    }
+  }
 
   function report(reason: unknown) {
     error = reason instanceof Error ? reason.message : String(reason);
@@ -170,7 +184,14 @@
     </div>
     <div class="airc-body">
       <div class="airc-main" bind:this={main} onscroll={scrolled}>
-        {#if tab === 'Claims'}
+        <PaneState
+          name={`AIRC ${tab}`}
+          rosen
+          loading={!view}
+          {error}
+          retry={refresh}
+        />
+        {#if view && tab === 'Claims'}
           <p class="cl-note" class:warn={view?.claims_warn}>
             {view?.claims_note ?? ''}
           </p>
@@ -186,14 +207,22 @@
               >
               {#if claim.dependency}<span class="dep">{claim.dependency}</span
                 >{/if}
-            </div>{/each}
-        {:else if tab === 'Discoveries' || tab === 'PastWork'}
+            </div>{:else}<PaneState
+              name="Claims"
+              empty
+              message="No active claims."
+            />{/each}
+        {:else if view && (tab === 'Discoveries' || tab === 'PastWork')}
           {#each lines as line (line.key)}<div class="lg">
               <span class="ts">{line.time}</span><span
                 class="n {tone(line.nick_tone)}">{line.nick}</span
               ><span class="x">{@render spans(line)}</span>
-            </div>{:else}<p class="cl-note">Nothing logged yet.</p>{/each}
-        {:else}
+            </div>{:else}<PaneState
+              name={tab}
+              empty
+              message="Nothing logged yet."
+            />{/each}
+        {:else if view}
           {#each lines as line (line.key)}{#if tab === 'Events'}<div
                 class="al ev tone-{line.tone}"
                 class:overlap={line.tag === 'overlap'}
@@ -213,11 +242,13 @@
                 <span class="ts">{line.time}</span><span
                   class="n {tone(line.nick_tone)}">&lt;{line.nick}&gt;</span
                 ><span class="x">{@render spans(line)}</span>
-              </div>{/if}{:else}<p class="cl-note">
-              {tab === 'Events'
-                ? 'No events yet. Claims, PRs, reviews, merges, issues and Task List changes show here as they happen.'
-                : 'No messages. Agents message each other only when a claim, overlap or dependency needs words. Everything else is in Events.'}
-            </p>{/each}
+              </div>{/if}{:else}<PaneState
+              name={tab}
+              empty
+              message={tab === 'Events'
+                ? 'No events yet · Project activity appears here.'
+                : 'No messages yet · Coordination messages appear here.'}
+            />{/each}
         {/if}
       </div>
       <aside class="airc-nicks" aria-label="Nick list">
@@ -258,7 +289,7 @@
         aria-label="Comment"
         spellcheck="false"
         placeholder="Comment for every agent, or “nick: …” to reach one. They read it at their next step."
-      />{#if error}<span class="error" role="alert">{error}</span>{/if}
+      />
     </form>
   </div>
 </dialog>

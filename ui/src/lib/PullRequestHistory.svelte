@@ -8,7 +8,7 @@
 </script>
 
 {#if track}
-  <div class="pr-track" aria-label="Pull request progress">
+  <div class="pr-track" aria-label="Change progress">
     {#each history.track as step, index (index)}
       {#if index}<span class="bar" class:done={step.state === 'done'}
         ></span>{/if}
@@ -64,7 +64,7 @@
   {/each}
   {#if history.cleanup_error}
     <div class="err-card" role="alert">
-      <div class="ah">Worktree cleanup will retry</div>
+      <div class="ah">Workspace cleanup will retry</div>
       <pre>{history.cleanup_error}</pre>
     </div>
   {/if}

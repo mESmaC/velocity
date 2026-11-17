@@ -1,4 +1,5 @@
 <script lang="ts">
+  import PaneState from './PaneState.svelte';
   import { onMount } from 'svelte';
   import Icon from './Icon.svelte';
   import SettingsNav from './SettingsNav.svelte';
@@ -44,7 +45,12 @@
 
   function run(request: Promise<ProvidersView>) {
     error = '';
-    request.then((next) => (view = next)).catch(report);
+    return request
+      .then((next) => {
+        view = next;
+        error = '';
+      })
+      .catch(report);
   }
 
   const edit = (change: ProviderEdit) => run(providerCommands.edit(change));
@@ -99,7 +105,10 @@
     let stop: (() => void) | undefined;
     async function start() {
       const unlisten = await onProviders((event) => {
-        if (active) view = event.payload.view;
+        if (active) {
+          view = event.payload.view;
+          error = '';
+        }
       });
       if (!active) {
         unlisten();
@@ -128,7 +137,11 @@
         class:wait={provider.phase === 'Waiting' ||
           provider.phase === 'Checking' ||
           provider.phase === 'Installing'}
-      ></i>{provider.status}
+      ></i>{provider.phase === 'Failed'
+        ? 'Provider unavailable'
+        : provider.phase === 'NotInstalled'
+          ? 'Agent not installed · Install to connect.'
+          : provider.status}
     </div>
     <div class="pv-actions">
       {#if provider.phase === 'SignedIn'}<button
@@ -156,6 +169,12 @@
           onclick={() => removeAgent(provider.provider)}>Remove</button
         >{/if}
     </div>
+    <PaneState
+      name={provider.name}
+      loading={provider.phase === 'Checking'}
+      error={provider.phase === 'Failed' ? provider.status : ''}
+      retry={() => run(providerCommands.list())}
+    />
     <div class="pv-command">
       ACP agent <label class="pv-command-input"
         ><input
@@ -294,7 +313,12 @@
       {send}
     />
     <div class="worktree-settings-main">
-      {#if error}<p class="pv-error" role="alert">{error}</p>{/if}
+      <PaneState
+        name="Providers"
+        {error}
+        loading={!view}
+        retry={() => run(providerCommands.list())}
+      />
       {#if view}
         <section>
           <h2>Providers</h2>
@@ -370,7 +394,7 @@
           <h2>Thread titles</h2>
           <p class="worktree-description">
             A small, fast model names each thread from your first message, and
-            the branch is named from the title. It runs once per thread, so pick
+            the change is named from the title. It runs once per thread, so pick
             something quick.
           </p>
           {@render choice(
@@ -391,8 +415,6 @@
               >{/if}
           </p>
         </section>
-      {:else}
-        <p class="worktree-description">Reading providers…</p>
       {/if}
     </div>
   </div>

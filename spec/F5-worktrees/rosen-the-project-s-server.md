@@ -8,7 +8,7 @@
   The first time, it imports the project's history from the checkout's `origin` (the checkout itself when it has none), and `origin` becomes the mirror every land is pushed to (Rosen R1).
   Velocity stops the servers it started when it exits and before an update installs, so their binaries can be replaced.
   Velocity follows every Rosen project's `mirror` events, including projects with no threads, and restores the latest mirror state at startup even when its thread-event cursor has passed the failure (#402).
-  While the latest push has failed, the main window's project header and Settings → Worktrees → Version control show `failing · retrying` with the next retry time, or `rejected · needs a person` when Rosen says the push was rejected.
+  While the latest push has failed, the main window's project header and Settings → Workspaces → Version control show `failing · retrying` with the next retry time, or `rejected · needs a person` when Rosen says the push was rejected.
   Both show the error's first three lines and the last commit the mirror accepted, or say that no accepted commit is recorded.
   The first rejection in an incident raises one toast naming the project and writes one `failed` entry in its AIRC channel, addressed to the current duty agents.
   Retrying the same rejection does not repeat the toast or channel entry, including after a Velocity restart; a channel failure leaves a durable notice to retry without hiding the project warning.

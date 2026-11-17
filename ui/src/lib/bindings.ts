@@ -1484,7 +1484,7 @@ export type GoalSwarmViewSnapshot_Deserialize = {
 	prompt_label: string,
 	segments: SwarmStage[],
 	legend: SwarmLegendItem[],
-	/**  "<n> waiting on another agent's PR". */
+	/**  "<n> waiting on another agent's change". */
 	waiting_label?: string | null,
 	cards: GoalAgentCard_Deserialize[],
 	feed: GoalFeedEvent[],
@@ -1507,7 +1507,7 @@ export type GoalSwarmViewSnapshot_Serialize = {
 	prompt_label: string,
 	segments: SwarmStage[],
 	legend: SwarmLegendItem[],
-	/**  "<n> waiting on another agent's PR". */
+	/**  "<n> waiting on another agent's change". */
 	waiting_label: string | null,
 	cards: GoalAgentCard_Serialize[],
 	feed: GoalFeedEvent[],
@@ -1943,6 +1943,8 @@ export type LayoutSnapshot = LayoutSnapshot_Serialize | LayoutSnapshot_Deseriali
 
 export type LayoutSnapshot_Deserialize = {
 	revision: number,
+	/**  The selected project's Rosen event stream is reconnecting. */
+	rosen_reconnecting: boolean,
 	project_identifier?: number | null,
 	project_name: string,
 	rosen_mirror?: MirrorState_Deserialize | null,
@@ -2000,6 +2002,8 @@ export type LayoutSnapshot_Deserialize = {
 
 export type LayoutSnapshot_Serialize = {
 	revision: number,
+	/**  The selected project's Rosen event stream is reconnecting. */
+	rosen_reconnecting: boolean,
 	project_identifier: number | null,
 	project_name: string,
 	rosen_mirror: MirrorState_Serialize | null,

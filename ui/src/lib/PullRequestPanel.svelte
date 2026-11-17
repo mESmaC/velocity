@@ -1,4 +1,5 @@
 <script lang="ts">
+  import PaneState from './PaneState.svelte';
   import { onMount } from 'svelte';
   import {
     onProjectSelected,
@@ -83,12 +84,22 @@
   });
 </script>
 
-<section class="panel pull-request-panel" aria-label="Open Pull Requests">
+<section class="panel pull-request-panel" aria-label="Open Changes">
   <div class="panel-h">
-    <span class="label">Open Pull Requests</span>
+    <span class="label">Open Changes</span>
     <span class="count">{panel?.rows.length || ''}</span>
   </div>
   <div class="panel-body" aria-busy={!panel || panel.loading}>
+    <PaneState
+      name="Changes"
+      loading={!panel || panel.loading}
+      empty={!panel?.rows.length}
+      error={error || panel?.error || ''}
+      retry={refresh}
+      message={panel?.project_identifier == null
+        ? 'Select a project.'
+        : 'No open pull requests.'}
+    />
     {#each panel?.rows ?? [] as row (row.number)}
       <button
         class="item pull-request-row"
@@ -119,19 +130,6 @@
             >{/if}
         </span>
       </button>
-    {:else}
-      {#if !error && !panel?.error}
-        <p class="empty">
-          {!panel || panel.loading
-            ? 'Loading pull requests…'
-            : 'No open pull requests.'}
-        </p>
-      {/if}
     {/each}
-    {#if error || panel?.error}
-      <p class="empty pull-request-error" role="status">
-        {error || panel?.error}
-      </p>
-    {/if}
   </div>
 </section>

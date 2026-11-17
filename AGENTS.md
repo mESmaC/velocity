@@ -8,6 +8,8 @@ You are building Velocity: a Rust + Tauri desktop IDE that runs many coding agen
 - `design/main-window.html` is the reference UI. Open it in a browser. Every feature in SPEC.md is mocked there with live simulated data, and its behaviour is part of the spec.
 
 ## Where you work
+- Use Rosen words for Rosen work: workspace, change, snapshot, name the change, land, base, stored conflict, land history and path claim. Literal GitHub workflows below keep GitHub words.
+- #417 migrates copy first; Rust and IPC identifiers migrate in #421–#424. Keep their current command spellings until then.
 - Velocity's projects, this one included, use Rosen by default (F5, `spec/F5-worktrees/README.md` and its rule files). Your thread works in a Rosen workspace by default: Velocity's first message says so and names your change. Follow "In a Rosen workspace" below.
 - When the project chooses git, your folder is a git worktree. Follow "In a git worktree" below. A Rosen project never falls back to git: workspace failures retry Rosen, then leave a retryable thread error (#407).
 - A Rosen workspace has a `.rosen` folder at its root and no `.git`.
@@ -54,7 +56,7 @@ Your job is working functionality. Proofs, tests and docs support it; they never
 - `crates/velocity-airc/`: claims, events, ledgers and the AIRC MCP server.
 - `crates/velocity-github/`: GitHub through `gh`.
 - `crates/velocity-graph/`: the code graph (F19): tree-sitter symbols, files and subsystems with their links, the per-project parse cache, and the `velocity-graph` MCP tools every agent gets.
-- `crates/velocity-threads/`: starting build threads from the composer (F4): the thread's name and worktree plan, its live agent session, and the transcript the thread view shows.
+- `crates/velocity-threads/`: starting build threads from the composer (F4): the thread's name and workspace plan, its live agent session, and the transcript the thread view shows.
 - `crates/velocity-updates/`: Velocity's own updates (F1 Updates): how this copy was installed (setup, MSI or portable), the Updates panel's state, and replacing a running portable executable.
 - `crates/velocity-new-project/`: Create in the New project dialog (F2): resolves the request and runs the planned git, `gh` and store steps.
 - `crates/velocity-proofs/`: the proof checks (F17): `lake build`, the `sorry`/`admit` scan, the axiom audit, the design proof's SPEC.md section, and the statement lock PR duty's approvals take.
@@ -64,7 +66,7 @@ Your job is working functionality. Proofs, tests and docs support it; they never
 - `ui/`: the frontend: Svelte 5, TypeScript and Vite, built with pnpm.
 - `proofs/`: the Lean 4 Lake project.
 - `stress/`: tests and stress scripts. Scouts and PR duty agents own it.
-- `design/`: the reference UI. Read-only.
+- `design/`: the reference UI. Read-only except for user-authorized changes; #414 authorizes the Rosen-first overhaul.
 - `spec/`: the spec's feature and section files. F5 and F7 have a README and one file per rule; `spec/3.1-ipc/` has a README and one file per feature's commands and events.
 - `scripts/`: development tooling: the local checks, machine setup and the PR duty app token.
 - If your work needs a crate that isn't listed here, add it to this list in the same PR.
@@ -107,7 +109,7 @@ Your job is working functionality. Proofs, tests and docs support it; they never
 
 ## Proofs
 Lean proves a few algorithms where a mistake loses work or breaks coordination. It never blocks implementation, and most pieces have no Lean.
-- Write Lean only for features on the proof list in F17, `spec/F17-proofs-and-adversarial-testing.md`: claim lock, targeted rebases and landing, worktree deletion, goal swarm work choice, and stall detection and claim release. Every other piece ships with no Lean.
+- Write Lean only for features on the proof list in F17, `spec/F17-proofs-and-adversarial-testing.md`: claim lock, targeted rebases and landing, workspace deletion, goal swarm work choice, and stall detection and claim release. Every other piece ships with no Lean.
 - If you think a feature belongs on the proof list, file an issue. Never write a proof for a feature that isn't on it.
 - For a proof-list feature, write the code first. Then, in the same PR, write `proofs/<Feature>/Design.lean`. On a Rosen project whose `rosen.toml` sets `review = "after-land"`, the Lean follows the land instead: proof agents write and check it in a later change (SPEC.md §1 Rule 8), and the release gate's `lake build` holds every release to it. It states exactly three theorems:
   - `correct`: the model meets the SPEC.md section it implements. Name that section in the file.
@@ -127,12 +129,12 @@ Lean proves a few algorithms where a mistake loses work or breaks coordination. 
 ## Tests and docs
 Both are low priority. Add them only where they pay for themselves, and only after the feature works.
 - Default: add no tests.
-- Add a targeted test only for a critical contract: the claim lock, worktree deletion, saved state surviving a save and load, the fixture check for a proof-list feature, or a concrete failure a scout found. Put the risk it covers in a comment above it.
+- Add a targeted test only for a critical contract: the claim lock, workspace deletion, saved state surviving a save and load, the fixture check for a proof-list feature, or a concrete failure a scout found. Put the risk it covers in a comment above it.
 - Never write a test that restates the implementation, and never add a test suite for a whole module.
 - Scouts and PR duty agents write the adversarial tests and stress scripts.
 - A bug fix copies the scout's failing script into `stress/` unchanged.
 - A stress script is evidence for one risk, named in its header comment. Keep it that way:
-  1. When master's types or entry points move, update the script so it still exercises the same risk through the current entry point. What it asserts must not get weaker. Say in its header what changed and why.
+  1. When the base's types or entry points move, update the script so it still exercises the same risk through the current entry point. What it asserts must not get weaker. Say in its header what changed and why.
   2. When the product has made the risk impossible to express (the entry point is gone and the hazard with it), retire the script: delete it, and record the risk, the commit that removed the hazard and the reason in the PR that deletes it.
   3. When a script fails because the product is wrong, leave the script as it is. Fix the product or file an issue.
   4. Build other modules' structs through their constructors, like all other code (see Code), so a new field can't break the script.
@@ -165,7 +167,7 @@ In a git worktree, claims are draft PRs:
 - If you touch a file your PR body doesn't list, add it to the list before you push.
 - When the work is done, retitle the PR without `[claim]` and mark it ready for review.
 
-## Worktrees
+## Workspaces
 - In Rosen, Velocity creates your workspace when your thread starts and deletes it when your change lands. Never delete it or move files out of it.
 - In git, every agent works in its own git worktree under `X:\velocity-wt\`. Create it from the latest `master`: `git fetch origin` then `git worktree add X:\velocity-wt\<slug> -b vel/<slug> origin/master`.
 - Branch name: `vel/<slug>`, where the slug is a short name for the piece.
@@ -176,13 +178,13 @@ In a git worktree, claims are draft PRs:
 Most merge conflicts come from a few files every feature touches. Keep your edits to them conflict-free:
 - **In Rosen**, `rosen.toml` lists generated artifacts under `generated` and only registration lists under `registration_lists`. Rosen never line-merges generated artifacts. When it reports `regenerate`, regenerate `Cargo.lock` with `cargo metadata --format-version 1`, `ui/pnpm-lock.yaml` with `pnpm -C ui install --lockfile-only`, and `ui/src/lib/bindings.ts` with `pnpm -C ui bindings`, from the project root, then name the work again. Locked checks (`--locked`, `--frozen-lockfile`, `export-bindings --check`) reject stale base copies after a land.
 - **Generated files:** `ui/src/lib/bindings.ts`, `Cargo.lock` and `ui/pnpm-lock.yaml`. Never resolve a conflict in them by hand. After `scripts/Setup-DevMachine.ps1`, `git merge origin/master` keeps master's copy without stopping. Then regenerate and commit: `pnpm -C ui bindings`, `cargo build --workspace` for `Cargo.lock`, `pnpm -C ui install` for `pnpm-lock.yaml`. `scripts/check.ps1` fails if you forget.
-- **Registration lists:** `collect_commands!`, `collect_events!`, `.typ` and `.constant` in `src-tauri/src/lib.rs`, the `mod` lines in each crate's `lib.rs`, and the dependency and member lists in `Cargo.toml`. Add your lines inside your module's group. A new module's group goes in alphabetical order, never at the end: two PRs that both append at the end always conflict.
+- **Registration lists:** `collect_commands!`, `collect_events!`, `.typ` and `.constant` in `src-tauri/src/lib.rs`, the `mod` lines in each crate's `lib.rs`, and the dependency and member lists in `Cargo.toml`. Add your lines inside your module's group. A new module's group goes in alphabetical order, never at the end: two changes that both append at the end always conflict.
 - Edits to generated files and registration lists never need a "shares" note (Coordination).
 - **`.gitattributes`:** `/stress/*` already preserves every stress script's bytes. Never add a line per script.
 - **Spec files:** claim the feature or rule file you edit. F5 rules are in `spec/F5-worktrees/`, F7 rules in `spec/F7-duty-agents/`, and §3.1 IPC in `spec/3.1-ipc/<feature>.md`. Add new rules in their own files and add each file to `SPEC.md`'s index; keep each folder's README short. Existing rule edits stay in their own files.
 - **§7 (`spec/7-implementation-order.md`):** never tick a checkbox in a PR: PR duty ticks it when it lands the PR. A Rosen change ticks its own item's checkbox, since only the reviewed change lands, so the tick lands with the work and never without it.
-- **Overlapping fixes, first come, first served:** when two open PRs fix the same root problem or add the same helper, the one that lands first wins. The later PR drops its own version and switches to `master`'s in the commit that merges `master` in. Never land two implementations of one thing, and never hold a PR back so another can land its version first.
-- **Silent conflicts:** after merging `master`, a build error in code neither side edited (a struct gained a field, a function was renamed) is a merge conflict. Fix it in the merge commit.
+- **Overlapping fixes, first come, first served:** when two named changes fix the same root problem or add the same helper, the one that lands first wins. The later PR drops its own version and switches to `master`'s in the commit that merges `master` in. Never land two implementations of one thing, and never hold a PR back so another can land its version first.
+- **Silent conflicts:** after merging `master`, a build error in code neither side edited (a struct gained a field, a function was renamed) is a conflict. Fix it in the merge commit.
 
 ## Sensitive paths
 PR duty tiers every change and PR (F7, `spec/F7-duty-agents/pr-duty-tiered-review.md` and its rule files). On a Rosen project whose `rosen.toml` sets `review = "after-land"`, a sensitive change gets no review before it lands: it lands on a clean merge like every change, and goes first in the review queue after the land. Everywhere else, a change or PR that touches a path listed here is sensitive: full review, `cargo run -p stress -- --all` on the merge result before merge, and a confidence proof at the reference level (a fixture table exported from the Lean model plus one Rust test that checks the implementation against it) for any proof-list feature it changes. The code level (an Aeneas translation) is required only when an issue asks for one (#142). A PR that changes only docs, comments or formatting is trivial: approve it once `scripts/check.ps1` passes and the change matches its claim. Every other PR gets the full review. Every tier needs an approving review.
@@ -201,12 +203,12 @@ One piece, one change (or one PR).
 - The folder is not a git checkout. Never run `git` or `gh` in it, and skip every branch, commit, push and pull request step below.
 - Every file you write is on the Rosen server within 2 seconds; there is nothing to push. `rosen status` shows what is stored and whether the server has rebased your change; `rosen diff` shows your change.
 - When the work runs end to end and its checks pass (`scripts/check.ps1` covers what your change can affect), name it: `rosen commit -m "<what changed, the §7 item or issue, the theorems proved>"`. That is your request for review. End your turn.
-- PR duty reviews your change's merge result onto `master`, and Velocity runs `rosen.toml`'s pre-land checks on that exact tree before it lands it. Never approve or land your own change (`rosen review approve`, `rosen receipt submit`, `rosen land`).
-- When `rosen.toml` sets `review = "after-land"` (SPEC.md §1 Rosen rules), no one reviews before the land and no check holds it: Velocity lands your change as soon as it merges cleanly onto `master`. Build and lint it through `rosen run` before you name it: the build and lint run again right after the land, and a change that breaks them is reverted. Review, scouting, the full tests and Lean follow the land; a full test your change fails is filed as a `post-land-failure` issue, not reverted. Your task is finished when your change lands.
+- The review agent reviews your change's combined result onto the base, and Velocity runs `rosen.toml`'s pre-land checks on that exact tree before it lands it. Never approve or land your own change (`rosen review approve`, `rosen receipt submit`, `rosen land`).
+- When `rosen.toml` sets `review = "after-land"` (SPEC.md §1 Rosen rules), no one reviews before the land and no check holds it: Velocity lands your change as soon as it combines cleanly with the base. Build and lint it through `rosen run` before you name it: the build and lint run again right after the land, and a change that breaks them is reverted. Review, scouting, the full tests and Lean follow the land; a full test your change fails is filed as a `post-land-failure` issue, not reverted. Your task is finished when your change lands.
 - Requested changes and failed pre-land checks come back to you as a message. Fix them, then name the work again with `rosen commit -m`.
-- A conflict with `master`: run `rosen rebase`, combine both sides between the conflict markers, run `rosen resolve <file>` for each file, then `rosen commit -m` again.
+- A conflict with the base: run `rosen rebase`, combine both sides between the conflict markers, run `rosen resolve <file>` for each file, then `rosen commit -m` again.
 - After a land, the post-land checks run the full tests. If your change broke them, Rosen reverts it and Velocity reopens your workspace with the failing output. Your work is kept: fix it and name it again.
-- Rosen mirrors `master` to GitHub after each land. Never open a GitHub PR for a Rosen change.
+- Rosen mirrors the base to GitHub after each land. Never open a GitHub PR for a Rosen change.
 
 ### In a git worktree
 - One piece, one branch, one PR, against `master`.
@@ -264,7 +266,7 @@ Long review cycles cost more than the defects they catch. Block only what matter
 ## Done means
 - The piece is built exactly as SPEC.md describes it and behaves like the reference UI. You ran it and saw it work.
 - The proofs check, clippy, `pnpm -C ui check` and `pnpm -C ui lint` report zero warnings on the merge result.
-- The change has landed and its post-land checks passed, or the PR is merged and your worktree is removed.
+- The change has landed and its post-land checks passed, or the PR is merged and your workspace is removed.
 
 ## Never
 - Never push to `master` directly, and never land your own Rosen change.

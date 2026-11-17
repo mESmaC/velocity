@@ -31,7 +31,7 @@ Any other repo that follows the Agent Skills standard can be added.
   - UI UX Pro Max when a UI is found: web frameworks in `package.json`, Tailwind, SwiftUI, Flutter or Compose files.
   - Game dev skills (the router plus the detected engine's bundle) when an engine is found: `project.godot`, `*.uproject`, `ProjectSettings/`, or a Bevy, Phaser, PixiJS or three.js dependency.
 
-  Velocity re-checks after every merge, so a project that gains a UI later gets the suggestion then.
+  Velocity re-checks after every land, so a project that gains a UI later gets the suggestion then.
   A suggested pack that is not installed says **Install to turn on**.
   Its switch can decline the suggestion before installation; that choice survives later scans and installation.
   Installing a selected pack activates it automatically.
@@ -52,7 +52,7 @@ The provider-to-folder mapping is a data table in `velocity-skills`, not code, s
 Kimi Code's folder is unverified, so Velocity links into both folders: the links are junctions excluded from version control, so the second folder costs nothing and never reaches a commit.
 When Kimi's folder is confirmed, the extra row is dropped, and Velocity removes its own links and exclude lines from a folder no provider uses any more.
 
-- **Linked** (default): each enabled skill is a directory junction (Windows) or symlink into the library, created in every worktree and in the main checkout the spec interview uses.
+- **Linked** (default): each enabled skill is a directory junction (Windows) or symlink into the library, created in every workspace and in the main checkout the spec interview uses.
   Those paths are listed in the repo's `.git/info/exclude`, so they never reach a commit or a PR.
   - **Rosen workspaces (#272):** links are made after the take, before the setup command, alongside existing skills without replacing them. Each provider's skills folder gets exact local `.gitignore` rules for Velocity's links; a newly created ignore file excludes itself too. Existing ignore files are preserved and supplemented. These rules survive a rebase without putting the links in a snapshot. Pack MCP discovery identifies Rosen workspaces through the project's saved workspace root or thread path, so enabled servers reach Rosen agents without a git checkout.
 - **Committed** (per project): the enabled skills are copied into the repo at the pinned commit, for collaborators who don't use Velocity.
@@ -81,7 +81,7 @@ Skills add knowledge; they never remove a tool.
 - **REA: MCP server.**
   - Turning REA on registers its MCP server in Velocity's shared MCP servers (§3.2), so every agent of every provider gets REA's tools with no per-agent setup.
     Its investigation skill is linked like any other.
-  - Analysis runs locally, under your user, inside the agent's worktree.
+  - Analysis runs locally, under your user, inside the agent's workspace.
   - The card says REA is for software you own or are authorized to examine, and that commercial engines (IDA, Hopper, JEB) need your own licences.
 
 **Accept when:**

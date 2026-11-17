@@ -98,3 +98,13 @@ At its next step the affected agent commits current edits and calls `airc_rebase
 - [ ] A conflict at landing reaches the owning agent within one event cycle and is resolved without user input.
 - [ ] A comment from a PR duty agent reaches the authoring thread automatically and is acted on without user input.
 - [ ] The thread is not finished until `pr://merged`.
+
+**Rosen-first reference (#414, #421, #422):**
+The reference replaces the PR rail with Rosen status: collapsible, reorderable Server, Base, Landing, Claims and conflicts, Warm pool, Mirror and Changes sections.
+Change rows link their owning threads and show path claims, overlaps, conflicts, stacked parents and line counts.
+The track is Editing → Named → Landing → Landed → Green; a failed build shows Reverted → Reopened with culprit output and kept work, and conflicts show their file and a Resolve with agent action.
+Land history includes the landed revision, trailers and post-land results.
+Review and proof coverage follow lands and never gate them.
+Projects, landed changes and AIRC land events offer Open on Collapse when a Collapse mirror exists.
+Mirror rejection and retry remain visible while local lands continue.
+The reference state preview exercises empty, skeleton loading, retryable error and reconnecting states in each data pane.

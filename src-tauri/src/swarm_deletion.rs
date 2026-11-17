@@ -163,8 +163,8 @@ pub(crate) fn delete_swarm_now(
         .count();
     let message = match worktrees {
         0 => format!("Deleted “{}”", swarm.title),
-        1 => format!("Deleted “{}” and its worktree", swarm.title),
-        count => format!("Deleted “{}” and {count} worktrees", swarm.title),
+        1 => format!("Deleted “{}” and its workspace", swarm.title),
+        count => format!("Deleted “{}” and {count} workspaces", swarm.title),
     };
     let deletion = Deletion::Swarm {
         project: project_identifier,

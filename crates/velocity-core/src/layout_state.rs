@@ -36,6 +36,7 @@ struct SentSteering {
 #[derive(Clone)]
 pub struct LayoutState {
     data: LayoutData,
+    reconnecting_projects: BTreeSet<u32>,
     issue_rows: BTreeMap<u32, Vec<RailItem>>,
     /// Each project's enabled skills for the composer's `$` menu (F4, F18). Kept apart from
     /// `data` because they come from the skill library, not from `state.json`.
@@ -82,10 +83,26 @@ pub struct LayoutState {
     toast_count: u32,
 }
 
+impl LayoutState {
+    /// Live transport status stays outside saved project data.
+    pub fn set_rosen_reconnecting(&mut self, project: u32, reconnecting: bool) -> bool {
+        let changed = if reconnecting {
+            self.reconnecting_projects.insert(project)
+        } else {
+            self.reconnecting_projects.remove(&project)
+        };
+        if changed {
+            self.changed();
+        }
+        changed
+    }
+}
+
 impl Default for LayoutState {
     fn default() -> Self {
         Self {
             data: LayoutData::default(),
+            reconnecting_projects: BTreeSet::new(),
             issue_rows: BTreeMap::new(),
             skill_menus: BTreeMap::new(),
             live: BTreeMap::new(),
@@ -641,6 +658,10 @@ impl LayoutState {
             project_identifier: self.data.project_identifier,
             project_name: self.data.project_name.clone(),
             rosen_mirror: self.data.rosen_mirror.clone(),
+            rosen_reconnecting: self
+                .data
+                .project_identifier
+                .is_some_and(|project| self.reconnecting_projects.contains(&project)),
             view: self.view,
             settings_tab: self.settings_tab.clone(),
             selected_thread: self.selected_thread,
@@ -1505,7 +1526,7 @@ impl LayoutState {
 
     fn worktree_label(&self) -> String {
         if self.data.worktree_drive.is_empty() {
-            format!("{} worktrees", self.data.worktree_count)
+            format!("{} workspaces", self.data.worktree_count)
         } else {
             format!(
                 "{} on {}",

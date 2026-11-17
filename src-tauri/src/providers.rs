@@ -153,7 +153,10 @@ impl ManagedProviders {
         };
         let mut providers = Vec::new();
         for slot in slots.iter_mut() {
-            if slot.runtime.phase == ProviderPhase::NotInstalled {
+            if matches!(
+                slot.runtime.phase,
+                ProviderPhase::NotInstalled | ProviderPhase::Failed
+            ) {
                 // Reserve the probe before spawning: repeated opens must not start
                 // competing agent processes for the same command.
                 slot.runtime.phase = ProviderPhase::Checking;
