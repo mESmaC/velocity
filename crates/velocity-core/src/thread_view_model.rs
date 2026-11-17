@@ -53,6 +53,7 @@ impl AgentCommandView {
 )]
 #[derive(Clone, Debug)]
 pub struct ModelPillView {
+    pub usage_account: Option<String>,
     pub provider: ProviderColor,
     pub model_name: String,
     pub effort_label: String,
@@ -71,6 +72,7 @@ impl ModelPillView {
     ) -> Self {
         Self {
             provider,
+            usage_account: None,
             model_name,
             effort_label,
             show_fast_badge: state.show_fast_badge,
@@ -264,6 +266,7 @@ pub struct PullRequestHistoryView {
 )]
 #[derive(Clone, Debug)]
 pub struct ThreadDetailSnapshot {
+    pub account_label: Option<String>,
     #[cfg_attr(feature = "bindings", serde(with = "crate::ipc_number"))]
     #[cfg_attr(feature = "bindings", specta(type = String))]
     pub identifier: usize,
@@ -357,6 +360,8 @@ impl SessionWork {
 
 #[derive(Clone)]
 pub struct ThreadDetailEntry {
+    pub account_label: Option<String>,
+    pub usage_account: Option<String>,
     pub identifier: usize,
     pub title: String,
     pub titling: bool,
@@ -396,6 +401,8 @@ impl ThreadDetailEntry {
             title,
             titling: false,
             title_model_name: String::new(),
+            account_label: None,
+            usage_account: None,
             branch,
             worktree_path,
             lifecycle,
@@ -599,6 +606,7 @@ pub fn project_thread_detail(entry: &ThreadDetailEntry) -> ThreadDetailSnapshot 
         title: entry.title.clone(),
         titling: entry.titling,
         title_model_name: entry.title_model_name.clone(),
+        account_label: entry.account_label.clone(),
         branch: entry.branch.clone(),
         worktree_path: entry.worktree_path.clone(),
         worktree_short_path: shorten_worktree_path(&entry.worktree_path),
@@ -619,6 +627,7 @@ pub fn project_thread_detail(entry: &ThreadDetailEntry) -> ThreadDetailSnapshot 
         agent_commands: entry.agent_commands.clone(),
         composer_placeholder: placeholder,
         model_pill: ModelPillView {
+            usage_account: entry.usage_account.clone(),
             provider: entry.provider,
             model_name: entry.model_name.clone(),
             effort_label: entry.effort_label.clone(),

@@ -71,6 +71,7 @@ export const commands = {
 	 *  shows Installing with Cancel until it finishes, then checks the agent again.
 	 */
 	installProvider: (provider: ProviderKind) => __TAURI_INVOKE<ProvidersView_Serialize>("install_provider", { provider }),
+	editProviderAccount: (provider: ProviderKind, action: ProviderAccountAction) => __TAURI_INVOKE<ProvidersView_Serialize>("edit_provider_account", { provider, action }),
 	/**
 	 *  Sign in with Claude / ChatGPT / Google / Kimi (F15): runs the agent's own login, which
 	 *  opens the provider's OAuth page in your browser. The card waits until it finishes.
@@ -1000,7 +1001,7 @@ export type DutyViewSnapshot_Deserialize = {
 	agents: DutyAgentCard[],
 	feed: DutyFeedEvent[],
 	composer_placeholder: string,
-	model_pill: ModelPillView,
+	model_pill: ModelPillView_Deserialize,
 };
 
 export type DutyViewSnapshot_Serialize = {
@@ -1018,7 +1019,7 @@ export type DutyViewSnapshot_Serialize = {
 	agents: DutyAgentCard[],
 	feed: DutyFeedEvent[],
 	composer_placeholder: string,
-	model_pill: ModelPillView,
+	model_pill: ModelPillView_Serialize,
 };
 
 export type EffortLevel = "low" | "medium" | "high" | "max";
@@ -1975,7 +1976,7 @@ export type LayoutSnapshot_Deserialize = {
 	active_swarm?: SwarmViewSnapshot_Deserialize | null,
 	/**  The selected goal swarm's view (F16); its rows share the Swarm view. */
 	active_goal_swarm?: GoalSwarmViewSnapshot_Deserialize | null,
-	default_model_pill: ModelPillView,
+	default_model_pill: ModelPillView_Deserialize,
 	search: string,
 	groups: SidebarGroup_Deserialize[],
 	/**
@@ -2034,7 +2035,7 @@ export type LayoutSnapshot_Serialize = {
 	active_swarm: SwarmViewSnapshot_Serialize | null,
 	/**  The selected goal swarm's view (F16); its rows share the Swarm view. */
 	active_goal_swarm: GoalSwarmViewSnapshot_Serialize | null,
-	default_model_pill: ModelPillView,
+	default_model_pill: ModelPillView_Serialize,
 	search: string,
 	groups: SidebarGroup_Serialize[],
 	/**
@@ -2215,7 +2216,10 @@ export type ModelChoiceView_Serialize = {
 export type ModelMenuChoice = ({ Model: {
 	provider: ProviderKind,
 	model: string,
-} }) & { Effort?: never; Speed?: never } | ({ Effort: EffortLevel }) & { Model?: never; Speed?: never } | ({ Speed: SpeedMode }) & { Effort?: never; Model?: never };
+} }) & { Account?: never; Effort?: never; Speed?: never } | ({ Account: {
+	provider: ProviderKind,
+	account: number,
+} }) & { Effort?: never; Model?: never; Speed?: never } | ({ Effort: EffortLevel }) & { Account?: never; Model?: never; Speed?: never } | ({ Speed: SpeedMode }) & { Account?: never; Effort?: never; Model?: never };
 
 export type ModelMenuGroup = {
 	provider: ProviderKind,
@@ -2226,6 +2230,8 @@ export type ModelMenuGroup = {
 	sign_in_label: string,
 	can_sign_in: boolean,
 	models: ModelMenuItem[],
+	accounts: ProviderAccountView[],
+	can_choose_account: boolean,
 };
 
 export type ModelMenuItem = {
@@ -2263,7 +2269,20 @@ export type ModelMenuView_Serialize = {
 	speed_note: string | null,
 };
 
-export type ModelPillView = {
+export type ModelPillView = ModelPillView_Serialize | ModelPillView_Deserialize;
+
+export type ModelPillView_Deserialize = {
+	usage_account?: string | null,
+	provider: ProviderColor,
+	model_name: string,
+	effort_label: string,
+	show_fast_badge: boolean,
+	speed_control_enabled: boolean,
+	preserve_requested_fast: boolean,
+};
+
+export type ModelPillView_Serialize = {
+	usage_account: string | null,
 	provider: ProviderColor,
 	model_name: string,
 	effort_label: string,
@@ -2914,6 +2933,55 @@ export type ProofsSettingsView_Serialize = {
 	stress_diff_input_count: number,
 };
 
+export type ProviderAccount = ProviderAccount_Serialize | ProviderAccount_Deserialize;
+
+export type ProviderAccountAction = "Add" | ({ SignIn: {
+	account: number,
+} }) & { Default?: never; Rename?: never; SignOut?: never } | ({ SignOut: {
+	account: number,
+} }) & { Default?: never; Rename?: never; SignIn?: never } | "Cancel" | ({ Rename: {
+	account: number,
+	name: string,
+} }) & { Default?: never; SignIn?: never; SignOut?: never } | ({ Default: {
+	account: number,
+} }) & { Rename?: never; SignIn?: never; SignOut?: never };
+
+export type ProviderAccountView = {
+	id: number,
+	name: string,
+	signed_in: boolean,
+	waiting: boolean,
+	is_default: boolean,
+	limit: LimitView,
+	selected: boolean,
+};
+
+export type ProviderAccount_Deserialize = {
+	provider: ProviderKind,
+	id: number,
+	directory?: string,
+	name?: string | null,
+	identity?: string | null,
+	plan?: string | null,
+	limit?: ProviderLimit_Deserialize | null,
+	blocked_until?: number | null,
+	signed_in?: boolean,
+	models?: ProviderModel_Deserialize[],
+};
+
+export type ProviderAccount_Serialize = {
+	provider: ProviderKind,
+	id: number,
+	directory: string,
+	name: string | null,
+	identity: string | null,
+	plan: string | null,
+	limit: ProviderLimit_Serialize | null,
+	blocked_until: number | null,
+	signed_in: boolean,
+	models: ProviderModel_Serialize[],
+};
+
 export type ProviderCardView = ProviderCardView_Serialize | ProviderCardView_Deserialize;
 
 export type ProviderCardView_Deserialize = {
@@ -2934,6 +3002,9 @@ export type ProviderCardView_Deserialize = {
 	can_sign_in: boolean,
 	/**  What Install runs while its agent isn't installed (F15 Install); `None` hides Install. */
 	install_command?: string | null,
+	accounts: ProviderAccountView[],
+	account_error?: string | null,
+	can_add_account: boolean,
 	limit?: LimitView | null,
 	models: ModelChipView[],
 	max_agents?: number | null,
@@ -2957,6 +3028,9 @@ export type ProviderCardView_Serialize = {
 	can_sign_in: boolean,
 	/**  What Install runs while its agent isn't installed (F15 Install); `None` hides Install. */
 	install_command: string | null,
+	accounts: ProviderAccountView[],
+	account_error: string | null,
+	can_add_account: boolean,
 	limit: LimitView | null,
 	models: ModelChipView[],
 	max_agents: number | null,
@@ -3151,6 +3225,9 @@ export type ProviderSettings_Deserialize = {
 	custom_agents?: CustomAgent_Deserialize[],
 	/**  The identifier the next added agent gets. Identifiers are never reused. */
 	next_custom_agent?: number,
+	accounts?: ProviderAccount_Deserialize[],
+	default_accounts?: { [key in string]: number },
+	composer_account?: number | null,
 };
 
 export type ProviderSettings_Serialize = {
@@ -3179,11 +3256,15 @@ export type ProviderSettings_Serialize = {
 	custom_agents: CustomAgent_Serialize[],
 	/**  The identifier the next added agent gets. Identifiers are never reused. */
 	next_custom_agent: number,
+	accounts: ProviderAccount_Serialize[],
+	default_accounts: { [key in string]: number },
+	composer_account: number | null,
 };
 
 export type ProviderUsage = ProviderUsage_Serialize | ProviderUsage_Deserialize;
 
 export type ProviderUsage_Deserialize = {
+	account_key: string,
 	provider: ProviderColor,
 	label: string,
 	percent_used: number,
@@ -3198,6 +3279,7 @@ export type ProviderUsage_Deserialize = {
 };
 
 export type ProviderUsage_Serialize = {
+	account_key: string,
 	provider: ProviderColor,
 	label: string,
 	percent_used: number,
@@ -4478,6 +4560,7 @@ export type TaskView_Serialize = {
 export type ThreadDetailSnapshot = ThreadDetailSnapshot_Serialize | ThreadDetailSnapshot_Deserialize;
 
 export type ThreadDetailSnapshot_Deserialize = {
+	account_label?: string | null,
 	identifier: string,
 	title: string,
 	titling: boolean,
@@ -4501,12 +4584,13 @@ export type ThreadDetailSnapshot_Deserialize = {
 	blocks: TranscriptBlock_Deserialize[],
 	agent_commands: AgentCommandView[],
 	composer_placeholder: string,
-	model_pill: ModelPillView,
+	model_pill: ModelPillView_Deserialize,
 	/**  Present on spec interview threads (F3). */
 	interview?: InterviewView_Deserialize | null,
 };
 
 export type ThreadDetailSnapshot_Serialize = {
+	account_label: string | null,
 	identifier: string,
 	title: string,
 	titling: boolean,
@@ -4530,7 +4614,7 @@ export type ThreadDetailSnapshot_Serialize = {
 	blocks: TranscriptBlock_Serialize[],
 	agent_commands: AgentCommandView[],
 	composer_placeholder: string,
-	model_pill: ModelPillView,
+	model_pill: ModelPillView_Serialize,
 	/**  Present on spec interview threads (F3). */
 	interview: InterviewView_Serialize | null,
 };
@@ -4579,6 +4663,9 @@ export type ThreadItem_Deserialize = {
 	deletions: number,
 	elapsed_seconds: number,
 	provider: ProviderKind,
+	/**  The account bound to the session. Zero is the existing CLI login. */
+	provider_account?: number,
+	preferred_account?: number | null,
 	model_name: string,
 	effort: EffortLevel,
 	preferred_speed: SpeedMode,
@@ -4618,6 +4705,9 @@ export type ThreadItem_Serialize = {
 	deletions: number,
 	elapsed_seconds: number,
 	provider: ProviderKind,
+	/**  The account bound to the session. Zero is the existing CLI login. */
+	provider_account: number,
+	preferred_account: number | null,
 	model_name: string,
 	effort: EffortLevel,
 	preferred_speed: SpeedMode,

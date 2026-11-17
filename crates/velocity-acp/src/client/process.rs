@@ -32,6 +32,8 @@ pub struct AgentLaunch {
     pub own_config: Option<Provider>,
     /// Provider slot shared with every role, including sessions using agent defaults.
     pub concurrency_provider: Option<Provider>,
+    /// F15 account identifier within the provider. Zero uses the existing CLI login.
+    pub account: u32,
 }
 
 impl AgentLaunch {
@@ -43,6 +45,107 @@ impl AgentLaunch {
             shared_servers: Vec::new(),
             own_config: None,
             concurrency_provider: None,
+            account: 0,
+        }
+    }
+
+    pub fn use_account(&mut self, account: u32, directory: &str) {
+        if self.account != 0 && account == 0 {
+            self.env.retain(|(name, _)| {
+                !matches!(
+                    name.as_str(),
+                    "CLAUDE_CONFIG_DIR"
+                        | "CODEX_HOME"
+                        | "KIMI_CODE_HOME"
+                        | "KIMI_SHARE_DIR"
+                        | "ANTIGRAVITY_GEMINI_DIR"
+                )
+            });
+        }
+        self.account = account;
+        if account == 0 {
+            return;
+        }
+        match self.own_config {
+            Some(Provider::Anthropic) => self.set_env("CLAUDE_CONFIG_DIR", directory),
+            Some(Provider::Codex) => self.set_env("CODEX_HOME", directory),
+            Some(Provider::KimiCode) => {
+                self.set_env("KIMI_CODE_HOME", directory);
+                self.set_env("KIMI_SHARE_DIR", directory);
+            }
+            Some(Provider::Antigravity) => {
+                self.set_env("ANTIGRAVITY_GEMINI_DIR", directory);
+            }
+            _ => {}
+        }
+    }
+
+    pub(super) fn profile_args(&self) -> impl Iterator<Item = &str> {
+        self.antigravity_profile()
+            .into_iter()
+            .flat_map(|directory| {
+                [
+                    "--gemini-dir",
+                    directory,
+                    "--app-data-dir",
+                    "antigravity-cli",
+                ]
+            })
+    }
+
+    pub(super) fn antigravity_profile(&self) -> Option<&str> {
+        (self.account != 0 && self.own_config == Some(Provider::Antigravity))
+            .then(|| self.env_value("ANTIGRAVITY_GEMINI_DIR"))
+            .flatten()
+    }
+
+    pub(super) fn prepare_account(&self) -> std::io::Result<()> {
+        let Some(directory) = self.antigravity_profile() else {
+            return Ok(());
+        };
+        let cache = Path::new(directory).join("antigravity-cli").join("cache");
+        std::fs::create_dir_all(&cache)?;
+        // agy's composite token store otherwise uses the OS user's shared keyring.
+        // Refresh the CLI's native file-storage marker before every isolated launch.
+        std::fs::write(cache.join("antigravity-keyring-unavailable"), [])?;
+        std::fs::write(cache.join("jetski-cli-keyring-unavailable"), [])
+    }
+
+    fn set_env(&mut self, name: &str, value: &str) {
+        self.env
+            .retain(|(existing, _)| !existing.eq_ignore_ascii_case(name));
+        self.env.push((name.to_owned(), value.to_owned()));
+    }
+
+    pub(super) fn env_value(&self, name: &str) -> Option<&str> {
+        self.env
+            .iter()
+            .find(|(variable, _)| variable == name)
+            .map(|(_, value)| value.as_str())
+    }
+
+    pub(super) fn apply_environment(&self, command: &mut Command) {
+        command.envs(self.env.iter().map(|(name, value)| (name, value)));
+        if self.account == 0 {
+            return;
+        }
+        // A token inherited from the desktop would take priority over the chosen CLI login.
+        let overrides: &[&str] = match self.own_config {
+            Some(Provider::Anthropic) => &[
+                "ANTHROPIC_API_KEY",
+                "ANTHROPIC_AUTH_TOKEN",
+                "CLAUDE_CODE_OAUTH_TOKEN",
+                "CLAUDE_CODE_USE_BEDROCK",
+                "CLAUDE_CODE_USE_VERTEX",
+                "CLAUDE_CODE_USE_FOUNDRY",
+            ],
+            Some(Provider::Codex) => &["OPENAI_API_KEY", "CODEX_API_KEY", "CODEX_ACCESS_TOKEN"],
+            Some(Provider::KimiCode) => &["KIMI_API_KEY", "KIMI_MODEL_API_KEY"],
+            Some(Provider::Antigravity) => &["GEMINI_API_KEY", "GOOGLE_API_KEY", "AGY_ADC_AUTH"],
+            _ => &[],
+        };
+        for variable in overrides {
+            command.env_remove(variable);
         }
     }
 }
@@ -52,10 +155,12 @@ pub type AgentProcess = Box<dyn ChildWrapper>;
 /// Starts the agent in `worktree` with piped stdio for ACP. It loads your user and project
 /// config as it would in a terminal: no isolated home, no empty config, no sandbox.
 pub fn spawn_agent(launch: &AgentLaunch, worktree: &Path) -> Result<AgentProcess, ClientError> {
+    launch.prepare_account()?;
     let mut command = hidden_command(find_program(launch.program.as_os_str()));
+    launch.apply_environment(&mut command);
     command
         .args(&launch.args)
-        .envs(launch.env.iter().map(|(name, value)| (name, value)))
+        .args(launch.profile_args())
         .current_dir(worktree)
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())

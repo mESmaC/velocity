@@ -144,7 +144,7 @@
           : provider.status}
     </div>
     <div class="pv-actions">
-      {#if provider.phase === 'SignedIn'}<button
+      {#if provider.phase === 'SignedIn' && provider.custom}<button
           class="worktree-button mini"
           onclick={() => signOut(provider.provider)}>Sign out</button
         >{:else if provider.phase === 'Waiting' || provider.phase === 'Installing'}<button
@@ -154,7 +154,7 @@
             class="worktree-button"
             title={`Runs ${provider.install_command}`}
             onclick={() => install(provider.provider)}>Install</button
-          >{/if}{:else if provider.phase !== 'Checking'}<button
+          >{/if}{:else if provider.phase !== 'Checking' && provider.phase !== 'SignedIn' && provider.custom}<button
           class="worktree-button"
           disabled={!provider.can_sign_in}
           title={provider.can_sign_in
@@ -163,6 +163,14 @@
           onclick={() => signIn(provider.provider)}
           >{provider.sign_in_label}</button
         >{/if}
+      {#if provider.can_add_account}
+        <button
+          class="worktree-button"
+          onclick={() =>
+            run(providerCommands.account(provider.provider, 'Add'))}
+          >Add account</button
+        >
+      {/if}
       {#if provider.custom}<button
           class="worktree-button mini"
           title="Remove this agent. Its threads keep their history."
@@ -191,11 +199,92 @@
           onclick={() => setCommand(provider.provider, null)}>Reset</button
         >{/if}
     </div>
-    {#if provider.limit}<div class="pv-limit">
+    {#if provider.custom && provider.limit}
+      <div class="pv-limit">
         <span class="pv-bar"
-          ><i style={`width: ${provider.limit.percent_used}%`}></i></span
-        >{provider.limit.label}
-      </div>{/if}
+          ><i style:width={`${provider.limit.percent_used}%`}></i></span
+        >
+        {provider.limit.label}
+      </div>
+    {:else if !provider.custom && (provider.phase === 'SignedIn' || provider.phase === 'SignedOut' || provider.phase === 'Waiting')}
+      {#each provider.accounts as account (account.id)}
+        <div class="pv-command">
+          <label class="pv-command-input">
+            <input
+              aria-label={`Rename ${provider.name} account ${account.name}`}
+              value={account.name}
+              onkeydown={(event) => commandKey(event, account.name)}
+              onchange={(event) =>
+                run(
+                  providerCommands.account(provider.provider, {
+                    Rename: {
+                      account: account.id,
+                      name: event.currentTarget.value,
+                    },
+                  }),
+                )}
+            />
+          </label>
+          {#if account.waiting}
+            <span>Finish signing in in your browser…</span>
+            <button
+              class="worktree-button mini"
+              onclick={() =>
+                run(providerCommands.account(provider.provider, 'Cancel'))}
+              >Cancel</button
+            >
+          {:else if account.signed_in}
+            {#if account.is_default}
+              <span>Default</span>
+            {:else}
+              <button
+                class="worktree-button mini"
+                onclick={() =>
+                  run(
+                    providerCommands.account(provider.provider, {
+                      Default: { account: account.id },
+                    }),
+                  )}>Set default</button
+              >
+            {/if}
+            <button
+              class="worktree-button mini"
+              onclick={() =>
+                run(
+                  providerCommands.account(provider.provider, {
+                    SignOut: { account: account.id },
+                  }),
+                )}>Sign out</button
+            >
+          {:else}
+            <button
+              class="worktree-button mini"
+              disabled={account.id === 0 &&
+                (!provider.can_sign_in || provider.phase === 'Waiting')}
+              onclick={() =>
+                account.id === 0
+                  ? signIn(provider.provider)
+                  : run(
+                      providerCommands.account(provider.provider, {
+                        SignIn: { account: account.id },
+                      }),
+                    )}>{provider.sign_in_label}</button
+            >
+          {/if}
+        </div>
+        {#if account.signed_in}
+          <div class="pv-limit">
+            <span class="pv-bar"
+              ><i style:width={`${account.limit.percent_used}%`}></i></span
+            >
+            {account.limit.label}
+          </div>
+        {/if}
+      {/each}
+      {#if provider.account_error}<div class="pv-status" role="alert">
+          {provider.account_error}
+        </div>{/if}
+    {/if}
     <div class="pv-command">
       <label class="pv-command-input"
         >Max agents at once

@@ -16,7 +16,7 @@
 | Q12 | Should AIRC be one channel per project, or one shared channel across projects (as in xros_chat)? Built: per project. | F14 |
 | Q13 | Should agents be able to schedule jobs for each other through AIRC (xros_chat job queues)? | F14 |
 | Q14 | Decided: Antigravity runs Google's own agent, `agy acp` (§3.2). Limits are read per provider outside ACP, from the sources T3 Code reads (F15 Limit sources). | F15, §3.2 |
-| Q15 | Decided: it waits for the reset and resumes by itself, as T3 Code does. Work never moves to another provider automatically (§2.2, F15). | F15, F10, F16 |
+| Q15 | Decided (#444): switch to another available account of the same provider, or wait for a reset when every account is exhausted (§2.2, F15). | F15, F10, F16 |
 | Q16 | May goal swarm agents claim work outside the Task List, issues and SPEC.md (split a large item, or claim something they found)? Built: no. | F16 |
 | Q17 | When there are more agents than unclaimed pieces, should the extras leave (built), or pair up on existing pieces (tests, review)? | F16 |
 | Q18 | Should "keep going" be on by default? Built: off, which matches the prompt you use today (stop after the merge). | F16 |

@@ -120,7 +120,18 @@ impl StateStore {
 
     /// Records a `working` thread and makes it the project's active thread.
     pub fn add_thread(&mut self, project: u32, thread: NewThread) -> Result<u32, ThreadError> {
-        self.add_linked_thread(project, thread, None)
+        self.add_linked_thread(project, thread, None, None)
+    }
+
+    pub fn add_composer_thread(
+        &mut self,
+        project: u32,
+        thread: NewThread,
+    ) -> Result<u32, ThreadError> {
+        let preferred = (thread.provider == self.state.settings.providers.default_provider)
+            .then_some(self.state.settings.providers.composer_account)
+            .flatten();
+        self.add_linked_thread(project, thread, None, preferred)
     }
 
     pub fn add_issue_thread(
@@ -129,7 +140,7 @@ impl StateStore {
         thread: NewThread,
         issue: crate::issues::ThreadIssue,
     ) -> Result<u32, ThreadError> {
-        self.add_linked_thread(project, thread, Some(issue))
+        self.add_linked_thread(project, thread, Some(issue), None)
     }
 
     fn add_linked_thread(
@@ -137,9 +148,11 @@ impl StateStore {
         project: u32,
         thread: NewThread,
         issue: Option<crate::issues::ThreadIssue>,
+        preferred: Option<u32>,
     ) -> Result<u32, ThreadError> {
         let mut next = self.state.clone();
         let identifier = insert_thread(&mut next, project, thread, issue)?;
+        thread_record(&mut next, project, identifier)?.preferred_account = preferred;
         self.commit(next)?;
         Ok(identifier)
     }

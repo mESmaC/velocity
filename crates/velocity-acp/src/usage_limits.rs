@@ -164,6 +164,33 @@ struct WindowInput {
     label: String,
 }
 
+pub(crate) fn kimi_usage_reading(report: &Value) -> Option<LimitReading> {
+    let quotas = report.get("usages")?;
+    let windows = [
+        ("limit_5h", "5-hour", FIVE_HOURS),
+        ("limit_7d", "weekly", ONE_WEEK),
+        ("limit_month_total", "monthly", ONE_DAY * 30),
+        ("limit_month_code", "monthly · Code", ONE_DAY * 30),
+    ]
+    .into_iter()
+    .filter_map(|(key, label, minutes)| {
+        let quota = quotas.get(key)?;
+        let ratio = quota.get("used_ratio")?;
+        let used = ratio.as_f64().or_else(|| ratio.as_str()?.parse().ok())? * 100.0;
+        let resets_at = quota
+            .get("reset_time")
+            .and_then(Value::as_str)
+            .and_then(unix_seconds);
+        Some(WindowInput {
+            used,
+            label: label.into(),
+            minutes,
+            resets_at,
+        })
+    });
+    fullest(windows, None)
+}
+
 fn fullest(
     windows: impl Iterator<Item = WindowInput>,
     plan: Option<String>,

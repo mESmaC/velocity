@@ -200,6 +200,19 @@ pub fn agent_launch(
     settings: &Settings,
     provider: ProviderKind,
 ) -> Result<(AgentLaunch, Vec<String>), ProviderUnavailable> {
+    let account = settings.launch_account(
+        provider,
+        settings.default_account(provider),
+        velocity_store::providers::unix_now(),
+    );
+    agent_launch_for_account(settings, provider, account)
+}
+
+pub fn agent_launch_for_account(
+    settings: &Settings,
+    provider: ProviderKind,
+    account: u32,
+) -> Result<(AgentLaunch, Vec<String>), ProviderUnavailable> {
     let command = settings
         .agent_command(provider)
         .map(|command| (PathBuf::from(&command.program), command.arguments.clone()));
@@ -207,6 +220,12 @@ pub fn agent_launch(
         .map(|mut agent| {
             // Every role's agent comes from here, so every one gets the shared servers.
             agent.launch.shared_servers = crate::shared_mcp::shared_mcp_servers(settings);
+            if let Some(profile) = settings
+                .saved_account(provider, account)
+                .filter(|profile| profile.id != 0)
+            {
+                agent.launch.use_account(profile.id, &profile.directory);
+            }
             (agent.launch, agent.bypass_modes)
         })
         .ok_or(ProviderUnavailable::Removed)

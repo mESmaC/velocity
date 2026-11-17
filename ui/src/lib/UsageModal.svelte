@@ -100,7 +100,7 @@
       <section aria-label="Usage limits">
         <div class="usage-title">Usage limits</div>
         <PaneState name="Usage" />
-        {#each providers as provider (provider.provider + provider.name)}
+        {#each providers as provider (provider.account_key)}
           <section class="usage-provider">
             <div class="usage-provider-head">
               <Icon

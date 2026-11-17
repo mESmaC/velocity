@@ -23,12 +23,12 @@ pub async fn read_antigravity_usage(
     deadline: Duration,
 ) -> Result<Option<LimitReading>, ClientError> {
     tokio::time::timeout(deadline, async {
-        let mut credentials = native_credentials().await?;
+        let mut credentials = account_credentials(launch).await?;
         if native_token_expired(&credentials) {
             // Let agy refresh its own keyring token. No prompt or authenticate request is
             // sent, and no OAuth client identity is copied from another application.
             probe_agent(launch, directory, deadline).await?;
-            credentials = native_credentials().await?;
+            credentials = account_credentials(launch).await?;
         }
         read_usage(deadline, &credentials).await
     })
@@ -95,6 +95,53 @@ async fn report(
         .json()
         .await
         .map_err(|_| usage_error("invalid Google quota report"))
+}
+
+async fn account_credentials(launch: &AgentLaunch) -> Result<Value, ClientError> {
+    let directory = match launch.antigravity_profile() {
+        Some(profile) => std::path::PathBuf::from(profile),
+        None => {
+            if let Ok(credentials) = native_credentials().await {
+                return Ok(credentials);
+            }
+            std::env::var_os("ANTIGRAVITY_GEMINI_DIR")
+                .map(std::path::PathBuf::from)
+                .or_else(|| {
+                    ["USERPROFILE", "HOME"]
+                        .into_iter()
+                        .find_map(std::env::var_os)
+                        .map(|home| std::path::PathBuf::from(home).join(".gemini"))
+                })
+                .ok_or_else(|| usage_error("agy has no profile directory"))?
+        }
+    };
+    let folder = directory.join("antigravity-cli");
+    for file in ["antigravity-oauth-token", "jetski-cli-oauth-token"] {
+        if let Ok(bytes) = tokio::fs::read(folder.join(file)).await
+            && let Ok(credentials) = serde_json::from_slice(&bytes)
+        {
+            return Ok(credentials);
+        }
+    }
+    Err(usage_error("agy has no login in this profile"))
+}
+
+/// agy can create an ACP session before authenticating, so the isolated login must
+/// be confirmed by the CLI's own token store rather than by session/new alone.
+pub async fn antigravity_profile_identity(launch: &AgentLaunch) -> Option<String> {
+    let credentials = account_credentials(launch).await.ok()?;
+    ["email", "user_email", "user_tier", "user_tier_id"]
+        .into_iter()
+        .find_map(|key| credentials.get(key).and_then(Value::as_str))
+        .filter(|label| !label.is_empty())
+        .map(str::to_owned)
+}
+
+pub async fn antigravity_profile_signed_in(launch: &AgentLaunch) -> bool {
+    account_credentials(launch)
+        .await
+        .ok()
+        .is_some_and(|value| token_string(value.get("token").unwrap_or(&value)).is_ok())
 }
 
 fn native_token_expired(credentials: &Value) -> bool {

@@ -865,6 +865,7 @@ impl LayoutState {
         }
         let state = thread_view::project_model_pill(false, true);
         ModelPillView {
+            usage_account: None,
             provider: ProviderColor::Claude,
             model_name: "Opus 5.5".into(),
             effort_label: "High".into(),

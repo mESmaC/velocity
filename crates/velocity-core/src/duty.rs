@@ -557,6 +557,7 @@ pub fn project_duty_view(
     let model_pill = entry.agents.first().map_or_else(
         || default_pill.clone(),
         |agent| ModelPillView {
+            usage_account: None,
             provider: agent.provider,
             model_name: agent.model_name.clone(),
             effort_label: default_pill.effort_label.clone(),

@@ -21,6 +21,22 @@ pub async fn read_claude_usage(
     directory: &Path,
     deadline: Duration,
 ) -> Result<Option<LimitReading>, ClientError> {
+    read_claude_report(directory, deadline, None).await
+}
+
+pub async fn read_claude_account_usage(
+    directory: &Path,
+    deadline: Duration,
+    launch: &super::AgentLaunch,
+) -> Result<Option<LimitReading>, ClientError> {
+    read_claude_report(directory, deadline, Some(launch)).await
+}
+
+async fn read_claude_report(
+    directory: &Path,
+    deadline: Duration,
+    launch: Option<&super::AgentLaunch>,
+) -> Result<Option<LimitReading>, ClientError> {
     let requests = [
         json!({"type": "control_request", "request_id": "velocity-init", "request": {"subtype": "initialize"}}),
         json!({"type": "control_request", "request_id": "velocity-usage", "request": {"subtype": "get_usage"}}),
@@ -38,7 +54,7 @@ pub async fn read_claude_usage(
         &arguments,
         directory,
         &requests,
-        deadline,
+        (deadline, launch),
         |line| {
             let response = line.get("response")?;
             (line.get("type")? == "control_response"
@@ -55,6 +71,22 @@ pub async fn read_codex_usage(
     directory: &Path,
     deadline: Duration,
 ) -> Result<Option<LimitReading>, ClientError> {
+    read_codex_report(directory, deadline, None).await
+}
+
+pub async fn read_codex_account_usage(
+    directory: &Path,
+    deadline: Duration,
+    launch: &super::AgentLaunch,
+) -> Result<Option<LimitReading>, ClientError> {
+    read_codex_report(directory, deadline, Some(launch)).await
+}
+
+async fn read_codex_report(
+    directory: &Path,
+    deadline: Duration,
+    launch: Option<&super::AgentLaunch>,
+) -> Result<Option<LimitReading>, ClientError> {
     let version = env!("CARGO_PKG_VERSION");
     let requests = [
         json!({"id": 1, "method": "initialize", "params": {"clientInfo": {"name": "velocity", "version": version}}}),
@@ -66,11 +98,73 @@ pub async fn read_codex_usage(
         &["app-server"],
         directory,
         &requests,
-        deadline,
+        (deadline, launch),
         |line| (line.get("id")? == 2).then(|| line.get("result").cloned().unwrap_or(Value::Null)),
     )
     .await?;
     Ok(codex_usage_reading(&answer))
+}
+
+/// Safe account labels from the provider's own account status, with no credential fields.
+pub async fn read_account_label(
+    launch: &super::AgentLaunch,
+    directory: &Path,
+    deadline: Duration,
+) -> Option<String> {
+    match launch.own_config {
+        Some(crate::Provider::Anthropic) => claude_label(launch, directory, deadline).await,
+        Some(crate::Provider::Codex) => {
+            let requests = [
+                json!({"id":1,"method":"initialize","params":{"clientInfo":{"name":"velocity","version":env!("CARGO_PKG_VERSION")}}}),
+                json!({"method":"initialized"}),
+                json!({"id":2,"method":"account/read","params":{"refreshToken":false}}),
+            ];
+            let answer = exchange(
+                "codex",
+                &["app-server"],
+                directory,
+                &requests,
+                (deadline, Some(launch)),
+                |line| (line.get("id")? == 2).then(|| line.clone()),
+            )
+            .await
+            .ok()?;
+            label(answer.pointer("/result/account")?, &["email", "planType"])
+        }
+        Some(crate::Provider::Antigravity) => super::antigravity_profile_identity(launch).await,
+        _ => None,
+    }
+}
+
+async fn claude_label(
+    launch: &super::AgentLaunch,
+    directory: &Path,
+    deadline: Duration,
+) -> Option<String> {
+    let mut command = process::hidden_command(find_program(OsStr::new("claude")));
+    launch.apply_environment(&mut command);
+    command
+        .args(["auth", "status", "--json"])
+        .current_dir(directory)
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null());
+    let mut child = process::spawn_owned_command(command).ok()?;
+    let stdout = child.stdout().take()?;
+    let mut output = Vec::new();
+    use tokio::io::AsyncReadExt;
+    let result = tokio::time::timeout(deadline, stdout.take(32_768).read_to_end(&mut output)).await;
+    let _ = process::stop_owned_process(&mut child).await;
+    result.ok()?.ok()?;
+    let account = serde_json::from_slice(&output).ok()?;
+    label(&account, &["email", "subscriptionType"])
+}
+
+fn label(account: &Value, keys: &[&str]) -> Option<String> {
+    keys.iter()
+        .filter_map(|key| account.get(key).and_then(Value::as_str))
+        .find(|value| !value.trim().is_empty())
+        .map(str::to_owned)
 }
 
 /// Starts `program`, writes each request as one JSON line, and returns the first line
@@ -80,10 +174,13 @@ async fn exchange(
     arguments: &[&str],
     directory: &Path,
     requests: &[Value],
-    deadline: Duration,
+    (deadline, launch): (Duration, Option<&super::AgentLaunch>),
     answer: impl Fn(&Value) -> Option<Value>,
 ) -> Result<Value, ClientError> {
     let mut command = process::hidden_command(find_program(OsStr::new(program)));
+    if let Some(launch) = launch {
+        launch.apply_environment(&mut command);
+    }
     command
         .args(arguments)
         .current_dir(directory)

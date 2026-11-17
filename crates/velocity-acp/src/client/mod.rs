@@ -12,6 +12,7 @@ mod error;
 mod files;
 mod handlers;
 mod install;
+mod kimi_limits;
 mod limits;
 mod live_limits;
 mod own_config;
@@ -45,12 +46,18 @@ use tokio::sync::oneshot;
 use tokio_util::compat::{TokioAsyncReadCompatExt, TokioAsyncWriteCompatExt};
 
 pub use airc::{AircLaunch, duty_member};
-pub use antigravity_limits::read_antigravity_usage;
+pub use antigravity_limits::{
+    antigravity_profile_identity, antigravity_profile_signed_in, read_antigravity_usage,
+};
 pub use error::ClientError;
 pub use files::resolve_in_worktree;
 pub use install::install_agent;
-pub use limits::{read_claude_usage, read_codex_usage};
-pub use live_limits::subscribe_limits;
+pub use kimi_limits::read_kimi_account;
+pub use limits::{
+    read_account_label, read_claude_account_usage, read_claude_usage, read_codex_account_usage,
+    read_codex_usage,
+};
+pub use live_limits::{subscribe_account_limits, subscribe_limits, subscription_limit_error};
 pub use probe::{AgentProbe, ProbedModel, probe_agent};
 pub use process::AgentLaunch;
 pub use program_path::program_found;
@@ -119,6 +126,7 @@ struct Shared {
     events: UnboundedSender<AgentEvent>,
     /// Set while `session/load` replays history the thread's transcript already shows.
     replaying: AtomicBool,
+    account: u32,
 }
 
 impl Shared {
@@ -130,6 +138,7 @@ impl Shared {
             transcript: Mutex::new(Transcript::new()),
             events,
             replaying: AtomicBool::new(false),
+            account: 0,
         }
     }
 
@@ -139,7 +148,7 @@ impl Shared {
     }
 
     fn record(&self, update: SessionUpdate) {
-        live_limits::observe(&update);
+        live_limits::observe_account(self.account, &update);
         match entry_class(&update) {
             Some(_) if self.replaying.load(Ordering::Acquire) => {}
             Some(class) => {
@@ -161,7 +170,7 @@ impl Shared {
 pub fn launch_shared_servers(launch: &AgentLaunch, worktree: &std::path::Path) -> Vec<McpServer> {
     let mut servers = launch.shared_servers.clone();
     servers.extend(shared::shared_servers_for(worktree));
-    own_config::without_own_servers(&servers, launch.own_config, worktree)
+    own_config::without_own_servers(&servers, launch, worktree)
 }
 
 /// Runs one thread's agent until the thread stops it or the agent exits: spawns the agent in
@@ -215,6 +224,7 @@ async fn run_admitted_session(
         transcript: Mutex::new(Transcript::new()),
         events,
         replaying: AtomicBool::new(false),
+        account: launch.account,
     });
     let result = connect_agent(&mut agent, Arc::clone(&shared), setup, inputs).await;
     let terminals_stopped = shared.terminals.stop_all().await;
@@ -241,7 +251,7 @@ async fn connect_agent(
         .take()
         .ok_or(ClientError::MissingPipe("stdout"))?;
     if let Some(stderr) = agent.stderr().take() {
-        forward_log(stderr, shared.events.clone());
+        forward_account_log(stderr, shared.events.clone(), shared.account);
     }
     let transport = ByteStreams::new(stdin.compat_write(), stdout.compat());
     let session_state = Arc::clone(&shared);
@@ -282,6 +292,10 @@ fn forward_inputs(
 /// aren't UTF-8 (code-page output from git or cmd) are forwarded lossily, and lines are still
 /// read and dropped once nobody listens.
 fn forward_log(stderr: ChildStderr, events: UnboundedSender<AgentEvent>) {
+    forward_account_log(stderr, events, 0);
+}
+
+fn forward_account_log(stderr: ChildStderr, events: UnboundedSender<AgentEvent>, account: u32) {
     tokio::spawn(async move {
         let mut reader = BufReader::new(stderr);
         let mut line = Vec::new();
@@ -292,7 +306,7 @@ fn forward_log(stderr: ChildStderr, events: UnboundedSender<AgentEvent>) {
                 Ok(_) => {
                     let text = String::from_utf8_lossy(without_line_end(&line)).into_owned();
                     // No receiver: the session is ending; keep draining regardless.
-                    if !live_limits::observe_log(&text) {
+                    if !live_limits::observe_account_log(account, &text) {
                         let _ = events.send(AgentEvent::Log(text));
                     }
                 }
@@ -352,7 +366,19 @@ async fn drive(
                 if let Some(meter) = meter.as_mut() {
                     meter.record(&report);
                 }
+                let paused = setup.pause_on_subscription_limit
+                    && report.outcome.as_ref().is_err_and(|error| subscription_limit_error(error));
                 shared.emit(AgentEvent::TurnEnded(report.outcome));
+                if paused {
+                    // The saved thread still owns any prompts it hasn't seen echoed.
+                    // Wait for its supervisor to stop this process before a new login runs.
+                    while let Some(input) = inputs.recv().await {
+                        if matches!(input, AgentInput::Stop) {
+                            break;
+                        }
+                    }
+                    return Ok(());
+                }
                 SteeringInput::TurnEnded
             }
         };
@@ -468,7 +494,7 @@ impl Turn<'_> {
                     .map(turn_usage::counts);
                 let outcome = result
                     .map(|response| response.stop_reason)
-                    .map_err(|error| error.to_string());
+                    .map_err(|error| live_limits::turn_error(&error));
                 // The loop ended: the session is stopping and no one waits for the turn.
                 let _ = turn_sender.send(turn_usage::TurnReport {
                     outcome,

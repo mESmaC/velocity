@@ -29,11 +29,12 @@ enum ConfigShape {
 /// The shared servers, minus every one whose name the agent's own config already has.
 pub(crate) fn without_own_servers(
     shared: &[McpServer],
-    provider: Option<Provider>,
+    launch: &super::AgentLaunch,
     worktree: &Path,
 ) -> Vec<McpServer> {
-    let own = provider
-        .map(|provider| own_server_names(provider, worktree))
+    let own = launch
+        .own_config
+        .map(|provider| own_server_names(provider, worktree, launch))
         .unwrap_or_default();
     shared
         .iter()
@@ -43,9 +44,13 @@ pub(crate) fn without_own_servers(
 }
 
 /// Names lowercased: agents on Windows treat config keys loosely, so a near match counts.
-fn own_server_names(provider: Provider, worktree: &Path) -> BTreeSet<String> {
+fn own_server_names(
+    provider: Provider,
+    worktree: &Path,
+    launch: &super::AgentLaunch,
+) -> BTreeSet<String> {
     let mut names = BTreeSet::new();
-    for (path, shape) in config_files(provider, worktree, home().as_deref()) {
+    for (path, shape) in config_files(provider, worktree, home().as_deref(), launch) {
         if let Ok(text) = std::fs::read_to_string(&path) {
             names.extend(
                 server_names(&text, shape, worktree)
@@ -79,6 +84,7 @@ fn config_files(
     provider: Provider,
     worktree: &Path,
     home: Option<&Path>,
+    launch: &super::AgentLaunch,
 ) -> Vec<(PathBuf, ConfigShape)> {
     let mut files = Vec::new();
     let mut user = |folder: Option<PathBuf>, file: &str, shape| {
@@ -86,15 +92,21 @@ fn config_files(
             files.push((folder.join(file), shape));
         }
     };
+    let profile = |variable| {
+        launch
+            .env_value(variable)
+            .map(PathBuf::from)
+            .or_else(|| environment_folder(variable))
+    };
     let home_folder = |child: &str| home.map(|home| home.join(child));
     match provider {
         Provider::Anthropic => {
-            let folder = environment_folder("CLAUDE_CONFIG_DIR").or(home.map(Path::to_path_buf));
+            let folder = profile("CLAUDE_CONFIG_DIR").or(home.map(Path::to_path_buf));
             user(folder, ".claude.json", ConfigShape::ClaudeUser);
             files.push((worktree.join(".mcp.json"), ConfigShape::JsonServers));
         }
         Provider::Codex => {
-            let folder = environment_folder("CODEX_HOME").or(home_folder(".codex"));
+            let folder = profile("CODEX_HOME").or(home_folder(".codex"));
             user(folder, "config.toml", ConfigShape::TomlServers);
             files.push((
                 worktree.join(".codex/config.toml"),
@@ -102,7 +114,7 @@ fn config_files(
             ));
         }
         Provider::Antigravity => {
-            let folder = home_folder(".gemini");
+            let folder = profile("ANTIGRAVITY_GEMINI_DIR").or_else(|| home_folder(".gemini"));
             user(folder.clone(), "settings.json", ConfigShape::JsonServers);
             user(
                 folder,
@@ -117,11 +129,15 @@ fn config_files(
         // Kimi Code keeps its servers in `~/.kimi-code/`; the older Kimi CLI in `~/.kimi/`.
         Provider::KimiCode => {
             user(
-                home_folder(".kimi-code"),
+                profile("KIMI_CODE_HOME").or_else(|| home_folder(".kimi-code")),
                 "mcp.json",
                 ConfigShape::JsonServers,
             );
-            user(home_folder(".kimi"), "mcp.json", ConfigShape::JsonServers);
+            user(
+                profile("KIMI_SHARE_DIR").or_else(|| home_folder(".kimi")),
+                "mcp.json",
+                ConfigShape::JsonServers,
+            );
         }
         Provider::Custom(_) => {}
     }

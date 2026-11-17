@@ -27,6 +27,11 @@
     threadIdentifier?: number | null;
   } = $props();
 
+  const usage = $derived(
+    layout.providers.find(
+      (provider) => provider.account_key === modelPill.usage_account,
+    ),
+  );
   let menuOpen = $state(false);
 
   const providerIcons: Record<ProviderColor, string> = {
@@ -115,7 +120,7 @@
     <button
       class="pill model"
       type="button"
-      title="Choose model"
+      title={usage?.label ?? 'Choose model'}
       aria-haspopup="menu"
       aria-expanded={menuOpen}
       onclick={() => (menuOpen = !menuOpen)}
@@ -127,6 +132,17 @@
       <i>{modelPill.effort_label}{modelPill.show_fast_badge ? ' · Fast' : ''}</i
       >
     </button>
+    {#if usage && !usage.note}
+      <span
+        class="provider-meter"
+        data-provider={usage.provider}
+        role="img"
+        aria-label={usage.label}
+        title={usage.label}
+      >
+        <span style={`--provider-used: ${usage.percent_used}%`}></span>
+      </span>
+    {/if}
     <button class="pill" type="button" title="Dictate" aria-label="Dictate"
       ><Icon name="microphone" /></button
     >

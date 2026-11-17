@@ -3,7 +3,7 @@
 
 Four providers: **Anthropic** (Claude Code agent), **Codex** (Codex CLI agent), **Antigravity** and **Kimi Code** (Kimi CLI agent).
 Every one signs in with OAuth on your own subscription, the way T3 Code does.
-Velocity talks to each one's agent over ACP (§3.2) and uses that agent's own login.
+Velocity talks to each one's agent over ACP (§3.2) and uses the selected account's own login.
 It never asks for, shows or stores an API key, and tokens stay in each provider's own credential store.
 Any other ACP agent can be added beside the four (Custom ACP agents, below).
 
@@ -11,7 +11,8 @@ Any other ACP agent can be added beside the four (Custom ACP agents, below).
 - Its mark, its name, "runs <agent> over ACP · OAuth", and the ACP agent command (e.g. `claude-agent-acp · stdio`).
   The command and its arguments can be edited, with Reset to return to the built-in one *(proposed)*: adapters get renamed (#46), and you may run a build of your own.
 - **Status:**
-  - **Signed in** shows the plan and how many agents are on it.
+  - **Signed in** shows how many agents use the provider.
+    Each account row shows its email or plan when the provider reports it and lets you rename the account.
   - **Waiting** shows "Waiting for you to finish signing in at <site>…" with Cancel.
   - **Not signed in** means the provider's models are hidden from every picker.
   - **Not installed** is checked again whenever Settings → Providers opens.
@@ -34,17 +35,25 @@ Any other ACP agent can be added beside the four (Custom ACP agents, below).
     On Windows a machine with no npm gets winget's `OpenJS.NodeJS.LTS` first.
     Elsewhere a missing npm fails with a message to install Node.js 22 or later.
     winget's "already installed" counts as success.
-- **Sign in with Claude / ChatGPT / Google / Kimi:** opens the provider's OAuth page in your browser.
-  When the login completes, the card flips to signed in by itself and a toast lists the models now available.
-- **Sign out:** agents already running on that provider keep their session until they finish.
-  New work can't use it.
-  When the default for new threads is signed out, new threads, spec interviews and the duty dialog start on the first signed-in provider in card order and its model; with no provider signed in, nothing new starts and the launch says to sign in.
-  Swarm and goal swarm launches refuse a provider signed out since its dialog was drawn, never swapping it.
-  Sign out is recorded by Velocity and leaves the agent's own login alone *(proposed)*, so signing in again needs no browser while that login holds.
-- **Limit:** a bar showing the share of the current subscription window used (5-hour, daily, weekly, whatever the provider reports) and when it resets.
-  - **At the limit** (decided, Q15): agents on that provider wait for the reset and resume by themselves (§2.2).
-    Work never moves to another provider automatically.
-    The pickers keep listing the provider with its limit bar, so you choose where new work goes.
+- **Accounts:** the existing CLI login is the first account and keeps its current configuration and cached usage.
+  **Add account** opens a new OAuth sign-in using a separate CLI profile for each account.
+  Claude uses `CLAUDE_CONFIG_DIR`, Codex uses `CODEX_HOME`, Antigravity uses its own Gemini directory and file-based token store, and Kimi Code uses `KIMI_CODE_HOME`.
+  The CLI manages its own credentials in that profile.
+  An added custom ACP agent uses the login supplied by its command.
+- **Default:** Settings sets the default account per provider.
+  The composer model menu groups accounts and models by provider and opens on the selected provider's default account unless you pick another.
+  The thread header shows the account currently assigned to its session.
+- **Sign out:** Velocity records the account as signed out and keeps its CLI credentials so you can sign back in.
+  Existing sessions can finish on that account.
+  Once the last account signs out, the provider's models disappear from the pickers.
+  A signed-out default provider gives way to the first signed-in provider for new composer work.
+  Swarms and goal swarms keep the provider selected for each member.
+- **Limit:** each signed-in account has a meter and reset times for the windows its CLI reports.
+  The composer shows the current account's limit and the model menu shows the limits for other accounts.
+- **At the limit** (#444): new threads, dispatch and swarms use the next available signed-in account of the same provider in card order.
+  A running build thread that reaches its subscription limit stops its current CLI and resumes automatically on the next available account.
+  It keeps its workspace, transcript, unsent messages and any claims it still holds.
+  While all accounts are at their limit, a paused thread waits and resumes automatically when an account has room.
 - **Max agents at once** (off by default): a cap on concurrently running agents for this provider.
   - Agents over the cap wait as "queued · <provider>" and start when a slot frees.
   - Parked agents (§2.2) don't hold a slot, so waiting on another PR never blocks new work.
@@ -75,19 +84,19 @@ Spec interviews, duty agents and swarms choose their models in their own dialogs
 
 **Limit sources** (decided, Q14).
 ACP doesn't carry subscription limits.
-Each provider's own usage report is read outside ACP, with the login its agent already holds, from the same sources T3 Code reads.
+Each periodic usage report uses the account's own CLI login.
 Velocity never stores a token for this.
 
 | Provider | Where it reports its limits |
 |---|---|
 | Anthropic | Claude Code's usage report (the 5-hour and weekly windows), and the rate-limit events it sends during a turn |
 | Codex | `account/rateLimits/read` on Codex's app server, and its rate-limit notifications |
-| Antigravity | Google's `retrieveUserQuotaSummary` report for the agent's signed-in account, falling back to `fetchAvailableModels` for older accounts. Uses the native agent's Windows `gemini:antigravity` credential; an expired token is refreshed by a prompt-free ACP probe through the configured agent. Tokens stay in the agent's credential store. The fullest enabled quota window supplies the bar and reset time; older per-model reports without a duration say "reported quota". |
-| Kimi Code, custom agents | no known source |
+| Antigravity | Google's `retrieveUserQuotaSummary` report, falling back to `fetchAvailableModels`. Uses the selected profile’s token store or the first account’s existing Windows credential. A prompt-free ACP probe asks the CLI to refresh an expired token. |
+| Kimi Code | The managed subscription’s `/usages` report through the CLI’s OAuth login |
+| Custom agents | No known source |
 
-- A provider with no source, or whose read fails, shows "limit not reported".
-  Nothing else depends on the bar.
-- Live Claude rate-limit metadata and Codex app-server notifications update the same saved meter immediately.
+- An account with no reported limits shows "limit not reported".
+- Live Claude rate-limit metadata and Codex app-server notifications update the emitting account’s saved meter immediately.
   Codex's Node ACP adapter is launched with a bundled preloader that observes its app-server output without changing the RPC stream or the installed adapter.
   Five-minute reads remain the fallback; a read started before a live update cannot replace that newer report.
   Reports contain only subscription windows, never context-token usage.
@@ -102,7 +111,7 @@ The footer usage button and the limit meter open a modal, like AIRC's: a centred
 It holds the usage limits, laid out like T3 Code's, and the project's code graph section (F19 Measuring it).
 Rust draws its rows; the limits update while it is open whenever a limit changes (`layout://state`).
 - **Title:** "Usage limits".
-- **A section per signed-in provider,** in card order: its icon, name and plan (`Max`, `Pro`).
+- **A section per signed-in account,** in provider card order, with the provider icon and the account’s name and plan.
 - **A row per subscription window,** shortest first: the window (`5-hour`, `Weekly`) and "resets in 1d 10h" on one line, then a bar of the share left in the provider's colour and "61% left".
   The tooltip adds the share used and, when the provider gives the window's length and reset time, the share of the window's time left: where even spending would put the bar.
 - **A provider with no window to show** (no source, or a failed read) says "No limits reported."
@@ -136,5 +145,6 @@ Clicking it opens Settings → Providers and starts that provider's sign-in.
 - No screen anywhere accepts an API key.
 - Signing in through the browser updates Velocity without a restart or a manual refresh.
 - A signed-out provider's models never appear as selectable.
+- Two Claude accounts show independent usage and a dispatch thread resumes on the second account when the first hits its limit.
 - A swarm can mix models from several providers, assigned round-robin.
 - A goal swarm runs exactly the count you set on each model.

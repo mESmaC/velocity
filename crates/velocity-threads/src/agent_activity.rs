@@ -64,15 +64,11 @@ pub fn observe(thread: &mut ThreadItem, event: &AgentEvent, now: u64) {
         checkpoint.last_update = now;
         checkpoint.nudged = false;
     }
-    if let AgentEvent::TurnEnded(Err(error)) = event {
-        let normalized = error.to_lowercase();
-        if normalized.contains("usage limit")
-            || normalized.contains("subscription limit")
-            || normalized.contains("quota exceeded")
-        {
-            checkpoint.retry_after = Some(provider_retry_after(error.as_str(), now));
-            thread.activity = AgentActivity::AtLimit;
-        }
+    if let AgentEvent::TurnEnded(Err(error)) = event
+        && velocity_acp::client::subscription_limit_error(error)
+    {
+        checkpoint.retry_after = Some(provider_retry_after(error.as_str(), now));
+        thread.activity = AgentActivity::AtLimit;
     }
     if matches!(event, AgentEvent::TurnEnded(_)) {
         checkpoint.turns = checkpoint.turns.saturating_add(1);
@@ -192,7 +188,7 @@ pub fn pushed_commit(thread: &ThreadItem) -> Option<String> {
         .then(|| String::from_utf8_lossy(&output.stdout).trim().to_owned())
 }
 
-fn capped(thread: &ThreadItem, settings: &AgentSettings, now: u64) -> bool {
+pub fn capped(thread: &ThreadItem, settings: &AgentSettings, now: u64) -> bool {
     settings
         .max_turns
         .is_some_and(|limit| thread.supervision.turns >= limit)

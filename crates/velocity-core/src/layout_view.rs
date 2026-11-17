@@ -141,6 +141,7 @@ pub struct LayoutData {
 )]
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ProviderUsage {
+    pub account_key: String,
     pub provider: ProviderColor,
     pub label: String,
     pub percent_used: u8,
@@ -161,6 +162,7 @@ impl ProviderUsage {
             label,
             percent_used,
             name: String::new(),
+            account_key: String::new(),
             plan: None,
             windows: Vec::new(),
             note: None,

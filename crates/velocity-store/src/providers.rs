@@ -62,6 +62,17 @@ pub struct ProviderLimit {
 }
 
 impl ProviderLimit {
+    pub fn exhausted(&self, now: u32) -> bool {
+        let full = |used, reset: Option<u32>| used >= 100 && reset.is_none_or(|at| at > now);
+        if self.windows.is_empty() {
+            full(self.percent_used, self.resets_at)
+        } else {
+            self.windows
+                .iter()
+                .any(|window| full(window.percent_used, window.resets_at))
+        }
+    }
+
     pub fn new(percent_used: u8, window: String, resets_at: Option<u32>) -> Self {
         Self {
             percent_used,
@@ -414,10 +425,10 @@ impl Settings {
     /// install launches as before until its agents have answered.
     pub fn provider_usable(&self, provider: ProviderKind) -> bool {
         self.provider_exists(provider)
-            && !self.providers.signed_out.contains(&provider)
-            && self
-                .provider_catalog(provider)
-                .is_none_or(|entry| entry.signed_in)
+            && (self.legacy_account_signed_in(provider)
+                || self.providers.accounts.iter().any(|account| {
+                    account.provider == provider && account.id != 0 && account.signed_in
+                }))
     }
 
     /// The providers new work can use, in card order (F15 Everywhere a model is chosen).
@@ -464,15 +475,28 @@ impl Settings {
     /// The models the pickers list for `provider`: what its agent offers, minus the ones you
     /// hid.
     pub fn visible_models(&self, provider: ProviderKind) -> Vec<&ProviderModel> {
-        self.provider_catalog(provider)
-            .map(|entry| {
-                entry
-                    .models
-                    .iter()
-                    .filter(|model| !self.model_hidden(provider, &model.name))
-                    .collect()
-            })
-            .unwrap_or_default()
+        self.provider_models(provider)
+            .into_iter()
+            .filter(|model| !self.model_hidden(provider, &model.name))
+            .collect()
+    }
+
+    pub fn provider_models(&self, provider: ProviderKind) -> Vec<&ProviderModel> {
+        let legacy = self
+            .provider_catalog(provider)
+            .into_iter()
+            .flat_map(|entry| &entry.models);
+        let isolated = self
+            .providers
+            .accounts
+            .iter()
+            .filter(|account| account.provider == provider && account.signed_in)
+            .flat_map(|account| &account.models);
+        let mut seen = std::collections::HashSet::new();
+        legacy
+            .chain(isolated)
+            .filter(|model| seen.insert(&model.name))
+            .collect()
     }
 
     pub fn model_hidden(&self, provider: ProviderKind, model: &str) -> bool {
@@ -485,12 +509,9 @@ impl Settings {
     /// Whether the agent offers a fast mode on `model`. A model never read is taken to have
     /// none, so Fast is never shown where it can't run.
     pub fn model_has_fast_mode(&self, provider: ProviderKind, model: &str) -> bool {
-        self.provider_catalog(provider).is_some_and(|entry| {
-            entry
-                .models
-                .iter()
-                .any(|known| known.fast && (known.name == model || known.id == model))
-        })
+        self.provider_models(provider)
+            .iter()
+            .any(|known| known.fast && (known.name == model || known.id == model))
     }
 
     /// The model new work on `provider` runs: Settings' default model on the default
@@ -753,7 +774,7 @@ impl StateStore {
         self.replace_settings(settings)
     }
 
-    fn replace_settings(&mut self, settings: Settings) -> Result<bool, StoreError> {
+    pub(crate) fn replace_settings(&mut self, settings: Settings) -> Result<bool, StoreError> {
         if self.state.settings == settings {
             return Ok(false);
         }
@@ -781,6 +802,9 @@ fn apply_edit(settings: &mut Settings, edit: ProviderEdit) {
             }
         }
         ProviderEdit::DefaultModel { provider, model } => {
+            if providers.default_provider != provider {
+                providers.composer_account = None;
+            }
             providers.default_provider = provider;
             providers.default_model = Some(model);
         }

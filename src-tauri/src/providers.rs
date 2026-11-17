@@ -6,6 +6,7 @@
 //! limits are read every five minutes. What the agents report is saved in the store's provider catalog, so pickers and
 //! the footer meter are right at the next start before the agents answer again.
 
+pub(crate) mod accounts;
 pub(crate) mod install;
 
 use std::path::PathBuf;
@@ -17,8 +18,8 @@ use tauri::{AppHandle, Manager};
 use tauri_specta::Event;
 use velocity_acp::client::AgentLaunch;
 use velocity_acp::client::{
-    AgentProbe, ClientError, probe_agent, read_antigravity_usage, read_claude_usage,
-    read_codex_usage, sign_in,
+    AgentProbe, ClientError, probe_agent, read_account_label, read_antigravity_usage,
+    read_claude_account_usage, read_codex_account_usage, read_kimi_account, sign_in,
 };
 use velocity_acp::{
     LimitReading, SignInMethod, agent_command_label, agent_command_line, choose_sign_in,
@@ -31,7 +32,7 @@ use velocity_store::providers::{
     LimitWindow, ProviderEdit, ProviderLimit, ProviderModel, unix_now,
 };
 use velocity_store::{ProviderKind, Settings, StateStore};
-use velocity_threads::{ThreadRuntimes, agent_launch, thread_run_settings};
+use velocity_threads::{ThreadRuntimes, agent_launch_for_account, thread_run_settings};
 
 use crate::layout::MainLayout;
 use crate::state::ManagedStateStore;
@@ -62,7 +63,8 @@ struct Slot {
     /// what the new one reports.
     generation: u64,
     /// Prevent an older periodic read from replacing a report received during that read.
-    limit_revision: u64,
+    limit_revisions: std::collections::HashMap<u32, u64>,
+    account_login: Option<tauri::async_runtime::JoinHandle<()>>,
 }
 
 /// Every provider's slot, in card order, kept in step with Settings → Providers.
@@ -80,7 +82,7 @@ impl ManagedProviders {
         let mut previous: Vec<Slot> = std::mem::take(&mut *slots);
         let mut changed = Vec::new();
         for provider in settings.all_providers() {
-            let launch = agent_launch(settings, provider)
+            let launch = agent_launch_for_account(settings, provider, 0)
                 .ok()
                 .map(|(launch, _)| launch);
             let line = launch.as_ref().map(agent_command_line).unwrap_or_default();
@@ -174,7 +176,8 @@ fn new_slot(provider: ProviderKind) -> Slot {
         sign_in: None,
         install: None,
         generation: 0,
-        limit_revision: 0,
+        limit_revisions: Default::default(),
+        account_login: None,
     }
 }
 
@@ -191,12 +194,18 @@ fn refresh_slot(
         slot.runtime.phase = ProviderPhase::Checking;
         slot.runtime.can_sign_in = false;
         slot.runtime.detail = None;
+        slot.runtime.account_waiting = None;
+        slot.runtime.account_error = None;
         slot.runtime.install_failure = None;
         slot.method = None;
         // A new command is a different program: its sign-in and install no longer apply.
-        for task in [slot.sign_in.take(), slot.install.take()]
-            .into_iter()
-            .flatten()
+        for task in [
+            slot.sign_in.take(),
+            slot.install.take(),
+            slot.account_login.take(),
+        ]
+        .into_iter()
+        .flatten()
         {
             task.abort();
         }
@@ -275,7 +284,7 @@ async fn check(application: &AppHandle, provider: ProviderKind) {
     let Some(generation) = providers.generation(provider) else {
         return;
     };
-    let Ok((launch, _)) = agent_launch(&settings(application), provider) else {
+    let Ok((launch, _)) = agent_launch_for_account(&settings(application), provider, 0) else {
         return;
     };
     let result = probe_agent(&launch, &working_directory(application), PROBE_DEADLINE).await;
@@ -283,6 +292,9 @@ async fn check(application: &AppHandle, provider: ProviderKind) {
         Ok(probe) => probe,
         Err(error) => {
             record_failure(application, (provider, generation), &error);
+            if providers.phase(provider) != Some(ProviderPhase::NotInstalled) {
+                accounts::refresh_profiles(application, provider, generation).await;
+            }
             publish(application, None);
             return;
         }
@@ -290,8 +302,9 @@ async fn check(application: &AppHandle, provider: ProviderKind) {
     if !record_probe(application, (provider, generation), &probe) {
         return;
     }
+    accounts::refresh_profiles(application, provider, generation).await;
     if probe.signed_in {
-        read_limit(application, provider).await;
+        read_limit(application, provider, 0).await;
     }
     publish(application, None);
 }
@@ -375,30 +388,58 @@ fn record_failure(
 
 /// Reads one provider's limit where it has a source (F15 Limit sources). A failed read shows
 /// "limit not reported".
-async fn read_limit(application: &AppHandle, provider: ProviderKind) {
+async fn read_limit(application: &AppHandle, provider: ProviderKind, account: u32) {
     let providers = application.state::<ManagedProviders>();
-    let revision = providers.with_slot(provider, |slot| (slot.generation, slot.limit_revision));
+    let revision = providers.with_slot(provider, |slot| {
+        (slot.generation, slot.limit_revisions.get(&account).copied())
+    });
     let directory = working_directory(application);
-    let reading = match provider {
-        ProviderKind::Claude => read_claude_usage(&directory, LIMIT_DEADLINE).await,
-        ProviderKind::Codex => read_codex_usage(&directory, LIMIT_DEADLINE).await,
-        ProviderKind::Antigravity => {
-            let launch = agent_launch(&settings(application), provider);
-            match launch {
-                Ok((launch, _)) => {
-                    read_antigravity_usage(&launch, &directory, LIMIT_DEADLINE).await
-                }
-                Err(error) => Err(ClientError::Usage(error.to_string())),
-            }
-        }
-        ProviderKind::Kimi | ProviderKind::Custom(_) => Ok(None),
+    let Ok((launch, _)) = agent_launch_for_account(&settings(application), provider, account)
+    else {
+        return;
     };
-    let reading: Option<LimitReading> = reading.ok().flatten();
+    let (reading, identity) = if provider == ProviderKind::Kimi {
+        read_kimi_account(&launch, &directory, LIMIT_DEADLINE)
+            .await
+            .unwrap_or_default()
+    } else {
+        let (reading, identity) = tokio::join!(
+            provider_reading(provider, &launch, &directory),
+            read_account_label(&launch, &directory, LIMIT_DEADLINE),
+        );
+        (reading, identity)
+    };
     providers.with_slot(provider, |slot| {
-        if revision == Some((slot.generation, slot.limit_revision)) {
-            record_limit(application, provider, reading, false);
+        if revision == Some((slot.generation, slot.limit_revisions.get(&account).copied())) {
+            record_limit(application, provider, account, reading, false);
+        }
+        if revision.is_some_and(|(generation, _)| slot.generation == generation)
+            && let Some(identity) = identity
+        {
+            with_store(application, |store| {
+                store.update_provider_account(provider, account, |profile| {
+                    profile.identity = Some(identity);
+                })
+            });
         }
     });
+}
+
+async fn provider_reading(
+    provider: ProviderKind,
+    launch: &AgentLaunch,
+    directory: &std::path::Path,
+) -> Option<LimitReading> {
+    match provider {
+        ProviderKind::Claude => read_claude_account_usage(directory, LIMIT_DEADLINE, launch).await,
+        ProviderKind::Codex => read_codex_account_usage(directory, LIMIT_DEADLINE, launch).await,
+        ProviderKind::Antigravity => {
+            read_antigravity_usage(launch, directory, LIMIT_DEADLINE).await
+        }
+        _ => Ok(None),
+    }
+    .ok()
+    .flatten()
 }
 
 /// Saves a reading. A full read replaces every window; a live event (`live`) names only some
@@ -406,13 +447,29 @@ async fn read_limit(application: &AppHandle, provider: ProviderKind) {
 fn record_limit(
     application: &AppHandle,
     provider: ProviderKind,
+    account: u32,
     reading: Option<LimitReading>,
     live: bool,
 ) {
     let plan = reading.as_ref().and_then(|reading| reading.plan.clone());
     let limit = reading.map(saved_limit);
     with_store(application, |store| {
-        if live {
+        if account != 0 {
+            store.update_provider_account(provider, account, |profile| {
+                if !live || limit.is_some() {
+                    profile.limit = limit.map(|limit| {
+                        if live {
+                            limit.merged_into(profile.limit.as_ref())
+                        } else {
+                            limit
+                        }
+                    });
+                }
+                if plan.is_some() {
+                    profile.plan = plan;
+                }
+            })
+        } else if live {
             store.record_live_provider_limit(provider, limit, plan)
         } else {
             store.record_provider_limit(provider, limit, plan)
@@ -443,12 +500,12 @@ fn saved_limit(reading: LimitReading) -> ProviderLimit {
 }
 
 fn watch_live_limits(application: &AppHandle) {
-    let mut reports = velocity_acp::client::subscribe_limits();
+    let mut reports = velocity_acp::client::subscribe_account_limits();
     let handle = application.clone();
     tauri::async_runtime::spawn(async move {
         loop {
             match reports.recv().await {
-                Ok((provider, reading)) => {
+                Ok((provider, account, reading)) => {
                     let provider = match provider {
                         velocity_acp::Provider::Anthropic => ProviderKind::Claude,
                         velocity_acp::Provider::Codex => ProviderKind::Codex,
@@ -457,8 +514,9 @@ fn watch_live_limits(application: &AppHandle) {
                     handle
                         .state::<ManagedProviders>()
                         .with_slot(provider, |slot| {
-                            slot.limit_revision = slot.limit_revision.wrapping_add(1);
-                            record_limit(&handle, provider, reading, true);
+                            let revision = slot.limit_revisions.entry(account).or_default();
+                            *revision = revision.wrapping_add(1);
+                            record_limit(&handle, provider, account, reading, true);
                         });
                     publish(&handle, None);
                 }
@@ -470,10 +528,14 @@ fn watch_live_limits(application: &AppHandle) {
 }
 
 async fn refresh_limits(application: &AppHandle) {
-    for provider in settings(application).all_providers() {
-        let providers = application.state::<ManagedProviders>();
-        if providers.phase(provider) == Some(ProviderPhase::SignedIn) {
-            read_limit(application, provider).await;
+    let settings = settings(application);
+    for provider in settings.all_providers() {
+        for account in settings
+            .provider_accounts(provider)
+            .into_iter()
+            .filter(|account| account.signed_in)
+        {
+            read_limit(application, provider, account.id).await;
         }
     }
     publish(application, None);
@@ -558,6 +620,9 @@ pub async fn provider_sign_in(
 ) -> Result<ProvidersView, String> {
     crate::layout::off_ui_thread(move || {
         let providers = application.state::<ManagedProviders>();
+        if providers.with_slot(provider, |slot| slot.account_login.is_some()) == Some(true) {
+            return Err("Wait for this account's sign-in to finish".into());
+        }
         // Signed out only in Velocity: the agent's login still holds, so no browser is needed.
         if providers.phase(provider) == Some(ProviderPhase::SignedIn) {
             with_store(&application, |store| {
@@ -595,7 +660,7 @@ pub async fn provider_sign_in(
 
 async fn finish_sign_in(application: &AppHandle, provider: ProviderKind, method: SignInMethod) {
     let settings = settings(application);
-    let Ok((launch, _)) = agent_launch(&settings, provider) else {
+    let Ok((launch, _)) = agent_launch_for_account(&settings, provider, 0) else {
         return;
     };
     let directory = working_directory(application);
@@ -805,6 +870,17 @@ pub async fn choose_model(
                     ModelMenuChoice::Model { provider, model } => {
                         ProviderEdit::DefaultModel { provider, model }
                     }
+                    ModelMenuChoice::Account { provider, account } => {
+                        let state = application.state::<ManagedStateStore>();
+                        let mut store = state.lock().map_err(|error| error.to_string())?;
+                        ensure_account(&store.settings(), provider, account)?;
+                        store
+                            .choose_composer_account(provider, account)
+                            .map_err(|error| error.to_string())?;
+                        drop(store);
+                        current_view(&application)?;
+                        return model_menu(&application, project_identifier, thread_identifier);
+                    }
                     ModelMenuChoice::Effort(effort) => ProviderEdit::DefaultEffort(effort),
                     ModelMenuChoice::Speed(speed) => ProviderEdit::DefaultSpeed(speed),
                 };
@@ -814,6 +890,19 @@ pub async fn choose_model(
         model_menu(&application, project_identifier, thread_identifier)
     })
     .await
+}
+
+fn ensure_account(settings: &Settings, provider: ProviderKind, account: u32) -> Result<(), String> {
+    if settings.provider_usable(provider)
+        && settings
+            .provider_accounts(provider)
+            .iter()
+            .any(|profile| profile.id == account && profile.signed_in)
+    {
+        Ok(())
+    } else {
+        Err("Sign in to the account first".into())
+    }
 }
 
 fn choose_for_thread(
@@ -829,6 +918,12 @@ fn choose_for_thread(
             .project(key.0)
             .and_then(|project| project.threads.iter().find(|item| item.id == key.1))
             .ok_or("This thread no longer exists")?;
+        if let ModelMenuChoice::Account { provider, account } = &choice {
+            if live {
+                return Err("Choose an account before starting or resuming the thread".into());
+            }
+            ensure_account(&store.settings(), *provider, *account)?;
+        }
         if let ModelMenuChoice::Model { provider, model } = &choice
             && live
             && *provider != thread.provider

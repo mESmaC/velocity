@@ -225,10 +225,10 @@
           updatesOpen = false;
         }}
       >
-        {#each layout.providers as provider (provider.provider)}<span
+        {#each layout.providers as provider (provider.account_key)}<span
             class="provider-meter"
             data-provider={provider.provider}
-            title={`${provider.label}: ${provider.percent_used}% used`}
+            title={provider.label}
             ><span style={`--provider-used: ${provider.percent_used}%`}
             ></span></span
           >{/each}

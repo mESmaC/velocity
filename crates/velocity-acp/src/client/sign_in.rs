@@ -43,10 +43,12 @@ async fn terminal_login(
     directory: &Path,
     args: &[String],
 ) -> Result<(), ClientError> {
+    launch.prepare_account()?;
     let mut command = process::hidden_command(find_program(launch.program.as_os_str()));
+    launch.apply_environment(&mut command);
     command
         .args(args)
-        .envs(launch.env.iter().map(|(name, value)| (name, value)))
+        .args(launch.profile_args())
         .current_dir(directory)
         .stdin(Stdio::null())
         .stdout(Stdio::null())

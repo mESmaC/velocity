@@ -65,6 +65,7 @@
       {/if}
     </h1>
     <div class="meta">
+      {#if thread.account_label}<span>{thread.account_label}</span>{/if}
       {#if thread.branch}
         <span class="branch" title={thread.branch}
           ><Icon name="branch" /><span class="label">{thread.branch}</span

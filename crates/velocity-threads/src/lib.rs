@@ -47,7 +47,7 @@ pub use deletion::{Deletion, DeletionError, DeletionPlan, PendingDeletions, plan
 pub use dispatch::{DispatchError, IssueDispatchPlan, plan_issue_dispatch};
 pub use follow_through::DeliveryStatus;
 pub use launch::{
-    LaunchError, LaunchPlan, WorktreeNaming, agent_launch, plan_launch,
+    LaunchError, LaunchPlan, WorktreeNaming, agent_launch, agent_launch_for_account, plan_launch,
     plan_launch_with_preferences, project_workspace_root, title_worktree_name,
 };
 pub use ready_pool::{PoolHost, PoolProject, PoolRow, PoolTicket, ReadyPools};

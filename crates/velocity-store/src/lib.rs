@@ -53,6 +53,7 @@ pub mod goal_swarm_view;
 pub mod goal_swarms;
 mod project_layout;
 pub mod projects;
+pub mod provider_accounts;
 pub mod provider_views;
 pub mod providers;
 pub mod rosen;
@@ -514,6 +515,12 @@ pub struct ProviderSettings {
     /// The identifier the next added agent gets. Identifiers are never reused.
     #[serde(default)]
     pub next_custom_agent: u32,
+    #[serde(default)]
+    pub accounts: Vec<provider_accounts::ProviderAccount>,
+    #[serde(default)]
+    pub default_accounts: BTreeMap<String, u32>,
+    #[serde(default)]
+    pub composer_account: Option<u32>,
 }
 
 fn default_title_provider() -> ProviderKind {
@@ -606,6 +613,9 @@ impl Settings {
                 commands: Vec::new(),
                 custom_agents: Vec::new(),
                 next_custom_agent: 1,
+                accounts: Vec::new(),
+                default_accounts: BTreeMap::new(),
+                composer_account: None,
             },
             agents: AgentSettings {
                 max_turns: core_settings.agents.max_turns,
@@ -771,6 +781,11 @@ pub struct ThreadItem {
     pub deletions: u32,
     pub elapsed_seconds: u32,
     pub provider: ProviderKind,
+    /// The account bound to the session. Zero is the existing CLI login.
+    #[serde(default)]
+    pub provider_account: u32,
+    #[serde(default)]
+    pub preferred_account: Option<u32>,
     pub model_name: String,
     pub effort: EffortLevel,
     pub preferred_speed: SpeedMode,
@@ -817,6 +832,8 @@ impl ThreadItem {
             deletions: 0,
             elapsed_seconds: 0,
             provider: ProviderKind::Codex,
+            provider_account: 0,
+            preferred_account: None,
             model_name: String::new(),
             effort: EffortLevel::High,
             preferred_speed: SpeedMode::Regular,
@@ -862,6 +879,8 @@ impl ThreadItem {
             deletions: 0,
             elapsed_seconds: 0,
             provider: thread.provider,
+            provider_account: 0,
+            preferred_account: None,
             model_name: thread.model_name,
             effort: thread.effort,
             preferred_speed: thread.preferred_speed,

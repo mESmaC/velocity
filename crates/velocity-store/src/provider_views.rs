@@ -50,6 +50,8 @@ pub struct ProviderRuntime {
     /// What Install runs, e.g. `npm install --global @agentclientprotocol/claude-agent-acp`.
     /// `None` when Velocity can't install it: an agent you added, or a command you changed.
     pub install_command: Option<String>,
+    pub account_waiting: Option<u32>,
+    pub account_error: Option<String>,
 }
 
 impl ProviderRuntime {
@@ -64,6 +66,8 @@ impl ProviderRuntime {
             detail: None,
             install_failure: None,
             install_command: None,
+            account_waiting: None,
+            account_error: None,
         }
     }
 }
@@ -100,9 +104,57 @@ pub struct ProviderCardView {
     pub can_sign_in: bool,
     /// What Install runs while its agent isn't installed (F15 Install); `None` hides Install.
     pub install_command: Option<String>,
+    pub accounts: Vec<ProviderAccountView>,
+    pub account_error: Option<String>,
+    pub can_add_account: bool,
     pub limit: Option<LimitView>,
     pub models: Vec<ModelChipView>,
     pub max_agents: Option<u32>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, Type)]
+pub struct ProviderAccountView {
+    pub id: u32,
+    pub name: String,
+    pub signed_in: bool,
+    pub waiting: bool,
+    pub is_default: bool,
+    pub limit: LimitView,
+    pub selected: bool,
+}
+
+fn account_views(
+    settings: &Settings,
+    provider: ProviderKind,
+    context: &ProviderContext<'_>,
+    selected: Option<u32>,
+) -> Vec<ProviderAccountView> {
+    let waiting = context
+        .runtime(provider)
+        .and_then(|runtime| runtime.account_waiting);
+    settings
+        .provider_accounts(provider)
+        .into_iter()
+        .map(|account| ProviderAccountView {
+            id: account.id,
+            name: account.label(),
+            signed_in: account.signed_in,
+            waiting: waiting == Some(account.id),
+            is_default: settings.default_account(provider) == account.id,
+            limit: account_limit(&account, context.now),
+            selected: selected == Some(account.id),
+        })
+        .collect()
+}
+
+fn account_limit(account: &crate::provider_accounts::ProviderAccount, now: u32) -> LimitView {
+    if let Some(reset) = account.blocked_until.filter(|until| *until > now) {
+        return limit_view(
+            Some(&ProviderLimit::new(100, "subscription".into(), Some(reset))),
+            now,
+        );
+    }
+    limit_view(account.limit.as_ref(), now)
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, Type)]
@@ -171,7 +223,11 @@ impl ProviderContext<'_> {
             .find(|entry| entry.provider == provider)
             .map_or(ProviderPhase::Checking, |entry| entry.phase);
         // Your sign-out wins over what the agent's login says (F15 Sign out).
-        if live == ProviderPhase::SignedIn && !settings.provider_usable(provider) {
+        if matches!(live, ProviderPhase::SignedOut | ProviderPhase::Failed)
+            && settings.provider_usable(provider)
+        {
+            ProviderPhase::SignedIn
+        } else if live == ProviderPhase::SignedIn && !settings.provider_usable(provider) {
             ProviderPhase::SignedOut
         } else {
             live
@@ -252,18 +308,14 @@ impl StateStore {
         let phase = context.phase(settings, provider);
         let runtime = context.runtime(provider);
         let catalog = settings.provider_catalog(provider);
-        let models = catalog
-            .map(|entry| {
-                entry
-                    .models
-                    .iter()
-                    .map(|model| ModelChipView {
-                        model: model.name.clone(),
-                        shown: !settings.model_hidden(provider, &model.name),
-                    })
-                    .collect()
+        let models = settings
+            .provider_models(provider)
+            .into_iter()
+            .map(|model| ModelChipView {
+                model: model.name.clone(),
+                shown: !settings.model_hidden(provider, &model.name),
             })
-            .unwrap_or_default();
+            .collect();
         let plan = catalog.and_then(|entry| entry.plan.clone());
         let status = status_text(
             phase,
@@ -296,6 +348,15 @@ impl StateStore {
                 .and_then(|entry| entry.install_command.clone()),
             limit: (phase == ProviderPhase::SignedIn)
                 .then(|| limit_view(catalog.and_then(|entry| entry.limit.as_ref()), context.now)),
+            accounts: account_views(settings, provider, context, None),
+            account_error: runtime.and_then(|runtime| runtime.account_error.clone()),
+            can_add_account: !matches!(provider, ProviderKind::Custom(_))
+                && runtime.is_some_and(|runtime| {
+                    matches!(
+                        runtime.phase,
+                        ProviderPhase::SignedIn | ProviderPhase::SignedOut
+                    ) && runtime.account_waiting.is_none()
+                }),
             models,
             max_agents: settings.provider_maximum(provider),
         }
@@ -330,33 +391,56 @@ pub fn provider_usage_at(settings: &Settings, now: u32) -> Vec<ProviderUsage> {
     settings
         .usable_providers()
         .into_iter()
-        .filter_map(|provider| {
-            let catalog = settings.provider_catalog(provider)?;
-            let name = settings.provider_name(provider);
-            let (percent_used, label) = match &catalog.limit {
-                Some(limit) => (
-                    limit.percent_used,
-                    format!("{name} {}% of {}", limit.percent_used, limit.window),
-                ),
-                None => (0, format!("{name} · limit not reported")),
-            };
-            let windows = catalog
-                .limit
-                .as_ref()
-                .map(|limit| usage_windows(limit, now))
-                .unwrap_or_default();
-            // T3 Code's wording for a signed-in account with nothing to draw.
-            let note = windows.is_empty().then(|| "No limits reported.".to_owned());
-            Some(
-                ProviderUsage::new(provider_color(provider), label, percent_used).with_panel(
-                    name,
-                    catalog.plan.clone(),
-                    windows,
-                    note,
-                ),
-            )
+        .flat_map(|provider| {
+            settings
+                .provider_accounts(provider)
+                .into_iter()
+                .filter_map(move |account| {
+                    if !account.signed_in
+                        || (account.id == 0 && settings.provider_catalog(provider).is_none())
+                    {
+                        return None;
+                    }
+                    let account_name = account.label();
+                    let name = format!("{} · {account_name}", settings.provider_name(provider));
+                    let limit = account_limit(&account, now);
+                    let mut windows = account
+                        .limit
+                        .as_ref()
+                        .map(|limit| usage_windows(limit, now))
+                        .unwrap_or_default();
+                    if !account
+                        .limit
+                        .as_ref()
+                        .is_some_and(|limit| limit.exhausted(now))
+                        && let Some(reset) = account.blocked_until.filter(|until| *until > now)
+                    {
+                        windows.push(usage_window(
+                            &LimitWindow::new(100, "subscription".into(), 0, Some(reset)),
+                            now,
+                        ));
+                    }
+                    let note = windows.is_empty().then(|| "No limits reported.".to_owned());
+                    let mut usage = ProviderUsage::new(
+                        provider_color(provider),
+                        format!("{name} · {}", limit.label),
+                        limit.percent_used,
+                    )
+                    .with_panel(
+                        name,
+                        account.plan.filter(|plan| plan != &account_name),
+                        windows,
+                        note,
+                    );
+                    usage.account_key = account_key(provider, account.id);
+                    Some(usage)
+                })
         })
         .collect()
+}
+
+pub fn account_key(provider: ProviderKind, account: u32) -> String {
+    format!("{}:{account}", provider.key())
 }
 
 /// The panel's rows: every window the provider reported, or its headline alone when the
@@ -426,12 +510,16 @@ pub fn default_model_pill(settings: &Settings) -> ModelPillView {
     let provider = settings.new_work_choice();
     let model = settings.provider_model(provider);
     let fast = settings.model_has_fast_mode(provider, &model);
-    ModelPillView::new(
+    let mut pill = ModelPillView::new(
         provider_color(provider),
         model,
         effort_label(providers.default_effort).into(),
         project_model_pill(providers.default_speed == SpeedMode::Fast, fast),
-    )
+    );
+    let requested = settings.composer_account(provider);
+    let active = settings.launch_account(provider, requested, unix_now());
+    pill.usage_account = Some(account_key(provider, active));
+    pill
 }
 
 fn status_text(
@@ -621,6 +709,8 @@ pub struct ModelMenuGroup {
     pub sign_in_label: String,
     pub can_sign_in: bool,
     pub models: Vec<ModelMenuItem>,
+    pub accounts: Vec<ProviderAccountView>,
+    pub can_choose_account: bool,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, Type)]
@@ -638,6 +728,10 @@ pub enum ModelMenuChoice {
     Model {
         provider: ProviderKind,
         model: String,
+    },
+    Account {
+        provider: ProviderKind,
+        account: u32,
     },
     Effort(EffortLevel),
     Speed(SpeedMode),
@@ -689,7 +783,17 @@ impl StateStore {
                     settings,
                     context,
                     candidate,
-                    (provider, &model),
+                    (
+                        provider,
+                        &model,
+                        target.thread.map(|thread| {
+                            if target.live_provider.is_some() {
+                                thread.provider_account
+                            } else {
+                                thread.preferred_account.unwrap_or(thread.provider_account)
+                            }
+                        }),
+                    ),
                     target.live_provider,
                 )
             })
@@ -716,8 +820,24 @@ impl StateStore {
         self.update_thread(project, thread, |item| match choice {
             ModelMenuChoice::Model { provider, model } => {
                 let fast = settings.model_has_fast_mode(provider, &model);
+                if item.provider != provider {
+                    item.preferred_account = None;
+                    item.agent_session = None;
+                    item.provider_account = settings.default_account(provider);
+                }
                 item.provider = provider;
                 *item = item.clone().switch_model(model, fast);
+            }
+            ModelMenuChoice::Account { provider, account } => {
+                if item.provider != provider {
+                    let model = settings.provider_model(provider);
+                    let fast = settings.model_has_fast_mode(provider, &model);
+                    item.provider = provider;
+                    item.agent_session = None;
+                    item.provider_account = settings.default_account(provider);
+                    *item = item.clone().switch_model(model, fast);
+                }
+                item.preferred_account = Some(account);
             }
             ModelMenuChoice::Effort(effort) => item.effort = effort,
             ModelMenuChoice::Speed(speed) => {
@@ -736,19 +856,13 @@ fn menu_group(
     settings: &Settings,
     context: &ProviderContext<'_>,
     candidate: ProviderKind,
-    (provider, model): (ProviderKind, &str),
+    (provider, model, thread_account): (ProviderKind, &str, Option<u32>),
     live_provider: Option<ProviderKind>,
 ) -> ModelMenuGroup {
     let facts = settings.provider_facts(candidate);
     let signed_in = settings.provider_usable(candidate);
     let note = if signed_in {
-        let limit = settings
-            .provider_catalog(candidate)
-            .and_then(|entry| entry.limit.as_ref());
-        match limit {
-            Some(limit) => format!("{}% of {}", limit.percent_used, limit.window),
-            None => "limit not reported".into(),
-        }
+        String::new()
     } else {
         match context.phase(settings, candidate) {
             ProviderPhase::Waiting => "signing in…".into(),
@@ -778,6 +892,14 @@ fn menu_group(
         signed_in,
         sign_in_label: facts.sign_in_label,
         can_sign_in: context.can_sign_in(candidate),
+        accounts: account_views(
+            settings,
+            candidate,
+            context,
+            (candidate == provider)
+                .then(|| thread_account.unwrap_or_else(|| settings.composer_account(candidate))),
+        ),
+        can_choose_account: live_provider.is_none(),
         models,
     }
 }

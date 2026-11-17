@@ -25,6 +25,7 @@ export type {
 // Settings → Providers and the composer's model menu (SPEC.md F15, F4).
 export const providerCommands = {
   list: commands.listProviders,
+  account: commands.editProviderAccount,
   signIn: commands.providerSignIn,
   // Sign out, and Cancel while signing in or installing.
   signOut: commands.providerSignOut,

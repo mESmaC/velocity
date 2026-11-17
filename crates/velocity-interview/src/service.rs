@@ -267,9 +267,20 @@ fn launch_plan<H: Host>(host: &H, (project, thread): InterviewKey) -> Option<Lau
         .agent_command(spec_thread.provider)
         .map(|command| (PathBuf::from(&command.program), command.arguments.clone()));
     let shared_servers = host.shared_mcp_servers(settings);
+    let provider = spec_thread.provider;
+    let account = settings.launch_account(
+        provider,
+        spec_thread
+            .preferred_account
+            .unwrap_or_else(|| settings.default_account(provider)),
+        velocity_store::providers::unix_now(),
+    );
     let agent = velocity_acp::configured_agent(acp_provider(spec_thread.provider), command)
         .map(|mut agent| {
             agent.launch.shared_servers = shared_servers;
+            if let Some(profile) = settings.saved_account(provider, account) {
+                agent.launch.use_account(account, &profile.directory);
+            }
             agent
         })
         .ok_or_else(|| velocity_store::providers::ProviderUnavailable::Removed.to_string());
@@ -295,6 +306,12 @@ fn launch<H: Host>(host: &Arc<H>, key: InterviewKey, prompt: String) {
             return;
         }
     };
+    if let Err(error) = lock(host.store()).update_thread(key.0, key.1, |thread| {
+        thread.bind_provider_account(agent.launch.account);
+    }) {
+        eprintln!("Could not record the spec interview account: {error}");
+        return;
+    }
     let (inputs, receiver) = unbounded_channel();
     // Queued until the session has started: the client reads inputs only after `session/new`.
     let _ = inputs.send(AgentInput::Send(text_message(prompt)));

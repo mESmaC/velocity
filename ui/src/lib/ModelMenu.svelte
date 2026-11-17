@@ -167,11 +167,23 @@
           class="model-menu-head"
           data-provider={providerMark(group.provider)}
         >
-          <Icon name={providerIcon(group.provider)} />{group.name}<span
-            >{group.note}</span
-          >
+          <Icon name={providerIcon(group.provider)} />{group.name}
+          {#if group.note}<span>{group.note}</span>{/if}
         </div>
         {#if group.signed_in}
+          {#each group.accounts.filter((account) => account.signed_in) as account (account.id)}
+            <button
+              class="model-menu-item"
+              class:on={account.selected}
+              role="menuitemradio"
+              aria-checked={account.selected}
+              disabled={!group.can_choose_account}
+              onclick={() =>
+                choose({
+                  Account: { provider: group.provider, account: account.id },
+                })}>{account.name}<small>{account.limit.label}</small></button
+            >
+          {/each}
           {#each group.models as item (item.model)}<button
               class="model-menu-item"
               class:on={item.selected}

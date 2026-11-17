@@ -9,7 +9,7 @@ use velocity_airc::{Channel, Event};
 use velocity_store::{AgentActivity, ProjectItem};
 use velocity_threads::{
     ThreadKey,
-    agent_activity::{Action, decide},
+    agent_activity::{Action, capped, decide},
 };
 
 fn now() -> u64 {
@@ -33,20 +33,41 @@ pub fn observe(
     if !runtimes.observe_supervision(key, batch, timestamp) {
         return Ok(());
     }
-    lock(
+    let mut store = lock(
         application.state::<ManagedStateStore>().inner(),
         "persisted state",
-    )?
-    .update_thread(key.0, key.1, |thread| {
-        if batch.is_empty() {
-            velocity_threads::agent_activity::begin(thread, timestamp);
-        }
-        for event in batch {
-            velocity_threads::agent_activity::observe(thread, event, timestamp);
-        }
-    })
-    .map(|_| ())
-    .map_err(|error| error.to_string())
+    )?;
+    let mut reached_limit = None;
+    store
+        .update_thread(key.0, key.1, |thread| {
+            if batch.is_empty() {
+                velocity_threads::agent_activity::begin(thread, timestamp);
+            }
+            let previous = thread.supervision.retry_after;
+            for event in batch {
+                velocity_threads::agent_activity::observe(thread, event, timestamp);
+            }
+            if thread.supervision.retry_after != previous
+                && let Some(until) = thread
+                    .supervision
+                    .retry_after
+                    .and_then(|until| u32::try_from(until).ok())
+            {
+                reached_limit = Some((thread.provider, thread.provider_account, until));
+            }
+        })
+        .map_err(|error| error.to_string())?;
+    if let Some((provider, account, until)) = reached_limit {
+        store
+            .update_provider_account(provider, account, |profile| {
+                profile.blocked_until = Some(until.max(profile.blocked_until.unwrap_or(0)));
+            })
+            .map_err(|error| error.to_string())?;
+        drop(store);
+        drop(runtimes);
+        let _ = crate::providers::current_view(application);
+    }
+    Ok(())
 }
 
 pub fn cycle(
@@ -106,12 +127,55 @@ fn step(
     if let Some(heartbeat) = heartbeat {
         current.supervision.last_update = current.supervision.last_update.max(heartbeat);
     }
-    execute(
-        application,
-        key,
-        channel,
-        decide(&current, settings, now(), live, build),
-    )
+    let action = decide(&current, settings, now(), live, build);
+    if !live
+        && current.activity == AgentActivity::AtLimit
+        && current.supervision.retry_after.is_some()
+        && !capped(&current, settings, now())
+        && current.worktree_path.is_some()
+        && matches!(
+            current.state,
+            velocity_store::ThreadState::Working | velocity_store::ThreadState::Review
+        )
+        && let Some(account) = available_account(application, &current)?
+    {
+        if let Err(error) = crate::parking::resume_after_limit(application, key, account) {
+            crate::threads::fail(application, key, "Could not resume the agent", &error);
+        }
+        return Ok(());
+    }
+    if action == Action::Resume && current.supervision.retry_after.is_some() {
+        return Ok(());
+    }
+    execute(application, key, channel, action)
+}
+
+fn available_account(
+    application: &AppHandle,
+    thread: &velocity_store::ThreadItem,
+) -> Result<Option<u32>, String> {
+    let store = lock(
+        application.state::<ManagedStateStore>().inner(),
+        "persisted state",
+    )?;
+    let timestamp = velocity_store::providers::unix_now();
+    let settings = store.settings();
+    let preferred = thread.provider_account;
+    let accounts = settings.provider_accounts(thread.provider);
+    let account = settings.available_account(thread.provider, preferred, timestamp);
+    let eligible = |account: u32| {
+        account != preferred
+            || thread
+                .supervision
+                .retry_after
+                .is_none_or(|retry| retry <= u64::from(timestamp))
+    };
+    Ok(account.filter(|account| eligible(*account)).or_else(|| {
+        accounts
+            .into_iter()
+            .find(|account| eligible(account.id) && account.available_at(timestamp))
+            .map(|account| account.id)
+    }))
 }
 
 /// A failed setup has no worktree, so supervision must not use the follow-through lookup.

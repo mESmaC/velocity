@@ -53,7 +53,7 @@ pub(crate) fn read_model(state: &PersistedState) -> LayoutData {
                 .iter()
                 .map(crate::goal_swarm_view::goal_swarm_row),
         );
-        entries.extend(thread_entries(project, task_count));
+        entries.extend(thread_entries(project, task_count, &state.settings));
         data.threads = entries;
         data.interviews = project
             .threads
@@ -84,7 +84,11 @@ pub(crate) fn read_model(state: &PersistedState) -> LayoutData {
 /// Thread rows. Swarm members are listed under their swarm in agent order (a1, a2, …),
 /// and goal swarm members under theirs in launch order (F16), not in the other groups
 /// (F10); other threads keep newest first.
-fn thread_entries(project: &ProjectItem, task_count: usize) -> Vec<ThreadEntry> {
+fn thread_entries(
+    project: &ProjectItem,
+    task_count: usize,
+    settings: &crate::Settings,
+) -> Vec<ThreadEntry> {
     let mut threads: Vec<_> = project
         .threads
         .iter()
@@ -92,7 +96,7 @@ fn thread_entries(project: &ProjectItem, task_count: usize) -> Vec<ThreadEntry> 
             let membership = crate::swarms::thread_swarm(project, thread.id)
                 .map(|(swarm, agent)| (swarm.id, agent, 0))
                 .or_else(|| crate::goal_swarm_view::goal_membership(project, thread));
-            let mut entry = thread_entry(thread, task_count);
+            let mut entry = thread_entry(thread, task_count, settings);
             entry.policy.member_of = membership
                 .filter(|_| entry.policy.group != ThreadGroup::Settled)
                 .map(|(swarm, _, _)| swarm as usize);
@@ -140,7 +144,7 @@ fn duty_entry(item: &DutyRoleItem, merged_today: usize) -> ThreadEntry {
     }
 }
 
-fn thread_entry(thread: &ThreadItem, task_count: usize) -> ThreadEntry {
+fn thread_entry(thread: &ThreadItem, task_count: usize, settings: &crate::Settings) -> ThreadEntry {
     ThreadEntry {
         policy: LayoutRow {
             identifier: thread.id as usize,
@@ -163,18 +167,23 @@ fn thread_entry(thread: &ThreadItem, task_count: usize) -> ThreadEntry {
             None if thread.state == ThreadState::Spec => NavigationView::SpecScan,
             None => NavigationView::Thread,
         },
-        detail: Some(thread_detail(thread)),
+        detail: Some(thread_detail(thread, settings)),
         duty: None,
     }
 }
 
 /// The thread header, conversation and model pill retained in `state.json`.
-fn thread_detail(thread: &ThreadItem) -> ThreadDetailEntry {
+fn thread_detail(thread: &ThreadItem, settings: &crate::Settings) -> ThreadDetailEntry {
     ThreadDetailEntry {
         identifier: thread.id as usize,
         title: thread.title.clone(),
         titling: false,
         title_model_name: String::new(),
+        account_label: settings.account_label(thread.provider, thread.provider_account),
+        usage_account: Some(crate::provider_views::account_key(
+            thread.provider,
+            thread.provider_account,
+        )),
         branch: thread.branch_name.clone(),
         worktree_path: thread.worktree_path.clone().unwrap_or_default(),
         lifecycle: thread_lifecycle(thread.state),

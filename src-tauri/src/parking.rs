@@ -9,7 +9,7 @@ use velocity_store::{AgentActivity, ProjectItem, ThreadItem, ThreadState};
 use velocity_threads::parking::{
     ParkingAction, ParkingInput, parking_action, resume_prompt, transcript_context,
 };
-use velocity_threads::{ThreadKey, agent_launch, spawn_session};
+use velocity_threads::{ThreadKey, agent_launch_for_account, spawn_session};
 
 use crate::state::ManagedStateStore;
 use crate::threads::{ManagedThreads, lock};
@@ -138,6 +138,7 @@ fn wake(application: &AppHandle, key: ThreadKey, channel: &Channel) -> Result<()
 enum Opening<'a> {
     /// A prompt from Velocity, sent ahead of the messages still queued.
     Prompt(&'a str),
+    AfterLimit(u32),
     /// A message you sent the ended thread. It joins the queue, so it is kept until the
     /// agent echoes it, however the new session ends (#317).
     Message(&'a str),
@@ -156,8 +157,16 @@ pub(crate) fn resume_with_message(
     start_session(application, key, Opening::Message(message))
 }
 
+pub(crate) fn resume_after_limit(
+    application: &AppHandle,
+    key: ThreadKey,
+    account: u32,
+) -> Result<(), String> {
+    start_session(application, key, Opening::AfterLimit(account))
+}
+
 fn start_session(application: &AppHandle, key: ThreadKey, opening: Opening) -> Result<(), String> {
-    let (project, thread, settings) = {
+    let (project, mut thread, settings) = {
         let store = lock(
             application.state::<ManagedStateStore>().inner(),
             "persisted state",
@@ -173,9 +182,18 @@ fn start_session(application: &AppHandle, key: ThreadKey, opening: Opening) -> R
     ) {
         return Err("This thread cannot resume a build session".into());
     }
+    let account = match opening {
+        Opening::AfterLimit(account) => account,
+        _ => settings.launch_account(
+            thread.provider,
+            thread.preferred_account.unwrap_or(thread.provider_account),
+            velocity_store::providers::unix_now(),
+        ),
+    };
+    thread.bind_provider_account(account);
     let path = thread.worktree_path.as_deref().ok_or("Missing worktree")?;
-    let (mut agent, bypass_modes) =
-        agent_launch(&settings, thread.provider).map_err(|error| error.to_string())?;
+    let (mut agent, bypass_modes) = agent_launch_for_account(&settings, thread.provider, account)
+        .map_err(|error| error.to_string())?;
     let mut setup = SessionSetup::new(path.into(), bypass_modes)
         .with_run_settings(velocity_threads::thread_run_settings(&thread));
     match crate::rosen::prepare_resume(application, key.0, &thread, &mut agent, &mut setup) {
@@ -189,7 +207,8 @@ fn start_session(application: &AppHandle, key: ThreadKey, opening: Opening) -> R
     }
     setup.airc = crate::airc_access::for_thread(application, key, Path::new(path), &thread);
     crate::airc_claims::attach(application, key, &setup, &thread.branch_name)?;
-    reset_supervision(application, key)?;
+    reset_supervision(application, key, &thread)?;
+    setup.pause_on_subscription_limit = true;
     let inputs = resume_inputs(application, key, path, opening, &thread, &mut setup)?;
     crate::threads::save_activity(application, key, AgentActivity::Thinking, None)?;
     crate::threads::refresh(application, key, false)?;
@@ -201,7 +220,11 @@ fn start_session(application: &AppHandle, key: ThreadKey, opening: Opening) -> R
     Ok(())
 }
 
-fn reset_supervision(application: &AppHandle, key: ThreadKey) -> Result<(), String> {
+fn reset_supervision(
+    application: &AppHandle,
+    key: ThreadKey,
+    thread: &ThreadItem,
+) -> Result<(), String> {
     let mut store = lock(
         application.state::<ManagedStateStore>().inner(),
         "persisted state",
@@ -212,6 +235,7 @@ fn reset_supervision(application: &AppHandle, key: ThreadKey) -> Result<(), Stri
     store
         .update_thread(key.0, key.1, |saved| {
             saved.activity = AgentActivity::Thinking;
+            saved.bind_provider_account(thread.provider_account);
             saved.supervision.last_update = std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
                 .unwrap_or_default()
@@ -247,6 +271,9 @@ fn resume_inputs(
             Opening::Prompt(prompt) => {
                 runtimes.resume_parked(key, path, Some(prompt), follows_pull_request)
             }
+            Opening::AfterLimit(_) => runtimes.resume_parked(
+                key, path, Some("Continue the interrupted work after the subscription limit. Recheck your claim and worktree, then resume from the transcript."), follows_pull_request,
+            ),
             Opening::Message(message) => {
                 runtimes.resume_with_message(key, path, message, follows_pull_request)
             }

@@ -16,8 +16,8 @@ use velocity_threads::goal_swarm::{
 };
 use velocity_threads::{
     DeliveryStatus, LaunchPlan, RunningSession, SessionInputs, StopOutcome, ThreadKey,
-    ThreadProgress, ThreadRuntimes, agent_launch, plan_launch_with_preferences, resolve_title,
-    spawn_session, title_worktree_name,
+    ThreadProgress, ThreadRuntimes, agent_launch_for_account, plan_launch_with_preferences,
+    resolve_title, spawn_session, title_worktree_name,
 };
 
 use crate::layout::MainLayout;
@@ -87,21 +87,34 @@ fn resume_follow_through(
     pending: &AgentFollowUp,
 ) -> Result<DeliveryStatus, String> {
     let (project, thread, settings) = {
-        let store = lock(
+        let mut store = lock(
             application.state::<ManagedStateStore>().inner(),
             "persisted state",
         )?;
-        let (project, thread) = store
+        let (project, mut thread) = store
             .follow_through_thread(key.0, key.1)
             .map_err(|error| error.to_string())?;
-        (project, thread, store.settings())
+        if thread.activity == AgentActivity::AtLimit {
+            return Ok(DeliveryStatus::Pending);
+        }
+        let settings = store.settings();
+        let Some(account) = settings.available_account(
+            thread.provider,
+            thread.preferred_account.unwrap_or(thread.provider_account),
+            velocity_store::providers::unix_now(),
+        ) else {
+            return Ok(DeliveryStatus::Pending);
+        };
+        thread.bind_provider_account(account);
+        store
+            .update_thread(key.0, key.1, |thread| thread.bind_provider_account(account))
+            .map_err(|error| error.to_string())?;
+        (project, thread, settings)
     };
-    if thread.activity == AgentActivity::AtLimit {
-        return Ok(DeliveryStatus::Pending);
-    }
     let path = thread.worktree_path.as_deref().ok_or("Missing workspace")?;
     let (mut agent, bypass_modes) =
-        agent_launch(&settings, thread.provider).map_err(|error| error.to_string())?;
+        agent_launch_for_account(&settings, thread.provider, thread.provider_account)
+            .map_err(|error| error.to_string())?;
     let mut setup = SessionSetup::new(path.into(), bypass_modes)
         .with_run_settings(velocity_threads::thread_run_settings(&thread));
     match crate::rosen::prepare_resume(application, key.0, &thread, &mut agent, &mut setup) {
@@ -131,6 +144,7 @@ fn resume_follow_through(
     .map_err(|error| error.to_string())?;
     let updated = save_activity(application, key, AgentActivity::Thinking, None)
         .and_then(|_| refresh(application, key, false));
+    setup.pause_on_subscription_limit = true;
     let handle = application.clone();
     tauri::async_runtime::spawn(async move {
         pump(&handle, key, spawn_session(agent, setup, inputs)).await;
@@ -314,7 +328,7 @@ fn start_thread(application: &AppHandle, prompt: &str) -> Result<LayoutSnapshot,
         let plan = plan_launch_with_preferences(project, &worktrees, &store.settings(), prompt)
             .map_err(|error| error.to_string())?;
         let thread = store
-            .add_thread(plan.project, plan.thread.clone())
+            .add_composer_thread(plan.project, plan.thread.clone())
             .map_err(|error| error.to_string())?;
         (plan, thread)
     };
@@ -717,10 +731,44 @@ async fn run_thread(
     run_thread_session(application, key, plan, inputs, folder).await;
 }
 
+fn bind_launch_account(
+    application: &AppHandle,
+    key: ThreadKey,
+    launch: &mut velocity_acp::client::AgentLaunch,
+) -> Result<(), String> {
+    let mut store = lock(
+        application.state::<ManagedStateStore>().inner(),
+        "persisted state",
+    )?;
+    let thread = store
+        .project(key.0)
+        .and_then(|project| project.threads.iter().find(|thread| thread.id == key.1))
+        .ok_or("Missing thread")?;
+    let settings = store.settings();
+    let provider = thread.provider;
+    settings
+        .ensure_new_work(provider)
+        .map_err(|error| error.to_string())?;
+    let preferred = thread
+        .preferred_account
+        .unwrap_or_else(|| settings.default_account(provider));
+    let account =
+        settings.launch_account(provider, preferred, velocity_store::providers::unix_now());
+    let directory = settings
+        .saved_account(provider, account)
+        .map(|profile| profile.directory.as_str())
+        .unwrap_or_default();
+    launch.use_account(account, directory);
+    store
+        .update_thread(key.0, key.1, |thread| thread.bind_provider_account(account))
+        .map_err(|error| error.to_string())?;
+    Ok(())
+}
+
 async fn run_thread_session(
     application: AppHandle,
     key: ThreadKey,
-    plan: LaunchPlan,
+    mut plan: LaunchPlan,
     inputs: SessionInputs,
     folder: ThreadFolder,
 ) {
@@ -730,6 +778,9 @@ async fn run_thread_session(
         rosen_change,
         ..
     } = folder;
+    if let Err(error) = bind_launch_account(&application, key, &mut plan.agent) {
+        return fail(&application, key, "Could not choose an account", &error);
+    }
     report(refresh(&application, key, false));
     let mut setup = configure_session(
         &application,
@@ -747,6 +798,7 @@ async fn run_thread_session(
     if let Err(error) = crate::airc_claims::attach(&application, key, &setup, branch) {
         return fail(&application, key, "Could not claim work", &error);
     }
+    setup.pause_on_subscription_limit = true;
     let session = spawn_session(plan.agent, setup, inputs);
     pump(&application, key, session).await;
 }
@@ -775,6 +827,9 @@ async fn run_goal_member(application: AppHandle, key: ThreadKey, mut plan: GoalM
     }
     if !finish_workspace_launch(&application, key) {
         return;
+    }
+    if let Err(error) = bind_launch_account(&application, key, &mut plan.agent) {
+        return fail(&application, key, "Could not choose an account", &error);
     }
     report(refresh(&application, key, false));
     match run_goal_choice(&application, key, &plan, &folder, &branch_name).await {
@@ -1021,6 +1076,7 @@ async fn finish_goal_claimed(
             .shared_servers
             .extend(crate::rosen::mcp_server(&setup.worktree, &plan.agent.env));
     }
+    setup.pause_on_subscription_limit = true;
     let session = spawn_session(plan.agent, setup, inputs);
     pump(application, key, session).await;
 }
@@ -1429,6 +1485,19 @@ pub(crate) fn fail(application: &AppHandle, key: ThreadKey, headline: &str, deta
     crate::goal_swarm::record_member_failed(application, key, headline);
     report(refresh(application, key, false).map(|_| ()));
     emit_status(application, key);
+}
+
+pub(crate) fn refresh_account_labels(application: &AppHandle) -> Result<(), String> {
+    let store = lock(
+        application.state::<ManagedStateStore>().inner(),
+        "persisted state",
+    )?;
+    let mut layout = lock(
+        application.state::<MainLayout>().inner(),
+        "main-window state",
+    )?;
+    store.refresh_layout(&mut layout);
+    crate::layout::publish(application, &layout.snapshot(), None)
 }
 
 /// Rebuilds the window from saved state plus the live transcript and publishes it.
