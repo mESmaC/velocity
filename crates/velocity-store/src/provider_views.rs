@@ -1,6 +1,8 @@
 //! Read models for F15 drawn in Rust: Settings → Providers, the composer's model menu and the
 //! footer limit meter. The window only renders them and sends choices back.
 
+use std::collections::BTreeMap;
+
 use serde::{Deserialize, Serialize};
 use specta::Type;
 use velocity_core::layout_view::{ProviderUsage, UsageWindowView};
@@ -43,6 +45,8 @@ pub struct ProviderRuntime {
     pub can_sign_in: bool,
     /// Why the last check or sign-in failed.
     pub detail: Option<String>,
+    /// Short reasons for unsuccessful quota reads, keyed by account.
+    pub limit_failures: BTreeMap<u32, String>,
     /// The last lines of a failed install's output (F15 Install). Kept apart from `detail`
     /// because each reopen of Providers checks a missing agent again: only a new install,
     /// Cancel, a changed command or the agent being found clears it.
@@ -64,6 +68,7 @@ impl ProviderRuntime {
             command_line,
             can_sign_in: false,
             detail: None,
+            limit_failures: BTreeMap::new(),
             install_failure: None,
             install_command: None,
             account_waiting: None,
@@ -129,9 +134,8 @@ fn account_views(
     context: &ProviderContext<'_>,
     selected: Option<u32>,
 ) -> Vec<ProviderAccountView> {
-    let waiting = context
-        .runtime(provider)
-        .and_then(|runtime| runtime.account_waiting);
+    let runtime = context.runtime(provider);
+    let waiting = runtime.and_then(|runtime| runtime.account_waiting);
     settings
         .provider_accounts(provider)
         .into_iter()
@@ -141,20 +145,32 @@ fn account_views(
             signed_in: account.signed_in,
             waiting: waiting == Some(account.id),
             is_default: settings.default_account(provider) == account.id,
-            limit: account_limit(&account, context.now),
+            limit: account_limit(
+                &account,
+                runtime.and_then(|entry| entry.limit_failures.get(&account.id).map(String::as_str)),
+                context.now,
+            ),
             selected: selected == Some(account.id),
         })
         .collect()
 }
 
-fn account_limit(account: &crate::provider_accounts::ProviderAccount, now: u32) -> LimitView {
+fn account_limit(
+    account: &crate::provider_accounts::ProviderAccount,
+    reason: Option<&str>,
+    now: u32,
+) -> LimitView {
     if let Some(reset) = account.blocked_until.filter(|until| *until > now) {
         return limit_view(
             Some(&ProviderLimit::new(100, "subscription".into(), Some(reset))),
             now,
         );
     }
-    limit_view(account.limit.as_ref(), now)
+    card_limit_view(
+        account.limit.as_ref(),
+        reason.filter(|_| account.signed_in),
+        now,
+    )
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, Type)]
@@ -346,8 +362,13 @@ impl StateStore {
             install_command: runtime
                 .filter(|_| phase == ProviderPhase::NotInstalled)
                 .and_then(|entry| entry.install_command.clone()),
-            limit: (phase == ProviderPhase::SignedIn)
-                .then(|| limit_view(catalog.and_then(|entry| entry.limit.as_ref()), context.now)),
+            limit: (phase == ProviderPhase::SignedIn).then(|| {
+                card_limit_view(
+                    catalog.and_then(|entry| entry.limit.as_ref()),
+                    runtime.and_then(|entry| entry.limit_failures.get(&0).map(String::as_str)),
+                    context.now,
+                )
+            }),
             accounts: account_views(settings, provider, context, None),
             account_error: runtime.and_then(|runtime| runtime.account_error.clone()),
             can_add_account: !matches!(provider, ProviderKind::Custom(_))
@@ -403,7 +424,7 @@ pub fn provider_usage_at(settings: &Settings, now: u32) -> Vec<ProviderUsage> {
                     }
                     let account_name = account.label();
                     let name = format!("{} · {account_name}", settings.provider_name(provider));
-                    let limit = account_limit(&account, now);
+                    let limit = account_limit(&account, None, now);
                     let mut windows = account
                         .limit
                         .as_ref()
@@ -575,6 +596,16 @@ fn status_text(
 
 fn command_program(command: &str) -> &str {
     command.split(" · ").next().unwrap_or(command)
+}
+
+fn card_limit_view(limit: Option<&ProviderLimit>, reason: Option<&str>, now: u32) -> LimitView {
+    let mut view = limit_view(limit, now);
+    if limit.is_none()
+        && let Some(reason) = reason
+    {
+        view.label = format!("{} · {reason}", view.label);
+    }
+    view
 }
 
 /// `38% of 5-hour · resets in 1h 52m`, or "limit not reported" (F15 Limit sources).

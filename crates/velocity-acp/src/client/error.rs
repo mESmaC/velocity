@@ -29,6 +29,8 @@ pub enum ClientError {
     Install(String),
     #[error("could not read the usage report: {0}")]
     Usage(String),
+    #[error("unrecognized usage report: {0}")]
+    UsageFormat(String),
     #[error("ACP: {0}")]
     Protocol(#[from] agent_client_protocol::Error),
 }

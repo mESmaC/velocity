@@ -97,6 +97,11 @@ Velocity never stores a token for this.
 | Custom agents | No known source |
 
 - An account with no reported limits shows "limit not reported".
+- Antigravity sends the quota User-Agent used by T3 Code and takes the daily host's value when both Google hosts report the same bucket.
+  If every daily window looks untouched, it retries the daily report up to three times because the host can return untouched copies of active windows.
+  It shows Google’s reset time for each window and omits rolling reset times for untouched windows.
+  Older per-model reports without a duration say "reported quota".
+  On failure the Antigravity card shows "limit not reported · <short reason>", and Velocity logs request errors and unrecognized response shapes without recording credentials or response bodies.
 - Live Claude rate-limit metadata and Codex app-server notifications update the emitting account’s saved meter immediately.
   Codex's Node ACP adapter is launched with a bundled preloader that observes its app-server output without changing the RPC stream or the installed adapter.
   Five-minute reads remain the fallback; a read started before a live update cannot replace that newer report.

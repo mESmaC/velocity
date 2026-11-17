@@ -194,6 +194,7 @@ fn refresh_slot(
         slot.runtime.phase = ProviderPhase::Checking;
         slot.runtime.can_sign_in = false;
         slot.runtime.detail = None;
+        slot.runtime.limit_failures.clear();
         slot.runtime.account_waiting = None;
         slot.runtime.account_error = None;
         slot.runtime.install_failure = None;
@@ -386,8 +387,7 @@ fn record_failure(
     });
 }
 
-/// Reads one provider's limit where it has a source (F15 Limit sources). A failed read shows
-/// "limit not reported".
+/// Reads the account's quota (F15 Limit sources) and records unavailable readings.
 async fn read_limit(application: &AppHandle, provider: ProviderKind, account: u32) {
     let providers = application.state::<ManagedProviders>();
     let revision = providers.with_slot(provider, |slot| {
@@ -399,9 +399,10 @@ async fn read_limit(application: &AppHandle, provider: ProviderKind, account: u3
         return;
     };
     let (reading, identity) = if provider == ProviderKind::Kimi {
-        read_kimi_account(&launch, &directory, LIMIT_DEADLINE)
+        let (reading, identity) = read_kimi_account(&launch, &directory, LIMIT_DEADLINE)
             .await
-            .unwrap_or_default()
+            .unwrap_or_default();
+        (Ok(reading), identity)
     } else {
         let (reading, identity) = tokio::join!(
             provider_reading(provider, &launch, &directory),
@@ -409,8 +410,24 @@ async fn read_limit(application: &AppHandle, provider: ProviderKind, account: u3
         );
         (reading, identity)
     };
+    let (reading, failure) = match reading {
+        Ok(reading) => (reading, None),
+        Err(error) if provider == ProviderKind::Antigravity => {
+            crate::diagnostics::record(
+                "provider quota",
+                &format!("{provider:?} account {account}: {error}"),
+            );
+            (None, Some(antigravity_quota_failure(&error)))
+        }
+        Err(_) => (None, None),
+    };
     providers.with_slot(provider, |slot| {
         if revision == Some((slot.generation, slot.limit_revisions.get(&account).copied())) {
+            if let Some(failure) = failure {
+                slot.runtime.limit_failures.insert(account, failure);
+            } else {
+                slot.runtime.limit_failures.remove(&account);
+            }
             record_limit(application, provider, account, reading, false);
         }
         if revision.is_some_and(|(generation, _)| slot.generation == generation)
@@ -425,21 +442,33 @@ async fn read_limit(application: &AppHandle, provider: ProviderKind, account: u3
     });
 }
 
+fn antigravity_quota_failure(error: &ClientError) -> String {
+    match error {
+        ClientError::TimedOut(_) => "quota read timed out",
+        ClientError::Spawn { .. } => "could not start agy",
+        ClientError::UsageFormat(_) => "Google returned no usable quota windows",
+        ClientError::Usage(reason) => reason,
+        _ => "Google quota unavailable",
+    }
+    .to_owned()
+}
+
 async fn provider_reading(
     provider: ProviderKind,
     launch: &AgentLaunch,
     directory: &std::path::Path,
-) -> Option<LimitReading> {
+) -> Result<Option<LimitReading>, ClientError> {
     match provider {
         ProviderKind::Claude => read_claude_account_usage(directory, LIMIT_DEADLINE, launch).await,
         ProviderKind::Codex => read_codex_account_usage(directory, LIMIT_DEADLINE, launch).await,
         ProviderKind::Antigravity => {
-            read_antigravity_usage(launch, directory, LIMIT_DEADLINE).await
+            read_antigravity_usage(launch, directory, LIMIT_DEADLINE, |request, error| {
+                crate::diagnostics::record("Antigravity quota", &format!("{request}: {error}"));
+            })
+            .await
         }
         _ => Ok(None),
     }
-    .ok()
-    .flatten()
 }
 
 /// Saves a reading. A full read replaces every window; a live event (`live`) names only some
