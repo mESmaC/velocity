@@ -20,7 +20,10 @@ export type {
   NickTone,
 } from '../bindings';
 
-export const aircModalCommands = { view: commands.getAircModal };
+export const aircModalCommands = {
+  view: commands.getAircModal,
+  undoTaskEvent: commands.undoTaskEvent,
+};
 
 export const onAircModal = (callback: EventCallback<AircModalPublished>) =>
   listen(AIRC_MODAL_EVENT, callback);

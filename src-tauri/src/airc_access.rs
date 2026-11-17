@@ -2,6 +2,7 @@
 //! connection, and every session Velocity starts is given it in `session/new`.
 
 use anyhow::Context;
+use std::path::Path;
 use tauri::{AppHandle, Manager};
 use velocity_acp::client::AircLaunch;
 use velocity_airc::{SERVER_SWITCH, serve_stdio};
@@ -40,4 +41,14 @@ pub fn managed(application: &AppHandle) -> Option<AircLaunch> {
     application
         .try_state::<AircLaunch>()
         .map(|launch| launch.inner().clone())
+}
+
+pub fn for_thread(
+    application: &AppHandle,
+    key: velocity_threads::ThreadKey,
+    path: &Path,
+    thread: &velocity_store::ThreadItem,
+) -> Option<agent_client_protocol::v1::schema::McpServer> {
+    managed(application)
+        .map(|airc| airc.thread_with_origin(key.0, key.1, path, thread.started_by_dispatch))
 }

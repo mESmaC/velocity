@@ -65,7 +65,7 @@ impl Channel {
             .collect())
     }
 
-    /// Posts `event` only if no identical `(tag, nick, pull_request, head, text)`
+    /// Posts `event` only if no matching `(tag, nick, pull_request, head, task_request, text)`
     /// event is already recorded in the channel. Returns `Some(entry)` when a
     /// new event was appended, or `None` when it was already recorded.
     pub fn post_event_once(&self, event: Event) -> Result<Option<Entry>, Error> {
@@ -231,6 +231,16 @@ impl Event {
         Ok(Self::new("task", &actor, &one_line(change)))
     }
 
+    /// Links the event to the request that produced it for replay and Undo.
+    pub fn with_task_request(mut self, request: u64) -> Self {
+        self.task_request = Some(request);
+        self
+    }
+
+    pub fn task_request(&self) -> Option<u64> {
+        self.task_request
+    }
+
     /// `failed`: `<nick> failed · <reason> · its claim is held` (§2.1, F14).
     pub fn thread_failed(owner_nick: &str, reason: &str) -> Result<Self, Error> {
         require_text(reason)?;
@@ -271,6 +281,7 @@ impl Event {
 fn matches_event(entry: &Entry, event: &Event) -> bool {
     entry.kind == event.tag()
         && entry.nick == event.nick()
+        && entry.acknowledged == event.task_request
         && entry.pull_request == event.pull_request()
         && entry.head.as_deref() == event.head()
         && (entry.pull_request.is_some() || entry.text == event.text())

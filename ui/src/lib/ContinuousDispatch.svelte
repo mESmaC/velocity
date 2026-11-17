@@ -107,11 +107,11 @@
       >
     </div>
     {#if !compact}
-      <div class="section-h">Next issues</div>
-      {#each view.next as issue (issue.number)}
-        <div class="dispatch-issue">#{issue.number} · {issue.title}</div>
+      <div class="section-h">Next work</div>
+      {#each view.next as item (item.key)}
+        <div class="dispatch-issue">{item.label} · {item.title}</div>
       {:else}
-        <div class="dispatch-issue">No available issues</div>
+        <div class="dispatch-issue">No available work</div>
       {/each}
     {/if}
     {#if error || view.error}<p role="status">{error || view.error}</p>{/if}

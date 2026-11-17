@@ -2,7 +2,7 @@
 //! `rosen run -- cargo run -p velocity-threads --example continuous_dispatch -- <folder> <owner/repo>`
 use velocity_github::IssueClient;
 use velocity_store::ProjectItem;
-use velocity_threads::continuous_dispatch::{DispatchView, ordered_issues};
+use velocity_threads::continuous_dispatch::{DispatchView, ordered_work};
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut arguments = std::env::args().skip(1);
@@ -13,8 +13,18 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     project.spec_locked = true;
     project.continuous_dispatch.slots = 3;
     let issues = client.open_issues()?;
-    let ready = ordered_issues(&project, client.repository(), &issues, &[]);
-    println!("{} open issues, {} available", issues.len(), ready.len());
+    let ready = ordered_work(
+        &project,
+        client.repository(),
+        &issues,
+        &Default::default(),
+        true,
+    );
+    println!(
+        "{} open issues, {} available items",
+        issues.len(),
+        ready.len()
+    );
     println!(
         "{}",
         serde_json::to_string_pretty(&DispatchView::new(&project, &ready, None))?

@@ -69,9 +69,14 @@ fn answer(channel: &Channel, request: u64) -> Result<Value, Error> {
     }
 }
 
-pub(crate) fn tools() -> Vec<Value> {
+pub(crate) fn tools(continuous_dispatch: bool) -> Vec<Value> {
     let task =
         json!({"type":"integer","minimum":1,"description":"The task number task_list shows"});
+    let guidance = if continuous_dispatch {
+        "Continuous dispatch may change the Task List without a user request."
+    } else {
+        "Change the Task List only when the user explicitly asks. Otherwise file issues."
+    };
     vec![
         tool(
             "task_list",
@@ -81,20 +86,26 @@ pub(crate) fn tools() -> Vec<Value> {
         ),
         tool(
             "task_add",
-            "Add a project Task List item ONLY when the user explicitly asks you to add it. Otherwise file an issue. Velocity saves it with your attribution, as a draft before the spec is locked and todo after. Never edits SPEC.md or starts an interview.",
+            &format!(
+                "Add a project Task List item. {guidance} Velocity saves it with your attribution, as a draft before the spec is locked and todo after. Never edits SPEC.md or starts an interview."
+            ),
             json!({"title":{"type":"string","minLength":1}}),
             &["title"],
         ),
         tool(
             "task_update",
-            "Change a Task List item's title, its state, or both, ONLY when the user explicitly asks you to. state todo reopens a done task; done marks it finished. A task stays a draft until the spec is locked, and a task an agent is on can be marked done but not reopened.",
+            &format!(
+                "Change a Task List item's title, its state, or both. {guidance} State todo reopens a done task; done marks it finished. A task stays a draft until the spec is locked, and a task an agent is on can be marked done but not reopened."
+            ),
             json!({"task":task.clone(),"title":{"type":"string","minLength":1},
                 "state":{"type":"string","enum":["todo","done"]}}),
             &["task"],
         ),
         tool(
             "task_delete",
-            "Remove a Task List item ONLY when the user explicitly asks you to. An agent working on it keeps working; its thread just no longer lists the task.",
+            &format!(
+                "Remove a Task List item. {guidance} An agent working on it keeps working; its thread just no longer lists the task."
+            ),
             json!({"task":task}),
             &["task"],
         ),

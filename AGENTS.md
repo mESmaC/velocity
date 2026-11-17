@@ -141,6 +141,7 @@ Both are low priority. Add them only where they pay for themselves, and only aft
 - Docs: update the spec file that describes the behaviour you change, and comment code whose purpose isn't clear. Use `SPEC.md`'s index to find it. Keep one sentence per line in moved files, with tables and code intact. Never add a new markdown file unless the piece asks for one.
 
 ## Choosing work
+- Follow the AIRC session's Task List instructions. Continuous dispatch threads can add, update and delete tasks on their own. In other threads, change the list only when the user explicitly asks; otherwise file issues.
 - Work comes from three places: unchecked items in §7 (`spec/7-implementation-order.md`), open GitHub issues, and sections of `SPEC.md` or `spec/` nothing implements yet.
 - Take the first unclaimed item that nothing blocks, from the lowest milestone that has one. An item is blocked when it depends on an open question in §8 (`spec/8-open-questions.md`), or on an unmerged PR. Skip blocked items; never wait for them.
 - Never build anything that depends on an open question in §8 (`spec/8-open-questions.md`). File an issue that names the question, labelled `spec-question`, with your recommended answer and the items it blocks, then pick other work.

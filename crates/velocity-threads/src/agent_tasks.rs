@@ -4,7 +4,7 @@
 use std::sync::Mutex;
 
 use velocity_airc::{Channel, Entry, Event, TaskListRow, TaskTarget};
-use velocity_store::task_list::{TaskError, TaskUpdate};
+use velocity_store::task_list::{TaskError, TaskMutation, TaskUpdate};
 use velocity_store::{StateStore, TaskState, threads::ThreadError};
 
 #[derive(Debug, thiserror::Error)]
@@ -103,9 +103,7 @@ fn answer(
 ) -> Result<bool, AgentTaskError> {
     let (text, changed) = match outcome {
         Outcome::Saved { event, result } => {
-            if request.kind == "task_request" {
-                // An add's event names its task number, so replay after a crash
-                // deduplicates it without hiding a second task of the same title.
+            if request.kind == "task_request" || event.task_request().is_some() {
                 channel.post_event_once(event)?;
             } else {
                 channel.post_event(event)?;
@@ -125,16 +123,9 @@ fn apply(store: &mut StateStore, project: u32, request: &Entry) -> Result<Outcom
     let Some(change) = request.task_change.clone() else {
         return add(store, project, request);
     };
-    let outcome = if request.kind == "task_delete_request" {
-        store.delete_task(project, change.task).map(|task| {
-            (
-                format!(
-                    "removed task #{} from the Task List: {}",
-                    task.id, task.text
-                ),
-                format!("deleted task #{}", task.id),
-            )
-        })
+    let deleting = request.kind == "task_delete_request";
+    let mutation = if deleting {
+        TaskMutation::Delete(change.task)
     } else {
         let mut update = TaskUpdate::new(change.task);
         update.title = change.title;
@@ -142,27 +133,15 @@ fn apply(store: &mut StateStore, project: u32, request: &Entry) -> Result<Outcom
             TaskTarget::Todo => TaskState::Todo,
             TaskTarget::Done => TaskState::Done,
         });
-        store.update_task(project, update).map(|task| {
-            let (state, title) = (state_name(task.state), &task.text);
-            (
-                format!(
-                    "changed task #{} on the Task List: {state} · {title}",
-                    task.id
-                ),
-                format!("updated task #{}: {state} · {title}", task.id),
-            )
-        })
+        TaskMutation::Update(update)
     };
-    match outcome {
-        Ok((event, result)) => Ok(Outcome::Saved {
-            event: Event::task_changed(&request.nick, &event)?,
-            result,
-        }),
+    match store.apply_agent_task_mutation(project, &request.member, request.sequence, mutation) {
+        Ok((task, recorded)) => changed(request, &task, deleting, recorded),
         Err(TaskError::Persistence(error)) => Err(error.into()),
         // Numbers are never reused, so a missing number that was handed out was deleted:
         // the replay of a delete saved just before a crash, or someone else's delete.
         Err(TaskError::UnknownTask(task))
-            if request.kind == "task_delete_request"
+            if deleting
                 && store
                     .project(project)
                     .is_some_and(|item| task <= item.last_task_identifier) =>
@@ -171,6 +150,31 @@ fn apply(store: &mut StateStore, project: u32, request: &Entry) -> Result<Outcom
         }
         Err(error) => Ok(Outcome::Refused(format!("Task was not changed: {error}"))),
     }
+}
+
+fn changed(
+    request: &Entry,
+    task: &velocity_store::TaskItem,
+    deleting: bool,
+    recorded: bool,
+) -> Result<Outcome, AgentTaskError> {
+    let (identifier, title, state) = (task.id, &task.text, state_name(task.state));
+    let (text, result) = if deleting {
+        (
+            format!("removed task #{identifier} from the Task List: {title}"),
+            format!("deleted task #{identifier}"),
+        )
+    } else {
+        (
+            format!("changed task #{identifier} on the Task List: {state} · {title}"),
+            format!("updated task #{identifier}: {state} · {title}"),
+        )
+    };
+    let mut event = Event::task_changed(&request.nick, &text)?;
+    if recorded {
+        event = event.with_task_request(request.sequence);
+    }
+    Ok(Outcome::Saved { event, result })
 }
 
 fn add(store: &mut StateStore, project: u32, request: &Entry) -> Result<Outcome, AgentTaskError> {

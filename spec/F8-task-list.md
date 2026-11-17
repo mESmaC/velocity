@@ -35,24 +35,28 @@ The Task List counter includes completed tasks in collapsed groups.
 **Rollout.** First add the Rosen lifecycle behind the live work pool while the existing panels keep working ([#474](https://github.com/mESmaC/velocity/issues/474)).
 Then replace both Rosen panels with Work in one change ([#475](https://github.com/mESmaC/velocity/issues/475)).
 Continuous dispatch keeps its inventory, claim protection and slot refill throughout the rollout.
-The separate dispatch change in #439 adds local tasks to continuous dispatch.
+Local tasks participate in continuous dispatch during the rollout (#439).
 Git projects keep the existing Task List and Issues panels and their PR lifecycle while git project mode is supported.
 
-**Continuous issue dispatch (Rosen projects):** Each project can save **Keep N agents busy** (off at 0) and a pause state.
-Velocity fills free slots with ordinary build threads on the default model, using the issue title and the issue-dispatch prompt.
-The work inventory excludes claimed issues, owner-decision questions (labelled `spec-question`, `needs-decision`, `needs-owner` or `owner-decision`, or explicitly requesting a decision in their title or body) and `release-blocker` issues.
-Issues are ordered by milestone number (no milestone last), then oldest first.
+**Continuous dispatch (Rosen projects):** Each project can save **Keep N agents busy** (off at 0) and a pause state.
+Velocity fills free slots with ordinary build threads on the default model, using the selected item's title and work prompt.
+The queue takes user-added tasks first, then issues by milestone number (no milestone last) and age, then agent-added and spec-generated tasks.
+Within each task group, the oldest task number goes first.
+The work inventory excludes claimed items, owner-decision questions and release blockers.
+Issues can carry the labels `spec-question`, `needs-decision`, `needs-owner`, `owner-decision` or `release-blocker`, and dispatch also checks issue and task text for explicit owner-decision wording and task titles for the `release-blocker` marker.
 Working and awaiting-land build threads count toward N; a land or an ended turn with no named work and an empty Rosen diff frees its slot.
 Failed and closed threads free capacity but retain issue ownership.
 An unchanged issue already dispatched is not dispatched again just because its agent found no changes or its GitHub issue has not closed yet; editing the issue makes it eligible again once unclaimed.
+A dispatched task moves to now when its thread is saved and to done when that thread's change lands.
+An empty turn returns its task to todo and continuous dispatch skips it until the task is edited or explicitly returned to todo.
 Dispatch continues across project switches and app restarts.
 Interrupted startup recovery reserves its threads before background dispatch starts.
 Empty-thread retirement excludes unread queued messages and rechecks saved state under the same lifecycle lease as resumption.
-The sidebar's Duty controls and each Duty view show the slot and busy counts and Pause/Resume; the Duty view also shows the next five available issues.
+The sidebar's Duty controls and each Duty view show the slot and busy counts and Pause/Resume; the Duty view also shows the next five available items in dispatch order.
 Pausing stops new starts and leaves existing threads running.
 The saved spec lock still applies.
 
-On git projects, the Task List sits in the top-right panel and uses draft (before spec lock), todo, now (an agent is on it), and done (its PR merged).
+On git projects and during the Rosen rollout, the Task List sits in the top-right panel and uses draft (before spec lock), todo, now (an agent is on it), and done (its change landed or PR merged, or someone marked it done).
 The Task List counter shows `done/total`.
 
 **Adding tasks (decided):**
@@ -63,16 +67,17 @@ The Task List counter shows `done/total`.
   - `/task <title>` in any composer
   - the palette
 - **Agents:** they have full create, read, update and delete over the Task List through `task_list`, `task_add`, `task_update` and `task_delete` (#309).
-  They read it at any time, and add, change or remove tasks **only when your message asks them to** (e.g. "add these to the task list: X, Y", "mark 3 done", "drop task 5").
-  Otherwise they file issues.
-  This rule is written in AGENTS.md.
+  They read it at any time.
+  Continuous dispatch threads add follow-up work, split work and update or delete tasks without a user request (#439).
+  In other threads, agents change tasks only when your message asks them to (e.g. "add these to the task list: X, Y", "mark 3 done", "drop task 5"); otherwise they file issues.
 - **Agent tool runtime:** the Task List tools are served by the AIRC MCP server injected into every agent session.
-  Its instructions say to change the list only for an explicit user request; otherwise file issues.
+  Its instructions use the thread's saved launch origin on every session start and resume.
   Only the native store owner writes `state.json`:
   - `task_list` returns each task's number, title, state, owning thread with its live state, and who added it.
     It reads a snapshot the store owner publishes in the project's channel on every pass (about once a second), and before it answers any change, so a change the agent just made is always in it.
   - `task_add { title }`, `task_update { task, title?, state? }` (state `todo` or `done`) and `task_delete { task }` queue a durable project-scoped request under the launcher's identity.
     The store owner applies it, saves the result with thread attribution (duty agents link to their role) and posts a `task` event.
+    Dispatch-agent edits and deletes can be undone from their AIRC Events row while the saved result still applies.
     The tool waits up to 5 s for the answer and returns it: the saved task, or why it was refused.
     Past that it returns the queued request sequence, and `read_feed` carries the answer.
     Request identities prevent duplicate adds after a crash/restart.

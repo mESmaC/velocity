@@ -37,6 +37,7 @@
   let tab = $state<AircTab>('Events');
   let text = $state('');
   let error = $state('');
+  let undoing = $state(false);
   // Keep a log pinned to its newest line unless you scrolled up to read.
   let pinned = true;
 
@@ -146,6 +147,18 @@
       .catch(report);
   }
 
+  async function undoTaskEvent(request: string) {
+    error = '';
+    undoing = true;
+    try {
+      await aircModalCommands.undoTaskEvent(project, request);
+    } catch (reason) {
+      report(reason);
+    } finally {
+      undoing = false;
+    }
+  }
+
   function tone(value: NickTone): string {
     return typeof value === 'string' ? `nick-${value}` : `nick-${value.Hue}`;
   }
@@ -232,7 +245,16 @@
                 ><span class="x"
                   >{#if line.nick}<b class={tone(line.nick_tone)}>{line.nick}</b
                     >
-                  {/if}{@render spans(line)}</span
+                  {/if}{@render spans(line)}
+                  {#if typeof line.task_undo_request === 'string'}
+                    {@const request = line.task_undo_request}
+                    <button
+                      class="btn"
+                      type="button"
+                      disabled={undoing}
+                      onclick={() => void undoTaskEvent(request)}>Undo</button
+                    >
+                  {/if}</span
                 >
               </div>{:else}<div
                 class="al"

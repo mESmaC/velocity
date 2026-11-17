@@ -2,7 +2,7 @@
 //! app reads the active project's channel once a second: it publishes the footer badge
 //! on `layout://state` and the modal on `airc://modal`, and marks lines read while the
 //! modal is open. The window never polls.
-use std::sync::Mutex;
+use std::{collections::HashSet, sync::Mutex};
 
 use tauri::{AppHandle, Manager};
 use tauri_specta::Event as SpectaEvent;
@@ -117,7 +117,7 @@ fn read_active(
     application: &AppHandle,
     unread_only: bool,
 ) -> Result<Option<ActiveChannel>, String> {
-    let (project, name, seen, members) = {
+    let (project, name, seen, members, undoable) = {
         let store = lock(
             application.state::<ManagedStateStore>().inner(),
             "persisted state",
@@ -134,6 +134,11 @@ fn read_active(
             project.name.clone(),
             project.airc_seen,
             airc_members(project),
+            if unread_only {
+                Default::default()
+            } else {
+                velocity_store::task_list::undoable_task_requests(project)
+            },
         )
     };
     let directory = application
@@ -145,16 +150,7 @@ fn read_active(
     let entries = channel
         .read(if unread_only { seen } else { 0 })
         .map_err(|error| error.to_string())?;
-    // The closed-modal badge needs only unseen entries; dependency waits are for the
-    // full Claims view.
-    let waits = if unread_only {
-        Vec::new()
-    } else {
-        channel
-            .dependency_waits()
-            .map_err(|error| error.to_string())?
-    };
-    let claims = claim_records(channel.claims().map_err(|error| error.to_string())?, &waits);
+    let claims = claim_records(&channel, unread_only)?;
     // The badge never shows report results. Without the saved record, marked discoveries
     // read "filing…" until it can be read.
     let reported = if unread_only {
@@ -164,10 +160,7 @@ fn read_active(
     };
     let input = AircModalInput::new(
         name,
-        entries
-            .iter()
-            .map(|entry| record(entry, project, &reported))
-            .collect(),
+        records(&entries, project, &reported, &undoable),
         claims,
         members,
     );
@@ -178,11 +171,18 @@ fn read_active(
     }))
 }
 
-fn claim_records(
-    claims: Vec<velocity_airc::Claim>,
-    waits: &[velocity_airc::waits::DependencyWait],
-) -> Vec<AircClaimRecord> {
-    claims
+fn claim_records(channel: &Channel, unread_only: bool) -> Result<Vec<AircClaimRecord>, String> {
+    // A closed modal needs only the unread badge. Dependency waits are for the Claims view.
+    let waits = if unread_only {
+        Vec::new()
+    } else {
+        channel
+            .dependency_waits()
+            .map_err(|error| error.to_string())?
+    };
+    Ok(channel
+        .claims()
+        .map_err(|error| error.to_string())?
         .into_iter()
         .map(|claim| {
             let waiting = waits.iter().find(|wait| wait.member == claim.member);
@@ -190,6 +190,26 @@ fn claim_records(
             match waiting {
                 Some(wait) => record.with_dependency(&wait.holder, &wait.holder_nick, &wait.file),
                 None => record,
+            }
+        })
+        .collect())
+}
+
+fn records(
+    entries: &[Entry],
+    project: u32,
+    reported: &ReportedDiscoveries,
+    undoable: &HashSet<u64>,
+) -> Vec<AircRecord> {
+    entries
+        .iter()
+        .map(|entry| {
+            let record = record(entry, project, reported);
+            match entry.acknowledged {
+                Some(request) if entry.kind == "task" && undoable.contains(&request) => {
+                    record.with_task_undo(request)
+                }
+                _ => record,
             }
         })
         .collect()

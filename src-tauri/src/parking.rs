@@ -187,8 +187,7 @@ fn start_session(application: &AppHandle, key: ThreadKey, opening: Opening) -> R
         )
         .map_err(|error| error.to_string())?,
     }
-    setup.airc = crate::airc_access::managed(application)
-        .map(|airc| airc.thread(key.0, key.1, Path::new(path)));
+    setup.airc = crate::airc_access::for_thread(application, key, Path::new(path), &thread);
     crate::airc_claims::attach(application, key, &setup, &thread.branch_name)?;
     reset_supervision(application, key)?;
     let inputs = resume_inputs(application, key, path, opening, &thread, &mut setup)?;

@@ -2,7 +2,7 @@
 //! project's issue rail, so changing projects cannot redirect a background launch.
 use crate::state::ManagedStateStore;
 use crate::threads::{ManagedThreads, lock, report};
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashSet};
 use std::path::Path;
 use std::sync::Mutex;
 use std::time::{Duration, Instant};
@@ -10,8 +10,10 @@ use tauri::{AppHandle, Manager};
 use velocity_github::{GitHubIssue, IssueClient};
 use velocity_store::continuous_dispatch::can_finish_empty_dispatch;
 use velocity_store::continuous_dispatch::has_capacity as project_has_capacity;
-use velocity_store::{ProjectItem, VersionControl};
-use velocity_threads::continuous_dispatch::{DispatchView, ordered_issues};
+use velocity_store::{ProjectItem, TaskAttribution, VersionControl};
+use velocity_threads::continuous_dispatch::{
+    DispatchView, DispatchWork, dispatchable_task, ordered_issues, ordered_work, plan_task,
+};
 
 #[derive(Clone, Default)]
 struct Backlog {
@@ -54,16 +56,25 @@ pub async fn set_continuous_dispatch(
 fn view(application: &AppHandle, identifier: u32) -> Result<DispatchView, String> {
     let backlog = lock(application.state::<Backlogs>().inner(), "dispatch backlog")?
         .get(&identifier)
-        .cloned()
-        .unwrap_or_default();
-    let claimed = claimed_issues(application, identifier)?;
+        .cloned();
+    let issues_known = backlog
+        .as_ref()
+        .is_some_and(|backlog| backlog.error.is_none());
+    let backlog = backlog.unwrap_or_default();
+    let claimed = claimed_pieces(application, identifier)?;
     let store = lock(
         application.state::<ManagedStateStore>().inner(),
         "persisted state",
     )?;
     let project = store.project(identifier).ok_or("The project was removed")?;
-    let issues = ordered_issues(project, &backlog.repository, &backlog.issues, &claimed);
-    Ok(DispatchView::new(project, &issues, backlog.error))
+    let work = ordered_work(
+        project,
+        &backlog.repository,
+        &backlog.issues,
+        &claimed,
+        issues_known,
+    );
+    Ok(DispatchView::new(project, &work, backlog.error))
 }
 
 pub fn initialize(application: &AppHandle) {
@@ -75,7 +86,7 @@ pub fn initialize(application: &AppHandle) {
 struct Reader {
     directory: String,
     remote: Option<String>,
-    client: IssueClient,
+    client: Option<IssueClient>,
     refreshed: Option<Instant>,
     backlog: Backlog,
 }
@@ -137,33 +148,64 @@ fn pass(
     readers: &mut BTreeMap<u32, Reader>,
 ) -> Result<(), String> {
     cleanup_empty_threads(application, project)?;
-    let reader = reader(project, readers)?;
+    if project.continuous_dispatch.slots > 0 {
+        finish_empty_threads(application, project)?;
+    }
+    let reader = reader(project, readers);
+    if project_has_capacity(project) {
+        // Local work takes precedence even while GitHub is slow or unavailable.
+        start_ready(application, project.id, &Backlog::default(), None, false)?;
+    }
     refresh_backlog(application, project.id, reader)?;
-    if project.continuous_dispatch.slots == 0 {
+    start_ready(
+        application,
+        project.id,
+        &reader.backlog,
+        reader.client.as_ref(),
+        reader.backlog.error.is_none(),
+    )
+}
+
+fn start_ready(
+    application: &AppHandle,
+    identifier: u32,
+    backlog: &Backlog,
+    client: Option<&IssueClient>,
+    issues_known: bool,
+) -> Result<(), String> {
+    if !has_capacity(application, identifier)? {
         return Ok(());
     }
-    finish_empty_threads(application, project)?;
-    if project.continuous_dispatch.paused || !project.spec_locked || reader.backlog.error.is_some()
-    {
-        return Ok(());
-    }
-    let claimed = claimed_issues(application, project.id)?;
-    let issues = ordered_issues(
-        project,
-        reader.client.repository(),
-        &reader.backlog.issues,
-        &claimed,
-    );
-    for issue in issues {
-        if !has_capacity(application, project.id)? {
+    let claimed = claimed_pieces(application, identifier)?;
+    let work = {
+        let store = lock(
+            application.state::<ManagedStateStore>().inner(),
+            "persisted state",
+        )?;
+        let project = store.project(identifier).ok_or("The project was removed")?;
+        ordered_work(
+            project,
+            &backlog.repository,
+            &backlog.issues,
+            &claimed,
+            issues_known,
+        )
+    };
+    for item in work {
+        if !has_capacity(application, identifier)? {
             break;
         }
-        // Re-read before claiming: a label, decision, ownership or close may have changed.
-        let fresh = reader
-            .client
-            .get(issue.number)
-            .map_err(|error| error.to_string())?;
-        start(application, project.id, reader.client.repository(), &fresh)?;
+        match item {
+            DispatchWork::Task(task) => start_task(application, identifier, task.id)?,
+            DispatchWork::Issue(issue) => {
+                let client = client.ok_or("The dispatch issue source was removed")?;
+                // Re-read before claiming: a label, decision, ownership or close may have changed.
+                let fresh = client
+                    .get(issue.number)
+                    .map_err(|error| error.to_string())?;
+                start_issue(application, identifier, client.repository(), &fresh)?;
+            }
+        }
     }
     Ok(())
 }
@@ -179,14 +221,8 @@ fn refresh_backlog(
     {
         // Failed reads also back off: an unavailable API must not be hammered every tick.
         reader.refreshed = Some(Instant::now());
-        match reader.client.open_issues() {
-            Ok(issues) => {
-                reader.backlog = Backlog {
-                    repository: reader.client.repository().into(),
-                    issues,
-                    error: None,
-                }
-            }
+        match read_issues(reader) {
+            Ok(backlog) => reader.backlog = backlog,
             Err(error) => {
                 reader.backlog.issues.clear();
                 reader.backlog.error = Some(error.to_string());
@@ -198,39 +234,48 @@ fn refresh_backlog(
     Ok(())
 }
 
-fn reader<'a>(
-    project: &ProjectItem,
-    readers: &'a mut BTreeMap<u32, Reader>,
-) -> Result<&'a mut Reader, String> {
-    let changed = readers.get(&project.id).is_none_or(|reader| {
-        reader.directory != project.repository_path
-            || reader.remote != project.github_remote
-            || (reader.remote.is_none()
-                && !reader
-                    .client
-                    .is_current(Path::new(&project.repository_path)))
-    });
-    if changed {
-        let directory = Path::new(&project.repository_path);
-        let client = match &project.github_remote {
-            Some(remote) => IssueClient::for_repository(directory, remote),
-            None => IssueClient::discover(directory),
-        }
-        .map_err(|error| error.to_string())?;
-        readers.insert(
-            project.id,
-            Reader {
-                directory: project.repository_path.clone(),
-                remote: project.github_remote.clone(),
-                client,
-                refreshed: None,
-                backlog: Backlog::default(),
-            },
-        );
+fn reader<'a>(project: &ProjectItem, readers: &'a mut BTreeMap<u32, Reader>) -> &'a mut Reader {
+    let setup = || Reader {
+        directory: project.repository_path.clone(),
+        remote: project.github_remote.clone(),
+        client: None,
+        refreshed: None,
+        backlog: Backlog::default(),
+    };
+    let reader = readers.entry(project.id).or_insert_with(setup);
+    if reader.directory != project.repository_path || reader.remote != project.github_remote {
+        *reader = setup();
     }
-    readers
-        .get_mut(&project.id)
-        .ok_or_else(|| "Dispatch reader was removed".into())
+    reader
+}
+
+fn read_issues(reader: &mut Reader) -> Result<Backlog, velocity_github::PullRequestError> {
+    let directory = Path::new(&reader.directory);
+    if reader.remote.is_none()
+        && reader
+            .client
+            .as_ref()
+            .is_some_and(|client| !client.is_current(directory))
+    {
+        reader.client = None;
+    }
+    if reader.client.is_none() {
+        reader.client = match reader.remote.as_deref() {
+            Some(remote) => Some(IssueClient::for_repository(directory, remote)?),
+            None if directory.join(".git").exists() && IssueClient::has_origin(directory)? => {
+                Some(IssueClient::discover(directory)?)
+            }
+            None => None,
+        };
+    }
+    let Some(client) = &reader.client else {
+        return Ok(Backlog::default());
+    };
+    Ok(Backlog {
+        repository: client.repository().into(),
+        issues: client.open_issues()?,
+        error: None,
+    })
 }
 
 fn has_capacity(application: &AppHandle, identifier: u32) -> Result<bool, String> {
@@ -241,20 +286,20 @@ fn has_capacity(application: &AppHandle, identifier: u32) -> Result<bool, String
     Ok(store.project(identifier).is_some_and(project_has_capacity))
 }
 
-fn start(
+fn start_issue(
     application: &AppHandle,
     identifier: u32,
     repository: &str,
     issue: &GitHubIssue,
 ) -> Result<(), String> {
-    let claimed = claimed_issues(application, identifier)?;
+    let claimed = claimed_pieces(application, identifier)?;
     let (plan, thread) = {
         let mut store = lock(
             application.state::<ManagedStateStore>().inner(),
             "persisted state",
         )?;
         let project = store.project(identifier).ok_or("The project was removed")?;
-        if !project_has_capacity(project) {
+        if !project_has_capacity(project) || has_user_task(project, &claimed) {
             return Ok(());
         }
         if ordered_issues(project, repository, std::slice::from_ref(issue), &claimed).is_empty() {
@@ -278,7 +323,43 @@ fn start(
     Ok(())
 }
 
-fn claimed_issues(application: &AppHandle, identifier: u32) -> Result<Vec<u32>, String> {
+fn start_task(application: &AppHandle, identifier: u32, task: u32) -> Result<(), String> {
+    let claimed = claimed_pieces(application, identifier)?;
+    let (plan, thread) = {
+        let mut store = lock(
+            application.state::<ManagedStateStore>().inner(),
+            "persisted state",
+        )?;
+        let project = store.project(identifier).ok_or("The project was removed")?;
+        let Some(task) = project
+            .tasks
+            .iter()
+            .find(|entry| entry.id == task && dispatchable_task(project, entry, &claimed))
+            .filter(|_| project_has_capacity(project))
+        else {
+            return Ok(());
+        };
+        if task.added_by != TaskAttribution::User && has_user_task(project, &claimed) {
+            return Ok(());
+        }
+        let task_identifier = task.id;
+        let plan = plan_task(&store, project, task).map_err(|error| error.to_string())?;
+        let thread = store
+            .record_continuous_task(identifier, plan.thread.clone(), task_identifier)
+            .map_err(|error| error.to_string())?;
+        (plan, thread)
+    };
+    crate::threads::start_planned_with_selection(application, plan, thread, false)?;
+    Ok(())
+}
+
+fn has_user_task(project: &ProjectItem, claimed: &HashSet<String>) -> bool {
+    project.tasks.iter().any(|task| {
+        task.added_by == TaskAttribution::User && dispatchable_task(project, task, claimed)
+    })
+}
+
+fn claimed_pieces(application: &AppHandle, identifier: u32) -> Result<HashSet<String>, String> {
     let data = application
         .path()
         .app_data_dir()
@@ -289,7 +370,7 @@ fn claimed_issues(application: &AppHandle, identifier: u32) -> Result<Vec<u32>, 
         .claims()
         .map_err(|error| error.to_string())?
         .iter()
-        .filter_map(|claim| claim.key().strip_prefix("issue:")?.parse().ok())
+        .map(|claim| claim.key().to_owned())
         .collect())
 }
 

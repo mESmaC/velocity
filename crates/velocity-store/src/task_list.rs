@@ -3,6 +3,7 @@ use crate::{
     ProjectItem, StateStore, StoreError, TaskAttribution, TaskItem, TaskState, ThreadItem,
     ThreadState,
 };
+use serde::{Deserialize, Serialize};
 use velocity_core::layout_view::TaskView;
 #[derive(Debug, thiserror::Error)]
 pub enum TaskError {
@@ -18,6 +19,10 @@ pub enum TaskError {
     SpecUnlocked(u32),
     #[error("An agent is working on task #{0}: it can be marked done, not reopened")]
     TaskInProgress(u32),
+    #[error("This event has no Task List change to undo")]
+    UnknownTaskUndo,
+    #[error("Task #{0} has changed since that event")]
+    TaskUndoConflict(u32),
     #[error(transparent)]
     Persistence(#[from] StoreError),
 }
@@ -66,15 +71,7 @@ impl StateStore {
             .iter_mut()
             .find(|project| project.id == project_identifier)
             .ok_or(TaskError::UnknownProject(project_identifier))?;
-        let position = project
-            .tasks
-            .iter()
-            .position(|task| task.id == identifier)
-            .ok_or(TaskError::UnknownTask(identifier))?;
-        let task = project.tasks.remove(position);
-        for thread in &mut project.threads {
-            thread.task_ids.retain(|listed| *listed != identifier);
-        }
+        let task = remove_task(project, identifier)?;
         self.commit(next)?;
         Ok(task)
     }
@@ -83,6 +80,179 @@ impl StateStore {
             .map(task_views)
             .ok_or(TaskError::UnknownProject(project_identifier))
     }
+}
+
+fn remove_task(project: &mut ProjectItem, identifier: u32) -> Result<TaskItem, TaskError> {
+    let position = project
+        .tasks
+        .iter()
+        .position(|task| task.id == identifier)
+        .ok_or(TaskError::UnknownTask(identifier))?;
+    let task = project.tasks.remove(position);
+    project
+        .continuous_dispatch
+        .task_attempts
+        .remove(&identifier);
+    for thread in &mut project.threads {
+        thread.task_ids.retain(|listed| *listed != identifier);
+    }
+    Ok(task)
+}
+
+pub enum TaskMutation {
+    Update(TaskUpdate),
+    Delete(u32),
+}
+
+/// Saved together with its mutation so a replay can still post the original undoable event.
+#[derive(Clone, Debug, PartialEq, Eq, Deserialize, Serialize)]
+pub(crate) struct TaskUndo {
+    before: TaskItem,
+    after: Option<TaskItem>,
+    #[serde(default)]
+    undone: bool,
+}
+
+impl TaskUndo {
+    fn changed(&self) -> bool {
+        self.after.as_ref() != Some(&self.before)
+    }
+
+    fn is_current(&self, project: &ProjectItem) -> bool {
+        !self.undone
+            && project.tasks.iter().find(|item| item.id == self.before.id) == self.after.as_ref()
+            && !(self.after.is_some()
+                && self.before.state == TaskState::Now
+                && project.threads.iter().any(|thread| {
+                    Some(thread.id) == self.before.assigned_thread_id
+                        && thread.state == ThreadState::Merged
+                }))
+    }
+}
+
+pub fn undoable_task_requests(project: &ProjectItem) -> std::collections::HashSet<u64> {
+    let mut seen = std::collections::HashSet::new();
+    project
+        .task_undo
+        .iter()
+        .rev()
+        .filter(|(_, undo)| !undo.undone && undo.changed() && seen.insert(undo.before.id))
+        .filter_map(|(request, undo)| undo.is_current(project).then_some(*request))
+        .collect()
+}
+
+impl StateStore {
+    pub fn apply_agent_task_mutation(
+        &mut self,
+        project: u32,
+        member: &str,
+        request: u64,
+        mutation: TaskMutation,
+    ) -> Result<(TaskItem, bool), TaskError> {
+        let mut next = self.state.clone();
+        let item = next
+            .projects
+            .iter_mut()
+            .find(|item| item.id == project)
+            .ok_or(TaskError::UnknownProject(project))?;
+        if let Some(undo) = item.task_undo.get(&request) {
+            return Ok((undo.after.as_ref().unwrap_or(&undo.before).clone(), true));
+        }
+        let identifier = match &mutation {
+            TaskMutation::Update(update) => update.task,
+            TaskMutation::Delete(identifier) => *identifier,
+        };
+        let dispatched = member
+            .strip_prefix("thread-")
+            .and_then(|value| value.parse::<u32>().ok())
+            .is_some_and(|identifier| {
+                item.threads
+                    .iter()
+                    .any(|thread| thread.id == identifier && thread.started_by_dispatch)
+            });
+        let before = item
+            .tasks
+            .iter()
+            .find(|task| task.id == identifier)
+            .cloned()
+            .ok_or(TaskError::UnknownTask(identifier))?;
+        let (task, after) = match mutation {
+            TaskMutation::Update(update) => {
+                let updated = apply_update(item, &update)?;
+                (updated.clone(), Some(updated))
+            }
+            TaskMutation::Delete(identifier) => (remove_task(item, identifier)?, None),
+        };
+        if dispatched {
+            item.task_undo.insert(
+                request,
+                TaskUndo {
+                    before,
+                    after,
+                    undone: false,
+                },
+            );
+        }
+        self.commit(next)?;
+        Ok((task, dispatched))
+    }
+
+    pub fn undo_task_request(&mut self, project: u32, request: u64) -> Result<TaskItem, TaskError> {
+        let mut next = self.state.clone();
+        let item = next
+            .projects
+            .iter_mut()
+            .find(|item| item.id == project)
+            .ok_or(TaskError::UnknownProject(project))?;
+        let undo = item
+            .task_undo
+            .get(&request)
+            .cloned()
+            .ok_or(TaskError::UnknownTaskUndo)?;
+        if !undoable_task_requests(item).contains(&request) {
+            return Err(TaskError::TaskUndoConflict(undo.before.id));
+        }
+        let task = restore_task(item, undo.before);
+        if let Some(undo) = item.task_undo.get_mut(&request) {
+            undo.undone = true;
+        }
+        self.commit(next)?;
+        Ok(task)
+    }
+}
+
+fn restore_task(project: &mut ProjectItem, task: TaskItem) -> TaskItem {
+    let mut task = task.normalize(project.spec_locked);
+    let owner = task.assigned_thread_id.and_then(|identifier| {
+        project.threads.iter_mut().find(|thread| {
+            thread.id == identifier
+                && (task.state == TaskState::Done
+                    || (!thread.supervision.released
+                        && thread.task_ids.iter().all(|listed| *listed == task.id)
+                        && matches!(thread.state, ThreadState::Working | ThreadState::Review)))
+        })
+    });
+    if let Some(owner) = owner {
+        if !owner.task_ids.contains(&task.id) {
+            owner.task_ids.push(task.id);
+        }
+    } else {
+        task.assigned_thread_id = None;
+        if task.state == TaskState::Now {
+            task.state = TaskState::Todo;
+        }
+    }
+    if let Some(current) = project.tasks.iter_mut().find(|entry| entry.id == task.id) {
+        *current = task.clone();
+    } else {
+        let position = project
+            .tasks
+            .iter()
+            .position(|entry| entry.id > task.id)
+            .unwrap_or(project.tasks.len());
+        project.tasks.insert(position, task.clone());
+    }
+    task
 }
 pub(crate) fn append_task(
     project: &mut ProjectItem,
@@ -152,6 +322,7 @@ fn apply_update(project: &mut ProjectItem, change: &TaskUpdate) -> Result<TaskIt
     // Reopening frees the task from the thread that finished it, so that thread's merge
     // cannot close it again.
     if reopened {
+        project.continuous_dispatch.task_attempts.remove(&task.id);
         for thread in &mut project.threads {
             thread.task_ids.retain(|listed| *listed != task.id);
         }

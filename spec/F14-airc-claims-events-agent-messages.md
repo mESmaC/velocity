@@ -28,7 +28,7 @@ Velocity posts them; agents never type them.
 | `PR` · `changes` · `pushed` · `approved` · `merged` | the PR lifecycle (F6, F7) | GitHub; `approved` is PR duty's approval record (F7) |
 | `order` | PR duty sets a merge order | PR duty |
 | `issue` | a scout or agent files an issue | GitHub |
-| `task` | a Task List item is added (by you or by an agent, F8) | Task List |
+| `task` | a Task List item is added, changed or deleted (F8) | Task List |
 | `failed` | an agent stops on an error; its claim is held | agent runner |
 | `discovery` | a Discoveries ledger entry is added | `append_ledger` |
 | `swarm` | a swarm or goal swarm starts | you |
@@ -211,6 +211,7 @@ Rosen applies workspace updates at step boundaries, so waking a Rosen wait never
 
 Claim grants and extensions use the atomic claim record itself as their event, formatted with the task and normalized files.
 User and agent Task List additions use the same event wording and include the saved task identifier, so replay is deduplicated without hiding separate tasks with identical titles.
+Dispatch agents' Task List edits and deletions show Undo on the Events row while the saved result still applies (F8).
 
 AIRC delivery retains each live session’s member nick and cursor.
 Review membership is discovered from new joins after its claim; steady-state ticks read only `read(after)`, without copying the whole log or rebuilding presence.

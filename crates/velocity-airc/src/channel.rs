@@ -100,6 +100,7 @@ pub struct Event {
     head: Option<String>,
     recipients: Vec<String>,
     files: Vec<String>,
+    pub(crate) task_request: Option<u64>,
 }
 
 impl Event {
@@ -112,6 +113,7 @@ impl Event {
             head: None,
             recipients: Vec::new(),
             files: Vec::new(),
+            task_request: None,
         }
     }
 
@@ -468,6 +470,7 @@ impl Channel {
         record.head = event.head;
         record.to = event.recipients;
         record.files = event.files;
+        record.acknowledged = event.task_request;
         if let Some(remote) = &self.remote {
             let result = remote.append_record(&record)?;
             if matches!(record.kind.as_str(), "PR" | "pushed" | "updated") {

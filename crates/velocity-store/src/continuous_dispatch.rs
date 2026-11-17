@@ -1,8 +1,11 @@
-//! Saved per-project continuous issue dispatch (F8).
+//! Saved per-project continuous dispatch (F8).
 use serde::{Deserialize, Serialize};
 use specta::Type;
+use std::collections::BTreeMap;
 
-use crate::{ProjectItem, StateStore, ThreadState, VersionControl, threads::ThreadError};
+use crate::{
+    ProjectItem, StateStore, TaskItem, TaskState, ThreadState, VersionControl, threads::ThreadError,
+};
 
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize, Type)]
 pub struct ContinuousDispatch {
@@ -14,6 +17,10 @@ pub struct ContinuousDispatch {
     /// while GitHub still shows an issue whose change just landed.
     #[serde(default)]
     pub attempts: Vec<DispatchAttempt>,
+    /// A task whose turn ended with no change waits for an edit or an explicit reopen.
+    #[serde(default)]
+    #[specta(skip)]
+    pub(crate) task_attempts: BTreeMap<u32, String>,
     /// Empty threads whose stopped workspace and claims still need cleanup.
     #[serde(default)]
     pub cleanup: Vec<u32>,
@@ -56,6 +63,12 @@ pub fn has_capacity(project: &ProjectItem) -> bool {
         && project.spec_locked
         && !project.continuous_dispatch.paused
         && busy_count(project) < project.continuous_dispatch.slots
+}
+
+pub fn available_task(project: &ProjectItem, task: &TaskItem) -> bool {
+    task.state == TaskState::Todo
+        && task.assigned_thread_id.is_none()
+        && project.continuous_dispatch.task_attempts.get(&task.id) != Some(&task.text)
 }
 
 /// Reset activity is not evidence that saved user work was read. Both the admission
@@ -158,7 +171,7 @@ impl StateStore {
         };
         let identifier = crate::threads::insert_thread(&mut next, project, thread, Some(issue))?;
         if let Some(item) = next.projects.iter_mut().find(|item| item.id == project) {
-            item.active_thread_id = selected;
+            mark_dispatch(item, selected, identifier);
             item.continuous_dispatch.attempts.retain(|prior| {
                 prior.number != attempt.number
                     || !prior.repository.eq_ignore_ascii_case(&attempt.repository)
@@ -167,6 +180,49 @@ impl StateStore {
         }
         self.commit(next)?;
         Ok(identifier)
+    }
+
+    /// Save the thread and its task ownership together before starting an ACP session.
+    pub fn record_continuous_task(
+        &mut self,
+        project: u32,
+        thread: crate::threads::NewThread,
+        task: u32,
+    ) -> Result<u32, ThreadError> {
+        let item = self
+            .project(project)
+            .ok_or(ThreadError::UnknownProject(project))?;
+        if !has_capacity(item) {
+            return Err(ThreadError::InvalidLaunch(
+                "Dispatch settings or capacity changed".into(),
+            ));
+        }
+        if !item
+            .tasks
+            .iter()
+            .any(|entry| entry.id == task && available_task(item, entry))
+        {
+            return Err(ThreadError::TaskUnavailable(task));
+        }
+        let selected = item.active_thread_id;
+        let mut next = self.state.clone();
+        let identifier = crate::threads::insert_thread(&mut next, project, thread, None)?;
+        let item = next
+            .projects
+            .iter_mut()
+            .find(|item| item.id == project)
+            .ok_or(ThreadError::UnknownProject(project))?;
+        crate::swarms::claim_task(item, task, identifier)?;
+        mark_dispatch(item, selected, identifier);
+        self.commit(next)?;
+        Ok(identifier)
+    }
+}
+
+fn mark_dispatch(project: &mut ProjectItem, selected: Option<u32>, thread: u32) {
+    project.active_thread_id = selected;
+    if let Some(record) = project.threads.iter_mut().find(|entry| entry.id == thread) {
+        record.started_by_dispatch = true;
     }
 }
 
@@ -196,6 +252,18 @@ impl StateStore {
             ));
         }
         thread.state = ThreadState::Done;
+        if thread.started_by_dispatch {
+            for task in &mut item.tasks {
+                if task.assigned_thread_id == Some(identifier) && task.state == TaskState::Now {
+                    item.continuous_dispatch
+                        .task_attempts
+                        .insert(task.id, thread.title.clone());
+                    thread.task_ids.retain(|listed| *listed != task.id);
+                    task.assigned_thread_id = None;
+                    task.state = TaskState::Todo;
+                }
+            }
+        }
         if !item.continuous_dispatch.cleanup.contains(&identifier) {
             item.continuous_dispatch.cleanup.push(identifier);
         }

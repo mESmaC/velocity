@@ -696,6 +696,10 @@ pub enum VersionControl {
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, Type)]
 pub struct ThreadItem {
+    /// Selects the Task List guidance whenever this thread starts an ACP session.
+    #[serde(default)]
+    #[specta(skip)]
+    pub started_by_dispatch: bool,
     /// A turn interrupted by startup, retained until its resume starts or fails.
     #[serde(default)]
     #[specta(skip)]
@@ -803,6 +807,7 @@ impl ThreadItem {
             provider_queued: false,
             transcript: Default::default(),
             startup_recovery_pending: false,
+            started_by_dispatch: false,
             supervision: Default::default(),
             review_stage: None,
             task_ids: Vec::new(),
@@ -847,6 +852,7 @@ impl ThreadItem {
             provider_queued: false,
             transcript: Default::default(),
             startup_recovery_pending: false,
+            started_by_dispatch: false,
             supervision: Default::default(),
             review_stage: None,
             task_ids: Vec::new(),
@@ -964,6 +970,9 @@ pub struct ProjectItem {
     pub active_thread_id: Option<u32>,
     pub merged_today: u32,
     pub tasks: Vec<TaskItem>,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    #[specta(skip)]
+    pub(crate) task_undo: BTreeMap<u64, task_list::TaskUndo>,
     pub threads: Vec<ThreadItem>,
     /// The spec interview Create asked for and nothing has started yet (F2, F3).
     #[serde(default)]
@@ -1045,6 +1054,7 @@ impl ProjectItem {
             active_thread_id: None,
             merged_today: 0,
             tasks: Vec::new(),
+            task_undo: BTreeMap::new(),
             threads: Vec::new(),
             pending_interview: None,
             duty_roles: Vec::new(),

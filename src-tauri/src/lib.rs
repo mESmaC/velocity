@@ -148,6 +148,7 @@ fn bindings() -> Builder<tauri::Wry> {
         swarm::add_to_swarm,
         swarm_deletion::delete_swarm,
         tasks::add_task,
+        tasks::undo_task_event,
         tasks::list_tasks,
         thread_menu::get_thread_menu,
         thread_menu::run_thread_menu_action,

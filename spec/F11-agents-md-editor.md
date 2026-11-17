@@ -66,7 +66,9 @@ Project-specific commands are filled in from the project's manifests and spec ra
 **The default AGENTS.md** includes these rules:
 - Name the change with `rosen commit -m`, then Velocity handles landing; the task finishes when the change lands.
 - Resolve stored conflicts with `rosen rebase` and `rosen resolve`, and repair a reopened change after a post-land revert.
-- Add to the Task List only when the user asks; otherwise file an issue.
+- Follow the AIRC session's Task List instructions.
+  Continuous dispatch threads can add, edit and delete tasks on their own.
+  Other threads change the Task List only on an explicit user request; otherwise file issues.
 - Review severity: the project's review policy, and that everything else becomes an issue (F7).
 - Shared files: the project's generated files and registration lists, and how to regenerate them on combined inputs (F14).
 - Build queue: run every heavy build, test and lint through `rosen run -- <command>`, the machine-wide queue (F5).

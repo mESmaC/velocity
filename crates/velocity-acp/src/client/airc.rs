@@ -4,7 +4,7 @@
 use std::path::{Path, PathBuf};
 
 use agent_client_protocol::v1::schema::{McpServer, McpServerStdio};
-use velocity_airc::{SERVER_NAME, SERVER_SWITCH, server_arguments};
+use velocity_airc::{CONTINUOUS_DISPATCH_ARGUMENT, SERVER_NAME, SERVER_SWITCH, server_arguments};
 
 /// The app data folder and project an AIRC server [`AircLaunch`] made is for.
 pub(super) fn airc_project(airc: &McpServer) -> Option<(&McpServerStdio, &str, &str)> {
@@ -62,6 +62,16 @@ impl AircLaunch {
 
     /// A build thread's connection. Its nick is the worktree leaf (F14 Nicks).
     pub fn thread(&self, project: u32, thread: u32, worktree: &Path) -> McpServer {
+        self.thread_with_origin(project, thread, worktree, false)
+    }
+
+    pub fn thread_with_origin(
+        &self,
+        project: u32,
+        thread: u32,
+        worktree: &Path,
+        continuous_dispatch: bool,
+    ) -> McpServer {
         let member = format!("thread-{thread}");
         let nick = worktree
             .file_name()
@@ -69,7 +79,11 @@ impl AircLaunch {
             .filter(|leaf| !leaf.trim().is_empty())
             .unwrap_or(&member)
             .to_owned();
-        self.server(project, &member, &nick)
+        let mut server = self.stdio(project, &member, &nick);
+        if continuous_dispatch {
+            server.args.push(CONTINUOUS_DISPATCH_ARGUMENT.to_owned());
+        }
+        McpServer::Stdio(server)
     }
 
     /// A duty agent's connection under its role nick (`scout-1`, `pr-1`).
@@ -84,6 +98,10 @@ impl AircLaunch {
     }
 
     fn server(&self, project: u32, member: &str, nick: &str) -> McpServer {
+        McpServer::Stdio(self.stdio(project, member, nick))
+    }
+
+    fn stdio(&self, project: u32, member: &str, nick: &str) -> McpServerStdio {
         let mut arguments = vec![SERVER_SWITCH.to_owned()];
         arguments.extend(server_arguments(
             &self.app_data,
@@ -91,6 +109,6 @@ impl AircLaunch {
             member,
             nick,
         ));
-        McpServer::Stdio(McpServerStdio::new(SERVER_NAME, &self.executable).args(arguments))
+        McpServerStdio::new(SERVER_NAME, &self.executable).args(arguments)
     }
 }

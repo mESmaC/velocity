@@ -61,3 +61,40 @@ pub(crate) fn record_added(application: &AppHandle, project: u32, task: &TaskIte
             .and_then(|event| crate::airc_events::post_event(application, project, event)),
     );
 }
+
+#[tauri::command]
+#[specta::specta]
+pub async fn undo_task_event(
+    application: AppHandle,
+    project_identifier: u32,
+    request: String,
+) -> Result<(), String> {
+    crate::layout::off_ui_thread(move || {
+        let request = request.parse().map_err(|_| "Invalid task event request")?;
+        let (task, selected) = {
+            let managed = application.state::<ManagedStateStore>();
+            let mut store = lock(&managed, "Task List")?;
+            let task = store
+                .undo_task_request(project_identifier, request)
+                .map_err(|error| error.to_string())?;
+            let selected = store
+                .project(project_identifier)
+                .and_then(|project| project.active_thread_id)
+                .unwrap_or(0);
+            (task, selected)
+        };
+        report(
+            velocity_airc::Event::task_changed(
+                "you",
+                &format!("undid a change to task #{}: {}", task.id, task.text),
+            )
+            .map_err(|error| error.to_string())
+            .and_then(|event| {
+                crate::airc_events::post_event(&application, project_identifier, event)
+            }),
+        );
+        crate::threads::refresh(&application, (project_identifier, selected), false)?;
+        crate::airc_modal::refresh(&application)
+    })
+    .await
+}

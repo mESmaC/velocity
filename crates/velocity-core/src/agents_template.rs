@@ -66,7 +66,8 @@ SPEC.md defines what to build. The project Task List defines what is left.
 
 ## Scope
 - Work only on the piece you claimed.
-- File unrelated problems as issues. Add to the Task List only when the user asks.
+- File unrelated problems as issues.
+- Follow the AIRC session's Task List instructions. Continuous dispatch threads can add, update and delete tasks on their own. In other threads, change the list only when the user explicitly asks. Otherwise, file issues.
 - Update SPEC.md when behaviour changes. File an issue when the spec contradicts itself; never change a product decision yourself.
 
 ## Implementation first

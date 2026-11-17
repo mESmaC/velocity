@@ -10,6 +10,17 @@ pub fn serve(
     input: impl BufRead + Send + 'static,
     output: impl Write + Send + 'static,
 ) -> Result<(), Error> {
+    serve_with_origin(channel, member, requested_nick, input, output, false)
+}
+
+pub(crate) fn serve_with_origin(
+    channel: &Channel,
+    member: &str,
+    requested_nick: &str,
+    input: impl BufRead + Send + 'static,
+    output: impl Write + Send + 'static,
+    continuous_dispatch: bool,
+) -> Result<(), Error> {
     let _connection = channel.connect(member)?;
     let connected = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true));
     let output = std::sync::Arc::new(std::sync::Mutex::new(output));
@@ -26,6 +37,7 @@ pub fn serve(
                     &request,
                     &mut initialized,
                     &connected,
+                    continuous_dispatch,
                 ),
                 Err(_) => Some(failure(Value::Null, -32700, "Parse error")),
             };
@@ -43,6 +55,17 @@ pub fn serve(
     result.and(cleanup)
 }
 
+fn instructions(nick: &str, continuous_dispatch: bool) -> String {
+    let task_rule = if continuous_dispatch {
+        "Continuous dispatch started this thread. Use task_add, task_update and task_delete without waiting for a user request. Record concrete follow-up work and split work into actionable tasks. Velocity marks your assigned task done when your change lands, so leave it assigned while you work."
+    } else {
+        "Use task_add, task_update and task_delete only when the user explicitly asks you to add, change or remove Task List items. Otherwise file issues."
+    };
+    format!(
+        "You joined this project's AIRC channel as {nick}. Read airc_claims before choosing work. Call airc_claim with the task, branch and every file BEFORE editing, and with piece set to the work item's identity (task:<id>, issue:<number> or spec:<section>) when it has one; on refusal the holder is named, so re-read airc_claims and claim the first open piece. Extend your existing task claim to add files. Record airc_share or a dependency wait before editing an overlapping file. Messages require named recipients and an intent. task_list reads the project Task List at any time. {task_rule} Task List changes never edit SPEC.md or start an interview. A discovery about Velocity itself (its worktrees, AIRC, duty tools, agent shells, build queue or app), not this project, goes in append_ledger with velocity_issue set, and Velocity files it on its own repository. A discovery about Rosen itself (its server, workspaces, durability, claims, rebases or landing) uses rosen_issue instead and is filed on mESmaC/rosen. Use only one issue field and read discoveries first to avoid reporting the same problem twice."
+    )
+}
+
 fn respond(
     channel: &Channel,
     member: &str,
@@ -50,6 +73,7 @@ fn respond(
     request: &Value,
     initialized: &mut bool,
     connected: &std::sync::atomic::AtomicBool,
+    continuous_dispatch: bool,
 ) -> Option<Value> {
     let id = request.get("id").cloned().unwrap_or(Value::Null);
     let method = request.get("method").and_then(Value::as_str);
@@ -63,14 +87,14 @@ fn respond(
                 *initialized = true;
                 json!({"protocolVersion":"2025-11-25","capabilities":{"tools":{}},
                         "serverInfo":{"name":"velocity-airc","version":env!("CARGO_PKG_VERSION")},
-                        "instructions":format!("You joined this project's AIRC channel as {nick}. Read airc_claims before choosing work. Call airc_claim with the task, branch and every file BEFORE editing, and with piece set to the work item's identity (task:<id>, issue:<number> or spec:<section>) when it has one; on refusal the holder is named, so re-read airc_claims and claim the first open piece. Extend your existing task claim to add files. Record airc_share or a dependency wait before editing an overlapping file. Messages require named recipients and an intent. task_list reads the project Task List at any time. Use task_add, task_update and task_delete ONLY when the user explicitly asks you to add, change or remove Task List items; otherwise file issues. Task List changes never edit SPEC.md or start an interview. A discovery about Velocity itself (its worktrees, AIRC, duty tools, agent shells, build queue or app), not this project, goes in append_ledger with velocity_issue set, and Velocity files it on its own repository. A discovery about Rosen itself (its server, workspaces, durability, claims, rebases or landing) uses rosen_issue instead and is filed on mESmaC/rosen. Use only one issue field and read discoveries first to avoid reporting the same problem twice.")})
+                        "instructions":instructions(&nick, continuous_dispatch)})
             }
             Err(error) => return Some(failure(id, -32603, &error.to_string())),
         },
         "ping" => json!({}),
         _ if !*initialized => return Some(failure(id, -32600, "Initialize first")),
         "tools/list" => match channel.is_rosen_project(member) {
-            Ok(rosen) => json!({"tools":tool_list(rosen)}),
+            Ok(rosen) => json!({"tools":tool_list(rosen, continuous_dispatch)}),
             Err(error) => return Some(failure(id, -32603, &error.to_string())),
         },
         "tools/call" => {
@@ -188,7 +212,7 @@ fn read_filtered(
     Ok(serde_json::to_value(entries)?)
 }
 
-fn tool_list(rosen: bool) -> Vec<Value> {
+fn tool_list(rosen: bool, continuous_dispatch: bool) -> Vec<Value> {
     let empty = json!({});
     let cursor = json!({"after":{"type":"integer","minimum":0}});
     let mut tools = vec![
@@ -224,7 +248,7 @@ fn tool_list(rosen: bool) -> Vec<Value> {
             &[],
         ),
     ];
-    tools.extend(crate::task_tools::tools());
+    tools.extend(crate::task_tools::tools(continuous_dispatch));
     tools.extend(writing_tools());
     tools.extend(claim_tools());
     if !rosen {

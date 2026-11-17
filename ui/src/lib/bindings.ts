@@ -167,6 +167,7 @@ export const commands = {
 	/**  Hides the swarm and its members at once and offers Undo; the deletion lands after 5 s. */
 	deleteSwarm: (projectIdentifier: number, swarmIdentifier: number) => __TAURI_INVOKE<LayoutSnapshot_Serialize>("delete_swarm", { projectIdentifier, swarmIdentifier }),
 	addTask: (projectIdentifier: number, title: string) => __TAURI_INVOKE<TaskItem_Serialize>("add_task", { projectIdentifier, title }),
+	undoTaskEvent: (projectIdentifier: number, request: string) => __TAURI_INVOKE<null>("undo_task_event", { projectIdentifier, request }),
 	listTasks: (projectIdentifier: number) => __TAURI_INVOKE<TaskView_Serialize[]>("list_tasks", { projectIdentifier }),
 	getThreadMenu: (threadIdentifier: number) => __TAURI_INVOKE<ThreadMenuView_Serialize | null>("get_thread_menu", { threadIdentifier }),
 	/**
@@ -352,7 +353,9 @@ export type AircEventPublished_Serialize = {
 	entry: Entry_Serialize,
 };
 
-export type AircLineView = {
+export type AircLineView = AircLineView_Serialize | AircLineView_Deserialize;
+
+export type AircLineView_Deserialize = {
 	key: string,
 	time: string,
 	tag: string,
@@ -363,6 +366,21 @@ export type AircLineView = {
 	spans: AircSpan[],
 	mention: boolean,
 	from_you: boolean,
+	task_undo_request?: string | null,
+};
+
+export type AircLineView_Serialize = {
+	key: string,
+	time: string,
+	tag: string,
+	tone: AircTone,
+	/**  Empty for lines Velocity posts about nobody in particular. */
+	nick: string,
+	nick_tone: NickTone,
+	spans: AircSpan[],
+	mention: boolean,
+	from_you: boolean,
+	task_undo_request: string | null,
 };
 
 export type AircMessagePublished = AircMessagePublished_Serialize | AircMessagePublished_Deserialize;
@@ -394,26 +412,26 @@ export type AircModalView = AircModalView_Serialize | AircModalView_Deserialize;
 export type AircModalView_Deserialize = {
 	channel: string,
 	tabs: AircTabView[],
-	events: AircLineView[],
-	messages: AircLineView[],
+	events: AircLineView_Deserialize[],
+	messages: AircLineView_Deserialize[],
 	claims_note: string,
 	claims_warn: boolean,
 	claims: AircClaimRow_Deserialize[],
-	discoveries: AircLineView[],
-	past_work: AircLineView[],
+	discoveries: AircLineView_Deserialize[],
+	past_work: AircLineView_Deserialize[],
 	nick_groups: AircNickGroup[],
 };
 
 export type AircModalView_Serialize = {
 	channel: string,
 	tabs: AircTabView[],
-	events: AircLineView[],
-	messages: AircLineView[],
+	events: AircLineView_Serialize[],
+	messages: AircLineView_Serialize[],
 	claims_note: string,
 	claims_warn: boolean,
 	claims: AircClaimRow_Serialize[],
-	discoveries: AircLineView[],
-	past_work: AircLineView[],
+	discoveries: AircLineView_Serialize[],
+	past_work: AircLineView_Serialize[],
 	nick_groups: AircNickGroup[],
 };
 
@@ -793,8 +811,9 @@ export type DispatchAttempt_Serialize = {
 	updated_at: string,
 };
 
-export type DispatchIssue = {
-	number: number,
+export type DispatchPreview = {
+	key: string,
+	label: string,
 	title: string,
 };
 
@@ -806,7 +825,7 @@ export type DispatchView_Deserialize = {
 	slots: number,
 	busy: number,
 	paused: boolean,
-	next: DispatchIssue[],
+	next: DispatchPreview[],
 	error?: string | null,
 };
 
@@ -816,7 +835,7 @@ export type DispatchView_Serialize = {
 	slots: number,
 	busy: number,
 	paused: boolean,
-	next: DispatchIssue[],
+	next: DispatchPreview[],
 	error: string | null,
 };
 

@@ -24,6 +24,7 @@ pub struct AircRecord {
     /// reported on once that is done.
     velocity_issue: Option<(String, Option<u32>)>,
     rosen_issue: Option<(String, Option<u32>)>,
+    task_undo_request: Option<String>,
 }
 
 impl AircRecord {
@@ -40,6 +41,7 @@ impl AircRecord {
             is_event: false,
             velocity_issue: None,
             rosen_issue: None,
+            task_undo_request: None,
         }
     }
 
@@ -66,6 +68,11 @@ impl AircRecord {
 
     pub fn as_event(mut self, is_event: bool) -> Self {
         self.is_event = is_event;
+        self
+    }
+
+    pub fn with_task_undo(mut self, request: u64) -> Self {
+        self.task_undo_request = Some(request.to_string());
         self
     }
 }
@@ -237,6 +244,7 @@ pub struct AircLineView {
     pub spans: Vec<AircSpan>,
     pub mention: bool,
     pub from_you: bool,
+    pub task_undo_request: Option<String>,
 }
 
 #[cfg_attr(
@@ -546,6 +554,7 @@ fn line(record: &AircRecord, tag: &str, tone: AircTone, text: &str) -> AircLineV
         spans: vec![AircSpan::Text(text.into())],
         mention: false,
         from_you: record.nick == "you",
+        task_undo_request: record.task_undo_request.clone(),
     }
 }
 

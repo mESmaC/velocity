@@ -295,7 +295,11 @@ fn project_mut(
 }
 
 /// A task taken by a swarm member is `now`, and refuses a second agent (F10 Items).
-fn claim_task(project: &mut ProjectItem, task: u32, thread: u32) -> Result<(), ThreadError> {
+pub(crate) fn claim_task(
+    project: &mut ProjectItem,
+    task: u32,
+    thread: u32,
+) -> Result<(), ThreadError> {
     let entry = project
         .tasks
         .iter_mut()

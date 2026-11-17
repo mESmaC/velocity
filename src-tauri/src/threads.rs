@@ -56,10 +56,9 @@ fn deliver_follow_up(
     }
 }
 
-/// The thread's saved model, effort and speed applied to its session (F15). A thread the store
-/// no longer has keeps the agent's own defaults.
-fn with_run_settings(application: &AppHandle, key: ThreadKey, setup: SessionSetup) -> SessionSetup {
-    let settings = lock(
+/// Apply the saved run settings and the AIRC instructions for this thread's launch origin.
+fn configure_session(application: &AppHandle, key: ThreadKey, setup: SessionSetup) -> SessionSetup {
+    let configured = lock(
         application.state::<ManagedStateStore>().inner(),
         "persisted state",
     )
@@ -71,12 +70,15 @@ fn with_run_settings(application: &AppHandle, key: ThreadKey, setup: SessionSetu
             .iter()
             .find(|item| item.id == key.0)?;
         let thread = project.threads.iter().find(|item| item.id == key.1)?;
-        Some(velocity_threads::thread_run_settings(thread))
+        let airc = crate::airc_access::for_thread(application, key, &setup.worktree, thread);
+        Some((velocity_threads::thread_run_settings(thread), airc))
     });
-    match settings {
-        Some(settings) => setup.with_run_settings(settings),
-        None => setup,
-    }
+    let Some((settings, airc)) = configured else {
+        return setup;
+    };
+    let mut setup = setup.with_run_settings(settings);
+    setup.airc = airc;
+    setup
 }
 
 fn resume_follow_through(
@@ -111,8 +113,8 @@ fn resume_follow_through(
         )
         .map_err(|error| error.to_string())?,
     }
-    setup.airc = crate::airc_access::managed(application)
-        .map(|airc| airc.thread(key.0, key.1, std::path::Path::new(path)));
+    setup.airc =
+        crate::airc_access::for_thread(application, key, std::path::Path::new(path), &thread);
     setup.resume = Some(
         velocity_acp::client::SessionResume::new(
             thread.agent_session.clone(),
@@ -729,7 +731,7 @@ async fn run_thread_session(
         ..
     } = folder;
     report(refresh(&application, key, false));
-    let mut setup = with_run_settings(
+    let mut setup = configure_session(
         &application,
         key,
         SessionSetup::new(worktree_path, plan.bypass_modes),
@@ -741,8 +743,6 @@ async fn run_thread_session(
         let server = crate::rosen::mcp_server(&setup.worktree, &plan.agent.env);
         setup.shared_servers.extend(server);
     }
-    setup.airc = crate::airc_access::managed(&application)
-        .map(|airc| airc.thread(key.0, key.1, &setup.worktree));
     let branch = branch_name.as_deref().unwrap_or(&plan.thread.branch_name);
     if let Err(error) = crate::airc_claims::attach(&application, key, &setup, branch) {
         return fail(&application, key, "Could not claim work", &error);
@@ -907,13 +907,11 @@ fn goal_selector(
     plan: &GoalMemberPlan,
     folder: &ThreadFolder,
 ) -> velocity_threads::goal_selection::GoalSelector {
-    let mut setup = with_run_settings(
+    let mut setup = configure_session(
         application,
         key,
         SessionSetup::new(folder.path.clone(), plan.bypass_modes.clone()),
     );
-    setup.airc = crate::airc_access::managed(application)
-        .map(|airc| airc.thread(key.0, key.1, &folder.path));
     if let Some(change) = &folder.rosen_change {
         setup.preface = Some(velocity_rosen::workspace_note(change));
         setup
@@ -1009,7 +1007,7 @@ async fn finish_goal_claimed(
     report(crate::airc_modal::refresh(application));
     report(refresh(application, key, false));
     emit_status(application, key);
-    let mut setup = with_run_settings(
+    let mut setup = configure_session(
         application,
         key,
         SessionSetup::new(folder.path, plan.bypass_modes),
@@ -1023,8 +1021,6 @@ async fn finish_goal_claimed(
             .shared_servers
             .extend(crate::rosen::mcp_server(&setup.worktree, &plan.agent.env));
     }
-    setup.airc = crate::airc_access::managed(application)
-        .map(|airc| airc.thread(key.0, key.1, &setup.worktree));
     let session = spawn_session(plan.agent, setup, inputs);
     pump(application, key, session).await;
 }

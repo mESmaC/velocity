@@ -26,7 +26,9 @@ pub use channel::{Channel, EVENT_TAGS, Entry, Event, Presence};
 pub use claims::{Claim, ClaimResult, piece_key};
 pub use delivery::deliver_targeted;
 pub use delivery::{deliver_messages, message_for};
-pub use launch::{SERVER_NAME, SERVER_SWITCH, serve_stdio, server_arguments};
+pub use launch::{
+    CONTINUOUS_DISPATCH_ARGUMENT, SERVER_NAME, SERVER_SWITCH, serve_stdio, server_arguments,
+};
 pub use protocol::serve;
 pub use routing::{MessageMode, mode_for};
 pub use tasks::{TaskChange, TaskListRow, TaskTarget};
