@@ -92,7 +92,7 @@ Velocity never stores a token for this.
 | Anthropic | Claude Code's usage report (the 5-hour and weekly windows), and the rate-limit events it sends during a turn |
 | Codex | `account/rateLimits/read` on Codex's app server, and its rate-limit notifications |
 | Antigravity | Google's `retrieveUserQuotaSummary` report, falling back to `fetchAvailableModels`. Uses the selected profile’s token store or the first account’s existing Windows credential. A prompt-free ACP probe asks the CLI to refresh an expired token. |
-| Kimi Code | The managed subscription’s `/usages` report through the CLI’s OAuth login |
+| Kimi Code | The managed subscription’s `/usages` report at Kimi’s regional API, using the selected CLI profile’s existing OAuth login. Supports the current `.kimi-code` and legacy `.kimi` credential stores. Named quota ratios and older count-based windows supply the usage and reset times. The monthly code share is part of the monthly total. |
 | Custom agents | No known source |
 
 - An account with no reported limits shows "limit not reported".

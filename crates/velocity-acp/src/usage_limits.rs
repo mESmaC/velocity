@@ -3,6 +3,8 @@
 //! headline is the window closest to its limit, since that is the one that stops work first;
 //! every window the report carried is kept for the footer usage panel.
 
+use std::collections::BTreeMap;
+
 use serde_json::Value;
 
 /// The share of one subscription window used.
@@ -47,6 +49,7 @@ impl LimitReading {
 const FIVE_HOURS: i64 = 5 * 60;
 const ONE_DAY: i64 = 24 * 60;
 const ONE_WEEK: i64 = 7 * ONE_DAY;
+const THIRTY_DAYS: i64 = 30 * ONE_DAY;
 
 /// Claude's native `rate_limit_info`, forwarded by its ACP adapter in usage metadata.
 /// Utilization is a fraction here, unlike the percentages in `get_usage`.
@@ -165,30 +168,96 @@ struct WindowInput {
 }
 
 pub(crate) fn kimi_usage_reading(report: &Value) -> Option<LimitReading> {
-    let quotas = report.get("usages")?;
-    let windows = [
-        ("limit_5h", "5-hour", FIVE_HOURS),
-        ("limit_7d", "weekly", ONE_WEEK),
-        ("limit_month_total", "monthly", ONE_DAY * 30),
-        ("limit_month_code", "monthly · Code", ONE_DAY * 30),
+    let mut windows: BTreeMap<i64, WindowInput> = [
+        ("limit_5h", FIVE_HOURS),
+        ("limit_7d", ONE_WEEK),
+        // Kimi reports code usage as a breakdown of the monthly total.
+        ("limit_month_total", THIRTY_DAYS),
     ]
     .into_iter()
-    .filter_map(|(key, label, minutes)| {
-        let quota = quotas.get(key)?;
-        let ratio = quota.get("used_ratio")?;
-        let used = ratio.as_f64().or_else(|| ratio.as_str()?.parse().ok())? * 100.0;
-        let resets_at = quota
-            .get("reset_time")
-            .and_then(Value::as_str)
-            .and_then(unix_seconds);
-        Some(WindowInput {
-            used,
-            label: label.into(),
-            minutes,
-            resets_at,
-        })
-    });
-    fullest(windows, None)
+    .filter_map(|(key, minutes)| {
+        let quota = report.get("usages")?.get(key)?;
+        let ratio = quota_number(quota.get("used_ratio")?)?;
+        Some((minutes, kimi_window(quota, ratio, minutes)))
+    })
+    .collect();
+    // Keep the named ratios when the report includes both forms of the same window.
+    for limit in report
+        .get("limits")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+    {
+        if let Some(minutes) = kimi_window_minutes(limit)
+            && let Some(window) = limit
+                .get("detail")
+                .and_then(|detail| counted_kimi_window(detail, minutes))
+        {
+            windows
+                .entry(minutes)
+                .and_modify(|named| named.resets_at = named.resets_at.or(window.resets_at))
+                .or_insert(window);
+        }
+    }
+    if let Some(weekly) = report
+        .get("usage")
+        .and_then(|summary| counted_kimi_window(summary, ONE_WEEK))
+    {
+        windows
+            .entry(ONE_WEEK)
+            .and_modify(|named| named.resets_at = named.resets_at.or(weekly.resets_at))
+            .or_insert(weekly);
+    }
+    fullest(windows.into_values(), None)
+}
+
+fn quota_number(value: &Value) -> Option<f64> {
+    let number = value
+        .as_f64()
+        .or_else(|| value.as_str()?.trim().parse().ok())?;
+    (number.is_finite() && number >= 0.0).then_some(number)
+}
+
+fn counted_kimi_window(quota: &Value, minutes: i64) -> Option<WindowInput> {
+    let limit = quota_number(quota.get("limit")?).filter(|limit| *limit > 0.0)?;
+    let ratio = quota
+        .get("used")
+        .and_then(quota_number)
+        .map(|used| used / limit)
+        .or_else(|| Some(1.0 - quota_number(quota.get("remaining")?)? / limit))?;
+    Some(kimi_window(quota, ratio, minutes))
+}
+
+fn kimi_window(quota: &Value, ratio: f64, minutes: i64) -> WindowInput {
+    let resets_at = ["reset_time", "resetTime", "reset_at", "resetAt"]
+        .into_iter()
+        .filter_map(|key| quota.get(key).and_then(Value::as_str))
+        .find_map(unix_seconds);
+    WindowInput {
+        used: ratio.clamp(0.0, 1.0) * 100.0,
+        label: if minutes == THIRTY_DAYS {
+            "monthly".into()
+        } else {
+            window_label(minutes)
+        },
+        minutes,
+        resets_at,
+    }
+}
+
+fn kimi_window_minutes(limit: &Value) -> Option<i64> {
+    let window = limit.get("window")?;
+    let minutes_per_unit = match window.get("timeUnit")?.as_str()? {
+        "TIME_UNIT_MINUTE" => 1,
+        "TIME_UNIT_HOUR" => 60,
+        "TIME_UNIT_DAY" => ONE_DAY,
+        "TIME_UNIT_WEEK" => ONE_WEEK,
+        _ => return None,
+    };
+    let duration = window.get("duration")?.as_i64()?;
+    duration
+        .checked_mul(minutes_per_unit)
+        .filter(|minutes| *minutes > 0)
 }
 
 fn fullest(
