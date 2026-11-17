@@ -1,5 +1,6 @@
 <script lang="ts">
   import type { ToastView } from './ipc';
+  import { pop, restoreOverlayFocus } from './motion';
   let {
     toast,
     undo,
@@ -11,6 +12,14 @@
   // The last toast stays rendered while it fades out.
   let shown = $state<ToastView | null>(null);
   let visible = $derived(!!toast && toast.identifier !== expired);
+  let element = $state<HTMLElement>();
+  let opener: HTMLElement | undefined;
+
+  function rememberFocus() {
+    const active = document.activeElement;
+    if (active instanceof HTMLElement && !element?.contains(active))
+      opener = active;
+  }
 
   $effect(() => {
     if (!toast) return;
@@ -25,17 +34,24 @@
   });
 </script>
 
-<div
-  class="toast"
-  class:on={visible}
-  class:act={visible && shown?.undo_deletion !== null}
-  role="status"
->
-  {#if shown}<span>{shown.message}</span
-    >{#if shown.undo_deletion !== null}<button
+{#if visible && shown}
+  <div
+    class="toast"
+    class:act={shown.undo_deletion !== null}
+    role="status"
+    bind:this={element}
+    transition:pop={{ style: 'slide' }}
+    onintrostart={rememberFocus}
+    onoutroend={() => restoreOverlayFocus(opener, element)}
+  >
+    <span>{shown.message}</span>
+    {#if shown.undo_deletion !== null}
+      <button
         class="mini"
         onclick={() => {
           if (shown?.undo_deletion != null) undo(shown.undo_deletion);
         }}>Undo</button
-      >{/if}{/if}
-</div>
+      >
+    {/if}
+  </div>
+{/if}

@@ -1,9 +1,8 @@
 <script lang="ts">
   import PaneState from './PaneState.svelte';
-  import { onMount } from 'svelte';
   import Icon from './Icon.svelte';
   import GraphStatusView from './GraphStatus.svelte';
-  import { pop } from './motion';
+  import { modal } from './motion';
   import { codeGraphCommands } from './ipc';
   import type {
     GraphComparison,
@@ -45,15 +44,6 @@
     Kimi: 'kimi',
     Custom: 'agents',
   };
-
-  onMount(() => {
-    const previous = document.activeElement;
-    dialog.showModal();
-    return () => {
-      if (previous instanceof HTMLElement && previous.isConnected)
-        previous.focus();
-    };
-  });
 
   $effect(() => {
     const identifier = project;
@@ -138,7 +128,7 @@
 
 <dialog
   bind:this={dialog}
-  in:pop|global
+  transition:modal|global
   class="usage-dialog"
   aria-labelledby="usage-title"
   oncancel={(event) => {

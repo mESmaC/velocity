@@ -63,25 +63,67 @@ function cubicBezier(value: string): (time: number) => number {
   };
 }
 
-/** Menus, popovers and dialogs: fade and grow from --motion-scale-from. A
- *  dialog's ::backdrop follows through --motion-presence. A leaving menu
- *  takes no clicks, so a click meant for what is under it lands there.
- *  Modal dialogs use it only to arrive (`in:pop|global`, since several sit
- *  inside a {#key} that is created with them): a closing modal would keep
- *  focus and block the page for the length of the fade. */
+type OverlayDirection = { direction: 'in' | 'out' };
+type OverlayStyle = 'scale' | 'slide' | 'fade';
+
+// Deferring the configuration lets Svelte supply the actual direction on
+// each run, while its bidirectional transition preserves the current progress.
 export function pop(
   _node: Element,
-  _parameters?: unknown,
-  options?: Direction,
-): TransitionConfig {
-  const leaving = options?.direction === 'out';
-  const motion = readMotion(!leaving, '--motion-duration-base');
-  return {
-    duration: motion.duration,
-    easing: motion.easing,
-    css: (time) =>
-      `opacity: ${time}; transform: scale(${motion.scale + (1 - motion.scale) * time}); --motion-presence: ${time};${leaving ? ' pointer-events: none;' : ''}`,
+  { style = 'scale' }: { style?: OverlayStyle } = {},
+) {
+  return (
+    { direction }: OverlayDirection = { direction: 'in' },
+  ): TransitionConfig => {
+    const { duration, easing, rise, scale } = readMotion(
+      direction === 'in',
+      '--motion-duration-base',
+    );
+    return {
+      duration,
+      easing,
+      css: (time) => {
+        const movement =
+          style === 'slide' && rise
+            ? `translate: 0 ${(1 - time) * rise}px;`
+            : style === 'scale' && scale !== 1
+              ? `transform: scale(${scale + (1 - scale) * time});`
+              : '';
+        return `opacity: ${time}; --motion-presence: ${time}; ${movement}`;
+      },
+    };
   };
+}
+
+export function modal(
+  node: HTMLDialogElement,
+  { focus }: { focus?: () => void } = {},
+) {
+  const animate = pop(node);
+  return (
+    options: OverlayDirection = { direction: 'in' },
+  ): TransitionConfig => {
+    if (options.direction === 'in') {
+      delete node.dataset.exiting;
+      node.showModal();
+      focus?.();
+    } else {
+      // Release native modality and its focus trap before painting the exit.
+      // Svelte makes the outgoing node inert and keeps it through the outro.
+      node.dataset.exiting = '';
+      node.close();
+    }
+    return animate(options);
+  };
+}
+
+export function restoreOverlayFocus(
+  opener: HTMLElement | null | undefined,
+  overlay: HTMLElement | undefined,
+) {
+  const active = document.activeElement;
+  if (active === document.body || overlay?.contains(active))
+    opener?.focus({ preventScroll: true });
 }
 
 /** Rows, blocks and expanded details: fade and rise --motion-rise pixels. */

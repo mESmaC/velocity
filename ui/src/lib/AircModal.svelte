@@ -1,7 +1,7 @@
 <script lang="ts">
   import PaneState from './PaneState.svelte';
   import { onMount, tick } from 'svelte';
-  import { pop } from './motion';
+  import { modal } from './motion';
   import {
     aircCommands,
     aircRoutingCommands,
@@ -54,11 +54,8 @@
   );
 
   onMount(() => {
-    const previous = document.activeElement;
     let active = true;
     let stop: (() => void) | null = null;
-    dialog.showModal();
-    input.focus();
     void onAircModal((event) => {
       if (event.payload.project_identifier === project) {
         view = event.payload.view;
@@ -77,8 +74,6 @@
     return () => {
       active = false;
       stop?.();
-      if (previous instanceof HTMLElement && previous.isConnected)
-        previous.focus();
     };
   });
 
@@ -166,7 +161,7 @@
 
 <dialog
   bind:this={dialog}
-  in:pop|global
+  transition:modal|global={{ focus: () => input.focus() }}
   class="airc-dialog"
   aria-labelledby="airc-title"
   oncancel={(event) => {

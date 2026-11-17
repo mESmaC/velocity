@@ -1,6 +1,6 @@
 <script lang="ts">
   import { onMount } from 'svelte';
-  import { pop } from './motion';
+  import { modal } from './motion';
   import Icon from './Icon.svelte';
   import ProviderSignInCards from './ProviderSignInCards.svelte';
   import {
@@ -56,7 +56,6 @@
   let handledSubmits = 0;
 
   onMount(() => {
-    const previous = document.activeElement;
     let active = true;
     const listening = onProviders((event) => {
       if (active) models = event.payload.view.defaults.cards;
@@ -72,8 +71,6 @@
       })
       .catch(report);
     handledSubmits = submitRequests;
-    dialog.showModal();
-    briefInput.focus();
     void newProjectCommands
       .defaults()
       .then((loaded) => {
@@ -87,8 +84,6 @@
     return () => {
       active = false;
       void listening.then((stop) => stop()).catch(report);
-      if (previous instanceof HTMLElement && previous.isConnected)
-        previous.focus();
     };
   });
 
@@ -154,7 +149,7 @@
 
 <dialog
   bind:this={dialog}
-  in:pop|global
+  transition:modal|global={{ focus: () => briefInput.focus() }}
   class="new-project-dialog"
   aria-labelledby="new-project-title"
   oncancel={(event) => {

@@ -1,6 +1,6 @@
 <script lang="ts">
-  import { onMount, tick } from 'svelte';
-  import { pop } from './motion';
+  import { tick } from 'svelte';
+  import { modal } from './motion';
   import type { LayoutAction, LayoutSnapshot } from './ipc';
   let {
     layout,
@@ -9,16 +9,6 @@
     $props();
   let dialog: HTMLDialogElement;
   let input: HTMLInputElement;
-
-  onMount(() => {
-    const previous = document.activeElement;
-    dialog.showModal();
-    input.focus();
-    return () => {
-      if (previous instanceof HTMLElement && previous.isConnected)
-        previous.focus();
-    };
-  });
 
   $effect(() => {
     const selected = layout.palette_selection;
@@ -37,7 +27,7 @@
 
 <dialog
   bind:this={dialog}
-  in:pop|global
+  transition:modal|global={{ focus: () => input.focus() }}
   class="palette-dialog"
   aria-label="Command palette"
   oncancel={(event) => {

@@ -1,7 +1,7 @@
 <script lang="ts">
   import { onMount, tick } from 'svelte';
   import Icon from './Icon.svelte';
-  import { pop } from './motion';
+  import { pop, restoreOverlayFocus } from './motion';
   import {
     providerCommands,
     onProviders,
@@ -25,11 +25,13 @@
     projectIdentifier,
     threadIdentifier,
     send,
+    opener,
     close,
   }: {
     projectIdentifier: number;
     threadIdentifier: number | null;
     send: (action: LayoutAction) => void;
+    opener: globalThis.HTMLButtonElement | undefined;
     close: () => void;
   } = $props();
 
@@ -119,13 +121,28 @@
 
   function dismiss(event: MouseEvent) {
     const target = event.target;
-    if (!(target instanceof Element) || menu?.contains(target)) return;
-    if (target.closest('.pill.model')) return;
+    if (
+      !(target instanceof Element) ||
+      !menu ||
+      menu.inert ||
+      menu.contains(target)
+    )
+      return;
+    if (opener?.contains(target)) return;
     close();
   }
 
   function escape(event: KeyboardEvent) {
-    if (event.key === 'Escape') close();
+    if (
+      event.key === 'Escape' &&
+      !event.defaultPrevented &&
+      !document.querySelector('dialog:modal') &&
+      menu &&
+      !menu.inert
+    ) {
+      event.preventDefault();
+      close();
+    }
   }
 
   onMount(() => {
@@ -157,8 +174,8 @@
   bind:this={menu}
   style:max-height={maxHeight === null ? undefined : `${maxHeight}px`}
   style:max-width={maxWidth === null ? undefined : `${maxWidth}px`}
-  in:pop
-  out:pop
+  transition:pop
+  onoutroend={() => restoreOverlayFocus(opener, menu)}
 >
   {#if view}
     <div class="model-menu-list" bind:this={list}>

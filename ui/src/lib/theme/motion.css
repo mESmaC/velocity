@@ -122,6 +122,9 @@
   transition-duration: var(--motion-duration-base);
   transition-timing-function: var(--motion-ease-out);
 }
+.project-menu:not(:popover-open) {
+  pointer-events: none;
+}
 @starting-style {
   .project-menu:popover-open {
     opacity: 0;
@@ -129,10 +132,25 @@
   }
 }
 
-/* Modal scrims follow their dialog. The dialog's Svelte transition animates
-   --motion-presence from 0 to 1 (or back), and ::backdrop inherits it. */
+/* Hold the visual top layer after close() releases native modality. The
+   extra time covers Svelte's first frame before its quick outro starts. */
+dialog {
+  transition: overlay var(--motion-duration-base) allow-discrete;
+}
+dialog[data-exiting] {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  pointer-events: none;
+}
+.palette-dialog[data-exiting] {
+  align-items: flex-start;
+}
 dialog::backdrop {
   opacity: var(--motion-presence);
+}
+dialog[data-exiting]::backdrop {
+  pointer-events: none;
 }
 
 /* Menus grow out of the control that opened them. */

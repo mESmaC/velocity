@@ -26,6 +26,7 @@
   import DutyDialog from './lib/DutyDialog.svelte';
   import ThreadMenu from './lib/ThreadMenu.svelte';
   import Toast from './lib/Toast.svelte';
+  import Tooltip from './lib/Tooltip.svelte';
   import PaneBoundary from './lib/PaneBoundary.svelte';
   import {
     layoutCommands,
@@ -188,20 +189,36 @@
     view: ThreadMenuView;
     x: number;
     y: number;
+    opener: HTMLElement;
   } | null>(null);
+  let threadMenuRequest = 0;
+
+  function closeThreadMenu() {
+    threadMenuRequest += 1;
+    threadMenu = null;
+  }
 
   // Right-click a sidebar thread (F12). Rust decides the entries; this places them.
-  function openThreadMenu(identifier: string, x: number, y: number) {
-    threadMenu = null;
+  function openThreadMenu(
+    identifier: string,
+    x: number,
+    y: number,
+    opener: HTMLElement,
+  ) {
+    closeThreadMenu();
+    const request = threadMenuRequest;
     threadMenuCommands
       .get(Number(identifier))
-      .then((view) => (threadMenu = view ? { view, x, y } : null))
+      .then((view) => {
+        if (request === threadMenuRequest && view && opener.isConnected)
+          threadMenu = { view, x, y, opener };
+      })
       .catch(report);
   }
 
   function chooseThreadAction(action: ThreadMenuAction) {
     const menu = threadMenu?.view;
-    threadMenu = null;
+    closeThreadMenu();
     if (!menu) return;
     const { project_identifier, thread_identifier } = menu;
     if (action === 'Delete' && menu.swarm)
@@ -224,7 +241,7 @@
 
   function chooseThreadMode(mode: MessageMode) {
     const menu = threadMenu?.view;
-    threadMenu = null;
+    closeThreadMenu();
     if (!menu?.message_mode) return;
     aircRoutingCommands
       .setMode(menu.project_identifier, menu.message_mode.nick, mode)
@@ -237,6 +254,11 @@
 
   function keydown(event: KeyboardEvent) {
     if (!layout || event.isComposing || event.key === 'Process') return;
+    if (event.key === 'Escape') {
+      if (event.defaultPrevented || document.querySelector('dialog:modal'))
+        return;
+      closeThreadMenu();
+    }
     if (event.key === 'Alt' && !event.ctrlKey && !event.metaKey) {
       event.preventDefault();
       if (!event.repeat) send({ NumberHints: 'AltDown' });
@@ -457,11 +479,13 @@
     menu={threadMenu.view}
     x={threadMenu.x}
     y={threadMenu.y}
+    opener={threadMenu.opener}
     choose={chooseThreadAction}
     chooseMode={chooseThreadMode}
-    close={() => (threadMenu = null)}
+    close={closeThreadMenu}
   />{/if}
 <Toast toast={layout?.toast ?? null} undo={undoDelete} />
+<Tooltip />
 {#if error || layout?.launch_notice}<p class="layout-error" role="alert">
     {error || layout?.launch_notice}
   </p>{/if}

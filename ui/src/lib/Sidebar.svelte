@@ -21,7 +21,12 @@
   }: {
     layout: LayoutSnapshot;
     send: (action: LayoutAction) => void;
-    openMenu: (identifier: string, x: number, y: number) => void;
+    openMenu: (
+      identifier: string,
+      x: number,
+      y: number,
+      opener: HTMLElement,
+    ) => void;
   } = $props();
   const icons: Record<string, string> = {
     Draft: 'new',
@@ -142,7 +147,12 @@
               onclick={() => send({ OpenThread: row.identifier })}
               oncontextmenu={(event) => {
                 event.preventDefault();
-                openMenu(row.identifier, event.clientX, event.clientY);
+                openMenu(
+                  row.identifier,
+                  event.clientX,
+                  event.clientY,
+                  event.currentTarget,
+                );
               }}
             >
               {#if layout.show_numbers && row.number}<span class="t-key"

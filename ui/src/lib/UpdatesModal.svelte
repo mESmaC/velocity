@@ -1,6 +1,5 @@
 <script lang="ts">
-  import { onMount } from 'svelte';
-  import { pop } from './motion';
+  import { modal } from './motion';
   import { updateCommands, type UpdateView } from './ipc';
   import './theme/usage.css';
   import './theme/updates.css';
@@ -18,15 +17,6 @@
 
   let dialog: HTMLDialogElement;
 
-  onMount(() => {
-    const previous = document.activeElement;
-    dialog.showModal();
-    return () => {
-      if (previous instanceof HTMLElement && previous.isConnected)
-        previous.focus();
-    };
-  });
-
   // Results arrive on `update://status`; a failure shows in the modal, not as an error.
   function act() {
     if (update.action === 'check') void updateCommands.check();
@@ -36,7 +26,7 @@
 
 <dialog
   bind:this={dialog}
-  in:pop|global
+  transition:modal|global
   class="usage-dialog"
   aria-labelledby="updates-title"
   oncancel={(event) => {

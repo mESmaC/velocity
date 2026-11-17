@@ -1,6 +1,6 @@
 <script lang="ts">
   import { onMount } from 'svelte';
-  import { pop } from './motion';
+  import { modal } from './motion';
   import Icon from './Icon.svelte';
   import ProviderSignInCards from './ProviderSignInCards.svelte';
   import { goalSwarmCommands, providerIcon } from './ipc';
@@ -56,17 +56,11 @@
   let queue: Promise<void> = Promise.resolve();
 
   onMount(() => {
-    const previous = document.activeElement;
     prompt = request.prompt;
     handledSubmits = submitRequests;
-    dialogElement.showModal();
     draw();
     // The pool is read after the saved source choices; the dialog is usable meanwhile.
     refreshPool();
-    return () => {
-      if (previous instanceof HTMLElement && previous.isConnected)
-        previous.focus();
-    };
   });
 
   function report(reason: unknown) {
@@ -177,7 +171,7 @@
 
 <dialog
   bind:this={dialogElement}
-  in:pop|global
+  transition:modal|global
   class="duty-dialog goal-dialog"
   aria-labelledby="goal-dialog-title"
   oncancel={(event) => {

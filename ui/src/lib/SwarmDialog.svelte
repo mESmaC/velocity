@@ -1,6 +1,6 @@
 <script lang="ts">
   import { onMount } from 'svelte';
-  import { pop } from './motion';
+  import { modal } from './motion';
   import Icon from './Icon.svelte';
   import ProviderSignInCards from './ProviderSignInCards.svelte';
   import { providerIcon, swarmCommands } from './ipc';
@@ -49,15 +49,9 @@
   const picked = $derived(view?.items.filter((item) => item.selected) ?? []);
 
   onMount(() => {
-    const previous = document.activeElement;
     source = request.source;
     handledSubmits = submitRequests;
-    dialogElement.showModal();
     refresh();
-    return () => {
-      if (previous instanceof HTMLElement && previous.isConnected)
-        previous.focus();
-    };
   });
 
   $effect(() => {
@@ -153,7 +147,7 @@
 
 <dialog
   bind:this={dialogElement}
-  in:pop|global
+  transition:modal|global
   class="duty-dialog swarm-dialog"
   aria-labelledby="swarm-dialog-title"
   oncancel={(event) => {

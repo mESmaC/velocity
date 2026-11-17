@@ -1,6 +1,6 @@
 <script lang="ts">
   import { onMount } from 'svelte';
-  import { pop } from './motion';
+  import { modal } from './motion';
   import Icon from './Icon.svelte';
   import ProviderSignInCards from './ProviderSignInCards.svelte';
   import { dutyCommands, providerIcon } from './ipc';
@@ -117,10 +117,8 @@
   let handledSubmits = 0;
 
   onMount(() => {
-    const previous = document.activeElement;
     role = initialRole;
     handledSubmits = submitRequests;
-    dialog.showModal();
     void dutyCommands
       .defaults()
       .then((loaded) => {
@@ -134,10 +132,6 @@
         if (loaded.lands_without_review && role === 'pr_duty') role = 'scouts';
       })
       .catch(report);
-    return () => {
-      if (previous instanceof HTMLElement && previous.isConnected)
-        previous.focus();
-    };
   });
 
   $effect(() => {
@@ -239,7 +233,7 @@
 
 <dialog
   bind:this={dialog}
-  in:pop|global
+  transition:modal|global
   class="duty-dialog"
   aria-labelledby="duty-dialog-title"
   oncancel={(event) => {

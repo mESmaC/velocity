@@ -1,10 +1,11 @@
 <script lang="ts">
   import type { MessageMode, ThreadMenuAction, ThreadMenuView } from './ipc';
-  import { pop } from './motion';
+  import { pop, restoreOverlayFocus } from './motion';
   let {
     menu,
     x,
     y,
+    opener,
     choose,
     chooseMode,
     close,
@@ -12,11 +13,13 @@
     menu: ThreadMenuView;
     x: number;
     y: number;
+    opener: HTMLElement;
     choose: (action: ThreadMenuAction) => void;
     chooseMode: (mode: MessageMode) => void;
     close: () => void;
   } = $props();
   let element = $state<HTMLElement>();
+  let focusTarget: HTMLElement;
   const modes: { mode: MessageMode; label: string }[] = [
     { mode: 'Open', label: 'Open' },
     { mode: 'HeadsDown', label: 'Heads-down' },
@@ -27,6 +30,7 @@
 
   // Keep the menu inside the window, as the reference's `openCtx` does.
   $effect(() => {
+    focusTarget = opener;
     if (!element) return;
     const gap = parseFloat(
       window
@@ -38,19 +42,31 @@
   });
 
   function outside(event: MouseEvent) {
-    if (!(event.target instanceof Element && element?.contains(event.target)))
+    if (
+      element &&
+      !element.inert &&
+      event.target instanceof window.Node &&
+      !element.contains(event.target)
+    )
       close();
+  }
+
+  function escape(event: KeyboardEvent) {
+    if (
+      event.key === 'Escape' &&
+      !event.defaultPrevented &&
+      !document.querySelector('dialog:modal') &&
+      element &&
+      !element.inert
+    ) {
+      event.preventDefault();
+      close();
+    }
   }
 </script>
 
-<svelte:window
-  onmousedown={outside}
-  onkeydown={(event) => {
-    if (event.key === 'Escape') close();
-  }}
-  onblur={close}
-  onresize={close}
-/>
+<svelte:document onmousedown={outside} onkeydown={escape} />
+<svelte:window onblur={close} onresize={close} />
 
 <div
   class="thread-menu"
@@ -59,8 +75,8 @@
   bind:this={element}
   style:left={`${left}px`}
   style:top={`${top}px`}
-  in:pop
-  out:pop
+  transition:pop
+  onoutroend={() => restoreOverlayFocus(focusTarget, element)}
 >
   {#if menu.message_mode}
     {#each modes as option (option.mode)}

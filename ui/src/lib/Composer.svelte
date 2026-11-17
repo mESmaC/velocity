@@ -33,6 +33,8 @@
     ),
   );
   let menuOpen = $state(false);
+  let modelButton = $state<globalThis.HTMLButtonElement>();
+  let slashDismissed = $state(false);
   const canChooseModel = $derived(
     threadIdentifier !== undefined && layout.project_identifier !== null,
   );
@@ -58,7 +60,12 @@
   });
 
   function handleKeydown(event: KeyboardEvent) {
-    const slashOpen = layout.slash_items.length > 0;
+    const slashOpen = !slashDismissed && layout.slash_items.length > 0;
+    if (slashOpen && event.key === 'Escape') {
+      event.preventDefault();
+      slashDismissed = true;
+      return;
+    }
     if (slashOpen && (event.key === 'ArrowDown' || event.key === 'ArrowUp')) {
       event.preventDefault();
       send(event.key === 'ArrowDown' ? 'SlashNext' : 'SlashPrevious');
@@ -75,6 +82,7 @@
       return;
     }
     if (event.key === 'Escape' && event.currentTarget instanceof HTMLElement) {
+      slashDismissed = true;
       event.currentTarget.blur();
     }
   }
@@ -90,6 +98,8 @@
   <SlashMenu
     items={layout.slash_items}
     selected={layout.slash_selection}
+    dismissed={slashDismissed}
+    opener={textarea}
     {send}
   />
   <textarea
@@ -98,7 +108,10 @@
     {placeholder}
     spellcheck="false"
     bind:this={textarea}
-    oninput={(event) => send({ ComposerText: event.currentTarget.value })}
+    oninput={(event) => {
+      slashDismissed = false;
+      send({ ComposerText: event.currentTarget.value });
+    }}
     onkeydown={handleKeydown}></textarea>
   <div class="composer-row">
     <button class="pill" type="button" title="Attach" aria-label="Attach"
@@ -118,6 +131,7 @@
         projectIdentifier={layout.project_identifier ?? 0}
         {threadIdentifier}
         {send}
+        opener={modelButton}
         close={() => (menuOpen = false)}
       />{/if}
     <button
@@ -126,6 +140,7 @@
       title={usage?.label ?? 'Choose model'}
       aria-haspopup="menu"
       aria-expanded={menuOpen}
+      bind:this={modelButton}
       disabled={!canChooseModel}
       onclick={() => (menuOpen = !menuOpen)}
     >

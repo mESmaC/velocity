@@ -55,12 +55,15 @@
     The 150 and 180 ms values come from the reference's toggle and toast.
     They also set two curves: an ease-out for things arriving and an ease-in for things leaving, which use the quick duration.
     Travel is 4 px and scale starts at 0.97.
-  - Menus and popovers (the model picker, the thread context menu, the slash menu, the project switcher) fade and grow in and out.
-    Modal dialogs (the palette, AIRC, usage, New project, Duty and the swarm dialogs) fade and grow in, and their scrim fades with them.
-    They close at once, so focus and keys come back without waiting.
+  - Menus and popovers (the model picker, the thread context menu, the slash and `$` menus, and the project switcher) fade and scale in both directions.
+    Modal dialogs (the palette, AIRC, Usage, Updates, New project, Duty and the swarm dialogs) fade and scale in both directions, with their scrims (#446).
+    An overlay reverses smoothly when it changes direction mid-transition.
+    Escape acts immediately and outgoing overlays release input as soon as they start to close.
+    Focus returns to an available opener unless it has already moved elsewhere.
   - New rows rise 4 px into place: sidebar threads, tasks, issues, an issue's expanded detail, tool steps and other transcript blocks.
     Rows leave at once, so a list never shows old and new rows together.
-    The toast rises in and fades out.
+  - Toasts fade and slide in both directions.
+    Tooltips fade in both directions.
   - The arriving view rises into place when switching between thread, board, swarm, duty, settings and settings tabs.
   - Buttons, pills and rows ease their colour on hover and focus.
     Compact controls (pills, buttons, segmented controls) sink to 0.97 while pressed; full-width rows only change colour.
@@ -68,7 +71,7 @@
     The usage and limit bars fill when they appear and when their value changes.
   - Motion never delays input or reading.
     Agent text appears at once, typing never waits, and a backend update never restarts an animation: entry motion runs only when an element is inserted.
-  - Only `opacity` and `transform` animate, apart from the small bars' fill, so nothing reflows.
+  - Motion uses opacity and transforms, apart from the small bars' fill, so nothing reflows.
   - With `prefers-reduced-motion`, nothing moves or scales and the bars don't fill.
     Short fades stay.
 - **Long content and controls (#415):** long titles, project names, tool arguments and results, and diff paths truncate within their pane and expose the full value in a tooltip.

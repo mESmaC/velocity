@@ -862,11 +862,13 @@ kbd {
   border-top: var(--thread-menu-divider-top);
 }
 .toast {
-  position: fixed;
   left: 50%;
   bottom: var(--toast-bottom);
-  transform: var(--toast-hidden-transform);
-  opacity: 0;
+  transform: var(--toast-shown-transform);
+}
+.toast,
+.tooltip {
+  position: fixed;
   padding: var(--toast-padding);
   border: var(--toast-border);
   border-radius: var(--toast-radius);
@@ -876,18 +878,8 @@ kbd {
   -webkit-backdrop-filter: var(--blur-pop);
   font-size: var(--toast-font-size);
   color: var(--text);
-  /* Leaving: quick ease-in (#226). .toast.on below sets the arrival. */
-  transition:
-    opacity var(--motion-duration-quick) var(--motion-ease-in),
-    transform var(--motion-duration-quick) var(--motion-ease-in);
   pointer-events: none;
   z-index: var(--toast-z-index);
-}
-.toast.on {
-  opacity: 1;
-  transform: var(--toast-shown-transform);
-  transition-duration: var(--motion-duration-base);
-  transition-timing-function: var(--motion-ease-out);
 }
 .toast.act {
   display: flex;
