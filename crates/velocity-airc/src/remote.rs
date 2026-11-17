@@ -47,22 +47,15 @@ pub(crate) fn wire<T: DeserializeOwned>(value: serde_json::Value) -> Result<T, E
 
 impl Remote {
     pub(crate) fn new(app_data: &Path, endpoint: String) -> Self {
-        let machine = std::env::var("COMPUTERNAME")
-            .or_else(|_| std::env::var("HOSTNAME"))
-            .unwrap_or_default();
-        let location = std::fs::canonicalize(app_data).unwrap_or_else(|_| app_data.to_owned());
-        let identity = format!("{machine}/{}", location.to_string_lossy())
-            .replace('\\', "/")
-            .to_lowercase();
-        let hash = identity
-            .bytes()
-            .fold(0xcbf2_9ce4_8422_2325_u64, |hash, byte| {
-                (hash ^ u64::from(byte)).wrapping_mul(0x0100_0000_01b3)
-            });
         Self {
             endpoint: Endpoint::new(endpoint),
-            scope: format!("{hash:016x}/"),
+            scope: member_scope(app_data),
         }
+    }
+
+    pub(crate) fn with_member_scope(mut self, scope: String) -> Self {
+        self.scope = scope;
+        self
     }
 
     pub(crate) fn member(&self, member: &str) -> String {
@@ -353,6 +346,22 @@ impl Remote {
     pub(crate) fn record(&self, kind: &str, member: &str, nick: &str, text: &str) -> Entry {
         entry(&[], kind, member, nick, text)
     }
+}
+
+pub(crate) fn member_scope(app_data: &Path) -> String {
+    let machine = std::env::var("COMPUTERNAME")
+        .or_else(|_| std::env::var("HOSTNAME"))
+        .unwrap_or_default();
+    let location = std::fs::canonicalize(app_data).unwrap_or_else(|_| app_data.to_owned());
+    let identity = format!("{machine}/{}", location.to_string_lossy())
+        .replace('\\', "/")
+        .to_lowercase();
+    let hash = identity
+        .bytes()
+        .fold(0xcbf2_9ce4_8422_2325_u64, |hash, byte| {
+            (hash ^ u64::from(byte)).wrapping_mul(0x0100_0000_01b3)
+        });
+    format!("{hash:016x}/")
 }
 
 async fn record_sequence(client: &Client, after: u64, ledger_sequence: u64) -> Result<u64, Error> {

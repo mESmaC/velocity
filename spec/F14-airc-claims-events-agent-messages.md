@@ -187,6 +187,8 @@ The optional per-provider cap (F15 "Max agents at once") lives on the Settings â
 The AIRC tools and modal call the project's Rosen server through `rosen-client`, including through a machine's forwarding daemon.
 The MCP connection uses the launcher's `ROSEN_ENDPOINT` when supplied, otherwise the project's configured server endpoint; a disconnection returns the server error and never falls back to local AIRC files.
 Member IDs are fixed at launch and scoped on the wire by machine and installation, so two machines' `thread-1` members cannot extend each other's claims; local views retain their original IDs.
+The launcher passes its member scope to the MCP process; the tool runtime uses that scope for joins, claims, messages and local projections instead of recomputing it from its provider's environment or path resolution (#411).
+The native prelaunch claim and the tool connection therefore keep one member and nick, including across reconnects, and the tool can extend its assigned issue claim.
 Presence, piece locks, agent messages, message modes and ledgers use Rosen's channel operations.
 The pinned protocol carries Velocity issue titles natively; Rosen report text and titles use a versioned discovery envelope in the same server ledger, retaining the server's agent authorship, time and event sequence.
 The adapter projects that envelope back to ordinary discovery text and `rosen_issue` for tools, reporting and the modal.
@@ -229,7 +231,8 @@ An idle PR duty agent has no session and receives nothing.
 
 **Runtime injection.**
 Every session Velocity starts, on every provider, gets an MCP server named `airc` in `session/new`: build threads (composer, dispatch and follow-through resume), scout sweeps, PR duty reviews and the spec interview.
-It runs Velocity's own executable as `velocity --airc-mcp <app-data> <project-id> <member-id> <nick>`, so the server ships inside the app; the standalone `velocity-airc` binary takes the same arguments, with or without the switch.
+It runs Velocity's own executable as `velocity --airc-mcp <app-data> <project-id> <member-id> <nick> <member-scope>`, so the server ships inside the app; the standalone `velocity-airc` binary takes the same arguments, with or without the switch.
+Four-argument standalone launches remain supported and derive their scope locally.
 Member ids are `thread-<thread id>`, `duty-<nick>` (scouts and PR duty) and `spec-<thread id>`.
 A thread's nick is its worktree leaf, a duty agent's its role nick, and the spec interview's `spec`.
 
