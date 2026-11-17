@@ -575,6 +575,7 @@ fn publish(application: &AppHandle, toast: Option<String>) -> Option<ProvidersVi
         let mut changed = layout.set_provider_summary(
             velocity_store::provider_views::provider_usage(&settings),
             velocity_store::provider_views::default_model_pill(&settings),
+            store.composer_model_pill(),
         );
         if let Some(message) = toast {
             layout.show_toast(message, None);
@@ -814,7 +815,7 @@ pub(crate) fn set_provider_settings_now(
     current_view(&application)
 }
 
-/// The composer's model menu (F4): for a thread, or the defaults from the home composer.
+/// The composer's model menu (F4): for a thread or the home draft.
 #[tauri::command]
 #[specta::specta]
 pub async fn get_model_menu(
@@ -848,7 +849,7 @@ fn model_menu(
             .find(|item| item.id == thread)
     });
     let live_provider = item.filter(|_| live).map(|item| item.provider);
-    let target = MenuTarget::new(item, live_provider);
+    let target = MenuTarget::new(project, item, live_provider);
     Ok(store.model_menu(&target, &ProviderContext::new(&runtime, unix_now())))
 }
 
@@ -865,31 +866,32 @@ pub async fn choose_model(
     crate::layout::off_ui_thread(move || {
         match thread_identifier {
             Some(thread) => choose_for_thread(&application, (project_identifier, thread), choice)?,
-            None => {
-                let edit = match choice {
-                    ModelMenuChoice::Model { provider, model } => {
-                        ProviderEdit::DefaultModel { provider, model }
-                    }
-                    ModelMenuChoice::Account { provider, account } => {
-                        let state = application.state::<ManagedStateStore>();
-                        let mut store = state.lock().map_err(|error| error.to_string())?;
-                        ensure_account(&store.settings(), provider, account)?;
-                        store
-                            .choose_composer_account(provider, account)
-                            .map_err(|error| error.to_string())?;
-                        drop(store);
-                        current_view(&application)?;
-                        return model_menu(&application, project_identifier, thread_identifier);
-                    }
-                    ModelMenuChoice::Effort(effort) => ProviderEdit::DefaultEffort(effort),
-                    ModelMenuChoice::Speed(speed) => ProviderEdit::DefaultSpeed(speed),
-                };
-                set_provider_settings_now(application.clone(), edit)?;
-            }
+            None => choose_for_composer(&application, project_identifier, choice)?,
         }
         model_menu(&application, project_identifier, thread_identifier)
     })
     .await
+}
+
+fn choose_for_composer(
+    application: &AppHandle,
+    project: u32,
+    choice: ModelMenuChoice,
+) -> Result<(), String> {
+    let store_state = application.state::<ManagedStateStore>();
+    let mut store = store_state.lock().map_err(|error| error.to_string())?;
+    if let ModelMenuChoice::Account { provider, account } = &choice {
+        ensure_account(&store.settings(), *provider, *account)?;
+    }
+    store
+        .choose_composer_model(project, choice)
+        .map_err(|error| error.to_string())?;
+    let layout_state = application.state::<MainLayout>();
+    let mut layout = layout_state.lock().map_err(|error| error.to_string())?;
+    if layout.set_composer_model_pill(store.composer_model_pill()) {
+        crate::layout::publish(application, &layout.snapshot(), None)?;
+    }
+    Ok(())
 }
 
 fn ensure_account(settings: &Settings, provider: ProviderKind, account: u32) -> Result<(), String> {

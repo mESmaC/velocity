@@ -519,8 +519,6 @@ pub struct ProviderSettings {
     pub accounts: Vec<provider_accounts::ProviderAccount>,
     #[serde(default)]
     pub default_accounts: BTreeMap<String, u32>,
-    #[serde(default)]
-    pub composer_account: Option<u32>,
 }
 
 fn default_title_provider() -> ProviderKind {
@@ -615,7 +613,6 @@ impl Settings {
                 next_custom_agent: 1,
                 accounts: Vec::new(),
                 default_accounts: BTreeMap::new(),
-                composer_account: None,
             },
             agents: AgentSettings {
                 max_turns: core_settings.agents.max_turns,
@@ -1368,6 +1365,7 @@ fn move_corrupt_snapshot_aside(
 pub struct StateStore {
     directory: PathBuf,
     state: PersistedState,
+    composer_models: BTreeMap<u32, threads::DraftThreadModel>,
     disk_revision: u32,
     recovered_corrupt_snapshot: Option<PathBuf>,
     /// Set once the app's background writer takes over saving (see `save_behind`).
@@ -1407,6 +1405,7 @@ impl StateStore {
                 Ok(Self {
                     directory: resolved_directory,
                     state: normalized,
+                    composer_models: Default::default(),
                     disk_revision,
                     recovered_corrupt_snapshot: None,
                     deferred_saves: false,
@@ -1435,6 +1434,7 @@ impl StateStore {
         Ok(Self {
             directory: resolved_directory,
             state: initial_state,
+            composer_models: Default::default(),
             disk_revision,
             recovered_corrupt_snapshot,
             deferred_saves: false,

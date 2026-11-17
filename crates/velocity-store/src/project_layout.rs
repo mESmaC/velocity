@@ -28,7 +28,8 @@ pub(crate) fn active_project(state: &PersistedState) -> Option<&ProjectItem> {
         .and_then(|index| state.projects.get(index))
 }
 
-pub(crate) fn read_model(state: &PersistedState) -> LayoutData {
+pub(crate) fn read_model(store: &crate::StateStore) -> LayoutData {
+    let state = store.state();
     let mut data = LayoutData {
         projects: project_palette(state),
         ..LayoutData::default()
@@ -78,6 +79,7 @@ pub(crate) fn read_model(state: &PersistedState) -> LayoutData {
     }
     data.providers = crate::provider_views::provider_usage(&state.settings);
     data.default_model_pill = Some(crate::provider_views::default_model_pill(&state.settings));
+    data.composer_model_pill = store.composer_model_pill();
     data
 }
 

@@ -802,9 +802,6 @@ fn apply_edit(settings: &mut Settings, edit: ProviderEdit) {
             }
         }
         ProviderEdit::DefaultModel { provider, model } => {
-            if providers.default_provider != provider {
-                providers.composer_account = None;
-            }
             providers.default_provider = provider;
             providers.default_model = Some(model);
         }

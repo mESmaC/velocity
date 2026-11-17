@@ -29,6 +29,9 @@
   - `Enter` sends, `Shift+Enter` adds a new line, `Esc` leaves the box.
   - Model pill (provider, model, effort, and "· Fast" when Fast is on), attach, mic.
     The pill opens a menu grouped by provider: each signed-in provider with its models and limit used, each signed-out provider as a "Sign in with …" row, and effort and speed at the bottom.
+    The home composer uses Settings → Providers for choices you leave unset.
+    A provider, account, model, effort or speed you pick there applies only to that draft.
+    After its thread starts, the next draft uses the Settings defaults again.
     On a running thread, a new model or speed applies from the next message.
   - A message sent while the agent is busy shows "queued · sends when the current step finishes" and a `remove` link.
     The message stays with Velocity, not the agent, until the turn ends, so `remove` withdraws it (the `RemoveQueuedMessage` intent).

@@ -51,7 +51,7 @@ impl AgentCommandView {
     feature = "bindings",
     derive(serde::Serialize, serde::Deserialize, specta::Type)
 )]
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ModelPillView {
     pub usage_account: Option<String>,
     pub provider: ProviderColor,

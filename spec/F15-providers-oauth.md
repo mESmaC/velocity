@@ -66,7 +66,7 @@ Any other ACP agent can be added beside the four (Custom ACP agents, below).
   Clicking a chip hides that model from the pickers or shows it again.
 
 **Default for new threads:** one model card per available model, plus effort and speed.
-A new thread starts on it.
+  A new thread uses these defaults for any choices left unset in the home composer (F4).
 Spec interviews, duty agents and swarms choose their models in their own dialogs.
 
 **Speed: Regular or Fast.**

@@ -6590,6 +6590,7 @@ dependencies = [
  "tauri-plugin-single-instance",
  "tauri-plugin-updater",
  "tauri-specta",
+ "tempfile",
  "tokio",
  "velocity-acp",
  "velocity-airc",
@@ -6652,6 +6653,7 @@ version = "0.1.0"
 dependencies = [
  "chrono",
  "crc32fast",
+ "ignore",
  "notify",
  "serde",
  "serde_json",

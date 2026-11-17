@@ -14,7 +14,7 @@ use velocity_git::{
     resolve_worktree_directory,
 };
 use velocity_store::providers::ProviderUnavailable;
-use velocity_store::threads::NewThread;
+use velocity_store::threads::{NewThread, ThreadModel};
 use velocity_store::{ProjectItem, ProviderKind, Settings};
 
 use crate::naming::{fallback_title, message_slug, unique_slug};
@@ -122,13 +122,30 @@ pub fn plan_launch_with_preferences(
     settings: &Settings,
     prompt: &str,
 ) -> Result<LaunchPlan, LaunchError> {
-    plan_named_launch(
+    plan_composer_launch(
+        project,
+        worktrees,
+        settings,
+        prompt,
+        ThreadModel::from_settings(settings),
+    )
+}
+
+pub fn plan_composer_launch(
+    project: &ProjectItem,
+    worktrees: &WorktreePreferences,
+    settings: &Settings,
+    prompt: &str,
+    model: ThreadModel,
+) -> Result<LaunchPlan, LaunchError> {
+    plan_with_model(
         project,
         worktrees,
         settings,
         prompt,
         &fallback_title(prompt),
         &message_slug(prompt),
+        model,
     )
 }
 
@@ -141,6 +158,26 @@ pub(crate) fn plan_named_launch(
     title: &str,
     requested_slug: &str,
 ) -> Result<LaunchPlan, LaunchError> {
+    plan_with_model(
+        project,
+        worktrees,
+        settings,
+        prompt,
+        title,
+        requested_slug,
+        ThreadModel::from_settings(settings),
+    )
+}
+
+fn plan_with_model(
+    project: &ProjectItem,
+    worktrees: &WorktreePreferences,
+    settings: &Settings,
+    prompt: &str,
+    title: &str,
+    requested_slug: &str,
+    model: ThreadModel,
+) -> Result<LaunchPlan, LaunchError> {
     let location = Location::new(project, worktrees);
     let repository = PathBuf::from(&project.repository_path);
     let slug = unique_slug(requested_slug, |candidate| {
@@ -152,14 +189,13 @@ pub(crate) fn plan_named_launch(
         .ok_or(WorktreeError::EmptyLeafName)?;
     let shared_target = location.project_root()?.join(SHARED_TARGET_FOLDER);
     let branch_name = format!("vel/{slug}");
-    let thread = NewThread::new(
+    let thread = NewThread::with_model(
         title.into(),
         branch_name.clone(),
         worktree_path.display().to_string(),
         settings,
+        model,
     );
-    // The thread runs where its record says: the default, or the first signed-in provider
-    // when you signed out of the default. Nothing starts when every provider is signed out.
     settings.ensure_new_work(thread.provider)?;
     let (agent, bypass_modes) = agent_launch(settings, thread.provider)?;
     let share_cache = worktrees.share_build_cache;

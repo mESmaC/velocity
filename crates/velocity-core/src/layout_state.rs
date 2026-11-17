@@ -221,26 +221,31 @@ impl LayoutState {
         true
     }
 
-    /// The footer limit meter and the home composer's model pill, after Settings → Providers or
-    /// a provider's agent changed them (F15). Returns whether the window needs redrawing.
+    /// The footer limit meter and model pills after a Settings or provider update (F15).
     pub fn set_provider_summary(
         &mut self,
         providers: Vec<crate::layout_view::ProviderUsage>,
-        default_pill: crate::thread_view_model::ModelPillView,
+        default_pill: ModelPillView,
+        composer_pill: Option<ModelPillView>,
     ) -> bool {
-        let same_meter = self.data.providers == providers;
-        let same_pill = self.data.default_model_pill.as_ref().is_some_and(|old| {
-            old.provider == default_pill.provider
-                && old.model_name == default_pill.model_name
-                && old.effort_label == default_pill.effort_label
-                && old.show_fast_badge == default_pill.show_fast_badge
-                && old.speed_control_enabled == default_pill.speed_control_enabled
-        });
-        if same_meter && same_pill {
+        if self.data.providers == providers
+            && self.data.default_model_pill.as_ref() == Some(&default_pill)
+            && self.data.composer_model_pill == composer_pill
+        {
             return false;
         }
         self.data.providers = providers;
         self.data.default_model_pill = Some(default_pill);
+        self.data.composer_model_pill = composer_pill;
+        self.changed();
+        true
+    }
+
+    pub fn set_composer_model_pill(&mut self, pill: Option<ModelPillView>) -> bool {
+        if self.data.composer_model_pill == pill {
+            return false;
+        }
+        self.data.composer_model_pill = pill;
         self.changed();
         true
     }
@@ -670,6 +675,11 @@ impl LayoutState {
             active_swarm: self.active_swarm_snapshot(),
             active_goal_swarm: self.active_goal_swarm_snapshot(),
             default_model_pill: self.default_model_pill(),
+            composer_model_pill: self
+                .data
+                .composer_model_pill
+                .clone()
+                .unwrap_or_else(|| self.default_model_pill()),
             search: self.search.clone(),
             board: crate::board::board_lanes(&groups, &tasks, &issues),
             groups,

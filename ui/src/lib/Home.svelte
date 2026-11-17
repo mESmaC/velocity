@@ -34,8 +34,9 @@
     {send}
     id="home-composer"
     placeholder="Ask anything. @ files, $ skills, / commands"
-    modelPill={layout.default_model_pill}
+    modelPill={layout.composer_model_pill}
     showWorktreePill={true}
+    threadIdentifier={null}
   />
   <div class="starters">
     {#each starters as starter (starter.intent)}<button

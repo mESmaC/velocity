@@ -67,7 +67,7 @@ impl StateStore {
         &self,
         layout: &mut velocity_core::layout_state::LayoutState,
     ) {
-        layout.replace_data(crate::project_layout::read_model(&self.state));
+        layout.replace_data(crate::project_layout::read_model(self));
         crate::build_gate::sync_layout(&self.state, layout);
     }
 

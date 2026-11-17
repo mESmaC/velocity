@@ -111,13 +111,6 @@ impl Settings {
             .unwrap_or(0)
     }
 
-    pub fn composer_account(&self, provider: ProviderKind) -> u32 {
-        self.providers
-            .composer_account
-            .filter(|_| self.providers.default_provider == provider)
-            .unwrap_or_else(|| self.default_account(provider))
-    }
-
     /// Search in card order, starting at the requested account and wrapping within the provider.
     pub fn available_account(
         &self,
@@ -250,23 +243,6 @@ impl StateStore {
             .providers
             .default_accounts
             .insert(provider.key(), id);
-        if settings.providers.default_provider == provider {
-            settings.providers.composer_account = None;
-        }
-        self.replace_settings(settings)
-    }
-
-    pub fn choose_composer_account(
-        &mut self,
-        provider: ProviderKind,
-        id: u32,
-    ) -> Result<bool, StoreError> {
-        let mut settings = self.settings();
-        if settings.providers.default_provider != provider {
-            settings.providers.default_model = Some(settings.provider_model(provider));
-            settings.providers.default_provider = provider;
-        }
-        settings.providers.composer_account = Some(id);
         self.replace_settings(settings)
     }
 }
@@ -295,7 +271,7 @@ mod tests {
             .pointer_mut("/settings/providers")
             .and_then(serde_json::Value::as_object_mut)
             .ok_or("Missing provider settings")?;
-        for key in ["accounts", "default_accounts", "composer_account"] {
+        for key in ["accounts", "default_accounts"] {
             providers.remove(key);
         }
         std::fs::write(

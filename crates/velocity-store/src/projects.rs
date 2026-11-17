@@ -101,7 +101,7 @@ impl StateStore {
             .and_then(|project| project.active_thread_id)
             .and_then(|identifier| usize::try_from(identifier).ok());
         layout.restore_project(
-            crate::project_layout::read_model(&self.state),
+            crate::project_layout::read_model(self),
             selected,
             String::new(),
         );
@@ -143,11 +143,7 @@ impl StateStore {
         let selected = crate::project_layout::active_project(&self.state)
             .and_then(|project| project.active_thread_id)
             .and_then(|identifier| usize::try_from(identifier).ok());
-        layout.restore_project(
-            crate::project_layout::read_model(&self.state),
-            selected,
-            search,
-        );
+        layout.restore_project(crate::project_layout::read_model(self), selected, search);
         crate::build_gate::sync_layout(&self.state, layout);
         Ok(view)
     }

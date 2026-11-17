@@ -15,7 +15,7 @@
     placeholder,
     modelPill,
     showWorktreePill = false,
-    threadIdentifier = null,
+    threadIdentifier,
   }: {
     layout: LayoutSnapshot;
     send: (action: LayoutAction) => void;
@@ -23,7 +23,7 @@
     placeholder: string;
     modelPill: ModelPillView;
     showWorktreePill?: boolean;
-    /** The thread the model menu changes; `null` changes the defaults for new threads. */
+    /** A thread identifier edits that thread. `null` targets the home draft. */
     threadIdentifier?: number | null;
   } = $props();
 
@@ -33,6 +33,9 @@
     ),
   );
   let menuOpen = $state(false);
+  const canChooseModel = $derived(
+    threadIdentifier !== undefined && layout.project_identifier !== null,
+  );
 
   const providerIcons: Record<ProviderColor, string> = {
     Claude: 'claude',
@@ -111,7 +114,7 @@
       >
     {/if}
     <span class="spacer"></span>
-    {#if menuOpen}<ModelMenu
+    {#if menuOpen && canChooseModel && threadIdentifier !== undefined}<ModelMenu
         projectIdentifier={layout.project_identifier ?? 0}
         {threadIdentifier}
         {send}
@@ -123,6 +126,7 @@
       title={usage?.label ?? 'Choose model'}
       aria-haspopup="menu"
       aria-expanded={menuOpen}
+      disabled={!canChooseModel}
       onclick={() => (menuOpen = !menuOpen)}
     >
       <span class="prov" data-provider={modelPill.provider}

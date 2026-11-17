@@ -503,20 +503,30 @@ fn capitalized(text: &str) -> String {
     }
 }
 
-/// The home composer's model pill: what a new thread starts on, the default for new threads
-/// unless you signed out of it (F4, F15).
+/// The Settings default for new work, with the signed-out fallback (F15).
 pub fn default_model_pill(settings: &Settings) -> ModelPillView {
-    let providers = &settings.providers;
-    let provider = settings.new_work_choice();
-    let model = settings.provider_model(provider);
+    model_pill(
+        settings,
+        crate::threads::ThreadModel::from_settings(settings),
+    )
+}
+
+fn model_pill(settings: &Settings, choice: crate::threads::ThreadModel) -> ModelPillView {
+    let crate::threads::ThreadModel {
+        provider,
+        model,
+        preferred_account,
+        effort,
+        speed,
+    } = choice;
     let fast = settings.model_has_fast_mode(provider, &model);
     let mut pill = ModelPillView::new(
         provider_color(provider),
         model,
-        effort_label(providers.default_effort).into(),
-        project_model_pill(providers.default_speed == SpeedMode::Fast, fast),
+        effort_label(effort).into(),
+        project_model_pill(speed == SpeedMode::Fast, fast),
     );
-    let requested = settings.composer_account(provider);
+    let requested = preferred_account.unwrap_or_else(|| settings.default_account(provider));
     let active = settings.launch_account(provider, requested, unix_now());
     pill.usage_account = Some(account_key(provider, active));
     pill
@@ -690,7 +700,7 @@ pub fn effort_label(effort: EffortLevel) -> &'static str {
 /// The composer's model menu (F4): grouped by provider, effort and speed at the bottom.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, Type)]
 pub struct ModelMenuView {
-    /// The thread the menu changes, or `None` for the home composer (the defaults).
+    /// The thread the menu changes, or `None` for the home draft.
     pub thread_identifier: Option<u32>,
     pub groups: Vec<ModelMenuGroup>,
     pub effort: EffortLevel,
@@ -737,16 +747,22 @@ pub enum ModelMenuChoice {
     Speed(SpeedMode),
 }
 
-/// What the menu is for: a thread's current choice, or the defaults.
+/// What the menu is for: an existing thread or the project's home composer.
 pub struct MenuTarget<'a> {
+    pub project: u32,
     pub thread: Option<&'a ThreadItem>,
     /// The provider a live session is bound to, when the thread has one.
     pub live_provider: Option<ProviderKind>,
 }
 
 impl<'a> MenuTarget<'a> {
-    pub fn new(thread: Option<&'a ThreadItem>, live_provider: Option<ProviderKind>) -> Self {
+    pub fn new(
+        project: u32,
+        thread: Option<&'a ThreadItem>,
+        live_provider: Option<ProviderKind>,
+    ) -> Self {
         Self {
+            project,
             thread,
             live_provider,
         }
@@ -754,26 +770,41 @@ impl<'a> MenuTarget<'a> {
 }
 
 impl StateStore {
+    pub fn composer_model_pill(&self) -> Option<ModelPillView> {
+        let project = self.active_project()?.id;
+        self.composer_models
+            .contains_key(&project)
+            .then(|| model_pill(&self.state.settings, self.composer_thread_model(project)))
+    }
+
     pub fn model_menu(
         &self,
         target: &MenuTarget<'_>,
         context: &ProviderContext<'_>,
     ) -> ModelMenuView {
         let settings = &self.state.settings;
-        let providers = &settings.providers;
-        let (provider, model, effort, speed) = match target.thread {
+        let (provider, model, effort, speed, preferred_account) = match target.thread {
             Some(thread) => (
                 thread.provider,
                 thread.model_name.clone(),
                 thread.effort,
                 thread.preferred_speed,
+                Some(if target.live_provider.is_some() {
+                    thread.provider_account
+                } else {
+                    thread.preferred_account.unwrap_or(thread.provider_account)
+                }),
             ),
-            None => (
-                settings.new_work_choice(),
-                settings.provider_model(settings.new_work_choice()),
-                providers.default_effort,
-                providers.default_speed,
-            ),
+            None => {
+                let choice = self.composer_thread_model(target.project);
+                (
+                    choice.provider,
+                    choice.model,
+                    choice.effort,
+                    choice.speed,
+                    choice.preferred_account,
+                )
+            }
         };
         let groups = settings
             .all_providers()
@@ -783,17 +814,7 @@ impl StateStore {
                     settings,
                     context,
                     candidate,
-                    (
-                        provider,
-                        &model,
-                        target.thread.map(|thread| {
-                            if target.live_provider.is_some() {
-                                thread.provider_account
-                            } else {
-                                thread.preferred_account.unwrap_or(thread.provider_account)
-                            }
-                        }),
-                    ),
+                    (provider, &model, preferred_account),
                     target.live_provider,
                 )
             })
@@ -856,7 +877,7 @@ fn menu_group(
     settings: &Settings,
     context: &ProviderContext<'_>,
     candidate: ProviderKind,
-    (provider, model, thread_account): (ProviderKind, &str, Option<u32>),
+    (provider, model, preferred_account): (ProviderKind, &str, Option<u32>),
     live_provider: Option<ProviderKind>,
 ) -> ModelMenuGroup {
     let facts = settings.provider_facts(candidate);
@@ -897,7 +918,7 @@ fn menu_group(
             candidate,
             context,
             (candidate == provider)
-                .then(|| thread_account.unwrap_or_else(|| settings.composer_account(candidate))),
+                .then(|| preferred_account.unwrap_or_else(|| settings.default_account(candidate))),
         ),
         can_choose_account: live_provider.is_none(),
         models,

@@ -3,8 +3,9 @@
 
 use thiserror::Error;
 
+use crate::provider_views::ModelMenuChoice;
 use crate::{
-    EffortLevel, ProjectItem, ProviderKind, SpeedMode, StateStore, StoreError, TaskState,
+    EffortLevel, ProjectItem, ProviderKind, Settings, SpeedMode, StateStore, StoreError, TaskState,
     ThreadItem,
 };
 
@@ -30,6 +31,54 @@ pub enum ThreadError {
     Persistence(#[from] StoreError),
 }
 
+/// The resolved model settings shared by the composer, its menu and the launch plan.
+pub struct ThreadModel {
+    pub(crate) provider: ProviderKind,
+    pub(crate) model: String,
+    pub(crate) preferred_account: Option<u32>,
+    pub(crate) effort: EffortLevel,
+    pub(crate) speed: SpeedMode,
+}
+
+impl ThreadModel {
+    pub fn from_settings(settings: &Settings) -> Self {
+        DraftThreadModel::default().resolve(settings)
+    }
+}
+
+#[derive(Default)]
+pub(crate) struct DraftThreadModel {
+    provider: Option<ProviderKind>,
+    model: Option<String>,
+    account: Option<u32>,
+    effort: Option<EffortLevel>,
+    speed: Option<SpeedMode>,
+}
+
+impl DraftThreadModel {
+    fn select_provider(&mut self, provider: ProviderKind, settings: &Settings) {
+        if provider != self.provider.unwrap_or_else(|| settings.new_work_choice()) {
+            self.model = None;
+            self.account = None;
+        }
+        self.provider = Some(provider);
+    }
+
+    fn resolve(&self, settings: &Settings) -> ThreadModel {
+        let provider = self.provider.unwrap_or_else(|| settings.new_work_choice());
+        ThreadModel {
+            provider,
+            model: self
+                .model
+                .clone()
+                .unwrap_or_else(|| settings.provider_model(provider)),
+            preferred_account: self.account,
+            effort: self.effort.unwrap_or(settings.providers.default_effort),
+            speed: self.speed.unwrap_or(settings.providers.default_speed),
+        }
+    }
+}
+
 /// What a new build thread starts with (F4): its title, branch and fixed worktree path (F5),
 /// and the provider settings it runs on (F15).
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -49,20 +98,33 @@ impl NewThread {
         title: String,
         branch_name: String,
         worktree_path: String,
-        settings: &crate::Settings,
+        settings: &Settings,
     ) -> Self {
-        // A signed-out default gives way to the first signed-in provider (F15 Sign out).
-        let provider = settings.new_work_choice();
-        let model_name = settings.provider_model(provider);
+        Self::with_model(
+            title,
+            branch_name,
+            worktree_path,
+            settings,
+            ThreadModel::from_settings(settings),
+        )
+    }
+
+    pub fn with_model(
+        title: String,
+        branch_name: String,
+        worktree_path: String,
+        settings: &Settings,
+        model: ThreadModel,
+    ) -> Self {
         Self {
             title,
             branch_name,
             worktree_path,
-            provider,
-            model_supports_fast: settings.model_has_fast_mode(provider, &model_name),
-            model_name,
-            effort: settings.providers.default_effort,
-            preferred_speed: settings.providers.default_speed,
+            provider: model.provider,
+            model_supports_fast: settings.model_has_fast_mode(model.provider, &model.model),
+            model_name: model.model,
+            effort: model.effort,
+            preferred_speed: model.speed,
         }
     }
 }
@@ -118,20 +180,55 @@ impl StateStore {
         self.state.projects.iter().find(|item| item.id == project)
     }
 
-    /// Records a `working` thread and makes it the project's active thread.
-    pub fn add_thread(&mut self, project: u32, thread: NewThread) -> Result<u32, ThreadError> {
-        self.add_linked_thread(project, thread, None, None)
+    pub fn composer_thread_model(&self, project: u32) -> ThreadModel {
+        self.composer_models.get(&project).map_or_else(
+            || ThreadModel::from_settings(&self.state.settings),
+            |draft| draft.resolve(&self.state.settings),
+        )
     }
 
+    pub fn choose_composer_model(
+        &mut self,
+        project: u32,
+        choice: ModelMenuChoice,
+    ) -> Result<(), ThreadError> {
+        if self.project(project).is_none() {
+            return Err(ThreadError::UnknownProject(project));
+        }
+        let draft = self.composer_models.entry(project).or_default();
+        match choice {
+            ModelMenuChoice::Model { provider, model } => {
+                draft.select_provider(provider, &self.state.settings);
+                draft.model = Some(model);
+            }
+            ModelMenuChoice::Account { provider, account } => {
+                draft.select_provider(provider, &self.state.settings);
+                draft.account = Some(account);
+            }
+            ModelMenuChoice::Effort(effort) => draft.effort = Some(effort),
+            ModelMenuChoice::Speed(speed) => draft.speed = Some(speed),
+        }
+        Ok(())
+    }
+
+    /// A recorded thread owns its model choice, including when workspace creation retries.
     pub fn add_composer_thread(
         &mut self,
         project: u32,
         thread: NewThread,
     ) -> Result<u32, ThreadError> {
-        let preferred = (thread.provider == self.state.settings.providers.default_provider)
-            .then_some(self.state.settings.providers.composer_account)
-            .flatten();
-        self.add_linked_thread(project, thread, None, preferred)
+        let preferred = self
+            .composer_models
+            .get(&project)
+            .and_then(|draft| draft.account);
+        let identifier = self.add_linked_thread(project, thread, None, preferred)?;
+        self.composer_models.remove(&project);
+        Ok(identifier)
+    }
+
+    /// Records a `working` thread and makes it the project's active thread.
+    pub fn add_thread(&mut self, project: u32, thread: NewThread) -> Result<u32, ThreadError> {
+        self.add_linked_thread(project, thread, None, None)
     }
 
     pub fn add_issue_thread(

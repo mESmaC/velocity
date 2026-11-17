@@ -362,7 +362,7 @@ impl StateStore {
         );
         project.active_thread_id = Some(identifier);
         self.commit_duty_state(next)?;
-        layout.replace_data(read_model(&self.state));
+        layout.replace_data(read_model(self));
         layout.close_duty_dialog_and_select(identifier as usize);
         crate::build_gate::sync_layout(&self.state, layout);
         Ok(DutyMutationOutcome {
@@ -389,7 +389,7 @@ impl StateStore {
         let role = core_entry.role;
         *item = DutyRoleItem::from_core(core_entry, self.state.settings.providers.default_provider);
         self.commit_duty_state(next)?;
-        layout.replace_data(read_model(&self.state));
+        layout.replace_data(read_model(self));
         crate::build_gate::sync_layout(&self.state, layout);
         Ok(DutyMutationOutcome {
             snapshot: layout.snapshot(),
@@ -420,7 +420,7 @@ impl StateStore {
                 .ok_or(ProjectError::IndexOutOfRange)?;
         *item = DutyRoleItem::from_core(core_entry, self.state.settings.providers.default_provider);
         self.commit_duty_state(next)?;
-        layout.replace_data(read_model(&self.state));
+        layout.replace_data(read_model(self));
         crate::build_gate::sync_layout(&self.state, layout);
         Ok(DutyMutationOutcome {
             snapshot: layout.snapshot(),
@@ -454,7 +454,7 @@ impl StateStore {
             .map(|agent| agent.nickname)
             .collect();
         self.commit_duty_state(next)?;
-        layout.replace_data(read_model(&self.state));
+        layout.replace_data(read_model(self));
         crate::build_gate::sync_layout(&self.state, layout);
         let event = duty::stop_duty_event(request.role, nicknames.len(), timestamp);
         Ok(StoppedDuty {
@@ -499,7 +499,7 @@ impl StateStore {
         let role = core_entry.role;
         *item = DutyRoleItem::from_core(core_entry, self.state.settings.providers.default_provider);
         self.commit_duty_state(next)?;
-        layout.replace_data(read_model(&self.state));
+        layout.replace_data(read_model(self));
         crate::build_gate::sync_layout(&self.state, layout);
         Ok(Some((role, event)))
     }

@@ -86,7 +86,7 @@ export const commands = {
 	providerSignOut: (provider: ProviderKind) => __TAURI_INVOKE<ProvidersView_Serialize>("provider_sign_out", { provider }),
 	/**  Model chips, the default for new threads and the thread title model (F15). */
 	setProviderSettings: (edit: ProviderEdit_Deserialize) => __TAURI_INVOKE<ProvidersView_Serialize>("set_provider_settings", { edit }),
-	/**  The composer's model menu (F4): for a thread, or the defaults from the home composer. */
+	/**  The composer's model menu (F4): for a thread or the home draft. */
 	getModelMenu: (projectIdentifier: number, threadIdentifier: number | null) => __TAURI_INVOKE<ModelMenuView_Serialize>("get_model_menu", { projectIdentifier, threadIdentifier }),
 	/**
 	 *  A pick from the model menu. On a running thread it applies from the next message; the
@@ -2026,6 +2026,7 @@ export type LayoutSnapshot_Deserialize = {
 	/**  The selected goal swarm's view (F16); its rows share the Swarm view. */
 	active_goal_swarm?: GoalSwarmViewSnapshot_Deserialize | null,
 	default_model_pill: ModelPillView_Deserialize,
+	composer_model_pill: ModelPillView_Deserialize,
 	search: string,
 	groups: SidebarGroup_Deserialize[],
 	/**
@@ -2085,6 +2086,7 @@ export type LayoutSnapshot_Serialize = {
 	/**  The selected goal swarm's view (F16); its rows share the Swarm view. */
 	active_goal_swarm: GoalSwarmViewSnapshot_Serialize | null,
 	default_model_pill: ModelPillView_Serialize,
+	composer_model_pill: ModelPillView_Serialize,
 	search: string,
 	groups: SidebarGroup_Serialize[],
 	/**
@@ -2298,7 +2300,7 @@ export type ModelMenuView = ModelMenuView_Serialize | ModelMenuView_Deserialize;
 
 /**  The composer's model menu (F4): grouped by provider, effort and speed at the bottom. */
 export type ModelMenuView_Deserialize = {
-	/**  The thread the menu changes, or `None` for the home composer (the defaults). */
+	/**  The thread the menu changes, or `None` for the home draft. */
 	thread_identifier?: number | null,
 	groups: ModelMenuGroup[],
 	effort: EffortLevel,
@@ -2309,7 +2311,7 @@ export type ModelMenuView_Deserialize = {
 
 /**  The composer's model menu (F4): grouped by provider, effort and speed at the bottom. */
 export type ModelMenuView_Serialize = {
-	/**  The thread the menu changes, or `None` for the home composer (the defaults). */
+	/**  The thread the menu changes, or `None` for the home draft. */
 	thread_identifier: number | null,
 	groups: ModelMenuGroup[],
 	effort: EffortLevel,
@@ -3276,7 +3278,6 @@ export type ProviderSettings_Deserialize = {
 	next_custom_agent?: number,
 	accounts?: ProviderAccount_Deserialize[],
 	default_accounts?: { [key in string]: number },
-	composer_account?: number | null,
 };
 
 export type ProviderSettings_Serialize = {
@@ -3307,7 +3308,6 @@ export type ProviderSettings_Serialize = {
 	next_custom_agent: number,
 	accounts: ProviderAccount_Serialize[],
 	default_accounts: { [key in string]: number },
-	composer_account: number | null,
 };
 
 export type ProviderUsage = ProviderUsage_Serialize | ProviderUsage_Deserialize;

@@ -126,6 +126,7 @@ pub struct LayoutData {
     pub worktree_drive: String,
     pub providers: Vec<ProviderUsage>,
     pub default_model_pill: Option<ModelPillView>,
+    pub composer_model_pill: Option<ModelPillView>,
     pub agent_commands: Vec<AgentCommandView>,
     /// Spec interview read models, keyed by thread (F3).
     pub interviews: Vec<InterviewEntry>,
@@ -459,6 +460,7 @@ pub struct LayoutSnapshot {
     /// The selected goal swarm's view (F16); its rows share the Swarm view.
     pub active_goal_swarm: Option<crate::goal_swarm_view::GoalSwarmViewSnapshot>,
     pub default_model_pill: ModelPillView,
+    pub composer_model_pill: ModelPillView,
     pub search: String,
     pub groups: Vec<SidebarGroup>,
     /// The Board view's lanes (F1). They mirror `groups`, `tasks` and `issues`, so they are
