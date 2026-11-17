@@ -5,10 +5,13 @@
   It gets a Rosen workspace and change from the project base and starts at once.
   The legacy GitHub backend creates a git worktree and branch instead.
 - **Thread titles:** the title model (Settings → Providers → Thread titles, F15) names the thread from your first message, as a short imperative title.
-  - Velocity asks for the title while it takes a workspace from the warm pool (F5).
-    Both finish in under a second with the default model, so the change and workspace are labelled from the title before the agent starts.
-  - Until the title arrives, the sidebar shows the first words of your message, pulsing, and the header shows "titling · <model>".
-  - If the title model fails or takes longer than 2 seconds, the slug of your message is kept.
+  - The thread starts with the first words of your message as its title.
+    Workspace setup proceeds immediately with the message slug, which also supplies the branch name for Git projects.
+  - While Velocity requests a title in the background, the sidebar title pulses and the header shows "titling · <model>".
+    A usable reply within 30 seconds replaces the display title and is saved.
+  - Velocity reuses a warm title session for the same project and title settings.
+  - On failure or timeout, Velocity keeps the first words and logs the error.
+    Three consecutive failures for a title model show a notice, and a successful title resets the count.
   - Threads are titled once, from the first message.
     Later messages don't retitle them.
   - Swarm, goal swarm and dispatched threads take their item's title and don't call the title model.

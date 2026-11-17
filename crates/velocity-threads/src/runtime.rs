@@ -531,8 +531,7 @@ impl ThreadRuntimes {
         }
     }
 
-    /// The worktree was named from the title before setup (F4), so the transcript shows and
-    /// resolves paths under its new folder.
+    /// The transcript shows and resolves paths under the actual workspace folder (F4).
     pub fn rename_worktree(&mut self, key: ThreadKey, worktree: &str) {
         if let Some(thread) = self.threads.get_mut(&key) {
             thread.transcript.rename_worktree(worktree);

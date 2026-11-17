@@ -1,9 +1,4 @@
-//! A new thread's title and branch before the title model names it (SPEC.md F4).
-//!
-//! F4 keeps "the slug of your message" when the title model fails or is slow; until thread
-//! titles land (#14) that fallback is the only name. The rules follow the reference's
-//! `send()`: the title is the message's first 48 characters, the branch is `vel/` plus the
-//! message lowercased, with every run of other characters turned into `-`, cut to 20.
+//! The initial display title and workspace slug from a new thread's first message (F4).
 
 const TITLE_LENGTH: usize = 48;
 const SLUG_LENGTH: usize = 20;

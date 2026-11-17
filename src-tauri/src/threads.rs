@@ -1,12 +1,13 @@
+use std::collections::HashMap;
 use std::path::PathBuf;
+use std::sync::LazyLock;
 use std::sync::{Mutex, MutexGuard};
 
 use tauri::{AppHandle, Manager};
 use tauri_specta::Event;
-use velocity_acp::client::{AgentEvent, SessionSetup};
+use velocity_acp::client::{AgentEvent, SessionSetup, TitleRequest};
 use velocity_core::layout_view::{LayoutIntent, LayoutSnapshot};
 use velocity_core::thread_view_model::TranscriptBlock;
-use velocity_git::{TitledWorktree, WorktreeName};
 use velocity_github::follow_through::AgentFollowUp;
 use velocity_store::build_gate::{LaunchRequest, require_launch};
 use velocity_store::duty::clock_timestamp;
@@ -17,7 +18,7 @@ use velocity_threads::goal_swarm::{
 use velocity_threads::{
     DeliveryStatus, LaunchPlan, RunningSession, SessionInputs, StopOutcome, ThreadKey,
     ThreadProgress, ThreadRuntimes, agent_launch_for_account, plan_launch_with_preferences,
-    resolve_title, spawn_session, title_worktree_name,
+    resolve_title, spawn_session,
 };
 
 use crate::layout::MainLayout;
@@ -347,7 +348,7 @@ pub(crate) fn start_planned(
 
 pub(crate) fn start_planned_with_selection(
     application: &AppHandle,
-    plan: LaunchPlan,
+    mut plan: LaunchPlan,
     thread: u32,
     select: bool,
 ) -> Result<LayoutSnapshot, String> {
@@ -371,6 +372,12 @@ pub(crate) fn start_planned_with_selection(
     };
     let snapshot = refresh(application, key, select)?;
     emit_status(application, key);
+    if let Some(request) = plan.title.request.take() {
+        let (handle, fallback) = (application.clone(), plan.title.fallback.clone());
+        tauri::async_runtime::spawn(async move {
+            settle_title(&handle, key, &fallback, request).await;
+        });
+    }
     let handle = application.clone();
     tauri::async_runtime::spawn(async move { run_thread(handle, key, plan, inputs).await });
     Ok(snapshot)
@@ -644,14 +651,7 @@ async fn take_folder(
     plan: &mut LaunchPlan,
 ) -> Result<ThreadFolder, String> {
     if crate::rosen::launch_pending(application, key)? {
-        // The title is settled meanwhile; a Rosen workspace keeps its first folder name.
-        let titling = {
-            let (application, plan) = (application.clone(), plan.clone());
-            tauri::async_runtime::spawn(async move { settle_title(&application, key, &plan).await })
-        };
-        let taken = crate::rosen::take_workspace(application, key, &plan.worktree).await;
-        let _ = titling.await;
-        let workspace = taken?;
+        let workspace = crate::rosen::take_workspace(application, key, &plan.worktree).await?;
         plan.agent.env.extend(workspace.environment);
         return Ok(ThreadFolder {
             path: workspace.root,
@@ -660,21 +660,10 @@ async fn take_folder(
             rosen_change: Some(workspace.change),
         });
     }
-    let (path, branch_name, failure) = match take_worktree(application, key, plan).await {
-        Ok(worktree) => (
-            worktree.worktree_path,
-            worktree.branch_name,
-            worktree.setup.err().map(|error| error.to_string()),
-        ),
-        Err(error) => (
-            plan.worktree.worktree_path.clone(),
-            plan.worktree.branch_name.clone(),
-            Some(error),
-        ),
-    };
+    let failure = take_worktree(application, key, plan).await.err();
     Ok(ThreadFolder {
-        path,
-        branch_name,
+        path: plan.worktree.worktree_path.clone(),
+        branch_name: plan.worktree.branch_name.clone(),
         failure,
         rosen_change: None,
     })
@@ -1097,36 +1086,32 @@ fn mark_worktree_ready(application: &AppHandle, key: ThreadKey, path: &str, fail
     .unwrap_or(false)
 }
 
-/// Checks the worktree out while the title model answers; naming and setup wait for the
-/// title, at most F4's two seconds (`resolve_title` enforces the deadline). The checkout is a
-/// ready worktree from the warm pool when it has one (F5).
+/// Takes a worktree with the names chosen at launch, using the warm pool when ready (F5).
 async fn take_worktree(
     application: &AppHandle,
     key: ThreadKey,
     plan: &LaunchPlan,
-) -> Result<TitledWorktree, String> {
-    let (name_sender, name_receiver) = std::sync::mpsc::channel();
+) -> Result<(), String> {
     let mut request = plan.worktree.clone();
     let pools = crate::ready_pool::pools(application);
     let project = key.0;
     let handle = application.clone();
-    let worktree = tauri::async_runtime::spawn_blocking(move || {
+    tauri::async_runtime::spawn_blocking(move || {
         let tip = synchronize_git_request(&handle, project, &mut request)?;
         // Held until the checkout is done: dropping it frees the slot for the next one.
         let mut ticket = pools.and_then(|pools| pools.take(project));
         if let (Some(ticket), Some(tip)) = (&mut ticket, tip) {
             ticket.ready.tip = Some(tip);
         }
-        Ok::<_, String>(velocity_git::execute_titled_pooled_setup(
+        velocity_git::execute_pooled_worktree_setup(
             &request,
             ticket.as_ref().map(|ticket| &ticket.ready),
-            || name_receiver.recv().ok().flatten(),
-        ))
-    });
-    let name = settle_title(application, key, plan).await;
-    // Setup is waiting for this; if the checkout already failed, nobody is listening.
-    let _ = name_sender.send(name);
-    worktree.await.map_err(|error| error.to_string())?
+        )
+        .map(|_| ())
+        .map_err(|error| error.to_string())
+    })
+    .await
+    .map_err(|error| error.to_string())?
 }
 
 fn synchronize_git_request(
@@ -1146,38 +1131,77 @@ fn synchronize_git_request(
     Ok(tip)
 }
 
-/// Asks the title model, shows the title it settles on, and returns the names the worktree
-/// takes from it: `None` keeps the message slug (F4).
+/// Only the display title can change when the model answers (F4).
 async fn settle_title(
     application: &AppHandle,
     key: ThreadKey,
-    plan: &LaunchPlan,
-) -> Option<WorktreeName> {
-    let title = resolve_title(plan.title.clone()).await;
+    fallback: &str,
+    request: TitleRequest,
+) {
+    let model = format!(
+        "{} · {}",
+        request.settings.provider.label(),
+        request.settings.model
+    );
+    let title = resolve_title(request).await;
+    record_title_outcome(
+        application,
+        model,
+        title.as_ref().err().map(ToString::to_string),
+    );
     if let Ok(mut runtimes) = lock(
         application.state::<ManagedThreads>().inner(),
         "thread sessions",
     ) {
         runtimes.set_titling(key, None);
     }
-    if let Some(title) = &title {
+    if let Ok(title) = title {
         let saved = lock(
             application.state::<ManagedStateStore>().inner(),
             "persisted state",
         )
         .and_then(|mut store| {
             store
-                .update_thread(key.0, key.1, |thread| thread.title.clone_from(title))
+                .update_thread(key.0, key.1, |thread| {
+                    if thread.title == fallback {
+                        thread.title = title;
+                    }
+                })
                 .map_err(|error| error.to_string())
         });
         report(saved);
     }
     report(refresh(application, key, false));
-    title.and_then(|title| title_worktree_name(&plan.naming, &plan.worktree, &title))
 }
 
-/// Saves the branch and folder git ended with: the title's, or the message slug's when the
-/// title was missing or the rename failed.
+/// Warn once after three consecutive failures for a title model; a success resets the count.
+fn record_title_outcome(application: &AppHandle, model: String, error: Option<String>) {
+    static FAILURES: LazyLock<Mutex<HashMap<String, u8>>> = LazyLock::new(Mutex::default);
+    const WARNING_THRESHOLD: u8 = 3;
+    let Some(error) = error else {
+        if let Ok(mut failures) = FAILURES.lock() {
+            failures.remove(&model);
+        }
+        return;
+    };
+    crate::diagnostics::record("thread title", &format!("{model}: {error}"));
+    let Ok(mut failures) = FAILURES.lock() else {
+        return;
+    };
+    let count = failures.entry(model).or_default();
+    *count = count.saturating_add(1);
+    let warn = *count == WARNING_THRESHOLD;
+    drop(failures);
+    if warn {
+        crate::layout::show_toast(
+            application,
+            "Thread title generation keeps failing. Check Settings → Providers → Thread titles."
+                .into(),
+        );
+    }
+}
+
+/// Saves the branch and folder the launch took.
 fn record_names(
     application: &AppHandle,
     key: ThreadKey,

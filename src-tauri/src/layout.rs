@@ -237,7 +237,7 @@ fn deliver_steer(application: &AppHandle, project: Option<u32>, intent: &LayoutI
     crate::threads::report(publish(application, &state.snapshot(), None));
 }
 
-fn show_toast(application: &AppHandle, message: String) {
+pub(crate) fn show_toast(application: &AppHandle, message: String) {
     let managed = application.state::<MainLayout>();
     let Ok(mut state) = managed.lock() else {
         return;

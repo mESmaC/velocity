@@ -21,6 +21,8 @@ pub enum ClientError {
     Io(#[from] std::io::Error),
     #[error("the agent did not answer within {0:?}")]
     TimedOut(std::time::Duration),
+    #[error("the title agent disconnected")]
+    TitleAgentDisconnected,
     #[error("sign-in failed: {0}")]
     SignIn(String),
     #[error("install failed: {0}")]

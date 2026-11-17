@@ -1,15 +1,11 @@
-//! Naming a build thread with the title model (SPEC.md F4, F15): one request to the title
-//! model's agent, run while the thread's worktree is checked out, settled once.
+//! Background titles for new build threads (SPEC.md F4, F15).
 
 use std::path::PathBuf;
 use std::time::Duration;
 
-use velocity_acp::client::{TitleRequest, request_title};
+use velocity_acp::client::{ClientError, TitleRequest, request_title};
 use velocity_acp::{Effort, Provider, RunSettings, Speed};
-use velocity_core::thread_titles::{
-    TITLE_DEADLINE_MILLISECONDS, ThreadTitle, TitleSource, title_from_response,
-    title_request_prompt,
-};
+use velocity_core::thread_titles::{title_from_response, title_request_prompt};
 use velocity_store::duty::DutyAgentItem;
 use velocity_store::{EffortLevel, ProviderKind, Settings, SpeedMode, ThreadItem};
 
@@ -67,7 +63,7 @@ pub fn plan_title(
                 repository,
                 run_settings,
                 title_request_prompt(prompt),
-                Duration::from_millis(TITLE_DEADLINE_MILLISECONDS),
+                Duration::from_secs(30),
             )
         });
     TitlePlan {
@@ -77,24 +73,18 @@ pub fn plan_title(
     }
 }
 
-/// The model's title when it answers in time with something usable, else `None`: the thread
-/// keeps its fallback (F4). Each thread calls this once, from its first message.
-pub async fn resolve_title(plan: TitlePlan) -> Option<String> {
-    let fallback = plan.fallback.clone();
-    let title = ThreadTitle::new(TitleSource::Message(plan.fallback), plan.request.is_some());
-    let request = plan.request?;
-    let settled = match request_title(request).await {
-        Ok(reply) => title.settle(
-            title_from_response(&reply.text),
-            u64::try_from(reply.elapsed.as_millis()).unwrap_or(u64::MAX),
-        ),
-        // A failure or the deadline: the fallback stays.
-        Err(_) => title.settle(None, 0),
-    };
-    settled
-        .final_title()
-        .filter(|chosen| **chosen != fallback)
-        .cloned()
+#[derive(Debug, thiserror::Error)]
+pub enum TitleError {
+    #[error(transparent)]
+    Provider(#[from] ClientError),
+    #[error("the model returned no usable title")]
+    EmptyReply,
+}
+
+/// Each thread asks once, from its first message.
+pub async fn resolve_title(request: TitleRequest) -> Result<String, TitleError> {
+    let reply = request_title(request).await?;
+    title_from_response(&reply.text).ok_or(TitleError::EmptyReply)
 }
 
 /// What a thread's agent runs on: its provider, model, effort and chosen speed (F15).

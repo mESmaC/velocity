@@ -1,5 +1,4 @@
-//! Asking the title model for a thread's title (F4): one short session on the title model's
-//! own agent, run while the thread's worktree is being taken.
+//! Background titles (F4): reuse the title agent and its configured ACP session.
 
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -7,10 +6,12 @@ use std::time::{Duration, Instant};
 
 use agent_client_protocol::v1::ConnectionTo;
 use agent_client_protocol::v1::schema::{
-    ContentBlock, NewSessionRequest, PromptRequest, SessionUpdate,
+    ContentBlock, NewSessionRequest, PromptRequest, SessionId, SessionUpdate,
 };
 use agent_client_protocol::{Agent, ByteStreams, Client};
 use tokio::sync::mpsc::{UnboundedReceiver, unbounded_channel};
+use tokio::sync::{Mutex, oneshot};
+use tokio::time::{Instant as Deadline, timeout_at};
 use tokio_util::compat::{TokioAsyncReadCompatExt, TokioAsyncWriteCompatExt};
 
 use super::{
@@ -30,7 +31,7 @@ pub struct TitleRequest {
     pub settings: RunSettings<String>,
     /// The whole prompt, from `velocity_core::thread_titles::title_request_prompt`.
     pub prompt: String,
-    /// F4's two seconds. The agent is stopped when it passes.
+    /// The total time F4 allows for a background title, including queueing.
     pub deadline: Duration,
 }
 
@@ -61,17 +62,104 @@ pub struct TitleReply {
     pub elapsed: Duration,
 }
 
-/// The model's reply, or why there is none. The agent's whole process tree is stopped when
-/// the reply arrives or the deadline passes, so a slow model never outlives its request.
-/// Call it inside a Tokio runtime: stopping the agent runs as a task of its own.
+static WARM_TITLE_SESSION: Mutex<Option<TitleSession>> = Mutex::const_new(None);
+// Keep the title conversation short so each request stays inexpensive.
+const TITLES_PER_SESSION: usize = 16;
+
+/// The model's reply, or why there is none. Titles have their own serial queue so they
+/// cannot take a provider slot from a thread that's starting.
 pub async fn request_title(request: TitleRequest) -> Result<TitleReply, ClientError> {
     let started = Instant::now();
-    let permit = tokio::time::timeout(
-        request.deadline,
-        crate::concurrency::acquire(request.settings.provider, || {}),
-    )
+    let duration = request.deadline;
+    let deadline = Deadline::now() + duration;
+    let expired = |_| ClientError::TimedOut(duration);
+    let mut warm = timeout_at(deadline, WARM_TITLE_SESSION.lock())
+        .await
+        .map_err(expired)?;
+    // Take ownership for the turn so a timeout, cancellation or provider error drops the
+    // session. A later request never inherits a turn that might still be running.
+    let reusable = warm.take().filter(|session| session.matches(&request));
+    let (session, text) = timeout_at(deadline, async {
+        let mut session = match reusable {
+            Some(session) => session,
+            None => TitleSession::start(&request).await?,
+        };
+        let text = session.prompt(request.prompt).await?;
+        Ok::<_, ClientError>((session, text))
+    })
     .await
-    .map_err(|_| ClientError::TimedOut(request.deadline))?;
+    .map_err(expired)??;
+    *warm = Some(session);
+    Ok(TitleReply {
+        text,
+        elapsed: started.elapsed(),
+    })
+}
+
+struct TitleSession {
+    launch: AgentLaunch,
+    working_directory: PathBuf,
+    settings: RunSettings<String>,
+    connection: ConnectionTo<Agent>,
+    session_id: SessionId,
+    received: UnboundedReceiver<AgentEvent>,
+    remaining: usize,
+    // Dropping the cache entry tells the task to shut down the process tree.
+    _stop: oneshot::Sender<()>,
+}
+
+impl TitleSession {
+    async fn start(request: &TitleRequest) -> Result<Self, ClientError> {
+        let (events, received) = unbounded_channel();
+        let shared = Arc::new(Shared::new(request.working_directory.clone(), events));
+        let (stop, stopped) = oneshot::channel();
+        let connection = start_connection(request, shared, stopped).await?;
+        let session_id = open_session(&connection, request).await?;
+        Ok(Self {
+            launch: request.launch.clone(),
+            working_directory: request.working_directory.clone(),
+            settings: request.settings.clone(),
+            connection,
+            session_id,
+            received,
+            remaining: TITLES_PER_SESSION,
+            _stop: stop,
+        })
+    }
+
+    fn matches(&self, request: &TitleRequest) -> bool {
+        self.remaining > 0
+            && self.launch == request.launch
+            && self.working_directory == request.working_directory
+            && self.settings == request.settings
+            && !self.connection.is_incoming_closed()
+            && self.connection.termination().is_none()
+    }
+
+    async fn prompt(&mut self, prompt: String) -> Result<String, ClientError> {
+        while self.received.try_recv().is_ok() {}
+        let prompt = PromptRequest::new(self.session_id.clone(), vec![ContentBlock::from(prompt)]);
+        let (send, reply) = oneshot::channel();
+        // The ordered callback runs after the message chunk notifications for this turn.
+        self.connection
+            .send_request(prompt)
+            .on_receiving_result(move |result| async move {
+                let _ = send.send(result);
+                Ok(())
+            })?;
+        reply
+            .await
+            .map_err(|_| ClientError::TitleAgentDisconnected)??;
+        self.remaining -= 1;
+        Ok(agent_reply(&mut self.received))
+    }
+}
+
+async fn start_connection(
+    request: &TitleRequest,
+    shared: Arc<Shared>,
+    stopped: oneshot::Receiver<()>,
+) -> Result<ConnectionTo<Agent>, ClientError> {
     let mut agent = process::spawn_agent(&request.launch, &request.working_directory)?;
     let stdin = agent
         .stdin()
@@ -81,41 +169,37 @@ pub async fn request_title(request: TitleRequest) -> Result<TitleReply, ClientEr
         .stdout()
         .take()
         .ok_or(ClientError::MissingPipe("stdout"))?;
-    let (events, mut received) = unbounded_channel();
     if let Some(stderr) = agent.stderr().take() {
-        forward_log(stderr, events.clone());
+        forward_log(stderr, shared.events.clone());
     }
-    let shared = Arc::new(Shared::new(request.working_directory.clone(), events));
+    let (connected, connection) = oneshot::channel();
     let transport = ByteStreams::new(stdin.compat_write(), stdout.compat());
-    let deadline = request.deadline.saturating_sub(started.elapsed());
-    let session = handlers::register(Client.v1(), &shared)
-        .connect_with(transport, async move |connection: ConnectionTo<Agent>| {
-            title_turn(&connection, &request).await
-        });
-    let outcome = tokio::time::timeout(deadline, session).await;
-    let elapsed = started.elapsed();
-    // Ending an agent's process tree can take seconds (Claude Code's took five), and the
-    // thread's setup waits for its title, so the agent is stopped without waiting for it.
-    // If the runtime shuts down first, dropping the job object still ends the tree.
     tokio::spawn(async move {
-        // Nothing waits on the title agent any more; a failed stop leaves the job object,
-        // which ends the tree when its handle drops.
+        let session = handlers::register(Client.v1(), &shared).connect_with(
+            transport,
+            async move |connection: ConnectionTo<Agent>| {
+                if connected.send(connection.clone()).is_ok() {
+                    connection.incoming_closed().await;
+                }
+                Ok(())
+            },
+        );
+        tokio::select! {
+            _ = session => {},
+            _ = stopped => {},
+        }
+        let _ = shared.terminals.stop_all().await;
         let _ = process::stop_agent(&mut agent).await;
-        drop(permit);
     });
-    outcome.map_err(|_| ClientError::TimedOut(deadline))??;
-    Ok(TitleReply {
-        text: agent_reply(&mut received),
-        elapsed,
-    })
+    connection
+        .await
+        .map_err(|_| ClientError::TitleAgentDisconnected)
 }
 
-/// `initialize` → `session/new` → the title model's config → one prompt. The agent sends
-/// every `session/update` of the turn before it answers the prompt.
-async fn title_turn(
+async fn open_session(
     connection: &ConnectionTo<Agent>,
     request: &TitleRequest,
-) -> Result<(), agent_client_protocol::Error> {
+) -> Result<SessionId, ClientError> {
     connection
         .send_request(session::initialize_request())
         .block_task()
@@ -126,13 +210,7 @@ async fn title_turn(
         .await?;
     let options = session.config_options.unwrap_or_default();
     config::apply_settings(connection, &session.session_id, options, &request.settings).await?;
-    let preface = super::run_queue::preface(&request.launch, None);
-    let prompt = super::run_queue::prompt_content(preface, request.prompt.clone());
-    connection
-        .send_request(PromptRequest::new(session.session_id, prompt))
-        .block_task()
-        .await?;
-    Ok(())
+    Ok(session.session_id)
 }
 
 /// The text of every agent message chunk the session reported, in order.
