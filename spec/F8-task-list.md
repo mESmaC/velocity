@@ -1,6 +1,43 @@
 <!-- split-spec: {"order":1115,"kind":"markdown","indentation":0} -->
 ### F8 · Task List
 
+**Rosen Work panel (decided, #440).** The project has one Work panel for local Task List entries and GitHub issues (F9).
+Each row has a **Task** or **GitHub issue** badge and keeps its source identity: project and task number, or repository and issue number.
+Tasks stay in the local store and issues keep their discussion on GitHub.
+Work and dispatch read the same F16 work inventory; unbuilt spec sections remain a Goal Swarm source.
+Draft tasks stay out of dispatch until the spec is locked.
+
+**Rosen work lifecycle.** The thread holds the claim and the Rosen change records the work items it addresses, including task IDs and repository-qualified issue IDs (F5, Issues carried by Rosen changes).
+The event follower projects the item state from those associations, reusing the saved thread link for navigation.
+Each row links its owning or completing thread and its change as soon as those links exist.
+
+| State | When it appears |
+|---|---|
+| Todo | The item has no active owner or completion; dispatch applies its usual eligibility rules. |
+| Claimed | A thread owns the item and has yet to name its change. |
+| In change | The owning thread named its change; the row shows the change ID. |
+| Landed | Rosen landed the change; the dispatch slot is free and the item stays out of the available pool. |
+| Green | A successful post-land build covers the landed commit (F5, F7). |
+| Reverted → Reopened | Rosen reverted the land and reopened the change. The item returns to active work with the revert reason and its original owner, which can name and land the change again. |
+
+Abandoning an item's current change releases its claim and returns it to the source's available work, subject to the existing eligibility rules.
+A stack handoff keeps the claim with the replacement change and late events from a superseded change leave that claim intact.
+The follower saves the projection and its replay position together so restart, reconnect and event replay preserve state and ownership.
+Rosen lifecycle updates reach the panel and the pool from the event follower without polling for change state.
+GitHub's issue state and the full-test result remain separate from the Work status.
+
+**Done history.** Green items move into collapsed **Done** groups, one per local calendar day of completion, newest day first.
+An issue can be Green while its GitHub discussion remains open (F9).
+Manually completed tasks join the group for their completion day; saved completions without a recoverable date appear under **Done · Date unavailable**.
+Reopening a completed item removes it from its Done group and restores it to active work.
+The Task List counter includes completed tasks in collapsed groups.
+
+**Rollout.** First add the Rosen lifecycle behind the live work pool while the existing panels keep working ([#474](https://github.com/mESmaC/velocity/issues/474)).
+Then replace both Rosen panels with Work in one change ([#475](https://github.com/mESmaC/velocity/issues/475)).
+Continuous dispatch keeps its inventory, claim protection and slot refill throughout the rollout.
+The separate dispatch change in #439 adds local tasks to continuous dispatch.
+Git projects keep the existing Task List and Issues panels and their PR lifecycle while git project mode is supported.
+
 **Continuous issue dispatch (Rosen projects):** Each project can save **Keep N agents busy** (off at 0) and a pause state.
 Velocity fills free slots with ordinary build threads on the default model, using the issue title and the issue-dispatch prompt.
 The work inventory excludes claimed issues, owner-decision questions (labelled `spec-question`, `needs-decision`, `needs-owner` or `owner-decision`, or explicitly requesting a decision in their title or body) and `release-blocker` issues.
@@ -15,9 +52,8 @@ The sidebar's Duty controls and each Duty view show the slot and busy counts and
 Pausing stops new starts and leaves existing threads running.
 The saved spec lock still applies.
 
-The project-scoped list in the top-right panel.
-- **States:** draft (before spec lock), todo, now (an agent is on it), done (its PR merged).
-- **The counter** shows `done/total`.
+On git projects, the Task List sits in the top-right panel and uses draft (before spec lock), todo, now (an agent is on it), and done (its PR merged).
+The Task List counter shows `done/total`.
 
 **Adding tasks (decided):**
 - **You:**
@@ -42,22 +78,24 @@ The project-scoped list in the top-right panel.
     Request identities prevent duplicate adds after a crash/restart.
   - An added task is a draft before lock and todo afterward.
     Every task stays a draft until the spec is locked, so a state change needs a locked spec.
-    A task an agent is on (now) can be marked done but not reopened.
-    Reopening a done task frees it from the thread that finished it, so that thread's merge cannot close it again.
+    On git projects, a task an agent is on (now) can be marked done and must finish before it can be reopened.
+    For Rosen work linked to an active change, the change advances the work state.
+    The manual done action remains available for Rosen tasks without an active change.
+    Reopening a done task releases its previous ownership and completion, so later events from that attempt leave the reopened task intact.
     Deleting a task drops it from any thread that lists it; the thread keeps running.
   - None of them edits SPEC.md or starts an interview.
 - Tasks not created by the spec show who added them: "added by you", or "added by <thread>", which links to that thread.
 - Tasks added before the spec is locked are drafts.
 - **After the spec is locked** (decided, Q6): a task you or an agent adds goes straight to todo and stays outside SPEC.md.
   Adding a task never starts an interview and never edits SPEC.md.
-  When the work changes behaviour SPEC.md describes, the building agent updates SPEC.md in its own PR (AGENTS.md).
+  When the work changes behaviour SPEC.md describes, the building agent updates the relevant spec in the same change (AGENTS.md).
 
-**Live state:** a task with an agent shows that agent's state (agent working / agent idle / #n · in review / merged · #n), linked to its thread.
+**Git live state:** a task with an agent shows that agent's state (agent working / agent idle / #n · in review / merged · #n), linked to its thread.
 Agent idle means its turn ended before its PR is followed, such as a draft claim not yet marked ready.
 
 **Accept when:**
 - [ ] Re-rendering the list never takes focus from the add-task input.
 - [ ] New tasks scroll into view.
-
-> The full meaning of the Task List is still to be explained by the user (§8).
-Do not add task fields or behaviour beyond this section.
+- [ ] The same Rosen item appears once through claim, name, land, build success, revert and reopen, including after a restart.
+- [ ] Abandoning a change frees eligible work and a stack handoff keeps the item with its replacement.
+- [ ] Done groups start collapsed, retain older completions and return reopened work to the active list.

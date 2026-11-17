@@ -3,7 +3,7 @@
 
 | # | Question | Blocks |
 |---|---|---|
-| Q1 | What is the full meaning of the Task List? (The user will explain.) | anything beyond F8 |
+| Q1 | Decided in #440: on Rosen projects, local Task List entries and GitHub issues share the Work panel, with status driven by the linked Rosen change (F8, F9). | — |
 | Q2 | How is "the implementation matches the spec exactly" verified? | a spec-check feature |
 | Q3 | Final names for "duty", "PR duty" and "Scouts". | labels only |
 | Q4 | Does a swarm ever cap how many agents run at once, or always start everything? Built: everything starts. A per-provider cap is specified, off by default (F15). | F10 |
