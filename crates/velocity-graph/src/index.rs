@@ -213,30 +213,15 @@ impl Index {
         {
             self.cache.reload();
         }
-        let blobs = source.blobs(
-            paths
-                .iter()
-                .filter_map(|(path, id)| id.filter(|id| self.needs_blob(path, *id)))
-                .collect(),
-        )?;
-        let mut sources = Vec::new();
-        let mut removed = Vec::new();
         let total = paths.len();
-        for (path, id) in paths {
-            let (file, skipped) = id.map_or((None, None), |id| self.tree_file(&path, id, &blobs));
-            if let Some(reason) = skipped {
-                *self.skipped.entry(reason).or_default() += 1;
-            }
-            match file {
-                Some(file) => sources.push(file),
-                None => removed.push(path),
-            }
-        }
-        let (misses, cached) = self.take_cached(sources);
-        let parsed = self.parse(misses, total, progress)?;
-        for path in removed {
-            self.files.remove(&path);
-            self.manifests.remove(&path);
+        let paths: Vec<_> = paths.into_iter().collect();
+        let (mut parsed, mut cached) = (0, 0);
+        for (batch, paths) in paths.chunks(32).enumerate() {
+            let (fresh, hits) = self.load_tree_batch(source, paths, |done, _| {
+                progress(batch * 32 + done, total);
+            })?;
+            parsed += fresh;
+            cached += hits;
         }
         drop(build);
         source.tree = Some(tree);
@@ -249,12 +234,40 @@ impl Index {
         Ok(())
     }
 
+    fn load_tree_batch(
+        &mut self,
+        source: &crate::rosen::Source,
+        paths: &[(String, Option<ObjectId>)],
+        progress: impl Fn(usize, usize) + Sync,
+    ) -> Result<(usize, usize), Error> {
+        let blobs = source.blobs(
+            paths
+                .iter()
+                .filter_map(|(path, id)| id.filter(|id| self.needs_blob(path, *id)))
+                .collect(),
+        )?;
+        let mut sources = Vec::new();
+        for (path, id) in paths {
+            let (file, skipped) = id.map_or((None, None), |id| self.tree_file(path, id, &blobs));
+            if let Some(reason) = skipped {
+                *self.skipped.entry(reason).or_default() += 1;
+            }
+            if let Some(file) = file {
+                sources.push(file);
+            } else {
+                self.files.remove(path);
+                self.manifests.remove(path);
+            }
+        }
+        let (misses, cached) = self.take_cached(sources);
+        Ok((self.parse(misses, paths.len(), progress)?, cached))
+    }
+
     fn needs_blob(&self, path: &str, id: ObjectId) -> bool {
         !generated_name(path)
             && (crate::subsystems::is_manifest(path)
-                || Language::of(path).is_some_and(|language| {
-                    self.cache.get(&key(&id.to_string(), language)).is_none()
-                }))
+                || Language::of(path)
+                    .is_some_and(|language| !self.cache.contains(&key(&id.to_string(), language))))
     }
 
     fn tree_file(
@@ -271,8 +284,7 @@ impl Index {
             return from_blob(path, hash, bytes.clone());
         }
         let recognized = Language::of(path);
-        let language =
-            recognized.filter(|language| self.cache.get(&key(&hash, *language)).is_some());
+        let language = recognized.filter(|language| self.cache.contains(&key(&hash, *language)));
         let skipped = if language.is_none() {
             Some(if recognized.is_some() {
                 "Over 1 MiB"
@@ -301,6 +313,40 @@ impl Index {
         &self.root
     }
 
+    pub(crate) fn select_workspace(&mut self, root: &Path) -> Result<bool, Error> {
+        let switched = self.root != root;
+        self.root = root.to_path_buf();
+        let refreshed = if let Some(source) = &mut self.rosen {
+            source.use_workspace(true);
+            self.refresh_snapshot()?
+        } else if switched {
+            self.refresh_all()?
+        } else {
+            false
+        };
+        if switched {
+            self.graph.stale_addresses.clear();
+        }
+        Ok(refreshed)
+    }
+
+    pub(crate) fn select_base(&mut self) -> Result<bool, Error> {
+        let Some(mut source) = self.rosen.take() else {
+            return Ok(false);
+        };
+        let result = source.revision_tree("base").and_then(|tree| {
+            if source.tree == Some(tree) {
+                return Ok(false);
+            }
+            self.load_tree(&mut source, tree, |_, _| {}).map(|()| true)
+        });
+        self.root = PathBuf::from("base");
+        self.graph.stale_addresses.clear();
+        source.use_workspace(false);
+        self.rosen = Some(source);
+        result
+    }
+
     pub fn cache_bytes(&self) -> u64 {
         self.cache.size()
     }
@@ -322,7 +368,10 @@ impl Index {
                         .get(path)
                         .is_some_and(|state| state.hash == file.hash) => {}
                 Some(_) => reread.push(path.clone()),
-                None => changed |= self.files.remove(path).is_some(),
+                None => {
+                    changed |= self.files.remove(path).is_some();
+                    self.manifests.remove(path);
+                }
             }
         }
         if !reread.is_empty() {
@@ -337,21 +386,29 @@ impl Index {
 
     /// Lists the worktree again (new files, deleted files) and refreshes what differs.
     pub fn refresh_listing(&mut self) -> Result<bool, Error> {
+        self.refresh_paths(false)
+    }
+
+    pub(crate) fn refresh_all(&mut self) -> Result<bool, Error> {
+        self.refresh_paths(true)
+    }
+
+    fn refresh_paths(&mut self, all: bool) -> Result<bool, Error> {
         let paths = list(&self.root)?;
         let listed: std::collections::HashSet<&String> = paths.iter().collect();
-        let mut changed: Vec<String> = self
-            .files
-            .keys()
-            .filter(|path| !listed.contains(path))
-            .cloned()
+        let previous = self.files.len();
+        self.files.retain(|path, _| listed.contains(path));
+        self.manifests.retain(|path, _| listed.contains(path));
+        let removed = self.files.len() != previous;
+        let changed: Vec<_> = paths
+            .into_iter()
+            .filter(|path| all || !self.files.contains_key(path))
             .collect();
-        changed.extend(
-            paths
-                .iter()
-                .filter(|path| !self.files.contains_key(*path))
-                .cloned(),
-        );
-        self.refresh(&changed)
+        let refreshed = self.refresh(&changed)?;
+        if removed && !refreshed {
+            self.rebuild();
+        }
+        Ok(removed || refreshed)
     }
 
     /// The paths among `paths` whose bytes on disk no longer match the graph (the staleness

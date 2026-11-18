@@ -14,6 +14,7 @@ mod lean;
 mod markdown;
 mod mcp;
 mod program;
+mod project_service;
 mod query;
 mod resolve;
 mod rosen;
@@ -34,6 +35,7 @@ pub use mcp::{
     SERVER_NAME, SERVER_SWITCH, WARM_SWITCH, serve, serve_stdio, server_arguments, task_context,
     warm, warm_stdio,
 };
+pub use project_service::{PROJECT_SWITCH, serve_project, warm_project};
 pub use tools::Tools;
 
 #[derive(Debug, thiserror::Error)]

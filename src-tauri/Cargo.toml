@@ -26,6 +26,7 @@ agent-client-protocol = "5.0.0"
 anyhow.workspace = true
 serde.workspace = true
 serde_json.workspace = true
+sysinfo = { workspace = true, features = ["system"] }
 specta.workspace = true
 specta-typescript.workspace = true
 tauri.workspace = true

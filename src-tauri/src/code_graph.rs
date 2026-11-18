@@ -17,12 +17,11 @@ pub(crate) fn follow_rosen_base(
         .endpoint()
         .clone();
     let project = project.to_string();
-    let cache = data.join("graph").join(&project);
+    let executable = std::env::current_exe().ok()?;
     std::thread::spawn(move || {
-        let mut index = None;
         while lands.recv().is_ok() {
             if usage::enabled(&data, &project) {
-                index = velocity_graph::Index::warm_base(endpoint.clone(), &cache, index).ok();
+                velocity_graph::warm_project(&executable, &data, &project, endpoint.clone());
             }
         }
     });

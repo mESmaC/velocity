@@ -88,6 +88,7 @@ pub async fn add_to_swarm(
 }
 
 fn launch(application: &AppHandle, request: LaunchSwarmRequest) -> Result<LayoutSnapshot, String> {
+    velocity_rosen::memory::require_headroom()?;
     let (repository, issues) = open_issues(application, &request)?;
     {
         let store = lock(
@@ -111,6 +112,10 @@ fn launch(application: &AppHandle, request: LaunchSwarmRequest) -> Result<Layout
     let mut started = 0;
     let mut refused = Vec::new();
     for (subsystem, (item, provider)) in assignments {
+        if let Err(error) = velocity_rosen::memory::require_headroom() {
+            refused.push(error);
+            break;
+        }
         let provider = request.providers[provider];
         match start_member(
             application,

@@ -5,7 +5,6 @@
 
 use std::path::{Path, PathBuf};
 
-use rosen_client::Client;
 use rosen_client::protocol::{CommentTarget, Diff, DiffRequest, FileDiff, LandStatus, LineKind};
 use serde_json::{Value, json};
 
@@ -28,7 +27,7 @@ pub async fn change_standing(
     server: &ProjectServer,
     change: &str,
 ) -> Result<ChangeStanding, RosenError> {
-    let client = Client::connect(server.endpoint()).await?;
+    let client = crate::connection::requests(server.endpoint()).await?;
     let record = client.change_show(change).await?.change;
     let head = record.head;
     let approved = client
@@ -70,7 +69,7 @@ pub async fn change_overview(
 ) -> Result<ChangeOverview, RosenError> {
     use rosen_client::protocol::ThreadFilter;
     use rosen_core::{SnapshotKind, ThreadState};
-    let client = Client::connect(server.endpoint()).await?;
+    let client = crate::connection::requests(server.endpoint()).await?;
     let record = client.change_show(change).await?.change;
     let named = record
         .snapshots
@@ -280,7 +279,7 @@ pub async fn changed_paths(
     server: &ProjectServer,
     change: &str,
 ) -> Result<Vec<String>, RosenError> {
-    let client = Client::connect(server.endpoint()).await?;
+    let client = crate::connection::requests(server.endpoint()).await?;
     let request = DiffRequest {
         to: Some(change.to_owned()),
         context: Some(0),
@@ -297,7 +296,7 @@ pub async fn changed_paths(
 
 /// The change's diff against its parent, with no unchanged lines.
 pub async fn change_diff_record(server: &ProjectServer, change: &str) -> Result<Diff, RosenError> {
-    let client = Client::connect(server.endpoint()).await?;
+    let client = crate::connection::requests(server.endpoint()).await?;
     Ok(client
         .diff(DiffRequest {
             to: Some(change.to_owned()),
@@ -327,7 +326,7 @@ impl ReviewTrees {
         server: &ProjectServer,
         path: &str,
     ) -> Result<Option<String>, RosenError> {
-        let client = Client::connect(server.endpoint()).await?;
+        let client = crate::connection::requests(server.endpoint()).await?;
         let diff = client
             .diff(DiffRequest {
                 from: Some(self.base.clone()),

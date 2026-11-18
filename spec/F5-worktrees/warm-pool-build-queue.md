@@ -13,6 +13,8 @@
   Velocity starts it when the provider ends its turn, keeps the full output outside the workspace, and delivers the result and log path in the next prompt.
   Explicitly stopping the session cancels its queued commands.
   The managed foreground `rosen run` command applies the same Rust policy when the MCP tool is unavailable.
+  New turns wait while the machine is below Rosen's current memory reserve (#481).
+  Velocity also checks headroom before starting each command within a check set (#481).
   A queued command counts as waiting in the build queue, so it is never stalled.
 
 <!-- split-spec links -->

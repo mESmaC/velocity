@@ -3,6 +3,12 @@
 mod queued_run_access;
 
 fn main() -> anyhow::Result<()> {
+    if let Some(argument) = std::env::args_os()
+        .nth(1)
+        .and_then(|value| value.into_string().ok())
+    {
+        velocity_app_lib::process_memory::start_helper_guard(&argument);
+    }
     if let Some(result) = velocity_rosen::agent_run::serve() {
         let code = match result {
             Ok(status) => status.code().unwrap_or(1),

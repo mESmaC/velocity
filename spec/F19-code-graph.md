@@ -63,24 +63,28 @@ Its accuracy rules come from the A.TXY address memory in MCL4-COE and `elem`: ro
   Rosen uses its snapshot's tracked paths, while git combines tracked files and non-ignored additions.
 - **Addresses:** each record has a short address such as `1.k3f9q`: its plane, then base-36 characters from a hash of its path, qualified name and kind.
   An address stays the same while the symbol keeps its name and file, so an agent can pass it back in later calls.
-  A moved or renamed symbol returns `stale` with the new address when a refresh in the same session finds a unique matching span or same-file signature.
+  A moved or renamed symbol returns `stale` with the new address when the previous workspace view is available and a refresh finds a unique matching span or same-file signature.
 
 **Building and keeping it current:**
 - **Parse cache.**
   Velocity keeps one parse cache per project in the app data folder: each file's symbols and references, keyed by blob ID, language, parser version and Velocity version.
-  It is an append-only log of checksummed records, shared by every agent of the project, so a file is parsed once whatever workspace or commit it appears in.
+  It is an append-only log of checksummed records shared by every agent of the project, so cached parses can be reused across workspaces and commits.
   A torn or corrupt record at the end of the log is dropped and that file is parsed again.
-  The log is compacted when it exceeds twice the size of the unique records for this parser version, so compaction preserves base and other workspace entries that can still be reused.
+  The reader streams records and retains up to 64 MiB of recent serialized parses.
+  Compaction keeps those recent records and rewrites the log before it grows beyond twice the cache budget.
   Cache misses are resolved under the project's build lock, with a second cache check before parsing.
-- **Each agent's graph.**
+- **Shared project graph.**
+  The MCP connections forward workspace queries to one project worker with one live graph and search index.
+  Workspaces at the same Rosen tree reuse the index, and switching to a different tree applies file changes to the current project view.
   On Rosen, each tool call checks the workspace marker Rosen advances when it stores a snapshot.
   The marker also wakes the background indexer so Usage can show workspaces catching up.
   The graph compares tree IDs, skips identical subtrees, and obtains only changed blobs that miss the cache or supply manifest data.
   A saved edit reaches lookup and impact in the 2 s snapshot window, and graph source reads use the same immutable tree.
   On git, a worktree watcher batches edits in the background, tool calls refresh pending changes, and the span check catches any missed edits.
+  Switching git workspaces lists and rehashes the new workspace so unchanged content can reuse the index.
 - **Warming.**
   Opening the Rosen project event stream warms the base, then lands and reverts wake the same background worker to update its tree and parse changed cache misses.
-  A workspace starting at a warmed base performs zero parses for unchanged blobs.
+  A workspace starting at a warmed base reuses its index and any retained parses of unchanged blobs.
   Git warms after base merges on the trigger that catches up the ready pool (F5).
 - **Speed:** a query answers in under 50 ms on a 100,000-line project.
   Building the graph for such a project takes under 10 s with an empty cache and under 1 s with a full one.

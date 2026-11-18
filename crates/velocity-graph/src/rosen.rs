@@ -22,6 +22,10 @@ pub struct Source {
 }
 
 impl Source {
+    pub fn use_workspace(&mut self, workspace: bool) {
+        self.workspace = workspace;
+    }
+
     pub fn new(endpoint: Endpoint, workspace: bool) -> Result<Self, Error> {
         Ok(Self {
             endpoint,
@@ -42,7 +46,7 @@ impl Source {
 
     pub fn revision_tree(&self, revision: &str) -> Result<ObjectId, Error> {
         self.request(async {
-            let client = Client::connect(&self.endpoint).await?;
+            let client = velocity_rosen::connection::requests(&self.endpoint).await?;
             let request = ReadRequest {
                 at: Some(revision.to_owned()),
                 path: String::new(),
@@ -61,7 +65,7 @@ impl Source {
         let previous = self.tree;
         let endpoint = &self.endpoint;
         wait(&self.runtime, async {
-            let client = Client::connect(endpoint).await?;
+            let client = velocity_rosen::connection::requests(endpoint).await?;
             changes(&client, directories, previous, tree).await
         })
     }
@@ -71,7 +75,7 @@ impl Source {
             return Ok(HashMap::new());
         }
         self.request(async {
-            let client = Client::connect(&self.endpoint).await?;
+            let client = velocity_rosen::connection::requests(&self.endpoint).await?;
             objects(&client, ids, ObjectKind::Blob).await
         })
     }
@@ -81,7 +85,7 @@ impl Source {
             .tree
             .ok_or_else(|| Error::Invalid("Rosen graph has no tree".into()))?;
         self.request(async {
-            let client = Client::connect(&self.endpoint).await?;
+            let client = velocity_rosen::connection::requests(&self.endpoint).await?;
             let request = ReadRequest {
                 at: Some(tree.to_string()),
                 path: path.to_owned(),
@@ -100,7 +104,7 @@ impl Source {
     pub fn overlaps(&self, root: &Path, paths: Vec<String>) -> Result<serde_json::Value, Error> {
         let change = WorkspaceMarker::read(root)?.change.to_string();
         self.request(async {
-            let client = Client::connect(&self.endpoint).await?;
+            let client = velocity_rosen::connection::requests(&self.endpoint).await?;
             let query = OverlapQuery { change: Some(change.clone()), paths };
             let answer = client.overlaps(query).await?;
             let mut overlaps = Vec::new();

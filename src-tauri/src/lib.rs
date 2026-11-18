@@ -31,6 +31,7 @@ mod machines;
 pub mod main_watch;
 mod new_project;
 mod parking;
+pub mod process_memory;
 mod projects;
 mod proof_card;
 mod proofs_settings;
@@ -92,6 +93,7 @@ fn bindings() -> Builder<tauri::Wry> {
         window::close_window,
         window::window_heartbeat,
         diagnostics::log_window_error,
+        process_memory::get_process_memory,
         state::get_settings,
         state::set_settings,
         state::get_ui_zoom,
@@ -370,6 +372,7 @@ pub fn run() -> anyhow::Result<()> {
             restart::resume_interrupted(application.handle(), interrupted);
             thread_links::initialize(application.handle());
             window::watch_renderer(application.handle());
+            process_memory::start(application.handle().clone());
             Ok(())
         })
         .on_window_event(|window, event| {

@@ -56,7 +56,7 @@ async fn recovered_after_restart(server: &ProjectServer, observation: &MirrorObs
     let Ok(attempted_identifier) = crate::policy::object(attempted) else {
         return false;
     };
-    let Ok(client) = rosen_client::Client::connect(server.endpoint()).await else {
+    let Ok(client) = crate::connection::requests(server.endpoint()).await else {
         return false;
     };
     client

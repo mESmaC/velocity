@@ -26,7 +26,8 @@ serde_json.workspace = true
 # Read-only R1/R9 mirror observations; matches the pinned Rosen metadata schema.
 rusqlite = { version = "0.37", features = ["bundled"] }
 specta = { workspace = true, optional = true }
+sysinfo = { workspace = true, features = ["system"] }
 thiserror.workspace = true
-tokio = { workspace = true, features = ["sync"] }
+tokio = { workspace = true, features = ["macros", "sync"] }
 velocity-spec.workspace = true
 velocity-core.workspace = true

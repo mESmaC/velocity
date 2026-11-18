@@ -1,6 +1,6 @@
 //! Confirm a turn ended without work before continuous dispatch frees its slot.
 use crate::{ProjectServer, RosenError};
-use rosen_client::{ChangeState, Client, protocol::DiffRequest};
+use rosen_client::{ChangeState, protocol::DiffRequest};
 
 /// Named work still belongs to the landing lifecycle, including a prose-only change.
 /// Snapshot the final files first: the watcher may still be uploading the last step.
@@ -9,7 +9,7 @@ pub async fn ended_without_changes(
     change: &str,
     root: &std::path::Path,
 ) -> Result<bool, RosenError> {
-    let client = Client::connect(server.endpoint()).await?;
+    let client = crate::connection::requests(server.endpoint()).await?;
     let record = client.change_show(change).await?.change;
     if record.state != ChangeState::Open {
         return Ok(false);
@@ -40,7 +40,7 @@ pub async fn ended_without_changes(
 /// Idempotent cleanup: a crash after abandoning but before saving its acknowledgement
 /// must not leave a completed thread holding claims forever.
 pub async fn abandon_finished(server: &ProjectServer, change: &str) -> Result<(), RosenError> {
-    let client = Client::connect(server.endpoint()).await?;
+    let client = crate::connection::requests(server.endpoint()).await?;
     let record = client.change_show(change).await?.change;
     if !record.state.is_closed() {
         crate::abandon_change(server, &record.owner.to_string(), change).await?;
@@ -50,7 +50,7 @@ pub async fn abandon_finished(server: &ProjectServer, change: &str) -> Result<()
 
 /// The server's authoritative state for an agent continuing in the same workspace.
 pub async fn handoff_state(server: &ProjectServer, change: &str) -> Result<String, RosenError> {
-    let client = Client::connect(server.endpoint()).await?;
+    let client = crate::connection::requests(server.endpoint()).await?;
     let record = client.change_show(change).await?.change;
     let conflicts = record
         .conflicts

@@ -119,5 +119,6 @@ PR duty checks an item off when it lands that item's PR (F7).
 - [x] Token usage by thread, role, project and input source, with day and week totals (F15 Usage modal, #461)
 - [x] AIRC and Rosen overlaps by symbol, swarm split by subsystem, and the review swarm's graph impact set
 - [x] Bound Velocity MCP answers and generated prompts, with issue search and paginated channel and Task List reads (#465)
+- [x] Share the project graph, bound Velocity process memory, report memory in Usage and pause dispatch under memory pressure (#481)
 
 ---

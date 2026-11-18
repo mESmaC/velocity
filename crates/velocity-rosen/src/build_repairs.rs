@@ -3,7 +3,7 @@
 
 use std::collections::BTreeMap;
 
-use rosen_client::{Client, protocol::CheckKind};
+use rosen_client::protocol::CheckKind;
 use rusqlite::{Connection, OpenFlags};
 use serde::Deserialize;
 
@@ -48,7 +48,7 @@ impl BuildFailure {
 /// The protocol has no failure timestamps or refusal inventory. As with mirror status,
 /// read those from the pinned server's metadata, without modifying its database.
 pub async fn build_failures(server: &ProjectServer) -> Result<Vec<BuildFailure>, RosenError> {
-    let client = Client::connect(server.endpoint()).await?;
+    let client = crate::connection::requests(server.endpoint()).await?;
     let failures = client.post_land_failures(None).await?;
     let (integrations, builds): (Vec<_>, Vec<_>) = failures
         .into_iter()

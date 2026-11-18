@@ -60,7 +60,7 @@ pub enum Bisection {
 
 /// The batch to test now; `None` when every landed commit is covered.
 pub async fn next_batch(server: &ProjectServer) -> Result<Option<Batch>, RosenError> {
-    let client = Client::connect(server.endpoint()).await?;
+    let client = crate::connection::requests(server.endpoint()).await?;
     let mut work = client.post_land_next().await?;
     if work
         .job
@@ -77,7 +77,7 @@ pub async fn next_batch(server: &ProjectServer) -> Result<Option<Batch>, RosenEr
 
 /// The independent build prefix, including merge-mode checks after a before-land gate.
 pub async fn next_build_batch(server: &ProjectServer) -> Result<Option<Batch>, RosenError> {
-    let client = Client::connect(server.endpoint()).await?;
+    let client = crate::connection::requests(server.endpoint()).await?;
     // Merge mode can route post_land_next to builds even on a before-land project.
     // Its build worker must advance that prefix so the test worker can receive tests.
     let merge = client.project_config(None).await?.config.recheck == RecheckMode::Merge;
@@ -92,14 +92,14 @@ pub async fn after_land(server: &ProjectServer) -> Result<bool, RosenError> {
 }
 
 pub async fn after_land_at(server: &ProjectServer, base: Option<&str>) -> Result<bool, RosenError> {
-    let client = Client::connect(server.endpoint()).await?;
+    let client = crate::connection::requests(server.endpoint()).await?;
     let at = base.map(crate::policy::object).transpose()?;
     Ok(client.project_config(at).await?.config.review == ReviewMode::AfterLand)
 }
 
 /// Confirmed, non-reverting test failures retained by Rosen, including across restarts.
 pub async fn test_failures(server: &ProjectServer) -> Result<Vec<TestFailure>, RosenError> {
-    let client = Client::connect(server.endpoint()).await?;
+    let client = crate::connection::requests(server.endpoint()).await?;
     let failures = match client.post_land_failures(None).await {
         Ok(failures) => failures,
         // Older before-land servers have no inventory request; their verifier still runs.
@@ -150,7 +150,7 @@ pub struct TestFailure {
 
 /// Every command passed on the batch's commit: it and every land before it are green.
 pub async fn batch_passed(server: &ProjectServer, batch: &Batch) -> Result<(), RosenError> {
-    let client = Client::connect(server.endpoint()).await?;
+    let client = crate::connection::requests(server.endpoint()).await?;
     if let Some(job) = &batch.merge_build {
         client.post_land_passed(job.clone()).await?;
     }
@@ -165,7 +165,7 @@ pub async fn batch_failed(
     batch: &Batch,
     output: &str,
 ) -> Result<Bisection, RosenError> {
-    let client = Client::connect(server.endpoint()).await?;
+    let client = crate::connection::requests(server.endpoint()).await?;
     let state = client
         .post_land_failed(batch.job.clone(), output.to_owned())
         .await?;
@@ -179,7 +179,7 @@ pub async fn step_result(
     passed: bool,
     output: &str,
 ) -> Result<Bisection, RosenError> {
-    let client = Client::connect(server.endpoint()).await?;
+    let client = crate::connection::requests(server.endpoint()).await?;
     let result = BisectResult {
         job: step.job.clone(),
         passed,
@@ -196,7 +196,7 @@ pub async fn stage_commit(
     folder: &Path,
 ) -> Result<(), RosenError> {
     let staging = duty::claim_checkout(folder)?;
-    let client = Client::connect(server.endpoint()).await?;
+    let client = crate::connection::requests(server.endpoint()).await?;
     let request = LogRequest {
         at: Some(commit.to_owned()),
         paths: Vec::new(),
@@ -297,7 +297,7 @@ async fn bisection(client: &Client, state: BisectState) -> Result<Bisection, Ros
 
 /// The immutable Rosen base snapshot used by the code graph.
 pub struct BaseSnapshot {
-    client: Client,
+    client: std::sync::Arc<crate::connection::Connection>,
     commit: String,
     tree: ObjectId,
 }

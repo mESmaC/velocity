@@ -140,6 +140,10 @@ Rust draws its rows; the limits update while it is open whenever a limit changes
   The trial needs at least ten items that continued in a fresh session and ten matched controls.
   Keep the experiment only if the enabled cohort uses at least 30% fewer tokens with no increase in review rounds or reverts.
 - **Usage limits** shows the subscription windows.
+- **Process memory** shows each Velocity process by role and PID, using private commit on Windows and resident memory elsewhere.
+  Velocity samples its processes while the modal is open and writes the same readings to `velocity.log` at startup and every two minutes.
+  The memory watchdog checks the main window against 2 GiB and MCP and graph helpers against 1 GiB once per second.
+  At its threshold, a helper exits and the main window takes the normal save and exit path.
 - **A section per signed-in account,** in provider card order, with the provider icon and the account’s name and plan.
 - **A row per subscription window,** shortest first: the window (`5-hour`, `Weekly`) and "resets in 1d 10h" on one line, then a bar of the share left in the provider's colour and "61% left".
   The tooltip adds the share used and, when the provider gives the window's length and reset time, the share of the window's time left: where even spending would put the bar.

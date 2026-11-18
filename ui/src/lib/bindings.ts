@@ -42,6 +42,7 @@ export const commands = {
 	 *  or an unhandled promise rejection. `source` names where the window caught it.
 	 */
 	logWindowError: (source: string, message: string) => __TAURI_INVOKE<void>("log_window_error", { source, message }),
+	getProcessMemory: () => __TAURI_INVOKE<ProcessMemory[]>("get_process_memory"),
 	getSettings: () => __TAURI_INVOKE<Settings_Serialize>("get_settings"),
 	setSettings: (settings: Settings_Deserialize) => __TAURI_INVOKE<Settings_Serialize>("set_settings", { settings }),
 	getUiZoom: () => __TAURI_INVOKE<UiZoomView>("get_ui_zoom"),
@@ -2725,6 +2726,13 @@ export type PrDutyRuleSettings = {
 	re_review_on_new_commits: boolean,
 	delete_branch_after_merge: boolean,
 	merge_method: DutyMergeMethod,
+};
+
+export type ProcessMemory = {
+	pid: number,
+	role: string,
+	memory_mib: number,
+	budget_mib: number,
 };
 
 export type ProjectItem = ProjectItem_Serialize | ProjectItem_Deserialize;

@@ -1,12 +1,10 @@
 //! Conflict notices are delivered only after the server's head reaches the workspace.
 
-use rosen_client::Client;
-
 use crate::{ProjectServer, RosenError};
 
 /// An old event must not resume an agent that already resolved or landed its change.
 pub async fn has_open_conflicts(server: &ProjectServer, change: &str) -> Result<bool, RosenError> {
-    let record = Client::connect(server.endpoint())
+    let record = crate::connection::requests(server.endpoint())
         .await?
         .change_show(change)
         .await?

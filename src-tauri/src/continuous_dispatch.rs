@@ -316,6 +316,9 @@ fn read_issues(reader: &mut Reader) -> Result<Backlog, velocity_github::PullRequ
 }
 
 fn has_capacity(application: &AppHandle, identifier: u32) -> Result<bool, String> {
+    if velocity_rosen::memory::is_low() {
+        return Ok(false);
+    }
     let store = lock(
         application.state::<ManagedStateStore>().inner(),
         "persisted state",
@@ -329,6 +332,9 @@ fn start_issue(
     repository: &str,
     issue: &GitHubIssue,
 ) -> Result<(), String> {
+    if velocity_rosen::memory::is_low() {
+        return Ok(());
+    }
     let claimed = claimed_pieces(application, identifier)?;
     let (plan, thread) = {
         let mut store = lock(

@@ -4,7 +4,7 @@
 use std::path::Path;
 
 use rosen_client::protocol::{LogRequest, MarkReviewed};
-use rosen_client::{ChangeState, ChannelMembership, Client};
+use rosen_client::{ChangeState, ChannelMembership};
 use rosen_core::ReviewedState;
 
 use crate::{ProjectServer, RosenError, duty, workspace};
@@ -53,7 +53,7 @@ impl IssueReviews {
 }
 
 pub async fn issue_reviews(server: &ProjectServer) -> Result<IssueReviews, RosenError> {
-    let client = Client::connect(server.endpoint()).await?;
+    let client = crate::connection::requests(server.endpoint()).await?;
     // A worker records its verdict before giving up its claim. Read in this order so
     // a worker completing between the two reads cannot look like an uncovered land.
     let claims = client
@@ -82,7 +82,7 @@ pub async fn issue_reviews(server: &ProjectServer) -> Result<IssueReviews, Rosen
 /// Rosen returns oldest first; stable partitioning puts sensitive work first without
 /// replacing age with a local discovery timestamp after an app restart.
 pub async fn unreviewed(server: &ProjectServer) -> Result<Vec<LandedChange>, RosenError> {
-    let client = Client::connect(server.endpoint()).await?;
+    let client = crate::connection::requests(server.endpoint()).await?;
     let records = client
         .review_landed(Some(ReviewedState::Unreviewed))
         .await?;
@@ -115,7 +115,7 @@ pub async fn landed_diff_record(
     target: &LandedChange,
 ) -> Result<rosen_client::protocol::Diff, RosenError> {
     use rosen_client::protocol::DiffRequest;
-    let client = Client::connect(server.endpoint()).await?;
+    let client = crate::connection::requests(server.endpoint()).await?;
     let log = client
         .log(LogRequest {
             at: Some(target.commit.clone()),
@@ -184,7 +184,7 @@ pub async fn mark(
     target: &LandedChange,
     issues_filed: bool,
 ) -> Result<bool, RosenError> {
-    let client = Client::connect(server.endpoint()).await?;
+    let client = crate::connection::requests(server.endpoint()).await?;
     let records = client.review_landed(None).await?;
     if !records.iter().any(|record| {
         record.change.to_string() == target.change && record.commit.to_string() == target.commit
@@ -239,7 +239,7 @@ pub async fn open_workspace(
             source,
         })?;
     let change = marker.change.to_string();
-    let record = Client::connect(server.endpoint())
+    let record = crate::connection::requests(server.endpoint())
         .await?
         .change_show(&change)
         .await?

@@ -7,6 +7,7 @@ use std::sync::Mutex;
 
 use rosen_client::{Session, WorkspaceSpec, WorkspaceWatch};
 
+use crate::connection::Scoped;
 use crate::{ProjectServer, RosenError};
 
 /// How long a new watcher has to fail before it counts as started.
@@ -37,13 +38,12 @@ impl AgentWorkspace {
 pub(crate) async fn session(server: &ProjectServer, agent: &str) -> Result<Session, RosenError> {
     let agent = rosen_client::identity::parse_agent(agent)
         .map_err(|_| RosenError::AgentName(agent.to_owned()))?;
-    Ok(Session::builder()
-        .endpoint(server.endpoint().clone())
-        .agent(agent)
-        // Velocity starts the server itself, with the project's own data folder.
-        .start_daemon(false)
-        .open()
-        .await?)
+    let connection = crate::connection::requests(server.endpoint()).await?;
+    Ok(Session::from_client(
+        connection.client(),
+        server.endpoint().clone(),
+        agent,
+    ))
 }
 
 /// Creates a change owned by `agent` and its workspace at `root`, which must not exist
@@ -155,7 +155,7 @@ pub async fn abandon_change(
 /// keeps journalling while the server is down and uploads in order once it is back.
 #[derive(Default)]
 pub struct Watches {
-    running: Mutex<BTreeMap<PathBuf, WorkspaceWatch>>,
+    running: Mutex<BTreeMap<PathBuf, Scoped<WorkspaceWatch>>>,
     /// Workspaces a rebase is being written into: no watcher starts there meanwhile.
     held: Mutex<BTreeSet<PathBuf>>,
     /// Workspaces whose watcher is starting and not yet in `running`, where a rebase's stop
@@ -190,18 +190,21 @@ impl Watches {
         if self.is_watching(root) || self.is_held(root) {
             return Ok(());
         }
-        let mut watch = session(server, agent).await?.watch(root);
+        let session = session(server, agent).await?;
+        let watched_root = root.to_path_buf();
+        let mut watch =
+            Scoped::start(move || async move { Ok(session.watch(&watched_root)) }).await?;
         // A watcher that can't open its workspace or its file watch ends at once. One that
         // runs reports its first snapshot of the whole workspace, or a failed attempt it
         // will retry. Waiting briefly for either tells the two apart; a large workspace
         // whose first snapshot is still running counts as started.
         if let Ok(None) = tokio::time::timeout(STARTUP_GRACE, watch.next_report()).await {
-            watch.stop().await?;
+            stop_watch(watch).await?;
             return Err(RosenError::WatchEnded(root.to_path_buf()));
         }
         if self.is_held(root) {
             // A rebase began while this watcher started: it must not run under the write.
-            watch.stop().await?;
+            stop_watch(watch).await?;
             return Ok(());
         }
         if let Ok(mut running) = self.running.lock() {
@@ -282,9 +285,16 @@ impl Watches {
             .ok()
             .and_then(|mut running| running.remove(root));
         if let Some(watch) = watch {
-            let _ = watch.stop().await;
+            let _ = stop_watch(watch).await;
         }
     }
+}
+
+async fn stop_watch(watch: Scoped<WorkspaceWatch>) -> Result<(), rosen_client::Error> {
+    let Scoped { value, stop } = watch;
+    let result = value.stop().await;
+    drop(stop);
+    result
 }
 
 /// Adds `root` to `set`; false when it was there already.

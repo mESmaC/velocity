@@ -1,7 +1,6 @@
 //! A project's Rosen event stream, which follows each thread's change through review and
 //! landing in place of the GitHub PR watcher (Rosen R9, Velocity F6).
 
-use rosen_client::Client;
 use rosen_client::protocol::{Event, EventKind};
 use tokio::sync::mpsc;
 
@@ -118,7 +117,7 @@ pub fn revert_output(event: &Event) -> Option<String> {
 /// cursor of its own, so Velocity keeps it.
 pub struct EventStream {
     // The connection the stream arrives on; it ends when this is dropped.
-    _client: Client,
+    _client: crate::connection::Connection,
     events: mpsc::Receiver<Event>,
 }
 
@@ -126,7 +125,7 @@ impl EventStream {
     /// Subscribes to the server's events after `after`. Connects to a running server only:
     /// the caller starts it.
     pub async fn open(server: &ProjectServer, after: u64) -> Result<Self, RosenError> {
-        let client = Client::connect(server.endpoint()).await?;
+        let client = crate::connection::Connection::dedicated(server.endpoint()).await?;
         let events = client.subscribe(Some(after)).await?;
         Ok(Self {
             _client: client,

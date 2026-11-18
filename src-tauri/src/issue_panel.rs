@@ -91,6 +91,7 @@ pub async fn dispatch_issue(
             .await
             .map_err(|error| error.to_string())?
             .map_err(|error| error.to_string())?;
+    velocity_rosen::memory::require_headroom()?;
     let (plan, thread) = {
         let store = application.state::<ManagedStateStore>();
         let mut store = lock(store.inner(), "persisted state")?;

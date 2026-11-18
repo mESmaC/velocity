@@ -97,6 +97,7 @@ pub async fn launch_goal_swarm(
     request: LaunchGoalSwarmRequest,
 ) -> Result<LayoutSnapshot, String> {
     crate::layout::off_ui_thread(move || {
+        velocity_rosen::memory::require_headroom()?;
         if request.add_pr_duty {
             report(ensure_pr_duty(
                 &application,
@@ -143,6 +144,7 @@ pub async fn add_goal_agents(
     request: AddGoalAgentsRequest,
 ) -> Result<LayoutSnapshot, String> {
     crate::layout::off_ui_thread(move || {
+        velocity_rosen::memory::require_headroom()?;
         if request.add_pr_duty {
             report(ensure_pr_duty(
                 &application,
@@ -330,6 +332,10 @@ fn spawn_goal_slots(
     // Agents take ready worktrees one by one instead of all checking out at once (F5).
     crate::ready_pool::reserve(application, project_id, slots.len());
     for slot in slots {
+        if let Err(error) = velocity_rosen::memory::require_headroom() {
+            refused.push(error);
+            break;
+        }
         match spawn_goal_slot(application, project_id, &slot) {
             Ok(_) => started += 1,
             Err(error) => refused.push(error),

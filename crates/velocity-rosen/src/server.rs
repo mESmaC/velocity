@@ -12,6 +12,7 @@ use rosen_client::protocol::ErrorCode;
 use rosen_client::{Client, Endpoint, Error as ClientError};
 
 use crate::RosenError;
+use crate::connection::{Connection, requests};
 
 /// A folder holding `rosen-server` and `rosen`, for a build that doesn't ship them beside
 /// Velocity's own executable (a development build).
@@ -88,7 +89,7 @@ impl ProjectServer {
     /// and a dozen agents on a project whose built workspace is several GiB would leave
     /// the next thread waiting with nothing to say why.
     pub async fn raise_disk_budget(&self, room: u64) -> Result<(), RosenError> {
-        let client = Client::connect(&self.endpoint).await?;
+        let client = requests(&self.endpoint).await?;
         let load = client.load_limits(None, None).await?;
         let wanted = load.charged_bytes.saturating_add(room);
         if load.settings.disk_bytes < wanted {
@@ -107,8 +108,8 @@ impl ProjectServer {
     }
 
     /// Connects to the server, starting it first when none listens.
-    pub async fn connect(&self) -> Result<Client, RosenError> {
-        match Client::connect(&self.endpoint).await {
+    pub async fn connect(&self) -> Result<Arc<Connection>, RosenError> {
+        match requests(&self.endpoint).await {
             Err(ClientError::NotRunning(_)) => {}
             connected => return Ok(connected?),
         }
@@ -183,11 +184,11 @@ impl ProjectServer {
         Ok(())
     }
 
-    async fn wait_until_listening(&self, child: &mut Child) -> Result<Client, RosenError> {
+    async fn wait_until_listening(&self, child: &mut Child) -> Result<Arc<Connection>, RosenError> {
         let deadline = tokio::time::Instant::now() + START_TIMEOUT;
         let mut delay = Duration::from_millis(20);
         loop {
-            match Client::connect(&self.endpoint).await {
+            match requests(&self.endpoint).await {
                 Err(ClientError::NotRunning(_)) => {}
                 connected => return Ok(connected?),
             }
@@ -212,10 +213,11 @@ impl ProjectServer {
 
     /// Asks the server to exit, if one listens, and waits until it has.
     pub(crate) async fn stop(&self) {
-        if let Ok(client) = Client::connect(&self.endpoint).await {
+        if let Ok(client) = Connection::dedicated(&self.endpoint).await {
             let _ = client.shutdown().await;
         }
         self.wait_until_stopped().await;
+        crate::connection::forget(&self.endpoint);
     }
 
     /// Waits, a few seconds at most, until the server no longer accepts connections: its
@@ -224,7 +226,7 @@ impl ProjectServer {
     async fn wait_until_stopped(&self) {
         let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
         while tokio::time::Instant::now() < deadline {
-            if let Err(ClientError::NotRunning(_)) = Client::connect(&self.endpoint).await {
+            if let Err(ClientError::NotRunning(_)) = Connection::dedicated(&self.endpoint).await {
                 return;
             }
             tokio::time::sleep(Duration::from_millis(100)).await;

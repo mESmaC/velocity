@@ -11,7 +11,7 @@ use super::session::SessionSetup;
 /// Keep the initial hint even if indexing cannot return matches within the startup budget.
 pub(super) async fn graph_preface(setup: &SessionSetup) -> Option<String> {
     let title = setup.graph_task_title.as_ref()?.trim();
-    let (_, app_data, project) = airc_project(setup.airc.as_ref()?)?;
+    let (airc, app_data, project) = airc_project(setup.airc.as_ref()?)?;
     let mut note = String::from(
         "Use the workspace's velocity-graph tools first for source navigation. \
          For each code lookup, use graph_read on a match below or on a known file path, \
@@ -23,11 +23,12 @@ pub(super) async fn graph_preface(setup: &SessionSetup) -> Option<String> {
     );
     if !title.is_empty() {
         let app_data = PathBuf::from(app_data);
+        let executable = airc.command.clone();
         let project = project.to_owned();
         let worktree = setup.worktree.clone();
         let title: String = title.chars().take(300).collect();
         let lookup = tokio::task::spawn_blocking(move || {
-            velocity_graph::task_context(&app_data, &project, &worktree, &title)
+            velocity_graph::task_context(&executable, &app_data, &project, &worktree, &title)
         });
         if let Ok(Ok(Some(matches))) =
             tokio::time::timeout(std::time::Duration::from_secs(5), lookup).await

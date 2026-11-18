@@ -16,6 +16,7 @@ use serde_json::{Value, json};
 
 use crate::Error;
 use crate::index::Index;
+use crate::project_service::{Action, Project, QUERY_TIMEOUT, Reply};
 use crate::status::WorkspaceStatus;
 use crate::tools::{CallError, Tools};
 use crate::usage::record_tool;
@@ -74,10 +75,15 @@ pub fn serve_stdio(arguments: &[OsString]) -> Result<(), Error> {
     let app_data = Path::new(app_data);
     let cache = crate::usage::folder(app_data, project);
     let endpoint = project_endpoint(app_data, project);
-    serve_with_endpoint(
+    let backend = Backend::Shared(Project::new(
+        cache.clone(),
+        std::env::current_exe()?,
+        endpoint,
+    ));
+    serve_connection(
         PathBuf::from(worktree),
         cache,
-        endpoint,
+        backend,
         thread,
         std::io::BufReader::new(std::io::stdin()),
         std::io::stdout(),
@@ -99,6 +105,7 @@ fn project_endpoint(app_data: &Path, project: &str) -> Option<Endpoint> {
 
 /// First-prompt context uses the same index, ranking and project cache as graph_find.
 pub fn task_context(
+    executable: &Path,
     app_data: &Path,
     project: &str,
     workspace: &Path,
@@ -106,25 +113,37 @@ pub fn task_context(
 ) -> Option<String> {
     let cache = crate::usage::folder(app_data, project);
     let endpoint = project_endpoint(app_data, project);
-    let mut tools = build(workspace, &cache, endpoint).ok()?;
-    tools.task_matches(title)
+    let project = Project::new(cache, executable.into(), endpoint);
+    let reply = project
+        .request(workspace, Vec::new(), Action::Task(title.into()), MAP_WAIT)
+        .ok()?;
+    (!reply.text.is_empty()).then_some(reply.text)
 }
 
 /// How long `initialize` waits for the index, so the session-start map can go out with the
 /// instructions. With a warm cache a build takes a fraction of this.
 const MAP_WAIT: Duration = Duration::from_millis(1500);
+const MAX_PENDING_PATH_BYTES: usize = 32 * 1024;
 
 /// One agent's connection.
 struct Connection {
-    tools: Mutex<Option<Tools>>,
+    backend: Backend,
     root: PathBuf,
     cache: PathBuf,
-    endpoint: Option<Endpoint>,
     thread: Option<String>,
     dirty: Mutex<HashSet<String>>,
+    request: Mutex<()>,
     status: WorkspaceStatus,
     /// Signalled once the background build finished; taken by the first `initialize`.
     built: Mutex<Option<mpsc::Receiver<()>>>,
+}
+
+enum Backend {
+    Local {
+        tools: Box<Mutex<Option<Tools>>>,
+        endpoint: Option<Endpoint>,
+    },
+    Shared(Project),
 }
 
 /// Serves one connection. The index is built in the background from the start, so the first
@@ -136,13 +155,17 @@ pub fn serve(
     output: impl Write,
 ) -> Result<(), Error> {
     let endpoint = std::env::var("ROSEN_ENDPOINT").ok().map(Endpoint::new);
-    serve_with_endpoint(root, cache, endpoint, None, input, output)
+    let backend = Backend::Local {
+        tools: Box::default(),
+        endpoint,
+    };
+    serve_connection(root, cache, backend, None, input, output)
 }
 
-fn serve_with_endpoint(
+fn serve_connection(
     root: PathBuf,
     cache: PathBuf,
-    endpoint: Option<Endpoint>,
+    backend: Backend,
     thread: Option<String>,
     input: impl BufRead,
     mut output: impl Write,
@@ -150,12 +173,12 @@ fn serve_with_endpoint(
     let (signal, built) = mpsc::channel();
     let status = WorkspaceStatus::track(&cache, &root);
     let connection = Arc::new(Connection {
-        tools: Mutex::default(),
+        backend,
         root,
         cache,
-        endpoint,
         thread,
         dirty: Mutex::default(),
+        request: Mutex::default(),
         status,
         built: Mutex::new(Some(built)),
     });
@@ -164,11 +187,7 @@ fn serve_with_endpoint(
     let builder = {
         let connection = connection.clone();
         std::thread::spawn(move || {
-            let mut tools = connection
-                .tools
-                .lock()
-                .unwrap_or_else(|error| error.into_inner());
-            let _ = ensure_tools(&connection, &mut tools);
+            connection.catch_up();
             let _ = signal.send(());
         })
     };
@@ -248,15 +267,12 @@ fn build(root: &Path, cache: &Path, endpoint: Option<Endpoint>) -> Result<Tools,
 fn ensure_tools<'tools>(
     connection: &Connection,
     tools: &'tools mut Option<Tools>,
+    endpoint: Option<Endpoint>,
 ) -> Result<&'tools mut Tools, CallError> {
     if tools.is_none() {
         *tools = Some(
-            build(
-                &connection.root,
-                &connection.cache,
-                connection.endpoint.clone(),
-            )
-            .map_err(|error| format!("the code graph could not be built: {error}"))?,
+            build(&connection.root, &connection.cache, endpoint)
+                .map_err(|error| format!("the code graph could not be built: {error}"))?,
         );
         let dirty = connection
             .dirty
@@ -290,24 +306,7 @@ fn watch(
             .lock()
             .unwrap_or_else(|error| error.into_inner());
         let was_clean = dirty.is_empty();
-        for path in event.paths {
-            if rosen_workspace {
-                if path
-                    .file_name()
-                    .is_some_and(|name| name == "workspace.json")
-                {
-                    dirty.insert(String::from(".rosen/workspace.json"));
-                }
-                continue;
-            }
-            let Ok(relative) = path.strip_prefix(&connection.root) else {
-                continue;
-            };
-            let relative = relative.to_string_lossy().replace('\\', "/");
-            if !relative.split('/').any(|part| NOISE.contains(&part)) {
-                dirty.insert(relative);
-            }
-        }
+        mark_changed(&mut dirty, &connection.root, rosen_workspace, event);
         if was_clean && !dirty.is_empty() {
             connection.status.mark(false);
             let _ = changes.try_send(());
@@ -318,17 +317,44 @@ fn watch(
     Some(watcher)
 }
 
+fn mark_changed(dirty: &mut HashSet<String>, root: &Path, rosen: bool, event: notify::Event) {
+    if event.need_rescan() {
+        dirty.clear();
+        dirty.insert(String::new());
+        return;
+    }
+    for path in event.paths {
+        if dirty.contains("") {
+            break;
+        }
+        if rosen {
+            if path
+                .file_name()
+                .is_some_and(|name| name == "workspace.json")
+            {
+                dirty.insert(String::from(".rosen/workspace.json"));
+            }
+            continue;
+        }
+        let Ok(relative) = path.strip_prefix(root) else {
+            continue;
+        };
+        let relative = relative.to_string_lossy().replace('\\', "/");
+        if !relative.split('/').any(|part| NOISE.contains(&part)) {
+            dirty.insert(relative);
+        }
+    }
+    if dirty.iter().map(|path| path.len() + 1).sum::<usize>() > MAX_PENDING_PATH_BYTES {
+        dirty.clear();
+        dirty.insert(String::new());
+    }
+}
+
 fn catch_up(connection: &Connection, pending: mpsc::Receiver<()>) {
     while pending.recv().is_ok() {
         // Group events from one save or build. A call still refreshes its own view immediately.
         std::thread::sleep(Duration::from_millis(150));
-        let mut tools = connection
-            .tools
-            .lock()
-            .unwrap_or_else(|error| error.into_inner());
-        if let Ok(tools) = ensure_tools(connection, &mut tools) {
-            let _ = refresh(tools, connection);
-        }
+        connection.catch_up();
     }
 }
 
@@ -365,12 +391,17 @@ fn instructions(connection: &Connection) -> String {
     if let Some(built) = built {
         let _ = built.recv_timeout(MAP_WAIT);
     }
-    let map = connection
-        .tools
-        .try_lock()
-        .ok()
-        .and_then(|tools| tools.as_ref().map(Tools::map))
-        .unwrap_or_default();
+    let map = match &connection.backend {
+        Backend::Local { tools, .. } => tools
+            .try_lock()
+            .ok()
+            .and_then(|tools| tools.as_ref().map(Tools::map))
+            .unwrap_or_default(),
+        Backend::Shared(project) => project
+            .request(&connection.root, Vec::new(), Action::Map, MAP_WAIT)
+            .map(|reply| reply.text)
+            .unwrap_or_default(),
+    };
     if map.is_empty() {
         INSTRUCTIONS.to_owned()
     } else {
@@ -381,13 +412,7 @@ fn instructions(connection: &Connection) -> String {
 fn call(parameters: &Value, connection: &Connection) -> Value {
     let name = parameters["name"].as_str().unwrap_or_default();
     let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        let mut tools = connection
-            .tools
-            .lock()
-            .unwrap_or_else(|poison| poison.into_inner());
-        let tools = ensure_tools(connection, &mut tools)?;
-        refresh(tools, connection)?;
-        tools.measured_call(name, &parameters["arguments"])
+        connection.call(name, &parameters["arguments"])
     }))
     .unwrap_or_else(|_| Err("the code graph failed on this request".into()));
     let (text, outcome, failed) = match result {
@@ -406,6 +431,71 @@ fn call(parameters: &Value, connection: &Connection) -> Value {
         json!({"isError": true, "content": [{"type": "text", "text": text}]})
     } else {
         json!({"content": [{"type": "text", "text": text}]})
+    }
+}
+
+impl Connection {
+    fn catch_up(&self) {
+        match &self.backend {
+            Backend::Local { tools, endpoint } => {
+                let mut tools = tools.lock().unwrap_or_else(|error| error.into_inner());
+                if let Ok(tools) = ensure_tools(self, &mut tools, endpoint.clone()) {
+                    let _ = refresh(tools, self);
+                }
+            }
+            Backend::Shared(project) => {
+                let _ = self.request(project, Action::Refresh);
+            }
+        }
+    }
+
+    fn call(
+        &self,
+        name: &str,
+        arguments: &Value,
+    ) -> Result<(String, crate::usage::ToolOutcome), CallError> {
+        match &self.backend {
+            Backend::Local { tools, endpoint } => {
+                let mut tools = tools.lock().unwrap_or_else(|error| error.into_inner());
+                let tools = ensure_tools(self, &mut tools, endpoint.clone())?;
+                refresh(tools, self)?;
+                tools.measured_call(name, arguments)
+            }
+            Backend::Shared(project) => {
+                let action = Action::Tool {
+                    name: name.into(),
+                    arguments: arguments.clone(),
+                };
+                let reply = self.request(project, action)?;
+                if reply.failed {
+                    return Err(CallError {
+                        message: reply.text,
+                        outcome: reply.outcome,
+                    });
+                }
+                Ok((reply.text, reply.outcome))
+            }
+        }
+    }
+
+    fn request(&self, project: &Project, action: Action) -> Result<Reply, CallError> {
+        let _request = self
+            .request
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        let changed: Vec<_> = self
+            .dirty
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .drain()
+            .collect();
+        let result = project.request(&self.root, changed.clone(), action, QUERY_TIMEOUT);
+        let mut dirty = self.dirty.lock().unwrap_or_else(|error| error.into_inner());
+        if result.is_err() {
+            dirty.extend(changed);
+        }
+        self.status.mark(result.is_ok() && dirty.is_empty());
+        result.map_err(Into::into)
     }
 }
 

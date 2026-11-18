@@ -3,7 +3,9 @@
 //! `graph_server`).
 
 use anyhow::Context;
-use velocity_graph::{SERVER_SWITCH, WARM_SWITCH, serve_stdio, warm_stdio};
+use velocity_graph::{
+    PROJECT_SWITCH, SERVER_SWITCH, WARM_SWITCH, serve_project, serve_stdio, warm_stdio,
+};
 
 /// `velocity --graph-mcp <app-data> <project-id> <worktree>`: serve one agent's graph tools on
 /// stdin/stdout and exit. `false` when Velocity was started normally.
@@ -16,6 +18,7 @@ pub fn serve_graph_server() -> anyhow::Result<bool> {
         Some(SERVER_SWITCH) => {
             serve_stdio(rest).context("The code graph MCP connection failed")?;
         }
+        Some(PROJECT_SWITCH) => serve_project(rest).context("The project graph worker failed")?,
         // The warm pool's warming run (F19 Warming): fill the parse cache and exit.
         Some(WARM_SWITCH) => warm_stdio(rest).context("Code graph warming failed")?,
         _ => return Ok(false),

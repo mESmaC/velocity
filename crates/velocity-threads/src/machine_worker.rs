@@ -168,7 +168,7 @@ async fn schedule(
                 saved.reported = true;
                 save(&path, &saved)?;
             }
-        } else if running.len() < slots {
+        } else if running.len() < slots && !velocity_rosen::memory::is_low() {
             let sequence = saved.sequence;
             running.insert(sequence);
             let (server, app_data, machine) =

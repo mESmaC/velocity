@@ -191,6 +191,10 @@ fn run_held_commands(
     let log = duty::sibling(folder, ".rosen-check.log");
     let held = turn.map(|_| class_of(priority));
     for command in commands {
+        // The check set holds one queue turn, but memory can drop between commands.
+        while crate::memory::is_low() {
+            std::thread::sleep(POLL);
+        }
         let exit_code = match run_one(folder, command, &log, (priority, held))? {
             Some(0) => continue,
             other => other,

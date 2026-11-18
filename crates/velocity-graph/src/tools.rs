@@ -131,6 +131,20 @@ Most used: {}.",
         &self.index
     }
 
+    pub(crate) fn select_workspace(&mut self, root: &std::path::Path) -> Result<(), Error> {
+        if self.index.select_workspace(root)? {
+            self.rebuild_search();
+        }
+        Ok(())
+    }
+
+    pub(crate) fn select_base(&mut self) -> Result<(), Error> {
+        if self.index.select_base()? {
+            self.rebuild_search();
+        }
+        Ok(())
+    }
+
     pub(crate) fn task_matches(&mut self, title: &str) -> Option<String> {
         let (matches, outcome) = self
             .measured_call(
@@ -149,6 +163,12 @@ Most used: {}.",
     pub fn refresh(&mut self, paths: &[String]) -> Result<(), Error> {
         if self.index.is_rosen() {
             if self.index.refresh_snapshot()? {
+                self.rebuild_search();
+            }
+            return Ok(());
+        }
+        if paths.iter().any(String::is_empty) {
+            if self.index.refresh_all()? {
                 self.rebuild_search();
             }
             return Ok(());

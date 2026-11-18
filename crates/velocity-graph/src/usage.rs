@@ -442,7 +442,7 @@ struct ToolTotals {
     classified: u64,
 }
 
-#[derive(Clone, Copy, Default)]
+#[derive(Clone, Copy, Default, Deserialize, Serialize)]
 pub(crate) enum ToolOutcome {
     Exact,
     Classified,

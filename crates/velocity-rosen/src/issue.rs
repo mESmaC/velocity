@@ -12,7 +12,7 @@ pub async fn issue_build_coverage(
     if commits.is_empty() {
         return Ok(Vec::new());
     }
-    let client = rosen_client::Client::connect(server.endpoint()).await?;
+    let client = crate::connection::requests(server.endpoint()).await?;
     let green = if crate::post_land::after_land(server).await? {
         crate::integration::last_green(server)?
     } else {

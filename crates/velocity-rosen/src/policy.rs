@@ -8,7 +8,7 @@
 //! checkout's own `AGENTS.md`, or a policy read before the merge result was staged, can be
 //! older than that base.
 
-use rosen_client::{Client, ObjectId};
+use rosen_client::ObjectId;
 use rosen_core::PathPattern;
 
 use crate::{ProjectServer, RosenError};
@@ -40,7 +40,7 @@ pub async fn policy_at(
     base: Option<&str>,
 ) -> Result<CheckPolicy, RosenError> {
     let at = base.map(object).transpose()?;
-    let client = Client::connect(server.endpoint()).await?;
+    let client = crate::connection::requests(server.endpoint()).await?;
     let record = client.project_config(at).await?;
     let pre_land = record.config.checks.pre_land;
     Ok(CheckPolicy {
