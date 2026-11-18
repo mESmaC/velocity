@@ -114,6 +114,23 @@
             Failed agents and agents at a cap keep their workspaces. Open and
             closed changes keep their claims.
           </p>
+        {/if}
+      </section>
+      <section>
+        {#if settings}
+          <h2>Agent launch</h2>
+          <label class="worktree-check">
+            <input
+              type="checkbox"
+              role="switch"
+              bind:checked={settings.trim_agent_context}
+            />
+            Trim unused agent context
+          </label>
+          <p class="worktree-description">
+            New Claude Code and Codex sessions skip desktop integrations and
+            provider skill context to use fewer tokens.
+          </p>
           <button
             class="worktree-button"
             disabled={saving}

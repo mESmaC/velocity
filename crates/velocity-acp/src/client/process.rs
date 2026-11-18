@@ -111,13 +111,13 @@ impl AgentLaunch {
         std::fs::write(cache.join("jetski-cli-keyring-unavailable"), [])
     }
 
-    fn set_env(&mut self, name: &str, value: &str) {
+    pub(crate) fn set_env(&mut self, name: &str, value: &str) {
         self.env
             .retain(|(existing, _)| !existing.eq_ignore_ascii_case(name));
         self.env.push((name.to_owned(), value.to_owned()));
     }
 
-    pub(super) fn env_value(&self, name: &str) -> Option<&str> {
+    pub(crate) fn env_value(&self, name: &str) -> Option<&str> {
         self.env
             .iter()
             .find(|(variable, _)| variable == name)

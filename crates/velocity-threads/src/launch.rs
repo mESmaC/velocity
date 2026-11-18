@@ -254,6 +254,9 @@ pub fn agent_launch_for_account(
         .map(|command| (PathBuf::from(&command.program), command.arguments.clone()));
     velocity_acp::configured_agent(crate::titles::provider(provider), command)
         .map(|mut agent| {
+            if settings.agents.trim_agent_context {
+                agent.trim_unused_context();
+            }
             // Every role's agent comes from here, so every one gets the shared servers.
             agent.launch.shared_servers = crate::shared_mcp::shared_mcp_servers(settings);
             if let Some(profile) = settings

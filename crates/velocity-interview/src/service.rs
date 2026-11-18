@@ -277,6 +277,9 @@ fn launch_plan<H: Host>(host: &H, (project, thread): InterviewKey) -> Option<Lau
     );
     let agent = velocity_acp::configured_agent(acp_provider(spec_thread.provider), command)
         .map(|mut agent| {
+            if settings.agents.trim_agent_context {
+                agent.trim_unused_context();
+            }
             agent.launch.shared_servers = shared_servers;
             if let Some(profile) = settings.saved_account(provider, account) {
                 agent.launch.use_account(account, &profile.directory);

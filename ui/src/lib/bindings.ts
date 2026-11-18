@@ -316,6 +316,7 @@ export type AgentSettings_Deserialize = {
 	claim_release_grace_minutes: number,
 	/**  Settings → Agents → shared MCP servers, passed to every agent (§3.2 Tool access). */
 	shared_mcp_servers?: SharedMcpServer[],
+	trim_agent_context?: boolean,
 };
 
 export type AgentSettings_Serialize = {
@@ -326,6 +327,7 @@ export type AgentSettings_Serialize = {
 	claim_release_grace_minutes: number,
 	/**  Settings → Agents → shared MCP servers, passed to every agent (§3.2 Tool access). */
 	shared_mcp_servers: SharedMcpServer[],
+	trim_agent_context: boolean,
 };
 
 export type AircClaimFile = {

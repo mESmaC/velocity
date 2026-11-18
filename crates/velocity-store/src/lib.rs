@@ -536,6 +536,8 @@ pub struct AgentSettings {
     /// Settings → Agents → shared MCP servers, passed to every agent (§3.2 Tool access).
     #[serde(default)]
     pub shared_mcp_servers: Vec<shared_mcp::SharedMcpServer>,
+    #[serde(default = "default_trim_agent_context")]
+    pub trim_agent_context: bool,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, Type)]
@@ -623,6 +625,7 @@ impl Settings {
                 tool_timeout_minutes: core_settings.agents.tool_timeout_minutes,
                 claim_release_grace_minutes: core_settings.agents.claim_release_grace_minutes,
                 shared_mcp_servers: Vec::new(),
+                trim_agent_context: default_trim_agent_context(),
             },
             proofs: ProofSettings {
                 stress_diff_input_count: core_settings.proofs.stress_diff_input_count,
@@ -1523,4 +1526,8 @@ impl StateStore {
 
 fn default_tool_timeout() -> u32 {
     30
+}
+
+fn default_trim_agent_context() -> bool {
+    true
 }

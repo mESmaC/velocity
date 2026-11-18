@@ -3,6 +3,8 @@
 
 use std::path::PathBuf;
 
+use serde_json::{Value, json};
+
 use crate::Provider;
 use crate::client::AgentLaunch;
 
@@ -13,6 +15,63 @@ pub struct ProviderAgent {
     /// The agent's session modes that skip its permission checks (Rule 1). Permission
     /// requests are answered allow-always either way; the mode only saves the round trip.
     pub bypass_modes: Vec<String>,
+}
+
+impl ProviderAgent {
+    /// Trim provider extras in this child process only (F13, #458).
+    pub fn trim_unused_context(&mut self) {
+        match self.launch.own_config {
+            Some(Provider::Anthropic) => {
+                for (name, value) in [
+                    ("ENABLE_CLAUDEAI_MCP_SERVERS", "false"),
+                    ("CLAUDE_CODE_DISABLE_BUNDLED_SKILLS", "1"),
+                    ("CLAUDE_CODE_DISABLE_ARTIFACT", "1"),
+                    ("CLAUDE_CODE_DISABLE_WORKFLOWS", "1"),
+                ] {
+                    self.launch.set_env(name, value);
+                }
+            }
+            Some(Provider::Codex) => trim_codex_context(&mut self.launch),
+            _ => {}
+        }
+    }
+}
+
+fn trim_codex_context(launch: &mut AgentLaunch) {
+    // codex-acp merges CODEX_CONFIG into new and resumed sessions. Keep any settings
+    // supplied by the caller and leave the account's own configuration on disk.
+    const CONFIG: &str = "CODEX_CONFIG";
+    let inherited = std::env::var(CONFIG).ok();
+    let mut config = match launch.env_value(CONFIG).or(inherited.as_deref()) {
+        None | Some("") => json!({}),
+        Some(text) => match serde_json::from_str::<Value>(text) {
+            Ok(value) if value.is_object() => value,
+            _ => return,
+        },
+    };
+    merge_config(
+        &mut config,
+        json!({
+            "skills": { "include_instructions": false },
+            "features": { "computer_use": false, "apps": false },
+            "plugins": {
+                "unified-computer-use@openai-bundled": { "enabled": false },
+                "computer-use@openai-bundled": { "enabled": false }
+            }
+        }),
+    );
+    launch.set_env(CONFIG, &config.to_string());
+}
+
+fn merge_config(config: &mut Value, overrides: Value) {
+    match (config, overrides) {
+        (Value::Object(config), Value::Object(overrides)) => {
+            for (key, value) in overrides {
+                merge_config(config.entry(key).or_insert(Value::Null), value);
+            }
+        }
+        (config, value) => *config = value,
+    }
 }
 
 /// The unrestricted session modes the built-in agents name (Rule 1). An agent you added may
