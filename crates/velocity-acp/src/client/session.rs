@@ -45,6 +45,8 @@ pub struct SessionSetup {
     /// Sent ahead of the session's first prompt and not shown in the transcript: what the
     /// agent must know about its folder, such as a Rosen workspace's note (F5).
     pub preface: Option<String>,
+    /// The work item's title for the new session's initial code graph lookup.
+    pub graph_task_title: Option<String>,
     /// A saved build thread moves its pending input to a new account on quota failure.
     pub pause_on_subscription_limit: bool,
     /// Review sessions can use the same AIRC membership scheme as other duty agents.
@@ -83,6 +85,7 @@ pub struct StartedSession {
     pub loaded: bool,
     /// The agent's config options once the run settings were applied.
     pub options: Vec<SessionConfigOption>,
+    pub(super) graph_on: bool,
 }
 
 impl SessionSetup {
@@ -96,6 +99,7 @@ impl SessionSetup {
             resume: None,
             run_settings: None,
             preface: None,
+            graph_task_title: None,
             pause_on_subscription_limit: false,
             review_usage: false,
         }
@@ -104,6 +108,11 @@ impl SessionSetup {
     /// The same setup running on `settings` (F15).
     pub fn with_run_settings(mut self, settings: RunSettings<String>) -> Self {
         self.run_settings = Some(settings);
+        self
+    }
+
+    pub fn with_graph_task_title(mut self, title: String) -> Self {
+        self.graph_task_title = Some(title);
         self
     }
 
@@ -240,6 +249,7 @@ async fn load_earlier_session(
             session_id,
             loaded: true,
             options,
+            graph_on: has_graph(servers),
         }));
     }
     Ok(None)
@@ -251,6 +261,7 @@ async fn new_resumed_session(
     shared: &Shared,
     servers: Vec<McpServer>,
 ) -> Result<StartedSession, agent_client_protocol::Error> {
+    let graph_on = has_graph(&servers);
     let session = connection
         .send_request(setup.new_session_request(servers))
         .block_task()
@@ -270,7 +281,14 @@ async fn new_resumed_session(
         session_id: session.session_id,
         loaded: false,
         options,
+        graph_on,
     })
+}
+
+fn has_graph(servers: &[McpServer]) -> bool {
+    servers
+        .iter()
+        .any(|server| server_name(server) == Some(velocity_graph::SERVER_NAME))
 }
 
 /// Applies the setup's run settings to the session's config options (F15).

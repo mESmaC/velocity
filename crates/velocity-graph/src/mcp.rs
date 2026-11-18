@@ -48,7 +48,7 @@ const NOISE: [&str; 10] = [
 
 /// What every agent is told at connection. Stated as facts, not orders: imperative "MUST"
 /// rules read like prompt injection and get ignored (Graphify #2202).
-const INSTRUCTIONS: &str = "The velocity-graph tools map this worktree's code: symbols, files and subsystems, linked by calls, imports, implementations, type uses and doc mentions. Finding where something lives, what calls it, or what a change affects is what the graph answers, so these questions start there rather than with a grep or a file read: graph_find for a name or a description, graph_read for one record and its links (source: true adds its lines), graph_impact for what depends on a change, and graph_run to chain several hops in one call. Every record gives its file and lines, so a read can be just those lines. Links marked inferred, ambiguous or unconfirmed are leads to check, not facts, and when the graph has nothing on a question it says so rather than guessing. Grep remains the tool for exact text: strings, literals, config values and logs. The graph follows edits as they happen.";
+const INSTRUCTIONS: &str = "The velocity-graph tools map the workspace's code. graph_find locates symbols by name or description. graph_read on a file gives a symbol outline with line ranges; graph_read on a symbol gives its links and, with source: true, its code. graph_impact finds dependents, and graph_run chains lookups. Inferred, ambiguous and unconfirmed links are leads to verify. Grep finds exact text such as literals and config values.";
 
 pub fn server_arguments(app_data: &Path, project: &str, worktree: &Path) -> Vec<String> {
     vec![
@@ -60,31 +60,54 @@ pub fn server_arguments(app_data: &Path, project: &str, worktree: &Path) -> Vec<
 
 /// Serves one agent from [`server_arguments`] on stdin/stdout until input ends.
 pub fn serve_stdio(arguments: &[OsString]) -> Result<(), Error> {
-    let [app_data, project, worktree] = arguments else {
-        return Err(Error::Invalid(USAGE.into()));
+    let [app_data, project, worktree, optional_thread @ ..] = arguments else {
+        return Err(Error::Invalid(format!("{USAGE} [thread]")));
+    };
+    let thread = match optional_thread {
+        [] => None,
+        [thread] => Some(thread.to_string_lossy().into_owned()),
+        _ => return Err(Error::Invalid(format!("{USAGE} [thread]"))),
     };
     let project = project
         .to_str()
         .ok_or_else(|| Error::Invalid("Invalid project identity".into()))?;
-    let cache = PathBuf::from(app_data).join("graph").join(project);
-    let endpoint = std::env::var("ROSEN_ENDPOINT")
-        .ok()
-        .map(Endpoint::new)
-        .or_else(|| {
-            let project = project.parse().ok()?;
-            Some(
-                velocity_rosen::ProjectServer::new(Path::new(app_data), project)
-                    .endpoint()
-                    .clone(),
-            )
-        });
+    let app_data = Path::new(app_data);
+    let cache = crate::usage::folder(app_data, project);
+    let endpoint = project_endpoint(app_data, project);
     serve_with_endpoint(
         PathBuf::from(worktree),
         cache,
         endpoint,
+        thread,
         std::io::BufReader::new(std::io::stdin()),
         std::io::stdout(),
     )
+}
+
+fn project_endpoint(app_data: &Path, project: &str) -> Option<Endpoint> {
+    std::env::var("ROSEN_ENDPOINT")
+        .ok()
+        .map(Endpoint::new)
+        .or_else(|| {
+            Some(
+                velocity_rosen::ProjectServer::new(app_data, project.parse().ok()?)
+                    .endpoint()
+                    .clone(),
+            )
+        })
+}
+
+/// First-prompt context uses the same index, ranking and project cache as graph_find.
+pub fn task_context(
+    app_data: &Path,
+    project: &str,
+    workspace: &Path,
+    title: &str,
+) -> Option<String> {
+    let cache = crate::usage::folder(app_data, project);
+    let endpoint = project_endpoint(app_data, project);
+    let mut tools = build(workspace, &cache, endpoint).ok()?;
+    tools.task_matches(title)
 }
 
 /// How long `initialize` waits for the index, so the session-start map can go out with the
@@ -97,6 +120,7 @@ struct Connection {
     root: PathBuf,
     cache: PathBuf,
     endpoint: Option<Endpoint>,
+    thread: Option<String>,
     dirty: Mutex<HashSet<String>>,
     status: WorkspaceStatus,
     /// Signalled once the background build finished; taken by the first `initialize`.
@@ -112,13 +136,14 @@ pub fn serve(
     output: impl Write,
 ) -> Result<(), Error> {
     let endpoint = std::env::var("ROSEN_ENDPOINT").ok().map(Endpoint::new);
-    serve_with_endpoint(root, cache, endpoint, input, output)
+    serve_with_endpoint(root, cache, endpoint, None, input, output)
 }
 
 fn serve_with_endpoint(
     root: PathBuf,
     cache: PathBuf,
     endpoint: Option<Endpoint>,
+    thread: Option<String>,
     input: impl BufRead,
     mut output: impl Write,
 ) -> Result<(), Error> {
@@ -129,6 +154,7 @@ fn serve_with_endpoint(
         root,
         cache,
         endpoint,
+        thread,
         dirty: Mutex::default(),
         status,
         built: Mutex::new(Some(built)),
@@ -368,7 +394,13 @@ fn call(parameters: &Value, connection: &Connection) -> Value {
         Ok((text, outcome)) => (text, outcome, false),
         Err(CallError { message, outcome }) => (message, outcome, true),
     };
-    record_tool(&connection.cache, name, outcome);
+    record_tool(
+        &connection.cache,
+        &connection.root,
+        connection.thread.as_deref(),
+        name,
+        outcome,
+    );
     if failed {
         json!({"isError": true, "content": [{"type": "text", "text": text}]})
     } else {
@@ -427,7 +459,7 @@ fn tool_list() -> Vec<Value> {
         ),
         tool(
             "graph_read",
-            "One record by address, exact name or path: signature, doc, file and lines, its chain up, its children, and its links by relation (calls, calls (in), implements, references, mentions, imports) with how each was found. Fails as `ambiguous` (with every candidate), `missing` (with the nearest names) or `stale`; it never picks between candidates.",
+            "A file path or file address gives its symbol outline with line ranges. A symbol name or address gives its signature, docs, location and links with provenance. Use source: true on a symbol for its source lines. Reports ambiguous, missing and stale lookups.",
             json!({
                 "target": {"type": "string", "description": "An address like 1.k3f9q, a name like Channel::open, or a path"},
                 "source": {"type": "boolean", "description": "Add the record's source lines, so no separate file read is needed"},
@@ -453,9 +485,17 @@ fn tool_list() -> Vec<Value> {
 }
 
 fn tool(name: &str, description: &str, properties: Value, required: &[&str]) -> Value {
-    json!({
+    let mut tool = json!({
         "name": name,
         "description": description,
         "inputSchema": {"type": "object", "properties": properties, "required": required},
-    })
+    });
+    // Claude Code keeps these discovery tools in context instead of deferring them to search.
+    if matches!(
+        name,
+        "graph_find" | "graph_read" | "graph_impact" | "graph_run"
+    ) {
+        tool["_meta"] = json!({"anthropic/alwaysLoad": true});
+    }
+    tool
 }

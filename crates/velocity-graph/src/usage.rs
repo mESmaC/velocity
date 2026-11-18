@@ -22,6 +22,13 @@ pub struct TurnUsage {
     pub working_milliseconds: u64,
 }
 
+/// ACP reports tool calls at different levels of detail by provider.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct SourceReads {
+    pub calls: u64,
+    pub whole_file_calls: u64,
+}
+
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct TokenCounts {
     pub input: u64,
@@ -158,7 +165,7 @@ pub fn record_turn(
     project: &str,
     graph_on: bool,
     turn: TurnUsage,
-    workspace: Option<(&Path, u64)>,
+    workspace: Option<(&Path, Option<&str>, SourceReads)>,
 ) -> Result<(), Error> {
     update(app_data, project, |usage| {
         if usage.since.is_empty() {
@@ -169,20 +176,11 @@ pub fn record_turn(
         } else {
             usage.off.add(turn);
         }
-        if let Some((path, raw_reads)) = workspace {
-            let meter = usage
-                .workspaces
-                .entry(crate::status::workspace_key(path))
-                .or_insert_with(|| WorkspaceUsage {
-                    name: path
-                        .file_name()
-                        .unwrap_or(path.as_os_str())
-                        .to_string_lossy()
-                        .into_owned(),
-                    ..WorkspaceUsage::default()
-                });
+        if let Some((path, thread, reads)) = workspace {
+            let meter = usage.workspace(path, thread);
             meter.totals.add(turn);
-            meter.raw_reads += raw_reads;
+            meter.raw_reads += reads.calls;
+            meter.whole_file_reads += reads.whole_file_calls;
         }
     })
     .map(drop)
@@ -410,6 +408,10 @@ struct WorkspaceUsage {
     name: String,
     totals: Totals,
     raw_reads: u64,
+    #[serde(default)]
+    whole_file_reads: u64,
+    #[serde(default)]
+    graph_calls: u64,
 }
 
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
@@ -435,7 +437,13 @@ const GRAPH_TOOLS: [&str; 5] = [
     "graph_overlaps",
 ];
 
-pub(crate) fn record_tool(folder: &Path, name: &str, outcome: ToolOutcome) {
+pub(crate) fn record_tool(
+    folder: &Path,
+    workspace: &Path,
+    thread: Option<&str>,
+    name: &str,
+    outcome: ToolOutcome,
+) {
     if GRAPH_TOOLS.contains(&name) {
         let _ = update_folder(folder, |usage| {
             let tool = usage.tools.entry(name.into()).or_default();
@@ -445,6 +453,7 @@ pub(crate) fn record_tool(folder: &Path, name: &str, outcome: ToolOutcome) {
                 ToolOutcome::Classified => tool.classified += 1,
                 ToolOutcome::Other => {}
             }
+            usage.workspace(workspace, thread).graph_calls += 1;
         });
     }
 }
@@ -467,9 +476,25 @@ pub struct ThreadUsageRow {
     pub cached_input: String,
     pub output: String,
     pub raw_reads: String,
+    pub whole_file_reads: String,
+    pub graph_calls: String,
 }
 
 impl ProjectUsage {
+    fn workspace(&mut self, path: &Path, thread: Option<&str>) -> &mut WorkspaceUsage {
+        let key = thread.map_or_else(|| crate::status::workspace_key(path), str::to_owned);
+        self.workspaces
+            .entry(key)
+            .or_insert_with(|| WorkspaceUsage {
+                name: path
+                    .file_name()
+                    .unwrap_or(path.as_os_str())
+                    .to_string_lossy()
+                    .into_owned(),
+                ..WorkspaceUsage::default()
+            })
+    }
+
     pub(crate) fn tool_rows(&self) -> Vec<ToolUsageRow> {
         GRAPH_TOOLS
             .into_iter()
@@ -495,10 +520,20 @@ impl ProjectUsage {
         format!("{calls} graph calls · {reads} observed raw code reads and searches")
     }
 
-    pub(crate) fn thread_rows(&self, workspaces: &[(PathBuf, String)]) -> Vec<ThreadUsageRow> {
+    pub(crate) fn thread_rows(
+        &self,
+        workspaces: &[crate::status::ThreadWorkspace],
+    ) -> Vec<ThreadUsageRow> {
         let names: BTreeMap<_, _> = workspaces
             .iter()
-            .map(|(path, name)| (crate::status::workspace_key(path), name))
+            .flat_map(|workspace| {
+                [
+                    format!("thread-{}", workspace.thread),
+                    format!("spec-{}", workspace.thread),
+                    crate::status::workspace_key(&workspace.path),
+                ]
+                .map(|key| (key, &workspace.title))
+            })
             .collect();
         self.workspaces
             .iter()
@@ -518,6 +553,8 @@ impl ProjectUsage {
                     cached_input: reported(tokens.cached_read),
                     output: reported(tokens.output),
                     raw_reads: workspace.raw_reads.to_string(),
+                    whole_file_reads: workspace.whole_file_reads.to_string(),
+                    graph_calls: workspace.graph_calls.to_string(),
                 }
             })
             .collect()

@@ -3,6 +3,7 @@
 //! the answer made again (F19 "Never stale").
 
 use std::fmt::Write;
+use std::path::Path;
 
 use serde_json::Value;
 
@@ -128,6 +129,19 @@ Most used: {}.",
 
     pub fn index(&self) -> &Index {
         &self.index
+    }
+
+    pub(crate) fn task_matches(&mut self, title: &str) -> Option<String> {
+        let (matches, outcome) = self
+            .measured_call(
+                "graph_find",
+                &serde_json::json!({"query": title, "limit": 5}),
+            )
+            .ok()?;
+        if matches!(outcome, ToolOutcome::Classified) {
+            return None;
+        }
+        Some(matches)
     }
 
     /// Re-reads `paths` (known files that changed) and lists the worktree again when a path
@@ -270,7 +284,12 @@ Most used: {}.",
     fn read(&self, arguments: &Value) -> Result<Draft, CallError> {
         let graph = &self.index.graph;
         let target = text(arguments, "target")?;
-        let record = match lookup(graph, &self.search, target) {
+        let path = Path::new(target.trim().trim_matches('`'));
+        let relative = path
+            .strip_prefix(self.index.root())
+            .ok()
+            .map(Path::to_string_lossy);
+        let record = match lookup(graph, &self.search, relative.as_deref().unwrap_or(target)) {
             Lookup::Found(record) => record,
             other => return Err(CallError::classified(failure(graph, target, &other))),
         };

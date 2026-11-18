@@ -365,7 +365,7 @@ async fn drive(
     let session_start = token_usage::now();
     let started = start_reporting_replay(&connection, &shared, &setup).await?;
     let session_id = started.session_id;
-    let mut meter = turn_usage::UsageMeter::for_setup(&setup);
+    let mut meter = turn_usage::UsageMeter::for_setup(&setup, started.graph_on);
     let since = if started.loaded { session_start } else { 0 };
     let mut tokens = token_usage::SessionMeter::new(&setup, &launch, &session_id.0, &shared, since);
     shared
@@ -378,7 +378,7 @@ async fn drive(
         session_id: session_id.clone(),
         loaded: started.loaded,
     });
-    let mut preface = session_preface(&setup, started.loaded);
+    let mut preface = session_preface(&setup, started.loaded, started.graph_on).await;
     let (turn_sender, mut turn_ended) = unbounded_channel::<PromptResult>();
     let mut steering: Steering<Vec<ContentBlock>, ()> = Steering::new(());
     loop {
@@ -427,8 +427,13 @@ async fn drive(
     }
 }
 
-/// The workspace note and, if an earlier session could not be loaded, its transcript.
-fn session_preface(setup: &SessionSetup, loaded: bool) -> Vec<ContentBlock> {
+/// The workspace note, any transcript needed for recovery, and a fresh session's graph hints.
+async fn session_preface(setup: &SessionSetup, loaded: bool, graph_on: bool) -> Vec<ContentBlock> {
+    let graph_preface = if !loaded && graph_on {
+        airc::graph_preface(setup).await
+    } else {
+        None
+    };
     setup
         .preface
         .iter()
@@ -440,6 +445,7 @@ fn session_preface(setup: &SessionSetup, loaded: bool) -> Vec<ContentBlock> {
                 .filter(|_| !loaded)
                 .map(|resume| ContentBlock::from(resume.transcript.clone())),
         )
+        .chain(graph_preface.map(ContentBlock::from))
         .collect()
 }
 

@@ -110,12 +110,17 @@
     {status.access}. Other outcomes include ranked matches and request errors.
   </p>
   {#if status.threads.length}
-    <table class="usage-compare" aria-label="Reported model tokens by thread">
+    <table
+      class="usage-compare"
+      aria-label="Reported tokens and code access by thread"
+    >
       <thead
         ><tr
           ><th scope="col">Thread</th><th scope="col">Input</th><th scope="col"
             >Cached input</th
-          ><th scope="col">Output</th><th scope="col">Raw reads</th></tr
+          ><th scope="col">Output</th><th scope="col">Graph calls</th><th
+            scope="col">Raw reads and searches</th
+          ><th scope="col">Whole-file reads</th></tr
         ></thead
       >
       <tbody>
@@ -123,7 +128,9 @@
           <tr
             ><th scope="row">{thread.name}</th><td>{thread.input}</td><td
               >{thread.cached_input}</td
-            ><td>{thread.output}</td><td>{thread.raw_reads}</td></tr
+            ><td>{thread.output}</td><td>{thread.graph_calls}</td><td
+              >{thread.raw_reads}</td
+            ><td>{thread.whole_file_reads}</td></tr
           >
         {/each}
       </tbody>

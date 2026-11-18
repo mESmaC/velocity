@@ -57,7 +57,12 @@ fn deliver_follow_up(
 }
 
 /// Apply the saved run settings and the AIRC instructions for this thread's launch origin.
-fn configure_session(application: &AppHandle, key: ThreadKey, setup: SessionSetup) -> SessionSetup {
+fn configure_session(
+    application: &AppHandle,
+    key: ThreadKey,
+    setup: SessionSetup,
+    seed_from_title: bool,
+) -> SessionSetup {
     let configured = lock(
         application.state::<ManagedStateStore>().inner(),
         "persisted state",
@@ -71,13 +76,15 @@ fn configure_session(application: &AppHandle, key: ThreadKey, setup: SessionSetu
             .find(|item| item.id == key.0)?;
         let thread = project.threads.iter().find(|item| item.id == key.1)?;
         let airc = crate::airc_access::for_thread(application, key, &setup.worktree, thread);
-        Some((velocity_threads::thread_run_settings(thread), airc))
+        let title = seed_from_title.then(|| thread.title.clone());
+        Some((velocity_threads::thread_run_settings(thread), airc, title))
     });
-    let Some((settings, airc)) = configured else {
+    let Some((settings, airc, title)) = configured else {
         return setup;
     };
     let mut setup = setup.with_run_settings(settings);
     setup.airc = airc;
+    setup.graph_task_title = title;
     setup
 }
 
@@ -780,6 +787,7 @@ async fn run_thread_session(
         &application,
         key,
         SessionSetup::new(worktree_path, plan.bypass_modes),
+        true,
     );
     setup.preface = rosen_change
         .as_deref()
@@ -960,6 +968,7 @@ fn goal_selector(
         application,
         key,
         SessionSetup::new(folder.path.clone(), plan.bypass_modes.clone()),
+        false,
     );
     if let Some(change) = &folder.rosen_change {
         setup.preface = Some(velocity_rosen::workspace_note(change));
@@ -1077,7 +1086,9 @@ async fn finish_goal_claimed(
         application,
         key,
         SessionSetup::new(folder.path, plan.bypass_modes),
-    );
+        false,
+    )
+    .with_graph_task_title(claimed.piece.title);
     setup.preface = folder
         .rosen_change
         .as_deref()

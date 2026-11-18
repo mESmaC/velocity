@@ -104,12 +104,13 @@ Recheck with `rosen run -- cargo run -p velocity-graph --example graph_stats -- 
 **Agent tools.**
 Every session Velocity starts, on every provider and in every role, gets an MCP server named `velocity-graph` in `session/new`, beside `airc` (§3.2, F14).
 The name carries Velocity's reserved prefix, so it never clashes with a server of your own, such as Graphify's.
-It runs Velocity's own executable as `velocity --graph-mcp <app-data> <project-id> <worktree>`.
+It runs Velocity's own executable as `velocity --graph-mcp <app-data> <project-id> <workspace> [thread]`.
+The four discovery tools advertise `anthropic/alwaysLoad` in `tools/list` so compatible Claude Code versions (2.1.325 and later) keep them in context.
 
 | Tool | Does |
 |---|---|
 | `graph_find { query, plane?, kind?, limit? }` | Ranks candidates for a name or a plain-language description. Matching is by words, with camelCase and snake_case split, word stems and rarer words weighted higher. A record's score scales with the square of the share of the query's words it matches. An exact name ranks first, then names that start with the query. Tests, examples and docs rank lower unless the query asks for them. Returns addresses with kind, name, file:line and signature. A result that is the only exact match for the name is marked `exact`. |
-| `graph_read { target, source? }` | One record by address or exact name: signature, doc summary, file and lines, its UP chain, its DOWN children by name, and its links grouped by relation with their counts. `source: true` adds the source lines themselves, so the agent doesn't need a separate read. Fails as the accuracy rules say. |
+| `graph_read { target, source? }` | One record by address, exact name or path. A file gives an outline of its symbols in source order with their addresses and line ranges. A symbol gives its signature, doc summary, location and links grouped by relation with their counts. `source: true` adds the record's source lines. Fails as the accuracy rules say. |
 | `graph_impact { targets, depth? }` | What depends on symbols or files, followed transitively through calls, implementations, type uses, imports and doc mentions (2 hops by default, at most 6). A type brings its methods and a file its symbols, and an implementation of a trait method brings the callers of the trait method. A hub (a record with at least the 99th percentile of incoming links, and at least 50) is listed but not followed. `ambiguous` and `unconfirmed` links are listed only as direct leads. The answer is grouped by subsystem with depth, and links found in the source are listed apart from leads to check. It says that no dependents doesn't prove code unused. |
 | `graph_overlaps { paths? }` | Live Rosen overlap paths, edited symbols on each side, and the names both changes edited. Omitting paths checks the workspace's own claims and edits. |
 | `graph_run { program }` | A pointer program of up to 16 steps, run in one call over one register: `FIND`, `AT`, `READ`, `UP`, `DOWN`, `FOLLOW <relation> [in\|out] [all]`, `FILTER <kind\|plane\|path glob\|name>`, `PATH <target>`, `COUNT`, `SOURCE`. Returns the result and a one-line audit for each step (what it did and how many records it held). `PATH` lists each hop with its relation and provenance, and the path's confidence: that of its weakest hop. It never passes through a hub. For example, `FIND "approval record"; FOLLOW calls in; FILTER path crates/velocity-github/**; COUNT` replaces several searches and reads with one call. |
@@ -122,6 +123,8 @@ It runs Velocity's own executable as `velocity --graph-mcp <app-data> <project-i
   They are written as facts, not orders: imperative rules read like prompt injection and get ignored.
 - **Session-start map.**
   When the index is ready within 1.5 s of the agent connecting, the instructions end with a map of about 250 tokens: the workspace, its file and symbol counts, its biggest subsystems and its most-used symbols with their addresses.
+  A new build thread with the graph enabled starts its first prompt with guidance on finding code and reading symbol outlines.
+  The prompt includes up to five `graph_find` matches for the task title when available within five seconds.
 
 **Measuring it.**
 The graph exists to save time and tokens without costing accuracy, so Velocity measures it per project and shows reported token counts by thread.
@@ -137,8 +140,10 @@ The graph exists to save time and tokens without costing accuracy, so Velocity m
 - **Tool calls.**
   Each tool shows its calls and the shares that resolved an exact lookup or returned a classified lookup failure.
   Ranked matches and request errors are also counted in the total.
-  The modal compares graph calls with raw source reads and searches observed in ACP tool events, and shows input, cached input, output and observed raw reads by thread workspace.
-  Availability of raw read counts and token totals depends on the events and turn usage the provider reports.
+  The modal compares graph calls with raw source reads and searches observed in ACP tool events.
+  Its thread rows show input, cached input, output, graph calls, observed raw reads and searches, and the subset of those calls that requested a whole file.
+  Graph calls are counted by the MCP server, and Velocity's own startup lookup does not count as an agent call.
+  Raw reads and searches require source evidence in the ACP event, such as a file path or source glob, and token totals depend on the usage the provider reports.
 - **Totals.**
   Every turn of every agent, in every role, adds its tokens and its working time to the project's totals for the side it ran on: the graph on or off.
   Tokens are what the agent reports when the turn ends (ACP's turn usage, which agents report as running session totals, so each turn adds the difference).
@@ -151,6 +156,12 @@ The graph exists to save time and tokens without costing accuracy, so Velocity m
 - **Reading it.**
   If turns with the graph use no fewer tokens and no less time, the graph does not pay for itself and the default turns off.
   Lookup accuracy (did the graph return the right record), record integrity (did the record match the source) and task outcome stay separate measures.
+
+**Adoption check (#455).**
+Ten fresh Claude Code 2.1.326 ACP sessions on read-only code navigation tasks in the Velocity workspace received title matches and made 16 graph calls, 24 observed raw source reads or searches, and no whole-file source reads.
+Compared with ten graph-off sessions on the same tasks, estimated carried raw read and search output dropped from 101,411 to 46,229 tokens (54%).
+Including graph tool output gives 78,062 tokens (23% lower).
+These estimates use the #438 transcript method, weighting each tool result by the number of model calls that could still see it.
 
 **Velocity's own uses:**
 - **AIRC and Rosen claims** (F14): overlap notices name the file and, when edits are available, show whether both agents changed the same symbols.

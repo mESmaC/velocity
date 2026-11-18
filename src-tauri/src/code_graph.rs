@@ -103,7 +103,9 @@ pub async fn reset_code_graph_usage(
     .await
 }
 
-use velocity_graph::status::{BaseJob, GraphStatus, ProjectStatus, stage_git_base};
+use velocity_graph::status::{
+    BaseJob, GraphStatus, ProjectStatus, ThreadWorkspace, stage_git_base,
+};
 use velocity_rosen::post_land::BaseSnapshot;
 use velocity_store::VersionControl;
 
@@ -146,7 +148,11 @@ impl ProjectGraph {
                     .worktree_path
                     .as_ref()
                     .or(thread.worktree_path_id.as_ref())?;
-                Some((PathBuf::from(path), thread.title.clone()))
+                Some(ThreadWorkspace::new(
+                    thread.id,
+                    PathBuf::from(path),
+                    thread.title.clone(),
+                ))
             })
             .collect();
         let branch = if project.default_branch.trim().is_empty() {

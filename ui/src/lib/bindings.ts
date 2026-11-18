@@ -4907,6 +4907,8 @@ export type ThreadUsageRow = {
 	cached_input: string,
 	output: string,
 	raw_reads: string,
+	whole_file_reads: string,
+	graph_calls: string,
 };
 
 /**

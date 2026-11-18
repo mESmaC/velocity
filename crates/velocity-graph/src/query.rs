@@ -171,7 +171,9 @@ pub fn read(graph: &Graph, index: usize) -> String {
     if !chain.is_empty() {
         let _ = writeln!(out, "  up: {}", chain.join(" < "));
     }
-    if !record.down.is_empty() {
+    if record.kind == RecordKind::File {
+        out.push_str(&outline(graph, record));
+    } else if !record.down.is_empty() {
         let names: Vec<String> = record
             .down
             .iter()
@@ -199,6 +201,28 @@ pub fn read(graph: &Graph, index: usize) -> String {
     out.push_str(&links(graph, index, true));
     out.push_str(&links(graph, index, false));
     out
+}
+
+fn outline(graph: &Graph, file: &Record) -> String {
+    if file.down.is_empty() {
+        return "  No indexed symbols.\n".to_owned();
+    }
+    let mut symbols = file.down.clone();
+    symbols.sort_by_key(|symbol| graph.records[*symbol].start_byte);
+    let mut output = String::from("  Symbols:\n");
+    for symbol in symbols {
+        let symbol = &graph.records[symbol];
+        let _ = writeln!(
+            output,
+            "    {} {} {}  {}-{}",
+            symbol.address,
+            symbol.kind.label(),
+            symbol.qualified,
+            symbol.start_line,
+            symbol.end_line,
+        );
+    }
+    output
 }
 
 fn links(graph: &Graph, index: usize, outgoing: bool) -> String {

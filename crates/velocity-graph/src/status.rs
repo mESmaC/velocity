@@ -73,12 +73,28 @@ struct Attempt {
 
 pub struct ProjectStatus {
     cache: PathBuf,
-    workspaces: Vec<(PathBuf, String)>,
+    workspaces: Vec<ThreadWorkspace>,
     usage: usage::ProjectUsage,
 }
 
+pub struct ThreadWorkspace {
+    pub(crate) thread: u32,
+    pub(crate) path: PathBuf,
+    pub(crate) title: String,
+}
+
+impl ThreadWorkspace {
+    pub fn new(thread: u32, path: PathBuf, title: String) -> Self {
+        Self {
+            thread,
+            path,
+            title,
+        }
+    }
+}
+
 impl ProjectStatus {
-    pub fn new(app_data: &Path, project: &str, workspaces: Vec<(PathBuf, String)>) -> Self {
+    pub fn new(app_data: &Path, project: &str, workspaces: Vec<ThreadWorkspace>) -> Self {
         Self {
             cache: usage::folder(app_data, project),
             workspaces,
@@ -160,8 +176,8 @@ impl ProjectStatus {
         let catching_up = self
             .workspaces
             .iter()
-            .filter(|(path, _)| WorkspaceStatus::catching_up(&self.cache, path))
-            .map(|(_, title)| title.clone())
+            .filter(|workspace| WorkspaceStatus::catching_up(&self.cache, &workspace.path))
+            .map(|workspace| workspace.title.clone())
             .collect();
         let bytes = self
             .cache

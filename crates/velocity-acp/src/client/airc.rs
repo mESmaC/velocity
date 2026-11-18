@@ -6,6 +6,39 @@ use std::path::{Path, PathBuf};
 use agent_client_protocol::v1::schema::{McpServer, McpServerStdio};
 use velocity_airc::{CONTINUOUS_DISPATCH_ARGUMENT, SERVER_NAME, SERVER_SWITCH, server_arguments};
 
+use super::session::SessionSetup;
+
+/// Keep the initial hint even if indexing cannot return matches within the startup budget.
+pub(super) async fn graph_preface(setup: &SessionSetup) -> Option<String> {
+    let title = setup.graph_task_title.as_ref()?.trim();
+    let (_, app_data, project) = airc_project(setup.airc.as_ref()?)?;
+    let mut note = String::from(
+        "Use the workspace's velocity-graph tools first for source navigation. \
+         For each code lookup, use graph_read on a match below or on a known file path, \
+         or use graph_find with a short name to locate the symbol. \
+         To inspect code from the file outline, pass the symbol's address to graph_read with \
+         source: true. Use graph_impact or graph_run to trace connections between files. \
+         For gaps in the graph, keep native reads to the relevant line ranges. \
+         Use grep for exact literals and config values.",
+    );
+    if !title.is_empty() {
+        let app_data = PathBuf::from(app_data);
+        let project = project.to_owned();
+        let worktree = setup.worktree.clone();
+        let title: String = title.chars().take(300).collect();
+        let lookup = tokio::task::spawn_blocking(move || {
+            velocity_graph::task_context(&app_data, &project, &worktree, &title)
+        });
+        if let Ok(Ok(Some(matches))) =
+            tokio::time::timeout(std::time::Duration::from_secs(5), lookup).await
+        {
+            note.push_str("\n\nTop graph_find matches for the task title:\n");
+            note.push_str(&matches);
+        }
+    }
+    Some(note)
+}
+
 /// The app data folder and project an AIRC server [`AircLaunch`] made is for.
 pub(super) fn airc_project(airc: &McpServer) -> Option<(&McpServerStdio, &str, &str)> {
     let McpServer::Stdio(airc) = airc else {
@@ -16,6 +49,19 @@ pub(super) fn airc_project(airc: &McpServer) -> Option<(&McpServerStdio, &str, &
         return None;
     };
     (switch == SERVER_SWITCH).then_some((airc, app_data.as_str(), project.as_str()))
+}
+
+/// Saved threads keep their identity across sessions and workspace renames.
+pub(super) fn usage_thread(airc: &McpServerStdio) -> Option<&str> {
+    let member = airc.args.get(3)?.as_str();
+    ["thread-", "spec-"]
+        .iter()
+        .any(|prefix| {
+            member
+                .strip_prefix(prefix)
+                .is_some_and(|id| id.parse::<u32>().is_ok())
+        })
+        .then_some(member)
 }
 
 /// The code graph server (F19) for a session that has AIRC: the same executable and project,
@@ -34,6 +80,7 @@ pub fn graph_server(airc: &McpServer, worktree: &Path) -> Option<McpServer> {
         project,
         worktree,
     ));
+    arguments.extend(usage_thread(airc).map(str::to_owned));
     Some(McpServer::Stdio(
         McpServerStdio::new(velocity_graph::SERVER_NAME, &airc.command).args(arguments),
     ))

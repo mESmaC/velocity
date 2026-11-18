@@ -31,7 +31,8 @@ pub use graph::{Graph, Provenance, Record, RecordKind, Relation};
 pub use index::{BuildReport, Index};
 pub use language::Language;
 pub use mcp::{
-    SERVER_NAME, SERVER_SWITCH, WARM_SWITCH, serve, serve_stdio, server_arguments, warm, warm_stdio,
+    SERVER_NAME, SERVER_SWITCH, WARM_SWITCH, serve, serve_stdio, server_arguments, task_context,
+    warm, warm_stdio,
 };
 pub use tools::Tools;
 
