@@ -98,7 +98,13 @@ At each step boundary, an agent receives only the lines it must act on:
 Nothing else is pushed to it (decided, #231).
 An agent is never sent its own events (its claims and claim updates, its PR, pushes, waits, shares and rebases): it caused them, and the tool call that did returned the result.
 Routine lines about its work posted by others, such as PR duty's review claim and release of its PR or an approval, stay in the log.
-The full log stays readable on demand (`read_events`, `airc_claims`), for example while choosing work in a goal swarm (F16).
+The event log stays readable on demand with `read_events`.
+`airc_claims { path?, task?, offset? }` filters held claims by repository-relative path, exact task text or piece key.
+With no filter it shows counts by agent, the caller's own claims and claims touching the caller's claimed files.
+Each page stays below 2 kB, summarizes oversized rows and returns `next_offset` when more rows are available.
+`read_messages` shows up to ten addressed messages or user comments that the session has neither read nor received through step-boundary delivery.
+Each preview shows up to 512 UTF-8 bytes.
+Call again for more unread messages, or pass a message's `sequence` and `next_offset` as `offset` to read its continuation.
 `read_feed` excludes internal delivery acknowledgements and message-mode records, retaining the original sequence numbers for cursor reads.
 This keeps agents heads-down and stops reading costs growing with the square of the agent count.
 The modal always shows you everything.

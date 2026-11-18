@@ -1,6 +1,24 @@
 //! The tools PR duty's Rosen MCP server lists (F5, F7), as the reviewing agent reads them.
 
 use serde_json::{Value, json};
+use velocity_github::mcp_stdio::{review_diff_page, review_diff_tool};
+use velocity_rosen::{ProjectServer, duty::ReviewTrees};
+
+pub(crate) async fn file_page(
+    server: &ProjectServer,
+    trees: Option<&ReviewTrees>,
+    path: &str,
+    offset: usize,
+) -> Result<Value, String> {
+    let trees =
+        trees.ok_or_else(|| "Read the change overview before requesting a patch".to_owned())?;
+    let patch = trees
+        .file(server, path)
+        .await
+        .map_err(|error| error.to_string())?
+        .ok_or_else(|| "Use one path from the change overview".to_owned())?;
+    review_diff_page(path, &patch, offset)
+}
 
 /// A review by reading (`reading`) gets only the tools that read the change and record a
 /// decision: Velocity checks and lands the head it approves.
@@ -8,11 +26,12 @@ pub(crate) fn tool_list(change: &str, reading: bool) -> Vec<Value> {
     let string = json!({"type": "string"});
     let head = json!({"type": "string", "description": "The change's full head id you checked. Velocity refuses it if the change has moved."});
     let none = json!({"type": "object", "properties": {}, "additionalProperties": false});
-    let read = json!({
-        "name": "rosen_duty_change",
-        "description": format!("Rosen change {change} as Rosen has it now: its head, its author, its named snapshots (the author's description of the work), its review threads and its diff against its base."),
-        "inputSchema": none,
-    });
+    let read = review_diff_tool(
+        "rosen_duty_change",
+        &format!(
+            "Rosen change {change} overview: head, base, author, named snapshots, review threads and changed files with diff stats."
+        ),
+    );
     if reading {
         let approves = "approve records Rosen's approval at that head; Velocity then runs the pre-land checks on it and lands it";
         return vec![read, review_tool(change, approves, &string, &head)];

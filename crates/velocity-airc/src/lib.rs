@@ -9,6 +9,7 @@ mod launch;
 mod presence;
 mod process;
 mod protocol;
+mod read_tools;
 mod rebase;
 mod remote;
 mod remote_claims;

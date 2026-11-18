@@ -17,7 +17,10 @@ use std::path::PathBuf;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
-use crate::mcp_stdio::{ToolServer, append_report, read_reports};
+use crate::mcp_stdio::{
+    ReviewDiffRequest, ToolServer, append_report, read_reports, review_diff_page, review_diff_tool,
+};
+use crate::pull_request_files::ReviewFiles;
 use crate::{
     MergeMethod, NewReviewComment, PullRequestClient, PullRequestError, PullRequestOperation,
     ReviewAction,
@@ -97,6 +100,9 @@ pub struct PrDutyServer {
     statement_lock: Option<StatementLockPlace>,
     /// Set when the review is by reading: the base commit its diff is read against.
     reading_base: Option<String>,
+    /// The base in the prepared checkout for a review with local checks.
+    local_review_base: Option<String>,
+    review_files: Option<ReviewFiles>,
 }
 
 /// Where an approval's statement lock is read and kept (F17): the review worktree, whose git
@@ -173,6 +179,8 @@ impl PrDutyServer {
             checked: None,
             statement_lock: None,
             reading_base: None,
+            local_review_base: None,
+            review_files: None,
         }
     }
 
@@ -180,6 +188,11 @@ impl PrDutyServer {
     /// receipt unless the head changes proof files since `base_commit`, and Velocity merges.
     pub fn reading(mut self, base_commit: String) -> Self {
         self.reading_base = Some(base_commit);
+        self
+    }
+
+    pub fn local_review(mut self, base_commit: String) -> Self {
+        self.local_review_base = Some(base_commit);
         self
     }
 
@@ -209,8 +222,45 @@ impl PrDutyServer {
             .map_err(|reason| PullRequestError::Invalid(reason.clone()))
     }
 
-    fn pull_request(&self) -> Result<Value, PullRequestError> {
-        Ok(serde_json::to_value(self.client()?.snapshot(self.number)?)?)
+    fn pull_request(&mut self, arguments: Value) -> Result<Value, PullRequestError> {
+        let request: ReviewDiffRequest = serde_json::from_value(arguments)?;
+        let client = self.client()?;
+        let checkout = &self
+            .statement_lock
+            .as_ref()
+            .ok_or_else(|| PullRequestError::Invalid("The review checkout is missing".into()))?
+            .worktree;
+        if let Some(path) = request.path {
+            let files = self.review_files.as_ref().ok_or_else(|| {
+                PullRequestError::Invalid("Read the PR overview before requesting a patch".into())
+            })?;
+            return review_diff_page(&path, &files.patch(checkout, &path)?, request.offset)
+                .map_err(PullRequestError::Invalid);
+        }
+        let snapshot = client.snapshot(self.number)?;
+        let base = self.review_base(&snapshot.pull_request.head_ref_oid)?;
+        let files = ReviewFiles::read(checkout, &base, &snapshot.pull_request.head_ref_oid)?;
+        let mut overview = serde_json::to_value(snapshot)?;
+        overview["base"] = json!(base);
+        overview["files"] = json!(files.paths);
+        overview["stat"] = json!(files.stat);
+        self.review_files = Some(files);
+        Ok(overview)
+    }
+
+    fn review_base(&self, head: &str) -> Result<String, PullRequestError> {
+        if let Some(prepared) = &self.prepared
+            && prepared.head == head
+        {
+            return Ok(prepared.base.clone());
+        }
+        self.reading_base
+            .as_ref()
+            .or(self.local_review_base.as_ref())
+            .map_or_else(
+                || self.client()?.base_head(self.number),
+                |base| Ok(base.clone()),
+            )
     }
 
     fn review(&self, arguments: Value) -> Result<Value, PullRequestError> {
@@ -448,7 +498,7 @@ impl ToolServer for PrDutyServer {
             "record your decision with pr_duty_review, and merge an approved head with pr_duty_merge"
         };
         format!(
-            "You are {}, holding the review claim on PR #{}. Read it with pr_duty_pull_request, {decide}.",
+            "You are {}, holding the review claim on PR #{}. Read the overview with pr_duty_pull_request, use graph_impact on the changed paths when available, then request patches one path at a time {decide}.",
             self.reviewer, self.number
         )
     }
@@ -459,7 +509,7 @@ impl ToolServer for PrDutyServer {
 
     fn call(&mut self, name: Option<&str>, arguments: Value) -> Result<Value, String> {
         let result = match name {
-            Some("pr_duty_pull_request") => self.pull_request(),
+            Some("pr_duty_pull_request") => self.pull_request(arguments),
             Some("pr_duty_review") => self.review(arguments),
             Some("pr_duty_prepare_landing") => self.prepare_landing(),
             Some("pr_duty_checked") => self.checked(arguments),
@@ -476,11 +526,12 @@ fn tool_list(number: u32) -> Vec<Value> {
     vec![
         json!({"name": "pr_duty_prepare_landing", "description": "Update this PR with its current base without rewriting commits. Returns head, base and required check scope: full, build_and_lint or none. Fetch and check out the returned head in your review worktree, regenerate generated artifacts, then run that scope of local checks. On conflicts resolve both sides or request changes naming files; the owning agent fixes them.", "inputSchema": {"type":"object","properties":{},"additionalProperties":false}}),
         json!({"name": "pr_duty_checked", "description": "Attest successful local checks on the exact prepared head/base. Call only after running all checks required by prepare_landing. A moved base or head is refused.", "inputSchema":{"type":"object","properties":{"head":head,"base":string},"required":["head","base"],"additionalProperties":false}}),
-        json!({
-            "name": "pr_duty_pull_request",
-            "description": format!("PR #{number} as GitHub has it now: title, description, head SHA, branches, CI checks (advisory), reviews, comments and review threads."),
-            "inputSchema": {"type": "object", "properties": {}, "additionalProperties": false},
-        }),
+        review_diff_tool(
+            "pr_duty_pull_request",
+            &format!(
+                "PR #{number} overview: title, description, head, base, changed files, diff stat, advisory CI checks and conversation."
+            ),
+        ),
         review_tool(number, &string, &head),
         json!({
             "name": "pr_duty_merge",

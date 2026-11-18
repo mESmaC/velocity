@@ -17,9 +17,9 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use velocity_git::{WorktreeSetupRequest, default_settings};
 use velocity_github::PrDutyReport;
-use velocity_github::mcp_stdio::{ToolServer, append_report};
+use velocity_github::mcp_stdio::{ReviewDiffRequest, ToolServer, append_report};
 use velocity_rosen::ProjectServer;
-use velocity_rosen::duty::{self, LandOutcome, MergeCheckout};
+use velocity_rosen::duty::{self, LandOutcome, MergeCheckout, ReviewTrees};
 
 /// The command-line switch that makes Velocity's own executable serve this MCP server.
 pub const ROSEN_DUTY_SERVER_SWITCH: &str = "--rosen-duty-mcp";
@@ -210,6 +210,7 @@ pub struct RosenDutyServer {
     prepared: Option<(String, String)>,
     /// The merge result whose receipt this session submitted.
     checked: Option<(String, String)>,
+    review_trees: Option<ReviewTrees>,
 }
 
 impl RosenDutyServer {
@@ -226,6 +227,7 @@ impl RosenDutyServer {
             runtime,
             prepared: None,
             checked: None,
+            review_trees: None,
         }
     }
 
@@ -247,16 +249,31 @@ impl RosenDutyServer {
         self.runtime.as_ref().map_err(Clone::clone)?.block_on(work)
     }
 
-    fn change(&self) -> Result<Value, String> {
+    fn change(&mut self, arguments: Value) -> Result<Value, String> {
+        let request: ReviewDiffRequest =
+            serde_json::from_value(arguments).map_err(|error| error.to_string())?;
         let (server, change) = (&self.server, self.launch.change.as_str());
+        if let Some(path) = request.path {
+            return self.block_on(crate::rosen_duty_tools::file_page(
+                server,
+                self.review_trees.as_ref(),
+                &path,
+                request.offset,
+            ));
+        }
         let (overview, diff) = self.block_on(async {
-            let overview = duty::change_overview(server, change).await;
-            let diff = duty::change_diff(server, change).await;
-            Ok((
-                overview.map_err(|error| error.to_string())?,
-                diff.map_err(|error| error.to_string())?,
-            ))
+            let overview = duty::change_overview(server, change)
+                .await
+                .map_err(|error| error.to_string())?;
+            let diff = duty::change_diff_record(server, change)
+                .await
+                .map_err(|error| error.to_string())?;
+            if diff.to.to_string() != overview.head {
+                return Err("The change moved while reading; refresh its overview".into());
+            }
+            Ok((overview, diff))
         })?;
+        self.review_trees = Some(ReviewTrees::from_diff(&diff));
         let threads: Vec<Value> = overview
             .threads
             .iter()
@@ -267,10 +284,12 @@ impl RosenDutyServer {
         Ok(json!({
             "change": change,
             "head": overview.head,
+            "base": diff.from.to_string(),
             "author": overview.owner,
+            "summary": overview.named.last(),
             "named_snapshots": overview.named,
             "review_threads": threads,
-            "diff": diff,
+            "files": duty::diff_stat(&diff),
         }))
     }
 
@@ -559,7 +578,7 @@ impl ToolServer for RosenDutyServer {
             "land an approved head with rosen_duty_land"
         };
         format!(
-            "You are {}, holding the review claim on Rosen change {}. Read it with rosen_duty_change, record your decision with rosen_duty_review, and {landing}.",
+            "You are {}, holding the review claim on Rosen change {}. Read the overview with rosen_duty_change, use graph_impact on the changed paths when available, then request patches one path at a time. Record your decision with rosen_duty_review, and {landing}.",
             self.launch.nickname, self.launch.change
         )
     }
@@ -570,7 +589,7 @@ impl ToolServer for RosenDutyServer {
 
     fn call(&mut self, name: Option<&str>, arguments: Value) -> Result<Value, String> {
         match name {
-            Some("rosen_duty_change") => self.change(),
+            Some("rosen_duty_change") => self.change(arguments),
             Some("rosen_duty_review") => self.review(arguments),
             Some("rosen_duty_prepare_landing" | "rosen_duty_checked" | "rosen_duty_land")
                 if self.launch.reading =>

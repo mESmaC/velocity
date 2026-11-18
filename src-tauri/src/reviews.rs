@@ -23,7 +23,7 @@ use crate::state::ManagedStateStore;
 use crate::threads::{lock, report};
 
 /// `velocity --pr-duty-mcp <worktree> <app-data> <project> <nick> <number> <method> <report>`,
-/// then `reading <base-commit>` for a review by reading: serve one review's MCP connection on
+/// then `<base-commit>` (preceded by `reading` for a reading review): serve one review's MCP connection on
 /// stdin/stdout and exit. `false` when Velocity was started normally.
 pub fn serve_pr_duty_server() -> anyhow::Result<bool> {
     let arguments: Vec<String> = std::env::args().skip(1).collect();
@@ -39,11 +39,11 @@ pub fn serve_pr_duty_server() -> anyhow::Result<bool> {
         number,
         method,
         report,
-        reading @ ..,
+        review_base @ ..,
     ] = arguments.as_slice()
     else {
         anyhow::bail!(
-            "Usage: {PR_DUTY_SERVER_SWITCH} <worktree> <app-data> <project> <nick> <number> <merge-method> <report-file> [{READING_REVIEW_ARGUMENT} <base-commit>]"
+            "Usage: {PR_DUTY_SERVER_SWITCH} <worktree> <app-data> <project> <nick> <number> <merge-method> <report-file> [[{READING_REVIEW_ARGUMENT}] <base-commit>]"
         );
     };
     let number: u32 = number.parse().context("The PR number is not a number")?;
@@ -71,10 +71,13 @@ pub fn serve_pr_duty_server() -> anyhow::Result<bool> {
         PathBuf::from(app_data),
         project.clone(),
     );
-    if let [mode, base_commit] = reading
-        && mode == READING_REVIEW_ARGUMENT
-    {
-        server = server.reading(base_commit.clone());
+    match review_base {
+        [mode, base_commit] if mode == READING_REVIEW_ARGUMENT => {
+            server = server.reading(base_commit.clone());
+        }
+        [base_commit] => server = server.local_review(base_commit.clone()),
+        [] => {}
+        _ => anyhow::bail!("Invalid PR duty review mode"),
     }
     let input = BufReader::new(std::io::stdin().lock());
     let mut output = std::io::stdout().lock();

@@ -457,7 +457,10 @@ fn prompt(launch: &SwarmLaunch, roster: &ScoutRoster, instruction: Option<&str>)
     );
     format!(
         "You are {}, a Review swarm duty agent. {work}\n\n\
-        Call review_swarm_change and read every referenced issue with its comments and evidence. Use section references from the work or find the relevant headings with graph_find. Read them with graph_read (source: true), or read only their line ranges when the graph is unavailable. \
+        Call review_swarm_change for the file list, diff stats and graph_impact. \
+        Use those to choose which files to inspect first. Request the patch by path and page through large files only as needed. \
+        Read every referenced issue with its comments and evidence. Use section references from the work or find the relevant headings with graph_find. \
+        Read them with graph_read (source: true), or read only their line ranges when the graph is unavailable. \
         Check the implementation end to end against each claim and its SPEC section. \
         Reviews never gate, delay or revert a land. Do not approve, submit receipts or revert by hand; R12 owns build recovery. \
         File findings through scout_issues and scout_file, with executed failing evidence and duplicate checks. \

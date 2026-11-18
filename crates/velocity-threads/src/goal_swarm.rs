@@ -346,7 +346,7 @@ pub fn goal_agent_prompt(
          - Claimed piece in AIRC: {piece_instructions}\n\
          - Work-pool context: {}. Prior pushed work is optional; never use another thread's checkout.\n\
          - Commit, push `{branch_name}`, open a PR against `{default_branch}`, and watch it until PR duty merges it: fix failed checks, answer every review comment, resolve addressed threads, and re-request review. Never merge your own PR.\n\
-         - Settle file overlaps and dependency waits in AIRC (`airc_claims`, `airc_claim`, `airc_send`); first claim wins.\n\
+         - Use the path filter in `airc_claims` to check file ownership. Settle overlaps and dependency waits in AIRC; first claim wins.\n\
          - Implement and run the feature first; then write Lean proofs only if the feature is on the project's proof list in SPEC.md (Rule 8, F17).\n\n{spec}",
         slot.prompt,
         slot.nick,
@@ -375,7 +375,7 @@ fn rosen_goal_prompt(
          - Claimed piece: {} ({}). {read_issue}Name this piece in your Rosen snapshot summary.\n\
          - This is a Rosen workspace. Claim files with `rosen claim`, record overlaps with `rosen share`, and name completed work with `rosen commit -m \"<summary>\"`, then end your turn. The task is done when the change lands.\n\
          - Run builds and tests through `rosen run -- <command>`.\n\
-         - Read `airc_claims` for work ownership. If this task depends on another member's work, call `airc_wait` with its holder and file. Velocity continues your work on a stacked change (Rosen D19); the parent must land first.\n\
+         - Use the task filter in `airc_claims` to check work ownership. If this task depends on another member's work, call `airc_wait` with its holder and file. Velocity continues your work on a stacked change (Rosen D19); the parent must land first.\n\
          - Implement and run first. Follow the project's proof-list instructions.\n\n{spec}",
         slot.prompt,
         slot.nick,

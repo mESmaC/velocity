@@ -6,7 +6,8 @@
 use std::path::{Path, PathBuf};
 
 use rosen_client::Client;
-use rosen_client::protocol::{CommentTarget, DiffRequest, LandStatus};
+use rosen_client::protocol::{CommentTarget, Diff, DiffRequest, FileDiff, LandStatus, LineKind};
+use serde_json::{Value, json};
 
 use crate::policy::object;
 use crate::workspace::session;
@@ -294,41 +295,109 @@ pub async fn changed_paths(
         .collect())
 }
 
-/// The change's diff against its parent, with three lines of context, as unified text.
-pub async fn change_diff(server: &ProjectServer, change: &str) -> Result<String, RosenError> {
+/// The change's diff against its parent, with no unchanged lines.
+pub async fn change_diff_record(server: &ProjectServer, change: &str) -> Result<Diff, RosenError> {
     let client = Client::connect(server.endpoint()).await?;
-    let request = DiffRequest {
-        to: Some(change.to_owned()),
-        ..DiffRequest::default()
-    };
-    Ok(unified(&client.diff(request).await?))
+    Ok(client
+        .diff(DiffRequest {
+            to: Some(change.to_owned()),
+            context: Some(0),
+            ..DiffRequest::default()
+        })
+        .await?)
 }
 
-/// The diff as unified text, the form agents read best.
-pub(crate) fn unified(diff: &rosen_client::protocol::Diff) -> String {
-    use rosen_client::protocol::LineKind;
-    let mut text = String::new();
-    for file in &diff.files {
-        text.push_str(&format!("--- a/{0}\n+++ b/{0}\n", file.path));
-        if file.binary {
-            text.push_str("Binary file differs\n");
-            continue;
+/// The immutable trees behind an overview. Later pages keep using these trees
+/// even when an automatic snapshot or rebase moves the change.
+pub struct ReviewTrees {
+    base: String,
+    head: String,
+}
+
+impl ReviewTrees {
+    pub fn from_diff(diff: &Diff) -> Self {
+        Self {
+            base: diff.from.to_string(),
+            head: diff.to.to_string(),
         }
-        for hunk in &file.hunks {
-            text.push_str(&format!(
-                "@@ -{},{} +{},{} @@\n",
-                hunk.old_start, hunk.old_lines, hunk.new_start, hunk.new_lines
-            ));
-            for line in &hunk.lines {
-                let sign = match line.kind {
-                    LineKind::Context => ' ',
-                    LineKind::Added => '+',
-                    LineKind::Removed => '-',
-                };
-                text.push(sign);
-                text.push_str(&line.text);
-                text.push('\n');
+    }
+
+    pub async fn file(
+        &self,
+        server: &ProjectServer,
+        path: &str,
+    ) -> Result<Option<String>, RosenError> {
+        let client = Client::connect(server.endpoint()).await?;
+        let diff = client
+            .diff(DiffRequest {
+                from: Some(self.base.clone()),
+                to: Some(self.head.clone()),
+                paths: vec![path.to_owned()],
+                ..DiffRequest::default()
+            })
+            .await?;
+        Ok(diff
+            .files
+            .iter()
+            .find(|file| file.path == path)
+            .map(file_patch))
+    }
+}
+
+pub fn diff_stat(diff: &Diff) -> Value {
+    let files: Vec<_> = diff
+        .files
+        .iter()
+        .map(|file| {
+            let mut added = 0;
+            let mut removed = 0;
+            for line in file.hunks.iter().flat_map(|hunk| &hunk.lines) {
+                match line.kind {
+                    LineKind::Added => added += 1,
+                    LineKind::Removed => removed += 1,
+                    LineKind::Context => {}
+                }
             }
+            json!({"path":file.path, "status":file.status, "added":added, "removed":removed,
+            "binary":file.binary})
+        })
+        .collect();
+    json!(files)
+}
+
+pub(crate) fn file_patch(file: &FileDiff) -> String {
+    let mut text = String::new();
+    let old = file.old.as_ref().map(|side| side.mode.as_str());
+    let new = file.new.as_ref().map(|side| side.mode.as_str());
+    match (old, new) {
+        (None, Some(mode)) => text.push_str(&format!("new file mode {mode}\n")),
+        (Some(mode), None) => text.push_str(&format!("deleted file mode {mode}\n")),
+        (Some(old), Some(new)) if old != new => {
+            text.push_str(&format!("old mode {old}\nnew mode {new}\n"));
+        }
+        _ => {}
+    }
+    let old_path = old.map_or_else(|| "/dev/null".to_owned(), |_| format!("a/{}", file.path));
+    let new_path = new.map_or_else(|| "/dev/null".to_owned(), |_| format!("b/{}", file.path));
+    text.push_str(&format!("--- {old_path}\n+++ {new_path}\n"));
+    if file.binary {
+        text.push_str("Binary file differs\n");
+        return text;
+    }
+    for hunk in &file.hunks {
+        text.push_str(&format!(
+            "@@ -{},{} +{},{} @@\n",
+            hunk.old_start, hunk.old_lines, hunk.new_start, hunk.new_lines
+        ));
+        for line in &hunk.lines {
+            let sign = match line.kind {
+                LineKind::Context => ' ',
+                LineKind::Added => '+',
+                LineKind::Removed => '-',
+            };
+            text.push(sign);
+            text.push_str(&line.text);
+            text.push('\n');
         }
     }
     text

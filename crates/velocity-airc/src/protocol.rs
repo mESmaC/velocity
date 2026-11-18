@@ -1,6 +1,7 @@
 use crate::{
     Channel, Error,
     issue_tools::{self, IssueHandler},
+    read_tools::{self, MessageReader},
 };
 use serde_json::{Value, json};
 use std::io::{BufRead, Write};
@@ -53,7 +54,7 @@ pub(crate) fn serve_with_options(
     let connected = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true));
     let output = std::sync::Arc::new(std::sync::Mutex::new(output));
     let receiver = read_requests(input, connected.clone(), output.clone());
-    let mut initialized = false;
+    let mut session = ToolSession::default();
     let result = (|| {
         for line in receiver {
             let line = line?;
@@ -63,7 +64,7 @@ pub(crate) fn serve_with_options(
                     member,
                     requested_nick,
                     &request,
-                    &mut initialized,
+                    &mut session,
                     &connected,
                     &options,
                 ),
@@ -75,7 +76,7 @@ pub(crate) fn serve_with_options(
         }
         Ok(())
     })();
-    let cleanup = if initialized {
+    let cleanup = if session.nick.is_some() {
         channel.leave(member)
     } else {
         Ok(())
@@ -90,8 +91,14 @@ fn instructions(nick: &str, continuous_dispatch: bool) -> String {
         "Use task_add, task_update and task_delete only when the user explicitly asks you to add, change or remove Task List items. Otherwise file issues."
     };
     format!(
-        "You joined this project's AIRC channel as {nick}. Read airc_claims before choosing work. Call airc_claim with the task, branch and every file BEFORE editing, and with piece set to the work item's identity (task:<id>, issue:<number> or spec:<section>) when it has one; on refusal the holder is named, so re-read airc_claims and claim the first open piece. Extend your existing task claim to add files. Record airc_share or a dependency wait before editing an overlapping file. Messages require named recipients and an intent. task_list reads the project Task List at any time. {task_rule} Task List changes never edit SPEC.md or start an interview. A discovery about Velocity itself (its worktrees, AIRC, duty tools, agent shells, build queue or app), not this project, goes in append_ledger with velocity_issue set, and Velocity files it on its own repository. A discovery about Rosen itself (its server, workspaces, durability, claims, rebases or landing) uses rosen_issue instead and is filed on mESmaC/rosen. Use only one issue field and read discoveries first to avoid reporting the same problem twice."
+        "You joined this project's AIRC channel as {nick}. Check ownership with airc_claims using the candidate task or piece as the task filter. Call airc_claim with the task, branch and every file BEFORE editing, and with piece set to the work item's identity (task:<id>, issue:<number> or spec:<section>) when it has one; on refusal the holder is named, so check the next candidate. Extend your existing task claim to add files. Record airc_share or a dependency wait before editing an overlapping file. Messages require named recipients and an intent. task_list reads the project Task List at any time. {task_rule} Task List changes never edit SPEC.md or start an interview. A discovery about Velocity itself (its worktrees, AIRC, duty tools, agent shells, build queue or app), not this project, goes in append_ledger with velocity_issue set, and Velocity files it on its own repository. A discovery about Rosen itself (its server, workspaces, durability, claims, rebases or landing) uses rosen_issue instead and is filed on mESmaC/rosen. Use only one issue field and read discoveries first to avoid reporting the same problem twice."
     )
+}
+
+#[derive(Default)]
+struct ToolSession {
+    nick: Option<String>,
+    messages: MessageReader,
 }
 
 fn respond(
@@ -99,7 +106,7 @@ fn respond(
     member: &str,
     nick: &str,
     request: &Value,
-    initialized: &mut bool,
+    session: &mut ToolSession,
     connected: &std::sync::atomic::AtomicBool,
     options: &ToolOptions<'_>,
 ) -> Option<Value> {
@@ -112,7 +119,7 @@ fn respond(
     let result = match method.unwrap_or_default() {
         "initialize" => match channel.join_with_session(member, nick, true) {
             Ok(nick) => {
-                *initialized = true;
+                session.nick = Some(nick.clone());
                 json!({"protocolVersion":"2025-11-25","capabilities":{"tools":{}},
                         "serverInfo":{"name":"velocity-airc","version":env!("CARGO_PKG_VERSION")},
                         "instructions":instructions(&nick, options.continuous_dispatch)})
@@ -120,7 +127,7 @@ fn respond(
             Err(error) => return Some(failure(id, -32603, &error.to_string())),
         },
         "ping" => json!({}),
-        _ if !*initialized => return Some(failure(id, -32600, "Initialize first")),
+        _ if session.nick.is_none() => return Some(failure(id, -32600, "Initialize first")),
         "tools/list" => match channel.is_rosen_project(member) {
             Ok(rosen) => json!({"tools":tool_list(rosen, options)}),
             Err(error) => return Some(failure(id, -32603, &error.to_string())),
@@ -134,6 +141,7 @@ fn respond(
                 parameters,
                 connected,
                 options.issue_handler,
+                session,
             ) {
                 Ok(value) => json!({"content":[{"type":"text","text":value.to_string()}]}),
                 Err(error) => {
@@ -153,6 +161,7 @@ fn call(
     parameters: &Value,
     connected: &std::sync::atomic::AtomicBool,
     issue_handler: Option<&IssueHandler<'_>>,
+    session: &mut ToolSession,
 ) -> Result<Value, Error> {
     let arguments = &parameters["arguments"];
     let after = arguments
@@ -190,7 +199,13 @@ fn call(
             Ok(json!({"left":true}))
         }
         "list_nicks" => Ok(serde_json::to_value(channel.presence()?)?),
-        name @ ("read_feed" | "read_events" | "read_messages" | "read_ledger") => {
+        "read_messages" => session.messages.read(
+            channel,
+            member,
+            session.nick.as_deref().unwrap_or(nick),
+            arguments,
+        ),
+        name @ ("read_feed" | "read_events" | "read_ledger") => {
             read_filtered(channel, name, arguments, after)
         }
         "append_ledger" => append_ledger(channel, member, arguments),
@@ -245,7 +260,6 @@ fn read_filtered(
             .filter(|entry| !matches!(entry.kind.as_str(), "delivery_ack" | "message_mode"))
             .collect(),
         "read_events" => channel.events(after)?,
-        "read_messages" => channel.messages(after)?,
         _ => channel.ledger(ledger(arguments)?, after)?,
     };
     Ok(serde_json::to_value(entries)?)
@@ -282,8 +296,9 @@ fn tool_list(rosen: bool, options: &ToolOptions<'_>) -> Vec<Value> {
         ),
         tool(
             "read_messages",
-            "Read project coordination messages",
-            cursor,
+            "Read up to 10 unread messages addressed to you, with 512-byte previews. Call again while more_unread is true. For a longer message, pass its sequence and next_offset as offset to read the next part.",
+            json!({"after":cursor["after"], "sequence":{"type":"integer","minimum":1},
+                "offset":{"type":"integer","minimum":0}}),
             &[],
         ),
     ];
@@ -361,8 +376,8 @@ fn claim_tools() -> Vec<Value> {
     vec![
         tool(
             "airc_claims",
-            "Read held piece and file claims",
-            json!({}),
+            "Read matching claims by repository-relative path or exact task text or piece key (both filters must match when supplied). Without filters, get counts by agent, your own claims and claims overlapping your files. Pass next_offset as offset for more summary rows.",
+            json!({"path":string, "task":string, "offset":{"type":"integer","minimum":0}}),
             &[],
         ),
         tool(
@@ -393,7 +408,7 @@ fn claim_call(
     arguments: &Value,
 ) -> Result<Value, Error> {
     match name {
-        "airc_claims" => Ok(serde_json::to_value(channel.claims()?)?),
+        "airc_claims" => read_tools::claims(channel, member, arguments),
         "airc_claim" => {
             let files = serde_json::from_value(arguments["files"].clone())?;
             let piece = arguments

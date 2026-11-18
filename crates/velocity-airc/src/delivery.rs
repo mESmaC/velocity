@@ -156,7 +156,7 @@ pub(crate) fn routed(
     message_for(entry, nick)
 }
 
-fn hold(
+pub(crate) fn hold(
     entry: &Entry,
     nick: &str,
     entries: &[Entry],

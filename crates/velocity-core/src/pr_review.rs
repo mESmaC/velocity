@@ -330,7 +330,7 @@ fn checkout_paragraph(brief: &ReviewBrief) -> String {
 fn tier_steps(brief: &ReviewBrief) -> String {
     match brief.tier.tier {
         ReviewTier::Trivial => format!(
-            "\nTier: trivial. Velocity read its diff as docs, comments or formatting only. No proof is needed.\n{CONVERSATION_STEP}- Read the PR with `pr_duty_pull_request` and confirm the change matches the piece its description claims. If you find a change that is not docs, comments or formatting, review it in full as a normal PR.\n{}- Approve once {} the change matches its claim.\n",
+            "\nTier: trivial. Velocity read its diff as docs, comments or formatting only. No proof is needed.\n{CONVERSATION_STEP}{DIFF_STEP}- Confirm the change matches the piece its description claims. If you find a change that is not docs, comments or formatting, review it in full as a normal PR.\n{}- Approve once {} the change matches its claim.\n",
             checks_step(brief),
             match brief.mode {
                 ReviewMode::Reading => "you have read it and",
@@ -349,6 +349,7 @@ fn tier_steps(brief: &ReviewBrief) -> String {
 /// Comments are how you steer a review from GitHub (F7): read before deciding, and a hold
 /// rests the head instead of being reviewed past.
 const CONVERSATION_STEP: &str = "- Before anything else, read the PR's whole conversation in `pr_duty_pull_request`: every comment, review and review thread, newest last. A comment from a person (not a PR duty agent's review) is an instruction for this review: follow it. If one puts the PR on hold, says not to review or merge it yet, or makes it wait for other work, and nothing newer lifts that, call `pr_duty_review` with action `hold`, the head and the comment's reason, then stop: run no checks.\n";
+const DIFF_STEP: &str = "- Start with the PR overview's file list and diff stat. Run `graph_impact` on changed paths indexed by the graph, then request patches with `pr_duty_pull_request` one path at a time. Page through large files only as needed.\n";
 
 /// What the review is told about checks (F7 "Checks before merge"): a reading review runs
 /// none, whatever the project's AGENTS.md tells PR duty; a local review runs AGENTS.md's.
@@ -386,6 +387,7 @@ fn review_steps(brief: &ReviewBrief) -> String {
         "Review:\n- Read the PR with `pr_duty_pull_request`: its description names the piece it completes. Use section references from the work or find the relevant headings with graph_find. Read them with graph_read (source: true), or read only their line ranges when the graph is unavailable.\n- Review the intent, not each line: check the PR against its claim, its Task List item, issue or SPEC.md section, and AGENTS.md. Style is left to linters.\n",
     );
     steps.push_str(CONVERSATION_STEP);
+    steps.push_str(DIFF_STEP);
     if rules.check_diff_against_spec {
         steps.push_str("- Check the diff against SPEC.md: the main path of the claimed piece must do what its section says.\n");
     }

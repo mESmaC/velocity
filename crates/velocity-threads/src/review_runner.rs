@@ -1033,8 +1033,8 @@ impl Review {
             executable: &self.runner.executable,
             app_data: &self.runner.app_data,
             report: &report,
-            reading_base: (prepared.mode == ReviewMode::Reading)
-                .then_some(prepared.base_commit.as_str()),
+            base_commit: &prepared.base_commit,
+            reading: prepared.mode == ReviewMode::Reading,
         };
         if self.runner.dismissed(&self.key) {
             // Dismissed while the worktree or the proofs were prepared: no session starts.

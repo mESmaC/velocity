@@ -6,9 +6,34 @@ use std::fs::OpenOptions;
 use std::io::{BufRead, Write};
 use std::path::Path;
 
-use serde::Serialize;
 use serde::de::DeserializeOwned;
+use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ReviewDiffRequest {
+    pub path: Option<String>,
+    #[serde(default)]
+    pub offset: usize,
+}
+
+pub fn review_diff_tool(name: &str, description: &str) -> Value {
+    json!({
+        "name": name,
+        "description": format!("{description} Pass one path from the file list for its patch. For a partial patch, pass the same path and next_offset as offset."),
+        "inputSchema": {"type":"object", "properties":{
+            "path":{"type":"string","minLength":1},
+            "offset":{"type":"integer","minimum":0}
+        }, "additionalProperties":false}
+    })
+}
+
+pub fn review_diff_page(path: &str, diff: &str, offset: usize) -> Result<Value, String> {
+    let (diff, next_offset) = velocity_core::review_diff::review_page(diff, offset)
+        .ok_or_else(|| "Use the byte offset returned by the previous page".to_owned())?;
+    Ok(json!({"path":path, "diff":diff, "next_offset":next_offset}))
+}
 
 /// One duty MCP server: its name, what it tells the agent, its tools and how it runs them.
 pub trait ToolServer {

@@ -7,9 +7,10 @@ use crate::launch::Location;
 use crate::review_swarm::ReviewSwarms;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
-use velocity_github::mcp_stdio::ToolServer;
+use velocity_github::mcp_stdio::{ReviewDiffRequest, ToolServer, review_diff_tool};
 use velocity_github::{IssueClient, ScoutServer, read_scout_reports};
 use velocity_rosen::ProjectServer;
+use velocity_rosen::duty::{self, ReviewTrees};
 use velocity_rosen::review_swarm::{self, LandedChange};
 use velocity_store::duty::ScoutRoster;
 
@@ -67,6 +68,7 @@ pub struct ReviewSwarmServer {
     launch: SwarmLaunch,
     scout: ScoutServer,
     runtime: tokio::runtime::Runtime,
+    review_trees: Option<ReviewTrees>,
 }
 
 impl ReviewSwarmServer {
@@ -89,6 +91,7 @@ impl ReviewSwarmServer {
             launch,
             scout,
             runtime,
+            review_trees: None,
         })
     }
 
@@ -100,19 +103,30 @@ impl ReviewSwarmServer {
         velocity_github::mcp_stdio::serve(self, input, output)
     }
 
-    fn change(&self) -> Result<Value, String> {
+    fn change(&mut self, arguments: Value) -> Result<Value, String> {
+        let request: ReviewDiffRequest =
+            serde_json::from_value(arguments).map_err(|error| error.to_string())?;
+        let server = ProjectServer::new(&self.launch.app_data, self.launch.project);
+        if let Some(path) = request.path {
+            return self.runtime.block_on(crate::rosen_duty_tools::file_page(
+                &server,
+                self.review_trees.as_ref(),
+                &path,
+                request.offset,
+            ));
+        }
         let Some(target) = &self.launch.target else {
             return Ok(
                 json!({"work": "Scout the current base against SPEC.md and its proof list"}),
             );
         };
-        let server = ProjectServer::new(&self.launch.app_data, self.launch.project);
         self.runtime.block_on(async {
-            let overview = velocity_rosen::duty::change_overview(&server, &target.change).await
+            let overview = duty::change_overview(&server, &target.change).await
                 .map_err(|error| error.to_string())?;
             let diff = review_swarm::landed_diff_record(&server, target).await
                 .map_err(|error| error.to_string())?;
-            let text = review_swarm::format_landed_diff(&diff);
+            let files = duty::diff_stat(&diff);
+            self.review_trees = Some(ReviewTrees::from_diff(&diff));
             let endpoint = server.endpoint().clone();
             let cache = self.launch.app_data.join("graph").join(self.launch.project.to_string());
             let impact = tokio::task::spawn_blocking(move || {
@@ -125,7 +139,7 @@ impl ReviewSwarmServer {
                     "landed": impact(diff.to.to_string(), false)})
             }).await.map_err(|error| error.to_string())?;
             Ok(json!({"change": target.change, "commit": target.commit,
-                "summary": target.summary, "named_snapshots": overview.named, "diff": text, "graph_impact": impact,
+                "summary": target.summary, "named_snapshots": overview.named, "files": files, "graph_impact": impact,
                 "source_issue": self.launch.source_issue,
                 "instruction": "Read the referenced issue and SPEC section; verify every claim against the code"}))
         })
@@ -307,13 +321,13 @@ impl ToolServer for ReviewSwarmServer {
     }
 
     fn instructions(&self) -> String {
-        "Review landed code, scout and verify proof-list features. Call review_swarm_change, use scout_issues/scout_file for evidence, then review_swarm_complete. No review gates a land.".into()
+        "Review landed code, scout and verify proof-list features. Start with review_swarm_change for files, diff stats and graph impact. Request patches one path at a time, use scout_issues/scout_file for evidence, then call review_swarm_complete. No review gates a land.".into()
     }
 
     fn tools(&self) -> Vec<Value> {
         let mut tools = self.scout.tools();
-        tools.push(json!({"name": "review_swarm_change", "description": "The exact landed diff, its issue references and author's named snapshots",
-            "inputSchema": {"type": "object", "properties": {}, "additionalProperties": false}}));
+        tools.push(review_diff_tool("review_swarm_change",
+            "Landed change overview: file list with diff stats, graph impact, issue references and named snapshots."));
         tools.push(json!({"name": "review_swarm_complete", "description": "Record a finished review or sweep. Proof features require Design.lean, fixtures, lake build and axiom audit. Coverage is applied after any named fix or proof lands.",
             "inputSchema": {"type": "object", "properties": {
                 "issues_filed": {"type": "boolean"}, "summary": {"type": "string"},
@@ -326,7 +340,7 @@ impl ToolServer for ReviewSwarmServer {
 
     fn call(&mut self, name: Option<&str>, arguments: Value) -> Result<Value, String> {
         match name {
-            Some("review_swarm_change") => self.change(),
+            Some("review_swarm_change") => self.change(arguments),
             Some("review_swarm_complete") => self.complete(arguments),
             Some("scout_file") => self.file(arguments),
             _ => self.scout.call(name, arguments),

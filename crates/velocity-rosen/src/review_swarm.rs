@@ -132,20 +132,10 @@ pub async fn landed_diff_record(
         .diff(DiffRequest {
             from: Some(parent.to_string()),
             to: Some(target.commit.clone()),
+            context: Some(0),
             ..DiffRequest::default()
         })
         .await?)
-}
-
-pub async fn landed_diff(
-    server: &ProjectServer,
-    target: &LandedChange,
-) -> Result<String, RosenError> {
-    Ok(duty::unified(&landed_diff_record(server, target).await?))
-}
-
-pub fn format_landed_diff(diff: &rosen_client::protocol::Diff) -> String {
-    duty::unified(diff)
 }
 
 pub async fn landed_paths(

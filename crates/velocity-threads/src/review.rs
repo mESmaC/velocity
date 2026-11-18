@@ -117,9 +117,8 @@ pub struct ReviewServer<'a> {
     /// The app data folder holding the project's AIRC channel (the approval record).
     pub app_data: &'a Path,
     pub report: &'a Path,
-    /// The base commit a review by reading reads its diff against; `None` for a review that
-    /// runs the local checks.
-    pub reading_base: Option<&'a str>,
+    pub base_commit: &'a str,
+    pub reading: bool,
 }
 
 /// Where PR `number`'s `review-pr-<n>` worktree is kept, whether or not it exists now.
@@ -151,9 +150,10 @@ pub fn review_session(plan: &ReviewPlan, worktree: PathBuf, server: ReviewServer
         method.to_owned(),
         server.report.display().to_string(),
     ];
-    if let Some(base_commit) = server.reading_base {
-        arguments.extend([READING_REVIEW_ARGUMENT.to_owned(), base_commit.to_owned()]);
+    if server.reading {
+        arguments.push(READING_REVIEW_ARGUMENT.to_owned());
     }
+    arguments.push(server.base_commit.to_owned());
     let stdio = McpServerStdio::new("velocity-pr-duty", server.executable).args(arguments);
     setup.shared_servers.push(McpServer::Stdio(stdio));
     setup
