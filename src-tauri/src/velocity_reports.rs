@@ -9,22 +9,24 @@ use std::time::Duration;
 
 use tauri::{AppHandle, Manager};
 use velocity_airc::{Channel, Entry};
-use velocity_github::velocity_reports::{
-    self, DiscoveryReport, ReportRepository, ReportedDiscoveries,
+use velocity_github::{
+    IssueClient,
+    velocity_reports::{self, DiscoveryReport, ReportRepository, ReportedDiscoveries},
 };
+use velocity_store::ProjectItem;
 
+use crate::graph_access::IssueGraph;
 use crate::state::ManagedStateStore;
 use crate::threads::lock;
-
-type FiledIssues = BTreeMap<ReportRepository, Vec<(u32, String)>>;
 
 const PASS_INTERVAL: Duration = Duration::from_secs(30);
 
 pub fn initialize(application: &AppHandle) {
     let application = application.clone();
     std::thread::spawn(move || {
+        let mut graphs = BTreeMap::new();
         loop {
-            if let Err(error) = report_all(&application) {
+            if let Err(error) = report_all(&application, &mut graphs) {
                 eprintln!("Discovery issue reports: {error}");
             }
             std::thread::sleep(PASS_INTERVAL);
@@ -32,35 +34,56 @@ pub fn initialize(application: &AppHandle) {
     });
 }
 
-fn report_all(application: &AppHandle) -> Result<(), String> {
+fn report_all(
+    application: &AppHandle,
+    graphs: &mut BTreeMap<u32, IssueGraph>,
+) -> Result<(), String> {
     let app_data = application
         .path()
         .app_data_dir()
         .map_err(|error| error.to_string())?;
-    let projects: Vec<(u32, String)> = {
+    let projects = {
         let store = lock(
             application.state::<ManagedStateStore>().inner(),
             "persisted state",
         )?;
-        store
-            .state()
-            .projects
-            .iter()
-            .map(|project| (project.id, project.name.clone()))
-            .collect()
+        store.state().projects.clone()
     };
+    graphs.retain(|identifier, _| projects.iter().any(|project| project.id == *identifier));
     let mut saved = ReportedDiscoveries::load(&app_data).map_err(|error| error.to_string())?;
-    // Issues filed in this pass, which GitHub's issue list may not show yet. A pass is
-    // long enough apart from the next that the list has caught up by then.
-    let mut filed = FiledIssues::new();
-    for (project, name) in projects {
+    let destinations = destination_projects(&projects);
+    for project in &projects {
         // One project's failure (gh signed out, offline) leaves its cursor where it was, so
         // the next pass retries; the other projects still report.
-        if let Err(error) = report_project(&app_data, (project, &name), &mut saved, &mut filed) {
-            eprintln!("Discovery issue reports for project {name}: {error}");
+        if let Err(error) = report_project(&app_data, project, &mut saved, &destinations, graphs) {
+            eprintln!(
+                "Discovery issue reports for project {}: {error}",
+                project.name
+            );
         }
     }
     Ok(())
+}
+
+fn destination_projects(projects: &[ProjectItem]) -> BTreeMap<ReportRepository, &ProjectItem> {
+    [ReportRepository::Velocity, ReportRepository::Rosen]
+        .into_iter()
+        .filter_map(|destination| {
+            let repository = destination.repository();
+            let project = projects.iter().find(|project| {
+                if let Some(remote) = project.github_remote.as_deref() {
+                    return remote.eq_ignore_ascii_case(repository);
+                }
+                let leaf = repository.rsplit('/').next().unwrap_or(repository);
+                let directory = Path::new(&project.repository_path);
+                project.name.eq_ignore_ascii_case(leaf)
+                    && directory.join(".git").exists()
+                    && IssueClient::discover(directory)
+                        .is_ok_and(|client| client.repository().eq_ignore_ascii_case(repository))
+            })?;
+            Some((destination, project))
+        })
+        .collect()
 }
 
 /// Reports the project's marked discoveries after its cursor, in order. Each one is marked
@@ -68,13 +91,17 @@ fn report_all(application: &AppHandle) -> Result<(), String> {
 /// between is matched to the issue it opened on the next pass rather than filed again.
 fn report_project(
     app_data: &Path,
-    (project, name): (u32, &str),
+    project: &ProjectItem,
     saved: &mut ReportedDiscoveries,
-    filed: &mut FiledIssues,
+    destinations: &BTreeMap<ReportRepository, &ProjectItem>,
+    graphs: &mut BTreeMap<u32, IssueGraph>,
 ) -> Result<(), String> {
-    let cursor = saved.projects.get(&project).map_or(0, |item| item.cursor);
+    let cursor = saved
+        .projects
+        .get(&project.id)
+        .map_or(0, |item| item.cursor);
     let channel =
-        Channel::open(app_data, &project.to_string()).map_err(|error| error.to_string())?;
+        Channel::open(app_data, &project.id.to_string()).map_err(|error| error.to_string())?;
     let entries = channel.read(cursor).map_err(|error| error.to_string())?;
     let Some(last) = entries.last().map(|entry| entry.sequence) else {
         return Ok(());
@@ -83,23 +110,31 @@ fn report_project(
         let Some((repository, title)) = destination(entry) else {
             continue;
         };
-        let reports = saved.projects.entry(project).or_default();
+        let reports = saved.projects.entry(project.id).or_default();
         let retry = reports.pending == Some(entry.sequence);
         reports.pending = Some(entry.sequence);
         saved.save(app_data).map_err(|error| error.to_string())?;
-        let report = DiscoveryReport::new(title, &entry.text, &entry.nick, name, &entry.time);
+        let report =
+            DiscoveryReport::new(title, &entry.text, &entry.nick, &project.name, &entry.time);
+        let graph = if let Some(project) = destinations.get(&repository) {
+            graphs.entry(project.id).or_default().get(app_data, project)
+        } else {
+            None
+        };
         let outcome = velocity_reports::report_to(
             repository,
             &report,
-            filed.entry(repository).or_default(),
+            &saved.recent,
+            |text| graph.map_or_else(Default::default, |graph| graph.mentioned_paths(text)),
             retry,
         )
         .map_err(|error| error.to_string())?;
-        let reports = saved.projects.entry(project).or_default();
+        let reports = saved.projects.entry(project.id).or_default();
         reports.record_issue(repository, entry.sequence, outcome.issue());
+        saved.remember(repository, outcome.issue(), report);
         saved.save(app_data).map_err(|error| error.to_string())?;
     }
-    let reports = saved.projects.entry(project).or_default();
+    let reports = saved.projects.entry(project.id).or_default();
     if reports.cursor != last {
         reports.cursor = last;
         saved.save(app_data).map_err(|error| error.to_string())?;

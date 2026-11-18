@@ -55,6 +55,7 @@ PR duty checks an item off when it lands that item's PR (F7).
 - [x] Issues panel and single dispatch (F9)
 - [x] Show open GitHub blockers in the issues rail and skip blocked issues in continuous dispatch (F8, F9, #472)
 - [x] Empty dispatch turns save their reason and hold the issue for independent review (F8, F9, #469)
+- [x] Deduplicate recent discovery reports and hold overlapping issue dispatch for land verification (F9, F14, #471)
 - [x] Swarm: dialog, launch, PR duty capacity, sidebar row, view, broadcast, + Items, rebase on merge, task done / issue close (F10)
 
 **M7 · AGENTS.md**

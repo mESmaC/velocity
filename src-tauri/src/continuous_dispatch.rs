@@ -1,5 +1,8 @@
 //! Native background adapter for F8 continuous dispatch. It never uses the selected
 //! project's issue rail, so changing projects cannot redirect a background launch.
+mod overlap;
+
+use crate::graph_access::IssueGraph;
 use crate::state::ManagedStateStore;
 use crate::threads::{ManagedThreads, lock, report};
 use std::collections::{BTreeMap, HashSet};
@@ -61,12 +64,13 @@ fn view(application: &AppHandle, identifier: u32) -> Result<DispatchView, String
         .as_ref()
         .is_some_and(|backlog| backlog.error.is_none());
     let backlog = backlog.unwrap_or_default();
-    let claimed = claimed_pieces(application, identifier)?;
+    let mut claimed = claimed_pieces(application, identifier)?;
     let store = lock(
         application.state::<ManagedStateStore>().inner(),
         "persisted state",
     )?;
     let project = store.project(identifier).ok_or("The project was removed")?;
+    include_overlap_waits(project, &backlog.repository, &mut claimed);
     let work = ordered_work(
         project,
         &backlog.repository,
@@ -116,6 +120,7 @@ struct Reader {
     client: Option<IssueClient>,
     refreshed: Option<Instant>,
     report_retry: BTreeMap<u32, Instant>,
+    graph: IssueGraph,
     backlog: Backlog,
 }
 
@@ -161,6 +166,7 @@ fn projects(application: &AppHandle) -> Result<Vec<ProjectItem>, String> {
         .filter(|project| {
             !project.continuous_dispatch.cleanup.is_empty()
                 || !project.continuous_dispatch.no_change_reports.is_empty()
+                || !project.continuous_dispatch.issue_overlaps.is_empty()
                 || (project.version_control == VersionControl::Rosen
                     && (project.continuous_dispatch.slots > 0
                         || project
@@ -190,41 +196,37 @@ fn pass(
     finish_empty_threads(application, project)?;
     if project_has_capacity(project) {
         // Local work takes precedence even while GitHub is slow or unavailable.
-        start_ready(application, project.id, &Backlog::default(), None, false)?;
+        start_ready(application, project.id, None)?;
     }
     refresh_backlog(application, project.id, reader)?;
-    start_ready(
-        application,
-        project.id,
-        &reader.backlog,
-        reader.client.as_ref(),
-        reader.backlog.error.is_none(),
-    )
+    overlap::refresh(application, project.id, reader)?;
+    start_ready(application, project.id, Some(reader))
 }
 
 fn start_ready(
     application: &AppHandle,
     identifier: u32,
-    backlog: &Backlog,
-    client: Option<&IssueClient>,
-    issues_known: bool,
+    mut reader: Option<&mut Reader>,
 ) -> Result<(), String> {
     if !has_capacity(application, identifier)? {
         return Ok(());
     }
-    let claimed = claimed_pieces(application, identifier)?;
+    let defaults = Backlog::default();
+    let backlog = reader.as_ref().map_or(&defaults, |reader| &reader.backlog);
+    let mut claimed = claimed_pieces(application, identifier)?;
     let work = {
         let store = lock(
             application.state::<ManagedStateStore>().inner(),
             "persisted state",
         )?;
         let project = store.project(identifier).ok_or("The project was removed")?;
+        include_overlap_waits(project, &backlog.repository, &mut claimed);
         ordered_work(
             project,
             &backlog.repository,
             &backlog.issues,
             &claimed,
-            issues_known,
+            reader.is_some() && backlog.error.is_none(),
         )
     };
     for item in work {
@@ -234,16 +236,71 @@ fn start_ready(
         match item {
             DispatchWork::Task(task) => start_task(application, identifier, task.id)?,
             DispatchWork::Issue(issue) => {
-                let client = client.ok_or("The dispatch issue source was removed")?;
-                // Re-read before claiming: a label, decision, ownership or close may have changed.
-                let fresh = client
-                    .get(issue.number)
-                    .map_err(|error| error.to_string())?;
-                start_issue(application, identifier, client.repository(), &fresh)?;
+                let reader = reader
+                    .as_deref_mut()
+                    .ok_or("The dispatch issue source was removed")?;
+                try_start_issue(application, identifier, reader, issue.number)?;
             }
         }
     }
     Ok(())
+}
+
+fn try_start_issue(
+    application: &AppHandle,
+    identifier: u32,
+    reader: &mut Reader,
+    number: u32,
+) -> Result<(), String> {
+    let client = reader
+        .client
+        .as_ref()
+        .ok_or("The dispatch issue source was removed")?;
+    let repository = client.repository().to_owned();
+    let state = application.state::<ManagedStateStore>();
+    if lock(state.inner(), "persisted state")?
+        .project(identifier)
+        .is_some_and(|project| {
+            project
+                .continuous_dispatch
+                .issue_overlaps
+                .contains_key(&number)
+        })
+    {
+        return Ok(());
+    }
+    // Re-read before claiming: the issue's text, eligibility or ownership may have changed.
+    let fresh = client.get(number).map_err(|error| error.to_string())?;
+    if let Some(issue) = reader
+        .backlog
+        .issues
+        .iter_mut()
+        .find(|issue| issue.number == number)
+    {
+        *issue = fresh.clone();
+    }
+    overlap::refresh(application, identifier, reader)?;
+    if !reader
+        .backlog
+        .issues
+        .iter()
+        .any(|issue| issue.number == number)
+    {
+        return Ok(());
+    }
+    start_issue(application, identifier, &repository, &fresh)?;
+    overlap::refresh(application, identifier, reader)
+}
+
+fn include_overlap_waits(project: &ProjectItem, repository: &str, claimed: &mut HashSet<String>) {
+    claimed.extend(
+        project
+            .continuous_dispatch
+            .issue_overlaps
+            .values()
+            .filter(|wait| wait.issue.repository.eq_ignore_ascii_case(repository))
+            .map(|wait| format!("issue:{}", wait.issue.number)),
+    );
 }
 
 fn refresh_backlog(
@@ -277,6 +334,7 @@ fn reader<'a>(project: &ProjectItem, readers: &'a mut BTreeMap<u32, Reader>) -> 
         client: None,
         refreshed: None,
         report_retry: BTreeMap::new(),
+        graph: IssueGraph::default(),
         backlog: Backlog::default(),
     };
     let reader = readers.entry(project.id).or_insert_with(setup);
@@ -346,6 +404,14 @@ fn start_issue(
             return Ok(());
         }
         if ordered_issues(project, repository, std::slice::from_ref(issue), &claimed).is_empty() {
+            return Ok(());
+        }
+        if project
+            .continuous_dispatch
+            .issue_overlaps
+            .get(&issue.number)
+            .is_some_and(|wait| wait.issue.repository.eq_ignore_ascii_case(repository))
+        {
             return Ok(());
         }
         let plan = velocity_threads::dispatch::plan_project_issue_dispatch(

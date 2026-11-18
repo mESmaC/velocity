@@ -47,7 +47,37 @@ impl IssueClient {
         byline: &str,
         reason: &str,
     ) -> Result<(), PullRequestError> {
-        let marker = format!("{NO_CHANGE_MARKER}{change} -->");
+        self.post_issue_for_verification(number, change, "Ended with no change", byline, reason)
+    }
+
+    pub fn post_overlap_review(
+        &self,
+        number: u32,
+        source: u32,
+        commit: &str,
+    ) -> Result<(), PullRequestError> {
+        self.post_issue_for_verification(
+            number,
+            &format!("overlap:{source}:{commit}"),
+            "Check against an overlapping land",
+            "Velocity continuous dispatch",
+            &format!(
+                "This issue waited for #{source}. Rosen commit `{commit}` landed for that issue. \
+                 Check this issue's acceptance criteria against the current base. Close it if \
+                 the fix is verified, or return it to dispatch with the remaining work."
+            ),
+        )
+    }
+
+    fn post_issue_for_verification(
+        &self,
+        number: u32,
+        attempt: &str,
+        heading: &str,
+        byline: &str,
+        reason: &str,
+    ) -> Result<(), PullRequestError> {
+        let marker = format!("{NO_CHANGE_MARKER}{attempt} -->");
         if self.has_rosen_comment(number, &marker)? {
             // A reviewer may have removed the label before the local acknowledgement.
             return Ok(());
@@ -65,7 +95,7 @@ impl IssueClient {
         self.add_issue_comment(
             &issue.id,
             &format!(
-                "## Ended with no change\n\n{byline}\n\n{}{truncated}\n\n{marker}",
+                "## {heading}\n\n{byline}\n\n{}{truncated}\n\n{marker}",
                 &reason[..end]
             ),
         )?;

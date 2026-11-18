@@ -3,6 +3,7 @@ use serde::{Deserialize, Serialize};
 use specta::Type;
 use std::collections::BTreeMap;
 
+use crate::issues::ThreadIssue;
 use crate::{
     ProjectItem, StateStore, TaskItem, TaskState, ThreadState, VersionControl, threads::ThreadError,
 };
@@ -28,6 +29,19 @@ pub struct ContinuousDispatch {
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     #[specta(skip)]
     pub no_change_reports: BTreeMap<u32, NoChangeReport>,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    #[specta(skip)]
+    pub issue_overlaps: BTreeMap<u32, IssueOverlap>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct IssueOverlap {
+    pub issue: ThreadIssue,
+    pub blocker: u32,
+    #[serde(default)]
+    pub blocker_thread: Option<u32>,
+    #[serde(default)]
+    pub review_commit: Option<String>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -116,6 +130,28 @@ pub fn can_finish_empty_dispatch(thread: &crate::ThreadItem) -> bool {
 }
 
 impl StateStore {
+    pub fn save_issue_overlaps(
+        &mut self,
+        project: u32,
+        overlaps: BTreeMap<u32, IssueOverlap>,
+    ) -> Result<(), ThreadError> {
+        let item = self
+            .project(project)
+            .ok_or(ThreadError::UnknownProject(project))?;
+        if item.continuous_dispatch.issue_overlaps == overlaps {
+            return Ok(());
+        }
+        let mut next = self.state.clone();
+        let item = next
+            .projects
+            .iter_mut()
+            .find(|item| item.id == project)
+            .ok_or(ThreadError::UnknownProject(project))?;
+        item.continuous_dispatch.issue_overlaps = overlaps;
+        self.commit(next)?;
+        Ok(())
+    }
+
     /// One durable reservation for the whole startup batch, before activity is reset.
     pub fn reserve_startup_recovery(
         &mut self,
@@ -190,6 +226,15 @@ impl StateStore {
             || item
                 .continuous_dispatch
                 .reporting_no_change(&issue.repository, issue.number)
+            || item
+                .continuous_dispatch
+                .issue_overlaps
+                .get(&issue.number)
+                .is_some_and(|wait| {
+                    wait.issue
+                        .repository
+                        .eq_ignore_ascii_case(&issue.repository)
+                })
         {
             return Err(ThreadError::InvalidLaunch(
                 "Dispatch settings or capacity changed".into(),

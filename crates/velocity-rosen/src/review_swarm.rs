@@ -114,11 +114,18 @@ pub async fn landed_diff_record(
     server: &ProjectServer,
     target: &LandedChange,
 ) -> Result<rosen_client::protocol::Diff, RosenError> {
+    landed_commit_diff(server, &target.commit).await
+}
+
+async fn landed_commit_diff(
+    server: &ProjectServer,
+    commit: &str,
+) -> Result<rosen_client::protocol::Diff, RosenError> {
     use rosen_client::protocol::DiffRequest;
     let client = crate::connection::requests(server.endpoint()).await?;
     let log = client
         .log(LogRequest {
-            at: Some(target.commit.clone()),
+            at: Some(commit.to_owned()),
             limit: Some(1),
             ..LogRequest::default()
         })
@@ -127,11 +134,11 @@ pub async fn landed_diff_record(
         .entries
         .first()
         .and_then(|entry| entry.parents.first())
-        .ok_or_else(|| RosenError::InvalidId(target.commit.clone()))?;
+        .ok_or_else(|| RosenError::InvalidId(commit.to_owned()))?;
     Ok(client
         .diff(DiffRequest {
             from: Some(parent.to_string()),
-            to: Some(target.commit.clone()),
+            to: Some(commit.to_owned()),
             context: Some(0),
             ..DiffRequest::default()
         })
@@ -142,7 +149,14 @@ pub async fn landed_paths(
     server: &ProjectServer,
     target: &LandedChange,
 ) -> Result<Vec<String>, RosenError> {
-    Ok(landed_diff_record(server, target)
+    landed_commit_paths(server, &target.commit).await
+}
+
+pub async fn landed_commit_paths(
+    server: &ProjectServer,
+    commit: &str,
+) -> Result<Vec<String>, RosenError> {
+    Ok(landed_commit_diff(server, commit)
         .await?
         .files
         .into_iter()

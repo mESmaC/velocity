@@ -25,6 +25,12 @@ The opening prompt fits in 4,000 characters and links to the full GitHub descrip
 Accept starts work scoped to recording the recommended one-line proposed answer in the spec through the ordinary Rosen lifecycle.
 The Work panel uses change and land vocabulary for Rosen projects.
 
+**Overlapping issues (#471).** Continuous dispatch holds an issue while another open issue is being worked if the reports describe the same problem or their code graph references overlap.
+The check includes the active issue's claimed paths and is repeated before starting each issue.
+After the blocking change lands, Velocity rechecks the current issue text against the source issue and the landed paths.
+A plausible fix goes to the independent review swarm to verify against the current base and close, or return with retry instructions.
+When the blocker ends without a land or its land shows no evidence for the waiting issue, the waiting issue returns to ordinary dispatch.
+
 **Issue follow-through.** Velocity's Rosen follower supplies the land and verified-build evidence and posts the land update (F5, Issues carried by Rosen changes).
 Under the #441 decision, the review swarm closes the issue after confirming that the landed change meets the issue's acceptance criteria.
 The main watcher handles closure after 30 minutes from verified post-land build success if no reviewer has covered that land; an objection rules out the fallback.

@@ -1,7 +1,7 @@
 //! The graph (F19 "What it holds"): records on three planes, their short addresses, and edges
 //! that say how they were found.
 
-use std::collections::HashMap;
+use std::collections::{BTreeSet, HashMap};
 use std::sync::Arc;
 
 use crate::extract::{FileParse, SymbolKind};
@@ -283,6 +283,85 @@ impl Graph {
         self.by_name
             .get(&name.to_lowercase())
             .map_or(&[], Vec::as_slice)
+    }
+
+    /// Resolve file and symbol mentions to repository-relative paths. A short name is
+    /// useful only when all its graph matches point to the same file.
+    pub fn mentioned_paths(&self, text: &str) -> BTreeSet<String> {
+        let quoted = text.split('`').skip(1).step_by(2);
+        let tokens = text.split(|character: char| {
+            !(character.is_alphanumeric() || "_./\\:-".contains(character))
+        });
+        quoted
+            .filter_map(|mention| self.mention_path(mention, true))
+            .chain(tokens.filter_map(|mention| self.mention_path(mention, false)))
+            .map(str::to_owned)
+            .collect()
+    }
+
+    fn mention_path(&self, mention: &str, quoted: bool) -> Option<&str> {
+        let mention = mention.trim().trim_end_matches(['.', ':']);
+        if mention.is_empty() {
+            return None;
+        }
+        if let Some(record) = self
+            .by_address
+            .get(mention)
+            .map(|&index| &self.records[index])
+            && record.kind != RecordKind::Subsystem
+        {
+            return Some(&record.path);
+        }
+        if mention.contains('.')
+            && let Some(path) = self.mentioned_file(mention)
+        {
+            return Some(path);
+        }
+        if !quoted && !mention.contains(['_', ':']) && !mention.chars().any(char::is_uppercase) {
+            return None;
+        }
+        let mut paths = self
+            .named(mention)
+            .iter()
+            .map(|&index| &self.records[index])
+            .filter(|record| matches!(record.kind, RecordKind::Symbol(_)))
+            .map(|record| record.path.as_str());
+        let path = paths.next()?;
+        paths.all(|other| other == path).then_some(path)
+    }
+
+    fn mentioned_file(&self, mention: &str) -> Option<&str> {
+        let normalized = mention.replace('\\', "/");
+        let path = normalized.trim_start_matches("./");
+        let mut path = path;
+        while let Some((prefix, suffix)) = path.rsplit_once(':') {
+            if suffix.is_empty() || !suffix.bytes().all(|byte| byte.is_ascii_digit()) {
+                break;
+            }
+            path = prefix;
+        }
+        if let Some((path, _)) = self.by_path.get_key_value(path) {
+            return Some(path);
+        }
+        let leaf = path.rsplit('/').next()?;
+        let lower_path = path.to_lowercase();
+        let mut matches = self.named(leaf).iter().filter_map(|&index| {
+            let record = &self.records[index];
+            if record.kind != RecordKind::File {
+                return None;
+            }
+            let known = record.path.to_lowercase();
+            (known == lower_path
+                || known
+                    .strip_suffix(&lower_path)
+                    .is_some_and(|prefix| prefix.ends_with('/'))
+                || lower_path
+                    .strip_suffix(&known)
+                    .is_some_and(|prefix| prefix.ends_with('/')))
+            .then_some(record.path.as_str())
+        });
+        let path = matches.next()?;
+        matches.next().is_none().then_some(path)
     }
 }
 

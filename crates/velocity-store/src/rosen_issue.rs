@@ -143,6 +143,10 @@ impl IssueProgress {
         self.green_since
             .is_some_and(|green| unix_seconds().saturating_sub(green) >= REVIEW_WINDOW)
     }
+
+    pub fn landed_commit(&self) -> Option<&str> {
+        self.landed.as_deref()
+    }
 }
 
 fn unix_seconds() -> u64 {

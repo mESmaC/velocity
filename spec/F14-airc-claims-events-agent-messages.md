@@ -79,12 +79,14 @@ Velocity posts them; agents never type them.
   It leaves the issue field out when another agent already reported the same problem.
   Only discoveries carry these fields.
   Every 30 seconds Velocity reads each project's channel and files each marked discovery as an issue on `mESmaC/velocity` or `mESmaC/rosen`, with the agent, project, time and text.
-  When an open issue in the destination repository has the same title, or its title shares at least half of the two titles' significant words, it adds the report to that issue as a comment instead.
-  Issues filed during the same pass are matched only within their destination repository.
+  Before filing, Velocity compares open issues and discoveries recorded within one hour of the report, within the same destination repository (#471).
+  It compares titles and discovery text, using file and symbol references resolved through the destination's code graph when available.
+  Matching reports add an **Also seen by** comment with the agent, project, recorded time and evidence on the existing open issue.
   A report quotes at most 20,000 characters of the discovery.
   It uses GitHub's REST API, which keeps working when a swarm has spent the GraphQL budget.
   A per-project cursor and each report's issue number, separated by destination repository, are saved in `velocity-reports.json` in the app data folder; existing Velocity records still load, and a failed report leaves the cursor in place and is retried on the next pass.
-  Each report is marked pending before GitHub is asked and recorded as soon as it answers; a pending report retried after a crash takes an open issue in its destination repository with its exact title as its result instead of filing again.
+  Each report is marked pending before GitHub is asked and recorded as soon as it answers.
+  A retried pending report checks for its original issue body or comment before posting again.
 
 **Targeted delivery** (from Google Scion's "Not in `to` → not for you").
 At each step boundary, an agent receives the coordination lines addressed to it and relevant project events.
