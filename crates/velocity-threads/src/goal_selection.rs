@@ -10,6 +10,7 @@ use velocity_acp::client::AgentEvent;
 use velocity_airc::claims::{WorkClaims, normalize_file, repository_relative};
 use velocity_core::goal_swarm::DEFAULT_PROMPT;
 use velocity_core::goal_swarm_choice::{canonical_piece_key, is_piece_unclaimed};
+use velocity_core::text_budget::{PROMPT_BYTES, json_text_page, prompt_excerpt};
 use velocity_core::work_pool::{WorkKey, WorkPiece, WorkPool};
 use velocity_graph::coordination::SubsystemMap;
 use velocity_rosen::PathPattern;
@@ -190,22 +191,46 @@ pub(crate) fn needs_choice(goal: &str) -> bool {
 }
 
 pub fn selection_prompt(goal: &str, shortlist: &[&WorkPiece]) -> String {
-    let candidates: Vec<_> = shortlist.iter()
-        .map(|piece| serde_json::json!({
-            "piece": piece.key.claim_piece(), "title": piece.title, "reference": piece.reference,
-        }))
-        .collect();
-    format!(
+    let goal = prompt_excerpt(goal, 2_500, "\n[Goal excerpt]");
+    let mut prompt = format!(
         "{goal}\n\n---\nVelocity goal swarm first turn (F16).\n\
          Read the goal above and use the candidate titles, references and any relevant evidence \
          to rank only the pieces that satisfy it. {} \n\
          This turn is for choosing only. Wait for Velocity to send the claimed piece before \
          claiming files or editing. Velocity can try the next acceptable piece if a claim is refused.\n\
          Return a JSON object with a pieces array of exact piece keys in preference order. \
-         Use an empty array if none matches.\nCandidates: {}",
-        crate::task_spec::instructions(&[goal]),
-        serde_json::Value::Array(candidates)
-    )
+         Use an empty array if none matches.\nCandidates: ",
+        crate::task_spec::instructions(&[&goal]),
+    );
+    let mut candidates = Vec::new();
+    let mut remaining = PROMPT_BYTES - prompt.len() - 100;
+    for piece in shortlist {
+        let row = serde_json::json!({
+            "piece": piece.key.claim_piece(),
+            "title": context_excerpt(&piece.title),
+            "reference": context_excerpt(&piece.reference),
+        });
+        let size = row.to_string().len() + 1;
+        if size <= remaining {
+            remaining -= size;
+            candidates.push(row);
+        }
+    }
+    let omitted = candidates.len() < shortlist.len();
+    prompt.push_str(&serde_json::Value::Array(candidates).to_string());
+    if omitted {
+        prompt.push_str("\n[Some candidate details exceeded the prompt limit.]");
+    }
+    prompt
+}
+
+fn context_excerpt(text: &str) -> String {
+    let (page, next) = json_text_page(text, 0, 220).unwrap_or_default();
+    if next.is_some() {
+        format!("{page}…")
+    } else {
+        page.to_owned()
+    }
 }
 
 #[derive(Deserialize)]

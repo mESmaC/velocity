@@ -42,12 +42,28 @@ impl Coordination {
             return None;
         }
         self.wake = None;
-        let deliveries = std::mem::take(&mut self.deliveries);
+        let mut deliveries = std::mem::take(&mut self.deliveries);
         let actions = deliveries
             .iter()
             .filter(|item| item.priority == DeliveryPriority::NeedsAction)
             .count();
-        let sequences = deliveries.iter().map(|item| item.sequence).collect();
-        Some((prompt_lines(&deliveries).join("\n"), sequences, actions))
+        let sequences: Vec<_> = deliveries.iter().map(|item| item.sequence).collect();
+        let mut prompt = prompt_lines(&deliveries).join("\n");
+        if prompt.len() > velocity_core::text_budget::PROMPT_BYTES {
+            deliveries.sort_by_key(|delivery| delivery.priority != DeliveryPriority::NeedsAction);
+            let first = sequences.iter().min().copied().unwrap_or_default();
+            let last = sequences.iter().max().copied().unwrap_or_default();
+            let hint = format!(
+                "\n[Notices clipped. Use read_feed with after {} and before {} for more details.]",
+                first.saturating_sub(1),
+                last.saturating_add(1)
+            );
+            prompt = velocity_core::text_budget::prompt_excerpt(
+                &prompt_lines(&deliveries).join("\n"),
+                velocity_core::text_budget::PROMPT_BYTES,
+                &hint,
+            );
+        }
+        Some((prompt, sequences, actions))
     }
 }

@@ -1,7 +1,7 @@
 //! The scouts' MCP server (F7 Scouts): the only way a sweep files an issue.
 //!
-//! `scout_issues` reads every open and closed issue, so the scout can compare its finding
-//! against them, and remembers that review. `scout_file` then runs the existing filing path
+//! `scout_issues` searches open and closed issues and remembers the inventory it searched.
+//! `scout_file` then runs the existing filing path
 //! ([`IssueClient::file_scout_finding`]): the reproduction must fail, its script and output
 //! are attached, and an exact duplicate or a stale review is refused. The scout's nick comes
 //! from the launcher, never from the tool arguments, so the attribution can't be forged.
@@ -13,7 +13,9 @@ use std::path::PathBuf;
 
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
+use velocity_core::text_budget::{json_text_page, preview};
 
+use crate::scout_search::Search;
 use crate::{IssueClient, IssueReviewToken, ScoutFinding, ScoutIssueError, ScoutIssueOutcome};
 
 /// One line of a sweep's report file: what a published `scout_file` call ended with.
@@ -79,29 +81,48 @@ impl ScoutServer {
             .map_err(|reason| ScoutIssueError::Invalid(reason.clone()))
     }
 
-    fn issues(&mut self) -> Result<Value, ScoutIssueError> {
-        let client = self.client()?;
-        let inventory = client.inventory()?;
-        let labels: Vec<String> = client.label_identifiers()?.into_keys().collect();
-        let issues: Vec<Value> = inventory
-            .issues
-            .iter()
-            .map(|issue| {
-                json!({
-                    "number": issue.number,
-                    "state": issue.state,
-                    "title": issue.title,
-                    "labels": issue.labels,
-                    "body": issue.body,
-                })
-            })
-            .collect();
+    fn issues(&mut self, arguments: Value) -> Result<Value, ScoutIssueError> {
+        let search: Search = serde_json::from_value(arguments)?;
+        if !search.query.chars().any(char::is_alphanumeric) || search.limit == Some(0) {
+            return Err(ScoutIssueError::Invalid(
+                "Supply a query with letters or numbers and a positive limit".into(),
+            ));
+        }
+        let inventory = self.client()?.inventory()?;
+        let page = search.page(&inventory.issues);
         self.reviewed = Some(inventory.review_token);
+        Ok(page)
+    }
+
+    fn issue(&self, arguments: Value) -> Result<Value, ScoutIssueError> {
+        #[derive(Deserialize)]
+        struct Request {
+            number: u32,
+            #[serde(default)]
+            offset: usize,
+        }
+        let request: Request = serde_json::from_value(arguments)?;
+        let issue = self.client()?.read_issue(request.number)?;
+        let (body, next_offset) = json_text_page(&issue.body, request.offset, 5_000)
+            .ok_or_else(|| ScoutIssueError::Invalid("Use the returned byte offset".into()))?;
         Ok(json!({
-            "repository": inventory.repository,
-            "labels": labels,
-            "issues": issues,
+            "number": issue.number, "state": issue.state, "title": preview(&issue.title, 300),
+            "url": issue.url, "body": body, "next_offset": next_offset,
         }))
+    }
+
+    fn labels(&self, arguments: &Value) -> Result<Value, ScoutIssueError> {
+        let query = arguments["query"]
+            .as_str()
+            .unwrap_or_default()
+            .to_lowercase();
+        let labels: Vec<_> = self
+            .client()?
+            .label_identifiers()?
+            .into_keys()
+            .filter(|label| label.to_lowercase().contains(&query))
+            .collect();
+        Ok(json!({"labels": labels}))
     }
 
     /// The arguments are a [`ScoutFinding`] without the scout and the review, which the
@@ -109,7 +130,7 @@ impl ScoutServer {
     fn file(&mut self, arguments: Value) -> Result<Value, ScoutIssueError> {
         let reviewed = self.reviewed.clone().ok_or_else(|| {
             ScoutIssueError::Invalid(
-                "Call scout_issues first and compare the finding with every issue".into(),
+                "Search for this finding with scout_issues before filing".into(),
             )
         })?;
         let Value::Object(mut fields) = arguments else {
@@ -211,8 +232,25 @@ fn tool_list() -> Vec<Value> {
         comparison_tool(),
         json!({
             "name": "scout_issues",
-            "description": "Every open and closed issue in this repository, with full bodies, plus the repository's labels. Call it before filing and compare each finding with every issue.",
-            "inputSchema": {"type": "object", "properties": {}, "additionalProperties": false},
+            "description": "Search open and closed issues for duplicates before filing. Returns the closest titles and one-line summaries (limit defaults to 10). Refine the query or pass next_offset as offset for more matches. Use scout_issue to read a candidate.",
+            "inputSchema": {"type": "object", "properties": {
+                "query": {"type":"string","minLength":1},
+                "limit": {"type":"integer","minimum":1,"default":10},
+                "offset": {"type":"integer","minimum":0}
+            }, "required":["query"], "additionalProperties": false},
+        }),
+        json!({
+            "name": "scout_issue",
+            "description": "Read one issue's body by number. If next_offset is present, pass it as offset for the next page.",
+            "inputSchema": {"type":"object","properties":{
+                "number":{"type":"integer","minimum":1},
+                "offset":{"type":"integer","minimum":0}
+            }, "required":["number"], "additionalProperties":false},
+        }),
+        json!({
+            "name": "scout_labels",
+            "description": "Read the repository's labels. Use query to filter by label name.",
+            "inputSchema": {"type":"object","properties":{"query":string}, "additionalProperties":false},
         }),
         json!({
             "name": "scout_file",
@@ -251,7 +289,7 @@ impl crate::mcp_stdio::ToolServer for ScoutServer {
 
     fn instructions(&self) -> String {
         format!(
-            "You are {}. Call scout_issues before filing, then file each finding with scout_file.",
+            "You are {}. Search with scout_issues before filing each finding with scout_file. Read likely duplicates with scout_issue and find repository labels with scout_labels.",
             self.scout
         )
     }
@@ -262,7 +300,9 @@ impl crate::mcp_stdio::ToolServer for ScoutServer {
 
     fn call(&mut self, name: Option<&str>, arguments: Value) -> Result<Value, String> {
         let result = match name {
-            Some("scout_issues") => self.issues(),
+            Some("scout_issues") => self.issues(arguments),
+            Some("scout_issue") => self.issue(arguments),
+            Some("scout_labels") => self.labels(&arguments),
             Some("scout_file") => self.file(arguments),
             Some("scout_compare") => self.compare(arguments),
             _ => Err(ScoutIssueError::Invalid("Unknown scout tool".into())),

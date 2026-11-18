@@ -92,6 +92,11 @@ impl QueuedRun {
                 _ => {}
             }
         }
+        let result = velocity_core::text_budget::prompt_excerpt(
+            &result,
+            velocity_core::text_budget::PROMPT_BYTES,
+            "\n[Output excerpt. Read the full log at the path above.]",
+        );
         RunResult {
             id: self.id,
             succeeded,

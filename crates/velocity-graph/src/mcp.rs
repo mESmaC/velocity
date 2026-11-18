@@ -401,6 +401,7 @@ fn call(parameters: &Value, connection: &Connection) -> Value {
         name,
         outcome,
     );
+    let text = crate::query::within_budget(text);
     if failed {
         json!({"isError": true, "content": [{"type": "text", "text": text}]})
     } else {

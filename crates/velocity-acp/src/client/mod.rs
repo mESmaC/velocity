@@ -471,15 +471,22 @@ async fn session_preface(setup: &SessionSetup, loaded: bool, graph_on: bool) -> 
     setup
         .preface
         .iter()
-        .map(|text| ContentBlock::from(text.clone()))
+        .cloned()
         .chain(
             setup
                 .resume
                 .iter()
                 .filter(|_| !loaded)
-                .map(|resume| ContentBlock::from(resume.transcript.clone())),
+                .map(|resume| resume.transcript.clone()),
         )
-        .chain(graph_preface.map(ContentBlock::from))
+        .chain(graph_preface)
+        .map(|text| {
+            ContentBlock::from(velocity_core::text_budget::prompt_excerpt(
+                &text,
+                velocity_core::text_budget::PROMPT_BYTES,
+                "\n[Context excerpt. Use the graph or the workspace files for further detail.]",
+            ))
+        })
         .collect()
 }
 

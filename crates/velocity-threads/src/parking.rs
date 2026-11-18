@@ -8,7 +8,7 @@ use velocity_store::{AgentActivity, ThreadState};
 
 /// The transcript a new session is sent is cut to its newest characters, so a long thread
 /// does not fill the agent's context before it reads what to do next.
-const TRANSCRIPT_CONTEXT_CHARACTERS: usize = 40_000;
+const TRANSCRIPT_CONTEXT_BYTES: usize = 7_700;
 
 /// What Velocity does for one thread on a parking pass.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -84,16 +84,10 @@ pub fn transcript_context(blocks: &[TranscriptBlock]) -> String {
         }
     }
     let joined = lines.join("\n");
-    let transcript = newest_characters(&joined, TRANSCRIPT_CONTEXT_CHARACTERS);
+    let start = joined.ceil_char_boundary(joined.len().saturating_sub(TRANSCRIPT_CONTEXT_BYTES));
+    let notice = if start > 0 { " (recent excerpt)" } else { "" };
+    let transcript = &joined[start..];
     format!(
-        "This continues an earlier session of yours in this worktree. Its transcript, newest last:\n\n{transcript}\n\n---\n"
+        "This continues an earlier session of yours in this worktree. Its transcript{notice}, newest last:\n\n{transcript}\n\n---\n"
     )
-}
-
-fn newest_characters(text: &str, limit: usize) -> &str {
-    let count = text.chars().count();
-    match text.char_indices().nth(count.saturating_sub(limit)) {
-        Some((start, _)) if count > limit => &text[start..],
-        _ => text,
-    }
 }

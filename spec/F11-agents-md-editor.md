@@ -10,7 +10,8 @@ It reads and writes the repo's `AGENTS.md`.
   - saved as plain markdown
   - a **Markdown** toggle shows the exact file agents read
 - **Enter submits a bullet:**
-  - A fast model *(proposed: Haiku 5.5)* rewrites it as a direct rule, using the whole file as context (e.g. it reuses the commands from `## Commands`).
+  - A fast model *(proposed: Haiku 5.5)* rewrites it as a direct rule using the file as context, including the commands from `## Commands`.
+    When the prompt includes an excerpt, the model can read the saved file for more context.
   - The edit lands at once, with no approval, and the cursor moves to a new bullet.
     You keep typing while it works.
   - It can:

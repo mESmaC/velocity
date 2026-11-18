@@ -9,6 +9,7 @@ use std::path::Path;
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
+use velocity_core::text_budget::tool_answer;
 
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -86,12 +87,15 @@ fn respond(server: &mut impl ToolServer, request: &Value) -> Option<Value> {
             let parameters = &request["params"];
             let name = parameters.get("name").and_then(Value::as_str);
             let arguments = parameters.get("arguments").cloned().unwrap_or(json!({}));
-            match server.call(name, arguments) {
-                Ok(value) => json!({"content": [{"type": "text", "text": value.to_string()}]}),
-                Err(error) => {
-                    json!({"isError": true, "content": [{"type": "text", "text": error}]})
-                }
-            }
+            let (text, failed) = match server.call(name, arguments) {
+                Ok(value) => (value.to_string(), false),
+                Err(error) => (error, true),
+            };
+            let text = tool_answer(
+                text,
+                "Use one path or issue number, a narrower query, or a smaller page when the tool supports it.",
+            );
+            json!({"isError": failed, "content": [{"type": "text", "text": text}]})
         }
         _ => return Some(failure(id, -32601, "Method not found")),
     };

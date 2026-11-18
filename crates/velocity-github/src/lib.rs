@@ -32,6 +32,7 @@ mod scout_directory;
 mod scout_evidence;
 mod scout_issues;
 mod scout_reference;
+mod scout_search;
 mod scout_server;
 pub mod velocity_reports;
 mod watch_server;

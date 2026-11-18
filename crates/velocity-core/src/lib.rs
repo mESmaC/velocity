@@ -42,6 +42,7 @@ pub mod skill_menu;
 pub mod skills;
 pub mod state;
 pub mod swarm;
+pub mod text_budget;
 pub mod theme;
 pub mod thread_menu;
 pub mod thread_titles;

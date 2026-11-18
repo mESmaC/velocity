@@ -73,13 +73,14 @@ The Task List counter shows `done/total`.
 - **Agent tool runtime:** the Task List tools are served by the AIRC MCP server injected into every agent session.
   Its instructions use the thread's saved launch origin on every session start and resume.
   Only the native store owner writes `state.json`:
-  - `task_list` returns each task's number, title, state, owning thread with its live state, and who added it.
+  - `task_list { query?, offset?, task? }` returns up to 50 tasks per page with their number, title, state, owning thread with its live state, and who added them.
+    Filter by title or continue with `next_offset`; specify a task number to continue reading a long title.
     It reads a snapshot the store owner publishes in the project's channel on every pass (about once a second), and before it answers any change, so a change the agent just made is always in it.
   - `task_add { title }`, `task_update { task, title?, state? }` (state `todo` or `done`) and `task_delete { task }` queue a durable project-scoped request under the launcher's identity.
     The store owner applies it, saves the result with thread attribution (duty agents link to their role) and posts a `task` event.
     Dispatch-agent edits and deletes can be undone from their AIRC Events row while the saved result still applies.
     The tool waits up to 5 s for the answer and returns it: the saved task, or why it was refused.
-    Past that it returns the queued request sequence, and `read_feed` carries the answer.
+    Past that it returns the queued request sequence to use as a `read_feed` query for the answer.
     Request identities prevent duplicate adds after a crash/restart.
   - An added task is a draft before lock and todo afterward.
     Every task stays a draft until the spec is locked, so a state change needs a locked spec.

@@ -16,6 +16,7 @@ Issue discussion loads independently of Rosen state; a slow or failed comment fe
 
 **Dispatch and Accept.** The hover action, `I` and the palette retain single-issue dispatch.
 Dispatch claims the repository-qualified issue atomically, opens the owning thread if one already exists, retains the issue title and launches in its own Rosen workspace.
+The opening prompt fits in 4,000 characters and links to the full GitHub description and evidence when the issue body is excerpted.
 Accept starts work scoped to recording the recommended one-line proposed answer in the spec through the ordinary Rosen lifecycle.
 The Work panel uses change and land vocabulary for Rosen projects.
 

@@ -2,12 +2,119 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use serde_json::{Value, json};
+use velocity_core::text_budget::{TOOL_ANSWER_BYTES, json_text_page, preview};
 
-use crate::{Channel, Claim, Entry, Error, delivery, mode_for, protocol::text};
+use crate::{
+    Channel, Claim, Entry, Error, delivery, mode_for,
+    protocol::{ledger, text},
+};
 
 const CLAIM_REPLY_BYTES: usize = 1_900;
 const MESSAGE_BYTES: usize = 512;
 const MESSAGES_PER_READ: usize = 10;
+pub(crate) const PAGE_BYTES: usize = TOOL_ANSWER_BYTES - 256;
+
+pub(crate) fn log_fields() -> Value {
+    json!({
+        "after":{"type":"integer","minimum":0},
+        "before":{"type":"integer","minimum":1},
+        "limit":{"type":"integer","minimum":1,"default":50},
+        "query":{"type":"string"},
+        "sequence":{"type":"integer","minimum":1},
+        "offset":{"type":"integer","minimum":0}
+    })
+}
+
+pub(crate) fn log(channel: &Channel, name: &str, arguments: &Value) -> Result<Value, Error> {
+    let selected = sequence(arguments, "sequence")?;
+    let after = sequence(arguments, "after")?.max(selected.saturating_sub(1));
+    let before = sequence(arguments, "before")?;
+    let limit = arguments
+        .get("limit")
+        .map_or(Ok(50), |_| counter(arguments, "limit"))?;
+    if limit == 0 {
+        return Err(Error::Invalid("limit must be positive".into()));
+    }
+    let query = arguments
+        .get("query")
+        .map(|_| text(arguments, "query"))
+        .transpose()?
+        .unwrap_or_default()
+        .trim()
+        .to_lowercase();
+    let mut entries = match name {
+        "read_feed" => channel
+            .read(after)?
+            .into_iter()
+            .filter(|entry| !matches!(entry.kind.as_str(), "delivery_ack" | "message_mode"))
+            .collect(),
+        "read_events" => channel.events(after)?,
+        _ => channel.ledger(ledger(arguments)?, after)?,
+    };
+    if selected != 0 {
+        let entry = entries
+            .iter()
+            .find(|entry| entry.sequence == selected)
+            .ok_or_else(|| Error::Invalid("No readable entry at that sequence".into()))?;
+        return log_entry(entry, counter(arguments, "offset")?);
+    }
+    entries
+        .retain(|entry| (before == 0 || entry.sequence < before) && matches_query(entry, &query));
+    // Storage and remote routing both preserve sequence order.
+    let total = entries.len();
+    let mut remaining = PAGE_BYTES;
+    let mut rows = Vec::new();
+    let mut last = None;
+    for entry in entries.iter().rev().take(limit) {
+        let mut row = serde_json::to_value(entry)?;
+        if row.to_string().len() >= PAGE_BYTES {
+            row = json!({"sequence": entry.sequence, "kind": entry.kind,
+                "text": preview(&entry.text, 400), "details_omitted": true});
+        }
+        if !push_row(&mut rows, &mut remaining, row) {
+            break;
+        }
+        last = Some(entry.sequence);
+    }
+    let more = total - rows.len();
+    Ok(json!({"entries": rows, "more": more, "next_before": last.filter(|_| more > 0)}))
+}
+
+fn matches_query(entry: &Entry, query: &str) -> bool {
+    query.is_empty()
+        || [&entry.text, &entry.kind, &entry.nick]
+            .into_iter()
+            .chain(&entry.files)
+            .any(|field| field.to_lowercase().contains(query))
+        || entry.claim.as_ref().is_some_and(|claim| {
+            std::iter::once(&claim.task)
+                .chain(&claim.files)
+                .any(|field| field.to_lowercase().contains(query))
+        })
+        || entry
+            .acknowledged
+            .is_some_and(|request| request.to_string() == query)
+}
+
+fn log_entry(entry: &Entry, offset: usize) -> Result<Value, Error> {
+    let encoded = serde_json::to_string(entry)?;
+    if offset == 0 && encoded.len() <= PAGE_BYTES {
+        return Ok(json!({"entry": entry}));
+    }
+    let (data, next_offset) = json_text_page(&encoded, offset, 5_000)
+        .ok_or_else(|| Error::Invalid("Use the returned byte offset".into()))?;
+    Ok(json!({"sequence": entry.sequence, "entry_json": data, "next_offset": next_offset}))
+}
+
+pub(crate) fn push_row(rows: &mut Vec<Value>, remaining: &mut usize, row: Value) -> bool {
+    let size = row.to_string().len() + 1;
+    if size > *remaining {
+        return false;
+    }
+    *remaining -= size;
+    rows.push(row);
+    true
+}
 
 pub(crate) fn claims(channel: &Channel, member: &str, arguments: &Value) -> Result<Value, Error> {
     let path = arguments
@@ -150,21 +257,22 @@ impl MessageReader {
             .map(|remote| remote.acknowledged_cursor(nick))
             .transpose()?
             .unwrap_or(0);
-        let mut unread = readable_messages(channel, nick, &history, after.max(native_after))?
+        let unread = readable_messages(channel, nick, &history, after.max(native_after))?
             .into_iter()
             .filter(|entry| {
                 !acknowledged.contains(&entry.sequence) && !self.seen.contains(&entry.sequence)
             })
             .take(MESSAGES_PER_READ + 1)
             .collect::<Vec<_>>();
-        let more = unread.len() > MESSAGES_PER_READ;
-        unread.truncate(MESSAGES_PER_READ);
-        let pages = unread
-            .iter()
-            .map(|entry| message_page(entry, 0))
-            .collect::<Result<Vec<_>, _>>()?;
-        self.seen.extend(unread.iter().map(|entry| entry.sequence));
-        Ok(json!({"messages": pages, "more_unread": more}))
+        let mut pages = Vec::new();
+        let mut remaining = PAGE_BYTES;
+        for entry in unread.iter().take(MESSAGES_PER_READ) {
+            if !push_row(&mut pages, &mut remaining, message_page(entry, 0)?) {
+                break;
+            }
+            self.seen.insert(entry.sequence);
+        }
+        Ok(json!({"messages": pages, "more_unread": pages.len() < unread.len()}))
     }
 }
 
@@ -196,10 +304,9 @@ fn readable_messages(
 
 fn message_page(entry: &Entry, offset: usize) -> Result<Value, Error> {
     let (text, next_offset) = chunk(&entry.text, offset, MESSAGE_BYTES)?;
-    Ok(
-        json!({"sequence": entry.sequence, "nick": entry.nick, "intent": entry.intent,
-        "text": text, "next_offset": next_offset}),
-    )
+    Ok(json!({"sequence": entry.sequence, "nick": entry.nick,
+        "intent": entry.intent.as_deref().map(|intent| preview(intent, 200)),
+        "text": text, "next_offset": next_offset}))
 }
 
 fn sequence(arguments: &Value, field: &str) -> Result<u64, Error> {
@@ -210,7 +317,7 @@ fn sequence(arguments: &Value, field: &str) -> Result<u64, Error> {
     })
 }
 
-fn counter(arguments: &Value, field: &str) -> Result<usize, Error> {
+pub(crate) fn counter(arguments: &Value, field: &str) -> Result<usize, Error> {
     usize::try_from(sequence(arguments, field)?)
         .map_err(|_| Error::Invalid(format!("{field} is too large")))
 }

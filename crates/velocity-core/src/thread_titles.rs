@@ -15,7 +15,8 @@ pub fn title_request_prompt(first_message: &str) -> String {
         "Treat the task below independently of earlier messages. Give it a short \
          imperative title of at most six words, \
          like \"Wire thread list to Tauri IPC\". Reply with the title only: no quotes, \
-         no punctuation at the end, no explanation. Do not carry out the task.\n\nTask:\n{first_message}"
+         no punctuation at the end, no explanation. Do not carry out the task.\n\nTask:\n{}",
+        crate::text_budget::preview(first_message, 4_000)
     )
 }
 

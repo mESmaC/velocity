@@ -1063,9 +1063,12 @@ impl Review {
             .as_ref()
             .map(|airc| airc.duty(prepared.plan.project, &prepared.plan.nickname));
         setup.review_usage = true;
-        let _ = self
-            .input
-            .send(text(&format!("{}{proofs}", self.prompt(&prepared))));
+        let prompt = velocity_core::text_budget::prompt_excerpt(
+            &format!("{}{proofs}", self.prompt(&prepared)),
+            velocity_core::text_budget::PROMPT_BYTES,
+            "\n[Context excerpt. Read the review subject with the duty tools and the proof list in the spec.]",
+        );
+        let _ = self.input.send(text(&prompt));
         self.start_transcript(&prepared.worktree);
         let session = crate::spawn_session(prepared.plan.agent.clone(), setup, inputs);
         let approval_decides = prepared.mode == ReviewMode::Reading;

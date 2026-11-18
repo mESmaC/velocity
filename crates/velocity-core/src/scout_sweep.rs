@@ -129,12 +129,17 @@ pub fn sweep_prompt(brief: &SweepBrief) -> String {
     prompt.push_str(&sweep_steps(brief.rules, brief.stress_diff_input_count));
     prompt.push_str(&filing_rules(brief.rules));
     if let Some(instruction) = brief.instruction {
+        let instruction = crate::text_budget::preview(instruction, 3_000);
         prompt.push_str(&format!("\nThe user asks the scouts: {instruction}\n"));
     }
     prompt.push_str(
         "\nThis worktree is a detached checkout that is reset before your next sweep: do not commit, push or open PRs, and do not fix what you find. End your turn with a one-line summary of what you filed.\n",
     );
-    prompt
+    crate::text_budget::prompt_excerpt(
+        &prompt,
+        crate::text_budget::PROMPT_BYTES,
+        "\n[Context excerpt]",
+    )
 }
 
 fn reason_sentence(reason: &SweepReason, base_branch: &str) -> String {
@@ -201,7 +206,7 @@ fn filing_rules(rules: &ScoutRuleSettings) -> String {
         "Give each issue at least one of the repository's existing labels."
     };
     format!(
-        "\nFiling (locked rules):\n- Never file a duplicate. Call `scout_issues` first and compare each finding with every open and closed issue it returns, by meaning, not by title.\n- No issue without evidence. File only with `scout_file`: Velocity runs your reproduction script, which must exit with a failing status, and attaches the script and its output. Preview with publish false, then file with publish true.\n- {labels}\n- Never file through `gh` or the GitHub website.\n"
+        "\nFiling (locked rules):\n- Search open and closed issues with `scout_issues` using the failure, file or symbol. Refine the query with related terms, then read likely matches with `scout_issue` and compare their meaning before filing.\n- No issue without evidence. File only with `scout_file`: Velocity runs your reproduction script, which must exit with a failing status, and attaches the script and its output. Preview with publish false, then file with publish true.\n- {labels} Use `scout_labels` to find them.\n- Never file through `gh` or the GitHub website.\n"
     )
 }
 

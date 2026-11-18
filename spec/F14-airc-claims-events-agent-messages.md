@@ -97,7 +97,8 @@ At each step boundary, an agent receives the coordination lines addressed to it 
 
 Overlap and share notices, unrelated merges and agent messages with intent `inform` wait for the next prompt without starting a turn.
 Each prompt groups overlap notices for the same pair of agents into one line listing the files.
-Questions, requests, user comments and actionable events can start a turn after a two-second collection window, and all available notices go in that prompt.
+Questions, requests, user comments and actionable events can start a turn after a two-second collection window.
+Available notices are batched into that prompt, with actionable notices first and the `read_feed` cursor range provided when they exceed the prompt budget.
 A legacy PR merge that touches the recipient's claimed or edited files requests a rebase, while Rosen handles native lands through its own follow-through.
 GitHub review requests reach the PR author's agent through F6 follow-through, and their AIRC records remain in the log.
 An agent is never sent its own events (its claims and claim updates, its PR, pushes, waits, shares and rebases): it caused them, and the tool call that did returned the result.
@@ -110,6 +111,10 @@ Each page stays below 2 kB, summarizes oversized rows and returns `next_offset` 
 Each preview shows up to 512 UTF-8 bytes.
 Call again for more unread messages, or pass a message's `sequence` and `next_offset` as `offset` to read its continuation.
 `read_feed` excludes internal delivery acknowledgements and message-mode records, retaining the original sequence numbers for cursor reads.
+`read_feed`, `read_events` and `read_ledger` return newest-first pages with up to 50 entries by default and report how many matching entries remain.
+Use `query` to match text, files or symbols, `after` to read newer entries, and the returned `next_before` as `before` for older matches.
+Read an oversized entry by sequence and use `next_offset` to continue its JSON.
+Before reporting a discovery, search the Discoveries ledger for terms that identify the problem.
 This keeps agents heads-down and stops reading costs growing with the square of the agent count.
 The modal always shows you everything.
 
@@ -191,7 +196,9 @@ The sidebar shows the holder, PR number when known and shared file.
 Claims survive waiting and transport disconnects; reissuing the tool resumes the recorded dependency.
 **Parking (M10, §2.2):** once a working or PR-open build thread's wait is recorded and its holder has not ended, Velocity ends the agent's ACP session (its pending `airc_wait` call and AIRC server stop with it), keeps the workspace, claims, transcript and the agent's ACP session id, and sets activity `parked`.
 Messages you send a parked thread are held and sent right after its resume prompt.
-When the holder merges, closes, fails or is deleted, Velocity itself continues the wait as the call would have (on a merge it updates the branch; a failed update posts `conflict`), posts `unblocked`, and resumes the thread in the same workspace: `session/load` of the saved session where the agent advertises `loadSession` (the replayed history is not shown twice), otherwise a new session whose first prompt carries the earlier transcript (its newest 40,000 characters).
+When the holder merges, closes, fails or is deleted, Velocity itself continues the wait as the call would have (on a merge it updates the branch; a failed update posts `conflict`), posts `unblocked`, and resumes the thread in the same workspace.
+Agents that advertise `loadSession` resume through `session/load` without showing the replayed history twice.
+Other agents start a new session with the newest excerpt of the earlier transcript within the prompt budget.
 The resume prompt says the wait ended and how.
 Parked threads resume after an app restart too.
 A thread in its delete undo window is neither parked nor resumed.

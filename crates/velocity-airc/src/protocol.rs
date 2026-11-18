@@ -5,6 +5,7 @@ use crate::{
 };
 use serde_json::{Value, json};
 use std::io::{BufRead, Write};
+use velocity_core::text_budget::tool_answer;
 
 #[derive(Default)]
 pub(crate) struct ToolOptions<'a> {
@@ -91,7 +92,7 @@ fn instructions(nick: &str, continuous_dispatch: bool) -> String {
         "Use task_add, task_update and task_delete only when the user explicitly asks you to add, change or remove Task List items. Otherwise file issues."
     };
     format!(
-        "You joined this project's AIRC channel as {nick}. Check ownership with airc_claims using the candidate task or piece as the task filter. Call airc_claim with the task, branch and every file BEFORE editing, and with piece set to the work item's identity (task:<id>, issue:<number> or spec:<section>) when it has one; on refusal the holder is named, so check the next candidate. Extend your existing task claim to add files. Record airc_share or a dependency wait before editing an overlapping file. Messages require named recipients and an intent. task_list reads the project Task List at any time. {task_rule} Task List changes never edit SPEC.md or start an interview. A discovery about Velocity itself (its worktrees, AIRC, duty tools, agent shells, build queue or app), not this project, goes in append_ledger with velocity_issue set, and Velocity files it on its own repository. A discovery about Rosen itself (its server, workspaces, durability, claims, rebases or landing) uses rosen_issue instead and is filed on mESmaC/rosen. Use only one issue field and read discoveries first to avoid reporting the same problem twice."
+        "You joined this project's AIRC channel as {nick}. Check ownership with airc_claims using the candidate task or piece as the task filter. Call airc_claim with the task, branch and every file BEFORE editing, and with piece set to the work item's identity (task:<id>, issue:<number> or spec:<section>) when it has one; on refusal the holder is named, so check the next candidate. Extend your existing task claim to add files. Record airc_share or a dependency wait before editing an overlapping file. Messages require named recipients and an intent. task_list reads the project Task List at any time. {task_rule} Task List changes never edit SPEC.md or start an interview. A discovery about Velocity itself (its worktrees, AIRC, duty tools, agent shells, build queue or app), not this project, goes in append_ledger with velocity_issue set, and Velocity files it on its own repository. A discovery about Rosen itself (its server, workspaces, durability, claims, rebases or landing) uses rosen_issue instead and is filed on mESmaC/rosen. Use only one issue field. Search read_ledger with ledger discovery and the problem's terms before reporting it."
     )
 }
 
@@ -134,7 +135,7 @@ fn respond(
         },
         "tools/call" => {
             let parameters = &request["params"];
-            match call(
+            let (text, failed) = match call(
                 channel,
                 member,
                 nick,
@@ -143,11 +144,14 @@ fn respond(
                 options.issue_handler,
                 session,
             ) {
-                Ok(value) => json!({"content":[{"type":"text","text":value.to_string()}]}),
-                Err(error) => {
-                    json!({"isError":true,"content":[{"type":"text","text":error.to_string()}]})
-                }
-            }
+                Ok(value) => (value.to_string(), false),
+                Err(error) => (error.to_string(), true),
+            };
+            let text = tool_answer(
+                text,
+                "Use a query, a smaller limit, or one sequence or task when the tool supports it.",
+            );
+            json!({"isError":failed,"content":[{"type":"text","text":text}]})
         }
         _ => return Some(failure(id, -32601, "Method not found")),
     };
@@ -164,15 +168,6 @@ fn call(
     session: &mut ToolSession,
 ) -> Result<Value, Error> {
     let arguments = &parameters["arguments"];
-    let after = arguments
-        .get("after")
-        .map(|value| {
-            value
-                .as_u64()
-                .ok_or_else(|| Error::Invalid("after must be an unsigned integer".into()))
-        })
-        .transpose()?
-        .unwrap_or(0);
     match text(parameters, "name")? {
         name @ ("airc_claims" | "airc_claim" | "airc_release" | "airc_share") => {
             claim_call(channel, member, name, arguments)
@@ -206,7 +201,7 @@ fn call(
             arguments,
         ),
         name @ ("read_feed" | "read_events" | "read_ledger") => {
-            read_filtered(channel, name, arguments, after)
+            read_tools::log(channel, name, arguments)
         }
         "append_ledger" => append_ledger(channel, member, arguments),
         "send_message" => {
@@ -245,25 +240,7 @@ fn append_ledger(channel: &Channel, member: &str, arguments: &Value) -> Result<V
     Ok(json!({"appended":true,"velocity_issue":reported_velocity,"rosen_issue":reported_rosen}))
 }
 
-fn read_filtered(
-    channel: &Channel,
-    name: &str,
-    arguments: &Value,
-    after: u64,
-) -> Result<Value, Error> {
-    let entries = match name {
-        // Routing must retain these durable records, but agents should not pay
-        // for per-recipient bookkeeping when reading the project feed.
-        "read_feed" => channel
-            .read(after)?
-            .into_iter()
-            .filter(|entry| !matches!(entry.kind.as_str(), "delivery_ack" | "message_mode"))
-            .collect(),
-        "read_events" => channel.events(after)?,
-        _ => channel.ledger(ledger(arguments)?, after)?,
-    };
-    Ok(serde_json::to_value(entries)?)
-}
+const LOG_PAGE: &str = "Newest first, up to 50 by default. Filter by query over text, files or symbols, or by sequence with after/before. The response gives the remaining count and next_before for older matches. To read an oversized entry, pass its sequence, then pass next_offset as offset to continue its JSON.";
 
 fn tool_list(rosen: bool, options: &ToolOptions<'_>) -> Vec<Value> {
     let empty = json!({});
@@ -284,14 +261,14 @@ fn tool_list(rosen: bool, options: &ToolOptions<'_>) -> Vec<Value> {
         ),
         tool(
             "read_feed",
-            "Read the project feed after a sequence number, excluding delivery acknowledgements and message modes",
-            cursor.clone(),
+            &format!("Read the project feed. {LOG_PAGE}"),
+            read_tools::log_fields(),
             &[],
         ),
         tool(
             "read_events",
-            "Read project events after a sequence number",
-            cursor.clone(),
+            &format!("Read project events. {LOG_PAGE}"),
+            read_tools::log_fields(),
             &[],
         ),
         tool(
@@ -317,13 +294,14 @@ fn tool_list(rosen: bool, options: &ToolOptions<'_>) -> Vec<Value> {
 
 fn writing_tools() -> Vec<Value> {
     let ledger = json!({"type":"string","enum":["discovery","past_work"]});
+    let mut fields = read_tools::log_fields();
+    fields["ledger"] = ledger.clone();
     let string = json!({"type":"string","minLength":1});
     vec![
         tool(
             "read_ledger",
-            "Read Discoveries or Past work",
-            json!({"ledger":ledger.clone(),
-            "after":{"type":"integer","minimum":0}}),
+            &format!("Read Discoveries or Past work. {LOG_PAGE}"),
+            fields,
             &["ledger"],
         ),
         tool(
@@ -351,7 +329,7 @@ pub(crate) fn tool(name: &str, description: &str, properties: Value, required: &
         "type":"object","properties":properties,"required":required,"additionalProperties":false}})
 }
 
-fn ledger(arguments: &Value) -> Result<&str, Error> {
+pub(crate) fn ledger(arguments: &Value) -> Result<&str, Error> {
     match text(arguments, "ledger")? {
         name @ ("discovery" | "past_work") => Ok(name),
         _ => Err(Error::Invalid(

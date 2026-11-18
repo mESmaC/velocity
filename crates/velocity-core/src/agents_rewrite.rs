@@ -139,8 +139,13 @@ impl AgentsEditor {
 
 pub fn rewrite_prompt(ticket: &RewriteTicket) -> String {
     format!(
-        "Rewrite one AGENTS.md bullet as direct, explicit instructions. Use the whole file as context. Tighten hedges, expand short notes, split independent rules when needed. Preserve meaning and commands. If vague intent cannot be inferred, return FLAG: followed by what is missing. Otherwise return only one or more single-line rules, each prefixed by '- '. Do not edit files or run commands; return the proposed text.\nWhole file (context only):\n{}\nBullet to rewrite:\n{}",
-        ticket.context, ticket.source
+        "Rewrite one AGENTS.md bullet as direct, explicit instructions. Tighten hedges, expand short notes, split independent rules when needed. Preserve meaning and commands. If vague intent cannot be inferred or the bullet is clipped, return FLAG: followed by what is missing. Otherwise return only one or more single-line rules, each prefixed by '- '. Do not edit files; return the proposed text.\nBullet to rewrite:\n{}\nFile context:\n{}",
+        crate::text_budget::prompt_excerpt(&ticket.source, 3_000, "\n[Bullet clipped]"),
+        crate::text_budget::prompt_excerpt(
+            &ticket.context,
+            4_000,
+            "\n[Context excerpt. Read AGENTS.md for the rest.]"
+        ),
     )
 }
 

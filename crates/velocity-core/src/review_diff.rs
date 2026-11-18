@@ -8,30 +8,7 @@
 /// Limit each JSON-encoded patch page. Five first pages leave room in a 20k-token
 /// review even when patch text tokenizes poorly.
 pub fn review_page(diff: &str, offset: usize) -> Option<(&str, Option<usize>)> {
-    const PAGE_BYTES: usize = 3_000;
-    let remaining = diff.get(offset..)?;
-    let mut bytes = 0;
-    let mut end = remaining.len();
-    for (position, character) in remaining.char_indices() {
-        bytes += match character {
-            '\\' | '"' | '\n' | '\r' | '\t' => 2,
-            '\0'..='\u{001f}' => 6,
-            _ => character.len_utf8(),
-        };
-        if bytes > PAGE_BYTES {
-            end = position;
-            break;
-        }
-    }
-    // Prefer complete patch lines, while still making progress on long lines.
-    if end < remaining.len()
-        && let Some(line_end) = remaining[..end].rfind('\n')
-        && line_end >= end / 2
-    {
-        end = line_end + 1;
-    }
-    let next = offset + end;
-    Some((&remaining[..end], (next < diff.len()).then_some(next)))
+    crate::text_budget::json_text_page(diff, offset, 3_000)
 }
 
 /// A diff reduced to what tiering needs.

@@ -1,17 +1,20 @@
 //! What Velocity tells the spec agent (F3). The interview runs on whichever provider you
 //! chose, so everything it must do is in the prompt rather than in provider config.
 
+use velocity_core::text_budget::{PROMPT_BYTES, preview, prompt_excerpt};
 use velocity_store::InterviewRecord;
 
 use crate::envelope::FENCE_LABEL;
 
 /// The first prompt: the brief, the three phases, and the block that ends each reply.
 pub fn opening_prompt(project_name: &str, brief: &str, spec_path: &str) -> String {
+    let project_name = preview(project_name, 240);
     let brief = if brief.trim().is_empty() {
         "(no brief given: find out what to build in your first questions)"
     } else {
         brief.trim()
     };
+    let brief = prompt_excerpt(brief, 3_200, "\n[Project brief excerpt]");
     format!(
         "You are the spec interview agent for the project \"{project_name}\" in Velocity. \
 Your working directory is the project's main checkout.
@@ -68,7 +71,12 @@ proof\"]}}}} in place of \"question\", after the spec file is written."
 
 /// An answer to the question on the card, by option or in your own words.
 pub fn answer_prompt(key: &str, value: &str) -> String {
-    format!("Answer for {key}: {value}\n{}", reply_format())
+    let key = preview(key, 240);
+    format!(
+        "Answer for {key}: {}\n{}",
+        interview_message(value),
+        reply_format()
+    )
 }
 
 /// Keep grilling (`G`).
@@ -91,7 +99,11 @@ pub fn write_spec_prompt(spec_path: &str) -> String {
 
 /// A message that is not an answer: a question for the agent, or a correction.
 pub fn message_prompt(text: &str) -> String {
-    format!("{text}\n{}", reply_format())
+    format!("{}\n{}", interview_message(text), reply_format())
+}
+
+fn interview_message(text: &str) -> String {
+    prompt_excerpt(text, 6_000, "\n[User message excerpt]")
 }
 
 /// After a restart the agent's session is gone, so the new one starts from what
@@ -103,9 +115,15 @@ pub fn resume_prompt(project_name: &str, spec_path: &str, record: &InterviewReco
     );
     if !record.decisions.is_empty() {
         prompt.push_str(" Decisions already made:\n");
+        let mut decisions = String::new();
         for decision in &record.decisions {
-            prompt.push_str(&format!("- {}: {}\n", decision.key, decision.value));
+            decisions.push_str(&format!("- {}: {}\n", decision.key, decision.value));
         }
+        prompt.push_str(&prompt_excerpt(
+            &decisions,
+            PROMPT_BYTES.saturating_sub(prompt.len()),
+            "\n[Decisions excerpt. Read the current spec for recorded decisions.]",
+        ));
     }
     prompt
 }

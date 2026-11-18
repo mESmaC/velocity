@@ -22,7 +22,7 @@ pub(crate) fn instructions(evidence: &[&str]) -> String {
     }
     format!(
         "Spec references in this work item: {}. Use any additional references in its evidence. Locate the applicable headings with `graph_find` (kind: section). {READ}",
-        sections.join(", ")
+        velocity_core::text_budget::preview(&sections.join(", "), 300)
     )
 }
 

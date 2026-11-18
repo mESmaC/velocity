@@ -21,6 +21,7 @@ serde_json.workspace = true
 specta = { workspace = true, optional = true }
 thiserror.workspace = true
 tokio = { workspace = true, features = ["rt-multi-thread"] }
+velocity-core.workspace = true
 velocity-git = { path = "../velocity-git" }
 velocity-graph.workspace = true
 velocity-rosen.workspace = true

@@ -111,5 +111,6 @@ PR duty checks an item off when it lands that item's PR (F7).
 - [x] Per-project switch, and the graph on/off comparison of tokens and time per turn in the usage modal (F15 Usage modal)
 - [x] Token usage by thread, role, project and input source, with day and week totals (F15 Usage modal, #461)
 - [x] AIRC and Rosen overlaps by symbol, swarm split by subsystem, and the review swarm's graph impact set
+- [x] Bound Velocity MCP answers and generated prompts, with issue search and paginated channel and Task List reads (#465)
 
 ---

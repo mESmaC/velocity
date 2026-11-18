@@ -457,7 +457,9 @@ fn prompt(launch: &SwarmLaunch, roster: &ScoutRoster, instruction: Option<&str>)
         |target| {
             format!(
                 "Review landed change {} at commit {}: {}. You hold its channel review claim.",
-                target.change, target.commit, target.summary
+                target.change,
+                target.commit,
+                velocity_core::text_budget::preview(&target.summary, 800)
             )
         },
     );
@@ -469,7 +471,7 @@ fn prompt(launch: &SwarmLaunch, roster: &ScoutRoster, instruction: Option<&str>)
         Read them with graph_read (source: true), or read only their line ranges when the graph is unavailable. \
         Check the implementation end to end against each claim and its SPEC section. \
         Reviews never gate, delay or revert a land. Do not approve, submit receipts or revert by hand; R12 owns build recovery. \
-        File findings through scout_issues and scout_file, with executed failing evidence and duplicate checks. \
+        Search scout_issues before filing, read possible duplicates with scout_issue, and use scout_file with executed failing evidence. \
         Claim issues and every path before editing through Rosen/AIRC. You may write a fix forward in your own workspace.\n\n\
         Identify every affected F17 proof-list feature from this project's SPEC.md. For each, write or update \
         proofs/<Feature>/Design.lean and the exported fixture table, with one implementation fixture check. \
@@ -485,6 +487,6 @@ fn prompt(launch: &SwarmLaunch, roster: &ScoutRoster, instruction: Option<&str>)
         Velocity lands that named work through the ordinary policy, then records the reviewed/issues filed state. \
         On a resumed workspace, finish the kept work and resolve any Rosen merge conflicts before completing.\n\n{}",
         launch.nickname,
-        instruction.unwrap_or("")
+        velocity_core::text_budget::preview(instruction.unwrap_or(""), 3_000)
     )
 }

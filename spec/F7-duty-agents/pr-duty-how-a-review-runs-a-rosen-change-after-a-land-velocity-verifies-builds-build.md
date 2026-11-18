@@ -8,7 +8,8 @@
   A requested inverse is not reported as completed until Rosen's durable failure record names its revert commit.
   If Rosen reports `revert_refused`, Velocity immediately starts one fix-forward build thread for the culprit on the default implementation model (#406).
   A culprit still unreverted two minutes after its recorded failure gets the same repair at that deadline, even if no PR duty agents are staffed or their role is paused.
-  The prompt includes the failing check output, culprit change and commit, the later commits blocking the inverse, and the instruction to make the base build again and touch nothing else.
+  The prompt starts with failing diagnostics and fits in 4,000 characters, including the culprit change and commit, later commits blocking the inverse, and the instruction to make the base build again and touch nothing else.
+  For an excerpt, it points to `rosen review failures --change <change> --json` for the full recorded output.
   Fix-forward scheduling runs independently of verification so a running build or another repair never holds it up.
   The culprit-to-thread association and opening prompt are saved together before launch; retries resume that pending launch, and restarts or deleted history never allocate a second thread for the same culprit.
   Each new build culprit gets its own repair thread.

@@ -286,9 +286,25 @@ pub fn goal_agent_prompt(
     worktree_path: &Path,
     branch_name: &str,
 ) -> String {
-    if worktree_path.join(".rosen").exists() {
-        return rosen_goal_prompt(slot, project, piece, worktree_path);
-    }
+    let prompt = if worktree_path.join(".rosen").exists() {
+        rosen_goal_prompt(slot, project, piece, worktree_path)
+    } else {
+        git_goal_prompt(slot, project, piece, worktree_path, branch_name)
+    };
+    velocity_core::text_budget::prompt_excerpt(
+        &prompt,
+        velocity_core::text_budget::PROMPT_BYTES,
+        "\n[Context excerpt. Read the claimed task, issue or spec section for its full details.]",
+    )
+}
+
+fn git_goal_prompt(
+    slot: &GoalAgentSlot,
+    project: &ProjectItem,
+    piece: &WorkPiece,
+    worktree_path: &Path,
+    branch_name: &str,
+) -> String {
     let default_branch = base_branch(project);
     let piece_instructions = match &piece.key {
         WorkKey::Task { identifier } => format!(
@@ -314,7 +330,7 @@ pub fn goal_agent_prompt(
          - Commit, push `{branch_name}`, open a PR against `{default_branch}`, and watch it until PR duty merges it: fix failed checks, answer every review comment, resolve addressed threads, and re-request review. Never merge your own PR.\n\
          - Use the path filter in `airc_claims` to check file ownership. Settle overlaps and dependency waits in AIRC; first claim wins.\n\
          - Implement and run the feature first; then write Lean proofs only if the feature is on the project's proof list in SPEC.md (Rule 8, F17).\n\n{spec}",
-        slot.prompt,
+        goal_excerpt(&slot.prompt),
         slot.nick,
         project.name,
         worktree_path.display(),
@@ -343,13 +359,17 @@ fn rosen_goal_prompt(
          - For builds and tests that can take more than a minute, use `queue_run` from `velocity-run` and end the turn until the result arrives. Use `rosen run -- <command>` for other builds and tests or when the tool is unavailable.\n\
          - Use the task filter in `airc_claims` to check work ownership. If this task depends on another member's work, call `airc_wait` with its holder and file. Velocity continues your work on a stacked change (Rosen D19); the parent must land first.\n\
          - Implement and run first. Follow the project's proof-list instructions.\n\n{spec}",
-        slot.prompt,
+        goal_excerpt(&slot.prompt),
         slot.nick,
         project.name,
         workspace.display(),
         piece.title,
         piece.reference
     )
+}
+
+fn goal_excerpt(goal: &str) -> String {
+    velocity_core::text_budget::prompt_excerpt(goal, 2_500, "\n[Goal excerpt]")
 }
 
 fn piece_spec(piece: &WorkPiece) -> String {

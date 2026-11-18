@@ -112,7 +112,7 @@ fn member_work(
                 .ok_or_else(|| {
                     DispatchError::Invalid(format!("Task {identifier} is no longer open"))
                 })?;
-            let prompt = task_prompt(&task.text, project.version_control);
+            let prompt = task_prompt(task.id, &task.text, project.version_control);
             (task.text.clone(), title_slug(&task.text), prompt, None)
         }
         SwarmItem::Issue(number) => {
@@ -142,7 +142,19 @@ fn member_work(
 
 const LIFECYCLE: &str = "You already have your own worktree and branch. Open a PR against the project's default branch and watch it until it merges: fix failed checks, answer every review comment, resolve addressed threads and re-request review. Never merge your own PR. Messages from the swarm arrive between your steps. When one says a merged PR touched your files, rebase onto the default branch, resolve the conflicts, re-run the checks and push.";
 
-fn task_prompt(task: &str, version_control: velocity_store::VersionControl) -> String {
+pub(crate) fn task_excerpt(identifier: u32, text: &str) -> String {
+    velocity_core::text_budget::prompt_excerpt(
+        text,
+        2_600,
+        &format!("\n[Read the complete task with task_list using task {identifier}.]"),
+    )
+}
+
+fn task_prompt(
+    identifier: u32,
+    task: &str,
+    version_control: velocity_store::VersionControl,
+) -> String {
     let delivery = if version_control == velocity_store::VersionControl::Rosen {
         "Follow the Rosen workspace note Velocity gave you. Name the task in the snapshot."
             .to_owned()
@@ -150,7 +162,8 @@ fn task_prompt(task: &str, version_control: velocity_store::VersionControl) -> S
         format!("Name the task in your PR description.\n\n{LIFECYCLE}")
     };
     format!(
-        "Your swarm item is this Task List task:\n\n{task}\n\nBuild it end to end. {}\n\n{delivery}",
+        "Your swarm item is Task List item #{identifier}:\n\n{}\n\nBuild it end to end. {}\n\n{delivery}",
+        task_excerpt(identifier, task),
         crate::task_spec::instructions(&[task])
     )
 }

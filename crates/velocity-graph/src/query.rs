@@ -452,13 +452,14 @@ pub fn within_budget(text: String) -> String {
     if text.len() <= BUDGET {
         return text;
     }
-    let mut cut = 0;
+    let mut cut = None;
     for (index, _) in text.match_indices('\n') {
         if index > BUDGET - 300 {
             break;
         }
-        cut = index;
+        cut = Some(index);
     }
+    let cut = cut.unwrap_or_else(|| text.floor_char_boundary(BUDGET - 300));
     let total = text.lines().filter(|line| !line.trim().is_empty()).count();
     let kept = text[..cut]
         .lines()

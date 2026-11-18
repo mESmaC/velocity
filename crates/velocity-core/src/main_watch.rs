@@ -105,12 +105,17 @@ pub fn watch_prompt(brief: &WatchBrief) -> String {
     prompt.push_str(&bisect_steps(brief));
     prompt.push_str(&repair_steps(base));
     if let Some(instruction) = brief.instruction {
+        let instruction = crate::text_budget::preview(instruction, 3_000);
         prompt.push_str(&format!(
             "\nThe user asks the main watcher: {instruction}\n"
         ));
     }
     prompt.push_str("\nEnd your turn with a one-line summary: green, flaky, or broken by which merge and the PR you opened.\n");
-    prompt
+    crate::text_budget::prompt_excerpt(
+        &prompt,
+        crate::text_budget::PROMPT_BYTES,
+        "\n[Context excerpt]",
+    )
 }
 
 fn reason_sentence(reason: &WatchReason, base: &str) -> String {
@@ -129,7 +134,7 @@ fn reason_sentence(reason: &WatchReason, base: &str) -> String {
     }
 }
 
-const WATCH_STEPS: &str = "\nWatch:\n- Use the project check commands supplied in your instructions.\n- Run every scout test and stress script (the project's test suite and every script in its stress folder, such as `stress/`), then the project's local checks.\n- If everything passes, call `watch_green` and end your turn.\n- A test or script that fails, then passes when you re-run it up to three times on this same commit, is flaky: check `scout_issues`, then file it once with `scout_file` (its reproduction runs it until it fails), and count it as passing.\n";
+const WATCH_STEPS: &str = "\nWatch:\n- Use the project check commands supplied in your instructions.\n- Run every scout test and stress script (the project's test suite and every script in its stress folder, such as `stress/`), then the project's local checks.\n- If everything passes, call `watch_green` and end your turn.\n- A test or script that fails, then passes when you re-run it up to three times on this same commit, is flaky: search `scout_issues` for the test and failure, read promising matches with `scout_issue`, then file it once with `scout_file` (its reproduction runs it until it fails), and count it as passing.\n";
 
 fn bisect_steps(brief: &WatchBrief) -> String {
     let tip = brief.tip;

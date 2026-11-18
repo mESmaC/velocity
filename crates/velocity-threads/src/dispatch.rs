@@ -1,5 +1,6 @@
 //! Single-issue launch planning shared by the native adapter and headless driver (F9).
 use thiserror::Error;
+use velocity_core::text_budget::{SHORT_PROMPT_BYTES, preview};
 use velocity_github::{GitHubIssue, IssueState, SpecQuestion};
 use velocity_store::StateStore;
 use velocity_store::build_gate::{LaunchBlocked, LaunchRequest, require_launch};
@@ -165,9 +166,14 @@ fn dispatch_prompt(
         } else {
             "Route the one-line PR through normal PR duty review as Trivial."
         };
+        let recommendation = velocity_core::text_budget::prompt_excerpt(
+            &question.recommendation,
+            800,
+            "\n[Read the full recommendation in the linked issue before recording it.]",
+        );
         format!(
             "The user accepts this recommended answer: {}\nRecord the answer as *(proposed)* in the relevant §8 question. Change only that decision line. {} {delivery}",
-            question.recommendation,
+            recommendation,
             crate::task_spec::named_section("§8 Open questions")
         )
     } else {
@@ -176,18 +182,38 @@ fn dispatch_prompt(
             crate::task_spec::instructions(&[&issue.title, &issue.body])
         )
     };
-    if version_control == velocity_store::VersionControl::Rosen {
-        return Ok(rosen_dispatch_prompt(&scope, repository, issue));
-    }
-    Ok(format!(
-        "{scope}\n\nIssue {repository}#{}: {}\n{}\n\n{}\n\nUse issue_comment for starting work, findings that change the plan, and blockers.\n\nYou already have your own worktree and branch. Open a PR against the project's default branch with Fixes #{} in its description. Watch it until it merges, fix failed checks, answer every review comment, resolve addressed threads and re-request review. Never merge your own PR. Messages received while busy are queued.",
-        issue.number, issue.title, issue.url, issue.body, issue.number
-    ))
+    Ok(issue_brief(&scope, repository, issue, version_control))
 }
 
-fn rosen_dispatch_prompt(scope: &str, repository: &str, issue: &GitHubIssue) -> String {
-    format!(
-        "{scope}\n\nIssue {repository}#{}: {}\n{}\n\n{}\n\nFollow the Rosen workspace note Velocity gave you. If there is no work to change, explain why and end your turn.",
-        issue.number, issue.title, issue.url, issue.body
+fn issue_brief(
+    scope: &str,
+    repository: &str,
+    issue: &GitHubIssue,
+    version_control: velocity_store::VersionControl,
+) -> String {
+    let delivery = if version_control == velocity_store::VersionControl::Rosen {
+        "Follow the Rosen workspace note Velocity gave you. If there is no work to change, explain why and end your turn.".to_owned()
+    } else {
+        format!(
+            "Use issue_comment for starting work, findings that change the plan, and blockers.\n\nYou already have your own worktree and branch. Open a PR against the project's default branch with Fixes #{} in its description. Watch it until it merges, fix failed checks, answer every review comment, resolve addressed threads and re-request review. Never merge your own PR. Messages received while busy are queued.",
+            issue.number
+        )
+    };
+    let title = preview(&issue.title, 320);
+    let header = format!(
+        "Issue {repository}#{}: {title}\n{}\n\n",
+        issue.number, issue.url
+    );
+    let instructions = format!("{scope}\n\n{delivery}");
+    let notice = "\n[Issue excerpt. Open the linked issue for the full description and evidence.]";
+    let available = SHORT_PROMPT_BYTES.saturating_sub(header.len() + instructions.len() + 2);
+    if issue.body.len() <= available {
+        return format!("{header}{}\n\n{instructions}", issue.body);
+    }
+    let excerpt = preview(&issue.body, available.saturating_sub(notice.len()));
+    // Repository and URL come from GitHub, but also bound the assembled prompt for old saved data.
+    preview(
+        &format!("{header}{excerpt}{notice}\n\n{instructions}"),
+        SHORT_PROMPT_BYTES,
     )
 }
