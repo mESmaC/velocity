@@ -143,7 +143,7 @@ impl ScoutCadence {
     pub fn header_label(self) -> &'static str {
         match self {
             Self::Once => "once",
-            Self::EveryThirtyMinutes => "every 30m",
+            Self::EveryThirtyMinutes => "30m minimum",
             Self::AfterEveryMerge => "after every merge",
         }
     }
@@ -151,7 +151,7 @@ impl ScoutCadence {
     pub fn rule_label(self) -> &'static str {
         match self {
             Self::Once => "Sweep once",
-            Self::EveryThirtyMinutes => "Sweep every 30m",
+            Self::EveryThirtyMinutes => "At least 30m between scheduled sweeps",
             Self::AfterEveryMerge => "Sweep after every merge",
         }
     }
@@ -228,6 +228,10 @@ pub struct DutyAgentCard {
     #[cfg_attr(feature = "bindings", serde(skip))]
     #[cfg_attr(feature = "bindings", specta(skip))]
     pub sweep: Option<crate::scout_sweep::SweepRecord>,
+    /// Whether this scout revisits an unchanged base for new generated inputs.
+    #[cfg_attr(feature = "bindings", serde(skip))]
+    #[cfg_attr(feature = "bindings", specta(skip))]
+    pub repeat_unchanged: bool,
     /// A PR duty agent's kept `review-pr-<n>` worktrees. Saved state only, so Settings →
     /// Worktrees lists them as PR duty's.
     #[cfg_attr(feature = "bindings", serde(skip))]
@@ -633,6 +637,7 @@ pub struct DutyStartSpec {
     pub speed: Option<crate::state::SpeedMode>,
     pub pr_rules: PrDutyRuleSettings,
     pub scout_rules: ScoutRuleSettings,
+    pub repeat_unchanged: bool,
     pub has_open_pull_requests: bool,
     pub timestamp: String,
 }
@@ -661,6 +666,7 @@ pub fn build_duty_agents(
             busy: false,
             doing: doing.clone(),
             sweep: None,
+            repeat_unchanged: false,
             review_worktrees: Vec::new(),
             effort: None,
             speed: None,
@@ -673,6 +679,7 @@ fn with_run_choice(mut agents: Vec<DutyAgentCard>, spec: &DutyStartSpec) -> Vec<
     for agent in &mut agents {
         agent.effort = spec.effort;
         agent.speed = spec.speed;
+        agent.repeat_unchanged = spec.role == DutyRole::Scouts && spec.repeat_unchanged;
     }
     agents
 }

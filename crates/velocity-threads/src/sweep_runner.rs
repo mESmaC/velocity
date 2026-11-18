@@ -1,5 +1,5 @@
-//! Running scout sweeps (SPEC.md F7 Scouts): every scout sweeps once when it joins, then on
-//! its cadence (once, every 30 m, after every merge) until its role is paused. A sweep runs
+//! Running scout sweeps (SPEC.md F7 Scouts): after the first sweep, scouts wait for a
+//! changed base, a user instruction or an opt-in repeat with generated inputs. A sweep runs
 //! one agent turn in the scout's `<scout>-sweep` worktree, its card follows the agent's
 //! steps, and what it files through the scout MCP server lands in the activity feed.
 
@@ -27,7 +27,7 @@ use crate::sweep::{SweepPlan, plan_sweep, sweep_doing, sweep_session};
 
 /// How often the runner looks for due sweeps when nothing wakes it sooner.
 const TICK: Duration = Duration::from_secs(20);
-/// How often "after every merge" asks the remote for the base branch's tip.
+/// How often recurring sweeps ask for the base branch's tip.
 const BASE_POLL: Duration = Duration::from_secs(60);
 /// A card that says this has a sweep that failed; it keeps saying so until the next sweep.
 const FAILED: &str = "sweep failed";
@@ -194,7 +194,11 @@ impl ScoutSweeps {
     }
 
     fn start_due<Host: SweepHost>(&self, host: &Host, roster: &ScoutRoster, base: Option<String>) {
-        let instruction = self.lock().instructions.remove(&roster.project.id);
+        let instruction = if roster.paused {
+            None
+        } else {
+            self.lock().instructions.remove(&roster.project.id)
+        };
         for (index, scout) in roster.scouts.iter().enumerate() {
             let key = (roster.project.id, scout.nickname.clone());
             let running = self.lock().running.contains_key(&key);
@@ -205,9 +209,7 @@ impl ScoutSweeps {
                 last: scout.sweep.as_ref(),
                 now: unix_now(),
                 base_commit: base.as_deref(),
-                // Only a sweep the runner started marks the card busy, and finishing
-                // clears it, so a busy card it isn't running was cut off by an exit.
-                interrupted: scout.busy && !running,
+                repeat_unchanged: scout.repeat_unchanged,
             };
             let instructed = instruction
                 .as_ref()
@@ -228,16 +230,15 @@ impl ScoutSweeps {
                     };
                     self.start(host, roster, brief);
                 }
-                None if !running => settle_card(host, roster, scout),
+                None if !running => settle_card(host, roster, scout, &schedule),
                 None => {}
             }
         }
     }
 
-    /// The remote base branch's tip, read at most once a minute, and only for "after every
-    /// merge", the one cadence that needs it before a sweep starts.
+    /// The base branch's tip, read at most once a minute when recurring sweeps are enabled.
     async fn base_commit(&self, roster: &ScoutRoster) -> Option<String> {
-        if roster.rules.cadence != ScoutCadence::AfterEveryMerge || roster.paused {
+        if roster.rules.cadence == ScoutCadence::Once || roster.paused {
             return None;
         }
         let project = roster.project.id;
@@ -295,7 +296,7 @@ struct SweepStart {
     index: usize,
     reason: SweepReason,
     instruction: Option<String>,
-    /// The base tip the runner last read, recorded if the sweep fails before reading its own.
+    /// The observed base tip that made the sweep due, if already read.
     base_hint: Option<String>,
 }
 
@@ -361,9 +362,14 @@ impl Sweep {
         let roster = self.roster.clone();
         let index = self.start.index;
         let app_data = self.runner.review_swarms.app_data.clone();
+        let base_hint = self.start.base_hint.clone();
         tokio::task::spawn_blocking(move || {
             let scout = roster.scouts.get(index).ok_or("The scout left")?;
-            let commit = crate::launch::resolve_git_base(&app_data, &roster.project)?;
+            // Use the same tip for the scheduling decision and the worktree.
+            let commit = match base_hint {
+                Some(commit) => commit,
+                None => crate::launch::resolve_git_base(&app_data, &roster.project)?,
+            };
             let plan = plan_sweep(&roster, scout, &commit).map_err(|error| error.to_string())?;
             let worktree = velocity_git::prepare_sweep_worktree(&plan.worktree)
                 .map_err(|error| error.to_string())?;
@@ -481,29 +487,37 @@ impl Sweep {
         let nickname = self.key.1.clone();
         let message = sweep_finished_message(counts.0, counts.1, failure);
         let failed = failure.map(|failure| step_doing(&format!("{FAILED} · {failure}")));
-        let cadence = self.roster.rules.cadence;
+        let repeat_unchanged = self.roster.scouts[self.start.index].repeat_unchanged;
         let base_hint = self.start.base_hint.clone();
         host.update(
             self.key.0,
             Box::new(move |entry, timestamp| {
                 let paused = entry.paused;
+                let cadence = entry.scout_rules.cadence;
                 let Some(card) = card_mut(entry, &nickname) else {
                     return Vec::new();
                 };
                 if !started {
-                    // The attempt counts as the sweep, so a failing setup is retried on the
-                    // cadence, not on every tick.
-                    let worktree = card.sweep.take().map(|last| last.worktree);
-                    card.sweep = Some(SweepRecord::new(
-                        unix_now(),
-                        base_hint,
-                        worktree.unwrap_or_default(),
-                    ));
+                    // Keep the last known tip if this attempt could not read the base.
+                    let last = card.sweep.take().unwrap_or_default();
+                    let base = base_hint.or(last.base_commit);
+                    card.sweep = Some(SweepRecord::new(unix_now(), base, last.worktree));
                 }
                 card.busy = false;
                 card.doing = match (failed, &card.sweep) {
                     (Some(failed), _) => failed,
-                    (None, Some(last)) => sweep_idle_doing(cadence, paused, last),
+                    (None, Some(last)) => sweep_idle_doing(
+                        &SweepSchedule {
+                            cadence,
+                            paused,
+                            running: false,
+                            last: Some(last),
+                            now: unix_now(),
+                            base_commit: last.base_commit.as_deref(),
+                            repeat_unchanged,
+                        },
+                        last,
+                    ),
                     (None, None) => "idle".into(),
                 };
                 vec![DutyFeedEvent::new(
@@ -523,9 +537,10 @@ fn settle_card<Host: SweepHost>(
     host: &Host,
     roster: &ScoutRoster,
     scout: &velocity_store::duty::DutyAgentItem,
+    schedule: &SweepSchedule,
 ) {
     let wanted = match &scout.sweep {
-        Some(last) => sweep_idle_doing(roster.rules.cadence, roster.paused, last),
+        Some(last) => sweep_idle_doing(schedule, last),
         None if roster.paused => "paused".into(),
         None => return,
     };

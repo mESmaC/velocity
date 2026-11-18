@@ -3,7 +3,7 @@
 
 use crate::duty::{ScoutCadence, ScoutFocusArea, ScoutRuleSettings};
 
-/// "Every 30 m" (F7 Sweep).
+/// The default minimum between scheduled sweeps and the interval for generated inputs.
 pub const SWEEP_INTERVAL_SECONDS: u64 = 30 * 60;
 
 /// The longest activity line a card shows; the agent's own step titles can be long.
@@ -14,8 +14,7 @@ const DOING_LIMIT: usize = 72;
 pub struct SweepRecord {
     /// Unix seconds when the sweep started.
     pub started_at: u64,
-    /// The commit the sweep started from, when known. "After every merge" sweeps again when
-    /// the base branch's tip moves past it.
+    /// The commit the sweep started from, when known.
     #[serde(default)]
     pub base_commit: Option<String>,
     /// The scout's sweep worktree (`<scout>-sweep`), which its next sweep reuses.
@@ -37,13 +36,9 @@ impl SweepRecord {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum SweepReason {
     First,
-    Interval,
-    NewCommits {
-        base_commit: String,
-    },
+    GeneratedInputs,
+    NewCommits { base_commit: String },
     Instruction,
-    /// Velocity closed during the scout's last sweep, which stopped it: sweep again.
-    Interrupted,
 }
 
 /// What decides whether a scout sweeps now.
@@ -56,35 +51,32 @@ pub struct SweepSchedule<'a> {
     pub now: u64,
     /// The base branch's tip now, when it could be read.
     pub base_commit: Option<&'a str>,
-    /// The saved card says a sweep runs, but none does: the app closed during it (§3.2).
-    pub interrupted: bool,
+    pub repeat_unchanged: bool,
 }
 
 /// The sweep a scout starts now, if any. A paused role or a running sweep starts nothing
-/// (F7: pausing finishes in-flight work and starts nothing new); every scout sweeps once
-/// when it joins, then as its cadence says.
+/// (F7: pausing finishes in-flight work and starts nothing new). Each scout sweeps once
+/// when it joins, then waits for a changed base or an opt-in repeat.
 pub fn sweep_due(schedule: &SweepSchedule) -> Option<SweepReason> {
     if schedule.paused || schedule.running {
         return None;
     }
-    if schedule.interrupted {
-        return Some(SweepReason::Interrupted);
-    }
     let Some(last) = schedule.last else {
         return Some(SweepReason::First);
     };
-    match schedule.cadence {
-        ScoutCadence::Once => None,
-        ScoutCadence::EveryThirtyMinutes => (schedule.now
-            >= last.started_at.saturating_add(SWEEP_INTERVAL_SECONDS))
-        .then_some(SweepReason::Interval),
-        ScoutCadence::AfterEveryMerge => {
-            let current = schedule.base_commit?;
-            (last.base_commit.as_deref() != Some(current)).then(|| SweepReason::NewCommits {
-                base_commit: current.to_owned(),
-            })
-        }
+    let interval_elapsed = schedule.now >= last.started_at.saturating_add(SWEEP_INTERVAL_SECONDS);
+    if schedule.cadence == ScoutCadence::Once
+        || (schedule.cadence == ScoutCadence::EveryThirtyMinutes && !interval_elapsed)
+    {
+        return None;
     }
+    let current = schedule.base_commit?;
+    if last.base_commit.as_deref() != Some(current) {
+        return Some(SweepReason::NewCommits {
+            base_commit: current.to_owned(),
+        });
+    }
+    (schedule.repeat_unchanged && interval_elapsed).then_some(SweepReason::GeneratedInputs)
 }
 
 /// Everything a sweep's prompt is built from.
@@ -145,10 +137,8 @@ pub fn sweep_prompt(brief: &SweepBrief) -> String {
 fn reason_sentence(reason: &SweepReason, base_branch: &str) -> String {
     match reason {
         SweepReason::First => format!("Start your first sweep of `{base_branch}`."),
-        SweepReason::Interval => {
-            format!(
-                "Thirty minutes have passed since your last sweep; sweep `{base_branch}` again."
-            )
+        SweepReason::GeneratedInputs => {
+            format!("Sweep the unchanged `{base_branch}` again with fresh generated inputs.")
         }
         SweepReason::NewCommits { base_commit } => format!(
             "`{base_branch}` moved to {} since your last sweep; sweep again and start with what changed.",
@@ -157,9 +147,6 @@ fn reason_sentence(reason: &SweepReason, base_branch: &str) -> String {
         SweepReason::Instruction => {
             format!("The user pointed the scouts somewhere; sweep `{base_branch}` with that focus.")
         }
-        SweepReason::Interrupted => format!(
-            "Velocity closed during your last sweep, which stopped it; sweep `{base_branch}` again. Issues you filed then are in `scout_issues`."
-        ),
     }
 }
 
@@ -230,15 +217,12 @@ pub fn sweep_started_message(reason: &SweepReason, rules: &ScoutRuleSettings) ->
                 format!("{lead} · {}", areas.join(", "))
             }
         }
-        SweepReason::Interval => "Sweep started · 30m since the last sweep".into(),
+        SweepReason::GeneratedInputs => "Sweep started · fresh generated inputs".into(),
         SweepReason::NewCommits { base_commit } => format!(
             "Sweep started · new commits since the last sweep (now at {})",
             short_commit(base_commit)
         ),
         SweepReason::Instruction => "Sweep started · following your instruction".into(),
-        SweepReason::Interrupted => {
-            "Sweep started · again, after a restart stopped the last one".into()
-        }
     }
 }
 
@@ -252,18 +236,27 @@ pub fn sweep_finished_message(filed: usize, skipped: usize, failure: Option<&str
 }
 
 /// What an idle scout's card says: when it sweeps next.
-pub fn sweep_idle_doing(cadence: ScoutCadence, paused: bool, last: &SweepRecord) -> String {
-    if paused {
+pub fn sweep_idle_doing(schedule: &SweepSchedule, last: &SweepRecord) -> String {
+    if schedule.paused {
         return "paused".into();
     }
-    match cadence {
-        ScoutCadence::Once => "sweep done".into(),
-        ScoutCadence::EveryThirtyMinutes => format!(
-            "idle · next sweep at {}",
-            clock_label(last.started_at.saturating_add(SWEEP_INTERVAL_SECONDS))
-        ),
-        ScoutCadence::AfterEveryMerge => "idle · waiting for the next merge".into(),
+    if schedule.cadence == ScoutCadence::Once {
+        return "sweep done".into();
     }
+    let Some(current) = schedule.base_commit else {
+        return "idle · waiting for the base tip".into();
+    };
+    if last.base_commit.as_deref() == Some(current) && !schedule.repeat_unchanged {
+        return nothing_changed_since(last.started_at);
+    }
+    format!(
+        "idle · next sweep at {}",
+        clock_label(last.started_at.saturating_add(SWEEP_INTERVAL_SECONDS))
+    )
+}
+
+pub fn nothing_changed_since(timestamp: u64) -> String {
+    format!("nothing changed since {}", clock_label(timestamp))
 }
 
 /// A card line from the agent's current step title, kept to one short line. An MCP tool's

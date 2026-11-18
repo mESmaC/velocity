@@ -42,6 +42,7 @@ PR duty checks an item off when it lands that item's PR (F7).
 **M5 · Duty agents**
 - [x] PR duty: claiming, review against SPEC.md, request changes, approve, merge; never merge unapproved; approval record bound to the head SHA; severity bar (Rule 4, F7, Q28)
 - [x] Scouts: sweeps, issue filing with repro, de-duplication (F7)
+  - [x] Gate scheduled sweeps on base changes by default and keep idle review workers waiting for lands (#462)
   - [x] GitHub issue inventory (open and closed), executed failure evidence, duplicate assessment, dispatch labels and scout attribution; runnable backend filing path
 - [x] Duty view, start dialog, pause/resume, add agents (F7)
 

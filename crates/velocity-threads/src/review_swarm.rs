@@ -11,7 +11,7 @@ use velocity_acp::client::{AgentInput, AircLaunch};
 use velocity_core::duty::{
     DutyEventKind, DutyFeedEvent, ReviewSwarmCoverage, review_window_seconds,
 };
-use velocity_core::scout_sweep::{SweepSchedule, sweep_due};
+use velocity_core::scout_sweep::nothing_changed_since;
 use velocity_rosen::{ProjectServer, review_swarm};
 use velocity_store::duty::ScoutRoster;
 
@@ -31,7 +31,6 @@ struct State {
     planning: BTreeSet<u32>,
     retry: BTreeMap<WorkerKey, Instant>,
     instructions: BTreeMap<u32, String>,
-    instructed_idle: BTreeSet<u32>,
     transcripts: BTreeMap<WorkerKey, crate::transcript_view::LiveTranscript>,
 }
 
@@ -85,17 +84,12 @@ impl ReviewSwarms {
 
     pub fn instruct(&self, project: u32, instruction: &str) {
         let mut state = self.lock();
-        let mut delivered = false;
         for ((owner, _), running) in &mut state.running {
             if *owner == project && running.input.send(message(instruction)).is_ok() {
                 running.pending += 1;
-                delivered = true;
             }
         }
         state.instructions.insert(project, instruction.into());
-        if !delivered {
-            state.instructed_idle.insert(project);
-        }
     }
 
     pub fn dismiss(&self, project: u32, nickname: &str) {
@@ -160,19 +154,14 @@ impl ReviewSwarms {
             return Ok(());
         }
         std::fs::create_dir_all(&self.reports).map_err(|error| error.to_string())?;
-        let base = velocity_rosen::policy::policy_at(&server, None)
-            .await
-            .map_err(|error| error.to_string())?
-            .base;
         let window = review_window_seconds(roster.rules.cadence);
         // Initially allow two minutes per review; an ageing backlog uses every slot.
         let remaining = window.saturating_sub(oldest).max(1);
         let desired = (pending.len() as u64)
             .saturating_mul(120)
-            .div_ceil(remaining)
-            .max(1) as usize;
+            .div_ceil(remaining) as usize;
         let cap = desired.min(roster.scouts.len());
-        self.start_available(host, roster, &server, &pending, &base, cap)
+        self.start_available(host, roster, &server, &pending, cap)
             .await
     }
 
@@ -182,7 +171,6 @@ impl ReviewSwarms {
         roster: &ScoutRoster,
         server: &ProjectServer,
         pending: &[review_swarm::LandedChange],
-        base: &str,
         cap: usize,
     ) -> Result<(), String> {
         for (index, agent) in roster.scouts.iter().enumerate() {
@@ -200,21 +188,18 @@ impl ReviewSwarms {
                 None
             };
             let target = match &recovered {
-                Some(job) => job.target.clone(),
+                // Keep existing workspaces recoverable, including old scout jobs, but
+                // leave targetless jobs parked while no landed work is pending.
+                Some(job) if job.target.is_some() || !pending.is_empty() => job.target.clone(),
                 None if self.active_count(key.0) < cap => {
-                    self.claim_next(server, &key.1, pending).await?
+                    let Some(target) = self.claim_next(server, &key.1, pending).await? else {
+                        continue;
+                    };
+                    Some(target)
                 }
+                Some(_) => continue,
                 None => continue,
             };
-            if target.is_none()
-                && recovered.is_none()
-                && (!pending.is_empty()
-                    || index != 0
-                    || (!scouting_due(roster, index, base)
-                        && !self.lock().instructed_idle.contains(&key.0)))
-            {
-                continue;
-            }
             self.start(host, roster, index, target, recovered);
         }
         Ok(())
@@ -251,15 +236,16 @@ impl ReviewSwarms {
     ) {
         let key = (roster.project.id, roster.scouts[index].nickname.clone());
         let (input, inputs) = unbounded_channel();
-        let instruction = self.lock().instructions.get(&key.0).cloned();
-        self.lock().running.insert(
+        let mut state = self.lock();
+        let instruction = state.instructions.get(&key.0).cloned();
+        state.running.insert(
             key.clone(),
             Running {
                 input: input.clone(),
                 pending: 0,
             },
         );
-        self.lock().instructed_idle.remove(&key.0);
+        drop(state);
         let job = crate::review_swarm_session::Job::new(
             self.clone(),
             roster.clone(),
@@ -335,25 +321,19 @@ fn worker_present<Host: SweepHost>(host: &Host, key: &WorkerKey) -> bool {
     })
 }
 
-fn scouting_due(roster: &ScoutRoster, index: usize, base: &str) -> bool {
-    let agent = &roster.scouts[index];
-    sweep_due(&SweepSchedule {
-        cadence: roster.rules.cadence,
-        paused: roster.paused,
-        running: false,
-        last: agent.sweep.as_ref(),
-        now: now(),
-        base_commit: Some(base),
-        interrupted: agent.busy,
-    })
-    .is_some()
-}
-
 fn coverage<Host: SweepHost>(host: &Host, project: u32, count: usize, oldest: u64) {
     host.update(
         project,
         Box::new(move |entry, _| {
             entry.review_swarm = Some(ReviewSwarmCoverage::new(count, oldest));
+            if count == 0 && !entry.paused {
+                for agent in entry.agents.iter_mut().filter(|agent| !agent.busy) {
+                    agent.doing = agent.sweep.as_ref().map_or_else(
+                        || "waiting for a land".into(),
+                        |last| nothing_changed_since(last.started_at),
+                    );
+                }
+            }
             Vec::new()
         }),
     );

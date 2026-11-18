@@ -82,7 +82,7 @@
 
   const cadences: [ScoutCadence, string][] = [
     ['once', 'Once'],
-    ['every_thirty_minutes', 'Every 30m'],
+    ['every_thirty_minutes', '30m minimum'],
     ['after_every_merge', 'After every merge'],
   ];
 
@@ -112,6 +112,7 @@
     label_issues_for_dispatch: false,
     cadence: 'every_thirty_minutes',
   });
+  let repeatUnchanged = $state(false);
   let submitting = $state(false);
   let error = $state('');
   let handledSubmits = 0;
@@ -189,11 +190,15 @@
     defaults?.lands_without_review && role === 'scouts',
   );
   const reviewWindows: [ScoutCadence, string][] = [
-    ['once', '30m · scout once'],
     ['every_thirty_minutes', '30m'],
     ['after_every_merge', '1m'],
   ];
   const offeredCadences = $derived(reviewSwarm ? reviewWindows : cadences);
+  const selectedCadence = $derived(
+    reviewSwarm && scoutRules.cadence === 'once'
+      ? 'every_thirty_minutes'
+      : scoutRules.cadence,
+  );
 
   const selectedRole = $derived(
     offeredRoles.find(([value]) => value === role) ?? roles[0],
@@ -216,7 +221,12 @@
         effort,
         speed,
         pr_rules: prRules,
-        scout_rules: scoutRules,
+        scout_rules: { ...scoutRules, cadence: selectedCadence },
+        repeat_unchanged:
+          role === 'scouts' &&
+          !reviewSwarm &&
+          selectedCadence !== 'once' &&
+          repeatUnchanged,
       };
       const snapshot = roleExists()
         ? await dutyCommands.addAgents(request)
@@ -488,15 +498,25 @@
               />
               Label issues so they can be dispatched straight to agents
             </label>
+            {#if !reviewSwarm && scoutRules.cadence !== 'once'}
+              <label class="check">
+                <input type="checkbox" bind:checked={repeatUnchanged} />
+                Sweep an unchanged base every 30m with fresh generated inputs
+              </label>
+            {/if}
           </div>
           <div class="row2 spread sub-row">
             <span class="label">{reviewSwarm ? 'Review window' : 'Sweep'}</span>
-            <div class="seg sm" role="group" aria-label="Sweep">
+            <div
+              class="seg sm"
+              role="group"
+              aria-label={reviewSwarm ? 'Review window' : 'Sweep'}
+            >
               {#each offeredCadences as [value, label] (value)}
                 <button
                   type="button"
-                  class:on={scoutRules.cadence === value}
-                  aria-pressed={scoutRules.cadence === value}
+                  class:on={selectedCadence === value}
+                  aria-pressed={selectedCadence === value}
                   onclick={() => (scoutRules.cadence = value)}>{label}</button
                 >
               {/each}

@@ -1,7 +1,7 @@
 #### Scouts · Sweep
 
 <!-- split-spec: {"order":1103,"kind":"markdown","indentation":0} -->
-- Sweep: Once / Every 30 m / After every merge.
+- Sweep: Once / 30m minimum / After every merge.
 
 <!-- split-spec links -->
 

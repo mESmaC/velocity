@@ -4369,6 +4369,8 @@ export type StartDutyRequest_Deserialize = {
 	speed?: SpeedMode | null,
 	pr_rules?: PrDutyRuleSettings | null,
 	scout_rules?: ScoutRuleSettings | null,
+	/**  Only the scouts started by this request get this setting. */
+	repeat_unchanged?: boolean,
 };
 
 export type StartDutyRequest_Serialize = {
@@ -4381,6 +4383,8 @@ export type StartDutyRequest_Serialize = {
 	speed: SpeedMode | null,
 	pr_rules: PrDutyRuleSettings | null,
 	scout_rules: ScoutRuleSettings | null,
+	/**  Only the scouts started by this request get this setting. */
+	repeat_unchanged: boolean,
 };
 
 /**  Stop a duty role (F7): every agent is dismissed and the role leaves "On duty". */

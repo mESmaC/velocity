@@ -27,6 +27,9 @@ pub struct DutyAgentItem {
     #[serde(default)]
     #[specta(skip)]
     pub sweep: Option<SweepRecord>,
+    #[serde(default)]
+    #[specta(skip)]
+    pub repeat_unchanged: bool,
     /// A PR duty agent's kept `review-pr-<n>` worktrees (F7), listed in Settings → Worktrees.
     #[serde(default)]
     #[specta(skip)]
@@ -80,6 +83,7 @@ impl DutyRoleItem {
                 busy: agent.busy,
                 doing: agent.doing.clone(),
                 sweep: agent.sweep.clone(),
+                repeat_unchanged: agent.repeat_unchanged,
                 review_worktrees: agent.review_worktrees.clone(),
                 effort: agent.effort.map(Into::into),
                 speed: agent.preferred_speed.map(Into::into),
@@ -117,6 +121,7 @@ impl DutyRoleItem {
                     busy: agent.busy,
                     doing: agent.doing,
                     sweep: agent.sweep,
+                    repeat_unchanged: agent.repeat_unchanged,
                     review_worktrees: agent.review_worktrees,
                     effort: agent.effort.map(Into::into),
                     preferred_speed: agent.speed.map(Into::into),
@@ -237,6 +242,9 @@ pub struct StartDutyRequest {
     pub speed: Option<SpeedMode>,
     pub pr_rules: Option<PrDutyRuleSettings>,
     pub scout_rules: Option<ScoutRuleSettings>,
+    /// Only the scouts started by this request get this setting.
+    #[serde(default)]
+    pub repeat_unchanged: bool,
 }
 
 impl StartDutyRequest {
@@ -251,6 +259,7 @@ impl StartDutyRequest {
             speed: None,
             pr_rules: None,
             scout_rules: None,
+            repeat_unchanged: false,
         }
     }
 }
@@ -722,6 +731,7 @@ fn apply_start_or_add(
                 .scout_rules
                 .clone()
                 .unwrap_or_else(|| core_entry.scout_rules.clone()),
+            repeat_unchanged: request.repeat_unchanged,
             has_open_pull_requests,
             timestamp,
         };
@@ -740,6 +750,7 @@ fn apply_start_or_add(
             speed: request.speed.map(Into::into),
             pr_rules: request.pr_rules.clone().unwrap_or_default(),
             scout_rules: request.scout_rules.clone().unwrap_or_default(),
+            repeat_unchanged: request.repeat_unchanged,
             has_open_pull_requests,
             timestamp,
         };
@@ -814,6 +825,7 @@ mod tests {
             speed: None,
             pr_rules: PrDutyRuleSettings::default(),
             scout_rules: ScoutRuleSettings::default(),
+            repeat_unchanged: false,
             has_open_pull_requests: false,
             timestamp: "00:00".into(),
         };
@@ -868,6 +880,7 @@ mod tests {
             speed: Some(speed),
             pr_rules: PrDutyRuleSettings::default(),
             scout_rules: ScoutRuleSettings::default(),
+            repeat_unchanged: false,
             has_open_pull_requests: false,
             timestamp: "00:00".into(),
         };
@@ -882,6 +895,75 @@ mod tests {
         let old = r#"{"nickname":"pr-1","provider":"claude","model_name":"Opus 5.5","busy":false,"doing":""}"#;
         let old: DutyAgentItem = serde_json::from_str(old)?;
         assert_eq!((old.effort, old.preferred_speed), (None, None));
+        assert!(!old.repeat_unchanged);
+        Ok(())
+    }
+
+    // #462: reloading duty state must keep the base comparison and each scout's own opt-in.
+    #[test]
+    fn scout_schedule_survives_reload() -> Result<(), Box<dyn std::error::Error>> {
+        use velocity_core::scout_sweep::{SweepReason, SweepSchedule, sweep_due, sweep_idle_doing};
+
+        let spec = |repeat_unchanged| DutyStartSpec {
+            role: DutyRole::Scouts,
+            agent_count: 1,
+            provider: ProviderColor::Codex,
+            model_name: "model".into(),
+            effort: None,
+            speed: None,
+            pr_rules: PrDutyRuleSettings::default(),
+            scout_rules: ScoutRuleSettings::default(),
+            repeat_unchanged,
+            has_open_pull_requests: false,
+            timestamp: "00:00".into(),
+        };
+        let (mut entry, _) = duty::start_duty_entry(7, spec(false));
+        duty::add_agents_to_duty_entry(&mut entry, spec(true));
+        for scout in &mut entry.agents {
+            scout.sweep = Some(SweepRecord::new(0, Some("base".into()), String::new()));
+        }
+        let saved = DutyRoleItem::from_core(entry, ProviderKind::Codex);
+        let loaded: DutyRoleItem = serde_json::from_str(&serde_json::to_string(&saved)?)?;
+        let default = &loaded.agents[0];
+        let last = default.sweep.as_ref().ok_or("missing last sweep")?;
+        let schedule = |now, base_commit| SweepSchedule {
+            cadence: loaded.scout_rules.cadence,
+            paused: false,
+            running: false,
+            last: Some(last),
+            now,
+            base_commit,
+            repeat_unchanged: default.repeat_unchanged,
+        };
+        for seconds in (0..=7_200).step_by(20) {
+            assert_eq!(sweep_due(&schedule(seconds, Some("base"))), None);
+        }
+        assert_eq!(
+            sweep_idle_doing(&schedule(7_200, Some("base")), last),
+            "nothing changed since 00:00"
+        );
+        assert_eq!(sweep_due(&schedule(1_799, Some("new"))), None);
+        assert_eq!(
+            sweep_due(&schedule(1_800, Some("new"))),
+            Some(SweepReason::NewCommits {
+                base_commit: "new".into()
+            })
+        );
+        assert_eq!(sweep_due(&schedule(7_200, None)), None);
+        let opted_in = &loaded.agents[1];
+        let repeat = SweepSchedule {
+            last: opted_in.sweep.as_ref(),
+            repeat_unchanged: opted_in.repeat_unchanged,
+            ..schedule(1_799, Some("base"))
+        };
+        assert_eq!(sweep_due(&repeat), None);
+        assert_eq!(
+            sweep_due(&SweepSchedule {
+                now: 1_800,
+                ..repeat
+            }),
+            Some(SweepReason::GeneratedInputs)
+        );
         Ok(())
     }
 }
