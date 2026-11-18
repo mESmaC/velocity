@@ -8,26 +8,23 @@ use velocity_threads::restart::CONTINUE_PROMPT;
 
 use crate::threads::{ManagedThreads, lock};
 
-/// Resumes each interrupted thread off the setup thread: checking a worktree is git work,
-/// and the window should open without waiting for it.
+/// Resumes each interrupted thread independently, so a slow Rosen server doesn't hold
+/// up the window or other threads' recovery.
 pub fn resume_interrupted(application: &AppHandle, interrupted: Vec<ThreadKey>) {
-    if interrupted.is_empty() {
-        return;
+    for key in interrupted {
+        let application = application.clone();
+        tauri::async_runtime::spawn(async move {
+            crate::threads::report(resume(&application, key).await);
+        });
     }
-    let application = application.clone();
-    std::thread::spawn(move || {
-        for key in interrupted {
-            crate::threads::report(resume(&application, key));
-        }
-    });
 }
 
-fn resume(application: &AppHandle, key: ThreadKey) -> Result<(), String> {
+async fn resume(application: &AppHandle, key: ThreadKey) -> Result<(), String> {
     // PR follow-through delivers pending review work under the same lease, and resumes the
     // session itself when none runs; holding it means only one of the two starts a session.
     let lease = crate::threads::action_lock(application, key)?;
-    let _guard = lease.blocking_lock();
-    let result = resume_session(application, key);
+    let _guard = lease.lock().await;
+    let result = resume_session(application, key).await;
     lock(
         application
             .state::<crate::state::ManagedStateStore>()
@@ -41,11 +38,12 @@ fn resume(application: &AppHandle, key: ThreadKey) -> Result<(), String> {
     result
 }
 
-fn resume_session(application: &AppHandle, key: ThreadKey) -> Result<(), String> {
+async fn resume_session(application: &AppHandle, key: ThreadKey) -> Result<(), String> {
     if session_running(application, key)? {
         return Ok(());
     }
-    if let Err(error) = crate::parking::resume(application, key, CONTINUE_PROMPT) {
+    let result = velocity_rosen::retry_workspace(|| attempt_resume(application, key)).await;
+    if let Err(error) = result.and_then(|attempt| attempt) {
         if session_running(application, key)? {
             return Ok(());
         }
@@ -57,6 +55,23 @@ fn resume_session(application: &AppHandle, key: ThreadKey) -> Result<(), String>
         );
     }
     Ok(())
+}
+
+async fn attempt_resume(
+    application: &AppHandle,
+    key: ThreadKey,
+) -> Result<Result<(), String>, String> {
+    let application = application.clone();
+    let result = tauri::async_runtime::spawn_blocking(move || {
+        crate::parking::resume(&application, key, CONTINUE_PROMPT)
+    })
+    .await
+    .map_err(|error| error.to_string())?;
+    // Only Rosen AIRC failures should reach the transport error classifier.
+    match result {
+        Err(error) if error.starts_with("Rosen AIRC: ") => Err(error),
+        result => Ok(result),
+    }
 }
 
 fn session_running(application: &AppHandle, key: ThreadKey) -> Result<bool, String> {
