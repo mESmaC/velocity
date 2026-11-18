@@ -99,6 +99,9 @@ mod tests {
         project.rosen_migration_notice = Some("Waiting for clean worktrees".into());
         let mut thread = ThreadItem::new(10, "Retained history".into());
         thread.state = ThreadState::Closed;
+        // A closed thread is idle; ThreadItem::new starts as Executing, which would hold
+        // the migration as if an agent were still running.
+        thread.activity = AgentActivity::Idle;
         thread.worktree_path = Some(r"X:\workspaces\project one\old thread".into());
         thread.transcript = std::sync::Arc::new(vec![TranscriptBlock::AgentMessage {
             paragraphs: vec!["Original conversation".into()],
