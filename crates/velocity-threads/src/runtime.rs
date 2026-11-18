@@ -49,6 +49,7 @@ pub struct ThreadProgress {
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum SessionPhase {
     SettingUp,
+    Selecting,
     Running,
     Ended,
 }
@@ -204,18 +205,41 @@ impl ThreadRuntimes {
             return None;
         }
         let (inputs, receiver) = unbounded_channel();
-        let _ = inputs.send(text_input(opening_prompt));
-        thread.pending_inputs = VecDeque::from([PendingInput::Opening]);
-        thread.replaying_history = false;
-        for message in thread.transcript.queued() {
-            let _ = inputs.send(text_input(message));
-            thread.pending_inputs.push_back(PendingInput::Steering);
-        }
         thread.inputs = inputs;
-        thread.phase = SessionPhase::Running;
-        thread.transcript.rename_worktree(worktree);
-        thread.transcript.worktree_ready();
+        queue_claimed_prompt(thread, worktree, opening_prompt)?;
         Some(receiver)
+    }
+
+    /// Start the custom goal's first turn and hold steering until the piece is claimed.
+    pub fn begin_goal_selection(
+        &mut self,
+        key: ThreadKey,
+        prompt: &str,
+    ) -> Option<(UnboundedSender<AgentInput>, SessionInputs)> {
+        let thread = self.threads.get_mut(&key)?;
+        if thread.phase != SessionPhase::SettingUp || self.retired.contains(&key) {
+            return None;
+        }
+        let (inputs, receiver) = unbounded_channel();
+        inputs.send(text_input(prompt)).ok()?;
+        thread.inputs = inputs.clone();
+        thread.pending_inputs.push_back(PendingInput::Opening);
+        thread.phase = SessionPhase::Selecting;
+        Some((inputs, receiver))
+    }
+
+    /// Send the claimed piece to the same session that interpreted the goal.
+    pub fn continue_claimed_session(
+        &mut self,
+        key: ThreadKey,
+        worktree: &str,
+        opening_prompt: &str,
+    ) -> Option<()> {
+        let thread = self.threads.get_mut(&key)?;
+        if thread.phase != SessionPhase::Selecting || self.retired.contains(&key) {
+            return None;
+        }
+        queue_claimed_prompt(thread, worktree, opening_prompt)
     }
 
     /// Drops a choosing runtime entry when an agent leaves without starting a session (F16).
@@ -517,7 +541,12 @@ impl ThreadRuntimes {
             thread.transcript.queue(prompt);
             return Ok(());
         }
+        if thread.phase == SessionPhase::SettingUp && thread.inputs.is_closed() {
+            thread.transcript.queue(prompt);
+            return Ok(());
+        }
         if self.workspace_updates.contains(&key)
+            || thread.phase == SessionPhase::Selecting
             || thread.busy && thread.phase == SessionPhase::Running
         {
             if thread.inputs.is_closed() {
@@ -613,7 +642,7 @@ impl ThreadRuntimes {
                             && thread.pending_inputs.is_empty()
                             && !thread.deliveries.airc_wake_pending()
                     }
-                    SessionPhase::SettingUp => false,
+                    SessionPhase::SettingUp | SessionPhase::Selecting => false,
                 }
         })
     }
@@ -647,9 +676,12 @@ impl ThreadRuntimes {
     }
 
     pub fn is_setting_up(&self, key: ThreadKey) -> bool {
-        self.threads
-            .get(&key)
-            .is_some_and(|thread| thread.phase == SessionPhase::SettingUp)
+        self.threads.get(&key).is_some_and(|thread| {
+            matches!(
+                thread.phase,
+                SessionPhase::SettingUp | SessionPhase::Selecting
+            )
+        })
     }
 
     /// A watcher must not recreate a session stopped for merge or explicit deletion.
@@ -687,7 +719,7 @@ impl ThreadRuntimes {
         match thread.phase {
             SessionPhase::Ended => StopOutcome::NotRunning,
             SessionPhase::SettingUp => StopOutcome::SettingUp,
-            SessionPhase::Running => {
+            SessionPhase::Running | SessionPhase::Selecting => {
                 let _ = thread.inputs.send(AgentInput::Stop);
                 let (ended, receiver) = oneshot::channel();
                 self.stopping.insert(key, Vec::from([ended]));
@@ -912,6 +944,24 @@ fn send_held(thread: &mut ThreadRuntime) {
     thread
         .pending_inputs
         .extend(std::iter::repeat_n(PendingInput::Steering, count));
+}
+
+fn queue_claimed_prompt(
+    thread: &mut ThreadRuntime,
+    worktree: &str,
+    opening_prompt: &str,
+) -> Option<()> {
+    thread.inputs.send(text_input(opening_prompt)).ok()?;
+    thread.pending_inputs = VecDeque::from([PendingInput::Opening]);
+    thread.replaying_history = false;
+    for message in thread.transcript.queued() {
+        let _ = thread.inputs.send(text_input(message));
+        thread.pending_inputs.push_back(PendingInput::Steering);
+    }
+    thread.phase = SessionPhase::Running;
+    thread.transcript.rename_worktree(worktree);
+    thread.transcript.worktree_ready();
+    Some(())
 }
 
 fn text_input(prompt: &str) -> AgentInput {

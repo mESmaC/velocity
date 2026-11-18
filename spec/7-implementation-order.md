@@ -70,6 +70,7 @@ PR duty checks an item off when it lands that item's PR (F7).
 - [x] Work pool: open Task List items, open issues, unbuilt SPEC.md sections (F16)
 - [x] Dialog: prompt, count, model mix with "the rest", effort and speed per row, limits, pool size, PR duty capacity, keep going (F16)
 - [x] Launch, choosing → claimed → normal lifecycle, leave when nothing is left, keep going (F16)
+- [x] Native goal-swarm selection and claim retries, with a five-piece first-turn shortlist for custom goals (F16, #463)
 - [x] Goal swarm view: claims board, one card per agent, activity; sidebar row (F16)
 
 **M10 · Throughput** (§3.3)

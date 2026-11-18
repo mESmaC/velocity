@@ -1,184 +1,258 @@
-//! The member's unrestricted agent evaluates the goal before Velocity locks any piece.
+//! Native goal-swarm candidate ranking and the optional first-turn choice protocol.
 
+use std::cmp::Reverse;
+use std::collections::{BTreeSet, HashMap};
 use std::path::Path;
-use std::time::Duration;
 
 use agent_client_protocol::v1::schema::{ContentBlock, SessionUpdate};
 use serde::Deserialize;
-use velocity_acp::client::{AgentEvent, AgentInput, AgentLaunch, SessionSetup};
-use velocity_core::work_pool::WorkPool;
-use velocity_store::goal_swarms::GoalAgentSlot;
-use velocity_store::{Settings, ThreadItem};
+use velocity_acp::client::AgentEvent;
+use velocity_airc::claims::{WorkClaims, normalize_file, repository_relative};
+use velocity_core::goal_swarm::DEFAULT_PROMPT;
+use velocity_core::goal_swarm_choice::{canonical_piece_key, is_piece_unclaimed};
+use velocity_core::work_pool::{WorkKey, WorkPiece, WorkPool};
+use velocity_graph::coordination::SubsystemMap;
+use velocity_rosen::PathPattern;
 
 use crate::goal_swarm::GoalSwarmError;
 
-pub struct GoalSelector {
-    launch: AgentLaunch,
-    setup: SessionSetup,
-    prompt: String,
-    subsystems: Option<(velocity_graph::coordination::SubsystemMap, usize)>,
+const SHORTLIST_LENGTH: usize = 5;
+
+pub(crate) struct Candidate {
+    pub piece: WorkPiece,
+    pub files: Vec<String>,
+    subsystems: BTreeSet<String>,
 }
 
-#[derive(Deserialize)]
-struct Selection {
-    piece: SelectedPiece,
-}
-
-#[derive(Deserialize)]
-#[serde(untagged)]
-enum SelectedPiece {
-    Key(String),
-    None(()),
-}
-
-impl GoalSelector {
-    pub fn new(launch: AgentLaunch, setup: SessionSetup, prompt: String) -> Self {
-        Self {
-            launch,
-            setup,
-            prompt,
-            subsystems: None,
-        }
-    }
-
-    pub fn with_subsystems(
-        mut self,
-        map: velocity_graph::coordination::SubsystemMap,
-        member: usize,
-    ) -> Self {
-        self.subsystems = Some((map, member));
-        self
-    }
-
-    pub fn for_member(
-        settings: &Settings,
-        thread: &ThreadItem,
-        slot: &GoalAgentSlot,
-        worktree: &Path,
-    ) -> Result<Self, GoalSwarmError> {
-        let (launch, modes) =
-            crate::launch::agent_launch(settings, slot.provider).map_err(selection_error)?;
-        let setup = SessionSetup::new(worktree.to_owned(), modes)
-            .with_run_settings(crate::thread_run_settings(thread));
-        Ok(Self::new(launch, setup, slot.prompt.clone()))
-    }
-
-    /// Called on the choosing worker, never while holding the state or AIRC lock.
-    pub fn choose(&self, pool: &WorkPool, flags: &[bool]) -> Result<Option<usize>, GoalSwarmError> {
-        if !flags.iter().any(|open| *open) {
-            return Ok(None);
-        }
-        let runtime = tokio::runtime::Builder::new_current_thread()
-            .enable_all()
-            .build()
-            .map_err(selection_error)?;
-        let reply = runtime.block_on(self.ask(selection_prompt(
-            &self.prompt,
-            pool,
-            flags,
-            self.subsystems.as_ref(),
-        )))?;
-        let selection = parse_selection(&reply)?;
-        match selection.piece {
-            SelectedPiece::None(()) => Ok(None),
-            SelectedPiece::Key(key) => pool
-                .pieces
-                .iter()
-                .enumerate()
-                .find(|(index, piece)| {
-                    flags.get(*index) == Some(&true) && piece.key.claim_piece() == key
-                })
-                .map(|(index, _)| Some(index))
-                .ok_or_else(|| {
-                    selection_error("The agent selected a piece outside the available pool")
-                }),
-        }
-    }
-
-    async fn ask(&self, prompt: String) -> Result<String, GoalSwarmError> {
-        let (input, inputs) = tokio::sync::mpsc::unbounded_channel();
-        input
-            .send(AgentInput::Send(vec![ContentBlock::from(prompt)]))
-            .map_err(selection_error)?;
-        let mut session = crate::spawn_session(self.launch.clone(), self.setup.clone(), inputs);
-        let reply =
-            tokio::time::timeout(Duration::from_secs(300), collect_reply(&mut session.events))
-                .await;
-        let _ = input.send(AgentInput::Stop);
-        session
-            .outcome
-            .await
-            .map_err(selection_error)?
-            .map_err(selection_error)?;
-        reply.map_err(selection_error)?.map_err(selection_error)
-    }
-}
-
-async fn collect_reply(
-    events: &mut tokio::sync::mpsc::UnboundedReceiver<AgentEvent>,
-) -> Result<String, String> {
-    let mut reply = String::new();
-    while let Some(event) = events.recv().await {
-        match event {
-            AgentEvent::Transcript {
-                update: SessionUpdate::AgentMessageChunk(chunk),
-                ..
-            } => {
-                if let ContentBlock::Text(text) = chunk.content {
-                    reply.push_str(&text.text);
-                }
-            }
-            AgentEvent::TurnEnded(result) => return result.map(|_| reply),
-            _ => {}
-        }
-    }
-    Err("The goal selection session ended without a choice".into())
-}
-
-fn selection_prompt(
-    goal: &str,
-    pool: &WorkPool,
-    flags: &[bool],
-    subsystems: Option<&(velocity_graph::coordination::SubsystemMap, usize)>,
-) -> String {
-    let areas: Vec<_> = pool
+pub(crate) fn candidates(
+    pool: WorkPool,
+    checkout: &Path,
+    mut issue_files: HashMap<u32, Vec<String>>,
+    map: Option<&SubsystemMap>,
+) -> Vec<Candidate> {
+    let mut candidates: Vec<_> = pool
         .pieces
-        .iter()
-        .map(|piece| subsystems.and_then(|(map, _)| map.classify(&piece.title)))
-        .collect();
-    let distinct: Vec<_> = areas
-        .iter()
-        .filter_map(Option::as_deref)
-        .collect::<std::collections::BTreeSet<_>>()
         .into_iter()
+        .map(|piece| {
+            let mut files = referenced_files(checkout, &piece.title);
+            if let WorkKey::Issue { number, .. } = piece.key {
+                files.extend(issue_files.remove(&number).into_iter().flatten());
+            }
+            files.sort();
+            files.dedup();
+            let subsystems = subsystems(map, &files, &piece.title);
+            Candidate {
+                piece,
+                files,
+                subsystems,
+            }
+        })
         .collect();
-    let preferred = subsystems
-        .and_then(|(_, member)| distinct.get(member.checked_rem(distinct.len())?).copied());
-    let candidates: Vec<_> = pool.pieces.iter().zip(areas.iter()).zip(flags).filter(|(_, open)| **open)
-        .map(|((piece, subsystem), _)| serde_json::json!({
+    // The spec parser supplies §7 order and the issue reader supplies creation order.
+    candidates.sort_by_key(|candidate| match candidate.piece.key {
+        WorkKey::Spec { .. } => 0,
+        WorkKey::Task { .. } => 1,
+        WorkKey::Issue { .. } => 2,
+    });
+    candidates
+}
+
+pub(crate) fn referenced_files(checkout: &Path, text: &str) -> Vec<String> {
+    let quoted = text.split('`').skip(1).step_by(2);
+    let bare = text
+        .split(|character: char| character.is_whitespace() || "()[]<>,;\"'`".contains(character))
+        .filter(|word| word.contains(['.', '/', '\\']) || word.chars().all(char::is_uppercase));
+    quoted
+        .chain(bare)
+        .filter_map(|hint| {
+            let hint = hint.trim_end_matches('.');
+            if !repository_relative(hint) || hint.contains("://") {
+                return None;
+            }
+            let path = hint.split_once(':').map_or(hint, |(path, _)| path);
+            let file = normalize_file(path);
+            if checkout.join(&file).is_file() {
+                return Some(file);
+            }
+            let (path, _) = file.split_once("#L")?;
+            checkout.join(path).is_file().then(|| path.to_owned())
+        })
+        .collect::<BTreeSet<_>>()
+        .into_iter()
+        .collect()
+}
+
+fn subsystems(map: Option<&SubsystemMap>, files: &[String], title: &str) -> BTreeSet<String> {
+    let Some(map) = map else {
+        return BTreeSet::new();
+    };
+    let mut known: BTreeSet<_> = files
+        .iter()
+        .filter_map(|file| map.for_file(claim_path(file)).map(str::to_owned))
+        .collect();
+    if known.is_empty() && !title.is_empty() {
+        known.extend(map.classify(title));
+    }
+    known
+}
+
+fn claim_path(file: &str) -> &str {
+    file.strip_suffix("::registration").unwrap_or(file)
+}
+
+pub(crate) struct HeldWork {
+    keys: BTreeSet<String>,
+    files: BTreeSet<String>,
+    patterns: Vec<PathPattern>,
+    subsystems: BTreeSet<String>,
+}
+
+impl HeldWork {
+    pub fn new(claims: WorkClaims, candidates: &[Candidate], map: Option<&SubsystemMap>) -> Self {
+        let mut held = Self {
+            keys: BTreeSet::new(),
+            files: BTreeSet::new(),
+            patterns: Vec::new(),
+            subsystems: BTreeSet::new(),
+        };
+        for pattern in claims.paths.iter().filter(|path| path.contains(['*', '?'])) {
+            held.patterns.extend(PathPattern::new(pattern).ok());
+            held.subsystems
+                .extend(map.and_then(|map| map.classify(pattern)));
+        }
+        held.subsystems.extend(subsystems(map, &claims.paths, ""));
+        held.files.extend(
+            claims
+                .paths
+                .into_iter()
+                .map(|file| normalize_file(claim_path(&file))),
+        );
+        for claim in claims.pieces {
+            held.keys.insert(canonical_piece_key(claim.key()));
+            held.subsystems
+                .extend(subsystems(map, &claim.files, &claim.task));
+            held.files.extend(
+                claim
+                    .files
+                    .iter()
+                    .map(|file| normalize_file(claim_path(file))),
+            );
+        }
+        for candidate in candidates {
+            if held.keys.contains(&candidate.piece.key.claim_piece())
+                || candidate.piece.thread_identifier.is_some()
+            {
+                held.files.extend(candidate.files.iter().cloned());
+                held.subsystems.extend(candidate.subsystems.iter().cloned());
+            }
+        }
+        held
+    }
+
+    pub fn allows(&self, candidate: &Candidate) -> bool {
+        is_piece_unclaimed(&candidate.piece, &self.keys)
+            && !candidate.files.iter().any(|file| {
+                self.files.contains(file)
+                    || self.patterns.iter().any(|pattern| pattern.matches(file))
+            })
+            && candidate.subsystems.is_disjoint(&self.subsystems)
+    }
+}
+
+pub(crate) fn shortlist<'a>(
+    goal: &str,
+    available: impl Iterator<Item = &'a Candidate>,
+) -> Vec<&'a Candidate> {
+    let words = goal_words(goal);
+    let mut ranked: Vec<_> = available.collect();
+    ranked.sort_by_cached_key(|candidate| {
+        let piece = &candidate.piece;
+        let exact_issue = matches!(piece.key, WorkKey::Issue { number, .. }
+            if goal.split(|character: char| !character.is_alphanumeric() && character != '#')
+                .any(|word| word.strip_prefix('#').and_then(|value| value.parse().ok()) == Some(number)));
+        let title = format!("{} {}", piece.title, piece.key.claim_piece());
+        Reverse((exact_issue, goal_words(&title).intersection(&words).count()))
+    });
+    ranked.truncate(SHORTLIST_LENGTH);
+    ranked
+}
+
+fn goal_words(text: &str) -> BTreeSet<String> {
+    text.split(|character: char| !character.is_alphanumeric())
+        .filter(|word| word.len() > 1)
+        .map(str::to_lowercase)
+        .collect()
+}
+
+pub(crate) fn needs_choice(goal: &str) -> bool {
+    let goal = goal.trim();
+    !goal.is_empty() && !goal.eq_ignore_ascii_case(DEFAULT_PROMPT)
+}
+
+pub fn selection_prompt(goal: &str, shortlist: &[&WorkPiece]) -> String {
+    let candidates: Vec<_> = shortlist.iter()
+        .map(|piece| serde_json::json!({
             "piece": piece.key.claim_piece(), "title": piece.title, "reference": piece.reference,
-            "subsystem": subsystem,
-        })).collect();
-    let preference = preferred.map_or_else(String::new, |area| format!(
-        "The code graph groups candidate work by subsystem. When several pieces fit the goal equally well, prefer `{area}` so members can work in different subsystems. Confirm the likely area from the source.\n"
-    ));
+        }))
+        .collect();
     format!(
-        "{goal}\n\n---\nVelocity goal swarm: choosing work, before claiming (F16).\n\
-         Read the user's goal above first. It governs which work to choose. Inspect issue evidence or the relevant spec headings as needed to choose work that satisfies it. {}\n\
-         This turn is only for choosing: do not claim, edit, implement or name work yet. \
-         Velocity will acquire the atomic claim and send the implementation prompt after your choice.\n\
-         Choose only from this currently unclaimed inventory, already filtered to the user's work sources. \
-         If another member takes your choice, you will be asked again with a refreshed inventory. \
-         If none fits the user's goal, choose null. Never substitute unrelated work.\n{preference}\
-         Return only a JSON object {{\"piece\":\"<exact piece key>\"}} or {{\"piece\":null}}.\n\
-         Inventory: {}",
+        "{goal}\n\n---\nVelocity goal swarm first turn (F16).\n\
+         Read the goal above and use the candidate titles, references and any relevant evidence \
+         to rank only the pieces that satisfy it. {} \n\
+         This turn is for choosing only. Wait for Velocity to send the claimed piece before \
+         claiming files or editing. Velocity can try the next acceptable piece if a claim is refused.\n\
+         Return a JSON object with a pieces array of exact piece keys in preference order. \
+         Use an empty array if none matches.\nCandidates: {}",
         crate::task_spec::instructions(&[goal]),
         serde_json::Value::Array(candidates)
     )
 }
 
-// Providers can emit introductory commentary before their final JSON answer.
-fn parse_selection(reply: &str) -> Result<Selection, GoalSwarmError> {
+#[derive(Deserialize)]
+struct Selection {
+    pieces: Vec<String>,
+}
+
+pub async fn selection_reply(
+    events: &mut tokio::sync::mpsc::UnboundedReceiver<AgentEvent>,
+    first_turn: &mut Vec<AgentEvent>,
+) -> Result<Vec<String>, GoalSwarmError> {
+    tokio::time::timeout(
+        std::time::Duration::from_secs(300),
+        collect_reply(events, first_turn),
+    )
+    .await
+    .map_err(selection_error)?
+}
+
+async fn collect_reply(
+    events: &mut tokio::sync::mpsc::UnboundedReceiver<AgentEvent>,
+    first_turn: &mut Vec<AgentEvent>,
+) -> Result<Vec<String>, GoalSwarmError> {
+    let mut reply = String::new();
+    while let Some(event) = events.recv().await {
+        match &event {
+            AgentEvent::Transcript {
+                update: SessionUpdate::AgentMessageChunk(chunk),
+                ..
+            } => {
+                if let ContentBlock::Text(text) = &chunk.content {
+                    reply.push_str(&text.text);
+                }
+            }
+            AgentEvent::TurnEnded(result) => {
+                result.as_ref().map_err(selection_error)?;
+                return parse_selection(&reply);
+            }
+            _ => {}
+        }
+        first_turn.push(event);
+    }
+    Err(selection_error("The session ended before choosing a piece"))
+}
+
+// Providers can emit commentary before their final JSON answer.
+fn parse_selection(reply: &str) -> Result<Vec<String>, GoalSwarmError> {
     reply
         .char_indices()
         .rev()
@@ -189,6 +263,7 @@ fn parse_selection(reply: &str) -> Result<Selection, GoalSwarmError> {
                 .next()
                 .and_then(Result::ok)
         })
+        .map(|selection| selection.pieces)
         .ok_or_else(|| selection_error("The agent did not return a goal work choice"))
 }
 

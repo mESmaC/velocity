@@ -219,6 +219,13 @@ impl SubsystemMap {
         Self { graph, search }
     }
 
+    /// The indexed subsystem of an exact repository-relative file path.
+    pub fn for_file(&self, path: &str) -> Option<&str> {
+        let file = self.graph.records.get(*self.graph.by_path.get(path)?)?;
+        let subsystem = &self.graph.records[file.subsystem].path;
+        (!subsystem.is_empty()).then_some(subsystem)
+    }
+
     /// A probable subsystem for a title or path, leaving ties unassigned.
     pub fn classify(&self, text: &str) -> Option<String> {
         let graph = &self.graph;

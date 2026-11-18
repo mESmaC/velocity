@@ -46,26 +46,49 @@ pub fn read_selected_display_work_pool(
     project: &ProjectItem,
     sources: WorkSources,
 ) -> Result<WorkPool, WorkPoolError> {
-    read_pool(project, DISPLAY_ISSUE_AGE, sources)
+    read_pool(project, DISPLAY_ISSUE_AGE, sources, |_| {})
 }
 
 /// `read_work_pool` for display only: open issues read in the last minute are reused.
 /// Never choose or claim work from this pool.
 pub fn read_display_work_pool(project: &ProjectItem) -> Result<WorkPool, WorkPoolError> {
-    read_pool(project, DISPLAY_ISSUE_AGE, WorkSources::default())
+    read_selected_display_work_pool(project, WorkSources::default())
 }
 
 pub fn read_selected_work_pool(
     project: &ProjectItem,
     sources: WorkSources,
 ) -> Result<WorkPool, WorkPoolError> {
-    read_pool(project, Duration::ZERO, sources)
+    read_pool(project, Duration::ZERO, sources, |_| {})
+}
+
+pub(crate) struct GoalInventory {
+    pub pool: WorkPool,
+    pub issue_files: HashMap<u32, Vec<String>>,
+}
+
+/// Selection uses the same inventory as the board, with issue evidence available locally
+/// for path matching. The evidence never becomes part of the board or the choosing prompt.
+pub(crate) fn read_goal_work_pool(
+    project: &ProjectItem,
+    sources: WorkSources,
+    workspace: &Path,
+) -> Result<GoalInventory, WorkPoolError> {
+    let mut issue_files = HashMap::new();
+    let pool = read_pool(project, Duration::ZERO, sources, |issue| {
+        issue_files.insert(
+            issue.number,
+            crate::goal_selection::referenced_files(workspace, &issue.body),
+        );
+    })?;
+    Ok(GoalInventory { pool, issue_files })
 }
 
 fn read_pool(
     project: &ProjectItem,
     issue_age: Duration,
     sources: WorkSources,
+    issue_evidence: impl FnMut(&GitHubIssue),
 ) -> Result<WorkPool, WorkPoolError> {
     if !project.spec_locked {
         return Ok(WorkPool::new(project.id, Vec::new()));
@@ -77,7 +100,7 @@ fn read_pool(
     };
     let checkout = Path::new(&project.repository_path);
     if sources.issues {
-        pieces.extend(issue_pieces(project, checkout, issue_age)?);
+        pieces.extend(issue_pieces(project, checkout, issue_age, issue_evidence)?);
         pieces.extend(held_rosen_issues(project));
     }
     if sources.sections {
@@ -110,10 +133,16 @@ fn issue_pieces(
     project: &ProjectItem,
     checkout: &Path,
     issue_age: Duration,
+    mut issue_evidence: impl FnMut(&GitHubIssue),
 ) -> Result<Vec<WorkPiece>, WorkPoolError> {
     let mut pieces = Vec::new();
     if IssueClient::has_origin(checkout)? {
-        let (repository, issues) = open_issues(checkout, issue_age)?;
+        let (repository, mut issues) = open_issues(checkout, issue_age)?;
+        issues.sort_by(|left, right| {
+            left.created_at
+                .cmp(&right.created_at)
+                .then_with(|| left.number.cmp(&right.number))
+        });
         // Unlabelled owner questions can also leave an agent holding a claim with
         // nothing to build (#389). Use the dispatch filter so both sources of work
         // wait for the owner's answer, including before a question is labelled.
@@ -131,6 +160,7 @@ fn issue_pieces(
                 continue;
             }
             let owner = issue_thread(project, &assignment).map(|thread| thread.id);
+            issue_evidence(issue);
             pieces.push(WorkPiece::new(
                 WorkKey::Issue {
                     repository: repository.to_lowercase(),

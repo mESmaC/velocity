@@ -16,8 +16,7 @@ use velocity_airc::waits::Checkout;
 use velocity_airc::{Channel, ClaimResult, Event};
 use velocity_core::goal_swarm::{GoalEventKind, GoalFeedEvent};
 use velocity_core::goal_swarm_choice::{
-    ChoiceDecision, ChoiceOutcome, LockReply, PostMergeDecision, choose_open_index,
-    decide_after_merge, open_flags_for_pool, piece_branch_slug, resolve_attempt,
+    PostMergeDecision, decide_after_merge, open_flags_for_pool, piece_branch_slug,
 };
 use velocity_core::work_pool::{WorkKey, WorkPiece, WorkPool};
 use velocity_core::worktree_settings::WorktreePreferences;
@@ -29,12 +28,13 @@ use velocity_store::goal_swarms::{CHOOSING_THREAD_TITLE, GoalAgentSlot};
 use velocity_store::threads::{NewThread, ThreadError};
 use velocity_store::{ProjectItem, Settings, StateStore};
 
-use crate::goal_selection::GoalSelector;
+use crate::goal_selection::{Candidate, HeldWork, candidates, needs_choice, shortlist};
 use crate::launch::{
     LaunchError, Location, agent_launch, base_branch, setup_settings, with_compiler_cache,
 };
 use crate::naming::unique_slug;
-use crate::work_pool::{WorkPoolError, read_selected_work_pool};
+use crate::work_pool::{WorkPoolError, read_goal_work_pool};
+use velocity_graph::coordination::SubsystemMap;
 
 const SHARED_TARGET_FOLDER: &str = "target";
 
@@ -59,6 +59,7 @@ pub enum GoalSwarmError {
 }
 
 /// Planned worktree and ACP process launch for one goal swarm slot.
+#[derive(Clone)]
 pub struct GoalMemberPlan {
     pub project_id: u32,
     pub slot: GoalAgentSlot,
@@ -111,9 +112,15 @@ struct ClaimContext<'a> {
     timestamp: &'a str,
 }
 
-enum RefusalNext {
-    Retry,
-    Left(ClaimPhaseOutcome),
+/// Serialize the board read and claim between local members when using advisory subsystem
+/// classification. The channel itself decides the atomic piece and file locks.
+static SUBSYSTEM_CLAIM_STEP: Mutex<()> = Mutex::new(());
+
+pub trait GoalChoice {
+    fn choose(&mut self, shortlist: &[&WorkPiece]) -> Result<Vec<String>, GoalSwarmError>;
+
+    /// The chooser must stop before an empty workspace can be removed.
+    fn stop(&mut self) -> Result<(), GoalSwarmError>;
 }
 
 /// Plans a `<nick>` worktree (`<root>\<project>\<nick>`, provisional branch `vel/<nick>`)
@@ -167,9 +174,10 @@ pub fn plan_goal_member(
     })
 }
 
-/// Runs the F16 choosing phase with `read_work_pool` as the pool source.
+/// Runs native selection, asking the implementation session for a preference only
+/// when a custom goal needs interpretation.
 #[allow(clippy::too_many_arguments)]
-pub fn choose_and_claim(
+pub fn choose_and_claim_selecting(
     store: &Mutex<StateStore>,
     channel: &Channel,
     project_id: u32,
@@ -178,37 +186,32 @@ pub fn choose_and_claim(
     worktree_path: &Path,
     initial_branch: &str,
     timestamp: &str,
+    subsystems: Option<&SubsystemMap>,
+    selector: &mut dyn GoalChoice,
 ) -> Result<ClaimPhaseOutcome, GoalSwarmError> {
-    let selector = {
-        let guard = store
-            .lock()
-            .map_err(|error| GoalSwarmError::LockPoisoned(error.to_string()))?;
-        let thread = guard
-            .project(project_id)
-            .and_then(|project| project.threads.iter().find(|thread| thread.id == thread_id))
-            .ok_or(ThreadError::UnknownThread {
-                project: project_id,
-                thread: thread_id,
-            })?;
-        GoalSelector::for_member(&guard.settings(), thread, slot, worktree_path)?
-    };
-    choose_and_claim_selecting(
+    let context = ClaimContext {
         store,
         channel,
+        member: format!("thread-{thread_id}"),
         project_id,
         thread_id,
         slot,
         worktree_path,
         initial_branch,
         timestamp,
-        |project| read_selected_work_pool(project, slot.sources),
-        |pool, flags| selector.choose(pool, flags),
-    )
+    };
+    let project = read_project(store, project_id)?;
+    let inventory = read_goal_work_pool(&project, slot.sources, worktree_path)?;
+    let candidates = candidates(
+        inventory.pool,
+        worktree_path,
+        inventory.issue_files,
+        subsystems,
+    );
+    context.choose(&project, &candidates, subsystems, Some(selector))
 }
 
-/// Runs the F16 choosing -> claimed / leave protocol against `pool_reader` and `channel`:
-/// joins `#<project>`, picks an unclaimed piece, retries within one step on `Refused`,
-/// renames the branch on `Granted`, or removes the untouched worktree and posts `left`.
+/// Runs the native claim protocol with an injected pool source.
 #[allow(clippy::too_many_arguments)]
 pub fn choose_and_claim_with<Reader>(
     store: &Mutex<StateStore>,
@@ -224,39 +227,7 @@ pub fn choose_and_claim_with<Reader>(
 where
     Reader: Fn(&ProjectItem) -> Result<WorkPool, WorkPoolError>,
 {
-    choose_and_claim_selecting(
-        store,
-        channel,
-        project_id,
-        thread_id,
-        slot,
-        worktree_path,
-        initial_branch,
-        timestamp,
-        pool_reader,
-        |_, flags| Ok(pick_index(None, flags)),
-    )
-}
-
-/// Chooses against the user's goal before locking work; a refusal re-evaluates the goal.
-#[allow(clippy::too_many_arguments)]
-pub fn choose_and_claim_selecting<Reader, Selector>(
-    store: &Mutex<StateStore>,
-    channel: &Channel,
-    project_id: u32,
-    thread_id: u32,
-    slot: &GoalAgentSlot,
-    worktree_path: &Path,
-    initial_branch: &str,
-    timestamp: &str,
-    pool_reader: Reader,
-    mut selector: Selector,
-) -> Result<ClaimPhaseOutcome, GoalSwarmError>
-where
-    Reader: Fn(&ProjectItem) -> Result<WorkPool, WorkPoolError>,
-    Selector: FnMut(&WorkPool, &[bool]) -> Result<Option<usize>, GoalSwarmError>,
-{
-    let ctx = ClaimContext {
+    let context = ClaimContext {
         store,
         channel,
         member: format!("thread-{thread_id}"),
@@ -268,14 +239,9 @@ where
         timestamp,
     };
     let project = read_project(store, project_id)?;
-    register_and_join(
-        channel,
-        &ctx.member,
-        &project,
-        worktree_path,
-        initial_branch,
-    )?;
-    ctx.choose(pool_reader, &mut selector)
+    let pool = slot.sources.filter(pool_reader(&project)?);
+    let candidates = candidates(pool, worktree_path, Default::default(), None);
+    context.choose(&project, &candidates, None, None)
 }
 
 /// Evaluates `keep_going` after `merged_thread` lands (`SPEC.md` F16 step 5).
@@ -396,66 +362,86 @@ fn piece_spec(piece: &WorkPiece) -> String {
     }
 }
 
-fn pick_index(forced_index: Option<usize>, flags: &[bool]) -> Option<usize> {
-    let chosen = match forced_index {
-        Some(index) if flags.get(index).copied().unwrap_or(false) => ChoiceDecision::Claim(index),
-        _ => choose_open_index(flags),
-    };
-    match chosen {
-        ChoiceDecision::Claim(index) => Some(index),
-        ChoiceDecision::Leave => None,
-    }
-}
-
 impl ClaimContext<'_> {
-    fn choose<Reader, Selector>(
+    fn choose(
         self,
-        pool_reader: Reader,
-        selector: &mut Selector,
-    ) -> Result<ClaimPhaseOutcome, GoalSwarmError>
-    where
-        Reader: Fn(&ProjectItem) -> Result<WorkPool, WorkPoolError>,
-        Selector: FnMut(&WorkPool, &[bool]) -> Result<Option<usize>, GoalSwarmError>,
-    {
+        project: &ProjectItem,
+        candidates: &[Candidate],
+        subsystems: Option<&SubsystemMap>,
+        mut selector: Option<&mut dyn GoalChoice>,
+    ) -> Result<ClaimPhaseOutcome, GoalSwarmError> {
+        register_and_join(
+            self.channel,
+            &self.member,
+            project,
+            self.worktree_path,
+            self.initial_branch,
+        )?;
+        let held = HeldWork::new(
+            self.channel.goal_claims(&self.member)?,
+            candidates,
+            subsystems,
+        );
+        let mut available: Vec<_> = candidates
+            .iter()
+            .filter(|piece| held.allows(piece))
+            .collect();
+        if let Some(selector) = selector.as_deref_mut()
+            && needs_choice(&self.slot.prompt)
+            && !available.is_empty()
+        {
+            let ranked = shortlist(&self.slot.prompt, available.into_iter());
+            let pieces: Vec<_> = ranked.iter().map(|candidate| &candidate.piece).collect();
+            available = selected_candidates(&ranked, selector.choose(&pieces)?)?;
+        }
         let mut feed_events = Vec::new();
-        for _ in 0..128 {
-            let project = read_project(self.store, self.project_id)?;
-            let pool = self.slot.sources.filter(pool_reader(&project)?);
-            let flags = open_flags_for_pool(&pool, &held_keys(self.channel)?);
-            let Some(index) = selector(&pool, &flags)? else {
-                return self.leave_empty(&project, feed_events);
-            };
-            let piece = pool
-                .pieces
-                .get(index)
-                .filter(|_| flags.get(index) == Some(&true))
-                .ok_or_else(|| {
-                    GoalSwarmError::Selection("The choice is outside the available pool".into())
-                })?;
-            self.channel
-                .join(&self.member, &self.worktree_path.display().to_string())?;
-            let key = piece.key.claim_piece();
-            match self.channel.claim_piece(
-                &self.member,
-                &key,
-                &piece.title,
-                self.initial_branch,
-                Vec::new(),
-            )? {
-                ClaimResult::Granted { .. } => {
-                    if let Some(claimed) = self.finalize_grant(piece, &mut feed_events)? {
+        for candidate in available {
+            match self.try_claim(candidate, candidates, subsystems)? {
+                Some(ClaimResult::Granted { .. }) => {
+                    if let Some(claimed) =
+                        self.finalize_grant(&candidate.piece, &mut feed_events)?
+                    {
                         return Ok(ClaimPhaseOutcome::Claimed(Box::new(claimed)));
                     }
                 }
-                ClaimResult::Refused { holder, .. } => {
-                    match self.on_refused(index, piece, &holder, &pool_reader, &mut feed_events)? {
-                        RefusalNext::Retry => {}
-                        RefusalNext::Left(outcome) => return Ok(outcome),
-                    }
+                Some(ClaimResult::Refused { holder, .. }) => {
+                    feed_events.push(self.record_refusal(&candidate.piece, &holder)?);
                 }
+                None => {}
             }
         }
-        self.leave_empty(&read_project(self.store, self.project_id)?, feed_events)
+        if let Some(selector) = selector {
+            selector.stop()?;
+        }
+        self.leave_empty(project, feed_events)
+    }
+
+    fn try_claim(
+        &self,
+        candidate: &Candidate,
+        candidates: &[Candidate],
+        subsystems: Option<&SubsystemMap>,
+    ) -> Result<Option<ClaimResult>, GoalSwarmError> {
+        let _step = subsystems
+            .map(|_| SUBSYSTEM_CLAIM_STEP.lock())
+            .transpose()
+            .map_err(|error| GoalSwarmError::LockPoisoned(error.to_string()))?;
+        let held = HeldWork::new(
+            self.channel.goal_claims(&self.member)?,
+            candidates,
+            subsystems,
+        );
+        if !held.allows(candidate) {
+            return Ok(None);
+        }
+        let piece = &candidate.piece;
+        Ok(Some(self.channel.claim_goal_piece(
+            &self.member,
+            &piece.key.claim_piece(),
+            &piece.title,
+            self.initial_branch,
+            candidate.files.clone(),
+        )?))
     }
 
     fn finalize_grant(
@@ -564,33 +550,40 @@ impl ClaimContext<'_> {
         } else {
             unique_piece_branch(&project, piece, self.initial_branch)
         };
-        if guard
-            .claim_goal_piece(
-                self.project_id,
-                self.thread_id,
-                piece,
-                target_branch.clone(),
-            )
-            .is_err()
+        if let WorkKey::Issue { repository, number } = &piece.key
+            && project.completed_goal_issues.iter().any(|issue| {
+                issue.number == *number && issue.repository.eq_ignore_ascii_case(repository)
+            })
         {
-            let _ = self.channel.release(&self.member, key);
+            self.channel.release(&self.member, key)?;
             return Ok(None);
         }
-        Ok(Some((project, target_branch)))
+        match guard.claim_goal_piece(
+            self.project_id,
+            self.thread_id,
+            piece,
+            target_branch.clone(),
+        ) {
+            Ok(()) => Ok(Some((project, target_branch))),
+            Err(error) => {
+                self.channel.release(&self.member, key)?;
+                match error {
+                    ThreadError::UnknownTask(_)
+                    | ThreadError::TaskUnavailable(_)
+                    | ThreadError::IssueAssigned { .. }
+                    | ThreadError::SpecUnavailable(_) => Ok(None),
+                    other => Err(other.into()),
+                }
+            }
+        }
     }
 
-    fn on_refused<Reader>(
+    fn record_refusal(
         &self,
-        index: usize,
         piece: &WorkPiece,
         holder: &str,
-        pool_reader: &Reader,
-        feed_events: &mut Vec<GoalFeedEvent>,
-    ) -> Result<RefusalNext, GoalSwarmError>
-    where
-        Reader: Fn(&ProjectItem) -> Result<WorkPool, WorkPoolError>,
-    {
-        feed_events.push(record_feed(
+    ) -> Result<GoalFeedEvent, GoalSwarmError> {
+        record_feed(
             self.store,
             self.project_id,
             self.slot.swarm_id,
@@ -603,17 +596,7 @@ impl ClaimContext<'_> {
                     self.slot.nick, piece.title
                 ),
             ),
-        )?);
-        let refreshed = read_project(self.store, self.project_id)?;
-        let refreshed_pool = self.slot.sources.filter(pool_reader(&refreshed)?);
-        let refreshed_flags = open_flags_for_pool(&refreshed_pool, &held_keys(self.channel)?);
-        match resolve_attempt(index, LockReply::Refused, &refreshed_flags) {
-            ChoiceOutcome::Retry(_) => Ok(RefusalNext::Retry),
-            ChoiceOutcome::Left => Ok(RefusalNext::Left(
-                self.leave_empty(&refreshed, std::mem::take(feed_events))?,
-            )),
-            ChoiceOutcome::Claimed(_) => Ok(RefusalNext::Retry),
-        }
+        )
     }
 
     fn leave_empty(
@@ -670,6 +653,25 @@ impl ClaimContext<'_> {
             left_entry: left_entry.map(Box::new),
         })
     }
+}
+
+fn selected_candidates<'a>(
+    shortlist: &[&'a Candidate],
+    keys: Vec<String>,
+) -> Result<Vec<&'a Candidate>, GoalSwarmError> {
+    let mut seen = BTreeSet::new();
+    keys.into_iter()
+        .filter(|key| seen.insert(key.clone()))
+        .map(|key| {
+            shortlist
+                .iter()
+                .copied()
+                .find(|candidate| candidate.piece.key.claim_piece() == key)
+                .ok_or_else(|| {
+                    GoalSwarmError::Selection("The choice is outside the shortlist".into())
+                })
+        })
+        .collect()
 }
 
 fn finish_keep_going_leave(

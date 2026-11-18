@@ -1,6 +1,7 @@
 //! Piece locks and path coordination are decided by Rosen, never by a local replay.
 use crate::{
     Claim, ClaimResult, Error,
+    claims::WorkClaims,
     remote::{Remote, wire},
     remote_events::{claim, time},
 };
@@ -54,23 +55,29 @@ impl Remote {
     }
 
     pub(crate) fn claims(&self) -> Result<Vec<Claim>, Error> {
+        Ok(self.work_claims(None)?.pieces)
+    }
+
+    pub(crate) fn work_claims(&self, requester: Option<&str>) -> Result<WorkClaims, Error> {
         let records = self.read(0)?;
+        let checkout = |member: &str| {
+            records
+                .iter()
+                .rev()
+                .find(|record| record.member == member && record.checkout.is_some())
+                .and_then(|record| record.head.as_deref())
+        };
+        let current = requester.and_then(checkout);
         self.run(async |client| {
             let paths = client.claim_list(ClaimFilter::default()).await?;
             let changes = client.change_list(wire(json!({}))?).await?;
-            Ok(client
+            let pieces = client
                 .pieces()
                 .await?
                 .iter()
                 .map(|held| {
-                    let change = records
-                        .iter()
-                        .rev()
-                        .find(|record| {
-                            record.member == self.local_member(&held.member)
-                                && record.checkout.is_some()
-                        })
-                        .and_then(|record| record.head.clone())
+                    let change = checkout(&self.local_member(&held.member))
+                        .map(str::to_owned)
                         .or_else(|| {
                             changes
                                 .iter()
@@ -89,7 +96,17 @@ impl Remote {
                     local.member = self.local_member(&local.member);
                     claim(&local, files)
                 })
-                .collect())
+                .collect();
+            let paths = paths
+                .into_iter()
+                .filter(|path| {
+                    requester.is_some()
+                        && path.kind != ClaimKind::Wait
+                        && Some(path.change.to_string().as_str()) != current
+                })
+                .map(|path| path.path)
+                .collect();
+            Ok(WorkClaims { pieces, paths })
         })
     }
 

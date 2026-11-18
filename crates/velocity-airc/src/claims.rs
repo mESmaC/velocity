@@ -83,12 +83,28 @@ pub fn claims(entries: &[Entry]) -> Vec<Claim> {
     held.into_values().collect()
 }
 
+/// The project work board and other paths reserved by Rosen changes.
+pub struct WorkClaims {
+    pub pieces: Vec<Claim>,
+    pub paths: Vec<String>,
+}
+
 impl Channel {
     pub fn claims(&self) -> Result<Vec<Claim>, Error> {
         if let Some(remote) = &self.remote {
             return remote.claims();
         }
         Ok(claims(&self.read(0)?))
+    }
+
+    pub fn goal_claims(&self, member: &str) -> Result<WorkClaims, Error> {
+        if let Some(remote) = &self.remote {
+            return remote.work_claims(Some(member));
+        }
+        Ok(WorkClaims {
+            pieces: self.claims()?,
+            paths: Vec::new(),
+        })
     }
 
     /// A claim locked on its task text. Pieces with an identity use [`Self::claim_piece`].
@@ -112,6 +128,31 @@ impl Channel {
         branch: &str,
         files: Vec<String>,
     ) -> Result<ClaimResult, Error> {
+        self.claim_work(member, piece, task, branch, files, false)
+    }
+
+    /// A goal swarm reserves its known files while claiming the piece. Other AIRC
+    /// callers retain advisory file overlaps for the share and wait workflow.
+    pub fn claim_goal_piece(
+        &self,
+        member: &str,
+        piece: &str,
+        task: &str,
+        branch: &str,
+        files: Vec<String>,
+    ) -> Result<ClaimResult, Error> {
+        self.claim_work(member, piece, task, branch, files, true)
+    }
+
+    fn claim_work(
+        &self,
+        member: &str,
+        piece: &str,
+        task: &str,
+        branch: &str,
+        files: Vec<String>,
+        require_clear_files: bool,
+    ) -> Result<ClaimResult, Error> {
         if task.trim().is_empty()
             || branch.trim().is_empty()
             || files.iter().any(|file| file.trim().is_empty())
@@ -128,8 +169,14 @@ impl Channel {
         let nick = active_nick(&entries, member)?;
         let held = claims(&entries);
         let previous = held.iter().find(|claim| claim.key() == key);
-        if !may_claim(previous.map(|claim| claim.member.as_str()), member) {
-            let holder = previous.ok_or_else(|| Error::Invalid("Missing holder".into()))?;
+        let holder = previous
+            .filter(|claim| !may_claim(Some(&claim.member), member))
+            .or_else(|| {
+                require_clear_files
+                    .then(|| goal_file_holder(&held, member, &files))
+                    .flatten()
+            });
+        if let Some(holder) = holder {
             let text = format!(
                 "{nick} refused {task}; held by {} since {}",
                 holder.nick, holder.since
@@ -242,6 +289,18 @@ impl Channel {
         }
         Ok(())
     }
+}
+
+fn goal_file_holder<'a>(held: &'a [Claim], member: &str, files: &[String]) -> Option<&'a Claim> {
+    let files: Vec<_> = files.iter().map(|file| normalize_file(file)).collect();
+    held.iter()
+        .filter(|claim| claim.member != member)
+        .find(|claim| {
+            claim.files.iter().any(|file| {
+                let path = file.strip_suffix("::registration").unwrap_or(file);
+                files.iter().any(|requested| requested == path)
+            })
+        })
 }
 
 fn active_nick(entries: &[Entry], member: &str) -> Result<String, Error> {
@@ -542,6 +601,43 @@ mod tests {
         assert_eq!(granted, 1);
         assert_eq!(Channel::open(&directory, "project")?.claims()?.len(), 1);
         std::fs::remove_dir_all(directory)?;
+        Ok(())
+    }
+
+    // Different pieces naming the same file must not both get a goal-swarm claim.
+    #[test]
+    fn goal_claim_refuses_an_occupied_file() -> Result<(), Box<dyn std::error::Error>> {
+        use crate::{Channel, ClaimResult};
+
+        let stamp = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)?
+            .as_nanos();
+        let directory = std::env::temp_dir().join(format!(
+            "velocity-goal-claim-{}-{stamp}",
+            std::process::id()
+        ));
+        let channel = Channel::open(&directory, "project")?;
+        channel.join("first", "first")?;
+        channel.join("second", "second")?;
+        let first = channel.claim_goal_piece(
+            "first",
+            "issue:1",
+            "first piece",
+            "vel/first",
+            vec!["src/lib.rs".into()],
+        )?;
+        let second = channel.claim_goal_piece(
+            "second",
+            "issue:2",
+            "second piece",
+            "vel/second",
+            vec!["src\\lib.rs".into()],
+        )?;
+        let claimed = channel.claims()?;
+        std::fs::remove_dir_all(directory)?;
+        assert!(matches!(first, ClaimResult::Granted { .. }));
+        assert!(matches!(second, ClaimResult::Refused { holder, .. } if holder == "first"));
+        assert_eq!(claimed.len(), 1);
         Ok(())
     }
 

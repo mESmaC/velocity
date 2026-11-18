@@ -3,7 +3,7 @@
 
 **Rosen projects.**
 Every member takes its own Rosen workspace from the project's warm pool, with git worktrees as the F5 fallback when Rosen cannot start.
-Work choice and the atomic AIRC piece lock are unchanged.
+The same native work choice and atomic AIRC piece lock apply to Rosen and git projects.
 Rosen members keep their change identity when they claim a piece; they never create or rename a git branch, open a PR or start a PR watcher.
 The goal dialog offers no PR duty capacity on a Rosen project.
 Its locked context names the piece, tells the agent to claim files in Rosen, build and lint through `rosen run`, and finish by naming its work with `rosen commit`.
@@ -33,8 +33,8 @@ The git lifecycle described below remains the fallback.
 - Your T3 Code routine as one action.
   Today you open 5–20 threads by hand and paste the same prompt into each: read AGENTS.md and start dev, push a branch, open a PR, watch it, keep the workspace on a given drive, remove it after the merge.
 - A goal swarm starts all of those agents at once, with one prompt and the model mix you choose.
-- It differs from a Swarm (F10) in one way: nobody assigns work.
-  Each agent decides what to build, and AIRC (F14) keeps two agents off the same piece.
+- Velocity picks work from the enabled inventory using the goal, the build order and the claims board.
+  AIRC (F14) keeps two agents off the same piece.
 
 **Dialog** (`G`, the "Goal swarm" starter chip, or the palette):
 - **Prompt:** every agent gets exactly this text.
@@ -85,12 +85,12 @@ Rust applies the edit, restores the "rest" rule and draws the dialog again.
    Gets a nick such as `sol-3`, a workspace named after it and the project's session instructions (§3.2).
    State: **choosing work**.
 2.
-   Receives the user's prompt before any piece is claimed.
-   Its chosen model reads the prompt and unclaimed inventory and inspects issue evidence or relevant spec headings as needed to pick a piece that satisfies the prompt.
-   The code graph groups candidate work by likely subsystem and gives different workers a preference to break ties among equally suitable pieces (F19).
-   Velocity validates the returned piece against the enabled, unclaimed inventory before acquiring its atomic claim.
-   A failed or malformed choice reports an error; it never falls back to unrelated first-available work.
-   If nothing matches the prompt, the agent leaves without a claim.
+   Velocity picks unclaimed work in §7 order, followed by Task List order and then issues by creation time, oldest first.
+   It skips pieces whose known files overlap held claims and, when the code graph is available, pieces in held subsystems (F19).
+   A custom goal that requires interpretation goes to the implementation session in its first turn with up to five candidates ranked by relevance.
+   The session returns its acceptable candidates in preference order and waits for the claimed piece before editing.
+   Velocity validates that choice against the shortlist.
+   A failed or malformed choice reports an error, and an empty choice leaves without a claim.
    Only enabled sources contribute to the pool:
    - open Task List items, except drafts and items another agent is already on;
    - open issues, except owner-decision questions and `release-blocker` issues, using the same eligibility rule as continuous dispatch (F8);
@@ -98,12 +98,12 @@ Rust applies the edit, restores the "rest" rule and draws the dialog again.
 3.
    Claims it with `airc_claim`.
    - **Granted:** it renames its branch for the piece (`vel/<slug>`, or `vel/issue-<n>`), posts its claim with files, and continues.
-   - **Refused** (another agent claimed the piece after this agent read the board): a `refused` event names the holder.
-     The agent re-reads the board and re-evaluates the same prompt against the refreshed enabled inventory before trying another matching piece.
-     No message is needed.
+   - **Refused** (another agent claimed the piece or its files after Velocity read the board): a `refused` event names the holder.
+     Velocity checks the claims again and retries the next available candidate in native code without another model call.
    - **Nothing left:** a `left` event is posted; the agent removes its workspace and leaves.
 4.
    From here it is an ordinary thread (F4–F6).
+   Velocity starts the implementation session, or continues the same session that interpreted the goal.
    Its implementation prompt names the chosen spec section when known and directs the member to read applicable headings with `graph_read`.
    It settles overlaps and dependency waits in AIRC (F14), opens a PR, watches it until PR duty merges it, and its worktree is deleted.
    Merging ticks the task, closes the issue, or records the SPEC.md section as built in the project's state.
@@ -113,7 +113,7 @@ Rust applies the edit, restores the "rest" rule and draws the dialog again.
 
 Agents launched together read the board within seconds of each other, so several often want the same piece.
 The lock is what makes that safe.
-The losers pick again within one step instead of duplicating work.
+The losers advance to the next candidate without duplicating work.
 
 **Work inventory.**
 A goal swarm reads only its enabled sources, including its pool preview and board, so a failure in a disabled source cannot prevent choosing work.
@@ -155,10 +155,11 @@ Its members nest under it like swarm members, and each member is titled by the p
 **Acceptance:**
 - One action starts N agents with the exact mix and efforts chosen.
   Each runs in its own workspace on the configured drive.
-- Agents receive and evaluate the same prompt before claiming, including after a refusal and in each Keep going round.
+- The default goal starts one implementation session after native work selection.
+  A custom goal uses the implementation session's first turn to evaluate up to five candidates.
   Tasks-only and issues-only choices exclude every other source from selection and the board.
 - No two agents ever hold a claim on the same piece.
-  A refused claim shows in AIRC, and that agent chooses another matching piece from a refreshed pool.
+  A refused claim shows in AIRC, and Velocity tries the next candidate without another model call.
 - Every agent's work ends in a merged PR (or a held claim on failure), and its workspace is deleted on merge.
 - With more agents than pieces, the extras leave without making a workspace change or a PR.
 - Keep going: an agent that finishes takes the next open piece until the pool is empty.

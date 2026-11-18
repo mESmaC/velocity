@@ -5,15 +5,18 @@ use std::sync::{Mutex, MutexGuard};
 
 use tauri::{AppHandle, Manager};
 use tauri_specta::Event;
-use velocity_acp::client::{AgentEvent, SessionSetup, TitleRequest};
+use velocity_acp::client::{AgentEvent, AgentInput, SessionSetup, TitleRequest};
 use velocity_core::layout_view::{LayoutIntent, LayoutSnapshot};
 use velocity_core::thread_view_model::TranscriptBlock;
+use velocity_core::work_pool::WorkPiece;
 use velocity_github::follow_through::AgentFollowUp;
 use velocity_store::build_gate::{LaunchRequest, require_launch};
 use velocity_store::duty::clock_timestamp;
 use velocity_store::{AgentActivity, ThreadState};
+use velocity_threads::goal_selection::{selection_prompt, selection_reply};
 use velocity_threads::goal_swarm::{
-    ClaimPhaseOutcome, ClaimedGoalWork, GoalMemberPlan, choose_and_claim_selecting,
+    ClaimPhaseOutcome, ClaimedGoalWork, GoalChoice, GoalMemberPlan, GoalSwarmError,
+    choose_and_claim_selecting,
 };
 use velocity_threads::{
     DeliveryStatus, LaunchPlan, RunningSession, SessionInputs, StopOutcome, ThreadKey,
@@ -650,6 +653,7 @@ fn folder_ready(
 
 /// The folder a new thread's agent works in: a Rosen workspace, or a git worktree when
 /// the project chooses git (F5). A failed Rosen launch never takes a git worktree.
+#[derive(Clone)]
 struct ThreadFolder {
     path: PathBuf,
     branch_name: Option<String>,
@@ -835,17 +839,22 @@ async fn run_goal_member(application: AppHandle, key: ThreadKey, mut plan: GoalM
     }
     report(refresh(&application, key, false));
     match run_goal_choice(&application, key, &plan, &folder, &branch_name).await {
-        Ok(ClaimPhaseOutcome::Left { left_entry, .. }) => {
+        Ok((ClaimPhaseOutcome::Left { left_entry, .. }, _)) => {
             if folder.rosen_change.is_some() {
                 discard_goal_folder(&application, key, &plan, &folder).await;
             }
             finish_goal_left(&application, key, left_entry);
         }
-        Ok(ClaimPhaseOutcome::Claimed(claimed)) => {
-            finish_goal_claimed(&application, key, plan, folder, &path, *claimed).await;
+        Ok((ClaimPhaseOutcome::Claimed(claimed), session)) => {
+            finish_goal_claimed(&application, key, plan, folder, *claimed, session).await;
         }
         Err(error) => {
-            if !mark_choosing_worktree(&application, key, &path) {
+            let can_discard = lock(
+                application.state::<ManagedThreads>().inner(),
+                "thread sessions",
+            )
+            .is_ok_and(|runtimes| runtimes.is_retired(key) && !runtimes.shutdown_failed(key));
+            if can_discard {
                 let _ = crate::airc_claims::release(&application, key);
                 discard_goal_folder(&application, key, &plan, &folder).await;
             } else {
@@ -958,29 +967,105 @@ fn mark_choosing_worktree(application: &AppHandle, key: ThreadKey, path: &str) -
     .unwrap_or(false)
 }
 
-fn goal_selector(
+struct GoalSelectionTurn {
+    inputs: tokio::sync::mpsc::UnboundedSender<AgentInput>,
+    session: RunningSession,
+    events: Vec<AgentEvent>,
+}
+
+struct GoalSessionChoice<'a> {
+    application: &'a AppHandle,
+    key: ThreadKey,
+    plan: &'a GoalMemberPlan,
+    folder: &'a ThreadFolder,
+    turn: Option<GoalSelectionTurn>,
+}
+
+impl GoalChoice for GoalSessionChoice<'_> {
+    fn choose(&mut self, shortlist: &[&WorkPiece]) -> Result<Vec<String>, GoalSwarmError> {
+        let prompt = selection_prompt(&self.plan.slot.prompt, shortlist);
+        let setup = goal_session_setup(
+            self.application,
+            self.key,
+            self.plan,
+            self.folder,
+            &self.plan.slot.prompt,
+        );
+        let (inputs, receiver) = lock(
+            self.application.state::<ManagedThreads>().inner(),
+            "thread sessions",
+        )
+        .map_err(GoalSwarmError::Selection)?
+        .begin_goal_selection(self.key, &prompt)
+        .ok_or_else(|| GoalSwarmError::Selection("The member stopped while choosing".into()))?;
+        let turn = self.turn.insert(GoalSelectionTurn {
+            inputs,
+            session: spawn_session(self.plan.agent.clone(), setup, receiver),
+            events: Vec::new(),
+        });
+        let reply = tauri::async_runtime::block_on(selection_reply(
+            &mut turn.session.events,
+            &mut turn.events,
+        ))?;
+        if setup_no_longer_wanted(self.application, self.key) {
+            return Err(GoalSwarmError::Selection(
+                "The member stopped while choosing".into(),
+            ));
+        }
+        Ok(reply)
+    }
+
+    fn stop(&mut self) -> Result<(), GoalSwarmError> {
+        if let Some(turn) = self.turn.take() {
+            tauri::async_runtime::block_on(turn.stop(self.application, self.key))?;
+        }
+        Ok(())
+    }
+}
+
+impl GoalSelectionTurn {
+    async fn stop(self, application: &AppHandle, key: ThreadKey) -> Result<(), GoalSwarmError> {
+        let _ = self.inputs.send(AgentInput::Stop);
+        let result = self.session.outcome.await;
+        let confirmed = self.session.shutdown.confirmed();
+        let mut runtimes = lock(
+            application.state::<ManagedThreads>().inner(),
+            "thread sessions",
+        )
+        .map_err(GoalSwarmError::Selection)?;
+        runtimes.session_ended_with_shutdown(key, confirmed);
+        if confirmed {
+            return Ok(());
+        }
+        Err(GoalSwarmError::Selection(match result {
+            Ok(Err(reason)) => reason,
+            _ => "The session could not confirm all of its processes stopped".into(),
+        }))
+    }
+}
+
+fn goal_session_setup(
     application: &AppHandle,
     key: ThreadKey,
     plan: &GoalMemberPlan,
     folder: &ThreadFolder,
-) -> velocity_threads::goal_selection::GoalSelector {
+    graph_title: &str,
+) -> SessionSetup {
     let mut setup = configure_session(
         application,
         key,
         SessionSetup::new(folder.path.clone(), plan.bypass_modes.clone()),
         false,
-    );
+    )
+    .with_graph_task_title(graph_title.to_owned());
     if let Some(change) = &folder.rosen_change {
         setup.preface = Some(velocity_rosen::workspace_note(change));
         setup
             .shared_servers
             .extend(crate::rosen::mcp_server(&folder.path, &plan.agent.env));
     }
-    velocity_threads::goal_selection::GoalSelector::new(
-        plan.agent.clone(),
-        setup,
-        plan.slot.prompt.clone(),
-    )
+    setup.pause_on_subscription_limit = true;
+    setup
 }
 
 async fn run_goal_choice(
@@ -989,11 +1074,10 @@ async fn run_goal_choice(
     plan: &GoalMemberPlan,
     folder: &ThreadFolder,
     branch_name: &str,
-) -> Result<ClaimPhaseOutcome, String> {
+) -> Result<(ClaimPhaseOutcome, Option<GoalSelectionTurn>), String> {
     let handle = application.clone();
-    let slot = plan.slot.clone();
-    let worktree = folder.path.clone();
-    let selector = goal_selector(application, key, plan, folder);
+    let plan = plan.clone();
+    let folder = folder.clone();
     let branch = branch_name.to_owned();
     tauri::async_runtime::spawn_blocking(move || {
         let data = handle
@@ -1006,33 +1090,35 @@ async fn run_goal_choice(
         let project = lock(store.inner(), "persisted state")?
             .project(key.0)
             .cloned();
-        let selector = match project.as_ref().and_then(|project| {
-            let swarm = project
-                .goal_swarms
-                .iter()
-                .find(|swarm| swarm.id == slot.swarm_id)?;
-            let member = swarm
-                .members
-                .iter()
-                .position(|member| member.nick == slot.nick)?;
-            Some((crate::code_graph::subsystem_map(&handle, project)?, member))
-        }) {
-            Some((map, member)) => selector.with_subsystems(map, member),
-            None => selector,
+        let subsystems = project
+            .as_ref()
+            .and_then(|project| crate::code_graph::subsystem_map(&handle, project));
+        let mut choice = GoalSessionChoice {
+            application: &handle,
+            key,
+            plan: &plan,
+            folder: &folder,
+            turn: None,
         };
-        choose_and_claim_selecting(
+        let result = choose_and_claim_selecting(
             store.inner(),
             &channel,
             key.0,
             key.1,
-            &slot,
-            &worktree,
+            &plan.slot,
+            &folder.path,
             &branch,
             &clock_timestamp(),
-            |project| velocity_threads::work_pool::read_selected_work_pool(project, slot.sources),
-            |pool, flags| selector.choose(pool, flags),
-        )
-        .map_err(|error| error.to_string())
+            subsystems.as_ref(),
+            &mut choice,
+        );
+        match result {
+            Ok(outcome) => Ok((outcome, choice.turn)),
+            Err(error) => {
+                choice.stop().map_err(|error| error.to_string())?;
+                Err(error.to_string())
+            }
+        }
     })
     .await
     .map_err(|error| error.to_string())?
@@ -1065,16 +1151,58 @@ async fn finish_goal_claimed(
     key: ThreadKey,
     plan: GoalMemberPlan,
     folder: ThreadFolder,
-    path: &str,
     claimed: ClaimedGoalWork,
+    selection: Option<GoalSelectionTurn>,
 ) {
-    let inputs = lock(
-        application.state::<ManagedThreads>().inner(),
-        "thread sessions",
-    )
-    .ok()
-    .and_then(|mut runtimes| runtimes.begin_claimed_session(key, path, &claimed.prompt));
-    let Some(inputs) = inputs else {
+    let path = folder.path.display().to_string();
+    let session = if let Some(turn) = selection {
+        report(save_agent_session(application, key, &turn.events));
+        report(apply_batch(application, key, &turn.events));
+        let continued = lock(
+            application.state::<ManagedThreads>().inner(),
+            "thread sessions",
+        )
+        .ok()
+        .and_then(|mut runtimes| runtimes.continue_claimed_session(key, &path, &claimed.prompt));
+        if continued.is_some() {
+            Some(turn.session)
+        } else {
+            if let Err(error) = turn.stop(application, key).await {
+                return fail(
+                    application,
+                    key,
+                    "Could not stop choosing work",
+                    &error.to_string(),
+                );
+            }
+            None
+        }
+    } else {
+        let inputs = lock(
+            application.state::<ManagedThreads>().inner(),
+            "thread sessions",
+        )
+        .ok()
+        .and_then(|mut runtimes| runtimes.begin_claimed_session(key, &path, &claimed.prompt));
+        inputs.map(|inputs| {
+            let setup = goal_session_setup(application, key, &plan, &folder, &claimed.piece.title);
+            spawn_session(plan.agent.clone(), setup, inputs)
+        })
+    };
+    let Some(session) = session else {
+        let retired = lock(
+            application.state::<ManagedThreads>().inner(),
+            "thread sessions",
+        )
+        .is_ok_and(|runtimes| runtimes.is_retired(key));
+        if !retired {
+            return fail(
+                application,
+                key,
+                "Could not start work",
+                "The choosing session stopped",
+            );
+        }
         let _ = crate::airc_claims::release(application, key);
         discard_goal_folder(application, key, &plan, &folder).await;
         return;
@@ -1082,24 +1210,6 @@ async fn finish_goal_claimed(
     report(crate::airc_modal::refresh(application));
     report(refresh(application, key, false));
     emit_status(application, key);
-    let mut setup = configure_session(
-        application,
-        key,
-        SessionSetup::new(folder.path, plan.bypass_modes),
-        false,
-    )
-    .with_graph_task_title(claimed.piece.title);
-    setup.preface = folder
-        .rosen_change
-        .as_deref()
-        .map(velocity_rosen::workspace_note);
-    if folder.rosen_change.is_some() {
-        setup
-            .shared_servers
-            .extend(crate::rosen::mcp_server(&setup.worktree, &plan.agent.env));
-    }
-    setup.pause_on_subscription_limit = true;
-    let session = spawn_session(plan.agent, setup, inputs);
     pump(application, key, session).await;
 }
 

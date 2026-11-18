@@ -44,6 +44,7 @@ pub use retry::retry_workspace;
 pub use rosen_client::Error as ClientError;
 pub use rosen_client::protocol::Event as ProjectEvent;
 pub use rosen_client::protocol::EventKind as ProjectEventKind;
+pub use rosen_core::claim::PathPattern;
 pub use server::{BINARY_FOLDER_ENV, ImportSource, ProjectServer, Servers, binary_folder};
 pub use stack::stack_workspace;
 pub use workspace::{

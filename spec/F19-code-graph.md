@@ -166,7 +166,7 @@ These estimates use the #438 transcript method, weighting each tool result by th
 **Velocity's own uses:**
 - **AIRC and Rosen claims** (F14): overlap notices name the file and, when edits are available, show whether both agents changed the same symbols.
   Symbol details are advisory and existing path claims still govern coordination.
-- **Swarm split** (F10, F16): the regular swarm interleaves launches from different likely subsystems and the goal swarm gives workers different subsystem preferences among equally suitable pieces.
+- **Swarm split** (F10, F16): the regular swarm interleaves launches from different likely subsystems, and native goal-swarm selection skips pieces in held subsystems.
 - **Review swarm** (F7): review starts with impact from the changed lines in the exact parent and landed trees, including the callers, references and imports of the affected symbols.
 
 **Accept when:**
