@@ -20,6 +20,86 @@ use velocity_store::{ProjectItem, ProviderKind, Settings};
 use crate::naming::{fallback_title, message_slug, unique_slug};
 use crate::titles::{TitlePlan, plan_title};
 
+pub(crate) fn add_review_handoff(
+    setup: &mut velocity_acp::client::SessionSetup,
+    app_data: &Path,
+    project: u32,
+    nickname: &str,
+) {
+    let member = velocity_acp::client::duty_member(nickname);
+    let state = airc_work_handoff(app_data, project, &[member]);
+    let workspace = setup.worktree.display();
+    let handoff = format!("Velocity work handoff\nWorkspace: {workspace}\n{state}");
+    setup.preface = Some(match setup.preface.take() {
+        Some(preface) => format!("{preface}\n\n{handoff}"),
+        None => handoff,
+    });
+}
+
+/// Read current claims and unresolved dependency waits for a fresh ACP session.
+pub fn airc_work_handoff(app_data: &Path, project: u32, members: &[String]) -> String {
+    let read = || {
+        let channel = velocity_airc::Channel::open(app_data, &project.to_string())?;
+        Ok::<_, velocity_airc::Error>((channel.claims()?, channel.dependency_waits()?))
+    };
+    let Ok((claims, waits)) = read() else {
+        return "AIRC state is unavailable. Check airc_claims and the AIRC feed.".into();
+    };
+    let held: Vec<_> = claims
+        .iter()
+        .filter(|claim| members.contains(&claim.member))
+        .collect();
+    let mut lines = Vec::new();
+    for claim in held.iter().take(4) {
+        let files = claim
+            .files
+            .iter()
+            .take(4)
+            .map(|file| handoff_line(file))
+            .collect::<Vec<_>>()
+            .join(", ");
+        lines.push(format!(
+            "Held claim: {}. Paths: {}.",
+            handoff_line(claim.key()),
+            if files.is_empty() {
+                "none".into()
+            } else {
+                files
+            }
+        ));
+    }
+    for wait in waits
+        .iter()
+        .filter(|wait| members.contains(&wait.member))
+        .take(4)
+    {
+        lines.push(format!(
+            "Open dependency: {} holds {}.",
+            handoff_line(&wait.holder_nick),
+            handoff_line(&wait.file)
+        ));
+    }
+    if lines.is_empty() {
+        lines.push("No AIRC claims or dependency waits remain.".into());
+    } else {
+        lines.push("See airc_claims and the AIRC feed for the full state.".into());
+    }
+    lines.join("\n")
+}
+
+pub fn handoff_line(text: &str) -> String {
+    text.chars()
+        .take(160)
+        .map(|character| {
+            if character.is_control() {
+                ' '
+            } else {
+                character
+            }
+        })
+        .collect()
+}
+
 /// The folder setup plans name for the build cache (F5), beside the worktrees. Builds no
 /// longer share a target folder (see [`with_compiler_cache`]); slugs never contain a dot, so
 /// no worktree can take this name.

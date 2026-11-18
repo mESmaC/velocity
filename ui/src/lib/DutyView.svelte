@@ -33,15 +33,18 @@
   let transcriptEl: HTMLElement | null = null;
   let busy = $state(false);
 
-  // The PR duty agent whose review session is open, and what that session shows. Reviews
+  // The duty agent whose review transcript is open. Reviews
   // stream outside the layout snapshot, so the open session is read again while it shows.
   const SESSION_REFRESH_MS = 1500;
   let sessionNickname = $state<string | null>(null);
   let sessionBlocks = $state<TranscriptBlock[] | null>(null);
+  const hasReviewTranscript = $derived(
+    duty.role === 'pr_duty' || duty.title === 'Review swarm',
+  );
 
   $effect(() => {
     const nickname = sessionNickname;
-    if (nickname === null || duty.role !== 'pr_duty') return;
+    if (nickname === null || !hasReviewTranscript) return;
     let stopped = false;
     const load = () =>
       dutyCommands
@@ -219,12 +222,12 @@
                   onclick={() => dismiss(agent.nickname)}>×</button
                 >
               </div>
-              {#if duty.role === 'pr_duty'}
+              {#if hasReviewTranscript}
                 <button
                   type="button"
                   class="doing open-session"
                   aria-pressed={agent.nickname === sessionNickname}
-                  title="Show {agent.nickname}'s review session"
+                  title="Show {agent.nickname}'s review transcript"
                   onclick={() => toggleSession(agent.nickname)}
                 >
                   {@render doing(agent.busy, agent.doing)}
@@ -242,7 +245,7 @@
       {#if sessionNickname !== null}
         <div class="duty-session">
           <div class="section-h session-h">
-            <span>Session · {sessionNickname}</span>
+            <span>Review transcript · {sessionNickname}</span>
             <button
               type="button"
               class="btn"

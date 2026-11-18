@@ -32,6 +32,7 @@ struct State {
     retry: BTreeMap<WorkerKey, Instant>,
     instructions: BTreeMap<u32, String>,
     instructed_idle: BTreeSet<u32>,
+    transcripts: BTreeMap<WorkerKey, crate::transcript_view::LiveTranscript>,
 }
 
 #[derive(Clone)]
@@ -51,6 +52,34 @@ impl ReviewSwarms {
             app_data: reports.parent().unwrap_or(reports).into(),
             reports: reports.join("review-swarm"),
             airc: None,
+        }
+    }
+
+    pub fn transcript(
+        &self,
+        project: u32,
+        nickname: &str,
+    ) -> Option<Vec<velocity_core::thread_view_model::TranscriptBlock>> {
+        self.lock()
+            .transcripts
+            .get(&(project, nickname.into()))
+            .map(crate::transcript_view::LiveTranscript::blocks)
+    }
+
+    pub fn start_transcript(&self, key: &WorkerKey, workspace: &Path) {
+        let mut state = self.lock();
+        let transcript = crate::transcript_view::LiveTranscript::next_work_session(
+            workspace,
+            state.transcripts.get(key),
+        );
+        state.transcripts.insert(key.clone(), transcript);
+    }
+
+    pub fn record_transcript(&self, key: &WorkerKey, event: &velocity_acp::client::AgentEvent) {
+        if let velocity_acp::client::AgentEvent::Transcript { placement, update } = event
+            && let Some(transcript) = self.lock().transcripts.get_mut(key)
+        {
+            transcript.record(*placement, update);
         }
     }
 

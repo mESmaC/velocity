@@ -13,6 +13,8 @@ pub enum RosenProgress {
     Named,
     /// The change landed on the base: the thread is merged.
     Landed,
+    /// Rosen closed the change and released its path claims.
+    Abandoned,
     /// Post-land verification reverted the landed change and gave it back to its owner
     /// (Rosen R12): the thread needs fixing.
     Reverted,
@@ -31,11 +33,18 @@ pub enum RosenProgress {
 pub enum RosenFollowUp {
     /// The change landed: its agent and watcher stop and its AIRC claims are released.
     FinishLanded,
+    FinishAbandoned,
     /// The change was reverted: its workspace is made again and its agent resumed with
     /// `message`.
-    Reopen { message: String, mark: usize },
+    Reopen {
+        message: String,
+        mark: usize,
+    },
     /// PR duty sent the change back: its agent gets `message`.
-    Deliver { message: String, mark: usize },
+    Deliver {
+        message: String,
+        mark: usize,
+    },
     /// Apply the current head at a turn boundary before delivering this conflict notice.
     Conflict {
         #[serde(default)]
@@ -56,7 +65,7 @@ impl RosenFollowUp {
     /// The message for the thread's agent, if this follow-up sends one.
     pub fn message(&self) -> Option<&str> {
         match self {
-            Self::FinishLanded => None,
+            Self::FinishLanded | Self::FinishAbandoned => None,
             Self::Reopen { message, .. }
             | Self::Deliver { message, .. }
             | Self::Conflict { message, .. }
@@ -238,9 +247,25 @@ impl StateStore {
         }
         thread.rosen_progress_generation = thread.rosen_progress_generation.saturating_add(1);
         let reverted = progress == RosenProgress::Reverted && thread.state == ThreadState::Merged;
+        let abandoned = progress == RosenProgress::Abandoned
+            && !matches!(thread.state, ThreadState::Done | ThreadState::Merged);
+        if progress == RosenProgress::Abandoned && !abandoned {
+            self.store_snapshot(next)?;
+            return Ok(None);
+        }
         let landed = apply_progress(thread, progress);
         queue_follow_up(thread, progress, message);
         crate::goal_rosen::apply(item, identifier, progress);
+        if abandoned {
+            for task in &mut item.tasks {
+                if task.assigned_thread_id == Some(identifier)
+                    && task.state == crate::TaskState::Now
+                {
+                    task.assigned_thread_id = None;
+                    task.state = crate::TaskState::Todo;
+                }
+            }
+        }
         if landed {
             crate::follow_through::finish_thread_tasks(&mut next, project, identifier);
         }
@@ -322,6 +347,10 @@ fn queue_follow_up(thread: &mut ThreadItem, progress: RosenProgress, message: &s
             thread.rosen_follow_ups.clear();
             RosenFollowUp::FinishLanded
         }
+        RosenProgress::Abandoned => {
+            thread.rosen_follow_ups.clear();
+            RosenFollowUp::FinishAbandoned
+        }
         RosenProgress::Reverted => RosenFollowUp::Reopen {
             message: message.to_owned(),
             mark,
@@ -353,6 +382,14 @@ fn apply_progress(thread: &mut ThreadItem, progress: RosenProgress) -> bool {
             thread.review_stage = Some(ReviewStage::Approved);
             thread.activity = AgentActivity::Idle;
             landed
+        }
+        RosenProgress::Abandoned => {
+            thread.state = ThreadState::Done;
+            thread.activity = AgentActivity::Idle;
+            thread.review_stage = None;
+            thread.spec_section = None;
+            thread.task_ids.clear();
+            false
         }
         RosenProgress::Reverted => {
             thread.state = ThreadState::Review;

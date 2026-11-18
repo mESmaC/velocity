@@ -45,6 +45,7 @@ Within each task group, the oldest task number goes first.
 The work inventory excludes claimed items, owner-decision questions and release blockers.
 Issues can carry the labels `spec-question`, `needs-decision`, `needs-owner`, `owner-decision` or `release-blocker`, and dispatch also checks issue and task text for explicit owner-decision wording and task titles for the `release-blocker` marker.
 Working and awaiting-land build threads count toward N; a land or an ended turn with no named work and an empty Rosen diff frees its slot.
+A dispatch worker takes its next item in a fresh ACP session after cleanup, with a bounded handoff from Velocity and a session boundary in the existing conversation (#456).
 Failed and closed threads free capacity but retain issue ownership.
 An unchanged issue already dispatched is not dispatched again just because its agent found no changes or its GitHub issue has not closed yet; editing the issue makes it eligible again once unclaimed.
 A dispatched task moves to now when its thread is saved and to done when that thread's change lands.

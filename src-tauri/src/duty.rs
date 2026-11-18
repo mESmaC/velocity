@@ -53,8 +53,7 @@ pub async fn get_duty_dialog_defaults(
     Ok(defaults)
 }
 
-/// What a PR duty agent's latest review session showed (F7), for the Duty view's session
-/// panel. `None` when the agent has had no review since Velocity started.
+/// A duty agent's review transcript (F7), including session boundaries for this app run.
 #[tauri::command]
 #[specta::specta]
 pub async fn get_duty_agent_transcript(
@@ -70,7 +69,13 @@ pub async fn get_duty_agent_transcript(
         Ok(window
             .app_handle()
             .try_state::<PrDutyReviews>()
-            .and_then(|reviews| reviews.transcript(project, &nickname)))
+            .and_then(|reviews| reviews.transcript(project, &nickname))
+            .or_else(|| {
+                window
+                    .app_handle()
+                    .try_state::<ScoutSweeps>()
+                    .and_then(|sweeps| sweeps.review_transcript(project, &nickname))
+            }))
     })
     .await
 }

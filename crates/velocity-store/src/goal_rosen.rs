@@ -65,6 +65,7 @@ fn record_activity(
     let (kind, action) = match progress {
         RosenProgress::Named => (GoalEventKind::Opened, "named"),
         RosenProgress::Landed => (GoalEventKind::Merged, "landed"),
+        RosenProgress::Abandoned => (GoalEventKind::Left, "abandoned"),
         RosenProgress::Reverted => (GoalEventKind::Changes, "reverted · fixing"),
         RosenProgress::ChangesRequested => (GoalEventKind::Changes, "fixing"),
     };

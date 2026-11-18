@@ -129,6 +129,7 @@ pub struct GoalAgentSlot {
     pub effort: EffortLevel,
     pub speed: SpeedMode,
     pub keep_going: bool,
+    pub previous_work_thread: Option<u32>,
 }
 
 /// Persisted goal swarm record on `ProjectItem` (`SPEC.md` F16).
@@ -170,6 +171,7 @@ impl GoalAgentSlot {
             effort: thread.effort,
             speed: thread.preferred_speed,
             keep_going: swarm.keep_going,
+            previous_work_thread: thread.previous_work_thread,
         })
     }
 }
@@ -312,17 +314,39 @@ impl StateStore {
         thread: NewThread,
     ) -> Result<u32, ThreadError> {
         let mut next = self.state.clone();
+        let selected = project_mut(&mut next, project_id)?.active_thread_id;
         let identifier = crate::threads::insert_thread(&mut next, project_id, thread, None)?;
         let project = project_mut(&mut next, project_id)?;
+        if let Some(previous) = slot.previous_work_thread {
+            if !project.threads.iter().any(|thread| {
+                thread.id == previous
+                    && matches!(thread.state, ThreadState::Merged | ThreadState::Done)
+            }) {
+                return Err(ThreadError::InvalidLaunch(
+                    "The previous item reopened".into(),
+                ));
+            }
+            project.active_thread_id = if selected == Some(previous) {
+                Some(identifier)
+            } else {
+                selected
+            };
+        }
         if let Some(record) = project
             .threads
             .iter_mut()
             .find(|item| item.id == identifier)
         {
             record.goal_member = Some(GoalThreadMember::choosing(slot.swarm_id, slot.nick.clone()));
+            record.previous_work_thread = slot.previous_work_thread;
         }
         let swarm = goal_swarm_mut(project, project_id, slot.swarm_id)?;
         if let Some(member) = swarm.members.iter_mut().find(|item| item.nick == slot.nick) {
+            if slot.previous_work_thread.is_some() && member.thread != slot.previous_work_thread {
+                return Err(ThreadError::InvalidLaunch(
+                    "The agent already took its next item".into(),
+                ));
+            }
             member.thread = Some(identifier);
             member.left_reason = None;
         }
@@ -370,13 +394,20 @@ impl StateStore {
         let mut next = self.state.clone();
         {
             let project = project_mut(&mut next, project_id)?;
+            let previous = choosing_thread.and_then(|id| {
+                project
+                    .threads
+                    .iter()
+                    .find(|thread| thread.id == id)?
+                    .previous_work_thread
+            });
             if let Some(thread_id) = choosing_thread {
                 remove_untouched_choosing_thread(project, thread_id);
             }
             let swarm = goal_swarm_mut(project, project_id, swarm_id)?;
             if let Some(member) = swarm.members.iter_mut().find(|item| item.nick == nick) {
                 if member.thread == choosing_thread {
-                    member.thread = member.merged_threads.last().copied();
+                    member.thread = previous.or_else(|| member.merged_threads.last().copied());
                 }
                 member.left_reason = Some(reason);
             }
@@ -419,12 +450,14 @@ impl StateStore {
     ) -> Result<Option<GoalAgentSlot>, ThreadError> {
         let mut next = self.state.clone();
         let project = project_mut(&mut next, project_id)?;
-        let Some(goal_member) = project
-            .threads
-            .iter()
-            .find(|thread| thread.id == merged_thread && thread.state == ThreadState::Merged)
-            .and_then(|thread| thread.goal_member.clone())
-        else {
+        let Some(thread) = project.threads.iter().find(|thread| {
+            thread.id == merged_thread
+                && matches!(thread.state, ThreadState::Merged | ThreadState::Done)
+        }) else {
+            return Ok(None);
+        };
+        let landed = thread.state == ThreadState::Merged;
+        let Some(goal_member) = thread.goal_member.clone().filter(|member| !member.choosing) else {
             return Ok(None);
         };
         let Some(swarm) = project
@@ -441,11 +474,13 @@ impl StateStore {
         else {
             return Ok(None);
         };
-        if member.merged_threads.contains(&merged_thread) {
-            return Ok(None);
+        if landed && !member.merged_threads.contains(&merged_thread) {
+            member.merged_threads.push(merged_thread);
         }
-        member.merged_threads.push(merged_thread);
-        let next_slot = swarm.keep_going.then(|| GoalAgentSlot {
+        let continuing = swarm.keep_going
+            && member.thread == Some(merged_thread)
+            && member.left_reason.is_none();
+        let next_slot = continuing.then(|| GoalAgentSlot {
             swarm_id: swarm.id,
             prompt: swarm.prompt.clone(),
             sources: swarm.sources,
@@ -455,6 +490,7 @@ impl StateStore {
             effort: member.effort,
             speed: member.speed,
             keep_going: true,
+            previous_work_thread: Some(merged_thread),
         });
         self.commit(next)?;
         Ok(next_slot)
@@ -551,6 +587,7 @@ fn build_slots(
                 effort: row.effort,
                 speed: row.speed,
                 keep_going,
+                previous_work_thread: None,
             });
         }
     }
@@ -619,9 +656,11 @@ fn remove_untouched_choosing_thread(project: &mut ProjectItem, thread_id: u32) {
             && thread.spec_section.is_none()
     });
     if let Some(position) = removable {
-        project.threads.remove(position);
+        let removed = project.threads.remove(position);
         if project.active_thread_id == Some(thread_id) {
-            project.active_thread_id = project.threads.first().map(|thread| thread.id);
+            project.active_thread_id = removed
+                .previous_work_thread
+                .or_else(|| project.threads.first().map(|thread| thread.id));
         }
     }
 }

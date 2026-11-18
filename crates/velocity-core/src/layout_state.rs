@@ -18,8 +18,8 @@ use crate::skill_menu::{self, SkillMenuEntry};
 use crate::swarm::{self, SwarmDialogRequest, SwarmSource, SwarmViewSnapshot};
 use crate::thread_view::{self, ComposerSubmitEffect};
 use crate::thread_view_model::{
-    self, AgentCommandView, LiveThreadView, ModelPillView, SlashCommandItem, ThreadDetailSnapshot,
-    TranscriptBlock,
+    self, AgentCommandView, LiveThreadView, ModelPillView, SlashCommandItem, ThreadDetailEntry,
+    ThreadDetailSnapshot, TranscriptBlock,
 };
 use pending_sends::PendingSends;
 use std::collections::{BTreeMap, BTreeSet};
@@ -250,6 +250,7 @@ impl LayoutState {
 
     /// Feature owners replace their read model after domain events, then emit a snapshot.
     pub fn replace_data(&mut self, data: LayoutData) {
+        self.follow_new_work_session(&data);
         self.data = data;
         self.hide_pending_rows();
         self.follow_selected_view();
@@ -257,6 +258,42 @@ impl LayoutState {
         self.palette_selection =
             layout::bounded_selection(self.palette_results().len(), self.palette_selection);
         self.changed();
+    }
+
+    fn follow_new_work_session(&mut self, data: &LayoutData) {
+        if data.project_identifier != self.data.project_identifier
+            || self.view != NavigationView::Thread
+        {
+            return;
+        }
+        let Some(selected) = self.selected_thread else {
+            return;
+        };
+        let successor = data.threads.iter().find_map(|entry| {
+            let detail = entry.detail.as_ref()?;
+            (detail.previous_work_thread == Some(selected)
+                && !self
+                    .data
+                    .threads
+                    .iter()
+                    .any(|prior| prior.policy.identifier == detail.identifier))
+            .then_some(detail.identifier)
+        });
+        if let Some(successor) = successor {
+            self.selected_thread = Some(successor);
+        } else if !data
+            .threads
+            .iter()
+            .any(|entry| entry.policy.identifier == selected)
+        {
+            // An empty Keep going round is discarded. Return to the last item it displayed.
+            self.selected_thread = self.data.threads.iter().find_map(|entry| {
+                let detail = entry.detail.as_ref()?;
+                (detail.identifier == selected)
+                    .then_some(detail.previous_work_thread)
+                    .flatten()
+            });
+        }
     }
 
     pub fn set_task_rows(&mut self, tasks: Vec<crate::layout_view::TaskView>) {
@@ -818,6 +855,8 @@ impl LayoutState {
             }
         }
 
+        self.prepend_work_history(detail, &mut snapshot.blocks);
+
         if let Some(interview) = self
             .data
             .interviews
@@ -829,6 +868,49 @@ impl LayoutState {
             snapshot.interview = Some(interview.view.clone());
         }
         Some(snapshot)
+    }
+
+    fn prepend_work_history(
+        &self,
+        detail: &ThreadDetailEntry,
+        blocks: &mut thread_view_model::SharedBlocks,
+    ) {
+        let mut history = Vec::new();
+        let mut current = detail;
+        while let Some(previous) = current.previous_work_thread {
+            // Work records are allocated in ascending order. The bound also prevents a cycle
+            // in saved data from keeping the view busy.
+            if previous >= current.identifier {
+                break;
+            }
+            let Some(earlier) = self.data.threads.iter().find_map(|entry| {
+                entry
+                    .detail
+                    .as_ref()
+                    .filter(|detail| detail.identifier == previous)
+            }) else {
+                break;
+            };
+            history.push(&earlier.blocks);
+            current = earlier;
+        }
+        if !history.is_empty() {
+            *blocks = history
+                .into_iter()
+                .rev()
+                .flat_map(|blocks| {
+                    blocks
+                        .iter()
+                        .filter(|block| {
+                            !matches!(block, TranscriptBlock::UserMessage { queued: true, .. })
+                        })
+                        .cloned()
+                        .chain(std::iter::once(thread_view_model::work_session_boundary()))
+                })
+                .chain(blocks.iter().cloned())
+                .collect::<Vec<_>>()
+                .into();
+        }
     }
 
     fn active_duty_snapshot(&self) -> Option<DutyViewSnapshot> {
@@ -1306,6 +1388,12 @@ impl LayoutState {
         // The reference trims the sidebar query, so a query of only spaces shows every thread.
         let query = normalized(self.search.trim());
         let selected = self.selected_row();
+        let superseded: BTreeSet<_> = self
+            .data
+            .threads
+            .iter()
+            .filter_map(|entry| entry.detail.as_ref()?.previous_work_thread)
+            .collect();
         let mut number = 0;
         GROUPS
             .into_iter()
@@ -1318,7 +1406,10 @@ impl LayoutState {
                         let mut row = thread.policy;
                         row.matches_search =
                             layout::substring_match(&query, &normalized(&thread.title));
-                        layout::is_root_visible(group, row)
+                        let historical = row.group == ThreadGroup::Settled
+                            && superseded.contains(&row.identifier)
+                            && self.selected_thread != Some(row.identifier);
+                        (!historical || !query.is_empty()) && layout::is_root_visible(group, row)
                     })
                     .collect();
                 if !layout::show_group(group, !roots.is_empty(), query.is_empty()) {

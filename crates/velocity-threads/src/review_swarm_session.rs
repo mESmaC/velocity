@@ -202,7 +202,8 @@ impl Job {
             return Err("the duty agent was removed".into());
         }
         self.save_workspace(host, key, launch);
-        let (agent_launch, setup) = self.setup(key, server, launch)?;
+        let (agent_launch, mut setup) = self.setup(key, server, launch)?;
+        crate::launch::add_review_handoff(&mut setup, &self.runner.app_data, key.0, &key.1);
         input
             .send(message(&prompt(
                 launch,
@@ -210,6 +211,7 @@ impl Job {
                 instruction.as_deref(),
             )))
             .map_err(|error| error.to_string())?;
+        self.runner.start_transcript(key, &launch.workspace);
         let session = crate::spawn_session(agent_launch, setup, inputs);
         self.follow(host, key, session).await
     }
@@ -266,6 +268,7 @@ impl Job {
     ) -> Result<(), String> {
         let mut doing = String::new();
         while let Some(event) = session.events.recv().await {
+            self.runner.record_transcript(key, &event);
             if let Some(step) = crate::sweep::sweep_doing(&event)
                 && step != doing
             {

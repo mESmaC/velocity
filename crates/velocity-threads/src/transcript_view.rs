@@ -95,6 +95,15 @@ impl LiveTranscript {
         transcript
     }
 
+    /// A duty agent uses the same view for successive work items with independent ACP indices.
+    pub(crate) fn next_work_session(workspace: &Path, previous: Option<&Self>) -> Self {
+        let mut blocks = previous.map_or_else(Vec::new, Self::blocks);
+        if previous.is_some() {
+            blocks.push(velocity_core::thread_view_model::work_session_boundary());
+        }
+        Self::restore(&workspace.display().to_string(), blocks)
+    }
+
     /// The worktree took the title's name while setup was still running (F4).
     pub fn rename_worktree(&mut self, worktree: &str) {
         worktree.clone_into(&mut self.worktree);

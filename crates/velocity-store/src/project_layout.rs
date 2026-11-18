@@ -208,6 +208,7 @@ fn thread_detail(thread: &ThreadItem, settings: &crate::Settings) -> ThreadDetai
             .filter(|watch| watch.number != 0)
             .map(|watch| watch.view()),
         blocks: thread.transcript.clone(),
+        previous_work_thread: thread.previous_work_thread.map(|id| id as usize),
         agent_commands: Vec::new(),
         provider: provider_color(thread.provider),
         model_name: thread.model_name.clone(),

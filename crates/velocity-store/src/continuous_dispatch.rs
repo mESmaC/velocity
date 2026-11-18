@@ -53,7 +53,16 @@ pub fn busy_count(project: &ProjectItem) -> u32 {
         .filter(|thread| {
             thread.interview.is_none()
                 && !thread.supervision.released
-                && matches!(thread.state, ThreadState::Working | ThreadState::Review)
+                && (matches!(thread.state, ThreadState::Working | ThreadState::Review)
+                    || (thread.started_by_dispatch
+                        && (project.continuous_dispatch.cleanup.contains(&thread.id)
+                            || thread.rosen_follow_ups.iter().any(|follow_up| {
+                                matches!(
+                                    follow_up,
+                                    crate::rosen::RosenFollowUp::FinishLanded
+                                        | crate::rosen::RosenFollowUp::FinishAbandoned
+                                )
+                            }))))
         })
         .count() as u32
 }
@@ -221,9 +230,27 @@ impl StateStore {
 }
 
 fn mark_dispatch(project: &mut ProjectItem, selected: Option<u32>, thread: u32) {
-    project.active_thread_id = selected;
+    let previous = project
+        .threads
+        .iter()
+        .find(|entry| {
+            entry.started_by_dispatch
+                && matches!(entry.state, ThreadState::Done | ThreadState::Merged)
+                && entry.rosen_follow_ups.is_empty()
+                && !project.continuous_dispatch.cleanup.contains(&entry.id)
+                && !project
+                    .threads
+                    .iter()
+                    .any(|later| later.previous_work_thread == Some(entry.id))
+        })
+        .map(|entry| entry.id);
+    project.active_thread_id = match previous {
+        Some(prior) if selected == Some(prior) => Some(thread),
+        _ => selected,
+    };
     if let Some(record) = project.threads.iter_mut().find(|entry| entry.id == thread) {
         record.started_by_dispatch = true;
+        record.previous_work_thread = previous;
     }
 }
 

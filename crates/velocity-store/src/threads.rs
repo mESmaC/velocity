@@ -335,6 +335,11 @@ pub(crate) fn remove_thread_record(
         .position(|record| record.id == thread)
         .ok_or(ThreadError::UnknownThread { project, thread })?;
     let removed = item.threads.remove(position);
+    for later in &mut item.threads {
+        if later.previous_work_thread == Some(thread) {
+            later.previous_work_thread = removed.previous_work_thread;
+        }
+    }
     if removed.state == crate::ThreadState::Merged
         && let Some(section) = &removed.spec_section
     {

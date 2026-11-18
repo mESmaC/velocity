@@ -46,6 +46,7 @@ pub enum ChangeEvent {
     /// A named snapshot (`rosen commit -m`): the agent says the work is ready.
     Named,
     Landed,
+    Abandoned,
     /// Post-land verification reverted the change and reopened it (R12).
     Reverted,
     /// The server rebased the change onto a newer base (R2): its workspace takes the new
@@ -67,6 +68,11 @@ pub fn change_event(event: &Event) -> Option<(&str, ChangeEvent)> {
             ChangeEvent::Named
         }
         EventKind::Landed => ChangeEvent::Landed,
+        EventKind::Updated
+            if event.detail.get("state").and_then(|value| value.as_str()) == Some("abandoned") =>
+        {
+            ChangeEvent::Abandoned
+        }
         EventKind::Reverted => ChangeEvent::Reverted,
         EventKind::Rebased => ChangeEvent::Rebased,
         EventKind::Conflict => ChangeEvent::Conflict,

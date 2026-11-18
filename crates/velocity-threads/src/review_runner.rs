@@ -1064,6 +1064,12 @@ impl Review {
             .as_ref()
             .map(|airc| airc.duty(prepared.plan.project, &prepared.plan.nickname));
         configure_review_session(&mut setup, &prepared);
+        crate::launch::add_review_handoff(
+            &mut setup,
+            &self.runner.app_data,
+            self.key.0,
+            &self.key.1,
+        );
         let prompt = velocity_core::text_budget::prompt_excerpt(
             &format!("{}{proofs}", self.prompt(&prepared)),
             velocity_core::text_budget::PROMPT_BYTES,
@@ -1086,10 +1092,9 @@ impl Review {
         if let Some(running) = state.running.get_mut(&self.key) {
             running.delivering = true;
         }
-        state.transcripts.insert(
-            self.key.clone(),
-            LiveTranscript::restore(&worktree.display().to_string(), Vec::new()),
-        );
+        let transcript =
+            LiveTranscript::next_work_session(worktree, state.transcripts.get(&self.key));
+        state.transcripts.insert(self.key.clone(), transcript);
     }
 
     /// Rule 5 also covers a PR merged outside this session. Check after its process tree

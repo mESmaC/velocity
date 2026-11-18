@@ -800,6 +800,7 @@ async fn run_thread_session(
     if let Err(error) = crate::airc_claims::attach(&application, key, &setup, branch) {
         return fail(&application, key, "Could not claim work", &error);
     }
+    add_work_handoff(&application, key, &mut setup);
     setup.pause_on_subscription_limit = true;
     let session = spawn_session(plan.agent, setup, inputs);
     pump(&application, key, session).await;
@@ -1154,6 +1155,10 @@ async fn finish_goal_claimed(
     selection: Option<GoalSelectionTurn>,
 ) {
     let path = folder.path.display().to_string();
+    let prompt = work_handoff(application, key).map_or_else(
+        || claimed.prompt.clone(),
+        |handoff| format!("{handoff}\n\n{}", claimed.prompt),
+    );
     let session = if let Some(turn) = selection {
         report(save_agent_session(application, key, &turn.events));
         report(apply_batch(application, key, &turn.events));
@@ -1162,7 +1167,7 @@ async fn finish_goal_claimed(
             "thread sessions",
         )
         .ok()
-        .and_then(|mut runtimes| runtimes.continue_claimed_session(key, &path, &claimed.prompt));
+        .and_then(|mut runtimes| runtimes.continue_claimed_session(key, &path, &prompt));
         if continued.is_some() {
             Some(turn.session)
         } else {
@@ -1182,7 +1187,7 @@ async fn finish_goal_claimed(
             "thread sessions",
         )
         .ok()
-        .and_then(|mut runtimes| runtimes.begin_claimed_session(key, &path, &claimed.prompt));
+        .and_then(|mut runtimes| runtimes.begin_claimed_session(key, &path, &prompt));
         inputs.map(|inputs| {
             let setup = goal_session_setup(application, key, &plan, &folder, &claimed.piece.title);
             spawn_session(plan.agent.clone(), setup, inputs)
@@ -1210,6 +1215,86 @@ async fn finish_goal_claimed(
     report(refresh(application, key, false));
     emit_status(application, key);
     pump(application, key, session).await;
+}
+
+fn add_work_handoff(application: &AppHandle, key: ThreadKey, setup: &mut SessionSetup) {
+    let Some(handoff) = work_handoff(application, key) else {
+        return;
+    };
+    setup.preface = Some(match setup.preface.take() {
+        Some(preface) => format!("{preface}\n\n{handoff}"),
+        None => handoff,
+    });
+}
+
+fn work_handoff(application: &AppHandle, key: ThreadKey) -> Option<String> {
+    let (mut handoff, members) = saved_work_handoff(application, key)?;
+    if let Ok(data) = application.path().app_data_dir() {
+        handoff.push('\n');
+        handoff.push_str(&velocity_threads::launch::airc_work_handoff(
+            &data, key.0, &members,
+        ));
+    }
+    Some(handoff)
+}
+
+fn saved_work_handoff(application: &AppHandle, key: ThreadKey) -> Option<(String, Vec<String>)> {
+    use velocity_threads::launch::handoff_line;
+    let store = lock(
+        application.state::<ManagedStateStore>().inner(),
+        "persisted state",
+    )
+    .ok()?;
+    let project = store.project(key.0)?;
+    let thread = project.threads.iter().find(|thread| thread.id == key.1)?;
+    if !thread.started_by_dispatch && thread.goal_member.is_none() {
+        return None;
+    }
+    let workspace = thread.worktree_path.as_deref().unwrap_or_default();
+    let change = thread
+        .rosen_change
+        .as_deref()
+        .unwrap_or(&thread.branch_name);
+    let mut summary = format!(
+        "Velocity work handoff\nItem: {}\nWorkspace: {workspace} ({change})",
+        handoff_line(&thread.title)
+    );
+    let mut members = vec![format!("thread-{}", key.1)];
+    if let Some(previous) = thread
+        .previous_work_thread
+        .and_then(|id| project.threads.iter().find(|thread| thread.id == id))
+    {
+        members.push(format!("thread-{}", previous.id));
+        let outcome = if previous.state == ThreadState::Merged {
+            "landed"
+        } else {
+            "ended without landing"
+        };
+        summary.push_str(&format!(
+            "\nPrevious item ({outcome}): {}",
+            handoff_line(&previous.title)
+        ));
+        if let Some(change) = &previous.rosen_change {
+            summary.push_str(&format!(" (Rosen change {change})"));
+        }
+        for task in project
+            .tasks
+            .iter()
+            .filter(|task| {
+                task.state != velocity_store::TaskState::Done
+                    && (task.added_by == velocity_store::TaskAttribution::Thread(previous.id)
+                        || task.assigned_thread_id == Some(previous.id))
+            })
+            .take(4)
+        {
+            summary.push_str(&format!(
+                "\nOpen Task List item #{}: {}",
+                task.id,
+                handoff_line(&task.text)
+            ));
+        }
+    }
+    Some((summary, members))
 }
 
 fn mark_worktree_ready(application: &AppHandle, key: ThreadKey, path: &str, failed: bool) -> bool {

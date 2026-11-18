@@ -11,6 +11,9 @@ Its locked context names the piece, tells the agent to claim files in Rosen, bui
 A named member change uses the ordinary Rosen landing path, including `review = "after-land"` (F7); goal swarms add no review or check gate.
 The task is finished on `landed`.
 That event ticks its tasks and records its built SPEC section, updates the board and activity feed, stops its session and watcher, releases its AIRC claim, and starts the next round in a fresh workspace when Keep going is on.
+An abandoned item also stops its session and releases its claim before the member takes another item with Keep going on.
+Each round starts a fresh ACP session and gets a short Velocity handoff with its item, workspace, claims and unfinished work from the preceding round.
+The thread view carries the conversation across rounds with a session boundary, and the provider receives only the current round's context (#456).
 `reverted` restores the unfinished tasks and reopens the section only when no other merged thread built it, including deleted history (#376).
 It keeps ownership with the original thread, updates the board and resumes that thread in its reopened workspace.
 These state changes and the event cursor save together and survive restart.

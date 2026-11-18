@@ -177,6 +177,7 @@ fn take(
     let (progress, message) = match meaning {
         ChangeEvent::Named => (RosenProgress::Named, String::new()),
         ChangeEvent::Landed => (RosenProgress::Landed, String::new()),
+        ChangeEvent::Abandoned => (RosenProgress::Abandoned, String::new()),
         ChangeEvent::Reverted => {
             let report = output.unwrap_or("Rosen kept no output for the failing run.");
             let message = velocity_core::rosen_checker::reverted_message(change, report);
@@ -252,7 +253,9 @@ async fn follow_up_once(
         return deliver_rebase_notice(application, key, change, follow_up, message).await;
     }
     match follow_up {
-        RosenFollowUp::FinishLanded => finish_landed(application, key).await,
+        RosenFollowUp::FinishLanded | RosenFollowUp::FinishAbandoned => {
+            finish_work(application, key).await
+        }
         RosenFollowUp::Reopen { message, .. } => {
             let Some(change) = change else {
                 return Ok(true);
@@ -441,10 +444,9 @@ fn publish_progress(
     Ok(())
 }
 
-/// A landed thread's work is on the base, and Rosen deletes its workspace: its agent and
-/// watcher stop, and its AIRC claims are released. Each step can run again, so a crash
-/// between the land and this cleanup is finished on the next pass.
-async fn finish_landed(application: &AppHandle, key: ThreadKey) -> Result<(), String> {
+/// Stop the finished item's session and watcher before its worker takes new work.
+/// A repeated follow-up is safe after a crash or a cleanup failure.
+async fn finish_work(application: &AppHandle, key: ThreadKey) -> Result<(), String> {
     let handle = application.clone();
     let stopped = tauri::async_runtime::spawn_blocking(move || {
         crate::threads::stop_follow_through(&handle, key)
@@ -452,7 +454,7 @@ async fn finish_landed(application: &AppHandle, key: ThreadKey) -> Result<(), St
     .await
     .map_err(|error| error.to_string())??;
     if !stopped {
-        return Err("The landed thread's agent is still starting; it was left running".into());
+        return Err("The finished item's agent is still starting; cleanup will retry".into());
     }
     if let Some(root) = workspace(application, key)? {
         crate::rosen::stop_watch(application, &root).await;

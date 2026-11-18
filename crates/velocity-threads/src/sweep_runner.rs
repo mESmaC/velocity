@@ -79,6 +79,14 @@ pub struct ScoutSweeps {
 }
 
 impl ScoutSweeps {
+    pub fn review_transcript(
+        &self,
+        project: u32,
+        nickname: &str,
+    ) -> Option<Vec<velocity_core::thread_view_model::TranscriptBlock>> {
+        self.review_swarms.transcript(project, nickname)
+    }
+
     pub fn new(scout_server: PathBuf, reports: PathBuf) -> Self {
         Self {
             review_swarms: crate::review_swarm::ReviewSwarms::new(scout_server.clone(), &reports),

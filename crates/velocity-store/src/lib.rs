@@ -738,6 +738,10 @@ pub struct ThreadItem {
     #[serde(default)]
     #[specta(skip)]
     pub started_by_dispatch: bool,
+    /// Earlier work in the same conversation. Kept separate for Rosen reverts and ACP recovery.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[specta(skip)]
+    pub previous_work_thread: Option<u32>,
     /// A turn interrupted by startup, retained until its resume starts or fails.
     #[serde(default)]
     #[specta(skip)]
@@ -855,6 +859,7 @@ impl ThreadItem {
             transcript: Default::default(),
             startup_recovery_pending: false,
             started_by_dispatch: false,
+            previous_work_thread: None,
             supervision: Default::default(),
             review_stage: None,
             task_ids: Vec::new(),
@@ -903,6 +908,7 @@ impl ThreadItem {
             transcript: Default::default(),
             startup_recovery_pending: false,
             started_by_dispatch: false,
+            previous_work_thread: None,
             supervision: Default::default(),
             review_stage: None,
             task_ids: Vec::new(),

@@ -378,12 +378,21 @@ pub struct ThreadDetailEntry {
     pub worked_summary: Option<WorkedSummaryView>,
     pub pull_request_history: Option<PullRequestHistoryView>,
     pub blocks: SharedBlocks,
+    pub previous_work_thread: Option<usize>,
     pub agent_commands: Vec<AgentCommandView>,
     pub provider: ProviderColor,
     pub model_name: String,
     pub effort_label: String,
     pub requested_fast: bool,
     pub model_has_fast_mode: bool,
+}
+
+/// A work item boundary shown in the transcript using the existing status row.
+pub fn work_session_boundary() -> TranscriptBlock {
+    TranscriptBlock::StatusLine {
+        running: false,
+        text: "New agent session".into(),
+    }
 }
 
 impl ThreadDetailEntry {
@@ -415,6 +424,7 @@ impl ThreadDetailEntry {
             worked_summary: None,
             pull_request_history: None,
             blocks: SharedBlocks::default(),
+            previous_work_thread: None,
             agent_commands: Vec::new(),
             provider,
             model_name: String::new(),
