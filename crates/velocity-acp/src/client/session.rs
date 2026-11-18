@@ -1,9 +1,9 @@
 //! Starting a session (§3.2 Start a thread) and answering permission requests (Rule 1).
 
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::Ordering;
+use std::sync::{Arc, PoisonError};
 
-use agent_client_protocol::Agent;
 use agent_client_protocol::schema::ProtocolVersion;
 use agent_client_protocol::v1::ConnectionTo;
 use agent_client_protocol::v1::schema::{
@@ -11,12 +11,14 @@ use agent_client_protocol::v1::schema::{
     InitializeRequest, LoadSessionRequest, McpCapabilities, McpServer, Meta, NewSessionRequest,
     PermissionOptionKind, RequestPermissionOutcome, RequestPermissionRequest,
     RequestPermissionResponse, SelectedPermissionOutcome, SessionConfigOption, SessionId,
-    SessionModeId, SessionModeState, SetSessionModeRequest,
+    SessionModeId, SessionModeState, SessionNotification, SessionUpdate, SetSessionModeRequest,
 };
+use agent_client_protocol::{Agent, Error, ErrorCode};
 
-use super::config;
+use super::{AgentEvent, Shared, config};
+use crate::session_config::ConfigValue;
 use crate::{
-    PermissionKind, RunSettings, SessionModeKind, choose_permission, choose_session_mode,
+    PermissionKind, Provider, RunSettings, SessionModeKind, choose_permission, choose_session_mode,
     keep_first_by_name, mode_to_select,
 };
 
@@ -129,10 +131,11 @@ impl SessionSetup {
     }
 }
 
-/// `initialize` → `session/new` → `session/set_mode` where it changes the mode.
-pub async fn start_session(
+/// `initialize` → `session/new` → select and check the bypass mode.
+pub(super) async fn start_session(
     connection: &ConnectionTo<Agent>,
     setup: &SessionSetup,
+    shared: &Shared,
 ) -> Result<SessionId, agent_client_protocol::Error> {
     let initialized = connection
         .send_request(initialize_request())
@@ -151,6 +154,8 @@ pub async fn start_session(
         &session.session_id,
         session.modes.as_ref(),
         setup,
+        shared,
+        &mut session.config_options.unwrap_or_default(),
     )
     .await?;
     Ok(session.session_id)
@@ -158,10 +163,10 @@ pub async fn start_session(
 
 /// Like [`start_session`], but a resumed thread first tries `session/load` of its earlier
 /// session. `replaying` suppresses replay only when the thread already holds its history.
-pub async fn start_or_resume_session(
+pub(super) async fn start_or_resume_session(
     connection: &ConnectionTo<Agent>,
     setup: &SessionSetup,
-    replaying: &AtomicBool,
+    shared: &Shared,
 ) -> Result<StartedSession, agent_client_protocol::Error> {
     let initialized = connection
         .send_request(initialize_request())
@@ -178,17 +183,17 @@ pub async fn start_or_resume_session(
     );
     if let Some(earlier) = earlier
         && let Some(started) =
-            load_earlier_session(connection, setup, replaying, earlier, &servers).await?
+            load_earlier_session(connection, setup, shared, earlier, &servers).await?
     {
         return Ok(started);
     }
-    new_resumed_session(connection, setup, servers).await
+    new_resumed_session(connection, setup, shared, servers).await
 }
 
 async fn load_earlier_session(
     connection: &ConnectionTo<Agent>,
     setup: &SessionSetup,
-    replaying: &AtomicBool,
+    shared: &Shared,
     earlier: String,
     servers: &[McpServer],
 ) -> Result<Option<StartedSession>, agent_client_protocol::Error> {
@@ -197,7 +202,7 @@ async fn load_earlier_session(
         .resume
         .as_ref()
         .is_some_and(|resume| resume.replay_history);
-    replaying.store(suppress_history, Ordering::Release);
+    shared.replaying.store(suppress_history, Ordering::Release);
     let loaded = connection
         .send_request(
             LoadSessionRequest::new(session_id.clone(), setup.worktree.clone())
@@ -206,11 +211,20 @@ async fn load_earlier_session(
         )
         .block_task()
         .await;
-    replaying.store(false, Ordering::Release);
+    shared.replaying.store(false, Ordering::Release);
     // A session the agent no longer has falls back to a new one with the transcript.
     if let Ok(response) = loaded {
-        select_bypass_mode(connection, &session_id, response.modes.as_ref(), setup).await?;
-        let options = configure(connection, &session_id, response.config_options, setup).await?;
+        let mut options = response.config_options.unwrap_or_default();
+        select_bypass_mode(
+            connection,
+            &session_id,
+            response.modes.as_ref(),
+            setup,
+            shared,
+            &mut options,
+        )
+        .await?;
+        let options = configure(connection, &session_id, options, setup).await?;
         return Ok(Some(StartedSession {
             session_id,
             loaded: true,
@@ -223,26 +237,24 @@ async fn load_earlier_session(
 async fn new_resumed_session(
     connection: &ConnectionTo<Agent>,
     setup: &SessionSetup,
+    shared: &Shared,
     servers: Vec<McpServer>,
 ) -> Result<StartedSession, agent_client_protocol::Error> {
     let session = connection
         .send_request(setup.new_session_request(servers))
         .block_task()
         .await?;
+    let mut options = session.config_options.unwrap_or_default();
     select_bypass_mode(
         connection,
         &session.session_id,
         session.modes.as_ref(),
         setup,
+        shared,
+        &mut options,
     )
     .await?;
-    let options = configure(
-        connection,
-        &session.session_id,
-        session.config_options,
-        setup,
-    )
-    .await?;
+    let options = configure(connection, &session.session_id, options, setup).await?;
     Ok(StartedSession {
         session_id: session.session_id,
         loaded: false,
@@ -254,10 +266,9 @@ async fn new_resumed_session(
 async fn configure(
     connection: &ConnectionTo<Agent>,
     session_id: &SessionId,
-    options: Option<Vec<SessionConfigOption>>,
+    options: Vec<SessionConfigOption>,
     setup: &SessionSetup,
 ) -> Result<Vec<SessionConfigOption>, agent_client_protocol::Error> {
-    let options = options.unwrap_or_default();
     match &setup.run_settings {
         Some(settings) => config::apply_settings(connection, session_id, options, settings).await,
         None => Ok(options),
@@ -269,14 +280,163 @@ async fn select_bypass_mode(
     session_id: &SessionId,
     modes: Option<&SessionModeState>,
     setup: &SessionSetup,
+    shared: &Shared,
+    options: &mut Vec<SessionConfigOption>,
 ) -> Result<(), agent_client_protocol::Error> {
-    if let Some(mode) = bypass_mode(modes, &setup.bypass_modes) {
-        connection
-            .send_request(SetSessionModeRequest::new(session_id.clone(), mode))
-            .block_task()
-            .await?;
+    let bypass_ids = &setup.bypass_modes;
+    if bypass_ids.is_empty() {
+        return Ok(());
     }
-    Ok(())
+    if let Some((id, mode)) = config::mode_option(options) {
+        let current = mode.current_value.0.as_ref();
+        if is_bypass(bypass_ids, current) {
+            return Ok(());
+        }
+        let Some((value, _)) = config::select_values(&mode.options)
+            .into_iter()
+            .find(|(value, _)| is_bypass(bypass_ids, value))
+        else {
+            if !has_provider_bypass(shared) {
+                return select_legacy_bypass(connection, session_id, modes, bypass_ids, shared)
+                    .await;
+            }
+            return Err(restricted_mode(
+                shared,
+                current,
+                "the agent offers no recognized bypass mode",
+            ));
+        };
+        // Unlike session/set_mode, this response reports the effective mode even if
+        // the agent accepted the request without changing its configuration.
+        let updated = config::set_option(
+            connection,
+            session_id,
+            Arc::clone(&id.0),
+            ConfigValue::Select(value),
+        )
+        .await
+        .map_err(|error| restricted_mode(shared, current, error))?;
+        let Some((_, effective)) = config::mode_option(&updated) else {
+            return Err(restricted_mode(
+                shared,
+                current,
+                "the agent did not confirm the mode change",
+            ));
+        };
+        if !is_bypass(bypass_ids, &effective.current_value.0) {
+            return Err(restricted_mode(
+                shared,
+                &effective.current_value.0,
+                "the mode change did not enable bypass",
+            ));
+        }
+        *options = updated;
+        return Ok(());
+    }
+    select_legacy_bypass(connection, session_id, modes, bypass_ids, shared).await
+}
+
+async fn select_legacy_bypass(
+    connection: &ConnectionTo<Agent>,
+    session_id: &SessionId,
+    modes: Option<&SessionModeState>,
+    bypass_ids: &[String],
+    shared: &Shared,
+) -> Result<(), Error> {
+    let Some(modes) = modes else { return Ok(()) };
+    let current = modes.current_mode_id.0.as_ref();
+    if is_bypass(bypass_ids, current) {
+        return Ok(());
+    }
+    let Some(mode) = bypass_mode(modes, bypass_ids) else {
+        if !has_provider_bypass(shared) {
+            return Ok(());
+        }
+        return Err(restricted_mode(
+            shared,
+            current,
+            "the agent offers no recognized bypass mode",
+        ));
+    };
+    *shared
+        .mode_selection
+        .lock()
+        .unwrap_or_else(PoisonError::into_inner) = Some(ModeSelection {
+        session_id: session_id.clone(),
+        reported: None,
+    });
+    let result = connection
+        .send_request(SetSessionModeRequest::new(session_id.clone(), mode))
+        .block_task()
+        .await;
+    let reported = shared
+        .mode_selection
+        .lock()
+        .unwrap_or_else(PoisonError::into_inner)
+        .take()
+        .and_then(|selection| selection.reported);
+    result
+        .map_err(|error| restricted_mode(shared, reported.as_deref().unwrap_or(current), error))?;
+    match reported {
+        Some(mode) if !is_bypass(bypass_ids, &mode) => Err(restricted_mode(
+            shared,
+            &mode,
+            "the mode change did not enable bypass",
+        )),
+        // The legacy response has no mode field. Codex must confirm a change from a
+        // restricted mode since an empty success can leave its sandbox and reviewer active.
+        None if shared.provider == Some(Provider::Codex) => Err(restricted_mode(
+            shared,
+            current,
+            "the agent did not confirm the mode change",
+        )),
+        _ => Ok(()),
+    }
+}
+
+pub(super) struct ModeSelection {
+    session_id: SessionId,
+    reported: Option<Arc<str>>,
+}
+
+/// Captures reports for the session whose legacy mode request is in flight.
+pub(super) fn record_mode(shared: &Shared, notification: &SessionNotification) {
+    let reported = match &notification.update {
+        SessionUpdate::CurrentModeUpdate(update) => Some(&update.current_mode_id.0),
+        SessionUpdate::ConfigOptionUpdate(update) => {
+            config::mode_option(&update.config_options).map(|(_, mode)| &mode.current_value.0)
+        }
+        _ => None,
+    };
+    if let Some(reported) = reported
+        && let Some(selection) = shared
+            .mode_selection
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .as_mut()
+        && selection.session_id == notification.session_id
+    {
+        selection.reported = Some(Arc::clone(reported));
+    }
+}
+
+fn is_bypass(bypass_ids: &[String], mode: &str) -> bool {
+    bypass_ids.iter().any(|id| id == mode)
+}
+
+fn has_provider_bypass(shared: &Shared) -> bool {
+    // Custom agents may use modes for unrelated features and have no provider-defined bypass.
+    shared
+        .provider
+        .is_some_and(|provider| !matches!(provider, Provider::Custom(_)))
+}
+
+fn restricted_mode(shared: &Shared, mode: &str, reason: impl std::fmt::Display) -> Error {
+    let message = format!(
+        "The agent reported mode `{mode}`. Velocity requires unrestricted access ({reason})."
+    );
+    shared.emit(AgentEvent::Log(message.clone()));
+    Error::new(ErrorCode::INTERNAL_ERROR, message)
 }
 
 pub(super) fn initialize_request() -> InitializeRequest {
@@ -348,13 +508,12 @@ pub(super) fn server_name(server: &McpServer) -> Option<&str> {
 }
 
 /// The mode `session/set_mode` selects: the agent's bypass mode, unless it is already on.
-fn bypass_mode(modes: Option<&SessionModeState>, bypass_ids: &[String]) -> Option<SessionModeId> {
-    let state = modes?;
+fn bypass_mode(state: &SessionModeState, bypass_ids: &[String]) -> Option<SessionModeId> {
     let kinds: Vec<SessionModeKind> = state
         .available_modes
         .iter()
         .map(|mode| {
-            if bypass_ids.iter().any(|id| id.as_str() == &*mode.id.0) {
+            if is_bypass(bypass_ids, &mode.id.0) {
                 SessionModeKind::Bypass
             } else {
                 SessionModeKind::Other

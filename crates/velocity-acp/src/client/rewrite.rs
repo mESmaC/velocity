@@ -60,10 +60,11 @@ async fn request(
         super::forward_log(stderr, events.clone());
     }
     let shared = Arc::new(Shared::new(setup.worktree.clone(), events));
+    let session_state = Arc::clone(&shared);
     let transport = ByteStreams::new(stdin.compat_write(), stdout.compat());
     let result = handlers::register(Client.v1(), &shared)
         .connect_with(transport, async move |connection: ConnectionTo<Agent>| {
-            let identifier = session::start_session(&connection, &setup).await?;
+            let identifier = session::start_session(&connection, &setup, &session_state).await?;
             let content = super::run_queue::prompt_content(setup.preface, prompt);
             connection
                 .send_request(PromptRequest::new(identifier, content))

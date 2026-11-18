@@ -114,7 +114,7 @@ pub enum AgentEvent {
     TurnEnded(Result<StopReason, String>),
     /// The agent wrote a file through `fs/write_text_file` (for the diff view and claims).
     FileWritten { path: PathBuf },
-    /// A line the agent wrote to stderr.
+    /// A session diagnostic from the agent's stderr or the ACP client.
     Log(String),
 }
 
@@ -126,6 +126,8 @@ struct Shared {
     events: UnboundedSender<AgentEvent>,
     /// Set while `session/load` replays history the thread's transcript already shows.
     replaying: AtomicBool,
+    mode_selection: Mutex<Option<session::ModeSelection>>,
+    provider: Option<crate::Provider>,
     account: u32,
     code_reads: Mutex<turn_usage::CodeReads>,
 }
@@ -139,6 +141,8 @@ impl Shared {
             transcript: Mutex::new(Transcript::new()),
             events,
             replaying: AtomicBool::new(false),
+            mode_selection: Mutex::default(),
+            provider: None,
             account: 0,
             code_reads: Mutex::default(),
         }
@@ -237,6 +241,8 @@ async fn run_admitted_session(
         transcript: Mutex::new(Transcript::new()),
         events,
         replaying: AtomicBool::new(false),
+        mode_selection: Mutex::default(),
+        provider: launch.concurrency_provider.or(launch.own_config),
         account: launch.account,
         code_reads: Mutex::default(),
     });
@@ -428,7 +434,7 @@ async fn start_reporting_replay(
     if replays_history {
         shared.emit(AgentEvent::HistoryReplay(true));
     }
-    let started = session::start_or_resume_session(connection, setup, &shared.replaying).await;
+    let started = session::start_or_resume_session(connection, setup, shared).await;
     if replays_history {
         shared.emit(AgentEvent::HistoryReplay(false));
     }

@@ -8,8 +8,8 @@ use agent_client_protocol::Agent;
 use agent_client_protocol::v1::ConnectionTo;
 use agent_client_protocol::v1::schema::{
     SessionConfigId, SessionConfigKind, SessionConfigOption, SessionConfigOptionCategory,
-    SessionConfigOptionValue, SessionConfigSelectOptions, SessionConfigValueId, SessionId,
-    SetSessionConfigOptionRequest,
+    SessionConfigOptionValue, SessionConfigSelect, SessionConfigSelectOptions,
+    SessionConfigValueId, SessionId, SetSessionConfigOptionRequest,
 };
 
 use crate::RunSettings;
@@ -88,7 +88,20 @@ fn option_view(option: &SessionConfigOption) -> Option<ConfigOption<Arc<str>>> {
     ))
 }
 
-fn select_values(options: &SessionConfigSelectOptions) -> Vec<(Arc<str>, Arc<str>)> {
+pub(super) fn mode_option(
+    options: &[SessionConfigOption],
+) -> Option<(&SessionConfigId, &SessionConfigSelect)> {
+    options.iter().find_map(|option| match &option.kind {
+        SessionConfigKind::Select(select)
+            if option.category == Some(SessionConfigOptionCategory::Mode) =>
+        {
+            Some((&option.id, select))
+        }
+        _ => None,
+    })
+}
+
+pub(super) fn select_values(options: &SessionConfigSelectOptions) -> Vec<(Arc<str>, Arc<str>)> {
     let pair = |value: &agent_client_protocol::v1::schema::SessionConfigSelectOption| {
         (Arc::clone(&value.value.0), Arc::from(value.name.as_str()))
     };

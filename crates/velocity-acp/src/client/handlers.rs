@@ -50,6 +50,7 @@ fn with_session_handlers(
         )
         .on_receive_notification(
             async move |notification: SessionNotification, _connection| {
+                super::session::record_mode(&notified, &notification);
                 notified.record(notification.update);
                 Ok(())
             },
