@@ -50,7 +50,7 @@ pub fn synchronize_git_base(
         .map(|tip| Some(tip.trim().to_owned()))
 }
 
-fn read_base(server: &ProjectServer) -> Result<Option<String>, RosenError> {
+pub(crate) fn read_base(server: &ProjectServer) -> Result<Option<String>, RosenError> {
     let metadata = server.data_dir().join("metadata.sqlite");
     if !metadata.is_file() {
         return Ok(None);

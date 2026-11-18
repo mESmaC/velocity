@@ -38,6 +38,7 @@ pub(crate) fn read_model(store: &crate::StateStore) -> LayoutData {
         data.project_identifier = Some(project.id);
         data.project_name = project.name.clone();
         data.rosen_mirror = project.rosen_mirror.clone();
+        data.rosen_migration_notice = project.rosen_migration_notice.clone();
         data.settled_expanded = project.settled_expanded;
         let merged_today = project.merged_today as usize;
         let task_count = project.tasks.len();

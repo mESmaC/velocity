@@ -43,6 +43,7 @@ pub mod reviews;
 mod rosen;
 mod rosen_events;
 mod rosen_issue;
+mod rosen_migration;
 mod rosen_mirror;
 mod rosen_rebase;
 mod rosen_status;
@@ -367,6 +368,7 @@ pub fn run() -> anyhow::Result<()> {
             updates::initialize(application.handle());
             velocity_reports::initialize(application.handle());
             restart::resume_interrupted(application.handle(), interrupted);
+            rosen_migration::initialize(application.handle());
             thread_links::initialize(application.handle());
             window::watch_renderer(application.handle());
             process_memory::start(application.handle().clone());

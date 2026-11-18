@@ -22,6 +22,7 @@ mod issue;
 pub mod machine_dispatch;
 pub mod machines;
 pub mod memory;
+mod migration;
 mod mirror;
 pub mod policy;
 pub mod post_land;
@@ -45,6 +46,7 @@ pub use events::{
 pub use events::{IssueEvent, issue_event};
 pub use git_base::synchronize_git_base;
 pub use issue::{issue_build_coverage, record_issue};
+pub use migration::{Migration, migration_event_cursor};
 pub use mirror::{MirrorObservation, mirror_status};
 pub use retry::retry_workspace;
 pub use rosen_client::Error as ClientError;
@@ -65,6 +67,8 @@ use std::path::PathBuf;
 pub enum RosenError {
     #[error("Could not read Rosen status: {0}")]
     StatusData(String),
+    #[error("Migration to Rosen: {0}")]
+    Migration(String),
     #[error("could not read Rosen build repair evidence: {0}")]
     BuildRepairData(String),
     #[error("could not synchronize git with Rosen's base: {0}")]

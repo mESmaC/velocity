@@ -6,6 +6,11 @@
   A release carries `rosen-server` and `rosen` inside Velocity, built from the Rosen commit Velocity pins, and unpacks them on first use into `%LOCALAPPDATA%\velocity-rosen\<content hash>`, so the portable download has them and an update never overwrites a running server.
   A development build finds them in the folder `VELOCITY_ROSEN_BIN` names, beside Velocity's executable, or on `PATH`.
   The first time, it imports the project's history from the checkout's `origin` (the checkout itself when it has none), and `origin` becomes the mirror every land is pushed to (Rosen R1).
+  At startup, legacy Git projects migrate one at a time in the background after their running threads finish (#419).
+  Migration imports the local default branch and carries the push URL of `origin` over as its mirror.
+  Each unmerged branch is imported as a Rosen change with a snapshot for each original commit, and live threads receive Rosen workspace paths while retaining their history.
+  The original Git checkouts are kept, and uncommitted work stops only that project's migration with an actionable sidebar notice.
+  The saved mode switches only after the import succeeds and the Git checkouts and saved project still match the version that was checked.
   Velocity stops the servers it started when it exits and before an update installs, so their binaries can be replaced.
   Velocity follows every Rosen project's `mirror` events, including projects with no threads, and restores the latest mirror state at startup even when its thread-event cursor has passed the failure (#402).
   While the latest push has failed, the main window's project header and Settings → Workspaces → Version control show `failing · retrying` with the next retry time, or `rejected · needs a person` when Rosen says the push was rejected.

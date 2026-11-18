@@ -114,6 +114,7 @@ pub struct LayoutData {
     pub project_identifier: Option<u32>,
     pub project_name: String,
     pub rosen_mirror: Option<crate::rosen_mirror::MirrorState>,
+    pub rosen_migration_notice: Option<String>,
     pub settled_expanded: bool,
     pub threads: Vec<ThreadEntry>,
     pub projects: Vec<PaletteItem>,
@@ -449,6 +450,7 @@ pub struct LayoutSnapshot {
     pub project_identifier: Option<u32>,
     pub project_name: String,
     pub rosen_mirror: Option<crate::rosen_mirror::MirrorState>,
+    pub rosen_migration_notice: Option<String>,
     pub view: NavigationView,
     pub settings_tab: String,
     #[cfg_attr(feature = "bindings", serde(with = "crate::ipc_number::optional"))]

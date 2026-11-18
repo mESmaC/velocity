@@ -343,7 +343,7 @@ impl ImportSource {
 /// checkout: the server resolves relative paths from its own data folder, not the
 /// checkout's. A remote has a scheme (`https://`) or is scp-like (`git@host:path`); a
 /// Windows drive path (`C:\...`) has its colon second and is local.
-fn absolute_remote(url: &str, repository: &Path) -> String {
+pub(crate) fn absolute_remote(url: &str, repository: &Path) -> String {
     let scp_like = url
         .find(':')
         .is_some_and(|colon| colon > 1 && !url[..colon].contains(['/', '\\']));

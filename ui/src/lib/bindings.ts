@@ -2058,6 +2058,7 @@ export type LayoutSnapshot_Deserialize = {
 	project_identifier?: number | null,
 	project_name: string,
 	rosen_mirror?: MirrorState_Deserialize | null,
+	rosen_migration_notice?: string | null,
 	view: NavigationView,
 	settings_tab: string,
 	selected_thread: string | null,
@@ -2118,6 +2119,7 @@ export type LayoutSnapshot_Serialize = {
 	project_identifier: number | null,
 	project_name: string,
 	rosen_mirror: MirrorState_Serialize | null,
+	rosen_migration_notice: string | null,
 	view: NavigationView,
 	settings_tab: string,
 	selected_thread: string | null,
@@ -2767,7 +2769,7 @@ export type ProjectItem_Deserialize = {
 	swarms?: SwarmRecord_Deserialize[],
 	/**  Goal swarms launched on this project, newest first (F16). */
 	goal_swarms?: GoalSwarmRecord_Deserialize[],
-	/**  Rosen or git for this project's agents (F5). Saved projects take Rosen. */
+	/**  New projects use Rosen. Older Git records migrate at startup (F5, #419). */
 	version_control?: VersionControl,
 	/**  Latest mirror failure, retained while the push remains unsuccessful (F5). */
 	rosen_mirror?: MirrorState_Deserialize | null,
@@ -2803,7 +2805,7 @@ export type ProjectItem_Serialize = {
 	swarms: SwarmRecord_Serialize[],
 	/**  Goal swarms launched on this project, newest first (F16). */
 	goal_swarms: GoalSwarmRecord_Serialize[],
-	/**  Rosen or git for this project's agents (F5). Saved projects take Rosen. */
+	/**  New projects use Rosen. Older Git records migrate at startup (F5, #419). */
 	version_control: VersionControl,
 	/**  Latest mirror failure, retained while the push remains unsuccessful (F5). */
 	rosen_mirror: MirrorState_Serialize | null,

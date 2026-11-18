@@ -30,6 +30,7 @@ PR duty checks an item off when it lands that item's PR (F7).
 - [x] ACP agents for Claude Code (`claude-agent-acp`), Codex (`codex-acp`), Kimi Code (`kimi acp`) and Antigravity (`agy acp`), each using its own OAuth login through `authenticate`; Settings → Providers, model menu, limit meter (F15)
 - [x] Custom ACP agents: Add an ACP agent (name, command, arguments), and an editable command on each provider card (F15)
 - [x] Workspace manager: create / delete / prune, path scheme, setup step (copy files, run command, shared build cache) (F5)
+- [x] Migrate saved Git projects and their work to Rosen in the background (F5, #419)
 - [x] Thread view: transcript, tool steps, diffs, header with workspace path, composer, slash menu (F4)
 - [x] Settings → Workspaces, including the live list and the footer count (F5, F13)
 

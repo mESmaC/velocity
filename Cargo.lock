@@ -6742,6 +6742,7 @@ dependencies = [
  "notify",
  "rosen-client",
  "rosen-core",
+ "rosen-store",
  "rusqlite",
  "serde",
  "serde_json",

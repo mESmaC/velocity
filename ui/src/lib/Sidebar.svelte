@@ -91,6 +91,9 @@
       ><Icon name="new" /></button
     >
   </div>
+  {#if layout.rosen_migration_notice}
+    <p class="duty-empty" role="status">{layout.rosen_migration_notice}</p>
+  {/if}
   <nav class="thread-groups" aria-label="Thread groups">
     <PaneState
       name="Threads"

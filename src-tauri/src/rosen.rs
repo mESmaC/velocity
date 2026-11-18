@@ -19,7 +19,7 @@ use crate::threads::{lock, report};
 
 /// Each project's Rosen server and the watchers that keep agents' workspaces stored.
 pub(crate) struct ManagedRosen {
-    servers: Servers,
+    pub(crate) servers: Servers,
     watches: Watches,
     /// Projects whose event stream a follower reads (F6).
     following: std::sync::Mutex<BTreeSet<u32>>,

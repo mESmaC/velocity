@@ -137,6 +137,13 @@ impl Default for LayoutState {
 }
 
 impl LayoutState {
+    pub fn set_migration_notice(&mut self, notice: Option<String>) {
+        if self.data.rosen_migration_notice != notice {
+            self.data.rosen_migration_notice = notice;
+            self.changed();
+        }
+    }
+
     pub fn set_project_issues(&mut self, project: u32, issues: Vec<RailItem>) {
         self.issue_rows.insert(project, issues);
         if self.data.project_identifier == Some(project) {
@@ -689,6 +696,7 @@ impl LayoutState {
             project_identifier: self.data.project_identifier,
             project_name: self.data.project_name.clone(),
             rosen_mirror: self.data.rosen_mirror.clone(),
+            rosen_migration_notice: self.data.rosen_migration_notice.clone(),
             rosen_reconnecting: self
                 .data
                 .project_identifier

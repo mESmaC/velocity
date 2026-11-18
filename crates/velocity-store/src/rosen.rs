@@ -237,6 +237,10 @@ impl StateStore {
             self.store_snapshot(next)?;
             return Ok(None);
         };
+        if seq != 0 && seq <= thread.rosen_import_event && progress == RosenProgress::Named {
+            self.store_snapshot(next)?;
+            return Ok(None);
+        }
         let identifier = thread.id;
         if progress == RosenProgress::ChangesRequested
             && thread.state != ThreadState::Merged

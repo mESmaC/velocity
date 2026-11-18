@@ -29,6 +29,7 @@ pub use save_behind::save_pending;
 
 pub mod interview;
 pub mod issues;
+pub mod migration;
 mod new_project;
 
 pub use interview::{
@@ -765,6 +766,10 @@ pub struct ThreadItem {
     /// The Rosen change the thread works on, when its workspace came from Rosen (F5).
     #[serde(default)]
     pub rosen_change: Option<String>,
+    /// Named snapshots through this event were imported from Git history.
+    #[serde(default)]
+    #[specta(skip)]
+    pub rosen_import_event: u64,
     /// Original prompt until Rosen workspace setup succeeds; retained for manual retry.
     #[serde(default)]
     #[specta(skip)]
@@ -850,6 +855,7 @@ impl ThreadItem {
             worktree_path_id: None,
             pull_request_number: None,
             rosen_change: None,
+            rosen_import_event: 0,
             pending_rosen_launch: None,
             rosen_progress_generation: 0,
             goal_stack: None,
@@ -900,6 +906,7 @@ impl ThreadItem {
             worktree_path_id: None,
             pull_request_number: None,
             rosen_change: None,
+            rosen_import_event: 0,
             pending_rosen_launch: None,
             rosen_progress_generation: 0,
             goal_stack: None,
@@ -1066,9 +1073,12 @@ pub struct ProjectItem {
     #[serde(default)]
     #[specta(skip)]
     pub last_task_identifier: u32,
-    /// Rosen or git for this project's agents (F5). Saved projects take Rosen.
-    #[serde(default)]
+    /// New projects use Rosen. Older Git records migrate at startup (F5, #419).
+    #[serde(default = "migration::legacy_version_control")]
     pub version_control: VersionControl,
+    #[serde(default)]
+    #[specta(skip)]
+    pub rosen_migration_notice: Option<String>,
     /// The newest event of the project's Rosen stream its threads have taken in (F6).
     #[serde(default)]
     #[specta(skip)]
@@ -1131,6 +1141,7 @@ impl ProjectItem {
             deleted_worktrees: Vec::new(),
             last_task_identifier: 0,
             version_control: VersionControl::default(),
+            rosen_migration_notice: None,
             rosen_event_cursor: 0,
             rosen_mirror: None,
             rosen_mirror_sequence: 0,
