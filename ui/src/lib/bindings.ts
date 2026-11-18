@@ -119,6 +119,8 @@ export const commands = {
 	stopDuty: (request: StopDutyRequest) => __TAURI_INVOKE<LayoutSnapshot_Serialize>("stop_duty", { request }),
 	listPullRequests: (projectIdentifier: number) => __TAURI_INVOKE<PullRequest_Serialize[]>("list_pull_requests", { projectIdentifier }),
 	getPullRequest: (projectIdentifier: number, number: number) => __TAURI_INVOKE<PullRequestSnapshot_Serialize>("get_pull_request", { projectIdentifier, number }),
+	/**  Opens historical AIRC PR links on demand. */
+	openProjectPullRequest: (projectIdentifier: number, number: number) => __TAURI_INVOKE<LayoutSnapshot_Serialize | null>("open_project_pull_request", { projectIdentifier, number }),
 	dispatchPullRequest: (projectIdentifier: number, operation: PullRequestOperation_Deserialize) => __TAURI_INVOKE<PullRequestReceipt>("dispatch_pull_request", { projectIdentifier, operation }),
 	/**
 	 *  The Goal swarm dialog for the user's choices with one edit applied; asked again after
@@ -145,8 +147,7 @@ export const commands = {
 	dispatchIssue: (projectIdentifier: number, number: number, acceptRecommendation: boolean) => __TAURI_INVOKE<LayoutSnapshot_Serialize>("dispatch_issue", { projectIdentifier, number, acceptRecommendation }),
 	/**  Expands or collapses one issue row in the rail (#209) and broadcasts the new snapshot. */
 	toggleIssueExpanded: (number: number) => __TAURI_INVOKE<IssuePanelSnapshot_Serialize>("toggle_issue_expanded", { number }),
-	getPullRequestPanel: () => __TAURI_INVOKE<PullRequestPanelSnapshot_Serialize>("get_pull_request_panel"),
-	openProjectPullRequest: (projectIdentifier: number, number: number) => __TAURI_INVOKE<LayoutSnapshot_Serialize | null>("open_project_pull_request", { projectIdentifier, number }),
+	watchRosenStatus: (projectIdentifier: number | null) => __TAURI_INVOKE<boolean>("watch_rosen_status", { projectIdentifier }),
 	/**
 	 *  Adds or removes a shared server. New agents of every provider get the saved list; agents
 	 *  already running keep the servers they started with.
@@ -244,7 +245,7 @@ export const PR_OPENED_EVENT = "pr://opened" as const;
 
 export const PR_REVIEW_EVENT = "pr://review" as const;
 
-export const PULL_REQUEST_PANEL_EVENT = "pr://panel" as const;
+export const ROSEN_STATUS_EVENT = "rosen://status" as const;
 
 export const SKILL_PACK_INSTALLATIONS_EVENT = "skills://installations" as const;
 
@@ -497,6 +498,24 @@ export type BaseCoverage = {
 	build: string,
 };
 
+export type BaseStatus = BaseStatus_Serialize | BaseStatus_Deserialize;
+
+export type BaseStatus_Deserialize = {
+	tip?: string | null,
+	green?: string | null,
+	bisecting: boolean,
+	culprit?: string | null,
+	revert?: string | null,
+};
+
+export type BaseStatus_Serialize = {
+	tip: string | null,
+	green: string | null,
+	bisecting: boolean,
+	culprit: string | null,
+	revert: string | null,
+};
+
 export type BoardCard = BoardCard_Serialize | BoardCard_Deserialize;
 
 export type BoardCardKind = "Task" | "Issue" | "Thread";
@@ -561,7 +580,33 @@ export type BoardPieceKind = "task" | "issue" | "spec";
 /**  How a board row is styled: the holder's state, open, or merged. */
 export type BoardRowState = "claimed" | "waiting" | "failed" | "open" | "merged";
 
-export type CheckStatus = "passing" | "running" | "failing" | "unavailable";
+export type ChangeRow = ChangeRow_Serialize | ChangeRow_Deserialize;
+
+export type ChangeRow_Deserialize = {
+	id: string,
+	owner: string,
+	phase: Phase,
+	parent?: string | null,
+	added?: number | null,
+	removed?: number | null,
+	overlaps: PathActivity[],
+	conflicts: string[],
+	landed?: string | null,
+	output?: string | null,
+};
+
+export type ChangeRow_Serialize = {
+	id: string,
+	owner: string,
+	phase: Phase,
+	parent: string | null,
+	added: number | null,
+	removed: number | null,
+	overlaps: PathActivity[],
+	conflicts: string[],
+	landed: string | null,
+	output: string | null,
+};
 
 export type Checkout = {
 	repository: string,
@@ -1910,6 +1955,22 @@ export type KeyboardInput = {
 	typing: boolean,
 };
 
+export type LandingStatus = LandingStatus_Serialize | LandingStatus_Deserialize;
+
+export type LandingStatus_Deserialize = {
+	lands_last_hour: number,
+	median_ms?: number | null,
+	builds_pending: number,
+	tests_pending: number,
+};
+
+export type LandingStatus_Serialize = {
+	lands_last_hour: number,
+	median_ms: number | null,
+	builds_pending: number,
+	tests_pending: number,
+};
+
 export type LanguageCoverage = {
 	language: string,
 	files: number,
@@ -2220,6 +2281,13 @@ export type LintKind =
 /**  A word with no standard an agent can check ("clean", "good"). */
 "Vague";
 
+export type LocalStatus = {
+	holders: string[],
+	waiting: number,
+	ready: number,
+	target: number,
+};
+
 export type Machine = {
 	id: string,
 	name: string,
@@ -2264,6 +2332,24 @@ export type MirrorState_Serialize = {
 	/**  Decimal Unix milliseconds, preserved as a string across IPC. */
 	retry_at_ms: string | null,
 	last_pushed_commit: string | null,
+};
+
+export type MirrorStatus = MirrorStatus_Serialize | MirrorStatus_Deserialize;
+
+export type MirrorStatus_Deserialize = {
+	collapse: boolean,
+	remote?: string | null,
+	pushed?: string | null,
+	state?: string | null,
+	error?: string | null,
+};
+
+export type MirrorStatus_Serialize = {
+	collapse: boolean,
+	remote: string | null,
+	pushed: string | null,
+	state: string | null,
+	error: string | null,
 };
 
 export type ModelCardView = {
@@ -2593,6 +2679,11 @@ export type OutlineSnapshot_Serialize = {
 	coverage: CoverageItem[],
 };
 
+export type OwningThread = {
+	identifier: string,
+	title: string,
+};
+
 export type PackSelection = PackSelection_Serialize | PackSelection_Deserialize;
 
 export type PackSelection_Deserialize = {
@@ -2628,6 +2719,13 @@ export type PaletteTarget = PaletteTarget_Serialize | PaletteTarget_Deserialize;
 export type PaletteTarget_Deserialize = ({ Intent: LayoutIntent_Deserialize }) & { Thread?: never } | ({ Thread: string }) & { Intent?: never };
 
 export type PaletteTarget_Serialize = ({ Intent: LayoutIntent_Serialize }) & { Thread?: never } | ({ Thread: string }) & { Intent?: never };
+
+export type PathActivity = {
+	change: string,
+	owner: string,
+	kind: string,
+	paths: string[],
+};
 
 export type PauseDutyRequest = PauseDutyRequest_Serialize | PauseDutyRequest_Deserialize;
 
@@ -2692,6 +2790,8 @@ export type PersistedState_Serialize = {
 	next_thread_identifiers: { [key in number]: number },
 	thread_started_at: { [key in number]: { [key in number]: string } },
 };
+
+export type Phase = "editing" | "named" | "landing" | "landed" | "green" | "reverted" | "abandoned";
 
 /**
  *  "They choose from **N unclaimed pieces**: x Task List · y issues · z unbuilt SPEC.md
@@ -3590,68 +3690,6 @@ export type PullRequestOperation_Serialize = ({ Create: CreatePullRequest_Serial
 	number: number,
 } }) & { Comment?: never; Create?: never; Merge?: never; Reply?: never; RequestReview?: never; Resolve?: never; Review?: never };
 
-export type PullRequestPanelChanged = PullRequestPanelChanged_Serialize | PullRequestPanelChanged_Deserialize;
-
-export type PullRequestPanelChanged_Deserialize = {
-	panel: PullRequestPanelSnapshot_Deserialize,
-};
-
-export type PullRequestPanelChanged_Serialize = {
-	panel: PullRequestPanelSnapshot_Serialize,
-};
-
-export type PullRequestPanelRow = PullRequestPanelRow_Serialize | PullRequestPanelRow_Deserialize;
-
-export type PullRequestPanelRow_Deserialize = {
-	number: number,
-	title: string,
-	head_branch: string,
-	head_in_project: boolean,
-	additions: number,
-	deletions: number,
-	checks: CheckStatus,
-	review: ReviewStatus,
-	review_label: string,
-	reviewer?: string | null,
-	/**  PR duty's review tier (F7); absent until the PR's diff could be read. */
-	tier?: ReviewTier | null,
-	thread_identifier?: number | null,
-};
-
-export type PullRequestPanelRow_Serialize = {
-	number: number,
-	title: string,
-	head_branch: string,
-	head_in_project: boolean,
-	additions: number,
-	deletions: number,
-	checks: CheckStatus,
-	review: ReviewStatus,
-	review_label: string,
-	reviewer: string | null,
-	/**  PR duty's review tier (F7); absent until the PR's diff could be read. */
-	tier: ReviewTier | null,
-	thread_identifier: number | null,
-};
-
-export type PullRequestPanelSnapshot = PullRequestPanelSnapshot_Serialize | PullRequestPanelSnapshot_Deserialize;
-
-export type PullRequestPanelSnapshot_Deserialize = {
-	revision: number,
-	project_identifier?: number | null,
-	loading: boolean,
-	rows: PullRequestPanelRow_Deserialize[],
-	error?: string | null,
-};
-
-export type PullRequestPanelSnapshot_Serialize = {
-	revision: number,
-	project_identifier: number | null,
-	loading: boolean,
-	rows: PullRequestPanelRow_Serialize[],
-	error: string | null,
-};
-
 /**
  *  A successful write is reported without a follow-up read that could fail and
  *  make a caller retry an already-published comment, review or PR.
@@ -3861,22 +3899,6 @@ export type ReviewSide = "LEFT" | "RIGHT";
 
 export type ReviewStage = "continuous_integration" | "review" | "fixing" | "approved";
 
-export type ReviewStatus = "draft" | "checking" | "unclaimed" | "reviewing" | "changes_requested" | "approved";
-
-export type ReviewTier = 
-/**
- *  Docs, comments or formatting: approved once the local checks pass and the change
- *  matches its claim. No proof needed.
- */
-"trivial" | 
-/**  Full review. */
-"normal" | 
-/**
- *  Touches a sensitive path: full review, the project's stress suite before merge, and a
- *  confidence proof at the reference level; code level only when an issue asks (F17).
- */
-"sensitive";
-
 export type RewriteView = RewriteView_Serialize | RewriteView_Deserialize;
 
 export type RewriteView_Deserialize = {
@@ -3894,6 +3916,22 @@ export type RewriteView_Serialize = {
 };
 
 export type Role = "agent" | "checker";
+
+export type RosenStatusChanged = RosenStatusChanged_Serialize | RosenStatusChanged_Deserialize;
+
+export type RosenStatusChanged_Deserialize = {
+	project_identifier: number,
+	status: Status_Deserialize,
+	owners: { [key in string]: OwningThread },
+	error?: string | null,
+};
+
+export type RosenStatusChanged_Serialize = {
+	project_identifier: number,
+	status: Status_Serialize,
+	owners: { [key in string]: OwningThread },
+	error: string | null,
+};
 
 export type ScoutCadence = "once" | "every_thirty_minutes" | "after_every_merge";
 
@@ -4397,6 +4435,30 @@ export type StartDutyRequest_Serialize = {
 	scout_rules: ScoutRuleSettings | null,
 	/**  Only the scouts started by this request get this setting. */
 	repeat_unchanged: boolean,
+};
+
+export type Status = Status_Serialize | Status_Deserialize;
+
+export type Status_Deserialize = {
+	server?: string | null,
+	machines: string[],
+	base: BaseStatus_Deserialize,
+	landing: LandingStatus_Deserialize,
+	mirror: MirrorStatus_Deserialize,
+	local: LocalStatus,
+	changes: ChangeRow_Deserialize[],
+	claims: PathActivity[],
+};
+
+export type Status_Serialize = {
+	server: string | null,
+	machines: string[],
+	base: BaseStatus_Serialize,
+	landing: LandingStatus_Serialize,
+	mirror: MirrorStatus_Serialize,
+	local: LocalStatus,
+	changes: ChangeRow_Serialize[],
+	claims: PathActivity[],
 };
 
 /**  Stop a duty role (F7): every agent is dismissed and the role leaves "On duty". */
