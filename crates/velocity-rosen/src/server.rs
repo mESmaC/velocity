@@ -20,6 +20,7 @@ pub const BINARY_FOLDER_ENV: &str = "VELOCITY_ROSEN_BIN";
 
 /// Written once the repository is imported, so a restart doesn't read the whole git
 /// history again only to be told the project already has a base.
+const PROJECT_FOLDER: &str = "velocity-project-folder";
 const IMPORTED_MARKER: &str = "velocity-imported";
 /// rosen-server exits with this when another server already holds the endpoint.
 const EXIT_ALREADY_RUNNING: i32 = 3;
@@ -38,6 +39,37 @@ impl ProjectServer {
     /// The server for `project`, keeping its data under `<app data>\rosen\<project>`.
     pub fn new(app_data: &Path, project: u32) -> Self {
         let data_dir = app_data.join("rosen").join(project.to_string());
+        if let Ok(folder) = std::fs::read_to_string(data_dir.join(PROJECT_FOLDER)) {
+            return Self::folder_data(Path::new(&folder));
+        }
+        Self::at(data_dir, project, false)
+    }
+
+    pub(crate) fn for_folder(root: &Path) -> Result<Self, RosenError> {
+        let folder = std::fs::canonicalize(root).map_err(|source| RosenError::Io {
+            action: "resolve",
+            path: root.to_path_buf(),
+            source,
+        })?;
+        Ok(Self::folder_data(&folder))
+    }
+
+    fn folder_data(folder: &Path) -> Self {
+        Self::at(folder.join(".rosen").join("server"), 0, true)
+    }
+
+    pub(crate) fn link_folder(app_data: &Path, project: u32, root: &Path) -> std::io::Result<()> {
+        use std::io::Write;
+        let root = std::fs::canonicalize(root)?;
+        let directory = app_data.join("rosen").join(project.to_string());
+        std::fs::create_dir_all(&directory)?;
+        let mut temporary = tempfile::NamedTempFile::new_in(&directory)?;
+        temporary.write_all(root.to_string_lossy().as_bytes())?;
+        temporary.persist(directory.join(PROJECT_FOLDER))?;
+        Ok(())
+    }
+
+    fn at(data_dir: PathBuf, project: u32, folder_backed: bool) -> Self {
         // The endpoint carries a hash of the data folder, so two Velocity installs with
         // different app data (a development build beside the installed app) never share
         // a server. FNV-1a, because the name must stay the same across Velocity versions.
@@ -53,7 +85,12 @@ impl ProjectServer {
         let endpoint = if cfg!(windows) {
             Endpoint::new(name)
         } else {
-            Endpoint::new(data_dir.join(format!("{name}.sock")).to_string_lossy())
+            let socket_dir = if folder_backed {
+                std::env::temp_dir()
+            } else {
+                data_dir.clone()
+            };
+            Endpoint::new(socket_dir.join(format!("{name}.sock")).to_string_lossy())
         };
         Self {
             endpoint,
@@ -369,13 +406,32 @@ impl Servers {
         source: &ImportSource,
         warm_pool_dir: Option<PathBuf>,
     ) -> Result<ProjectServer, RosenError> {
+        let server = ProjectServer::new(&self.app_data, project).with_warm_pool_dir(warm_pool_dir);
+        self.ready_server(project, server, Some(source)).await
+    }
+
+    pub async fn ready_local(
+        &self,
+        project: u32,
+        root: &Path,
+        warm_pool_dir: Option<PathBuf>,
+    ) -> Result<ProjectServer, RosenError> {
+        let server = ProjectServer::for_folder(root)?.with_warm_pool_dir(warm_pool_dir);
+        self.ready_server(project, server, None).await
+    }
+
+    async fn ready_server(
+        &self,
+        project: u32,
+        server: ProjectServer,
+        source: Option<&ImportSource>,
+    ) -> Result<ProjectServer, RosenError> {
         let start_lock = self.start_lock(project);
         let _starting = start_lock.lock().await;
         // Checked under the lock [`Self::shutdown_all`] takes, so no start slips in after it.
         if self.stopped() {
             return Err(RosenError::Stopped);
         }
-        let server = ProjectServer::new(&self.app_data, project).with_warm_pool_dir(warm_pool_dir);
         let client = server.connect().await?;
         // Stopped while this start was connecting: the server it started goes too.
         if self.stopped() {
@@ -387,7 +443,11 @@ impl Servers {
         if let Ok(mut registry) = self.registry.lock() {
             registry.insert(project, server.clone());
         }
-        server.import(&client, source).await?;
+        if let Some(source) = source {
+            server.import(&client, source).await?;
+        } else {
+            client.project_config(None).await?;
+        }
         Ok(server)
     }
 

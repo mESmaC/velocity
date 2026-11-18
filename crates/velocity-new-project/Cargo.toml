@@ -1,6 +1,6 @@
 [package]
 name = "velocity-new-project"
-description = "Velocity's New project setup: resolves the dialog's request and runs the planned git, gh and store steps"
+description = "Velocity Rosen project creation and opening"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -13,8 +13,9 @@ workspace = true
 serde.workspace = true
 specta.workspace = true
 thiserror.workspace = true
+tokio = { version = "1.54", features = ["rt-multi-thread"] }
 velocity-core.workspace = true
 velocity-git.workspace = true
 velocity-github.workspace = true
-velocity-spec.workspace = true
+velocity-rosen.workspace = true
 velocity-store.workspace = true

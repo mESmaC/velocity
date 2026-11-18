@@ -1,4 +1,4 @@
-//! The interview's async edge (F3): runs the spec agent in the project's main checkout,
+//! The interview's async edge (F3): runs the spec agent,
 //! turns its replies into saved interview steps, and carries out your answers, Keep
 //! grilling and Lock. Every decision is made by `turns`, `envelope` and `spec_file`.
 
@@ -33,6 +33,19 @@ pub trait Host: Send + Sync + 'static {
     fn interviews(&self) -> &Interviews;
     fn publish(&self, snapshot: LayoutSnapshot);
     fn spawn(&self, task: Pin<Box<dyn Future<Output = ()> + Send>>);
+    /// Sets up the interview workspace and attaches its agent environment.
+    fn prepare<'a>(
+        &'a self,
+        key: InterviewKey,
+        launch: &'a mut velocity_acp::client::AgentLaunch,
+        setup: &'a mut SessionSetup,
+    ) -> Pin<Box<dyn Future<Output = Result<(), String>> + Send + 'a>>;
+
+    fn publish_spec<'a>(
+        &'a self,
+        key: InterviewKey,
+    ) -> Pin<Box<dyn Future<Output = Result<(), String>> + Send + 'a>>;
+
     /// The project's AIRC channel, passed to the interview agent like every agent (F14).
     fn airc(&self) -> Option<AircLaunch> {
         None
@@ -300,7 +313,7 @@ fn launch<H: Host>(host: &Arc<H>, key: InterviewKey, prompt: String) {
     let Some(plan) = launch_plan(host.as_ref(), key) else {
         return;
     };
-    let agent = match plan.agent {
+    let mut agent = match plan.agent {
         Ok(agent) => agent,
         Err(message) => {
             save(host.as_ref(), key.0, |project| {
@@ -332,6 +345,15 @@ fn launch<H: Host>(host: &Arc<H>, key: InterviewKey, prompt: String) {
     setup.airc = host.airc().map(|airc| airc.spec_interview(key.0, key.1));
     let task_host = Arc::clone(host);
     host.spawn(Box::pin(async move {
+        if let Err(message) = task_host.prepare(key, &mut agent.launch, &mut setup).await {
+            task_host
+                .interviews()
+                .with(key, |session| session.inputs = None);
+            save(task_host.as_ref(), key.0, |project| {
+                turns::fail(project, key.1, message)
+            });
+            return;
+        }
         run(task_host, key, agent.launch, setup, receiver).await;
     }));
 }
@@ -471,14 +493,22 @@ fn remind_to_write_spec<H: Host>(host: &H, key: InterviewKey) -> bool {
     })
 }
 
-fn spec_location<H: Host>(host: &H, (project, _): InterviewKey) -> Option<(String, String)> {
+pub(crate) fn spec_location<H: Host>(
+    host: &H,
+    (project, thread): InterviewKey,
+) -> Option<(String, String)> {
     let store = lock(host.store());
     let item = store
         .state()
         .projects
         .iter()
         .find(|item| item.id == project)?;
-    Some((item.repository_path.clone(), item.spec_path.clone()))
+    let thread = item.threads.iter().find(|item| item.id == thread)?;
+    let folder = thread
+        .worktree_path
+        .as_ref()
+        .unwrap_or(&item.repository_path);
+    Some((folder.clone(), item.spec_path.clone()))
 }
 
 /// Publishes the streamed transcript without rebuilding the rest of the window.

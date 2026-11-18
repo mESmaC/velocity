@@ -78,12 +78,8 @@ fn answer<H: Host>(host: &Arc<H>, key: InterviewKey, answer: Answer) {
 /// Text from the composer: the answer when a question waits, a message otherwise.
 fn reply<H: Host>(host: &Arc<H>, key: InterviewKey, text: &str) {
     let stage = with_project(host.as_ref(), key, |project| {
-        let record = project
-            .threads
-            .iter()
-            .find(|thread| thread.id == key.1)?
-            .interview
-            .as_ref()?;
+        let thread = project.threads.iter().find(|thread| thread.id == key.1)?;
+        let record = thread.interview.as_ref()?;
         Some((record.stage, record.question.is_some()))
     });
     match stage {
@@ -135,6 +131,7 @@ struct LockPlan {
     checkout: String,
     spec_path: String,
     proof_list: Vec<String>,
+    rosen: bool,
 }
 
 /// Lock spec & publish tasks: writes the proof list into SPEC.md, commits it, then saves
@@ -145,9 +142,17 @@ fn lock_spec<H: Host>(host: &Arc<H>, key: InterviewKey) {
     };
     let task_host = Arc::clone(host);
     host.spawn(Box::pin(async move {
-        let committed = tokio::task::spawn_blocking(move || commit_spec(&plan))
+        let rosen = plan.rosen;
+        let committed = tokio::task::spawn_blocking(move || write_locked_spec(&plan))
             .await
             .unwrap_or_else(|error| Err(InterviewError::Stopped(error.to_string())));
+        let committed = match committed {
+            Ok(()) if rosen => task_host
+                .publish_spec(key)
+                .await
+                .map_err(InterviewError::Stopped),
+            result => result,
+        };
         match committed {
             Ok(()) => {
                 service::stop(task_host.as_ref(), key);
@@ -166,22 +171,29 @@ fn lock_spec<H: Host>(host: &Arc<H>, key: InterviewKey) {
 
 fn lock_plan<H: Host>(host: &H, key: InterviewKey) -> Option<LockPlan> {
     with_project(host, key, |project| {
-        let record = project
-            .threads
-            .iter()
-            .find(|thread| thread.id == key.1)?
-            .interview
-            .as_ref()?;
+        let thread = project.threads.iter().find(|thread| thread.id == key.1)?;
+        let rosen = project.version_control == velocity_store::VersionControl::Rosen;
+        let checkout = if rosen {
+            thread.worktree_path.clone()?
+        } else {
+            project.repository_path.clone()
+        };
+        let record = thread.interview.as_ref()?;
         (record.stage == InterviewStage::Ready).then(|| LockPlan {
-            checkout: project.repository_path.clone(),
+            checkout,
+            rosen,
             spec_path: project.spec_path.clone(),
             proof_list: turns::included_proof_list(record),
         })
     })
 }
 
-fn commit_spec(plan: &LockPlan) -> Result<(), InterviewError> {
+fn write_locked_spec(plan: &LockPlan) -> Result<(), InterviewError> {
     let checkout = Path::new(&plan.checkout);
+    if plan.rosen && !checkout.is_dir() {
+        // The app can finish a previously landed interview from the Rosen base.
+        return Ok(());
+    }
     let spec = velocity_spec::ProjectSpec::read(checkout, Path::new(&plan.spec_path)).map_err(
         |source| InterviewError::NoSpec {
             path: plan.spec_path.clone(),
@@ -202,6 +214,9 @@ fn commit_spec(plan: &LockPlan) -> Result<(), InterviewError> {
             source,
         }
     })?;
+    if plan.rosen {
+        return Ok(());
+    }
     // Include deletions in the folder and publish the complete spec in one commit.
     let mut paths: Vec<&Path> = spec.files.iter().map(|file| file.path.as_path()).collect();
     if checkout.join(velocity_spec::FOLDER).is_dir() {
@@ -215,9 +230,7 @@ fn commit_spec(plan: &LockPlan) -> Result<(), InterviewError> {
 
 /// SPEC.md (`S`): opens the file in the app Windows associates with it.
 fn open_spec<H: Host>(host: &H, key: InterviewKey) {
-    let Some((checkout, root_file)) = with_project(host, key, |project| {
-        Some((project.repository_path.clone(), project.spec_path.clone()))
-    }) else {
+    let Some((checkout, root_file)) = service::spec_location(host, key) else {
         return;
     };
     let opened = open_spec_file(&checkout, &root_file).map_err(|error| error.to_string());

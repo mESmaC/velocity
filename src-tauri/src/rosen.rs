@@ -193,17 +193,21 @@ pub(crate) async fn server(application: &AppHandle, project: u32) -> Result<Proj
         (repository, branch, pool)
     };
     let (repository, branch, pool) = source;
-    let source = tauri::async_runtime::spawn_blocking(move || {
-        ImportSource::for_checkout(&repository, &branch)
-    })
-    .await
-    .map_err(|error| error.to_string())?;
     let managed = application.state::<ManagedRosen>();
-    let server = managed
-        .servers
-        .ready(project, &source, pool.clone())
+    let server = if velocity_rosen::project::has_local_server(&repository) {
+        managed
+            .servers
+            .ready_local(project, &repository, pool.clone())
+            .await
+    } else {
+        let source = tauri::async_runtime::spawn_blocking(move || {
+            ImportSource::for_checkout(&repository, &branch)
+        })
         .await
         .map_err(|error| error.to_string())?;
+        managed.servers.ready(project, &source, pool.clone()).await
+    }
+    .map_err(|error| error.to_string())?;
     let first = managed
         .budgeted
         .lock()
@@ -654,7 +658,11 @@ async fn watch_thread(application: &AppHandle, project: u32, root: &Path) -> Res
     watch(application, &server, root).await
 }
 
-async fn watch(application: &AppHandle, server: &ProjectServer, root: &Path) -> Result<(), String> {
+pub(crate) async fn watch(
+    application: &AppHandle,
+    server: &ProjectServer,
+    root: &Path,
+) -> Result<(), String> {
     let agent = velocity_rosen::agent_name(root);
     application
         .state::<ManagedRosen>()

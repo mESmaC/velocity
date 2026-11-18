@@ -200,7 +200,7 @@ export const commands = {
 	getNewProjectDefaults: () => __TAURI_INVOKE<NewProjectDefaults_Serialize>("get_new_project_defaults"),
 	/**  Browse…: the native folder picker. `None` when it is dismissed. */
 	pickProjectFolder: () => __TAURI_INVOKE<string | null>("pick_project_folder"),
-	/**  Create & start interview. `git` and `gh` run off the UI thread. */
+	/**  Create a Rosen project and start its spec interview. */
 	createProject: (request: NewProjectRequest_Deserialize) => __TAURI_INVOKE<CreatedProject>("create_project", { request }),
 	/**
 	 *  Open project: a folder or one of your GitHub repositories. Cloning runs off the
@@ -2459,7 +2459,7 @@ export type NumberHintEvent = "AltDown" | "AltUp" | "Blur" | "Other";
 
 /**  Open project in the project switcher (F2): a project that already exists. */
 export type OpenProjectRequest = 
-/**  A git checkout on this machine, opened where it is. */
+/**  An existing Rosen project or a Git checkout to import. */
 ({ LocalFolder: {
 	path: string,
 } }) & { GitHub?: never } | 
@@ -2818,17 +2818,21 @@ export type ProjectList = {
 
 export type ProjectLocationKind = "local" | "git_hub";
 
-export type ProjectLocationRequest = ({ LocalFolder: {
+export type ProjectLocationRequest = 
+/**  Compatibility for headless callers. Creates the same Rosen project as the dialog. */
+({ LocalFolder: {
 	path: string,
 	create_if_needed: boolean,
-} }) & { GitHubExisting?: never; GitHubNew?: never } | ({ GitHubNew: {
+} }) & { RosenFolder?: never } | ({ RosenFolder: {
+	path: string,
+	mirror: ProjectMirror,
+} }) & { LocalFolder?: never };
+
+export type ProjectMirror = "None" | ({ Collapse: {
 	repository: string,
-	visibility: RepositoryVisibility,
-	clone_to: string,
-} }) & { GitHubExisting?: never; LocalFolder?: never } | ({ GitHubExisting: {
+} }) & { GitHub?: never } | ({ GitHub: {
 	repository: string,
-	clone_to: string,
-} }) & { GitHubNew?: never; LocalFolder?: never };
+} }) & { Collapse?: never };
 
 export type ProjectRow = {
 	identifier: number,
@@ -3844,8 +3848,6 @@ export type RepositoryPickerView_Serialize = {
 	 */
 	typed: string | null,
 };
-
-export type RepositoryVisibility = "Private" | "Public";
 
 export type ReviewAction = "APPROVE" | "REQUEST_CHANGES" | "COMMENT";
 

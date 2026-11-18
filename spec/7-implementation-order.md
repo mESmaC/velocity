@@ -15,8 +15,8 @@ PR duty checks an item off when it lands that item's PR (F7).
 
 **M2 · Projects and spec**
 - [x] Project store and switcher (F1)
-- [x] New-project dialog: local (git init) and GitHub (new/existing, visibility, clone) (F2)
-- [x] Open project from the switcher: a local folder or one of your GitHub repositories; an existing SPEC.md locks the spec (F2)
+- [x] New-project dialog: create a Rosen project from a folder with a Collapse, GitHub or no mirror (F2, #420)
+- [x] Open project from the switcher: open a local Rosen project or import a Git checkout or GitHub repository into Rosen (F2, #420)
 - [x] Spec interview: scan, ask, ready, lock; SPEC.md written and committed; draft → published tasks (F3)
 - [x] Gate: no build work on unlocked projects (Rule 2)
 

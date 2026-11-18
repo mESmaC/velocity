@@ -3,33 +3,30 @@
 use std::path::{MAIN_SEPARATOR, Path};
 use velocity_store::{EffortLevel, ProviderKind, Settings, SpeedMode};
 
-#[derive(Clone, Copy, Debug, serde::Deserialize, specta::Type)]
-pub enum RepositoryVisibility {
-    Private,
-    Public,
+#[derive(Clone, Debug, serde::Deserialize, specta::Type)]
+pub enum ProjectMirror {
+    None,
+    Collapse { repository: String },
+    GitHub { repository: String },
 }
 
 #[derive(Clone, Debug, serde::Deserialize, specta::Type)]
 pub enum ProjectLocationRequest {
+    /// Compatibility for headless callers. Creates the same Rosen project as the dialog.
     LocalFolder {
         path: String,
         create_if_needed: bool,
     },
-    GitHubNew {
-        repository: String,
-        visibility: RepositoryVisibility,
-        clone_to: String,
-    },
-    GitHubExisting {
-        repository: String,
-        clone_to: String,
+    RosenFolder {
+        path: String,
+        mirror: ProjectMirror,
     },
 }
 
 /// Open project in the project switcher (F2): a project that already exists.
 #[derive(Clone, Debug, serde::Deserialize, specta::Type)]
 pub enum OpenProjectRequest {
-    /// A git checkout on this machine, opened where it is.
+    /// An existing Rosen project or a Git checkout to import.
     LocalFolder { path: String },
     /// One of your GitHub repositories, cloned to `<clone_to>/<name>`, or opened
     /// there when that folder is already its clone.

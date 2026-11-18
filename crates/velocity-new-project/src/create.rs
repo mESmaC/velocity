@@ -3,10 +3,8 @@
 use std::sync::{Mutex, MutexGuard};
 use velocity_core::layout_state::LayoutState;
 use velocity_core::layout_view::LayoutSnapshot;
-use velocity_core::new_project::{
-    NewProjectLocation, Observation, Refusal, SetupStep, plan_new_project,
-};
-use velocity_github::RepositoryName;
+use velocity_core::new_project::{NewProjectLocation, Observation, should_clone};
+use velocity_rosen::project;
 use velocity_store::projects::{ProjectList, ProjectSelectionView};
 use velocity_store::{NewProjectRecord, PendingInterview, StateStore};
 
@@ -21,16 +19,8 @@ pub struct Publication {
     pub selection: Option<(ProjectList, ProjectSelectionView)>,
 }
 
-/// What the store steps asked for. Nothing reaches the store until `finish` saves
-/// it all at once, so a failed save leaves no project behind and Create can be
-/// retried; the repository set up so far is kept.
-#[derive(Default)]
-struct PendingProject {
-    record: Option<NewProjectRecord>,
-    interview: Option<PendingInterview>,
-    switch_requested: bool,
-    spec_locked: bool,
-}
+// Keep retries and simultaneous opens of the same folder from racing the initial import.
+static SETUP: Mutex<()> = Mutex::new(());
 
 /// Create & start interview. Refusals come back before anything is created. The
 /// store lock is not held while `git` or `gh` runs; `publish` is called with the
@@ -64,25 +54,46 @@ pub(crate) fn set_up(
     layout: &Mutex<LayoutState>,
     publish: impl FnOnce(Publication) -> Result<(), String>,
 ) -> Result<CreatedProject, NewProjectError> {
+    if project::is_workspace(&resolved.path) {
+        return Err(NewProjectError::Refused(
+            "Choose the project folder instead of a Rosen workspace.".into(),
+        ));
+    }
+    let _setup = lock(&SETUP, "Rosen project setup")?;
     let already_a_project =
         lock(store, "Persisted state store")?.has_project_at(&resolved.path_text());
     let observation = observe(resolved, already_a_project)?;
-    let steps = plan_new_project(resolved.location, observation)
+    let clone = should_clone(resolved.location, observation)
         .map_err(|refusal| NewProjectError::Refused(refusal_message(refusal, resolved)))?;
-    let mut pending = PendingProject::default();
-    for step in steps {
-        run_step(step, resolved, &interview, &mut pending)?;
+    if clone && let Some(repository) = &resolved.repository {
+        velocity_github::clone_repository(repository, &resolved.path)?;
     }
-    let installed =
-        velocity_git::agents_template::install_default_agents(&resolved.path, &resolved.name)?;
-    // A failed commit leaves the template on disk. Retry it before registration so
-    // new worktrees inherit the instructions, without adopting a user's custom file.
-    if installed
-        || velocity_git::agents_template::is_default_agents(&resolved.path, &resolved.name)?
-    {
-        velocity_git::agents_file::commit_agents(&resolved.path)?;
-    }
-    let identifier = finish(resolved, pending, store, layout, publish)?;
+    let runtime = tokio::runtime::Runtime::new().map_err(project::ProjectError::from)?;
+    let base = runtime.block_on(project::prepare(
+        &resolved.path,
+        &resolved.name,
+        resolved.mirror.as_deref(),
+        resolved.location.opens_existing(),
+    ))?;
+    let record = project_record(resolved, base.branch).with_spec_locked(base.has_spec);
+    let mut store = lock(store, "Persisted state store")?;
+    project::link(
+        store.data_directory(),
+        store.next_project_identifier(),
+        &resolved.path,
+    )?;
+    let mut layout = lock(layout, "Main-window state")?;
+    let identifier =
+        store.commit_new_project(record, (!base.has_spec).then_some(interview), true)?;
+    let selection = store.switch_project_layout(&mut layout, identifier)?;
+    layout.close_new_project();
+    let projects = store.list_projects();
+    drop(store);
+    publish(Publication {
+        snapshot: layout.snapshot(),
+        selection: Some((projects, selection)),
+    })
+    .map_err(NewProjectError::Publish)?;
     Ok(CreatedProject {
         identifier,
         name: resolved.name.clone(),
@@ -90,149 +101,55 @@ pub(crate) fn set_up(
     })
 }
 
-/// Reads the facts the planner decides from. GitHub is asked only about GitHub
-/// locations, and not at all when Open project finds your clone already there.
 fn observe(
     resolved: &ResolvedRequest,
     already_a_project: bool,
 ) -> Result<Observation, NewProjectError> {
-    let is_repository = velocity_git::is_repository(&resolved.path);
-    let target_is_checkout = match &resolved.repository {
-        Some(repository) if is_repository => velocity_github::checkout_repository(&resolved.path)
-            .is_some_and(|origin| same_repository(&origin, repository)),
-        _ => false,
-    };
-    let (remote_exists, target_occupied) = match &resolved.repository {
-        Some(_) if target_is_checkout => (true, true),
-        Some(repository) => (
-            velocity_github::repository_exists(repository)?,
-            velocity_git::folder_is_occupied(&resolved.path)?,
-        ),
-        None => (false, false),
-    };
-    Ok(Observation {
+    let mut observation = Observation {
         already_a_project,
-        is_repository,
-        remote_exists,
-        target_occupied,
-        target_is_checkout,
-    })
-}
-
-/// GitHub owner and repository names ignore case.
-fn same_repository(left: &RepositoryName, right: &RepositoryName) -> bool {
-    left.full_name().eq_ignore_ascii_case(&right.full_name())
-}
-
-fn run_step(
-    step: SetupStep,
-    resolved: &ResolvedRequest,
-    interview: &PendingInterview,
-    pending: &mut PendingProject,
-) -> Result<(), NewProjectError> {
-    match step {
-        SetupStep::GitInit => velocity_git::initialize_repository(&resolved.path)?,
-        SetupStep::CreateRemote => {
-            velocity_github::create_repository(github_repository(resolved)?, resolved.visibility)?
-        }
-        SetupStep::Clone => clone(resolved)?,
-        SetupStep::Register => pending.record = Some(project_record(resolved)?),
-        SetupStep::SwitchTo => pending.switch_requested = true,
-        SetupStep::StartInterview => pending.interview = Some(interview.clone()),
-        // Rule 2 holds for opened projects too: a project without a spec gets its
-        // interview. Read every spec file before adopting it, including a split spec.
-        SetupStep::AdoptSpec => match velocity_spec::ProjectSpec::read_default(&resolved.path) {
-            Ok(_) => pending.spec_locked = true,
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-                pending.interview = Some(interview.clone());
-            }
-            Err(error) => return Err(NewProjectError::Spec(error)),
-        },
-    }
-    Ok(())
-}
-
-fn clone(resolved: &ResolvedRequest) -> Result<(), NewProjectError> {
-    let repository = github_repository(resolved)?;
-    velocity_github::clone_repository(repository, &resolved.path).map_err(|source| {
-        match resolved.location {
-            NewProjectLocation::GitHubNew => NewProjectError::CloneAfterCreate {
-                repository: repository.full_name(),
-                source,
-            },
-            _ => NewProjectError::GitHub(source),
-        }
-    })
-}
-
-fn github_repository(resolved: &ResolvedRequest) -> Result<&RepositoryName, NewProjectError> {
-    resolved
-        .repository
-        .as_ref()
-        .ok_or(NewProjectError::StepOrder(
-            "A GitHub step was planned for a local folder",
-        ))
-}
-
-fn project_record(resolved: &ResolvedRequest) -> Result<NewProjectRecord, NewProjectError> {
-    let default_branch = if resolved.location.opens_existing() {
-        velocity_git::opened_project_default_branch(&resolved.path)?
-    } else {
-        velocity_git::current_branch(&resolved.path)?
+        is_repository: false,
+        remote_exists: false,
+        target_occupied: false,
+        target_is_checkout: false,
     };
-    let record = NewProjectRecord::new(resolved.name.clone(), resolved.path_text(), default_branch);
-    // An opened folder whose origin is on GitHub is a GitHub project, as a clone is.
-    let repository = resolved.repository.clone().or_else(|| {
+    if already_a_project {
+        return Ok(observation);
+    }
+    observation.is_repository =
+        project::has_local_server(&resolved.path) || velocity_git::is_repository(&resolved.path);
+    if let Some(repository) = &resolved.repository {
+        observation.target_is_checkout = observation.is_repository
+            && velocity_github::checkout_repository(&resolved.path).is_some_and(|origin| {
+                origin
+                    .full_name()
+                    .eq_ignore_ascii_case(&repository.full_name())
+            });
+        if !observation.target_is_checkout {
+            observation.target_occupied = velocity_git::folder_is_occupied(&resolved.path)?;
+            if !observation.target_occupied {
+                observation.remote_exists = velocity_github::repository_exists(repository)?;
+            }
+        }
+    }
+    Ok(observation)
+}
+
+fn project_record(resolved: &ResolvedRequest, branch: String) -> NewProjectRecord {
+    let record = NewProjectRecord::new(resolved.name.clone(), resolved.path_text(), branch);
+    let github_mirror = resolved
+        .mirror
+        .as_deref()
+        .filter(|mirror| mirror.starts_with("https://github.com/"))
+        .and_then(|mirror| velocity_github::RepositoryName::parse(mirror).ok());
+    let repository = resolved.repository.clone().or(github_mirror).or_else(|| {
         (resolved.location == NewProjectLocation::OpenFolder)
             .then(|| velocity_github::checkout_repository(&resolved.path))
             .flatten()
     });
-    Ok(match repository {
+    match repository {
         Some(repository) => record.on_github(repository.full_name()),
         None => record,
-    })
-}
-
-/// Saves the project, switches to it the way the switcher does, and closes the
-/// dialog. As in the switcher's command, the store is locked before the layout and
-/// released before `publish` runs.
-fn finish(
-    resolved: &ResolvedRequest,
-    pending: PendingProject,
-    store: &Mutex<StateStore>,
-    layout: &Mutex<LayoutState>,
-    publish: impl FnOnce(Publication) -> Result<(), String>,
-) -> Result<u32, NewProjectError> {
-    let record = pending
-        .record
-        .ok_or(NewProjectError::StepOrder(
-            "Create finished without registering the project",
-        ))?
-        .with_spec_locked(pending.spec_locked);
-    let mut store = lock(store, "Persisted state store")?;
-    // Another Create may have registered the same folder while git or gh ran.
-    if store.has_project_at(&record.repository_path) {
-        let message = refusal_message(Refusal::AlreadyAProject, resolved);
-        return Err(NewProjectError::Refused(message));
     }
-    let mut layout = lock(layout, "Main-window state")?;
-    let identifier =
-        store.commit_new_project(record, pending.interview, pending.switch_requested)?;
-    // The project is already saved as active, so this only refreshes the layout.
-    let selection = if pending.switch_requested {
-        Some(store.switch_project_layout(&mut layout, identifier)?)
-    } else {
-        None
-    };
-    layout.close_new_project();
-    let projects = store.list_projects();
-    drop(store);
-    publish(Publication {
-        snapshot: layout.snapshot(),
-        selection: selection.map(|selection| (projects, selection)),
-    })
-    .map_err(NewProjectError::Publish)?;
-    Ok(identifier)
 }
 
 fn lock<'a, Value>(

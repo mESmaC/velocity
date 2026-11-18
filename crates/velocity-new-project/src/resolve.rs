@@ -1,20 +1,18 @@
-//! Turns the dialog's request into a path, name and repository, and phrases the
-//! plan's refusals for the user.
+//! Resolves folder paths and mirror choices for F2.
 
 use std::path::{Path, PathBuf};
 use velocity_core::new_project::{NewProjectLocation, Refusal};
-use velocity_github::{RepositoryName, Visibility};
+use velocity_github::RepositoryName;
 
 use crate::error::NewProjectError;
-use crate::request::{OpenProjectRequest, ProjectLocationRequest, RepositoryVisibility};
+use crate::request::{OpenProjectRequest, ProjectLocationRequest, ProjectMirror};
 
-/// The request with its path, name and repository worked out.
 pub(crate) struct ResolvedRequest {
     pub(crate) location: NewProjectLocation,
     pub(crate) path: PathBuf,
     pub(crate) name: String,
     pub(crate) repository: Option<RepositoryName>,
-    pub(crate) visibility: Visibility,
+    pub(crate) mirror: Option<String>,
 }
 
 impl ResolvedRequest {
@@ -26,92 +24,67 @@ impl ResolvedRequest {
 pub(crate) fn resolve(
     location: &ProjectLocationRequest,
 ) -> Result<ResolvedRequest, NewProjectError> {
-    match location {
-        ProjectLocationRequest::LocalFolder {
-            path,
-            create_if_needed,
-        } => {
-            let path = absolute_folder(path)?;
-            Ok(ResolvedRequest {
-                location: NewProjectLocation::LocalFolder {
-                    create_if_needed: *create_if_needed,
-                },
-                name: folder_name(&path)?,
-                path,
-                repository: None,
-                visibility: Visibility::Private,
-            })
-        }
-        ProjectLocationRequest::GitHubNew {
-            repository,
-            visibility,
-            clone_to,
-        } => {
-            let visibility = match visibility {
-                RepositoryVisibility::Private => Visibility::Private,
-                RepositoryVisibility::Public => Visibility::Public,
-            };
-            resolve_github(
-                NewProjectLocation::GitHubNew,
-                repository,
-                clone_to,
-                visibility,
-            )
-        }
-        ProjectLocationRequest::GitHubExisting {
-            repository,
-            clone_to,
-        } => resolve_github(
-            NewProjectLocation::GitHubExisting,
-            repository,
-            clone_to,
-            Visibility::Private,
-        ),
-    }
+    let (path, mirror) = match location {
+        ProjectLocationRequest::LocalFolder { path, .. } => (path, None),
+        ProjectLocationRequest::RosenFolder { path, mirror } => (path, mirror_url(mirror)?),
+    };
+    folder(path, NewProjectLocation::NewFolder, mirror)
 }
 
-/// Open project's request: a checkout you already have, or one of your repositories.
+fn mirror_url(mirror: &ProjectMirror) -> Result<Option<String>, NewProjectError> {
+    let (input, host) = match mirror {
+        ProjectMirror::None => return Ok(None),
+        ProjectMirror::GitHub { repository } => (repository, "https://github.com/"),
+        ProjectMirror::Collapse { repository } => (repository, "https://api.collapse.sh/"),
+    };
+    let trimmed = input.trim();
+    let name = trimmed.strip_prefix(host).unwrap_or(trimmed);
+    // Keep credentials and arbitrary URLs out of the project configuration.
+    if name.contains([':', '@', '?', '#', '\\']) {
+        return Err(NewProjectError::Refused(format!(
+            "Enter an owner/repository or a {host} repository URL."
+        )));
+    }
+    let repository = RepositoryName::parse(name)?;
+    Ok(Some(format!("{host}{}.git", repository.full_name())))
+}
+
 pub(crate) fn resolve_open(
     request: &OpenProjectRequest,
 ) -> Result<ResolvedRequest, NewProjectError> {
     match request {
         OpenProjectRequest::LocalFolder { path } => {
-            let path = absolute_folder(path)?;
-            Ok(ResolvedRequest {
-                location: NewProjectLocation::OpenFolder,
-                name: folder_name(&path)?,
-                path,
-                repository: None,
-                visibility: Visibility::Private,
-            })
+            folder(path, NewProjectLocation::OpenFolder, None)
         }
         OpenProjectRequest::GitHub {
             repository,
             clone_to,
-        } => resolve_github(
-            NewProjectLocation::OpenGitHub,
-            repository,
-            clone_to,
-            Visibility::Private,
-        ),
+        } => {
+            let repository = RepositoryName::parse(repository)?;
+            Ok(ResolvedRequest {
+                location: NewProjectLocation::OpenGitHub,
+                path: absolute_folder(clone_to)?.join(repository.name()),
+                name: repository.name().to_owned(),
+                repository: Some(repository),
+                mirror: None,
+            })
+        }
     }
 }
 
-fn resolve_github(
+fn folder(
+    text: &str,
     location: NewProjectLocation,
-    repository: &str,
-    clone_to: &str,
-    visibility: Visibility,
+    mirror: Option<String>,
 ) -> Result<ResolvedRequest, NewProjectError> {
-    let repository = RepositoryName::parse(repository)?;
-    // The clone gets its own folder named after the repository, as `git clone` does.
-    let path = absolute_folder(clone_to)?.join(repository.name());
+    let path = absolute_folder(text)?;
+    let name = folder_name(&path)?;
     Ok(ResolvedRequest {
         location,
         path,
-        name: repository.name().to_owned(),
-        repository: Some(repository),
-        visibility,
+        name,
+        repository: None,
+        mirror,
     })
 }
 
@@ -140,26 +113,16 @@ pub(crate) fn refusal_message(refusal: Refusal, resolved: &ResolvedRequest) -> S
         .as_ref()
         .map(RepositoryName::full_name)
         .unwrap_or_default();
-    let opening = resolved.location.opens_existing();
     match refusal {
-        Refusal::NotARepository if opening => {
-            format!("{path} is not a git repository. Use New project to set it up as one.")
-        }
-        Refusal::TargetOccupied if opening => format!(
+        Refusal::NotARepository => format!(
+            "{path} has no Rosen project or Git checkout. Use New project to set up the folder."
+        ),
+        Refusal::TargetOccupied => format!(
             "{path} already exists and is not a clone of github.com/{repository}. Choose another clone folder."
         ),
-        Refusal::NotARepository => format!(
-            "{path} is not a git repository. Turn on \"Create the folder and run git init if needed\"."
-        ),
         Refusal::AlreadyAProject => format!("{path} is already a project. Switch to it instead."),
-        Refusal::RemoteAlreadyExists => {
-            format!("github.com/{repository} already exists. Choose Existing repo to clone it.")
-        }
         Refusal::RemoteMissing => {
             format!("github.com/{repository} was not found, or your gh account cannot see it.")
-        }
-        Refusal::TargetOccupied => {
-            format!("{path} already exists and is not empty. Choose another clone folder.")
         }
     }
 }

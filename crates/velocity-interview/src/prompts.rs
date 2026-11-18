@@ -17,7 +17,7 @@ pub fn opening_prompt(project_name: &str, brief: &str, spec_path: &str) -> Strin
     let brief = prompt_excerpt(brief, 3_200, "\n[Project brief excerpt]");
     format!(
         "You are the spec interview agent for the project \"{project_name}\" in Velocity. \
-Your working directory is the project's main checkout.
+Scan the project from your working directory.
 
 What the user wants to build: {brief}
 

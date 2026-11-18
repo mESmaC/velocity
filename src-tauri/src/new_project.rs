@@ -55,14 +55,15 @@ pub async fn pick_project_folder(application: AppHandle) -> Result<Option<String
         .transpose()
 }
 
-/// Create & start interview. `git` and `gh` run off the UI thread.
+/// Create a Rosen project and start its spec interview.
 #[tauri::command]
 #[specta::specta]
 pub async fn create_project(
     application: AppHandle,
     request: NewProjectRequest,
 ) -> Result<CreatedProject, String> {
-    tauri::async_runtime::spawn_blocking(move || {
+    let host = application.clone();
+    let created = tauri::async_runtime::spawn_blocking(move || {
         let created = velocity_new_project::create_project(
             &request,
             &application.state::<ManagedStateStore>(),
@@ -70,12 +71,13 @@ pub async fn create_project(
             |publication| publish(&application, publication),
         )
         .map_err(|error| error.to_string())?;
-        // F2: Create "starts the spec interview thread straight away".
-        crate::interview::start(&application);
-        Ok(created)
+        Ok::<_, String>(created)
     })
     .await
-    .map_err(|error| format!("Create stopped: {error}"))?
+    .map_err(|error| format!("Create stopped: {error}"))??;
+    crate::rosen::server(&host, created.identifier).await?;
+    crate::interview::start(&host);
+    Ok(created)
 }
 
 /// Open project: a folder or one of your GitHub repositories. Cloning runs off the
@@ -86,7 +88,8 @@ pub async fn open_project(
     application: AppHandle,
     request: OpenProjectRequest,
 ) -> Result<CreatedProject, String> {
-    tauri::async_runtime::spawn_blocking(move || {
+    let host = application.clone();
+    let opened = tauri::async_runtime::spawn_blocking(move || {
         let opened = velocity_new_project::open_project(
             &request,
             &application.state::<ManagedStateStore>(),
@@ -94,11 +97,13 @@ pub async fn open_project(
             |publication| publish(&application, publication),
         )
         .map_err(|error| error.to_string())?;
-        crate::interview::start(&application);
-        Ok(opened)
+        Ok::<_, String>(opened)
     })
     .await
-    .map_err(|error| format!("Open project stopped: {error}"))?
+    .map_err(|error| format!("Open project stopped: {error}"))??;
+    crate::rosen::server(&host, opened.identifier).await?;
+    crate::interview::start(&host);
+    Ok(opened)
 }
 
 /// The switcher's cached list of your GitHub repositories.

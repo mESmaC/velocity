@@ -15,7 +15,7 @@
     ModelCardView,
     NewProjectDefaults,
     ProjectLocationRequest,
-    RepositoryVisibility,
+    ProjectMirror,
     SpeedMode,
   } from './ipc';
   import './theme/new-project.css';
@@ -41,13 +41,11 @@
   let defaults = $state<NewProjectDefaults | null>(null);
   let models = $state<ModelCardView[]>([]);
   let modelName = $state<string | null>(null);
-  let where = $state<'local' | 'github'>('local');
-  let githubKind = $state<'new' | 'existing'>('new');
+  const mirrors = ['none', 'collapse', 'github'] as const;
+  const mirrorLabels = { none: 'None', collapse: 'Collapse', github: 'GitHub' };
+  let mirrorKind = $state<(typeof mirrors)[number]>('none');
   let folder = $state('');
-  let createIfNeeded = $state(true);
   let repository = $state('');
-  let visibility = $state<RepositoryVisibility>('Private');
-  let cloneTo = $state('');
   let effort = $state<EffortLevel>('high');
   let speed = $state<SpeedMode>('regular');
   let brief = $state('');
@@ -75,8 +73,6 @@
       .defaults()
       .then((loaded) => {
         defaults = loaded;
-        folder = loaded.folder;
-        cloneTo = loaded.clone_to;
         effort = loaded.effort;
         speed = loaded.speed;
       })
@@ -106,25 +102,17 @@
   async function browse() {
     try {
       const picked = await newProjectCommands.pickFolder();
-      if (picked !== null) {
-        if (where === 'local') folder = picked;
-        else cloneTo = picked;
-      }
+      if (picked !== null) folder = picked;
     } catch (reason) {
       report(reason);
     }
   }
 
   function location(): ProjectLocationRequest {
-    if (where === 'local')
-      return {
-        LocalFolder: { path: folder, create_if_needed: createIfNeeded },
-      };
-    if (githubKind === 'new')
-      return {
-        GitHubNew: { repository, visibility, clone_to: cloneTo },
-      };
-    return { GitHubExisting: { repository, clone_to: cloneTo } };
+    let mirror: ProjectMirror = 'None';
+    if (mirrorKind === 'github') mirror = { GitHub: { repository } };
+    if (mirrorKind === 'collapse') mirror = { Collapse: { repository } };
+    return { RosenFolder: { path: folder, mirror } };
   }
 
   async function create() {
@@ -168,85 +156,47 @@
     <div class="np-body">
       <fieldset class="field">
         <legend class="label">Location</legend>
-        <div class="seg" role="group" aria-label="Location">
-          <button
-            class:on={where === 'local'}
-            aria-pressed={where === 'local'}
-            onclick={() => (where = 'local')}
-            ><Icon name="localFolder" />Local folder</button
-          >
-          <button
-            class:on={where === 'github'}
-            aria-pressed={where === 'github'}
-            onclick={() => (where = 'github')}
-            ><Icon name="github" />GitHub</button
-          >
+        <div class="row2">
+          <label class="inp">
+            <input
+              aria-label="Project folder"
+              placeholder={defaults?.folder ?? ''}
+              spellcheck="false"
+              bind:value={folder}
+            />
+          </label>
+          <button class="btn" onclick={browse}>Browse…</button>
         </div>
-        {#if where === 'local'}<div class="where">
-            <div class="row2">
-              <label class="inp"
-                ><input
-                  aria-label="Project folder"
-                  spellcheck="false"
-                  bind:value={folder}
-                /></label
-              >
-              <button class="btn" onclick={browse}>Browse…</button>
-            </div>
-            <label class="check"
-              ><input type="checkbox" bind:checked={createIfNeeded} /> Create
-              the folder and run <span class="mono">git init</span> if needed</label
+      </fieldset>
+      <fieldset class="field">
+        <legend class="label">Mirror</legend>
+        <div class="seg" role="group" aria-label="Mirror">
+          {#each mirrors as choice (choice)}
+            <button
+              class:on={mirrorKind === choice}
+              aria-pressed={mirrorKind === choice}
+              onclick={() => {
+                mirrorKind = choice;
+                repository = '';
+              }}>{mirrorLabels[choice]}</button
             >
-          </div>{:else}<div class="where">
-            <div class="seg sm" role="group" aria-label="Repository">
-              <button
-                class:on={githubKind === 'new'}
-                aria-pressed={githubKind === 'new'}
-                onclick={() => (githubKind = 'new')}>New repo</button
-              >
-              <button
-                class:on={githubKind === 'existing'}
-                aria-pressed={githubKind === 'existing'}
-                onclick={() => (githubKind = 'existing')}>Existing repo</button
-              >
-            </div>
-            <div class="row2">
-              <label class="inp"
-                ><span class="pre">github.com/</span><input
-                  aria-label="Repository, owner/name"
-                  spellcheck="false"
-                  placeholder="owner/name"
-                  bind:value={repository}
-                /></label
-              >
-              {#if githubKind === 'new'}<div
-                  class="seg sm"
-                  role="group"
-                  aria-label="Visibility"
-                >
-                  <button
-                    class:on={visibility === 'Private'}
-                    aria-pressed={visibility === 'Private'}
-                    onclick={() => (visibility = 'Private')}>Private</button
-                  >
-                  <button
-                    class:on={visibility === 'Public'}
-                    aria-pressed={visibility === 'Public'}
-                    onclick={() => (visibility = 'Public')}>Public</button
-                  >
-                </div>{/if}
-            </div>
-            <div class="row2">
-              <label class="inp"
-                ><span class="pre">clone to</span><input
-                  aria-label="Clone to"
-                  spellcheck="false"
-                  bind:value={cloneTo}
-                /></label
-              >
-              <button class="btn" onclick={browse}>Browse…</button>
-            </div>
-          </div>{/if}
+          {/each}
+        </div>
+        {#if mirrorKind !== 'none'}
+          <label class="inp">
+            <span class="pre"
+              >{mirrorKind === 'github'
+                ? 'github.com/'
+                : 'api.collapse.sh/'}</span
+            >
+            <input
+              aria-label="Mirror repository"
+              spellcheck="false"
+              placeholder="owner/repository"
+              bind:value={repository}
+            />
+          </label>
+        {/if}
       </fieldset>
       <div class="field">
         <div class="row2 spread">

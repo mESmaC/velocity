@@ -14,7 +14,7 @@ use crate::resolve::resolve_open;
 /// How many matching repositories the picker shows; the rest are counted.
 const SHOWN_REPOSITORIES: usize = 60;
 
-/// Opens the project and switches to it. A checkout with SPEC.md opens with its spec
+/// Opens or imports a Rosen project and switches to it. A base with a spec opens with it
 /// locked; one without records the spec interview with Settings' defaults, which
 /// starts once a provider is signed in (Rule 2, F3).
 pub fn open_project(

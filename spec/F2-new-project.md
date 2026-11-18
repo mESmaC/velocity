@@ -10,36 +10,30 @@ Sections are identified by their heading IDs, such as F5, §3.1 and R8, whicheve
 All spec consumers use this layout: work inventory and goal swarms, Proofs settings and design-proof references, design-system generation, opening projects, the interview and Rosen's source-issue notes.
 New projects still start with a single `SPEC.md`.
 
-`Ctrl+Shift+N` opens a dialog with:
-- **Location:**
-  - **Local folder:** a path and Browse… (native picker via `tauri-plugin-dialog`).
-    One option: "create the folder and run `git init` if needed".
-  - **GitHub:** New repo or Existing repo; `github.com/<owner>/<name>`; Private or Public; and a "clone to" path.
-- **Model for the interview:** model cards plus effort and speed.
-- **What are you building?**
-  A free-text brief.
-- **Create & start interview** (`Ctrl+Enter`).
+`Ctrl+Shift+N` opens the New project dialog.
+- **Location:** choose an absolute folder path or use Browse… to open the native folder picker.
+- **Mirror:** choose an existing Collapse repository, an existing GitHub repository, or None.
+  Collapse account connection and automatic mirror provisioning are tracked in #427.
+- **Model for the interview:** choose a model, effort and speed.
+- **What are you building?** Enter a free-text brief.
+- **Create & start interview** (`Ctrl+Enter`) creates the folder when needed and starts the Rosen server with an initial base.
+  Velocity adds `rosen.toml` with after-land review, generated paths, registration lists, a warm pool and prepare settings when the file is missing.
+  Velocity adds `AGENTS.md` from the default template when needed (F11).
+  The project opens with its spec interview in a Rosen workspace.
+- **Esc** dismisses the dialog without creating anything.
+
+**Open project** in the project switcher (F1) opens or imports an existing project.
+- **Open folder…** opens the selected Rosen project or imports the default branch of an existing Git checkout into a local Rosen server.
+- **Open from GitHub…** lists the repositories you and your organisations own through signed-in `gh`, most recently updated first.
+  Search filters the list by name and description, and typing an unlisted `owner/name` adds an exact choice.
+  The clone destination is `<clone to>/<name>` and defaults to your home folder.
+  Velocity imports a new or matching existing checkout into Rosen and uses GitHub as its mirror.
+- A spec already on the Rosen base opens locked, including split specs under `spec/`.
+  A project without a spec starts the interview in a Rosen workspace with Settings' default model, effort and speed.
+  The interview waits for a provider sign-in when needed.
+- Opening refuses a registered project, an unsupported local folder, an inaccessible GitHub repository or a clone destination occupied by unrelated files.
 
 **Accept when:**
-- [ ] Create sets up the project (folder / `git init` / repo / clone), switches to it, and starts the spec interview thread straight away.
-- [ ] Esc cancels; nothing is created.
-
-**Open project** (in the project switcher, F1): opens a project that already exists, without the dialog.
-- **Open folder…:** the native folder picker.
-  The folder must already be a git repository; it is opened where it is, nothing is cloned or initialised.
-  When its `origin` is on GitHub, the project is shown as a GitHub project.
-- **Open from GitHub…:** the dropdown shows your repositories in place of the project list: those you own and those of organisations you belong to, read through signed-in `gh`, most recently updated first.
-  A search box filters them by name and description; typing an `owner/name` that is not in the list offers it as its own row.
-  A "Clone to" folder (default: your home folder) sets where the clone goes, `<clone to>/<name>`.
-  Choosing a repository clones it there, or opens the clone already in that folder when its `origin` is that repository.
-- **The spec:** a project that already has `SPEC.md` at its root opens with its spec locked, so build work can start at once.
-  A project without one starts its spec interview, as Create does (Rule 2), using Settings' default model, effort and speed and no brief.
-  The interview's scan reads the existing code; it waits for a provider sign-in if none is signed in.
-- The existing spec can also be supplied by `spec/` Markdown files (Project spec layout above); Open reads all sources before adopting it.
-- Opening refuses, before anything is cloned, a folder that is already a project, a folder that is not a git repository, a repository `gh` cannot see, and a clone folder that is occupied by something else.
-  As with Create, a missing AGENTS.md is added from the default template and committed (F11).
-
-**Accept when:**
-- [ ] Open folder… opens a git checkout from the native picker and switches to it.
-- [ ] Open from GitHub… lists your and your organisations' repositories, searchable, and opens the chosen one by cloning it or by opening its existing clone.
-- [ ] A project with `SPEC.md` opens with its spec locked; one without starts the spec interview.
+- [ ] Every successful Create and Open starts or reconnects to a Rosen server with a base before registering the project.
+- [ ] Projects that need a spec run the interview in a Rosen workspace.
+- [ ] An existing spec on the base opens locked.

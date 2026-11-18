@@ -74,6 +74,20 @@ impl StateStore {
             .any(|project| comparable_path(&project.repository_path) == wanted)
     }
 
+    pub fn data_directory(&self) -> &std::path::Path {
+        &self.directory
+    }
+
+    /// The identifier the next registration will use, while the store lock is held.
+    pub fn next_project_identifier(&self) -> u32 {
+        self.state
+            .projects
+            .iter()
+            .map(|project| project.id)
+            .max()
+            .map_or(1, |highest| highest.saturating_add(1))
+    }
+
     /// Adds the project with its interview, making it active when asked, and saves.
     /// The live state changes only after the snapshot is on disk, so a failed save
     /// leaves the store as it was and Create can be retried.
@@ -84,12 +98,7 @@ impl StateStore {
         activate: bool,
     ) -> Result<u32, ProjectError> {
         let mut candidate = self.state.clone();
-        let identifier = candidate
-            .projects
-            .iter()
-            .map(|project| project.id)
-            .max()
-            .map_or(1, |highest| highest.saturating_add(1));
+        let identifier = self.next_project_identifier();
         let index =
             u32::try_from(candidate.projects.len()).map_err(|_| ProjectError::IndexOutOfRange)?;
         candidate

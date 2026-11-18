@@ -26,6 +26,7 @@ mod mirror;
 pub mod policy;
 pub mod post_land;
 mod process;
+pub mod project;
 mod retry;
 pub mod review_swarm;
 mod server;

@@ -3,7 +3,7 @@
 
 1.
    **Scan:** the agent reads the folder or repo and lists what it found as tool steps.
-   It works in the main checkout and gets **no workspace**.
+   It works in a Rosen workspace for a Rosen project.
    - The scan also suggests skill packs for the project (F18): UI UX Pro Max when it finds a UI, and Game dev skills when it finds a game engine.
      Suggestions are switched on unless you turn them off.
    - When UI UX Pro Max is on and the project has a UI, the interview asks the design questions it needs (product type, audience, mood) and generates the design system before the spec locks.
@@ -17,7 +17,7 @@
    **Ready:** a spec card lists every decision.
    - **Proof list:** the card proposes which features get Lean proofs (F17), and you edit it before locking.
      Most projects list a handful; UI and plumbing never appear on it.
-   - **Lock spec & publish tasks** (`L`): commits the root spec and `spec/` sources together and pushes to the remote base before locking, turns the draft tasks into real tasks, and marks the thread done.
+   - **Lock spec & publish tasks** (`L`): snapshots the root spec and `spec/` sources together and lands the Rosen change before locking, publishing the draft tasks, and marking the thread done.
    - **SPEC.md** (`S`): opens the file.
    - **Keep grilling** (`G`): asks more questions.
 4.
@@ -32,5 +32,5 @@
 **Accept when:**
 - [ ] No build thread, swarm or dispatch can start on a project whose spec is unlocked.
       Swarm marks draft tasks "lock the spec first".
-- [ ] Locking commits and pushes SPEC.md before it publishes the tasks.
+- [ ] Locking publishes the spec to the project base before publishing the tasks.
 - [ ] The Task List counter shows `draft · N` before lock and `done/total` after.

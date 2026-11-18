@@ -86,7 +86,7 @@ export type {
   NewProjectDefaults_Serialize as NewProjectDefaults,
   NewProjectRequest_Deserialize as NewProjectRequest,
   ProjectLocationRequest,
-  RepositoryVisibility,
+  ProjectMirror,
   RailItem_Serialize as RailItem,
   ProjectList,
   ProjectRow,

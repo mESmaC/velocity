@@ -6715,10 +6715,11 @@ dependencies = [
  "serde",
  "specta",
  "thiserror 2.0.21",
+ "tokio",
  "velocity-core",
  "velocity-git",
  "velocity-github",
- "velocity-spec",
+ "velocity-rosen",
  "velocity-store",
 ]
 
@@ -6745,9 +6746,11 @@ dependencies = [
  "serde_json",
  "specta",
  "sysinfo",
+ "tempfile",
  "thiserror 2.0.21",
  "tokio",
  "velocity-core",
+ "velocity-git",
  "velocity-spec",
 ]
 

@@ -27,7 +27,9 @@ serde_json.workspace = true
 rusqlite = { version = "0.37", features = ["bundled"] }
 specta = { workspace = true, optional = true }
 sysinfo = { workspace = true, features = ["system"] }
+tempfile = "3"
 thiserror.workspace = true
 tokio = { workspace = true, features = ["macros", "sync"] }
-velocity-spec.workspace = true
 velocity-core.workspace = true
+velocity-git.workspace = true
+velocity-spec.workspace = true
