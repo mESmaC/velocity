@@ -167,9 +167,29 @@ pub fn run_commands(
     commands: &[String],
     priority: Priority,
 ) -> Result<Option<FailedCommand>, RosenError> {
+    let turn = turn(folder, priority).ok();
+    run_held_commands(folder, commands, priority, turn.as_ref())
+}
+
+/// Integration always takes a verify turn before starting any child process.
+pub fn run_integration_commands(
+    folder: &Path,
+    commands: &[String],
+) -> Result<Option<FailedCommand>, RosenError> {
+    let priority = Priority::Background;
+    let turn = turn(folder, priority)
+        .map_err(|source| io_error("queue integration in", folder, source))?;
+    run_held_commands(folder, commands, priority, Some(&turn))
+}
+
+fn run_held_commands(
+    folder: &Path,
+    commands: &[String],
+    priority: Priority,
+    turn: Option<&Turn>,
+) -> Result<Option<FailedCommand>, RosenError> {
     let log = duty::sibling(folder, ".rosen-check.log");
-    let turn = turn(folder, priority);
-    let held = turn.as_ref().map(|_| class_of(priority));
+    let held = turn.map(|_| class_of(priority));
     for command in commands {
         let exit_code = match run_one(folder, command, &log, (priority, held))? {
             Some(0) => continue,
@@ -185,12 +205,11 @@ pub fn run_commands(
     Ok(None)
 }
 
-/// Waits for this run's turn. `None` when the queue can't be used: it only schedules, so
-/// the checks then run without waiting.
-fn turn(folder: &Path, priority: Priority) -> Option<Turn> {
+/// Waits for this run's turn. The integration runner propagates queue errors.
+fn turn(folder: &Path, priority: Priority) -> std::io::Result<Turn> {
     let class = class_of(priority);
     let note = format!("{} checks in {}", class.name(), folder.display());
-    RunQueue::machine().ok()?.turn(class, &note).ok()
+    RunQueue::machine()?.turn(class, &note)
 }
 
 fn class_of(priority: Priority) -> RunClass {
@@ -217,6 +236,11 @@ fn run_one(
     let mut shell = shell(command, priority);
     if let Some(class) = held {
         shell.env(run_queue::HELD_ENV, class.name());
+        if class == RunClass::Verify {
+            shell
+                .env("CARGO_BUILD_JOBS", "2")
+                .env("RUST_TEST_THREADS", "2");
+        }
     }
     let mut child = shell
         .current_dir(folder)

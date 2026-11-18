@@ -17,7 +17,7 @@ These hold for every feature. A feature that breaks one of them is wrong, whatev
 2. **The spec comes first.** Every new project starts with a spec interview. No build work starts until the spec is locked.
 3. **A task is finished when its change lands.** The agent names its work (`rosen commit -m`) and repairs anything a stored conflict or post-land revert sends back to it.
    - **Legacy GitHub projects:** an agent opens a PR, watches it until it merges, fixes CI and answers every review comment.
-4. **Landing follows the project's review policy.** On an after-land Rosen project, no approval gates a land: a named change lands as soon as it combines cleanly with the base. Fast build and lint checks follow the land and revert a broken build; full tests file failures as issues. Review, scouting and proof verification follow the land without blocking development (#382). The release is the gate (F7).
+4. **Landing follows the project's review policy.** On an after-land Rosen project, no approval gates a land: a named change lands as soon as it combines cleanly with the base. A batched integration build runs the build, lint and full tests, then bisects failures for fix-forward work (#480). Review, scouting and proof verification follow the land without blocking development (#382). The release is the gate (F7).
    - **Before-land Rosen projects:** review and pre-land checks gate the land (F7).
    - **Legacy GitHub projects:** never merge without approval. Only the PR duty agent that approved a PR merges it. Local checks use the live head and base branch when GitHub's cached record lags; checks and approval stay bound to that exact head (F6, #350).
 5. **One workspace per unit of work.** Every thread and agent has its own Rosen change and workspace. Rosen deletes the workspace when the change lands or is abandoned.
@@ -29,9 +29,11 @@ These hold for every feature. A feature that breaks one of them is wrong, whatev
 
 **Rosen rules** *(decided, #381; the project owner, 2026-11-14)*: "With rosen, pr agents become basically obsolete. They existed to help settle github work faster and cleaner. But with rosen, we care about speed. Then we can have agents that can swarm the project to look for issues and review the code and implementations, use lean to verify implementations, and so on, without blocking development."
 - A Rosen project here is one whose `rosen.toml` sets `review = "after-land"` (Rosen R7 and R8, rosen#365; Velocity #380). A git project keeps the wording above, and so does a Rosen project that keeps `review = "before-land"`, Rosen's default: there PR duty still reviews and Rosen still lands nothing without its approval and a receipt for its pre-land checks (F7 "A Rosen change").
-- What stays: no work is lost (Rosen's durability, and a revert never discards the author's work), every land's build and lint are verified with bisection and the automatic revert of a broken build, the full tests run after the land, and git projects work as before.
+- What stays: no work is lost (Rosen's durability, and a revert never discards the author's work), the integration build verifies the base with bisection and fix-forward repairs, and git projects work as before.
 - A failing or rejected Rosen mirror stays visible on its project until the next successful push; F5 specifies the project header, Settings, retry time and rejection notice (#402).
-- A build culprit whose revert is refused, or remains unreverted for two minutes, gets one fix-forward thread on the default implementation model; F5/F7 specify its evidence, scope and closure on a passing post-land build (#406).
+- A confirmed integration failure gets one fix-forward thread on the default implementation model, with the failing command and output (#406, #480).
+- Agents use Rust formatting, UI type-check and lint, and one queued type-check of the Rust crate they change.
+- A release requires a green integration build on its exact commit.
 - Discoveries can report problems in either Velocity or Rosen to their own repositories, with separate title matching and filing results (F14, #303).
 - Generated lockfiles and bindings are regenerated rather than line-merged; F5 specifies the commands in durable rebase notices, including rebases with no text conflicts (#404).
 - A Rosen project never falls back to a git worktree when workspace creation fails: transient errors retry Rosen for about a minute, and a lasting failure leaves the thread in `error` with the Rosen error and a retry action (F5, #407).

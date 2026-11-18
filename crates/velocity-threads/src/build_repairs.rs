@@ -88,11 +88,16 @@ fn restore_repair(
 }
 
 pub fn repair_prompt(failure: &BuildFailure) -> String {
+    let integrated = failure
+        .output
+        .starts_with(velocity_rosen::integration::FAILURE_HEADING);
     let reason = failure
         .refusal
         .as_deref()
         .unwrap_or("The build culprit has not been reverted within two minutes of being recorded.");
-    let blockers = if failure.blocking_commits.is_empty() {
+    let blockers = if integrated {
+        "Integration keeps the landed history and uses a follow-up change.".into()
+    } else if failure.blocking_commits.is_empty() {
         "Rosen reported no overlapping later commits.".into()
     } else {
         preview(&failure.blocking_commits.join("\n"), 500)
@@ -103,8 +108,7 @@ pub fn repair_prompt(failure: &BuildFailure) -> String {
          Make the project's base build again and touch nothing else. Fix this confirmed \
          build failure forward in your Rosen workspace. If the repair needs a spec decision, \
          find its heading with graph_find and read it with graph_read (source: true). \
-         Use the normal build-thread lifecycle: claim the files, verify the build and lint \
-         through Rosen's queue with rosen run, and name the finished change with rosen commit -m. Velocity \
+         Claim the files, queue a type-check for the crate you change, and name the finished change with rosen commit -m. Velocity \
          lands it. Keep the repair limited to restoring the build; do not take other work.",
         preview(&failure.change, 128),
         preview(&failure.commit, 128),

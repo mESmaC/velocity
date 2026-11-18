@@ -3,8 +3,8 @@ use rosen_client::protocol::{CommentTarget, ReadAnswer};
 
 use crate::{ProjectServer, RosenError, workspace::session};
 
-/// Landed commits covered by Rosen's last successful Build job. Test jobs use a separate
-/// prefix. Missing/old protocol support, no build result, and empty build sets prove nothing.
+/// Landed commits covered by Velocity's integration build or the corresponding
+/// legacy built prefix.
 pub async fn issue_build_coverage(
     server: &ProjectServer,
     commits: &[String],
@@ -13,8 +13,27 @@ pub async fn issue_build_coverage(
         return Ok(Vec::new());
     }
     let client = rosen_client::Client::connect(server.endpoint()).await?;
-    let Some(green) = client.post_land_build_next().await?.last_green else {
+    let green = if crate::post_land::after_land(server).await? {
+        crate::integration::last_green(server)?
+    } else {
+        legacy_green(&client).await?
+    };
+    let Some(green) = green else {
         return Ok(Vec::new());
+    };
+    let mut covered = Vec::new();
+    for commit in commits {
+        let identifier = crate::policy::object(commit)?;
+        if client.merge_base(commit, &green).await?.merge_base == Some(identifier) {
+            covered.push(commit.clone());
+        }
+    }
+    Ok(covered)
+}
+
+async fn legacy_green(client: &rosen_client::Client) -> Result<Option<String>, RosenError> {
+    let Some(green) = client.post_land_build_next().await?.last_green else {
+        return Ok(None);
     };
     if client
         .project_config(Some(green))
@@ -25,21 +44,9 @@ pub async fn issue_build_coverage(
         .commands
         .is_empty()
     {
-        return Ok(Vec::new());
+        return Ok(None);
     }
-    let mut covered = Vec::new();
-    for commit in commits {
-        let identifier = crate::policy::object(commit)?;
-        if client
-            .merge_base(commit, &green.to_string())
-            .await?
-            .merge_base
-            == Some(identifier)
-        {
-            covered.push(commit.clone());
-        }
-    }
-    Ok(covered)
+    Ok(Some(green.to_string()))
 }
 
 /// A resolved note on the root spec (or a folder source file) records the

@@ -152,7 +152,7 @@ fn reason_sentence(reason: &SweepReason, base_branch: &str) -> String {
 
 fn sweep_steps(rules: &ScoutRuleSettings, stress_diff_input_count: u32) -> String {
     let mut steps = String::from(
-        "\nSweep:\n- Assume what you inspect will fail. Find applicable spec headings with graph_find and read them with graph_read (source: true).\n- Run the project's checks and lint, and the existing tests and stress scripts.\n",
+        "\nSweep:\n- Assume what you inspect will fail. Find applicable spec headings with graph_find and read them with graph_read (source: true).\n- Use the agent checks allowed in AGENTS.md. Inspect existing tests and stress scripts for coverage.\n",
     );
     if rules.run_stress_against_models {
         steps.push_str("- Build the Lean reference models in `proofs/` where they exist. Use `scout_compare` with implementation and compiled-model driver scripts, feeding identical generated cases through stdin. Both must succeed; normalize their stdout in the adapters. Preserve every disagreeing input in a failing reproduction script and file it through `scout_file`. Missing models or toolchain failures are proof gaps, not output disagreements.\n");

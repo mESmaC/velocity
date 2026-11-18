@@ -15,7 +15,7 @@ Velocity is a Rust + Tauri desktop IDE for running coding agents in parallel.
 - Claim every intended path before editing with `rosen claim <paths>`. The first claim wins. Use `rosen share <paths>` for deliberate overlap, `rosen wait <paths>` for a dependency and `rosen release <paths>` to give up a claim.
 - Follow the workspace note for issue follow-through. Where the thread owns issue updates, use AIRC `issue_comment` for start, a changed plan or a blocker, and `issue_ready_to_close` for verified completion. Leave the issue open for Velocity.
 - Run and verify working functionality before proofs, tests or docs. Use `rosen status` and `rosen diff` to inspect stored work. Name the completed change with `rosen commit -m "<summary> (#issue)"` using the assigned issue or §7 item, then end your turn. Never approve a review, submit receipts or land your own change. Never use git or gh in the Rosen workspace.
-- With `review = "after-land"`, Velocity lands a clean named change. Fast build and lint checks may revert it. Full test failures are filed as issues. Fix work returned after a revert. For a stored conflict, run `rosen rebase`, combine both sides, run `rosen resolve <file>` for each conflict and name the change again.
+- With `review = "after-land"`, Velocity lands a clean named change. The integration build verifies landed changes in batches. Fix a confirmed failure in the follow-up thread Velocity starts. For a stored conflict, run `rosen rebase`, combine both sides, run `rosen resolve <file>` for each conflict and name the change again.
 - Address every review comment with a fix or a reason. Check fixes and name the change again.
 
 ## Shared files
@@ -25,11 +25,9 @@ Velocity is a Rust + Tauri desktop IDE for running coding agents in parallel.
 
 ## Commands
 
-- Use `queue_run` from `velocity-run` for builds, tests, lint and other commands that can take more than a minute. End your turn after queuing and continue from the result Velocity sends. Use `rosen run -- <command>` for shorter builds and tests or when the tool is unavailable.
-- For Rust iteration use `cargo check -p <crate>`. Before naming working Rust, run `cargo fmt --all`, the locked workspace build and `cargo clippy --workspace --all-targets -- -D warnings`.
-- For app verification use `cargo tauri dev` outside the build queue. It starts the UI dev server. Use a crate's own entry point when that exercises the whole change.
-- For the affected checks use `scripts/check.ps1` with the changed paths list in a Rosen tree. The script queues its own heavy steps. For UI-only changes run `pnpm -C ui check`, `pnpm -C ui lint` and `pnpm -C ui build`, and format with `pnpm -C ui format` before naming. Keep all checks free of warnings.
-- Skip builds for documentation and stress-script-only edits. Skip reruns when covered inputs are unchanged.
+- Agents run Rust formatting, UI type-check and lint, and a targeted Rust type-check. The integration build runs Rust compilation, clippy and the full tests. The release gate runs stress.
+- Queue `cargo check -p <crate>` for the crate your change touches with `queue_run` from `velocity-run`, or use `rosen run -- cargo check -p <crate>`. End your turn after an MCP run queues and continue from the result Velocity sends.
+- Format Rust with `cargo fmt --all`. For UI changes use `pnpm -C ui check`, `pnpm -C ui lint` and `pnpm -C ui format`. Skip unaffected checks and skip reruns when covered inputs are unchanged.
 
 ## Code and UI
 
@@ -67,7 +65,7 @@ Keep this list aligned with `rosen.toml`. Sensitive changes take priority in rev
 
 ## Done means
 
-- The feature meets its spec and runs with passing checks. The task is finished when the change lands and its post-land build passes.
+- The feature meets its spec and runs with passing checks. The task is finished when the change lands and a green integration build covers it.
 
 ## Never
 

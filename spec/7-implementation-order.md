@@ -88,6 +88,7 @@ PR duty checks an item off when it lands that item's PR (F7).
 - [x] PR duty tiered review and intent review; Sensitive paths in AGENTS.md (F7)
 - [x] Reasoning effort by role, with Medium defaults for trivial reading reviews and duty sweeps (F15, #468)
 - [x] Main watcher duty role: post-merge suite, bisect, fix or revert PR (F7)
+- [x] Batch integration builds on the base and queue single-crate agent checks (#480, F5, F7)
 
 **M11 · Proofs** (F17)
 - [x] Lean toolchain and Mathlib cache in the warm pool (F5)

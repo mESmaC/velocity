@@ -8,8 +8,8 @@ use std::sync::Mutex;
 use std::time::{Duration, Instant};
 use tauri::{AppHandle, Manager};
 use velocity_github::{GitHubIssue, IssueClient};
-use velocity_store::continuous_dispatch::can_finish_empty_dispatch;
 use velocity_store::continuous_dispatch::has_capacity as project_has_capacity;
+use velocity_store::continuous_dispatch::{busy_count, can_finish_empty_dispatch};
 use velocity_store::{ProjectItem, TaskAttribution, VersionControl};
 use velocity_threads::continuous_dispatch::{
     DispatchView, DispatchWork, dispatchable_task, ordered_issues, ordered_work, plan_task,
@@ -77,6 +77,33 @@ fn view(application: &AppHandle, identifier: u32) -> Result<DispatchView, String
     Ok(DispatchView::new(project, &work, backlog.error))
 }
 
+pub(crate) fn integration_idle(application: &AppHandle, identifier: u32) -> Result<bool, String> {
+    let known = lock(application.state::<Backlogs>().inner(), "dispatch backlog")?
+        .get(&identifier)
+        .filter(|backlog| backlog.error.is_none())
+        .cloned();
+    let Some(backlog) = known else {
+        return Ok(false);
+    };
+    let claimed = claimed_pieces(application, identifier)?;
+    let store = lock(
+        application.state::<ManagedStateStore>().inner(),
+        "persisted state",
+    )?;
+    let Some(project) = store.project(identifier) else {
+        return Ok(false);
+    };
+    Ok(busy_count(project) == 0
+        && ordered_work(
+            project,
+            &backlog.repository,
+            &backlog.issues,
+            &claimed,
+            true,
+        )
+        .is_empty())
+}
+
 pub fn initialize(application: &AppHandle) {
     application.manage(Backlogs::default());
     let application = application.clone();
@@ -136,6 +163,10 @@ fn projects(application: &AppHandle) -> Result<Vec<ProjectItem>, String> {
                 || !project.continuous_dispatch.no_change_reports.is_empty()
                 || (project.version_control == VersionControl::Rosen
                     && (project.continuous_dispatch.slots > 0
+                        || project
+                            .threads
+                            .iter()
+                            .any(|thread| thread.rosen_change.is_some())
                         || project.threads.iter().any(|thread| {
                             thread.started_by_dispatch
                                 && thread.state == velocity_store::ThreadState::Working

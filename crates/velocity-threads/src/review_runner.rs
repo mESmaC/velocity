@@ -70,6 +70,10 @@ pub trait ReviewHost: Clone + Send + Sync + 'static {
     /// Atomically retain each culprit's thread identity before launching it. Repeated
     /// observations must resume pending launches rather than allocate another thread.
     fn repair_builds(&self, project: u32, observation: BuildRepairs) -> Result<(), String>;
+    /// True after dispatch has read a known backlog with no ready item or working thread.
+    fn integration_idle(&self, _project: u32) -> bool {
+        false
+    }
     /// Every project's PR duty role.
     fn rosters(&self) -> Vec<PrDutyRoster>;
     /// Applies `change` to the project's PR duty, appends and publishes the events it returns,

@@ -7,7 +7,7 @@ use rosen_client::{Client, protocol::CheckKind};
 use rusqlite::{Connection, OpenFlags};
 use serde::Deserialize;
 
-use crate::{ProjectServer, RosenError};
+use crate::{ProjectServer, RosenError, integration};
 
 #[derive(Clone, Debug)]
 pub struct BuildFailure {
@@ -50,18 +50,32 @@ impl BuildFailure {
 pub async fn build_failures(server: &ProjectServer) -> Result<Vec<BuildFailure>, RosenError> {
     let client = Client::connect(server.endpoint()).await?;
     let failures = client.post_land_failures(None).await?;
-    let builds: Vec<_> = failures
+    let (integrations, builds): (Vec<_>, Vec<_>) = failures
         .into_iter()
-        .filter(|failure| failure.kind == CheckKind::Build && failure.requires_revert)
+        .filter(|failure| {
+            (failure.kind == CheckKind::Build && failure.requires_revert) || is_integration(failure)
+        })
+        .partition(is_integration);
+    let mut repairs: Vec<_> = integrations
+        .into_iter()
+        .map(|failure| {
+            BuildFailure::new(
+                failure.commit.to_string(),
+                failure.change,
+                failure.output,
+                0,
+            )
+            .with_refusal("Integration failures are fixed forward.".into(), Vec::new())
+        })
         .collect();
     if builds.is_empty() {
-        return Ok(Vec::new());
+        return Ok(repairs);
     }
     let reading = server.clone();
     let mut evidence = tokio::task::spawn_blocking(move || read_evidence(&reading))
         .await
         .map_err(|error| RosenError::BuildRepairData(error.to_string()))??;
-    builds
+    let legacy = builds
         .into_iter()
         .map(|failure| {
             let commit = failure.commit.to_string();
@@ -78,7 +92,15 @@ pub async fn build_failures(server: &ProjectServer) -> Result<Vec<BuildFailure>,
                 blocking_commits: evidence.blocking_commits,
             })
         })
-        .collect()
+        .collect::<Result<Vec<_>, RosenError>>()?;
+    repairs.extend(legacy);
+    Ok(repairs)
+}
+
+fn is_integration(failure: &rosen_client::protocol::PostLandFailure) -> bool {
+    failure.kind == CheckKind::Test
+        && failure.revert.is_none()
+        && failure.output.starts_with(integration::FAILURE_HEADING)
 }
 
 #[derive(Default)]

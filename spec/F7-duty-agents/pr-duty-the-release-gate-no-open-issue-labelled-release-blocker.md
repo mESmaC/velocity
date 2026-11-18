@@ -2,4 +2,4 @@
 
 <!-- split-spec: {"order":1067,"kind":"markdown","indentation":2} -->
 - no open issue labelled `release-blocker`.
-The release gate's GitHub token has only `contents: read` and `issues: read`; only the publishing job receives `contents: write` (#393).
+The release gate's GitHub token has only `contents: read`, `issues: read` and `statuses: read`; only the publishing job receives `contents: write` (#393).

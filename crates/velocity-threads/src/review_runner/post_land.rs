@@ -1,9 +1,5 @@
-//! Post-land verification of a Rosen project (SPEC.md F7 "After a land"; Rosen R12 and §9
-//! "Build queue"). Independent build and test passes batch the newest lands. Merge-mode
-//! builds run ahead of background tests; after-land mode has no check at land time. Rosen bisects
-//! failures, reverts build breaks and retains test failures for the issue reporter. A
-//! before-land project keeps its existing test-failure reverts and PR duty schedule;
-//! merge-mode build checks also run after landing with Rosen's requested priority.
+//! Batched integration on after-land projects and legacy checks on before-land
+//! projects. Rosen owns bisection and its durable failure records (F7, R12).
 
 use std::collections::BTreeSet;
 use std::path::PathBuf;
@@ -15,8 +11,8 @@ use velocity_core::rosen_checker::{
     verified_line, verify_failed_line, verify_stopped_line, verifying_line,
 };
 use velocity_rosen::ProjectServer;
-use velocity_rosen::checker;
 use velocity_rosen::post_land::{self, Batch, Bisection, CheckKind};
+use velocity_rosen::{checker, integration};
 use velocity_store::duty::PrDutyRoster;
 
 use super::landing::LANDER;
@@ -56,8 +52,7 @@ struct Verify<Host> {
 }
 
 impl PrDutyReviews {
-    /// Starts each verification track independently, off the tick. A long test run never
-    /// prevents the build track from seeing and repairing a newer land.
+    /// Legacy verification and integration run off the tick so dispatch can keep going.
     pub(super) fn verify_landed<Host: ReviewHost>(&self, host: &Host, roster: &PrDutyRoster) {
         // A project that switched to git still verifies what its Rosen threads landed.
         if !roster.project.rosen_in_use() {
@@ -122,29 +117,76 @@ impl<Host: ReviewHost> Verify<Host> {
             }
             // Rosen may offer a merge-mode build here; the independent build worker
             // owns its folder and advances that prefix before tests are offered.
-            if batch.kind != self.kind || self.settled(&batch.commit) || !self.verify(&batch).await
-            {
+            if batch.kind != self.kind || self.settled(&batch.commit) {
+                return;
+            }
+            if batch.after_land && batch.kind == CheckKind::Test {
+                self.integrate(&batch).await;
+                return;
+            }
+            if !self.verify(&batch).await {
                 return;
             }
         }
+    }
+
+    async fn integrate(&self, batch: &Batch) {
+        let idle = self.host.integration_idle(self.project);
+        match integration::due(&self.server, &batch.commit, idle) {
+            Ok(true) => {}
+            Ok(false) => return,
+            Err(error) => {
+                self.stopped(&batch.commit, &error.to_string());
+                return;
+            }
+        }
+        let _slot = match integration::try_slot() {
+            Ok(Some(slot)) => slot,
+            Ok(None) => return,
+            Err(error) => {
+                self.stopped(&batch.commit, &error.to_string());
+                return;
+            }
+        };
+        self.verify(batch).await;
     }
 
     /// Tests one batch. `true` when it went green, so the next can be looked for.
     async fn verify(&self, batch: &Batch) -> bool {
         // A project with no post-land commands has nothing to fail: its lands are green.
         let started = Instant::now();
-        let (failed, suffix) = if batch.commands.is_empty() {
+        let is_integration = batch.after_land && batch.kind == CheckKind::Test;
+        let already_passed = is_integration
+            && match integration::passed(&self.server, &batch.commit) {
+                Ok(passed) => passed,
+                Err(error) => return self.stopped(&batch.commit, &error.to_string()),
+            };
+        let (failed, suffix) = if batch.commands.is_empty() || already_passed {
             (None, String::new())
         } else {
-            self.say(DutyEventKind::Wait, verifying_line(&batch.commit));
+            let line = verifying_line(&batch.commit);
+            self.say(
+                DutyEventKind::Wait,
+                if is_integration {
+                    format!("Integration build · {line}")
+                } else {
+                    line
+                },
+            );
             match self.test(&batch.commit, batch).await {
                 Ok(failed) => failed,
                 Err(why) => return self.stopped(&batch.commit, &why),
             }
         };
         let Some(failed) = failed else {
+            if is_integration
+                && !batch.commands.is_empty()
+                && let Err(error) = integration::result(&self.server, &batch.commit, true)
+            {
+                return self.stopped(&batch.commit, &error.to_string());
+            }
             let result = post_land::batch_passed(&self.server, batch).await;
-            if result.is_ok() && batch.kind == CheckKind::Build {
+            if result.is_ok() && (is_integration || batch.kind == CheckKind::Build) {
                 self.runner.wake();
             }
             return match result {
@@ -171,7 +213,7 @@ impl<Host: ReviewHost> Verify<Host> {
                 verify_failed_line(&batch.commit, &failed.command)
             ),
         );
-        let report = failed_check_report(failed);
+        let report = failure_report(batch, failed);
         let mut state = post_land::batch_failed(&self.server, batch, &report).await;
         for _ in 0..STEPS {
             let step = match state {
@@ -182,10 +224,19 @@ impl<Host: ReviewHost> Verify<Host> {
                     reverted,
                     kind,
                 }) => {
-                    self.culprit(&change, &commit, kind, reverted);
+                    self.record_failed_integration(batch);
+                    if batch.after_land && kind == CheckKind::Test && !reverted {
+                        self.say(DutyEventKind::Changes, format!(
+                            "Integration build failed at {commit} in change {change} · fix forward"
+                        ));
+                        self.runner.wake();
+                    } else {
+                        self.culprit(&change, &commit, kind, reverted);
+                    }
                     return;
                 }
                 Ok(Bisection::Unconfirmed) => {
+                    self.record_failed_integration(batch);
                     return self.settle(&batch.commit, unconfirmed_line(&batch.commit));
                 }
                 Err(error) => {
@@ -198,7 +249,7 @@ impl<Host: ReviewHost> Verify<Host> {
             // bisection must never substitute the project's full-test commands.
             let (passed, output, suffix) = match self.test(&step.commit, batch).await {
                 Ok((None, suffix)) => (true, String::new(), suffix),
-                Ok((Some(failed), suffix)) => (false, failed_check_report(&failed), suffix),
+                Ok((Some(failed), suffix)) => (false, failure_report(batch, &failed), suffix),
                 // Rosen keeps the bisection: the next pass fails the batch again and
                 // carries on from this step.
                 Err(why) => {
@@ -208,6 +259,15 @@ impl<Host: ReviewHost> Verify<Host> {
             };
             self.step_feed(&step.commit, passed, &suffix);
             state = post_land::step_result(&self.server, &step, passed, &output).await;
+        }
+    }
+
+    fn record_failed_integration(&self, batch: &Batch) {
+        if batch.after_land
+            && batch.kind == CheckKind::Test
+            && let Err(error) = integration::result(&self.server, &batch.commit, false)
+        {
+            self.stopped(&batch.commit, &error.to_string());
         }
     }
 
@@ -254,10 +314,14 @@ impl<Host: ReviewHost> Verify<Host> {
         let (folder, commands) = (self.folder.clone(), batch.commands.clone());
         let priority = batch.priority.into();
         let kind = batch.kind;
+        let integration = batch.after_land && kind == CheckKind::Test;
         let ran = tokio::task::spawn_blocking(move || {
             checker::apply_staged(&folder)?;
             if kind == CheckKind::Build {
                 check_feed::run_commands(&folder, &commands, priority)
+            } else if integration {
+                checker::run_integration_commands(&folder, &commands)
+                    .map(|failed| (failed, String::new()))
             } else {
                 checker::run_commands(&folder, &commands, priority)
                     .map(|failed| (failed, String::new()))
@@ -341,5 +405,14 @@ impl<Host: ReviewHost> Verify<Host> {
                 }),
             );
         }
+    }
+}
+
+fn failure_report(batch: &Batch, failed: &FailedCheck) -> String {
+    let report = failed_check_report(failed);
+    if batch.after_land && batch.kind == CheckKind::Test {
+        format!("{}{report}", integration::FAILURE_HEADING)
+    } else {
+        report
     }
 }

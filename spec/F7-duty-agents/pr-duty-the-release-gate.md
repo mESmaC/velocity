@@ -10,7 +10,7 @@
 
 Rule files:
 
-- [the post-land full tests green on the release commit](pr-duty-the-release-gate-the-post-land-full-tests-green.md)
+- [a green integration build on the exact release commit](pr-duty-the-release-gate-the-post-land-full-tests-green.md)
 - [cargo run -p stress -- --all passing;](pr-duty-the-release-gate-cargo-run-p-stress-all-passing.md)
 - [lake build in proofs/ passing, with the axiom audit (only propext, Classical.choice and Quot.sound);](pr-duty-the-release-gate-lake-build-in-proofs-passing-with.md)
 - [no open issue labelled release-blocker](pr-duty-the-release-gate-no-open-issue-labelled-release-blocker.md)

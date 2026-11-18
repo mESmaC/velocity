@@ -2,7 +2,9 @@
 
 <!-- split-spec: {"order":1020,"kind":"markdown","indentation":4} -->
 - **After a land, Velocity verifies builds and runs the full tests** (Rosen R12, #380).
-  In `after-land` mode these are independent passes that run even without active PR duty agents or while PR duty is paused.
+  In `after-land` mode one integration build runs the workspace build, clippy and full tests on the current base (#480).
+  It starts when dispatch has no ready items or working threads, or after ten lands or two hours with pending lands, whichever comes first.
+  One integration build runs at a time, independently of PR duty staffing and dispatch.
   In `before-land` mode the full-test pass retains today's PR duty schedule and revert policy; builds remain before landing, and `recheck = "merge"` also runs build/lint after landing, independently of PR duty pause or staffing (#391).
 
 <!-- split-spec links -->
@@ -10,7 +12,7 @@
 Rule files:
 
 - [Checker and post-land messages remain visible without a PR duty role (#392)](pr-duty-how-a-review-runs-a-rosen-ch-ies-builds-checker-and-post-land-messages-remain-0d35a4d4.md)
-- [Fast builds in after-land mode](pr-duty-how-a-review-runs-a-rosen-ch-y-verifies-builds-fast-builds-in-after-land-mode-b5d1a96c.md)
+- [Batched integration in after-land mode](pr-duty-how-a-review-runs-a-rosen-ch-y-verifies-builds-fast-builds-in-after-land-mode-b5d1a96c.md)
 - [Full tests](pr-duty-how-a-review-runs-a-rosen-change-after-a-land-velocity-verifies-builds-full-tests.md)
 - [Every command passed](pr-duty-how-a-review-runs-a-rosen-change-after-a-land-velocity-verifies-builds-every-command-passed.md)
 - [A command failed](pr-duty-how-a-review-runs-a-rosen-change-after-a-land-velocity-verifies-builds-a-command-failed.md)

@@ -96,7 +96,7 @@ fn folder_paragraph(brief: &RosenReviewBrief) -> String {
 fn tier_steps(brief: &RosenReviewBrief) -> String {
     match brief.tier.tier {
         ReviewTier::Sensitive => format!(
-            "\nTier: sensitive. It touches {}, listed under Sensitive paths in AGENTS.md. Full review, plus:\n- Run the project's designated stress suite on the merge result before you land. In the Velocity repository the command is `cargo run -p stress -- --all`. A failure blocks the land.\n- Any proof-list feature it changes needs its confidence proof at the reference level (SPEC.md F17).\n{}",
+            "\nTier: sensitive. It touches {}, listed under Sensitive paths in AGENTS.md. Full review, plus:\n- Any proof-list feature it changes needs its confidence proof at the reference level (SPEC.md F17).\n{}",
             quoted_list(&brief.tier.sensitive_files),
             review_steps(brief)
         ),
@@ -121,10 +121,10 @@ fn review_steps(brief: &RosenReviewBrief) -> String {
     }
     // Velocity can't check this change itself: the agent's checks are the only ones it gets.
     if rules.ci_green_before_merge {
-        steps.push_str("- Run the project's local checks from AGENTS.md here, on the merge result. Nothing else checks this change before it lands.\n");
+        steps.push_str("- Run the agent checks allowed in AGENTS.md here, on the merge result. Nothing else checks this change before it lands.\n");
     }
     steps.push_str("- If `proofs/` changes, run `lake build` and the axiom audit. Never land unless the proofs check.\n");
-    steps.push_str("- When you doubt a claim no proof covers, write a stress script, run it, and put its output in your review.\n");
+    steps.push_str("- When you doubt a claim no proof covers, document the evidence and add a reproduction if it helps.\n");
     steps
 }
 

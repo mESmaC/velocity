@@ -7,14 +7,14 @@ before it is released.
 On a Rosen project no approval gates a land, so the release is where everything
 is held to the full bar. Run it on the release commit. It stops at the first
 failure and exits non-zero:
-1. No open issue labelled release-blocker (gh, on the checkout's repository).
-2. The post-land full tests: the [checks.post_land] commands of rosen.toml.
+1. A green Velocity integration build on the exact release commit.
+2. No open issue labelled release-blocker (gh, on the checkout's repository).
 3. cargo run -p stress -- --all.
 4. lake build in proofs/, with the axiom audit: only propext,
    Classical.choice and Quot.sound.
 
-The release workflow runs it before it builds anything, so a tag that fails it
-publishes nothing.
+The release workflow checks integration before setting up its tools and runs
+the full gate before building the release.
 
 .EXAMPLE
 pwsh -NoProfile -File scripts/release-gate.ps1
@@ -22,7 +22,8 @@ pwsh -NoProfile -File scripts/release-gate.ps1
 param(
     # The repository whose release-blocker issues count, as owner/name. Empty
     # reads it from the checkout's origin through gh.
-    [string]$Repository = ''
+    [string]$Repository = '',
+    [switch]$IntegrationOnly
 )
 $ErrorActionPreference = 'Stop'
 Set-Location -LiteralPath (Split-Path -Parent $PSScriptRoot)
@@ -43,20 +44,31 @@ function Invoke-Step([string]$Name, [scriptblock]$Command) {
     }
 }
 
-# The commands under [checks.post_land] in rosen.toml: the one array of
-# one-line strings Rosen reads there (Rosen SPEC §2 "Project configuration").
-function Get-PostLandCommands {
-    $text = Get-Content -Raw -LiteralPath 'rosen.toml'
-    $section = [regex]::Match($text, '(?ms)^\[checks\.post_land\]\s*$(.*?)(?=^\[|\z)')
-    if (-not $section.Success) {
-        return @()
+function Confirm-Integration {
+    $commit = git rev-parse --verify HEAD
+    if ($LASTEXITCODE -ne 0 -or $commit -cnotmatch '^[0-9a-f]{40}$') {
+        Stop-Gate 'could not resolve the release commit'
     }
-    $array = [regex]::Match($section.Groups[1].Value, '(?ms)^commands\s*=\s*\[(.*?)\]')
-    if (-not $array.Success) {
-        return @()
+    $repo = $Repository
+    if (-not $repo) {
+        $repo = gh repo view --json nameWithOwner --jq .nameWithOwner
+        if ($LASTEXITCODE -ne 0) {
+            Stop-Gate 'could not resolve the release repository'
+        }
     }
-    [regex]::Matches($array.Groups[1].Value, '"((?:[^"\\]|\\.)*)"') |
-        ForEach-Object { $_.Groups[1].Value -replace '\\"', '"' -replace '\\\\', '\' }
+    $states = @(gh api --paginate "repos/$repo/commits/$commit/statuses" --jq '.[] | select(.context == "velocity/integration") | .state')
+    if ($LASTEXITCODE -ne 0) {
+        Stop-Gate "could not read integration status on $commit"
+    }
+    if ($states.Count -eq 0 -or $states[0] -cne 'success') {
+        Stop-Gate "$commit has no green Velocity integration build"
+    }
+    Write-Host "==> Integration passed on $commit" -ForegroundColor Cyan
+}
+
+Confirm-Integration
+if ($IntegrationOnly) {
+    exit 0
 }
 
 Write-Host '==> No open release-blocker issue' -ForegroundColor Cyan
@@ -68,17 +80,6 @@ if ($LASTEXITCODE -ne 0) {
 if ($blockers) {
     $list = ($blockers | ForEach-Object { "#$($_.number) $($_.title)" }) -join '; '
     Stop-Gate "open release-blocker issues: $list"
-}
-
-$postLand = @(Get-PostLandCommands)
-if ($postLand.Count -eq 0 -and (Test-Path -LiteralPath 'rosen.toml')) {
-    Write-Host '==> Post-land tests: rosen.toml names none' -ForegroundColor Cyan
-}
-# Not $command: the script block runs inside Invoke-Step, where that name (variables
-# ignore case) is its own $Command parameter, so Invoke-Expression got a script block.
-foreach ($postLandCommand in $postLand) {
-    # Each is one line that runs the same from cmd, PowerShell and sh (rosen.toml).
-    Invoke-Step "Post-land: $postLandCommand" { Invoke-Expression $postLandCommand }
 }
 
 Invoke-Step 'Stress: cargo run -p stress -- --all' { cargo run -p stress -- --all }

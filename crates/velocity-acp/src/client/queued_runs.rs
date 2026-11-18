@@ -215,6 +215,16 @@ impl QueueHost {
     }
 
     fn enqueue(&self, request: Request, runs: &mut JoinSet<RunResult>) -> Result<PathBuf, String> {
+        let policy = velocity_rosen::agent_run::policy(
+            &request.command.program,
+            &request.command.arguments,
+        )?;
+        let rosen = if policy == velocity_rosen::agent_run::AgentRun::RustCheck {
+            velocity_rosen::agent_run::cli()
+                .ok_or("The managed Rosen command is unavailable for agent type checks")?
+        } else {
+            &self.rosen
+        };
         let run = QueuedRun::new(request.command).map_err(|error| error.to_string())?;
         let log = run.log.clone();
         // Subscribe before acknowledging. A fast turn end must release this command
@@ -226,7 +236,7 @@ impl QueueHost {
             .events
             .send(QueueEvent::Started(Box::new(run.started())));
         let (rosen, worktree, launch, stop) = (
-            self.rosen.clone(),
+            rosen.to_owned(),
             self.worktree.clone(),
             self.launch.clone(),
             self.stop.clone(),

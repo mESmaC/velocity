@@ -244,6 +244,42 @@ impl IssueClient {
         Ok(true)
     }
 
+    /// Publishes a pass on the exact mirrored base tested by Velocity.
+    pub fn publish_integration_success(&self, commit: &str) -> Result<bool, PullRequestError> {
+        if !self.rosen_commit_mirrored(commit)? {
+            return Ok(false);
+        }
+        #[derive(Deserialize)]
+        struct Status {
+            context: String,
+            state: String,
+        }
+        const CONTEXT: &str = "velocity/integration";
+        let statuses = format!(
+            "repos/{}/commits/{commit}/statuses?per_page=100",
+            self.repository()
+        );
+        let existing: Vec<Status> = self.transport.command.read(&["api", &statuses])?;
+        if existing
+            .iter()
+            .find(|status| status.context == CONTEXT)
+            .is_some_and(|status| status.state == "success")
+        {
+            return Ok(true);
+        }
+        let endpoint = format!("repos/{}/statuses/{commit}", self.repository());
+        let _: Value = self.transport.command.api(
+            "POST",
+            &endpoint,
+            &json!({
+                "context": CONTEXT,
+                "state": "success",
+                "description": "Velocity integration build passed"
+            }),
+        )?;
+        Ok(true)
+    }
+
     /// Returns false while the mirror's default branch has not caught up to the land.
     pub fn rosen_commit_mirrored(&self, commit: &str) -> Result<bool, PullRequestError> {
         if commit.len() != 40 || !commit.bytes().all(|byte| byte.is_ascii_hexdigit()) {

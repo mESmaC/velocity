@@ -53,7 +53,12 @@ pub fn agent_environment(
 /// `rosen`. `None` when the `rosen` program isn't found.
 pub fn path_with_rosen(existing: &str) -> Option<String> {
     let folder = program_folder("rosen")?;
-    let folders = std::iter::once(folder).chain(std::env::split_paths(existing));
+    let folders = crate::agent_run::cli()
+        .and_then(Path::parent)
+        .map(Path::to_owned)
+        .into_iter()
+        .chain(std::iter::once(folder))
+        .chain(std::env::split_paths(existing));
     let path = std::env::join_paths(folders).ok()?;
     Some(path.to_string_lossy().into_owned())
 }
@@ -66,12 +71,10 @@ pub fn run_queue_note() -> &'static str {
     RUN_QUEUE_NOTE
 }
 
-const RUN_QUEUE_NOTE: &str = "[Velocity] Run every heavy build, test and lint (compile, test, \
-     clippy, a project's full local checks) through `rosen run -- <command>`, such as \
-     `rosen run -- cargo build -p <crate>`: builds on this machine, from every project, take \
-     turns in one queue, so yours has the cores when it runs. A PR duty landing check runs \
-     first with `rosen run --class landing -- <command>`. Use it in place of any build queue \
-     script your instructions name. Never run a long-lived dev server through it.";
+const RUN_QUEUE_NOTE: &str = "[Velocity] Use cargo fmt, UI type-check and lint, and \
+     `queue_run` or `rosen run -- cargo check -p <crate>` for the Rust crate your change \
+     touches. Use the queue for Lean checks. The integration build covers Rust compilation, \
+     clippy, tests and stress runs.";
 
 /// Rosen's own MCP server for an agent (Rosen R10 `rosen mcp`): its commands as tools.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -119,7 +122,8 @@ pub fn workspace_note(change: &str) -> String {
          and the rest), returning JSON. For any command that can take more than a minute, \
          use `queue_run` from `velocity-run` when available, then end your turn. Velocity \
          runs it in Rosen's queue and sends the result and full log path when it finishes. \
-         Run other builds and tests through `rosen run -- <command>`. Checks a land waits \
-         on go first. Use Rosen's queue in place of any build queue script your instructions name."
+         Use cargo fmt, UI type-check and lint, and `rosen run -- cargo check -p <crate>` \
+         for the Rust crate your change touches. The integration build covers Rust \
+         compilation, clippy, tests and stress runs."
     )
 }

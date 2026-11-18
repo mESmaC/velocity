@@ -3,6 +3,16 @@
 mod queued_run_access;
 
 fn main() -> anyhow::Result<()> {
+    if let Some(result) = velocity_rosen::agent_run::serve() {
+        let code = match result {
+            Ok(status) => status.code().unwrap_or(1),
+            Err(error) => {
+                eprintln!("rosen: {error}");
+                1
+            }
+        };
+        std::process::exit(code);
+    }
     if queued_run_access::serve()? {
         return Ok(());
     }
@@ -39,5 +49,6 @@ fn main() -> anyhow::Result<()> {
     if velocity_updates::supervision::supervise()? {
         return Ok(());
     }
+    velocity_rosen::agent_run::install(&std::env::current_exe()?);
     velocity_app_lib::run()
 }

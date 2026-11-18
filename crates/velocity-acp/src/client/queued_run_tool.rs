@@ -17,10 +17,10 @@ pub(super) const REQUEST_TIMEOUT: Duration = Duration::from_secs(5);
 pub(super) const REQUEST_BYTES: u64 = 128 * 1024;
 
 pub(super) const INSTRUCTIONS: &str = "Use `queue_run` from `velocity-run` for commands that \
-    can take more than a minute, including builds, tests, Lean, stress and local checks. \
-    Pass the program and its arguments separately, without `rosen run`. For checks that \
-    gate a land, pass class `landing`. After it queues, end your turn. Velocity sends the \
-    result and log path in your next prompt. Run long-lived dev servers outside this queue.";
+    can take more than a minute, including `cargo check -p <crate>` and Lean checks. \
+    Pass the program and its arguments separately. Agents use cargo fmt and UI type-check \
+    and lint. The integration build covers Rust compilation, clippy and tests. After a \
+    command queues, end your turn. Velocity sends the result and log path in your next prompt.";
 
 #[derive(Deserialize, Serialize)]
 pub(super) struct Request {

@@ -4,8 +4,8 @@ use std::path::Path;
 
 use velocity_core::duty::{DutyEventKind, DutyFeedEvent};
 use velocity_github::post_land_failures::{self, FailureReport, PendingReports};
-use velocity_rosen::ProjectServer;
 use velocity_rosen::post_land::{self, TestFailure};
+use velocity_rosen::{ProjectServer, integration};
 use velocity_store::duty::PrDutyRoster;
 
 use super::landing::LANDER;
@@ -27,6 +27,9 @@ impl PrDutyReviews {
             let failures = post_land::test_failures(&server).await;
             let path = server.data_dir().join("test-failure-issues.json");
             let result = tokio::task::spawn_blocking(move || {
+                if let Err(error) = publish_integrations(&server, &roster) {
+                    eprintln!("Integration status for project {project}: {error}");
+                }
                 report_pending(&path, &roster, failures.map_err(|error| error.to_string()))
             })
             .await;
@@ -122,6 +125,30 @@ fn enqueue_failures(
             report = report.with_thread(thread.id, thread.title.clone());
         }
         pending.enqueue(report);
+    }
+    Ok(())
+}
+
+fn publish_integrations(server: &ProjectServer, roster: &PrDutyRoster) -> Result<(), String> {
+    let Some(repository) = roster.project.github_remote.as_deref() else {
+        return Ok(());
+    };
+    let pending = integration::unpublished(server).map_err(|error| error.to_string())?;
+    if pending.is_empty() {
+        return Ok(());
+    }
+    let client = velocity_github::IssueClient::for_repository(
+        Path::new(&roster.project.repository_path),
+        repository,
+    )
+    .map_err(|error| error.to_string())?;
+    for commit in &pending {
+        if client
+            .publish_integration_success(commit)
+            .map_err(|error| error.to_string())?
+        {
+            integration::published(server, commit).map_err(|error| error.to_string())?;
+        }
     }
     Ok(())
 }

@@ -48,6 +48,7 @@ pub fn serve() -> anyhow::Result<bool> {
 }
 
 fn run(directory: PathBuf, slots: usize, key: Option<String>, name: String) -> anyhow::Result<()> {
+    velocity_rosen::agent_run::install(&std::env::current_exe()?);
     // Resolve before spawning the local cache so its upstream reference has one stable
     // credential-store target even when provisioning uses a relative Windows path.
     let directory = velocity_store::extended_windows_path(&std::path::absolute(directory)?);

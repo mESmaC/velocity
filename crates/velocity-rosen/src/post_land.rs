@@ -16,7 +16,7 @@ use rosen_core::project_config::{RecheckMode, ReviewMode};
 
 pub use rosen_client::protocol::{CheckKind, CheckPriority};
 
-use crate::{ProjectServer, RosenError, duty};
+use crate::{ProjectServer, RosenError, duty, integration};
 
 /// The newest landed commit this check kind has not covered, and the commands to run on it.
 #[derive(Clone, Debug)]
@@ -31,6 +31,7 @@ pub struct Batch {
     /// The build or test check set the project's `rosen.toml` held at that commit.
     pub commands: Vec<String>,
     job: PostLandJob,
+    merge_build: Option<PostLandJob>,
 }
 
 /// One commit Rosen wants tested to find the change that broke a batch.
@@ -60,7 +61,18 @@ pub enum Bisection {
 /// The batch to test now; `None` when every landed commit is covered.
 pub async fn next_batch(server: &ProjectServer) -> Result<Option<Batch>, RosenError> {
     let client = Client::connect(server.endpoint()).await?;
-    batch(&client, client.post_land_next().await?).await
+    let mut work = client.post_land_next().await?;
+    if work
+        .job
+        .as_ref()
+        .is_some_and(|job| job.kind == CheckKind::Build)
+        && after_land(server).await?
+    {
+        // Merge rechecking makes Rosen offer builds first. The integration pass
+        // performs those commands and reports both prefixes after the full pass.
+        work.job = integration::merge_test_job(server, &client).await?;
+    }
+    batch(&client, work).await
 }
 
 /// The independent build prefix, including merge-mode checks after a before-land gate.
@@ -71,7 +83,7 @@ pub async fn next_build_batch(server: &ProjectServer) -> Result<Option<Batch>, R
     let merge = client.project_config(None).await?.config.recheck == RecheckMode::Merge;
     Ok(batch(&client, client.post_land_build_next().await?)
         .await?
-        .filter(|batch| batch.after_land || merge || batch.priority == CheckPriority::Landing))
+        .filter(|batch| !batch.after_land && (merge || batch.priority == CheckPriority::Landing)))
 }
 
 /// The current base's landing policy, never a checkout's possibly stale configuration.
@@ -97,10 +109,11 @@ pub async fn test_failures(server: &ProjectServer) -> Result<Vec<TestFailure>, R
         Err(error) => return Err(error.into()),
     };
     let mut reports = Vec::new();
-    for failure in failures
-        .into_iter()
-        .filter(|failure| failure.kind == CheckKind::Test && failure.revert.is_none())
-    {
+    for failure in failures.into_iter().filter(|failure| {
+        failure.kind == CheckKind::Test
+            && failure.revert.is_none()
+            && !failure.output.starts_with(integration::FAILURE_HEADING)
+    }) {
         // A before-land failure is recorded before its revert completes. Only the policy
         // that authorised its land can distinguish it from a non-reverting test failure.
         let request = LogRequest {
@@ -138,6 +151,9 @@ pub struct TestFailure {
 /// Every command passed on the batch's commit: it and every land before it are green.
 pub async fn batch_passed(server: &ProjectServer, batch: &Batch) -> Result<(), RosenError> {
     let client = Client::connect(server.endpoint()).await?;
+    if let Some(job) = &batch.merge_build {
+        client.post_land_passed(job.clone()).await?;
+    }
     client.post_land_passed(batch.job.clone()).await?;
     Ok(())
 }
@@ -217,14 +233,35 @@ async fn batch(client: &Client, work: PostLandWork) -> Result<Option<Batch>, Ros
         .and_then(|entry| entry.parents.first())
         .ok_or_else(|| RosenError::InvalidId(job.commit.to_string()))?;
     let authorising = client.project_config(Some(*parent)).await?;
+    let after_land = policy.config.review == ReviewMode::AfterLand
+        || authorising.config.review == ReviewMode::AfterLand;
+    let mut commands = job.check_set.commands.clone();
+    let mut merge_build = None;
+    if after_land && job.kind == CheckKind::Test {
+        let pre_land = policy.config.checks.pre_land;
+        if !commands
+            .iter()
+            .any(|command| command == integration::FULL_SUITE)
+        {
+            commands.splice(..0, pre_land.commands.iter().cloned());
+        }
+        if policy.config.recheck == RecheckMode::Merge {
+            merge_build = Some(PostLandJob {
+                commit: job.commit,
+                kind: CheckKind::Build,
+                priority: CheckPriority::Landing,
+                check_set: pre_land,
+            });
+        }
+    }
     Ok(Some(Batch {
         commit: job.commit.to_string(),
         kind: job.kind,
         priority: job.priority,
-        after_land: policy.config.review == ReviewMode::AfterLand
-            || authorising.config.review == ReviewMode::AfterLand,
-        commands: job.check_set.commands.clone(),
+        after_land,
+        commands,
         job,
+        merge_build,
     }))
 }
 

@@ -175,6 +175,10 @@ impl ReviewHost for TauriReviewHost {
         crate::rosen_events::record_landed(&self.0, project, change, generation)
     }
 
+    fn integration_idle(&self, project: u32) -> bool {
+        crate::continuous_dispatch::integration_idle(&self.0, project).unwrap_or(false)
+    }
+
     fn rosters(&self) -> Vec<PrDutyRoster> {
         lock(
             self.0.state::<ManagedStateStore>().inner(),

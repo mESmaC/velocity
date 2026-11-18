@@ -339,7 +339,7 @@ fn tier_steps(brief: &ReviewBrief) -> String {
         ),
         ReviewTier::Normal => format!("\nTier: normal. Full review.\n{}", review_steps(brief)),
         ReviewTier::Sensitive => format!(
-            "\nTier: sensitive. It touches {}, listed under Sensitive paths in AGENTS.md. Full review, plus:\n- Run the project's designated stress suite on the merge result before you merge. In the Velocity repository the command is `cargo run -p stress -- --all`. A failure blocks the merge. Never run a benchmark or load run that AGENTS.md marks as not a merge gate.\n- Any proof-list feature it changes needs its confidence proof at the reference level: a fixture table exported from the Lean model plus a test that checks the code against it (SPEC.md F17). A model-only level blocks the merge. The code level (a translation) is required only when an issue asks for one.\n{}",
+            "\nTier: sensitive. It touches {}, listed under Sensitive paths in AGENTS.md. Full review, plus:\n- Any proof-list feature it changes needs its confidence proof at the reference level: a fixture table exported from the Lean model plus a test that checks the code against it (SPEC.md F17). A model-only level blocks the merge. The code level (a translation) is required only when an issue asks for one.\n{}",
             quoted_list(&brief.tier.sensitive_files),
             review_steps(brief)
         ),
@@ -362,7 +362,7 @@ fn checks_step(brief: &ReviewBrief) -> &'static str {
             "- Review by reading. Do not build, run the tests or run the local checks: this role merges on approval.\n"
         }
         (ReviewMode::LocalChecks, true) => {
-            "- Run the project's local checks from AGENTS.md here, on the merge result. Nothing else checks this PR before it merges: a pending, red or stale GitHub run does not hold it up.\n"
+            "- Run the agent checks allowed in AGENTS.md here, on the merge result. Nothing else checks this PR before it merges: a pending, red or stale GitHub run does not hold it up.\n"
         }
         (ReviewMode::LocalChecks, false) => "",
     }
@@ -401,7 +401,7 @@ fn review_steps(brief: &ReviewBrief) -> String {
     steps.push_str("- Review every theorem statement, not the proofs: does it say what the SPEC.md section says, do its hypotheses exclude real inputs, is the cost model honest, and is the class of alternatives the one that matters?\n");
     steps.push_str("- Compare the claimed feature and changed runtime paths with the project proof list. A new proof-list feature needs Design.lean with exactly correct, cost_bound and optimal; off-list Lean or a theorem about one case gets changes requested. For a bug fix require the failing input in its confidence fixtures instead. Review confidence levels per language: reference by default, code only when requested, model flagged as a proof gap; sensitive changes require at least the reference level. Implementation must outweigh proofs, tests and docs together. Require author tests to cover a critical contract or a concrete scout failure.\n");
     if runs_checks {
-        steps.push_str("- When you doubt a claim no proof covers, write a stress script, run it, and put its output in your review.\n");
+        steps.push_str("- When you doubt a claim no proof covers, document the evidence and add a reproduction if it helps.\n");
     } else {
         steps.push_str("- When you doubt a claim no proof covers, say what you doubt and why in your review. Block on it only if it meets the severity bar; otherwise file it as an issue.\n");
     }

@@ -54,9 +54,9 @@ const DEFAULT_AGENTS_BODY: &str = r#"Use the project instructions already loaded
 The project spec defines what to build. The Task List defines what is left.
 
 ## Commands
-- Find build, run and lint commands in the manifests or the spec section that defines them. Record those commands here when established.
-- Use `queue_run` from `velocity-run` for commands that can take more than a minute. End your turn after queuing and continue from Velocity's result. Run other builds, tests and lint through `rosen run -- <command>`. Never run a long-lived dev server through the queue.
-- Check only what your change affects before naming it. Lint reports zero warnings. Never repeat a passed check unless its inputs changed.
+- Agents use Rust formatting, UI type-check and lint, and one targeted Rust type-check. The integration build runs Rust compilation, clippy and full tests. The release gate runs the stress suite.
+- Queue `cargo check -p <crate>` for the crate your change touches via `queue_run` from `velocity-run`, or use `rosen run -- cargo check -p <crate>`. After an MCP command queues, end your turn and continue from Velocity's result.
+- Check only what your change affects before naming it. Never repeat a passed check unless its inputs changed.
 - Run `lake build` in `proofs/` when changing a pinned Lean project.
 
 ## Code

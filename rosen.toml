@@ -3,9 +3,8 @@
 # a change, so an edit takes effect only once it lands. Unknown keys are
 # refused. `rosen config show` prints the configuration in force.
 
-# Changes land on a clean merge, with no approval or pre-land receipt. Build and lint
-# run after landing and revert only a broken build; test failures are recorded and
-# filed as issues (Rosen R7, R8, R12, #365; Velocity #380).
+# Changes land on a clean merge. Build, lint and tests run in the batched
+# integration build. Confirmed failures are fixed forward (Velocity #480).
 review = "after-land"
 
 # Untracked paths snapshots skip, in .gitignore syntax. They rank below
@@ -71,20 +70,17 @@ sensitive = [
 # unit, read from the manifests at the base. `ui/`, `proofs/` and `scripts/`
 # lie in no unit, so a change to them counts as reaching every unit.
 
-# Fast build set; #380 runs checks.pre_land after landing in after-land mode.
-# The script compares this folder with its last successful inputs, checks the
-# changed crates and their reverse dependencies, and checks bindings/UI only
-# when their inputs changed. Separate targets share sccache, never Cargo locks.
+# Retained for before-land mode. The integration suite covers these checks
+# when this project runs in after-land mode.
 [checks.pre_land]
 commands = [
     "node scripts/check-fast.mjs",
 ]
 
-# The full set, on landed commits in batches. In after-land mode #380 reports
-# test failures without reverting; #381 requires this set green for a release.
+# Full integration suite for after-land mode.
 [checks.post_land]
 commands = [
-    "node scripts/check-full.mjs",
+    "node scripts/check-full.mjs --integration",
 ]
 
 # Ready workspaces each machine's daemon keeps at the base tip. On a ReFS
@@ -93,18 +89,12 @@ commands = [
 [warm_pool]
 size = 8
 
-# Run in the template, or in each ready workspace where there is no ReFS, so
-# an agent's first build compiles only what it changed. No `--locked` or
-# `--frozen-lockfile`: a lockfile the base left stale must not leave every
-# workspace unprepared.
+# Prepare the Lean cache and UI dependencies in the template or slot.
 [prepare]
 commands = [
     # The elan lake proxy installs proofs/lean-toolchain before fetching Mathlib's cache.
     "cd proofs && lake exe cache get",
     "pnpm -C ui install",
-    "pnpm -C ui build",
-    "cargo build --workspace",
-    "cargo clippy --workspace --all-targets -- -D warnings",
 ]
 
 # The base is pushed here after each land. The server's git credential
