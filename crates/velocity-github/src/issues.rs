@@ -4,10 +4,13 @@ use std::path::{Path, PathBuf};
 use serde::Deserialize;
 use serde_json::json;
 
+use crate::issue_types::IssueState;
+use crate::pull_requests::Connection;
 use crate::{GitHubIssue, IssueInventory, PullRequestClient, PullRequestError};
 
 const ISSUE_FIELDS: &str = "id number title body url state author { login }
     createdAt updatedAt closedAt milestone { number } labels(first:100) { nodes { name } totalCount }";
+const BLOCKER_FIELDS: &str = "number state repository { nameWithOwner }";
 
 /// Uses the same signed-in gh transport and long-path repository discovery as
 /// PRs. No credential, shell, or provider-specific path is introduced here.
@@ -21,6 +24,41 @@ struct IssueNode {
     #[serde(flatten)]
     issue: GitHubIssue,
     labels: Labels,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct IssueWithDependencies {
+    #[serde(flatten)]
+    node: IssueNode,
+    issue_dependencies_summary: IssueDependenciesSummary,
+    blocked_by: Connection<Option<Blocker>>,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct IssueDependenciesSummary {
+    blocked_by: u32,
+}
+
+#[derive(Deserialize)]
+struct Blocker {
+    number: u32,
+    state: IssueState,
+    repository: BlockerRepository,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct BlockerRepository {
+    name_with_owner: String,
+}
+
+fn dependency_fields() -> String {
+    format!(
+        "issueDependenciesSummary {{ blockedBy }} blockedBy(first:10) {{
+        nodes {{ {BLOCKER_FIELDS} }} pageInfo {{ hasNextPage endCursor }} }}"
+    )
 }
 
 #[derive(Deserialize)]
@@ -52,29 +90,71 @@ impl IssueClient {
 
     pub fn open_issues(&self) -> Result<Vec<GitHubIssue>, PullRequestError> {
         let query = format!(
-            "query($owner:String!,$name:String!,$cursor:String) {{ repository(owner:$owner,name:$name) {{ issues(first:100,after:$cursor,states:OPEN,orderBy:{{field:CREATED_AT,direction:ASC}}) {{ nodes {{ {ISSUE_FIELDS} }} pageInfo {{ hasNextPage endCursor }} }} }} }}"
+            "query($owner:String!,$name:String!,$cursor:String) {{ repository(owner:$owner,name:$name) {{ issues(first:100,after:$cursor,states:OPEN,orderBy:{{field:CREATED_AT,direction:ASC}}) {{ nodes {{ {ISSUE_FIELDS} {} }} pageInfo {{ hasNextPage endCursor }} }} }} }}",
+            dependency_fields(),
         );
-        let issues: Vec<IssueNode> = self.transport.connection(
+        let issues: Vec<IssueWithDependencies> = self.transport.connection(
             &query,
             self.transport.variables(0),
             "/data/repository/issues",
         )?;
         issues
             .into_iter()
-            .map(|issue| self.decode_issue(issue))
+            .map(|issue| self.decode_issue_with_dependencies(issue))
             .collect()
     }
 
     pub(crate) fn read_issue(&self, number: u32) -> Result<GitHubIssue, PullRequestError> {
         let query = format!(
-            "query($owner:String!,$name:String!,$number:Int!) {{ repository(owner:$owner,name:$name) {{ issue(number:$number) {{ {ISSUE_FIELDS} }} }} }}"
+            "query($owner:String!,$name:String!,$number:Int!) {{ repository(owner:$owner,name:$name) {{ issue(number:$number) {{ {ISSUE_FIELDS} {} }} }} }}",
+            dependency_fields(),
         );
         let issue = self.transport.graphql_at(
             &query,
             self.transport.variables(number),
             "/data/repository/issue",
         )?;
-        self.decode_issue(issue)
+        self.decode_issue_with_dependencies(issue)
+    }
+
+    pub(crate) fn add_blocker(&self, issue: u32, blocker: u32) -> Result<(), PullRequestError> {
+        if issue == 0 || blocker == 0 || issue == blocker {
+            return Err(PullRequestError::Invalid(
+                "Use two distinct, positive issue numbers".into(),
+            ));
+        }
+        #[derive(Deserialize)]
+        struct IssueId {
+            id: String,
+        }
+        #[derive(Deserialize)]
+        struct DependencyIds {
+            issue: Option<IssueId>,
+            blocker: Option<IssueId>,
+        }
+        let mut variables = self.transport.variables(issue);
+        variables["blocker"] = json!(blocker);
+        let ids: DependencyIds = self.transport.graphql_at(
+            "query($owner:String!,$name:String!,$number:Int!,$blocker:Int!) {
+                repository(owner:$owner,name:$name) {
+                    issue(number:$number) { id } blocker: issue(number:$blocker) { id }
+                }
+            }",
+            variables,
+            "/data/repository",
+        )?;
+        let issue_id = ids
+            .issue
+            .ok_or_else(|| PullRequestError::Missing(format!("issue #{issue}")))?;
+        let blocker_id = ids
+            .blocker
+            .ok_or_else(|| PullRequestError::Missing(format!("issue #{blocker}")))?;
+        let _: IssueId = self.transport.graphql_at(
+            "mutation($input:AddBlockedByInput!) { addBlockedBy(input:$input) { issue { id } } }",
+            json!({"input": {"issueId": issue_id.id, "blockingIssueId": blocker_id.id}}),
+            "/data/addBlockedBy/issue",
+        )?;
+        Ok(())
     }
 
     #[track_caller]
@@ -175,6 +255,44 @@ impl IssueClient {
         node.issue.labels.sort();
         node.issue.scout = scout_attribution(&node.issue.body);
         Ok(node.issue)
+    }
+
+    fn decode_issue_with_dependencies(
+        &self,
+        node: IssueWithDependencies,
+    ) -> Result<GitHubIssue, PullRequestError> {
+        let mut issue = self.decode_issue(node.node)?;
+        issue.open_blocker_count = node.issue_dependencies_summary.blocked_by;
+        // The connection includes closed issues. Skip extra pages when the summary says none are open.
+        let blockers = if issue.open_blocker_count == 0 {
+            node.blocked_by.into_nodes()
+        } else {
+            self.transport.complete_connection(
+                &format!(
+                    "query($owner:String!,$name:String!,$number:Int!,$cursor:String) {{
+                    repository(owner:$owner,name:$name) {{ issue(number:$number) {{
+                      blockedBy(first:100,after:$cursor) {{ nodes {{ {BLOCKER_FIELDS} }}
+                        pageInfo {{ hasNextPage endCursor }} }} }} }} }}"
+                ),
+                self.transport.variables(issue.number),
+                "/data/repository/issue/blockedBy",
+                node.blocked_by,
+            )?
+        };
+        issue.open_blockers = blockers
+            .into_iter()
+            .flatten()
+            .filter(|blocker| blocker.state == IssueState::Open)
+            .map(|blocker| {
+                let repository = blocker.repository.name_with_owner;
+                if repository.eq_ignore_ascii_case(self.repository()) {
+                    format!("#{}", blocker.number)
+                } else {
+                    format!("{repository}#{}", blocker.number)
+                }
+            })
+            .collect();
+        Ok(issue)
     }
 }
 

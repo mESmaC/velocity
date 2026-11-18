@@ -43,6 +43,7 @@ Velocity fills free slots with ordinary build threads on the default model, usin
 The queue takes user-added tasks first, then issues by milestone number (no milestone last) and age, then agent-added and spec-generated tasks.
 Within each task group, the oldest task number goes first.
 The work inventory excludes claimed items, owner-decision questions, release blockers and issues labelled `no-change`.
+Continuous dispatch also skips GitHub issues with an open GitHub blocker and makes them eligible on the first issue refresh after their last blocker closes (#472).
 Issues can carry the labels `spec-question`, `needs-decision`, `needs-owner`, `owner-decision` or `release-blocker`, and dispatch also checks issue and task text for explicit owner-decision wording and task titles for the `release-blocker` marker.
 Working and awaiting-land build threads count toward N; a land or an ended turn with no named work and an empty Rosen diff frees its slot.
 A dispatch worker takes its next item in a fresh ACP session after cleanup, with a bounded handoff from Velocity and a session boundary in the existing conversation (#456).

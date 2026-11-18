@@ -14,6 +14,10 @@ Expansion starts collapsed and is saved per project.
 Click, Enter, Space and the arrow keys retain their row expansion behaviour.
 Issue discussion loads independently of Rosen state; a slow or failed comment fetch leaves work and dispatch available.
 
+**Issue dependencies (#472).** Issue rows show `Blocked by #n` for open GitHub blockers.
+When a decision sets an order between issues, record it as a GitHub issue dependency.
+The main watcher and review swarm can record dependencies between project issues with `scout_add_blocker { issue, blocker }`.
+
 **Dispatch and Accept.** The hover action, `I` and the palette retain single-issue dispatch.
 Dispatch claims the repository-qualified issue atomically, opens the owning thread if one already exists, retains the issue title and launches in its own Rosen workspace.
 Issue dispatch, continuous dispatch, swarms and dispatch workers pause new agent starts while the machine is below Rosen's commit reserve or its available physical memory is at most 4 GiB, capped at one fifth of installed memory (#481).

@@ -53,6 +53,7 @@ PR duty checks an item off when it lands that item's PR (F7).
 - [x] Task List: states, add input, `T`, `/task`, palette, attribution, live agent state (F8)
 - [x] Agent Task List tools, with autonomous edits and task pickup for continuous dispatch (F8, #439)
 - [x] Issues panel and single dispatch (F9)
+- [x] Show open GitHub blockers in the issues rail and skip blocked issues in continuous dispatch (F8, F9, #472)
 - [x] Empty dispatch turns save their reason and hold the issue for independent review (F8, F9, #469)
 - [x] Swarm: dialog, launch, PR duty capacity, sidebar row, view, broadcast, + Items, rebase on merge, task done / issue close (F10)
 

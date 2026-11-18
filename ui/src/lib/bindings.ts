@@ -1901,6 +1901,7 @@ export type IssuePanelRow_Deserialize = {
 	question?: SpecQuestion | null,
 	/**  The body's opening paragraph, shown when the row is expanded (#209). */
 	summary?: string,
+	blocked_by?: string | null,
 	thread_identifier?: number | null,
 	thread_label?: string | null,
 };
@@ -1913,6 +1914,7 @@ export type IssuePanelRow_Serialize = {
 	question: SpecQuestion | null,
 	/**  The body's opening paragraph, shown when the row is expanded (#209). */
 	summary: string,
+	blocked_by: string | null,
 	thread_identifier: number | null,
 	thread_label: string | null,
 };

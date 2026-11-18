@@ -172,6 +172,9 @@
             {#if row.thread_label}<span class="issue-agent"
                 >{row.thread_label}</span
               >{/if}
+            {#if row.blocked_by}
+              <span class="issue-blocker">Blocked by {row.blocked_by}</span>
+            {/if}
             <span>{row.labels.join(' · ')}</span>
             {#if row.scout}<span class="issue-scout"
                 ><Icon name="scout" />{row.scout}</span

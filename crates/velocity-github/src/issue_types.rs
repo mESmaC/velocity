@@ -28,6 +28,10 @@ pub struct GitHubIssue {
     pub scout: Option<String>,
     #[serde(default)]
     pub milestone: Option<IssueMilestone>,
+    #[serde(default)]
+    pub open_blocker_count: u32,
+    #[serde(default)]
+    pub open_blockers: Vec<String>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, Type)]
@@ -36,6 +40,10 @@ pub struct IssueMilestone {
 }
 
 impl GitHubIssue {
+    pub fn has_open_blockers(&self) -> bool {
+        self.open_blocker_count > 0 || !self.open_blockers.is_empty()
+    }
+
     /// Whether the issue is labelled `spec-question`: an open SPEC.md §8 question that
     /// waits on the owner's answer (F9), so it holds no build work of its own.
     pub fn is_spec_question(&self) -> bool {

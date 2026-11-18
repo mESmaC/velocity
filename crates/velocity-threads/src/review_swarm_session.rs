@@ -461,13 +461,14 @@ fn rosen_server(launch: &SwarmLaunch, environment: &[(String, String)]) -> Optio
 }
 
 fn prompt(launch: &SwarmLaunch, roster: &ScoutRoster, instruction: Option<&str>) -> String {
+    let dependencies = "When a decision sets an order between issues, use scout_add_blocker to record the dependency on GitHub.";
     let no_change = "Use review_swarm_no_change to list the issues waiting after an empty turn. \
         Read their discussion, following the GitHub link for any clipped evidence, and verify their acceptance criteria against the current base. \
         Resolve an already-fixed issue with verification evidence or requeue it with concrete instructions. \
         Leave the label in place if the blocker still prevents a productive retry.";
     if launch.no_change_only {
         return format!(
-            "You are {}, a Review swarm duty agent. {no_change}\n\n\
+            "You are {}, a Review swarm duty agent. {no_change} {dependencies}\n\n\
              Review the current base without editing it. Report completion through review_swarm_complete \
              with your summary and no proof features, then end the turn.",
             launch.nickname,
@@ -499,6 +500,7 @@ fn prompt(launch: &SwarmLaunch, roster: &ScoutRoster, instruction: Option<&str>)
         Check the implementation end to end against each claim and its SPEC section. \
         Reviews never gate, delay or revert a land. Do not approve, submit receipts or revert by hand; R12 owns build recovery. \
         Search scout_issues before filing, read possible duplicates with scout_issue, and use scout_file with executed failing evidence. \
+        {dependencies} \
         Claim issues and every path before editing through Rosen/AIRC. You may write a fix forward in your own workspace.\n\n\
         Identify every affected F17 proof-list feature from this project's SPEC.md. For each, write or update \
         proofs/<Feature>/Design.lean and the exported fixture table, with one implementation fixture check. \

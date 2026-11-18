@@ -35,6 +35,7 @@
   overflow-wrap: anywhere;
   user-select: text;
 }
+.issue-blocker,
 .issue-blocks {
   margin: var(--layout-empty-margin);
   font: var(--layout-item-meta-font);

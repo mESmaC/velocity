@@ -59,6 +59,7 @@ pub struct IssuePanelRow {
     /// The body's opening paragraph, shown when the row is expanded (#209).
     #[serde(default)]
     pub summary: String,
+    pub blocked_by: Option<String>,
     pub thread_identifier: Option<u32>,
     pub thread_label: Option<String>,
 }
@@ -70,6 +71,15 @@ impl IssuePanelRow {
             .iter()
             .any(|label| label.eq_ignore_ascii_case("spec-question"))
             .then(|| SpecQuestion::from_body(&issue.body));
+        let blocked_by = if !issue.open_blockers.is_empty() {
+            Some(issue.open_blockers.join(", "))
+        } else if issue.open_blocker_count == 1 {
+            Some("1 issue".into())
+        } else if issue.open_blocker_count > 1 {
+            Some(format!("{} issues", issue.open_blocker_count))
+        } else {
+            None
+        };
         Self {
             number: issue.number,
             title: issue.title,
@@ -77,6 +87,7 @@ impl IssuePanelRow {
             scout: issue.scout,
             question,
             summary: body_summary(&issue.body),
+            blocked_by,
             thread_identifier: None,
             thread_label: None,
         }
@@ -193,24 +204,18 @@ fn truncate(text: String) -> String {
 pub const ISSUE_FULL_REFRESH: Duration = Duration::from_secs(10 * 60);
 
 /// The last full read of the open issues and what the probe showed just before it, kept
-/// between refreshes so a refresh where nothing changed is one small request (#228).
+/// between refreshes so unchanged issues only need a lightweight probe (#228).
 #[derive(Default)]
 pub struct IssuePanelCache {
-    probe: Option<String>,
+    probe: Option<Vec<serde_json::Value>>,
     read_at: Option<Instant>,
     panel: Option<(String, Vec<IssuePanelRow>)>,
 }
 
 impl IssueClient {
-    /// The panel, read in full only when the probe shows the open issues changed. The probe
-    /// reads the open-issue count and the most recently updated open issue:
-    /// - a new or reopened issue changes the count, and is the newest update;
-    /// - an edited title or body, or an added or removed label, moves that issue's `updatedAt`
-    ///   to the newest;
-    /// - a closed, deleted or transferred issue leaves the open list and lowers the count.
-    ///
-    /// `updatedAt` has one-second precision, so a full read every `ISSUE_FULL_REFRESH`
-    /// catches two changes in one second on either side of a probe.
+    /// GitHub can close a blocker in another repository without editing the dependent issue.
+    /// The probe includes the open blocker counts so the rail picks up those changes.
+    /// Periodic full reads also catch changes that leave the timestamps and counts unchanged.
     pub fn cached_panel(
         &self,
         cache: &mut IssuePanelCache,
@@ -235,15 +240,15 @@ impl IssueClient {
         Ok(panel)
     }
 
-    fn probe_open_issues(&self) -> Result<String, PullRequestError> {
-        let probe: serde_json::Value = self.transport.graphql_at(
-            "query($owner:String!,$name:String!) { repository(owner:$owner,name:$name) {
-              issues(states:OPEN,first:1,orderBy:{field:UPDATED_AT,direction:DESC}) {
-                totalCount nodes { number updatedAt } } } }",
+    fn probe_open_issues(&self) -> Result<Vec<serde_json::Value>, PullRequestError> {
+        self.transport.connection(
+            "query($owner:String!,$name:String!,$cursor:String) { repository(owner:$owner,name:$name) {
+              issues(states:OPEN,first:100,after:$cursor,orderBy:{field:CREATED_AT,direction:ASC}) {
+                nodes { number updatedAt issueDependenciesSummary { blockedBy } }
+                pageInfo { hasNextPage endCursor } } } }",
             self.transport.variables(0),
             "/data/repository/issues",
-        )?;
-        Ok(probe.to_string())
+        )
     }
 
     pub fn panel(&self) -> Result<(String, Vec<IssuePanelRow>), PullRequestError> {

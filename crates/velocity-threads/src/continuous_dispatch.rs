@@ -72,6 +72,7 @@ impl DispatchView {
 /// Owner questions wait for an answer even before somebody labels them (#356, #389).
 pub fn actionable(issue: &GitHubIssue) -> bool {
     if issue.state != IssueState::Open
+        || issue.has_open_blockers()
         || issue.is_spec_question()
         || issue.labels.iter().any(|label| {
             [

@@ -125,6 +125,17 @@ impl ScoutServer {
         Ok(json!({"labels": labels}))
     }
 
+    fn add_blocker(&self, arguments: Value) -> Result<Value, ScoutIssueError> {
+        #[derive(Deserialize)]
+        struct Request {
+            issue: u32,
+            blocker: u32,
+        }
+        let Request { issue, blocker } = serde_json::from_value(arguments)?;
+        self.client()?.add_blocker(issue, blocker)?;
+        Ok(json!({"issue": issue, "blocked_by": blocker}))
+    }
+
     /// The arguments are a [`ScoutFinding`] without the scout and the review, which the
     /// server supplies, plus `publish`.
     fn file(&mut self, arguments: Value) -> Result<Value, ScoutIssueError> {
@@ -231,6 +242,14 @@ fn tool_list() -> Vec<Value> {
     vec![
         comparison_tool(),
         json!({
+            "name": "scout_add_blocker",
+            "description": "Record a decided order between two issues in this project's GitHub repository. The issue must wait for the blocker to close before continuous dispatch can start it.",
+            "inputSchema": {"type": "object", "properties": {
+                "issue": {"type":"integer","minimum":1,"description":"The issue that must wait"},
+                "blocker": {"type":"integer","minimum":1,"description":"The issue that must close first"}
+            }, "required":["issue", "blocker"], "additionalProperties":false},
+        }),
+        json!({
             "name": "scout_issues",
             "description": "Search open and closed issues for duplicates before filing. Returns the closest titles and one-line summaries (limit defaults to 10). Refine the query or pass next_offset as offset for more matches. Use scout_issue to read a candidate.",
             "inputSchema": {"type": "object", "properties": {
@@ -300,6 +319,7 @@ impl crate::mcp_stdio::ToolServer for ScoutServer {
 
     fn call(&mut self, name: Option<&str>, arguments: Value) -> Result<Value, String> {
         let result = match name {
+            Some("scout_add_blocker") => self.add_blocker(arguments),
             Some("scout_issues") => self.issues(arguments),
             Some("scout_issue") => self.issue(arguments),
             Some("scout_labels") => self.labels(&arguments),
