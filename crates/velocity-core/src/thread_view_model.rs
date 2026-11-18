@@ -191,6 +191,88 @@ pub enum TranscriptModeView {
     FullTranscript,
     CollapsedWithPrHistory,
     ExpandedWithPrHistory,
+    CollapsedWithLandHistory,
+    ExpandedWithLandHistory,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Deserialize, serde::Serialize)]
+#[cfg_attr(feature = "bindings", derive(specta::Type))]
+pub enum RosenChangeStage {
+    Editing,
+    Named,
+    Landing,
+    Landed,
+    Green,
+    Reopened,
+    Conflict,
+    Abandoned,
+}
+
+impl RosenChangeStage {
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Editing => "Editing",
+            Self::Named => "Named",
+            Self::Landing => "Landing",
+            Self::Landed => "Landed",
+            Self::Green => "Green",
+            Self::Reopened => "Reopened",
+            Self::Conflict => "Conflict",
+            Self::Abandoned => "Abandoned",
+        }
+    }
+
+    pub fn finished(self) -> bool {
+        matches!(self, Self::Landed | Self::Green | Self::Abandoned)
+    }
+}
+
+/// The change's server state and retained evidence for each of its lands (F6).
+#[derive(Clone, Debug, PartialEq, Eq, serde::Deserialize, serde::Serialize)]
+#[cfg_attr(feature = "bindings", derive(specta::Type))]
+pub struct RosenChangeView {
+    pub identifier: String,
+    pub stage: RosenChangeStage,
+    pub name: Option<String>,
+    pub proof_required: bool,
+    pub proved: bool,
+    pub conflicts: Vec<String>,
+    pub lands: Vec<RosenLandView>,
+}
+
+impl RosenChangeView {
+    pub fn new(identifier: String, stage: RosenChangeStage) -> Self {
+        Self {
+            identifier,
+            stage,
+            name: None,
+            proof_required: false,
+            proved: false,
+            conflicts: Vec::new(),
+            lands: Vec::new(),
+        }
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, serde::Deserialize, serde::Serialize)]
+#[cfg_attr(feature = "bindings", derive(specta::Type))]
+pub struct RosenLandView {
+    pub commit: String,
+    pub summary: String,
+    pub change: String,
+    pub receipt: Option<String>,
+    pub approvers: Vec<String>,
+    pub build_passed: bool,
+    pub checks_passed: bool,
+    pub revert: Option<String>,
+    pub failures: Vec<RosenLandFailureView>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, serde::Deserialize, serde::Serialize)]
+#[cfg_attr(feature = "bindings", derive(specta::Type))]
+pub struct RosenLandFailureView {
+    pub label: String,
+    pub output: String,
 }
 
 #[cfg_attr(
@@ -296,6 +378,7 @@ pub struct ThreadDetailSnapshot {
     pub transcript_mode: TranscriptModeView,
     pub worked_summary: Option<WorkedSummaryView>,
     pub pull_request_history: Option<PullRequestHistoryView>,
+    pub rosen_change: Option<RosenChangeView>,
     pub blocks: SharedBlocks,
     pub agent_commands: Vec<AgentCommandView>,
     pub composer_placeholder: String,
@@ -379,6 +462,7 @@ pub struct ThreadDetailEntry {
     pub show_work: bool,
     pub worked_summary: Option<WorkedSummaryView>,
     pub pull_request_history: Option<PullRequestHistoryView>,
+    pub rosen_change: Option<RosenChangeView>,
     pub blocks: SharedBlocks,
     pub previous_work_thread: Option<usize>,
     pub agent_commands: Vec<AgentCommandView>,
@@ -426,6 +510,7 @@ impl ThreadDetailEntry {
             show_work: false,
             worked_summary: None,
             pull_request_history: None,
+            rosen_change: None,
             blocks: SharedBlocks::default(),
             previous_work_thread: None,
             agent_commands: Vec::new(),
@@ -593,18 +678,8 @@ pub fn initial_worktree_step_group(worktree_path: &str, base_branch: &str) -> Ve
 
 /// Projects a `ThreadDetailEntry` into a serializable `ThreadDetailSnapshot`.
 pub fn project_thread_detail(entry: &ThreadDetailEntry) -> ThreadDetailSnapshot {
-    let chip = match thread_view::worktree_chip_state(!entry.branch.is_empty(), entry.lifecycle) {
-        WorktreeChipState::Hidden => WorktreeChipView::Hidden,
-        WorktreeChipState::Live => WorktreeChipView::Live,
-        WorktreeChipState::Deleted => WorktreeChipView::Deleted,
-    };
+    let (chip, mode) = thread_presentation(entry);
     let actions = thread_view::header_actions(entry.pull_request_number);
-    let mode =
-        match thread_view::transcript_mode(entry.pull_request_number.is_some(), entry.show_work) {
-            TranscriptMode::FullTranscript => TranscriptModeView::FullTranscript,
-            TranscriptMode::CollapsedWithPrHistory => TranscriptModeView::CollapsedWithPrHistory,
-            TranscriptMode::ExpandedWithPrHistory => TranscriptModeView::ExpandedWithPrHistory,
-        };
     let pill = thread_view::project_model_pill(entry.requested_fast, entry.model_has_fast_mode);
     let placeholder = match (entry.pull_request_number, entry.lifecycle) {
         (Some(_), ThreadLifecycle::Merged) => "Thread finished · change landed".into(),
@@ -612,6 +687,14 @@ pub fn project_thread_detail(entry: &ThreadDetailEntry) -> ThreadDetailSnapshot 
             "change closed · tell the agent to reopen it, or carry on in this workspace".into()
         }
         (Some(pr), _) => format!("Steer while it watches change #{pr}"),
+        (None, _)
+            if entry
+                .rosen_change
+                .as_ref()
+                .is_some_and(|change| change.stage == RosenChangeStage::Reopened) =>
+        {
+            "Steer the reopened thread".into()
+        }
         (None, _) => "Steer, queue a follow-up, or / for commands".into(),
     };
     ThreadDetailSnapshot {
@@ -637,6 +720,7 @@ pub fn project_thread_detail(entry: &ThreadDetailEntry) -> ThreadDetailSnapshot 
         transcript_mode: mode,
         worked_summary: worked_summary(entry),
         pull_request_history: entry.pull_request_history.clone(),
+        rosen_change: entry.rosen_change.clone(),
         blocks: entry.blocks.clone(),
         agent_commands: entry.agent_commands.clone(),
         composer_placeholder: placeholder,
@@ -653,8 +737,48 @@ pub fn project_thread_detail(entry: &ThreadDetailEntry) -> ThreadDetailSnapshot 
     }
 }
 
+fn thread_presentation(entry: &ThreadDetailEntry) -> (WorktreeChipView, TranscriptModeView) {
+    if let Some(change) = &entry.rosen_change {
+        let chip = if entry.worktree_path.is_empty() {
+            WorktreeChipView::Hidden
+        } else if change.stage.finished() {
+            WorktreeChipView::Deleted
+        } else {
+            WorktreeChipView::Live
+        };
+        let has_history = !change.lands.is_empty();
+        let mode = match (change.stage, entry.show_work, has_history) {
+            (RosenChangeStage::Landed | RosenChangeStage::Green, true, true) => {
+                TranscriptModeView::ExpandedWithLandHistory
+            }
+            (RosenChangeStage::Landed | RosenChangeStage::Green, false, true) => {
+                TranscriptModeView::CollapsedWithLandHistory
+            }
+            _ => TranscriptModeView::FullTranscript,
+        };
+        return (chip, mode);
+    }
+    let chip = match thread_view::worktree_chip_state(!entry.branch.is_empty(), entry.lifecycle) {
+        WorktreeChipState::Hidden => WorktreeChipView::Hidden,
+        WorktreeChipState::Live => WorktreeChipView::Live,
+        WorktreeChipState::Deleted => WorktreeChipView::Deleted,
+    };
+    let mode =
+        match thread_view::transcript_mode(entry.pull_request_number.is_some(), entry.show_work) {
+            TranscriptMode::FullTranscript => TranscriptModeView::FullTranscript,
+            TranscriptMode::CollapsedWithPrHistory => TranscriptModeView::CollapsedWithPrHistory,
+            TranscriptMode::ExpandedWithPrHistory => TranscriptModeView::ExpandedWithPrHistory,
+        };
+    (chip, mode)
+}
+
 fn worked_summary(entry: &ThreadDetailEntry) -> Option<WorkedSummaryView> {
-    if entry.pull_request_number.is_none() {
+    if entry.pull_request_number.is_none()
+        && !entry
+            .rosen_change
+            .as_ref()
+            .is_some_and(|change| !change.lands.is_empty() && change.stage.finished())
+    {
         return entry.worked_summary.clone();
     }
     if let Some(history) = &entry.pull_request_history {
@@ -688,7 +812,10 @@ fn worked_summary(entry: &ThreadDetailEntry) -> Option<WorkedSummaryView> {
         files_touched,
         added: entry.added,
         deleted: entry.deleted,
-        proved: false,
+        proved: entry
+            .rosen_change
+            .as_ref()
+            .is_some_and(|change| change.proved),
     })
 }
 

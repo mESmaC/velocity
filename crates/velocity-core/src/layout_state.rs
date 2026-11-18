@@ -256,8 +256,9 @@ impl LayoutState {
     }
 
     /// Feature owners replace their read model after domain events, then emit a snapshot.
-    pub fn replace_data(&mut self, data: LayoutData) {
+    pub fn replace_data(&mut self, mut data: LayoutData) {
         self.follow_new_work_session(&data);
+        self.retain_land_history_expansion(&mut data);
         if self.data.project_identifier != data.project_identifier {
             self.workspace_count = None;
         }
@@ -268,6 +269,26 @@ impl LayoutState {
         self.palette_selection =
             layout::bounded_selection(self.palette_results().len(), self.palette_selection);
         self.changed();
+    }
+
+    fn retain_land_history_expansion(&self, data: &mut LayoutData) {
+        if self.data.project_identifier != data.project_identifier {
+            return;
+        }
+        for entry in &mut data.threads {
+            let Some(detail) = &mut entry.detail else {
+                continue;
+            };
+            if detail.rosen_change.is_some() {
+                detail.show_work = self
+                    .data
+                    .threads
+                    .iter()
+                    .find(|previous| previous.policy.identifier == entry.policy.identifier)
+                    .and_then(|previous| previous.detail.as_ref())
+                    .is_some_and(|previous| previous.show_work);
+            }
+        }
     }
 
     fn follow_new_work_session(&mut self, data: &LayoutData) {
@@ -1486,6 +1507,11 @@ impl LayoutState {
                     .live_thread(entry.policy.identifier)
                     .is_some_and(|live| live.titling_model.is_some()),
             metadata,
+            change_stage: entry
+                .detail
+                .as_ref()
+                .and_then(|detail| detail.rosen_change.as_ref())
+                .map(|change| change.stage),
             group: entry.policy.group,
             duty_role: entry.duty.as_ref().map(|duty| duty.role),
             member,

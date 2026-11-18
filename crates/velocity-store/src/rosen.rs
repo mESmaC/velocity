@@ -2,7 +2,7 @@
 //! take the place of the GitHub PR watcher for threads that work in Rosen workspaces.
 
 use serde::{Deserialize, Serialize};
-use velocity_core::thread_view_model::TranscriptBlock;
+use velocity_core::thread_view_model::{RosenChangeStage, RosenChangeView, TranscriptBlock};
 
 use crate::{AgentActivity, ReviewStage, StateStore, StoreError, ThreadItem, ThreadState};
 
@@ -92,6 +92,75 @@ impl RosenFollowUp {
 }
 
 impl StateStore {
+    /// Put the Resolve action through the same durable turn-boundary delivery as a conflict event.
+    pub fn queue_rosen_resolution(
+        &mut self,
+        project: u32,
+        identifier: u32,
+        change: &str,
+        message: String,
+    ) -> Result<(), StoreError> {
+        let mut next = self.state.clone();
+        let Some(thread) = next
+            .projects
+            .iter_mut()
+            .find(|item| item.id == project)
+            .and_then(|item| {
+                item.threads.iter_mut().find(|thread| {
+                    thread.id == identifier
+                        && thread.rosen_change.as_deref() == Some(change)
+                        && !matches!(thread.state, ThreadState::Merged | ThreadState::Done)
+                })
+            })
+        else {
+            return Ok(());
+        };
+        if thread
+            .rosen_follow_ups
+            .iter()
+            .any(|pending| matches!(pending, RosenFollowUp::Conflict { .. }))
+        {
+            return Ok(());
+        }
+        thread.rosen_follow_ups.push(RosenFollowUp::Conflict {
+            message,
+            mark: thread.transcript.len(),
+        });
+        self.store_snapshot(next)
+    }
+
+    /// Updates the cached view only for the same registered change. Read failures retain the
+    /// last view and a later follower pass retries the read.
+    pub fn save_rosen_change_views(
+        &mut self,
+        project: u32,
+        mut views: std::collections::BTreeMap<String, (u64, RosenChangeView)>,
+    ) -> Result<bool, StoreError> {
+        let Some(current) = self.project(project) else {
+            return Ok(false);
+        };
+        views.retain(|change, (generation, view)| {
+            current.threads.iter().any(|thread| {
+                thread.rosen_change.as_ref() == Some(change)
+                    && thread.rosen_progress_generation == *generation
+                    && thread.rosen_change_view.as_ref() != Some(view)
+            })
+        });
+        if views.is_empty() {
+            return Ok(false);
+        }
+        let mut next = self.state.clone();
+        if let Some(item) = next.projects.iter_mut().find(|item| item.id == project) {
+            for thread in &mut item.threads {
+                if let Some((_, view)) = thread.rosen_change.as_ref().and_then(|id| views.get(id)) {
+                    thread.rosen_change_view = Some(view.clone());
+                }
+            }
+        }
+        self.store_snapshot(next)?;
+        Ok(true)
+    }
+
     /// Save a conflict notice with its event cursor, without sending it to a busy agent
     /// whose workspace still holds the old basis. Superseded pending notices coalesce.
     pub fn save_rosen_conflict(
@@ -372,6 +441,23 @@ fn queue_follow_up(thread: &mut ThreadItem, progress: RosenProgress, message: &s
 /// Moves the thread through review as its change does. Returns true when the thread has
 /// just become merged, so its tasks are done.
 fn apply_progress(thread: &mut ThreadItem, progress: RosenProgress) -> bool {
+    if let Some(view) = &mut thread.rosen_change_view {
+        view.stage = match progress {
+            RosenProgress::Named if thread.state != ThreadState::Merged => RosenChangeStage::Named,
+            RosenProgress::Landed if view.stage != RosenChangeStage::Green => {
+                RosenChangeStage::Landed
+            }
+            RosenProgress::Abandoned => RosenChangeStage::Abandoned,
+            RosenProgress::Reverted => RosenChangeStage::Reopened,
+            RosenProgress::ChangesRequested if thread.state != ThreadState::Merged => {
+                RosenChangeStage::Editing
+            }
+            _ => view.stage,
+        };
+        if view.stage.finished() || view.stage == RosenChangeStage::Reopened {
+            view.conflicts.clear();
+        }
+    }
     match progress {
         // A replayed event never takes a merged thread back to review.
         RosenProgress::Named if thread.state != ThreadState::Merged => {

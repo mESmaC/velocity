@@ -766,6 +766,10 @@ pub struct ThreadItem {
     /// The Rosen change the thread works on, when its workspace came from Rosen (F5).
     #[serde(default)]
     pub rosen_change: Option<String>,
+    /// Last observed Rosen thread view, retained while its project reconnects (F6).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[specta(skip)]
+    pub rosen_change_view: Option<velocity_core::thread_view_model::RosenChangeView>,
     /// Named snapshots through this event were imported from Git history.
     #[serde(default)]
     #[specta(skip)]
@@ -855,6 +859,7 @@ impl ThreadItem {
             worktree_path_id: None,
             pull_request_number: None,
             rosen_change: None,
+            rosen_change_view: None,
             rosen_import_event: 0,
             pending_rosen_launch: None,
             rosen_progress_generation: 0,
@@ -906,6 +911,7 @@ impl ThreadItem {
             worktree_path_id: None,
             pull_request_number: None,
             rosen_change: None,
+            rosen_change_view: None,
             rosen_import_event: 0,
             pending_rosen_launch: None,
             rosen_progress_generation: 0,

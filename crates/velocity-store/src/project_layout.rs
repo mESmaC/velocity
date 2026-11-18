@@ -18,7 +18,7 @@ use velocity_core::layout_view::{
 };
 use velocity_core::navigation::NavigationView;
 use velocity_core::thread_view::ThreadLifecycle;
-use velocity_core::thread_view_model::ThreadDetailEntry;
+use velocity_core::thread_view_model::{RosenChangeStage, RosenChangeView, ThreadDetailEntry};
 
 pub(crate) fn active_project(state: &PersistedState) -> Option<&ProjectItem> {
     usize::try_from(state.active_project_index)
@@ -173,6 +173,7 @@ fn thread_entry(thread: &ThreadItem, task_count: usize, settings: &crate::Settin
 
 /// The thread header, conversation and model pill retained in `state.json`.
 fn thread_detail(thread: &ThreadItem, settings: &crate::Settings) -> ThreadDetailEntry {
+    let rosen_change = rosen_change(thread);
     ThreadDetailEntry {
         identifier: thread.id as usize,
         title: thread.title.clone(),
@@ -189,7 +190,11 @@ fn thread_detail(thread: &ThreadItem, settings: &crate::Settings) -> ThreadDetai
         added: thread.additions as usize,
         deleted: thread.deletions as usize,
         elapsed_label: elapsed_label(thread.elapsed_seconds),
-        pull_request_number: thread.pull_request_number.map(|number| number as usize),
+        pull_request_number: if rosen_change.is_none() {
+            thread.pull_request_number.map(|number| number as usize)
+        } else {
+            None
+        },
         agent_busy: matches!(
             thread.state,
             ThreadState::Working | ThreadState::Review | ThreadState::Closed
@@ -203,8 +208,9 @@ fn thread_detail(thread: &ThreadItem, settings: &crate::Settings) -> ThreadDetai
         pull_request_history: thread
             .follow_through
             .as_ref()
-            .filter(|watch| watch.number != 0)
+            .filter(|watch| rosen_change.is_none() && watch.number != 0)
             .map(|watch| watch.view()),
+        rosen_change,
         blocks: thread.transcript.clone(),
         previous_work_thread: thread.previous_work_thread.map(|id| id as usize),
         agent_commands: Vec::new(),
@@ -213,6 +219,33 @@ fn thread_detail(thread: &ThreadItem, settings: &crate::Settings) -> ThreadDetai
         effort_label: effort_label(thread.effort).into(),
         requested_fast: thread.preferred_speed == SpeedMode::Fast,
         model_has_fast_mode: thread.model_supports_fast,
+    }
+}
+
+fn rosen_change(thread: &ThreadItem) -> Option<RosenChangeView> {
+    let identifier = thread.rosen_change.as_ref()?;
+    if let Some(view) = &thread.rosen_change_view
+        && &view.identifier == identifier
+    {
+        return Some(view.clone());
+    }
+    Some(RosenChangeView::new(
+        identifier.clone(),
+        rosen_stage(thread),
+    ))
+}
+
+fn rosen_stage(thread: &ThreadItem) -> RosenChangeStage {
+    if let Some(view) = &thread.rosen_change_view
+        && thread.rosen_change.as_ref() == Some(&view.identifier)
+    {
+        return view.stage;
+    }
+    match (thread.state, thread.review_stage) {
+        (ThreadState::Merged, _) => RosenChangeStage::Landed,
+        (ThreadState::Done, _) => RosenChangeStage::Abandoned,
+        (ThreadState::Review, Some(ReviewStage::Review)) => RosenChangeStage::Named,
+        _ => RosenChangeStage::Editing,
     }
 }
 
@@ -306,6 +339,9 @@ pub(crate) fn thread_metadata(thread: &ThreadItem) -> String {
             .is_some_and(|member| member.choosing)
     {
         return "choosing work".into();
+    }
+    if thread.rosen_change.is_some() {
+        return rosen_stage(thread).label().into();
     }
     if thread.state == ThreadState::Review {
         let stage = match thread.review_stage {

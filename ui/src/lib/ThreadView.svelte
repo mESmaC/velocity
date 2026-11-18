@@ -1,15 +1,19 @@
 <script lang="ts">
   import PaneState from './PaneState.svelte';
+  import ChangeHistory from './ChangeHistory.svelte';
+  import ChangeTrack from './ChangeTrack.svelte';
   import Composer from './Composer.svelte';
   import Icon from './Icon.svelte';
   import Markdown from './Markdown.svelte';
   import TokenUsage from './TokenUsage.svelte';
   import TranscriptBlocks from './TranscriptBlocks.svelte';
   import { followTranscript } from './follow-transcript';
-  import { threadMenuCommands } from './ipc';
+  import { threadChangeCommands, threadMenuCommands } from './ipc';
   import type {
     LayoutAction,
     LayoutSnapshot,
+    RosenChangeView,
+    RosenThreadAction,
     ThreadDetailSnapshot,
   } from './ipc';
   let {
@@ -22,6 +26,90 @@
     send: (action: LayoutAction) => void;
   } = $props();
   let usageOpen = $state(false);
+  let change = $derived(thread.rosen_change);
+  let changeKey = $derived(
+    `${layout.project_identifier}:${thread.identifier}:${change?.identifier}`,
+  );
+  let actions = $state<{
+    key: string;
+    panel: 'name' | 'abandon' | null;
+    pending: boolean;
+    error: string;
+  }>({
+    key: '',
+    panel: null,
+    pending: false,
+    error: '',
+  });
+  let name = $state('');
+  let panel = $derived(actions.key === changeKey ? actions.panel : null);
+  let pending = $derived(actions.key === changeKey && actions.pending);
+  let actionable = $derived(
+    change && !['Landed', 'Green', 'Abandoned'].includes(change.stage),
+  );
+
+  function openActions(next: 'name' | 'abandon' | null) {
+    name = '';
+    actions = { key: changeKey, panel: next, pending: false, error: '' };
+  }
+
+  async function runChange(action: RosenThreadAction) {
+    const project = layout.project_identifier;
+    if (!change || project === null || pending) return;
+    const key = changeKey;
+    const currentPanel = panel;
+    actions = { key, panel: currentPanel, pending: true, error: '' };
+    try {
+      await threadChangeCommands.run(
+        project,
+        Number(thread.identifier),
+        change.identifier,
+        action,
+      );
+      if (actions.key !== key) return;
+      actions = { key, panel: null, pending: false, error: '' };
+    } catch (error) {
+      if (actions.key === key)
+        actions = {
+          key,
+          panel: currentPanel,
+          pending: false,
+          error: String(error),
+        };
+    }
+  }
+
+  function changeSteps(view: RosenChangeView) {
+    const reopened =
+      view.stage === 'Reopened' ||
+      (view.stage === 'Conflict' && Boolean(view.lands.at(-1)?.revert));
+    const labels = ['Editing', 'Named', 'Landing', 'Landed', 'Green'];
+    if (view.proof_required) labels.splice(2, 0, 'Proved');
+    if (reopened) labels.splice(labels.length - 1, 1, 'Reverted', 'Reopened');
+    if (view.stage === 'Abandoned')
+      labels.splice(view.name ? 2 : 1, labels.length, 'Abandoned');
+    let stage: string = view.stage;
+    if (view.stage === 'Conflict') {
+      if (reopened) stage = 'Reopened';
+      else stage = view.name ? 'Landing' : 'Editing';
+    }
+    const active = labels.indexOf(stage);
+    return labels.map((label, index) => ({
+      label,
+      state:
+        label === 'Reverted' || (index === active && view.stage === 'Conflict')
+          ? 'fail'
+          : label === 'Proved' && !view.proved
+            ? 'todo'
+            : index < active ||
+                (index === active &&
+                  ['Green', 'Abandoned'].includes(view.stage))
+              ? 'done'
+              : index === active
+                ? 'run'
+                : 'todo',
+    }));
+  }
 
   async function retryResponse() {
     const project = layout.project_identifier;
@@ -69,7 +157,11 @@
     </h1>
     <div class="meta">
       {#if thread.account_label}<span>{thread.account_label}</span>{/if}
-      {#if thread.branch}
+      {#if change}
+        <span class="branch mono" title={change.identifier}>
+          <Icon name="branch" /><span class="label">{change.identifier}</span>
+        </span>
+      {:else if thread.branch}
         <span class="branch" title={thread.branch}
           ><Icon name="branch" /><span class="label">{thread.branch}</span
           ></span
@@ -89,7 +181,9 @@
         </button>
       {:else if thread.worktree_chip === 'Deleted'}
         <span class="wt gone" title={thread.worktree_path}>
-          <Icon name="folder" />workspace deleted
+          <Icon name="folder" />{change
+            ? thread.worktree_short_path
+            : 'workspace deleted'}
         </span>
       {/if}
       <span class="add">+{thread.added}</span>
@@ -102,7 +196,7 @@
         aria-expanded={usageOpen}
         onclick={() => (usageOpen = !usageOpen)}>Token usage</button
       >
-      {#if thread.has_diff_action}
+      {#if thread.has_diff_action && (!change || thread.worktree_chip === 'Live')}
         <button
           type="button"
           class="btn"
@@ -112,7 +206,7 @@
           Diff <kbd>D</kbd>
         </button>
       {/if}
-      {#if thread.has_editor_action}
+      {#if thread.has_editor_action && (!change || thread.worktree_chip === 'Live')}
         <button
           type="button"
           class="btn"
@@ -122,7 +216,28 @@
           Editor <kbd>E</kbd>
         </button>
       {/if}
-      {#if thread.pull_request_number !== null}
+      {#if actionable && thread.worktree_chip === 'Live'}
+        <button
+          type="button"
+          class="btn primary"
+          disabled={pending || thread.agent_busy}
+          aria-expanded={panel === 'name'}
+          onclick={() => openActions('name')}>Name change</button
+        >
+        <button
+          type="button"
+          class="btn"
+          disabled={pending || thread.agent_busy}
+          onclick={() => runChange('Rebase')}>Rebase</button
+        >
+        <button
+          type="button"
+          class="btn"
+          disabled={pending || thread.agent_busy}
+          aria-expanded={panel === 'abandon'}
+          onclick={() => openActions('abandon')}>Abandon</button
+        >
+      {:else if thread.pull_request_number !== null}
         <button
           type="button"
           class="btn primary"
@@ -138,6 +253,56 @@
     </div>
   </header>
 
+  {#if actionable && panel === 'name'}
+    <form
+      class="change-action"
+      onsubmit={(event) => {
+        event.preventDefault();
+        if (name.trim() && !thread.agent_busy)
+          void runChange({ Name: { message: name } });
+      }}
+    >
+      <label for="change-name">Name change</label>
+      <input
+        id="change-name"
+        bind:value={name}
+        placeholder="Summarize the change"
+        required
+        disabled={pending}
+      />
+      <button
+        class="btn primary"
+        disabled={pending || !name.trim() || thread.agent_busy}
+        >Name change</button
+      >
+      <button
+        type="button"
+        class="btn"
+        disabled={pending}
+        onclick={() => openActions(null)}>Cancel</button
+      >
+    </form>
+  {:else if actionable && panel === 'abandon'}
+    <div class="change-action">
+      <span>Abandon this change and remove its workspace?</span>
+      <button
+        type="button"
+        class="btn"
+        disabled={pending || thread.agent_busy}
+        onclick={() => runChange('Abandon')}>Abandon change</button
+      >
+      <button
+        type="button"
+        class="btn"
+        disabled={pending}
+        onclick={() => openActions(null)}>Cancel</button
+      >
+    </div>
+  {/if}
+  {#if actions.key === changeKey && actions.error}
+    <div class="change-action" role="alert">{actions.error}</div>
+  {/if}
+
   {#if usageOpen && layout.project_identifier !== null}
     <div class="thread-token-usage">
       <TokenUsage
@@ -145,6 +310,9 @@
         thread={Number(thread.identifier)}
       />
     </div>
+  {/if}
+  {#if change}
+    <ChangeTrack steps={changeSteps(change)} />
   {/if}
 
   <div class="transcript" use:followTranscript={thread.identifier}>
@@ -163,22 +331,53 @@
           )}
         empty={!thread.blocks.length &&
           !thread.agent_busy &&
+          !change?.lands.length &&
+          !change?.conflicts.length &&
           !thread.no_change_reason}
         message="No updates yet · Send a message to start."
       />
-      <TranscriptBlocks
-        blocks={thread.blocks}
-        retry={thread.agent_busy ? undefined : retryResponse}
-        removeQueued={(index) =>
-          send({
-            Request: {
-              RemoveQueuedMessage: {
-                identifier: thread.identifier,
-                index: String(index),
+      {#if change && thread.worked_summary && thread.transcript_mode !== 'FullTranscript'}
+        <div class="worked">
+          <Icon name="check" />
+          <span>
+            Task finished · {thread.worked_summary.tool_calls} tool calls · {thread
+              .worked_summary.files_touched} files ·
+            <span class="add">+{thread.worked_summary.added}</span>
+            <span class="del">−{thread.worked_summary.deleted}</span>
+            {thread.worked_summary.proved ? ' · proved' : ''}
+          </span>
+          <button
+            type="button"
+            class="mini"
+            onclick={() => send('ToggleShowWork')}
+          >
+            {thread.show_work ? 'Hide work' : 'Show work'}
+          </button>
+        </div>
+      {/if}
+      {#if thread.transcript_mode !== 'CollapsedWithLandHistory'}
+        <TranscriptBlocks
+          blocks={thread.blocks}
+          retry={thread.agent_busy ? undefined : retryResponse}
+          removeQueued={(index) =>
+            send({
+              Request: {
+                RemoveQueuedMessage: {
+                  identifier: thread.identifier,
+                  index: String(index),
+                },
               },
-            },
-          })}
-      />
+            })}
+        />
+      {/if}
+      {#if change}
+        <ChangeHistory
+          {change}
+          resolve={() => runChange('Resolve')}
+          resolving={pending}
+        />
+      {/if}
+
       {#if thread.no_change_reason}
         <div class="msg-agent">
           <div class="status-line"><strong>Ended with no change</strong></div>
@@ -188,7 +387,7 @@
     </div>
   </div>
 
-  {#if !thread.no_change_reason}
+  {#if !thread.no_change_reason && (!change || actionable)}
     <div class="dock">
       <Composer
         {layout}

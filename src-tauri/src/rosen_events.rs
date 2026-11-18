@@ -59,27 +59,54 @@ async fn follow_project(application: &AppHandle, project: u32) {
                     if let Some(warm) = &warm {
                         let _ = warm.try_send(());
                     }
-                    while let Some(event) = stream.next().await {
-                        if matches!(
-                            event.kind,
-                            velocity_rosen::ProjectEventKind::Landed
-                                | velocity_rosen::ProjectEventKind::Reverted
-                        ) && let Some(warm) = &warm
-                        {
-                            let _ = warm.try_send(());
-                        }
-                        if let Err(error) = consume(application, project, &event).await {
-                            report::<()>(Err(error));
-                            break;
-                        }
-                        after = after.max(event.seq);
-                    }
+                    follow_connected(application, project, &mut stream, &mut after, warm.as_ref())
+                        .await;
                 }
                 Err(error) => eprintln!("Rosen events for project {project}: {error}"),
             }
         }
         connection_state(application, project, true);
         tokio::time::sleep(RECONNECT).await;
+    }
+}
+
+async fn follow_connected(
+    application: &AppHandle,
+    project: u32,
+    stream: &mut EventStream,
+    after: &mut u64,
+    warm: Option<&std::sync::mpsc::SyncSender<()>>,
+) {
+    use velocity_rosen::ProjectEventKind::*;
+    let mut refresh = tokio::time::interval(RECONNECT);
+    refresh.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+    loop {
+        tokio::select! {
+            _ = refresh.tick() => {
+                report(crate::rosen_thread::refresh(application, project, None, false).await);
+            }
+            event = stream.next() => {
+                let Some(event) = event else { break };
+                if matches!(event.kind, Landed | Reverted) && let Some(warm) = warm {
+                    let _ = warm.try_send(());
+                }
+                if let Err(error) = consume(application, project, &event).await {
+                    report::<()>(Err(error));
+                    break;
+                }
+                *after = (*after).max(event.seq);
+                match event.kind {
+                    Built | Green => report(crate::rosen_thread::refresh(application, project, None, false).await),
+                    Landed | Reverted | Updated | Conflict | Rebased | PostLandFailure | Review => {
+                        report(crate::rosen_thread::refresh(application, project, event.change.as_deref(), true).await);
+                    }
+                    Snapshot if velocity_rosen::change_event(&event).is_some() => {
+                        report(crate::rosen_thread::refresh(application, project, event.change.as_deref(), true).await);
+                    }
+                    _ => {}
+                }
+            }
+        }
     }
 }
 
@@ -432,7 +459,7 @@ fn save(
     Ok(thread)
 }
 
-fn publish_progress(
+pub(crate) fn publish_progress(
     application: &AppHandle,
     store: &velocity_store::StateStore,
 ) -> Result<(), String> {

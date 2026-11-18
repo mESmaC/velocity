@@ -151,6 +151,7 @@ export const commands = {
 	/**  Expands or collapses one issue row in the rail (#209) and broadcasts the new snapshot. */
 	toggleIssueExpanded: (number: number) => __TAURI_INVOKE<IssuePanelSnapshot_Serialize>("toggle_issue_expanded", { number }),
 	watchRosenStatus: (projectIdentifier: number | null) => __TAURI_INVOKE<boolean>("watch_rosen_status", { projectIdentifier }),
+	runRosenThreadAction: (projectIdentifier: number, threadIdentifier: number, change: string, action: RosenThreadAction) => __TAURI_INVOKE<null>("run_rosen_thread_action", { projectIdentifier, threadIdentifier, change, action }),
 	/**
 	 *  Adds or removes a shared server. New agents of every provider get the saved list; agents
 	 *  already running keep the servers they started with.
@@ -3932,6 +3933,64 @@ export type RewriteView_Serialize = {
 
 export type Role = "agent" | "checker";
 
+export type RosenChangeStage = "Editing" | "Named" | "Landing" | "Landed" | "Green" | "Reopened" | "Conflict" | "Abandoned";
+
+/**  The change's server state and retained evidence for each of its lands (F6). */
+export type RosenChangeView = RosenChangeView_Serialize | RosenChangeView_Deserialize;
+
+/**  The change's server state and retained evidence for each of its lands (F6). */
+export type RosenChangeView_Deserialize = {
+	identifier: string,
+	stage: RosenChangeStage,
+	name?: string | null,
+	proof_required: boolean,
+	proved: boolean,
+	conflicts: string[],
+	lands: RosenLandView_Deserialize[],
+};
+
+/**  The change's server state and retained evidence for each of its lands (F6). */
+export type RosenChangeView_Serialize = {
+	identifier: string,
+	stage: RosenChangeStage,
+	name: string | null,
+	proof_required: boolean,
+	proved: boolean,
+	conflicts: string[],
+	lands: RosenLandView_Serialize[],
+};
+
+export type RosenLandFailureView = {
+	label: string,
+	output: string,
+};
+
+export type RosenLandView = RosenLandView_Serialize | RosenLandView_Deserialize;
+
+export type RosenLandView_Deserialize = {
+	commit: string,
+	summary: string,
+	change: string,
+	receipt?: string | null,
+	approvers: string[],
+	build_passed: boolean,
+	checks_passed: boolean,
+	revert?: string | null,
+	failures: RosenLandFailureView[],
+};
+
+export type RosenLandView_Serialize = {
+	commit: string,
+	summary: string,
+	change: string,
+	receipt: string | null,
+	approvers: string[],
+	build_passed: boolean,
+	checks_passed: boolean,
+	revert: string | null,
+	failures: RosenLandFailureView[],
+};
+
 export type RosenStatusChanged = RosenStatusChanged_Serialize | RosenStatusChanged_Deserialize;
 
 export type RosenStatusChanged_Deserialize = {
@@ -3947,6 +4006,10 @@ export type RosenStatusChanged_Serialize = {
 	owners: { [key in string]: OwningThread },
 	error: string | null,
 };
+
+export type RosenThreadAction = { Name: {
+	message: string,
+} } | "Rebase" | "Abandon" | "Resolve";
 
 export type ScoutCadence = "once" | "every_thirty_minutes" | "after_every_merge";
 
@@ -4033,6 +4096,7 @@ export type SidebarRow_Deserialize = {
 	 */
 	titling: boolean,
 	metadata: string,
+	change_stage?: RosenChangeStage | null,
 	group: ThreadGroup,
 	duty_role?: DutyRole | null,
 	member: boolean,
@@ -4056,6 +4120,7 @@ export type SidebarRow_Serialize = {
 	 */
 	titling: boolean,
 	metadata: string,
+	change_stage: RosenChangeStage | null,
 	group: ThreadGroup,
 	duty_role: DutyRole | null,
 	member: boolean,
@@ -4822,6 +4887,7 @@ export type ThreadDetailSnapshot_Deserialize = {
 	transcript_mode: TranscriptModeView,
 	worked_summary?: WorkedSummaryView_Deserialize | null,
 	pull_request_history?: PullRequestHistoryView_Deserialize | null,
+	rosen_change?: RosenChangeView_Deserialize | null,
 	blocks: TranscriptBlock_Deserialize[],
 	agent_commands: AgentCommandView[],
 	composer_placeholder: string,
@@ -4853,6 +4919,7 @@ export type ThreadDetailSnapshot_Serialize = {
 	transcript_mode: TranscriptModeView,
 	worked_summary: WorkedSummaryView_Serialize | null,
 	pull_request_history: PullRequestHistoryView_Serialize | null,
+	rosen_change: RosenChangeView_Serialize | null,
 	blocks: TranscriptBlock_Serialize[],
 	agent_commands: AgentCommandView[],
 	composer_placeholder: string,
@@ -5150,7 +5217,7 @@ export type TranscriptBlock_Serialize = ({ UserMessage: {
 	text: string,
 } }) & { AgentMessage?: never; Decision?: never; Diff?: never; ErrorCard?: never; StatusLine?: never; ToolGroup?: never; UserMessage?: never };
 
-export type TranscriptModeView = "FullTranscript" | "CollapsedWithPrHistory" | "ExpandedWithPrHistory";
+export type TranscriptModeView = "FullTranscript" | "CollapsedWithPrHistory" | "ExpandedWithPrHistory" | "CollapsedWithLandHistory" | "ExpandedWithLandHistory";
 
 export type TrialResult = "Collecting" | "Met" | "Missed";
 

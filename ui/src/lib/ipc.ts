@@ -9,6 +9,7 @@ export * from './ipc/open-project';
 export * from './ipc/proofs-settings';
 export * from './ipc/providers';
 export * from './ipc/rosen-mirror';
+export * from './ipc/thread-change';
 export * from './ipc/skill-packs';
 export * from './ipc/shared-mcp';
 export * from './ipc/skills';

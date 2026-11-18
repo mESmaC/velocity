@@ -24,10 +24,22 @@ Rows show editing, named, landing, landed, green, reverted or abandoned.
 A landed row includes the resulting base commit.
 A reverted row shows the saved culprit output.
 
+#### Rosen thread view
+
+The header shows the Rosen change ID and its workspace path.
+Name change records a named snapshot, Rebase brings the workspace onto the current base, and Abandon closes the change and lets Rosen remove the workspace.
+The change track shows Editing → Named → Landing → Landed → Green, with a Proved step when the review policy uses a pre-land receipt.
+The sidebar uses the same stage and its colour.
+The transcript shows the files with stored conflicts and offers Resolve with agent, which queues the handoff for the owning agent's next turn boundary.
+After a land the transcript groups the coding work behind Show work and shows the landed commit, its Rosen change, receipt and approver trailers, and the recorded post-land results.
+A revert shows Reverted → Reopened with the inverse commit and failing output, restores the transcript and composer, and resumes the owning agent through the F5 recovery path.
+Land attempts and their evidence stay in the thread after a reland or restart.
+
 **Accept when:**
 
 - [ ] Naming, landing, reverting and abandoning update the row within a second without a GitHub request from the pane.
 - [ ] Section order and collapsed state survive reopening Velocity.
+- [ ] A Rosen thread shows naming, landing, check results and any reopen in its own view.
 
 #### Legacy Git thread follow-through
 

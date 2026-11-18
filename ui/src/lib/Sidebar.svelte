@@ -170,6 +170,9 @@
                 >{/if}
               {#if row.metadata}<span
                   class="t-meta"
+                  data-change-stage={row.metadata === row.change_stage
+                    ? row.change_stage
+                    : undefined}
                   title={row.metadata}
                   style:color={row.metadata === 'stalled' ||
                   row.metadata.startsWith('at limit')

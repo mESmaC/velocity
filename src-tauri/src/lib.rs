@@ -47,6 +47,7 @@ mod rosen_migration;
 mod rosen_mirror;
 mod rosen_rebase;
 mod rosen_status;
+mod rosen_thread;
 mod shared_mcp;
 mod skills;
 mod state;
@@ -151,6 +152,7 @@ fn bindings() -> Builder<tauri::Wry> {
         issue_panel::dispatch_issue,
         issue_panel::toggle_issue_expanded,
         rosen_status::watch_rosen_status,
+        rosen_thread::run_rosen_thread_action,
         shared_mcp::edit_shared_mcp_servers,
         skills::get_skill_library,
         skills::get_skill_pack_installations,

@@ -36,6 +36,7 @@ pub mod review_swarm;
 mod server;
 mod stack;
 pub mod status;
+pub mod thread_change;
 mod workspace;
 pub mod workspace_settings;
 
@@ -73,6 +74,8 @@ pub enum RosenError {
     StatusData(String),
     #[error("Migration to Rosen: {0}")]
     Migration(String),
+    #[error("could not read Rosen thread change: {0}")]
+    ThreadChange(String),
     #[error("could not read Rosen build repair evidence: {0}")]
     BuildRepairData(String),
     #[error("could not synchronize git with Rosen's base: {0}")]

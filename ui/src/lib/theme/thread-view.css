@@ -111,7 +111,64 @@
 }
 .head-actions {
   display: flex;
+  flex-wrap: wrap;
   gap: var(--thread-head-actions-gap);
+}
+.change-action {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--thread-head-gap);
+  padding: var(--pr-track-padding);
+  border-bottom: var(--pr-track-border);
+}
+.change-action input {
+  flex: 1;
+  min-width: 0;
+  padding: var(--thread-btn-padding);
+  border: var(--thread-btn-border);
+  border-radius: var(--thread-btn-border-radius);
+  background: var(--surface-2);
+  color: var(--text);
+}
+.change-action[role='alert'],
+.t-meta[data-change-stage='Conflict'],
+.t-meta[data-change-stage='Reopened'] {
+  color: var(--err);
+}
+.t-meta[data-change-stage='Named'],
+.t-meta[data-change-stage='Landing'] {
+  color: var(--accent);
+}
+.t-meta[data-change-stage='Landed'],
+.t-meta[data-change-stage='Green'] {
+  color: var(--ok);
+}
+.change-history {
+  display: grid;
+  gap: var(--thread-transcript-inner-gap);
+}
+.change-history .section-h {
+  margin: 0;
+  font-size: var(--type-caption);
+  color: var(--text-2);
+}
+.change-history .ah,
+.change-trailers dd,
+.change-conflicts {
+  overflow-wrap: anywhere;
+}
+.change-trailers {
+  display: grid;
+  grid-template-columns: max-content minmax(0, 1fr);
+  gap: var(--thread-meta-item-gap) var(--thread-meta-gap);
+  color: var(--text-2);
+}
+.change-trailers dd {
+  margin: 0;
+}
+.change-conflicts {
+  padding-inline-start: var(--thread-btn-height);
 }
 .btn {
   display: inline-flex;
@@ -440,7 +497,7 @@
   color: var(--text-2);
 }
 
-.pr-track {
+.change-track {
   display: flex;
   align-items: center;
   gap: var(--pr-track-gap);
@@ -450,41 +507,41 @@
   font-size: var(--pr-track-font-size);
   flex-wrap: wrap;
 }
-.pr-track .step {
+.change-track .step {
   display: inline-flex;
   align-items: center;
   gap: var(--pr-step-gap);
   white-space: nowrap;
   color: var(--muted);
 }
-.pr-track .step i {
+.change-track .step i {
   width: var(--pr-step-dot-size);
   height: var(--pr-step-dot-size);
   border: var(--pr-step-dot-border);
   border-radius: var(--pr-dot-radius);
   flex: none;
 }
-.pr-track .step.done {
+.change-track .step.done {
   color: var(--ok);
 }
-.pr-track .step.run {
+.change-track .step.run {
   color: var(--warn);
 }
-.pr-track .step.fail {
+.change-track .step.fail {
   color: var(--err);
 }
-.pr-track .step.done i,
-.pr-track .step.run i,
-.pr-track .step.fail i {
+.change-track .step.done i,
+.change-track .step.run i,
+.change-track .step.fail i {
   background: var(--pr-dot-active-background);
 }
-.pr-track .step span {
+.change-track .step span {
   color: var(--text-2);
 }
-.pr-track .step.todo span {
+.change-track .step.todo span {
   color: var(--muted);
 }
-.pr-track .bar {
+.change-track .bar {
   flex: var(--pr-bar-flex);
   min-width: var(--pr-bar-min-width);
   max-width: var(--pr-bar-max-width);
@@ -492,7 +549,7 @@
   background: var(--line-dim);
   margin: var(--pr-bar-margin);
 }
-.pr-track .bar.done {
+.change-track .bar.done {
   background: var(--pr-bar-done-background);
 }
 .pl {

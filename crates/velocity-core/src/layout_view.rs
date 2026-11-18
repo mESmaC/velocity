@@ -231,6 +231,7 @@ pub struct SidebarRow {
     /// (F4).
     pub titling: bool,
     pub metadata: String,
+    pub change_stage: Option<crate::thread_view_model::RosenChangeStage>,
     pub group: ThreadGroup,
     pub duty_role: Option<DutyRole>,
     pub member: bool,
