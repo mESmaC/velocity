@@ -12,8 +12,23 @@ use crate::Error;
 pub enum Role {
     Implementation,
     Review,
+    TrivialReview,
     Duty,
+    DutySweep,
     Title,
+}
+
+impl Role {
+    fn label(self) -> &'static str {
+        match self {
+            Self::Implementation => "Implementation",
+            Self::Review => "Review",
+            Self::TrivialReview => "Trivial review",
+            Self::Duty => "Duty",
+            Self::DutySweep => "Duty sweep",
+            Self::Title => "Title",
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug, Deserialize, Eq, Ord, PartialEq, PartialOrd, Serialize)]
@@ -291,7 +306,7 @@ impl Summary {
 
     fn report(self, projects: &BTreeMap<u32, Project>, thread_view: bool) -> Report {
         let roles = group("Agent roles", self.roles, |role| {
-            (format!("{role:?}"), String::new())
+            (role.label().to_owned(), String::new())
         });
         let threads = group("Threads", self.threads, |(project, thread)| {
             let project = &projects[&project];

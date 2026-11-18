@@ -95,7 +95,7 @@
   const cardKey = (card: SwarmModelCard) =>
     `${JSON.stringify(card.provider)}:${card.model_name}`;
   let chosenKey = $state<string | null>(null);
-  let effort = $state<EffortLevel>('high');
+  let effort = $state<EffortLevel | null>(null);
   let speed = $state<SpeedMode>('regular');
   let prRules = $state<PrDutyRuleSettings>({
     review_theorem_statements: true,
@@ -125,7 +125,6 @@
         defaults = loaded;
         const initial = loaded.models.find((card) => card.selected);
         chosenKey = initial ? cardKey(initial) : null;
-        effort = loaded.effort;
         speed = loaded.speed;
         prRules = loaded.pr_rules;
         scoutRules = loaded.scout_rules;
@@ -303,6 +302,12 @@
           <span class="label" id="duty-model-label">Model</span>
           <div class="row2">
             <div class="seg sm" role="group" aria-label="Effort">
+              <button
+                type="button"
+                class:on={effort === null}
+                aria-pressed={effort === null}
+                onclick={() => (effort = null)}>Role default</button
+              >
               {#each efforts as [value, label] (value)}<button
                   type="button"
                   class:on={effort === value}

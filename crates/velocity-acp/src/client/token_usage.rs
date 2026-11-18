@@ -23,13 +23,11 @@ impl Ledger {
     pub fn for_setup(setup: &SessionSetup) -> Option<Self> {
         let (airc, data, project) = airc_project(setup.airc.as_ref()?)?;
         let member = airc.args.get(3)?;
-        let role = if setup.review_usage {
-            Role::Review
-        } else if member.starts_with("duty-") {
+        let role = setup.usage_role.unwrap_or(if member.starts_with("duty-") {
             Role::Duty
         } else {
             Role::Implementation
-        };
+        });
         let thread = member
             .strip_prefix("thread-")
             .or_else(|| member.strip_prefix("spec-"))

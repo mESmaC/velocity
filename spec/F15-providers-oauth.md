@@ -69,6 +69,13 @@ Any other ACP agent can be added beside the four (Custom ACP agents, below).
   A new thread uses these defaults for any choices left unset in the home composer (F4).
 Spec interviews, duty agents and swarms choose their models in their own dialogs.
 
+**Reasoning effort by role** (#468).
+Settings → Agents sets effort for Implementation, Review, Duty sweep and Title.
+Implementation and Title share their saved effort with Settings → Providers, initially High and Low respectively.
+Review defaults to Auto, which uses Medium for trivial reviews by reading and High for other reviews, including review swarm work.
+Duty sweep defaults to Medium for scout sweeps.
+An explicit duty agent effort overrides the role default for that agent.
+
 **Speed: Regular or Fast.**
 - **Where available.**
   Some models offer a fast mode, which answers sooner, as Claude Code's fast mode does for Opus.
@@ -117,7 +124,9 @@ The footer usage button and the limit meter open a modal, like AIRC's: a centred
 It holds thread token usage, the subscription limits laid out like T3 Code's, and the project's code graph section (F19 Measuring it).
 Rust draws its rows; the limits update while it is open whenever a limit changes (`layout://state`).
 - **Token usage** (#461) totals input, cached input and output for Today and Last 7 days in local calendar time.
-  It ranks threads by input plus output and shows totals by project and by agent role (implementation, review, duty and title).
+  It ranks threads by input plus output and shows totals by project and by agent role.
+  Trivial reading reviews and duty sweeps have their own output totals.
+  Older entries keep their recorded review or duty role.
   Each row expands into the estimated input from the base prompt, project instructions, code reads, graph calls, searches, diffs, build output, polls, MCP tools, and conversation, with an unattributed remainder.
   Cached input is included in input.
   The thread header opens the thread's lifetime totals, including its title requests.

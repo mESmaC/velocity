@@ -37,6 +37,8 @@ pub struct ReviewPlan {
     pub bypass_modes: Vec<String>,
     /// The model, effort and speed the review runs on (F7, F15).
     pub run_settings: RunSettings<String>,
+    /// Chosen after the runner knows whether the review is both trivial and by reading.
+    pub(crate) trivial_effort: velocity_acp::Effort,
 }
 
 /// Plans `agent`'s review of PR `number` in the PR's `review-pr-<n>` worktree, made at
@@ -105,7 +107,16 @@ fn plan_in(
         worktree,
         agent: with_compiler_cache(launch, preferences.share_build_cache),
         bypass_modes,
-        run_settings: crate::titles::duty_run_settings(&roster.settings, agent),
+        run_settings: crate::titles::duty_run_settings(
+            &roster.settings,
+            agent,
+            roster.settings.agents.review_effort(false),
+        ),
+        trivial_effort: crate::titles::effort(
+            agent
+                .effort
+                .unwrap_or(roster.settings.agents.review_effort(true)),
+        ),
     })
 }
 

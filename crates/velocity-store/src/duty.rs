@@ -32,7 +32,7 @@ pub struct DutyAgentItem {
     #[specta(skip)]
     pub review_worktrees: Vec<String>,
     /// The effort and speed its sessions run at, chosen in the Start a duty agent dialog
-    /// (F7). `None` on an agent saved before they could be chosen: Settings' defaults apply.
+    /// (F7). `None` follows Settings' defaults for every session.
     #[serde(default)]
     pub effort: Option<EffortLevel>,
     #[serde(default)]
@@ -210,8 +210,7 @@ pub struct DutyDialogDefaults {
     pub model_configured: bool,
     /// Every visible model of every signed-in provider, the default one selected (F7, F15).
     pub models: Vec<SwarmModelCard>,
-    /// Settings' default effort and speed, where the dialog's Effort and Speed start.
-    pub effort: EffortLevel,
+    /// Settings' default speed, where the dialog's Speed starts.
     pub speed: SpeedMode,
     pub pr_duty_exists: bool,
     pub scouts_exists: bool,
@@ -309,7 +308,6 @@ impl StateStore {
             model_name,
             model_configured,
             models,
-            effort: settings.providers.default_effort,
             speed: settings.providers.default_speed,
             pr_duty_exists: existing_pr.is_some(),
             scouts_exists: existing_scouts.is_some(),
@@ -767,6 +765,38 @@ pub fn clock_timestamp() -> String {
 mod tests {
     use super::*;
     use velocity_core::layout_view::ProviderColor;
+
+    // A state written before role defaults must load, and edited defaults must survive restart.
+    #[test]
+    fn role_effort_survives_save_and_reload() -> Result<(), Box<dyn std::error::Error>> {
+        let directory =
+            std::env::temp_dir().join(format!("velocity-role-effort-{}", std::process::id()));
+        std::fs::create_dir_all(&directory)?;
+        let file = directory.join(crate::STATE_FILE_NAME);
+        let mut saved = serde_json::to_value(PersistedState::default())?;
+        let agents = saved["settings"]["agents"]
+            .as_object_mut()
+            .ok_or("missing agent settings")?;
+        agents.remove("review_effort");
+        agents.remove("sweep_effort");
+        std::fs::write(&file, serde_json::to_vec(&saved)?)?;
+        let mut store = StateStore::load_or_default(&directory)?;
+        let mut settings = store.settings();
+        assert_eq!(settings.agents.review_effort(false), EffortLevel::High);
+        assert_eq!(settings.agents.review_effort(true), EffortLevel::Medium);
+        assert_eq!(settings.agents.sweep_effort, EffortLevel::Medium);
+
+        settings.agents.review_effort = Some(EffortLevel::Max);
+        settings.agents.sweep_effort = EffortLevel::Low;
+        store.set_settings(settings)?;
+        let loaded = StateStore::load_or_default(&directory)?.settings();
+        assert_eq!(loaded.agents.review_effort(false), EffortLevel::Max);
+        assert_eq!(loaded.agents.review_effort(true), EffortLevel::Max);
+        assert_eq!(loaded.agents.sweep_effort, EffortLevel::Low);
+        std::fs::remove_file(file)?;
+        std::fs::remove_dir(directory)?;
+        Ok(())
+    }
 
     // #282: a dismissed agent or a stopped role that came back after a restart would start
     // its agents again, and a reused nick must never collide with a live one.

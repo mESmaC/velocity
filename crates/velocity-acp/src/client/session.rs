@@ -14,6 +14,7 @@ use agent_client_protocol::v1::schema::{
     SessionModeId, SessionModeState, SessionNotification, SessionUpdate, SetSessionModeRequest,
 };
 use agent_client_protocol::{Agent, Error, ErrorCode};
+use velocity_graph::token_usage::Role;
 
 use super::{AgentEvent, Shared, config};
 use crate::session_config::ConfigValue;
@@ -49,8 +50,8 @@ pub struct SessionSetup {
     pub graph_task_title: Option<String>,
     /// A saved build thread moves its pending input to a new account on quota failure.
     pub pause_on_subscription_limit: bool,
-    /// Review sessions can use the same AIRC membership scheme as other duty agents.
-    pub review_usage: bool,
+    /// Duty sessions can report a more specific usage role than AIRC membership supplies.
+    pub usage_role: Option<Role>,
 }
 
 /// How a parked thread's agent picks up where it stopped: `session/load` of its earlier
@@ -101,7 +102,7 @@ impl SessionSetup {
             preface: None,
             graph_task_title: None,
             pause_on_subscription_limit: false,
-            review_usage: false,
+            usage_role: None,
         }
     }
 

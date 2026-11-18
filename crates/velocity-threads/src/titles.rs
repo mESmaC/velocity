@@ -97,16 +97,21 @@ pub fn thread_run_settings(thread: &ThreadItem) -> RunSettings<String> {
     }
 }
 
-/// What a duty agent's sessions run on (F7, F15): its provider and model, at the effort and
-/// speed chosen when it was added. An agent saved before those could be chosen uses Settings'
-/// defaults, like a new thread.
-pub fn duty_run_settings(settings: &Settings, agent: &DutyAgentItem) -> RunSettings<String> {
-    let defaults = &settings.providers;
+/// Explicit effort and speed choices on a duty agent take precedence over its defaults.
+pub(crate) fn duty_run_settings(
+    settings: &Settings,
+    agent: &DutyAgentItem,
+    role_effort: EffortLevel,
+) -> RunSettings<String> {
     RunSettings {
         provider: provider(agent.provider),
         model: agent.model_name.clone(),
-        effort: effort(agent.effort.unwrap_or(defaults.default_effort)),
-        speed: speed(agent.preferred_speed.unwrap_or(defaults.default_speed)),
+        effort: effort(agent.effort.unwrap_or(role_effort)),
+        speed: speed(
+            agent
+                .preferred_speed
+                .unwrap_or(settings.providers.default_speed),
+        ),
     }
 }
 
@@ -120,7 +125,7 @@ pub fn provider(kind: ProviderKind) -> Provider {
     }
 }
 
-fn effort(level: EffortLevel) -> Effort {
+pub(crate) fn effort(level: EffortLevel) -> Effort {
     match level {
         EffortLevel::Low => Effort::Low,
         EffortLevel::Medium => Effort::Medium,

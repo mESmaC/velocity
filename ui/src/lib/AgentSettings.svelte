@@ -2,31 +2,40 @@
   import { onMount } from 'svelte';
   import SettingsNav from './SettingsNav.svelte';
   import SharedMcpServers from './SharedMcpServers.svelte';
+  import './theme/providers.css';
   import './theme/worktrees.css';
   import {
     readAgentSettings,
     saveAgentSettings,
-    type AgentSettings,
+    type AgentPreferences,
+    type EffortLevel,
     type LayoutAction,
   } from './ipc';
   let { send }: { send: (action: LayoutAction) => void } = $props();
-  let settings = $state<AgentSettings | null>(null);
+  let preferences = $state<AgentPreferences | null>(null);
+  let settings = $derived(preferences?.agents);
   let error = $state('');
   let saving = $state(false);
+  const efforts: [EffortLevel, string][] = [
+    ['low', 'Low'],
+    ['medium', 'Medium'],
+    ['high', 'High'],
+    ['max', 'Max'],
+  ];
   onMount(() => {
     void readAgentSettings()
       .then((value) => {
-        settings = value;
+        preferences = value;
       })
       .catch((failure) => {
         error = String(failure);
       });
   });
   async function save() {
-    if (!settings) return;
+    if (!preferences || saving) return;
     saving = true;
     try {
-      settings = await saveAgentSettings(settings);
+      preferences = await saveAgentSettings(preferences);
       error = '';
     } catch (failure) {
       error = String(failure);
@@ -36,6 +45,37 @@
   }
 </script>
 
+{#snippet effortRow(
+  label: string,
+  value: EffortLevel | null,
+  change: (effort: EffortLevel) => void,
+  reset?: () => void,
+)}
+  <div class="worktree-setting-row">
+    <span>{label}</span>
+    <div class="pv-seg" role="group" aria-label={label}>
+      {#if reset}
+        <button
+          type="button"
+          class:on={value === null}
+          aria-pressed={value === null}
+          disabled={saving}
+          onclick={reset}>Auto</button
+        >
+      {/if}
+      {#each efforts as [level, name] (level)}
+        <button
+          type="button"
+          class:on={value === level}
+          aria-pressed={value === level}
+          disabled={saving}
+          onclick={() => change(level)}>{name}</button
+        >
+      {/each}
+    </div>
+  </div>
+{/snippet}
+
 <section class="worktree-settings" aria-label="Agent settings">
   <header class="worktree-settings-head">
     <h1>Settings</h1>
@@ -44,6 +84,43 @@
   <div class="worktree-settings-body">
     <SettingsNav current="agent-settings" {send} />
     <div class="worktree-settings-main">
+      {#if preferences}
+        {@const roles = preferences}
+        <section>
+          <h2>Reasoning effort</h2>
+          {@render effortRow(
+            'Implementation',
+            roles.implementationEffort,
+            (level) => {
+              roles.implementationEffort = level;
+            },
+          )}
+          {@render effortRow(
+            'Review',
+            roles.agents.review_effort,
+            (level) => {
+              roles.agents.review_effort = level;
+            },
+            () => {
+              roles.agents.review_effort = null;
+            },
+          )}
+          {@render effortRow(
+            'Duty sweep',
+            roles.agents.sweep_effort,
+            (level) => {
+              roles.agents.sweep_effort = level;
+            },
+          )}
+          {@render effortRow('Title', roles.titleEffort, (level) => {
+            roles.titleEffort = level;
+          })}
+          <p class="worktree-description">
+            Auto uses Medium for trivial reading reviews and High for other
+            reviews. An agent's explicit effort overrides its role default.
+          </p>
+        </section>
+      {/if}
       <section>
         <h2>Agent activity and recovery</h2>
         <p class="worktree-description">

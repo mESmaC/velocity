@@ -26,6 +26,7 @@ pub fn plan_watch(
         (&roster.project, &roster.worktrees),
         watcher,
         base_ref,
+        roster.settings.providers.default_effort,
     )
 }
 

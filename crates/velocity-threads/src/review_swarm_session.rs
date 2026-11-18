@@ -230,15 +230,16 @@ impl Job {
             &key.1,
             &launch.change,
         ));
+        let settings = &self.roster.settings;
         let mut setup = SessionSetup::new(launch.workspace.clone(), modes).with_run_settings(
-            crate::titles::duty_run_settings(&self.roster.settings, agent),
+            crate::titles::duty_run_settings(settings, agent, settings.agents.review_effort(false)),
         );
         setup.airc = self
             .runner
             .airc
             .as_ref()
             .map(|airc| airc.duty(key.0, &key.1));
-        setup.review_usage = true;
+        setup.usage_role = Some(velocity_graph::token_usage::Role::Review);
         setup.preface = Some(velocity_rosen::workspace_note(&launch.change));
         setup.shared_servers.push(McpServer::Stdio(
             McpServerStdio::new("velocity-review-swarm", &self.runner.executable)

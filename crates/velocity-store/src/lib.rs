@@ -533,11 +533,30 @@ pub struct AgentSettings {
     #[serde(default = "default_tool_timeout")]
     pub tool_timeout_minutes: u32,
     pub claim_release_grace_minutes: u32,
+    /// Automatic uses High for full reviews and Medium for trivial reading reviews.
+    #[serde(default)]
+    pub review_effort: Option<EffortLevel>,
+    #[serde(default = "default_sweep_effort")]
+    pub sweep_effort: EffortLevel,
     /// Settings → Agents → shared MCP servers, passed to every agent (§3.2 Tool access).
     #[serde(default)]
     pub shared_mcp_servers: Vec<shared_mcp::SharedMcpServer>,
     #[serde(default = "default_trim_agent_context")]
     pub trim_agent_context: bool,
+}
+
+fn default_sweep_effort() -> EffortLevel {
+    EffortLevel::Medium
+}
+
+impl AgentSettings {
+    pub fn review_effort(&self, trivial_reading: bool) -> EffortLevel {
+        self.review_effort.unwrap_or(if trivial_reading {
+            EffortLevel::Medium
+        } else {
+            EffortLevel::High
+        })
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, Type)]
@@ -624,6 +643,8 @@ impl Settings {
                 stall_timeout_minutes: core_settings.agents.stall_timeout_minutes,
                 tool_timeout_minutes: core_settings.agents.tool_timeout_minutes,
                 claim_release_grace_minutes: core_settings.agents.claim_release_grace_minutes,
+                review_effort: None,
+                sweep_effort: default_sweep_effort(),
                 shared_mcp_servers: Vec::new(),
                 trim_agent_context: default_trim_agent_context(),
             },

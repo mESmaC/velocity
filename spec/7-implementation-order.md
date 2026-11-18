@@ -82,6 +82,7 @@ PR duty checks an item off when it lands that item's PR (F7).
 - [x] Warm workspace pool from one base clone, prebuilt at the tip of `master` with a shared compiler cache; workspace guards (F5)
 - [x] Queue long agent commands in Rosen and resume the ACP thread with the result (#454, F5, F7)
 - [x] PR duty tiered review and intent review; Sensitive paths in AGENTS.md (F7)
+- [x] Reasoning effort by role, with Medium defaults for trivial reading reviews and duty sweeps (F15, #468)
 - [x] Main watcher duty role: post-merge suite, bisect, fix or revert PR (F7)
 
 **M11 · Proofs** (F17)

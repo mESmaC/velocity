@@ -9,9 +9,10 @@ use velocity_acp::client::{AgentEvent, AgentLaunch, SessionSetup};
 use velocity_core::scout_sweep::step_doing;
 use velocity_core::worktree_settings::WorktreePreferences;
 use velocity_git::{JobKind, WorktreeError, WorktreeSetupRequest};
+use velocity_graph::token_usage::Role;
 use velocity_store::duty::DutyAgentItem;
 use velocity_store::duty::ScoutRoster;
-use velocity_store::{ProjectItem, Settings};
+use velocity_store::{EffortLevel, ProjectItem, Settings};
 
 use crate::LaunchError;
 use crate::launch::{
@@ -46,6 +47,7 @@ pub fn plan_sweep(
         (&roster.project, &roster.worktrees),
         scout,
         base_ref,
+        roster.settings.agents.sweep_effort,
     )
 }
 
@@ -56,6 +58,7 @@ pub fn plan_duty_checkout(
     (project, preferences): (&ProjectItem, &WorktreePreferences),
     agent_item: &DutyAgentItem,
     base_ref: &str,
+    role_effort: EffortLevel,
 ) -> Result<SweepPlan, LaunchError> {
     let location = Location::new(project, preferences);
     let worktree_path = location
@@ -79,7 +82,7 @@ pub fn plan_duty_checkout(
         worktree,
         agent: with_compiler_cache(agent, preferences.share_build_cache),
         bypass_modes,
-        run_settings: crate::titles::duty_run_settings(settings, agent_item),
+        run_settings: crate::titles::duty_run_settings(settings, agent_item, role_effort),
     })
 }
 
@@ -93,6 +96,7 @@ pub fn sweep_session(
 ) -> SessionSetup {
     let mut setup = SessionSetup::new(worktree.clone(), plan.bypass_modes.clone())
         .with_run_settings(plan.run_settings.clone());
+    setup.usage_role = Some(Role::DutySweep);
     let server = McpServerStdio::new("velocity-scout", scout_server).args(vec![
         SCOUT_SERVER_SWITCH.to_owned(),
         worktree.display().to_string(),

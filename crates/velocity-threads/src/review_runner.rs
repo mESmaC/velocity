@@ -27,7 +27,7 @@ use std::time::{Duration, Instant};
 use agent_client_protocol::v1::schema::ContentBlock;
 use tokio::sync::Notify;
 use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender, unbounded_channel};
-use velocity_acp::client::{AgentEvent, AgentInput, AircLaunch, duty_member};
+use velocity_acp::client::{AgentEvent, AgentInput, AircLaunch, SessionSetup, duty_member};
 use velocity_airc::Channel;
 use velocity_core::duty::{DutyAgentCard, DutyEventKind, DutyFeedEvent, DutyRoleEntry};
 use velocity_core::merge_gate::ReviewMode;
@@ -37,13 +37,14 @@ use velocity_core::pr_review::{
     review_finished_message, review_idle_doing, review_prompt, short_change, short_commit,
     turn_end_action,
 };
-use velocity_core::review_tier::TierAssessment;
+use velocity_core::review_tier::{ReviewTier, TierAssessment};
 use velocity_core::rosen_review::{RosenReviewBrief, rosen_review_prompt};
 use velocity_core::thread_view_model::TranscriptBlock;
 use velocity_github::{
     PrDutyReport, PullRequestClient, PullRequestError, PullRequestOperation, PullRequestState,
     ReviewRecord, read_pr_duty_reports,
 };
+use velocity_graph::token_usage::Role;
 use velocity_store::duty::PrDutyRoster;
 
 use crate::RunningSession;
@@ -1062,7 +1063,7 @@ impl Review {
             .airc
             .as_ref()
             .map(|airc| airc.duty(prepared.plan.project, &prepared.plan.nickname));
-        setup.review_usage = true;
+        configure_review_session(&mut setup, &prepared);
         let prompt = velocity_core::text_budget::prompt_excerpt(
             &format!("{}{proofs}", self.prompt(&prepared)),
             velocity_core::text_budget::PROMPT_BYTES,
@@ -1397,6 +1398,19 @@ impl Review {
             }),
         );
     }
+}
+
+fn configure_review_session(setup: &mut SessionSetup, prepared: &Prepared) {
+    let role = if prepared.tier.tier == ReviewTier::Trivial && prepared.mode == ReviewMode::Reading
+    {
+        if let Some(settings) = &mut setup.run_settings {
+            settings.effort = prepared.plan.trivial_effort;
+        }
+        Role::TrivialReview
+    } else {
+        Role::Review
+    };
+    setup.usage_role = Some(role);
 }
 
 /// Idle cards say they are watching for PRs (or paused, or why PRs could not be listed). Also

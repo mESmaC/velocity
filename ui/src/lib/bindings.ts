@@ -314,6 +314,9 @@ export type AgentSettings_Deserialize = {
 	stall_timeout_minutes: number,
 	tool_timeout_minutes?: number,
 	claim_release_grace_minutes: number,
+	/**  Automatic uses High for full reviews and Medium for trivial reading reviews. */
+	review_effort?: EffortLevel | null,
+	sweep_effort?: EffortLevel,
 	/**  Settings → Agents → shared MCP servers, passed to every agent (§3.2 Tool access). */
 	shared_mcp_servers?: SharedMcpServer[],
 	trim_agent_context?: boolean,
@@ -325,6 +328,9 @@ export type AgentSettings_Serialize = {
 	stall_timeout_minutes: number,
 	tool_timeout_minutes: number,
 	claim_release_grace_minutes: number,
+	/**  Automatic uses High for full reviews and Medium for trivial reading reviews. */
+	review_effort: EffortLevel | null,
+	sweep_effort: EffortLevel,
 	/**  Settings → Agents → shared MCP servers, passed to every agent (§3.2 Tool access). */
 	shared_mcp_servers: SharedMcpServer[],
 	trim_agent_context: boolean,
@@ -881,7 +887,7 @@ export type DutyAgentItem_Deserialize = {
 	doing: string,
 	/**
 	 *  The effort and speed its sessions run at, chosen in the Start a duty agent dialog
-	 *  (F7). `None` on an agent saved before they could be chosen: Settings' defaults apply.
+	 *  (F7). `None` follows Settings' defaults for every session.
 	 */
 	effort?: EffortLevel | null,
 	preferred_speed?: SpeedMode | null,
@@ -895,7 +901,7 @@ export type DutyAgentItem_Serialize = {
 	doing: string,
 	/**
 	 *  The effort and speed its sessions run at, chosen in the Start a duty agent dialog
-	 *  (F7). `None` on an agent saved before they could be chosen: Settings' defaults apply.
+	 *  (F7). `None` follows Settings' defaults for every session.
 	 */
 	effort: EffortLevel | null,
 	preferred_speed: SpeedMode | null,
@@ -911,8 +917,7 @@ export type DutyDialogDefaults_Deserialize = {
 	model_configured: boolean,
 	/**  Every visible model of every signed-in provider, the default one selected (F7, F15). */
 	models: SwarmModelCard_Deserialize[],
-	/**  Settings' default effort and speed, where the dialog's Effort and Speed start. */
-	effort: EffortLevel,
+	/**  Settings' default speed, where the dialog's Speed starts. */
 	speed: SpeedMode,
 	pr_duty_exists: boolean,
 	scouts_exists: boolean,
@@ -935,8 +940,7 @@ export type DutyDialogDefaults_Serialize = {
 	model_configured: boolean,
 	/**  Every visible model of every signed-in provider, the default one selected (F7, F15). */
 	models: SwarmModelCard_Serialize[],
-	/**  Settings' default effort and speed, where the dialog's Effort and Speed start. */
-	effort: EffortLevel,
+	/**  Settings' default speed, where the dialog's Speed starts. */
 	speed: SpeedMode,
 	pr_duty_exists: boolean,
 	scouts_exists: boolean,
