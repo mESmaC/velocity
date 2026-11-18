@@ -101,7 +101,7 @@ fn seeded_store(root: &std::path::Path) -> Outcome<StateStore> {
 fn launch(store: &mut StateStore) -> Outcome<(u32, Vec<u32>)> {
     let request = LaunchGoalSwarmRequest::new(
         1,
-        "Read AGENTS.md and start dev.".into(),
+        velocity_core::goal_swarm::DEFAULT_PROMPT.into(),
         vec![
             GoalMixRow::new(
                 ProviderKind::Claude,
@@ -198,7 +198,11 @@ fn check_sidebar(snapshot: &LayoutSnapshot, swarm: u32) -> Outcome {
         "goal row with target icon",
     )?;
     ensure(
-        row.title == "Goal · Read AGENTS.md and start dev",
+        row.title
+            == format!(
+                "Goal · {}",
+                velocity_core::goal_swarm::DEFAULT_PROMPT.trim_end_matches('.')
+            ),
         "row title",
     )?;
     ensure(row.agents == 3, "×3 live agents")?;

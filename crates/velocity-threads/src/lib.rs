@@ -35,6 +35,7 @@ pub mod shared_mcp;
 pub mod swarm;
 pub mod sweep;
 pub mod sweep_runner;
+mod task_spec;
 pub mod titles;
 pub mod transcript_saves;
 pub mod transcript_view;

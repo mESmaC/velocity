@@ -1,280 +1,74 @@
-# AGENTS.md · velocity
+# AGENTS.md · Velocity
 
-Read this file in full before you start any task. Every rule here is mandatory.
+Velocity is a Rust + Tauri desktop IDE for running coding agents in parallel.
 
-You are building Velocity: a Rust + Tauri desktop IDE that runs many coding agents in parallel.
-- `SPEC.md` and Markdown recursively under `spec/` define what to build. `SPEC.md` keeps §1 Rules, §2 Concepts and the complete file index. The build order (§7) is `spec/7-implementation-order.md`; open questions (§8) are `spec/8-open-questions.md`.
-- Start prompt: "Read AGENTS.md and SPEC.md, follow the spec/ file index, then start dev." Read §1 and §2 first, then §7, §8 and the files for your piece. Feature IDs and section IDs still name the same sections after the move.
-- `design/main-window.html` is the reference UI. Open it in a browser. Every feature in SPEC.md is mocked there with live simulated data, and its behaviour is part of the spec.
+## Scope
 
-## Where you work
-- Use Rosen words for Rosen work: workspace, change, snapshot, name the change, land, base, stored conflict, land history and path claim. Literal GitHub workflows below keep GitHub words.
-- #417 migrates copy first; Rust and IPC identifiers migrate in #421–#424. Keep their current command spellings until then.
-- Velocity's projects, this one included, use Rosen by default (F5, `spec/F5-worktrees/README.md` and its rule files). Your thread works in a Rosen workspace by default: Velocity's first message says so and names your change. Follow "In a Rosen workspace" below.
-- When the project chooses git, your folder is a git worktree. Follow "In a git worktree" below. A Rosen project never falls back to git: workspace failures retry Rosen, then leave a retryable thread error (#407).
-- A Rosen workspace has a `.rosen` folder at its root and no `.git`.
+- Follow the issue, §7 item or named spec section for your work. Find the applicable headings with `graph_find` (kind: section) and read them with `graph_read` (source: true). If the graph is unavailable or clips a section, read just that section's lines. Use the project instructions already in your session and keep spec reads to the sections you need.
+- SPEC.md §1 governs product rules. Agents run unrestricted with all tools and no approval gates. Providers sign in through OAuth. The frontend calls Tauri commands and subscribes to events. It never runs shell commands.
+- Take the first unclaimed, unblocked item in the lowest milestone when choosing work. Use §7 for build order and §8 for open decisions that affect your piece. Skip blocked items. Treat *(proposed)* decisions as ready to build. File a `spec-question` issue with the recommended answer and blocked items when a decision is missing. File contradictions and unrelated findings as issues. Edit only your claimed piece.
+- Follow the AIRC Task List instructions. Continuous dispatch can maintain the list. Other threads change it only at the user's request.
 
-## Implementation first
-Your job is working functionality. Proofs, tests and docs support it; they never replace it.
-- Build the feature first, end to end, then run it (`cargo tauri dev`, or the crate's own entry point) and see it work.
-- Only then add the proof, test or doc the piece needs (see Proofs, and Tests and docs).
-- Implementation is the larger part of every PR. Proofs, tests and docs together stay smaller than the implementation code. Lockfiles, generated files and §7 checkbox ticks count on neither side.
-- Never claim a piece that is only tests, proofs or docs while an implementation piece in the current milestone is unclaimed.
+## Rosen workspace
 
-## Commands
-- Build: `cargo build --workspace`
-- Run the app: `cargo tauri dev`
-- Lint: `cargo clippy --workspace --all-targets -- -D warnings`. Zero warnings.
-- Format: `cargo fmt --all`. Run it before every commit.
-- All local checks: `pwsh -NoProfile -File scripts/check.ps1`. It runs the checks PR duty approves on, but only those your change can affect. Rust inputs (`crates/`, `src-tauri/`, Cargo files, the toolchain, and files Rust embeds) run format, the locked build, each changed crate built on its own, generated bindings and clippy. `ui/` or Rust changes run the UI check, lint and build. `proofs/` changes run `lake build` with the axiom audit. A docs-only change runs nothing. A path the script does not recognise, such as a new folder or a file in `scripts/`, runs everything, and so does `-Full`. Run it on the merge result before you mark a PR ready.
-- One-time machine setup: `pwsh -NoProfile -File scripts/Setup-DevMachine.ps1`. It registers the merge driver for generated files and turns on the shared sccache compiler cache.
-- In a Rosen workspace, run heavy builds with `rosen run -- <command>`, for example `rosen run -- cargo build -p velocity-core`. It waits in the machine's run queue (Rosen R3), the same line as the build queue below.
-- Heavy builds go through the build queue: `pwsh -NoProfile -File scripts/build-queue.ps1 cargo build --workspace`. Use it for `cargo build`, `cargo test`, `cargo clippy` and `cargo run`. It runs one build at a time on this machine, so each gets every core and finishes several times faster than five builds side by side. Builds run first come, first served, except that landing checks go first and checks before a PR is marked ready go next: `scripts/check.ps1` already uses it with `-Priority ready`, and PR duty passes `-Priority landing`. While you wait, it prints your place in line and who holds the queue; never stop that process to jump the queue. On a machine with Rosen, the script waits in Rosen's run queue instead (`landing` in its `landing` class, the rest in `build`), the same line as Velocity's checks, Rosen's warm pool prepares and `rosen run`; inside a Rosen workspace, `rosen run -- <command>` does the same directly. Never run `cargo tauri dev` through it: the dev server runs until stopped and would hold the queue.
-- Build only when your change needs it. The build queue is shared by every agent on this machine, so each build you skip shortens everyone's wait.
-  - Docs, SPEC.md, spec/, AGENTS.md, README and stress scripts need no build. Don't build at all.
-  - A UI-only change needs `pnpm -C ui check`, `lint` and `build`. Never cargo.
-  - While you work on Rust, run `cargo check -p <crate>` on the crate you changed, not a workspace build. Build the workspace once, when the piece works end to end.
-  - Never run a build or `scripts/check.ps1` again when nothing it covers changed since it last passed.
-- Proofs: `lake build` in `proofs/`. Run it before every push that changes `proofs/`.
-- Proof toolchain setup (Windows + Ubuntu WSL): `powershell -File proofs/scripts/Setup-Toolchain.ps1`.
-- Charon and Aeneas (only when an issue asks for a translation): `powershell -File proofs/scripts/Export-Rust.ps1 -CratePath crates/<crate> -Feature <Feature> -StartFrom crate::<module>`. This runs pinned `charon cargo --preset=aeneas` then `aeneas -backend lean`; complete the confidence proof and run `lake build` afterwards. See `proofs/README.md`.
-- Release gate: `pwsh -NoProfile -File scripts/release-gate.ps1`, on the release commit. It requires no open `release-blocker` issue, the post-land tests in `rosen.toml`, `cargo run -p stress -- --all`, and `lake build` with the axiom audit (F7, `spec/F7-duty-agents/pr-duty-the-release-gate.md` and its rule files). The release workflow runs it before it builds anything.
-- Stress: `cargo run -p stress -- --all`. Scouts and PR duty agents only. To run one script, name it: `cargo run -p stress -- pr86-read-overlap` (`--list` shows the names). A named run skips the workspace tests and UI build that `--all` adds.
-- UI type check: `pnpm -C ui check` (svelte-check). Zero errors and zero warnings.
-- UI lint: `pnpm -C ui lint`. Zero warnings.
-- UI format: `pnpm -C ui format`. Run it before every commit.
-- `cargo tauri dev` starts the UI dev server itself. Never start it separately.
-- The PR that sets up `ui/` creates these three scripts in `ui/package.json`.
-
-## Layout
-- `src-tauri/`: the Tauri app. Tauri commands and events only: it calls into the crates below and holds no logic of its own.
-- `crates/velocity-core/`: state, projects, threads, tasks, settings. No Tauri, no I/O.
-- `crates/velocity-store/`: JSON persistence store (`state.json`) for projects, threads, tasks and settings.
-- `crates/velocity-spec/`: shared project spec discovery (`SPEC.md` plus Markdown recursively under `spec/`) and heading IDs.
-- `crates/velocity-git/`: git and worktrees.
-- `crates/velocity-acp/`: the ACP client and agent processes.
-- `crates/velocity-airc/`: claims, events, ledgers and the AIRC MCP server.
-- `crates/velocity-github/`: GitHub through `gh`.
-- `crates/velocity-graph/`: the code graph (F19): tree-sitter symbols, files and subsystems with their links, the per-project parse cache, and the `velocity-graph` MCP tools every agent gets.
-- `crates/velocity-threads/`: starting build threads from the composer (F4): the thread's name and workspace plan, its live agent session, and the transcript the thread view shows.
-- `crates/velocity-updates/`: Velocity's own updates (F1 Updates): how this copy was installed (setup, MSI or portable), the Updates panel's state, and replacing a running portable executable.
-- `crates/velocity-new-project/`: Create in the New project dialog (F2): resolves the request and runs the planned git, `gh` and store steps.
-- `crates/velocity-proofs/`: the proof checks (F17): `lake build`, the `sorry`/`admit` scan, the axiom audit, the design proof's SPEC.md section, and the statement lock PR duty's approvals take.
-- `crates/velocity-rosen/`: Rosen, the first-class version control (F5): starts and imports each project's Rosen server, creates, watches and abandons agents' Rosen workspaces, and the environment and note their agents get.
-- `crates/velocity-skills/`: the machine-wide skill pack library (F18): clones and pins packs with `core.symlinks=true`, previews update diffs of `SKILL.md` files, scripts and data before moving a pin, and runs pack Python tools with `PYTHONUTF8=1`.
-- `crates/velocity-interview/`: the spec interview (F3): runs the spec agent in the main checkout, parses its questions, records decisions and draft tasks, and locks the spec.
-- `ui/`: the frontend: Svelte 5, TypeScript and Vite, built with pnpm.
-- `proofs/`: the Lean 4 Lake project.
-- `stress/`: tests and stress scripts. Scouts and PR duty agents own it.
-- `design/`: the reference UI. Read-only except for user-authorized changes; #414 authorizes the Rosen-first overhaul.
-- `spec/`: the spec's feature and section files. F5 and F7 have a README and one file per rule; `spec/3.1-ipc/` has a README and one file per feature's commands and events.
-- `scripts/`: development tooling: the local checks, machine setup and the PR duty app token.
-- If your work needs a crate that isn't listed here, add it to this list in the same PR.
-
-## Product rules
-§1 Rules in `SPEC.md` overrides everything else. Never build any of these:
-- An approval prompt, a plan-approval gate or a "needs you" state. Agents always run unrestricted (Rule 1).
-- A field, file or setting that holds an API key. Every provider signs in with OAuth (F15).
-- A way for the frontend to run a shell command. The frontend calls Tauri commands and subscribes to events (§3).
-- A tool restriction on any agent: no allow-lists, deny-lists, read-only modes or sandboxes (§3.2 Tool access).
-
-## Code
-- Rust edition 2024, stable toolchain, pinned in `rust-toolchain.toml`.
-- No `unsafe`. If you need it, file an issue that explains why, and stop that piece of work.
-- Errors: `thiserror` in the crates, `anyhow` in `src-tauri`. Never call `unwrap()` or `expect()` outside `stress/`.
-- Keep functions under 60 lines. Split anything longer.
-- Name functions, types and variables for what they do. No abbreviations.
-- Use the IPC names in §3.1, `spec/3.1-ipc/`. If you need a new command or event, add it to your feature's file there in the same PR. Keep one list entry per command or event; shared descriptions can follow a group of entries.
-- Put logic you prove in pure, synchronous functions in the crates. Keep I/O, async and Tauri at the edges, so the logic can be checked against fixture tables (see Proofs).
-- Handle Windows paths everywhere: drive letters, spaces, backslashes and paths over 260 characters. Windows 11 is the primary platform.
-- Rosen dependencies inherit `rosen-client` and `rosen-core` from `[workspace.dependencies]`; new consumers use the existing pin, and pin updates move both entries together.
-- Comment code whose purpose isn't clear from reading it. Explain why, not what.
-- Add every new field on a saved record in `velocity-store` with `#[serde(default)]`, so an existing `state.json` still loads.
-- Build a struct that another module defines through a function that module provides (`new`, `Default`, a builder), never a full struct literal. If none exists, add one in that module. A field another PR adds then can't break your code after a clean merge.
-
-## UI
-- Svelte 5 with runes (`$state`, `$derived`, `$effect`, `$props`). Never use Svelte 4 stores or `export let`.
-- Plain Vite. No SvelteKit: Velocity is one window with no routes and no server.
-- TypeScript in strict mode. Never use `any`, `@ts-ignore` or `@ts-expect-error`.
-- Every Tauri command and event goes through the IPC layer, `ui/src/lib/ipc.ts` and `ui/src/lib/ipc/`. Components never call `invoke` or `listen` directly.
-- Put a new feature's IPC wrappers and type re-exports in their own file, `ui/src/lib/ipc/<feature>.ts`, and add one line to `ipc.ts`: `export * from './ipc/<feature>';`. Never append to the shared lists in `ipc.ts`.
-- The TypeScript types for commands and events are generated from Rust with `tauri-specta`. Never write them by hand.
-- Keep logic out of the UI. State changes happen in Rust; components render state and send commands.
-- Copy `:root` from `design/main-window.html` exactly into `ui/src/lib/theme/tokens.css`.
-- Missing values go in `ui/src/lib/theme/reference.css`, copied from the reference's winning CSS declarations. The user authorized this supplement in #12. Keep `tokens.css` and `design/` unchanged when adding supplemental values.
-- Take every colour, radius, font and size from these token files. Components use `var(--token)` only. Never hard-code a visual value or derive a missing value from unrelated tokens.
-- Black is `#000`. Panes are smoked glass on black, as in the reference. No Mica or vibrancy.
-- No italics anywhere.
-- A screen is done when it matches the reference UI's layout, states and keyboard behaviour (§5, `spec/5-keyboard-map.md`).
-
-## Proofs
-Lean proves a few algorithms where a mistake loses work or breaks coordination. It never blocks implementation, and most pieces have no Lean.
-- Write Lean only for features on the proof list in F17, `spec/F17-proofs-and-adversarial-testing.md`: claim lock, targeted rebases and landing, workspace deletion, goal swarm work choice, and stall detection and claim release. Every other piece ships with no Lean.
-- If you think a feature belongs on the proof list, file an issue. Never write a proof for a feature that isn't on it.
-- For a proof-list feature, write the code first. Then, in the same PR, write `proofs/<Feature>/Design.lean`. On a Rosen project whose `rosen.toml` sets `review = "after-land"`, the Lean follows the land instead: proof agents write and check it in a later change (SPEC.md §1 Rule 8), and the release gate's `lake build` holds every release to it. It states exactly three theorems:
-  - `correct`: the model meets the SPEC.md section it implements. Name that section in the file.
-  - `cost_bound`: its cost stays within a bound, under a cost model the file defines.
-  - `optimal`: no alternative in a class the theorem states costs less.
-- Lemmas are allowed only as steps toward those three theorems.
-- Never write a theorem about one behaviour, case, key, value or example. That is a test.
-- State the cost model and the class of alternatives in the theorem itself. A proof against an unstated alternative does not count.
-- If a design proof passes 300 lines, stop and file an issue. The model is too detailed.
-- Tie the proof to the Rust with fixtures, not a translation. Export a compact fixture table from the Lean model to `proofs/fixtures/<feature>.tsv`, and add one Rust test that checks the implementation against it.
-- Never run Charon or Aeneas unless an issue asks for it.
-- A bug fix in a proof-list feature adds the failing input to its fixture table. A bug fix anywhere else has no Lean.
-- Never use `sorry`, `admit`, `axiom` or `native_decide`. `#print axioms` lists only `propext`, `Classical.choice` and `Quot.sound`.
-- Never change a theorem statement after review to make its proof go through.
-- `proofs/` is the pinned Lake project. `proofs/toolchain-pins.json` records the compatible Lean, Mathlib, Charon and Aeneas versions. Keep its pins, `lean-toolchain`, `lakefile.lean` and `lake-manifest.json` consistent; follow `proofs/README.md` when updating them.
-
-## Tests and docs
-Both are low priority. Add them only where they pay for themselves, and only after the feature works.
-- Default: add no tests.
-- Add a targeted test only for a critical contract: the claim lock, workspace deletion, saved state surviving a save and load, the fixture check for a proof-list feature, or a concrete failure a scout found. Put the risk it covers in a comment above it.
-- Never write a test that restates the implementation, and never add a test suite for a whole module.
-- Scouts and PR duty agents write the adversarial tests and stress scripts.
-- A bug fix copies the scout's failing script into `stress/` unchanged.
-- A stress script is evidence for one risk, named in its header comment. Keep it that way:
-  1. When the base's types or entry points move, update the script so it still exercises the same risk through the current entry point. What it asserts must not get weaker. Say in its header what changed and why.
-  2. When the product has made the risk impossible to express (the entry point is gone and the hazard with it), retire the script: delete it, and record the risk, the commit that removed the hazard and the reason in the PR that deletes it.
-  3. When a script fails because the product is wrong, leave the script as it is. Fix the product or file an issue.
-  4. Build other modules' structs through their constructors, like all other code (see Code), so a new field can't break the script.
-- Docs: update the spec file that describes the behaviour you change, and comment code whose purpose isn't clear. Use `SPEC.md`'s index to find it. Keep one sentence per line in moved files, with tables and code intact. Never add a new markdown file unless the piece asks for one.
-
-## Choosing work
-- Follow the AIRC session's Task List instructions. Continuous dispatch threads can add, update and delete tasks on their own. In other threads, change the list only when the user explicitly asks; otherwise file issues.
-- Work comes from three places: unchecked items in §7 (`spec/7-implementation-order.md`), open GitHub issues, and sections of `SPEC.md` or `spec/` nothing implements yet.
-- Take the first unclaimed item that nothing blocks, from the lowest milestone that has one. An item is blocked when it depends on an open question in §8 (`spec/8-open-questions.md`), or on an unmerged PR. Skip blocked items; never wait for them.
-- Never build anything that depends on an open question in §8 (`spec/8-open-questions.md`). File an issue that names the question, labelled `spec-question`, with your recommended answer and the items it blocks, then pick other work.
-- Items marked *(proposed)* are decided enough to build. Build them as written.
-- If the spec is wrong or contradicts itself, file an issue. Never change a decision in `SPEC.md` or `spec/` yourself.
-- If your change alters behaviour the spec describes, update the file that holds that section in the same PR.
-- Work only on the piece you claimed. If you find an unrelated problem, file an issue for it. Do not fix it in your PR.
-
-## Coordination (claims)
-In a Rosen workspace, claims are Rosen's:
-- Before you edit anything, claim every file you expect to touch: `rosen claim <paths>`. The first claim wins; a refusal names the change that holds the path. Pick other work, or record `rosen share <paths>` when you must edit a held file, or `rosen wait <paths>` when you need its change landed first.
-- Claims are released when your change lands or is abandoned; `rosen release <paths>` gives one up sooner.
-- There is no claim PR, `[claim]` title or "shares" note: Rosen records all of it.
-- Use AIRC `issue_comment` when you start a claimed issue, when a finding changes the plan or when you are blocked. Use `issue_ready_to_close` to post completion evidence and label the issue. Leave the issue open and let Velocity post the land comment.
-
-In a git worktree, claims are draft PRs:
-- Before you edit anything, claim your piece:
-  1. List open PRs: `gh pr list --state open --json number,title,body,createdAt,headRefName`.
-  2. Pick a piece no open PR claims.
-  3. Create your branch and worktree (see Worktrees), push an empty commit, and open a draft PR against `master` titled `[claim] <the §7 item, issue or SPEC section>`.
-  4. In the PR body, list the piece and every file you expect to touch.
-- First claim wins. List open PRs again. If an earlier open PR claims the same piece, close yours, delete your branch and worktree, and pick again.
-- Before you edit a file another open PR lists, write "shares `<file>` with #n" in your PR body and comment the same on #n.
-- If your piece needs another PR merged first, write "Waits for #n" in your PR body. Rebase onto `master` after #n merges.
-- If you touch a file your PR body doesn't list, add it to the list before you push.
-- When the work is done, retitle the PR without `[claim]` and mark it ready for review.
-
-## Workspaces
-- In Rosen, Velocity creates your workspace when your thread starts and deletes it when your change lands. Never delete it or move files out of it.
-- In git, every agent works in its own git worktree under `X:\velocity-wt\`. Create it from the latest `master`: `git fetch origin` then `git worktree add X:\velocity-wt\<slug> -b vel/<slug> origin/master`.
-- Branch name: `vel/<slug>`, where the slug is a short name for the piece.
-- After your PR merges, remove your worktree (`git worktree remove X:\velocity-wt\<slug>`) and delete your local branch.
-- Never touch another agent's worktree or branch. Never run `git worktree prune`. The one exception: PR duty agents update PR branches with `master` (see If you are on PR duty).
+- Use Rosen terms: workspace, change, snapshot, name the change, land, base, stored conflict, land history and path claim. A Rosen workspace has `.rosen`. Work in the workspace Velocity assigned and leave its cleanup to Velocity.
+- Claim every intended path before editing with `rosen claim <paths>`. The first claim wins. Use `rosen share <paths>` for deliberate overlap, `rosen wait <paths>` for a dependency and `rosen release <paths>` to give up a claim.
+- Follow the workspace note for issue follow-through. Where the thread owns issue updates, use AIRC `issue_comment` for start, a changed plan or a blocker, and `issue_ready_to_close` for verified completion. Leave the issue open for Velocity.
+- Run and verify working functionality before proofs, tests or docs. Use `rosen status` and `rosen diff` to inspect stored work. Name the completed change with `rosen commit -m "<summary> (#issue)"` using the assigned issue or §7 item, then end your turn. Never approve a review, submit receipts or land your own change. Never use git or gh in the Rosen workspace.
+- With `review = "after-land"`, Velocity lands a clean named change. Fast build and lint checks may revert it. Full test failures are filed as issues. Fix work returned after a revert. For a stored conflict, run `rosen rebase`, combine both sides, run `rosen resolve <file>` for each conflict and name the change again.
+- Address every review comment with a fix or a reason. Check fixes and name the change again.
 
 ## Shared files
-Most merge conflicts come from a few files every feature touches. Keep your edits to them conflict-free:
-- **In Rosen**, `rosen.toml` lists generated artifacts under `generated` and only registration lists under `registration_lists`. Rosen never line-merges generated artifacts. When it reports `regenerate`, regenerate `Cargo.lock` with `cargo metadata --format-version 1`, `ui/pnpm-lock.yaml` with `pnpm -C ui install --lockfile-only`, and `ui/src/lib/bindings.ts` with `pnpm -C ui bindings`, from the project root, then name the work again. Locked checks (`--locked`, `--frozen-lockfile`, `export-bindings --check`) reject stale base copies after a land.
-- **Generated files:** `ui/src/lib/bindings.ts`, `Cargo.lock` and `ui/pnpm-lock.yaml`. Never resolve a conflict in them by hand. After `scripts/Setup-DevMachine.ps1`, `git merge origin/master` keeps master's copy without stopping. Then regenerate and commit: `pnpm -C ui bindings`, `cargo build --workspace` for `Cargo.lock`, `pnpm -C ui install` for `pnpm-lock.yaml`. `scripts/check.ps1` fails if you forget.
-- **Registration lists:** `collect_commands!`, `collect_events!`, `.typ` and `.constant` in `src-tauri/src/lib.rs`, the `mod` lines in each crate's `lib.rs`, and the dependency and member lists in `Cargo.toml`. Add your lines inside your module's group. A new module's group goes in alphabetical order, never at the end: two changes that both append at the end always conflict.
-- Edits to generated files and registration lists never need a "shares" note (Coordination).
-- **`.gitattributes`:** `/stress/*` already preserves every stress script's bytes. Never add a line per script.
-- **Spec files:** claim the feature or rule file you edit. F5 rules are in `spec/F5-worktrees/`, F7 rules in `spec/F7-duty-agents/`, and §3.1 IPC in `spec/3.1-ipc/<feature>.md`. Add new rules in their own files and add each file to `SPEC.md`'s index; keep each folder's README short. Existing rule edits stay in their own files.
-- **§7 (`spec/7-implementation-order.md`):** never tick a checkbox in a PR: PR duty ticks it when it lands the PR. A Rosen change ticks its own item's checkbox, since only the reviewed change lands, so the tick lands with the work and never without it.
-- **Overlapping fixes, first come, first served:** when two named changes fix the same root problem or add the same helper, the one that lands first wins. The later PR drops its own version and switches to `master`'s in the commit that merges `master` in. Never land two implementations of one thing, and never hold a PR back so another can land its version first.
-- **Silent conflicts:** after merging `master`, a build error in code neither side edited (a struct gained a field, a function was renamed) is a conflict. Fix it in the merge commit.
+
+- Tick your matching §7 item in the same change. Register commands, events, modules, members and dependencies in the appropriate group and place new named groups alphabetically. Use the existing implementation if the base lands the same fix first.
+- When Rosen reports `regenerate`, regenerate `Cargo.lock` with `cargo metadata --format-version 1`, `ui/pnpm-lock.yaml` with `pnpm -C ui install --lockfile-only` and `ui/src/lib/bindings.ts` with `pnpm -C ui bindings`. Regenerate from the merged inputs and name the change again. Keep generated artifacts and registration lists in their respective `rosen.toml` lists.
+
+## Commands
+
+- Use `rosen run -- <command>` for builds and tests. Follow the workspace note when it supplies a queued-run tool. Let other runs finish in queue order.
+- For Rust iteration use `cargo check -p <crate>`. Before naming working Rust, run `cargo fmt --all`, the locked workspace build and `cargo clippy --workspace --all-targets -- -D warnings`.
+- For app verification use `cargo tauri dev` outside the build queue. It starts the UI dev server. Use a crate's own entry point when that exercises the whole change.
+- For the affected checks use `scripts/check.ps1` with the changed paths list in a Rosen tree. The script queues its own heavy steps. For UI-only changes run `pnpm -C ui check`, `pnpm -C ui lint` and `pnpm -C ui build`, and format with `pnpm -C ui format` before naming. Keep all checks free of warnings.
+- Skip builds for documentation and stress-script-only edits. Skip reruns when covered inputs are unchanged.
+
+## Code and UI
+
+- `src-tauri/` handles Tauri commands and events. Put logic in domain crates. `velocity-core` is pure state and decisions, `velocity-store` persists them, `velocity-threads` starts and runs threads, and `velocity-acp` handles agent sessions. Use the crate manifests for the rest of the workspace layout.
+- Use pinned stable Rust, edition 2024. Use `thiserror` in crates and `anyhow` in Tauri. No `unsafe`, and no `unwrap()` or `expect()` outside `stress/`. Keep functions under 60 lines, use descriptive names without abbreviations and explain unclear decisions in comments.
+- Handle Windows drive letters, spaces, backslashes and long paths. Use the workspace's pinned `rosen-client` and `rosen-core` together. Use constructors across modules and add `#[serde(default)]` to new persisted fields. Keep algorithms that need proofs pure and synchronous.
+- Use the IPC names in §3.1. Document new commands and events in their feature's `spec/3.1-ipc/` file, one entry each. Place UI wrappers and re-exports in `ui/src/lib/ipc/<feature>.ts` and export from `ipc.ts`. Only IPC wrappers call `invoke` or `listen`. Generate command and event types with tauri-specta.
+- Use Svelte 5 runes, plain Vite and strict TypeScript. No SvelteKit, Svelte 4 stores, `export let`, `any` or TypeScript bypass directives. Keep state changes in Rust.
+- Open `design/main-window.html` in a browser for UI work. Match its layout, states and §5 keyboard map. Edit the reference only with user authorization. Keep its `:root` copied exactly in `ui/src/lib/theme/tokens.css`; add missing values to `reference.css` from the reference's winning declarations. Use `var(--token)` for visuals. Use smoked glass on black (`#000`), with no Mica, vibrancy or italics.
+
+## Implementation first
+
+- Working implementation outweighs proofs, tests and docs combined. Generated files, lockfiles and §7 ticks count on neither side. Choose implementation before proof-only, test-only or doc-only work in the current milestone.
+
+## Proofs
+
+- Proof agents handle F17 proof-list features after they land. Build the feature first and keep the implementation checkable against Lean-exported fixtures. File an issue to propose a change to the proof list. Run Charon or Aeneas only when the issue requests it.
+
+## Tests and docs
+
+- Add a targeted test only for the claim lock, workspace deletion, persisted state surviving save and load, a proof fixture check or a concrete scout failure. Name the risk in a comment. Copy a scout's failing reproduction into `stress/` unchanged for its fix. When entry points move, preserve what the script asserts and record the adaptation in its header. Retire a script only when the hazard becomes impossible and record the risk, commit and reason in the change.
+- Update the existing spec section that describes changed behaviour, one sentence per line with tables and code intact. Keep new spec rules in their own files and index them in SPEC.md. Add Markdown files only when the task calls for them.
 
 ## Sensitive paths
-PR duty tiers every change and PR (F7, `spec/F7-duty-agents/pr-duty-tiered-review.md` and its rule files). On a Rosen project whose `rosen.toml` sets `review = "after-land"`, a sensitive change gets no review before it lands: it lands on a clean merge like every change, and goes first in the review queue after the land. Everywhere else, a change or PR that touches a path listed here is sensitive: full review, `cargo run -p stress -- --all` on the merge result before merge, and a confidence proof at the reference level (a fixture table exported from the Lean model plus one Rust test that checks the implementation against it) for any proof-list feature it changes. The code level (an Aeneas translation) is required only when an issue asks for one (#142). A PR that changes only docs, comments or formatting is trivial: approve it once `scripts/check.ps1` passes and the change matches its claim. Every other PR gets the full review. Every tier needs an approving review.
-- `rosen.toml`: the project's Rosen configuration; it names the checks a land needs, the sensitive paths and the mirror remote. Keep its `sensitive` list the same as the list in this file. Generated artifacts belong only in `generated`; registration lists belong in `registration_lists`.
-- `crates/velocity-store/`: saved state; a mistake loses `state.json`.
-- `crates/velocity-git/src/lifecycle.rs`, `crates/velocity-git/src/merged_worktree.rs`, `crates/velocity-git/src/review.rs`: worktree deletion.
-- `crates/velocity-airc/src/claims.rs`: the claim lock.
-- `crates/velocity-github/src/approval.rs`: the approval record that gates merges (Rule 4).
-- `.github/workflows/`, `scripts/check.ps1`, `scripts/check-ui.mjs`: CI config, the local checks, and the UI checks Rosen's pre-land check set runs.
-- `scripts/Get-PrDutyToken.ps1`: PR duty's GitHub App credentials.
 
-## Landing your work
-One piece, one change (or one PR).
+Keep this list aligned with `rosen.toml`. Sensitive changes take priority in review after landing.
 
-### In a Rosen workspace
-- The folder is not a git checkout. Never run `git` or `gh` in it, and skip every branch, commit, push and pull request step below.
-- Every file you write is on the Rosen server within 2 seconds; there is nothing to push. `rosen status` shows what is stored and whether the server has rebased your change; `rosen diff` shows your change.
-- When the work runs end to end and its checks pass (`scripts/check.ps1` covers what your change can affect), name it: `rosen commit -m "<what changed, the §7 item or issue, the theorems proved>"`. That is your request for review. End your turn.
-- The review agent reviews your change's combined result onto the base, and Velocity runs `rosen.toml`'s pre-land checks on that exact tree before it lands it. Never approve or land your own change (`rosen review approve`, `rosen receipt submit`, `rosen land`).
-- When `rosen.toml` sets `review = "after-land"` (SPEC.md §1 Rosen rules), no one reviews before the land and no check holds it: Velocity lands your change as soon as it combines cleanly with the base. Build and lint it through `rosen run` before you name it: the build and lint run again right after the land, and a change that breaks them is reverted. Review, scouting, the full tests and Lean follow the land; a full test your change fails is filed as a `post-land-failure` issue, not reverted. Your task is finished when your change lands.
-- Requested changes and failed pre-land checks come back to you as a message. Fix them, then name the work again with `rosen commit -m`.
-- A conflict with the base: run `rosen rebase`, combine both sides between the conflict markers, run `rosen resolve <file>` for each file, then `rosen commit -m` again.
-- After a land, the post-land checks run the full tests. If your change broke them, Rosen reverts it and Velocity reopens your workspace with the failing output. Your work is kept: fix it and name it again.
-- Rosen mirrors the base to GitHub after each land. Never open a GitHub PR for a Rosen change.
-
-### In a git worktree
-- One piece, one branch, one PR, against `master`.
-- PR description: what changed, why, the theorems you proved, and the piece it completes (§7 item, `Fixes #n`, or SPEC section).
-- Name your §7 item in the PR description. Never tick its checkbox yourself: PR duty ticks it when it lands the PR.
-- Opening the PR does not finish the task. Monitor the PR until it is merged:
-  - If the local checks or CI fail on your change, fix it and push.
-  - Address every comment PR duty agents leave: fix it and push, or reply with the reason you didn't. Resolve the thread.
-  - After pushing fixes, re-request review.
-  - PR duty agents may update your branch with `master`, and push small fixes to it, at any time. Pull before you push again (`git pull --no-rebase`).
-  - Merge `master` into your branch only before you mark the PR ready, or when PR duty sends a conflict back to you. While the PR has the `reviewing` label, PR duty owns branch updates: a merge you push at the same time throws away the check it is running. Never force-push a branch PR duty may have updated.
-- If the PR is closed without merging, report why in your thread and keep your worktree.
-
-## If you are on PR duty
-- PR duty is for git projects, and for Rosen projects whose `rosen.toml` keeps `review = "before-land"`. On a Rosen project that sets `review = "after-land"`, Velocity lands changes with no approval; PR duty there reviews only the project's GitHub PRs.
-- For a Rosen change, Velocity gives you the review claim, a folder holding the change's merge result and the `rosen_duty_*` tools, and its prompt says which checks you run. Record every decision with `rosen_duty_review`. Velocity runs the pre-land checks and lands. The review rules and Review severity below apply; the GitHub steps (labels, holds, `gh`, branch updates) do not.
-- For a GitHub PR, everything below applies.
-- Hold one open, ready PR at a time. To take one: pick a ready PR without the `reviewing` label, or one whose hold is stale (below), add the label (`gh pr edit <n> --add-label reviewing`), comment "Reviewing · <your worktree slug>", then read the PR's comments again. If another agent's "Reviewing" comment is earlier than yours and its hold is live, leave the label and pick another PR.
-- A hold is live only while its holder works on the PR. While you hold one, post a one-line progress comment at least every 15 minutes. A hold is stale when its holder has posted no comment, commit or review on the PR for 20 minutes: its agent has stopped. Find the last activity with `gh pr view <n> --json comments,commits,reviews --jq '[.comments[].createdAt, .commits[].committedDate, .reviews[].submittedAt] | max'`. Take a stale hold over with the comment "Reviewing · <your worktree slug>, taking over a stale hold", and build on the earlier holder's findings and commits.
-- Never review, update or merge a PR another agent holds with a live hold. Remove the `reviewing` label when you merge, send the PR back to its author, or stop.
-- Never sit idle while a ready PR waits. Each time you merge, send a PR back, or would otherwise wait, list open PRs again and take the oldest ready PR without the `reviewing` label or with a stale hold. Wait only when every ready PR has a live hold or is waiting on its author.
-- Review, approve, request changes and merge as the PR duty GitHub app, not the shared login, so approvals are real GitHub reviews (#42). Set the token in the same command as `gh`: `$env:GH_TOKEN = pwsh -NoProfile -File scripts/Get-PrDutyToken.ps1; gh pr review <n> --approve`. Approve with `gh pr review --approve` and block with `gh pr review --request-changes`, never with a plain comment. If the script says its settings are missing, the app isn't set up on this machine: record approval as a comment starting `Approved at <head SHA>`.
-- Review the intent, not each line: check the PR against its claim, its SPEC.md section and this file.
-- Request changes on any PR that adds Lean for a feature not on the proof list, or a theorem about a single behaviour or case.
-- Review every theorem statement: does it say what the SPEC section says, do its hypotheses exclude real inputs, is the cost model honest, and is the class of alternatives the one that matters? Lean already checked the proofs.
-- When you doubt a claim no proof covers, write a stress script in `stress/`, run it, and attach the result to your comment. Point its `CARGO_TARGET_DIR` at your review worktree's `target/` so it reuses the crates already compiled there.
-- Request changes on a PR whose proofs, tests and docs together outweigh its implementation, or that adds tests outside the critical contracts in Tests and docs.
-- Approve only when `scripts/check.ps1 -Priority landing` passes on the PR merged onto the current `master`, in your review worktree. It runs the checks the PR's changes can affect (see Commands): the Rust steps when Rust inputs change, the UI steps when `ui/` or Rust changes, and `lake build` with the axiom check above when `proofs/` changes.
-- GitHub CI never holds up a PR. A pending, red or stale run doesn't block a merge when the local checks pass on the merge result.
-- After another PR merges, run the checks again on the new merge result before you merge the next one.
-- Update PR branches with `master`. You are allowed and encouraged to, so PRs never wait on their author to rebase:
-  - Whenever a PR you review or are about to merge is behind `master`, run `gh pr update-branch <n>`, or merge `master` into it in your review worktree and push.
-  - Resolve a conflict yourself when the resolution keeps both changes as written, or when both sides implement the same thing: keep `master`'s version and adapt the PR to it (first come, first served, see Shared files). Send it back to the author only when it means choosing between two different behaviours, or adapting takes more than a few lines.
-  - Never force-push, and never rewrite the author's commits.
-  - Run the checks on the updated branch, not the old PR head.
-- Land a PR in this order: update the branch with `master`, tick its §7 checkbox in `spec/7-implementation-order.md` in a commit on the branch, run `scripts/check.ps1 -Priority landing`, approve, then merge with `gh pr merge <n> --squash --delete-branch --match-head-commit <the SHA you approved>`. A commit pushed after your approval then stops the merge.
-- Never merge without an approving review.
-- If a PR merges while you are still reviewing it, file your findings as issues. Never post them on the merged PR.
-
-### Review severity
-Long review cycles cost more than the defects they catch. Block only what matters:
-- Request changes only for: data loss or corruption; a crash or hang; a violation of SPEC.md §1 or the Product rules; a security hole; a failing local check; the main path of the claimed piece not doing what its SPEC.md section says; or a Lean or tests rule above.
-- Everything else does not block: edge cases on rare inputs, display miscounts, naming, style, missing polish. File each as an issue with its evidence, link it in your review, and approve.
-- Fix a blocking finding yourself when the fix is a few lines with one obvious correct form, such as a missing derive, a wrong guard or a dropped field. Push it as your own commit on the branch, with its stress script in `stress/`, say what you changed in your review, and carry on landing the PR. Send the PR back only when the fix needs a design choice or is larger.
-- Put every blocking finding in your first review. A later round reviews only the commits pushed since your last review, and blocks only on a finding in those commits, or on new data loss or a crash.
-- When you are unsure whether a finding blocks, it does not block. File the issue.
-
-## If you are a scout
-- Assume every part of Velocity is broken and will fail. Prove it.
-- Write tests and stress scripts in `stress/`: load, concurrency, malformed input, resource exhaustion, crash and restart, and Windows paths.
-- Look for proof gaps too: features with no proof, statements weaker than SPEC.md, hypotheses that exclude real inputs.
-- File every issue with its evidence attached: the failing test or stress script, and its output.
-- Never file a duplicate. Search open and closed issues first.
+- `rosen.toml` configures checks, merge rules and the mirror.
+- `crates/velocity-store/` owns persisted state.
+- `crates/velocity-git/src/lifecycle.rs`, `crates/velocity-git/src/merged_worktree.rs` and `crates/velocity-git/src/review.rs` guard worktree deletion.
+- `crates/velocity-airc/src/claims.rs` implements the claim lock.
+- `crates/velocity-github/src/approval.rs` records approvals.
+- `.github/workflows/`, `scripts/check.ps1` and `scripts/check-ui.mjs` run checks.
+- `scripts/Get-PrDutyToken.ps1` handles GitHub App credentials.
 
 ## Done means
-- The piece is built exactly as SPEC.md describes it and behaves like the reference UI. You ran it and saw it work.
-- The proofs check, clippy, `pnpm -C ui check` and `pnpm -C ui lint` report zero warnings on the merge result.
-- The change has landed and its post-land checks passed, or the PR is merged and your workspace is removed.
+
+- The feature meets its spec and runs with passing checks. The task is finished when the change lands and its post-land build passes.
 
 ## Never
-- Never push to `master` directly, and never land your own Rosen change.
-- Never merge your own PR. PR duty agents merge.
-- Never force-push to another agent's branch.
-- Never edit `design/`. Changes to the reference UI come from the user.
-- Never skip git hooks (`--no-verify`).
-- Never commit secrets, tokens or `.env` files.
-- Never skip, delete or weaken a scout's test or stress script to make anything pass. Update or retire one only as Tests and docs describes.
+
+- Never modify the base directly, include secrets or `.env` files in a snapshot, or weaken a failing test to make checks pass.

@@ -166,11 +166,15 @@ fn dispatch_prompt(
             "Route the one-line PR through normal PR duty review as Trivial."
         };
         format!(
-            "The user accepts this recommended answer: {}\nRecord the answer as *(proposed)* in the relevant §8 question. Change only that decision line. {delivery}",
-            question.recommendation
+            "The user accepts this recommended answer: {}\nRecord the answer as *(proposed)* in the relevant §8 question. Change only that decision line. {} {delivery}",
+            question.recommendation,
+            crate::task_spec::named_section("§8 Open questions")
         )
     } else {
-        "Implement this issue end to end, following AGENTS.md and SPEC.md. Read its evidence before editing.".into()
+        format!(
+            "Read the issue evidence before editing and implement the issue end to end. {}",
+            crate::task_spec::instructions(&[&issue.title, &issue.body])
+        )
     };
     if version_control == velocity_store::VersionControl::Rosen {
         return Ok(rosen_dispatch_prompt(&scope, repository, issue));

@@ -96,7 +96,7 @@ fn folder_paragraph(brief: &RosenReviewBrief) -> String {
 fn tier_steps(brief: &RosenReviewBrief) -> String {
     match brief.tier.tier {
         ReviewTier::Sensitive => format!(
-            "\nTier: sensitive. It touches {}, listed under Sensitive paths in AGENTS.md. Full review, plus:\n- Run the project's stress suite, the stress command AGENTS.md names as the merge gate, on the merge result before you land. A failure blocks the land.\n- Any proof-list feature it changes needs its confidence proof at the reference level (SPEC.md F17).\n{}",
+            "\nTier: sensitive. It touches {}, listed under Sensitive paths in AGENTS.md. Full review, plus:\n- Run the project's designated stress suite on the merge result before you land. In the Velocity repository the command is `cargo run -p stress -- --all`. A failure blocks the land.\n- Any proof-list feature it changes needs its confidence proof at the reference level (SPEC.md F17).\n{}",
             quoted_list(&brief.tier.sensitive_files),
             review_steps(brief)
         ),
@@ -109,13 +109,14 @@ fn tier_steps(brief: &RosenReviewBrief) -> String {
 fn review_steps(brief: &RosenReviewBrief) -> String {
     let rules = brief.rules;
     let mut steps = String::from(
-        "Review:\n- Read AGENTS.md and SPEC.md first and follow AGENTS.md's rules for PR duty. Read the change with `rosen_duty_change`: its diff against its base, its named snapshots (the author's description of the work) and its review threads. A comment from a person is an instruction for this review: follow it. If one puts the change on hold, call `rosen_duty_review` with action `hold`, the head and the comment's reason, then stop.\n- Review the intent, not each line: check the change against its thread's task, issue or SPEC.md section, and AGENTS.md. Style is left to linters.\n",
+        "Review:\n- Read the change with `rosen_duty_change`: its diff against its base, its named snapshots (the author's description of the work) and its review threads. A comment from a person is an instruction for this review: follow it. If one puts the change on hold, call `rosen_duty_review` with action `hold`, the head and the comment's reason, then stop.\n- Use section references from the work or find the relevant headings with graph_find. Read them with graph_read (source: true), or read only their line ranges when the graph is unavailable.\n- Review the intent, not each line: check the change against its thread's task, issue or SPEC.md section, and AGENTS.md. Style is left to linters.\n",
     );
     if rules.check_diff_against_spec {
         steps.push_str("- Check the diff against SPEC.md: the main path of the claimed piece must do what its section says.\n");
     }
+    steps.push_str("- Compare proof scope and theorem statements to the project’s proof list and cited sections. Request changes for off-list Lean or single-case theorems. Implementation must outweigh proofs, tests and docs together.\n");
     if brief.mode == ReviewMode::Reading {
-        steps.push_str("- Review by reading. Do not build, run the tests or run the local checks, even where AGENTS.md tells PR duty to: once you approve, Velocity runs the project's pre-land checks (`rosen.toml`) on the merge result and lands the change only if they pass.\n");
+        steps.push_str("- Review by reading. Do not build, run the tests or run the local checks: once you approve, Velocity runs the project's pre-land checks (`rosen.toml`) on the merge result and lands the change only if they pass.\n");
         return steps;
     }
     // Velocity can't check this change itself: the agent's checks are the only ones it gets.

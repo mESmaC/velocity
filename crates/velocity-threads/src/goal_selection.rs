@@ -164,8 +164,7 @@ fn selection_prompt(
     ));
     format!(
         "{goal}\n\n---\nVelocity goal swarm: choosing work, before claiming (F16).\n\
-         Read the user's goal above first. It governs which work to choose. Read AGENTS.md and the project spec, \
-         and inspect issue bodies/comments or referenced files as needed to choose work that satisfies it.\n\
+         Read the user's goal above first. It governs which work to choose. Inspect issue evidence or the relevant spec headings as needed to choose work that satisfies it. {}\n\
          This turn is only for choosing: do not claim, edit, implement or name work yet. \
          Velocity will acquire the atomic claim and send the implementation prompt after your choice.\n\
          Choose only from this currently unclaimed inventory, already filtered to the user's work sources. \
@@ -173,6 +172,7 @@ fn selection_prompt(
          If none fits the user's goal, choose null. Never substitute unrelated work.\n{preference}\
          Return only a JSON object {{\"piece\":\"<exact piece key>\"}} or {{\"piece\":null}}.\n\
          Inventory: {}",
+        crate::task_spec::instructions(&[goal]),
         serde_json::Value::Array(candidates)
     )
 }

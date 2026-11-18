@@ -8,7 +8,7 @@ use agent_client_protocol::schema::ProtocolVersion;
 use agent_client_protocol::v1::ConnectionTo;
 use agent_client_protocol::v1::schema::{
     AuthCapabilities, ClientCapabilities, FileSystemCapabilities, Implementation,
-    InitializeRequest, LoadSessionRequest, McpCapabilities, McpServer, NewSessionRequest,
+    InitializeRequest, LoadSessionRequest, McpCapabilities, McpServer, Meta, NewSessionRequest,
     PermissionOptionKind, RequestPermissionOutcome, RequestPermissionRequest,
     RequestPermissionResponse, SelectedPermissionOutcome, SessionConfigOption, SessionId,
     SessionModeId, SessionModeState, SetSessionModeRequest,
@@ -30,6 +30,8 @@ pub struct SessionSetup {
     pub airc: Option<McpServer>,
     /// Settings → Agents → shared MCP servers, passed to every agent.
     pub shared_servers: Vec<McpServer>,
+    /// Provider extensions sent at session setup, outside the transcript.
+    session_metadata: Option<Meta>,
     /// The ids of the agent's session modes that skip its permission checks, as the provider
     /// layer classifies them.
     pub bypass_modes: Vec<String>,
@@ -85,6 +87,7 @@ impl SessionSetup {
             worktree,
             airc: None,
             shared_servers: Vec::new(),
+            session_metadata: None,
             bypass_modes,
             resume: None,
             run_settings: None,
@@ -97,6 +100,32 @@ impl SessionSetup {
     pub fn with_run_settings(mut self, settings: RunSettings<String>) -> Self {
         self.run_settings = Some(settings);
         self
+    }
+
+    pub(super) async fn load_claude_project_instructions(&mut self) -> std::io::Result<()> {
+        let instructions = match tokio::fs::read_to_string(self.worktree.join("AGENTS.md")).await {
+            Ok(instructions) => instructions,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+            Err(error) => return Err(error),
+        };
+        if !instructions.trim().is_empty() {
+            // claude-agent-acp forwards the preset's append field to the Claude SDK.
+            self.session_metadata = Some(Meta::from_iter([(
+                "systemPrompt".into(),
+                serde_json::json!({
+                    "type": "preset",
+                    "preset": "claude_code",
+                    "append": format!("Project instructions from AGENTS.md:\n\n{instructions}"),
+                }),
+            )]));
+        }
+        Ok(())
+    }
+
+    fn new_session_request(&self, servers: Vec<McpServer>) -> NewSessionRequest {
+        NewSessionRequest::new(self.worktree.clone())
+            .mcp_servers(servers)
+            .meta(self.session_metadata.clone())
     }
 }
 
@@ -114,7 +143,7 @@ pub async fn start_session(
         &initialized.agent_capabilities.mcp_capabilities,
     );
     let session = connection
-        .send_request(NewSessionRequest::new(setup.worktree.clone()).mcp_servers(servers))
+        .send_request(setup.new_session_request(servers))
         .block_task()
         .await?;
     select_bypass_mode(
@@ -172,7 +201,8 @@ async fn load_earlier_session(
     let loaded = connection
         .send_request(
             LoadSessionRequest::new(session_id.clone(), setup.worktree.clone())
-                .mcp_servers(servers.to_vec()),
+                .mcp_servers(servers.to_vec())
+                .meta(setup.session_metadata.clone()),
         )
         .block_task()
         .await;
@@ -196,7 +226,7 @@ async fn new_resumed_session(
     servers: Vec<McpServer>,
 ) -> Result<StartedSession, agent_client_protocol::Error> {
     let session = connection
-        .send_request(NewSessionRequest::new(setup.worktree.clone()).mcp_servers(servers))
+        .send_request(setup.new_session_request(servers))
         .block_task()
         .await?;
     select_bypass_mode(

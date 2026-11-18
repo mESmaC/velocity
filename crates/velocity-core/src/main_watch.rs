@@ -129,7 +129,7 @@ fn reason_sentence(reason: &WatchReason, base: &str) -> String {
     }
 }
 
-const WATCH_STEPS: &str = "\nWatch:\n- Read AGENTS.md and SPEC.md first and use the commands AGENTS.md gives.\n- Run every scout test and stress script (the project's test suite and every script in its stress folder, such as `stress/`), then the project's local checks.\n- If everything passes, call `watch_green` and end your turn.\n- A test or script that fails, then passes when you re-run it up to three times on this same commit, is flaky: check `scout_issues`, then file it once with `scout_file` (its reproduction runs it until it fails), and count it as passing.\n";
+const WATCH_STEPS: &str = "\nWatch:\n- Use the project check commands supplied in your instructions.\n- Run every scout test and stress script (the project's test suite and every script in its stress folder, such as `stress/`), then the project's local checks.\n- If everything passes, call `watch_green` and end your turn.\n- A test or script that fails, then passes when you re-run it up to three times on this same commit, is flaky: check `scout_issues`, then file it once with `scout_file` (its reproduction runs it until it fails), and count it as passing.\n";
 
 fn bisect_steps(brief: &WatchBrief) -> String {
     let tip = brief.tip;

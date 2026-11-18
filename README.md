@@ -142,15 +142,10 @@ The Lean proofs have their own setup; see
 
 ## Contributing
 
-Read `AGENTS.md` and `SPEC.md` first, then follow the spec's file index.
-The build order is in `spec/7-implementation-order.md`, open questions in
-`spec/8-open-questions.md`, and the proof list in
-`spec/F17-proofs-and-adversarial-testing.md`.
-`AGENTS.md` is written for coding agents, but its rules for code, checks and
-pull requests apply to everyone.
-
-Start an agent with: "Read AGENTS.md and SPEC.md, follow the spec/ file index,
-then start dev."
+Give the agent an issue, a §7 item or a named spec section.
+Velocity supplies Claude's project instructions at session setup and Codex loads them itself.
+Use `graph_find` to locate applicable sections and `graph_read` with `source: true` to read them.
+The build order is in `spec/7-implementation-order.md`, open questions in `spec/8-open-questions.md`, and the proof list in `spec/F17-proofs-and-adversarial-testing.md`.
 
 The spec move can be replayed on a newer monolithic base with
 `node scripts/split-spec.mjs`; an optional checkout path selects another folder.

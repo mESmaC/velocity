@@ -338,6 +338,7 @@ pub fn goal_agent_prompt(
             piece.title
         ),
     };
+    let spec = piece_spec(piece);
     format!(
         "{}\n\n---\nVelocity goal swarm context (locked, SPEC.md F16):\n\
          - Nick: `{}` in `#{}`\n\
@@ -346,7 +347,7 @@ pub fn goal_agent_prompt(
          - Work-pool context: {}. Prior pushed work is optional; never use another thread's checkout.\n\
          - Commit, push `{branch_name}`, open a PR against `{default_branch}`, and watch it until PR duty merges it: fix failed checks, answer every review comment, resolve addressed threads, and re-request review. Never merge your own PR.\n\
          - Settle file overlaps and dependency waits in AIRC (`airc_claims`, `airc_claim`, `airc_send`); first claim wins.\n\
-         - Implement and run the feature first; then write Lean proofs only if the feature is on the project's proof list in SPEC.md (Rule 8, F17).",
+         - Implement and run the feature first; then write Lean proofs only if the feature is on the project's proof list in SPEC.md (Rule 8, F17).\n\n{spec}",
         slot.prompt,
         slot.nick,
         project.name,
@@ -367,6 +368,7 @@ fn rosen_goal_prompt(
         }
         _ => String::new(),
     };
+    let spec = piece_spec(piece);
     format!(
         "{}\n\n---\nVelocity goal swarm context (SPEC.md F16):\n\
          - Nick: `{}` in `#{}`; workspace: `{}`.\n\
@@ -374,7 +376,7 @@ fn rosen_goal_prompt(
          - This is a Rosen workspace. Claim files with `rosen claim`, record overlaps with `rosen share`, and name completed work with `rosen commit -m \"<summary>\"`, then end your turn. The task is done when the change lands.\n\
          - Run builds and tests through `rosen run -- <command>`.\n\
          - Read `airc_claims` for work ownership. If this task depends on another member's work, call `airc_wait` with its holder and file. Velocity continues your work on a stacked change (Rosen D19); the parent must land first.\n\
-         - Implement and run first. Follow the project's proof-list instructions.",
+         - Implement and run first. Follow the project's proof-list instructions.\n\n{spec}",
         slot.prompt,
         slot.nick,
         project.name,
@@ -382,6 +384,16 @@ fn rosen_goal_prompt(
         piece.title,
         piece.reference
     )
+}
+
+fn piece_spec(piece: &WorkPiece) -> String {
+    match &piece.key {
+        WorkKey::Spec { section } => format!(
+            "Spec work item: `{section}`. {}",
+            crate::task_spec::instructions(&[&piece.title, section])
+        ),
+        _ => crate::task_spec::instructions(&[&piece.title]),
+    }
 }
 
 fn pick_index(forced_index: Option<usize>, flags: &[bool]) -> Option<usize> {

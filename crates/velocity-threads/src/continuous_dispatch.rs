@@ -194,8 +194,11 @@ pub fn plan_task(
     task: &TaskItem,
 ) -> Result<LaunchPlan, DispatchError> {
     let prompt = format!(
-        "Continuous dispatch assigned you Task List item #{}: {}\n\nImplement it end to end, following AGENTS.md and SPEC.md. Follow the Rosen workspace note, claim the files before editing and run builds and checks through rosen run -- <command>. Name the change with rosen commit -m \"<one-line summary> (task #{})\" and end your turn. Velocity marks your task done when the change lands. If there is no work to change, explain why and end your turn.",
-        task.id, task.text, task.id,
+        "Continuous dispatch assigned you Task List item #{}: {}\n\nImplement it end to end. {}\n\nFollow the Rosen workspace note Velocity gave you. Name the change with rosen commit -m \"<one-line summary> (task #{})\" and end your turn. Velocity marks your task done when the change lands. If there is no work to change, explain why and end your turn.",
+        task.id,
+        task.text,
+        crate::task_spec::instructions(&[&task.text]),
+        task.id,
     );
     let mut plan = crate::launch::plan_named_launch(
         project,

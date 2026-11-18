@@ -4,7 +4,7 @@
 
 use std::collections::BTreeMap;
 
-pub const DEFAULT_PROMPT: &str = "Read AGENTS.md and start dev.";
+pub const DEFAULT_PROMPT: &str = "Implement the next unclaimed piece.";
 pub const MAXIMUM_AGENTS: u32 = 30;
 pub const DEFAULT_AGENTS: u32 = 10;
 pub const QUICK_PICKS: [u32; 4] = [3, 5, 10, 20];

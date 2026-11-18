@@ -50,11 +50,11 @@ pub(crate) const TESTS_AND_DOCS_RULES: &[&str] = &[
     "- Comment code whose purpose is not clear; explain why. Never add a new Markdown file unless the piece asks for one.",
 ];
 
-const DEFAULT_AGENTS_BODY: &str = r#"Read this file in full before you start any task. Every rule here is mandatory.
-SPEC.md defines what to build. The project Task List defines what is left.
+const DEFAULT_AGENTS_BODY: &str = r#"Use the project instructions already loaded in your session.
+The project spec defines what to build. The Task List defines what is left.
 
 ## Commands
-- Read the project's build, run and lint commands from its manifests and SPEC.md. Record those commands here when established.
+- Find build, run and lint commands in the manifests or the spec section that defines them. Record those commands here when established.
 - Run builds, tests and lint through `rosen run -- <command>`. Never run a long-lived dev server through the queue.
 - Check only what your change affects before naming it. Lint reports zero warnings. Never repeat a passed check unless its inputs changed.
 - Run `lake build` in `proofs/` when changing a pinned Lean project.
@@ -66,6 +66,7 @@ SPEC.md defines what to build. The project Task List defines what is left.
 
 ## Scope
 - Work only on the piece you claimed.
+- Use the section references in the task or find applicable headings with `graph_find` (kind: section). Read them with `graph_read` (source: true). If the graph is unavailable, read only the relevant line ranges.
 - File unrelated problems as issues.
 - Follow the AIRC session's Task List instructions. Continuous dispatch threads can add, update and delete tasks on their own. In other threads, change the list only when the user explicitly asks. Otherwise, file issues.
 - Update SPEC.md when behaviour changes. File an issue when the spec contradicts itself; never change a product decision yourself.
@@ -89,8 +90,6 @@ SPEC.md defines what to build. The project Task List defines what is left.
 ## Issue updates
 - For an issue you hold in AIRC, use `issue_comment` when you start, when a finding changes the plan and when you are blocked.
 - On a Rosen project, use `issue_ready_to_close` to post your completion evidence and label the issue. Leave the issue open and let Velocity announce the land.
-- Review swarm: verify the source issue's acceptance criteria against the exact landed commit and report whether that commit satisfies them.
-- Main watcher: leave Rosen issue follow-through to Velocity. It closes after 30 minutes of green post-land builds only when the land has no review coverage or objection.
 
 ## Shared files
 - Identify generated files and registration lists here as they are established.
@@ -111,10 +110,6 @@ SPEC.md defines what to build. The project Task List defines what is left.
 - Resolve a stored conflict with `rosen rebase`, edit the conflict markers, regenerate generated files, run `rosen resolve <file>` for each conflict, check and name the change again.
 - If post-land build checks revert your change, your work remains in the reopened workspace. Fix the reported failure, check and name it again.
 - If the change is abandoned, report why in your thread.
-
-## Review severity
-- Report data loss, a crash or hang, a security hole, a product-rule violation, a failing check or the claimed main path failing its spec with evidence.
-- File other findings as issues. Follow the project's before-land or after-land review policy.
 
 ## Done means
 - The piece meets SPEC.md and has been run successfully.

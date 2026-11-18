@@ -60,8 +60,10 @@ The template is installed atomically, so concurrent setup cannot replace instruc
 Installation or commit failures stop setup and report the error; created instructions remain available for recovery.
 On retry, a regular AGENTS.md whose bytes still match the generated default template is committed before registration, even when it was already present; custom instructions, directories and symbolic links remain untouched.
 The interview continues to write only SPEC.md (Q7).
-The template includes implementation-first, proof-list-only, scope, change follow-through, Task List, AIRC, shared-file and review-severity rules.
-Project-specific commands are filled in from the project's manifests and spec rather than assuming Rust or a frontend stack.
+The template includes implementation-first, proof-list-only, scope, change follow-through, Task List, AIRC and shared-file rules.
+It directs agents to the relevant spec headings using the graph tools and relies on the session for project instructions (§3.2).
+Duty prompts carry the instructions for their roles (F7).
+Project-specific commands come from the project's manifests or the applicable spec section.
 
 **The default AGENTS.md** includes these rules:
 - Name the change with `rosen commit -m`, then Velocity handles landing; the task finishes when the change lands.
@@ -69,7 +71,6 @@ Project-specific commands are filled in from the project's manifests and spec ra
 - Follow the AIRC session's Task List instructions.
   Continuous dispatch threads can add, edit and delete tasks on their own.
   Other threads change the Task List only on an explicit user request; otherwise file issues.
-- Review severity: the project's review policy, and that everything else becomes an issue (F7).
 - Shared files: the project's generated files and registration lists, and how to regenerate them on combined inputs (F14).
 - Build queue: run every heavy build, test and lint through `rosen run -- <command>`, the machine-wide queue (F5).
 

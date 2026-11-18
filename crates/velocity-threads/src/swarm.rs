@@ -112,7 +112,7 @@ fn member_work(
                 .ok_or_else(|| {
                     DispatchError::Invalid(format!("Task {identifier} is no longer open"))
                 })?;
-            let prompt = task_prompt(&task.text);
+            let prompt = task_prompt(&task.text, project.version_control);
             (task.text.clone(), title_slug(&task.text), prompt, None)
         }
         SwarmItem::Issue(number) => {
@@ -142,9 +142,16 @@ fn member_work(
 
 const LIFECYCLE: &str = "You already have your own worktree and branch. Open a PR against the project's default branch and watch it until it merges: fix failed checks, answer every review comment, resolve addressed threads and re-request review. Never merge your own PR. Messages from the swarm arrive between your steps. When one says a merged PR touched your files, rebase onto the default branch, resolve the conflicts, re-run the checks and push.";
 
-fn task_prompt(task: &str) -> String {
+fn task_prompt(task: &str, version_control: velocity_store::VersionControl) -> String {
+    let delivery = if version_control == velocity_store::VersionControl::Rosen {
+        "Follow the Rosen workspace note Velocity gave you. Name the task in the snapshot."
+            .to_owned()
+    } else {
+        format!("Name the task in your PR description.\n\n{LIFECYCLE}")
+    };
     format!(
-        "You are one agent in a swarm: one agent per open item, all working at once, each in its own worktree. Your item is this Task List task:\n\n{task}\n\nBuild it end to end, following AGENTS.md and SPEC.md. Name the task in your PR description.\n\n{LIFECYCLE}"
+        "Your swarm item is this Task List task:\n\n{task}\n\nBuild it end to end. {}\n\n{delivery}",
+        crate::task_spec::instructions(&[task])
     )
 }
 
@@ -155,11 +162,16 @@ fn issue_prompt(
     version_control: velocity_store::VersionControl,
 ) -> String {
     let scope = format!(
-        "Your swarm item is issue {repository}#{}: {}. Read its description and evidence, then implement it end to end following AGENTS.md and SPEC.md.",
-        issue.number, issue.title
+        "Your swarm item is issue {repository}#{}: {}. Read its description and evidence, then implement it end to end. {}",
+        issue.number,
+        issue.title,
+        crate::task_spec::instructions(&[&issue.title])
     );
     if version_control == velocity_store::VersionControl::Rosen {
-        return format!("{scope}\n\nFollow the Rosen workspace note Velocity gave you.");
+        return format!(
+            "{scope}\n\nhttps://github.com/{repository}/issues/{}\n\nFollow the Rosen workspace note Velocity gave you.",
+            issue.number
+        );
     }
     let link = if close {
         format!("Write Fixes #{} in the PR description.", issue.number)

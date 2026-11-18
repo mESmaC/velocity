@@ -223,6 +223,13 @@ async fn run_admitted_session(
     setup
         .shared_servers
         .extend(launch_shared_servers(&launch, &setup.worktree));
+    if launch.own_config == Some(crate::Provider::Anthropic)
+        && let Err(error) = setup.load_claude_project_instructions().await
+    {
+        let _ = events.send(AgentEvent::Log(format!(
+            "Could not load project AGENTS.md: {error}"
+        )));
+    }
     let mut agent = process::spawn_agent(&launch, &setup.worktree)?;
     let shared = Arc::new(Shared {
         worktree: setup.worktree.clone(),

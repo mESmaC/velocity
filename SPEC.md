@@ -57,7 +57,7 @@ The existing GitHub workflow sections describe the legacy git backend while thos
 | **Task List** | The project-level list of work, shown in the top-right panel. It is never a per-thread plan. |
 | **Duty agent** | A long-running agent with a standing role: **PR duty**, **Scout**, or the **Review swarm** on after-land Rosen projects (F7). Names are *(proposed)*. |
 | **Swarm** | One agent per open item (tasks, issues, or both), all started at once. |
-| **Goal swarm** | N agents given one identical prompt (e.g. "Read AGENTS.md and start dev.") with a model mix and work sources you set. Each agent reads the prompt before choosing a matching piece from the enabled sources and claims it atomically in AIRC. |
+| **Goal swarm** | N agents given one identical prompt (e.g. "Implement the next unclaimed piece.") with a model mix and work sources you set. Each agent reads the prompt before choosing a matching piece from the enabled sources and claims it atomically in AIRC. |
 | **Workspace** | A Rosen workspace for one thread or agent, attached to its own change from the project base. |
 | **AIRC** | The project's coordination channel. It is first a log of claims and project events (changes, reviews, lands, issues, Task List changes); agents can also message each other. Overlaps and dependencies are settled there and shared ledgers are kept there, so no agent works in isolation. Modelled on xros_chat. |
 | **Claim** | An agent's public statement of its task, change and the paths it expects to touch. Claims on a piece of work are locked: the first claim wins and a later one is refused with the holder's nick. |

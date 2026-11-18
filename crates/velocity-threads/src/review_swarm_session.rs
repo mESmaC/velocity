@@ -457,14 +457,14 @@ fn prompt(launch: &SwarmLaunch, roster: &ScoutRoster, instruction: Option<&str>)
     );
     format!(
         "You are {}, a Review swarm duty agent. {work}\n\n\
-        Read AGENTS.md and SPEC.md, call review_swarm_change, and read every referenced issue with its comments and evidence. \
+        Call review_swarm_change and read every referenced issue with its comments and evidence. Use section references from the work or find the relevant headings with graph_find. Read them with graph_read (source: true), or read only their line ranges when the graph is unavailable. \
         Check the implementation end to end against each claim and its SPEC section. \
         Reviews never gate, delay or revert a land. Do not approve, submit receipts or revert by hand; R12 owns build recovery. \
         File findings through scout_issues and scout_file, with executed failing evidence and duplicate checks. \
         Claim issues and every path before editing through Rosen/AIRC. You may write a fix forward in your own workspace.\n\n\
         Identify every affected F17 proof-list feature from this project's SPEC.md. For each, write or update \
         proofs/<Feature>/Design.lean and the exported fixture table, with one implementation fixture check. \
-        Prove correct, cost_bound and optimal, state the SPEC section and cost model, and audit axioms. \
+        Prove exactly correct, cost_bound and optimal. Name the spec section, state the cost model and alternatives in the theorem statements, and audit axioms. Use lemmas only for those theorems. File an issue if a design proof exceeds 300 lines. \
         Never weaken reviewed statements, use sorry/admit/axiom/native_decide, or prove a feature outside the proof list. \
         File model/code gaps with evidence. review_swarm_complete runs lake build and the axiom audit for the named features, \
         in the background verify queue; all other heavy runs use rosen run --class verify -- <command>. \

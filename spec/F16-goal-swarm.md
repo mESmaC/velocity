@@ -38,7 +38,7 @@ The git lifecycle described below remains the fallback.
 
 **Dialog** (`G`, the "Goal swarm" starter chip, or the palette):
 - **Prompt:** every agent gets exactly this text.
-  The default is `Read AGENTS.md and start dev.`; text typed in the empty composer prefills it.
+  The default is `Implement the next unclaimed piece.`; text typed in the empty composer prefills it.
 - **Velocity adds to every agent** (locked):
   - its own workspace under the workspace root (F5), removed after its PR merges;
   - commit, push, open a PR against the base, and watch it until it lands (AGENTS.md);
@@ -82,11 +82,11 @@ Rust applies the edit, restores the "rest" rule and draws the dialog again.
 
 **What each agent does:**
 1.
-   Gets a nick such as `sol-3` and a workspace named after it, then reads AGENTS.md and SPEC.md.
+   Gets a nick such as `sol-3`, a workspace named after it and the project's session instructions (§3.2).
    State: **choosing work**.
 2.
    Receives the user's prompt before any piece is claimed.
-   Its chosen model reads the prompt, AGENTS.md, the project spec and the current AIRC claims board, and inspects issue bodies/comments or references as needed to pick an unclaimed piece that satisfies the prompt.
+   Its chosen model reads the prompt and unclaimed inventory and inspects issue evidence or relevant spec headings as needed to pick a piece that satisfies the prompt.
    The code graph groups candidate work by likely subsystem and gives different workers a preference to break ties among equally suitable pieces (F19).
    Velocity validates the returned piece against the enabled, unclaimed inventory before acquiring its atomic claim.
    A failed or malformed choice reports an error; it never falls back to unrelated first-available work.
@@ -104,6 +104,7 @@ Rust applies the edit, restores the "rest" rule and draws the dialog again.
    - **Nothing left:** a `left` event is posted; the agent removes its workspace and leaves.
 4.
    From here it is an ordinary thread (F4–F6).
+   Its implementation prompt names the chosen spec section when known and directs the member to read applicable headings with `graph_read`.
    It settles overlaps and dependency waits in AIRC (F14), opens a PR, watches it until PR duty merges it, and its worktree is deleted.
    Merging ticks the task, closes the issue, or records the SPEC.md section as built in the project's state.
    Velocity records it at landing; the agent's PR never edits SPEC.md to mark it, so changes don't all touch SPEC.md.
