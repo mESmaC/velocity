@@ -1,4 +1,5 @@
 #### Settings → Workspaces · Lifecycle
 
 <!-- split-spec: {"order":651,"kind":"markdown","indentation":0} -->
-- **Lifecycle:** the two always-on rules shown locked; "delete the local branch too"; a read-only explanation of the closed, failed and spec rules.
+Delete workspace invokes Rosen's deletion guard (R4) for the selected registration.
+The page shows the refusal when Rosen keeps a workspace.

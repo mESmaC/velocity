@@ -408,6 +408,65 @@
   color: var(--err);
 }
 
+.workspace-commands {
+  display: grid;
+  gap: var(--worktrees-input-gap);
+  margin: var(--worktrees-summary-margin) 0;
+  color: var(--text-2);
+  font-size: var(--worktrees-summary-font-size);
+}
+.workspace-commands .worktree-description {
+  margin: 0;
+}
+.workspace-commands textarea {
+  padding: var(--worktrees-nav-padding);
+  border: var(--worktrees-input-border);
+  border-radius: var(--worktrees-input-radius);
+  background: var(--worktrees-input-background);
+  color: var(--text);
+  font: var(--worktrees-input-font);
+  resize: vertical;
+}
+.workspace-inventory {
+  width: 100%;
+  table-layout: fixed;
+  border-collapse: collapse;
+  font-size: var(--worktrees-table-font-size);
+  text-align: left;
+}
+.workspace-inventory th,
+.workspace-inventory td {
+  padding: var(--worktrees-table-padding);
+  border-bottom: var(--worktrees-row-border);
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.workspace-inventory th,
+.workspace-inventory td:nth-child(3),
+.workspace-inventory td:nth-child(4) {
+  color: var(--muted);
+}
+.workspace-inventory th:first-child {
+  width: 30%;
+}
+.workspace-inventory th:last-child,
+.workspace-inventory td:last-child {
+  width: 6rem;
+  text-align: right;
+}
+.workspace-inventory td code,
+.workspace-inventory td:nth-child(2) button {
+  display: block;
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.workspace-inventory td:nth-child(2) button {
+  color: var(--accent);
+  text-align: left;
+}
+
 .worktree-settings-main::-webkit-scrollbar {
   width: var(--worktrees-scrollbar-size);
   height: var(--worktrees-scrollbar-size);

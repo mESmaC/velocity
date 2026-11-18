@@ -32,6 +32,7 @@ sysinfo = { workspace = true, features = ["system"] }
 tempfile = "3"
 thiserror.workspace = true
 tokio = { workspace = true, features = ["macros", "sync"] }
+toml_edit = "0.25"
 velocity-core.workspace = true
 velocity-git.workspace = true
 velocity-spec.workspace = true

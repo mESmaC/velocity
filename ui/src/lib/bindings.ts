@@ -99,11 +99,14 @@ export const commands = {
 	 */
 	chooseModel: (projectIdentifier: number, threadIdentifier: number | null, choice: ModelMenuChoice) => __TAURI_INVOKE<ModelMenuView_Serialize>("choose_model", { projectIdentifier, threadIdentifier, choice }),
 	getWorkPool: (projectIdentifier: number) => __TAURI_INVOKE<WorkPool_Serialize>("get_work_pool", { projectIdentifier }),
-	listWorktrees: () => __TAURI_INVOKE<WorktreeSettingsView_Serialize>("list_worktrees"),
-	setWorktreeSettings: (edit: WorktreeSettingsEdit, projectIdentifier: number | null) => __TAURI_INVOKE<WorktreeSettingsView_Serialize>("set_worktree_settings", { edit, projectIdentifier }),
-	previewWorktreeFolder: (folder: string) => __TAURI_INVOKE<WorktreePathPreview>("preview_worktree_folder", { folder }),
-	browseWorktreeFolder: () => __TAURI_INVOKE<string | null>("browse_worktree_folder"),
-	pruneWorktrees: () => __TAURI_INVOKE<string>("prune_worktrees"),
+	getWorkspaceSettings: () => __TAURI_INVOKE<WorktreeSettingsView_Serialize>("get_workspace_settings"),
+	setWorkspaceSettings: (edit: WorktreeSettingsEdit, projectIdentifier: number | null) => __TAURI_INVOKE<WorktreeSettingsView_Serialize>("set_workspace_settings", { edit, projectIdentifier }),
+	previewWorkspaceFolder: (folder: string) => __TAURI_INVOKE<WorktreePathPreview>("preview_workspace_folder", { folder }),
+	browseWorkspaceFolder: () => __TAURI_INVOKE<string | null>("browse_workspace_folder"),
+	listWorkspaces: (projectIdentifier: number) => __TAURI_INVOKE<WorkspaceRow_Serialize[]>("list_workspaces", { projectIdentifier }),
+	deleteWorkspace: (projectIdentifier: number, change: string, path: string) => __TAURI_INVOKE<null>("delete_workspace", { projectIdentifier, change, path }),
+	getWorkspacePreparation: (projectIdentifier: number) => __TAURI_INVOKE<LandedWorkspacePreparation_Serialize | null>("get_workspace_preparation", { projectIdentifier }),
+	proposeWorkspacePreparation: (projectIdentifier: number, expected: WorkspacePreparation, edited: WorkspacePreparation) => __TAURI_INVOKE<string | null>("propose_workspace_preparation", { projectIdentifier, expected, edited }),
 	getDutyDialogDefaults: () => __TAURI_INVOKE<DutyDialogDefaults_Serialize>("get_duty_dialog_defaults"),
 	/**  A duty agent's review transcript (F7), including session boundaries for this app run. */
 	getDutyAgentTranscript: (nickname: string) => __TAURI_INVOKE<TranscriptBlock_Serialize[] | null>("get_duty_agent_transcript", { nickname }),
@@ -258,8 +261,6 @@ export const THREAD_STEP_EVENT = "thread://step" as const;
 export const UPDATE_STATUS_EVENT = "update://status" as const;
 
 export const WINDOW_STATE_EVENT = "window://state" as const;
-
-export const WORKTREE_INVENTORY_EVENT = "worktree://inventory" as const;
 
 /* Types */
 export type AddGoalAgentsRequest = AddGoalAgentsRequest_Serialize | AddGoalAgentsRequest_Deserialize;
@@ -1953,6 +1954,20 @@ export type KeyboardInput = {
 	alt: boolean,
 	meta_held: boolean,
 	typing: boolean,
+};
+
+export type LandedWorkspacePreparation = LandedWorkspacePreparation_Serialize | LandedWorkspacePreparation_Deserialize;
+
+export type LandedWorkspacePreparation_Deserialize = {
+	preparation: WorkspacePreparation,
+	maximum_pool_size: number,
+	config_error?: string | null,
+};
+
+export type LandedWorkspacePreparation_Serialize = {
+	preparation: WorkspacePreparation,
+	maximum_pool_size: number,
+	config_error: string | null,
 };
 
 export type LandingStatus = LandingStatus_Serialize | LandingStatus_Deserialize;
@@ -5305,6 +5320,31 @@ export type WorkedSummaryView_Serialize = {
 	proved: boolean,
 };
 
+export type WorkspacePreparation = {
+	warm_pool_size: number,
+	prepare_commands: string[],
+};
+
+export type WorkspaceRow = WorkspaceRow_Serialize | WorkspaceRow_Deserialize;
+
+export type WorkspaceRow_Deserialize = {
+	change: string,
+	path: string,
+	thread?: OwningThread | null,
+	size?: string | null,
+	state: string,
+	kept?: string | null,
+};
+
+export type WorkspaceRow_Serialize = {
+	change: string,
+	path: string,
+	thread: OwningThread | null,
+	size: string | null,
+	state: string,
+	kept: string | null,
+};
+
 export type WorktreeChipView = "Hidden" | "Live" | "Deleted";
 
 export type WorktreeDriveView = {
@@ -5315,16 +5355,6 @@ export type WorktreeDriveView = {
 	used_percent: number,
 	selected: boolean,
 	slow: boolean,
-};
-
-export type WorktreeInventoryChanged = WorktreeInventoryChanged_Serialize | WorktreeInventoryChanged_Deserialize;
-
-export type WorktreeInventoryChanged_Deserialize = {
-	state: WorktreeSettingsView_Deserialize,
-};
-
-export type WorktreeInventoryChanged_Serialize = {
-	state: WorktreeSettingsView_Serialize,
 };
 
 /**  The path preview for a folder the user is still typing, before it is saved. */

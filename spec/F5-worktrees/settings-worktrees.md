@@ -1,7 +1,9 @@
 #### Settings → Workspaces
 
 <!-- split-spec: {"order":637,"kind":"markdown","indentation":0} -->
-**Settings → Workspaces:**
+Settings → Workspaces reads the selected project's effective warm pool size and prepare commands from Rosen's landed `rosen.toml`.
+Saving the editor names a new Rosen change and displays its ID for review and landing.
+The settings take effect when the change lands.
 
 <!-- split-spec links -->
 

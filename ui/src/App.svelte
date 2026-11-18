@@ -17,7 +17,7 @@
   import SpecInterview from './lib/SpecInterview.svelte';
   import AgentsEditor from './lib/AgentsEditor.svelte';
   import CommandPalette from './lib/CommandPalette.svelte';
-  import WorktreeSettings from './lib/WorktreeSettings.svelte';
+  import WorkspaceSettings from './lib/WorkspaceSettings.svelte';
   import ProvidersSettings from './lib/ProvidersSettings.svelte';
   import AgentSettings from './lib/AgentSettings.svelte';
   import ProofsSettings from './lib/ProofsSettings.svelte';
@@ -573,11 +573,15 @@
                 {layout}
                 swarm={layout.active_goal_swarm}
                 {send}
-              />{:else if layout.view === 'Settings' && layout.settings_tab === 'worktrees'}<WorktreeSettings
-                mirror={layout.rosen_mirror}
-                projectIdentifier={layout.project_identifier}
-                {send}
-              />{:else if layout.view === 'Settings' && layout.settings_tab === 'providers'}<ProvidersSettings
+              />{:else if layout.view === 'Settings' && layout.settings_tab === 'worktrees'}
+              {#key layout.project_identifier}
+                <WorkspaceSettings
+                  mirror={layout.rosen_mirror}
+                  projectIdentifier={layout.project_identifier}
+                  {send}
+                />
+              {/key}
+            {:else if layout.view === 'Settings' && layout.settings_tab === 'providers'}<ProvidersSettings
                 {send}
               />{:else if layout.view === 'Settings' && layout.settings_tab === 'appearance'}<AppearanceSettings
                 {zoom}

@@ -123,8 +123,6 @@ pub struct LayoutData {
     pub pull_requests: Vec<RailItem>,
     pub issues: Vec<RailItem>,
     pub merged_today: usize,
-    pub worktree_count: usize,
-    pub worktree_drive: String,
     pub providers: Vec<ProviderUsage>,
     pub default_model_pill: Option<ModelPillView>,
     pub composer_model_pill: Option<ModelPillView>,

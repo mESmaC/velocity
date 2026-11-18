@@ -32,7 +32,7 @@ PR duty checks an item off when it lands that item's PR (F7).
 - [x] Workspace manager: create / delete / prune, path scheme, setup step (copy files, run command, shared build cache) (F5)
 - [x] Migrate saved Git projects and their work to Rosen in the background (F5, #419)
 - [x] Thread view: transcript, tool steps, diffs, header with workspace path, composer, slash menu (F4)
-- [x] Settings → Workspaces, including the live list and the footer count (F5, F13)
+- [x] Settings → Workspaces backed by Rosen, including guarded deletion, preparation changes and the live footer count (F5, F13, #423)
 
 **M4 · PR loop**
 - [x] GitHub integration: open PR, CI checks, reviews, comments, merge, close

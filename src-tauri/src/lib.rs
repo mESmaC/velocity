@@ -63,7 +63,7 @@ mod updates;
 mod velocity_reports;
 mod window;
 mod work_pool;
-mod worktree_settings;
+mod workspace_settings;
 
 fn bindings() -> Builder<tauri::Wry> {
     // Export event payloads/names without the generator's `any`-typed helpers;
@@ -122,11 +122,14 @@ fn bindings() -> Builder<tauri::Wry> {
         providers::get_model_menu,
         providers::choose_model,
         work_pool::get_work_pool,
-        worktree_settings::list_worktrees,
-        worktree_settings::set_worktree_settings,
-        worktree_settings::preview_worktree_folder,
-        worktree_settings::browse_worktree_folder,
-        worktree_settings::prune_worktrees,
+        workspace_settings::get_workspace_settings,
+        workspace_settings::set_workspace_settings,
+        workspace_settings::preview_workspace_folder,
+        workspace_settings::browse_workspace_folder,
+        workspace_settings::list_workspaces,
+        workspace_settings::delete_workspace,
+        workspace_settings::get_workspace_preparation,
+        workspace_settings::propose_workspace_preparation,
         duty::get_duty_dialog_defaults,
         duty::get_duty_agent_transcript,
         duty::start_duty,
@@ -198,7 +201,6 @@ fn event_bindings(builder: Builder<tauri::Wry>) -> Builder<tauri::Wry> {
         .typ::<providers::ProvidersChanged>()
         .typ::<swarm::SwarmEventPublished>()
         .typ::<issue_panel::IssuePanelChanged>()
-        .typ::<worktree_settings::WorktreeInventoryChanged>()
         .typ::<rosen_status::RosenStatusChanged>()
         .typ::<skills::SkillPackInstallationsChanged>()
         .typ::<threads::ThreadStatusChanged>()
@@ -223,10 +225,6 @@ fn event_bindings(builder: Builder<tauri::Wry>) -> Builder<tauri::Wry> {
         .constant("PR_REVIEW_EVENT", follow_through::PR_REVIEW_EVENT)
         .constant("PR_MERGED_EVENT", follow_through::PR_MERGED_EVENT)
         .constant("PR_CLOSED_EVENT", follow_through::PR_CLOSED_EVENT)
-        .constant(
-            "WORKTREE_INVENTORY_EVENT",
-            worktree_settings::WorktreeInventoryChanged::NAME,
-        )
         .constant("ROSEN_STATUS_EVENT", rosen_status::RosenStatusChanged::NAME)
         .constant(
             "SKILL_PACK_INSTALLATIONS_EVENT",
@@ -308,7 +306,6 @@ pub fn run() -> anyhow::Result<()> {
         providers::ProvidersChanged,
         swarm::SwarmEventPublished,
         issue_panel::IssuePanelChanged,
-        worktree_settings::WorktreeInventoryChanged,
         rosen_status::RosenStatusChanged,
         skills::SkillPackInstallationsChanged,
         threads::ThreadStatusChanged,
@@ -356,7 +353,7 @@ pub fn run() -> anyhow::Result<()> {
             github_requests::initialize(application.handle());
             issue_panel::initialize(application.handle());
             continuous_dispatch::initialize(application.handle());
-            worktree_settings::initialize(application.handle())?;
+            workspace_settings::initialize(application.handle());
             ready_pool::initialize(application.handle())?;
             skills::initialize(application.handle())?;
             interview::start(application.handle());
@@ -376,7 +373,6 @@ pub fn run() -> anyhow::Result<()> {
         })
         .on_window_event(|window, event| {
             window::on_window_event(window, event);
-            worktree_settings::on_window_event(window, event);
         });
     // The single-instance plugin exits before setup when it hands off a URL or launch.
     recovery.set_intentional_exit(true)?;

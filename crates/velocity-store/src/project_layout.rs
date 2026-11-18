@@ -1,7 +1,6 @@
 //! Read the active project's persisted context into the shell's public read model.
 
 use crate::duty::DutyRoleItem;
-use crate::worktree_settings::project_owners;
 use crate::{
     AgentActivity, EffortLevel, InterviewRecord, InterviewStage, PersistedState, ProjectItem,
     ProviderKind, ReviewStage, SpeedMode, TaskState, ThreadItem, ThreadState,
@@ -20,7 +19,6 @@ use velocity_core::layout_view::{
 use velocity_core::navigation::NavigationView;
 use velocity_core::thread_view::ThreadLifecycle;
 use velocity_core::thread_view_model::ThreadDetailEntry;
-use velocity_core::worktree_view::footer_summary;
 
 pub(crate) fn active_project(state: &PersistedState) -> Option<&ProjectItem> {
     usize::try_from(state.active_project_index)
@@ -75,8 +73,6 @@ pub(crate) fn read_model(store: &crate::StateStore) -> LayoutData {
             .count();
         data.pull_requests = pull_requests(project);
         data.merged_today = merged_today;
-        (data.worktree_count, data.worktree_drive) =
-            footer_summary(&project_owners(project), &fallback_root(project, state));
     }
     data.providers = crate::provider_views::provider_usage(&state.settings);
     data.default_model_pill = Some(crate::provider_views::default_model_pill(&state.settings));
@@ -353,17 +349,6 @@ fn pull_requests(project: &ProjectItem) -> Vec<RailItem> {
             })
         })
         .collect()
-}
-
-/// The footer names this drive while the project has no live worktree.
-fn fallback_root(project: &ProjectItem, state: &PersistedState) -> String {
-    let settings = &state.settings.worktrees;
-    settings
-        .project_roots
-        .get(&project.id)
-        .or(settings.location_root.as_ref())
-        .cloned()
-        .unwrap_or_default()
 }
 
 fn interview_phase(stage: InterviewStage) -> InterviewPhase {

@@ -37,6 +37,7 @@ mod server;
 mod stack;
 pub mod status;
 mod workspace;
+pub mod workspace_settings;
 
 pub use agent::{
     McpCommand, agent_environment, agent_name, mcp_command, path_with_rosen, run_queue_note,

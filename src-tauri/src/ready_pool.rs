@@ -6,17 +6,12 @@ use std::process::Child;
 use std::sync::{Arc, Mutex};
 
 use tauri::{AppHandle, Manager};
-use velocity_core::ready_pool::SlotState;
-use velocity_core::worktree_settings::{WorktreeDisplayStatus, WorktreePreferences};
-use velocity_core::worktree_view::WorktreeOwner;
+use velocity_core::worktree_settings::WorktreePreferences;
 use velocity_threads::{PoolHost, PoolProject, ReadyPools};
 
 use crate::state::ManagedStateStore;
 
 pub type ManagedReadyPools = ReadyPools;
-
-/// The owner name ready worktrees show under in Settings → Worktrees.
-const POOL_OWNER: &str = "warm pool";
 
 struct Host {
     application: AppHandle,
@@ -129,34 +124,9 @@ pub(crate) fn reserve(application: &AppHandle, project: u32, count: usize) {
     }
 }
 
-/// `master` may have moved, or Settings → Worktrees changed: look again now.
+/// The base or workspace preferences may have changed: look again now.
 pub(crate) fn wake(application: &AppHandle, project: Option<u32>) {
     if let Some(pools) = pools(application) {
         pools.wake(project);
     }
-}
-
-/// The project's ready worktrees as Settings → Worktrees rows. Slots still being checked
-/// out are left out until their folder exists.
-pub(crate) fn owners(application: &AppHandle, project: u32) -> Vec<WorktreeOwner> {
-    let Some(pools) = pools(application) else {
-        return Vec::new();
-    };
-    pools
-        .rows(project)
-        .into_iter()
-        .filter_map(|row| {
-            let status = match row.state {
-                SlotState::Ready { .. } => WorktreeDisplayStatus::Ready,
-                SlotState::Building { .. } => WorktreeDisplayStatus::Prebuilding,
-                SlotState::Preparing | SlotState::Taken => return None,
-            };
-            Some(WorktreeOwner::new(
-                0,
-                POOL_OWNER.into(),
-                row.path.display().to_string(),
-                status,
-            ))
-        })
-        .collect()
 }

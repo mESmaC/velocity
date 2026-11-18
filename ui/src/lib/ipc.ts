@@ -18,6 +18,7 @@ export * from './ipc/code-graph';
 export * from './ipc/token-usage';
 export * from './ipc/usage';
 export * from './ipc/window-recovery';
+export * from './ipc/workspaces';
 import {
   commands,
   WINDOW_STATE_EVENT,
@@ -32,8 +33,6 @@ import {
   type LayoutStateChanged_Serialize,
   type LayoutIntentRequested_Serialize,
   type ProjectSelected,
-  WORKTREE_INVENTORY_EVENT,
-  type WorktreeInventoryChanged_Serialize,
 } from './bindings';
 
 export type {
@@ -89,9 +88,6 @@ export type {
   ProjectList,
   ProjectRow,
   ProjectLabel,
-  WorktreeSettingsView_Serialize as WorktreeSettingsView,
-  WorktreeSettingsEdit,
-  WorktreePathPreview,
   PullRequest,
   PullRequestSnapshot,
   PullRequestCheck,
@@ -154,18 +150,6 @@ export const settingsCommands = {
   get: commands.getSettings,
   set: commands.setSettings,
 };
-
-export const worktreeCommands = {
-  list: commands.listWorktrees,
-  set: commands.setWorktreeSettings,
-  preview: commands.previewWorktreeFolder,
-  browse: commands.browseWorktreeFolder,
-  prune: commands.pruneWorktrees,
-};
-
-export const onWorktreeInventory = (
-  callback: EventCallback<WorktreeInventoryChanged_Serialize>,
-) => listen(WORKTREE_INVENTORY_EVENT, callback);
 
 export const launchCommands = {
   getEligibility: commands.getLaunchEligibility,

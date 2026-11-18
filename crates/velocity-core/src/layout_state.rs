@@ -36,6 +36,7 @@ struct SentSteering {
 #[derive(Clone)]
 pub struct LayoutState {
     data: LayoutData,
+    workspace_count: Option<usize>,
     reconnecting_projects: BTreeSet<u32>,
     issue_rows: BTreeMap<u32, Vec<RailItem>>,
     /// The machine-wide library supplies the composer's `$` menu (F4, F18).
@@ -100,6 +101,7 @@ impl Default for LayoutState {
     fn default() -> Self {
         Self {
             data: LayoutData::default(),
+            workspace_count: None,
             reconnecting_projects: BTreeSet::new(),
             issue_rows: BTreeMap::new(),
             installed_skills: Vec::new(),
@@ -180,6 +182,9 @@ impl LayoutState {
         selected_thread: Option<usize>,
         search: String,
     ) {
+        if self.data.project_identifier != data.project_identifier {
+            self.workspace_count = None;
+        }
         self.data = data;
         self.hide_pending_rows();
         self.search = search;
@@ -203,16 +208,11 @@ impl LayoutState {
         self.changed();
     }
 
-    pub fn set_worktree_summary(
-        &mut self,
-        view: &crate::worktree_view::WorktreeSettingsView,
-    ) -> bool {
-        let count = view.rows.iter().filter(|row| !row.deleted).count();
-        if self.data.worktree_count == count && self.data.worktree_drive == view.footer_drive {
+    pub fn set_workspace_count(&mut self, project: Option<u32>, count: Option<usize>) -> bool {
+        if self.data.project_identifier != project || self.workspace_count == count {
             return false;
         }
-        self.data.worktree_count = count;
-        self.data.worktree_drive = view.footer_drive.clone();
+        self.workspace_count = count;
         self.changed();
         true
     }
@@ -258,6 +258,9 @@ impl LayoutState {
     /// Feature owners replace their read model after domain events, then emit a snapshot.
     pub fn replace_data(&mut self, data: LayoutData) {
         self.follow_new_work_session(&data);
+        if self.data.project_identifier != data.project_identifier {
+            self.workspace_count = None;
+        }
         self.data = data;
         self.hide_pending_rows();
         self.follow_selected_view();
@@ -1622,13 +1625,10 @@ impl LayoutState {
     }
 
     fn worktree_label(&self) -> String {
-        if self.data.worktree_drive.is_empty() {
-            format!("{} workspaces", self.data.worktree_count)
-        } else {
-            format!(
-                "{} on {}",
-                self.data.worktree_count, self.data.worktree_drive
-            )
+        match self.workspace_count {
+            Some(1) => "1 workspace".into(),
+            Some(count) => format!("{count} workspaces"),
+            None => "Workspaces".into(),
         }
     }
 }
