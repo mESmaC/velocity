@@ -1,7 +1,83 @@
 use anyhow::Context;
-use tauri::{Window, WindowEvent};
+use std::sync::Mutex;
+use std::time::{Duration, Instant};
+use tauri::{AppHandle, Manager, State, Webview, Window, WindowEvent};
 use tauri_specta::Event;
 use velocity_core::window::{WindowAction, WindowOperation, window_operation};
+
+const MAIN_WINDOW: &str = "main";
+const HEARTBEAT_TIMEOUT: Duration = Duration::from_secs(5);
+const PAGE_START_GRACE: Duration = Duration::from_secs(12);
+
+pub struct WindowHeartbeat(Mutex<Instant>);
+
+impl Default for WindowHeartbeat {
+    fn default() -> Self {
+        Self(Mutex::new(Instant::now() + PAGE_START_GRACE))
+    }
+}
+
+impl WindowHeartbeat {
+    fn extend(&self, grace: Duration) {
+        *self.0.lock().unwrap_or_else(|error| error.into_inner()) = Instant::now() + grace;
+    }
+
+    fn expired(&self) -> bool {
+        Instant::now() >= *self.0.lock().unwrap_or_else(|error| error.into_inner())
+    }
+
+    fn begin_recovery(&self) -> bool {
+        let mut deadline = self.0.lock().unwrap_or_else(|error| error.into_inner());
+        let now = Instant::now();
+        if now < *deadline {
+            return false;
+        }
+        // Give the next page time to boot before trying again.
+        *deadline = now + PAGE_START_GRACE;
+        true
+    }
+}
+
+#[tauri::command]
+#[specta::specta]
+pub fn window_heartbeat(webview: Webview, heartbeat: State<'_, WindowHeartbeat>) {
+    if webview.label() == MAIN_WINDOW {
+        heartbeat.extend(HEARTBEAT_TIMEOUT);
+    }
+}
+
+pub fn watch_renderer(application: &AppHandle) {
+    application
+        .state::<WindowHeartbeat>()
+        .extend(PAGE_START_GRACE);
+    let application = application.clone();
+    tauri::async_runtime::spawn(async move {
+        loop {
+            tokio::time::sleep(Duration::from_secs(1)).await;
+            let Some(window) = application.get_webview_window(MAIN_WINDOW) else {
+                break;
+            };
+            let heartbeat = application.state::<WindowHeartbeat>();
+            if !heartbeat.expired() {
+                continue;
+            }
+            // Browsers may throttle timers while the window is minimized or hidden.
+            if window.is_minimized().unwrap_or(false) || !window.is_visible().unwrap_or(true) {
+                heartbeat.extend(HEARTBEAT_TIMEOUT);
+                continue;
+            }
+            if heartbeat.begin_recovery() {
+                crate::diagnostics::record(
+                    "webview",
+                    "Heartbeat timed out. Reloading the main window.",
+                );
+                if let Err(error) = window.reload() {
+                    crate::diagnostics::record("webview", &format!("Could not reload: {error}"));
+                }
+            }
+        }
+    });
+}
 
 #[derive(Clone, Debug, serde::Serialize, serde::Deserialize, specta::Type, Event)]
 #[tauri_specta(event_name = "window://state")]

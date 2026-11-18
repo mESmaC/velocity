@@ -1,7 +1,7 @@
 <script lang="ts">
   import { onMount, tick } from 'svelte';
   import { paneConnection } from './lib/pane-state.svelte';
-  import PaneState from './lib/PaneState.svelte';
+  import WindowRecovery from './lib/WindowRecovery.svelte';
   import TitleBar from './lib/TitleBar.svelte';
   import Board from './lib/Board.svelte';
   import Sidebar from './lib/Sidebar.svelte';
@@ -55,6 +55,8 @@
   import './lib/theme/thread-view.css';
   import './lib/theme/duty.css';
   import './lib/theme/spec-interview.css';
+
+  const LAYOUT_TIMEOUT_MS = 10_000;
 
   // Raw, not deep: Svelte would wrap every new snapshot, transcripts included, in fresh
   // proxies (#321). Snapshots are replaced whole and never changed in place.
@@ -211,15 +213,38 @@
     }
   }
 
-  function enqueue(request: () => Promise<LayoutSnapshot>, clearsError = true) {
+  function enqueue(
+    operation: string,
+    request: () => Promise<LayoutSnapshot>,
+    clearsError = true,
+  ) {
     pending += 1;
     queue = queue
       .then(async () => {
-        const snapshot = await request();
-        if (clearsError) clearError();
-        receive(snapshot);
+        let timeout = 0;
+        try {
+          const deadline = new Promise<never>((_, reject) => {
+            timeout = window.setTimeout(() => {
+              reject(
+                new Error(
+                  `${operation} timed out after ${LAYOUT_TIMEOUT_MS / 1000} seconds.`,
+                ),
+              );
+            }, LAYOUT_TIMEOUT_MS);
+          });
+          // The IPC can still finish after the deadline. Rust publishes its own
+          // revisioned snapshot, so a late reply does not need to hold this queue.
+          const snapshot = await Promise.race([request(), deadline]);
+          if (clearsError) clearError();
+          receive(snapshot);
+        } finally {
+          window.clearTimeout(timeout);
+        }
       })
-      .catch(report)
+      .catch((reason: unknown) => {
+        reportWindowError(operation, reason);
+        report(reason);
+      })
       .finally(() => {
         pending -= 1;
         flush();
@@ -227,6 +252,7 @@
   }
 
   function send(action: LayoutAction) {
+    if (!layout) return;
     if (
       typeof action === 'object' &&
       ('OpenThread' in action || 'Request' in action)
@@ -238,7 +264,15 @@
     const keyReport =
       typeof action === 'object' &&
       ('Keyboard' in action || 'NumberHints' in action);
-    enqueue(() => layoutCommands.dispatch(action), !keyReport);
+    const kind = typeof action === 'string' ? action : Object.keys(action)[0];
+    enqueue(
+      `Layout action ${kind}`,
+      () => {
+        window.console.debug(`Dispatching layout action ${kind}`);
+        return layoutCommands.dispatch(action);
+      },
+      !keyReport,
+    );
   }
 
   let threadMenu = $state<{
@@ -278,11 +312,11 @@
     if (!menu) return;
     const { project_identifier, thread_identifier } = menu;
     if (action === 'Delete' && menu.swarm)
-      enqueue(() =>
+      enqueue('Delete swarm', () =>
         threadMenuCommands.deleteSwarm(project_identifier, thread_identifier),
       );
     else if (action === 'Delete')
-      enqueue(() =>
+      enqueue('Delete thread', () =>
         threadMenuCommands.delete(project_identifier, thread_identifier),
       );
     else
@@ -292,7 +326,9 @@
   }
 
   function undoDelete(deletion: number) {
-    enqueue(() => threadMenuCommands.undoDelete(deletion));
+    enqueue('Undo thread deletion', () =>
+      threadMenuCommands.undoDelete(deletion),
+    );
   }
 
   function chooseThreadMode(mode: MessageMode) {
@@ -306,7 +342,7 @@
 
   function switchProject(identifier: number) {
     openPane = null;
-    enqueue(() => projectCommands.switch(identifier));
+    enqueue('Switch project', () => projectCommands.switch(identifier));
   }
 
   async function togglePane(pane: 'threads' | 'activity') {
@@ -435,13 +471,23 @@
       const snapshot = await layoutCommands.getState();
       if (active) receive(snapshot);
     }
-    void start().catch((reason: unknown) => {
-      startupError = String(reason);
+    function startupFailed(reason: unknown) {
+      if (!active || latest) return;
+      const message = reason instanceof Error ? reason.message : String(reason);
+      startupError = `Could not load the workspace. ${message}`;
       reportWindowError('startup', reason);
-      report(reason);
-    });
+    }
+    const startupDeadline = window.setTimeout(
+      () => startupFailed('The layout did not respond in time.'),
+      LAYOUT_TIMEOUT_MS,
+    );
+    void start()
+      .catch(startupFailed)
+      .finally(() => window.clearTimeout(startupDeadline));
     return () => {
       active = false;
+      window.clearTimeout(startupDeadline);
+      clearTimeout(errorTimer);
       window.cancelAnimationFrame(frame);
       stops.forEach((stop) => stop());
     };
@@ -460,10 +506,11 @@
 
 <!-- Each pane fails on its own and redraws from the next snapshot (#273). -->
 <div class="app-shell">
-  <PaneBoundary name="title bar" {revision}
-    ><TitleBar {layout} {send} {switchProject} /></PaneBoundary
-  >
-  {#if layout}<div
+  {#if layout}
+    <PaneBoundary name="title bar" {revision}
+      ><TitleBar {layout} {send} {switchProject} /></PaneBoundary
+    >
+    <div
       class="workspace"
       class:board-mode={layout.view === 'Board'}
       data-open-pane={openPane}
@@ -554,21 +601,7 @@
             ><Rail {layout} {send} /></PaneBoundary
           >
         </div>{/if}
-    </div>{:else}<PaneState
-      name="Threads"
-      loading
-      error={startupError}
-      retry={async () => {
-        try {
-          receive(await layoutCommands.getState());
-          startupError = '';
-          clearError();
-        } catch (reason) {
-          startupError = String(reason);
-          report(reason);
-        }
-      }}
-    />{/if}
+    </div>{:else}<WindowRecovery error={startupError} />{/if}
 </div>
 {#if layout?.palette_open}<PaneBoundary name="command palette" {revision}
     ><CommandPalette {layout} {send} /></PaneBoundary

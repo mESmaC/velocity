@@ -35,6 +35,7 @@ export const commands = {
 	minimizeWindow: () => __TAURI_INVOKE<null>("minimize_window"),
 	toggleMaximizeWindow: () => __TAURI_INVOKE<null>("toggle_maximize_window"),
 	closeWindow: () => __TAURI_INVOKE<null>("close_window"),
+	windowHeartbeat: () => __TAURI_INVOKE<void>("window_heartbeat"),
 	/**
 	 *  Records an error the window caught: a pane that failed to render, an uncaught exception
 	 *  or an unhandled promise rejection. `source` names where the window caught it.

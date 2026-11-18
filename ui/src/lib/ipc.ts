@@ -16,6 +16,7 @@ export * from './ipc/swarm';
 export * from './ipc/updates';
 export * from './ipc/code-graph';
 export * from './ipc/usage';
+export * from './ipc/window-recovery';
 import {
   commands,
   WINDOW_STATE_EVENT,

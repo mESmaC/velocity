@@ -87,6 +87,7 @@ fn bindings() -> Builder<tauri::Wry> {
         window::minimize_window,
         window::toggle_maximize_window,
         window::close_window,
+        window::window_heartbeat,
         diagnostics::log_window_error,
         state::get_settings,
         state::set_settings,
@@ -335,6 +336,7 @@ pub fn run() -> anyhow::Result<()> {
         .manage(threads::ManagedThreads::default())
         .manage(velocity_interview::Interviews::default())
         .manage(thread_menu::ManagedDeletions::default())
+        .manage(window::WindowHeartbeat::default())
         .invoke_handler(bindings.invoke_handler())
         .setup(move |application| {
             setup_recovery.set_intentional_exit(false)?;
@@ -364,6 +366,7 @@ pub fn run() -> anyhow::Result<()> {
             velocity_reports::initialize(application.handle());
             restart::resume_interrupted(application.handle(), interrupted);
             thread_links::initialize(application.handle());
+            window::watch_renderer(application.handle());
             Ok(())
         })
         .on_window_event(|window, event| {

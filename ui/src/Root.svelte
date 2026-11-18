@@ -1,5 +1,6 @@
 <script lang="ts">
   import App from './App.svelte';
+  import WindowRecovery from './lib/WindowRecovery.svelte';
   import { reportWindowError } from './lib/ipc';
 
   // The last line of defence against a blank window (#273): an error no pane caught, or one
@@ -16,8 +17,8 @@
 <svelte:boundary {onerror}>
   <App />
   {#snippet failed()}
-    <p class="empty" role="alert">
-      Something failed to draw. Reopening the window…
-    </p>
+    <div class="app-shell">
+      <WindowRecovery error="Something failed to draw. Reconnecting…" />
+    </div>
   {/snippet}
 </svelte:boundary>

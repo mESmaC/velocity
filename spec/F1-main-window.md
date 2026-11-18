@@ -26,6 +26,14 @@ There are two views of the same work, switched from the title bar or with `B`:
 - A `Ctrl K` button that opens the palette.
 - The window controls.
 
+**Window recovery**
+
+- While the layout loads, the window shows its controls and “Reconnecting…”.
+  If startup fails or times out, the window shows the error and a Reload button.
+- If a visible window misses its renderer heartbeat for five seconds, Rust logs the timeout in `velocity.log` and reloads the webview in place.
+  The layout and agent sessions remain in Rust.
+- A layout dispatch that exceeds ten seconds logs a timeout and releases the next request in the queue.
+
 **Board:**
 - Lanes read left to right as a pipeline.
   Each has a title, a count and its cards:
