@@ -5,7 +5,8 @@ use std::collections::BTreeMap;
 #[cfg_attr(feature = "bindings", derive(specta::Type))]
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ProjectSkills {
-    #[serde(default)]
+    /// Packs and bundles to load at session start. Older saves called this map "packs".
+    #[serde(default, rename = "always_on", alias = "packs")]
     pub packs: BTreeMap<String, PackSelection>,
     /// What the latest project scan suggested (F3, F18 Suggestions); the cards show why.
     #[serde(default)]
@@ -76,6 +77,20 @@ pub enum SkillSettingsEdit {
     },
 }
 impl ProjectSkills {
+    pub fn apply_with_defaults(&mut self, edit: SkillSettingsEdit, bundles: Vec<String>) {
+        let identifier = match &edit {
+            SkillSettingsEdit::Pack { identifier, .. }
+            | SkillSettingsEdit::Bundle { identifier, .. } => identifier,
+        };
+        self.packs
+            .entry(identifier.clone())
+            .or_insert_with(|| PackSelection {
+                bundles,
+                ..PackSelection::default()
+            });
+        self.apply(edit);
+    }
+
     pub fn apply(&mut self, edit: SkillSettingsEdit) {
         let identifier = match &edit {
             SkillSettingsEdit::Pack { identifier, .. }

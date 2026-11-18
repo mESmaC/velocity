@@ -1,13 +1,11 @@
 //! The composer's `$` skill menu and skill loads in the transcript (SPEC.md F4, F18).
 //!
-//! Typing `$` lists the project's enabled skills, filtered by what follows the `$`. Picking one
-//! replaces the `$word` being typed with `$<skill> `. When a message names an enabled skill, the
-//! agent is told to load it for that message. A step where an agent loads a skill shows as
-//! "Skill · <name>" in the transcript.
+//! Typing $ lists installed skills. Picking one replaces the token being typed with its name.
+//! The session resolves named skills immediately before the turn is sent to the provider.
 
 use crate::thread_view_model::SlashCommandItem;
 
-/// One enabled skill as the `$` menu lists it.
+/// One installed skill as the `$` menu lists it.
 #[cfg_attr(
     feature = "bindings",
     derive(serde::Serialize, serde::Deserialize, specta::Type)
@@ -42,14 +40,17 @@ pub fn typed_skill_token(composer_text: &str) -> Option<&str> {
     (starts_word && name_only).then_some(token)
 }
 
-/// The enabled skills whose `$name` starts with the `$word` being typed, in the order given.
+/// The installed skills whose `$name` starts with the `$word` being typed, in the order given.
 /// Matching ignores ASCII case, so `$UI` still finds `$ui-ux-pro-max`.
-pub fn skill_menu_items(composer_text: &str, enabled: &[SkillMenuEntry]) -> Vec<SlashCommandItem> {
+pub fn skill_menu_items(
+    composer_text: &str,
+    installed: &[SkillMenuEntry],
+) -> Vec<SlashCommandItem> {
     let Some(token) = typed_skill_token(composer_text) else {
         return Vec::new();
     };
     let typed = token[1..].to_ascii_lowercase();
-    enabled
+    installed
         .iter()
         .filter(|skill| skill.name.to_ascii_lowercase().starts_with(&typed))
         .map(|skill| SlashCommandItem {
@@ -68,9 +69,9 @@ pub fn complete_skill(composer_text: &str, command: &str) -> String {
     format!("{kept}{command} ")
 }
 
-/// Enabled skills the message names as `$<skill>`, each once, in the order they appear.
-/// A `$word` that names no enabled skill (`$HOME`, `$5`) is left alone.
-pub fn requested_skills<'a>(message: &str, enabled: &'a [SkillMenuEntry]) -> Vec<&'a str> {
+/// Installed skills the message names as `$<skill>`, each once, in the order they appear.
+/// A `$word` that names no installed skill (`$HOME`, `$5`) is left alone.
+pub fn requested_skills<'a>(message: &str, installed: &'a [SkillMenuEntry]) -> Vec<&'a str> {
     let mut requested: Vec<&str> = Vec::new();
     let mut previous: Option<char> = None;
     for (index, character) in message.char_indices() {
@@ -84,31 +85,13 @@ pub fn requested_skills<'a>(message: &str, enabled: &'a [SkillMenuEntry]) -> Vec
             .find(|next: char| !is_skill_name_character(next))
             .unwrap_or(rest.len());
         let named = &rest[..length];
-        if let Some(skill) = enabled.iter().find(|skill| skill.name == named)
+        if let Some(skill) = installed.iter().find(|skill| skill.name == named)
             && !requested.contains(&skill.name.as_str())
         {
             requested.push(skill.name.as_str());
         }
     }
     requested
-}
-
-/// The message the agent receives: the user's words, then one line telling it which skills to
-/// load for this message. A message naming no enabled skill is sent unchanged.
-pub fn with_skill_instructions(message: &str, enabled: &[SkillMenuEntry]) -> String {
-    let requested = requested_skills(message, enabled);
-    let Some((last, first)) = requested.split_last() else {
-        return message.to_owned();
-    };
-    let quoted = |name: &&str| format!("`{name}`");
-    let names = if first.is_empty() {
-        quoted(last)
-    } else {
-        let listed: Vec<String> = first.iter().map(quoted).collect();
-        format!("{} and {}", listed.join(", "), quoted(last))
-    };
-    let noun = if first.is_empty() { "skill" } else { "skills" };
-    format!("{message}\n\nLoad the {names} {noun} before you start on this message.")
 }
 
 /// The skill a tool step loads, if it loads one:

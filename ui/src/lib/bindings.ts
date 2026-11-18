@@ -151,9 +151,12 @@ export const commands = {
 	 */
 	editSharedMcpServers: (edit: SharedMcpServerEdit) => __TAURI_INVOKE<SharedMcpServer[]>("edit_shared_mcp_servers", { edit }),
 	getSkillLibrary: () => __TAURI_INVOKE<SkillLibrarySnapshot_Serialize>("get_skill_library"),
-	getSkillSettings: (projectIdentifier: number) => __TAURI_INVOKE<SkillsSettingsView_Serialize>("get_skill_settings", { projectIdentifier }),
+	getSkillPackInstallations: () => __TAURI_INVOKE<SkillPackInstallationsChanged>("get_skill_pack_installations"),
+	getSkillSettings: (projectIdentifier: number | null) => __TAURI_INVOKE<SkillsSettingsView_Serialize>("get_skill_settings", { projectIdentifier }),
 	setSkillSettings: (projectIdentifier: number, edit: SkillSettingsEdit) => __TAURI_INVOKE<SkillsSettingsView_Serialize>("set_skill_settings", { projectIdentifier, edit }),
-	installSkillPack: (packOrRepo: string, sourceOverride: string | null, initialPin: string | null) => __TAURI_INVOKE<InstalledSkillPack_Serialize>("install_skill_pack", { packOrRepo, sourceOverride, initialPin }),
+	setSkillBundleDefault: (packId: string, bundleId: string, enabled: boolean) => __TAURI_INVOKE<null>("set_skill_bundle_default", { packId, bundleId, enabled }),
+	removeSkillPack: (packId: string) => __TAURI_INVOKE<null>("remove_skill_pack", { packId }),
+	installSkillPack: (packOrRepo: string, sourceOverride: string | null, initialPin: string | null) => __TAURI_INVOKE<null>("install_skill_pack", { packOrRepo, sourceOverride, initialPin }),
 	checkSkillPackUpdate: (packId: string) => __TAURI_INVOKE<SkillPackUpdatePreview_Serialize>("check_skill_pack_update", { packId }),
 	confirmSkillPackUpdate: (packId: string, candidateCommit: string) => __TAURI_INVOKE<InstalledSkillPack_Serialize>("confirm_skill_pack_update", { packId, candidateCommit }),
 	/**
@@ -240,6 +243,8 @@ export const PR_OPENED_EVENT = "pr://opened" as const;
 export const PR_REVIEW_EVENT = "pr://review" as const;
 
 export const PULL_REQUEST_PANEL_EVENT = "pr://panel" as const;
+
+export const SKILL_PACK_INSTALLATIONS_EVENT = "skills://installations" as const;
 
 export const SWARM_EVENT = "swarm://event" as const;
 
@@ -2815,7 +2820,6 @@ export type ProjectSelectionView_Serialize = {
 export type ProjectSkills = ProjectSkills_Serialize | ProjectSkills_Deserialize;
 
 export type ProjectSkills_Deserialize = {
-	packs?: { [key in string]: PackSelection_Deserialize },
 	/**  What the latest project scan suggested (F3, F18 Suggestions); the cards show why. */
 	suggestions?: SkillSuggestion_Deserialize[],
 	/**
@@ -2823,10 +2827,17 @@ export type ProjectSkills_Deserialize = {
 	 *  never turns these back on ("switched on unless you turn them off").
 	 */
 	declined?: string[],
-};
+} & ({
+	/**  Packs and bundles to load at session start. Older saves called this map "packs". */
+	always_on?: { [key in string]: PackSelection_Deserialize },
+} & {
+	/**  Packs and bundles to load at session start. Older saves called this map "packs". */
+	packs?: { [key in string]: PackSelection_Deserialize },
+});
 
 export type ProjectSkills_Serialize = {
-	packs: { [key in string]: PackSelection_Serialize },
+	/**  Packs and bundles to load at session start. Older saves called this map "packs". */
+	always_on: { [key in string]: PackSelection_Serialize },
 	/**  What the latest project scan suggested (F3, F18 Suggestions); the cards show why. */
 	suggestions: SkillSuggestion_Serialize[],
 	/**
@@ -4008,6 +4019,7 @@ export type SkillLibrarySnapshot_Deserialize = {
 	installed?: InstalledSkillPack_Deserialize[],
 	/**  Real skill counts per bundle of each installed built-in pack, at its pinned commit. */
 	bundle_counts?: SkillPackBundleCounts_Deserialize[],
+	default_bundles?: { [key in string]: string[] },
 };
 
 /**  Snapshot of the machine-wide skill library (built-in catalog + installed pinned packs). */
@@ -4017,6 +4029,7 @@ export type SkillLibrarySnapshot_Serialize = {
 	installed: InstalledSkillPack_Serialize[],
 	/**  Real skill counts per bundle of each installed built-in pack, at its pinned commit. */
 	bundle_counts: SkillPackBundleCounts_Serialize[],
+	default_bundles: { [key in string]: string[] },
 };
 
 /**  A stdio MCP server a skill pack contributes to the shared MCP servers. */
@@ -4058,6 +4071,8 @@ export type SkillPackCard_Deserialize = {
 	installed: boolean,
 	pin: string,
 	selection: PackSelection_Deserialize,
+	default_bundles: string[],
+	installed_count: number,
 	enabled_count: number,
 	requirements: string[],
 	details?: SkillPackDetails_Deserialize,
@@ -4072,6 +4087,8 @@ export type SkillPackCard_Serialize = {
 	installed: boolean,
 	pin: string,
 	selection: PackSelection_Serialize,
+	default_bundles: string[],
+	installed_count: number,
 	enabled_count: number,
 	requirements: string[],
 	details: SkillPackDetails_Serialize,
@@ -4150,6 +4167,20 @@ export type SkillPackDiffFile_Serialize = {
 	additions: number,
 	deletions: number,
 	patch: string,
+};
+
+export type SkillPackInstallStatus = { state: "running"; message: string } | { state: "complete" } | { state: "failed"; message: string };
+
+export type SkillPackInstallation = {
+	pack_id: string,
+	name: string,
+	built_in: boolean,
+	status: SkillPackInstallStatus,
+};
+
+export type SkillPackInstallationsChanged = {
+	revision: number,
+	packs: SkillPackInstallation[],
 };
 
 /**
@@ -4236,6 +4267,9 @@ export type SkillsSettingsView_Deserialize = {
 	enabled_count: number,
 	description_tokens: number,
 	budget_warning: boolean,
+	default_skill_count: number,
+	default_description_tokens: number,
+	default_budget_warning: boolean,
 };
 
 export type SkillsSettingsView_Serialize = {
@@ -4245,6 +4279,9 @@ export type SkillsSettingsView_Serialize = {
 	enabled_count: number,
 	description_tokens: number,
 	budget_warning: boolean,
+	default_skill_count: number,
+	default_description_tokens: number,
+	default_budget_warning: boolean,
 };
 
 export type SkippedFiles = {

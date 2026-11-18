@@ -64,6 +64,8 @@ pub enum SkillLibraryError {
     InstallInProgress(String),
     #[error("skill pack identifier `{0}` is already registered to another repository")]
     PackIdentifierInUse(String),
+    #[error("unknown or fixed skill bundle: {0}")]
+    UnknownBundle(String),
     #[error("cannot move pin for `{0}` before its update diff has been checked")]
     UpdateDiffNotReviewed(String),
     #[error("candidate commit `{provided}` does not match the reviewed diff commit `{expected}`")]

@@ -19,6 +19,8 @@ export type {
 export const skillLibraryCommands = {
   getLibrary: commands.getSkillLibrary,
   installPack: commands.installSkillPack,
+  removePack: commands.removeSkillPack,
+  setBundleDefault: commands.setSkillBundleDefault,
   installations: commands.getSkillPackInstallations,
   checkUpdate: commands.checkSkillPackUpdate,
   confirmUpdate: commands.confirmSkillPackUpdate,

@@ -42,8 +42,8 @@
 - **Slash menu:** `/task`, `/fanout 3`, `/review`, `/compact`, `/model`, followed by the active session's advertised commands and descriptions (`available_commands_update`, §3.2), filtered by the typed prefix.
   Selecting an agent command inserts `/<name>` for the next prompt.
   Advertisements are scoped to the project and thread and cleared when its session is replaced.
-- **Skill menu:** typing `$` lists the project's enabled skills with a one-line description each, filtered as you type.
-  Picking one inserts `$<skill>`, and the agent is told to load that skill for this message.
+- **Skill menu:** typing `$` lists the machine-wide library's installed skills with a one-line description each, filtered as you type.
+  Picking one inserts `$<skill>`, and the agent receives the path to its manifest for this turn.
   The transcript shows each skill an agent loads as a tool step ("Skill · ui-ux-pro-max").
 - **Fan out** (`F`): the same prompt goes to 3 models in 3 workspaces.
 

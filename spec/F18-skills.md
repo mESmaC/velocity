@@ -1,7 +1,7 @@
 <!-- split-spec: {"order":1688,"kind":"markdown","indentation":0} -->
 ### F18 · Skills
 
-**What it is:** first-class support for skill packs: installed once, kept on a pinned commit, switched on per project, and given to every agent of every provider.
+**What it is:** first-class support for skill packs: installed once, kept on a pinned commit, available on demand from the composer in every project.
 Four packs are built in.
 Any other repo that follows the Agent Skills standard can be added.
 
@@ -15,6 +15,14 @@ Any other repo that follows the Agent Skills standard can be added.
 **Library:**
 - Velocity keeps one library of packs on your machine.
   A pack is a git clone pinned to a commit.
+- **Settings → Skills** shows installed and available packs, with install, remove and update actions.
+  Built-in and custom packs use the same library.
+  Installed skills appear in the composer's `$` menu independently of bundle defaults.
+  A duplicate name can be invoked using its pack-qualified name.
+- **Default bundles** set the starting selection when a user first marks a pack always on in a project.
+  claude-skills defaults to Engineering and Game dev defaults to its router.
+- **Context budget** estimates skill counts and description tokens for the machine defaults and the current project's always-on selection.
+  The meter turns amber above 150 skills.
 - Installing a pack runs in the background and shows cloning, checkout, pinning and discovery on its Settings card.
   A failed install shows a retry action, and Velocity records the install steps and failures in `velocity.log`.
   Retrying after an interruption reuses a usable clone or replaces incomplete staging data.
@@ -27,18 +35,18 @@ Any other repo that follows the Agent Skills standard can be added.
 - **Velocity's own installer:** Velocity installs packs itself instead of running each pack's installer (`npx skills add`, `uipro init`, `rea-agents setup`, Claude plugin marketplaces).
   One install then reaches all four providers, and nothing edits each agent's own config.
 
-**Per project** (Settings → Skills, scoped to the current project):
-- A switch per pack, plus bundle chips for packs that have bundles: claude-skills by domain, and Game dev skills by engine, discipline, genre and workflow.
-- **Context budget:** a meter shows how many skills are on and roughly how many tokens of skill descriptions every agent loads at start.
-  It turns amber above 150 skills.
-  claude-skills defaults to Engineering only for this reason.
+**Always on for this project** (optional):
+- New projects start with an empty always-on list.
+  A project can select a pack and customize the bundles it loads at session start.
+  Existing per-project pack enables and bundle selections become its always-on list.
+  Installed packs and their pins stay in the machine-wide library.
 - **Suggestions** from the project scan (F3), switched on automatically:
   - UI UX Pro Max when a UI is found: web frameworks in `package.json`, Tailwind, SwiftUI, Flutter or Compose files.
   - Game dev skills (the router plus the detected engine's bundle) when an engine is found: `project.godot`, `*.uproject`, `ProjectSettings/`, or a Bevy, Phaser, PixiJS or three.js dependency.
 
   Velocity re-checks after every land, so a project that gains a UI later gets the suggestion then.
-  A suggested pack that is not installed says **Install to turn on**.
-  Its switch can decline the suggestion before installation; that choice survives later scans and installation.
+  A suggested pack that is not installed says **Install for always on**.
+  Its always-on switch can decline the suggestion before installation; that choice survives later scans and installation.
   Installing a selected pack activates it automatically.
   Turning a declined pack back on requires installation.
 - **Requirements:** each card shows what the pack needs and whether it's found, e.g. "✓ Python 3.12", "· Ghidra optional · not found".
@@ -57,16 +65,21 @@ The provider-to-folder mapping is a data table in `velocity-skills`, not code, s
 Kimi Code's folder is unverified, so Velocity links into both folders: the links are junctions excluded from version control, so the second folder costs nothing and never reaches a commit.
 When Kimi's folder is confirmed, the extra row is dropped, and Velocity removes its own links and exclude lines from a folder no provider uses any more.
 
-- **Linked** (default): each enabled skill is a directory junction (Windows) or symlink into the library, created in every workspace and in the main checkout the spec interview uses.
-  Those paths are listed in the repo's `.git/info/exclude`, so they never reach a commit or a PR.
-  - **Rosen workspaces (#272):** links are made after the take, before the setup command, alongside existing skills without replacing them. Each provider's skills folder gets exact local `.gitignore` rules for Velocity's links; a newly created ignore file excludes itself too. Existing ignore files are preserved and supplemented. These rules survive a rebase without putting the links in a snapshot. Pack MCP discovery identifies Rosen workspaces through the project's saved workspace root or thread path, so enabled servers reach Rosen agents without a git checkout.
-- **Committed** (per project): the enabled skills are copied into the repo at the pinned commit, for collaborators who don't use Velocity.
+- **Linked** (default): the session's always-on skills are directory junctions (Windows) or symlinks to the pinned library in the workspace or spec checkout.
+  When a prompt invokes a skill, Velocity links that skill into the workspace and tells the agent which `SKILL.md` to read for the turn.
+  The link stays available for the workspace's lifetime under `.velocity/invoked-skills`, where a later session in that checkout does not auto-load it.
+  Git workspaces exclude links through `.git/info/exclude`.
+  - **Rosen workspaces (#272):** always-on links are made after the take, before the setup command.
+    Each provider folder gets exact local `.gitignore` rules, and a new ignore file excludes itself.
+    Existing skills and ignore rules are preserved.
+    Pack MCP discovery uses the registered project or workspace path.
+- **Committed** (per project): the always-on skills are copied into the repo at the pinned commit, for collaborators who don't use Velocity.
   Updating the pin then goes through a PR like any other change.
 - **Skills you installed yourself** are left alone (§3.2 Tool access).
   Velocity's links sit next to them.
   If a name clashes, your own skill wins and the card says so.
 
-**Every role gets them:** threads, swarm and goal swarm members, PR duty, scouts, the main watcher and spec interviews all see the same enabled skills.
+**Every role gets them:** threads, swarm and goal swarm members, PR duty, scouts, the main watcher and spec interviews all see the always-on selection for their project.
 Skills add knowledge; they never remove a tool.
 
 **Pack specifics:**
@@ -84,15 +97,15 @@ Skills add knowledge; they never remove a tool.
   The router skill is always on with the pack.
   Engine bundles are exclusive (only the detected engine's bundle is suggested); disciplines, genres and workflows add on.
 - **REA: MCP server.**
-  - Turning REA on registers its MCP server in Velocity's shared MCP servers (§3.2), so every agent of every provider gets REA's tools with no per-agent setup.
+  - Adding REA to a project's always-on selection registers its MCP server for new sessions in that project (§3.2).
     Its investigation skill is linked like any other.
   - Analysis runs locally, under your user, inside the agent's workspace.
   - The card says REA is for software you own or are authorized to examine, and that commercial engines (IDA, Hopper, JEB) need your own licences.
 
 **Accept when:**
-- [ ] Turning a pack on makes its skills available to the next agent of every signed-in provider, with no per-provider step.
+- [ ] Installing a pack once makes it available from the composer in any project.
 - [ ] Linked skills never appear in `git status` or in a PR.
 - [ ] A pack's pin moves only after its diff is shown, and only when you confirm.
-- [ ] Turning REA on gives every new agent REA's MCP tools.
-- [ ] The `$` menu lists exactly the project's enabled skills.
+- [ ] Adding REA to a project's always-on list gives its new sessions REA's MCP tools.
+- [ ] The `$` menu lists installed skills and selecting one makes its manifest available to that turn.
 - [ ] Opening a Godot project suggests the router and the Godot bundle, and opening a Svelte app suggests UI UX Pro Max.

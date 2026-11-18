@@ -82,6 +82,18 @@ pub fn initialize(application: &AppHandle) -> anyhow::Result<()> {
         .context("Could not resolve the application data directory for the skill library")?;
     let library = SkillLibrary::open(&app_data)
         .context("Could not initialize the machine-wide skill library")?;
+    let prompt_library = library.clone();
+    velocity_acp::client::install_skill_prompt_resolver(move |folder, text| {
+        match prompt_library.snapshot() {
+            Ok(snapshot) => {
+                velocity_skills::workspace::prepare_skill_prompt(text, &snapshot, folder)
+            }
+            Err(error) => {
+                eprintln!("Could not resolve skill invocation: {error}");
+                None
+            }
+        }
+    });
     application.manage(Arc::new(Mutex::new(library)));
     application.manage(ManagedSkillInstallations::default());
     let handle = application.clone();
@@ -101,7 +113,7 @@ pub fn initialize(application: &AppHandle) -> anyhow::Result<()> {
     Ok(())
 }
 
-/// The switched-on packs' MCP servers for an agent starting in `folder` (F18, §3.2).
+/// Set up always-on skills and their MCP servers before the provider starts (F18, §3.2).
 /// Saved workspace paths identify Rosen agents without invoking git in their workspace.
 fn shared_servers(
     application: &AppHandle,
@@ -124,6 +136,12 @@ fn shared_servers(
     let Ok(library) = library.lock().map(|library| library.clone()) else {
         return Vec::new();
     };
+    let linked = library.snapshot().and_then(|snapshot| {
+        velocity_skills::workspace::link_workspace_skills(&choices, &snapshot, &folder)
+    });
+    if let Err(error) = linked {
+        eprintln!("Could not link always-on skills: {error}");
+    }
     velocity_skills::pack_shared_servers(&choices, &library)
         .into_iter()
         .map(|server| {
@@ -361,9 +379,45 @@ pub async fn confirm_skill_pack_update(
 
 #[tauri::command]
 #[specta::specta]
+pub async fn remove_skill_pack(application: AppHandle, pack_id: String) -> Result<(), String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        application
+            .state::<ManagedSkillLibrary>()
+            .lock()
+            .map_err(|error| error.to_string())?
+            .remove_pack(&pack_id)
+            .map_err(|error| error.to_string())?;
+        publish_skill_menus(&application)
+    })
+    .await
+    .map_err(|error| error.to_string())?
+}
+
+#[tauri::command]
+#[specta::specta]
+pub async fn set_skill_bundle_default(
+    application: AppHandle,
+    pack_id: String,
+    bundle_id: String,
+    enabled: bool,
+) -> Result<(), String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        application
+            .state::<ManagedSkillLibrary>()
+            .lock()
+            .map_err(|error| error.to_string())?
+            .set_default_bundle(&pack_id, &bundle_id, enabled)
+            .map_err(|error| error.to_string())
+    })
+    .await
+    .map_err(|error| error.to_string())?
+}
+
+#[tauri::command]
+#[specta::specta]
 pub async fn get_skill_settings(
     application: AppHandle,
-    project_identifier: u32,
+    project_identifier: Option<u32>,
 ) -> Result<velocity_skills::settings::SkillsSettingsView, String> {
     tauri::async_runtime::spawn_blocking(move || read_settings(&application, project_identifier))
         .await
@@ -371,16 +425,27 @@ pub async fn get_skill_settings(
 }
 fn read_settings(
     application: &AppHandle,
-    identifier: u32,
+    identifier: Option<u32>,
 ) -> Result<velocity_skills::settings::SkillsSettingsView, String> {
-    let state = application.state::<crate::state::ManagedStateStore>();
+    let snapshot = application
+        .state::<ManagedSkillLibrary>()
+        .lock()
+        .map_err(|error| error.to_string())?
+        .snapshot()
+        .map_err(|error| error.to_string())?;
+    let Some(identifier) = identifier else {
+        return Ok(velocity_skills::settings::settings_view(
+            0,
+            String::new(),
+            &Default::default(),
+            &snapshot,
+        ));
+    };
     let (name, choices, checkout) = {
+        let state = application.state::<ManagedStateStore>();
         let store = state.lock().map_err(|error| error.to_string())?;
         let project = store
-            .state()
-            .projects
-            .iter()
-            .find(|project| project.id == identifier)
+            .project(identifier)
             .ok_or("Project is not registered")?;
         (
             project.name.clone(),
@@ -388,16 +453,11 @@ fn read_settings(
             PathBuf::from(&project.repository_path),
         )
     };
-    let library = application.state::<ManagedSkillLibrary>();
-    let snapshot = library
-        .lock()
-        .map_err(|error| error.to_string())?
-        .snapshot()
-        .map_err(|error| error.to_string())?;
     let mut view = velocity_skills::settings::settings_view(identifier, name, &choices, &snapshot);
     velocity_skills::add_pack_details(&mut view, &checkout, &snapshot);
     Ok(view)
 }
+
 #[tauri::command]
 #[specta::specta]
 pub async fn set_skill_settings(
@@ -407,8 +467,7 @@ pub async fn set_skill_settings(
 ) -> Result<velocity_skills::settings::SkillsSettingsView, String> {
     tauri::async_runtime::spawn_blocking(move || {
         save_settings(&application, project_identifier, edit)?;
-        publish_skill_menus(&application)?;
-        read_settings(&application, project_identifier)
+        read_settings(&application, Some(project_identifier))
     })
     .await
     .map_err(|error| error.to_string())?
@@ -456,7 +515,8 @@ fn save_settings(
         .find(|project| project.id == identifier)
         .ok_or("Project is not registered")?;
     let mut choices = project.skills.clone();
-    choices.apply(edit);
+    let defaults = snapshot.default_bundles_for(pack);
+    choices.apply_with_defaults(edit, defaults);
     store
         .save_project_skills(identifier, choices)
         .map_err(|error| error.to_string())
@@ -555,40 +615,21 @@ fn recheck(application: &AppHandle, identifier: u32, check: SuggestionCheck) -> 
         store
             .save_project_skills(identifier, choices)
             .map_err(|error| error.to_string())?;
-        // The `$` menu lists the switched-on skills; it takes the store lock itself.
-        drop(store);
-        publish_skill_menus(application)?;
     }
     Ok(())
 }
 
-/// Gives every project's `$` menu the skills it has switched on (F4, F18), after the library
-/// or a project's choices change.
+/// Publish one machine-wide composer menu after any library change.
 pub fn publish_skill_menus(application: &AppHandle) -> Result<(), String> {
-    let snapshot = application
+    let library = application
         .state::<ManagedSkillLibrary>()
         .lock()
         .map_err(|error| error.to_string())?
-        .snapshot()
-        .map_err(|error| error.to_string())?;
-    let menus: Vec<_> = {
-        let state = application.state::<crate::state::ManagedStateStore>();
-        let store = state.lock().map_err(|error| error.to_string())?;
-        store
-            .state()
-            .projects
-            .iter()
-            .map(|project| {
-                let entries = velocity_skills::menu::skill_menu_entries(&project.skills, &snapshot);
-                (project.id, entries)
-            })
-            .collect()
-    };
+        .clone();
     let layout = application.state::<crate::layout::MainLayout>();
     let mut layout = layout.lock().map_err(|error| error.to_string())?;
-    for (project, entries) in menus {
-        layout.set_project_skills(project, entries);
-    }
-    // Published under the layout lock, as every layout update is, to keep events in order.
+    // Read under the layout lock so concurrent installs cannot publish stale menus.
+    let snapshot = library.snapshot().map_err(|error| error.to_string())?;
+    layout.set_installed_skills(velocity_skills::menu::skill_menu_entries(&snapshot));
     crate::layout::publish(application, &layout.snapshot(), None)
 }

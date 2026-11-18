@@ -6739,14 +6739,18 @@ name = "velocity-skills"
 version = "0.1.0"
 dependencies = [
  "junction",
+ "process-wrap",
  "serde",
  "serde_json",
  "specta",
+ "tempfile",
  "thiserror 2.0.21",
+ "tokio",
  "velocity-acp",
  "velocity-core",
  "velocity-git",
  "velocity-spec",
+ "windows",
 ]
 
 [[package]]

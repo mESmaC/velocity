@@ -38,9 +38,8 @@ pub struct LayoutState {
     data: LayoutData,
     reconnecting_projects: BTreeSet<u32>,
     issue_rows: BTreeMap<u32, Vec<RailItem>>,
-    /// Each project's enabled skills for the composer's `$` menu (F4, F18). Kept apart from
-    /// `data` because they come from the skill library, not from `state.json`.
-    skill_menus: BTreeMap<u32, Vec<SkillMenuEntry>>,
+    /// The machine-wide library supplies the composer's `$` menu (F4, F18).
+    installed_skills: Vec<SkillMenuEntry>,
     /// Running sessions' transcripts by `(project, thread)`. Kept apart from `data` because the
     /// store rebuilds `data` from `state.json`, which has no transcript, after every change.
     live: BTreeMap<(u32, usize), LiveThreadView>,
@@ -67,8 +66,7 @@ pub struct LayoutState {
     form_open: bool,
     overlay_open: bool,
     composer_text: String,
-    /// The last message sent to a thread, as typed. A failed send gives back these words
-    /// rather than the prompt with its skill instructions.
+    /// The message as typed, restored to the composer if sending fails.
     /// One entry per send still on its way, oldest first: sends to one thread are
     /// delivered in order, so each answer belongs to the oldest matching entry.
     sent_steering: Vec<SentSteering>,
@@ -104,7 +102,7 @@ impl Default for LayoutState {
             data: LayoutData::default(),
             reconnecting_projects: BTreeSet::new(),
             issue_rows: BTreeMap::new(),
-            skill_menus: BTreeMap::new(),
+            installed_skills: Vec::new(),
             live: BTreeMap::new(),
             revision: 0,
             view: NavigationView::Home,
@@ -146,19 +144,10 @@ impl LayoutState {
         }
     }
 
-    /// The project's enabled skills, as the `$` menu lists them (F4, F18).
-    pub fn set_project_skills(&mut self, project: u32, skills: Vec<SkillMenuEntry>) {
-        self.skill_menus.insert(project, skills);
-        if self.data.project_identifier == Some(project) {
-            self.changed();
-        }
-    }
-
-    fn project_skills(&self) -> &[SkillMenuEntry] {
-        self.data
-            .project_identifier
-            .and_then(|project| self.skill_menus.get(&project))
-            .map_or(&[], Vec::as_slice)
+    /// The machine-wide skills the composer can invoke in any project (F4, F18).
+    pub fn set_installed_skills(&mut self, skills: Vec<SkillMenuEntry>) {
+        self.installed_skills = skills;
+        self.changed();
     }
 
     fn project_issues(&self) -> &[RailItem] {
@@ -907,7 +896,7 @@ impl LayoutState {
     }
 
     /// The composer menu: slash commands while a leading `/command` is typed, otherwise the
-    /// enabled skills matching a `$word` being typed (F4).
+    /// installed skills matching a `$word` being typed (F4).
     fn current_slash_items(&self) -> Vec<SlashCommandItem> {
         let commands = thread_view_model::slash_menu_items_with_agent(
             &self.composer_text,
@@ -916,7 +905,7 @@ impl LayoutState {
         if !commands.is_empty() {
             return commands;
         }
-        skill_menu::skill_menu_items(&self.composer_text, self.project_skills())
+        skill_menu::skill_menu_items(&self.composer_text, &self.installed_skills)
     }
 
     /// Updates the advertised slash commands (`available_commands_update`, `SPEC.md §3.2`) for a thread.
@@ -1006,17 +995,14 @@ impl LayoutState {
             agent_busy,
         );
         let text = payload?;
-        // A message naming an enabled `$skill` tells the agent to load it (F4); tasks keep
-        // the words as typed.
-        let prompt = || skill_menu::with_skill_instructions(&text, self.project_skills());
         let intent = match effect {
             ComposerSubmitEffect::Nothing => return None,
             ComposerSubmitEffect::AddTask => LayoutIntent::AddTask(text.clone()),
-            ComposerSubmitEffect::StartThreadFromDraft => LayoutIntent::StartPrompt(prompt()),
+            ComposerSubmitEffect::StartThreadFromDraft => LayoutIntent::StartPrompt(text.clone()),
             ComposerSubmitEffect::SendPromptNow | ComposerSubmitEffect::QueueForNextStep => {
                 LayoutIntent::SteerThread {
                     identifier: self.selected_thread?,
-                    prompt: prompt(),
+                    prompt: text.clone(),
                     queued,
                 }
             }

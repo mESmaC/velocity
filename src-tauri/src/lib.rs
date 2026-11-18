@@ -144,6 +144,8 @@ fn bindings() -> Builder<tauri::Wry> {
         skills::get_skill_pack_installations,
         skills::get_skill_settings,
         skills::set_skill_settings,
+        skills::set_skill_bundle_default,
+        skills::remove_skill_pack,
         skills::install_skill_pack,
         skills::check_skill_pack_update,
         skills::confirm_skill_pack_update,

@@ -33,7 +33,7 @@ pub fn add_pack_details(
     for card in &mut view.cards {
         let on = card.selection.enabled;
         card.details = match card.catalog.id.as_str() {
-            UIUX_PACK if on => SkillPackDetails {
+            UIUX_PACK if card.installed => SkillPackDetails {
                 design_system: Some(design_system_status(checkout, &view.project_name)),
                 ..SkillPackDetails::default()
             },

@@ -1,12 +1,14 @@
 //! Machine-wide skill pack library: git clone with `core.symlinks=true`, commit pinning,
 //! update diff preview, and `PYTHONUTF8=1` script execution (SPEC.md F18).
 
+use std::collections::BTreeMap;
 use std::ffi::OsStr;
-use std::fs::{self, OpenOptions};
+use std::fs::{self, File, OpenOptions};
 use std::io::Write;
 use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
+use velocity_core::skills::PackSelection;
 
 use crate::SkillLibraryError;
 use crate::bundles::{SkillPackBundleCounts, bundle_skill_counts};
@@ -126,6 +128,17 @@ pub struct SkillLibrarySnapshot {
     /// Real skill counts per bundle of each installed built-in pack, at its pinned commit.
     #[serde(default)]
     pub bundle_counts: Vec<SkillPackBundleCounts>,
+    #[serde(default)]
+    pub default_bundles: BTreeMap<String, Vec<String>>,
+}
+
+impl SkillLibrarySnapshot {
+    pub fn default_bundles_for(&self, pack_id: &str) -> Vec<String> {
+        self.default_bundles
+            .get(pack_id)
+            .cloned()
+            .unwrap_or_else(|| PackSelection::for_pack(pack_id).bundles)
+    }
 }
 
 /// Output of running a Python tool inside an installed skill pack with `PYTHONUTF8=1`.
@@ -144,6 +157,8 @@ pub struct SkillPythonOutput {
 struct PersistedRegistry {
     #[serde(default)]
     installed: Vec<InstalledSkillPack>,
+    #[serde(default)]
+    default_bundles: BTreeMap<String, Vec<String>>,
 }
 
 /// Velocity's machine-wide skill library rooted under `<app-data>/skills-library`.
@@ -192,7 +207,71 @@ impl SkillLibrary {
             catalog,
             installed: registry.installed,
             bundle_counts,
+            default_bundles: registry.default_bundles,
         })
+    }
+
+    pub fn set_default_bundle(
+        &self,
+        pack_id: &str,
+        bundle_id: &str,
+        enabled: bool,
+    ) -> Result<(), SkillLibraryError> {
+        let _registry_lease = self.lock_registry()?;
+        let mut registry = self.load_registry()?;
+        let pack = registry
+            .installed
+            .iter()
+            .find(|pack| pack.id == pack_id)
+            .ok_or_else(|| SkillLibraryError::PackNotInstalled(pack_id.to_owned()))?;
+        if bundle_id == crate::GAMEDEV_ROUTER_BUNDLE
+            || !bundle_skill_counts(pack)
+                .bundles
+                .iter()
+                .any(|bundle| bundle.bundle_id == bundle_id)
+        {
+            return Err(SkillLibraryError::UnknownBundle(bundle_id.to_owned()));
+        }
+        let bundles = registry
+            .default_bundles
+            .entry(pack_id.to_owned())
+            .or_insert_with(|| PackSelection::for_pack(pack_id).bundles);
+        bundles.retain(|bundle| bundle != bundle_id);
+        if enabled {
+            bundles.push(bundle_id.to_owned());
+        }
+        self.save_registry(&registry)
+    }
+
+    pub fn remove_pack(&self, pack_id: &str) -> Result<(), SkillLibraryError> {
+        if pack_id.is_empty() || crate::sanitize_pack_id(pack_id) != pack_id {
+            return Ok(());
+        }
+        let _pack_lease = self.lock_installation(pack_id)?;
+        let registry_lease = self.lock_registry()?;
+        let mut registry = self.load_registry()?;
+        let Some(position) = registry
+            .installed
+            .iter()
+            .position(|pack| pack.id == pack_id)
+        else {
+            return Ok(());
+        };
+        registry.installed.remove(position);
+        registry.default_bundles.remove(pack_id);
+        self.save_registry(&registry)?;
+        drop(registry_lease);
+        let directory = self.pack_directory(pack_id);
+        // Commit the registry first so a failed cleanup can't leave a registered broken clone.
+        if let Err(error) = fs::remove_dir_all(&directory)
+            && error.kind() != std::io::ErrorKind::NotFound
+        {
+            eprintln!(
+                "Could not clean up removed skill pack at {}: {error}",
+                directory.display()
+            );
+        }
+        Ok(())
     }
 
     /// One installed pack from the registry.
@@ -309,13 +388,9 @@ impl SkillLibrary {
         Ok(())
     }
 
-    pub(crate) fn upsert_installed(
-        &self,
-        pack: InstalledSkillPack,
-    ) -> Result<(), SkillLibraryError> {
-        // Re-read while holding the writer lease so simultaneous pack jobs keep both entries.
+    fn lock_registry(&self) -> Result<File, SkillLibraryError> {
         let path = self.root.join(".skills-library.lock");
-        let lease = OpenOptions::new()
+        OpenOptions::new()
             .create(true)
             .truncate(false)
             .write(true)
@@ -324,7 +399,15 @@ impl SkillLibrary {
                 file.lock()?;
                 Ok(file)
             })
-            .map_err(|source| SkillLibraryError::Io { path, source })?;
+            .map_err(|source| SkillLibraryError::Io { path, source })
+    }
+
+    pub(crate) fn upsert_installed(
+        &self,
+        pack: InstalledSkillPack,
+    ) -> Result<(), SkillLibraryError> {
+        // Re-read while holding the writer lease so simultaneous pack jobs keep both entries.
+        let _registry_lease = self.lock_registry()?;
         let mut registry = self.load_registry()?;
         if let Some(existing) = registry
             .installed
@@ -335,9 +418,7 @@ impl SkillLibrary {
         } else {
             registry.installed.push(pack);
         }
-        self.save_registry(&registry)?;
-        drop(lease);
-        Ok(())
+        self.save_registry(&registry)
     }
 }
 

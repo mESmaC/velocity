@@ -1,6 +1,6 @@
 //! Headless F4 `$` skill menu driver: `cargo run -p velocity-core --example skill_menu`.
-//! Types into the home composer of a locked project with two enabled skills, prints the menu
-//! after each keystroke, picks a skill with `Tab`, and prints the prompt the agent receives.
+//! Types into the home composer of a locked project with two installed skills, prints the menu
+//! after each keystroke, picks a skill with `Tab`, and prints the submitted prompt.
 
 use velocity_core::layout_state::LayoutState;
 use velocity_core::layout_view::{LayoutAction, LayoutData, LayoutIntent};
@@ -25,13 +25,10 @@ fn main() {
         ..LayoutData::default()
     });
     layout.set_project_spec_locked(Some(true));
-    layout.set_project_skills(
-        1,
-        vec![
-            SkillMenuEntry::new("ui-ux-pro-max", "design system, styles, palettes, fonts"),
-            SkillMenuEntry::new("senior-frontend", "engineering · frontend"),
-        ],
-    );
+    layout.set_installed_skills(vec![
+        SkillMenuEntry::new("ui-ux-pro-max", "design system, styles, palettes, fonts"),
+        SkillMenuEntry::new("senior-frontend", "engineering · frontend"),
+    ]);
 
     for typed in [
         "Restyle $",
@@ -55,7 +52,7 @@ fn main() {
         "{picked}and keep $HOME paths"
     )));
     match layout.apply(LayoutAction::SubmitComposer) {
-        Some(LayoutIntent::StartPrompt(prompt)) => println!("agent receives:\n{prompt}"),
+        Some(LayoutIntent::StartPrompt(prompt)) => println!("submitted prompt:\n{prompt}"),
         other => println!("unexpected intent: {other:?}"),
     }
 

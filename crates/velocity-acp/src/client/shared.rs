@@ -55,3 +55,20 @@ pub(crate) fn shared_servers_for(folder: &Path) -> Vec<McpServer> {
         })
         .unwrap_or_default()
 }
+
+type SkillPrompt = dyn Fn(&Path, &str) -> Option<String> + Send + Sync;
+static SKILL_PROMPT: OnceLock<Box<SkillPrompt>> = OnceLock::new();
+
+/// Resolves installed skill references against the session's working folder.
+pub fn install_skill_prompt_resolver(
+    resolve: impl Fn(&Path, &str) -> Option<String> + Send + Sync + 'static,
+) -> bool {
+    SKILL_PROMPT.set(Box::new(resolve)).is_ok()
+}
+
+pub(super) fn skill_prompt(folder: &Path, message: &str) -> Option<String> {
+    if !message.contains('$') {
+        return None;
+    }
+    SKILL_PROMPT.get()?.as_ref()(folder, message)
+}

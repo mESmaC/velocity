@@ -75,7 +75,7 @@ impl SkillLibrary {
         Ok(installed)
     }
 
-    fn lock_installation(&self, pack: &str) -> Result<File, SkillLibraryError> {
+    pub(crate) fn lock_installation(&self, pack: &str) -> Result<File, SkillLibraryError> {
         let path = self.pack_directory(&format!(".install-{pack}.lock"));
         let file = OpenOptions::new()
             .create(true)

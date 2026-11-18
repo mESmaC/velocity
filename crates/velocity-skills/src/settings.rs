@@ -10,6 +10,8 @@ pub struct SkillPackCard {
     pub installed: bool,
     pub pin: String,
     pub selection: PackSelection,
+    pub default_bundles: Vec<String>,
+    pub installed_count: u32,
     pub enabled_count: u32,
     pub requirements: Vec<String>,
     #[serde(default)]
@@ -28,6 +30,9 @@ pub struct SkillsSettingsView {
     pub enabled_count: u32,
     pub description_tokens: u32,
     pub budget_warning: bool,
+    pub default_skill_count: u32,
+    pub default_description_tokens: u32,
+    pub default_budget_warning: bool,
 }
 
 pub fn settings_view(
@@ -36,51 +41,89 @@ pub fn settings_view(
     choices: &ProjectSkills,
     library: &SkillLibrarySnapshot,
 ) -> SkillsSettingsView {
-    let mut count = 0;
-    let mut tokens = 0;
+    let mut always_on = ContextBudget::default();
+    let mut defaults = ContextBudget::default();
     let cards = library
         .catalog
         .iter()
-        .map(|catalog| {
-            let installed = library.installed.iter().find(|pack| pack.id == catalog.id);
-            let selection = choices
-                .packs
-                .get(&catalog.id)
-                .cloned()
-                .unwrap_or_else(|| PackSelection::for_pack(&catalog.id));
-            let skills: Vec<_> = installed
-                .into_iter()
-                .flat_map(|pack| &pack.skills)
-                .filter(|skill| skill_enabled(&catalog.id, &selection, skill))
-                .collect();
-            let enabled_count = u32::try_from(skills.len()).unwrap_or(u32::MAX);
-            count += enabled_count;
-            // Estimate the name and description loaded at startup, without loading skill bodies.
-            tokens += description_tokens(&skills);
-            SkillPackCard {
-                catalog: with_installed_counts(catalog, library),
-                installed: installed.is_some(),
-                pin: installed
-                    .map(|pack| pack.short_commit.clone())
-                    .unwrap_or_default(),
-                selection,
-                enabled_count,
-                requirements: crate::requirements::requirements(catalog),
-                details: crate::details::SkillPackDetails::default(),
-                suggestion_badge: suggestion_badge(&catalog.id, choices),
-                detection: detection(&catalog.id, choices),
-            }
-        })
+        .map(|catalog| pack_card(catalog, choices, library, &mut always_on, &mut defaults))
         .collect();
     SkillsSettingsView {
         project_identifier: identifier,
         project_name: name,
         cards,
-        enabled_count: count,
-        description_tokens: tokens,
-        budget_warning: count > 150,
+        enabled_count: always_on.skills,
+        description_tokens: always_on.tokens,
+        budget_warning: always_on.skills > 150,
+        default_skill_count: defaults.skills,
+        default_description_tokens: defaults.tokens,
+        default_budget_warning: defaults.skills > 150,
     }
 }
+
+#[derive(Default)]
+struct ContextBudget {
+    skills: u32,
+    tokens: u32,
+}
+
+impl ContextBudget {
+    fn count(&mut self, skills: impl Iterator<Item = u32>) -> u32 {
+        let mut count = 0;
+        for tokens in skills {
+            count += 1;
+            self.tokens += tokens;
+        }
+        self.skills += count;
+        count
+    }
+}
+
+fn pack_card(
+    catalog: &SkillPackCatalogEntry,
+    choices: &ProjectSkills,
+    library: &SkillLibrarySnapshot,
+    always_on: &mut ContextBudget,
+    defaults: &mut ContextBudget,
+) -> SkillPackCard {
+    let installed = library.installed.iter().find(|pack| pack.id == catalog.id);
+    let skills = installed.map_or(&[][..], |pack| pack.skills.as_slice());
+    let default_bundles = library.default_bundles_for(&catalog.id);
+    let selection = choices.packs.get(&catalog.id).cloned().unwrap_or_else(|| {
+        let mut selection = PackSelection::default();
+        selection.bundles.clone_from(&default_bundles);
+        selection
+    });
+    defaults.count(
+        skills
+            .iter()
+            .filter(|skill| crate::selection_includes(&catalog.id, &default_bundles, skill))
+            .map(description_tokens),
+    );
+    let enabled_count = always_on.count(
+        skills
+            .iter()
+            .filter(|skill| skill_enabled(&catalog.id, &selection, skill))
+            .map(description_tokens),
+    );
+    SkillPackCard {
+        catalog: with_installed_counts(catalog, library),
+        installed: installed.is_some(),
+        pin: installed
+            .map(|pack| pack.short_commit.clone())
+            .unwrap_or_default(),
+        selection,
+        default_bundles,
+        installed_count: u32::try_from(skills.iter().filter(|skill| !skill.mirror).count())
+            .unwrap_or(u32::MAX),
+        enabled_count,
+        requirements: crate::requirements::requirements(catalog),
+        details: crate::details::SkillPackDetails::default(),
+        suggestion_badge: suggestion_badge(&catalog.id, choices),
+        detection: detection(&catalog.id, choices),
+    }
+}
+
 // The chips show how many skills each bundle holds at the pinned commit, once installed.
 fn with_installed_counts(
     catalog: &SkillPackCatalogEntry,
@@ -124,16 +167,10 @@ fn detection(pack: &str, choices: &ProjectSkills) -> String {
         _ => String::new(),
     }
 }
-fn description_tokens(skills: &[&DiscoveredSkill]) -> u32 {
-    skills
-        .iter()
-        .map(|skill| {
-            u32::try_from(
-                (skill.name.chars().count() + skill.description.chars().count()).div_ceil(4),
-            )
-            .unwrap_or(u32::MAX)
-        })
-        .sum()
+// Estimate the name and description a provider loads without loading skill bodies.
+fn description_tokens(skill: &DiscoveredSkill) -> u32 {
+    u32::try_from((skill.name.chars().count() + skill.description.chars().count()).div_ceil(4))
+        .unwrap_or(u32::MAX)
 }
 
 /// Bundle membership follows each pack's folders at its pinned commit (`crate::bundles`).

@@ -40,7 +40,12 @@ mod tests {
             identifier: "cskills".into(),
             enabled: true,
         });
-        store.save_project_skills(1, choices.clone())?;
+        // Old project enables and their bundle choices must survive the always-on rename.
+        let legacy: ProjectSkills = serde_json::from_value(serde_json::json!({
+            "packs": {"cskills": {"enabled": true, "bundles": ["eng"]}}
+        }))?;
+        assert_eq!(legacy, choices);
+        store.save_project_skills(1, legacy)?;
         let loaded = StateStore::load_or_default(&directory)?;
         assert_eq!(loaded.state().projects[0].skills, choices);
         assert_eq!(loaded.state().projects[1].skills, ProjectSkills::default());

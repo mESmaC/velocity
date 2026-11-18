@@ -91,8 +91,9 @@ PR duty checks an item off when it lands that item's PR (F7).
 
 **M12 · Skills** (F18)
 - [x] Skill library: clone and pin packs, update with a diff, Windows symlink and UTF-8 handling
-- [x] Settings → Skills: per-project switches, bundles, context budget, requirements, add any Agent Skills repo
-- [ ] Link enabled skills into every worktree and the spec checkout per provider folder; `.git/info/exclude`; committed mode
+- [x] Settings → Skills: machine-wide library, default bundles, context budget, requirements, optional per-project always-on skills
+- [x] Link always-on skills at session start and invoked skills when the turn starts; provider folders and local excludes
+- [ ] Committed mode for always-on skills
 - [x] Built-in packs: UI UX Pro Max (design system and AGENTS.md rule), claude-skills (bundles), Game dev skills (router and engine detection), REA (shared MCP server)
 - [x] Project scan suggestions (F3), re-checked after lands
 - [x] `$` skill menu in the composer; skill loads shown as tool steps (F4)

@@ -1,34 +1,60 @@
-//! The project's enabled skills as the composer's `$` menu lists them (SPEC.md F4, F18).
+//! Installed skill names shared by the composer and the session prompt resolver (F18).
 
+use std::collections::BTreeMap;
+use std::collections::btree_map::Entry;
+use std::path::PathBuf;
 use velocity_core::skill_menu::SkillMenuEntry;
-use velocity_core::skills::{PackSelection, ProjectSkills};
 
-use crate::SkillLibrarySnapshot;
-use crate::settings::skill_enabled;
+use crate::{DiscoveredSkill, SkillLibrarySnapshot};
 
-/// Every skill the project has switched on, from the pinned packs in the library, in library
-/// order. The menu inserts `$<name>`, so a name two packs share is listed once.
-pub fn skill_menu_entries(
-    choices: &ProjectSkills,
+/// A colliding name can still be invoked by its pack-qualified name.
+pub fn installed_skills(
     library: &SkillLibrarySnapshot,
-) -> Vec<SkillMenuEntry> {
-    let mut entries: Vec<SkillMenuEntry> = Vec::new();
+) -> BTreeMap<String, (PathBuf, &DiscoveredSkill)> {
+    let mut installed = BTreeMap::new();
+    let mut duplicates = Vec::new();
     for pack in &library.installed {
-        let selection = choices
-            .packs
-            .get(&pack.id)
-            .cloned()
-            .unwrap_or_else(|| PackSelection::for_pack(&pack.id));
-        for skill in &pack.skills {
-            if skill_enabled(&pack.id, &selection, skill)
-                && !entries.iter().any(|entry| entry.name == skill.name)
-            {
-                entries.push(SkillMenuEntry::new(
-                    skill.name.clone(),
-                    skill.description.clone(),
-                ));
+        for skill in pack.skills.iter().filter(|skill| !skill.mirror) {
+            let source = PathBuf::from(&pack.clone_path).join(&skill.relative_folder);
+            let name = invocation_name(&skill.name);
+            match installed.entry(name.clone()) {
+                Entry::Vacant(entry) => {
+                    entry.insert((source, skill));
+                }
+                Entry::Occupied(_) => {
+                    duplicates.push((format!("{}--{name}", pack.id), source, skill));
+                }
             }
         }
     }
-    entries
+    for (name, source, skill) in duplicates {
+        let mut alias = name.clone();
+        let mut suffix = 2;
+        while installed.contains_key(&alias) {
+            alias = format!("{name}-{suffix}");
+            suffix += 1;
+        }
+        installed.insert(alias, (source, skill));
+    }
+    installed
+}
+
+fn invocation_name(name: &str) -> String {
+    if crate::workspace::valid_name(name) && !name.contains('.') {
+        return name.to_owned();
+    }
+    // Some packs supply a Markdown heading as the name. The composer needs a single word.
+    let slug = crate::sanitize_pack_id(name);
+    if slug.is_empty() {
+        "skill".into()
+    } else {
+        slug
+    }
+}
+
+pub fn skill_menu_entries(library: &SkillLibrarySnapshot) -> Vec<SkillMenuEntry> {
+    installed_skills(library)
+        .into_iter()
+        .map(|(name, (_, skill))| SkillMenuEntry::new(name, skill.description.clone()))
+        .collect()
 }

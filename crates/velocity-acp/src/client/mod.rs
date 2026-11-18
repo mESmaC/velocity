@@ -64,7 +64,7 @@ pub use program_path::program_found;
 pub use session::{
     SessionResume, SessionSetup, StartedSession, answer_permission, session_servers,
 };
-pub use shared::{SharedServer, install_shared_servers};
+pub use shared::{SharedServer, install_shared_servers, install_skill_prompt_resolver};
 pub use sign_in::sign_in;
 pub use title::{TitleReply, TitleRequest, request_title};
 pub use updates::{AgentSlashCommand, available_commands, entry_class};
@@ -171,7 +171,7 @@ impl Shared {
 }
 
 /// The shared servers a session in `worktree` gets (§3.2 Tool access): Settings → Agents' list
-/// from the launch, then the app's servers for the folder's project (F18: a switched-on pack's
+/// from the launch, then the app's servers for the folder's project (F18: an always-on pack's
 /// MCP server, such as REA's), minus every name the agent's own config already has.
 pub fn launch_shared_servers(launch: &AgentLaunch, worktree: &std::path::Path) -> Vec<McpServer> {
     let mut servers = launch.shared_servers.clone();
@@ -489,6 +489,15 @@ impl Turn<'_> {
                     block.clone(),
                 )));
         }
+        let skill_instructions: Vec<_> = blocks
+            .iter()
+            .filter_map(|block| match block {
+                ContentBlock::Text(text) => shared::skill_prompt(&self.shared.worktree, &text.text),
+                _ => None,
+            })
+            .map(ContentBlock::from)
+            .collect();
+        blocks.extend(skill_instructions);
         // The thread view already shows the transcript, so the preface is sent unrecorded.
         if !self.preface.is_empty() {
             let mut sent = std::mem::take(self.preface);

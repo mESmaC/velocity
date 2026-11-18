@@ -41,7 +41,7 @@
     view = null;
     error = '';
     preview = null;
-    if (identifier !== null) void refresh(identifier);
+    void refresh(identifier);
   });
   $effect(() => {
     let disposed = false;
@@ -56,8 +56,7 @@
           )?.status.state !== 'complete',
       );
       installations = next;
-      if (completed && projectIdentifier !== null)
-        void refresh(projectIdentifier);
+      if (completed) void refresh();
     }
     void onSkillPackInstallations(({ payload }) => apply(payload))
       .then(async (unlisten) => {
@@ -85,7 +84,7 @@
       busy = false;
     }
   }
-  async function refresh(identifier: number) {
+  async function refresh(identifier: number | null = projectIdentifier) {
     const request = ++generation;
     try {
       const result = await skillSettingsCommands.read(identifier);
@@ -112,6 +111,19 @@
         error = String(failure);
       });
   }
+  function remove(pack: string) {
+    void run(async () => {
+      await skillLibraryCommands.removePack(pack);
+      if (preview?.pack_id === pack) preview = null;
+      await refresh();
+    });
+  }
+  function setDefaultBundle(pack: string, bundle: string, enabled: boolean) {
+    void run(async () => {
+      await skillLibraryCommands.setBundleDefault(pack, bundle, enabled);
+      await refresh();
+    });
+  }
   function generate(regenerate: boolean) {
     const identifier = projectIdentifier;
     if (identifier === null) return;
@@ -128,15 +140,14 @@
   }
   function confirm() {
     const update = preview;
-    const identifier = projectIdentifier;
-    if (!update || identifier === null) return;
+    if (!update) return;
     void run(async () => {
       await skillLibraryCommands.confirmUpdate(
         update.pack_id,
         update.candidate_commit,
       );
       preview = null;
-      await refresh(identifier);
+      await refresh();
     });
   }
 </script>
@@ -144,50 +155,46 @@
 <section class="worktree-settings" aria-label="Skill settings">
   <header class="worktree-settings-head">
     <h1>Settings</h1>
-    <span>current project</span>
+    <span>machine-wide</span>
   </header>
   <div class="worktree-settings-body">
     <SettingsNav current="skills" {send} />
     <div class="worktree-settings-main">
       <PaneState
         name="Skills"
+        network={false}
         {error}
-        loading={projectIdentifier !== null && !view}
-        empty={projectIdentifier === null}
-        message="Select a project to configure skills."
-        retry={() => {
-          const identifier = projectIdentifier;
-          if (identifier !== null) return run(() => refresh(identifier));
-        }}
+        loading={!view}
+        retry={() => run(() => refresh())}
       />
       {#if view}
         <section>
-          <h2>Skills for {view.project_name}</h2>
+          <h2>Skill library</h2>
           <p class="worktree-description">
-            Skill packs are installed once and switched on per project. Every
-            agent in this project uses the same selection.
+            Type <b>$</b> in the composer to invoke an installed skill in any project.
           </p>
-          <div class="sk-budget" class:warn={view.budget_warning}>
+          <div class="sk-budget" class:warn={view.default_budget_warning}>
             <meter
               min="0"
               max="200"
-              value={view.enabled_count}
-              aria-label="Enabled skills"
+              value={view.default_skill_count}
+              aria-label="Default bundle context budget"
             ></meter>
-            {view.enabled_count} skills on · ≈{view.description_tokens} tokens of
-            skill descriptions every agent loads
-            {#if view.budget_warning}
-              · turn off bundles this project doesn’t use{/if}
+            Default bundles · {view.default_skill_count} skills · ≈{view.default_description_tokens}
+            description tokens
           </div>
+          {#if projectIdentifier !== null}
+            <div class="sk-budget" class:warn={view.budget_warning}>
+              Always on for {view.project_name} · {view.enabled_count} skills · ≈{view.description_tokens}
+              description tokens per session
+            </div>
+          {/if}
           <div class="skill-cards">
             {#each view.cards as card (card.catalog.id)}
               {@const status = installations.packs.find(
                 (pack) => pack.pack_id === card.catalog.id,
               )?.status}
-              <div
-                class="sk"
-                class:on={card.installed && card.selection.enabled}
-              >
+              <div class="sk" class:on={card.installed}>
                 <div class="top">
                   <b>{card.catalog.name}</b>
                   {#if card.suggestion_badge}<span class="sugg"
@@ -196,58 +203,85 @@
                   <span class="repo"
                     >{card.catalog.repository} · {card.catalog.license}</span
                   >
-                  <button
-                    class="skill-toggle"
-                    role="switch"
-                    aria-checked={card.selection.enabled}
-                    aria-label={card.installed
-                      ? `Enable ${card.catalog.name}`
-                      : `Accept suggestion for ${card.catalog.name} after installation`}
-                    disabled={busy ||
-                      (!card.installed && !card.selection.enabled)}
-                    onclick={() =>
-                      edit({
-                        Pack: {
-                          identifier: card.catalog.id,
-                          enabled: !card.selection.enabled,
-                        },
-                      })}
-                    >{card.selection.enabled
-                      ? card.installed
-                        ? 'On'
-                        : 'Install to turn on'
-                      : 'Off'}</button
-                  >
+                  {#if projectIdentifier !== null && (card.installed || card.selection.enabled)}
+                    <button
+                      class="skill-toggle"
+                      role="switch"
+                      aria-checked={card.selection.enabled}
+                      aria-label={card.installed
+                        ? `Always load ${card.catalog.name} in ${view.project_name}`
+                        : `Accept suggestion for ${card.catalog.name} after installation`}
+                      disabled={busy}
+                      onclick={() =>
+                        edit({
+                          Pack: {
+                            identifier: card.catalog.id,
+                            enabled: !card.selection.enabled,
+                          },
+                        })}
+                      >{card.selection.enabled
+                        ? card.installed
+                          ? 'Always on'
+                          : 'Install for always on'
+                        : 'On demand'}</button
+                    >
+                  {/if}
                 </div>
                 <div class="d">{card.catalog.description}</div>
-                {#if card.catalog.bundles.length > 1}
+                {#if card.installed && card.catalog.bundles.length > 1}
+                  <div class="meta">Default bundles</div>
                   <div class="bund">
                     {#each card.catalog.bundles as bundle (bundle.id)}
                       <button
                         class="skill-chip"
-                        class:on={card.selection.bundles.includes(bundle.id)}
-                        aria-pressed={card.selection.bundles.includes(
-                          bundle.id,
-                        )}
+                        class:on={card.default_bundles.includes(bundle.id)}
+                        aria-pressed={card.default_bundles.includes(bundle.id)}
                         disabled={busy ||
-                          !card.installed ||
                           (card.catalog.id === 'gamedev' &&
                             bundle.id === 'router')}
                         onclick={() =>
-                          edit({
-                            Bundle: {
-                              identifier: card.catalog.id,
-                              bundle: bundle.id,
-                              enabled: !card.selection.bundles.includes(
-                                bundle.id,
-                              ),
-                            },
-                          })}
+                          setDefaultBundle(
+                            card.catalog.id,
+                            bundle.id,
+                            !card.default_bundles.includes(bundle.id),
+                          )}
                         >{bundle.label}<small>{bundle.skill_count}</small
                         ></button
                       >
                     {/each}
                   </div>
+                  {#if projectIdentifier !== null && card.selection.enabled}
+                    <div class="meta">
+                      Always-on bundles for {view.project_name}
+                    </div>
+                    <div class="bund">
+                      {#each card.catalog.bundles as bundle (bundle.id)}
+                        <button
+                          class="skill-chip"
+                          class:on={card.selection.bundles.includes(bundle.id)}
+                          aria-pressed={card.selection.bundles.includes(
+                            bundle.id,
+                          )}
+                          disabled={busy ||
+                            !card.installed ||
+                            (card.catalog.id === 'gamedev' &&
+                              bundle.id === 'router')}
+                          onclick={() =>
+                            edit({
+                              Bundle: {
+                                identifier: card.catalog.id,
+                                bundle: bundle.id,
+                                enabled: !card.selection.bundles.includes(
+                                  bundle.id,
+                                ),
+                              },
+                            })}
+                          >{bundle.label}<small>{bundle.skill_count}</small
+                          ></button
+                        >
+                      {/each}
+                    </div>
+                  {/if}
                 {/if}
                 <div class="meta">
                   <span
@@ -258,8 +292,12 @@
                   {#each card.requirements as requirement (requirement)}<span
                       >{requirement}</span
                     >{/each}
-                  <span>{card.enabled_count} skills on</span>
-                  {#if card.detection}<span>{card.detection}</span>{/if}
+                  {#if card.installed}<span
+                      >{card.installed_count} installed skills</span
+                    >{/if}
+                  {#if projectIdentifier !== null && card.detection}<span
+                      >{card.detection}</span
+                    >{/if}
                 </div>
                 {#if card.details.design_system}
                   {@const design = card.details.design_system}
@@ -280,8 +318,8 @@
                       >{card.details.shared_server.name}</code
                     >
                     <span
-                      >passed to every agent of every provider (§3.2 Tool
-                      access) · IDA, Hopper and JEB need your own licences</span
+                      >available in this project's new sessions · IDA, Hopper
+                      and JEB need your own licences</span
                     >
                   </div>
                 {/if}
@@ -291,20 +329,20 @@
                       onclick={() => check(card.catalog.id)}
                       >Check for updates</button
                     >
+                    <button
+                      disabled={busy || status?.state === 'running'}
+                      onclick={() => remove(card.catalog.id)}
+                      >Remove pack</button
+                    >
                   {:else}<button
-                      disabled={status?.state === 'running' ||
-                        status?.state === 'complete'}
+                      disabled={busy || status?.state === 'running'}
                       onclick={() => install(card.catalog.id)}
                       >{status?.state === 'failed'
                         ? 'Retry install'
                         : 'Install pack'}</button
                     >{/if}
-                  {#if !card.installed && status}
-                    <span role="status"
-                      >{status.state === 'complete'
-                        ? 'Installed'
-                        : status.message}</span
-                    >
+                  {#if !card.installed && status && status.state !== 'complete'}
+                    <span role="status">{status.message}</span>
                   {:else}
                     <span
                       >updates are reviewed as a diff before the pin moves</span
