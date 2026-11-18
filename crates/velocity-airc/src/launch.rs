@@ -76,7 +76,7 @@ fn serve_stdio_inner(
             .first()
             .map(|scope| text(scope, "member scope"))
             .transpose()?,
-    );
+    )?;
     let update = |request: IssueUpdate<'_>| {
         handler.ok_or_else(|| Error::Invalid("No GitHub issue transport".into()))?(
             &app_data, &project, request,

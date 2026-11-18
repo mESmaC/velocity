@@ -53,9 +53,13 @@ impl Remote {
         }
     }
 
-    pub(crate) fn with_member_scope(mut self, scope: String) -> Self {
+    pub(crate) fn with_member_scope(mut self, scope: String) -> Result<Self, Error> {
+        let hash = scope.strip_suffix('/').unwrap_or_default();
+        if hash.len() != 16 || !hash.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+            return Err(Error::Invalid("Invalid launcher member scope".into()));
+        }
         self.scope = scope;
-        self
+        Ok(self)
     }
 
     pub(crate) fn member(&self, member: &str) -> String {

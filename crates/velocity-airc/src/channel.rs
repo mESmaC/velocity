@@ -186,11 +186,14 @@ pub struct Channel {
 impl Channel {
     /// Keep the launcher's wire IDs and local projections even if the tool process runs
     /// with a different machine environment or resolves the app data path differently.
-    pub(crate) fn with_member_scope(mut self, scope: Option<String>) -> Self {
+    pub(crate) fn with_member_scope(mut self, scope: Option<String>) -> Result<Self, Error> {
         if let Some(scope) = scope {
-            self.remote = self.remote.map(|remote| remote.with_member_scope(scope));
+            self.remote = self
+                .remote
+                .map(|remote| remote.with_member_scope(scope))
+                .transpose()?;
         }
-        self
+        Ok(self)
     }
 
     /// Rosen channels never fall back to a machine-local copy on disconnection.
