@@ -55,6 +55,7 @@ mod tasks;
 mod thread_links;
 mod thread_menu;
 mod threads;
+mod token_usage;
 mod updates;
 mod velocity_reports;
 mod window;
@@ -83,6 +84,7 @@ fn bindings() -> Builder<tauri::Wry> {
         code_graph::retry_graph_index,
         continuous_dispatch::get_continuous_dispatch,
         continuous_dispatch::set_continuous_dispatch,
+        token_usage::get_token_usage,
         window::get_window_state,
         window::minimize_window,
         window::toggle_maximize_window,

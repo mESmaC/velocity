@@ -266,3 +266,42 @@
 .usage-graph-status .usage-note {
   overflow-wrap: anywhere;
 }
+
+.token-usage-table th,
+.token-usage-table td {
+  vertical-align: top;
+}
+
+.token-usage-table summary {
+  cursor: pointer;
+  white-space: normal;
+  overflow-wrap: anywhere;
+}
+
+.token-usage-table small {
+  display: block;
+  color: var(--muted);
+}
+
+.token-usage-table ul {
+  margin: 0;
+  padding: 4px 0;
+  list-style: none;
+}
+
+.token-usage-table li {
+  display: flex;
+  justify-content: space-between;
+  gap: 8px;
+  max-width: 220px;
+  font: var(--providers-meta-font);
+  color: var(--text-2);
+}
+
+.thread-token-usage {
+  flex: 0 1 auto;
+  max-height: 38vh;
+  overflow: auto;
+  padding: var(--usage-modal-body-padding);
+  border-bottom: 1px solid var(--line-dim);
+}

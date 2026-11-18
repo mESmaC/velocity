@@ -3,6 +3,7 @@
   import Composer from './Composer.svelte';
   import Icon from './Icon.svelte';
   import PullRequestHistory from './PullRequestHistory.svelte';
+  import TokenUsage from './TokenUsage.svelte';
   import TranscriptBlocks from './TranscriptBlocks.svelte';
   import { followTranscript } from './follow-transcript';
   import { threadMenuCommands } from './ipc';
@@ -20,6 +21,8 @@
     thread: ThreadDetailSnapshot;
     send: (action: LayoutAction) => void;
   } = $props();
+  let usageOpen = $state(false);
+
   async function retryResponse() {
     const project = layout.project_identifier;
     const identifier = thread.identifier;
@@ -94,6 +97,11 @@
       {#if thread.elapsed_label}<span>{thread.elapsed_label}</span>{/if}
     </div>
     <div class="head-actions">
+      <button
+        class="usage-button"
+        aria-expanded={usageOpen}
+        onclick={() => (usageOpen = !usageOpen)}>Token usage</button
+      >
       {#if thread.has_diff_action}
         <button
           type="button"
@@ -130,6 +138,14 @@
     </div>
   </header>
 
+  {#if usageOpen && layout.project_identifier !== null}
+    <div class="thread-token-usage">
+      <TokenUsage
+        project={layout.project_identifier}
+        thread={Number(thread.identifier)}
+      />
+    </div>
+  {/if}
   {#if thread.pull_request_history}<PullRequestHistory
       history={thread.pull_request_history}
       track

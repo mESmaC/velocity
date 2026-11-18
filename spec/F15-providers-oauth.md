@@ -114,9 +114,18 @@ Velocity never stores a token for this.
 
 **Usage modal.**
 The footer usage button and the limit meter open a modal, like AIRC's: a centred window over a dimmed, blurred scrim.
-It holds the usage limits, laid out like T3 Code's, and the project's code graph section (F19 Measuring it).
+It holds thread token usage, the subscription limits laid out like T3 Code's, and the project's code graph section (F19 Measuring it).
 Rust draws its rows; the limits update while it is open whenever a limit changes (`layout://state`).
-- **Title:** "Usage limits".
+- **Token usage** (#461) totals input, cached input and output for Today and Last 7 days in local calendar time.
+  It ranks threads by input plus output and shows totals by project and by agent role (implementation, review, duty and title).
+  Each row expands into the estimated input from the base prompt, project instructions, code reads, graph calls, searches, diffs, build output, polls, MCP tools, and conversation, with an unattributed remainder.
+  Cached input is included in input.
+  The thread header opens the thread's lifetime totals, including its title requests.
+  Velocity reads explicit per-call ACP token breakdowns when available, otherwise it reads the matching Claude or Codex JSONL from the selected account's profile.
+  When only an ACP end-of-turn breakdown is available, it records the reported turn total.
+  Session log and ACP records for the same usage are counted once.
+  Attribution estimates use the input content visible to Velocity, and the saved ledger holds counts and identifiers only.
+- **Usage limits** shows the subscription windows.
 - **A section per signed-in account,** in provider card order, with the provider icon and the account’s name and plan.
 - **A row per subscription window,** shortest first: the window (`5-hour`, `Weekly`) and "resets in 1d 10h" on one line, then a bar of the share left in the provider's colour and "61% left".
   The tooltip adds the share used and, when the provider gives the window's length and reset time, the share of the window's time left: where even spending would put the bar.

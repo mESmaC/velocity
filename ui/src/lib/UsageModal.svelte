@@ -1,6 +1,7 @@
 <script lang="ts">
   import PaneState from './PaneState.svelte';
   import Icon from './Icon.svelte';
+  import TokenUsage from './TokenUsage.svelte';
   import GraphStatusView from './GraphStatus.svelte';
   import { modal } from './motion';
   import { codeGraphCommands } from './ipc';
@@ -145,6 +146,8 @@
       <span class="label">Esc to close</span>
     </div>
     <div class="usage-modal-body">
+      <TokenUsage />
+      <hr />
       <section aria-label="Usage limits">
         <div class="usage-title">Usage limits</div>
         <PaneState name="Usage" />

@@ -1054,6 +1054,7 @@ impl Review {
             .airc
             .as_ref()
             .map(|airc| airc.duty(prepared.plan.project, &prepared.plan.nickname));
+        setup.review_usage = true;
         let _ = self
             .input
             .send(text(&format!("{}{proofs}", self.prompt(&prepared))));

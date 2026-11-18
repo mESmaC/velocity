@@ -1165,6 +1165,10 @@ async fn settle_title(
         request.settings.provider.label(),
         request.settings.model
     );
+    let request = match application.path().app_data_dir() {
+        Ok(data) => request.with_usage(data, key.0, key.1),
+        Err(_) => request,
+    };
     let title = resolve_title(request).await;
     record_title_outcome(
         application,

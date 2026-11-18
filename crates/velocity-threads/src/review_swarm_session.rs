@@ -238,6 +238,7 @@ impl Job {
             .airc
             .as_ref()
             .map(|airc| airc.duty(key.0, &key.1));
+        setup.review_usage = true;
         setup.preface = Some(velocity_rosen::workspace_note(&launch.change));
         setup.shared_servers.push(McpServer::Stdio(
             McpServerStdio::new("velocity-review-swarm", &self.runner.executable).args(vec![

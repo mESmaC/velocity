@@ -19,6 +19,7 @@ mod own_config;
 mod probe;
 mod process;
 mod program_path;
+mod provider_usage_log;
 pub mod rewrite;
 mod run_queue;
 mod session;
@@ -26,6 +27,8 @@ mod shared;
 mod sign_in;
 mod terminals;
 mod title;
+mod token_usage;
+mod token_usage_context;
 mod turn_usage;
 mod updates;
 
@@ -130,6 +133,7 @@ struct Shared {
     provider: Option<crate::Provider>,
     account: u32,
     code_reads: Mutex<turn_usage::CodeReads>,
+    token_capture: Mutex<token_usage::Capture>,
 }
 
 impl Shared {
@@ -145,6 +149,7 @@ impl Shared {
             provider: None,
             account: 0,
             code_reads: Mutex::default(),
+            token_capture: Mutex::default(),
         }
     }
 
@@ -155,6 +160,12 @@ impl Shared {
 
     fn record(&self, update: SessionUpdate) {
         live_limits::observe_account(self.account, &update);
+        if !self.replaying.load(Ordering::Acquire) {
+            self.token_capture
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .observe(&update);
+        }
         self.code_reads
             .lock()
             .unwrap_or_else(PoisonError::into_inner)
@@ -245,8 +256,9 @@ async fn run_admitted_session(
         provider: launch.concurrency_provider.or(launch.own_config),
         account: launch.account,
         code_reads: Mutex::default(),
+        token_capture: Mutex::default(),
     });
-    let result = connect_agent(&mut agent, Arc::clone(&shared), setup, inputs).await;
+    let result = connect_agent(&mut agent, Arc::clone(&shared), setup, launch, inputs).await;
     let terminals_stopped = shared.terminals.stop_all().await;
     let agent_stopped = process::stop_agent(&mut agent)
         .await
@@ -260,6 +272,7 @@ async fn connect_agent(
     agent: &mut process::AgentProcess,
     shared: Arc<Shared>,
     setup: SessionSetup,
+    launch: AgentLaunch,
     inputs: UnboundedReceiver<AgentInput>,
 ) -> Result<(), ClientError> {
     let stdin = agent
@@ -279,7 +292,7 @@ async fn connect_agent(
     let connection = handlers::register(Client.v1(), &shared).connect_with(
         transport,
         async move |connection: ConnectionTo<Agent>| {
-            drive(connection, session_state, setup, inputs).await
+            drive(connection, session_state, setup, launch, inputs).await
         },
     );
     let result = tokio::select! {
@@ -346,11 +359,15 @@ async fn drive(
     connection: ConnectionTo<Agent>,
     shared: Arc<Shared>,
     setup: SessionSetup,
+    launch: AgentLaunch,
     mut inputs: UnboundedReceiver<AgentInput>,
 ) -> Result<(), agent_client_protocol::Error> {
+    let session_start = token_usage::now();
     let started = start_reporting_replay(&connection, &shared, &setup).await?;
     let session_id = started.session_id;
     let mut meter = turn_usage::UsageMeter::for_setup(&setup);
+    let since = if started.loaded { session_start } else { 0 };
+    let mut tokens = token_usage::SessionMeter::new(&setup, &launch, &session_id.0, &shared, since);
     shared
         .code_reads
         .lock()
@@ -361,20 +378,8 @@ async fn drive(
         session_id: session_id.clone(),
         loaded: started.loaded,
     });
-    // The setup's preface, and for a resumed thread in a new session its transcript, go
-    // ahead of the first prompt.
-    let mut preface: Vec<ContentBlock> = setup
-        .preface
-        .map(ContentBlock::from)
-        .into_iter()
-        .chain(
-            setup
-                .resume
-                .filter(|_| !started.loaded)
-                .map(|resume| ContentBlock::from(resume.transcript)),
-        )
-        .collect();
-    let (turn_sender, mut turn_ended) = unbounded_channel::<turn_usage::TurnReport>();
+    let mut preface = session_preface(&setup, started.loaded);
+    let (turn_sender, mut turn_ended) = unbounded_channel::<PromptResult>();
     let mut steering: Steering<Vec<ContentBlock>, ()> = Steering::new(());
     loop {
         let input = tokio::select! {
@@ -387,7 +392,10 @@ async fn drive(
                 }
                 Some(AgentInput::Stop) | None => return Ok(()),
             },
-            Some(report) = turn_ended.recv() => {
+            Some(PromptResult { report, usage }) = turn_ended.recv() => {
+                if let Some(tokens) = tokens.as_mut() {
+                    tokens.finish(usage.as_ref()).await;
+                }
                 if let Some(meter) = meter.as_mut() {
                     let reads = shared.code_reads.lock().unwrap_or_else(PoisonError::into_inner).take_count();
                     meter.record(&report, reads);
@@ -417,6 +425,27 @@ async fn drive(
         };
         turn.apply(steering.step(input))?;
     }
+}
+
+/// The workspace note and, if an earlier session could not be loaded, its transcript.
+fn session_preface(setup: &SessionSetup, loaded: bool) -> Vec<ContentBlock> {
+    setup
+        .preface
+        .iter()
+        .map(|text| ContentBlock::from(text.clone()))
+        .chain(
+            setup
+                .resume
+                .iter()
+                .filter(|_| !loaded)
+                .map(|resume| ContentBlock::from(resume.transcript.clone())),
+        )
+        .collect()
+}
+
+struct PromptResult {
+    report: turn_usage::TurnReport,
+    usage: Option<agent_client_protocol::v1::schema::Usage>,
 }
 
 /// Starts the session, bracketing it with [`AgentEvent::HistoryReplay`] when a loaded session
@@ -467,7 +496,7 @@ struct Turn<'session> {
     connection: &'session ConnectionTo<Agent>,
     shared: &'session Shared,
     session_id: &'session SessionId,
-    turn_sender: &'session UnboundedSender<turn_usage::TurnReport>,
+    turn_sender: &'session UnboundedSender<PromptResult>,
     preface: &'session mut Vec<ContentBlock>,
 }
 
@@ -517,6 +546,11 @@ impl Turn<'_> {
             sent.append(&mut blocks);
             blocks = sent;
         }
+        self.shared
+            .token_capture
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .prompt(&blocks);
         let turn_sender = self.turn_sender.clone();
         let started = std::time::Instant::now();
         self.connection
@@ -525,16 +559,18 @@ impl Turn<'_> {
                 let usage = result
                     .as_ref()
                     .ok()
-                    .and_then(|response| response.usage.as_ref())
-                    .map(turn_usage::counts);
+                    .and_then(|response| response.usage.clone());
                 let outcome = result
                     .map(|response| response.stop_reason)
                     .map_err(|error| live_limits::turn_error(&error));
                 // The loop ended: the session is stopping and no one waits for the turn.
-                let _ = turn_sender.send(turn_usage::TurnReport {
-                    outcome,
+                let _ = turn_sender.send(PromptResult {
+                    report: turn_usage::TurnReport {
+                        outcome,
+                        usage: usage.as_ref().map(turn_usage::counts),
+                        elapsed: started.elapsed(),
+                    },
                     usage,
-                    elapsed: started.elapsed(),
                 });
                 Ok(())
             })

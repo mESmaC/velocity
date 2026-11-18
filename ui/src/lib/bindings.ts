@@ -31,6 +31,7 @@ export const commands = {
 	retryGraphIndex: (projectIdentifier: number) => __TAURI_INVOKE<GraphStatus_Serialize>("retry_graph_index", { projectIdentifier }),
 	getContinuousDispatch: (projectIdentifier: number) => __TAURI_INVOKE<DispatchView_Serialize>("get_continuous_dispatch", { projectIdentifier }),
 	setContinuousDispatch: (projectIdentifier: number, slots: number, paused: boolean) => __TAURI_INVOKE<DispatchView_Serialize>("set_continuous_dispatch", { projectIdentifier, slots, paused }),
+	getTokenUsage: (period: Period, projectIdentifier: number | null, threadIdentifier: number | null) => __TAURI_INVOKE<Report>("get_token_usage", { period, projectIdentifier, threadIdentifier }),
 	getWindowState: () => __TAURI_INVOKE<WindowStateChanged>("get_window_state"),
 	minimizeWindow: () => __TAURI_INVOKE<null>("minimize_window"),
 	toggleMaximizeWindow: () => __TAURI_INVOKE<null>("toggle_maximize_window"),
@@ -2634,6 +2635,8 @@ export type PendingInterview_Serialize = {
 	brief: string,
 };
 
+export type Period = "Today" | "Week";
+
 export type PersistedState = PersistedState_Serialize | PersistedState_Deserialize;
 
 export type PersistedState_Deserialize = {
@@ -3762,6 +3765,10 @@ export type RailItem_Serialize = {
 	metadata: string,
 };
 
+export type Report = {
+	groups: UsageGroup[],
+};
+
 /**  What the picker shows for the current search. */
 export type RepositoryPickerView = RepositoryPickerView_Serialize | RepositoryPickerView_Deserialize;
 
@@ -4297,6 +4304,11 @@ export type SkippedFiles = {
 export type SlashCommandItem = {
 	command: string,
 	description: string,
+};
+
+export type SourceRow = {
+	label: string,
+	tokens: string,
 };
 
 export type SpecQuestion = {
@@ -5063,6 +5075,23 @@ export type UpdateView_Serialize = {
 	progress: number | null,
 	/**  The footer button's dot: a newer version is ready to install. */
 	badge: boolean,
+};
+
+export type UsageGroup = {
+	name: string,
+	rows: UsageRow[],
+};
+
+export type UsageRow = {
+	key: string,
+	label: string,
+	detail: string,
+	input: string,
+	cached: string,
+	output: string,
+	total: string,
+	calls: string,
+	sources: SourceRow[],
 };
 
 /**

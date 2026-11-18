@@ -47,6 +47,8 @@ pub struct SessionSetup {
     pub preface: Option<String>,
     /// A saved build thread moves its pending input to a new account on quota failure.
     pub pause_on_subscription_limit: bool,
+    /// Review sessions can use the same AIRC membership scheme as other duty agents.
+    pub review_usage: bool,
 }
 
 /// How a parked thread's agent picks up where it stopped: `session/load` of its earlier
@@ -95,6 +97,7 @@ impl SessionSetup {
             run_settings: None,
             preface: None,
             pause_on_subscription_limit: false,
+            review_usage: false,
         }
     }
 
@@ -102,6 +105,14 @@ impl SessionSetup {
     pub fn with_run_settings(mut self, settings: RunSettings<String>) -> Self {
         self.run_settings = Some(settings);
         self
+    }
+
+    pub(super) fn instruction_bytes(&self) -> usize {
+        self.session_metadata
+            .as_ref()
+            .and_then(|meta| meta.get("systemPrompt"))
+            .and_then(|prompt| prompt["append"].as_str())
+            .map_or(0, str::len)
     }
 
     pub(super) async fn load_claude_project_instructions(&mut self) -> std::io::Result<()> {

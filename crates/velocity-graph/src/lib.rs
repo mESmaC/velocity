@@ -22,6 +22,7 @@ pub mod status;
 mod subsystems;
 mod svelte;
 mod text;
+pub mod token_usage;
 mod tools;
 pub mod usage;
 

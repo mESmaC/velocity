@@ -14,10 +14,13 @@ use tokio::sync::{Mutex, oneshot};
 use tokio::time::{Instant as Deadline, timeout_at};
 use tokio_util::compat::{TokioAsyncReadCompatExt, TokioAsyncWriteCompatExt};
 
+use super::provider_usage_log::ProviderLog;
+use super::token_usage::{self, Ledger};
 use super::{
     AgentEvent, AgentLaunch, ClientError, Shared, config, forward_log, handlers, process, session,
 };
 use crate::RunSettings;
+use velocity_graph::token_usage::{Role, Subject};
 
 /// What a title request runs with.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -33,6 +36,7 @@ pub struct TitleRequest {
     pub prompt: String,
     /// The total time F4 allows for a background title, including queueing.
     pub deadline: Duration,
+    usage: Option<Ledger>,
 }
 
 impl TitleRequest {
@@ -49,7 +53,19 @@ impl TitleRequest {
             settings,
             prompt,
             deadline,
+            usage: None,
         }
+    }
+    pub fn with_usage(mut self, data: PathBuf, project: u32, thread: u32) -> Self {
+        self.usage = Some(Ledger {
+            data,
+            project,
+            subject: Subject {
+                role: Role::Title,
+                thread: Some(thread),
+            },
+        });
+        self
     }
 }
 
@@ -84,7 +100,7 @@ pub async fn request_title(request: TitleRequest) -> Result<TitleReply, ClientEr
             Some(session) => session,
             None => TitleSession::start(&request).await?,
         };
-        let text = session.prompt(request.prompt).await?;
+        let text = session.prompt(request.prompt, request.usage).await?;
         Ok::<_, ClientError>((session, text))
     })
     .await
@@ -102,6 +118,9 @@ struct TitleSession {
     settings: RunSettings<String>,
     connection: ConnectionTo<Agent>,
     session_id: SessionId,
+    shared: Arc<Shared>,
+    usage_log: Option<ProviderLog>,
+    usage_since: i64,
     received: UnboundedReceiver<AgentEvent>,
     remaining: usize,
     // Dropping the cache entry tells the task to shut down the process tree.
@@ -113,14 +132,23 @@ impl TitleSession {
         let (events, received) = unbounded_channel();
         let shared = Arc::new(Shared::new(request.working_directory.clone(), events));
         let (stop, stopped) = oneshot::channel();
-        let connection = start_connection(request, shared, stopped).await?;
+        let connection = start_connection(request, shared.clone(), stopped).await?;
         let session_id = open_session(&connection, request).await?;
+        shared
+            .token_capture
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .open(&request.working_directory, 0, &request.launch);
+        let usage_log = token_usage::log(&request.launch, &session_id.0, 0);
         Ok(Self {
             launch: request.launch.clone(),
             working_directory: request.working_directory.clone(),
             settings: request.settings.clone(),
             connection,
             session_id,
+            shared,
+            usage_log,
+            usage_since: 0,
             received,
             remaining: TITLES_PER_SESSION,
             _stop: stop,
@@ -136,9 +164,18 @@ impl TitleSession {
             && self.connection.termination().is_none()
     }
 
-    async fn prompt(&mut self, prompt: String) -> Result<String, ClientError> {
+    async fn prompt(
+        &mut self,
+        prompt: String,
+        ledger: Option<Ledger>,
+    ) -> Result<String, ClientError> {
         while self.received.try_recv().is_ok() {}
         let prompt = PromptRequest::new(self.session_id.clone(), vec![ContentBlock::from(prompt)]);
+        self.shared
+            .token_capture
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .prompt(&prompt.prompt);
         let (send, reply) = oneshot::channel();
         // The ordered callback runs after the message chunk notifications for this turn.
         self.connection
@@ -147,9 +184,23 @@ impl TitleSession {
                 let _ = send.send(result);
                 Ok(())
             })?;
-        reply
+        let response = reply
             .await
-            .map_err(|_| ClientError::TitleAgentDisconnected)??;
+            .map_err(|_| ClientError::TitleAgentDisconnected)?;
+        if let Some(ledger) = ledger {
+            token_usage::finish(
+                &ledger,
+                &self.shared.token_capture,
+                response
+                    .as_ref()
+                    .ok()
+                    .and_then(|response| response.usage.as_ref()),
+                &mut self.usage_log,
+                &mut self.usage_since,
+            )
+            .await;
+        }
+        response?;
         self.remaining -= 1;
         Ok(agent_reply(&mut self.received))
     }
