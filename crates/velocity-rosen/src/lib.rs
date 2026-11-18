@@ -10,7 +10,9 @@ pub mod agent_run;
 pub mod build_repairs;
 #[cfg(feature = "bundled")]
 mod bundled;
+pub mod change_details;
 pub mod checker;
+mod checkout;
 mod conflicts;
 pub mod connection;
 pub mod dispatch;
@@ -19,6 +21,7 @@ mod events;
 mod git_base;
 pub mod integration;
 mod issue;
+pub mod landing;
 pub mod machine_dispatch;
 pub mod machines;
 pub mod memory;

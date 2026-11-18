@@ -15,7 +15,7 @@ use std::time::{Duration, Instant};
 use rosen_client::protocol::CheckPriority;
 use rosen_client::run_queue::{self, RunClass, RunQueue, Turn};
 
-use crate::duty::{self, MergeCheckout};
+use crate::checkout::{self, MergeCheckout};
 use crate::policy::{CheckPolicy, policy_at};
 use crate::process::{background_command, hidden_command};
 use crate::workspace::session;
@@ -73,7 +73,7 @@ pub async fn stage_merge_result(
     change: &str,
     folder: &Path,
 ) -> Result<StagedMerge, RosenError> {
-    let staging = duty::claim_checkout(folder)?;
+    let staging = checkout::claim_checkout(folder)?;
     let checkout = session(server, CHECKER)
         .await?
         .check_out_merge_result(change, &staging)
@@ -93,7 +93,7 @@ pub async fn stage_merge_result(
 /// fails to build pass. Any file that can't be removed stops the check, and stays listed
 /// so the next check removes it.
 pub fn apply_staged(folder: &Path) -> Result<(), RosenError> {
-    let staging = duty::staging_folder(folder);
+    let staging = checkout::staging_folder(folder);
     let list = file_list(folder);
     let files = files_under(&staging)?;
     let listed = match listed_files(&list)? {
@@ -188,7 +188,7 @@ fn run_held_commands(
     priority: Priority,
     turn: Option<&Turn>,
 ) -> Result<Option<FailedCommand>, RosenError> {
-    let log = duty::sibling(folder, ".rosen-check.log");
+    let log = checkout::sibling(folder, ".rosen-check.log");
     let held = turn.map(|_| class_of(priority));
     for command in commands {
         // The check set holds one queue turn, but memory can drop between commands.
@@ -368,7 +368,7 @@ fn files_under(root: &Path) -> Result<Vec<PathBuf>, RosenError> {
 
 /// Beside the folder, like its marker: the files the last merge result put in it.
 fn file_list(folder: &Path) -> PathBuf {
-    duty::sibling(folder, ".rosen-files")
+    checkout::sibling(folder, ".rosen-files")
 }
 
 /// The files the list names, or `None` when there is no list.
@@ -393,7 +393,7 @@ fn write_list<'a>(
     files: impl IntoIterator<Item = &'a Path>,
 ) -> Result<(), RosenError> {
     let list = file_list(folder);
-    let next = duty::sibling(folder, ".rosen-files.next");
+    let next = checkout::sibling(folder, ".rosen-files.next");
     let lines: Vec<String> = files.into_iter().map(slashed).collect();
     std::fs::write(&next, lines.join("\n")).map_err(|source| io_error("write", &next, source))?;
     std::fs::rename(&next, &list).map_err(|source| io_error("write", &list, source))
@@ -432,7 +432,7 @@ mod tests {
     -> Result<(), Box<dyn Error>> {
         let scratch = std::env::temp_dir().join(format!("velocity-apply-{}", std::process::id()));
         let folder = scratch.join("pre-land-checks");
-        let staging = duty::staging_folder(&folder);
+        let staging = checkout::staging_folder(&folder);
         std::fs::create_dir_all(&folder)?;
         std::fs::create_dir_all(&staging)?;
         let main = "mod deleted_module; fn main() { deleted_module::works(); }\n";

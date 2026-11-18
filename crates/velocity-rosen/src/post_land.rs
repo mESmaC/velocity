@@ -16,7 +16,7 @@ use rosen_core::project_config::{RecheckMode, ReviewMode};
 
 pub use rosen_client::protocol::{CheckKind, CheckPriority};
 
-use crate::{ProjectServer, RosenError, duty, integration};
+use crate::{ProjectServer, RosenError, checkout, integration};
 
 /// The newest landed commit this check kind has not covered, and the commands to run on it.
 #[derive(Clone, Debug)]
@@ -195,7 +195,7 @@ pub async fn stage_commit(
     commit: &str,
     folder: &Path,
 ) -> Result<(), RosenError> {
-    let staging = duty::claim_checkout(folder)?;
+    let staging = checkout::claim_checkout(folder)?;
     let client = crate::connection::requests(server.endpoint()).await?;
     let request = LogRequest {
         at: Some(commit.to_owned()),

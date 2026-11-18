@@ -7,7 +7,7 @@ use rosen_client::protocol::{LogRequest, MarkReviewed};
 use rosen_client::{ChangeState, ChannelMembership};
 use rosen_core::ReviewedState;
 
-use crate::{ProjectServer, RosenError, duty, workspace};
+use crate::{ProjectServer, RosenError, change_details, landing, workspace};
 
 #[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 pub struct LandedChange {
@@ -273,7 +273,9 @@ pub async fn finish_workspace(
         return Ok(expected_head.is_none_or(|expected| record.head.to_string() == expected));
     }
     if record.state == ChangeState::Abandoned {
-        return Ok(duty::changed_paths(server, change).await?.is_empty());
+        return Ok(change_details::changed_paths(server, change)
+            .await?
+            .is_empty());
     }
     session.snapshot(root, None).await?;
     let record = session.client().change_show(change).await?.change;
@@ -282,11 +284,14 @@ pub async fn finish_workspace(
     }
     if record.state == ChangeState::Ready {
         return Ok(matches!(
-            duty::land(server, "velocity-checker", change).await?,
-            duty::LandOutcome::Landed { .. }
+            landing::land(server, "velocity-checker", change).await?,
+            landing::LandOutcome::Landed { .. }
         ));
     }
-    if duty::changed_paths(server, change).await?.is_empty() {
+    if change_details::changed_paths(server, change)
+        .await?
+        .is_empty()
+    {
         session.abandon(change).await?;
         return Ok(true);
     }

@@ -11,7 +11,7 @@ use velocity_acp::client::{QUEUED_RUN_PORT_ENV, QUEUED_RUN_TOKEN_ENV, request_qu
 use velocity_github::mcp_stdio::{ReviewDiffRequest, ToolServer, review_diff_tool};
 use velocity_github::{IssueClient, ScoutServer, read_scout_reports};
 use velocity_rosen::ProjectServer;
-use velocity_rosen::duty::{self, ReviewTrees};
+use velocity_rosen::change_details::{self, ReviewTrees};
 use velocity_rosen::review_swarm::{self, LandedChange};
 use velocity_store::duty::ScoutRoster;
 
@@ -144,11 +144,11 @@ impl ReviewSwarmServer {
             );
         };
         self.runtime.block_on(async {
-            let overview = duty::change_overview(&server, &target.change).await
+            let overview = change_details::change_overview(&server, &target.change).await
                 .map_err(|error| error.to_string())?;
             let diff = review_swarm::landed_diff_record(&server, target).await
                 .map_err(|error| error.to_string())?;
-            let files = duty::diff_stat(&diff);
+            let files = change_details::diff_stat(&diff);
             self.review_trees = Some(ReviewTrees::from_diff(&diff));
             let endpoint = server.endpoint().clone();
             let cache = self.launch.app_data.join("graph").join(self.launch.project.to_string());
@@ -379,10 +379,7 @@ impl ReviewSwarmServer {
         let server = ProjectServer::new(&self.launch.app_data, self.launch.project);
         let mut paths = self
             .runtime
-            .block_on(velocity_rosen::duty::changed_paths(
-                &server,
-                &self.launch.change,
-            ))
+            .block_on(change_details::changed_paths(&server, &self.launch.change))
             .map_err(|error| error.to_string())?;
         if let Some(target) = &self.launch.target {
             paths.extend(
