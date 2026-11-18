@@ -124,6 +124,12 @@ fn observe(
                     .full_name()
                     .eq_ignore_ascii_case(&repository.full_name())
             });
+        if observation.target_is_checkout && !resolved.explicit_destination {
+            return Err(NewProjectError::Refused(format!(
+                "{} already contains this checkout. Enter its parent in the Clone to field.",
+                resolved.path.display()
+            )));
+        }
         if !observation.target_is_checkout {
             observation.target_occupied = velocity_git::folder_is_occupied(&resolved.path)?;
             if !observation.target_occupied {

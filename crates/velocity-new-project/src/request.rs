@@ -1,6 +1,6 @@
 //! What the dialog sends and receives over IPC (SPEC.md §3.1).
 
-use std::path::{MAIN_SEPARATOR, Path};
+use std::path::{MAIN_SEPARATOR, Path, PathBuf};
 use velocity_store::{EffortLevel, ProviderKind, Settings, SpeedMode};
 
 #[derive(Clone, Debug, serde::Deserialize, specta::Type)]
@@ -80,10 +80,14 @@ pub struct CreatedProject {
     pub repository_path: String,
 }
 
-/// The dialog opens on the home folder, with the interview settings from
-/// Settings · Providers.
+/// The default parent for new projects and GitHub clones.
+pub fn projects_directory(home: &Path) -> PathBuf {
+    home.join("Projects")
+}
+
+/// Suggests the projects directory and loads the interview settings from Settings · Providers.
 pub fn new_project_defaults(home: &Path, settings: Settings) -> NewProjectDefaults {
-    let folder = format!("{}{MAIN_SEPARATOR}", home.display());
+    let folder = format!("{}{MAIN_SEPARATOR}", projects_directory(home).display());
     // A signed-out default gives way to the first signed-in provider and its model (F15).
     let provider = settings.new_work_choice();
     let model_name = if provider == settings.providers.default_provider {

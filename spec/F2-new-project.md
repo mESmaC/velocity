@@ -12,6 +12,7 @@ New projects still start with a single `SPEC.md`.
 
 `Ctrl+Shift+N` opens the New project dialog.
 - **Location:** choose an absolute folder path or use Browse… to open the native folder picker.
+  The dialog suggests a dedicated `Projects` folder under your home folder and requires a typed or browsed project path before Create can use it.
 - **Mirror:** choose an existing Collapse repository, an existing GitHub repository, or None.
   Collapse account connection and automatic mirror provisioning are tracked in #427.
 - **Model for the interview:** choose a model, effort and speed.
@@ -26,12 +27,15 @@ New projects still start with a single `SPEC.md`.
 - **Open folder…** opens the selected Rosen project or imports the default branch of an existing Git checkout into a local Rosen server.
 - **Open from GitHub…** lists the repositories you and your organisations own through signed-in `gh`, most recently updated first.
   Search filters the list by name and description, and typing an unlisted `owner/name` adds an exact choice.
-  The clone destination is `<clone to>/<name>` and defaults to your home folder.
+  The clone destination is `<clone to>/<name>` and defaults to the dedicated `Projects` folder under your home folder.
+  To reuse a matching checkout, enter its parent folder in **Clone to** or choose the checkout with **Open folder…**.
   Velocity imports a new or matching existing checkout into Rosen and uses GitHub as its mirror.
 - A spec already on the Rosen base opens locked, including split specs under `spec/`.
   A project without a spec starts the interview in a Rosen workspace with Settings' default model, effort and speed.
   The interview waits for a provider sign-in when needed.
 - Opening refuses a registered project, an unsupported local folder, an inaccessible GitHub repository or a clone destination occupied by unrelated files.
+- Create and Open refuse home, drive and network-share roots and folders inside system directories, including AppData, Program Files and Windows.
+  The refusal names the requested folder and comes before repository setup or template writes.
 
 **Accept when:**
 - [ ] Every successful Create and Open starts or reconnects to a Rosen server with a base before registering the project.

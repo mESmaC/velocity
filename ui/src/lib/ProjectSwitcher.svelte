@@ -35,6 +35,7 @@
   let showing = $state<'projects' | 'github'>('projects');
   let query = $state('');
   let cloneTo = $state('');
+  let defaultCloneTo = $state('');
   let picker = $state<RepositoryPickerView | null>(null);
   let reading = $state(false);
   let opening = $state('');
@@ -133,11 +134,11 @@
     error = '';
     await tick();
     search?.focus();
-    if (!cloneTo) {
+    if (!defaultCloneTo) {
       void newProjectCommands
         .defaults()
         .then((defaults) => {
-          if (active && !cloneTo) cloneTo = defaults.clone_to;
+          if (active) defaultCloneTo = defaults.clone_to;
         })
         .catch(report);
     }
@@ -288,6 +289,7 @@
       <span>Clone to</span><label class="inp"
         ><input
           bind:value={cloneTo}
+          placeholder={defaultCloneTo}
           spellcheck="false"
           aria-label="Clone to folder"
         /></label

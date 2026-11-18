@@ -1,3 +1,6 @@
+use std::io;
+use std::path::PathBuf;
+
 use thiserror::Error;
 use velocity_git::GitError;
 use velocity_github::GitHubError;
@@ -11,8 +14,12 @@ pub enum NewProjectError {
     NoFolder,
     #[error("Use a full path, starting with a drive letter: {0}")]
     RelativePath(String),
-    #[error("Choose a folder, not a drive: {0}")]
+    #[error("Cannot use a drive or share root as a project folder: {0}")]
     DriveRoot(String),
+    #[error("Cannot use {path} as a project folder because {reason}. Choose another folder.", path = .path.display())]
+    ProtectedFolder { path: PathBuf, reason: &'static str },
+    #[error("Could not check the project folder {path}: {source}", path = .path.display())]
+    InspectFolder { path: PathBuf, source: io::Error },
     /// A refusal from the plan. Nothing has been created.
     #[error("{0}")]
     Refused(String),

@@ -9,7 +9,8 @@ use tauri_plugin_dialog::DialogExt;
 use tauri_specta::Event;
 use velocity_new_project::{
     CreatedProject, NewProjectDefaults, NewProjectRequest, OpenProjectRequest, Publication,
-    RepositoryPicker, RepositoryPickerView, new_project_defaults,
+    RepositoryPicker, RepositoryPickerView, new_project_defaults, projects_directory,
+    validate_project_root,
 };
 
 use crate::layout::{LayoutStateChanged, MainLayout};
@@ -41,7 +42,20 @@ pub async fn get_new_project_defaults(
 #[specta::specta]
 pub async fn pick_project_folder(application: AppHandle) -> Result<Option<String>, String> {
     let picked = tauri::async_runtime::spawn_blocking(move || {
-        application.dialog().file().blocking_pick_folder()
+        let paths = application.path();
+        let home = paths.home_dir().ok();
+        let initial = home
+            .as_deref()
+            .map(projects_directory)
+            .into_iter()
+            .chain(paths.document_dir().ok())
+            .find(|path| path.is_dir() && validate_project_root(path).is_ok())
+            .or_else(|| home.as_deref()?.ancestors().last().map(ToOwned::to_owned));
+        let mut dialog = application.dialog().file();
+        if let Some(initial) = initial {
+            dialog = dialog.set_directory(initial);
+        }
+        dialog.blocking_pick_folder()
     })
     .await
     .map_err(|error| format!("The folder picker stopped: {error}"))?;
