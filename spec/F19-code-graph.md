@@ -146,9 +146,13 @@ The graph exists to save time and tokens without costing accuracy, so Velocity m
   Raw reads and searches require source evidence in the ACP event, such as a file path or source glob, and token totals depend on the usage the provider reports.
 - **Totals.**
   Every turn of every agent, in every role, adds its tokens and its working time to the project's totals for the side it ran on: the graph on or off.
-  Tokens are what the agent reports when the turn ends (ACP's turn usage, which agents report as running session totals, so each turn adds the difference).
+  Claude and Codex report usage for the current prompt, so each turn adds the full reported counts.
+  Providers that follow ACP's running session totals add the difference since the previous report.
+  The meter saves reported thought tokens and uses the adapter's reported total for the comparison.
   A turn whose agent reports none still counts its time.
   Writes are serialized, so agents finishing together never lose a turn.
+  Failed turn writes are logged and retried twice.
+  Old graph usage totals from before the accounting fix are cleared on upgrade, and each project's graph switch is retained.
 - **The comparison** (usage modal, Code graph): for each side, its turns, tokens per turn, time per turn, total tokens and total time.
   Once each side has at least 10 turns, the modal shows the percentage change from graph off to graph on beside each per-turn average, with a sentence explaining the change.
   Before that it says how many turns each side still needs.

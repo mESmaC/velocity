@@ -16,6 +16,7 @@ use tokio_util::compat::{TokioAsyncReadCompatExt, TokioAsyncWriteCompatExt};
 
 use super::provider_usage_log::ProviderLog;
 use super::token_usage::{self, Ledger};
+use super::turn_usage::PromptUsage;
 use super::{
     AgentEvent, AgentLaunch, ClientError, Shared, config, forward_log, handlers, process, session,
 };
@@ -120,6 +121,7 @@ struct TitleSession {
     session_id: SessionId,
     shared: Arc<Shared>,
     usage_log: Option<ProviderLog>,
+    prompt_usage: PromptUsage,
     usage_since: i64,
     received: UnboundedReceiver<AgentEvent>,
     remaining: usize,
@@ -138,7 +140,7 @@ impl TitleSession {
             .token_capture
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .open(&request.working_directory, 0, &request.launch);
+            .open(&request.working_directory, 0);
         let usage_log = token_usage::log(&request.launch, &session_id.0, 0);
         Ok(Self {
             launch: request.launch.clone(),
@@ -148,6 +150,7 @@ impl TitleSession {
             session_id,
             shared,
             usage_log,
+            prompt_usage: PromptUsage::for_launch(&request.launch),
             usage_since: 0,
             received,
             remaining: TITLES_PER_SESSION,
@@ -187,14 +190,17 @@ impl TitleSession {
         let response = reply
             .await
             .map_err(|_| ClientError::TitleAgentDisconnected)?;
+        let usage = self.prompt_usage.turn(
+            response
+                .as_ref()
+                .ok()
+                .and_then(|response| response.usage.as_ref()),
+        );
         if let Some(ledger) = ledger {
             token_usage::finish(
                 &ledger,
                 &self.shared.token_capture,
-                response
-                    .as_ref()
-                    .ok()
-                    .and_then(|response| response.usage.as_ref()),
+                usage,
                 &mut self.usage_log,
                 &mut self.usage_since,
             )

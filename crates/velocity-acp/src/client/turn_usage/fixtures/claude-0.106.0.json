@@ -1,0 +1,54 @@
+{
+  "responses": [
+    {
+      "stopReason": "end_turn",
+      "usage": {
+        "inputTokens": 2,
+        "outputTokens": 4,
+        "cachedReadTokens": 16439,
+        "cachedWriteTokens": 9516,
+        "totalTokens": 25961
+      }
+    },
+    {
+      "stopReason": "end_turn",
+      "usage": {
+        "inputTokens": 2,
+        "outputTokens": 80,
+        "cachedReadTokens": 18870,
+        "cachedWriteTokens": 11068,
+        "totalTokens": 30020
+      }
+    },
+    {
+      "stopReason": "end_turn",
+      "usage": {
+        "inputTokens": 4,
+        "outputTokens": 30,
+        "cachedReadTokens": 29938,
+        "cachedWriteTokens": 108,
+        "totalTokens": 30080
+      }
+    }
+  ],
+  "log": [
+    {
+      "input_tokens": 2,
+      "output_tokens": 4,
+      "cache_read_input_tokens": 16439,
+      "cache_creation_input_tokens": 9516
+    },
+    {
+      "input_tokens": 2,
+      "output_tokens": 80,
+      "cache_read_input_tokens": 18870,
+      "cache_creation_input_tokens": 11068
+    },
+    {
+      "input_tokens": 4,
+      "output_tokens": 30,
+      "cache_read_input_tokens": 29938,
+      "cache_creation_input_tokens": 108
+    }
+  ]
+}

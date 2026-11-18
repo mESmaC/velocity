@@ -11,7 +11,6 @@ use super::airc::airc_project;
 use super::provider_usage_log::ProviderLog;
 use super::token_usage_context::{AcpContext, message_source};
 use super::{AgentLaunch, SessionSetup, Shared, turn_usage};
-use crate::Provider;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(super) struct Ledger {
@@ -49,18 +48,11 @@ pub(super) struct Capture {
     context: AcpContext,
     calls: Vec<Call>,
     seen: HashSet<String>,
-    cumulative_response: bool,
-    last_response: Option<TokenCounts>,
 }
 
 impl Capture {
-    pub(super) fn open(&mut self, worktree: &Path, instructions: usize, launch: &AgentLaunch) {
+    pub(super) fn open(&mut self, worktree: &Path, instructions: usize) {
         self.active = true;
-        // These adapters report the current prompt; the ACP schema's default is session totals.
-        self.cumulative_response = !matches!(
-            launch.own_config.or(launch.concurrency_provider),
-            Some(Provider::Codex | Provider::Anthropic)
-        );
         let instructions = if instructions == 0 {
             ["AGENTS.md", "CLAUDE.md"]
                 .iter()
@@ -109,18 +101,10 @@ impl Capture {
         self.context.observe(update);
     }
 
-    pub(super) fn finish(&mut self, usage: Option<&Usage>) -> (Vec<Call>, Option<Call>) {
-        let total = usage.map(turn_usage::counts).map(|running| {
-            if self.cumulative_response {
-                let previous = self.last_response.replace(running).unwrap_or_default();
-                running.since(previous)
-            } else {
-                running
-            }
-        });
+    fn finish(&mut self, usage: Option<TokenCounts>) -> (Vec<Call>, Option<Call>) {
         (
             std::mem::take(&mut self.calls),
-            total.map(|counts| self.call(counts)),
+            usage.map(|counts| self.call(counts)),
         )
     }
 
@@ -163,7 +147,7 @@ impl SessionMeter {
             .token_capture
             .lock()
             .unwrap_or_else(PoisonError::into_inner)
-            .open(&setup.worktree, instructions, launch);
+            .open(&setup.worktree, instructions);
         Some(Self {
             ledger,
             shared: shared.clone(),
@@ -172,7 +156,7 @@ impl SessionMeter {
         })
     }
 
-    pub(super) async fn finish(&mut self, response: Option<&Usage>) {
+    pub(super) async fn finish(&mut self, response: Option<TokenCounts>) {
         finish(
             &self.ledger,
             &self.shared.token_capture,
@@ -208,7 +192,7 @@ impl Drop for SessionMeter {
 pub(super) async fn finish(
     ledger: &Ledger,
     capture: &Mutex<Capture>,
-    response: Option<&Usage>,
+    response: Option<TokenCounts>,
     log: &mut Option<ProviderLog>,
     since: &mut i64,
 ) {

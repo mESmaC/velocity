@@ -14,6 +14,8 @@ use crate::Error;
 /// decides it.
 pub const MINIMUM_TURNS: u64 = 10;
 
+const USAGE_VERSION: u32 = 1;
+
 /// What one turn cost, as the agent reported it.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct TurnUsage {
@@ -33,6 +35,8 @@ pub struct SourceReads {
 pub struct TokenCounts {
     pub input: u64,
     pub output: u64,
+    #[serde(default)]
+    pub thought_tokens: u64,
     pub cached_read: u64,
     pub cached_write: u64,
     pub total: u64,
@@ -48,6 +52,7 @@ impl TokenCounts {
         TokenCounts {
             input: self.input.saturating_sub(before.input),
             output: self.output.saturating_sub(before.output),
+            thought_tokens: self.thought_tokens.saturating_sub(before.thought_tokens),
             cached_read: self.cached_read.saturating_sub(before.cached_read),
             cached_write: self.cached_write.saturating_sub(before.cached_write),
             total: self.total - before.total,
@@ -73,6 +78,7 @@ impl Totals {
             self.turns_with_tokens += 1;
             self.tokens.input += tokens.input;
             self.tokens.output += tokens.output;
+            self.tokens.thought_tokens += tokens.thought_tokens;
             self.tokens.cached_read += tokens.cached_read;
             self.tokens.cached_write += tokens.cached_write;
             self.tokens.total += tokens.total;
@@ -92,6 +98,8 @@ impl Totals {
 /// A project's saved switch and totals.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct ProjectUsage {
+    #[serde(default)]
+    version: u32,
     #[serde(default = "enabled_by_default")]
     pub enabled: bool,
     #[serde(default)]
@@ -114,6 +122,7 @@ fn enabled_by_default() -> bool {
 impl Default for ProjectUsage {
     fn default() -> Self {
         Self {
+            version: USAGE_VERSION,
             enabled: true,
             on: Totals::default(),
             off: Totals::default(),
@@ -131,14 +140,26 @@ pub(crate) fn folder(app_data: &Path, project: &str) -> PathBuf {
 /// The project's saved switch and totals; a missing or unreadable file is the defaults (the
 /// graph on, nothing counted).
 pub fn read(app_data: &Path, project: &str) -> ProjectUsage {
-    read_folder(&folder(app_data, project))
+    read_folder(&folder(app_data, project)).unwrap_or_default()
 }
 
-fn read_folder(folder: &Path) -> ProjectUsage {
-    std::fs::read(folder.join("usage.json"))
-        .ok()
-        .and_then(|bytes| serde_json::from_slice(&bytes).ok())
-        .unwrap_or_default()
+fn read_folder(folder: &Path) -> Result<ProjectUsage, Error> {
+    let bytes = match std::fs::read(folder.join("usage.json")) {
+        Ok(bytes) => bytes,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            return Ok(ProjectUsage::default());
+        }
+        Err(error) => return Err(error.into()),
+    };
+    let usage: ProjectUsage = serde_json::from_slice(&bytes)?;
+    // The old turn totals cannot be recovered. Keep the independent project switch.
+    if usage.version < USAGE_VERSION {
+        return Ok(ProjectUsage {
+            enabled: usage.enabled,
+            ..ProjectUsage::default()
+        });
+    }
+    Ok(usage)
 }
 
 /// Whether sessions in `project` get the graph (the switch; on by default).
@@ -228,7 +249,7 @@ fn update_folder(
 ) -> Result<ProjectUsage, Error> {
     std::fs::create_dir_all(folder)?;
     let lock = lock(folder)?;
-    let mut usage = read_folder(folder);
+    let mut usage = read_folder(folder)?;
     change(&mut usage);
     let temporary = folder.join("usage.json.tmp");
     std::fs::write(&temporary, serde_json::to_vec_pretty(&usage)?)?;

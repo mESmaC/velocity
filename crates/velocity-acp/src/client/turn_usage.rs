@@ -7,29 +7,55 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
 
-use agent_client_protocol::v1::schema::{
-    SessionUpdate, StopReason, ToolCallLocation, ToolKind, Usage,
-};
+use agent_client_protocol::v1::schema::{SessionUpdate, ToolCallLocation, ToolKind, Usage};
 use velocity_graph::usage::{SourceReads, TokenCounts, TurnUsage, record_turn};
 
+use super::AgentLaunch;
 use super::airc::airc_project;
 use super::session::SessionSetup;
+use crate::Provider;
 
-/// How a `session/prompt` ended, with what it reported and how long it took.
-pub(super) struct TurnReport {
-    pub outcome: Result<StopReason, String>,
-    /// The agent's running totals for the session (ACP reports them cumulatively).
-    pub usage: Option<TokenCounts>,
-    pub elapsed: Duration,
-}
+#[cfg(test)]
+mod tests;
 
 pub(super) fn counts(usage: &Usage) -> TokenCounts {
     TokenCounts {
         input: usage.input_tokens,
         output: usage.output_tokens,
+        thought_tokens: usage.thought_tokens.unwrap_or_default(),
         cached_read: usage.cached_read_tokens.unwrap_or_default(),
         cached_write: usage.cached_write_tokens.unwrap_or_default(),
         total: usage.total_tokens,
+    }
+}
+
+/// The scope of prompt response usage depends on the provider.
+pub(super) enum PromptUsage {
+    PerTurn,
+    SessionTotal(Option<TokenCounts>),
+}
+
+impl PromptUsage {
+    pub(super) fn for_launch(launch: &AgentLaunch) -> Self {
+        Self::for_provider(launch.own_config.or(launch.concurrency_provider))
+    }
+
+    fn for_provider(provider: Option<Provider>) -> Self {
+        match provider {
+            Some(Provider::Anthropic | Provider::Codex) => Self::PerTurn,
+            // Providers without a known override follow the ACP v1 session-total contract.
+            Some(Provider::Antigravity | Provider::KimiCode | Provider::Custom(_)) | None => {
+                Self::SessionTotal(None)
+            }
+        }
+    }
+
+    pub(super) fn turn(&mut self, usage: Option<&Usage>) -> Option<TokenCounts> {
+        let reported = counts(usage?);
+        Some(match self {
+            Self::PerTurn => reported,
+            Self::SessionTotal(last) => reported.since(last.replace(reported).unwrap_or_default()),
+        })
     }
 }
 
@@ -40,8 +66,6 @@ pub(super) struct UsageMeter {
     graph_on: bool,
     worktree: PathBuf,
     thread: Option<String>,
-    /// The agent's running totals after the previous turn.
-    last: Option<TokenCounts>,
 }
 
 impl UsageMeter {
@@ -55,29 +79,43 @@ impl UsageMeter {
             graph_on,
             worktree: setup.worktree.clone(),
             thread: super::airc::usage_thread(airc).map(str::to_owned),
-            last: None,
         })
     }
 
     /// Adds a finished turn. A turn whose agent reported no tokens still counts its time.
-    pub fn record(&mut self, report: &TurnReport, reads: SourceReads) {
-        let tokens = report.usage.map(|running| {
-            let turn = running.since(self.last.unwrap_or_default());
-            self.last = Some(running);
-            turn
-        });
+    pub async fn record(
+        &self,
+        tokens: Option<TokenCounts>,
+        elapsed: Duration,
+        reads: SourceReads,
+        mut log: impl FnMut(String),
+    ) {
         let turn = TurnUsage {
             tokens,
-            working_milliseconds: report.elapsed.as_millis() as u64,
+            working_milliseconds: elapsed.as_millis() as u64,
         };
-        // Measurement never gets in the way of the agent: a failed write loses one turn.
-        let _ = record_turn(
-            &self.app_data,
-            &self.project,
-            self.graph_on,
-            turn,
-            Some((&self.worktree, self.thread.as_deref(), reads)),
-        );
+        for delay in [Some(50), Some(200), None] {
+            let result = record_turn(
+                &self.app_data,
+                &self.project,
+                self.graph_on,
+                turn,
+                Some((&self.worktree, self.thread.as_deref(), reads)),
+            );
+            let Err(error) = result else { return };
+            let action = if delay.is_some() {
+                "retrying"
+            } else {
+                "turn usage was not saved after retries"
+            };
+            log(format!(
+                "Could not save code graph usage for project {}: {error} ({action})",
+                self.project
+            ));
+            if let Some(milliseconds) = delay {
+                tokio::time::sleep(Duration::from_millis(milliseconds)).await;
+            }
+        }
     }
 }
 

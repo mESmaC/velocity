@@ -449,7 +449,11 @@ async fn drive(
     turn.drive_turns(
         inputs,
         turn_ended,
-        TurnAccounting { meter, tokens },
+        TurnAccounting {
+            meter,
+            tokens,
+            prompt_usage: turn_usage::PromptUsage::for_launch(&launch),
+        },
         started.options,
         setup.pause_on_subscription_limit,
         runs,
@@ -480,27 +484,34 @@ async fn session_preface(setup: &SessionSetup, loaded: bool, graph_on: bool) -> 
 }
 
 struct PromptResult {
-    report: turn_usage::TurnReport,
+    outcome: Result<StopReason, String>,
     usage: Option<agent_client_protocol::v1::schema::Usage>,
+    elapsed: std::time::Duration,
 }
 
 struct TurnAccounting {
     meter: Option<turn_usage::UsageMeter>,
     tokens: Option<token_usage::SessionMeter>,
+    prompt_usage: turn_usage::PromptUsage,
 }
 
 impl TurnAccounting {
     async fn record(&mut self, result: &PromptResult, shared: &Shared) {
+        let usage = self.prompt_usage.turn(result.usage.as_ref());
         if let Some(tokens) = &mut self.tokens {
-            tokens.finish(result.usage.as_ref()).await;
+            tokens.finish(usage).await;
         }
-        if let Some(meter) = &mut self.meter {
+        if let Some(meter) = &self.meter {
             let reads = shared
                 .code_reads
                 .lock()
                 .unwrap_or_else(PoisonError::into_inner)
                 .take_count();
-            meter.record(&result.report, reads);
+            meter
+                .record(usage, result.elapsed, reads, |line| {
+                    shared.emit(AgentEvent::Log(line))
+                })
+                .await;
         }
     }
 }
@@ -595,7 +606,7 @@ impl Turn<'_> {
                 },
                 Some(result) = turn_ended.recv() => {
                     accounting.record(&result, self.shared).await;
-                    let outcome = result.report.outcome;
+                    let outcome = result.outcome;
                     let paused = pause_on_subscription_limit
                         && outcome.as_ref().is_err_and(|error| subscription_limit_error(error));
                     if !paused && (runs.outstanding() || !runs.ready.is_empty()) {
@@ -722,12 +733,9 @@ impl Turn<'_> {
                     .map_err(|error| live_limits::turn_error(&error));
                 // The loop ended: the session is stopping and no one waits for the turn.
                 let _ = turn_sender.send(PromptResult {
-                    report: turn_usage::TurnReport {
-                        outcome,
-                        usage: usage.as_ref().map(turn_usage::counts),
-                        elapsed: started.elapsed(),
-                    },
+                    outcome,
                     usage,
+                    elapsed: started.elapsed(),
                 });
                 Ok(())
             })
