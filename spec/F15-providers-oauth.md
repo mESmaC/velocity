@@ -134,6 +134,11 @@ Rust draws its rows; the limits update while it is open whenever a limit changes
   When only an ACP end-of-turn breakdown is available, it records the reported turn total.
   Session log and ACP records for the same usage are counted once.
   Attribution estimates use the input content visible to Velocity, and the saved ledger holds counts and identifiers only.
+- **Context hand-off trial** (#467) compares lifetime input plus output, review rounds and reverts for work items that cross the threshold with the switch on or off.
+  It pairs reviewed, build-verified lands by project, work source, provider, model, effort and speed in threshold order.
+  The enabled cohort includes note-generation costs and shows how many matched items continued in a fresh session.
+  The trial needs at least ten items that continued in a fresh session and ten matched controls.
+  Keep the experiment only if the enabled cohort uses at least 30% fewer tokens with no increase in review rounds or reverts.
 - **Usage limits** shows the subscription windows.
 - **A section per signed-in account,** in provider card order, with the provider icon and the account’s name and plan.
 - **A row per subscription window,** shortest first: the window (`5-hour`, `Weekly`) and "resets in 1d 10h" on one line, then a bar of the share left in the provider's colour and "61% left".

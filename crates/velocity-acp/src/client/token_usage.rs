@@ -4,7 +4,7 @@ use std::sync::{Arc, Mutex, PoisonError};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use agent_client_protocol::v1::schema::{ContentBlock, SessionUpdate, Usage};
-use velocity_graph::token_usage::{Call, Counts, Input, Role, Subject, record};
+use velocity_graph::token_usage::{Call, Counts, Input, Role, Subject, record_for_change};
 use velocity_graph::usage::TokenCounts;
 
 use super::airc::airc_project;
@@ -43,6 +43,7 @@ impl Ledger {
 #[derive(Default)]
 pub(super) struct Capture {
     active: bool,
+    occupancy: Option<u64>,
     context: AcpContext,
     calls: Vec<Call>,
     seen: HashSet<String>,
@@ -80,6 +81,9 @@ impl Capture {
     pub(super) fn observe(&mut self, update: &SessionUpdate) {
         if !self.active {
             return;
+        }
+        if let SessionUpdate::UsageUpdate(update) = update {
+            self.occupancy = Some(update.used);
         }
         if let SessionUpdate::UsageUpdate(update) = update
             && let Some(metadata) = &update.meta
@@ -129,6 +133,7 @@ pub(super) struct SessionMeter {
     shared: Arc<Shared>,
     log: Option<ProviderLog>,
     since: i64,
+    change: Option<String>,
 }
 
 impl SessionMeter {
@@ -151,18 +156,23 @@ impl SessionMeter {
             shared: shared.clone(),
             log: log(launch, session, instructions),
             since,
+            change: setup
+                .handoff
+                .as_ref()
+                .map(|experiment| experiment.change.clone()),
         })
     }
 
-    pub(super) async fn finish(&mut self, response: Option<TokenCounts>) {
-        finish(
+    pub(super) async fn finish(&mut self, response: Option<TokenCounts>) -> Option<u64> {
+        finish_for_change(
             &self.ledger,
+            self.change.clone(),
             &self.shared.token_capture,
             response,
             &mut self.log,
             &mut self.since,
         )
-        .await;
+        .await
     }
 }
 
@@ -180,9 +190,13 @@ impl Drop for SessionMeter {
         }
         let ledger = self.ledger.clone();
         let since = self.since;
+        let change = self.change.clone();
         tokio::task::spawn_blocking(move || {
             let log_calls = log.as_mut().map(|log| log.read(since)).unwrap_or_default();
-            ledger.save(if calls.is_empty() { log_calls } else { calls });
+            ledger.save(
+                change.as_deref(),
+                if calls.is_empty() { log_calls } else { calls },
+            );
         });
     }
 }
@@ -194,10 +208,22 @@ pub(super) async fn finish(
     log: &mut Option<ProviderLog>,
     since: &mut i64,
 ) {
-    let (calls, aggregate) = capture
-        .lock()
-        .unwrap_or_else(PoisonError::into_inner)
-        .finish(response);
+    finish_for_change(ledger, None, capture, response, log, since).await;
+}
+
+async fn finish_for_change(
+    ledger: &Ledger,
+    change: Option<String>,
+    capture: &Mutex<Capture>,
+    response: Option<TokenCounts>,
+    log: &mut Option<ProviderLog>,
+    since: &mut i64,
+) -> Option<u64> {
+    let (calls, aggregate, occupancy) = {
+        let mut capture = capture.lock().unwrap_or_else(PoisonError::into_inner);
+        let (calls, aggregate) = capture.finish(response);
+        (calls, aggregate, capture.occupancy.take())
+    };
     let ledger = ledger.clone();
     let mut reader = log.take();
     let lower_boundary = *since;
@@ -207,6 +233,11 @@ pub(super) async fn finish(
             .as_mut()
             .map(|log| log.read(lower_boundary))
             .unwrap_or_default();
+        // A turn aggregate measures spending, not the size of any context window.
+        let occupancy = occupancy.or_else(|| {
+            let call = log_calls.last().or_else(|| calls.last())?;
+            Some(call.counts.input.saturating_add(call.counts.output))
+        });
         let (calls, may_overlap) = if !calls.is_empty() {
             (calls, true)
         } else if !log_calls.is_empty() {
@@ -219,24 +250,27 @@ pub(super) async fn finish(
             let may_overlap = !calls.is_empty();
             (calls, may_overlap)
         };
-        ledger.save(calls);
-        (reader, may_overlap)
+        ledger.save(change.as_deref(), calls);
+        (reader, may_overlap, occupancy)
     })
     .await;
-    if let Ok((reader, may_overlap)) = result {
+    if let Ok((reader, may_overlap, occupancy)) = result {
         *log = reader;
         // A provider log can flush after the ACP result. Do not import the same
         // turn again after using explicit ACP counts for it.
         if may_overlap {
             *since = turn_end;
         }
+        return occupancy;
     }
+    None
 }
 
 impl Ledger {
-    fn save(&self, calls: Vec<Call>) {
+    fn save(&self, change: Option<&str>, calls: Vec<Call>) {
         if !calls.is_empty()
-            && let Err(error) = record(&self.data, self.project, self.subject, calls)
+            && let Err(error) =
+                record_for_change(&self.data, self.project, self.subject, change, calls)
         {
             eprintln!("Could not save token usage: {error}");
         }

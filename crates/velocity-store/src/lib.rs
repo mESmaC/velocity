@@ -51,6 +51,7 @@ pub mod goal_rosen;
 pub mod goal_swarm_dialog;
 pub mod goal_swarm_view;
 pub mod goal_swarms;
+pub mod handoff;
 mod project_layout;
 pub mod projects;
 pub mod provider_accounts;
@@ -533,6 +534,8 @@ pub struct AgentSettings {
     #[serde(default = "default_tool_timeout")]
     pub tool_timeout_minutes: u32,
     pub claim_release_grace_minutes: u32,
+    #[serde(default)]
+    pub context_handoff: bool,
     /// Automatic uses High for full reviews and Medium for trivial reading reviews.
     #[serde(default)]
     pub review_effort: Option<EffortLevel>,
@@ -643,6 +646,7 @@ impl Settings {
                 stall_timeout_minutes: core_settings.agents.stall_timeout_minutes,
                 tool_timeout_minutes: core_settings.agents.tool_timeout_minutes,
                 claim_release_grace_minutes: core_settings.agents.claim_release_grace_minutes,
+                context_handoff: false,
                 review_effort: None,
                 sweep_effort: default_sweep_effort(),
                 shared_mcp_servers: Vec::new(),
@@ -789,6 +793,9 @@ pub struct ThreadItem {
     /// The agent's ACP session id, which a parked thread loads again on resume (§2.2).
     #[serde(default)]
     pub agent_session: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[specta(skip)]
+    pub context_handoff: Option<handoff::Note>,
     #[serde(default)]
     pub provider_queued: bool,
     /// Conversation retained across process restarts (§3.2).
@@ -843,6 +850,7 @@ impl ThreadItem {
             airc_cursor: 0,
             dependency_wait: None,
             agent_session: None,
+            context_handoff: None,
             provider_queued: false,
             transcript: Default::default(),
             startup_recovery_pending: false,
@@ -890,6 +898,7 @@ impl ThreadItem {
             airc_cursor: 0,
             dependency_wait: None,
             agent_session: None,
+            context_handoff: None,
             provider_queued: false,
             transcript: Default::default(),
             startup_recovery_pending: false,
@@ -982,6 +991,9 @@ pub struct ProjectItem {
     #[serde(default)]
     #[specta(skip)]
     pub build_repairs: Vec<build_repairs::BuildRepair>,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    #[specta(skip)]
+    pub handoff_items: BTreeMap<String, handoff::Item>,
     pub id: u32,
     pub name: String,
     pub location_kind: ProjectLocationKind,
@@ -1080,6 +1092,7 @@ impl ProjectItem {
     pub fn new(identifier: u32, name: String, repository_path: String) -> Self {
         Self {
             build_repairs: Vec::new(),
+            handoff_items: BTreeMap::new(),
             id: identifier,
             name,
             repository_path,

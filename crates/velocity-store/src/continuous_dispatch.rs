@@ -78,6 +78,7 @@ pub fn can_finish_empty_dispatch(thread: &crate::ThreadItem) -> bool {
         && thread.state == ThreadState::Working
         && thread.activity == crate::AgentActivity::Idle
         && !thread.startup_recovery_pending
+        && !crate::handoff::note_for(thread).is_some_and(|note| note.pending)
         && !thread.transcript.iter().any(|block| {
             matches!(
                 block,

@@ -89,3 +89,51 @@
     />
   {/if}
 </section>
+
+{#if report?.handoff}
+  {@const comparison = report.handoff}
+  <section aria-label="Context hand-off trial">
+    <div class="usage-title">Context hand-off trial</div>
+    <p class="usage-note">
+      Lifetime totals for matched Rosen items that reached 120,000 context
+      tokens and passed review and build checks.
+    </p>
+    <table class="usage-compare token-usage-table">
+      <thead>
+        <tr>
+          <th scope="col">Setting</th>
+          <th scope="col">Matched items</th>
+          <th scope="col">Tokens</th>
+          <th scope="col">Review rounds</th>
+          <th scope="col">Reverts</th>
+        </tr>
+      </thead>
+      <tbody>
+        {#each [{ label: 'On', cohort: comparison.enabled }, { label: 'Off', cohort: comparison.disabled }] as { label, cohort } (label)}
+          <tr>
+            <th scope="row">{label}</th>
+            <td>{cohort.matched} of {cohort.eligible}</td>
+            <td>{cohort.tokens}</td>
+            <td>{cohort.review_rounds}</td>
+            <td>{cohort.reverts}</td>
+          </tr>
+        {/each}
+      </tbody>
+    </table>
+    <p class="usage-note">
+      {comparison.handed_off} matched items continued in a fresh session.
+      {#if typeof comparison.savings_percent === 'number'}
+        {Math.abs(comparison.savings_percent).toFixed(1)}%
+        {comparison.savings_percent >= 0 ? 'fewer' : 'more'} tokens with the setting
+        on.
+      {/if}
+      {#if comparison.result === 'Collecting'}
+        Waiting for at least 10 hand-offs and 10 matched controls.
+      {:else if comparison.result === 'Met'}
+        Trial target met.
+      {:else}
+        Trial target missed.
+      {/if}
+    </p>
+  </section>
+{/if}

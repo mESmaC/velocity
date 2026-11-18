@@ -10,6 +10,10 @@ use velocity_store::{AgentActivity, ThreadState};
 /// does not fill the agent's context before it reads what to do next.
 const TRANSCRIPT_CONTEXT_BYTES: usize = 7_700;
 
+pub const HANDOFF_OPENING: &str =
+    "Continue the work item from the saved hand-off and the current workspace state.";
+pub const HANDOFF_BOUNDARY: &str = "Velocity started a fresh session for this work item.";
+
 /// What Velocity does for one thread on a parking pass.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ParkingAction {

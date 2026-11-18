@@ -88,6 +88,7 @@ fn configure_session(
     let mut setup = setup.with_run_settings(settings);
     setup.airc = airc;
     setup.graph_task_title = title;
+    crate::handoff::configure(application, key, &mut setup);
     setup
 }
 
@@ -138,13 +139,7 @@ fn resume_follow_through(
     }
     setup.airc =
         crate::airc_access::for_thread(application, key, std::path::Path::new(path), &thread);
-    setup.resume = Some(
-        velocity_acp::client::SessionResume::new(
-            thread.agent_session.clone(),
-            velocity_threads::parking::transcript_context(&thread.transcript),
-        )
-        .with_history_replay(thread.transcript.is_empty()),
-    );
+    setup.resume = crate::handoff::resume_context(&thread, &thread.transcript);
     crate::airc_claims::attach(application, key, &setup, &thread.branch_name)?;
     let inputs = lock(
         application.state::<ManagedThreads>().inner(),
@@ -157,6 +152,7 @@ fn resume_follow_through(
     setup.pause_on_subscription_limit = true;
     let handle = application.clone();
     tauri::async_runtime::spawn(async move {
+        crate::handoff::add_preface(&handle, key, &mut setup).await;
         pump(&handle, key, spawn_session(agent, setup, inputs)).await;
     });
     updated?;
@@ -984,13 +980,16 @@ struct GoalSessionChoice<'a> {
 impl GoalChoice for GoalSessionChoice<'_> {
     fn choose(&mut self, shortlist: &[&WorkPiece]) -> Result<Vec<String>, GoalSwarmError> {
         let prompt = selection_prompt(&self.plan.slot.prompt, shortlist);
-        let setup = goal_session_setup(
+        let mut setup = goal_session_setup(
             self.application,
             self.key,
             self.plan,
             self.folder,
             &self.plan.slot.prompt,
         );
+        if let Some(experiment) = &mut setup.handoff {
+            experiment.skip_first_turn = true;
+        }
         let (inputs, receiver) = lock(
             self.application.state::<ManagedThreads>().inner(),
             "thread sessions",
@@ -1395,6 +1394,7 @@ pub(crate) async fn pump(application: &AppHandle, key: ThreadKey, mut session: R
     .and_then(|runtimes| runtimes.session_identifier(key));
     report(crate::agent_activity::observe(application, key, &[]));
     let shutdown = session.shutdown.clone();
+    let mut handoff = crate::handoff::Progress::default();
     let mut mutations = velocity_acp::tool_mutations::ToolMutations::default();
     let worktree = lock(
         application.state::<ManagedStateStore>().inner(),
@@ -1409,10 +1409,17 @@ pub(crate) async fn pump(application: &AppHandle, key: ThreadKey, mut session: R
             batch.push(next);
         }
         if !current_session(application, key, &generation) {
+            crate::handoff::reject(&batch);
             continue;
         }
         report(save_agent_session(application, key, &batch));
         report(crate::agent_activity::observe(application, key, &batch));
+        report(crate::handoff::observe(
+            application,
+            key,
+            &batch,
+            &mut handoff,
+        ));
         if let Some(worktree) = &worktree {
             for event in &batch {
                 report(crate::airc_claims::observe(
@@ -1442,7 +1449,11 @@ pub(crate) async fn pump(application: &AppHandle, key: ThreadKey, mut session: R
     if !current_session(application, key, &generation) {
         return;
     }
-    finish_session(application, key, shutdown.confirmed(), outcome);
+    let replace = handoff.accepted && shutdown.confirmed() && matches!(outcome, Ok(Ok(())));
+    if finish_session(application, key, shutdown.confirmed(), outcome, replace) && replace {
+        let handle = application.clone();
+        tauri::async_runtime::spawn_blocking(move || crate::handoff::resume(&handle, key));
+    }
 }
 
 fn finish_session(
@@ -1450,15 +1461,16 @@ fn finish_session(
     key: ThreadKey,
     shutdown_confirmed: bool,
     outcome: Result<Result<(), String>, tokio::sync::oneshot::error::RecvError>,
-) {
+    replacing: bool,
+) -> bool {
     let still_wanted = lock(
         application.state::<ManagedThreads>().inner(),
         "thread sessions",
     )
     .map(|mut runtimes| runtimes.session_ended_with_shutdown(key, shutdown_confirmed))
     .unwrap_or(false);
-    if !still_wanted {
-        return;
+    if !still_wanted || replacing {
+        return still_wanted;
     }
     match outcome {
         Ok(Ok(())) => report(
@@ -1473,6 +1485,7 @@ fn finish_session(
             "Its session ended unexpectedly.",
         ),
     }
+    still_wanted
 }
 
 fn current_session(application: &AppHandle, key: ThreadKey, generation: &Option<String>) -> bool {

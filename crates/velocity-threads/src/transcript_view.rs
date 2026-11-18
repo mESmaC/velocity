@@ -122,6 +122,11 @@ impl LiveTranscript {
         }
     }
 
+    pub fn handoff_boundary(&mut self) {
+        self.entries
+            .push(EntryView::Notice(crate::parking::HANDOFF_BOUNDARY.into()));
+    }
+
     pub fn record_error(&mut self, headline: &str, detail: &str) {
         self.entries.push(EntryView::Error(ErrorCardView {
             headline: headline.to_owned(),

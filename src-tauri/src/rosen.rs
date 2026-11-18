@@ -542,6 +542,7 @@ pub(crate) fn prepare_resume(
         (project, thread.id),
         change,
     ));
+    crate::handoff::configure(application, (project, thread.id), setup);
     // The watcher started at launch may have failed; the agent's edits are stored only
     // while one runs.
     let handle = application.clone();

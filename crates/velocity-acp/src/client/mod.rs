@@ -12,6 +12,7 @@ mod coordination;
 mod error;
 mod files;
 mod handlers;
+mod handoff;
 mod install;
 mod kimi_limits;
 mod limits;
@@ -58,6 +59,7 @@ pub use antigravity_limits::{
 };
 pub use error::ClientError;
 pub use files::resolve_in_worktree;
+pub use handoff::{Decision as HandoffDecision, Experiment as HandoffExperiment};
 pub use install::install_agent;
 pub use kimi_limits::read_kimi_account;
 pub use limits::{
@@ -135,6 +137,17 @@ pub enum AgentEvent {
     ProviderQueued(bool, String),
     /// A turn ended: why, or the error the prompt failed with.
     TurnEnded(Result<StopReason, String>),
+    /// A successful turn crossed the experiment's context threshold.
+    HandoffThreshold {
+        change: String,
+        decision: Option<HandoffDecision>,
+    },
+    /// A complete hand-off note, produced at the end of the old session.
+    HandoffReady {
+        change: String,
+        note: String,
+        decision: HandoffDecision,
+    },
     /// The agent wrote a file through `fs/write_text_file` (for the diff view and claims).
     FileWritten { path: PathBuf },
     /// A session diagnostic from the agent's stderr or the ACP client.
@@ -154,6 +167,7 @@ struct Shared {
     account: u32,
     code_reads: Mutex<turn_usage::CodeReads>,
     token_capture: Mutex<token_usage::Capture>,
+    handoff_text: Mutex<Option<String>>,
 }
 
 impl Shared {
@@ -170,6 +184,7 @@ impl Shared {
             account: 0,
             code_reads: Mutex::default(),
             token_capture: Mutex::default(),
+            handoff_text: Mutex::default(),
         }
     }
 
@@ -196,6 +211,9 @@ impl Shared {
                 .lock()
                 .unwrap_or_else(PoisonError::into_inner)
                 .observe(&update);
+        }
+        if handoff::capture(self, &update) {
+            return;
         }
         self.code_reads
             .lock()
@@ -299,6 +317,7 @@ async fn run_admitted_session(
         account: launch.account,
         code_reads: Mutex::default(),
         token_capture: Mutex::default(),
+        handoff_text: Mutex::default(),
     });
     let result = connect_agent(
         &mut agent,
@@ -453,6 +472,7 @@ async fn drive(
             meter,
             tokens,
             prompt_usage: turn_usage::PromptUsage::for_launch(&launch),
+            handoff: setup.handoff.map(handoff::Boundary::new),
         },
         started.options,
         setup.pause_on_subscription_limit,
@@ -472,6 +492,7 @@ async fn session_preface(setup: &SessionSetup, loaded: bool, graph_on: bool) -> 
         .preface
         .iter()
         .cloned()
+        .chain(setup.handoff_context.iter().cloned())
         .chain(
             setup
                 .resume
@@ -499,15 +520,17 @@ struct PromptResult {
 struct TurnAccounting {
     meter: Option<turn_usage::UsageMeter>,
     tokens: Option<token_usage::SessionMeter>,
+    handoff: Option<handoff::Boundary>,
     prompt_usage: turn_usage::PromptUsage,
 }
 
 impl TurnAccounting {
-    async fn record(&mut self, result: &PromptResult, shared: &Shared) {
+    async fn record(&mut self, result: &PromptResult, shared: &Shared) -> Option<u64> {
         let usage = self.prompt_usage.turn(result.usage.as_ref());
-        if let Some(tokens) = &mut self.tokens {
-            tokens.finish(usage).await;
-        }
+        let context = match &mut self.tokens {
+            Some(tokens) => tokens.finish(usage).await,
+            None => None,
+        };
         if let Some(meter) = &self.meter {
             let reads = shared
                 .code_reads
@@ -520,6 +543,7 @@ impl TurnAccounting {
                 })
                 .await;
         }
+        context
     }
 }
 
@@ -612,8 +636,16 @@ impl Turn<'_> {
                     continue;
                 },
                 Some(result) = turn_ended.recv() => {
-                    accounting.record(&result, self.shared).await;
+                    let context = accounting.record(&result, self.shared).await;
                     let outcome = result.outcome;
+                    let outcome = match self.handoff_boundary(&mut accounting.handoff, &runs, outcome, context).await? {
+                        handoff::TurnBoundary::Finish(outcome) => outcome,
+                        handoff::TurnBoundary::Summarizing => continue,
+                        handoff::TurnBoundary::Replace(outcome) => {
+                            self.shared.emit(AgentEvent::TurnEnded(outcome));
+                            return Ok(());
+                        }
+                    };
                     let paused = pause_on_subscription_limit
                         && outcome.as_ref().is_err_and(|error| subscription_limit_error(error));
                     if !paused && (runs.outstanding() || !runs.ready.is_empty()) {
@@ -721,6 +753,10 @@ impl Turn<'_> {
             sent.append(&mut blocks);
             blocks = sent;
         }
+        self.request(blocks)
+    }
+
+    fn request(&self, blocks: Vec<ContentBlock>) -> Result<(), agent_client_protocol::Error> {
         self.shared
             .token_capture
             .lock()

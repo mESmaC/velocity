@@ -229,6 +229,13 @@ impl StateStore {
             return Ok(None);
         };
         let identifier = thread.id;
+        if progress == RosenProgress::ChangesRequested
+            && thread.state != ThreadState::Merged
+            && thread.review_stage != Some(ReviewStage::Fixing)
+            && let Some(item) = item.handoff_items.get_mut(change)
+        {
+            item.requested_rounds = item.requested_rounds.saturating_add(1);
+        }
         thread.rosen_progress_generation = thread.rosen_progress_generation.saturating_add(1);
         let reverted = progress == RosenProgress::Reverted && thread.state == ThreadState::Merged;
         let landed = apply_progress(thread, progress);

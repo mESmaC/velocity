@@ -47,6 +47,11 @@ pub fn turn_interrupted(thread: &ThreadItem) -> bool {
         && thread.agent_session.is_some()
         && thread.worktree_path.is_some()
         && (thread.startup_recovery_pending
+            || velocity_store::handoff::note_for(thread).is_some_and(|note| {
+                note.pending
+                    && thread.activity != AgentActivity::Parked
+                    && thread.activity != AgentActivity::AtLimit
+            })
             || mid_turn
             || (queued && thread.activity == AgentActivity::Idle))
 }

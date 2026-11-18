@@ -31,7 +31,7 @@ export const commands = {
 	retryGraphIndex: (projectIdentifier: number) => __TAURI_INVOKE<GraphStatus_Serialize>("retry_graph_index", { projectIdentifier }),
 	getContinuousDispatch: (projectIdentifier: number) => __TAURI_INVOKE<DispatchView_Serialize>("get_continuous_dispatch", { projectIdentifier }),
 	setContinuousDispatch: (projectIdentifier: number, slots: number, paused: boolean) => __TAURI_INVOKE<DispatchView_Serialize>("set_continuous_dispatch", { projectIdentifier, slots, paused }),
-	getTokenUsage: (period: Period, projectIdentifier: number | null, threadIdentifier: number | null) => __TAURI_INVOKE<Report>("get_token_usage", { period, projectIdentifier, threadIdentifier }),
+	getTokenUsage: (period: Period, projectIdentifier: number | null, threadIdentifier: number | null) => __TAURI_INVOKE<Report_Serialize>("get_token_usage", { period, projectIdentifier, threadIdentifier }),
 	getWindowState: () => __TAURI_INVOKE<WindowStateChanged>("get_window_state"),
 	minimizeWindow: () => __TAURI_INVOKE<null>("minimize_window"),
 	toggleMaximizeWindow: () => __TAURI_INVOKE<null>("toggle_maximize_window"),
@@ -314,6 +314,7 @@ export type AgentSettings_Deserialize = {
 	stall_timeout_minutes: number,
 	tool_timeout_minutes?: number,
 	claim_release_grace_minutes: number,
+	context_handoff?: boolean,
 	/**  Automatic uses High for full reviews and Medium for trivial reading reviews. */
 	review_effort?: EffortLevel | null,
 	sweep_effort?: EffortLevel,
@@ -328,6 +329,7 @@ export type AgentSettings_Serialize = {
 	stall_timeout_minutes: number,
 	tool_timeout_minutes: number,
 	claim_release_grace_minutes: number,
+	context_handoff: boolean,
 	/**  Automatic uses High for full reviews and Medium for trivial reading reviews. */
 	review_effort: EffortLevel | null,
 	sweep_effort: EffortLevel,
@@ -602,6 +604,16 @@ export type Claim_Serialize = {
 	since: string,
 };
 
+export type Cohort = {
+	eligible: number,
+	matched: number,
+	tokens: string,
+	review_rounds: number,
+	reverts: number,
+};
+
+export type Comparison = Comparison_Serialize | Comparison_Deserialize;
+
 export type ComparisonSide = {
 	/**  "Graph on" or "Graph off". */
 	label: string,
@@ -615,6 +627,22 @@ export type ComparisonSide = {
 	total_time: string,
 	/**  "Tokens reported for 40 of 42 turns", when some turns came without counts. */
 	note: string,
+};
+
+export type Comparison_Deserialize = {
+	enabled: Cohort,
+	disabled: Cohort,
+	handed_off: number,
+	savings_percent?: number | null,
+	result: TrialResult,
+};
+
+export type Comparison_Serialize = {
+	enabled: Cohort,
+	disabled: Cohort,
+	handed_off: number,
+	savings_percent: number | null,
+	result: TrialResult,
 };
 
 export type ContinuousDispatch = ContinuousDispatch_Serialize | ContinuousDispatch_Deserialize;
@@ -3771,8 +3799,16 @@ export type RailItem_Serialize = {
 	metadata: string,
 };
 
-export type Report = {
+export type Report = Report_Serialize | Report_Deserialize;
+
+export type Report_Deserialize = {
 	groups: UsageGroup[],
+	handoff?: Comparison_Deserialize | null,
+};
+
+export type Report_Serialize = {
+	groups: UsageGroup[],
+	handoff: Comparison_Serialize | null,
 };
 
 /**  What the picker shows for the current search. */
@@ -5023,6 +5059,8 @@ export type TranscriptBlock_Serialize = ({ UserMessage: {
 } }) & { AgentMessage?: never; Decision?: never; Diff?: never; ErrorCard?: never; StatusLine?: never; ToolGroup?: never; UserMessage?: never };
 
 export type TranscriptModeView = "FullTranscript" | "CollapsedWithPrHistory" | "ExpandedWithPrHistory";
+
+export type TrialResult = "Collecting" | "Met" | "Missed";
 
 export type UiZoom = number;
 

@@ -47,3 +47,28 @@ pub async fn abandon_finished(server: &ProjectServer, change: &str) -> Result<()
     }
     Ok(())
 }
+
+/// The server's authoritative state for an agent continuing in the same workspace.
+pub async fn handoff_state(server: &ProjectServer, change: &str) -> Result<String, RosenError> {
+    let client = Client::connect(server.endpoint()).await?;
+    let record = client.change_show(change).await?.change;
+    let conflicts = record
+        .conflicts
+        .iter()
+        .take(30)
+        .map(ToString::to_string)
+        .collect::<Vec<_>>();
+    Ok(format!(
+        "Rosen change: {}\nState: {}\nStored head: {}\nParent: {:?}\nStored conflicts ({} total): {}",
+        record.id,
+        record.state,
+        record.head,
+        record.parent,
+        record.conflicts.len(),
+        if conflicts.is_empty() {
+            "none".into()
+        } else {
+            conflicts.join(", ")
+        },
+    ))
+}

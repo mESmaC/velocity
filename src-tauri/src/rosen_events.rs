@@ -111,6 +111,9 @@ async fn consume(
     if event.kind == velocity_rosen::ProjectEventKind::Mirror {
         report(crate::rosen_mirror::refresh(application, project).await);
     }
+    if event.kind == velocity_rosen::ProjectEventKind::Review {
+        crate::handoff::observe_review(application, project, event)?;
+    }
     let evidence = velocity_rosen::issue_event(event);
     let has_evidence = evidence.is_some();
     if let Some((change, meaning)) = evidence {

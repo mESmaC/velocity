@@ -21,6 +21,7 @@ mod github_requests;
 mod goal_stack;
 mod goal_swarm;
 pub mod graph_access;
+mod handoff;
 pub mod headless;
 mod interview;
 mod issue_panel;

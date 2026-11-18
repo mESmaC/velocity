@@ -89,13 +89,13 @@ struct ThreadRuntime {
     heartbeat: crate::agent_activity::Heartbeat,
 }
 
-#[derive(Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, PartialEq, Eq)]
 enum PendingInput {
     Opening,
     /// A message you sent; its queued row leaves when the agent reads it.
     Steering,
     /// A line Velocity delivered (AIRC, PR follow-through): shown as a notice, never queued.
-    Notice,
+    Notice(String),
 }
 
 #[derive(Default)]
@@ -111,6 +111,7 @@ pub struct ThreadRuntimes {
     parked: BTreeSet<ThreadKey>,
     /// Inputs stay queued while Rosen writes a rebased head between turns.
     workspace_updates: BTreeSet<ThreadKey>,
+    handoff_closing: BTreeSet<ThreadKey>,
     actions: BTreeMap<ThreadKey, Arc<tokio::sync::Mutex<()>>>,
     transcript_saves: crate::transcript_saves::TranscriptSaves,
 }
@@ -327,7 +328,9 @@ impl ThreadRuntimes {
     /// thread shows it as a notice once read. It never joins your composer queue, so it
     /// never leaves a row there you cannot clear (#231).
     fn notify(&mut self, key: ThreadKey, message: &str) -> Result<(), SteerError> {
-        let parked = self.parked.contains(&key) || self.workspace_updates.contains(&key);
+        let parked = self.parked.contains(&key)
+            || self.workspace_updates.contains(&key)
+            || self.handoff_closing.contains(&key);
         let thread = self.threads.get_mut(&key).ok_or(SteerError::NoSession)?;
         if parked {
             thread.held_notices.push(message.to_owned());
@@ -337,7 +340,9 @@ impl ThreadRuntimes {
             .inputs
             .send(text_input(message))
             .map_err(|_| SteerError::NoSession)?;
-        thread.pending_inputs.push_back(PendingInput::Notice);
+        thread
+            .pending_inputs
+            .push_back(PendingInput::Notice(message.into()));
         Ok(())
     }
 
@@ -349,6 +354,29 @@ impl ThreadRuntimes {
         };
         let sent = sent_count(thread);
         thread.transcript.remove_queued(index, sent)
+    }
+
+    /// Hold unread messages across shutdown, including notices already queued in ACP.
+    pub fn reserve_handoff(&mut self, key: ThreadKey) {
+        if let Some(thread) = self.threads.get_mut(&key) {
+            self.handoff_closing.insert(key);
+            let mut notices: Vec<_> = thread
+                .pending_inputs
+                .iter()
+                .filter_map(|input| match input {
+                    PendingInput::Notice(text) => Some(text.clone()),
+                    _ => None,
+                })
+                .collect();
+            notices.append(&mut thread.held_notices);
+            thread.held_notices = notices;
+        }
+    }
+
+    pub fn handoff_boundary(&mut self, key: ThreadKey) {
+        if let Some(thread) = self.threads.get_mut(&key) {
+            thread.transcript.handoff_boundary();
+        }
     }
 
     pub fn is_parked(&self, key: ThreadKey) -> bool {
@@ -397,6 +425,7 @@ impl ThreadRuntimes {
             || self.retired.contains(&key)
             || self.stopping.contains_key(&key)
             || self.workspace_updates.contains(&key)
+            || self.handoff_closing.contains(&key)
         {
             return Err(SteerError::NoSession);
         }
@@ -443,7 +472,9 @@ impl ThreadRuntimes {
         );
         for notice in std::mem::take(&mut thread.held_notices) {
             let _ = inputs.send(text_input(&notice));
-            thread.pending_inputs.push_back(PendingInput::Notice);
+            thread
+                .pending_inputs
+                .push_back(PendingInput::Notice(notice));
         }
         thread.inputs = inputs;
         thread.busy = true;
@@ -537,7 +568,7 @@ impl ThreadRuntimes {
     pub fn steer(&mut self, key: ThreadKey, prompt: &str) -> Result<(), SteerError> {
         let thread = self.threads.get_mut(&key).ok_or(SteerError::NoSession)?;
         // A parked agent gets the message right after its resume prompt (§2.2, Rule 1).
-        if self.parked.contains(&key) {
+        if self.parked.contains(&key) || self.handoff_closing.contains(&key) {
             thread.transcript.queue(prompt);
             return Ok(());
         }
@@ -634,6 +665,9 @@ impl ThreadRuntimes {
             return false;
         }
         self.threads.get(&key).is_none_or(|thread| {
+            if self.handoff_closing.contains(&key) {
+                return !thread.busy;
+            }
             thread.transcript.queued().is_empty()
                 && match thread.phase {
                     SessionPhase::Ended => true,
@@ -656,7 +690,10 @@ impl ThreadRuntimes {
     /// Release inputs even when application failed: edits stay on disk and a later
     /// boundary retries. Ended and parked sessions retain their messages for resume.
     pub fn finish_workspace_update(&mut self, key: ThreadKey) {
-        if !self.workspace_updates.remove(&key) || self.parked.contains(&key) {
+        if !self.workspace_updates.remove(&key)
+            || self.parked.contains(&key)
+            || self.handoff_closing.contains(&key)
+        {
             return;
         }
         let Some(thread) = self.threads.get_mut(&key) else {
@@ -668,7 +705,9 @@ impl ThreadRuntimes {
         send_held(thread);
         for notice in std::mem::take(&mut thread.held_notices) {
             if thread.inputs.send(text_input(&notice)).is_ok() {
-                thread.pending_inputs.push_back(PendingInput::Notice);
+                thread
+                    .pending_inputs
+                    .push_back(PendingInput::Notice(notice));
             } else {
                 thread.held_notices.push(notice);
             }
@@ -734,6 +773,7 @@ impl ThreadRuntimes {
     }
 
     pub fn session_ended_with_shutdown(&mut self, key: ThreadKey, confirmed: bool) -> bool {
+        self.handoff_closing.remove(&key);
         if !confirmed {
             self.shutdown_failures.insert(key);
         }
@@ -786,7 +826,7 @@ impl ThreadRuntimes {
                     thread.busy = true;
                     match thread.pending_inputs.pop_front() {
                         Some(PendingInput::Steering) => thread.transcript.sent_queued(1),
-                        Some(PendingInput::Notice) => {
+                        Some(PendingInput::Notice(_)) => {
                             thread.transcript.record_notice(*placement, update);
                             return Some(progress(thread));
                         }
@@ -818,7 +858,7 @@ impl ThreadRuntimes {
                 // A delayed turn end cannot acknowledge inputs sent after that turn.
                 // Only the client's prompt chunks above remove queued rows.
                 thread.busy = false;
-                if !self.workspace_updates.contains(&key) {
+                if !self.workspace_updates.contains(&key) && !self.handoff_closing.contains(&key) {
                     send_held(thread);
                 }
             }
@@ -834,6 +874,8 @@ impl ThreadRuntimes {
                 return None;
             }
             AgentEvent::SessionStarted { .. }
+            | AgentEvent::HandoffThreshold { .. }
+            | AgentEvent::HandoffReady { .. }
             | AgentEvent::ProviderQueued(..)
             | AgentEvent::Queued
             | AgentEvent::FileWritten { .. } => return None,

@@ -125,6 +125,14 @@ Both timeouts are set in Settings → Agents (F13).
 
 The native supervisor checks live build threads once a second. Its defaulted checkpoint in `state.json` retains completed turns, the session start, the last ACP update at a durable transition, the nudge, and the unavailability grace deadline. The exact live ACP heartbeat stays in memory; streaming batches do not write supervision checkpoints. Streaming batches save the live transcript to `state.json` at most once every 5 seconds per thread, and always at the end of a turn, so copying every chunk of every agent into the store no longer starves the window (#273). A change to saved state only updates memory; a background writer saves the newest state to `state.json` at most once a second, copying it under the store lock and serializing and writing it outside the lock, as compact JSON, and once more as Velocity exits or hands over to an installer (#285, #320). A crash loses at most the last second of changes, and mid-turn at most those last seconds of transcript. Session start, turn end, nudge and the first subsequent ACP update persist checkpoints; a resumed session starts a fresh silence clock. Recovery stops the owned ACP session and resumes in the registered checkout through the existing load/transcript path. Caps end the session; raising or disabling the cap resumes it. A usage-limit error pauses the session and picks the next available account within that provider. It uses a fresh session with transcript context after a change of account. Released Task List ownership is returned to todo; issues and SPEC pieces become available again. Optional prior pushed work is shown in the pool. Resumption must win the atomic claim again before starting ACP, and fails with the holder named if the piece was taken.
 
+**Context hand-off** (#467).
+Settings → Agents can enable the experiment for new Rosen work items.
+At a successful turn boundary with at least 120,000 context tokens, Velocity asks the agent for the goal, completed work, remaining work, files touched, decisions and open failures in six fixed sections.
+Velocity reads current context occupancy from ACP or the latest measured model call.
+After saving a complete note and stopping the old session, Velocity opens a fresh ACP session in the same thread and workspace using the note, the workspace note and current Rosen change state.
+The thread keeps its transcript and queued messages, and marks where the fresh session starts.
+An incomplete note leaves the old session available to continue the work.
+
 **Sidebar and views:** `stalled` and `at limit` show in amber in the thread's sidebar meta and on its swarm or goal swarm card. `parked` shows "waiting for <nick> · #n".
 
 ---

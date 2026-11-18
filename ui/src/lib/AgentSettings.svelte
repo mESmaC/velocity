@@ -187,6 +187,15 @@
               /></span
             ></label
           >
+          <label class="worktree-setting-row">
+            Experimental context hand-off
+            <input type="checkbox" bind:checked={settings.context_handoff} />
+          </label>
+          <p class="worktree-description">
+            Applies to new Rosen work items. At 120,000 context tokens, Velocity
+            can carry the work into a fresh session. See Usage for the
+            comparison.
+          </p>
           <p class="worktree-description">
             Failed agents and agents at a cap keep their workspaces. Open and
             closed changes keep their claims.

@@ -219,19 +219,34 @@ impl StateStore {
         let Some(project) = next.projects.iter_mut().find(|item| item.id == project) else {
             return Ok(());
         };
-        let thread = project
+        let observed = project
+            .handoff_items
+            .get_mut(change)
+            .is_some_and(|item| item.observe_land(sequence, &event));
+        let index = project
             .threads
             .iter()
             .position(|thread| thread.rosen_change.as_deref() == Some(change));
-        let Some(index) = thread else { return Ok(()) };
+        let Some(index) = index else {
+            return if observed {
+                self.store_snapshot(next)
+            } else {
+                Ok(())
+            };
+        };
         let close_enabled = close_enabled(project, project.threads[index].id);
         let thread = &mut project.threads[index];
-        let Some(issue) = &thread.issue else {
-            return Ok(());
+        let Some(issue) = thread
+            .issue
+            .as_ref()
+            .filter(|_| sequence > thread.rosen_issue.sequence)
+        else {
+            return if observed {
+                self.store_snapshot(next)
+            } else {
+                Ok(())
+            };
         };
-        if sequence <= thread.rosen_issue.sequence {
-            return Ok(());
-        }
         // An upgrade can first hear the green event for a land the older app already
         // acknowledged. R12's per-change green event carries that exact landed SHA.
         if thread.rosen_issue.sequence == 0

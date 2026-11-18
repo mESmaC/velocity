@@ -8,6 +8,8 @@ use serde::{Deserialize, Serialize};
 
 use crate::Error;
 
+pub mod handoff;
+
 #[derive(Clone, Copy, Debug, Deserialize, Eq, Ord, PartialEq, PartialOrd, Serialize)]
 pub enum Role {
     Implementation,
@@ -100,11 +102,23 @@ pub struct Call {
 #[derive(Deserialize, Serialize)]
 struct Entry {
     subject: Subject,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    change: Option<String>,
     calls: Vec<Call>,
 }
 
 /// Store numbers and identifiers only. A day's lock serializes concurrent appends.
 pub fn record(data: &Path, project: u32, subject: Subject, calls: Vec<Call>) -> Result<(), Error> {
+    record_for_change(data, project, subject, None, calls)
+}
+
+pub fn record_for_change(
+    data: &Path,
+    project: u32,
+    subject: Subject,
+    change: Option<&str>,
+    calls: Vec<Call>,
+) -> Result<(), Error> {
     let folder = project_folder(data, project);
     std::fs::create_dir_all(&folder)?;
     let mut days = BTreeMap::<NaiveDate, Vec<Call>>::new();
@@ -116,7 +130,15 @@ pub fn record(data: &Path, project: u32, subject: Subject, calls: Vec<Call>) -> 
         }
     }
     for (day, calls) in days {
-        append(&folder, day, Entry { subject, calls })?;
+        append(
+            &folder,
+            day,
+            Entry {
+                subject,
+                change: change.map(str::to_owned),
+                calls,
+            },
+        )?;
     }
     Ok(())
 }
@@ -143,6 +165,7 @@ fn append(folder: &Path, day: NaiveDate, entry: Entry) -> Result<(), Error> {
 #[cfg_attr(feature = "bindings", derive(specta::Type))]
 pub struct Report {
     pub groups: Vec<UsageGroup>,
+    pub handoff: Option<handoff::Comparison>,
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -330,7 +353,10 @@ impl Summary {
                 (projects[&id].name.clone(), String::new())
             }));
         }
-        Report { groups }
+        Report {
+            groups,
+            handoff: None,
+        }
     }
 }
 

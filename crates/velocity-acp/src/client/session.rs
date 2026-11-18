@@ -52,6 +52,10 @@ pub struct SessionSetup {
     pub pause_on_subscription_limit: bool,
     /// Duty sessions can report a more specific usage role than AIRC membership supplies.
     pub usage_role: Option<Role>,
+    /// A Rosen work item enrolled in the context hand-off experiment.
+    pub handoff: Option<super::handoff::Experiment>,
+    /// A fresh session's saved note and current change state have their own preface budget.
+    pub handoff_context: Option<String>,
 }
 
 /// How a parked thread's agent picks up where it stopped: `session/load` of its earlier
@@ -103,6 +107,8 @@ impl SessionSetup {
             graph_task_title: None,
             pause_on_subscription_limit: false,
             usage_role: None,
+            handoff: None,
+            handoff_context: None,
         }
     }
 

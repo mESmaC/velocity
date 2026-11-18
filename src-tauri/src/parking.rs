@@ -3,12 +3,10 @@
 use std::path::Path;
 
 use tauri::{AppHandle, Manager};
-use velocity_acp::client::{SessionResume, SessionSetup};
+use velocity_acp::client::SessionSetup;
 use velocity_airc::Channel;
 use velocity_store::{AgentActivity, ProjectItem, ThreadItem, ThreadState};
-use velocity_threads::parking::{
-    ParkingAction, ParkingInput, parking_action, resume_prompt, transcript_context,
-};
+use velocity_threads::parking::{ParkingAction, ParkingInput, parking_action, resume_prompt};
 use velocity_threads::{ThreadKey, agent_launch_for_account, spawn_session};
 
 use crate::state::ManagedStateStore;
@@ -138,6 +136,7 @@ fn wake(application: &AppHandle, key: ThreadKey, channel: &Channel) -> Result<()
 enum Opening<'a> {
     /// A prompt from Velocity, sent ahead of the messages still queued.
     Prompt(&'a str),
+    Handoff,
     AfterLimit(u32),
     /// A message you sent the ended thread. It joins the queue, so it is kept until the
     /// agent echoes it, however the new session ends (#317).
@@ -155,6 +154,10 @@ pub(crate) fn resume_with_message(
     message: &str,
 ) -> Result<(), String> {
     start_session(application, key, Opening::Message(message))
+}
+
+pub(crate) fn resume_handoff(application: &AppHandle, key: ThreadKey) -> Result<(), String> {
+    start_session(application, key, Opening::Handoff)
 }
 
 pub(crate) fn resume_after_limit(
@@ -215,6 +218,7 @@ fn start_session(application: &AppHandle, key: ThreadKey, opening: Opening) -> R
     crate::threads::emit_status(application, key);
     let handle = application.clone();
     tauri::async_runtime::spawn(async move {
+        crate::handoff::add_preface(&handle, key, &mut setup).await;
         crate::threads::pump(&handle, key, spawn_session(agent, setup, inputs)).await;
     });
     Ok(())
@@ -262,12 +266,16 @@ fn resume_inputs(
             .view(key)
             .map(|view| view.blocks)
             .unwrap_or_default();
-        setup.resume = Some(
-            SessionResume::new(thread.agent_session.clone(), transcript_context(&blocks))
-                .with_history_replay(blocks.is_empty()),
-        );
+        setup.resume = crate::handoff::resume_context(thread, &blocks);
         let follows_pull_request = thread.state == ThreadState::Review;
         match opening {
+            Opening::Handoff => {
+                let queued = blocks.iter().any(|block| matches!(
+                    block, velocity_core::thread_view_model::TranscriptBlock::UserMessage { queued: true, .. }
+                ));
+                let opening = (!queued).then_some(velocity_threads::parking::HANDOFF_OPENING);
+                runtimes.resume_parked(key, path, opening, follows_pull_request)
+            }
             Opening::Prompt(prompt) => {
                 runtimes.resume_parked(key, path, Some(prompt), follows_pull_request)
             }
