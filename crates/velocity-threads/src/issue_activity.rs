@@ -43,20 +43,31 @@ pub fn post_issue_update(
         None => IssueClient::discover(directory),
     }
     .map_err(|error| Error::Invalid(error.to_string()))?;
-    let nick = &update.claim.nick;
-    let byline = match update
+    let thread = update
         .claim
         .member
         .strip_prefix("thread-")
-        .and_then(|member| member.parse::<u32>().ok())
-    {
-        Some(thread) => {
-            let link = format!("velocity://thread/{identifier}/{thread}");
-            format!("Velocity agent `{nick}` · [Thread {thread}]({link}) · `{link}`")
-        }
-        None => format!("Velocity agent `{nick}`"),
-    };
+        .and_then(|member| member.parse::<u32>().ok());
     client
-        .post_issue_progress(update.issue, &byline, update.body, update.ready)
+        .post_issue_progress(
+            update.issue,
+            &issue_byline(identifier, thread, Some(&update.claim.nick)),
+            update.body,
+            update.ready,
+        )
         .map_err(|error| Error::Invalid(error.to_string()))
+}
+
+pub fn issue_byline(project: u32, thread: Option<u32>, nick: Option<&str>) -> String {
+    let agent = nick.map_or_else(
+        || "Velocity agent".into(),
+        |nick| format!("Velocity agent `{nick}`"),
+    );
+    match thread {
+        Some(thread) => {
+            let link = format!("velocity://thread/{project}/{thread}");
+            format!("{agent} · [Thread {thread}]({link}) · `{link}`")
+        }
+        None => agent,
+    }
 }

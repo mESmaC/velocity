@@ -805,6 +805,9 @@ pub struct ThreadItem {
     /// Conversation retained across process restarts (§3.2).
     #[serde(default)]
     pub transcript: velocity_core::thread_view_model::SharedBlocks,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[specta(skip)]
+    pub no_change_reason: Option<String>,
     pub review_stage: Option<ReviewStage>,
     pub task_ids: Vec<u32>,
     #[serde(default)]
@@ -857,6 +860,7 @@ impl ThreadItem {
             context_handoff: None,
             provider_queued: false,
             transcript: Default::default(),
+            no_change_reason: None,
             startup_recovery_pending: false,
             started_by_dispatch: false,
             previous_work_thread: None,
@@ -906,6 +910,7 @@ impl ThreadItem {
             context_handoff: None,
             provider_queued: false,
             transcript: Default::default(),
+            no_change_reason: None,
             startup_recovery_pending: false,
             started_by_dispatch: false,
             previous_work_thread: None,

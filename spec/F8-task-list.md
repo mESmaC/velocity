@@ -42,12 +42,15 @@ Git projects keep the existing Task List and Issues panels and their PR lifecycl
 Velocity fills free slots with ordinary build threads on the default model, using the selected item's title and work prompt.
 The queue takes user-added tasks first, then issues by milestone number (no milestone last) and age, then agent-added and spec-generated tasks.
 Within each task group, the oldest task number goes first.
-The work inventory excludes claimed items, owner-decision questions and release blockers.
+The work inventory excludes claimed items, owner-decision questions, release blockers and issues labelled `no-change`.
 Issues can carry the labels `spec-question`, `needs-decision`, `needs-owner`, `owner-decision` or `release-blocker`, and dispatch also checks issue and task text for explicit owner-decision wording and task titles for the `release-blocker` marker.
 Working and awaiting-land build threads count toward N; a land or an ended turn with no named work and an empty Rosen diff frees its slot.
 A dispatch worker takes its next item in a fresh ACP session after cleanup, with a bounded handoff from Velocity and a session boundary in the existing conversation (#456).
 Failed and closed threads free capacity but retain issue ownership.
-An unchanged issue already dispatched is not dispatched again just because its agent found no changes or its GitHub issue has not closed yet; editing the issue makes it eligible again once unclaimed.
+An unchanged issue already dispatched stays out of dispatch while its GitHub issue has not closed after a land.
+When continuous dispatch retires an issue thread after an empty turn, it saves **Ended with no change** and the last agent message in the thread view (#469).
+Dispatch holds the issue while the GitHub report is pending and then skips it while the `no-change` label is present (F9).
+Once a person or review agent removes the label, an open, unclaimed issue can be dispatched again.
 A dispatched task moves to now when its thread is saved and to done when that thread's change lands.
 An empty turn returns its task to todo and continuous dispatch skips it until the task is edited or explicitly returned to todo.
 Dispatch continues across project switches and app restarts.

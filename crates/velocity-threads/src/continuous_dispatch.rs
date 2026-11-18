@@ -2,7 +2,7 @@
 use serde::{Deserialize, Serialize};
 use specta::Type;
 use std::collections::HashSet;
-use velocity_github::{GitHubIssue, IssueState};
+use velocity_github::{GitHubIssue, IssueClient, IssueState};
 use velocity_store::continuous_dispatch::{available_task, busy_count};
 use velocity_store::issues::{ThreadIssue, issue_thread};
 use velocity_store::{ProjectItem, StateStore, TaskAttribution, TaskItem, VersionControl};
@@ -79,6 +79,7 @@ pub fn actionable(issue: &GitHubIssue) -> bool {
                 "needs-owner",
                 "release-blocker",
                 "owner-decision",
+                IssueClient::NO_CHANGE_LABEL,
             ]
             .iter()
             .any(|skip| label.eq_ignore_ascii_case(skip))
@@ -127,6 +128,9 @@ pub fn ordered_issues(
                     issue.number,
                     &issue.updated_at,
                 )
+                && !project
+                    .continuous_dispatch
+                    .reporting_no_change(repository, issue.number)
         })
         .cloned()
         .collect();

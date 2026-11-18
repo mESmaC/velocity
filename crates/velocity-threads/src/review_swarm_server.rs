@@ -32,6 +32,8 @@ pub(crate) struct SwarmLaunch {
     pub completion: PathBuf,
     #[serde(default)]
     pub scout_base: Option<String>,
+    #[serde(default)]
+    pub no_change_only: bool,
 }
 
 impl SwarmLaunch {
@@ -63,6 +65,24 @@ pub(crate) struct Completion {
     pub proof_features: Vec<String>,
     #[serde(default)]
     pub head: String,
+}
+
+#[derive(Deserialize)]
+#[serde(tag = "action", rename_all = "snake_case")]
+enum NoChangeReview {
+    List {
+        #[serde(default)]
+        offset: usize,
+    },
+    Read {
+        issue: u32,
+    },
+    Resolve {
+        issue: u32,
+        attempt: String,
+        evidence: String,
+        already_fixed: bool,
+    },
 }
 
 pub struct ReviewSwarmServer {
@@ -146,6 +166,60 @@ impl ReviewSwarmServer {
                 "source_issue": self.launch.source_issue,
                 "instruction": "Read the referenced issue and SPEC section; verify every claim against the code"}))
         })
+    }
+
+    fn no_change(&self, arguments: Value) -> Result<Value, String> {
+        let request = serde_json::from_value(arguments).map_err(|error| error.to_string())?;
+        let repository = self
+            .launch
+            .repository
+            .as_deref()
+            .ok_or("The project has no GitHub repository")?;
+        let client = IssueClient::for_repository(&self.launch.workspace, repository)
+            .map_err(|error| error.to_string())?;
+        match request {
+            NoChangeReview::List { offset } => {
+                let issues = client
+                    .open_no_change_issues()
+                    .map_err(|error| error.to_string())?;
+                let remaining = issues.len().saturating_sub(offset.saturating_add(10));
+                let waiting: Vec<_> = issues.into_iter().skip(offset).take(10).map(|issue| {
+                    json!({"number": issue.number, "title": issue.title, "url": issue.url})
+                }).collect();
+                Ok(json!({"repository": repository, "issues": waiting, "remaining": remaining}))
+            }
+            NoChangeReview::Read { issue } => {
+                let (issue, comments, attempt) = client
+                    .no_change_discussion(issue)
+                    .map_err(|error| error.to_string())?;
+                let comments: Vec<_> = comments
+                    .iter()
+                    .map(|comment| issue_excerpt(comment, 1_500))
+                    .collect();
+                Ok(json!({
+                    "issue": {"number": issue.number, "title": issue.title, "url": issue.url,
+                        "body": issue_excerpt(&issue.body, 2_500)},
+                    "discussion_excerpts": comments, "attempt": attempt,
+                }))
+            }
+            NoChangeReview::Resolve {
+                issue,
+                attempt,
+                evidence,
+                already_fixed,
+            } => {
+                client
+                    .resolve_no_change(
+                        issue,
+                        &attempt,
+                        &self.launch.nickname,
+                        &evidence,
+                        already_fixed,
+                    )
+                    .map_err(|error| error.to_string())?;
+                Ok(json!({"issue": issue, "closed": already_fixed}))
+            }
+        }
     }
 
     /// Serialise filings across the swarm using a channel claim. The ordinary scout
@@ -382,6 +456,20 @@ impl ToolServer for ReviewSwarmServer {
 
     fn tools(&self) -> Vec<Value> {
         let mut tools = self.scout.tools();
+        if self.launch.repository.is_some() {
+            tools.push(json!({
+                "name": "review_swarm_no_change",
+                "description": "List open no-change issues, read an issue with its discussion and attempt, or resolve that attempt after checking the evidence. Resolution closes an independently verified fix, or comments with concrete retry instructions and removes the no-change label.",
+                "inputSchema": {"type": "object", "properties": {
+                    "action": {"enum": ["list", "read", "resolve"]},
+                    "offset": {"type": "integer", "minimum": 0, "description": "List offset, ten issues per page"},
+                    "issue": {"type": "integer", "description": "Required for read and resolve"},
+                    "attempt": {"type": "string", "description": "Required for resolve, returned by read"},
+                    "already_fixed": {"type": "boolean", "description": "Required for resolve, true only when the current base satisfies the issue"},
+                    "evidence": {"type": "string", "description": "Required for resolve, verification evidence or instructions for the next agent"}
+                }, "required": ["action"], "additionalProperties": false}
+            }));
+        }
         tools.push(review_diff_tool("review_swarm_change",
             "Landed change overview: file list with diff stats, graph impact, issue references and named snapshots."));
         tools.push(json!({"name": "review_swarm_complete", "description": "Record a finished review or sweep. Proof features require Design.lean and fixtures. If this queues Lean verification, end your turn and continue from the result. Coverage is applied after any named fix or proof lands.",
@@ -397,11 +485,20 @@ impl ToolServer for ReviewSwarmServer {
     fn call(&mut self, name: Option<&str>, arguments: Value) -> Result<Value, String> {
         match name {
             Some("review_swarm_change") => self.change(arguments),
+            Some("review_swarm_no_change") => self.no_change(arguments),
             Some("review_swarm_complete") => self.completion_request(arguments),
             Some("scout_file") => self.file(arguments),
             _ => self.scout.call(name, arguments),
         }
     }
+}
+
+fn issue_excerpt(text: &str, limit: usize) -> String {
+    velocity_core::text_budget::prompt_excerpt(
+        text,
+        limit,
+        "\n[Read the rest in the GitHub discussion.]",
+    )
 }
 
 impl SwarmLaunch {
@@ -442,6 +539,7 @@ impl SwarmLaunch {
             report: runner.reports.join(format!("{basename}-issues.jsonl")),
             completion: runner.reports.join(format!("{basename}-complete.json")),
             scout_base: None,
+            no_change_only: false,
         })
     }
 }

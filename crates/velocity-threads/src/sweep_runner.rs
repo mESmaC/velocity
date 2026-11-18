@@ -110,6 +110,11 @@ impl ScoutSweeps {
         self.wake.notify_one();
     }
 
+    pub fn request_no_change_review(&self, project: u32) {
+        self.review_swarms.request_no_change_review(project);
+        self.wake();
+    }
+
     /// Delivers your instruction from the Duty view's composer (F7: it instructs every agent
     /// in the role). A running sweep gets it as its next message; idle scouts sweep with it.
     pub fn instruct(&self, project: u32, instruction: &str) {

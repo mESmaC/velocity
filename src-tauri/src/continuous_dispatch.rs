@@ -88,6 +88,7 @@ struct Reader {
     remote: Option<String>,
     client: Option<IssueClient>,
     refreshed: Option<Instant>,
+    report_retry: BTreeMap<u32, Instant>,
     backlog: Backlog,
 }
 
@@ -132,8 +133,13 @@ fn projects(application: &AppHandle) -> Result<Vec<ProjectItem>, String> {
         .iter()
         .filter(|project| {
             !project.continuous_dispatch.cleanup.is_empty()
+                || !project.continuous_dispatch.no_change_reports.is_empty()
                 || (project.version_control == VersionControl::Rosen
                     && (project.continuous_dispatch.slots > 0
+                        || project.threads.iter().any(|thread| {
+                            thread.started_by_dispatch
+                                && thread.state == velocity_store::ThreadState::Working
+                        })
                         || store
                             .active_project()
                             .is_some_and(|active| active.id == project.id)))
@@ -147,11 +153,10 @@ fn pass(
     project: &ProjectItem,
     readers: &mut BTreeMap<u32, Reader>,
 ) -> Result<(), String> {
-    cleanup_empty_threads(application, project)?;
-    if project.continuous_dispatch.slots > 0 {
-        finish_empty_threads(application, project)?;
-    }
     let reader = reader(project, readers);
+    report_no_change_issues(application, project, reader)?;
+    cleanup_empty_threads(application, project)?;
+    finish_empty_threads(application, project)?;
     if project_has_capacity(project) {
         // Local work takes precedence even while GitHub is slow or unavailable.
         start_ready(application, project.id, &Backlog::default(), None, false)?;
@@ -240,6 +245,7 @@ fn reader<'a>(project: &ProjectItem, readers: &'a mut BTreeMap<u32, Reader>) -> 
         remote: project.github_remote.clone(),
         client: None,
         refreshed: None,
+        report_retry: BTreeMap::new(),
         backlog: Backlog::default(),
     };
     let reader = readers.entry(project.id).or_insert_with(setup);
@@ -360,18 +366,23 @@ fn has_user_task(project: &ProjectItem, claimed: &HashSet<String>) -> bool {
 }
 
 fn claimed_pieces(application: &AppHandle, identifier: u32) -> Result<HashSet<String>, String> {
+    Ok(dispatch_claims(application, identifier)?
+        .iter()
+        .map(|claim| claim.key().to_owned())
+        .collect())
+}
+
+fn dispatch_claims(
+    application: &AppHandle,
+    identifier: u32,
+) -> Result<Vec<velocity_airc::Claim>, String> {
     let data = application
         .path()
         .app_data_dir()
         .map_err(|error| error.to_string())?;
     let channel = velocity_airc::Channel::open(&data, &identifier.to_string())
         .map_err(|error| error.to_string())?;
-    Ok(channel
-        .claims()
-        .map_err(|error| error.to_string())?
-        .iter()
-        .map(|claim| claim.key().to_owned())
-        .collect())
+    channel.claims().map_err(|error| error.to_string())
 }
 
 fn save_error(application: &AppHandle, identifier: u32, error: String) -> Result<(), String> {
@@ -383,6 +394,7 @@ fn save_error(application: &AppHandle, identifier: u32, error: String) -> Result
 fn finish_empty_threads(application: &AppHandle, project: &ProjectItem) -> Result<(), String> {
     for thread in project.threads.iter().filter(|thread| {
         can_finish_empty_dispatch(thread)
+            && (project.continuous_dispatch.slots > 0 || thread.started_by_dispatch)
             && thread.supervision.turns > 0
             && thread.rosen_change.is_some()
     }) {
@@ -426,13 +438,73 @@ fn finish_empty_thread(
             .map_err(|error| error.to_string())
     })?;
     if empty && crate::threads::stop_idle_thread(application, key)? {
+        let nick = if thread.started_by_dispatch && thread.issue.is_some() {
+            let member = format!("thread-{}", thread.id);
+            dispatch_claims(application, project)?
+                .into_iter()
+                .find(|claim| claim.member == member)
+                .map(|claim| claim.nick)
+        } else {
+            None
+        };
         lock(
             application.state::<ManagedStateStore>().inner(),
             "persisted state",
         )?
-        .finish_empty_dispatch(project, thread.id)
+        .finish_empty_dispatch_with_nick(project, thread.id, nick)
         .map_err(|error| error.to_string())?;
         crate::threads::refresh(application, key, false)?;
+    }
+    Ok(())
+}
+
+fn report_no_change_issues(
+    application: &AppHandle,
+    project: &ProjectItem,
+    reader: &mut Reader,
+) -> Result<(), String> {
+    for (&thread, pending) in &project.continuous_dispatch.no_change_reports {
+        if reader
+            .report_retry
+            .get(&thread)
+            .is_some_and(|time| time.elapsed() < Duration::from_secs(30))
+        {
+            continue;
+        }
+        let byline = velocity_threads::issue_activity::issue_byline(
+            project.id,
+            Some(thread),
+            pending.nick.as_deref(),
+        );
+        let result =
+            IssueClient::for_repository(Path::new(&reader.directory), &pending.issue.repository)
+                .and_then(|client| {
+                    client.post_no_change(
+                        pending.issue.number,
+                        &pending.change,
+                        &byline,
+                        &pending.reason,
+                    )
+                });
+        if let Err(error) = result {
+            reader.report_retry.insert(thread, Instant::now());
+            report::<()>(Err(format!(
+                "Could not report no change on {}#{}: {error}",
+                pending.issue.repository, pending.issue.number
+            )));
+            continue;
+        }
+        if let Some(sweeps) = application.try_state::<velocity_threads::ScoutSweeps>() {
+            sweeps.request_no_change_review(project.id);
+        }
+        lock(
+            application.state::<ManagedStateStore>().inner(),
+            "persisted state",
+        )?
+        .finish_no_change_report(project.id, thread)
+        .map_err(|error| error.to_string())?;
+        reader.report_retry.remove(&thread);
+        reader.refreshed = None;
     }
     Ok(())
 }

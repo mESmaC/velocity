@@ -23,6 +23,7 @@ pub(crate) struct Job {
     index: usize,
     target: Option<review_swarm::LandedChange>,
     recovered: Option<SwarmLaunch>,
+    no_change_only: bool,
 }
 
 impl Job {
@@ -32,6 +33,7 @@ impl Job {
         index: usize,
         target: Option<review_swarm::LandedChange>,
         recovered: Option<SwarmLaunch>,
+        no_change_only: bool,
     ) -> Self {
         Self {
             runner,
@@ -39,6 +41,7 @@ impl Job {
             index,
             target,
             recovered,
+            no_change_only,
         }
     }
 
@@ -76,12 +79,16 @@ impl Job {
         let result = async {
             let mut launch = match &self.recovered {
                 Some(launch) => launch.clone(),
-                None => SwarmLaunch::for_job(
-                    &self.runner,
-                    &self.roster,
-                    self.index,
-                    self.target.clone(),
-                )?,
+                None => {
+                    let mut launch = SwarmLaunch::for_job(
+                        &self.runner,
+                        &self.roster,
+                        self.index,
+                        self.target.clone(),
+                    )?;
+                    launch.no_change_only = self.no_change_only;
+                    launch
+                }
             };
             launch.save(&self.runner.job_path(&key))?;
             self.work(
@@ -353,6 +360,9 @@ impl Job {
     }
 
     fn save_workspace<Host: SweepHost>(&self, host: &Host, key: &WorkerKey, launch: &SwarmLaunch) {
+        if launch.no_change_only {
+            return;
+        }
         let nickname = key.1.clone();
         let record = SweepRecord::new(
             now(),
@@ -451,10 +461,23 @@ fn rosen_server(launch: &SwarmLaunch, environment: &[(String, String)]) -> Optio
 }
 
 fn prompt(launch: &SwarmLaunch, roster: &ScoutRoster, instruction: Option<&str>) -> String {
+    let no_change = "Use review_swarm_no_change to list the issues waiting after an empty turn. \
+        Read their discussion, following the GitHub link for any clipped evidence, and verify their acceptance criteria against the current base. \
+        Resolve an already-fixed issue with verification evidence or requeue it with concrete instructions. \
+        Leave the label in place if the blocker still prevents a productive retry.";
+    if launch.no_change_only {
+        return format!(
+            "You are {}, a Review swarm duty agent. {no_change}\n\n\
+             Review the current base without editing it. Report completion through review_swarm_complete \
+             with your summary and no proof features, then end the turn.",
+            launch.nickname,
+        );
+    }
     let work = launch.target.as_ref().map_or_else(
         || {
             format!(
-                "Scout the base adversarially, covering every top-level folder; focus on {:?}.",
+                "Scout the base adversarially, covering every top-level folder; focus on {:?}. \
+                 If review_swarm_no_change is available, {no_change}",
                 roster.rules.focus_areas
             )
         },

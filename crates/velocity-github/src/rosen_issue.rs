@@ -2,9 +2,10 @@
 use serde::Deserialize;
 use serde_json::{Value, json};
 
-use crate::{IssueClient, IssueState, PullRequestError};
+use crate::{GitHubIssue, IssueClient, IssueState, PullRequestError};
 
 const READY_LABEL: &str = "ready-to-close";
+const NO_CHANGE_MARKER: &str = "<!-- velocity-issue-no-change:";
 
 pub enum RosenIssueEffect<'a> {
     Landed { change: &'a str },
@@ -14,6 +15,16 @@ pub enum RosenIssueEffect<'a> {
 }
 
 impl IssueClient {
+    pub const NO_CHANGE_LABEL: &str = "no-change";
+
+    pub fn open_no_change_issues(&self) -> Result<Vec<GitHubIssue>, PullRequestError> {
+        Ok(self
+            .open_issues()?
+            .into_iter()
+            .filter(issue_has_no_change_label)
+            .collect())
+    }
+
     pub fn post_issue_progress(
         &self,
         number: u32,
@@ -23,24 +34,122 @@ impl IssueClient {
     ) -> Result<String, PullRequestError> {
         let issue = self.read_issue(number)?;
         if ready {
-            self.label_issue_ready(number)?;
+            self.label_issue(number, READY_LABEL)?;
         }
         let heading = if ready { "Ready to close · " } else { "" };
         self.add_issue_comment(&issue.id, &format!("{heading}{byline}\n\n{body}"))
     }
 
-    fn label_issue_ready(&self, number: u32) -> Result<(), PullRequestError> {
+    pub fn post_no_change(
+        &self,
+        number: u32,
+        change: &str,
+        byline: &str,
+        reason: &str,
+    ) -> Result<(), PullRequestError> {
+        let marker = format!("{NO_CHANGE_MARKER}{change} -->");
+        if self.has_rosen_comment(number, &marker)? {
+            // A reviewer may have removed the label before the local acknowledgement.
+            return Ok(());
+        }
+        let issue = self.read_issue(number)?;
+        if issue.state == IssueState::Open && !issue_has_no_change_label(&issue) {
+            self.label_issue(number, Self::NO_CHANGE_LABEL)?;
+        }
+        let end = reason.floor_char_boundary(60_000);
+        let truncated = if end < reason.len() {
+            "\n\n[Message truncated.]"
+        } else {
+            ""
+        };
+        self.add_issue_comment(
+            &issue.id,
+            &format!(
+                "## Ended with no change\n\n{byline}\n\n{}{truncated}\n\n{marker}",
+                &reason[..end]
+            ),
+        )?;
+        Ok(())
+    }
+
+    pub fn no_change_discussion(
+        &self,
+        number: u32,
+    ) -> Result<(GitHubIssue, Vec<String>, String), PullRequestError> {
+        let issue = self.read_issue(number)?;
+        if issue.state != IssueState::Open || !issue_has_no_change_label(&issue) {
+            return Err(PullRequestError::Invalid(
+                "The issue is no longer waiting for no-change review".into(),
+            ));
+        }
+        let comments = self.issue_comment_bodies(number)?;
+        let (report, attempt) = comments
+            .iter()
+            .rev()
+            .find_map(|body| {
+                let attempt = body
+                    .lines()
+                    .last()?
+                    .strip_prefix(NO_CHANGE_MARKER)?
+                    .strip_suffix(" -->")?;
+                Some((body, attempt.to_owned()))
+            })
+            .ok_or_else(|| {
+                PullRequestError::Missing("The no-change report is still pending".into())
+            })?;
+        let mut discussion = vec![report.clone()];
+        discussion.extend(
+            comments
+                .iter()
+                .rev()
+                .filter(|body| *body != report)
+                .take(2)
+                .cloned(),
+        );
+        Ok((issue, discussion, attempt))
+    }
+
+    pub fn resolve_no_change(
+        &self,
+        number: u32,
+        attempt: &str,
+        reviewer: &str,
+        evidence: &str,
+        close: bool,
+    ) -> Result<(), PullRequestError> {
+        let (_, _, current) = self.no_change_discussion(number)?;
+        if current != attempt || evidence.trim().is_empty() {
+            return Err(PullRequestError::Invalid(
+                "Review the current report and supply verification or retry instructions".into(),
+            ));
+        }
+        let decision = if close {
+            "verified already fixed"
+        } else {
+            "returned to dispatch"
+        };
+        let marker = format!("<!-- velocity-no-change-review:{current}:{close} -->");
+        let body = format!("Velocity review swarm · `{reviewer}` {decision}.\n\n{evidence}");
+        self.sync_rosen_issue(number, &marker, &body, close.then_some(IssueState::Closed))?;
+        if !close {
+            self.remove_issue_label(number, Self::NO_CHANGE_LABEL)?;
+        }
+        Ok(())
+    }
+
+    fn label_issue(&self, number: u32, name: &str) -> Result<(), PullRequestError> {
         let labels = format!("repos/{}/labels", self.repository());
-        let label = format!("{labels}/{READY_LABEL}");
+        let label = format!("{labels}/{name}");
         if self
             .transport
             .command
             .read::<Value>(&["api", &label])
             .is_err()
-            && let Err(error) =
-                self.transport
-                    .command
-                    .api::<Value>("POST", &labels, &json!({"name": READY_LABEL}))
+            && let Err(error) = self.transport.command.api::<Value>(
+                "POST",
+                &labels,
+                &json!({"name": name, "color": "ededed"}),
+            )
         {
             // Another commenter can create the repository label at the same time.
             self.transport
@@ -49,10 +158,18 @@ impl IssueClient {
                 .map_err(|_| error)?;
         }
         let endpoint = format!("repos/{}/issues/{number}/labels", self.repository());
-        let _: Value =
-            self.transport
-                .command
-                .api("POST", &endpoint, &json!({"labels": [READY_LABEL]}))?;
+        let _: Value = self
+            .transport
+            .command
+            .api("POST", &endpoint, &json!({"labels": [name]}))?;
+        Ok(())
+    }
+
+    fn remove_issue_label(&self, number: u32, label: &str) -> Result<(), PullRequestError> {
+        let endpoint = format!("repos/{}/issues/{number}/labels/{label}", self.repository());
+        self.transport
+            .command
+            .text(&["api", "--method", "DELETE", &endpoint])?;
         Ok(())
     }
 
@@ -176,13 +293,7 @@ impl IssueClient {
                 .iter()
                 .any(|label| label.eq_ignore_ascii_case(READY_LABEL))
         {
-            let endpoint = format!(
-                "repos/{}/issues/{number}/labels/{READY_LABEL}",
-                self.repository()
-            );
-            self.transport
-                .command
-                .text(&["api", "--method", "DELETE", &endpoint])?;
+            self.remove_issue_label(number, READY_LABEL)?;
         }
         let Some(state) = state.filter(|state| *state != issue.state) else {
             return Ok(());
@@ -205,6 +316,13 @@ impl IssueClient {
     }
 
     fn has_rosen_comment(&self, number: u32, marker: &str) -> Result<bool, PullRequestError> {
+        Ok(self
+            .issue_comment_bodies(number)?
+            .iter()
+            .any(|body| body.lines().last() == Some(marker)))
+    }
+
+    fn issue_comment_bodies(&self, number: u32) -> Result<Vec<String>, PullRequestError> {
         #[derive(Deserialize)]
         struct Comment {
             body: String,
@@ -217,8 +335,13 @@ impl IssueClient {
             self.transport.variables(number),
             "/data/repository/issue/comments",
         )?;
-        Ok(comments
-            .iter()
-            .any(|comment| comment.body.lines().any(|line| line == marker)))
+        Ok(comments.into_iter().map(|comment| comment.body).collect())
     }
+}
+
+fn issue_has_no_change_label(issue: &GitHubIssue) -> bool {
+    issue
+        .labels
+        .iter()
+        .any(|label| label.eq_ignore_ascii_case(IssueClient::NO_CHANGE_LABEL))
 }

@@ -31,6 +31,7 @@ struct State {
     planning: BTreeSet<u32>,
     retry: BTreeMap<WorkerKey, Instant>,
     instructions: BTreeMap<u32, String>,
+    no_change_review: BTreeSet<u32>,
     transcripts: BTreeMap<WorkerKey, crate::transcript_view::LiveTranscript>,
 }
 
@@ -90,6 +91,10 @@ impl ReviewSwarms {
             }
         }
         state.instructions.insert(project, instruction.into());
+    }
+
+    pub fn request_no_change_review(&self, project: u32) {
+        self.lock().no_change_review.insert(project);
     }
 
     pub fn dismiss(&self, project: u32, nickname: &str) {
@@ -188,14 +193,22 @@ impl ReviewSwarms {
                 None
             };
             let target = match &recovered {
-                // Keep existing workspaces recoverable, including old scout jobs, but
-                // leave targetless jobs parked while no landed work is pending.
-                Some(job) if job.target.is_some() || !pending.is_empty() => job.target.clone(),
+                // Older scout jobs stay parked without landed work. A no-change
+                // review has an issue to verify even without a land of its own.
+                Some(job) if job.target.is_some() || job.no_change_only || !pending.is_empty() => {
+                    job.target.clone()
+                }
                 None if self.active_count(key.0) < cap => {
                     let Some(target) = self.claim_next(server, &key.1, pending).await? else {
                         continue;
                     };
                     Some(target)
+                }
+                None if pending.is_empty()
+                    && index == 0
+                    && self.lock().no_change_review.contains(&key.0) =>
+                {
+                    None
                 }
                 Some(_) => continue,
                 None => continue,
@@ -245,6 +258,8 @@ impl ReviewSwarms {
                 pending: 0,
             },
         );
+        let no_change_only =
+            target.is_none() && recovered.is_none() && state.no_change_review.remove(&key.0);
         drop(state);
         let job = crate::review_swarm_session::Job::new(
             self.clone(),
@@ -252,6 +267,7 @@ impl ReviewSwarms {
             index,
             target,
             recovered,
+            no_change_only,
         );
         let (runner, host) = (self.clone(), host.clone());
         tokio::spawn(async move {

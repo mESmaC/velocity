@@ -192,7 +192,7 @@ fn issue_brief(
     version_control: velocity_store::VersionControl,
 ) -> String {
     let delivery = if version_control == velocity_store::VersionControl::Rosen {
-        "Follow the Rosen workspace note Velocity gave you. If there is no work to change, explain why and end your turn.".to_owned()
+        "Read the issue discussion for evidence and any instructions for retrying after an empty turn. Follow the Rosen workspace note Velocity gave you. If there is no work to change, explain why and end your turn.".to_owned()
     } else {
         format!(
             "Use issue_comment for starting work, findings that change the plan, and blockers.\n\nYou already have your own worktree and branch. Open a PR against the project's default branch with Fixes #{} in its description. Watch it until it merges, fix failed checks, answer every review comment, resolve addressed threads and re-request review. Never merge your own PR. Messages received while busy are queued.",

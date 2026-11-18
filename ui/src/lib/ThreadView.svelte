@@ -2,6 +2,7 @@
   import PaneState from './PaneState.svelte';
   import Composer from './Composer.svelte';
   import Icon from './Icon.svelte';
+  import Markdown from './Markdown.svelte';
   import PullRequestHistory from './PullRequestHistory.svelte';
   import TokenUsage from './TokenUsage.svelte';
   import TranscriptBlocks from './TranscriptBlocks.svelte';
@@ -165,7 +166,9 @@
               block.ErrorCard ||
               block.Decision,
           )}
-        empty={!thread.blocks.length && !thread.agent_busy}
+        empty={!thread.blocks.length &&
+          !thread.agent_busy &&
+          !thread.no_change_reason}
         message="No updates yet · Send a message to start."
       />
       {#if thread.worked_summary && thread.transcript_mode !== 'FullTranscript'}
@@ -206,17 +209,25 @@
       {#if thread.pull_request_history}<PullRequestHistory
           history={thread.pull_request_history}
         />{/if}
+      {#if thread.no_change_reason}
+        <div class="msg-agent">
+          <div class="status-line"><strong>Ended with no change</strong></div>
+          <Markdown text={thread.no_change_reason} />
+        </div>
+      {/if}
     </div>
   </div>
 
-  <div class="dock">
-    <Composer
-      {layout}
-      {send}
-      id="thread-composer"
-      placeholder={thread.composer_placeholder}
-      modelPill={thread.model_pill}
-      threadIdentifier={Number(thread.identifier)}
-    />
-  </div>
+  {#if !thread.no_change_reason}
+    <div class="dock">
+      <Composer
+        {layout}
+        {send}
+        id="thread-composer"
+        placeholder={thread.composer_placeholder}
+        modelPill={thread.model_pill}
+        threadIdentifier={Number(thread.identifier)}
+      />
+    </div>
+  {/if}
 </section>

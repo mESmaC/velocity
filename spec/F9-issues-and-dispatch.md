@@ -34,6 +34,11 @@ On Rosen, Velocity posts the land comment with the change ID and commit.
 The author can call `issue_ready_to_close { issue, body }` to post completion evidence and add the `ready-to-close` label.
 The author leaves the issue open for the review swarm or main watcher (F7).
 
+**Empty dispatch turns (#469).** Velocity adds the `no-change` label and posts an **Ended with no change** comment with the agent's last message and thread link when an automatically dispatched issue thread ends with an empty Rosen change (F8).
+Velocity retries an undelivered report across restarts and uses the Rosen change ID to avoid duplicate comments.
+A person or review swarm agent can close the issue after independently verifying the current base meets its acceptance criteria, or post concrete retry instructions and remove the label.
+If the blocker still prevents a productive retry, the issue stays labelled.
+
 **Git projects.** The existing Issues panel and dispatch apply while git project mode is supported.
 
 - **The Issues panel** lists open GitHub issues: number, title, label and the scout that filed it.

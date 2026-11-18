@@ -24,6 +24,18 @@ pub struct ContinuousDispatch {
     /// Empty threads whose stopped workspace and claims still need cleanup.
     #[serde(default)]
     pub cleanup: Vec<u32>,
+    /// Issue reports must survive workspace cleanup, thread deletion and failed GitHub calls.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    #[specta(skip)]
+    pub no_change_reports: BTreeMap<u32, NoChangeReport>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct NoChangeReport {
+    pub issue: crate::issues::ThreadIssue,
+    pub change: String,
+    pub nick: Option<String>,
+    pub reason: String,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, Type)]
@@ -37,6 +49,13 @@ pub struct DispatchAttempt {
 }
 
 impl ContinuousDispatch {
+    pub fn reporting_no_change(&self, repository: &str, number: u32) -> bool {
+        self.no_change_reports.values().any(|report| {
+            report.issue.number == number
+                && report.issue.repository.eq_ignore_ascii_case(repository)
+        })
+    }
+
     pub fn attempted(&self, repository: &str, number: u32, updated_at: &str) -> bool {
         self.attempts.iter().any(|attempt| {
             attempt.repository.eq_ignore_ascii_case(repository)
@@ -168,6 +187,9 @@ impl StateStore {
             || item
                 .continuous_dispatch
                 .attempted(&issue.repository, issue.number, &updated_at)
+            || item
+                .continuous_dispatch
+                .reporting_no_change(&issue.repository, issue.number)
         {
             return Err(ThreadError::InvalidLaunch(
                 "Dispatch settings or capacity changed".into(),
@@ -254,11 +276,37 @@ fn mark_dispatch(project: &mut ProjectItem, selected: Option<u32>, thread: u32) 
     }
 }
 
+fn no_change_reason(thread: &crate::ThreadItem) -> String {
+    use velocity_core::thread_view_model::TranscriptBlock;
+
+    thread
+        .transcript
+        .iter()
+        .rev()
+        .find_map(|block| match block {
+            TranscriptBlock::AgentMessage { paragraphs } => {
+                let message = paragraphs.join("\n\n");
+                (!message.trim().is_empty()).then_some(message)
+            }
+            _ => None,
+        })
+        .unwrap_or_else(|| "The agent left no final message.".into())
+}
+
 impl StateStore {
     pub fn finish_empty_dispatch(
         &mut self,
         project: u32,
         identifier: u32,
+    ) -> Result<(), ThreadError> {
+        self.finish_empty_dispatch_with_nick(project, identifier, None)
+    }
+
+    pub fn finish_empty_dispatch_with_nick(
+        &mut self,
+        project: u32,
+        identifier: u32,
+        nick: Option<String>,
     ) -> Result<(), ThreadError> {
         let mut next = self.state.clone();
         let item = next
@@ -280,7 +328,20 @@ impl StateStore {
             ));
         }
         thread.state = ThreadState::Done;
+        let reason = no_change_reason(thread);
+        thread.no_change_reason = Some(reason.clone());
         if thread.started_by_dispatch {
+            if let (Some(issue), Some(change)) = (&thread.issue, &thread.rosen_change) {
+                item.continuous_dispatch.no_change_reports.insert(
+                    identifier,
+                    NoChangeReport {
+                        issue: issue.clone(),
+                        change: change.clone(),
+                        nick,
+                        reason,
+                    },
+                );
+            }
             for task in &mut item.tasks {
                 if task.assigned_thread_id == Some(identifier) && task.state == TaskState::Now {
                     item.continuous_dispatch
@@ -296,6 +357,32 @@ impl StateStore {
             item.continuous_dispatch.cleanup.push(identifier);
         }
         self.commit(next)?;
+        Ok(())
+    }
+
+    pub fn finish_no_change_report(
+        &mut self,
+        project: u32,
+        identifier: u32,
+    ) -> Result<(), ThreadError> {
+        let mut next = self.state.clone();
+        let dispatch = &mut next
+            .projects
+            .iter_mut()
+            .find(|item| item.id == project)
+            .ok_or(ThreadError::UnknownProject(project))?
+            .continuous_dispatch;
+        if let Some(report) = dispatch.no_change_reports.remove(&identifier) {
+            // The GitHub label now owns eligibility. Removing it reopens dispatch
+            // even if GitHub gives the issue the same updated_at timestamp.
+            dispatch.attempts.retain(|attempt| {
+                attempt.number != report.issue.number
+                    || !attempt
+                        .repository
+                        .eq_ignore_ascii_case(&report.issue.repository)
+            });
+            self.commit(next)?;
+        }
         Ok(())
     }
 
@@ -342,10 +429,20 @@ mod tests {
             issue.clone(),
             "version-1".into(),
         )?;
+        let reason = "Computer Use failed. I could not verify the issue.";
         store.update_thread(1, identifier, |thread| {
-            thread.activity = AgentActivity::Idle
+            thread.activity = AgentActivity::Idle;
+            thread.rosen_change = Some("empty-change".into());
+            std::sync::Arc::make_mut(&mut thread.transcript).extend([
+                velocity_core::thread_view_model::TranscriptBlock::AgentMessage {
+                    paragraphs: vec!["I will check the issue.".into()],
+                },
+                velocity_core::thread_view_model::TranscriptBlock::AgentMessage {
+                    paragraphs: vec![reason.into()],
+                },
+            ]);
         })?;
-        store.finish_empty_dispatch(1, identifier)?;
+        store.finish_empty_dispatch_with_nick(1, identifier, Some("maple".into()))?;
         store.set_continuous_dispatch(1, 2, true)?;
         drop(store);
         let mut loaded = StateStore::load_or_default(&directory)?;
@@ -361,12 +458,20 @@ mod tests {
         assert_eq!(project.threads[0].state, ThreadState::Done);
         assert_eq!(project.active_thread_id, None);
         assert_eq!(project.threads[0].issue.as_ref(), Some(&issue));
+        assert_eq!(project.threads[0].no_change_reason.as_deref(), Some(reason));
+        let report = &project.continuous_dispatch.no_change_reports[&identifier];
+        assert_eq!(report.issue, issue);
+        assert_eq!(report.change, "empty-change");
+        assert_eq!(report.reason, reason);
+        assert_eq!(report.nick.as_deref(), Some("maple"));
         loaded.set_continuous_dispatch(1, 2, false)?;
         assert!(
             loaded
-                .record_continuous_dispatch(1, thread, issue, "version-1".into())
+                .record_continuous_dispatch(1, thread.clone(), issue.clone(), "version-2".into())
                 .is_err()
         );
+        loaded.finish_no_change_report(1, identifier)?;
+        loaded.record_continuous_dispatch(1, thread, issue, "version-1".into())?;
         std::fs::remove_dir_all(directory)?;
         Ok(())
     }

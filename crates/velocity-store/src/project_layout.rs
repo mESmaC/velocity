@@ -200,6 +200,7 @@ fn thread_detail(thread: &ThreadItem, settings: &crate::Settings) -> ThreadDetai
             thread.activity,
             AgentActivity::Thinking | AgentActivity::Executing
         ),
+        no_change_reason: thread.no_change_reason.clone(),
         show_work: false,
         worked_summary: None,
         pull_request_history: thread
@@ -273,6 +274,9 @@ fn thread_group(state: ThreadState) -> ThreadGroup {
 }
 
 pub(crate) fn thread_metadata(thread: &ThreadItem) -> String {
+    if thread.no_change_reason.is_some() {
+        return "Ended with no change".into();
+    }
     if thread.provider_queued
         && thread.activity != AgentActivity::Idle
         && matches!(
