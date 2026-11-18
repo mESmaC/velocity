@@ -5,8 +5,10 @@
     skillSettingsCommands,
     skillLibraryCommands,
     skillPackCommands,
+    onSkillPackInstallations,
     type SkillsSettingsView,
     type SkillSettingsEdit,
+    type SkillPackInstallationsChanged,
     type SkillPackUpdatePreview,
     type LayoutAction,
   } from './ipc';
@@ -23,25 +25,53 @@
   let error = $state('');
   let busy = $state(false);
   let repository = $state('');
+  let installations = $state<SkillPackInstallationsChanged>({
+    revision: 0,
+    packs: [],
+  });
+  let customInstallations = $derived(
+    installations.packs.filter(
+      (pack) => !pack.built_in && pack.status.state !== 'complete',
+    ),
+  );
   let preview = $state<SkillPackUpdatePreview | null>(null);
   let generation = 0;
   $effect(() => {
     const identifier = projectIdentifier;
-    const request = ++generation;
     view = null;
     error = '';
     preview = null;
-    if (identifier !== null) {
-      skillSettingsCommands
-        .read(identifier)
-        .then((result) => {
-          if (request !== generation) return;
-          view = result;
-        })
-        .catch((failure) => {
-          if (request === generation) error = String(failure);
-        });
+    if (identifier !== null) void refresh(identifier);
+  });
+  $effect(() => {
+    let disposed = false;
+    let stop: (() => void) | undefined;
+    function apply(next: SkillPackInstallationsChanged) {
+      if (disposed || next.revision <= installations.revision) return;
+      const completed = next.packs.some(
+        (pack) =>
+          pack.status.state === 'complete' &&
+          installations.packs.find(
+            (previous) => previous.pack_id === pack.pack_id,
+          )?.status.state !== 'complete',
+      );
+      installations = next;
+      if (completed && projectIdentifier !== null)
+        void refresh(projectIdentifier);
     }
+    void onSkillPackInstallations(({ payload }) => apply(payload))
+      .then(async (unlisten) => {
+        if (disposed) return unlisten();
+        stop = unlisten;
+        apply(await skillLibraryCommands.installations());
+      })
+      .catch((failure: unknown) => {
+        if (!disposed) error = String(failure);
+      });
+    return () => {
+      disposed = true;
+      stop?.();
+    };
   });
   async function run(operation: () => Promise<void>) {
     if (busy) return;
@@ -56,26 +86,31 @@
     }
   }
   async function refresh(identifier: number) {
-    const result = await skillSettingsCommands.read(identifier);
-    if (projectIdentifier !== identifier) return;
-    view = result;
-    error = '';
+    const request = ++generation;
+    try {
+      const result = await skillSettingsCommands.read(identifier);
+      if (projectIdentifier === identifier && request === generation)
+        view = result;
+    } catch (failure) {
+      if (projectIdentifier === identifier && request === generation)
+        error = String(failure);
+    }
   }
   function edit(change: SkillSettingsEdit) {
     const identifier = projectIdentifier;
     if (identifier === null) return;
     void run(async () => {
-      const result = await skillSettingsCommands.edit(identifier, change);
-      if (projectIdentifier === identifier) view = result;
+      await skillSettingsCommands.edit(identifier, change);
+      if (projectIdentifier === identifier) await refresh(identifier);
     });
   }
   function install(source: string) {
-    const identifier = projectIdentifier;
-    if (identifier === null) return;
-    void run(async () => {
-      await skillLibraryCommands.installPack(source, null, null);
-      await refresh(identifier);
-    });
+    error = '';
+    void skillLibraryCommands
+      .installPack(source, null, null)
+      .catch((failure: unknown) => {
+        error = String(failure);
+      });
   }
   function generate(regenerate: boolean) {
     const identifier = projectIdentifier;
@@ -146,6 +181,9 @@
           </div>
           <div class="skill-cards">
             {#each view.cards as card (card.catalog.id)}
+              {@const status = installations.packs.find(
+                (pack) => pack.pack_id === card.catalog.id,
+              )?.status}
               <div
                 class="sk"
                 class:on={card.installed && card.selection.enabled}
@@ -254,13 +292,24 @@
                       >Check for updates</button
                     >
                   {:else}<button
-                      disabled={busy}
+                      disabled={status?.state === 'running' ||
+                        status?.state === 'complete'}
                       onclick={() => install(card.catalog.id)}
-                      >Install pack</button
+                      >{status?.state === 'failed'
+                        ? 'Retry install'
+                        : 'Install pack'}</button
                     >{/if}
-                  <span
-                    >updates are reviewed as a diff before the pin moves</span
-                  >
+                  {#if !card.installed && status}
+                    <span role="status"
+                      >{status.state === 'complete'
+                        ? 'Installed'
+                        : status.message}</span
+                    >
+                  {:else}
+                    <span
+                      >updates are reviewed as a diff before the pin moves</span
+                    >
+                  {/if}
                 </div>
               </div>
             {/each}
@@ -283,11 +332,22 @@
                 aria-label="Skill pack repository"
                 placeholder="owner/repo"
                 bind:value={repository}
-                disabled={busy}
               /></label
             >
-            <button disabled={busy || !repository.trim()}>Add</button>
+            <button
+              disabled={!repository.trim() ||
+                customInstallations.some(
+                  (pack) => pack.status.state === 'running',
+                )}>Add</button
+            >
           </form>
+          {#each customInstallations as pack (pack.pack_id)}
+            {#if pack.status.state !== 'complete'}
+              <p class="worktree-description" role="status">
+                {pack.name} · {pack.status.message}
+              </p>
+            {/if}
+          {/each}
         </section>
         {#if preview}<section>
             <h2>Pack update</h2>

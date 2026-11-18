@@ -15,6 +15,11 @@ Any other repo that follows the Agent Skills standard can be added.
 **Library:**
 - Velocity keeps one library of packs on your machine.
   A pack is a git clone pinned to a commit.
+- Installing a pack runs in the background and shows cloning, checkout, pinning and discovery on its Settings card.
+  A failed install shows a retry action, and Velocity records the install steps and failures in `velocity.log`.
+  Retrying after an interruption reuses a usable clone or replaces incomplete staging data.
+  Agent launches continue during installation and see the new pack only after Velocity atomically saves its registry entry.
+  A fresh install at the remote tip uses a shallow clone.
 - **Updates:** Velocity checks for new commits and shows the diff of `SKILL.md` files, scripts and data before moving the pin.
   A pack never updates silently, because a skill is instructions every agent follows.
 - **Windows:** packs are cloned with `core.symlinks=true` and their Python runs with `PYTHONUTF8=1`.

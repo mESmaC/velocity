@@ -141,6 +141,7 @@ fn bindings() -> Builder<tauri::Wry> {
         pull_request_panel::open_project_pull_request,
         shared_mcp::edit_shared_mcp_servers,
         skills::get_skill_library,
+        skills::get_skill_pack_installations,
         skills::get_skill_settings,
         skills::set_skill_settings,
         skills::install_skill_pack,
@@ -188,6 +189,7 @@ fn event_bindings(builder: Builder<tauri::Wry>) -> Builder<tauri::Wry> {
         .typ::<issue_panel::IssuePanelChanged>()
         .typ::<worktree_settings::WorktreeInventoryChanged>()
         .typ::<pull_request_panel::PullRequestPanelChanged>()
+        .typ::<skills::SkillPackInstallationsChanged>()
         .typ::<threads::ThreadStatusChanged>()
         .typ::<threads::ThreadStepRecorded>()
         .typ::<updates::UpdateStatusChanged>()
@@ -217,6 +219,10 @@ fn event_bindings(builder: Builder<tauri::Wry>) -> Builder<tauri::Wry> {
         .constant(
             "PULL_REQUEST_PANEL_EVENT",
             pull_request_panel::PullRequestPanelChanged::NAME,
+        )
+        .constant(
+            "SKILL_PACK_INSTALLATIONS_EVENT",
+            skills::SkillPackInstallationsChanged::NAME,
         )
         .constant("THREAD_STATUS_EVENT", threads::ThreadStatusChanged::NAME)
         .constant("THREAD_STEP_EVENT", threads::ThreadStepRecorded::NAME)
@@ -296,6 +302,7 @@ pub fn run() -> anyhow::Result<()> {
         issue_panel::IssuePanelChanged,
         worktree_settings::WorktreeInventoryChanged,
         pull_request_panel::PullRequestPanelChanged,
+        skills::SkillPackInstallationsChanged,
         threads::ThreadStatusChanged,
         threads::ThreadStepRecorded,
         updates::UpdateStatusChanged

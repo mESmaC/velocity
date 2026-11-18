@@ -2,14 +2,15 @@
 //! update diff preview, and `PYTHONUTF8=1` script execution (SPEC.md F18).
 
 use std::ffi::OsStr;
-use std::fs;
+use std::fs::{self, OpenOptions};
+use std::io::Write;
 use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 
 use crate::SkillLibraryError;
 use crate::bundles::{SkillPackBundleCounts, bundle_skill_counts};
-use crate::catalog::{SkillPackCatalogEntry, built_in_catalog, resolve_pack_source};
+use crate::catalog::{SkillPackCatalogEntry, built_in_catalog};
 use crate::manifest::{
     DiscoveredSkill, SkillDiffCategory, classify_pack_path, discover_pack_skills,
     mark_mirrored_skills,
@@ -45,6 +46,30 @@ pub struct InstalledSkillPack {
     /// Candidate upstream commit found by `check_skill_pack_update`, waiting for user confirmation.
     #[serde(default)]
     pub pending_update: Option<SkillPackUpdatePreview>,
+}
+
+impl InstalledSkillPack {
+    pub(crate) fn from_checkout(
+        catalog: SkillPackCatalogEntry,
+        source_url: String,
+        pinned_commit: String,
+        destination: &Path,
+        skills: Vec<DiscoveredSkill>,
+    ) -> Self {
+        Self {
+            id: catalog.id,
+            name: catalog.name,
+            repository: catalog.repository,
+            source_url,
+            built_in: catalog.built_in,
+            short_commit: short_sha(&pinned_commit),
+            pinned_commit,
+            clone_path: destination.display().to_string(),
+            symlinks_enabled: read_symlinks_config(destination),
+            skills,
+            pending_update: None,
+        }
+    }
 }
 
 /// Diff of a single file between the pinned commit and a candidate upstream commit (SPEC.md F18).
@@ -179,43 +204,6 @@ impl SkillLibrary {
             .ok_or_else(|| SkillLibraryError::PackNotInstalled(pack_id.to_owned()))
     }
 
-    /// Clones a skill pack into the library with `core.symlinks=true` and `core.longpaths=true`
-    /// and pins it to `initial_pin` (or the remote's `HEAD` when `None`).
-    pub fn install_pack(
-        &self,
-        pack_or_repo: &str,
-        source_override: Option<&str>,
-        initial_pin: Option<&str>,
-    ) -> Result<InstalledSkillPack, SkillLibraryError> {
-        let (catalog_entry, remote_url) = resolve_pack_source(pack_or_repo, source_override)?;
-        let clone_dir = self.pack_directory(&catalog_entry.id);
-        if clone_dir.exists() {
-            fs::remove_dir_all(&clone_dir).map_err(|source| SkillLibraryError::Io {
-                path: clone_dir.clone(),
-                source,
-            })?;
-        }
-        clone_pack_with_symlinks(&self.root, &remote_url, &clone_dir)?;
-        let pinned_commit = checkout_pinned_commit(&clone_dir, initial_pin)?;
-        let symlinks_enabled = read_symlinks_config(&clone_dir);
-        let skills = discover_skills(&clone_dir, &catalog_entry.name)?;
-        let installed = InstalledSkillPack {
-            id: catalog_entry.id,
-            name: catalog_entry.name,
-            repository: catalog_entry.repository,
-            source_url: remote_url,
-            built_in: catalog_entry.built_in,
-            short_commit: short_sha(&pinned_commit),
-            pinned_commit,
-            clone_path: clone_dir.display().to_string(),
-            symlinks_enabled,
-            skills,
-            pending_update: None,
-        };
-        self.upsert_installed(installed.clone())?;
-        Ok(installed)
-    }
-
     /// Fetches new commits from `origin` without moving the pack's pinned checkout, and builds
     /// the diff of `SKILL.md` files, scripts, and data between the pinned commit and the
     /// fetched candidate commit (SPEC.md F18).
@@ -223,19 +211,14 @@ impl SkillLibrary {
         &self,
         pack_id: &str,
     ) -> Result<SkillPackUpdatePreview, SkillLibraryError> {
-        let mut registry = self.load_registry()?;
-        let pack = registry
-            .installed
-            .iter_mut()
-            .find(|item| item.id == pack_id)
-            .ok_or_else(|| SkillLibraryError::PackNotInstalled(pack_id.to_owned()))?;
+        let mut pack = self.installed_pack(pack_id)?;
         let clone_dir = PathBuf::from(&pack.clone_path);
         let head_before = resolve_commit(&clone_dir, "HEAD")?;
         run_git(&clone_dir, ["fetch", "--quiet", "origin"])?;
         let candidate_commit = resolve_fetched_candidate(&clone_dir, &head_before)?;
         let preview = build_update_preview(&clone_dir, pack_id, &head_before, &candidate_commit)?;
         pack.pending_update = (!preview.up_to_date).then(|| preview.clone());
-        self.save_registry(&registry)?;
+        self.upsert_installed(pack)?;
         Ok(preview)
     }
 
@@ -247,12 +230,7 @@ impl SkillLibrary {
         pack_id: &str,
         expected_candidate_commit: &str,
     ) -> Result<InstalledSkillPack, SkillLibraryError> {
-        let mut registry = self.load_registry()?;
-        let pack = registry
-            .installed
-            .iter_mut()
-            .find(|item| item.id == pack_id)
-            .ok_or_else(|| SkillLibraryError::PackNotInstalled(pack_id.to_owned()))?;
+        let mut pack = self.installed_pack(pack_id)?;
         let pending = pack
             .pending_update
             .as_ref()
@@ -270,9 +248,8 @@ impl SkillLibrary {
         pack.short_commit = short_sha(&pinned_commit);
         pack.skills = discover_skills(&clone_dir, &pack.name)?;
         pack.pending_update = None;
-        let updated = pack.clone();
-        self.save_registry(&registry)?;
-        Ok(updated)
+        self.upsert_installed(pack.clone())?;
+        Ok(pack)
     }
 
     /// Runs a Python script inside an installed pack with `PYTHONUTF8=1` and `PYTHONIOENCODING=utf-8`
@@ -294,7 +271,7 @@ impl SkillLibrary {
         run_python_utf8(&clone_dir, &script_path, arguments)
     }
 
-    fn pack_directory(&self, pack_id: &str) -> PathBuf {
+    pub(crate) fn pack_directory(&self, pack_id: &str) -> PathBuf {
         let folder = self.root.join(PACKS_DIRECTORY_NAME);
         let base = fs::canonicalize(&folder).unwrap_or(folder);
         base.join(pack_id)
@@ -306,25 +283,48 @@ impl SkillLibrary {
 
     fn load_registry(&self) -> Result<PersistedRegistry, SkillLibraryError> {
         let path = self.registry_path();
-        if !path.is_file() {
-            return Ok(PersistedRegistry::default());
+        match fs::read(&path) {
+            Ok(bytes) => Ok(serde_json::from_slice(&bytes)?),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                Ok(PersistedRegistry::default())
+            }
+            Err(source) => Err(SkillLibraryError::Io { path, source }),
         }
-        let bytes = fs::read(&path).map_err(|source| SkillLibraryError::Io { path, source })?;
-        Ok(serde_json::from_slice(&bytes)?)
     }
 
     fn save_registry(&self, registry: &PersistedRegistry) -> Result<(), SkillLibraryError> {
         let path = self.registry_path();
-        let temporary = self.root.join(".skills-library.json.tmp");
-        let serialized = serde_json::to_vec_pretty(registry)?;
-        fs::write(&temporary, serialized).map_err(|source| SkillLibraryError::Io {
-            path: temporary.clone(),
+        let io_error = |source| SkillLibraryError::Io {
+            path: path.clone(),
             source,
-        })?;
-        fs::rename(&temporary, &path).map_err(|source| SkillLibraryError::Io { path, source })
+        };
+        let mut temporary = tempfile::NamedTempFile::new_in(&self.root).map_err(io_error)?;
+        temporary
+            .write_all(&serde_json::to_vec_pretty(registry)?)
+            .and_then(|()| temporary.as_file().sync_all())
+            .map_err(io_error)?;
+        temporary
+            .persist(&path)
+            .map_err(|error| io_error(error.error))?;
+        Ok(())
     }
 
-    fn upsert_installed(&self, pack: InstalledSkillPack) -> Result<(), SkillLibraryError> {
+    pub(crate) fn upsert_installed(
+        &self,
+        pack: InstalledSkillPack,
+    ) -> Result<(), SkillLibraryError> {
+        // Re-read while holding the writer lease so simultaneous pack jobs keep both entries.
+        let path = self.root.join(".skills-library.lock");
+        let lease = OpenOptions::new()
+            .create(true)
+            .truncate(false)
+            .write(true)
+            .open(&path)
+            .and_then(|file| {
+                file.lock()?;
+                Ok(file)
+            })
+            .map_err(|source| SkillLibraryError::Io { path, source })?;
         let mut registry = self.load_registry()?;
         if let Some(existing) = registry
             .installed
@@ -335,46 +335,10 @@ impl SkillLibrary {
         } else {
             registry.installed.push(pack);
         }
-        self.save_registry(&registry)
+        self.save_registry(&registry)?;
+        drop(lease);
+        Ok(())
     }
-}
-
-/// Clones a skill pack repository with `core.symlinks=true` and `core.longpaths=true` (SPEC.md F18).
-/// If Windows rejects symlink creation during clone because Developer Mode is off, falls back to
-/// cloning with `core.symlinks=true` recorded in repository config and materializes in-repo
-/// pointer files so `claude-skills` mirror folders still resolve to their target directories.
-fn clone_pack_with_symlinks(
-    working_dir: &Path,
-    remote_url: &str,
-    destination: &Path,
-) -> Result<(), SkillLibraryError> {
-    let destination_str = strip_verbatim_prefix(destination);
-    let clone_attempt = run_git(
-        working_dir,
-        [
-            "-c",
-            "core.symlinks=true",
-            "-c",
-            "core.longpaths=true",
-            "clone",
-            "--no-checkout",
-            remote_url,
-            &destination_str,
-        ],
-    );
-    clone_attempt?;
-    let _ = run_git(destination, ["config", "core.symlinks", "true"]);
-    let _ = run_git(destination, ["config", "core.longpaths", "true"]);
-    if run_git(
-        destination,
-        ["-c", "core.symlinks=true", "checkout", "-f", "HEAD"],
-    )
-    .is_err()
-    {
-        run_git(destination, ["checkout", "-f", "HEAD"])?;
-    }
-    materialize_symlink_pointers(destination)?;
-    Ok(())
 }
 
 fn checkout_pinned_commit(
@@ -386,38 +350,63 @@ fn checkout_pinned_commit(
         .filter(|s| !s.is_empty())
         .unwrap_or("HEAD");
     let commit = resolve_commit(clone_dir, rev)?;
-    if run_git(
-        clone_dir,
-        [
-            "-c",
-            "core.symlinks=true",
-            "checkout",
-            "--detach",
-            "-f",
-            &commit,
-        ],
-    )
-    .is_err()
-    {
-        run_git(clone_dir, ["checkout", "--detach", "-f", &commit])?;
-    }
+    #[cfg(windows)]
+    remove_pack_junctions(clone_dir)?;
+    checkout_with_symlinks(&commit, |arguments| {
+        run_git(clone_dir, arguments).map(|_| ())
+    })?;
     materialize_symlink_pointers(clone_dir)?;
     resolve_commit(clone_dir, "HEAD")
 }
 
-/// Ensures git symlink entries (`120000`) inside a pack resolve as real directories or files
-/// on Windows even when the OS refuses native symlink creation without elevation: if git wrote
-/// a plain pointer file whose text names a relative directory inside the pack, replaces the
-/// pointer file with a Windows directory junction (`mklink /J`) or copies the target file.
-fn materialize_symlink_pointers(clone_dir: &Path) -> Result<(), SkillLibraryError> {
-    let output = run_git(clone_dir, ["ls-files", "-s"])?;
-    for line in output.lines() {
-        let Some((meta, relative_path)) = line.split_once('\t') else {
-            continue;
-        };
-        if !meta.starts_with("120000 ") {
-            continue;
+pub(crate) fn checkout_with_symlinks(
+    commit: &str,
+    mut git: impl FnMut(&[&str]) -> Result<(), SkillLibraryError>,
+) -> Result<(), SkillLibraryError> {
+    let checkout = [
+        "-c",
+        "core.symlinks=true",
+        "checkout",
+        "--detach",
+        "-f",
+        commit,
+    ];
+    match git(&checkout) {
+        #[cfg(windows)]
+        Err(SkillLibraryError::GitCommand { stderr, .. })
+            if stderr.contains("unable to create symlink") =>
+        {
+            // Keep the repo config enabled and materialize Git's pointers after checkout.
+            let mut fallback = checkout;
+            fallback[1] = "core.symlinks=false";
+            git(&fallback)
         }
+        result => result,
+    }
+}
+
+#[cfg(windows)]
+pub(crate) fn remove_pack_junctions(clone_dir: &Path) -> Result<(), SkillLibraryError> {
+    use std::os::windows::fs::MetadataExt;
+    const DIRECTORY_REPARSE_POINT: u32 = 0x10 | 0x400;
+    for relative_path in tracked_links(clone_dir)? {
+        let path = clone_dir.join(relative_path);
+        if fs::symlink_metadata(&path).is_ok_and(|metadata| {
+            metadata.file_attributes() & DIRECTORY_REPARSE_POINT == DIRECTORY_REPARSE_POINT
+        }) {
+            fs::remove_dir(&path).map_err(|source| SkillLibraryError::Io { path, source })?;
+        }
+    }
+    Ok(())
+}
+
+/// Makes Git's plain-text symlink fallbacks resolve inside the pack without Developer Mode.
+pub(crate) fn materialize_symlink_pointers(clone_dir: &Path) -> Result<(), SkillLibraryError> {
+    let canonical_clone = fs::canonicalize(clone_dir).map_err(|source| SkillLibraryError::Io {
+        path: clone_dir.to_owned(),
+        source,
+    })?;
+    for relative_path in tracked_links(clone_dir)? {
         let link_path = clone_dir.join(relative_path);
         let Ok(metadata) = fs::symlink_metadata(&link_path) else {
             continue;
@@ -436,69 +425,34 @@ fn materialize_symlink_pointers(clone_dir: &Path) -> Result<(), SkillLibraryErro
             continue;
         };
         let target_path = parent.join(target_rel);
-        let Ok(canonical_clone) = fs::canonicalize(clone_dir) else {
-            continue;
-        };
         let Ok(canonical_target) = fs::canonicalize(&target_path) else {
             continue;
         };
         if !canonical_target.starts_with(&canonical_clone) {
             continue;
         }
-        let _ = fs::remove_file(&link_path);
+        let io_error = |source| SkillLibraryError::Io {
+            path: link_path.clone(),
+            source,
+        };
         if canonical_target.is_dir() {
-            create_directory_link(&link_path, &canonical_target)?;
+            fs::remove_file(&link_path).map_err(io_error)?;
+            create_directory_link(&link_path, &canonical_target).map_err(io_error)?;
         } else if canonical_target.is_file() {
-            let _ = fs::copy(&canonical_target, &link_path);
+            fs::copy(&canonical_target, &link_path).map_err(io_error)?;
         }
     }
     Ok(())
 }
 
 #[cfg(windows)]
-fn create_directory_link(link_path: &Path, target_dir: &Path) -> Result<(), SkillLibraryError> {
-    if std::os::windows::fs::symlink_dir(target_dir, link_path).is_ok() {
-        return Ok(());
-    }
-    use std::os::windows::process::CommandExt;
-    let link_str = strip_verbatim_prefix(link_path);
-    let target_str = strip_verbatim_prefix(target_dir);
-    // The link path comes from the pack's own tree. cmd.exe treats `&`, `|`, `^`, `<`, `>`
-    // and parentheses in an unquoted argument as syntax, and Rust quotes only arguments with
-    // spaces, so both paths are always quoted. `%` expands and `"` ends a quote even then.
-    if [&link_str, &target_str]
-        .iter()
-        .any(|path| path.contains(['"', '%']))
-    {
-        return Err(SkillLibraryError::GitCommand {
-            command: format!("mklink /J {link_str} {target_str}"),
-            stderr: "the pack path contains a character cmd.exe cannot take literally".into(),
-        });
-    }
-    let output = crate::process::hidden_command("cmd")
-        .args(["/C", "mklink", "/J"])
-        .raw_arg(format!("\"{link_str}\""))
-        .raw_arg(format!("\"{target_str}\""))
-        .output()
-        .map_err(|source| SkillLibraryError::Io {
-            path: link_path.to_path_buf(),
-            source,
-        })?;
-    if !output.status.success() {
-        return Err(SkillLibraryError::GitCommand {
-            command: format!("mklink /J {link_str} {target_str}"),
-            stderr: String::from_utf8_lossy(&output.stderr).trim().to_owned(),
-        });
-    }
-    Ok(())
+fn create_directory_link(link_path: &Path, target_dir: &Path) -> std::io::Result<()> {
+    junction::create(target_dir, link_path)
 }
 
 #[cfg(not(windows))]
-fn create_directory_link(link_path: &Path, target_dir: &Path) -> Result<(), SkillLibraryError> {
-    std::os::unix::fs::symlink(target_dir, link_path).map_err(|source| SkillLibraryError::Io {
-        path: link_path.to_path_buf(),
-        source,
-    })
+fn create_directory_link(link_path: &Path, target_dir: &Path) -> std::io::Result<()> {
+    std::os::unix::fs::symlink(target_dir, link_path)
 }
 
 fn read_symlinks_config(clone_dir: &Path) -> bool {
@@ -507,9 +461,12 @@ fn read_symlinks_config(clone_dir: &Path) -> bool {
         .unwrap_or(false)
 }
 
-fn resolve_commit(clone_dir: &Path, rev: &str) -> Result<String, SkillLibraryError> {
+pub(crate) fn resolve_commit(clone_dir: &Path, rev: &str) -> Result<String, SkillLibraryError> {
     let commit_ref = format!("{rev}^{{commit}}");
-    let output = run_git(clone_dir, ["rev-parse", "--verify", &commit_ref])?;
+    let output = run_git(
+        clone_dir,
+        ["rev-parse", "--verify", "--end-of-options", &commit_ref],
+    )?;
     Ok(output.trim().to_owned())
 }
 
@@ -612,7 +569,7 @@ fn commits_match(candidate: &str, provided: &str) -> bool {
                     .starts_with(&provided.to_ascii_lowercase())))
 }
 
-fn discover_skills(
+pub(crate) fn discover_skills(
     clone_dir: &Path,
     name: &str,
 ) -> Result<Vec<DiscoveredSkill>, SkillLibraryError> {
@@ -637,8 +594,11 @@ fn short_sha(commit: &str) -> String {
     commit.chars().take(7).collect()
 }
 
-fn strip_verbatim_prefix(path: &Path) -> String {
+pub(crate) fn strip_verbatim_prefix(path: &Path) -> String {
     let raw = path.to_string_lossy();
+    if let Some(network_path) = raw.strip_prefix(r"\\?\UNC\") {
+        return format!(r"\\{network_path}");
+    }
     raw.strip_prefix(r"\\?\").unwrap_or(&raw).to_owned()
 }
 

@@ -8,6 +8,7 @@ pub mod bundles;
 pub mod catalog;
 pub mod design_system;
 pub mod details;
+mod installation;
 pub mod library;
 pub mod manifest;
 pub mod menu;
@@ -34,6 +35,7 @@ pub use design_system::{
     design_system_slug, design_system_status, generate_design_system, sync_design_system_rule,
 };
 pub use details::{SkillPackDetails, add_pack_details, pack_shared_servers};
+pub use installation::SkillPackInstallStep;
 pub use library::{
     InstalledSkillPack, SkillLibrary, SkillLibrarySnapshot, SkillPackDiffFile,
     SkillPackUpdatePreview, SkillPythonOutput, run_python_utf8,
@@ -58,6 +60,10 @@ pub enum SkillLibraryError {
     InvalidPackSource(String),
     #[error("skill pack `{0}` is not installed in the library")]
     PackNotInstalled(String),
+    #[error("skill pack `{0}` is already being installed")]
+    InstallInProgress(String),
+    #[error("skill pack identifier `{0}` is already registered to another repository")]
+    PackIdentifierInUse(String),
     #[error("cannot move pin for `{0}` before its update diff has been checked")]
     UpdateDiffNotReviewed(String),
     #[error("candidate commit `{provided}` does not match the reviewed diff commit `{expected}`")]

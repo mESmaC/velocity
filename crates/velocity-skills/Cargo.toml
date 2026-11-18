@@ -9,16 +9,20 @@ publish = false
 bindings = ["dep:specta", "velocity-core/bindings"]
 
 [dependencies]
+process-wrap = { version = "=10.0.1", features = ["tokio1"] }
 serde.workspace = true
 serde_json.workspace = true
 specta = { workspace = true, optional = true }
+tempfile = "3.27"
 thiserror.workspace = true
+tokio = { version = "1.54", features = ["process", "rt", "time"] }
 velocity-git.workspace = true
 velocity-core = { path = "../velocity-core" }
 velocity-spec.workspace = true
 
 [target.'cfg(windows)'.dependencies]
 junction = "2.1.0"
+windows = { version = "0.62", features = ["Win32_System_Threading"] }
 
 [dev-dependencies]
 velocity-acp = { path = "../velocity-acp" }

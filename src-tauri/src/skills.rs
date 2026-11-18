@@ -5,14 +5,75 @@ use std::sync::{Arc, Mutex};
 
 use anyhow::Context;
 use tauri::{AppHandle, Manager, State};
+use tauri_specta::Event;
 use velocity_skills::{
     DesignSystemStatus, InstalledSkillPack, SkillLibrary, SkillLibrarySnapshot,
-    SkillPackUpdatePreview,
+    SkillPackInstallStep, SkillPackUpdatePreview,
 };
 
 use crate::state::ManagedStateStore;
 
 pub type ManagedSkillLibrary = Arc<Mutex<SkillLibrary>>;
+
+#[derive(Default)]
+struct ManagedSkillInstallations(Mutex<SkillPackInstallationsChanged>);
+
+#[derive(Clone, Default, serde::Serialize, specta::Type, Event)]
+#[tauri_specta(event_name = "skills://installations")]
+pub struct SkillPackInstallationsChanged {
+    revision: u32,
+    packs: Vec<SkillPackInstallation>,
+}
+
+#[derive(Clone, serde::Serialize, specta::Type)]
+struct SkillPackInstallation {
+    pack_id: String,
+    name: String,
+    built_in: bool,
+    status: SkillPackInstallStatus,
+}
+
+#[derive(Clone, PartialEq, serde::Serialize, specta::Type)]
+#[serde(tag = "state", content = "message", rename_all = "snake_case")]
+enum SkillPackInstallStatus {
+    Running(String),
+    Complete,
+    Failed(String),
+}
+
+impl ManagedSkillInstallations {
+    fn publish(
+        &self,
+        application: &AppHandle,
+        installation: SkillPackInstallation,
+        starting: bool,
+    ) -> Result<(), String> {
+        let mut view = self.0.lock().map_err(|error| error.to_string())?;
+        if let Some(existing) = view
+            .packs
+            .iter_mut()
+            .find(|pack| pack.pack_id == installation.pack_id)
+        {
+            if starting && matches!(existing.status, SkillPackInstallStatus::Running(_)) {
+                return Err(format!("{} is already being installed", existing.name));
+            }
+            if existing.status == installation.status {
+                return Ok(());
+            }
+            *existing = installation;
+        } else {
+            view.packs.push(installation);
+        }
+        view.revision += 1;
+        if let Err(error) = view.emit(application) {
+            crate::diagnostics::record(
+                "skills",
+                &format!("Could not publish install progress: {error}"),
+            );
+        }
+        Ok(())
+    }
+}
 
 pub fn initialize(application: &AppHandle) -> anyhow::Result<()> {
     let app_data = application
@@ -22,6 +83,7 @@ pub fn initialize(application: &AppHandle) -> anyhow::Result<()> {
     let library = SkillLibrary::open(&app_data)
         .context("Could not initialize the machine-wide skill library")?;
     application.manage(Arc::new(Mutex::new(library)));
+    application.manage(ManagedSkillInstallations::default());
     let handle = application.clone();
     velocity_acp::client::install_shared_servers(move |folder| shared_servers(&handle, folder));
     // The project restored at launch counts as opened (F18: "opening a Godot project
@@ -137,30 +199,123 @@ pub async fn get_skill_library(
 
 #[tauri::command]
 #[specta::specta]
+pub fn get_skill_pack_installations(
+    application: AppHandle,
+) -> Result<SkillPackInstallationsChanged, String> {
+    application
+        .state::<ManagedSkillInstallations>()
+        .0
+        .lock()
+        .map(|view| view.clone())
+        .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+#[specta::specta]
 pub async fn install_skill_pack(
     application: AppHandle,
     library: State<'_, ManagedSkillLibrary>,
     pack_or_repo: String,
     source_override: Option<String>,
     initial_pin: Option<String>,
-) -> Result<InstalledSkillPack, String> {
+) -> Result<(), String> {
+    let (catalog, _) =
+        velocity_skills::resolve_pack_source(&pack_or_repo, source_override.as_deref()).map_err(
+            |error| {
+                crate::diagnostics::record("skills", &error.to_string());
+                error.to_string()
+            },
+        )?;
+    let installation = SkillPackInstallation {
+        pack_id: catalog.id,
+        name: catalog.name,
+        built_in: catalog.built_in,
+        status: SkillPackInstallStatus::Running("Cloning…".into()),
+    };
+    application
+        .state::<ManagedSkillInstallations>()
+        .publish(&application, installation.clone(), true)
+        .inspect_err(|error| crate::diagnostics::record("skills", error))?;
     let library = Arc::clone(&library);
-    tauri::async_runtime::spawn_blocking(move || {
-        let pack = library
+    let job_application = application.clone();
+    let job_installation = installation.clone();
+    let job = tauri::async_runtime::spawn_blocking(move || {
+        let result = library
             .lock()
-            .map_err(|error| error.to_string())?
-            .install_pack(
-                &pack_or_repo,
-                source_override.as_deref(),
-                initial_pin.as_deref(),
-            )
-            .map_err(|error| error.to_string())?;
-        // The library lock above is released by now; the menu takes it again.
-        publish_skill_menus(&application)?;
-        Ok(pack)
-    })
-    .await
-    .map_err(|error| error.to_string())?
+            .map(|handle| handle.clone())
+            .map_err(|error| error.to_string())
+            .and_then(|library| {
+                library
+                    .install_pack_with_progress(
+                        &pack_or_repo,
+                        source_override.as_deref(),
+                        initial_pin.as_deref(),
+                        |step| report_install_step(&job_application, &job_installation, step),
+                    )
+                    .map_err(|error| error.to_string())
+            });
+        finish_installation(&job_application, job_installation, result);
+    });
+    tauri::async_runtime::spawn(async move {
+        if let Err(error) = job.await {
+            finish_installation(&application, installation, Err(error.to_string()));
+        }
+    });
+    Ok(())
+}
+
+fn report_install_step(
+    application: &AppHandle,
+    installation: &SkillPackInstallation,
+    step: SkillPackInstallStep,
+) {
+    let message = match step {
+        SkillPackInstallStep::Cloning => "Cloning…",
+        SkillPackInstallStep::CheckingOut => "Checking out…",
+        SkillPackInstallStep::Pinning => "Pinning commit…",
+        SkillPackInstallStep::Discovering => "Discovering skills…",
+        SkillPackInstallStep::Registering => "Registering pack…",
+    };
+    crate::diagnostics::record("skills", &format!("{} {step:?}", installation.pack_id));
+    let mut installation = installation.clone();
+    installation.status = SkillPackInstallStatus::Running(message.into());
+    crate::threads::report(application.state::<ManagedSkillInstallations>().publish(
+        application,
+        installation,
+        false,
+    ));
+}
+
+fn finish_installation(
+    application: &AppHandle,
+    mut installation: SkillPackInstallation,
+    result: Result<InstalledSkillPack, String>,
+) {
+    let installed = result.is_ok();
+    installation.status = match result {
+        Ok(pack) => {
+            crate::diagnostics::record(
+                "skills",
+                &format!("{} installed at {}", pack.id, pack.pinned_commit),
+            );
+            SkillPackInstallStatus::Complete
+        }
+        Err(error) => {
+            crate::diagnostics::record(
+                "skills",
+                &format!("{} installation failed: {error}", installation.pack_id),
+            );
+            SkillPackInstallStatus::Failed(error)
+        }
+    };
+    crate::threads::report(application.state::<ManagedSkillInstallations>().publish(
+        application,
+        installation,
+        false,
+    ));
+    if installed && let Err(error) = publish_skill_menus(application) {
+        crate::diagnostics::record("skills", &format!("Could not publish skill menus: {error}"));
+    }
 }
 
 #[tauri::command]
