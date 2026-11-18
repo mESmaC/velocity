@@ -10,7 +10,11 @@
   - **Layout:**
     - The sidebar is one floating glass pane, and each rail panel is its own pane.
     - The main column has no panel: content sits straight on the window.
-    - The thread header has two lines: the title (20 px) with Diff and Editor as pill buttons beside it, and the meta line (branch, workspace, diff counts, time) under it.
+    - The thread header has two lines: the title (1.25 rem) with Diff and Editor as pill buttons beside it, and the meta line (branch, workspace, diff counts, time) under it.
+    - Side panes narrow as the window narrows, and the rail collapses below 76 rem of window width.
+    - The sidebar collapses below 54 rem.
+    - Threads and Activity buttons open the collapsed panes, and their keyboard shortcuts open the pane before focusing the search or task entry.
+    - The Board wraps its lanes into fewer columns as space runs out.
   - **Materials:**
     - Panes are smoked glass:
       - a translucent top-lit fill `rgba(255,255,255,.072)` → `.034`, plus a faint top-left sheen, over `blur(36px) saturate(1.7)` of whatever is behind the pane;
@@ -31,6 +35,10 @@
     - Segmented controls use a sliding raised segment, and buttons are subtle raised gradients.
     - The send button is an accent filled circle with a black arrow, and shortcuts are keycaps.
   - **Type:** SF Pro / system UI, falling back to Inter (bundled), with SF Mono falling back to JetBrains Mono for code and meta.
+    - The shared scale in `reference.css` uses 0.9375 rem for captions, 1 rem for body text, 1.125 rem for headings, 1.25 rem for titles and 1.5 rem for display text.
+    - The minimum interactive target is 1.75 rem on each axis.
+    - At default system text sizing and 100% UI zoom, captions are 15 CSS pixels, body text is 16 CSS pixels, and targets are at least 28 CSS pixels.
+    - UI zoom sets the root size, so typography, controls, spacing and pane breakpoints scale together on top of Windows display scaling.
     - There are no italics anywhere, including placeholders.
     - Hierarchy comes from weight and the label greys: titles `#fff`, primary `#f5f5f7`, secondary `#b4b4bd`, tertiary `#8a8a91`.
       The tertiary grey still passes 4.5:1 on black.
@@ -75,11 +83,12 @@
   - With `prefers-reduced-motion`, nothing moves or scales and the bars don't fill.
     Short fades stay.
 - **Long content and controls (#415):** long titles, project names, tool arguments and results, and diff paths truncate within their pane and expose the full value in a tooltip.
-  Code and diffs scroll inside their own cards; prose and error details wrap long paths without widening a pane.
+  Code, diffs, prose and error details wrap long lines without widening a pane.
+  Panes scroll vertically when content exceeds their height.
   Dialog bodies scroll within the window while the header and action footer remain visible.
   Keyboard focus keeps the accent ring on raised controls, disabled actions are dimmed, and Settings navigation uses the shared hover state.
 - Base tokens are copied exactly from the mockup's `:root` into `ui/src/lib/theme/tokens.css`.
-  Values missing from `:root` are copied from the reference's winning CSS declarations into `ui/src/lib/theme/reference.css` (user-authorized in #12).
+  Supplemental values live in `ui/src/lib/theme/reference.css`, including the shared type and target scale and the rem overrides for base lengths (#12, #445).
   Components use the token files; the reference is read-only.
   The Rust theme module mirrors the base tokens.
 - Fonts are bundled locally in the app.

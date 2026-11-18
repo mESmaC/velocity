@@ -90,6 +90,8 @@ fn bindings() -> Builder<tauri::Wry> {
         diagnostics::log_window_error,
         state::get_settings,
         state::set_settings,
+        state::get_ui_zoom,
+        state::adjust_ui_zoom,
         layout::get_layout_state,
         layout::dispatch_layout,
         machines::get_machines,

@@ -2,6 +2,7 @@
   import { onMount, tick } from 'svelte';
   import Icon from './Icon.svelte';
   import { pop, restoreOverlayFocus } from './motion';
+  import { tokenPixels } from './theme/length';
   import {
     providerCommands,
     onProviders,
@@ -79,10 +80,6 @@
       .catch(report);
   }
 
-  function tokenPixels(element: HTMLElement, token: string) {
-    return parseFloat(window.getComputedStyle(element).getPropertyValue(token));
-  }
-
   function place() {
     const row = menu?.offsetParent;
     if (!menu || !(row instanceof HTMLElement)) return;
@@ -111,6 +108,14 @@
         .querySelector('.model-menu-item.on')
         ?.scrollIntoView({ block: 'nearest' });
     });
+  });
+
+  $effect(() => {
+    const row = menu?.offsetParent;
+    if (!row) return;
+    const observer = new window.ResizeObserver(place);
+    observer.observe(row);
+    return () => observer.disconnect();
   });
 
   function signIn(provider: ProviderKind) {

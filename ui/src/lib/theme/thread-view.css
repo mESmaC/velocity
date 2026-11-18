@@ -276,12 +276,12 @@
 .diff pre {
   margin: var(--thread-diff-pre-margin);
   padding: var(--thread-diff-pre-padding);
-  overflow-x: auto;
 }
 .diff pre span {
   display: block;
   padding: var(--thread-diff-line-padding);
-  white-space: pre;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
 }
 .diff .a {
   background: var(--thread-diff-added-background);
@@ -302,7 +302,7 @@
 .transcript .tools,
 .transcript .diff {
   content-visibility: auto;
-  contain-intrinsic-size: auto 160px;
+  contain-intrinsic-size: auto var(--layout-transcript-placeholder);
 }
 .worked {
   display: flex;
@@ -448,7 +448,7 @@
   border-bottom: var(--pr-track-border);
   background: var(--pr-track-background);
   font-size: var(--pr-track-font-size);
-  overflow-x: auto;
+  flex-wrap: wrap;
 }
 .pr-track .step {
   display: inline-flex;
@@ -738,7 +738,8 @@
   border: var(--thread-diff-border);
   border-radius: var(--thread-diff-border-radius);
   background: var(--thread-diff-background);
-  overflow-x: auto;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
 }
 .markdown pre code {
   padding: 0;
@@ -746,9 +747,8 @@
   border-radius: 0;
 }
 .markdown table {
-  display: block;
-  max-width: var(--layout-item-width);
-  overflow-x: auto;
+  width: var(--layout-item-width);
+  table-layout: fixed;
   border-collapse: collapse;
 }
 .markdown th,

@@ -7,7 +7,13 @@
     providersLabel = '',
     send,
   }: {
-    current: 'worktrees' | 'providers' | 'skills' | 'agent-settings' | 'proofs';
+    current:
+      | 'worktrees'
+      | 'providers'
+      | 'appearance'
+      | 'skills'
+      | 'agent-settings'
+      | 'proofs';
     providersLabel?: string;
     send: (action: LayoutAction) => void;
   } = $props();
@@ -25,6 +31,12 @@
     aria-current={current === 'providers' ? 'page' : undefined}
     onclick={() => send({ Request: { SettingsTab: 'providers' } })}
     >Providers <span>{providersLabel}</span></button
+  >
+  <button
+    class:on={current === 'appearance'}
+    aria-current={current === 'appearance' ? 'page' : undefined}
+    onclick={() => send({ Request: { SettingsTab: 'appearance' } })}
+    >Appearance</button
   >
   <button
     class:on={current === 'skills'}

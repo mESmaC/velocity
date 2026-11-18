@@ -36,6 +36,7 @@
 .airc-h {
   display: flex;
   align-items: baseline;
+  flex-wrap: wrap;
   gap: var(--airc-header-gap);
   padding: var(--airc-header-padding);
 }
@@ -65,9 +66,10 @@
 }
 .airc-tabs {
   display: flex;
+  flex-wrap: wrap;
   gap: var(--airc-tabs-gap);
   padding: var(--airc-tabs-padding);
-  border-bottom: 1px solid var(--line-dim);
+  border-bottom: var(--layout-hairline) solid var(--line-dim);
 }
 .airc-tabs button {
   padding: var(--airc-tab-padding);
@@ -97,16 +99,29 @@
 }
 .airc-main {
   min-height: 0;
+  min-width: 0;
+  overflow-x: hidden;
   overflow-y: auto;
   padding: var(--airc-main-padding);
   background: var(--airc-main-background);
 }
 .airc-nicks {
   min-height: 0;
+  min-width: 0;
+  overflow-x: hidden;
   overflow-y: auto;
   padding: var(--airc-nicks-padding);
-  border-left: 1px solid var(--line-dim);
+  border-left: var(--layout-hairline) solid var(--line-dim);
   background: var(--airc-nicks-background);
+}
+@container app (width < 48rem) {
+  .airc-body {
+    grid-template-columns: minmax(0, 1fr);
+    grid-template-rows: minmax(0, 3fr) minmax(0, 1fr);
+  }
+  .airc-nicks {
+    border-top: var(--layout-hairline) solid var(--line-dim);
+  }
 }
 .al,
 .lg {
@@ -119,7 +134,7 @@
 }
 .lg {
   padding: var(--airc-ledger-padding);
-  border-top: 1px solid var(--line-dim);
+  border-top: var(--layout-hairline) solid var(--line-dim);
   font: var(--airc-ledger-font);
 }
 .al:hover {
@@ -244,7 +259,7 @@
   grid-template-columns: var(--airc-claim-columns);
   gap: var(--airc-claim-gap);
   padding: var(--airc-claim-padding);
-  border-top: 1px solid var(--line-dim);
+  border-top: var(--layout-hairline) solid var(--line-dim);
   font-size: var(--airc-claim-font-size);
 }
 .cl .n {
@@ -272,7 +287,7 @@
 }
 .cl .fs code {
   padding: var(--airc-claim-file-padding);
-  border: 1px solid var(--line-dim);
+  border: var(--layout-hairline) solid var(--line-dim);
   border-radius: var(--airc-claim-file-radius);
   font: var(--airc-claim-file-font);
   color: var(--text-2);
@@ -321,7 +336,7 @@
 }
 .nk i.Left {
   background: transparent;
-  border: 1px solid var(--muted);
+  border: var(--layout-hairline) solid var(--muted);
 }
 .nk b {
   overflow: hidden;
@@ -342,7 +357,7 @@
   align-items: center;
   gap: var(--airc-input-gap);
   padding: var(--airc-input-padding);
-  border-top: 1px solid var(--line-dim);
+  border-top: var(--layout-hairline) solid var(--line-dim);
 }
 .airc-in .me {
   font: var(--airc-input-font);

@@ -2,6 +2,7 @@ use anyhow::Context;
 use std::path::PathBuf;
 use std::sync::Mutex;
 use tauri::{AppHandle, Manager};
+use velocity_core::state::ui_zoom::{UiZoomAdjustment, UiZoomView};
 use velocity_store::{Settings, StateStore};
 
 pub type ManagedStateStore = Mutex<StateStore>;
@@ -92,6 +93,33 @@ pub async fn set_settings(application: AppHandle, settings: Settings) -> Result<
             .map_err(|_| String::from("Persisted state store lock is poisoned"))?;
         guard
             .set_settings(settings)
+            .map_err(|error| error.to_string())
+    })
+    .await
+}
+
+#[tauri::command]
+#[specta::specta]
+pub async fn get_ui_zoom(application: AppHandle) -> Result<UiZoomView, String> {
+    crate::layout::off_ui_thread(move || {
+        let store = application.state::<ManagedStateStore>();
+        let store = store.lock().map_err(|error| error.to_string())?;
+        Ok(store.state().settings.ui_zoom.view())
+    })
+    .await
+}
+
+#[tauri::command]
+#[specta::specta]
+pub async fn adjust_ui_zoom(
+    application: AppHandle,
+    adjustment: UiZoomAdjustment,
+) -> Result<UiZoomView, String> {
+    crate::layout::off_ui_thread(move || {
+        let store = application.state::<ManagedStateStore>();
+        let mut store = store.lock().map_err(|error| error.to_string())?;
+        store
+            .adjust_ui_zoom(adjustment)
             .map_err(|error| error.to_string())
     })
     .await

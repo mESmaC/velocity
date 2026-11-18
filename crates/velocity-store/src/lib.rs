@@ -549,6 +549,8 @@ pub struct Settings {
     pub providers: ProviderSettings,
     pub agents: AgentSettings,
     pub proofs: ProofSettings,
+    #[serde(default)]
+    pub ui_zoom: core_state::ui_zoom::UiZoom,
 }
 
 impl Settings {
@@ -625,6 +627,7 @@ impl Settings {
             proofs: ProofSettings {
                 stress_diff_input_count: core_settings.proofs.stress_diff_input_count,
             },
+            ui_zoom: core_state::ui_zoom::UiZoom::default(),
         }
     }
 }
@@ -1460,7 +1463,25 @@ impl StateStore {
         settings
     }
 
+    pub fn adjust_ui_zoom(
+        &mut self,
+        adjustment: core_state::ui_zoom::UiZoomAdjustment,
+    ) -> Result<core_state::ui_zoom::UiZoomView, StoreError> {
+        let previous = self.state.settings.ui_zoom;
+        let zoom = previous.adjust(adjustment);
+        if zoom != previous {
+            self.state.settings.ui_zoom = zoom;
+            if let Err(error) = self.record_change() {
+                self.state.settings.ui_zoom = previous;
+                return Err(error);
+            }
+        }
+        Ok(zoom.view())
+    }
+
     pub fn set_settings(&mut self, mut next_settings: Settings) -> Result<Settings, StoreError> {
+        // Other settings pages can save a snapshot fetched before the last zoom shortcut.
+        next_settings.ui_zoom = self.state.settings.ui_zoom;
         // Keep the implicit default implicit on disk after editing a resolved snapshot.
         if next_settings.worktrees.location_root.as_deref()
             == Some(worktree_settings::default_worktree_root(&self.directory).as_str())

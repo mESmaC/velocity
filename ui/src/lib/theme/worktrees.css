@@ -63,7 +63,28 @@
   min-height: var(--worktrees-zero);
   min-width: var(--worktrees-zero);
   overflow-y: auto;
+  overflow-x: hidden;
   padding: var(--worktrees-main-padding);
+}
+.appearance-zoom {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: var(--layout-edge-gap);
+}
+.appearance-zoom output {
+  font-variant-numeric: tabular-nums;
+}
+@container main-view (width < 40rem) {
+  .worktree-settings-body {
+    grid-template-columns: minmax(0, 1fr);
+    grid-template-rows: auto minmax(0, 1fr);
+  }
+  .worktree-settings-nav {
+    flex-direction: row;
+    flex-wrap: wrap;
+    border-right: 0;
+  }
 }
 .worktree-settings-main > section {
   max-width: var(--worktrees-section-width);
@@ -361,6 +382,8 @@
   font: var(--worktrees-table-meta-font);
   color: var(--muted);
   text-align: right;
+}
+.worktree-row .size {
   white-space: nowrap;
 }
 .worktree-row.gone {

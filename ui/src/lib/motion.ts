@@ -5,6 +5,7 @@
 // applies to both. Things arrive with the base duration and an ease-out, and
 // leave with the quick duration and an ease-in.
 import type { TransitionConfig } from 'svelte/transition';
+import { tokenPixels } from './theme/length';
 
 type Direction = { direction: 'in' | 'out' | 'both' };
 
@@ -25,7 +26,7 @@ function readMotion(arriving: boolean, durationToken: string): Motion {
     easing: cubicBezier(
       read(arriving ? '--motion-ease-out' : '--motion-ease-in'),
     ),
-    rise: Number.parseFloat(read('--motion-rise')) || 0,
+    rise: tokenPixels(document.documentElement, '--motion-rise'),
     scale: Number.parseFloat(read('--motion-scale-from')) || 1,
   };
 }

@@ -153,6 +153,7 @@
 .sk-budget.warn {
   color: var(--warn);
 }
-pre {
-  overflow: auto;
+.worktree-settings-main pre {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
 }

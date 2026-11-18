@@ -22,6 +22,7 @@
   import AgentSettings from './lib/AgentSettings.svelte';
   import ProofsSettings from './lib/ProofsSettings.svelte';
   import SkillsSettings from './lib/SkillsSettings.svelte';
+  import AppearanceSettings from './lib/AppearanceSettings.svelte';
   import NewProjectDialog from './lib/NewProjectDialog.svelte';
   import DutyDialog from './lib/DutyDialog.svelte';
   import ThreadMenu from './lib/ThreadMenu.svelte';
@@ -36,6 +37,7 @@
     threadMenuCommands,
     aircRoutingCommands,
     reportWindowError,
+    appearanceCommands,
   } from './lib/ipc';
   import { reuseUnchanged } from './lib/reuse-unchanged';
   import type {
@@ -45,6 +47,8 @@
     ThreadMenuAction,
     ThreadMenuView,
     MessageMode,
+    UiZoomAdjustment,
+    UiZoomView,
   } from './lib/ipc';
   import './lib/theme/layout.css';
   import './lib/theme/board.css';
@@ -69,6 +73,10 @@
   let goalSubmits = $state(0);
   let agentsSaves = $state(0);
   let queue = Promise.resolve();
+  let zoom = $state.raw<UiZoomView | null>(null);
+  let zoomError = $state('');
+  let zoomQueue = Promise.resolve();
+  let openPane = $state<'threads' | 'activity' | null>(null);
   const intents: LayoutIntent[] = [];
   const shortcutKeys = new Set([
     'k',
@@ -106,8 +114,42 @@
     errorTimer = setTimeout(clearError, 4000);
   }
 
+  $effect(() => {
+    if (zoom)
+      document.documentElement.style.setProperty(
+        '--ui-zoom',
+        `${zoom.percent}%`,
+      );
+  });
+
+  async function readZoom() {
+    zoomError = '';
+    try {
+      zoom = await appearanceCommands.readZoom();
+    } catch (reason) {
+      zoomError = String(reason);
+    }
+  }
+
+  function adjustZoom(adjustment: UiZoomAdjustment) {
+    zoomQueue = zoomQueue
+      .then(async () => {
+        zoom = await appearanceCommands.adjustZoom(adjustment);
+      })
+      .catch(report);
+  }
+
   let frame = 0;
   function receive(snapshot: LayoutSnapshot) {
+    if (
+      !latest ||
+      (snapshot.revision >= latest.revision &&
+        (snapshot.view !== latest.view ||
+          snapshot.active_thread?.identifier !==
+            latest.active_thread?.identifier))
+    ) {
+      openPane = null;
+    }
     if (!latest || snapshot.revision >= latest.revision) latest = snapshot;
     // A swarm publishes many snapshots a second (#273). Draw only the newest, once per
     // frame, rather than re-rendering the whole window for each one.
@@ -158,7 +200,15 @@
           : navigation === 'NewThread'
             ? 'home-composer'
             : null;
-    if (target) document.getElementById(target)?.focus();
+    if (target) {
+      openPane =
+        navigation === 'Search'
+          ? 'threads'
+          : navigation === 'Task'
+            ? 'activity'
+            : null;
+      void tick().then(() => document.getElementById(target)?.focus());
+    }
   }
 
   function enqueue(request: () => Promise<LayoutSnapshot>, clearsError = true) {
@@ -177,6 +227,12 @@
   }
 
   function send(action: LayoutAction) {
+    if (
+      typeof action === 'object' &&
+      ('OpenThread' in action || 'Request' in action)
+    ) {
+      openPane = null;
+    }
     // Key reports go out with every keypress. Enter's own report follows the send it
     // started, so letting it clear errors hid a failed send's reason at once (#274).
     const keyReport =
@@ -249,14 +305,68 @@
   }
 
   function switchProject(identifier: number) {
+    openPane = null;
     enqueue(() => projectCommands.switch(identifier));
   }
 
+  async function togglePane(pane: 'threads' | 'activity') {
+    openPane = openPane === pane ? null : pane;
+    if (openPane) {
+      await tick();
+      document.getElementById(`workspace-${pane}`)?.focus();
+    }
+  }
+
+  function zoomShortcut(event: KeyboardEvent): boolean {
+    if (!event.ctrlKey || event.altKey || event.metaKey) return false;
+    const adjustment =
+      event.key === '=' || event.key === '+'
+        ? 'Increase'
+        : event.key === '-'
+          ? 'Decrease'
+          : event.key === '0'
+            ? 'Reset'
+            : null;
+    if (!adjustment) return false;
+    event.preventDefault();
+    adjustZoom(adjustment);
+    return true;
+  }
+
+  function dismissCompactPane(snapshot: LayoutSnapshot) {
+    if (
+      openPane &&
+      !snapshot.palette_open &&
+      !snapshot.airc_open &&
+      !snapshot.new_project_open &&
+      !snapshot.duty_dialog_open &&
+      !snapshot.swarm_dialog &&
+      !snapshot.goal_dialog &&
+      !threadMenu
+    ) {
+      const button = document.getElementById(`pane-switch-${openPane}`);
+      if (button?.getClientRects().length) {
+        openPane = null;
+        button.focus();
+        return true;
+      }
+    }
+    return false;
+  }
+
   function keydown(event: KeyboardEvent) {
-    if (!layout || event.isComposing || event.key === 'Process') return;
+    if (
+      event.isComposing ||
+      event.key === 'Process' ||
+      zoomShortcut(event) ||
+      !layout
+    )
+      return;
     if (event.key === 'Escape') {
       if (event.defaultPrevented || document.querySelector('dialog:modal'))
         return;
+      if (document.querySelector('#compact-project-pulse:popover-open')) return;
+      if (dismissCompactPane(layout)) return;
       closeThreadMenu();
     }
     if (event.key === 'Alt' && !event.ctrlKey && !event.metaKey) {
@@ -301,6 +411,7 @@
     paneConnection.online = window.navigator.onLine;
     let active = true;
     const stops: (() => void)[] = [];
+    zoomQueue = readZoom();
     async function start() {
       const stopState = await onLayoutState((event) => {
         if (active) receive(event.payload.state);
@@ -352,14 +463,36 @@
   <PaneBoundary name="title bar" {revision}
     ><TitleBar {layout} {send} {switchProject} /></PaneBoundary
   >
-  {#if layout}<div class="workspace" class:board-mode={layout.view === 'Board'}>
+  {#if layout}<div
+      class="workspace"
+      class:board-mode={layout.view === 'Board'}
+      data-open-pane={openPane}
+    >
       <!-- The Board replaces the sidebar, one thread and the rail with every thread at once. -->
       {#if layout.view === 'Board'}<PaneBoundary name="board" {revision}
           ><Board {layout} {send} /></PaneBoundary
         >{:else}
-        <PaneBoundary name="sidebar" {revision}
-          ><Sidebar {layout} {send} openMenu={openThreadMenu} /></PaneBoundary
-        >
+        <div class="pane-switch" role="group" aria-label="Workspace panes">
+          <button
+            id="pane-switch-threads"
+            class="pane-switch-threads btn"
+            aria-controls="workspace-threads"
+            aria-expanded={openPane === 'threads'}
+            onclick={() => void togglePane('threads')}>Threads</button
+          >
+          <button
+            id="pane-switch-activity"
+            class="pane-switch-activity btn"
+            aria-controls="workspace-activity"
+            aria-expanded={openPane === 'activity'}
+            onclick={() => void togglePane('activity')}>Activity</button
+          >
+        </div>
+        <div class="workspace-threads" id="workspace-threads" tabindex="-1">
+          <PaneBoundary name="sidebar" {revision}
+            ><Sidebar {layout} {send} openMenu={openThreadMenu} /></PaneBoundary
+          >
+        </div>
         <main class="main-view" aria-label="Velocity workspace">
           <PaneBoundary name="main view" {revision}>
             {#if layout.view === 'Agents' && layout.project_identifier !== null}
@@ -370,7 +503,7 @@
             {:else if layout.view === 'Home'}<Home
                 {layout}
                 {send}
-              />{:else if layout.active_thread?.interview}<SpecInterview
+              />{:else if layout.view.startsWith('Spec') && layout.active_thread?.interview}<SpecInterview
                 {layout}
                 thread={layout.active_thread}
                 interview={layout.active_thread.interview}
@@ -399,6 +532,12 @@
                 {send}
               />{:else if layout.view === 'Settings' && layout.settings_tab === 'providers'}<ProvidersSettings
                 {send}
+              />{:else if layout.view === 'Settings' && layout.settings_tab === 'appearance'}<AppearanceSettings
+                {zoom}
+                error={zoomError}
+                retry={readZoom}
+                adjust={adjustZoom}
+                {send}
               />{:else if layout.view === 'Settings' && layout.settings_tab === 'skills'}<SkillsSettings
                 {send}
                 projectIdentifier={layout.project_identifier}
@@ -410,9 +549,11 @@
                 />{/key}{/if}
           </PaneBoundary>
         </main>
-        <PaneBoundary name="rail" {revision}
-          ><Rail {layout} {send} /></PaneBoundary
-        >{/if}
+        <div class="workspace-activity" id="workspace-activity" tabindex="-1">
+          <PaneBoundary name="rail" {revision}
+            ><Rail {layout} {send} /></PaneBoundary
+          >
+        </div>{/if}
     </div>{:else}<PaneState
       name="Threads"
       loading

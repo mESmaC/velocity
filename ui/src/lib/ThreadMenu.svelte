@@ -1,6 +1,7 @@
 <script lang="ts">
   import type { MessageMode, ThreadMenuAction, ThreadMenuView } from './ipc';
   import { pop, restoreOverlayFocus } from './motion';
+  import { tokenPixels } from './theme/length';
   let {
     menu,
     x,
@@ -32,13 +33,30 @@
   $effect(() => {
     focusTarget = opener;
     if (!element) return;
-    const gap = parseFloat(
-      window
-        .getComputedStyle(element)
-        .getPropertyValue('--thread-menu-edge-gap'),
-    );
-    left = Math.min(x, window.innerWidth - element.offsetWidth - gap);
-    top = Math.min(y, window.innerHeight - element.offsetHeight - gap);
+    const menuElement = element;
+    const preferredLeft = x;
+    const preferredTop = y;
+    const place = () => {
+      const gap = tokenPixels(menuElement, '--thread-menu-edge-gap');
+      left = Math.max(
+        gap,
+        Math.min(
+          preferredLeft,
+          window.innerWidth - menuElement.offsetWidth - gap,
+        ),
+      );
+      top = Math.max(
+        gap,
+        Math.min(
+          preferredTop,
+          window.innerHeight - menuElement.offsetHeight - gap,
+        ),
+      );
+    };
+    place();
+    const observer = new window.ResizeObserver(place);
+    observer.observe(menuElement);
+    return () => observer.disconnect();
   });
 
   function outside(event: MouseEvent) {

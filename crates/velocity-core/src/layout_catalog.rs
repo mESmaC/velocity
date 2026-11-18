@@ -46,7 +46,7 @@ enum CommandTarget {
     SwarmIssues,
 }
 
-const COMMANDS: [(&str, &str, CommandTarget); 16] = {
+const COMMANDS: [(&str, &str, CommandTarget); 17] = {
     use CommandTarget::{Navigation, Settings, SwarmIssues};
     use NavigationIntent::*;
     [
@@ -56,6 +56,7 @@ const COMMANDS: [(&str, &str, CommandTarget); 16] = {
         ("Add a task to the Task List", "T", Navigation(Task)),
         ("Settings · Workspaces", "Ctrl ,", Settings("worktrees")),
         ("Settings · Providers (sign in)", "", Settings("providers")),
+        ("Settings · Appearance", "", Settings("appearance")),
         ("Settings · Proofs", "", Settings("proofs")),
         ("AIRC · agent chat", "A", Navigation(Airc)),
         (

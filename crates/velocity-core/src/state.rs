@@ -1,5 +1,7 @@
 //! Pure persisted-state domain types and transitions (`SPEC.md` §2.1, §2.2, §3, F3, F5, F8, F13, F15, §7 M1).
 
+pub mod ui_zoom;
+
 /// Thread lifecycle states (`SPEC.md` §2.1).
 /// Rule 1: there is no "waiting for user" or approval-gate state.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

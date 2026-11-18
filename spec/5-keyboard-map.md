@@ -7,6 +7,8 @@
 | `Ctrl+N` | anywhere | new thread |
 | `Ctrl+Shift+N` | anywhere | new project |
 | `Ctrl+,` | anywhere | settings |
+| `Ctrl+=` / `Ctrl+-` | anywhere | increase / decrease UI zoom by 10 percentage points |
+| `Ctrl+0` | anywhere | reset UI zoom to 100% |
 | `Alt` (hold) / `Alt+1–9` | anywhere | show thread numbers / jump to thread |
 | `/` | not typing | search threads |
 | `T` | not typing | focus "Add a task" |
@@ -15,6 +17,7 @@
 | `A` | not typing | AIRC |
 | `B` | not typing | show the Board, or return to Focus |
 | `Esc` | anywhere | close overlay / menu |
+| `Esc` | compact workspace | close the open Threads or Activity pane and return focus to its button |
 | `Ctrl+Enter` | dialogs | create / start / launch |
 | `I` `R` `F` `V` `S` | home view | dispatch, resume, fan out, post-land review swarm, scouts |
 | `1–4`, `L` `S` `G` | spec interview | answer; lock, SPEC.md, keep grilling |

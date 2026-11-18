@@ -7,7 +7,33 @@ textarea {
 .workspace {
   display: grid;
   grid-template-columns: var(--layout-workspace-grid-template-columns);
+  grid-template-areas: 'threads main activity';
+  grid-template-rows: minmax(0, 1fr);
   min-height: var(--layout-workspace-min-height);
+  position: relative;
+}
+.workspace-threads,
+.workspace-activity {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  min-height: 0;
+}
+.workspace-threads {
+  grid-area: threads;
+}
+.workspace-activity {
+  grid-area: activity;
+}
+.workspace-threads > .sidebar,
+.workspace-activity > .rail {
+  flex: 1;
+  overflow-x: clip;
+}
+.pane-switch,
+.pane-switch .pane-switch-threads,
+.pane-switch .pane-switch-activity {
+  display: none;
 }
 .icon {
   width: var(--layout-icon-width);
@@ -439,6 +465,8 @@ kbd {
   background: var(--text-2);
 }
 .main-view {
+  grid-area: main;
+  container: main-view / inline-size;
   display: flex;
   flex-direction: column;
   min-width: var(--layout-main-view-min-width);
@@ -451,8 +479,9 @@ kbd {
   display: flex;
   flex-direction: column;
   align-items: center;
-  justify-content: center;
+  justify-content: safe center;
   padding: var(--layout-home-view-padding);
+  overflow-y: auto;
 }
 .composer {
   display: flex;
@@ -483,6 +512,7 @@ kbd {
 .composer-row {
   display: flex;
   align-items: center;
+  flex-wrap: wrap;
   gap: var(--layout-composer-row-gap);
   margin-top: var(--layout-composer-row-margin-top);
 }
@@ -543,6 +573,7 @@ kbd {
 .hints {
   margin-top: var(--layout-hints-margin-top);
   display: flex;
+  flex-wrap: wrap;
   gap: var(--layout-hints-gap);
   color: var(--muted);
   font-size: var(--layout-hints-font-size);
@@ -556,6 +587,7 @@ kbd {
   display: flex;
   flex-direction: column;
   min-height: var(--layout-rail-min-height);
+  overflow-y: auto;
   gap: var(--layout-rail-gap);
   padding: var(--layout-rail-padding);
 }
@@ -569,6 +601,7 @@ kbd {
   display: flex;
   align-items: center;
   justify-content: space-between;
+  flex-wrap: wrap;
   margin: var(--layout-panel-h-margin);
 }
 .panel-h .label {
@@ -719,7 +752,7 @@ kbd {
 .badge {
   display: inline-block;
   min-width: var(--layout-badge-min-width);
-  height: var(--layout-badge-height);
+  min-height: var(--layout-badge-height);
   margin-left: var(--layout-badge-margin-left);
   padding: var(--layout-badge-padding);
   border-radius: var(--layout-badge-border-radius);
@@ -949,7 +982,17 @@ kbd {
 }
 .pulse {
   min-width: 0;
-  overflow-x: auto;
+  height: auto;
+  flex-wrap: wrap;
+  justify-content: center;
+}
+.titlebar-space .pulse-trigger,
+.pulse.pulse-popover {
+  display: none;
+}
+.pulse > span {
+  height: auto;
+  min-height: var(--colour-pulse-pill-height);
 }
 .view-switch,
 .window-controls {
@@ -964,4 +1007,125 @@ kbd {
 }
 .palette-group {
   flex: none;
+}
+
+.sidebar-foot,
+.rail-foot {
+  flex-wrap: wrap;
+}
+.search {
+  min-height: var(--target-min);
+}
+.task-items,
+.thread-groups {
+  overflow-x: hidden;
+}
+.palette {
+  max-width: 100%;
+}
+.palette li button {
+  flex-wrap: wrap;
+}
+
+/* Container widths are measured against the live root size, including UI zoom. */
+@container app (width < 76rem) {
+  .workspace:not(.board-mode) {
+    grid-template-columns: var(--sidebar-w) minmax(0, 1fr);
+    grid-template-areas: 'threads switch' 'threads main';
+    grid-template-rows: auto minmax(0, 1fr);
+  }
+  .pane-switch {
+    grid-area: switch;
+    display: flex;
+    justify-content: flex-end;
+    gap: var(--layout-edge-gap);
+    padding: 0 var(--layout-edge-gap) var(--layout-edge-gap);
+  }
+  .pane-switch .pane-switch-activity {
+    display: inline-flex;
+  }
+  .workspace-activity {
+    display: none;
+  }
+  .workspace[data-open-pane='activity'] .workspace-activity {
+    display: flex;
+    grid-area: main;
+    justify-self: end;
+    width: min(100%, var(--layout-drawer-width));
+    z-index: var(--layout-drawer-layer);
+    background: var(--bg);
+  }
+  .workspace[data-open-pane='activity'] .main-view {
+    visibility: hidden;
+  }
+  .pulse-label {
+    display: none;
+  }
+  .pulse {
+    padding-block: 0;
+  }
+}
+
+@container app (width < 54rem) {
+  .workspace:not(.board-mode) {
+    grid-template-columns: minmax(0, 1fr);
+    grid-template-areas: 'switch' 'main';
+  }
+  .pane-switch {
+    justify-content: space-between;
+  }
+  .pane-switch .pane-switch-threads {
+    display: inline-flex;
+  }
+  .workspace-threads {
+    display: none;
+  }
+  .workspace[data-open-pane='threads'] .workspace-threads {
+    display: flex;
+    grid-area: main;
+    justify-self: start;
+    width: min(100%, var(--layout-drawer-width));
+    z-index: var(--layout-drawer-layer);
+    background: var(--bg);
+  }
+  .workspace[data-open-pane='threads'] .main-view {
+    visibility: hidden;
+  }
+  .window-titlebar .brand > b {
+    display: none;
+  }
+  .project-header {
+    min-width: 0;
+  }
+  .project-header > .window-titlebar {
+    display: flex;
+    width: 100%;
+  }
+  .window-titlebar .brand {
+    flex: 1;
+  }
+  .titlebar-space {
+    flex: none;
+    justify-content: flex-end;
+    flex: none;
+  }
+  .titlebar-space .pulse {
+    display: none;
+  }
+  .titlebar-space .pulse-trigger {
+    display: inline-flex;
+    flex: none;
+  }
+  .pulse.pulse-popover:popover-open {
+    display: flex;
+    position: fixed;
+    inset: var(--titlebar-h) var(--layout-edge-gap) auto auto;
+    max-width: calc(100% - 2 * var(--layout-edge-gap));
+    padding: var(--layout-edge-gap);
+    margin: 0;
+    background: var(--glass-pop);
+  }
+  .pulse-popover .pulse-label {
+    display: inline;
+  }
 }

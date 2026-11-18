@@ -50,6 +50,20 @@
   });
 </script>
 
+{#snippet pulseCounts()}
+  {#each layout?.pulse ?? [] as count (count.kind)}
+    <span
+      role="img"
+      data-kind={count.kind}
+      title={`${count.count} ${count.label}`}
+      aria-label={`${count.count} ${count.label}`}
+      >{#if count.kind !== 'MergedToday'}<span class="pulse-dot"
+        ></span>{:else}↳{/if}{count.count}
+      <span class="pulse-label">{count.label}</span></span
+    >
+  {/each}
+{/snippet}
+
 <div class="project-header">
   <header class="window-titlebar">
     <div class="brand" data-tauri-drag-region>
@@ -83,13 +97,8 @@
             }}>Board</button
           >
         </div>{/if}
-      <div class="pulse" aria-label="Project pulse">
-        {#each layout?.pulse ?? [] as count (count.kind)}<span
-            data-kind={count.kind}
-            >{#if count.kind !== 'MergedToday'}<span class="pulse-dot"
-              ></span>{:else}↳{/if}{count.count}
-            {count.label}</span
-          >{/each}
+      <div class="pulse" role="group" aria-label="Project pulse">
+        {@render pulseCounts()}
         <button
           title="Command palette (Ctrl+K)"
           aria-label="Open command palette"
@@ -97,6 +106,12 @@
           ><kbd>Ctrl</kbd><kbd>K</kbd></button
         >
       </div>
+      <button
+        class="btn pulse-trigger"
+        popovertarget="compact-project-pulse"
+        aria-label="Project pulse"
+        title="Project pulse">Pulse</button
+      >
     </div>
     <div class="window-controls" aria-label="Window controls">
       <button
@@ -131,6 +146,21 @@
           ><path d="M4 4l8 8M12 4l-8 8" /></svg
         >
       </button>
+    </div>
+    <div
+      id="compact-project-pulse"
+      class="pulse pulse-popover"
+      popover
+      aria-label="Project pulse"
+      role="group"
+    >
+      {@render pulseCounts()}
+      <button
+        popovertarget="compact-project-pulse"
+        popovertargetaction="hide"
+        onclick={() => send({ Request: { Navigation: 'Palette' } })}
+        >Command palette <kbd>Ctrl</kbd><kbd>K</kbd></button
+      >
     </div>
   </header>
   {#if error}<p class="window-error" role="alert">{error}</p>{/if}

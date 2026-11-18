@@ -12,6 +12,10 @@
 .agents-view .head-actions {
   flex: none;
 }
+.agents-view .head-actions {
+  max-width: 100%;
+  flex-wrap: wrap;
+}
 .agents-view .meta {
   min-width: var(--agents-zero);
   overflow: hidden;
@@ -21,6 +25,22 @@
   min-height: var(--agents-zero);
   display: grid;
   grid-template-columns: var(--agents-columns);
+}
+@container main-view (width < 42rem) {
+  .agents-view .head-actions {
+    flex: 1 1 100%;
+    min-width: 0;
+  }
+  .agents-view .thread-head > .spacer {
+    display: none;
+  }
+  .agents-body {
+    grid-template-columns: minmax(0, 1fr);
+    grid-template-rows: minmax(0, 3fr) minmax(0, 1fr);
+  }
+  .agents-help {
+    border-top: var(--agents-help-border);
+  }
 }
 .agents-scroll {
   position: relative;

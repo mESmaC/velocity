@@ -42,6 +42,8 @@ export const commands = {
 	logWindowError: (source: string, message: string) => __TAURI_INVOKE<void>("log_window_error", { source, message }),
 	getSettings: () => __TAURI_INVOKE<Settings_Serialize>("get_settings"),
 	setSettings: (settings: Settings_Deserialize) => __TAURI_INVOKE<Settings_Serialize>("set_settings", { settings }),
+	getUiZoom: () => __TAURI_INVOKE<UiZoomView>("get_ui_zoom"),
+	adjustUiZoom: (adjustment: UiZoomAdjustment) => __TAURI_INVOKE<UiZoomView>("adjust_ui_zoom", { adjustment }),
 	getLayoutState: () => __TAURI_INVOKE<LayoutSnapshot_Serialize>("get_layout_state"),
 	dispatchLayout: (action: LayoutAction_Deserialize) => __TAURI_INVOKE<LayoutSnapshot_Serialize>("dispatch_layout", { action }),
 	getMachines: (projectIdentifier: number) => __TAURI_INVOKE<MachinesView_Serialize>("get_machines", { projectIdentifier }),
@@ -3853,6 +3855,7 @@ export type Settings_Deserialize = {
 	providers: ProviderSettings_Deserialize,
 	agents: AgentSettings_Deserialize,
 	proofs: ProofSettings,
+	ui_zoom?: UiZoom,
 };
 
 export type Settings_Serialize = {
@@ -3860,6 +3863,7 @@ export type Settings_Serialize = {
 	providers: ProviderSettings_Serialize,
 	agents: AgentSettings_Serialize,
 	proofs: ProofSettings,
+	ui_zoom: UiZoom,
 };
 
 /**  One shared MCP server, in the order Settings → Agents lists it. */
@@ -4998,6 +5002,17 @@ export type TranscriptBlock_Serialize = ({ UserMessage: {
 } }) & { AgentMessage?: never; Decision?: never; Diff?: never; ErrorCard?: never; StatusLine?: never; ToolGroup?: never; UserMessage?: never };
 
 export type TranscriptModeView = "FullTranscript" | "CollapsedWithPrHistory" | "ExpandedWithPrHistory";
+
+export type UiZoom = number;
+
+export type UiZoomAdjustment = "Increase" | "Decrease" | "Reset";
+
+export type UiZoomView = {
+	percent: number,
+	can_increase: boolean,
+	can_decrease: boolean,
+	can_reset: boolean,
+};
 
 /**  The one action the panel offers. */
 export type UpdateAction = "none" | "check" | "install";

@@ -6,18 +6,20 @@
   display: flex;
   gap: var(--board-switch-gap);
   padding: var(--board-switch-padding);
-  border: 1px solid var(--pane-edge);
+  border: var(--layout-hairline) solid var(--pane-edge);
   border-radius: var(--board-switch-border-radius);
   background: var(--sheen), var(--pane);
   backdrop-filter: var(--blur-pane);
 }
 .view-switch button {
+  flex: none;
   height: var(--board-switch-button-height);
   padding: var(--board-switch-button-padding);
   border-radius: var(--board-switch-border-radius);
   font-size: var(--board-switch-font-size);
   font-weight: var(--board-switch-font-weight);
   color: var(--text-2);
+  white-space: nowrap;
 }
 .view-switch button:hover {
   color: var(--text);
@@ -34,24 +36,29 @@
 /* On the Board the lanes take the whole window: no sidebar, no rail. */
 .workspace.board-mode {
   grid-template-columns: var(--board-workspace-grid-template-columns);
+  grid-template-areas: 'board';
 }
 .board {
-  display: flex;
+  display: grid;
+  grid-template-columns: repeat(
+    auto-fit,
+    minmax(min(100%, var(--layout-lane-width)), 1fr)
+  );
   gap: var(--board-gap);
   min-width: 0;
   min-height: 0;
   padding: var(--board-padding);
-  overflow-x: auto;
+  overflow-y: auto;
+  overflow-x: hidden;
 }
 .lane {
-  flex: var(--board-lane-flex);
-  min-width: var(--board-lane-min-width);
-  min-height: 0;
+  min-width: 0;
+  min-height: var(--layout-options-width);
   display: flex;
   flex-direction: column;
   gap: var(--board-lane-gap);
   padding: var(--board-lane-padding);
-  border: 1px solid var(--pane-edge);
+  border: var(--layout-hairline) solid var(--pane-edge);
   border-radius: var(--board-lane-border-radius);
   background: var(--sheen), var(--pane);
   box-shadow: var(--pane-lift);
