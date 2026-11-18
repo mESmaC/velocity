@@ -1,6 +1,14 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
+mod queued_run_access;
+
 fn main() -> anyhow::Result<()> {
+    if queued_run_access::serve()? {
+        return Ok(());
+    }
+    if let Ok(executable) = std::env::current_exe() {
+        velocity_acp::client::enable_queued_runs(executable);
+    }
     if velocity_app_lib::headless::serve()? {
         return Ok(());
     }

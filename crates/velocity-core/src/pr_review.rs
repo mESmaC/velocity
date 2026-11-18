@@ -149,7 +149,7 @@ pub fn continue_prompt(subject: &ReviewSubject, nudge: u32) -> String {
         ),
     };
     format!(
-        "You ended your turn without recording a decision on {named} (reminder {nudge} of {UNDECIDED_NUDGES}). Your session stops when a turn ends without one, so nothing you left running in the background will call you back. Continue the review now: run any long command in the foreground and wait for it, then record your decision with {tools}. If you cannot decide, say why in one line.\n"
+        "You ended your turn without a queued run or a decision on {named} (reminder {nudge} of {UNDECIDED_NUDGES}). Continue the review now. If it requires a long check, use `queue_run` from `velocity-run` and end your turn until the result arrives. Record your decision with {tools}. If you cannot decide, say why in one line.\n"
     )
 }
 
@@ -286,7 +286,7 @@ fn closing(mode: ReviewMode) -> &'static str {
             "\nNever end your turn before you record your decision: ending it stops your session.\nEnd your turn with a one-line summary of your decision.\n"
         }
         ReviewMode::LocalChecks => {
-            "\nRun every command in the foreground and wait for it, however long it takes (a cold build, `lake build`, the stress suite). Never end your turn before you record your decision: ending it stops your session, and a command left running in the background never calls you back.\nEnd your turn with a one-line summary of your decision.\n"
+            "\nQueue local checks that can take more than a minute with `queue_run` from `velocity-run`, using class `landing` in this review worktree. End your turn after queuing and continue from Velocity's result. If the tool is unavailable, run the checks in the foreground.\nEnd the review with a one-line summary after recording your decision.\n"
         }
     }
 }

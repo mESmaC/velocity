@@ -94,7 +94,7 @@ pub fn repair_prompt(failure: &BuildFailure) -> String {
          build failure forward in your Rosen workspace. If the repair needs a spec decision, \
          find its heading with graph_find and read it with graph_read (source: true). \
          Use the normal build-thread lifecycle: claim the files, verify the build and lint \
-         through rosen run, and name the finished change with rosen commit -m. Velocity \
+         through Rosen's queue, and name the finished change with rosen commit -m. Velocity \
          lands it. Keep the repair limited to restoring the build; do not take other work.\n\n\
          Culprit change: {}\nCulprit commit: {}\n\nRevert status: {reason}\n\n\
          Later commits blocking the revert:\n{blockers}\n\nFailing check output:\n{}",

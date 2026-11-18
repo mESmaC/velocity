@@ -27,6 +27,17 @@ use crate::threads::{lock, report};
 pub fn serve_scout_server() -> anyhow::Result<bool> {
     let arguments: Vec<String> = std::env::args().skip(1).collect();
     if arguments.first().map(String::as_str) == Some(REVIEW_SWARM_SWITCH) {
+        if let [_, launch, mode, completion] = arguments.as_slice()
+            && mode == "--complete"
+        {
+            let server = ReviewSwarmServer::open(std::path::Path::new(launch))
+                .map_err(anyhow::Error::msg)?;
+            let result = server
+                .finish_queued(completion)
+                .map_err(anyhow::Error::msg)?;
+            println!("{result}");
+            return Ok(true);
+        }
         let [_, launch] = arguments.as_slice() else {
             anyhow::bail!("Usage: {REVIEW_SWARM_SWITCH} <launch-file>");
         };

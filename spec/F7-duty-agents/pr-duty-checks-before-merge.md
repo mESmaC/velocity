@@ -4,7 +4,8 @@
 - **Checks before merge.**
   These gates apply to git PRs and Rosen projects with `review = "before-land"` (the default).
   A Rosen project with `review = "after-land"` has no build, receipt or approval gate at land time: its named changes land on a clean merge, and Velocity verifies builds and tests afterwards as described below.
-  Authors still build and lint their work through `rosen run` before naming it.
+  Authors still build and lint their work through Rosen's queue before naming it.
+  When duty agents run long checks themselves, they use `velocity-run`'s `queue_run` with class `landing` in the prepared merge result and end the turn until Velocity delivers the result.
   A reviewer reads a PR; it does not rebuild it.
   GitHub's checks build and test the head, and Velocity merges it once they pass.
 

@@ -72,7 +72,7 @@ Project-specific commands come from the project's manifests or the applicable sp
   Continuous dispatch threads can add, edit and delete tasks on their own.
   Other threads change the Task List only on an explicit user request; otherwise file issues.
 - Shared files: the project's generated files and registration lists, and how to regenerate them on combined inputs (F14).
-- Build queue: run every heavy build, test and lint through `rosen run -- <command>`, the machine-wide queue (F5).
+- Build queue: use `queue_run` from `velocity-run` for commands that can take more than a minute, then end the turn and continue from Velocity's result (F5).
 
 **Accept when:**
 - [ ] Saving commits and pushes AGENTS.md; agents pick it up on their next task.

@@ -55,7 +55,7 @@ The project spec defines what to build. The Task List defines what is left.
 
 ## Commands
 - Find build, run and lint commands in the manifests or the spec section that defines them. Record those commands here when established.
-- Run builds, tests and lint through `rosen run -- <command>`. Never run a long-lived dev server through the queue.
+- Use `queue_run` from `velocity-run` for commands that can take more than a minute. End your turn after queuing and continue from Velocity's result. Run other builds, tests and lint through `rosen run -- <command>`. Never run a long-lived dev server through the queue.
 - Check only what your change affects before naming it. Lint reports zero warnings. Never repeat a passed check unless its inputs changed.
 - Run `lake build` in `proofs/` when changing a pinned Lean project.
 

@@ -21,6 +21,9 @@ mod probe;
 mod process;
 mod program_path;
 mod provider_usage_log;
+mod queued_run_command;
+mod queued_run_tool;
+mod queued_runs;
 pub mod rewrite;
 mod run_queue;
 mod session;
@@ -65,6 +68,12 @@ pub use live_limits::{subscribe_account_limits, subscribe_limits, subscription_l
 pub use probe::{AgentProbe, ProbedModel, probe_agent};
 pub use process::AgentLaunch;
 pub use program_path::program_found;
+pub use queued_run_command::is_queued_run_notice;
+pub use queued_run_tool::{
+    QUEUED_RUN_PORT_ENV, QUEUED_RUN_SERVER, QUEUED_RUN_SWITCH, QUEUED_RUN_TOKEN_ENV,
+    QUEUED_RUN_TOOL, queued_run_tool, request_queued_run,
+};
+pub use queued_runs::enable_queued_runs;
 pub use session::{
     SessionResume, SessionSetup, StartedSession, answer_permission, session_servers,
 };
@@ -74,6 +83,7 @@ pub use title::{TitleReply, TitleRequest, request_title};
 pub use updates::{AgentSlashCommand, available_commands, entry_class};
 
 use crate::{Placement, RunSettings, Steering, SteeringEffect, SteeringInput, Transcript};
+use queued_runs::{RunQueue, RunResults};
 use terminals::Terminals;
 
 /// What the thread sends its agent.
@@ -252,9 +262,20 @@ async fn run_admitted_session(
     events: UnboundedSender<AgentEvent>,
 ) -> Result<(), ClientError> {
     let mut setup = setup;
-    setup.preface = run_queue::preface(&launch, setup.preface.take());
     // Meter availability must never prevent starting an agent.
     let _ = live_limits::prepare(&mut launch).await;
+    let (mut queue, results) = match RunQueue::start(&mut setup, &launch).await {
+        Ok(Some((queue, results))) => (Some(queue), results),
+        unavailable => {
+            if let Err(error) = unavailable {
+                let _ = events.send(AgentEvent::Log(format!(
+                    "Could not start the queued run tool: {error}"
+                )));
+            }
+            setup.preface = run_queue::preface(&launch, setup.preface.take());
+            (None, RunResults::default())
+        }
+    };
     // Velocity's own servers come first in the setup, so a clash keeps them (session_servers).
     setup
         .shared_servers
@@ -279,13 +300,27 @@ async fn run_admitted_session(
         code_reads: Mutex::default(),
         token_capture: Mutex::default(),
     });
-    let result = connect_agent(&mut agent, Arc::clone(&shared), setup, launch, inputs).await;
+    let result = connect_agent(
+        &mut agent,
+        Arc::clone(&shared),
+        setup,
+        launch,
+        inputs,
+        results,
+    )
+    .await;
+    let queue_stopped = if let Some(queue) = &mut queue {
+        queue.stop().await
+    } else {
+        Ok(())
+    };
     let terminals_stopped = shared.terminals.stop_all().await;
     let agent_stopped = process::stop_agent(&mut agent)
         .await
         .map_err(|error| ClientError::Shutdown(error.to_string()));
     terminals_stopped?;
     agent_stopped?;
+    queue_stopped.map_err(|error| ClientError::Shutdown(error.to_string()))?;
     result
 }
 
@@ -295,6 +330,7 @@ async fn connect_agent(
     setup: SessionSetup,
     launch: AgentLaunch,
     inputs: UnboundedReceiver<AgentInput>,
+    results: RunResults,
 ) -> Result<(), ClientError> {
     let stdin = agent
         .stdin()
@@ -313,7 +349,7 @@ async fn connect_agent(
     let connection = handlers::register(Client.v1(), &shared).connect_with(
         transport,
         async move |connection: ConnectionTo<Agent>| {
-            drive(connection, session_state, setup, launch, inputs).await
+            drive(connection, session_state, setup, launch, inputs, results).await
         },
     );
     let result = tokio::select! {
@@ -381,79 +417,44 @@ async fn drive(
     shared: Arc<Shared>,
     setup: SessionSetup,
     launch: AgentLaunch,
-    mut inputs: UnboundedReceiver<AgentInput>,
+    inputs: UnboundedReceiver<AgentInput>,
+    runs: RunResults,
 ) -> Result<(), agent_client_protocol::Error> {
     let session_start = token_usage::now();
     let started = start_reporting_replay(&connection, &shared, &setup).await?;
     let session_id = started.session_id;
-    let mut meter = turn_usage::UsageMeter::for_setup(&setup, started.graph_on);
+    let meter = turn_usage::UsageMeter::for_setup(&setup, started.graph_on);
     let since = if started.loaded { session_start } else { 0 };
-    let mut tokens = token_usage::SessionMeter::new(&setup, &launch, &session_id.0, &shared, since);
+    let tokens = token_usage::SessionMeter::new(&setup, &launch, &session_id.0, &shared, since);
     shared
         .code_reads
         .lock()
         .unwrap_or_else(PoisonError::into_inner)
         .start();
-    let mut options = started.options;
     shared.emit(AgentEvent::SessionStarted {
         session_id: session_id.clone(),
         loaded: started.loaded,
     });
     let mut preface = session_preface(&setup, started.loaded, started.graph_on).await;
-    let (turn_sender, mut turn_ended) = unbounded_channel::<PromptResult>();
-    let mut steering: Steering<Vec<ContentBlock>, ()> = Steering::new(());
+    let (turn_sender, turn_ended) = unbounded_channel();
     let mut coordination = coordination::Coordination::default();
-    loop {
-        let input = tokio::select! {
-            input = inputs.recv() => match input {
-                Some(AgentInput::Send(message)) => SteeringInput::Send(message),
-                Some(AgentInput::Coordination(delivery)) => {
-                    coordination.push(delivery);
-                    continue;
-                }
-                Some(AgentInput::Interrupt) => SteeringInput::Interrupt,
-                Some(AgentInput::Configure(settings)) => {
-                    options = reconfigure(&connection, &shared, &session_id, options, &settings).await;
-                    continue;
-                }
-                Some(AgentInput::Stop) | None => return Ok(()),
-            },
-            () = coordination.wait(), if !steering.is_busy() => SteeringInput::Send(Vec::new()),
-            Some(PromptResult { report, usage }) = turn_ended.recv() => {
-                if let Some(tokens) = tokens.as_mut() {
-                    tokens.finish(usage.as_ref()).await;
-                }
-                if let Some(meter) = meter.as_mut() {
-                    let reads = shared.code_reads.lock().unwrap_or_else(PoisonError::into_inner).take_count();
-                    meter.record(&report, reads);
-                }
-                let paused = setup.pause_on_subscription_limit
-                    && report.outcome.as_ref().is_err_and(|error| subscription_limit_error(error));
-                shared.emit(AgentEvent::TurnEnded(report.outcome));
-                if paused {
-                    // The saved thread still owns any prompts it hasn't seen echoed.
-                    // Wait for its supervisor to stop this process before a new login runs.
-                    while let Some(input) = inputs.recv().await {
-                        if matches!(input, AgentInput::Stop) {
-                            break;
-                        }
-                    }
-                    return Ok(());
-                }
-                coordination.turn_ended();
-                SteeringInput::TurnEnded
-            }
-        };
-        let mut turn = Turn {
-            connection: &connection,
-            shared: &shared,
-            session_id: &session_id,
-            turn_sender: &turn_sender,
-            preface: &mut preface,
-            coordination: &mut coordination,
-        };
-        turn.apply(steering.step(input))?;
-    }
+    let mut turn = Turn {
+        connection: &connection,
+        shared: &shared,
+        session_id: &session_id,
+        turn_sender: &turn_sender,
+        preface: &mut preface,
+        coordination: &mut coordination,
+    };
+    turn.drive_turns(
+        inputs,
+        turn_ended,
+        TurnAccounting { meter, tokens },
+        started.options,
+        setup.pause_on_subscription_limit,
+        runs,
+    )
+    .await
 }
 
 /// The workspace note, any transcript needed for recovery, and a fresh session's graph hints.
@@ -481,6 +482,27 @@ async fn session_preface(setup: &SessionSetup, loaded: bool, graph_on: bool) -> 
 struct PromptResult {
     report: turn_usage::TurnReport,
     usage: Option<agent_client_protocol::v1::schema::Usage>,
+}
+
+struct TurnAccounting {
+    meter: Option<turn_usage::UsageMeter>,
+    tokens: Option<token_usage::SessionMeter>,
+}
+
+impl TurnAccounting {
+    async fn record(&mut self, result: &PromptResult, shared: &Shared) {
+        if let Some(tokens) = &mut self.tokens {
+            tokens.finish(result.usage.as_ref()).await;
+        }
+        if let Some(meter) = &mut self.meter {
+            let reads = shared
+                .code_reads
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .take_count();
+            meter.record(&result.report, reads);
+        }
+    }
 }
 
 /// Starts the session, bracketing it with [`AgentEvent::HistoryReplay`] when a loaded session
@@ -537,6 +559,92 @@ struct Turn<'session> {
 }
 
 impl Turn<'_> {
+    async fn drive_turns(
+        &mut self,
+        mut inputs: UnboundedReceiver<AgentInput>,
+        mut turn_ended: UnboundedReceiver<PromptResult>,
+        mut accounting: TurnAccounting,
+        mut options: Vec<agent_client_protocol::v1::schema::SessionConfigOption>,
+        pause_on_subscription_limit: bool,
+        mut runs: RunResults,
+    ) -> Result<(), agent_client_protocol::Error> {
+        let mut steering = Steering::new(());
+        loop {
+            let input = tokio::select! {
+                input = inputs.recv() => match input {
+                    Some(AgentInput::Send(message)) => SteeringInput::Send(message),
+                    Some(AgentInput::Coordination(delivery)) => {
+                        self.coordination.push(delivery);
+                        continue;
+                    }
+                    Some(AgentInput::Interrupt) if runs.waiting => continue,
+                    Some(AgentInput::Interrupt) => SteeringInput::Interrupt,
+                    Some(AgentInput::Configure(settings)) => {
+                        options = reconfigure(self.connection, self.shared, self.session_id, options, &settings).await;
+                        continue;
+                    }
+                    Some(AgentInput::Stop) | None => return Ok(()),
+                },
+                () = self.coordination.wait(), if !steering.is_busy() => SteeringInput::Send(Vec::new()),
+                event = runs.receive() => {
+                    runs.record(event, self.shared);
+                    if runs.waiting && !runs.outstanding() {
+                        self.continue_after_runs(&mut steering, &mut runs)?;
+                    }
+                    continue;
+                },
+                Some(result) = turn_ended.recv() => {
+                    accounting.record(&result, self.shared).await;
+                    let outcome = result.report.outcome;
+                    let paused = pause_on_subscription_limit
+                        && outcome.as_ref().is_err_and(|error| subscription_limit_error(error));
+                    if !paused && (runs.outstanding() || !runs.ready.is_empty()) {
+                        // Keep the logical turn open so duty runners do not stop or nudge
+                        // the session while the provider has no prompt in flight.
+                        runs.waiting = true;
+                        runs.release();
+                        if !runs.outstanding() {
+                            self.continue_after_runs(&mut steering, &mut runs)?;
+                        }
+                        continue;
+                    }
+                    self.shared.emit(AgentEvent::TurnEnded(outcome));
+                    if paused {
+                        // The saved thread owns prompts it hasn't seen echoed. Its supervisor
+                        // stops this process before starting a new login.
+                        while let Some(input) = inputs.recv().await {
+                            if matches!(input, AgentInput::Stop) {
+                                break;
+                            }
+                        }
+                        return Ok(());
+                    }
+                    self.coordination.turn_ended();
+                    SteeringInput::TurnEnded
+                }
+            };
+            self.apply(steering.step(input))?;
+        }
+    }
+
+    fn continue_after_runs(
+        &mut self,
+        steering: &mut Steering<Vec<ContentBlock>, ()>,
+        runs: &mut RunResults,
+    ) -> Result<(), agent_client_protocol::Error> {
+        runs.waiting = false;
+        for block in &runs.ready {
+            self.shared
+                .record(queued_run_command::completion_notice(block.clone()));
+        }
+        self.preface.append(&mut runs.ready);
+        let effect = match steering.step(SteeringInput::TurnEnded) {
+            SteeringEffect::Nothing => steering.step(SteeringInput::Send(Vec::new())),
+            effect => effect,
+        };
+        self.apply(effect)
+    }
+
     fn apply(
         &mut self,
         effect: SteeringEffect<Vec<ContentBlock>>,

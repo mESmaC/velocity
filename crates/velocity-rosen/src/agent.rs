@@ -116,10 +116,10 @@ pub fn workspace_note(change: &str) -> String {
          your change, and \
          `rosen claim <paths>` claims files other agents might edit. The `rosen` MCP server \
          offers the same commands as tools (`status`, `diff`, `claim`, `overlaps`, `commit` \
-         and the rest), returning JSON. Run every build and test through \
-         `rosen run -- <command>`, such as `rosen run -- cargo build -p <crate>`: builds on \
-         this machine take turns, so yours has the cores when it runs, and the checks a \
-         land waits on go first. Use it in place of any build queue script your \
-         instructions name."
+         and the rest), returning JSON. For any command that can take more than a minute, \
+         use `queue_run` from `velocity-run` when available, then end your turn. Velocity \
+         runs it in Rosen's queue and sends the result and full log path when it finishes. \
+         Run other builds and tests through `rosen run -- <command>`. Checks a land waits \
+         on go first. Use Rosen's queue in place of any build queue script your instructions name."
     )
 }

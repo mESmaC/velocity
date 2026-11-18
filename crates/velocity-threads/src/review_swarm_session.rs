@@ -241,10 +241,15 @@ impl Job {
         setup.review_usage = true;
         setup.preface = Some(velocity_rosen::workspace_note(&launch.change));
         setup.shared_servers.push(McpServer::Stdio(
-            McpServerStdio::new("velocity-review-swarm", &self.runner.executable).args(vec![
-                REVIEW_SWARM_SWITCH.into(),
-                self.runner.job_path(key).display().to_string(),
-            ]),
+            McpServerStdio::new("velocity-review-swarm", &self.runner.executable)
+                .args(vec![
+                    REVIEW_SWARM_SWITCH.into(),
+                    self.runner.job_path(key).display().to_string(),
+                ])
+                .env(vec![EnvVariable::new(
+                    velocity_acp::client::QUEUED_RUN_PORT_ENV,
+                    "",
+                )]),
         ));
         setup
             .shared_servers
@@ -470,8 +475,9 @@ fn prompt(launch: &SwarmLaunch, roster: &ScoutRoster, instruction: Option<&str>)
         proofs/<Feature>/Design.lean and the exported fixture table, with one implementation fixture check. \
         Prove exactly correct, cost_bound and optimal. Name the spec section, state the cost model and alternatives in the theorem statements, and audit axioms. Use lemmas only for those theorems. File an issue if a design proof exceeds 300 lines. \
         Never weaken reviewed statements, use sorry/admit/axiom/native_decide, or prove a feature outside the proof list. \
-        File model/code gaps with evidence. review_swarm_complete runs lake build and the axiom audit for the named features, \
-        in the background verify queue; all other heavy runs use rosen run --class verify -- <command>. \
+        File model/code gaps with evidence. review_swarm_complete queues lake build and the axiom audit for the named features. \
+        For other commands that can take more than a minute, use queue_run from velocity-run with class verify. \
+        When a tool queues a run, end your turn and continue from Velocity's result. \
         A proof or fix is an ordinary Rosen change, with no review gate.\n\n\
         For a source issue, check its acceptance criteria against the exact landed commit. In review_swarm_complete, report source_issue_satisfied as true when the land meets those criteria and false otherwise. Velocity closes issues on behalf of the review swarm after a positive verdict. A negative verdict keeps the issue open for follow-up. \
         Call review_swarm_complete with your summary, proof assessment and feature folders; set issues_filed when you filed or identified findings through scout_file. \

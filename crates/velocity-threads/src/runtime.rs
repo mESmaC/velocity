@@ -779,7 +779,9 @@ impl ThreadRuntimes {
             AgentEvent::Transcript { placement, update } => {
                 // A replayed user message is history: it must not clear a queued row
                 // whose message has not been sent yet (#340).
-                if matches!(update, SessionUpdate::UserMessageChunk(_)) && !thread.replaying_history
+                if matches!(update, SessionUpdate::UserMessageChunk(_))
+                    && !thread.replaying_history
+                    && !velocity_acp::client::is_queued_run_notice(update)
                 {
                     thread.busy = true;
                     match thread.pending_inputs.pop_front() {

@@ -25,7 +25,7 @@ Velocity is a Rust + Tauri desktop IDE for running coding agents in parallel.
 
 ## Commands
 
-- Use `rosen run -- <command>` for builds and tests. Follow the workspace note when it supplies a queued-run tool. Let other runs finish in queue order.
+- Use `queue_run` from `velocity-run` for builds, tests, lint and other commands that can take more than a minute. End your turn after queuing and continue from the result Velocity sends. Use `rosen run -- <command>` for shorter builds and tests or when the tool is unavailable.
 - For Rust iteration use `cargo check -p <crate>`. Before naming working Rust, run `cargo fmt --all`, the locked workspace build and `cargo clippy --workspace --all-targets -- -D warnings`.
 - For app verification use `cargo tauri dev` outside the build queue. It starts the UI dev server. Use a crate's own entry point when that exercises the whole change.
 - For the affected checks use `scripts/check.ps1` with the changed paths list in a Rosen tree. The script queues its own heavy steps. For UI-only changes run `pnpm -C ui check`, `pnpm -C ui lint` and `pnpm -C ui build`, and format with `pnpm -C ui format` before naming. Keep all checks free of warnings.

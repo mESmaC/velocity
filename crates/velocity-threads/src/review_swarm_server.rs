@@ -7,6 +7,7 @@ use crate::launch::Location;
 use crate::review_swarm::ReviewSwarms;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
+use velocity_acp::client::{QUEUED_RUN_PORT_ENV, QUEUED_RUN_TOKEN_ENV, request_queued_run};
 use velocity_github::mcp_stdio::{ReviewDiffRequest, ToolServer, review_diff_tool};
 use velocity_github::{IssueClient, ScoutServer, read_scout_reports};
 use velocity_rosen::ProjectServer;
@@ -65,6 +66,7 @@ pub(crate) struct Completion {
 }
 
 pub struct ReviewSwarmServer {
+    launch_file: PathBuf,
     launch: SwarmLaunch,
     scout: ScoutServer,
     runtime: tokio::runtime::Runtime,
@@ -88,6 +90,7 @@ impl ReviewSwarmServer {
             .build()
             .map_err(|error| error.to_string())?;
         Ok(Self {
+            launch_file: path.to_owned(),
             launch,
             scout,
             runtime,
@@ -176,9 +179,48 @@ impl ReviewSwarmServer {
         result
     }
 
-    fn complete(&self, arguments: Value) -> Result<Value, String> {
-        let mut completion: Completion =
+    fn completion_request(&self, arguments: Value) -> Result<Value, String> {
+        let completion: Completion =
             serde_json::from_value(arguments).map_err(|error| error.to_string())?;
+        self.validate_completion(&completion)?;
+        let port = std::env::var(QUEUED_RUN_PORT_ENV).unwrap_or_default();
+        if !port.is_empty()
+            && self.needs_checks(&completion)
+            && !self.proof_paths(&completion.proof_features)?.is_empty()
+        {
+            return self.queue_completion(&port, &completion);
+        }
+        self.complete(completion)
+    }
+
+    fn queue_completion(&self, port: &str, completion: &Completion) -> Result<Value, String> {
+        let port = port.parse::<u16>().map_err(|error| error.to_string())?;
+        let token = std::env::var(QUEUED_RUN_TOKEN_ENV).map_err(|error| error.to_string())?;
+        let program = std::env::current_exe().map_err(|error| error.to_string())?;
+        let completion = serde_json::to_string(completion).map_err(|error| error.to_string())?;
+        let mut result = request_queued_run(
+            port,
+            &token,
+            json!({
+                "program": program,
+                "arguments": [REVIEW_SWARM_SWITCH, self.launch_file, "--complete", completion],
+                "class": "verify",
+            }),
+        )?;
+        result["next"] = json!(
+            "End your turn. On a pass, name any proof or fix work with rosen commit, then end your turn."
+        );
+        Ok(result)
+    }
+
+    /// Called by the queued command, with the same validation as the foreground route.
+    pub fn finish_queued(&self, completion: &str) -> Result<Value, String> {
+        let completion = serde_json::from_str(completion).map_err(|error| error.to_string())?;
+        self.validate_completion(&completion)?;
+        self.complete(completion)
+    }
+
+    fn validate_completion(&self, completion: &Completion) -> Result<(), String> {
         if completion.summary.trim().is_empty() || completion.proof_assessment.trim().is_empty() {
             return Err("Explain the review and its applicability to SPEC.md's proof list".into());
         }
@@ -196,6 +238,14 @@ impl ReviewSwarmServer {
                     .into(),
             );
         }
+        Ok(())
+    }
+
+    fn needs_checks(&self, completion: &Completion) -> bool {
+        !completion.issues_filed && completion.source_issue_satisfied != Some(false)
+    }
+
+    fn complete(&self, mut completion: Completion) -> Result<Value, String> {
         let server = ProjectServer::new(&self.launch.app_data, self.launch.project);
         let head = self
             .runtime
@@ -206,7 +256,7 @@ impl ReviewSwarmServer {
                 &self.launch.workspace,
             ))
             .map_err(|error| error.to_string())?;
-        if !completion.issues_filed && completion.source_issue_satisfied != Some(false) {
+        if self.needs_checks(&completion) {
             self.check_proofs(&completion.proof_features)?;
         }
         completion.head = self
@@ -251,7 +301,7 @@ impl ReviewSwarmServer {
         Ok(())
     }
 
-    fn check_proofs(&self, features: &[String]) -> Result<(), String> {
+    fn proof_paths(&self, features: &[String]) -> Result<Vec<String>, String> {
         let server = ProjectServer::new(&self.launch.app_data, self.launch.project);
         let mut paths = self
             .runtime
@@ -289,7 +339,13 @@ impl ReviewSwarmServer {
             }
             paths.push(design);
         }
-        if !paths.iter().any(|path| path.starts_with("proofs/")) {
+        paths.retain(|path| path.starts_with("proofs/"));
+        Ok(paths)
+    }
+
+    fn check_proofs(&self, features: &[String]) -> Result<(), String> {
+        let paths = self.proof_paths(features)?;
+        if paths.is_empty() {
             return Ok(());
         }
         let report = review_swarm::verify(&self.launch.workspace, || {
@@ -328,7 +384,7 @@ impl ToolServer for ReviewSwarmServer {
         let mut tools = self.scout.tools();
         tools.push(review_diff_tool("review_swarm_change",
             "Landed change overview: file list with diff stats, graph impact, issue references and named snapshots."));
-        tools.push(json!({"name": "review_swarm_complete", "description": "Record a finished review or sweep. Proof features require Design.lean, fixtures, lake build and axiom audit. Coverage is applied after any named fix or proof lands.",
+        tools.push(json!({"name": "review_swarm_complete", "description": "Record a finished review or sweep. Proof features require Design.lean and fixtures. If this queues Lean verification, end your turn and continue from the result. Coverage is applied after any named fix or proof lands.",
             "inputSchema": {"type": "object", "properties": {
                 "issues_filed": {"type": "boolean"}, "summary": {"type": "string"},
                 "source_issue_satisfied": {"type": "boolean", "description": "Required when review_swarm_change identifies a source issue. True only when the landed implementation meets that issue's acceptance criteria."},
@@ -341,7 +397,7 @@ impl ToolServer for ReviewSwarmServer {
     fn call(&mut self, name: Option<&str>, arguments: Value) -> Result<Value, String> {
         match name {
             Some("review_swarm_change") => self.change(arguments),
-            Some("review_swarm_complete") => self.complete(arguments),
+            Some("review_swarm_complete") => self.completion_request(arguments),
             Some("scout_file") => self.file(arguments),
             _ => self.scout.call(name, arguments),
         }

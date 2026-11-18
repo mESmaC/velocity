@@ -313,7 +313,10 @@ pub async fn snapshot_head(
 /// Proof verification yields to every build in the machine queue. The closure runs only
 /// after a verify turn is acquired; there is no receipt or landing dependency.
 pub fn verify<T>(folder: &Path, check: impl FnOnce() -> T) -> Result<T, RosenError> {
-    use rosen_client::run_queue::{RunClass, RunQueue};
+    use rosen_client::run_queue::{RunClass, RunQueue, held};
+    if held().is_some() {
+        return Ok(check());
+    }
     let source_error = |source| RosenError::Io {
         action: "queue proof verification for",
         path: folder.into(),

@@ -170,6 +170,9 @@ impl LiveTranscript {
 
     /// Files one update where the ACP client placed it.
     pub fn record(&mut self, placement: Placement, update: &SessionUpdate) {
+        if velocity_acp::client::is_queued_run_notice(update) {
+            return self.record_notice(placement, update);
+        }
         match placement {
             Placement::Added(_) => {
                 // The client adds entries in order, so the next ACP index is the next one here.

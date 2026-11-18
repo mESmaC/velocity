@@ -80,6 +80,7 @@ PR duty checks an item off when it lands that item's PR (F7).
 - [x] Informational AIRC notices ride the next prompt, overlap files and idle deliveries batch together, and PR follow-through delivers review requests once (F6, F14, #464)
 - [x] Targeted rebases, optimistic landing, conflicts sent back to the owning agent; rebuild the merge result whenever `master` moved; Shared files exempt from overlaps (F6, F14)
 - [x] Warm workspace pool from one base clone, prebuilt at the tip of `master` with a shared compiler cache; workspace guards (F5)
+- [x] Queue long agent commands in Rosen and resume the ACP thread with the result (#454, F5, F7)
 - [x] PR duty tiered review and intent review; Sensitive paths in AGENTS.md (F7)
 - [x] Main watcher duty role: post-merge suite, bisect, fix or revert PR (F7)
 

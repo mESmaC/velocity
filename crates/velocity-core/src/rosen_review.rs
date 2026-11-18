@@ -55,7 +55,7 @@ pub fn rosen_review_prompt(brief: &RosenReviewBrief) -> String {
             "\nNever end your turn before you record your decision: ending it stops your session.\nEnd your turn with a one-line summary of your decision.\n"
         }
         ReviewMode::LocalChecks => {
-            "\nRun every command in the foreground and wait for it, however long it takes. Never end your turn before you record your decision: ending it stops your session, and a command left running in the background never calls you back.\nEnd your turn with a one-line summary of your decision.\n"
+            "\nQueue local checks that can take more than a minute with `queue_run` from `velocity-run`, using class `landing` in this merge result folder. End your turn after queuing and continue from Velocity's result. If the tool is unavailable, run the checks in the foreground.\nEnd the review with a one-line summary after recording your decision.\n"
         }
     });
     prompt
