@@ -219,9 +219,10 @@ impl QueueHost {
             &request.command.program,
             &request.command.arguments,
         )?;
-        let rosen = if policy == velocity_rosen::agent_run::AgentRun::RustCheck {
+        // Checks and binding generation take the managed command's light Rust slots.
+        let rosen = if policy != velocity_rosen::agent_run::AgentRun::Ordinary {
             velocity_rosen::agent_run::cli()
-                .ok_or("The managed Rosen command is unavailable for agent type checks")?
+                .ok_or("The managed Rosen command is unavailable for agent Rust runs")?
         } else {
             &self.rosen
         };

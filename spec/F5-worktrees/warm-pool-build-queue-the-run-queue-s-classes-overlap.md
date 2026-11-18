@@ -4,4 +4,4 @@
 - The run queue's classes overlap on purpose.
   Landing checks, agent checks, integration builds and warm pool prepares have separate priorities in Rosen's machine queue.
   Runs pass the machine's free-memory gate before starting.
-  Agent Rust checks and integration builds each hold a machine-wide single slot for their work.
+  Integration builds hold a machine-wide single slot; agent light Rust runs share two slots of their own.

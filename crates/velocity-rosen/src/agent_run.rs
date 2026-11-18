@@ -1,29 +1,42 @@
-//! The managed Rosen CLI and MCP queue share this policy. Agent checks take one
-//! machine-wide slot inside Rosen's memory-aware queue.
+//! The managed Rosen CLI and MCP queue share this policy. Agents' light Rust runs
+//! (single-crate checks and binding generation) take one of a few machine-wide slots
+//! and start once their own memory fits above Rosen's reserve.
 
 use std::ffi::OsString;
-use std::fs::{File, OpenOptions};
+use std::fs::{File, OpenOptions, TryLockError};
 use std::io;
 use std::path::{Path, PathBuf};
 use std::process::ExitStatus;
 use std::sync::OnceLock;
 
-use rosen_client::run_queue::{HELD_ENV, RunClass, RunQueue};
+use rosen_client::run_queue::{HELD_ENV, POLL, RunClass, RunQueue};
 
 use crate::process::hidden_command;
 
 static AGENT_CLI: OnceLock<Option<PathBuf>> = OnceLock::new();
 const PROGRAM_RECORD: &str = "rosen-program";
 const REFUSAL: &str = "The integration build covers Rust compilation, lint and tests. Agents may run cargo fmt or queue cargo check -p <crate>.";
+/// Light runs going at once on the machine. Each uses two Cargo jobs.
+const LIGHT_SLOTS: usize = 2;
+/// What a light run may use: two Cargo jobs plus the linker of a debug build.
+const LIGHT_MEMORY: u64 = 3 << 30;
+/// The shared target folder beside a Rosen project's workspaces.
+const PROJECT_TARGET: &str = ".velocity-agent-target";
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub enum AgentRun {
     Ordinary,
+    /// `cargo check -p <crate>`.
     RustCheck,
+    /// The UI's `bindings` script, which builds and runs `export-bindings`.
+    Bindings,
 }
 
 pub fn policy(program: &str, arguments: &[String]) -> Result<AgentRun, &'static str> {
     let name = executable_name(program);
+    if name == "pnpm" && runs_bindings_script(arguments) {
+        return Ok(AgentRun::Bindings);
+    }
     if name == "cargo" {
         return match arguments {
             [command, flag, package]
@@ -50,6 +63,19 @@ pub fn policy(program: &str, arguments: &[String]) -> Result<AgentRun, &'static 
         return Err(REFUSAL);
     }
     Ok(AgentRun::Ordinary)
+}
+
+/// `pnpm -C ui bindings`, `pnpm --dir ui bindings` or `pnpm run bindings`.
+fn runs_bindings_script(arguments: &[String]) -> bool {
+    let mut rest = arguments;
+    loop {
+        match rest {
+            [flag, _, tail @ ..] if flag == "-C" || flag == "--dir" => rest = tail,
+            [run, tail @ ..] if run == "run" => rest = tail,
+            [script] => return script == "bindings",
+            _ => return false,
+        }
+    }
 }
 
 fn heavy_script(argument: &str) -> bool {
@@ -154,12 +180,17 @@ fn run(program: String, arguments: &[OsString]) -> io::Result<ExitStatus> {
         .ancestors()
         .find(|path| path.join(".rosen").exists() || path.join(".git").exists())
         .unwrap_or(&directory);
+    let target = light_target(root);
+    std::fs::create_dir_all(&target)?;
+    // Cargo locks a target folder for a whole build, so runs that share one wait here
+    // rather than in a machine slot.
+    let _project = locked(&target.join(".velocity-light-run.lock"))?;
     let _slot = light_slot()?;
-    let queue = RunQueue::machine()?;
-    let _turn = queue.turn(
-        RunClass::Build,
-        &format!("agent cargo check in {}", root.display()),
-    )?;
+    wait_for_memory()?;
+    // No Rosen turn: its admission charges every running turn its full cap (6 GiB for
+    // an integration build), which kept two-job checks waiting while gigabytes sat free.
+    // A light run starts when its own memory fits above Rosen's reserve; the run below
+    // still executes in a job capped at a build turn's memory.
     command
         .args(&arguments[..=subcommand])
         .args(["--class", RunClass::Build.name(), "--"])
@@ -170,8 +201,26 @@ fn run(program: String, arguments: &[OsString]) -> io::Result<ExitStatus> {
         // The shared compiler cache rejects incremental compilation.
         .env("RUSTC_WRAPPER", "")
         .env("RUSTC_WORKSPACE_WRAPPER", "")
-        .env("CARGO_TARGET_DIR", root.join("target").join("agent-check"))
+        .env("CARGO_TARGET_DIR", target)
         .status()
+}
+
+/// One target folder per Rosen project, beside its workspaces: registry dependencies
+/// build once, and each workspace's own crates keep separate artifacts because their
+/// path is part of the package ID. Elsewhere the workspace keeps its own.
+fn light_target(root: &Path) -> PathBuf {
+    match root.parent() {
+        Some(project) if root.join(".rosen").exists() => project.join(PROJECT_TARGET),
+        _ => root.join("target").join("agent-check"),
+    }
+}
+
+fn wait_for_memory() -> io::Result<()> {
+    let queue = RunQueue::machine()?;
+    while !queue.memory_headroom().fits(LIGHT_MEMORY) {
+        std::thread::sleep(POLL);
+    }
+    Ok(())
 }
 
 fn subcommand_index(arguments: &[OsString]) -> usize {
@@ -218,13 +267,38 @@ fn classify_run(arguments: &[OsString]) -> Result<(usize, AgentRun), &'static st
     policy(program, &rest).map(|policy| (index, policy))
 }
 
+/// Takes the first free machine-wide light slot, waiting while all are taken. Slot 0
+/// keeps the single slot's old name, so older shims still count against it.
 fn light_slot() -> io::Result<File> {
-    let file = OpenOptions::new()
+    let folder = std::env::temp_dir();
+    loop {
+        for slot in 0..LIGHT_SLOTS {
+            let name = match slot {
+                0 => "velocity-agent-rust-check.lock".to_owned(),
+                _ => format!("velocity-agent-rust-check-{slot}.lock"),
+            };
+            let file = lock_file(&folder.join(name))?;
+            match file.try_lock() {
+                Ok(()) => return Ok(file),
+                Err(TryLockError::WouldBlock) => {}
+                Err(TryLockError::Error(error)) => return Err(error),
+            }
+        }
+        std::thread::sleep(POLL);
+    }
+}
+
+fn locked(path: &Path) -> io::Result<File> {
+    let file = lock_file(path)?;
+    file.lock()?;
+    Ok(file)
+}
+
+fn lock_file(path: &Path) -> io::Result<File> {
+    OpenOptions::new()
         .read(true)
         .write(true)
         .create(true)
         .truncate(false)
-        .open(std::env::temp_dir().join("velocity-agent-rust-check.lock"))?;
-    file.lock()?;
-    Ok(file)
+        .open(path)
 }

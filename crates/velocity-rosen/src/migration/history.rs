@@ -128,7 +128,7 @@ fn copy_object(
     }
     let mut delimiter = [0];
     output.read_exact(&mut delimiter).map_err(failure)?;
-    if delimiter != [b'\n'] {
+    if delimiter != *b"\n" {
         return Err(failure(format!("Git returned invalid data for {id}")));
     }
     Ok(())
