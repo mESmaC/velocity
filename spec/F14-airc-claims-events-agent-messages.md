@@ -24,7 +24,7 @@ Velocity posts them; agents never type them.
 |---|---|---|
 | `claim` | an agent's claim is granted, or it extends a claim (e.g. adds an issue its PR also fixes) | `airc_claim` |
 | `refused` | a claim loses to an earlier one; names the holder | `airc_claim` |
-| `overlap` (amber row) | two working or PR-open agents claim the same file | Velocity's claim comparison |
+| `overlap` (amber row) | two working or PR-open agents claim the same files | Velocity's claim comparison |
 | `shares` | an agent will make a small change in another agent's file and rebase after it merges | `airc_share` |
 | `waits` / `unblocked` | an agent waits for another agent's PR, then rebases after it merges | `airc_wait`, `pr://merged` |
 | `PR` · `changes` · `pushed` · `approved` · `merged` | the PR lifecycle (F6, F7) | GitHub; `approved` is PR duty's approval record (F7) |
@@ -87,15 +87,19 @@ Velocity posts them; agents never type them.
   Each report is marked pending before GitHub is asked and recorded as soon as it answers; a pending report retried after a crash takes an open issue in its destination repository with its exact title as its result instead of filing again.
 
 **Targeted delivery** (from Google Scion's "Not in `to` → not for you").
-At each step boundary, an agent receives only the lines it must act on:
+At each step boundary, an agent receives the coordination lines addressed to it and relevant project events.
 - overlaps that name it, and shares another agent records on its files;
-- `changes`, `conflict` and `updated` on its PR, posted by someone else;
-- merges whose files touch its claimed or edited files;
+- `conflict` and `updated` on its PR, posted by someone else;
+- merges by other agents;
 - `broken` events for merges its branch contains (F7);
 - events and messages with it in `to`;
 - your comments.
 
-Nothing else is pushed to it (decided, #231).
+Overlap and share notices, unrelated merges and agent messages with intent `inform` wait for the next prompt without starting a turn.
+Each prompt groups overlap notices for the same pair of agents into one line listing the files.
+Questions, requests, user comments and actionable events can start a turn after a two-second collection window, and all available notices go in that prompt.
+A legacy PR merge that touches the recipient's claimed or edited files requests a rebase, while Rosen handles native lands through its own follow-through.
+GitHub review requests reach the PR author's agent through F6 follow-through, and their AIRC records remain in the log.
 An agent is never sent its own events (its claims and claim updates, its PR, pushes, waits, shares and rebases): it caused them, and the tool call that did returned the result.
 Routine lines about its work posted by others, such as PR duty's review claim and release of its PR or an approval, stay in the log.
 The event log stays readable on demand with `read_events`.
@@ -228,16 +232,17 @@ Review membership is discovered from new joins after its claim; steady-state tic
 Routing borrows immutable cached history for modes, claims and checkout ownership predating the cursor; durable acknowledgements still let events pass held messages.
 
 M8 message delivery registers live build-thread members as `thread-<thread-id>` with worktree-leaf nicks.
-Native delivery passes named messages and your broadcast comments as `via AIRC` through ordinary queued steering at the next completed ACP turn.
+Native delivery adds named messages and your broadcast comments to the next ACP prompt as `via AIRC` notices.
 A per-thread cursor in `state.json` advances only after the receiving turn succeeds.
 Pending input replays after restart; acknowledged input does not.
-The events targeted delivery names (overlaps and shares naming it, others' `changes` / `conflict` / `updated` on its PR, and merges touching its claimed or observed files) are queued at step boundaries; its own events never are.
+Build threads acknowledge each underlying notice after the prompt that carried it completes successfully.
 A delivered line is not a message you sent: it never appears in the composer queue, and once the agent reads it the transcript shows it as a "from Velocity" notice.
 Heads-down holds agent messages until idle or a PR update, while events and user comments pass through.
 Per-line durable acknowledgements prevent replay when held messages keep the scan cursor behind.
 Quarantined senders’ messages stay in the modal log but are never pushed; quarantined recipients receive events and user comments.
 The modal uses `airc_send` for comments.
-A running PR duty review is a member too, as `duty-<nick>`: from its claim, the same targeted messages reach its review session as queued input once the review prompt is sent, each answered in another turn before the review ends.
+A running PR duty review is a member too, as `duty-<nick>`.
+Once the review prompt is sent, actionable notices can extend the review, and informational notices ride along with a turn the reviewer is already taking.
 An idle PR duty agent has no session and receives nothing.
 
 **Runtime injection.**

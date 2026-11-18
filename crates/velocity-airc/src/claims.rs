@@ -1,7 +1,7 @@
 //! Durable first-wins piece claims and advisory file overlaps (SPEC.md F14).
 use crate::{Channel, Entry, Error, channel::entry, storage::Storage};
 use serde::{Deserialize, Serialize};
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 #[derive(Clone, Debug, PartialEq, Eq, Deserialize, Serialize)]
 #[cfg_attr(feature = "bindings", derive(specta::Type))]
@@ -261,38 +261,54 @@ fn post_overlaps(
     previous: Option<&Claim>,
     claim: &Claim,
 ) -> Result<(), Error> {
+    let mut pairs = BTreeMap::<_, BTreeSet<_>>::new();
     for other in held.iter().filter(|other| other.member != claim.member) {
         for file in claim.files.iter().filter(|file| !shared_registration(file)) {
             if other.files.contains(file) && !previous.is_some_and(|old| old.files.contains(file)) {
-                let symbols = |member: &str| {
-                    entries
-                        .iter()
-                        .rev()
-                        .find(|record| record.member == member && record.checkout.is_some())
-                        .and_then(|record| record.checkout.as_ref())
-                        .map(|checkout| {
-                            velocity_graph::coordination::git_changes(
-                                std::path::Path::new(&checkout.worktree),
-                                &checkout.base,
-                                file,
-                            )
-                        })
-                        .unwrap_or_default()
-                };
-                let theirs = symbols(&other.member);
-                let ours = symbols(&claim.member);
-                let detail = symbol_overlap(&ours, &theirs);
-                let text = format!(
-                    "{} overlaps {} on {file}{detail}; record a share or wait before editing",
-                    claim.nick, other.nick
-                );
-                let record = entry(entries, "overlap", "velocity", &claim.nick, &text);
-                storage.append(&record)?;
-                entries.push(record);
+                pairs
+                    .entry((&other.nick, &other.member))
+                    .or_default()
+                    .insert(file);
             }
         }
     }
+    for ((nick, member), files) in pairs {
+        let paths: Vec<_> = files
+            .into_iter()
+            .map(|file| {
+                let ours = edited_symbols(entries, &claim.member, file);
+                let theirs = edited_symbols(entries, member, file);
+                format!("{file}{}", symbol_overlap(&ours, &theirs))
+            })
+            .collect();
+        let text = format!(
+            "{} overlaps {nick} on {}; record a share or wait before editing",
+            claim.nick,
+            paths.join(", ")
+        );
+        let mut record = entry(entries, "overlap", "velocity", &claim.nick, &text);
+        record.to = vec![claim.nick.clone(), nick.clone()];
+        record.files = paths;
+        storage.append(&record)?;
+        entries.push(record);
+    }
     Ok(())
+}
+
+fn edited_symbols(entries: &[Entry], member: &str, file: &str) -> Vec<String> {
+    entries
+        .iter()
+        .rev()
+        .find(|record| record.member == member && record.checkout.is_some())
+        .and_then(|record| record.checkout.as_ref())
+        .map(|checkout| {
+            velocity_graph::coordination::git_changes(
+                std::path::Path::new(&checkout.worktree),
+                &checkout.base,
+                file,
+            )
+        })
+        .unwrap_or_default()
 }
 
 pub(crate) fn symbol_overlap(ours: &[String], theirs: &[String]) -> String {

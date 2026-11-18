@@ -91,6 +91,7 @@ type AgentKey = (u32, String);
 struct Running {
     input: UnboundedSender<AgentInput>,
     pending: usize,
+    airc_pending: usize,
     subject: ReviewSubject,
     /// Its review was stopped from outside: its agent was dismissed (F7), or its PR closed
     /// (#349). The session is stopping and the PR is already released.
@@ -666,6 +667,7 @@ impl PrDutyReviews {
                 Running {
                     input: input.clone(),
                     pending: 0,
+                    airc_pending: 0,
                     subject: candidate.subject.clone(),
                     dismissed: false,
                     airc: ReviewDelivery::default(),
@@ -763,17 +765,23 @@ impl PrDutyReviews {
         let Some(nick) = &delivery.nick else {
             return Ok(());
         };
-        let deliver = |_: &str, message: &str| -> Result<bool, String> {
+        let deliver = |delivery: &velocity_airc::Delivery| -> Result<bool, String> {
             let mut state = self.lock();
             let Some(running) = state.running.get_mut(key).filter(|running| {
                 running.input.same_channel(input) && running.delivering && !running.dismissed
             }) else {
                 return Ok(false);
             };
-            if running.input.send(text(message)).is_err() {
+            if running
+                .input
+                .send(AgentInput::Coordination(delivery.clone()))
+                .is_err()
+            {
                 return Ok(false);
             }
-            running.pending += 1;
+            if delivery.priority == velocity_airc::DeliveryPriority::NeedsAction {
+                running.airc_pending += 1;
+            }
             Ok(true)
         };
         delivery.after =
@@ -1206,11 +1214,16 @@ impl Review {
                 doing = step;
             }
             offset = self.read_reports(host, report, offset, &mut outcome);
-            if batch
-                .iter()
-                .any(|event| matches!(event, AgentEvent::TurnEnded(_)))
-            {
-                self.end_turn(host, outcome.decided, &mut nudges);
+            for event in &batch {
+                match event {
+                    AgentEvent::CoordinationPrompt { actions, .. } => {
+                        if let Some(running) = self.runner.lock().running.get_mut(&self.key) {
+                            running.airc_pending = running.airc_pending.saturating_sub(*actions);
+                        }
+                    }
+                    AgentEvent::TurnEnded(_) => self.end_turn(host, outcome.decided, &mut nudges),
+                    _ => {}
+                }
             }
         }
         self.read_reports(host, report, offset, &mut outcome);
@@ -1245,8 +1258,14 @@ impl Review {
             return;
         };
         for event in batch {
-            if let AgentEvent::Transcript { placement, update } = event {
-                transcript.record(*placement, update);
+            match event {
+                AgentEvent::Transcript { placement, update } => {
+                    transcript.record(*placement, update)
+                }
+                AgentEvent::CoordinationPrompt {
+                    placement, update, ..
+                } => transcript.record_notice(*placement, update),
+                _ => {}
             }
         }
     }
@@ -1258,6 +1277,9 @@ impl Review {
         let Some(running) = state.running.get_mut(&self.key) else {
             return;
         };
+        if running.airc_pending > 0 && running.pending == 0 {
+            return;
+        }
         match turn_end_action(running.pending, decided, *nudges) {
             TurnEndAction::AnswerInstruction => running.pending -= 1,
             TurnEndAction::Stop => {

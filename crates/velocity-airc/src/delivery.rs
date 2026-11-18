@@ -1,5 +1,64 @@
 //! F14 targeted step-boundary delivery and held-message acknowledgement.
+use std::collections::BTreeMap;
+
 use crate::{Channel, Entry, Error};
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum DeliveryPriority {
+    Information,
+    NeedsAction,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Delivery {
+    pub sequence: u64,
+    pub message: String,
+    pub priority: DeliveryPriority,
+    overlaps: Vec<Overlap>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct Overlap {
+    agents: [String; 2],
+    paths: Vec<String>,
+}
+
+impl Delivery {
+    pub fn identifier(&self) -> String {
+        format!("airc:{}", self.sequence)
+    }
+}
+
+/// Render once at the prompt boundary, including overlaps gathered on earlier passes.
+pub fn prompt_lines(deliveries: &[Delivery]) -> Vec<String> {
+    let mut lines = Vec::new();
+    let mut pairs = BTreeMap::new();
+    for delivery in deliveries {
+        if delivery.overlaps.is_empty() {
+            lines.push(delivery.message.clone());
+        }
+        for overlap in &delivery.overlaps {
+            let mut pair = overlap.agents.clone();
+            pair.sort();
+            let (index, paths) = pairs.entry(pair).or_insert_with(|| {
+                lines.push(String::new());
+                (lines.len() - 1, Vec::new())
+            });
+            for path in &overlap.paths {
+                if !paths.contains(path) {
+                    paths.push(path.clone());
+                }
+            }
+            lines[*index] = format!(
+                "via AIRC · {} overlaps {} on {}; record a share or wait before editing",
+                overlap.agents[0],
+                overlap.agents[1],
+                paths.join(", ")
+            );
+        }
+    }
+    lines
+}
 
 impl Channel {
     /// A new thread starts at its own join, never at historical broadcast comments.
@@ -46,18 +105,37 @@ pub fn deliver_targeted(
     nick: &str,
     after: u64,
     idle: bool,
-    mut deliver: impl FnMut(&str, &str) -> Result<bool, String>,
+    deliver: impl FnMut(&Delivery) -> Result<bool, String>,
+) -> Result<u64, Error> {
+    deliver_filtered(channel, nick, after, idle, false, deliver)
+}
+
+/// A legacy PR author receives GitHub review prompts from follow-through.
+pub fn deliver_filtered(
+    channel: &Channel,
+    nick: &str,
+    after: u64,
+    idle: bool,
+    follows_github_reviews: bool,
+    mut deliver: impl FnMut(&Delivery) -> Result<bool, String>,
 ) -> Result<u64, Error> {
     if channel.server_backed() {
-        return crate::remote_delivery::deliver(channel, nick, after, idle, deliver);
+        return crate::remote_delivery::deliver(
+            channel,
+            nick,
+            after,
+            idle,
+            follows_github_reviews,
+            deliver,
+        );
     }
     let mut cursor = after;
     let mut held = false;
-    for (sequence, delivery) in pending(channel, nick, after, idle)? {
+    for (sequence, delivery) in pending(channel, nick, after, idle, follows_github_reviews)? {
         match delivery {
             Pending::Held => held = true,
             Pending::Message(message) => {
-                if !deliver(&format!("airc:{sequence}"), &message).map_err(Error::Invalid)? {
+                if !deliver(&message).map_err(Error::Invalid)? {
                     held = true;
                     continue;
                 }
@@ -75,7 +153,7 @@ pub fn deliver_targeted(
 enum Pending {
     Skip,
     Held,
-    Message(String),
+    Message(Delivery),
 }
 
 fn pending(
@@ -83,6 +161,7 @@ fn pending(
     nick: &str,
     after: u64,
     idle: bool,
+    follows_github_reviews: bool,
 ) -> Result<Vec<(u64, Pending)>, Error> {
     let tail = channel.read(after)?;
     if tail.is_empty() {
@@ -103,7 +182,9 @@ fn pending(
         .map(|entry| {
             let delivery = if acknowledged.contains(&entry.sequence) {
                 Pending::Skip
-            } else if let Some(message) = routed(entry, nick, &history, mode) {
+            } else if let Some(message) =
+                routed(entry, nick, &history, mode, follows_github_reviews, false)
+            {
                 if hold(entry, nick, &history, mode, idle) {
                     Pending::Held
                 } else {
@@ -122,15 +203,23 @@ pub(crate) fn routed(
     nick: &str,
     entries: &[Entry],
     mode: crate::MessageMode,
-) -> Option<String> {
+    follows_github_reviews: bool,
+    native_land: bool,
+) -> Option<Delivery> {
+    if follows_github_reviews && entry.kind == "changes" && entry.pull_request.is_some() {
+        return None;
+    }
     if crate::routing::event_for(entry, nick, entries)
         || crate::routing::broken_for(entry, nick, entries)
     {
-        return Some(format!(
+        let needs_rebase = entry.kind == "merged"
+            && !native_land
+            && crate::routing::merge_touches(entry, nick, entries);
+        let message = format!(
             "via AIRC · event {} · #{}\n{}",
             entry.kind,
             entry.sequence,
-            if entry.kind == "merged" {
+            if needs_rebase {
                 format!(
                     "{}\nIf these files overlap your claim or edits, commit current edits and call airc_rebase now, then regenerate generated files and run the required checks. Velocity records the update outcome; resolve any conflicts in your own worktree. Otherwise update once at landing.",
                     entry.text
@@ -138,9 +227,34 @@ pub(crate) fn routed(
             } else {
                 entry.text.clone()
             }
-        ));
+        );
+        let priority = match entry.kind.as_str() {
+            "overlap" | "shares" => DeliveryPriority::Information,
+            "merged" if !needs_rebase => DeliveryPriority::Information,
+            _ => DeliveryPriority::NeedsAction,
+        };
+        let overlaps = if entry.kind == "overlap" {
+            overlaps_for(entry, nick)
+        } else {
+            Vec::new()
+        };
+        return Some(Delivery {
+            sequence: entry.sequence,
+            message,
+            priority,
+            overlaps,
+        });
     }
-    if entry.kind != "message" {
+    routed_message(entry, nick, entries, mode)
+}
+
+pub(crate) fn routed_message(
+    entry: &Entry,
+    nick: &str,
+    entries: &[Entry],
+    mode: crate::MessageMode,
+) -> Option<Delivery> {
+    if !entry.is_message() {
         return None;
     }
     if entry.nick != "you" {
@@ -153,7 +267,74 @@ pub(crate) fn routed(
             return None;
         }
     }
-    message_for(entry, nick)
+    message_delivery(entry, nick)
+}
+
+pub(crate) fn message_delivery(entry: &Entry, nick: &str) -> Option<Delivery> {
+    let priority = match (entry.nick.as_str(), entry.intent.as_deref()) {
+        ("you", _) | (_, Some("question" | "request")) => DeliveryPriority::NeedsAction,
+        _ => DeliveryPriority::Information,
+    };
+    Some(Delivery {
+        sequence: entry.sequence,
+        message: message_for(entry, nick)?,
+        priority,
+        overlaps: Vec::new(),
+    })
+}
+
+fn overlaps_for(entry: &Entry, nick: &str) -> Vec<Overlap> {
+    if let Some((pair, paths)) = entry.text.split_once(" on ")
+        && let Some((requester, holder)) = pair.split_once(" overlaps ")
+    {
+        return vec![Overlap {
+            agents: [requester.into(), holder.into()],
+            paths: if entry.files.is_empty() {
+                vec![
+                    paths
+                        .strip_suffix("; record a share or wait before editing")
+                        .unwrap_or(paths)
+                        .into(),
+                ]
+            } else {
+                entry.files.clone()
+            },
+        }];
+    }
+    let Ok(detail) = serde_json::from_str::<serde_json::Value>(&entry.text) else {
+        return Vec::new();
+    };
+    let Some(overlaps) = detail.get("overlaps").and_then(serde_json::Value::as_array) else {
+        return Vec::new();
+    };
+    overlaps
+        .iter()
+        .filter_map(|overlap| {
+            let holder = overlap.get("owner")?.as_str()?;
+            if entry.nick != nick && holder != nick {
+                return None;
+            }
+            Some(Overlap {
+                agents: [entry.nick.clone(), holder.into()],
+                paths: overlap
+                    .get("paths")?
+                    .as_array()?
+                    .iter()
+                    .filter_map(serde_json::Value::as_str)
+                    .map(|path| overlap_path(path, &overlap["symbols"][path]))
+                    .collect(),
+            })
+        })
+        .collect()
+}
+
+fn overlap_path(path: &str, symbols: &serde_json::Value) -> String {
+    let names =
+        |key: &str| serde_json::from_value::<Vec<String>>(symbols[key].clone()).unwrap_or_default();
+    format!(
+        "{path}{}",
+        crate::claims::symbol_overlap(&names("requester"), &names("holder"))
+    )
 }
 
 pub(crate) fn hold(

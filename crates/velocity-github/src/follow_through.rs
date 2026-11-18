@@ -400,10 +400,11 @@ impl FollowThrough {
             self.card(&key, format!("{author} · {}", review.state), &review.body);
             let changed = self.changed(&key, format!("{}:{}", review.state, review.body));
             if changed
-                && !same_author(
-                    review.author.as_ref(),
-                    snapshot.pull_request.author.as_ref(),
-                )
+                && (mirrored_change_request(review)
+                    || !same_author(
+                        review.author.as_ref(),
+                        snapshot.pull_request.author.as_ref(),
+                    ))
                 && review.state != "PENDING"
                 && review.state != "APPROVED"
                 && snapshot.pull_request.state == PullRequestState::Open
@@ -572,6 +573,23 @@ impl FollowThrough {
                 .extend(["Merged".into(), "Worktree deleted".into()]);
         }
     }
+}
+
+/// PR duty can share the author's login. Its mirrored change request is still
+/// incoming review work, even when GitHub records it as a comment by that login.
+fn mirrored_change_request(review: &crate::PullRequestReview) -> bool {
+    let Some(commit) = &review.commit else {
+        return false;
+    };
+    let prefix = format!(
+        "Changes requested at `{}` by ",
+        crate::approval::short_head(&commit.oid)
+    );
+    review
+        .body
+        .strip_prefix(&prefix)
+        .and_then(|body| body.split_once("\n\n"))
+        .is_some_and(|(nick, reason)| !nick.is_empty() && !reason.is_empty())
 }
 
 const PROVED: &str = "Proved";

@@ -377,6 +377,11 @@ async fn route_project_entries(client: &Client, records: &mut [Entry]) -> Result
             nicks.insert(change.clone(), member.nick.clone());
         }
     }
+    for change in &changes {
+        nicks
+            .entry(change.change.id.to_string())
+            .or_insert_with(|| change.change.owner.to_string());
+    }
     let owners: std::collections::BTreeMap<_, _> = changes
         .iter()
         .filter_map(|change| {
@@ -404,12 +409,12 @@ fn route_overlap(
     nick: &str,
     owners: &std::collections::BTreeMap<String, String>,
 ) {
-    let Ok(detail) = serde_json::from_str::<serde_json::Value>(&record.text) else {
+    let Ok(mut detail) = serde_json::from_str::<serde_json::Value>(&record.text) else {
         return;
     };
     let Some(overlaps) = detail
-        .get("overlaps")
-        .and_then(|value| value.as_array())
+        .get_mut("overlaps")
+        .and_then(|value| value.as_array_mut())
         .filter(|rows| !rows.is_empty())
     else {
         return;
@@ -418,9 +423,32 @@ fn route_overlap(
     record.to.push(nick.into());
     for overlap in overlaps {
         if let Some(owner) = overlap.get("owner").and_then(|value| value.as_str()) {
-            record
-                .to
-                .push(owners.get(owner).cloned().unwrap_or_else(|| owner.into()));
+            let holder = owners.get(owner).cloned().unwrap_or_else(|| owner.into());
+            overlap["owner"] = serde_json::Value::String(holder.clone());
+            record.to.push(holder);
         }
+    }
+    record.text = detail.to_string();
+}
+
+/// Keep the recipients resolved by the project view and the symbol details
+/// resolved by the targeted view of the same event.
+pub(crate) fn copy_overlap_symbols(project: &mut Entry, targeted: &Entry) {
+    let (Ok(mut project_detail), Ok(targeted_detail)) = (
+        serde_json::from_str::<serde_json::Value>(&project.text),
+        serde_json::from_str::<serde_json::Value>(&targeted.text),
+    ) else {
+        return;
+    };
+    if let (Some(project_rows), Some(targeted_rows)) = (
+        project_detail["overlaps"].as_array_mut(),
+        targeted_detail["overlaps"].as_array(),
+    ) {
+        for (project_row, targeted_row) in project_rows.iter_mut().zip(targeted_rows) {
+            if let Some(symbols) = targeted_row.get("symbols") {
+                project_row["symbols"] = symbols.clone();
+            }
+        }
+        project.text = project_detail.to_string();
     }
 }

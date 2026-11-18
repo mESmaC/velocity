@@ -8,6 +8,7 @@
 mod airc;
 mod antigravity_limits;
 mod config;
+mod coordination;
 mod error;
 mod files;
 mod handlers;
@@ -81,6 +82,8 @@ pub enum AgentInput {
     /// A message: prompted now when the agent is idle, queued until the turn ends otherwise
     /// (Rule 1).
     Send(Vec<ContentBlock>),
+    /// Coordination joins the next prompt. Only actionable notices can start one.
+    Coordination(velocity_airc::Delivery),
     /// `Esc`: `session/cancel` when a turn is running.
     Interrupt,
     /// A new model, effort or speed chosen from the composer menu (F4, F15). The agent
@@ -100,6 +103,13 @@ pub enum AgentEvent {
     },
     /// An update recorded in the transcript, and where it went.
     Transcript {
+        placement: Placement,
+        update: SessionUpdate,
+    },
+    /// The grouped AIRC text in this prompt, with all original delivery sequences.
+    CoordinationPrompt {
+        sequences: Vec<u64>,
+        actions: usize,
         placement: Placement,
         update: SessionUpdate,
     },
@@ -159,6 +169,17 @@ impl Shared {
     }
 
     fn record(&self, update: SessionUpdate) {
+        self.record_with(update, |placement, update| AgentEvent::Transcript {
+            placement,
+            update,
+        });
+    }
+
+    fn record_with(
+        &self,
+        update: SessionUpdate,
+        event: impl FnOnce(Placement, SessionUpdate) -> AgentEvent,
+    ) {
         live_limits::observe_account(self.account, &update);
         if !self.replaying.load(Ordering::Acquire) {
             self.token_capture
@@ -178,7 +199,7 @@ impl Shared {
                     .lock()
                     .unwrap_or_else(PoisonError::into_inner)
                     .record(class, update.clone());
-                self.emit(AgentEvent::Transcript { placement, update });
+                self.emit(event(placement, update));
             }
             None => self.emit(AgentEvent::SessionUpdate(update)),
         }
@@ -381,10 +402,15 @@ async fn drive(
     let mut preface = session_preface(&setup, started.loaded, started.graph_on).await;
     let (turn_sender, mut turn_ended) = unbounded_channel::<PromptResult>();
     let mut steering: Steering<Vec<ContentBlock>, ()> = Steering::new(());
+    let mut coordination = coordination::Coordination::default();
     loop {
         let input = tokio::select! {
             input = inputs.recv() => match input {
                 Some(AgentInput::Send(message)) => SteeringInput::Send(message),
+                Some(AgentInput::Coordination(delivery)) => {
+                    coordination.push(delivery);
+                    continue;
+                }
                 Some(AgentInput::Interrupt) => SteeringInput::Interrupt,
                 Some(AgentInput::Configure(settings)) => {
                     options = reconfigure(&connection, &shared, &session_id, options, &settings).await;
@@ -392,6 +418,7 @@ async fn drive(
                 }
                 Some(AgentInput::Stop) | None => return Ok(()),
             },
+            () = coordination.wait(), if !steering.is_busy() => SteeringInput::Send(Vec::new()),
             Some(PromptResult { report, usage }) = turn_ended.recv() => {
                 if let Some(tokens) = tokens.as_mut() {
                     tokens.finish(usage.as_ref()).await;
@@ -413,6 +440,7 @@ async fn drive(
                     }
                     return Ok(());
                 }
+                coordination.turn_ended();
                 SteeringInput::TurnEnded
             }
         };
@@ -422,6 +450,7 @@ async fn drive(
             session_id: &session_id,
             turn_sender: &turn_sender,
             preface: &mut preface,
+            coordination: &mut coordination,
         };
         turn.apply(steering.step(input))?;
     }
@@ -504,6 +533,7 @@ struct Turn<'session> {
     session_id: &'session SessionId,
     turn_sender: &'session UnboundedSender<PromptResult>,
     preface: &'session mut Vec<ContentBlock>,
+    coordination: &'session mut coordination::Coordination,
 }
 
 impl Turn<'_> {
@@ -536,6 +566,19 @@ impl Turn<'_> {
                 .record(SessionUpdate::UserMessageChunk(ContentChunk::new(
                     block.clone(),
                 )));
+        }
+        if let Some((message, sequences, actions)) = self.coordination.take_prompt() {
+            let block = ContentBlock::from(message);
+            self.shared.record_with(
+                SessionUpdate::UserMessageChunk(ContentChunk::new(block.clone())),
+                |placement, update| AgentEvent::CoordinationPrompt {
+                    sequences,
+                    actions,
+                    placement,
+                    update,
+                },
+            );
+            blocks.push(block);
         }
         let skill_instructions: Vec<_> = blocks
             .iter()

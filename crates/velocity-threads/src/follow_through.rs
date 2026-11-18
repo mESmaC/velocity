@@ -22,6 +22,7 @@ enum DeliveryPhase {
 struct Delivery {
     message: String,
     phase: DeliveryPhase,
+    wakes_agent: bool,
 }
 
 #[derive(Default)]
@@ -36,6 +37,7 @@ impl Deliveries {
             Delivery {
                 message: message.to_owned(),
                 phase: DeliveryPhase::Queued,
+                wakes_agent: false,
             },
         );
     }
@@ -45,6 +47,14 @@ impl Deliveries {
         if delivery.message != message {
             return None;
         }
+        Self::phase_status(delivery)
+    }
+
+    pub fn airc_status(&self, identifier: &str) -> Option<DeliveryStatus> {
+        self.pending.get(identifier).and_then(Self::phase_status)
+    }
+
+    fn phase_status(delivery: &Delivery) -> Option<DeliveryStatus> {
         match delivery.phase {
             DeliveryPhase::Queued | DeliveryPhase::Prompted => Some(DeliveryStatus::Pending),
             DeliveryPhase::Completed => Some(DeliveryStatus::Delivered),
@@ -52,15 +62,47 @@ impl Deliveries {
         }
     }
 
+    pub fn stage_airc(&mut self, identifier: String, wakes_agent: bool) {
+        self.pending.insert(
+            identifier,
+            Delivery {
+                message: String::new(),
+                phase: DeliveryPhase::Queued,
+                wakes_agent,
+            },
+        );
+    }
+
+    pub fn airc_wake_pending(&self) -> bool {
+        self.pending
+            .values()
+            .any(|delivery| delivery.wakes_agent && delivery.phase == DeliveryPhase::Queued)
+    }
+
+    pub fn reset_airc(&mut self) {
+        self.pending.retain(|identifier, delivery| {
+            !identifier.starts_with("airc:") || delivery.phase == DeliveryPhase::Completed
+        });
+    }
+
     pub fn apply(&mut self, event: &AgentEvent) {
         match event {
+            AgentEvent::CoordinationPrompt { sequences, .. } => {
+                for sequence in sequences {
+                    if let Some(delivery) = self.pending.get_mut(&format!("airc:{sequence}")) {
+                        delivery.phase = DeliveryPhase::Prompted;
+                    }
+                }
+            }
             AgentEvent::Transcript {
                 update: SessionUpdate::UserMessageChunk(chunk),
                 ..
             } => {
                 if let ContentBlock::Text(text) = &chunk.content {
-                    for delivery in self.pending.values_mut() {
-                        if delivery.phase == DeliveryPhase::Queued && delivery.message == text.text
+                    for (identifier, delivery) in &mut self.pending {
+                        if !identifier.starts_with("airc:")
+                            && delivery.phase == DeliveryPhase::Queued
+                            && delivery.message == text.text
                         {
                             delivery.phase = DeliveryPhase::Prompted;
                         }

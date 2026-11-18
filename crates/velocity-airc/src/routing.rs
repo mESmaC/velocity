@@ -75,7 +75,7 @@ impl Channel {
     }
 }
 
-/// Only the event lines an agent must act on are pushed to it (#231). Its own events
+/// Only the event lines relevant to an agent are pushed to it. Its own events
 /// (claims, PR, pushes, waits, rebases) are never sent back: it caused them, and the
 /// tool call that did already returned the result. Routine lines about its PR from
 /// others (PR duty's review claim and release, approvals) stay in the log for
@@ -88,8 +88,7 @@ pub(crate) fn event_for(entry: &Entry, nick: &str, entries: &[Entry]) -> bool {
         return true;
     }
     match entry.kind.as_str() {
-        // Both named agents must settle an overlap; the later one records a share or wait.
-        "overlap" => names(entry, nick),
+        "overlap" => entry.to.is_empty() && names(entry, nick),
         // The holder learns another agent will change its file; the sharer already knows.
         "shares" => entry.nick != nick && names(entry, nick),
         "changes" | "conflict" | "updated" => {
@@ -97,19 +96,20 @@ pub(crate) fn event_for(entry: &Entry, nick: &str, entries: &[Entry]) -> bool {
                 && owns_pull_request(entry, nick, entries, &own_claims(entries, nick))
         }
         "merged" => {
-            let own = own_claims(entries, nick);
-            if entry.nick == nick || owns_pull_request(entry, nick, entries, &own) {
-                return false;
-            }
-            let claimed = own.iter().any(|claim| {
-                claim.files.iter().any(|file| {
-                    velocity_git::landing::contested_path(file) && entry.files.contains(file)
-                })
-            });
-            claimed || edited_merge(entry, nick, entries)
+            entry.nick != nick
+                && !owns_pull_request(entry, nick, entries, &own_claims(entries, nick))
         }
         _ => false,
     }
+}
+
+pub(crate) fn merge_touches(entry: &Entry, nick: &str, entries: &[Entry]) -> bool {
+    own_claims(entries, nick).iter().any(|claim| {
+        claim
+            .files
+            .iter()
+            .any(|file| velocity_git::landing::contested_path(file) && entry.files.contains(file))
+    }) || edited_merge(entry, nick, entries)
 }
 
 /// Generated overlap/share notices name whole nicks, never substring matches.

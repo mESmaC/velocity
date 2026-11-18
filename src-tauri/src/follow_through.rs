@@ -149,20 +149,18 @@ fn followed_threads(project: &ProjectItem) -> Vec<ThreadItem> {
     project
         .threads
         .iter()
-        .filter(|thread| {
-            matches!(
-                thread.state,
-                ThreadState::Working
-                    | ThreadState::Review
-                    | ThreadState::Closed
-                    | ThreadState::Error
-            ) && !thread.branch_name.is_empty()
-                && thread.worktree_path.is_some()
-                // A Rosen thread opens no PR: its project's Rosen events follow it.
-                && thread.rosen_change.is_none()
-        })
+        .filter(|thread| follows_github_reviews(thread))
         .cloned()
         .collect()
+}
+
+pub(crate) fn follows_github_reviews(thread: &ThreadItem) -> bool {
+    matches!(
+        thread.state,
+        ThreadState::Working | ThreadState::Review | ThreadState::Closed | ThreadState::Error
+    ) && !thread.branch_name.is_empty()
+        && thread.worktree_path.is_some()
+        && thread.rosen_change.is_none()
 }
 
 fn project_client<'a>(

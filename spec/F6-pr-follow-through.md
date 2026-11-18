@@ -10,6 +10,7 @@ Draft claims keep the coding transcript until the PR is ready.
 The watcher follows the thread's same-repository branch and excludes historical PRs from earlier uses of that branch.
 New review work is saved before delivery and remains pending until its ACP prompt completes; after a restart it resumes in the retained worktree.
 The PR author's own progress replies remain in history without prompting another response.
+The watcher delivers PR duty's mirrored change requests even when the reviewer and author share a GitHub login, and the AIRC decision stays in the event log.
 Merge cleanup and explicit deletion (F12) share the thread's lifecycle lock and wait for confirmed shutdown of its agent and owned terminals before removing the checkout.
 
 Merge cleanup first verifies the registered worktree through F5's ownership and F17's deletion gate, including uncommitted, untracked and unpushed work.

@@ -1,6 +1,6 @@
 //! The project and targeted R9 streams have independent cursors. A quiet targeted
 //! page must never be acknowledged through a later, unrelated project-view event.
-use crate::{Channel, Entry, Error};
+use crate::{Channel, Delivery, Entry, Error};
 use std::collections::{BTreeMap, BTreeSet};
 
 struct Pending {
@@ -14,7 +14,8 @@ pub(crate) fn deliver(
     nick: &str,
     after: u64,
     idle: bool,
-    mut deliver: impl FnMut(&str, &str) -> Result<bool, String>,
+    follows_github_reviews: bool,
+    mut deliver: impl FnMut(&Delivery) -> Result<bool, String>,
 ) -> Result<u64, Error> {
     let remote = channel
         .remote
@@ -36,14 +37,20 @@ pub(crate) fn deliver(
         let message = if acknowledged.contains(&sequence) {
             None
         } else if pending.targeted && pending.entry.is_message() {
-            crate::message_for(&pending.entry, nick)
+            crate::delivery::message_delivery(&pending.entry, nick)
         } else {
-            crate::delivery::routed(&pending.entry, nick, &history, crate::MessageMode::Open)
+            crate::delivery::routed(
+                &pending.entry,
+                nick,
+                &history,
+                crate::MessageMode::Open,
+                follows_github_reviews,
+                pending.entry.kind == "merged" && pending.entry.pull_request.is_none(),
+            )
         };
         let received = match message {
             Some(message) => {
-                let received =
-                    deliver(&format!("airc:{sequence}"), &message).map_err(Error::Invalid)?;
+                let received = deliver(&message).map_err(Error::Invalid)?;
                 if received {
                     channel.acknowledge(nick, sequence)?;
                 }
@@ -89,6 +96,14 @@ fn pending(
         );
     }
     for entry in remote.targeted(nick, native_after, idle)? {
+        if entry.kind == "overlap"
+            && let Some(project) = entries.get_mut(&entry.sequence)
+            && project.entry.kind == "overlap"
+        {
+            crate::remote_events::copy_overlap_symbols(&mut project.entry, &entry);
+            project.targeted = true;
+            continue;
+        }
         let project = entries
             .get(&entry.sequence)
             .is_some_and(|pending| pending.project);

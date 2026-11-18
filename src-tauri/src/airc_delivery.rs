@@ -172,19 +172,20 @@ fn deliver_pending(
     nick: &str,
 ) -> Result<(), String> {
     let member = format!("thread-{}", key.1);
-    let cursor = velocity_airc::deliver_targeted(
+    let cursor = velocity_airc::deliver_filtered(
         channel,
         nick,
         channel
             .delivery_cursor(&member, thread.airc_cursor)
             .map_err(|error| error.to_string())?,
         thread.activity == velocity_store::AgentActivity::Idle,
-        |identifier, message| {
+        crate::follow_through::follows_github_reviews(thread),
+        |delivery| {
             let status = lock(
                 application.state::<ManagedThreads>().inner(),
                 "thread sessions",
             )?
-            .deliver_follow_up(key, identifier, message)
+            .deliver_airc(key, delivery)
             .map_err(|error| error.to_string())?;
             Ok(status == DeliveryStatus::Delivered)
         },

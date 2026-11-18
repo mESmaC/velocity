@@ -44,8 +44,8 @@ fn drain(
     cursor: u64,
     idle: bool,
 ) -> Result<u64, velocity_airc::Error> {
-    deliver_targeted(channel, nick, cursor, idle, |_, message| {
-        println!("{message}");
+    deliver_targeted(channel, nick, cursor, idle, |delivery| {
+        println!("{:?} {}", delivery.priority, delivery.message);
         Ok(true)
     })
 }

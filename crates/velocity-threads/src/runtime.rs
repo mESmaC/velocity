@@ -399,6 +399,7 @@ impl ThreadRuntimes {
             .or_insert_with(|| parked_runtime(worktree, follows_pull_request));
         thread.session_identifier = uuid::Uuid::new_v4().to_string();
         thread.transcript.new_session();
+        thread.deliveries.reset_airc();
         thread.session_tool_start = thread.transcript.tool_steps().len();
         thread.pending_inputs = prompt.map(|_| PendingInput::Opening).into_iter().collect();
         thread.replaying_history = false;
@@ -470,6 +471,30 @@ impl ThreadRuntimes {
         if let Some(thread) = self.threads.get_mut(&key) {
             thread.deliveries.stage(identifier, message);
         }
+        Ok(DeliveryStatus::Pending)
+    }
+
+    pub fn deliver_airc(
+        &mut self,
+        key: ThreadKey,
+        delivery: &velocity_airc::Delivery,
+    ) -> Result<DeliveryStatus, SteerError> {
+        let thread = self.threads.get_mut(&key).ok_or(SteerError::NoSession)?;
+        let identifier = delivery.identifier();
+        if let Some(status) = thread.deliveries.airc_status(&identifier) {
+            return Ok(status);
+        }
+        if self.workspace_updates.contains(&key) {
+            return Ok(DeliveryStatus::Pending);
+        }
+        thread
+            .inputs
+            .send(AgentInput::Coordination(delivery.clone()))
+            .map_err(|_| SteerError::NoSession)?;
+        thread.deliveries.stage_airc(
+            identifier,
+            delivery.priority == velocity_airc::DeliveryPriority::NeedsAction,
+        );
         Ok(DeliveryStatus::Pending)
     }
 
@@ -583,7 +608,11 @@ impl ThreadRuntimes {
             thread.transcript.queued().is_empty()
                 && match thread.phase {
                     SessionPhase::Ended => true,
-                    SessionPhase::Running => !thread.busy && thread.pending_inputs.is_empty(),
+                    SessionPhase::Running => {
+                        !thread.busy
+                            && thread.pending_inputs.is_empty()
+                            && !thread.deliveries.airc_wake_pending()
+                    }
                     SessionPhase::SettingUp => false,
                 }
         })
@@ -709,6 +738,12 @@ impl ThreadRuntimes {
         let thread = self.threads.get_mut(&key)?;
         thread.deliveries.apply(event);
         match event {
+            AgentEvent::CoordinationPrompt {
+                placement, update, ..
+            } => {
+                thread.busy = true;
+                thread.transcript.record_notice(*placement, update);
+            }
             AgentEvent::Transcript { placement, update } => {
                 // A replayed user message is history: it must not clear a queued row
                 // whose message has not been sent yet (#340).

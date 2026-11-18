@@ -187,7 +187,7 @@ fn readable_messages(
         .filter(|entry| {
             entry.sequence > after
                 && entry.is_message()
-                && delivery::routed(entry, nick, history, mode).is_some()
+                && delivery::routed_message(entry, nick, history, mode).is_some()
                 && !delivery::hold(entry, nick, history, mode, false)
         })
         .cloned()
