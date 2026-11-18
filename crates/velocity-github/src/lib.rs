@@ -19,7 +19,6 @@ mod proof_gate;
 mod pull_request_command;
 mod pull_request_files;
 mod pull_request_mutations;
-mod pull_request_panel;
 mod pull_request_queries;
 mod pull_request_reviews;
 mod pull_request_types;
@@ -45,10 +44,6 @@ pub use issues::IssueClient;
 pub use merge_gate::{StatementLockPlace, require_statement_lock};
 pub use proof_gate::check_proof_gate;
 pub use pull_request_command::PullRequestError;
-pub use pull_request_panel::{
-    CheckStatus, PullRequestPanelCache, PullRequestPanelRow, PullRequestPanelSnapshot,
-    PullRequestThread, ReviewStatus,
-};
 pub use pull_request_types::*;
 pub use pull_requests::PullRequestClient;
 pub use repository::{

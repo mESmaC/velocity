@@ -176,6 +176,32 @@ pub(crate) async fn stop_watch(application: &AppHandle, root: &Path) {
 /// The folder, among a project's workspaces, that Rosen keeps its warm pool under.
 const WARM_POOL_FOLDER: &str = ".rosen-pool";
 
+/// Describes the daemon without starting a server just to display its status.
+pub(crate) fn observation_server(
+    application: &AppHandle,
+    project: u32,
+) -> Result<ProjectServer, String> {
+    let data = application
+        .path()
+        .app_data_dir()
+        .map_err(|error| error.to_string())?;
+    let store = lock(
+        application.state::<ManagedStateStore>().inner(),
+        "persisted state",
+    )?;
+    let item = store.project(project).ok_or("Unknown project")?;
+    let preferences = store.worktree_preferences(item);
+    let pool = velocity_threads::project_workspace_root(item, &preferences)
+        .map(|root| root.join(WARM_POOL_FOLDER));
+    Ok(ProjectServer::new(&data, project).with_warm_pool_dir(pool))
+}
+
+pub(crate) async fn pool_target(application: &AppHandle, project: u32) -> u32 {
+    let managed = application.state::<ManagedRosen>();
+    let sizes = managed.pool_sizes.lock().await;
+    u32::try_from(sizes.get(&project).copied().unwrap_or(0)).unwrap_or(u32::MAX)
+}
+
 /// The project's server, started and imported.
 pub(crate) async fn server(application: &AppHandle, project: u32) -> Result<ProjectServer, String> {
     let source = {
@@ -470,14 +496,18 @@ pub(crate) fn record_change(
     key: ThreadKey,
     change: &str,
 ) -> Result<bool, String> {
-    lock(
+    let recorded = lock(
         application.state::<ManagedStateStore>().inner(),
         "persisted state",
     )?
     .update_thread(key.0, key.1, |thread| {
         thread.rosen_change = Some(change.to_owned());
     })
-    .map_err(|error| error.to_string())
+    .map_err(|error| error.to_string())?;
+    if recorded {
+        crate::rosen_status::ownership_changed(application);
+    }
+    Ok(recorded)
 }
 
 /// Stops the thread's watcher and abandons its change; Rosen then deletes the workspace

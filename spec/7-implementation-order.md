@@ -35,7 +35,7 @@ PR duty checks an item off when it lands that item's PR (F7).
 
 **M4 · PR loop**
 - [x] GitHub integration: open PR, CI checks, reviews, comments, merge, close
-  - [x] Live Open Changes rail: real project changes, CI, line counts, review state, reviewer claims and owning-thread navigation (F6/F7)
+- [x] Live Rosen status pane with server, base, landing, claims, warm pool, mirror and owning-thread navigation (F6, #421)
 - [x] PR follow-through: track, land history, auto-response to review comments, merge → workspace delete (F6)
 - [x] Closed-without-merge state with the workspace kept (F5, F6)
 - [x] Right-click menu and delete with 5 s undo (F12)

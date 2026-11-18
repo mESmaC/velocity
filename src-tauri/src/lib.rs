@@ -37,7 +37,6 @@ mod proof_card;
 mod proofs_settings;
 mod provider_agents;
 mod providers;
-mod pull_request_panel;
 mod ready_pool;
 mod restart;
 pub mod reviews;
@@ -46,6 +45,7 @@ mod rosen_events;
 mod rosen_issue;
 mod rosen_mirror;
 mod rosen_rebase;
+mod rosen_status;
 mod shared_mcp;
 mod skills;
 mod state;
@@ -135,6 +135,7 @@ fn bindings() -> Builder<tauri::Wry> {
         duty::stop_duty,
         github::list_pull_requests,
         github::get_pull_request,
+        github::open_project_pull_request,
         github::dispatch_pull_request,
         goal_swarm::get_goal_swarm_dialog,
         goal_swarm::read_goal_swarm_pool,
@@ -145,8 +146,7 @@ fn bindings() -> Builder<tauri::Wry> {
         issue_panel::open_project_issue,
         issue_panel::dispatch_issue,
         issue_panel::toggle_issue_expanded,
-        pull_request_panel::get_pull_request_panel,
-        pull_request_panel::open_project_pull_request,
+        rosen_status::watch_rosen_status,
         shared_mcp::edit_shared_mcp_servers,
         skills::get_skill_library,
         skills::get_skill_pack_installations,
@@ -198,7 +198,7 @@ fn event_bindings(builder: Builder<tauri::Wry>) -> Builder<tauri::Wry> {
         .typ::<swarm::SwarmEventPublished>()
         .typ::<issue_panel::IssuePanelChanged>()
         .typ::<worktree_settings::WorktreeInventoryChanged>()
-        .typ::<pull_request_panel::PullRequestPanelChanged>()
+        .typ::<rosen_status::RosenStatusChanged>()
         .typ::<skills::SkillPackInstallationsChanged>()
         .typ::<threads::ThreadStatusChanged>()
         .typ::<threads::ThreadStepRecorded>()
@@ -226,10 +226,7 @@ fn event_bindings(builder: Builder<tauri::Wry>) -> Builder<tauri::Wry> {
             "WORKTREE_INVENTORY_EVENT",
             worktree_settings::WorktreeInventoryChanged::NAME,
         )
-        .constant(
-            "PULL_REQUEST_PANEL_EVENT",
-            pull_request_panel::PullRequestPanelChanged::NAME,
-        )
+        .constant("ROSEN_STATUS_EVENT", rosen_status::RosenStatusChanged::NAME)
         .constant(
             "SKILL_PACK_INSTALLATIONS_EVENT",
             skills::SkillPackInstallationsChanged::NAME,
@@ -311,7 +308,7 @@ pub fn run() -> anyhow::Result<()> {
         swarm::SwarmEventPublished,
         issue_panel::IssuePanelChanged,
         worktree_settings::WorktreeInventoryChanged,
-        pull_request_panel::PullRequestPanelChanged,
+        rosen_status::RosenStatusChanged,
         skills::SkillPackInstallationsChanged,
         threads::ThreadStatusChanged,
         threads::ThreadStepRecorded,
@@ -338,6 +335,7 @@ pub fn run() -> anyhow::Result<()> {
         .manage(new_project::ManagedRepositoryPicker::default())
         .manage(providers::ManagedProviders::default())
         .manage(airc_modal::ManagedAircModal::default())
+        .manage(rosen_status::StatusWatch::default())
         .manage(threads::ManagedThreads::default())
         .manage(velocity_interview::Interviews::default())
         .manage(thread_menu::ManagedDeletions::default())
@@ -359,7 +357,6 @@ pub fn run() -> anyhow::Result<()> {
             continuous_dispatch::initialize(application.handle());
             worktree_settings::initialize(application.handle())?;
             ready_pool::initialize(application.handle())?;
-            pull_request_panel::initialize(application.handle());
             skills::initialize(application.handle())?;
             interview::start(application.handle());
             reviews::initialize(application.handle())?;

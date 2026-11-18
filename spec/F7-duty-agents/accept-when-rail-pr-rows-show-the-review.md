@@ -1,4 +1,4 @@
-#### Accept when · Rail PR rows show the review state and the claiming agent
+#### Accept when · Rosen status shows live path claims and their holders
 
 <!-- split-spec: {"order":1113,"kind":"markdown","indentation":0} -->
-- [ ] Rail PR rows show the review state and the claiming agent.
+- [ ] Rosen status shows live path claims and their holders.

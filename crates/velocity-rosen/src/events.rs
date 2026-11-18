@@ -137,4 +137,8 @@ impl EventStream {
     pub async fn next(&mut self) -> Option<Event> {
         self.events.recv().await
     }
+
+    pub(crate) fn queued(&mut self) -> Option<Event> {
+        self.events.try_recv().ok()
+    }
 }

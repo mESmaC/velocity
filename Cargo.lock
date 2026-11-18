@@ -6739,6 +6739,7 @@ dependencies = [
 name = "velocity-rosen"
 version = "0.1.0"
 dependencies = [
+ "notify",
  "rosen-client",
  "rosen-core",
  "rusqlite",

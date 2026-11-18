@@ -32,6 +32,16 @@
   --rail-w: clamp(17rem, 24vw, 30rem);
   --titlebar-h: 2.375rem;
 
+  /* Rosen status section and change rows in the reference rail. */
+  --rosen-section-padding: 0.625rem 0;
+  --rosen-section-border: 0.0625rem solid var(--line-dim);
+  --rosen-line-margin: 0.375rem 0;
+  --rosen-line-size: 0.6875rem;
+  --rosen-line-height: 1.5;
+  --rosen-row-gap: 0.375rem;
+  --rosen-row-padding: 0.625rem;
+  --rosen-row-radius: 0.625rem;
+
   /* F11 outliner: reference winning declarations at 746–815; no italics (§6). */
   --agents-zero: 0;
   --agents-flex: 1;

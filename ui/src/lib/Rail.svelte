@@ -1,7 +1,7 @@
 <script lang="ts">
   import { tick } from 'svelte';
   import Icon from './Icon.svelte';
-  import PullRequestPanel from './PullRequestPanel.svelte';
+  import RosenStatusPane from './RosenStatusPane.svelte';
   import IssuePanel from './IssuePanel.svelte';
   import { rise } from './motion';
   import type { LayoutAction, LayoutSnapshot } from './ipc';
@@ -108,7 +108,7 @@
       </form>
     </div>
   </section>
-  <PullRequestPanel />
+  <RosenStatusPane project={layout.project_identifier} {send} />
   <IssuePanel {layout} {send} />
   <footer class="rail-foot">
     <button onclick={() => send({ Request: { Navigation: 'Airc' } })}

@@ -1,11 +1,14 @@
 use std::path::PathBuf;
-use tauri::{AppHandle, Manager, State};
+use tauri::{AppHandle, Manager, State, Window};
+use velocity_core::layout_view::{LayoutAction, LayoutSnapshot};
 use velocity_github::{
     PullRequest, PullRequestClient, PullRequestOperation, PullRequestReceipt, PullRequestSnapshot,
     ReviewRecord,
 };
 
+use crate::layout::MainLayout;
 use crate::state::ManagedStateStore;
+use crate::threads::lock;
 
 fn project_directory(store: &ManagedStateStore, identifier: u32) -> Result<PathBuf, String> {
     let store = store.lock().map_err(|error| error.to_string())?;
@@ -70,4 +73,45 @@ pub async fn dispatch_pull_request(
     .await
     .map_err(|error| error.to_string())?
     .map_err(|error| error.to_string())
+}
+
+/// Opens historical AIRC PR links on demand.
+#[tauri::command]
+#[specta::specta]
+pub async fn open_project_pull_request(
+    window: Window,
+    store: State<'_, ManagedStateStore>,
+    layout: State<'_, MainLayout>,
+    project_identifier: u32,
+    number: u32,
+) -> Result<Option<LayoutSnapshot>, String> {
+    let directory = {
+        let mut store = lock(store.inner(), "persisted state")?;
+        let project = store
+            .active_project()
+            .filter(|project| project.id == project_identifier)
+            .ok_or("The selected project changed")?;
+        if let Some(thread) = project
+            .threads
+            .iter()
+            .find(|thread| thread.pull_request_number == Some(number))
+        {
+            let identifier = thread.id as usize;
+            let mut layout = lock(layout.inner(), "layout")?;
+            let outcome = store
+                .dispatch_project_layout(&mut layout, LayoutAction::OpenThread(identifier))
+                .map_err(|error| error.to_string())?;
+            drop(store);
+            crate::layout::publish(&window, &outcome.snapshot, outcome.intent)?;
+            return Ok(Some(outcome.snapshot));
+        }
+        PathBuf::from(&project.repository_path)
+    };
+    tauri::async_runtime::spawn_blocking(move || {
+        PullRequestClient::discover(&directory)?.open_in_browser(number)
+    })
+    .await
+    .map_err(|error| error.to_string())?
+    .map_err(|error| error.to_string())?;
+    Ok(None)
 }

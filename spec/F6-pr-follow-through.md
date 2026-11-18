@@ -1,10 +1,39 @@
 <!-- split-spec: {"order":788,"kind":"markdown","indentation":0} -->
-### F6 · PR follow-through
+### F6 · Change follow-through
+
+Velocity follows the selected Rosen project through its event stream (R9).
+A named snapshot moves the owning thread into review, a land settles it and releases its claims, and a revert reopens the change with the failed check output (F5, F7).
+The rail reads Rosen directly and reconnects when the stream drops.
+It takes its initial snapshot on selection and refreshes when Rosen publishes events or changes local state that has no R9 event in the pinned daemon.
+
+The Rosen status pane has seven collapsible sections.
+The window saves their order and collapsed state.
+
+| Section | Live information |
+|---|---|
+| Server | Running state, version, connected R14 machines, and the local run queue holders and waiter count |
+| Base | Base tip, last green commit, bisect progress, and current culprit or revert |
+| Landing | Lands in the last hour, median time from naming to land for that hour, and post-land build and full-test backlog |
+| Claims and conflicts | Paths, claim holders, overlaps and open stored conflicts |
+| Warm pool | Ready workspace count and target |
+| Mirror | Mirror state and last pushed commit, with the Collapse downstream forwarder state supplied by #427 when available |
+| Changes | Open changes and recent outcomes with the owning thread, line counts, claims, overlaps, conflicts and stacked parent |
+
+An owned change row opens its thread.
+Rows show editing, named, landing, landed, green, reverted or abandoned.
+A landed row includes the resulting base commit.
+A reverted row shows the saved culprit output.
+
+**Accept when:**
+
+- [ ] Naming, landing, reverting and abandoning update the row within a second without a GitHub request from the pane.
+- [ ] Section order and collapsed state survive reopening Velocity.
+
+#### Legacy Git thread follow-through
 
 When the task is done, the agent opens a PR.
 The PR description links the Task List item or says `Fixes #n`.
 The thread moves to **PR open · watching**.
-A thread in a Rosen workspace opens no PR: its project's Rosen events follow it instead (F5).
 
 Draft claims keep the coding transcript until the PR is ready.
 The watcher follows the thread's same-repository branch and excludes historical PRs from earlier uses of that branch.
@@ -99,13 +128,3 @@ At its next step the affected agent commits current edits and calls `airc_rebase
 - [ ] A conflict at landing reaches the owning agent within one event cycle and is resolved without user input.
 - [ ] A comment from a PR duty agent reaches the authoring thread automatically and is acted on without user input.
 - [ ] The thread is not finished until `pr://merged`.
-
-**Rosen-first reference (#414, #421, #422):**
-The reference replaces the PR rail with Rosen status: collapsible, reorderable Server, Base, Landing, Claims and conflicts, Warm pool, Mirror and Changes sections.
-Change rows link their owning threads and show path claims, overlaps, conflicts, stacked parents and line counts.
-The track is Editing → Named → Landing → Landed → Green; a failed build shows Reverted → Reopened with culprit output and kept work, and conflicts show their file and a Resolve with agent action.
-Land history includes the landed revision, trailers and post-land results.
-Review and proof coverage follow lands and never gate them.
-Projects, landed changes and AIRC land events offer Open on Collapse when a Collapse mirror exists.
-Mirror rejection and retry remain visible while local lands continue.
-The reference state preview exercises empty, skeleton loading, retryable error and reconnecting states in each data pane.

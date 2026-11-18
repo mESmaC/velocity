@@ -123,6 +123,25 @@ impl PullRequestClient {
         self
     }
 
+    pub fn open_in_browser(&self, number: u32) -> Result<(), PullRequestError> {
+        let output = crate::command::gh(&[
+            "pr",
+            "view",
+            &number.to_string(),
+            "--repo",
+            &self.repository,
+            "--web",
+        ])
+        .output()?;
+        if !output.status.success() {
+            return Err(PullRequestError::Command {
+                code: output.status.code(),
+                message: String::from_utf8_lossy(&output.stderr).trim().to_owned(),
+            });
+        }
+        Ok(())
+    }
+
     pub fn list(&self) -> Result<Vec<PullRequest>, PullRequestError> {
         let query = format!(
             "query($owner:String!,$name:String!,$cursor:String) {{

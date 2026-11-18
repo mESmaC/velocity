@@ -17,6 +17,7 @@ bindings = ["dep:specta"]
 bundled = []
 
 [dependencies]
+notify = "8.2"
 # Pinned together in workspace.dependencies; move the pins deliberately.
 rosen-client.workspace = true
 # The model types the client does not re-export (snapshot kinds, review thread states).

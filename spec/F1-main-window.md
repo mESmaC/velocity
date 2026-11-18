@@ -70,7 +70,7 @@ There are two views of the same work, switched from the title bar or with `B`:
     A `v*` tag publishes a release (`.github/workflows/release.yml`); development builds check only when asked and never install.
     A failed check or download shows in the modal, not as a window error.
 
-**Rail:** three panels: Task List, Open Changes, Open Issues.
+**Rail:** Task List, Rosen status (F6) for Rosen projects, and Open Issues.
 Below them are footer links: AIRC (F14), with an unread badge that turns amber when an overlap is unread, and AGENTS.md.
 
 **Home (empty) view:** a composer and quick chips:

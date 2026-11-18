@@ -3,7 +3,6 @@
   import Composer from './Composer.svelte';
   import Icon from './Icon.svelte';
   import Markdown from './Markdown.svelte';
-  import PullRequestHistory from './PullRequestHistory.svelte';
   import TokenUsage from './TokenUsage.svelte';
   import TranscriptBlocks from './TranscriptBlocks.svelte';
   import { followTranscript } from './follow-transcript';
@@ -147,10 +146,6 @@
       />
     </div>
   {/if}
-  {#if thread.pull_request_history}<PullRequestHistory
-      history={thread.pull_request_history}
-      track
-    />{/if}
 
   <div class="transcript" use:followTranscript={thread.identifier}>
     <div class="transcript-inner">
@@ -171,44 +166,19 @@
           !thread.no_change_reason}
         message="No updates yet · Send a message to start."
       />
-      {#if thread.worked_summary && thread.transcript_mode !== 'FullTranscript'}
-        <div class="worked">
-          <Icon name="check" />
-          <span>
-            Task finished · {thread.worked_summary.tool_calls} tool calls · {thread
-              .worked_summary.files_touched} files ·
-            <span class="add">+{thread.worked_summary.added}</span>
-            <span class="del">−{thread.worked_summary.deleted}</span>
-            {thread.worked_summary.proved ? ' · proved' : ''}
-          </span>
-          <button
-            type="button"
-            class="mini"
-            onclick={() => send('ToggleShowWork')}
-          >
-            {thread.show_work ? 'Hide work' : 'Show work'}
-          </button>
-        </div>
-      {/if}
-
-      {#if thread.transcript_mode !== 'CollapsedWithPrHistory'}
-        <TranscriptBlocks
-          blocks={thread.blocks}
-          retry={thread.agent_busy ? undefined : retryResponse}
-          removeQueued={(index) =>
-            send({
-              Request: {
-                RemoveQueuedMessage: {
-                  identifier: thread.identifier,
-                  index: String(index),
-                },
+      <TranscriptBlocks
+        blocks={thread.blocks}
+        retry={thread.agent_busy ? undefined : retryResponse}
+        removeQueued={(index) =>
+          send({
+            Request: {
+              RemoveQueuedMessage: {
+                identifier: thread.identifier,
+                index: String(index),
               },
-            })}
-        />
-      {/if}
-      {#if thread.pull_request_history}<PullRequestHistory
-          history={thread.pull_request_history}
-        />{/if}
+            },
+          })}
+      />
       {#if thread.no_change_reason}
         <div class="msg-agent">
           <div class="status-line"><strong>Ended with no change</strong></div>

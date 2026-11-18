@@ -31,6 +31,7 @@ mod retry;
 pub mod review_swarm;
 mod server;
 mod stack;
+pub mod status;
 mod workspace;
 
 pub use agent::{
@@ -62,6 +63,8 @@ use std::path::PathBuf;
 /// Why Rosen could not do what Velocity asked.
 #[derive(Debug, thiserror::Error)]
 pub enum RosenError {
+    #[error("Could not read Rosen status: {0}")]
+    StatusData(String),
     #[error("could not read Rosen build repair evidence: {0}")]
     BuildRepairData(String),
     #[error("could not synchronize git with Rosen's base: {0}")]

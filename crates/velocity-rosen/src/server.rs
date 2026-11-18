@@ -109,6 +109,10 @@ impl ProjectServer {
         self
     }
 
+    pub(crate) fn warm_pool_dir(&self) -> Option<&Path> {
+        self.warm_pool_dir.as_deref()
+    }
+
     pub fn endpoint(&self) -> &Endpoint {
         &self.endpoint
     }
