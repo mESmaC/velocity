@@ -6,7 +6,7 @@ use sysinfo::{MemoryRefreshKind, System};
 const GIB: u64 = 1024 * 1024 * 1024;
 
 pub fn is_low() -> bool {
-    if RunQueue::machine().is_ok_and(|queue| queue.memory_headroom().is_low()) {
+    if RunQueue::machine().is_ok_and(|queue| !queue.memory_headroom().fits(0)) {
         return true;
     }
     let Ok(mut system) = System::new() else {
