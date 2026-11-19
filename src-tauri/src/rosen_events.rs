@@ -266,7 +266,7 @@ fn record_named(
         .save_rosen_named(project, event.seq, change, commit)
         .map_err(|error| error.to_string())?;
     publish_progress(application, &store)?;
-    crate::reviews::wake(application);
+    crate::rosen_landing::wake(application);
     Ok(())
 }
 
