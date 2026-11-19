@@ -192,6 +192,7 @@ F5, F7 and §3.1 have a README for their introduction and separate files for the
 - [spec/F5-worktrees/rosen-rebases-at-the-step-boundary-airc-rebase-tool.md](spec/F5-worktrees/rosen-rebases-at-the-step-boundary-airc-rebase-tool.md)
 - [spec/F5-worktrees/rosen-rebases-at-the-step-boundary-a-conflict.md](spec/F5-worktrees/rosen-rebases-at-the-step-boundary-a-conflict.md)
 - [spec/F5-worktrees/rosen-falling-back.md](spec/F5-worktrees/rosen-falling-back.md)
+- [spec/F5-worktrees/rosen-pin-bump.md](spec/F5-worktrees/rosen-pin-bump.md)
 - [spec/F5-worktrees/lifecycle.md](spec/F5-worktrees/lifecycle.md)
 - [spec/F5-worktrees/path.md](spec/F5-worktrees/path.md)
 - [spec/F5-worktrees/settings-worktrees.md](spec/F5-worktrees/settings-worktrees.md)

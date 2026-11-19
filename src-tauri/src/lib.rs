@@ -47,6 +47,7 @@ mod rosen_issue;
 mod rosen_landing;
 mod rosen_migration;
 mod rosen_mirror;
+mod rosen_pin;
 mod rosen_rebase;
 mod rosen_status;
 mod rosen_thread;
@@ -394,6 +395,7 @@ pub fn run() -> anyhow::Result<()> {
             airc_modal::initialize(application.handle());
             updates::initialize(application.handle());
             local_build::initialize(application.handle());
+            rosen_pin::initialize(application.handle());
             velocity_reports::initialize(application.handle());
             restart::resume_interrupted(application.handle(), interrupted);
             rosen_migration::initialize(application.handle());

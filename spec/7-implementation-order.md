@@ -123,6 +123,7 @@ Each milestone ends with a working app.
 **M13 · Releases and updates** (F1)
 - [x] In-app updates: signed releases from `v*` tags, the update check and Updates panel, Restart to update for setup, MSI and portable copies
 - [x] Local builds of Velocity's own green commits: background build, Restart into `<commit>` and Restart into previous in the title bar (F1 Title bar, #512)
+- [x] Rosen pin kept current: one open pin-bump issue for the newest green commit on Rosen's `main` ahead of the pin, and the Rosen release a landed bump names (F5 Rosen · Pin bumps, #513)
 
 **M14 · Code graph** (F19)
 - [x] Code graph index: tree-sitter symbols, files and subsystems with addresses, span hashes and edge provenance; the per-project parse cache, warmed after lands

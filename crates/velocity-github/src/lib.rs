@@ -18,6 +18,7 @@ mod repository_client;
 mod repository_list;
 mod request_counter;
 mod rosen_issue;
+pub mod rosen_pin;
 mod scout_directory;
 mod scout_evidence;
 mod scout_issues;

@@ -34,6 +34,7 @@ pub mod release;
 pub mod review_diff;
 pub mod rosen_checker;
 pub mod rosen_mirror;
+pub mod rosen_pin;
 pub mod scout_sweep;
 pub mod skill_menu;
 pub mod skills;
