@@ -167,5 +167,7 @@ pub(crate) async fn merge_test_job(
         kind: CheckKind::Test,
         priority: CheckPriority::Verify,
         check_set: config.checks.post_land,
+        // An offered job carries no submitter; Rosen records it with the result.
+        submitter: None,
     }))
 }

@@ -11,7 +11,7 @@ use std::path::Path;
 use rosen_client::protocol::{
     BisectJob, BisectResult, BisectState, ErrorCode, LogRequest, PostLandJob, PostLandWork,
 };
-use rosen_client::{Client, ObjectId};
+use rosen_client::{AgentId, Client, ObjectId};
 use rosen_core::project_config::{RecheckMode, ReviewMode};
 
 pub use rosen_client::protocol::{CheckKind, CheckPriority};
@@ -184,6 +184,8 @@ pub async fn step_result(
         job: step.job.clone(),
         passed,
         output: output.to_owned(),
+        // Rosen records the checker's nick with the connection's machine (R14).
+        submitter: AgentId::new(crate::checker::CHECKER).ok(),
     };
     bisection(&client, client.bisect_submit(result).await?).await
 }
@@ -251,6 +253,7 @@ async fn batch(client: &Client, work: PostLandWork) -> Result<Option<Batch>, Ros
                 kind: CheckKind::Build,
                 priority: CheckPriority::Landing,
                 check_set: pre_land,
+                submitter: None,
             });
         }
     }
