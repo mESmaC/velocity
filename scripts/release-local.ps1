@@ -31,6 +31,18 @@ $env:Path = (Join-Path $env:SystemRoot 'System32') + ';' + $env:Path
 $target = if ($env:CARGO_TARGET_DIR) { $env:CARGO_TARGET_DIR } else { Join-Path $root 'target' }
 if (-not $OutDir) { $OutDir = Join-Path $target "release-local\$Version" }
 $started = Get-Date
+# A release build at opt-level 3 uses up to about 1.5 GB of commit charge per job. Running
+# every core at once next to working agents exhausted the commit limit on 2026-11-19
+# (allocation failures and compiler crashes, the same pressure behind earlier bluescreens).
+# Size the job count to the free commit charge, keeping 4 GB back, at most half the cores.
+if (-not $env:CARGO_BUILD_JOBS) {
+    $os = Get-CimInstance Win32_OperatingSystem
+    $freeCommitGb = $os.FreeVirtualMemory / 1MB
+    $byMemory = [math]::Floor(($freeCommitGb - 4) / 1.5)
+    $byCores = [math]::Max(1, [math]::Floor([Environment]::ProcessorCount / 2))
+    $env:CARGO_BUILD_JOBS = [string][math]::Max(1, [math]::Min($byMemory, $byCores))
+    Write-Host "Building with $env:CARGO_BUILD_JOBS jobs ($([math]::Round($freeCommitGb, 1)) GB commit free)"
+}
 
 function Write-Step([string]$Text) {
     $elapsed = [int]((Get-Date) - $started).TotalSeconds
