@@ -304,7 +304,7 @@ fn sweep_owners(project: &ProjectItem) -> Vec<WorktreeOwner> {
         .iter()
         .flat_map(|role| {
             role.agents.iter().flat_map(move |agent| {
-                let sweep = agent
+                agent
                     .sweep
                     .as_ref()
                     .filter(|sweep| !sweep.worktree.is_empty())
@@ -315,8 +315,7 @@ fn sweep_owners(project: &ProjectItem) -> Vec<WorktreeOwner> {
                             sweep.worktree.clone(),
                             WorktreeDisplayStatus::Sweep,
                         )
-                    });
-                sweep
+                    })
             })
         })
         .collect()
