@@ -1,5 +1,6 @@
 mod discovery;
 mod runner;
+mod timing;
 mod workspace;
 
 use std::{

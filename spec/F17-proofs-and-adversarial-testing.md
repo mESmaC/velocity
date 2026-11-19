@@ -124,6 +124,7 @@ How the checks run:
 - Tests and stress scripts live in `stress/` (and the project's own test folder).
   Scouts run them on sweeps, and the release gate runs the full stress suite.
   The Windows release gate builds the Rust stress harnesses together in the workspace with a two-job Cargo build limit, caches the workspace crates and runs the scripts serially.
+  A stress run ends with the time each step took, slowest first, and the release gate adds that list and its own stage times to the job summary (#434).
   They never run in per-PR GitHub CI.
 
 **Proof card** (in the land history, F6):

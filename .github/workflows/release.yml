@@ -20,6 +20,12 @@ name: Release
 # a minute, then `stress` (Windows) and `proofs` (Linux) run in parallel. A `-beta` tag
 # whose exact commit Rosen reports green skips `stress` and `proofs`, so a beta takes
 # only as long as the build; numbered releases and other pre-releases run every job.
+#
+# The build waits for `rosen`, so that job has to be quick. `build.yml` keeps the pinned
+# Rosen built in the default branch's cache, which a release restores in under a minute
+# instead of building Rosen for five. `publish` ends by writing each job's time and the
+# time from trigger to published to the run summary, and warns when a beta took over
+# 20 minutes (#434).
 on:
   push:
     tags: ['v*']
@@ -91,6 +97,8 @@ jobs:
           -Destination "$env:RUNNER_TEMP\rosen\bin"
       # Keyed on the pinned commit, not Velocity's lockfile: `cargo install --locked` builds
       # from Rosen's own lockfile, so only a new pin or toolchain changes the binaries.
+      # build.yml's `rosen` job fills this cache on the default branch after each pin bump
+      # (#434); keep its steps, path and key the same as these.
       - name: Cache pinned Rosen installation
         id: rosen-cache
         if: steps.prebuilt.outputs.found != 'true'
@@ -430,6 +438,8 @@ jobs:
         || (needs.stress.result == 'success' && needs.proofs.result == 'success'))
     permissions:
       contents: write
+      # The timing record reads this run's jobs.
+      actions: read
     runs-on: ubuntu-latest
     env:
       GH_REPO: ${{ github.repository }}
@@ -494,3 +504,22 @@ jobs:
           }
           gh release upload $env:MANIFEST_TAG dist/latest.json --clobber
           if ($LASTEXITCODE -ne 0) { throw "Could not publish the update manifest" }
+
+      # The release is published by now; the last two steps only record where its time
+      # went (#434) and never fail it. The script comes from the workflow's own commit,
+      # not the release commit, so a release of an older commit still has it.
+      - name: Get the timing script
+        continue-on-error: true
+        uses: actions/checkout@v4
+        with:
+          path: workflow
+          sparse-checkout: .github/scripts
+          sparse-checkout-cone-mode: false
+      - name: Record the release timing
+        continue-on-error: true
+        shell: pwsh
+        run: >-
+          ./workflow/.github/scripts/release-timing.ps1
+          -Repository '${{ github.repository }}'
+          -RunId '${{ github.run_id }}'
+          -Tag "$env:TAG"

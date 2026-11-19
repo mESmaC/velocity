@@ -159,18 +159,41 @@ function Confirm-Proofs {
     }
 }
 
+# Prints how long each stage took, and under GitHub Actions adds it to the job summary,
+# so every release records the gate's profile (#434). The stress runner lists its own
+# steps the same way.
+function Write-StageTimes([Collections.Specialized.OrderedDictionary]$Times) {
+    $rows = foreach ($name in $Times.Keys) {
+        $elapsed = [TimeSpan]$Times[$name]
+        '| {0} | {1} min {2:00} s |' -f $name, [math]::Floor($elapsed.TotalMinutes), $elapsed.Seconds
+    }
+    Write-Host '==> Time by stage' -ForegroundColor Cyan
+    $rows | ForEach-Object { Write-Host "    $_" }
+    if ($env:GITHUB_STEP_SUMMARY) {
+        @('### Release gate stages', '', '| Stage | Time |', '| --- | ---: |') + $rows + '' >> $env:GITHUB_STEP_SUMMARY
+    }
+}
+
+$stageTimes = [ordered]@{}
 if ($Stage -in 'All', 'Checks') {
+    $watch = [Diagnostics.Stopwatch]::StartNew()
     $exactGreen = Confirm-Integration
     Confirm-NoReleaseBlocker
+    $stageTimes['Checks'] = $watch.Elapsed
     if ($env:GITHUB_OUTPUT) {
         "exact-green=$($exactGreen.ToString().ToLower())" >> $env:GITHUB_OUTPUT
     }
 }
 if ($Stage -in 'All', 'Stress') {
+    $watch = [Diagnostics.Stopwatch]::StartNew()
     Invoke-Step 'Stress: cargo run -p stress -- --scripts' { cargo run -p stress -- --scripts }
+    $stageTimes['Stress'] = $watch.Elapsed
 }
 if ($Stage -in 'All', 'Proofs') {
+    $watch = [Diagnostics.Stopwatch]::StartNew()
     Confirm-Proofs
+    $stageTimes['Proofs'] = $watch.Elapsed
 }
+Write-StageTimes $stageTimes
 Write-Host "Release gate passed ($Stage)." -ForegroundColor Green
 exit 0

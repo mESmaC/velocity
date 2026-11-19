@@ -53,3 +53,54 @@ jobs:
         run: pnpm -C ui check
       - name: Lint frontend
         run: pnpm -C ui lint
+
+  # Keeps the pinned Rosen built in the default branch's cache, which a release on any
+  # ref can restore (#434). Cargo.toml pins no Rosen release yet, so without this the
+  # release's `rosen` job built Rosen from source for about five minutes after every pin
+  # bump while the app build waited for it. With the cache filled this job takes under a
+  # minute, and running on every push keeps the cache from expiring unused.
+  # The steps, cache path and cache key are those of release.yml's `rosen` job. Keep
+  # them the same, or the release never finds this cache.
+  rosen:
+    name: Warm the pinned Rosen cache
+    # A pull request's cache is private to it, so only a push fills the shared one.
+    if: github.event_name == 'push'
+    runs-on: windows-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          sparse-checkout: |
+            .github/scripts
+            Cargo.toml
+            crates/velocity-rosen/Cargo.toml
+            rust-toolchain.toml
+          sparse-checkout-cone-mode: false
+      - name: Read the Rosen pin
+        id: rosen-pin
+        shell: pwsh
+        run: ./.github/scripts/rosen-pin.ps1
+      # A pinned Rosen release with its binaries attached needs no source build or cache.
+      - name: Download the pinned Rosen release
+        id: prebuilt
+        shell: pwsh
+        run: >-
+          ./.github/scripts/rosen-fetch.ps1
+          -Url '${{ steps.rosen-pin.outputs.url }}'
+          -Rev '${{ steps.rosen-pin.outputs.rev }}'
+          -Release '${{ steps.rosen-pin.outputs.release }}'
+          -Destination "$env:RUNNER_TEMP\rosen\bin"
+      - name: Cache pinned Rosen installation
+        id: rosen-cache
+        if: steps.prebuilt.outputs.found != 'true'
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
+        with:
+          path: ${{ runner.temp }}/rosen
+          key: rosen-${{ runner.os }}-${{ runner.arch }}-${{ steps.rosen-pin.outputs.rev }}-${{ hashFiles('rust-toolchain.toml') }}
+      - name: Build Rosen
+        if: steps.prebuilt.outputs.found != 'true' && steps.rosen-cache.outputs.cache-hit != 'true'
+        shell: pwsh
+        run: |
+          rustup show active-toolchain
+          cargo install --locked --git '${{ steps.rosen-pin.outputs.url }}' --rev '${{ steps.rosen-pin.outputs.rev }}' --root "$env:RUNNER_TEMP\rosen" rosen-server rosen-cli
+          if ($LASTEXITCODE -ne 0) { throw "Could not build Rosen" }
