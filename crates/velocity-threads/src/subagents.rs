@@ -1,14 +1,19 @@
 //! A thread's subagents (SPEC.md §3.2 Subagents, #436): one node per spawning tool call,
-//! with its own transcript, status, model, start time and token use.
+//! or per subagent session when the agent gives each subagent its own, with its own
+//! transcript, status, model, start time and token use.
 //!
-//! The ACP client files a subagent's updates under its spawning call
-//! ([`velocity_acp::client::AgentEvent::Subagent`]); the facts about each subagent come
-//! from that call's own updates ([`velocity_acp::subagent_report`]).
+//! The ACP client files a subagent's updates under its spawning call or session
+//! ([`velocity_acp::client::AgentEvent::Subagent`]). The facts about each subagent come
+//! from the spawning call's own updates ([`velocity_acp::subagent_report`]), or from what
+//! the subagent's session and its parent report ([`velocity_acp::session_report`]).
 
 use std::collections::BTreeSet;
 
 use agent_client_protocol::v1::schema::{SessionUpdate, ToolCallStatus};
-use velocity_acp::{Placement, SubagentReport, agent_thread_states, subagent_report};
+use velocity_acp::{
+    Placement, SubagentActivity, SubagentReport, agent_thread_states, session_report,
+    subagent_report,
+};
 use velocity_core::thread_view_model::{SubagentStatus, SubagentView};
 
 use crate::transcript_view::LiveTranscript;
@@ -69,6 +74,14 @@ impl Subagents {
                 node.status = thread_status(status);
                 self.changed.insert(node.spawn.clone());
             }
+        }
+    }
+
+    /// Reads what the session of the subagent `spawn`, or its parent, reports about it: its
+    /// announcement and state, its model, its token use.
+    pub fn observe_session(&mut self, spawn: &str, update: &SessionUpdate, now: u64) {
+        if let Some(report) = session_report(spawn, update) {
+            self.apply_report(report, now);
         }
     }
 
@@ -164,6 +177,9 @@ impl Subagents {
         if let Some(status) = report.status {
             node.status = call_status(node, status);
         }
+        if let Some(activity) = report.activity {
+            node.status = activity_status(node.status, activity);
+        }
     }
 
     fn node_mut(&mut self, spawn: &str, now: u64) -> &mut SubagentNode {
@@ -197,6 +213,18 @@ fn call_status(node: &SubagentNode, status: ToolCallStatus) -> SubagentStatus {
         ToolCallStatus::Completed if node.background => node.status,
         ToolCallStatus::Completed => SubagentStatus::Done,
         _ => SubagentStatus::Running,
+    }
+}
+
+/// A subagent's status after its own session reports `activity`. A session the agent lost
+/// sight of was cut off if it was working; one that had finished keeps its outcome.
+fn activity_status(current: SubagentStatus, activity: SubagentActivity) -> SubagentStatus {
+    match activity {
+        SubagentActivity::Running => SubagentStatus::Running,
+        SubagentActivity::Done => SubagentStatus::Done,
+        SubagentActivity::Failed => SubagentStatus::Failed,
+        SubagentActivity::Unknown if current == SubagentStatus::Running => SubagentStatus::Failed,
+        SubagentActivity::Unknown => current,
     }
 }
 

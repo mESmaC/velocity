@@ -7,12 +7,21 @@
 //! collab call whose raw input names the model, the prompt and the child threads, and whose
 //! `agentsStates` (on every collab call) say how each child is doing.
 //!
+//! An agent told that Velocity takes native subagent sessions (`clientCapabilities.subagents`,
+//! which codex-acp needs before it forwards a child thread's items) instead gives each
+//! subagent an ACP session of its own. The parent session announces it with a
+//! `subagent_update` and reports its state there; the subagent's messages and tool calls
+//! arrive as `session/update`s under its own session id, which is then its key.
+//!
 //! Everything here is pure: the router files updates, the report functions read facts.
 
 use std::collections::HashMap;
 use std::sync::Arc;
 
-use agent_client_protocol::v1::schema::{Meta, SessionUpdate, ToolCallStatus};
+use agent_client_protocol::v1::schema::{
+    IdleStopReason, Meta, SessionConfigKind, SessionConfigOption, SessionConfigOptionCategory,
+    SessionUpdate, StateUpdate, ToolCallStatus,
+};
 use serde_json::Value;
 
 use crate::{EntryClass, Placement, Transcript};
@@ -41,6 +50,32 @@ pub struct SubagentRouter {
     /// tool name.
     tool_calls: HashMap<Arc<str>, Arc<str>>,
     transcripts: HashMap<Arc<str>, Transcript<Arc<str>, ()>>,
+    /// The native subagent sessions announced so far, by session id.
+    sessions: HashMap<Arc<str>, NativeSession>,
+}
+
+/// A native subagent session its parent announced.
+struct NativeSession {
+    /// The announcement of a session known only from replayed history. It is held back
+    /// until the session works again, so a resumed thread shows no empty subagents.
+    held: Option<SessionUpdate>,
+}
+
+/// Where a `session/update` that concerns a native subagent session goes.
+#[derive(Clone, Debug, PartialEq)]
+pub enum SessionRoute {
+    /// An entry in the transcript of the subagent `spawn`. `announcement` is the held
+    /// announcement of a session from replayed history, to report first.
+    Entry {
+        spawn: Arc<str>,
+        placement: Placement,
+        announcement: Option<SessionUpdate>,
+    },
+    /// A fact about the subagent `spawn` for [`session_report`]: its announcement or state
+    /// from its parent, or its own model or token use.
+    Fact { spawn: Arc<str> },
+    /// Replayed history, or a fact about a session that has not worked since the replay.
+    Skipped,
 }
 
 impl SubagentRouter {
@@ -64,6 +99,55 @@ impl SubagentRouter {
         Some((spawn, placement))
     }
 
+    /// Routes one `session/update` of `session`: a subagent's announcement, or anything a
+    /// native subagent session reports. `None` leaves the update to its own session, where
+    /// [`SubagentRouter::route`] looks for an attributed subagent. `replaying` marks history
+    /// that `session/load` replays, which rebuilds no subagent transcript.
+    pub fn route_session(
+        &mut self,
+        session: &Arc<str>,
+        update: &SessionUpdate,
+        class: Option<&EntryClass<Arc<str>>>,
+        replaying: bool,
+    ) -> Option<SessionRoute> {
+        if let SessionUpdate::SubagentUpdate(child) = update {
+            let spawn = Arc::clone(&child.session_id.0);
+            let native = self
+                .sessions
+                .entry(Arc::clone(&spawn))
+                .or_insert_with(|| NativeSession {
+                    held: replaying.then(|| update.clone()),
+                });
+            return Some(match native.held {
+                Some(_) => SessionRoute::Skipped,
+                None => SessionRoute::Fact { spawn },
+            });
+        }
+        let native = self.sessions.get_mut(session)?;
+        if replaying {
+            return Some(SessionRoute::Skipped);
+        }
+        let Some(class) = class else {
+            return Some(match native.held {
+                Some(_) => SessionRoute::Skipped,
+                None => SessionRoute::Fact {
+                    spawn: Arc::clone(session),
+                },
+            });
+        };
+        let announcement = native.held.take();
+        let placement = self
+            .transcripts
+            .entry(Arc::clone(session))
+            .or_default()
+            .record(class.clone(), ());
+        Some(SessionRoute::Entry {
+            spawn: Arc::clone(session),
+            placement,
+            announcement,
+        })
+    }
+
     fn spawn_of(&mut self, update: &SessionUpdate) -> Option<Arc<str>> {
         let call = tool_call_id(update);
         if let Some(spawn) = attributed_spawn(update) {
@@ -77,10 +161,23 @@ impl SubagentRouter {
     }
 }
 
-/// What a parent's tool call says about the subagent it runs.
+/// A subagent's foreground work, as its native session's state reports it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SubagentActivity {
+    /// Working, or blocked on an answer it asked for.
+    Running,
+    /// Its turn ended normally. Its parent can still message it again.
+    Done,
+    /// Its turn ended on an error or was cancelled.
+    Failed,
+    /// The agent cannot tell: the session was closed, unloaded or lost.
+    Unknown,
+}
+
+/// What a parent's tool call, or a native subagent session, says about a subagent.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct SubagentReport {
-    /// The spawning tool call's id: the subagent's key.
+    /// The subagent's key: the spawning tool call's id, or its native session's id.
     pub spawn: String,
     /// The tool call's title.
     pub title: Option<String>,
@@ -90,6 +187,8 @@ pub struct SubagentReport {
     pub model: Option<String>,
     /// The spawning call's status.
     pub status: Option<ToolCallStatus>,
+    /// The native session's state.
+    pub activity: Option<SubagentActivity>,
     /// Total tokens the subagent used, when the agent reports them.
     pub tokens: Option<u64>,
     /// The call returned while the subagent keeps working: a Claude background subagent, or
@@ -140,6 +239,68 @@ pub fn subagent_report(
                     fields.status,
                 )
             })
+        }
+        _ => None,
+    }
+}
+
+/// The subagent facts in an update [`SessionRoute::Fact`] filed under `spawn`: the parent's
+/// `subagent_update` (title, task and state), or the subagent session's own model option
+/// and context use.
+pub fn session_report(spawn: &str, update: &SessionUpdate) -> Option<SubagentReport> {
+    let report = SubagentReport {
+        spawn: spawn.to_owned(),
+        // A native session outlives the call that started it, as a Codex spawn does.
+        background: true,
+        ..SubagentReport::default()
+    };
+    match update {
+        SessionUpdate::SubagentUpdate(child) => Some(SubagentReport {
+            title: announced_text(child.title.value()).map(str::to_owned),
+            // codex-acp describes a subagent by the whole prompt it was started with.
+            description: announced_text(child.description.value()).map(prompt_summary),
+            activity: child.state.value().map(state_activity),
+            ..report
+        }),
+        SessionUpdate::ConfigOptionUpdate(options) => {
+            let model = options.config_options.iter().find_map(model_choice)?;
+            Some(SubagentReport {
+                model: Some(model),
+                ..report
+            })
+        }
+        // The same measure as Claude's `totalTokens`: the tokens of its latest request.
+        SessionUpdate::UsageUpdate(usage) => Some(SubagentReport {
+            tokens: Some(usage.used),
+            ..report
+        }),
+        _ => None,
+    }
+}
+
+fn announced_text(text: Option<&String>) -> Option<&str> {
+    text.map(|text| text.trim()).filter(|text| !text.is_empty())
+}
+
+/// A turn that ends on an error or a cancel failed; any other end is a finished turn.
+fn state_activity(state: &StateUpdate) -> SubagentActivity {
+    match state {
+        StateUpdate::Running(_) | StateUpdate::RequiresAction(_) => SubagentActivity::Running,
+        StateUpdate::Idle(idle) => match idle.stop_reason {
+            Some(IdleStopReason::Error(_) | IdleStopReason::Cancelled) => SubagentActivity::Failed,
+            _ => SubagentActivity::Done,
+        },
+        _ => SubagentActivity::Unknown,
+    }
+}
+
+/// The model a session's config options say it runs on.
+fn model_choice(option: &SessionConfigOption) -> Option<String> {
+    match &option.kind {
+        SessionConfigKind::Select(select)
+            if option.category == Some(SessionConfigOptionCategory::Model) =>
+        {
+            Some(select.current_value.0.to_string())
         }
         _ => None,
     }
@@ -201,6 +362,7 @@ fn report(
             .or_else(|| input_text("prompt").map(prompt_summary)),
         model: input_text("model").map(str::to_owned),
         status,
+        activity: None,
         tokens: response
             .and_then(|response| response.get("totalTokens"))
             .and_then(Value::as_u64),

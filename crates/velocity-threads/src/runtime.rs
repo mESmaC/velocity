@@ -855,6 +855,9 @@ impl ThreadRuntimes {
                     .subagents
                     .record(spawn, *placement, update, unix_now());
             }
+            AgentEvent::SubagentSession { spawn, update } => {
+                thread.subagents.observe_session(spawn, update, unix_now());
+            }
             AgentEvent::SessionUpdate(update) => {
                 if let Some(commands) = available_commands(update) {
                     thread.agent_commands = Some(

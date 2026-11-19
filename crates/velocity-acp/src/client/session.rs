@@ -12,6 +12,7 @@ use agent_client_protocol::v1::schema::{
     PermissionOptionKind, RequestPermissionOutcome, RequestPermissionRequest,
     RequestPermissionResponse, SelectedPermissionOutcome, SessionConfigOption, SessionId,
     SessionModeId, SessionModeState, SessionNotification, SessionUpdate, SetSessionModeRequest,
+    SubagentCapabilities,
 };
 use agent_client_protocol::{Agent, Error, ErrorCode};
 use velocity_graph::token_usage::Role;
@@ -207,7 +208,7 @@ pub(super) async fn start_or_resume_session(
     shared: &Shared,
 ) -> Result<StartedSession, agent_client_protocol::Error> {
     let initialized = connection
-        .send_request(initialize_request())
+        .send_request(thread_initialize_request(shared))
         .block_task()
         .await?;
     let earlier = setup
@@ -499,6 +500,19 @@ pub(super) fn initialize_request() -> InitializeRequest {
                 .auth(AuthCapabilities::new().terminal(true)),
         )
         .client_info(Implementation::new("velocity", env!("CARGO_PKG_VERSION")))
+}
+
+/// A thread session's `initialize`. Codex is told Velocity takes native subagent sessions:
+/// codex-acp forwards a child thread's own items only to a client that declares them (§3.2
+/// Subagents). Every other agent keeps reporting subagents inside the parent session.
+fn thread_initialize_request(shared: &Shared) -> InitializeRequest {
+    let mut request = initialize_request();
+    if shared.provider == Some(Provider::Codex) {
+        request.client_capabilities = request
+            .client_capabilities
+            .subagents(SubagentCapabilities::new());
+    }
+    request
 }
 
 /// AIRC, the code graph beside it (F19), then the shared servers, keeping the first server of

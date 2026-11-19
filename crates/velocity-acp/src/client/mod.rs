@@ -46,7 +46,7 @@ use std::sync::{Arc, Mutex, PoisonError};
 use agent_client_protocol::v1::ConnectionTo;
 use agent_client_protocol::v1::schema::{
     CancelNotification, ContentBlock, ContentChunk, McpServer, PromptRequest, SessionId,
-    SessionUpdate, StopReason,
+    SessionNotification, SessionUpdate, StopReason,
 };
 use agent_client_protocol::{Agent, ByteStreams, Client};
 use tokio::io::{AsyncBufReadExt, BufReader};
@@ -124,10 +124,18 @@ pub enum AgentEvent {
         update: SessionUpdate,
     },
     /// An update a subagent made, recorded in that subagent's own transcript rather than
-    /// the parent's (§3.2 Subagents). `spawn` is the parent's tool call that started it.
+    /// the parent's (§3.2 Subagents). `spawn` is the parent's tool call that started it, or
+    /// the subagent's own session when the agent gives it one.
     Subagent {
         spawn: Arc<str>,
         placement: Placement,
+        update: SessionUpdate,
+    },
+    /// What a subagent with a session of its own, or its parent, reports about it outside
+    /// its transcript: its announcement and state, its model, its token use (§3.2
+    /// Subagents). `spawn` is the subagent's session.
+    SubagentSession {
+        spawn: Arc<str>,
         update: SessionUpdate,
     },
     /// The grouped AIRC text in this prompt, with all original delivery identifiers.
@@ -212,6 +220,60 @@ impl Shared {
             placement,
             update,
         });
+    }
+
+    /// Records one `session/update`. What a subagent's own session sends, and what its
+    /// parent says about it, go to that subagent (§3.2 Subagents); everything else is the
+    /// thread's session.
+    fn record_notification(&self, notification: SessionNotification) {
+        let class = entry_class(&notification.update);
+        let route = self
+            .subagents
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .route_session(
+                &notification.session_id.0,
+                &notification.update,
+                class.as_ref(),
+                self.replaying.load(Ordering::Acquire),
+            );
+        match route {
+            None => self.record(notification.update),
+            Some(route) => self.record_subagent_session(route, notification.update),
+        }
+    }
+
+    /// A subagent session's context use and model are its own, so its updates stay out of
+    /// the thread's token capture and hand-off note.
+    fn record_subagent_session(&self, route: crate::SessionRoute, update: SessionUpdate) {
+        match route {
+            crate::SessionRoute::Skipped => {}
+            crate::SessionRoute::Fact { spawn } => {
+                self.emit(AgentEvent::SubagentSession { spawn, update });
+            }
+            crate::SessionRoute::Entry {
+                spawn,
+                placement,
+                announcement,
+            } => {
+                if let Some(announcement) = announcement {
+                    self.emit(AgentEvent::SubagentSession {
+                        spawn: Arc::clone(&spawn),
+                        update: announcement,
+                    });
+                }
+                // A subagent's code reads are still this turn's reads.
+                self.code_reads
+                    .lock()
+                    .unwrap_or_else(PoisonError::into_inner)
+                    .observe(&update);
+                self.emit(AgentEvent::Subagent {
+                    spawn,
+                    placement,
+                    update,
+                });
+            }
+        }
     }
 
     fn record_with(
