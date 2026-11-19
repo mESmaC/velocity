@@ -108,21 +108,18 @@ fn launch(application: &AppHandle, request: LaunchSwarmRequest) -> Result<Layout
     crate::ready_pool::reserve(application, request.project_identifier, request.items.len());
     let mut started = 0;
     let mut refused = Vec::new();
-    for (subsystem, (item, provider)) in assignments {
+    for assignment in assignments {
         if let Err(error) = velocity_rosen::memory::require_headroom() {
             refused.push(error);
             break;
         }
-        let provider = request.providers[provider];
         match start_member(
             application,
             &request,
             swarm,
             &repository,
             &issues,
-            item,
-            provider,
-            subsystem.as_deref(),
+            assignment,
         ) {
             Ok(()) => started += 1,
             Err(error) => refused.push(error),
@@ -214,10 +211,10 @@ fn start_member(
     swarm: u32,
     repository: &str,
     issues: &[OpenIssue],
-    item: SwarmItem,
-    provider: velocity_store::ProviderKind,
-    subsystem: Option<&str>,
+    assignment: SwarmAssignment,
 ) -> Result<(), String> {
+    let (subsystem, (item, provider_index)) = assignment;
+    let provider = request.providers[provider_index];
     let (mut plan, thread) = {
         let mut store = lock(
             application.state::<ManagedStateStore>().inner(),
