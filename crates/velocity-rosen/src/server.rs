@@ -508,7 +508,6 @@ pub fn binary_folder() -> Result<PathBuf, RosenError> {
 pub(crate) fn program_folder(program: &str) -> Option<PathBuf> {
     let program = executable(program);
     let configured = std::env::var_os(BINARY_FOLDER_ENV).map(PathBuf::from);
-    #[cfg(feature = "bundled")]
     let configured = configured.or_else(crate::bundled::folder);
     let beside_app = std::env::current_exe()
         .ok()

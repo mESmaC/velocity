@@ -21,16 +21,22 @@ fn main() -> ExitCode {
 fn start() -> Result<bool, Box<dyn Error>> {
     let arguments: Vec<_> = std::env::args().skip(1).collect();
     if arguments.is_empty() {
-        return Err("Usage: cargo run -p stress -- --all | --list | <script name>...".into());
+        return Err(
+            "Usage: cargo run -p stress -- --all | --scripts | --list | <script name>...".into(),
+        );
     }
     let root = workspace::root()?;
     let mut entries = discovery::discover(&root)?;
     if entries.is_empty() {
         return Err("No stress evidence discovered".into());
     }
+    // `--scripts` runs every script without the workspace tests and UI build that `--all`
+    // adds: the release gate requires a green integration build, which ran the tests on
+    // the release commit, and the release build compiles the UI itself (#498).
+    let scripts_only = arguments == ["--scripts"];
     // Named scripts run alone, without the workspace tests and UI build that `--all`
     // adds, so checking one script does not hold the build queue for the whole suite.
-    let named = arguments != ["--all"] && arguments != ["--list"];
+    let named = arguments != ["--all"] && arguments != ["--list"] && !scripts_only;
     if named {
         entries = discovery::select(&root, entries, &arguments)?;
     }
@@ -58,5 +64,5 @@ fn start() -> Result<bool, Box<dyn Error>> {
             .status()?
             .success());
     }
-    Ok(runner::run(&root, &entries, !named))
+    Ok(runner::run(&root, &entries, !named && !scripts_only))
 }

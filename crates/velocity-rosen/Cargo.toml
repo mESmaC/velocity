@@ -11,10 +11,6 @@ workspace = true
 
 [features]
 bindings = ["dep:specta"]
-# Builds Rosen's binaries into Velocity, for releases: the release workflow names them in
-# VELOCITY_ROSEN_SERVER_EXE and VELOCITY_ROSEN_CLI_EXE. Development builds find them
-# through VELOCITY_ROSEN_BIN or PATH instead.
-bundled = []
 
 [dependencies]
 notify = "8.2"

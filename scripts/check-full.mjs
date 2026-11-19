@@ -57,7 +57,9 @@ function checkBindings() {
 try {
   run("cargo", ["fmt", "--all", "--", "--check"]);
   run("node", ["scripts/check-ui.mjs"]);
-  run("cargo", ["build", "--workspace", "--locked"]);
+  // No separate `cargo build --workspace`: clippy with --all-targets compiles every
+  // target, and the tests and bindings check build the libraries, so a build step only
+  // added a third full compile (#498).
   run("cargo", [
     "clippy",
     "--workspace",

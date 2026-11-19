@@ -4,6 +4,10 @@ name: Release
 # GitHub Release plus the update manifest the app checks (SPEC.md F1 Updates). A tag with a
 # pre-release part (`v0.1.0-beta.2`) is published as a pre-release and builds no MSI,
 # because MSI versions must be numeric.
+#
+# The gate and the build run side by side, and `publish` waits for both, so a release
+# takes as long as the slower of the two instead of their sum (#498). Nothing is
+# published unless the gate passes.
 on:
   push:
     tags: ['v*']
@@ -29,7 +33,7 @@ env:
 
 jobs:
   # The release is the gate (SPEC.md F7 "The release gate", #381): on a Rosen project no
-  # approval gates a land, so nothing is built or published until the release commit passes
+  # approval gates a land, so nothing is published until the release commit passes
   # integration, the stress suite and the proofs, with no release-blocker open.
   gate:
     name: Release gate
@@ -39,9 +43,9 @@ jobs:
       issues: read
       statuses: read
     runs-on: windows-latest
-    timeout-minutes: 300
+    timeout-minutes: 90
     env:
-      # Keep the workspace tests and stress harness builds within runner memory.
+      # Keep the stress harness builds within runner memory.
       CARGO_BUILD_JOBS: '2'
       # Match debug settings across the workspace and standalone stress manifests.
       CARGO_PROFILE_DEV_DEBUG: 'none'
@@ -54,6 +58,14 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: pwsh -NoProfile -File scripts/release-gate.ps1 -Repository ${{ github.repository }} -IntegrationOnly
+      # Builds write to a Dev Drive: ReFS, without real-time scanning of every file the
+      # compiler writes, which slows Rust builds on Windows runners the most (#498).
+      - uses: samypr100/setup-dev-drive@562171fe8df7401fdf582d766cd3b6ab80d5b1a0 # v4.1.0
+        with:
+          drive-size: 40GB
+          drive-format: ReFS
+          env-mapping: |
+            CARGO_TARGET_DIR,{{ DEV_DRIVE }}/target
       - uses: pnpm/action-setup@v4
         with:
           version: 10.34.9
@@ -66,7 +78,8 @@ jobs:
         run: rustup show active-toolchain
       - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
         with:
-          key: dev
+          key: gate
+          workspaces: '. -> ${{ env.CARGO_TARGET_DIR }}'
       - name: Install UI dependencies
         run: pnpm -C ui install --frozen-lockfile
       # elan installs the toolchain proofs/lean-toolchain pins on first use; Mathlib's
@@ -104,39 +117,55 @@ jobs:
           git config --global user.name "Velocity release gate"
           git config --global user.email "release-gate@velocity.invalid"
       # Stress scripts start real Rosen servers (pr4-goal-stack-crash failed with
-      # MissingBinary). Build the pinned Rosen the release carries and point Velocity at it.
+      # MissingBinary). Use the pinned Rosen the release carries.
+      - name: Read the Rosen pin
+        id: rosen-pin
+        shell: pwsh
+        run: ./.github/scripts/rosen-pin.ps1
+      # Keyed on the pinned commit, not Velocity's lockfile: `cargo install --locked` builds
+      # from Rosen's own lockfile, so only a new pin or toolchain changes the binaries.
       - name: Cache pinned Rosen installation
+        id: rosen-cache
         uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
         with:
           path: ${{ runner.temp }}/rosen
-          key: rosen-${{ runner.os }}-${{ runner.arch }}-release-${{ hashFiles('Cargo.lock', 'rust-toolchain.toml') }}
+          key: rosen-${{ runner.os }}-${{ runner.arch }}-${{ steps.rosen-pin.outputs.rev }}-${{ hashFiles('rust-toolchain.toml') }}
       - name: Build Rosen for the gate
+        if: steps.rosen-cache.outputs.cache-hit != 'true'
         shell: pwsh
         run: |
-          $pin = 'rosen-client = \{ git = "([^"]+)", rev = "([0-9a-f]{40})" \}'
-          $manifest = @('Cargo.toml', 'crates/velocity-rosen/Cargo.toml') | ForEach-Object { Get-Content -Raw $_ } | Where-Object { $_ -match $pin } | Select-Object -First 1
-          if (-not $manifest -or $manifest -notmatch $pin) { throw "No pinned rosen-client in Cargo.toml or crates/velocity-rosen/Cargo.toml" }
-          $root = "$env:RUNNER_TEMP\rosen"
-          cargo install --locked --git $Matches[1] --rev $Matches[2] --root $root rosen-server rosen-cli
+          cargo install --locked --git '${{ steps.rosen-pin.outputs.url }}' --rev '${{ steps.rosen-pin.outputs.rev }}' --root "$env:RUNNER_TEMP\rosen" rosen-server rosen-cli
           if ($LASTEXITCODE -ne 0) { throw "Could not build Rosen" }
-          "VELOCITY_ROSEN_BIN=$root\bin" >> $env:GITHUB_ENV
-          "$root\bin" >> $env:GITHUB_PATH
+      - name: Use the pinned Rosen
+        shell: pwsh
+        run: |
+          "VELOCITY_ROSEN_BIN=$env:RUNNER_TEMP\rosen\bin" >> $env:GITHUB_ENV
+          "$env:RUNNER_TEMP\rosen\bin" >> $env:GITHUB_PATH
       - name: Run the release gate
         shell: pwsh
         env:
           GH_TOKEN: ${{ github.token }}
         run: pwsh -NoProfile -File scripts/release-gate.ps1 -Repository ${{ github.repository }}
 
-  release:
-    name: Build, sign and publish
-    needs: gate
+  build:
+    name: Build and sign
     permissions:
-      contents: write
+      contents: read
     runs-on: windows-latest
+    timeout-minutes: 60
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+      prerelease: ${{ steps.version.outputs.prerelease }}
     steps:
       - uses: actions/checkout@v4
         with:
           ref: ${{ env.TAG }}
+      - uses: samypr100/setup-dev-drive@562171fe8df7401fdf582d766cd3b6ab80d5b1a0 # v4.1.0
+        with:
+          drive-size: 40GB
+          drive-format: ReFS
+          env-mapping: |
+            CARGO_TARGET_DIR,{{ DEV_DRIVE }}/target
       - uses: pnpm/action-setup@v4
         with:
           version: 10.34.9
@@ -150,6 +179,7 @@ jobs:
       - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
         with:
           key: release
+          workspaces: '. -> ${{ env.CARGO_TARGET_DIR }}'
       - name: Install UI dependencies
         run: pnpm -C ui install --frozen-lockfile
 
@@ -166,25 +196,29 @@ jobs:
           @{ version = $version } | ConvertTo-Json | Set-Content -Encoding utf8 "$env:RUNNER_TEMP\version.json"
 
       # Rosen is Velocity's version control (SPEC.md F5). Its binaries are built from the
-      # commit velocity-rosen pins and carried inside the app, so the portable download has
-      # them too; Velocity unpacks them on first use.
+      # commit Velocity pins and carried inside the app, so the portable download has them
+      # too; Velocity unpacks them on first use.
+      - name: Read the Rosen pin
+        id: rosen-pin
+        shell: pwsh
+        run: ./.github/scripts/rosen-pin.ps1
       - name: Cache pinned Rosen installation
+        id: rosen-cache
         uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
         with:
           path: ${{ runner.temp }}/rosen
-          key: rosen-${{ runner.os }}-${{ runner.arch }}-release-${{ hashFiles('Cargo.lock', 'rust-toolchain.toml') }}
+          key: rosen-${{ runner.os }}-${{ runner.arch }}-${{ steps.rosen-pin.outputs.rev }}-${{ hashFiles('rust-toolchain.toml') }}
       - name: Build Rosen
+        if: steps.rosen-cache.outputs.cache-hit != 'true'
         shell: pwsh
         run: |
-          # The workspace Cargo.toml holds the pin since #404; older tags kept it in the crate.
-          $pin = 'rosen-client = \{ git = "([^"]+)", rev = "([0-9a-f]{40})" \}'
-          $manifest = @('Cargo.toml', 'crates/velocity-rosen/Cargo.toml') | ForEach-Object { Get-Content -Raw $_ } | Where-Object { $_ -match $pin } | Select-Object -First 1
-          if (-not $manifest -or $manifest -notmatch $pin) { throw "No pinned rosen-client in Cargo.toml or crates/velocity-rosen/Cargo.toml" }
-          $root = "$env:RUNNER_TEMP\rosen"
-          cargo install --locked --git $Matches[1] --rev $Matches[2] --root $root rosen-server rosen-cli
+          cargo install --locked --git '${{ steps.rosen-pin.outputs.url }}' --rev '${{ steps.rosen-pin.outputs.rev }}' --root "$env:RUNNER_TEMP\rosen" rosen-server rosen-cli
           if ($LASTEXITCODE -ne 0) { throw "Could not build Rosen" }
-          "VELOCITY_ROSEN_SERVER_EXE=$root\bin\rosen-server.exe" >> $env:GITHUB_ENV
-          "VELOCITY_ROSEN_CLI_EXE=$root\bin\rosen.exe" >> $env:GITHUB_ENV
+      - name: Use the pinned Rosen
+        shell: pwsh
+        run: |
+          "VELOCITY_ROSEN_SERVER_EXE=$env:RUNNER_TEMP\rosen\bin\rosen-server.exe" >> $env:GITHUB_ENV
+          "VELOCITY_ROSEN_CLI_EXE=$env:RUNNER_TEMP\rosen\bin\rosen.exe" >> $env:GITHUB_ENV
 
       - name: Build
         shell: pwsh
@@ -200,13 +234,14 @@ jobs:
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
         run: |
           $version = '${{ steps.version.outputs.version }}'
+          $release = Join-Path $env:CARGO_TARGET_DIR 'release'
           $out = New-Item -ItemType Directory -Force dist
-          Copy-Item (Get-ChildItem target/release/bundle/nsis/*-setup.exe | Select-Object -First 1) "$out/Velocity_${version}_x64-setup.exe"
-          $msi = Get-ChildItem target/release/bundle/msi/*.msi -ErrorAction SilentlyContinue | Select-Object -First 1
+          Copy-Item (Get-ChildItem "$release/bundle/nsis/*-setup.exe" | Select-Object -First 1) "$out/Velocity_${version}_x64-setup.exe"
+          $msi = Get-ChildItem "$release/bundle/msi/*.msi" -ErrorAction SilentlyContinue | Select-Object -First 1
           if ($msi) { Copy-Item $msi "$out/Velocity_${version}_x64_en-US.msi" }
           # The portable download is the app executable itself.
-          $exe = @('target/release/Velocity.exe', 'target/release/velocity-app.exe') | Where-Object { Test-Path $_ } | Select-Object -First 1
-          if (-not $exe) { throw "No app executable in target/release" }
+          $exe = @("$release/Velocity.exe", "$release/velocity-app.exe") | Where-Object { Test-Path $_ } | Select-Object -First 1
+          if (-not $exe) { throw "No app executable in $release" }
           Copy-Item $exe "$out/Velocity_${version}_x64-portable.exe"
           # Each signature binds the version, so a manifest can't pair an old package with a new number.
           foreach ($file in Get-ChildItem $out -File) {
@@ -217,15 +252,36 @@ jobs:
             "$((Get-FileHash $_.FullName -Algorithm SHA256).Hash.ToLower())  $($_.Name)"
           } | Set-Content -Encoding utf8 "$out/SHA256SUMS.txt"
 
+      - uses: actions/upload-artifact@v4
+        with:
+          name: release-downloads
+          path: dist/
+          if-no-files-found: error
+
+  publish:
+    name: Publish
+    needs: [gate, build]
+    permissions:
+      contents: write
+    runs-on: ubuntu-latest
+    env:
+      GH_REPO: ${{ github.repository }}
+      GH_TOKEN: ${{ github.token }}
+      VERSION: ${{ needs.build.outputs.version }}
+      PRERELEASE: ${{ needs.build.outputs.prerelease }}
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: release-downloads
+          path: dist/
+
       - name: Publish the release
         shell: pwsh
-        env:
-          GH_TOKEN: ${{ github.token }}
         run: |
           gh release view $env:TAG *> $null
           if ($LASTEXITCODE -ne 0) {
-            $flags = @('--generate-notes', '--verify-tag', '--title', "Velocity ${{ steps.version.outputs.version }}")
-            if ('${{ steps.version.outputs.prerelease }}' -eq 'true') { $flags += '--prerelease' }
+            $flags = @('--generate-notes', '--verify-tag', '--title', "Velocity $env:VERSION")
+            if ($env:PRERELEASE -eq 'true') { $flags += '--prerelease' }
             gh release create $env:TAG @flags
             if ($LASTEXITCODE -ne 0) { throw "Could not create the release" }
           }
@@ -234,11 +290,9 @@ jobs:
 
       - name: Publish the update manifest
         shell: pwsh
-        env:
-          GH_TOKEN: ${{ github.token }}
         run: |
-          $version = '${{ steps.version.outputs.version }}'
-          $base = "https://github.com/${{ github.repository }}/releases/download/$env:TAG"
+          $version = $env:VERSION
+          $base = "https://github.com/$env:GH_REPO/releases/download/$env:TAG"
           function Entry($name) {
             @{ url = "$base/$name"; signature = (Get-Content -Raw "dist/$name.sig").Trim() }
           }

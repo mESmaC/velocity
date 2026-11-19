@@ -1,0 +1,5 @@
+# rust-lld ships with the Rust toolchain and links several times faster than MSVC's
+# link.exe, which is single-threaded: every test binary, harness and the 110 MB app
+# executable pay for each link (#498).
+[target.x86_64-pc-windows-msvc]
+linker = "rust-lld.exe"

@@ -6,32 +6,37 @@
 use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
 
-/// Each binary's file name and bytes. The release workflow builds them from the Rosen
-/// commit `Cargo.toml` pins and names them in these variables.
-const BINARIES: [(&str, &[u8]); 2] = [
-    (
-        "rosen-server.exe",
-        include_bytes!(env!("VELOCITY_ROSEN_SERVER_EXE")),
-    ),
-    ("rosen.exe", include_bytes!(env!("VELOCITY_ROSEN_CLI_EXE"))),
-];
+/// Each binary's file name and bytes.
+pub type Binaries = &'static [(&'static str, &'static [u8])];
 
-/// The folder holding the unpacked binaries, unpacking them the first time. `None` when
-/// they can't be written, so the caller looks elsewhere.
-pub(crate) fn folder() -> Option<PathBuf> {
-    static UNPACKED: OnceLock<Option<PathBuf>> = OnceLock::new();
-    UNPACKED.get_or_init(unpack).clone()
+/// The app's executable embeds the binaries (its `bundled-rosen` feature) and hands them
+/// over at startup. Embedding them here instead put 28 MB into this crate's metadata,
+/// which every crate built on it then loaded.
+static BINARIES: OnceLock<Binaries> = OnceLock::new();
+
+/// Called once by the app's `main` before anything looks for Rosen.
+pub fn provide(binaries: Binaries) {
+    let _ = BINARIES.set(binaries);
 }
 
-fn unpack() -> Option<PathBuf> {
+/// The folder holding the unpacked binaries, unpacking them the first time. `None` when
+/// none were provided or they can't be written, so the caller looks elsewhere.
+pub(crate) fn folder() -> Option<PathBuf> {
+    static UNPACKED: OnceLock<Option<PathBuf>> = OnceLock::new();
+    UNPACKED
+        .get_or_init(|| BINARIES.get().and_then(|binaries| unpack(binaries)))
+        .clone()
+}
+
+fn unpack(binaries: Binaries) -> Option<PathBuf> {
     let root = std::env::var_os("LOCALAPPDATA")
         .map(PathBuf::from)
         .unwrap_or_else(std::env::temp_dir);
     let folder = root
         .join("velocity-rosen")
-        .join(format!("{:016x}", content_hash()));
+        .join(format!("{:016x}", content_hash(binaries)));
     std::fs::create_dir_all(&folder).ok()?;
-    for (name, bytes) in BINARIES {
+    for (name, bytes) in binaries {
         write_once(&folder.join(name), bytes).ok()?;
     }
     Some(folder)
@@ -61,8 +66,8 @@ fn write_once(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
 }
 
 /// FNV-1a over every binary, so a release with other binaries unpacks into a new folder.
-fn content_hash() -> u64 {
-    BINARIES
+fn content_hash(binaries: Binaries) -> u64 {
+    binaries
         .iter()
         .flat_map(|(_, bytes)| bytes.iter())
         .fold(0xcbf2_9ce4_8422_2325_u64, |hash, byte| {

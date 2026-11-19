@@ -8,8 +8,7 @@
 mod agent;
 pub mod agent_run;
 pub mod build_repairs;
-#[cfg(feature = "bundled")]
-mod bundled;
+pub mod bundled;
 pub mod change_details;
 pub mod checker;
 mod checkout;

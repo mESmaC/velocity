@@ -2,7 +2,20 @@
 
 mod queued_run_access;
 
+/// Rosen's binaries ride inside a release (F5). They are a `static` in the executable's
+/// own crate, so no library's metadata carries them and no other crate rebuilds for them.
+#[cfg(feature = "bundled-rosen")]
+static ROSEN_BINARIES: [(&str, &[u8]); 2] = [
+    (
+        "rosen-server.exe",
+        include_bytes!(env!("VELOCITY_ROSEN_SERVER_EXE")),
+    ),
+    ("rosen.exe", include_bytes!(env!("VELOCITY_ROSEN_CLI_EXE"))),
+];
+
 fn main() -> anyhow::Result<()> {
+    #[cfg(feature = "bundled-rosen")]
+    velocity_rosen::bundled::provide(&ROSEN_BINARIES);
     if let Some(code) = velocity_acp::providers::serve_codex_app_server()? {
         std::process::exit(code);
     }

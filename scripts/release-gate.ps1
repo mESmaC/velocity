@@ -9,7 +9,9 @@ is held to the full bar. Run it on the release commit. It stops at the first
 failure and exits non-zero:
 1. A green Velocity integration build on the exact release commit.
 2. No open issue labelled release-blocker (gh, on the checkout's repository).
-3. cargo run -p stress -- --all.
+3. cargo run -p stress -- --scripts: every stress script. --all would add the
+   workspace tests, which the green integration build in step 1 already ran,
+   and the UI build, which the release build itself runs (#498).
 4. lake build in proofs/, with the axiom audit: only propext,
    Classical.choice and Quot.sound.
 
@@ -82,7 +84,7 @@ if ($blockers) {
     Stop-Gate "open release-blocker issues: $list"
 }
 
-Invoke-Step 'Stress: cargo run -p stress -- --all' { cargo run -p stress -- --all }
+Invoke-Step 'Stress: cargo run -p stress -- --scripts' { cargo run -p stress -- --scripts }
 
 if (-not (Get-Command lake -ErrorAction SilentlyContinue)) {
     Stop-Gate 'lake is not installed. Run proofs/scripts/Setup-Toolchain.ps1.'

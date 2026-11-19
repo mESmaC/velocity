@@ -79,3 +79,10 @@ debug = "line-tables-only"
 
 [profile.dev.package."*"]
 debug = false
+
+# Local release builds reuse the last build's work, so a change to one crate recompiles
+# only what changed instead of every Velocity crate from scratch (9 of a 13-minute
+# release build were Velocity's own crates, #498). CI sets CARGO_INCREMENTAL=0, which
+# overrides this, so published CI builds are fully optimised as before.
+[profile.release]
+incremental = true
