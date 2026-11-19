@@ -90,6 +90,26 @@ Its accuracy rules come from the A.TXY address memory in MCL4-COE and `elem`: ro
 - **Speed:** a query answers in under 50 ms on a 100,000-line project.
   Building the graph for such a project takes under 10 s with an empty cache and under 1 s with a full one.
 
+**Standalone indexer (C11, #428).**
+Collapse serves the graph for landed commits by running Velocity's indexer as the `velocity-graph` binary, pinned like `git`.
+It is a bin target of the `velocity-graph` crate, with no Tauri or UI dependencies.
+Each release publishes a Linux x86-64 build as `velocity-graph-<version>-x86_64-unknown-linux-gnu.tar.gz` with its SHA-256 checksum.
+It indexes one commit of a git repository, bare or not, reading its regular files from git objects with no checkout.
+Git blob IDs are the file hashes and parse cache keys, so a commit gives the same records and addresses as the MCP tools for the same tree.
+The parse cache lives in the folder given with `--cache`, so only blobs missing from it are read and parsed.
+The tools skip the staleness check because a commit never changes.
+
+| Command | Does |
+|---|---|
+| `velocity-graph version` | Prints the schema version, the indexer's release version, the parser version and the tools it answers. |
+| `velocity-graph index --repository <path> --commit <revision> --cache <folder>` | Indexes the commit and prints its full ID, file, symbol and subsystem counts, parses made and reused, time, and skipped files by reason. |
+| `velocity-graph query --repository <path> --commit <revision> --cache <folder> <tool> [<json-arguments>]` | Answers `graph_find`, `graph_read`, `graph_impact` or `graph_run` with the MCP tool's arguments and text. |
+| `velocity-graph serve --repository <path> --cache <folder>` | Reads one JSON request per line, `{id?, commit, tool?, arguments?}`, and answers each on one line with one warm index, re-indexing only files whose blobs changed between commits. |
+
+Every answer is one JSON object carrying `schema` (currently 1), which changes only when a field changes meaning or goes away.
+A tool answer has `commit`, `tool`, `ok` and `text`, and `ok: false` marks a classified failure such as `ambiguous` or `missing`.
+A fault is `{schema, error}`, exiting 1, and a usage error exits 2.
+
 **Backend measurements (#442).**
 Measured on Windows 11 with a Core Ultra 7 265F using the debug `velocity-graph` example `graph_stats`, a local Rosen server and a new project cache.
 Startup includes opening the graph and building its search index, and peak working set refers to the example process.

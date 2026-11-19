@@ -13,6 +13,7 @@ use crate::Error;
 use crate::cache::{Cache, key};
 use crate::extract::{FileParse, extract};
 use crate::files::{SourceFile, from_blob, generated_name, inspect, list, read, walk};
+use crate::git_tree::GitTree;
 use crate::graph::{FileInput, Graph};
 use crate::language::Language;
 use crate::subsystems::detect;
@@ -38,6 +39,8 @@ pub struct Index {
     files: BTreeMap<String, FileState>,
     manifests: HashMap<String, String>,
     rosen: Option<crate::rosen::Source>,
+    /// The commit a standalone index shows (C11), read from git objects alone.
+    git: Option<GitTree>,
     pub(crate) skipped: BTreeMap<&'static str, u32>,
     pub graph: Graph,
     pub report: BuildReport,
@@ -144,20 +147,77 @@ impl Index {
             files: BTreeMap::new(),
             manifests: HashMap::new(),
             rosen: None,
+            git: None,
             skipped: BTreeMap::new(),
             graph: Graph::build(&[], Vec::new(), &HashMap::new()),
             report: BuildReport::default(),
         }
     }
 
+    /// Indexes commit `revision` of the git repository at `repository`, bare or not, from
+    /// its objects alone, with the parse cache in `cache_folder` (C11).
+    pub fn open_git(repository: &Path, revision: &str, cache_folder: &Path) -> Result<Self, Error> {
+        let tree = GitTree::open(repository, revision)?;
+        let mut index = Self::empty(Path::new(&tree.commit), cache_folder);
+        index.load_git(tree)?;
+        Ok(index)
+    }
+
+    /// Moves a git index to commit `revision`, parsing only files whose blobs changed and
+    /// missed the cache. Returns whether the commit changed.
+    pub fn select_commit(&mut self, repository: &Path, revision: &str) -> Result<bool, Error> {
+        let tree = GitTree::open(repository, revision)?;
+        if self
+            .git
+            .as_ref()
+            .is_some_and(|current| current.commit == tree.commit)
+        {
+            return Ok(false);
+        }
+        self.load_git(tree)?;
+        // Each commit answers as a fresh index would, so Collapse and the MCP tools agree.
+        self.graph.stale_addresses.clear();
+        Ok(true)
+    }
+
+    fn load_git(&mut self, tree: GitTree) -> Result<(), Error> {
+        let started = std::time::Instant::now();
+        let previous = self.git.take();
+        if previous.is_none() {
+            self.files.clear();
+            self.manifests.clear();
+        }
+        // The report counts what this update read.
+        self.skipped.clear();
+        let changes = tree.changes_since(previous.as_ref());
+        // A failed update leaves no commit, so the next one reloads every file.
+        self.apply_changes(&tree, changes, |_, _| {})?;
+        self.root = PathBuf::from(&tree.commit);
+        self.git = Some(tree);
+        self.rebuild();
+        self.report.milliseconds = started.elapsed().as_millis();
+        Ok(())
+    }
+
     pub fn is_rosen(&self) -> bool {
         self.rosen.is_some()
     }
 
+    /// Whether this index shows one git commit, which never changes under it.
+    pub fn is_git(&self) -> bool {
+        self.git.is_some()
+    }
+
+    /// The commit a git index shows.
+    pub fn commit(&self) -> Option<&str> {
+        self.git.as_ref().map(|tree| tree.commit.as_str())
+    }
+
     pub fn source(&self, path: &str) -> Result<String, Error> {
-        match &self.rosen {
-            Some(source) => source.read(path),
-            None => Ok(std::fs::read_to_string(self.root.join(path))?),
+        match (&self.rosen, &self.git) {
+            (Some(source), _) => source.read(path),
+            (None, Some(tree)) => tree.read(path),
+            (None, None) => Ok(std::fs::read_to_string(self.root.join(path))?),
         }
     }
 
@@ -204,8 +264,21 @@ impl Index {
         tree: ObjectId,
         progress: impl Fn(usize, usize) + Sync,
     ) -> Result<(), Error> {
-        let started = std::time::Instant::now();
         let paths = source.changes(tree)?;
+        self.apply_changes(&*source, paths, progress)?;
+        source.tree = Some(tree);
+        Ok(())
+    }
+
+    /// Applies changed paths (a new blob, or `None` when deleted), reading only the blobs
+    /// that miss the cache or supply manifest text.
+    fn apply_changes(
+        &mut self,
+        source: &impl BlobSource,
+        paths: BTreeMap<String, Option<ObjectId>>,
+        progress: impl Fn(usize, usize) + Sync,
+    ) -> Result<(), Error> {
+        let started = std::time::Instant::now();
         let build = self.cache.build_lock()?;
         if paths
             .iter()
@@ -224,7 +297,6 @@ impl Index {
             cached += hits;
         }
         drop(build);
-        source.tree = Some(tree);
         self.report = BuildReport {
             files: self.files.len(),
             parsed,
@@ -236,7 +308,7 @@ impl Index {
 
     fn load_tree_batch(
         &mut self,
-        source: &crate::rosen::Source,
+        source: &impl BlobSource,
         paths: &[(String, Option<ObjectId>)],
         progress: impl Fn(usize, usize) + Sync,
     ) -> Result<(usize, usize), Error> {
@@ -566,6 +638,23 @@ impl Index {
         let mut graph = Graph::build(&inputs, subsystems, &self.manifests);
         graph.track_stale_addresses(&self.graph);
         self.graph = graph;
+    }
+}
+
+/// Where a tree's changed blobs come from: a Rosen server or a git repository.
+trait BlobSource {
+    fn blobs(&self, ids: Vec<ObjectId>) -> Result<HashMap<ObjectId, Vec<u8>>, Error>;
+}
+
+impl BlobSource for crate::rosen::Source {
+    fn blobs(&self, ids: Vec<ObjectId>) -> Result<HashMap<ObjectId, Vec<u8>>, Error> {
+        crate::rosen::Source::blobs(self, ids)
+    }
+}
+
+impl BlobSource for GitTree {
+    fn blobs(&self, ids: Vec<ObjectId>) -> Result<HashMap<ObjectId, Vec<u8>>, Error> {
+        GitTree::blobs(self, ids)
     }
 }
 

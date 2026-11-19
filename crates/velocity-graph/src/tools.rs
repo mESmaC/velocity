@@ -138,6 +138,14 @@ Most used: {}.",
         Ok(())
     }
 
+    /// Moves a git commit index (C11) to commit `revision` of `repository`.
+    pub fn select_commit(&mut self, repository: &Path, revision: &str) -> Result<(), Error> {
+        if self.index.select_commit(repository, revision)? {
+            self.rebuild_search();
+        }
+        Ok(())
+    }
+
     pub(crate) fn select_base(&mut self) -> Result<(), Error> {
         if self.index.select_base()? {
             self.rebuild_search();
@@ -161,6 +169,10 @@ Most used: {}.",
     /// Re-reads `paths` (known files that changed) and lists the worktree again when a path
     /// is new to the index.
     pub fn refresh(&mut self, paths: &[String]) -> Result<(), Error> {
+        // A commit never changes; `select_commit` moves to another.
+        if self.index.is_git() {
+            return Ok(());
+        }
         if self.index.is_rosen() {
             if self.index.refresh_snapshot()? {
                 self.rebuild_search();
@@ -223,6 +235,11 @@ Most used: {}.",
         }
         if self.index.is_rosen() {
             self.refresh(&[]).map_err(|error| error.to_string())?;
+            let draft = self.draft(name, arguments)?;
+            return Ok(self.render(draft));
+        }
+        // A git commit's files are immutable objects, so there is no disk to compare with.
+        if self.index.is_git() {
             let draft = self.draft(name, arguments)?;
             return Ok(self.render(draft));
         }

@@ -287,7 +287,7 @@ pub(crate) fn background_command(program: impl AsRef<std::ffi::OsStr>) -> std::p
 }
 
 #[allow(clippy::disallowed_methods)]
-fn hidden_command(program: impl AsRef<std::ffi::OsStr>) -> std::process::Command {
+pub(crate) fn hidden_command(program: impl AsRef<std::ffi::OsStr>) -> std::process::Command {
     let mut command = std::process::Command::new(program);
     #[cfg(windows)]
     {

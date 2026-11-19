@@ -3,9 +3,11 @@
 
 mod build;
 mod cache;
+pub mod command_line;
 pub mod coordination;
 mod extract;
 mod files;
+mod git_tree;
 mod graph;
 mod imports;
 mod index;

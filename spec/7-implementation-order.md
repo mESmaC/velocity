@@ -126,6 +126,7 @@ Each milestone ends with a working app.
 - [x] AIRC and Rosen overlaps by symbol, swarm split by subsystem, and the review swarm's graph impact set
 - [x] Bound Velocity MCP answers and generated prompts, with issue search and paginated channel and Task List reads (#465)
 - [x] Share the project graph, bound Velocity process memory, report memory in Usage and pause dispatch under memory pressure (#481)
+- [x] Standalone `velocity-graph` indexer binary for Collapse: index a git commit from its objects and answer the four graph tools as versioned JSON, with a Linux x86-64 release build (C11, #428)
 
 **M15 · Agent browser** (F20)
 - [x] Private offscreen agent browser with ACP tools, live thread view, owner takeover, memory accounting and thread cleanup (#488)

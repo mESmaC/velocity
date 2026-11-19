@@ -9,6 +9,13 @@ publish = false
 [lints]
 workspace = true
 
+# The standalone indexer Collapse pins (C11): the library behind a command line, with no
+# Tauri or UI dependencies. `doc = false` because it shares the library's name.
+[[bin]]
+name = "velocity-graph"
+path = "src/bin/velocity-graph.rs"
+doc = false
+
 [features]
 bindings = ["dep:specta"]
 

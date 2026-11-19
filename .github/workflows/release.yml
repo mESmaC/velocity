@@ -258,9 +258,47 @@ jobs:
           path: dist/
           if-no-files-found: error
 
+  # The standalone code graph indexer Collapse pins and runs like `git` (C11, #428): a Linux
+  # x86-64 build of the `velocity-graph` binary, versioned with the release, so Collapse's
+  # graph answers carry the same records and addresses as this release's MCP tools.
+  graph-indexer:
+    name: Build the code graph indexer
+    permissions:
+      contents: read
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ env.TAG }}
+      - name: Install pinned Rust toolchain
+        run: rustup show active-toolchain
+      - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
+        with:
+          key: graph-indexer
+      - name: Build and package
+        shell: bash
+        run: |
+          set -euo pipefail
+          version="${TAG#v}"
+          target=x86_64-unknown-linux-gnu
+          # The binary reports this version in `velocity-graph version`, for Collapse's pin check.
+          VELOCITY_GRAPH_VERSION="$version" cargo build --release --locked --target "$target" -p velocity-graph --bin velocity-graph
+          name="velocity-graph-${version}-${target}"
+          mkdir -p dist "$name"
+          cp "target/$target/release/velocity-graph" LICENSE "$name/"
+          "$name/velocity-graph" version
+          tar -czf "dist/$name.tar.gz" "$name"
+          (cd dist && sha256sum "$name.tar.gz" > "$name.tar.gz.sha256")
+      - uses: actions/upload-artifact@v4
+        with:
+          name: graph-indexer
+          path: dist/
+          if-no-files-found: error
+
   publish:
     name: Publish
-    needs: [gate, build]
+    needs: [gate, build, graph-indexer]
     permissions:
       contents: write
     runs-on: ubuntu-latest
@@ -273,6 +311,10 @@ jobs:
       - uses: actions/download-artifact@v4
         with:
           name: release-downloads
+          path: dist/
+      - uses: actions/download-artifact@v4
+        with:
+          name: graph-indexer
           path: dist/
 
       - name: Publish the release
