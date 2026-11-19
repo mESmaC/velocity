@@ -18,6 +18,7 @@ use crate::{ProjectServer, RosenError};
 pub const CHECKER: &str = "velocity-checker";
 /// The longest one verification command may run.
 const COMMAND_LIMIT: Duration = Duration::from_secs(60 * 60);
+const INTEGRATION_SILENCE_LIMIT: Duration = Duration::from_secs(10 * 60);
 const POLL: Duration = Duration::from_millis(250);
 
 /// How much of the machine a run of commands may take.
@@ -43,9 +44,9 @@ impl From<CheckPriority> for Priority {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct FailedCommand {
     pub command: String,
-    /// `None` when the command ran past the limit and was stopped.
+    /// `None` when the runner stopped the command at a time limit.
     pub exit_code: Option<i32>,
-    /// What it printed, standard output and error together.
+    /// Standard output and error together, with a diagnostic on a silence timeout.
     pub output: String,
 }
 
@@ -149,7 +150,7 @@ pub fn run_commands(
     priority: Priority,
 ) -> Result<Option<FailedCommand>, RosenError> {
     let turn = turn(folder, priority).ok();
-    run_held_commands(folder, commands, priority, turn.as_ref())
+    run_held_commands(folder, commands, priority, turn.as_ref(), None)
 }
 
 /// Integration always takes a verify turn before starting any child process.
@@ -160,7 +161,13 @@ pub fn run_integration_commands(
     let priority = Priority::Background;
     let turn = turn(folder, priority)
         .map_err(|source| io_error("queue integration in", folder, source))?;
-    run_held_commands(folder, commands, priority, Some(&turn))
+    run_held_commands(
+        folder,
+        commands,
+        priority,
+        Some(&turn),
+        Some(INTEGRATION_SILENCE_LIMIT),
+    )
 }
 
 fn run_held_commands(
@@ -168,6 +175,7 @@ fn run_held_commands(
     commands: &[String],
     priority: Priority,
     turn: Option<&Turn>,
+    silence_limit: Option<Duration>,
 ) -> Result<Option<FailedCommand>, RosenError> {
     let log = checkout::sibling(folder, ".rosen-check.log");
     let held = turn.map(|_| class_of(priority));
@@ -176,15 +184,21 @@ fn run_held_commands(
         while crate::memory::is_low() {
             std::thread::sleep(POLL);
         }
-        let exit_code = match run_one(folder, command, &log, (priority, held))? {
-            Some(0) => continue,
-            other => other,
+        let outcome = run_one(folder, command, &log, (priority, held), silence_limit)?;
+        let exit_code = match outcome {
+            CommandOutcome::Exited(0) => continue,
+            CommandOutcome::Exited(code) => Some(code),
+            CommandOutcome::TimeLimit | CommandOutcome::SilenceLimit => None,
         };
-        let output = std::fs::read(&log).unwrap_or_default();
+        let bytes = std::fs::read(&log).unwrap_or_default();
+        let mut output = String::from_utf8_lossy(&bytes).into_owned();
+        if matches!(outcome, CommandOutcome::SilenceLimit) {
+            output.push_str("\n[Velocity] Stopped after 10 minutes without new output.\n");
+        }
         return Ok(Some(FailedCommand {
             command: command.clone(),
             exit_code,
-            output: String::from_utf8_lossy(&output).into_owned(),
+            output,
         }));
     }
     Ok(None)
@@ -204,20 +218,28 @@ fn class_of(priority: Priority) -> RunClass {
     }
 }
 
-/// The command's exit status, or `None` when it was stopped for running too long. A
-/// process ended by a signal counts as status 1. `held` is the run queue turn the command
-/// runs beneath, if one was taken.
+enum CommandOutcome {
+    Exited(i32),
+    TimeLimit,
+    SilenceLimit,
+}
+
+/// A process ended by a signal counts as status 1. `held` is the run queue turn the
+/// command runs beneath, if one was taken.
 fn run_one(
     folder: &Path,
     command: &str,
     log: &Path,
     (priority, held): (Priority, Option<RunClass>),
-) -> Result<Option<i32>, RosenError> {
+    silence_limit: Option<Duration>,
+) -> Result<CommandOutcome, RosenError> {
     let failed = |source| io_error("run a check in", folder, source);
     let output = File::create(log).map_err(|source| io_error("write", log, source))?;
-    let errors = output
-        .try_clone()
-        .map_err(|source| io_error("write", log, source))?;
+    let clone_output = || {
+        output
+            .try_clone()
+            .map_err(|source| io_error("write", log, source))
+    };
     let mut shell = shell(command, priority);
     if let Some(class) = held {
         shell.env(run_queue::HELD_ENV, class.name());
@@ -230,18 +252,31 @@ fn run_one(
     let mut child = shell
         .current_dir(folder)
         .stdin(Stdio::null())
-        .stdout(output)
-        .stderr(errors)
+        .stdout(clone_output()?)
+        .stderr(clone_output()?)
         .spawn()
         .map_err(failed)?;
     let started = Instant::now();
+    let mut last_output = started;
+    let mut log_length = Some(0);
     loop {
         if let Some(status) = child.try_wait().map_err(failed)? {
-            return Ok(Some(status.code().unwrap_or(1)));
+            return Ok(CommandOutcome::Exited(status.code().unwrap_or(1)));
         }
-        if started.elapsed() > COMMAND_LIMIT {
+        if started.elapsed() >= COMMAND_LIMIT {
             stop_tree(&mut child);
-            return Ok(None);
+            return Ok(CommandOutcome::TimeLimit);
+        }
+        if let Some(limit) = silence_limit {
+            let length = output.metadata().ok().map(|metadata| metadata.len());
+            // A failed sample cannot establish that the command has been silent.
+            if length.is_none() || length != log_length {
+                last_output = Instant::now();
+                log_length = length;
+            } else if last_output.elapsed() >= limit {
+                stop_tree(&mut child);
+                return Ok(CommandOutcome::SilenceLimit);
+            }
         }
         std::thread::sleep(POLL);
     }
@@ -259,7 +294,12 @@ fn shell(command: &str, priority: Priority) -> Command {
 
 #[cfg(not(windows))]
 fn shell(command: &str, priority: Priority) -> Command {
+    #[cfg(unix)]
+    use std::os::unix::process::CommandExt;
+
     let mut shell = shell_program("sh", priority);
+    #[cfg(unix)]
+    shell.process_group(0);
     shell.args(["-c", command]);
     shell
 }
@@ -278,6 +318,15 @@ fn stop_tree(child: &mut Child) {
     {
         let _ = hidden_command("taskkill")
             .args(["/T", "/F", "/PID", &child.id().to_string()])
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status();
+    }
+    #[cfg(unix)]
+    {
+        let group = format!("-{}", child.id());
+        let _ = hidden_command("kill")
+            .args(["-s", "KILL", "--", &group])
             .stdout(Stdio::null())
             .stderr(Stdio::null())
             .status();

@@ -9,6 +9,7 @@ Rosen R12 owns the queue of verification jobs, bisection, confirmed failures and
 Velocity runs Rosen's commands on the requested commit in a reusable build folder and reports their results.
 The worker runs independently of Scouts and the review swarm.
 Velocity's batched integration build runs compilation, lint and full tests, and a confirmed broken build can start a fix-forward thread.
+Velocity stops an integration command and its child processes after 10 minutes without new log output and reports the failure with the log tail (#486).
 A revert returns the change and failing output to its author.
 
 Velocity can close a source issue 30 minutes after verified R12 build success when the mirror carries the landed commit and the exact land has no review claim or objection.

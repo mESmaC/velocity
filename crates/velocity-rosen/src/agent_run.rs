@@ -415,3 +415,33 @@ fn lock_file(path: &Path) -> io::Result<File> {
         .truncate(false)
         .open(path)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::{AgentRun, policy};
+
+    #[test]
+    fn pnpm_bindings_uses_the_light_run_policy() {
+        // Missing a bindings invocation puts a Rust build in the ordinary queue.
+        let cases: &[(&[&str], AgentRun)] = &[
+            (&["bindings"], AgentRun::Bindings),
+            (&["-C", "ui", "bindings"], AgentRun::Bindings),
+            (&["--dir", "ui", "bindings"], AgentRun::Bindings),
+            (&["run", "bindings"], AgentRun::Bindings),
+            (&["-C", "ui", "run", "bindings"], AgentRun::Bindings),
+            (&["-C", "ui", "check"], AgentRun::Ordinary),
+            (&["-C", "bindings"], AgentRun::Ordinary),
+            (&["exec", "bindings"], AgentRun::Ordinary),
+        ];
+        for (arguments, expected) in cases {
+            let arguments: Vec<_> = arguments
+                .iter()
+                .map(|&argument| argument.to_owned())
+                .collect();
+            assert!(
+                policy("pnpm.cmd", &arguments) == Ok(*expected),
+                "Unexpected run policy for {arguments:?}"
+            );
+        }
+    }
+}
