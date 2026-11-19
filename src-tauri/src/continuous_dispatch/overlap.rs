@@ -152,13 +152,17 @@ impl<'a> OverlapContext<'a> {
         let mut paths: BTreeMap<_, _> = candidates
             .into_iter()
             .map(|issue| issue.number)
-            .zip(issue_paths(self.data, self.project, &descriptions))
+            .zip(
+                issue_paths(self.data, self.project, &descriptions)
+                    .into_iter()
+                    .map(code_paths),
+            )
             .collect();
         let active: BTreeMap<_, _> = working
             .into_iter()
             .map(|(number, working)| {
                 let mut problem = problem(working.issue, paths.remove(&number).unwrap_or_default());
-                problem.paths.extend(working.files);
+                problem.paths.extend(code_paths(working.files));
                 (
                     number,
                     ActiveIssue {
@@ -175,7 +179,9 @@ impl<'a> OverlapContext<'a> {
                 && issues.iter().any(|issue| issue.number == *number)
         });
         for issue in issues {
-            if active.contains_key(&issue.number) {
+            // A landed issue waits for its integration build, not for another issue, and
+            // reviewing it against someone else's land only parks finished work (#505).
+            if active.contains_key(&issue.number) || has_landed(self.project, issue.number) {
                 waits.remove(&issue.number);
             } else {
                 self.update(
@@ -252,7 +258,8 @@ impl<'a> OverlapContext<'a> {
             self.project,
             &[issue_text(&issue), issue_text(&source)],
         )
-        .into_iter();
+        .into_iter()
+        .map(code_paths);
         let wanted = problem(&issue, paths.next().unwrap_or_default());
         if wanted.matches(&problem(&source, paths.next().unwrap_or_default())) {
             return Ok(Some(commit));
@@ -267,7 +274,7 @@ impl<'a> OverlapContext<'a> {
             ))
             .map_err(|error| error.to_string())?;
             self.landed
-                .insert(commit.clone(), paths.into_iter().collect());
+                .insert(commit.clone(), code_paths(paths.into_iter().collect()));
         }
         Ok(self
             .landed
@@ -283,6 +290,39 @@ fn issue_text(issue: &GitHubIssue) -> (&str, &str) {
 
 fn problem(issue: &GitHubIssue, paths: BTreeSet<String>) -> IssueProblem {
     IssueProblem::new(&issue.title, &issue.body, paths)
+}
+
+/// Code paths only. Specs, design references and other documents are cited by most
+/// issues, so sharing one says nothing about a conflict; Rosen's claims and the merge
+/// settle edits there. Counting them held every collapse.sh issue behind one thread and
+/// turned each of its lands into false overlap reviews (#505).
+fn code_paths(paths: BTreeSet<String>) -> BTreeSet<String> {
+    paths
+        .into_iter()
+        .filter(|path| !is_reference(path))
+        .collect()
+}
+
+fn is_reference(path: &str) -> bool {
+    let path = path.replace('\\', "/").to_ascii_lowercase();
+    let in_folder = |folder: &str| path.starts_with(folder) || path.contains(&format!("/{folder}"));
+    [".md", ".png", ".svg", ".jpg"]
+        .iter()
+        .any(|extension| path.ends_with(extension))
+        || ["spec/", "design/", "docs/"]
+            .iter()
+            .any(|folder| in_folder(folder))
+}
+
+/// Whether the project's thread for `number` has landed its change.
+fn has_landed(project: &ProjectItem, number: u32) -> bool {
+    project.threads.iter().any(|thread| {
+        thread
+            .issue
+            .as_ref()
+            .is_some_and(|issue| issue.number == number)
+            && thread.rosen_issue.landed_commit().is_some()
+    })
 }
 
 fn blocker_thread<'a>(project: &'a ProjectItem, wait: &IssueOverlap) -> Option<&'a ThreadItem> {

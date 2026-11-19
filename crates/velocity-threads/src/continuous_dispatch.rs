@@ -80,6 +80,8 @@ pub fn actionable(issue: &GitHubIssue) -> bool {
                 "needs-owner",
                 "release-blocker",
                 "owner-decision",
+                // An owner hold, e.g. collapse.sh#10 (#505).
+                "on-hold",
                 IssueClient::NO_CHANGE_LABEL,
             ]
             .iter()
