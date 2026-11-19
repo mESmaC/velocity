@@ -1,6 +1,6 @@
 //! Goal swarm dialog policies (SPEC.md F16): one prompt, N agents and a model mix whose
-//! first row is "the rest". Pure arithmetic and labels; the store supplies the models, the
-//! pool and PR duty, and the window only holds the user's choices.
+//! first row is "the rest". Pure arithmetic and labels; the store supplies the models and
+//! the pool, and the window only holds the user's choices.
 
 use std::collections::BTreeMap;
 
@@ -286,11 +286,6 @@ impl PoolCounts {
             .saturating_add(self.issues)
             .saturating_add(self.sections)
     }
-
-    /// PRs this launch can open: an agent that finds nothing to claim opens none.
-    pub fn new_pull_requests(self, agents: u32) -> u32 {
-        agents.min(self.total())
-    }
 }
 
 /// "They choose from **N unclaimed pieces**: x Task List · y issues · z unbuilt SPEC.md
@@ -344,8 +339,8 @@ pub fn launch_label(agents: u32) -> String {
     format!("Launch {agents} agent{}", plural(agents))
 }
 
-/// Activity feed tags for a goal swarm (SPEC.md F16: claims, refusals, PRs, waits,
-/// merges and leaves).
+/// Activity feed tags for a goal swarm (SPEC.md F16: claims, refusals, named changes,
+/// waits, lands, reverts and leaves).
 #[cfg_attr(feature = "bindings", derive(specta::Type))]
 #[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -353,11 +348,16 @@ pub enum GoalEventKind {
     You,
     Claim,
     Refused,
-    Opened,
+    /// A member named its change. Feeds saved before Rosen call it `opened`.
+    #[serde(alias = "opened")]
+    Named,
+    /// A refused land, a revert or requested changes reopened a member's change.
     Changes,
     Wait,
-    Merged,
+    #[serde(alias = "merged")]
+    Landed,
     Left,
+
     Failed,
     Finished,
 }

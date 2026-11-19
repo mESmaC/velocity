@@ -3,9 +3,12 @@
 
 **Rosen projects.**
 Every member takes its own Rosen workspace from the project's warm pool, with git worktrees as the F5 fallback when Rosen cannot start.
+A launch raises the Rosen warm pool on the machines it uses to the agent count (Rosen §9) instead of Velocity's git pool.
 The same native work choice and atomic AIRC piece lock apply to Rosen and git projects.
 Rosen members keep their change identity when they claim a piece; they never create or rename a git branch, open a PR or start a PR watcher.
 Its locked context names the piece, tells the agent to claim files in Rosen, build and lint through `rosen run`, and finish by naming its work with `rosen commit`.
+Each Rosen member runs choosing → claimed → editing → named → landed, and a post-land revert or a refused land reopens its change (reverted → reopened) before it takes the next piece.
+The dialog sizes no reviewer pool and the view holds no PR or merge state; after-land review (F7) covers landed changes without holding them.
 
 A named member change uses the ordinary Rosen landing path, including `review = "after-land"` (F7); goal swarms add no review or check gate.
 The task is finished on `landed`.
@@ -23,7 +26,7 @@ A failed save retains the original; cleanup retries must pass the same save barr
 A copy that overlaps the dependency's edits, changes a nonregular file, or cannot be made safely keeps the original task waiting; on the holder's land it continues through Rosen's rebase, without a git checkout update.
 A second dependency outside the current stack waits for its land.
 The parent must land before the child; Rosen rebases its descendants.
-The board and cards show named, fixing and landed changes, with a claim → named → landed track and landed-change counts.
+The board and cards show editing, named, reopened and landed changes, with a claimed → editing → named → landed track and landed-change counts.
 
 Each Keep going round has a distinct workspace path, retaining its nick as the folder leaf.
 A later revert can therefore reopen an earlier round without touching the next round's files.
@@ -42,8 +45,8 @@ The git lifecycle described below remains the fallback.
 - **Prompt:** every agent gets exactly this text.
   The default is `Implement the next unclaimed piece.`; text typed in the empty composer prefills it.
 - **Velocity adds to every agent** (locked):
-  - its own workspace under the workspace root (F5), removed after its PR merges;
-  - commit, push, open a PR against the base, and watch it until it lands (AGENTS.md);
+  - its own workspace under the workspace root (F5), removed after its change lands;
+  - claim files, build and lint, then name its work with `rosen commit`; it is finished when the change lands (AGENTS.md);
   - join `#<project>` and claim work before editing, where the first claim wins;
   - implement and run first; then prove only features on the project's proof list (Rule 8, F17).
 
@@ -67,7 +70,7 @@ The git lifecycle described below remains the fallback.
 - **Pool:** "They choose from N unclaimed pieces: x Task List · y issues · z unbuilt SPEC.md sections."
   If there are more agents than pieces, it says how many will find nothing and leave.
 - **Options:**
-  - **Keep going** (off by default): after its PR merges, an agent claims the next unclaimed piece in a fresh workspace instead of stopping.
+  - **Keep going** (off by default): after its change lands, an agent claims the next unclaimed piece in a fresh workspace instead of stopping.
 - **Launch N agents** (`Ctrl+Enter`).
 
 **Dialog state.**
@@ -104,9 +107,9 @@ Rust applies the edit, restores the "rest" rule and draws the dialog again.
    From here it is an ordinary thread (F4–F6).
    Velocity starts the implementation session, or continues the same session that interpreted the goal.
    Its implementation prompt names the chosen spec section when known and directs the member to read applicable headings with `graph_read`.
-   It settles overlaps and dependency waits in AIRC (F14), opens a PR and follows its review, and its worktree is deleted.
-   Merging ticks the task, closes the issue, or records the SPEC.md section as built in the project's state.
-   Velocity records it at landing; the agent's PR never edits SPEC.md to mark it, so changes don't all touch SPEC.md.
+   It settles overlaps and dependency waits in AIRC (F14), names its change, and its workspace is removed once Rosen lands it.
+   Landing ticks the task, completes the issue, or records the SPEC.md section as built in the project's state.
+   Velocity records it at landing; the agent's change never edits SPEC.md to mark it, so changes don't all touch SPEC.md.
 5.
    With keep going on, the same nick goes back to step 2.
 
@@ -138,17 +141,17 @@ Single-file projects retain their existing work identities.
 Its members nest under it like swarm members, and each member is titled by the piece it claimed.
 
 **Goal swarm view:**
-- **Header:** title, "<n> agents · one prompt", start time, changes merged.
+- **Header:** title, "<n> agents · one prompt", start time, changes landed.
   Buttons: **AIRC** and **+ Agents** (more agents on the same prompt).
 - **Prompt bubble:** "goal swarm · the same prompt to all <n> · <mix>".
-- **Segment bar:** one segment per agent (choosing, working, named, addressing review, merged, failed), plus "<n> waiting on another agent's PR".
+- **Segment bar:** one segment per agent (choosing work, editing, named, reopened, landed, failed), plus "<n> waiting on another agent's change".
 - **Claims board:** every piece in the pool, in three groups:
-  - claimed pieces first, with the holder's nick and state (working, "waits for <nick> · #n", "#n · in review", failed · claim held);
+  - claimed pieces first, with the holder's nick and state (editing, "waits for <nick> · <change>", "named · <change>", "reopened · <change>", failed · claim held);
   - open pieces next;
-  - pieces this swarm merged last, struck through, with "merged #n".
-- **Agents:** one card per agent showing nick, model, effort (and "Fast" when on), claimed piece, the claim → PR → CI → review → merged track, and what it is doing.
+  - pieces this swarm landed last, struck through, with "landed <change>".
+- **Agents:** one card per agent showing nick, model, effort (and "Fast" when on), claimed piece, the claimed → editing → named → landed track, and what it is doing.
   Clicking a card opens that thread.
-- **Activity:** claims, refusals, changes, waits, merges and leaves.
+- **Activity:** claims, refusals, named changes, waits, lands, reverts and leaves.
 - **Composer:** messages every agent in the swarm (read at its next step, Rule 1).
 
 **Acceptance:**
@@ -159,8 +162,8 @@ Its members nest under it like swarm members, and each member is titled by the p
   Tasks-only and issues-only choices exclude every other source from selection and the board.
 - No two agents ever hold a claim on the same piece.
   A refused claim shows in AIRC, and Velocity tries the next candidate without another model call.
-- Every agent's work ends in a merged PR (or a held claim on failure), and its workspace is deleted on merge.
-- With more agents than pieces, the extras leave without making a workspace change or a PR.
+- Every agent's work ends in a landed change (or a held claim on failure), and its workspace is removed once it lands.
+- With more agents than pieces, the extras leave without making a change.
 - Keep going: an agent that finishes takes the next open piece until the pool is empty.
 
 ---

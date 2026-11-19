@@ -206,12 +206,7 @@ fn check_sidebar(snapshot: &LayoutSnapshot, swarm: u32) -> Outcome {
     )?;
     ensure(row.agents == 3, "×3 live agents")?;
     ensure(
-        row.segments
-            == [
-                SwarmStage::PullRequest,
-                SwarmStage::Working,
-                SwarmStage::Choosing,
-            ],
+        row.segments == [SwarmStage::Named, SwarmStage::Working, SwarmStage::Choosing],
         "one segment per live agent",
     )?;
     let members: Vec<_> = group.rows.iter().filter(|row| row.member).collect();
@@ -258,7 +253,7 @@ fn check_view(snapshot: &LayoutSnapshot) -> Outcome {
         .ok_or("no goal swarm view")?;
     println!(
         "\n{} · {} · {} · {:?}",
-        view.title, view.agents_label, view.started_label, view.merged_label
+        view.title, view.agents_label, view.started_label, view.landed_label
     );
     println!("“{}” — {}", view.prompt, view.prompt_label);
     let legend: Vec<_> = view.legend.iter().map(|item| item.label.as_str()).collect();
@@ -282,11 +277,11 @@ fn check_view(snapshot: &LayoutSnapshot) -> Outcome {
         "header agents",
     )?;
     ensure(
-        view.merged_label.as_deref() == Some("1 PR merged"),
-        "PRs merged",
+        view.landed_label.as_deref() == Some("1 change landed"),
+        "changes landed",
     )?;
     ensure(
-        view.waiting_label.as_deref() == Some("1 waiting on another agent's PR"),
+        view.waiting_label.as_deref() == Some("1 waiting on another agent's change"),
         "waits",
     )?;
     ensure(view.cards.len() == 4, "one card per agent")?;
@@ -350,10 +345,10 @@ fn check_board(store: &StateStore, swarm: u32, threads: &[u32]) -> Outcome {
         );
     }
     let states: Vec<_> = board.rows.iter().map(|row| row.state).collect();
-    use BoardRowState::{Claimed, Merged, Open, Waiting};
+    use BoardRowState::{Claimed, Landed, Open, Waiting};
     ensure(
-        states == [Claimed, Waiting, Open, Open, Merged],
-        "claimed, then open, then merged",
+        states == [Claimed, Waiting, Open, Open, Landed],
+        "claimed, then open, then landed",
     )?;
     ensure(
         board.heading.starts_with("Claims · 2 claimed · 2 open"),
@@ -363,7 +358,7 @@ fn check_board(store: &StateStore, swarm: u32, threads: &[u32]) -> Outcome {
         board.rows[0].status == "#41 · waiting on CI",
         "holder state",
     )?;
-    ensure(board.rows[4].status == "merged #40", "merged row")?;
+    ensure(board.rows[4].status == "landed #40", "landed row")?;
     ensure(
         TaskState::Now == project.tasks[0].state,
         "claim moved the task to now",

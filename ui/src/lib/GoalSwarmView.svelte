@@ -50,10 +50,10 @@
     you: 'you',
     claim: 'claim',
     refused: 'changes',
-    opened: 'file',
+    named: 'file',
     changes: 'changes',
     wait: 'wait',
-    merged: 'merge',
+    landed: 'merge',
     left: 'left',
     failed: 'changes',
     finished: 'merge',
@@ -97,7 +97,7 @@
     <div class="meta" aria-label="Goal swarm metadata">
       <span>{swarm.agents_label}</span>
       <span>{swarm.started_label}</span>
-      {#if swarm.merged_label}<span class="add">{swarm.merged_label}</span>{/if}
+      {#if swarm.landed_label}<span class="add">{swarm.landed_label}</span>{/if}
     </div>
     <span class="spacer"></span>
     <div class="head-actions">
@@ -155,7 +155,7 @@
             {#each board.rows as row, index (`${row.reference}-${row.title}-${index}`)}
               <div class="gb-r {row.state}">
                 <Icon
-                  name={row.state === 'merged' ? 'check' : pieceIcons[row.kind]}
+                  name={row.state === 'landed' ? 'check' : pieceIcons[row.kind]}
                 />
                 <span class="ttl" title={row.title}>{row.title}</span>
                 <span class="ref">{row.reference}</span>

@@ -385,7 +385,7 @@ pub(crate) fn record_pull_request_observation(
         swarm_id,
         event,
     ));
-    if kind == GoalEventKind::Merged {
+    if kind == GoalEventKind::Landed {
         let handle = application.clone();
         let merged_thread = thread.id;
         tauri::async_runtime::spawn(async move {
@@ -469,16 +469,16 @@ fn member_pr_context(
     } else if thread.spec_section.is_some() {
         "spec item built".into()
     } else {
-        "merged".into()
+        "landed".into()
     };
     Some((swarm.id, nick, finished))
 }
 
 fn goal_pr_kind(kind: SwarmEventKind) -> Option<GoalEventKind> {
     match kind {
-        SwarmEventKind::Opened => Some(GoalEventKind::Opened),
+        SwarmEventKind::Named => Some(GoalEventKind::Named),
         SwarmEventKind::Changes => Some(GoalEventKind::Changes),
-        SwarmEventKind::Merged => Some(GoalEventKind::Merged),
+        SwarmEventKind::Landed => Some(GoalEventKind::Landed),
         SwarmEventKind::Failed => Some(GoalEventKind::Failed),
         _ => None,
     }

@@ -580,8 +580,8 @@ export type BoardLane_Serialize = {
 
 export type BoardPieceKind = "task" | "issue" | "spec";
 
-/**  How a board row is styled: the holder's state, open, or merged. */
-export type BoardRowState = "claimed" | "waiting" | "failed" | "open" | "merged";
+/**  How a board row is styled: the holder's state, open, or landed. */
+export type BoardRowState = "claimed" | "waiting" | "failed" | "open" | "landed";
 
 export type BrowserFrame = BrowserFrame_Serialize | BrowserFrame_Deserialize;
 
@@ -1275,13 +1275,13 @@ export type GitHubRepository_Serialize = {
 };
 
 /**
- *  One agent's card: nick, model, claimed piece, the claim → PR → CI → review → merged
+ *  One agent's card: nick, model, claimed piece, the claimed → editing → named → landed
  *  track and what it is doing.
  */
 export type GoalAgentCard = GoalAgentCard_Serialize | GoalAgentCard_Deserialize;
 
 /**
- *  One agent's card: nick, model, claimed piece, the claim → PR → CI → review → merged
+ *  One agent's card: nick, model, claimed piece, the claimed → editing → named → landed
  *  track and what it is doing.
  */
 export type GoalAgentCard_Deserialize = {
@@ -1301,7 +1301,7 @@ export type GoalAgentCard_Deserialize = {
 };
 
 /**
- *  One agent's card: nick, model, claimed piece, the claim → PR → CI → review → merged
+ *  One agent's card: nick, model, claimed piece, the claimed → editing → named → landed
  *  track and what it is doing.
  */
 export type GoalAgentCard_Serialize = {
@@ -1378,15 +1378,46 @@ export type GoalDialogRequest_Serialize = {
 };
 
 /**
- *  Activity feed tags for a goal swarm (SPEC.md F16: claims, refusals, PRs, waits,
- *  merges and leaves).
+ *  Activity feed tags for a goal swarm (SPEC.md F16: claims, refusals, named changes,
+ *  waits, lands, reverts and leaves).
  */
-export type GoalEventKind = "you" | "claim" | "refused" | "opened" | "changes" | "wait" | "merged" | "left" | "failed" | "finished";
+export type GoalEventKind = GoalEventKind_Serialize | GoalEventKind_Deserialize;
 
-export type GoalFeedEvent = {
+/**
+ *  Activity feed tags for a goal swarm (SPEC.md F16: claims, refusals, named changes,
+ *  waits, lands, reverts and leaves).
+ */
+export type GoalEventKind_Deserialize = "you" | "claim" | "refused" | 
+/**  A member named its change. Feeds saved before Rosen call it `opened`. */
+"named" | 
+/**  A member named its change. Feeds saved before Rosen call it `opened`. */
+"opened" | 
+/**  A refused land, a revert or requested changes reopened a member's change. */
+"changes" | "wait" | "landed" | "merged" | "left" | "failed" | "finished";
+
+/**
+ *  Activity feed tags for a goal swarm (SPEC.md F16: claims, refusals, named changes,
+ *  waits, lands, reverts and leaves).
+ */
+export type GoalEventKind_Serialize = "you" | "claim" | "refused" | 
+/**  A member named its change. Feeds saved before Rosen call it `opened`. */
+"named" | 
+/**  A refused land, a revert or requested changes reopened a member's change. */
+"changes" | "wait" | "landed" | "left" | "failed" | "finished";
+
+export type GoalFeedEvent = GoalFeedEvent_Serialize | GoalFeedEvent_Deserialize;
+
+export type GoalFeedEvent_Deserialize = {
 	timestamp: string,
 	actor: string,
-	kind: GoalEventKind,
+	kind: GoalEventKind_Deserialize,
+	message: string,
+};
+
+export type GoalFeedEvent_Serialize = {
+	timestamp: string,
+	actor: string,
+	kind: GoalEventKind_Serialize,
 	message: string,
 };
 
@@ -1561,7 +1592,7 @@ export type GoalSwarmRecord_Deserialize = {
 	started: string,
 	mix_summary?: string,
 	members?: GoalSwarmMember_Deserialize[],
-	feed?: GoalFeedEvent[],
+	feed?: GoalFeedEvent_Deserialize[],
 };
 
 /**  Persisted goal swarm record on `ProjectItem` (`SPEC.md` F16). */
@@ -1573,7 +1604,7 @@ export type GoalSwarmRecord_Serialize = {
 	started: string,
 	mix_summary: string,
 	members: GoalSwarmMember_Serialize[],
-	feed: GoalFeedEvent[],
+	feed: GoalFeedEvent_Serialize[],
 };
 
 export type GoalSwarmViewSnapshot = GoalSwarmViewSnapshot_Serialize | GoalSwarmViewSnapshot_Deserialize;
@@ -1583,7 +1614,8 @@ export type GoalSwarmViewSnapshot_Deserialize = {
 	title: string,
 	agents_label: string,
 	started_label: string,
-	merged_label?: string | null,
+	/**  "<n> changes landed" once one has. */
+	landed_label?: string | null,
 	prompt: string,
 	/**  "goal swarm · the same prompt to all <n> · <mix>", under the prompt bubble. */
 	prompt_label: string,
@@ -1592,10 +1624,10 @@ export type GoalSwarmViewSnapshot_Deserialize = {
 	/**  "<n> waiting on another agent's change". */
 	waiting_label?: string | null,
 	cards: GoalAgentCard_Deserialize[],
-	feed: GoalFeedEvent[],
+	feed: GoalFeedEvent_Deserialize[],
 	composer_placeholder: string,
 	/**
-	 *  Changes whenever a claim, PR or merge could have moved the claims board, so the
+	 *  Changes whenever a claim, named change or land could have moved the claims board, so the
 	 *  window reads the board again (`get_goal_swarm_board`).
 	 */
 	board_revision: string,
@@ -1606,7 +1638,8 @@ export type GoalSwarmViewSnapshot_Serialize = {
 	title: string,
 	agents_label: string,
 	started_label: string,
-	merged_label: string | null,
+	/**  "<n> changes landed" once one has. */
+	landed_label: string | null,
 	prompt: string,
 	/**  "goal swarm · the same prompt to all <n> · <mix>", under the prompt bubble. */
 	prompt_label: string,
@@ -1615,10 +1648,10 @@ export type GoalSwarmViewSnapshot_Serialize = {
 	/**  "<n> waiting on another agent's change". */
 	waiting_label: string | null,
 	cards: GoalAgentCard_Serialize[],
-	feed: GoalFeedEvent[],
+	feed: GoalFeedEvent_Serialize[],
 	composer_placeholder: string,
 	/**
-	 *  Changes whenever a claim, PR or merge could have moved the claims board, so the
+	 *  Changes whenever a claim, named change or land could have moved the claims board, so the
 	 *  window reads the board again (`get_goal_swarm_board`).
 	 */
 	board_revision: string,
@@ -2044,7 +2077,6 @@ export type LaunchSwarmRequest_Deserialize = {
 	/**  Providers assigned round-robin, in item order. */
 	providers: ProviderKind[],
 	close_issues: boolean,
-	rebase_on_merge: boolean,
 	into?: number | null,
 };
 
@@ -2056,7 +2088,6 @@ export type LaunchSwarmRequest_Serialize = {
 	/**  Providers assigned round-robin, in item order. */
 	providers: ProviderKind[],
 	close_issues: boolean,
-	rebase_on_merge: boolean,
 	into: number | null,
 };
 
@@ -4495,6 +4526,8 @@ export type SwarmCard_Deserialize = {
 	reference: string,
 	issue: boolean,
 	stage: SwarmStage,
+	/**  The track's step names, its tooltip. */
+	track_label: string,
 	track: TrackStep[],
 	doing: string,
 	provider: ProviderColor,
@@ -4509,6 +4542,8 @@ export type SwarmCard_Serialize = {
 	reference: string,
 	issue: boolean,
 	stage: SwarmStage,
+	/**  The track's step names, its tooltip. */
+	track_label: string,
 	track: TrackStep[],
 	doing: string,
 	provider: ProviderColor,
@@ -4593,18 +4628,60 @@ export type SwarmDialog_Serialize = {
 	issues_note: string | null,
 };
 
-export type SwarmEventKind = "you" | "opened" | "changes" | "merged" | "rebase" | "failed" | "finished";
+export type SwarmEventKind = SwarmEventKind_Serialize | SwarmEventKind_Deserialize;
 
-export type SwarmEventPublished = {
+export type SwarmEventKind_Deserialize = "you" | 
+/**  A member named its change. Feeds saved before Rosen call it `opened`. */
+"named" | 
+/**  A member named its change. Feeds saved before Rosen call it `opened`. */
+"opened" | 
+/**
+ *  A change was refused, reverted or reopened. Saved `rebase` lines from the removed
+ *  git rebase notice read as this kind, so old state still loads.
+ */
+"changes" | 
+/**
+ *  A change was refused, reverted or reopened. Saved `rebase` lines from the removed
+ *  git rebase notice read as this kind, so old state still loads.
+ */
+"rebase" | "landed" | "merged" | "failed" | "finished";
+
+export type SwarmEventKind_Serialize = "you" | 
+/**  A member named its change. Feeds saved before Rosen call it `opened`. */
+"named" | 
+/**
+ *  A change was refused, reverted or reopened. Saved `rebase` lines from the removed
+ *  git rebase notice read as this kind, so old state still loads.
+ */
+"changes" | "landed" | "failed" | "finished";
+
+export type SwarmEventPublished = SwarmEventPublished_Serialize | SwarmEventPublished_Deserialize;
+
+export type SwarmEventPublished_Deserialize = {
 	project_identifier: number,
 	swarm_identifier: number,
-	event: SwarmFeedEvent,
+	event: SwarmFeedEvent_Deserialize,
 };
 
-export type SwarmFeedEvent = {
+export type SwarmEventPublished_Serialize = {
+	project_identifier: number,
+	swarm_identifier: number,
+	event: SwarmFeedEvent_Serialize,
+};
+
+export type SwarmFeedEvent = SwarmFeedEvent_Serialize | SwarmFeedEvent_Deserialize;
+
+export type SwarmFeedEvent_Deserialize = {
 	timestamp: string,
 	actor: string,
-	kind: SwarmEventKind,
+	kind: SwarmEventKind_Deserialize,
+	message: string,
+};
+
+export type SwarmFeedEvent_Serialize = {
+	timestamp: string,
+	actor: string,
+	kind: SwarmEventKind_Serialize,
 	message: string,
 };
 
@@ -4648,12 +4725,13 @@ export type SwarmRecord_Deserialize = {
 	source: SwarmSource,
 	/**  `HH:MM` the swarm launched. */
 	started: string,
-	/**  Close each issue when its PR merges (default on). */
+	/**
+	 *  Close each issue once its change lands (default on). Rosen rebases members at
+	 *  their step boundaries, so a saved `rebase_on_merge` option is ignored on load.
+	 */
 	close_issues?: boolean,
-	/**  Rebase members whose files a merged member PR touched (F6). */
-	rebase_on_merge?: boolean,
 	members?: SwarmMember[],
-	feed?: SwarmFeedEvent[],
+	feed?: SwarmFeedEvent_Deserialize[],
 };
 
 export type SwarmRecord_Serialize = {
@@ -4661,12 +4739,13 @@ export type SwarmRecord_Serialize = {
 	source: SwarmSource,
 	/**  `HH:MM` the swarm launched. */
 	started: string,
-	/**  Close each issue when its PR merges (default on). */
+	/**
+	 *  Close each issue once its change lands (default on). Rosen rebases members at
+	 *  their step boundaries, so a saved `rebase_on_merge` option is ignored on load.
+	 */
 	close_issues: boolean,
-	/**  Rebase members whose files a merged member PR touched (F6). */
-	rebase_on_merge: boolean,
 	members: SwarmMember[],
-	feed: SwarmFeedEvent[],
+	feed: SwarmFeedEvent_Serialize[],
 };
 
 /**  Where a swarm takes its items from (F10 Source). */
@@ -4675,7 +4754,13 @@ export type SwarmSource = "tasks" | "issues" | "both";
 /**  Where one member is in its lifecycle: the segment colours of the progress bars. */
 export type SwarmStage = 
 /**  A goal swarm agent reading the claims board before it claims a piece (F16). */
-"choosing" | "working" | "pull_request" | "fixing" | "merged" | "failed";
+"choosing" | 
+/**  Claimed and editing in its workspace. */
+"working" | 
+/**  The agent named its change; Rosen lands it once it combines cleanly. */
+"named" | 
+/**  A refused land or a post-land revert reopened the change for its owner. */
+"fixing" | "landed" | "failed";
 
 export type SwarmViewSnapshot = SwarmViewSnapshot_Serialize | SwarmViewSnapshot_Deserialize;
 
@@ -4684,11 +4769,12 @@ export type SwarmViewSnapshot_Deserialize = {
 	title: string,
 	agents_label: string,
 	started_label: string,
-	merged_label?: string | null,
+	/**  "landed/total landed" once a member's change has landed. */
+	landed_label?: string | null,
 	segments: SwarmStage[],
 	legend: SwarmLegendItem[],
 	cards: SwarmCard_Deserialize[],
-	feed: SwarmFeedEvent[],
+	feed: SwarmFeedEvent_Deserialize[],
 	composer_placeholder: string,
 };
 
@@ -4697,11 +4783,12 @@ export type SwarmViewSnapshot_Serialize = {
 	title: string,
 	agents_label: string,
 	started_label: string,
-	merged_label: string | null,
+	/**  "landed/total landed" once a member's change has landed. */
+	landed_label: string | null,
 	segments: SwarmStage[],
 	legend: SwarmLegendItem[],
 	cards: SwarmCard_Serialize[],
-	feed: SwarmFeedEvent[],
+	feed: SwarmFeedEvent_Serialize[],
 	composer_placeholder: string,
 };
 
@@ -5075,7 +5162,7 @@ export type ToolUsageRow = {
 	classified: string,
 };
 
-/**  One dot of a card's work · PR · CI · review · merged track. */
+/**  One dot of a card's editing · named · landed track. */
 export type TrackStep = "todo" | "running" | "done" | "failed";
 
 export type TranscriptBlock = TranscriptBlock_Serialize | TranscriptBlock_Deserialize;

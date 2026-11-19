@@ -7,6 +7,7 @@ use specta::Type;
 use velocity_core::swarm::{SwarmEventKind, SwarmFeedEvent, SwarmSource};
 
 use crate::issues::ThreadIssue;
+use crate::rosen::RosenProgress;
 use crate::threads::{NewThread, ThreadError};
 use crate::{ProjectItem, ProviderKind, StateStore, TaskState, ThreadState};
 
@@ -26,12 +27,10 @@ pub struct SwarmRecord {
     pub source: SwarmSource,
     /// `HH:MM` the swarm launched.
     pub started: String,
-    /// Close each issue when its PR merges (default on).
+    /// Close each issue once its change lands (default on). Rosen rebases members at
+    /// their step boundaries, so a saved `rebase_on_merge` option is ignored on load.
     #[serde(default = "enabled")]
     pub close_issues: bool,
-    /// Rebase members whose files a merged member PR touched (F6).
-    #[serde(default = "enabled")]
-    pub rebase_on_merge: bool,
     #[serde(default)]
     pub members: Vec<SwarmMember>,
     #[serde(default)]
@@ -59,7 +58,6 @@ pub struct LaunchSwarmRequest {
     /// Providers assigned round-robin, in item order.
     pub providers: Vec<ProviderKind>,
     pub close_issues: bool,
-    pub rebase_on_merge: bool,
     pub into: Option<u32>,
 }
 
@@ -70,7 +68,6 @@ impl SwarmRecord {
             source,
             started,
             close_issues: request.close_issues,
-            rebase_on_merge: request.rebase_on_merge,
             members: Vec::new(),
             feed: Vec::new(),
         }
@@ -143,7 +140,7 @@ pub fn swarm_member_threads(project: &ProjectItem, swarm: u32) -> Option<Vec<u32
     Some(members)
 }
 
-/// Every member has merged: "Swarm finished · all N PRs merged".
+/// Every member has landed: "Swarm finished · all N changes landed".
 pub fn swarm_finished(project: &ProjectItem, swarm: &SwarmRecord) -> bool {
     let mut members = live_members(project, swarm).peekable();
     members.peek().is_some()
@@ -281,6 +278,87 @@ impl StateStore {
     }
 }
 
+/// Records a Rosen swarm member's change event in its swarm's feed, in the same save as
+/// the thread's own progress (F10 Activity). The thread's state already reflects
+/// `progress`, so the land that finishes the last member also posts "Swarm finished".
+pub(crate) fn record_rosen_activity(
+    project: &mut ProjectItem,
+    identifier: u32,
+    progress: RosenProgress,
+) {
+    let Some((swarm, agent)) =
+        thread_swarm(project, identifier).map(|(swarm, agent)| (swarm.id, agent))
+    else {
+        return;
+    };
+    let Some(thread) = project
+        .threads
+        .iter()
+        .find(|thread| thread.id == identifier)
+    else {
+        return;
+    };
+    let (kind, message) = rosen_member_event(thread, progress);
+    let timestamp = crate::duty::clock_timestamp();
+    let mut events = vec![SwarmFeedEvent::new(
+        &timestamp,
+        &format!("a{agent}"),
+        kind,
+        message,
+    )];
+    if let Some(record) = project.swarms.iter().find(|record| record.id == swarm)
+        && progress == RosenProgress::Landed
+        && swarm_finished(project, record)
+    {
+        let count = live_members(project, record).count();
+        events.push(SwarmFeedEvent::new(
+            &timestamp,
+            "swarm",
+            SwarmEventKind::Finished,
+            format!(
+                "Swarm finished · all {count} change{} landed",
+                if count == 1 { "" } else { "s" }
+            ),
+        ));
+    }
+    if let Some(record) = project.swarms.iter_mut().find(|record| record.id == swarm) {
+        record.feed.extend(events);
+        let overflow = record.feed.len().saturating_sub(FEED_LIMIT);
+        record.feed.drain(..overflow);
+    }
+}
+
+/// The feed line for a Rosen member's change event: named, landed, reverted, reopened
+/// after a refused land, or abandoned.
+fn rosen_member_event(
+    thread: &crate::ThreadItem,
+    progress: RosenProgress,
+) -> (SwarmEventKind, String) {
+    let change = thread.rosen_change.as_deref().unwrap_or_default();
+    match progress {
+        RosenProgress::Named => (SwarmEventKind::Named, format!("named change {change}")),
+        RosenProgress::Landed => {
+            let finished_item = match &thread.issue {
+                Some(issue) => format!("issue #{}", issue.number),
+                None => "task done".to_owned(),
+            };
+            (
+                SwarmEventKind::Landed,
+                format!("landed {change} · {finished_item}"),
+            )
+        }
+        RosenProgress::Reverted => (
+            SwarmEventKind::Changes,
+            format!("reverted · reopened {change}"),
+        ),
+        RosenProgress::ChangesRequested => (SwarmEventKind::Changes, format!("reopened {change}")),
+        RosenProgress::Abandoned => (
+            SwarmEventKind::Failed,
+            format!("abandoned {change} · workspace kept"),
+        ),
+    }
+}
+
 fn project_mut(
     state: &mut crate::PersistedState,
     project: u32,
@@ -359,6 +437,7 @@ fn member_progress(
         state: thread.state.into(),
         review_stage: thread.review_stage.map(Into::into),
         pull_request_number: thread.pull_request_number,
+        rosen_change: thread.rosen_change.clone(),
         activity_label: crate::project_layout::thread_metadata(thread),
         added: thread.additions,
         deleted: thread.deletions,

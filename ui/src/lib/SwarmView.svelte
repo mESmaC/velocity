@@ -31,10 +31,9 @@
   // Feed dots reuse the duty feed's colours (F7, F10).
   const eventClasses: Record<SwarmEventKind, string> = {
     you: 'you',
-    opened: 'file',
+    named: 'file',
     changes: 'changes',
-    merged: 'merge',
-    rebase: 'sweep',
+    landed: 'merge',
     failed: 'changes',
     finished: 'merge',
   };
@@ -46,7 +45,7 @@
     <div class="meta" aria-label="Swarm metadata">
       <span>{swarm.agents_label}</span>
       <span>{swarm.started_label}</span>
-      {#if swarm.merged_label}<span class="add">{swarm.merged_label}</span>{/if}
+      {#if swarm.landed_label}<span class="add">{swarm.landed_label}</span>{/if}
     </div>
     <span class="spacer"></span>
     <div class="head-actions">
@@ -91,7 +90,7 @@
                 <span class="ttl">{card.title}</span>
                 <span class="ref">{card.reference}</span>
               </span>
-              <span class="sc-track" title="work · PR · CI · review · merged">
+              <span class="sc-track" title={card.track_label}>
                 {#each card.track as step, index (index)}{#if index > 0}<b
                     ></b>{/if}<i class={step}></i>{/each}
               </span>

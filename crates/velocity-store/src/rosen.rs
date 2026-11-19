@@ -502,6 +502,7 @@ impl StateStore {
         let landed = apply_progress(thread, progress, message);
         queue_follow_up(thread, progress, message);
         crate::goal_rosen::apply(item, identifier, progress);
+        crate::swarms::record_rosen_activity(item, identifier, progress);
         if abandoned {
             for task in &mut item.tasks {
                 if task.assigned_thread_id == Some(identifier)

@@ -77,13 +77,13 @@
 .sg.working {
   background: var(--swarm-segment-working);
 }
-.sg.pull_request {
+.sg.named {
   background: var(--info);
 }
 .sg.fixing {
   background: var(--warn);
 }
-.sg.merged {
+.sg.landed {
   background: var(--ok);
 }
 .sg.failed {
@@ -145,7 +145,7 @@
   border-color: var(--polish-card-hover-border);
   background: var(--polish-card-hover-background);
 }
-.sw-card.merged {
+.sw-card.landed {
   border-color: var(--swarm-card-merged-border-color);
 }
 .sw-card.fixing {
@@ -204,7 +204,7 @@
   font-size: var(--swarm-doing-font-size);
   color: var(--text-2);
 }
-.sc-doing.merged {
+.sc-doing.landed {
   color: var(--ok);
 }
 .sc-doing.fixing {

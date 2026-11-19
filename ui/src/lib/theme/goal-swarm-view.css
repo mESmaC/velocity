@@ -63,7 +63,7 @@
 .gb-r .st.failed {
   color: var(--err);
 }
-.gb-r .st.merged {
+.gb-r .st.landed {
   color: var(--ok);
 }
 .gb-r.open .ttl {
@@ -73,11 +73,11 @@
   font-weight: var(--goal-view-row-open-who-weight);
   color: var(--muted);
 }
-.gb-r.merged .ttl {
+.gb-r.landed .ttl {
   color: var(--muted);
   text-decoration: line-through;
 }
-.gb-r.merged .icon {
+.gb-r.landed .icon {
   color: var(--ok);
 }
 .sw-card.gc .gc-n {

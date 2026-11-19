@@ -4,7 +4,7 @@
 use std::collections::BTreeSet;
 
 use velocity_core::goal_swarm_view::{
-    BoardPiece, ClaimHolder, GoalAgentProgress, GoalClaimsBoard, GoalSwarmEntry, MergedPiece,
+    BoardPiece, ClaimHolder, GoalAgentProgress, GoalClaimsBoard, GoalSwarmEntry, LandedPiece,
     claims_board, goal_row_summary,
 };
 use velocity_core::layout_view::ThreadEntry;
@@ -43,7 +43,7 @@ fn goal_swarm_entry(project: &ProjectItem, swarm: &GoalSwarmRecord) -> GoalSwarm
             .iter()
             .any(|agent| agent.rosen_change.is_some())
     };
-    entry.merged_pull_requests = merged_threads(project, swarm).len();
+    entry.landed_changes = merged_threads(project, swarm).len();
     entry.feed = swarm.feed.clone();
     entry
 }
@@ -153,10 +153,10 @@ pub fn goal_claims_board(
             BoardPiece::new(piece.key.clone(), &piece.title, holder)
         })
         .collect();
-    let merged: Vec<MergedPiece> = merged_threads(project, swarm)
+    let landed: Vec<LandedPiece> = merged_threads(project, swarm)
         .into_iter()
         .map(|(thread, nick)| {
-            let mut piece = MergedPiece::new(
+            let mut piece = LandedPiece::new(
                 thread_piece(thread),
                 &thread.title,
                 nick,
@@ -166,7 +166,7 @@ pub fn goal_claims_board(
             piece
         })
         .collect();
-    Some(claims_board(&pieces, &merged))
+    Some(claims_board(&pieces, &landed))
 }
 
 /// Goal agents go by their nick; other threads by the AIRC member name they join as.

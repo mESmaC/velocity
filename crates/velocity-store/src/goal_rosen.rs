@@ -63,11 +63,11 @@ fn record_activity(
     progress: RosenProgress,
 ) {
     let (kind, action) = match progress {
-        RosenProgress::Named => (GoalEventKind::Opened, "named"),
-        RosenProgress::Landed => (GoalEventKind::Merged, "landed"),
+        RosenProgress::Named => (GoalEventKind::Named, "named"),
+        RosenProgress::Landed => (GoalEventKind::Landed, "landed"),
         RosenProgress::Abandoned => (GoalEventKind::Left, "abandoned"),
-        RosenProgress::Reverted => (GoalEventKind::Changes, "reverted · fixing"),
-        RosenProgress::ChangesRequested => (GoalEventKind::Changes, "fixing"),
+        RosenProgress::Reverted => (GoalEventKind::Changes, "reverted · reopened"),
+        RosenProgress::ChangesRequested => (GoalEventKind::Changes, "reopened"),
     };
     if let Some(swarm) = project
         .goal_swarms

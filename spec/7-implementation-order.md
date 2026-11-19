@@ -58,6 +58,7 @@ Each milestone ends with a working app.
 - [x] Empty dispatch turns save their reason and hold the issue for independent review (F8, F9, #469)
 - [x] Deduplicate recent discovery reports and hold overlapping issue dispatch for land verification (F9, F14, #471)
 - [x] Swarm: dialog, launch, sidebar row, view, broadcast, + Items, rebase on merge, task done / issue close (F10)
+- [x] Swarm and goal swarm follow the Rosen lifecycle with no PR duty capacity, PR state or git rebase path (F10, F16, #425)
 - [x] Replace the Rosen Task List and Issues rails with Work (F8, F9, #475)
 
 **M7 · AGENTS.md**

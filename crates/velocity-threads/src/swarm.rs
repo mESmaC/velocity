@@ -140,7 +140,7 @@ fn member_work(
     Ok(work)
 }
 
-const LIFECYCLE: &str = "You already have your own worktree and branch. Open a PR against the project's default branch and watch it until it merges: fix failed checks, answer every review comment, resolve addressed threads and re-request review. Never merge your own PR. Messages from the swarm arrive between your steps. When one says a merged PR touched your files, rebase onto the default branch, resolve the conflicts, re-run the checks and push.";
+const LIFECYCLE: &str = "You already have your own worktree and branch. Open a PR against the project's default branch and watch it until it merges: fix failed checks, answer every review comment, resolve addressed threads and re-request review. Never merge your own PR. Messages from the swarm arrive between your steps.";
 
 pub(crate) fn task_excerpt(identifier: u32, text: &str) -> String {
     velocity_core::text_budget::prompt_excerpt(

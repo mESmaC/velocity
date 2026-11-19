@@ -52,35 +52,38 @@ impl SwarmDialogRequest {
 pub enum SwarmStage {
     /// A goal swarm agent reading the claims board before it claims a piece (F16).
     Choosing,
+    /// Claimed and editing in its workspace.
     Working,
-    PullRequest,
+    /// The agent named its change; Rosen lands it once it combines cleanly.
+    Named,
+    /// A refused land or a post-land revert reopened the change for its owner.
     Fixing,
-    Merged,
+    Landed,
     Failed,
 }
 
 impl SwarmStage {
     const ORDER: [Self; 5] = [
         Self::Working,
-        Self::PullRequest,
+        Self::Named,
         Self::Fixing,
-        Self::Merged,
+        Self::Landed,
         Self::Failed,
     ];
 
     pub fn label(self) -> &'static str {
         match self {
             Self::Choosing => "choosing work",
-            Self::Working => "working",
-            Self::PullRequest => "named",
-            Self::Fixing => "addressing review",
-            Self::Merged => "merged",
+            Self::Working => "editing",
+            Self::Named => "named",
+            Self::Fixing => "reopened",
+            Self::Landed => "landed",
             Self::Failed => "failed",
         }
     }
 }
 
-/// One dot of a card's work · PR · CI · review · merged track.
+/// One dot of a card's editing · named · landed track.
 #[cfg_attr(feature = "bindings", derive(specta::Type))]
 #[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -96,10 +99,15 @@ pub enum TrackStep {
 #[serde(rename_all = "snake_case")]
 pub enum SwarmEventKind {
     You,
-    Opened,
+    /// A member named its change. Feeds saved before Rosen call it `opened`.
+    #[serde(alias = "opened")]
+    Named,
+    /// A change was refused, reverted or reopened. Saved `rebase` lines from the removed
+    /// git rebase notice read as this kind, so old state still loads.
+    #[serde(alias = "rebase")]
     Changes,
-    Merged,
-    Rebase,
+    #[serde(alias = "merged")]
+    Landed,
     Failed,
     Finished,
 }
@@ -138,6 +146,8 @@ pub struct MemberProgress {
     pub state: ThreadState,
     pub review_stage: Option<ReviewStage>,
     pub pull_request_number: Option<u32>,
+    /// The member's Rosen change, when its project uses Rosen.
+    pub rosen_change: Option<String>,
     pub activity_label: String,
     pub added: u32,
     pub deleted: u32,
@@ -156,6 +166,8 @@ pub struct SwarmCard {
     pub reference: String,
     pub issue: bool,
     pub stage: SwarmStage,
+    /// The track's step names, its tooltip.
+    pub track_label: String,
     pub track: Vec<TrackStep>,
     pub doing: String,
     pub provider: ProviderColor,
@@ -198,7 +210,8 @@ pub struct SwarmViewSnapshot {
     pub title: String,
     pub agents_label: String,
     pub started_label: String,
-    pub merged_label: Option<String>,
+    /// "landed/total landed" once a member's change has landed.
+    pub landed_label: Option<String>,
     pub segments: Vec<SwarmStage>,
     pub legend: Vec<SwarmLegendItem>,
     pub cards: Vec<SwarmCard>,
@@ -208,17 +221,37 @@ pub struct SwarmViewSnapshot {
 
 pub fn member_stage(state: ThreadState, review_stage: Option<ReviewStage>) -> SwarmStage {
     match state {
-        ThreadState::Merged | ThreadState::Done => SwarmStage::Merged,
+        ThreadState::Merged | ThreadState::Done => SwarmStage::Landed,
         ThreadState::Error | ThreadState::Closed => SwarmStage::Failed,
         ThreadState::Review if review_stage == Some(ReviewStage::Fixing) => SwarmStage::Fixing,
-        ThreadState::Review => SwarmStage::PullRequest,
+        ThreadState::Review => SwarmStage::Named,
         ThreadState::Draft | ThreadState::Spec | ThreadState::Working => SwarmStage::Working,
     }
 }
 
-/// work · PR · CI · review · merged, as the reference's `swCard` lights them.
+/// The Rosen track's step names: the agent edits, names its change, and Rosen lands it.
+pub const ROSEN_TRACK_LABEL: &str = "editing · named · landed";
+/// The legacy git track's step names, for members of projects still on git.
+pub const GIT_TRACK_LABEL: &str = "work · change · CI · review · landed";
+
+/// editing · named · landed for a Rosen member: a refused land or a revert reopens it.
+pub fn rosen_member_track(stage: SwarmStage) -> Vec<TrackStep> {
+    use TrackStep::{Done, Failed, Running, Todo};
+    match stage {
+        SwarmStage::Choosing | SwarmStage::Working => vec![Running, Todo, Todo],
+        SwarmStage::Named => vec![Done, Running, Todo],
+        SwarmStage::Fixing => vec![Running, Failed, Todo],
+        SwarmStage::Landed => vec![Done, Done, Done],
+        SwarmStage::Failed => vec![Failed, Todo, Todo],
+    }
+}
+
+/// The member's track: Rosen's lifecycle, or the legacy git change's checks and review.
 pub fn member_track(member: &MemberProgress) -> Vec<TrackStep> {
     use TrackStep::{Done, Failed, Running, Todo};
+    if member.rosen_change.is_some() {
+        return rosen_member_track(member_stage(member.state, member.review_stage));
+    }
     let merged = matches!(member.state, ThreadState::Merged | ThreadState::Done);
     let stage = member.review_stage;
     let has_pull_request = member.pull_request_number.is_some() || merged;
@@ -253,16 +286,26 @@ pub fn member_doing(member: &MemberProgress) -> String {
     if member.activity_label == "stalled" || member.activity_label.starts_with("at limit") {
         return member.activity_label.clone();
     }
+    let stage = member_stage(member.state, member.review_stage);
+    if let Some(change) = &member.rosen_change {
+        return match stage {
+            SwarmStage::Choosing | SwarmStage::Working => member.activity_label.clone(),
+            SwarmStage::Named => format!("named · {change}"),
+            SwarmStage::Fixing => format!("reopened · {change}"),
+            SwarmStage::Landed => format!("landed · {change}"),
+            SwarmStage::Failed => "failed · workspace kept".into(),
+        };
+    }
     let number = member.pull_request_number.unwrap_or_default();
-    match member_stage(member.state, member.review_stage) {
+    match stage {
         SwarmStage::Choosing | SwarmStage::Working => member.activity_label.clone(),
-        SwarmStage::Merged => format!("landed · change #{number}"),
+        SwarmStage::Landed => format!("landed · change #{number}"),
         SwarmStage::Failed if member.state == ThreadState::Closed => {
             format!("change #{number} closed · workspace kept")
         }
         SwarmStage::Failed => "failed · workspace kept".into(),
         SwarmStage::Fixing => format!("change #{number} · addressing review"),
-        SwarmStage::PullRequest => match member.review_stage {
+        SwarmStage::Named => match member.review_stage {
             Some(ReviewStage::ContinuousIntegration) => format!("change #{number} · waiting on CI"),
             Some(ReviewStage::Approved) => format!("change #{number} · approved · landing"),
             _ => format!("change #{number} · in review"),
@@ -277,6 +320,11 @@ pub fn member_card(member: &MemberProgress) -> SwarmCard {
         reference: member.reference.clone(),
         issue: member.issue,
         stage: member_stage(member.state, member.review_stage),
+        track_label: if member.rosen_change.is_some() {
+            ROSEN_TRACK_LABEL.into()
+        } else {
+            GIT_TRACK_LABEL.into()
+        },
         track: member_track(member),
         doing: member_doing(member),
         provider: member.provider,
@@ -310,19 +358,19 @@ pub fn segments(members: &[MemberProgress]) -> Vec<SwarmStage> {
         .collect()
 }
 
-fn merged_count(members: &[MemberProgress]) -> usize {
+fn landed_count(members: &[MemberProgress]) -> usize {
     segments(members)
         .into_iter()
-        .filter(|stage| *stage == SwarmStage::Merged)
+        .filter(|stage| *stage == SwarmStage::Landed)
         .count()
 }
 
-/// A member still at work: choosing, working, PR open or addressing review. Merged,
-/// closed and failed members are finished, and deleted ones are not members at all.
+/// A member still at work: choosing, editing, named or reopened. Landed, closed and
+/// failed members are finished, and deleted ones are not members at all.
 pub fn is_live(stage: SwarmStage) -> bool {
     matches!(
         stage,
-        SwarmStage::Choosing | SwarmStage::Working | SwarmStage::PullRequest | SwarmStage::Fixing
+        SwarmStage::Choosing | SwarmStage::Working | SwarmStage::Named | SwarmStage::Fixing
     )
 }
 
@@ -334,7 +382,7 @@ pub fn row_summary(stages: &[SwarmStage]) -> (usize, String) {
     let mut parts: Vec<String> = [
         SwarmStage::Choosing,
         SwarmStage::Working,
-        SwarmStage::PullRequest,
+        SwarmStage::Named,
         SwarmStage::Fixing,
         SwarmStage::Failed,
     ]
@@ -352,7 +400,7 @@ pub fn row_summary(stages: &[SwarmStage]) -> (usize, String) {
 
 pub fn project_swarm_view(entry: &SwarmEntry) -> SwarmViewSnapshot {
     let total = entry.members.len();
-    let merged = merged_count(&entry.members);
+    let landed = landed_count(&entry.members);
     let live = segments(&entry.members).into_iter().any(is_live);
     SwarmViewSnapshot {
         identifier: entry.identifier,
@@ -361,8 +409,8 @@ pub fn project_swarm_view(entry: &SwarmEntry) -> SwarmViewSnapshot {
             format!(
                 "{total} agent{} · {} workspace{} live",
                 if total == 1 { "" } else { "s" },
-                total - merged,
-                if total - merged == 1 { "" } else { "s" }
+                total - landed,
+                if total - landed == 1 { "" } else { "s" }
             )
         } else {
             format!(
@@ -371,7 +419,7 @@ pub fn project_swarm_view(entry: &SwarmEntry) -> SwarmViewSnapshot {
             )
         },
         started_label: format!("started {}", entry.started_label),
-        merged_label: (merged > 0).then(|| format!("{merged}/{total} landed")),
+        landed_label: (landed > 0).then(|| format!("{landed}/{total} landed")),
         segments: segments(&entry.members),
         legend: stage_counts(&entry.members),
         cards: entry.members.iter().map(member_card).collect(),
@@ -426,9 +474,9 @@ impl<'a> PullRequestStep<'a> {
     }
 }
 
-/// The swarm feed line for a member PR moving from `before` to `after` (F10 Activity):
-/// PR opened, changes requested, comments addressed, merged (with what merging finished),
-/// and closed without merging.
+/// The swarm feed line for a legacy git member's change moving from `before` to `after`
+/// (F10 Activity): opened, changes requested, comments addressed, landed (with what landing
+/// finished), and closed without landing. Rosen members report through their change events.
 pub fn pull_request_event(
     before: Option<PullRequestStep<'_>>,
     after: PullRequestStep<'_>,
@@ -443,12 +491,12 @@ pub fn pull_request_event(
     let merged = |step: PullRequestStep<'_>| step.stage == "merged" && step.worktree_deleted;
     if merged(after) && !previous.is_some_and(merged) {
         return Some((
-            SwarmEventKind::Merged,
+            SwarmEventKind::Landed,
             format!("landed #{number} · {finished_item}"),
         ));
     }
     if previous.is_none() {
-        return Some((SwarmEventKind::Opened, format!("opened change #{number}")));
+        return Some((SwarmEventKind::Named, format!("opened change #{number}")));
     }
     match after.stage {
         "fixing" if !was("fixing") => Some((

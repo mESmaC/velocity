@@ -178,7 +178,7 @@ impl StateStore {
         let sources = dialog_sources(project, query);
         let preferences = self.worktree_context().preferences;
         let root = preferences.project_override.unwrap_or(preferences.root);
-        let (pool_line, pool_note, _) = pool_view(pool, agents, sources);
+        let (pool_line, pool_note) = pool_view(pool, agents, sources);
         let rosen = project.version_control == crate::VersionControl::Rosen;
         let mut choices = choices(&mix);
         choices.sources = sources;
@@ -241,21 +241,17 @@ fn pool_view(
     pool: &GoalPool,
     agents: u32,
     sources: WorkSources,
-) -> (Option<PoolLine>, Option<String>, u32) {
+) -> (Option<PoolLine>, Option<String>) {
     match pool {
-        GoalPool::Reading => (None, Some("Reading the work pool\u{2026}".into()), 0),
-        GoalPool::Failed(error) => (None, Some(error.clone()), 0),
+        GoalPool::Reading => (None, Some("Reading the work pool\u{2026}".into())),
+        GoalPool::Failed(error) => (None, Some(error.clone())),
         GoalPool::Read(counts) => {
             let selected = PoolCounts::new(
                 if sources.tasks { counts.tasks } else { 0 },
                 if sources.issues { counts.issues } else { 0 },
                 if sources.sections { counts.sections } else { 0 },
             );
-            (
-                Some(goal_swarm::pool_line(selected, agents)),
-                None,
-                selected.new_pull_requests(agents),
-            )
+            (Some(goal_swarm::pool_line(selected, agents)), None)
         }
     }
 }

@@ -3220,7 +3220,7 @@ I.swarm = `<svg class="i s-ico" viewBox="0 0 16 16"><circle cx="8" cy="3.5" r="1
 document.querySelectorAll('[data-swarm]').forEach(b => { b.insertAdjacentHTML('afterbegin', I.swarm); b.onclick = () => openSwarm(b.dataset.swarm); });
 $('#swTitle').insertAdjacentHTML('afterbegin', I.swarm);
 
-const sw = { src:'tasks', off:new Set(), models:new Set(['opus']), rebase:true, close:true, duty:true, into:null, dutyAdd:0 };
+const sw = { src:'tasks', off:new Set(), models:new Set(['opus']), close:true, into:null };
 const SRC_LABEL = { tasks:'Task List', issues:'open issues', both:'Task List + issues' };
 function swItems(src = sw.src) {
   const out = [];
@@ -3250,7 +3250,7 @@ function drawSwarm() {
     ? 'Round-robin: ' + ms.map((m, i) => `${Math.floor(n / ms.length) + (i < n % ms.length ? 1 : 0)} on ${m.name}`).join(' · ')
     : 'Pick more than one model to spread the swarm across them.';
   $('#swChecks').innerHTML = `<span class="hint">One workspace per agent. Changes land as soon as they combine cleanly.</span>
-    <label class="check"><input type="checkbox" data-swopt="rebase" ${sw.rebase ? 'checked' : ''}> Rebase after another change lands</label>
+    <label class="check"><input type="checkbox" checked disabled> Rosen rebases each agent onto the base at its next step after a change lands</label>
     <label class="check"><input type="checkbox" data-swopt="close" ${sw.close ? 'checked' : ''}> Close issues after green and post-land review (watcher fallback after 30 min)</label>`;
   $('#swN').textContent = n ? `${n} agent${n > 1 ? 's' : ''}` : '';
   $('#swSum').textContent = n ? `${n} workspaces on ${wtRoot().slice(0, 2)} · all start now` : 'Select at least one item';
@@ -3280,7 +3280,7 @@ function launchSwarm() {
   const P = state, ms = MODELS.filter(m => sw.models.has(m.id));
   let S = sw.into && P.threads.find(x => x.id === sw.into);
   if (!S) {
-    S = { id:'sw' + (++swSeq), title:`Swarm · ${SRC_LABEL[sw.src]}`, status:'swarm', isSwarm:true, src:sw.src, members:[], feed:[], started:clock(), opts:{ rebase:sw.rebase, close:sw.close } };
+    S = { id:'sw' + (++swSeq), title:`Swarm · ${SRC_LABEL[sw.src]}`, status:'swarm', isSwarm:true, src:sw.src, members:[], feed:[], started:clock(), opts:{ close:sw.close } };
     P.threads.push(S);
   }
   P.nextN = P.nextN || Math.max(59, ...P.issues.map(i => i.n), ...P.changes.map(x => x.n)) + 1;
@@ -3359,7 +3359,7 @@ $('#gsTitle').insertAdjacentHTML('afterbegin', I.goal);
 const GOAL_PROMPT = 'Read AGENTS.md and start dev.';
 const EFF = ['Low', 'Medium', 'High', 'Max'], GS_MAX = 30;
 const gs = { prompt:GOAL_PROMPT, n:10, rows:[{ m:'sol', e:'High', n:6 }, { m:'argon', e:'High', n:2 }, { m:'fable', e:'High', n:2 }],
-             keep:false, duty:true, dutyAdd:0, into:null };
+             keep:false, into:null };
 // SPEC.md sections nobody has started: the third place agents look for work
 projects.velocity.specPieces = [
   { t:'Diff review pane' }, { t:'Keyboard map + shortcut editor' }, { t:'Thread search across projects' },
@@ -3469,7 +3469,7 @@ function launchGoal() {
   let S = gs.into && P.threads.find(x => x.id === gs.into);
   if (!S) {
     S = { id:'gs' + (++gsSeq), title:`Goal · ${shortT(prompt.replace(/\.$/, ''))}`, status:'swarm', isSwarm:true, goal:true, prompt,
-          members:[], feed:[], started:clock(), opts:{ rebase:true, close:true, keep:gs.keep } };
+          members:[], feed:[], started:clock(), opts:{ close:true, keep:gs.keep } };
     P.threads.push(S);
     aev(P, 'swarm', 'you', `started a goal swarm · ${n} agents · one prompt: “${prompt}”`);
   } else S.opts.keep = gs.keep;

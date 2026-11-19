@@ -1,5 +1,9 @@
 import { listen, type EventCallback } from '@tauri-apps/api/event';
-import { commands, SWARM_EVENT, type SwarmEventPublished } from '../bindings';
+import {
+  commands,
+  SWARM_EVENT,
+  type SwarmEventPublished_Serialize as SwarmEventPublished,
+} from '../bindings';
 
 export type {
   LaunchSwarmRequest_Deserialize as LaunchSwarmRequest,
@@ -8,9 +12,9 @@ export type {
   SwarmDialogItem,
   SwarmDialogQuery_Deserialize as SwarmDialogQuery,
   SwarmDialogRequest_Serialize as SwarmDialogRequest,
-  SwarmEventKind,
-  SwarmEventPublished,
-  SwarmFeedEvent,
+  SwarmEventKind_Serialize as SwarmEventKind,
+  SwarmEventPublished_Serialize as SwarmEventPublished,
+  SwarmFeedEvent_Serialize as SwarmFeedEvent,
   SwarmItem,
   SwarmLegendItem,
   SwarmModelCard,

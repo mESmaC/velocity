@@ -400,7 +400,8 @@ fn snapshot(application: &AppHandle) -> Result<LayoutSnapshot, String> {
 }
 
 /// Feed lines from a member's PR lifecycle (F6): opened, changes requested, resolved,
-/// merged and closed. A merge also asks the affected members to rebase (F6, F10).
+/// landed and closed, for members of legacy git projects. Rosen members report through
+/// their change events, and Rosen rebases them at their step boundaries (F10).
 pub(crate) fn record_pull_request_observation(
     application: &AppHandle,
     project: u32,
@@ -418,19 +419,8 @@ pub(crate) fn record_pull_request_observation(
     };
     let event = SwarmFeedEvent::new(&clock_timestamp(), &format!("a{agent}"), kind, message);
     report(post_event(application, project, swarm, event));
-    if kind == SwarmEventKind::Merged {
-        let application = application.clone();
-        let (merged, number) = (thread.id, after.number);
-        std::thread::spawn(move || {
-            report(crate::swarm_rebase::notify_affected(
-                &application,
-                project,
-                swarm,
-                merged,
-                number,
-            ));
-            report(announce_finished(&application, project, swarm));
-        });
+    if kind == SwarmEventKind::Landed {
+        report(announce_finished(application, project, swarm));
     }
 }
 

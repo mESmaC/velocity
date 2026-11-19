@@ -35,7 +35,6 @@
   let chosen = $state<SwarmItem[] | null>(null);
   let providers = $state<ProviderKind[]>([]);
   let closeIssues = $state(true);
-  let rebaseOnMerge = $state(true);
   let submitting = $state(false);
   let error = $state('');
   let handledSubmits = 0;
@@ -127,7 +126,6 @@
         items: picked.map((entry) => entry.item),
         providers,
         close_issues: closeIssues,
-        rebase_on_merge: rebaseOnMerge,
         into,
       };
       onResult(
@@ -256,8 +254,12 @@
             <span class="lockt"><Icon name="lock" /> always</span>
           </label>
           <label class="check">
-            <input type="checkbox" bind:checked={rebaseOnMerge} />
-            Rebase a member when another swarm change that touches its files lands
+            <input type="checkbox" checked disabled />
+            <span
+              >Rosen rebases each agent onto the base at its next step after a
+              change lands</span
+            >
+            <span class="lockt"><Icon name="lock" /> always</span>
           </label>
           {#if source !== 'tasks'}<label class="check">
               <input type="checkbox" bind:checked={closeIssues} />

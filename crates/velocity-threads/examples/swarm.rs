@@ -1,6 +1,7 @@
 //! F10 without a window: seed a throwaway repository and project, open the Swarm dialog,
 //! launch a swarm through the real store, planner and `git worktree` setup (no agents), then
-//! replay a real merged PR through the F6 save path and check the targeted rebase overlap.
+//! replay a real merged PR through the legacy F6 save path. Rosen rebases members at their
+//! step boundaries, so the swarm no longer computes a targeted rebase overlap (#425).
 //!
 //! cargo run -p velocity-threads --example swarm -- <empty scratch folder> <github checkout> <merged PR>
 
@@ -35,7 +36,7 @@ fn main() -> Outcome<()> {
     show_dialog(&store, "dialog before launch")?;
     let members = launch(&mut store)?;
     show_layout(&store, "after launch")?;
-    // Member 1 edits a file the merged PR also changed, and one it didn't.
+    // Member 1 has local edits that the merge must leave alone.
     std::fs::write(members[0].1.join("SPEC.md"), "member 1 edit\n")?;
     std::fs::write(members[0].1.join("README.md"), "member 1 edit\n")?;
     store.update_thread(1, members[1].0, |thread| {
@@ -44,7 +45,6 @@ fn main() -> Outcome<()> {
         thread.review_stage = Some(velocity_store::ReviewStage::Fixing);
     })?;
     merge_member(&mut store, &checkout, merged, members[2].0)?;
-    rebase_overlap(&checkout, merged, &members[0].1)?;
     show_layout(&store, "after a fixing PR and a merge")?;
     show_dialog(&store, "dialog after launch")?;
     store.remove_thread(1, members[1].0)?;
@@ -173,7 +173,6 @@ fn launch(store: &mut StateStore) -> Outcome<Vec<(u32, PathBuf)>> {
         items: vec![SwarmItem::Task(1), SwarmItem::Task(2), SwarmItem::Task(3)],
         providers: vec![ProviderKind::Claude, ProviderKind::Codex],
         close_issues: true,
-        rebase_on_merge: true,
         into: None,
     };
     require_swarm_launch(store, &request)?;
@@ -230,7 +229,7 @@ fn show_layout(store: &StateStore, heading: &str) -> Outcome<()> {
         .ok_or("the swarm is not the selected view")?;
     println!(
         "{} · {} · {} · {:?}",
-        swarm.title, swarm.agents_label, swarm.started_label, swarm.merged_label
+        swarm.title, swarm.agents_label, swarm.started_label, swarm.landed_label
     );
     for card in &swarm.cards {
         println!(
@@ -261,17 +260,5 @@ fn merge_member(store: &mut StateStore, checkout: &Path, number: u32, thread: u3
         "\nfeed line for the merge: {:?}",
         pull_request_event(None, after, "task done")
     );
-    Ok(())
-}
-
-fn rebase_overlap(checkout: &Path, number: u32, worktree: &Path) -> Outcome<()> {
-    let merged = PullRequestClient::discover(checkout)?.changed_files(number)?;
-    let changed = velocity_git::worktree_changed_files(worktree, "master")?;
-    let overlap: Vec<_> = changed
-        .iter()
-        .filter(|file| merged.contains(file))
-        .collect();
-    println!("PR #{number} files: {merged:?}");
-    println!("member 1 changed: {changed:?} → rebase notice for {overlap:?}");
     Ok(())
 }

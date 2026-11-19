@@ -53,7 +53,6 @@ mod skills;
 mod state;
 mod swarm;
 mod swarm_deletion;
-mod swarm_rebase;
 pub mod sweeps;
 mod tasks;
 mod thread_links;
