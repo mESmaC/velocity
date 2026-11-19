@@ -93,7 +93,10 @@ Its accuracy rules come from the A.TXY address memory in MCL4-COE and `elem`: ro
 **Standalone indexer (C11, #428).**
 Collapse serves the graph for landed commits by running Velocity's indexer as the `velocity-graph` binary, pinned like `git`.
 It is a bin target of the `velocity-graph` crate, with no Tauri or UI dependencies.
-Each release publishes a Linux x86-64 build as `velocity-graph-<version>-x86_64-unknown-linux-gnu.tar.gz` with its SHA-256 checksum.
+Each release publishes a Linux x86-64 build as `velocity-graph-<version>-x86_64-unknown-linux-gnu.tar.gz` with its SHA-256 checksum in `<archive>.sha256`.
+The release workflow publishes both with the release it builds.
+Publishing a release built any other way, such as a local build, starts the `Graph indexer` workflow, which attaches both; dispatching it with a tag adds them to an earlier release (#518).
+An archive and checksum already on a release are never replaced, because Collapse pins the checksum.
 It indexes one commit of a git repository, bare or not, reading its regular files from git objects with no checkout.
 Git blob IDs are the file hashes and parse cache keys, so a commit gives the same records and addresses as the MCP tools for the same tree.
 The parse cache lives in the folder given with `--cache`, so only blobs missing from it are read and parsed.

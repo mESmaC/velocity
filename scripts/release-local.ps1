@@ -12,6 +12,8 @@ One command for a local release build, without the waits that made it slow:
   crate rebuilds only what changed.
 The installer and the portable executable are copied to -OutDir.
 The downloads are not signed with the updater key, which only CI holds.
+The Linux code graph indexer Collapse pins is not built here. Publishing the GitHub
+release starts .github/workflows/graph-indexer.yml, which attaches it (#518).
 
 .EXAMPLE
 pwsh -NoProfile -File scripts/release-local.ps1 -Version 0.1.0-beta.13
@@ -102,3 +104,4 @@ Get-ChildItem $OutDir -File -Filter 'Velocity_*' | ForEach-Object {
     "$((Get-FileHash $_.FullName -Algorithm SHA256).Hash.ToLower())  $($_.Name)"
 } | Set-Content -Encoding utf8 (Join-Path $OutDir 'SHA256SUMS.txt')
 Write-Step "Done: $OutDir"
+Write-Host 'Publishing these as a GitHub release starts the Graph indexer workflow, which attaches the Linux velocity-graph archive Collapse pins.'

@@ -1,0 +1,153 @@
+name: Graph indexer
+
+# Attaches the standalone code graph indexer (SPEC.md F19, C11) to a published release:
+# `velocity-graph-<version>-x86_64-unknown-linux-gnu.tar.gz` and its `.sha256`, which
+# Collapse pins and verifies in its server image.
+#
+# release.yml builds the same archive, but publishes it only with a release that passes
+# its gate. Betas 12 and 17 were built on the owner's machine with
+# scripts/release-local.ps1 and published by hand, so they carried Windows downloads only
+# and Collapse had nothing to pin (#518). Publishing a release now starts this workflow,
+# whatever built the release. A release that release.yml publishes does not start it,
+# because GitHub starts no workflow for an event made with the workflow token, and it
+# already carries the archive.
+#
+# Dispatch it with `tag` to add the archive to a release published before its tagged
+# commit had this workflow.
+#
+# An archive already on the release is never replaced, because Collapse pins its checksum.
+# A missing checksum is made from the published archive, so a run that stopped between
+# the two uploads is finished by running it again.
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Published release to attach the indexer to, e.g. v0.1.0-beta.17.
+        required: true
+
+# Each job grants only the repository access it needs.
+permissions: {}
+
+concurrency:
+  group: graph-indexer-${{ inputs.tag || github.event.release.tag_name }}
+  cancel-in-progress: false
+
+env:
+  CARGO_INCREMENTAL: '0'
+  TAG: ${{ inputs.tag || github.event.release.tag_name }}
+  GH_REPO: ${{ github.repository }}
+
+jobs:
+  # The build holds a read-only token; only `attach` can write to the release.
+  build:
+    name: Build the code graph indexer
+    # The rolling `updater` release holds the update manifest, not a version.
+    if: github.event_name == 'workflow_dispatch' || startsWith(github.event.release.tag_name, 'v')
+    permissions:
+      contents: read
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    outputs:
+      build: ${{ steps.published.outputs.build }}
+    steps:
+      - name: Find what the release already has
+        id: published
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          if ! [[ "$TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$ ]]; then
+            echo "::error::Tag $TAG is not v<semver>"
+            exit 1
+          fi
+          archive="velocity-graph-${TAG#v}-x86_64-unknown-linux-gnu.tar.gz"
+          # Fails here when the tag has no published release to attach to.
+          assets="$(gh release view "$TAG" --json assets --jq '.assets[].name')"
+          if grep -qxF "$archive" <<<"$assets"; then
+            echo "$TAG already has $archive; it is kept"
+            echo "build=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "build=true" >> "$GITHUB_OUTPUT"
+          fi
+      - uses: actions/checkout@v4
+        if: steps.published.outputs.build == 'true'
+        with:
+          ref: refs/tags/${{ env.TAG }}
+      # The script comes from the workflow's own commit, not the tagged one, so a release
+      # tagged before the script existed still gets its archive.
+      - name: Get the packaging script
+        if: steps.published.outputs.build == 'true'
+        uses: actions/checkout@v4
+        with:
+          path: workflow
+          sparse-checkout: .github/scripts
+          sparse-checkout-cone-mode: false
+      - name: Install pinned Rust toolchain
+        if: steps.published.outputs.build == 'true'
+        run: rustup show active-toolchain
+      # No build cache: a cache saved for a tag can be restored only by that tag.
+      - name: Build and package
+        if: steps.published.outputs.build == 'true'
+        shell: bash
+        run: bash workflow/.github/scripts/graph-indexer.sh "${TAG#v}" dist
+      - uses: actions/upload-artifact@v4
+        if: steps.published.outputs.build == 'true'
+        with:
+          name: graph-indexer
+          path: dist/
+          if-no-files-found: error
+          retention-days: 1
+
+  attach:
+    name: Attach the indexer to the release
+    needs: build
+    permissions:
+      contents: write
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    env:
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/download-artifact@v4
+        if: needs.build.outputs.build == 'true'
+        with:
+          name: graph-indexer
+          path: dist/
+      - name: Attach the archive and its checksum
+        shell: bash
+        run: |
+          set -euo pipefail
+          archive="velocity-graph-${TAG#v}-x86_64-unknown-linux-gnu.tar.gz"
+          mkdir -p dist
+          cd dist
+          assets="$(gh release view "$TAG" --json assets --jq '.assets[].name')"
+          if grep -qxF "$archive" <<<"$assets"; then
+            # The published archive wins over one built here, and its checksum is made from it.
+            gh release download "$TAG" --pattern "$archive" --clobber
+          else
+            gh release upload "$TAG" "$archive"
+          fi
+          if ! grep -qxF "$archive.sha256" <<<"$assets"; then
+            sha256sum "$archive" > "$archive.sha256"
+            gh release upload "$TAG" "$archive.sha256"
+          fi
+      # Downloads both as Collapse does, so a green run means the published pair agrees.
+      - name: Check the published archive against its checksum
+        shell: bash
+        run: |
+          set -euo pipefail
+          archive="velocity-graph-${TAG#v}-x86_64-unknown-linux-gnu.tar.gz"
+          mkdir published
+          cd published
+          gh release download "$TAG" --pattern "$archive" --pattern "$archive.sha256"
+          sha256sum --check "$archive.sha256"
+          {
+            echo "### Code graph indexer on $TAG"
+            echo
+            echo '```'
+            cat "$archive.sha256"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"

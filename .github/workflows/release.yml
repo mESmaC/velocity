@@ -389,6 +389,8 @@ jobs:
   # The standalone code graph indexer Collapse pins and runs like `git` (C11, #428): a Linux
   # x86-64 build of the `velocity-graph` binary, versioned with the release, so Collapse's
   # graph answers carry the same records and addresses as this release's MCP tools.
+  # graph-indexer.yml attaches the same archive to a release this workflow did not publish,
+  # such as a local build (#518).
   graph-indexer:
     name: Build the code graph indexer
     permissions:
@@ -399,6 +401,14 @@ jobs:
       - uses: actions/checkout@v4
         with:
           ref: ${{ env.RELEASE_REF }}
+      # Both workflows package with one script, taken from the workflow's own commit so a
+      # release of an older commit still has it.
+      - name: Get the packaging script
+        uses: actions/checkout@v4
+        with:
+          path: workflow
+          sparse-checkout: .github/scripts
+          sparse-checkout-cone-mode: false
       - name: Install pinned Rust toolchain
         run: rustup show active-toolchain
       - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
@@ -406,18 +416,7 @@ jobs:
           key: graph-indexer
       - name: Build and package
         shell: bash
-        run: |
-          set -euo pipefail
-          version="${TAG#v}"
-          target=x86_64-unknown-linux-gnu
-          # The binary reports this version in `velocity-graph version`, for Collapse's pin check.
-          VELOCITY_GRAPH_VERSION="$version" cargo build --release --locked --target "$target" -p velocity-graph --bin velocity-graph
-          name="velocity-graph-${version}-${target}"
-          mkdir -p dist "$name"
-          cp "target/$target/release/velocity-graph" LICENSE "$name/"
-          "$name/velocity-graph" version
-          tar -czf "dist/$name.tar.gz" "$name"
-          (cd dist && sha256sum "$name.tar.gz" > "$name.tar.gz.sha256")
+        run: bash workflow/.github/scripts/graph-indexer.sh "${TAG#v}" dist
       - uses: actions/upload-artifact@v4
         with:
           name: graph-indexer
@@ -467,6 +466,14 @@ jobs:
             if ($env:PRERELEASE -eq 'true') { $flags += '--prerelease' }
             gh release create $env:TAG @flags
             if ($LASTEXITCODE -ne 0) { throw "Could not create the release" }
+          }
+          # Collapse pins the indexer archive by its checksum. When graph-indexer.yml has
+          # already attached the pair to this release, the published pair is kept (#518).
+          $published = @(gh release view $env:TAG --json assets --jq '.assets[].name')
+          if ($LASTEXITCODE -ne 0) { throw "Could not list the release's downloads" }
+          $indexer = @(Get-ChildItem dist -File -Filter 'velocity-graph-*')
+          if ($indexer -and -not ($indexer | Where-Object { $published -notcontains $_.Name })) {
+            $indexer | Remove-Item
           }
           gh release upload $env:TAG (Get-ChildItem dist -File).FullName --clobber
           if ($LASTEXITCODE -ne 0) { throw "Could not upload the downloads" }
