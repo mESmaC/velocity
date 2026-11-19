@@ -76,5 +76,34 @@ $encoding = New-Object System.Text.UTF8Encoding($false)
 [System.IO.File]::WriteAllText((Join-Path $fixture 'src/main.rs'), $source, $encoding)
 Copy-Item -LiteralPath (Join-Path $repository 'Cargo.lock') -Destination (Join-Path $fixture 'Cargo.lock')
 Write-Output "Harness: $fixture"
-cargo run --offline --manifest-path (Join-Path $fixture 'Cargo.toml') -- $fixture
-exit $LASTEXITCODE
+try {
+    cargo run --offline --manifest-path (Join-Path $fixture 'Cargo.toml') -- $fixture
+    $harnessExitCode = $LASTEXITCODE
+} finally {
+    if ($IsWindows) {
+        # The server uses a canonical path, which can differ from the workspace drive.
+        # Match the unique fixture directory and the rest of the quoted data-dir argument.
+        $dataDirectorySuffix = (Split-Path -Leaf $fixture) + '\new project\.rosen\server'
+        $dataDirectoryArgument = '\s--data-dir\s+"[^"]*\\' + [regex]::Escape($dataDirectorySuffix) + '"(?=\s|$)'
+        $fixtureServers = Get-CimInstance -ClassName Win32_Process -Filter "Name = 'rosen-server.exe'" |
+            Where-Object { $_.CommandLine -match $dataDirectoryArgument }
+        foreach ($fixtureServer in $fixtureServers) {
+            $server = Get-Process -Id $fixtureServer.ProcessId -ErrorAction SilentlyContinue
+            if ($null -eq $server) {
+                continue
+            }
+            try {
+                Stop-Process -InputObject $server -Force
+            } catch {
+                if (-not $server.HasExited) {
+                    throw
+                }
+            }
+            if (-not $server.WaitForExit(5000)) {
+                throw "Fixture Rosen server $($server.Id) did not exit for $fixture"
+            }
+            Write-Output "Stopped fixture Rosen server $($server.Id)"
+        }
+    }
+}
+exit $harnessExitCode
