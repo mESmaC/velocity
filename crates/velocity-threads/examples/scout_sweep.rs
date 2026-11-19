@@ -63,7 +63,6 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         // The same request the start dialog sends: one scout, sweeping once.
         let request: StartDutyRequest = serde_json::from_value(serde_json::json!({
             "role": "scouts", "agent_count": 1, "provider": provider, "model_name": null,
-            "pr_rules": null,
             "scout_rules": {"focus_areas": ["bugs"], "assume_every_part_fails": true,
                 "run_stress_against_models": false, "label_issues_for_dispatch": false,
                 "cadence": "once"},

@@ -1,4 +1,4 @@
-//! Post-land reviews beside build threads (#382). This runner never enters PR duty's
+//! Post-land reviews beside build threads (#382). This runner is independent of the
 //! checker, submits receipts, or owns landing locks. Its only limit is its saved roster.
 
 use std::collections::{BTreeMap, BTreeSet};

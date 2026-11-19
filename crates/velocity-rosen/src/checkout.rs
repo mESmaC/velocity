@@ -2,8 +2,7 @@
 
 use std::path::{Path, PathBuf};
 
-use crate::workspace::session;
-use crate::{ProjectServer, RosenError};
+use crate::RosenError;
 
 /// A change's merge result, checked out to build in.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -27,38 +26,6 @@ impl MergeCheckout {
             conflicts,
         }
     }
-}
-
-/// Writes `change`'s current merge result onto the base into `folder`, replacing what an
-/// earlier checkout left there. A folder Velocity did not check out is never touched.
-///
-/// The folder itself stays: it is the reviewing agent's working directory, which Windows
-/// won't remove. Rosen writes the result into a new sibling, whose entries then replace the
-/// folder's.
-///
-/// With `prepared`, for a review that builds, the result comes from Rosen's warm pool when
-/// it can (Rosen R3): a ready workspace brought to the merge result, with the build output
-/// its prepare left, so the review's first build compiles what the change touched and not
-/// the whole project. A review that only reads asks for the files alone, and takes nothing
-/// from the pool.
-pub async fn check_out_merge_result(
-    server: &ProjectServer,
-    reviewer: &str,
-    change: &str,
-    folder: &Path,
-    prepared: bool,
-) -> Result<MergeCheckout, RosenError> {
-    let staging = claim_checkout(folder)?;
-    let session = session(server, reviewer).await?;
-    let checkout = if prepared {
-        session
-            .check_out_prepared_merge_result(change, &staging)
-            .await?
-    } else {
-        session.check_out_merge_result(change, &staging).await?
-    };
-    replace_entries(folder, &staging)?;
-    Ok(MergeCheckout::from_result(checkout.merge))
 }
 
 /// Makes `folder` a checkout of Velocity's, with nothing staged beside it, and returns
@@ -90,35 +57,6 @@ pub(crate) fn staging_folder(folder: &Path) -> PathBuf {
     sibling(folder, ".rosen-next")
 }
 
-/// Empties `folder`, moves every entry of `staging` into it and removes `staging`.
-fn replace_entries(folder: &Path, staging: &Path) -> Result<(), RosenError> {
-    for entry in entries(folder)? {
-        let path = entry.path();
-        let removed = if entry.file_type().is_ok_and(|kind| kind.is_dir()) {
-            std::fs::remove_dir_all(&path)
-        } else {
-            std::fs::remove_file(&path)
-        };
-        removed.map_err(|source| io_error("remove", &path, source))?;
-    }
-    // Rosen leaves no folder when the merge conflicts.
-    if !staging.exists() {
-        return Ok(());
-    }
-    for entry in entries(staging)? {
-        let target = folder.join(entry.file_name());
-        std::fs::rename(entry.path(), &target)
-            .map_err(|source| io_error("move", &target, source))?;
-    }
-    remove_folder(staging)
-}
-
-fn entries(folder: &Path) -> Result<Vec<std::fs::DirEntry>, RosenError> {
-    std::fs::read_dir(folder)
-        .and_then(Iterator::collect)
-        .map_err(|source| io_error("read", folder, source))
-}
-
 fn create_folder(folder: &Path) -> Result<(), RosenError> {
     std::fs::create_dir_all(folder).map_err(|source| io_error("create", folder, source))
 }
@@ -129,21 +67,6 @@ fn io_error(action: &'static str, path: &Path, source: std::io::Error) -> RosenE
         path: path.to_path_buf(),
         source,
     }
-}
-
-/// Removes a review checkout and its marker, once its agent has stopped.
-pub fn remove_checkout(folder: &Path) -> Result<(), RosenError> {
-    let marker = checkout_marker(folder);
-    if !marker.is_file() {
-        return Ok(());
-    }
-    for path in [folder.to_path_buf(), staging_folder(folder)] {
-        if path.exists() {
-            remove_folder(&path)?;
-        }
-    }
-    let _ = std::fs::remove_file(marker);
-    Ok(())
 }
 
 /// Beside the folder, not in it: the folder is the build tree the checks run on.

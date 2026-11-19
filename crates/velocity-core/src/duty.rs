@@ -8,73 +8,16 @@ use crate::thread_view_model::ModelPillView;
 #[serde(rename_all = "snake_case")]
 pub enum DutyRole {
     #[default]
-    PrDuty,
     Scouts,
-    /// Watches the base branch after merges (F7 Main watcher; the role name is proposed, Q22).
-    MainWatcher,
 }
 
 impl DutyRole {
     pub fn title(self) -> &'static str {
-        match self {
-            Self::PrDuty => "PR duty",
-            Self::Scouts => "Scouts",
-            Self::MainWatcher => "Main watcher",
-        }
+        "Scouts"
     }
 
     pub fn prefix(self) -> &'static str {
-        match self {
-            Self::PrDuty => "pr",
-            Self::Scouts => "scout",
-            Self::MainWatcher => "watch",
-        }
-    }
-
-    pub fn description(self) -> &'static str {
-        match self {
-            Self::PrDuty => {
-                "Watches open PRs: reviews the intent and every theorem statement, checks CI and proofs, and merges only what it approves."
-            }
-            Self::Scouts => {
-                "Assumes every part of the app is broken and sets out to prove it: writes the tests and stress scripts, and files each issue with the failing one attached."
-            }
-            Self::MainWatcher => {
-                "Watches master after every merge: runs every test and stress script, bisects a break to the merge that caused it, and opens a fix or revert PR."
-            }
-        }
-    }
-
-    pub fn hint(self) -> &'static str {
-        match self {
-            Self::PrDuty => {
-                "With several agents, each one claims a PR so two never review the same one."
-            }
-            Self::Scouts => "With several scouts, each takes a different area of the repo.",
-            Self::MainWatcher => {
-                "One watcher takes each merge. With several, a merge that lands mid-watch goes to the next one."
-            }
-        }
-    }
-}
-
-#[cfg_attr(feature = "bindings", derive(specta::Type))]
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum DutyMergeMethod {
-    #[default]
-    Squash,
-    Rebase,
-    MergeCommit,
-}
-
-impl DutyMergeMethod {
-    pub fn rule_label(self) -> &'static str {
-        match self {
-            Self::Squash => "Squash merge",
-            Self::Rebase => "Rebase merge",
-            Self::MergeCommit => "Merge commit",
-        }
+        "scout"
     }
 }
 
@@ -159,30 +102,6 @@ impl ScoutCadence {
 
 #[cfg_attr(feature = "bindings", derive(specta::Type))]
 #[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
-pub struct PrDutyRuleSettings {
-    pub review_theorem_statements: bool,
-    pub ci_green_before_merge: bool,
-    pub check_diff_against_spec: bool,
-    pub re_review_on_new_commits: bool,
-    pub delete_branch_after_merge: bool,
-    pub merge_method: DutyMergeMethod,
-}
-
-impl Default for PrDutyRuleSettings {
-    fn default() -> Self {
-        Self {
-            review_theorem_statements: true,
-            ci_green_before_merge: true,
-            check_diff_against_spec: true,
-            re_review_on_new_commits: true,
-            delete_branch_after_merge: true,
-            merge_method: DutyMergeMethod::Squash,
-        }
-    }
-}
-
-#[cfg_attr(feature = "bindings", derive(specta::Type))]
-#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct ScoutRuleSettings {
     pub focus_areas: Vec<ScoutFocusArea>,
     pub assume_every_part_fails: bool,
@@ -232,11 +151,6 @@ pub struct DutyAgentCard {
     #[cfg_attr(feature = "bindings", serde(skip))]
     #[cfg_attr(feature = "bindings", specta(skip))]
     pub repeat_unchanged: bool,
-    /// A PR duty agent's kept `review-pr-<n>` worktrees. Saved state only, so Settings →
-    /// Worktrees lists them as PR duty's.
-    #[cfg_attr(feature = "bindings", serde(skip))]
-    #[cfg_attr(feature = "bindings", specta(skip))]
-    pub review_worktrees: Vec<String>,
     /// The effort and speed its sessions run at (F7, F15). `None` on an agent saved before
     /// they could be chosen: its sessions use Settings' defaults. Saved state only.
     #[cfg_attr(feature = "bindings", serde(skip))]
@@ -301,12 +215,6 @@ pub struct DutyViewSnapshot {
     pub agent_count_label: String,
     #[cfg_attr(feature = "bindings", serde(with = "crate::ipc_number"))]
     #[cfg_attr(feature = "bindings", specta(type = String))]
-    pub open_pull_request_count: usize,
-    #[cfg_attr(feature = "bindings", serde(with = "crate::ipc_number"))]
-    #[cfg_attr(feature = "bindings", specta(type = String))]
-    pub merged_today: usize,
-    #[cfg_attr(feature = "bindings", serde(with = "crate::ipc_number"))]
-    #[cfg_attr(feature = "bindings", specta(type = String))]
     pub issues_filed: usize,
     pub cadence_label: String,
     pub rules: Vec<DutyRuleChip>,
@@ -322,7 +230,6 @@ pub struct DutyRoleEntry {
     pub role: DutyRole,
     pub paused: bool,
     pub issues_filed: usize,
-    pub pr_rules: PrDutyRuleSettings,
     pub scout_rules: ScoutRuleSettings,
     pub agents: Vec<DutyAgentCard>,
     pub feed: Vec<DutyFeedEvent>,
@@ -353,7 +260,6 @@ impl DutyRoleEntry {
             role,
             paused: false,
             issues_filed: 0,
-            pr_rules: PrDutyRuleSettings::default(),
             scout_rules: ScoutRuleSettings::default(),
             agents: Vec::new(),
             feed: Vec::new(),
@@ -391,54 +297,6 @@ pub fn review_window_seconds(cadence: ScoutCadence) -> u64 {
 
 pub fn clamp_duty_agent_count(count: usize) -> usize {
     count.clamp(1, 4)
-}
-
-pub fn build_pr_duty_rule_chips(settings: &PrDutyRuleSettings) -> Vec<DutyRuleChip> {
-    let mut chips = vec![
-        DutyRuleChip {
-            text: "Never merge without an approving review".into(),
-            hard: true,
-        },
-        DutyRuleChip {
-            text: "Proofs check".into(),
-            hard: true,
-        },
-    ];
-    if settings.review_theorem_statements {
-        chips.push(DutyRuleChip {
-            text: "Review statements".into(),
-            hard: false,
-        });
-    }
-    if settings.ci_green_before_merge {
-        chips.push(DutyRuleChip {
-            text: "Checks pass".into(),
-            hard: false,
-        });
-    }
-    if settings.check_diff_against_spec {
-        chips.push(DutyRuleChip {
-            text: "Check against SPEC.md".into(),
-            hard: false,
-        });
-    }
-    if settings.re_review_on_new_commits {
-        chips.push(DutyRuleChip {
-            text: "Re-review on new commits".into(),
-            hard: false,
-        });
-    }
-    chips.push(DutyRuleChip {
-        text: settings.merge_method.rule_label().into(),
-        hard: false,
-    });
-    if settings.delete_branch_after_merge {
-        chips.push(DutyRuleChip {
-            text: "Delete branch".into(),
-            hard: false,
-        });
-    }
-    chips
 }
 
 pub fn build_scout_rule_chips(settings: &ScoutRuleSettings) -> Vec<DutyRuleChip> {
@@ -483,20 +341,6 @@ pub fn build_scout_rule_chips(settings: &ScoutRuleSettings) -> Vec<DutyRuleChip>
     chips
 }
 
-/// The Main watcher's rules (F7). It has no settings: what it runs comes from AGENTS.md.
-pub fn build_main_watcher_rule_chips() -> Vec<DutyRuleChip> {
-    let rule = |text: &str, hard: bool| DutyRuleChip {
-        text: text.into(),
-        hard,
-    };
-    vec![
-        rule("Never push to master · every fix or revert is a PR", true),
-        rule("Every test and stress script after each merge", false),
-        rule("Bisect a break to its merge", false),
-        rule("File flaky tests", false),
-    ]
-}
-
 fn format_focus_areas(areas: &[ScoutFocusArea]) -> Option<String> {
     let first = areas.first()?;
     let mut text = String::from(first.label());
@@ -507,51 +351,21 @@ fn format_focus_areas(areas: &[ScoutFocusArea]) -> Option<String> {
     Some(text)
 }
 
-pub fn duty_sidebar_summary(entry: &DutyRoleEntry, merged_today: usize) -> String {
+pub fn duty_sidebar_summary(entry: &DutyRoleEntry) -> String {
     if entry.paused {
         return "paused".into();
     }
     if let Some(coverage) = entry.coverage_label() {
         return coverage;
     }
-    match entry.role {
-        DutyRole::PrDuty => {
-            let busy = entry.agents.iter().filter(|agent| agent.busy).count();
-            format!("{busy} reviewing · {merged_today} merged")
-        }
-        DutyRole::Scouts => {
-            let doing = entry
-                .agents
-                .first()
-                .map_or("idle", |agent| agent.doing.as_str());
-            format!("{} filed · {doing}", entry.issues_filed)
-        }
-        // The watcher on a merge right now, else what the first one says it waits for.
-        DutyRole::MainWatcher => entry
-            .agents
-            .iter()
-            .find(|agent| agent.busy)
-            .or(entry.agents.first())
-            .map_or_else(|| "idle".into(), |agent| agent.doing.clone()),
-    }
+    let doing = entry
+        .agents
+        .first()
+        .map_or("idle", |agent| agent.doing.as_str());
+    format!("{} filed · {doing}", entry.issues_filed)
 }
 
-pub fn initial_agent_doing(role: DutyRole, _has_open_pull_requests: bool) -> String {
-    match role {
-        // Open PRs describe available work, not whether a runner has started.
-        // Only the runners can report claiming, watching or sweeping.
-        DutyRole::PrDuty | DutyRole::Scouts => "waiting to start".into(),
-        // The watch runner replaces this as soon as a watcher takes the base branch's tip.
-        DutyRole::MainWatcher => "waiting for the first watch".into(),
-    }
-}
-
-pub fn project_duty_view(
-    entry: &DutyRoleEntry,
-    open_pull_request_count: usize,
-    merged_today: usize,
-    default_pill: &ModelPillView,
-) -> DutyViewSnapshot {
+pub fn project_duty_view(entry: &DutyRoleEntry, default_pill: &ModelPillView) -> DutyViewSnapshot {
     let count = entry.agents.len();
     let agent_count_label = if count == 1 {
         "1 agent".into()
@@ -577,8 +391,6 @@ pub fn project_duty_view(
         paused: entry.paused,
         agent_count: count,
         agent_count_label,
-        open_pull_request_count,
-        merged_today,
         issues_filed: entry.issues_filed,
         cadence_label: entry
             .coverage_label()
@@ -607,23 +419,14 @@ fn duty_rules(entry: &DutyRoleEntry) -> Vec<DutyRuleChip> {
         })
         .collect();
     }
-    match entry.role {
-        DutyRole::PrDuty => build_pr_duty_rule_chips(&entry.pr_rules),
-        DutyRole::Scouts => build_scout_rule_chips(&entry.scout_rules),
-        DutyRole::MainWatcher => build_main_watcher_rule_chips(),
-    }
+    build_scout_rule_chips(&entry.scout_rules)
 }
 
 fn duty_placeholder(entry: &DutyRoleEntry) -> &'static str {
     if entry.review_swarm.is_some() {
-        return "Point the review swarm at a feature, issue or proof gap";
-    }
-    match entry.role {
-        DutyRole::PrDuty => "Instruct every PR agent, e.g. “hold merges until #41 lands”",
-        DutyRole::Scouts => "Point the scouts somewhere, e.g. “dig into the IPC layer”",
-        DutyRole::MainWatcher => {
-            "Instruct the watcher, e.g. “run the stress suite on master again”"
-        }
+        "Point the review swarm at a feature, issue or proof gap"
+    } else {
+        "Point the scouts somewhere, e.g. “dig into the IPC layer”"
     }
 }
 
@@ -635,10 +438,8 @@ pub struct DutyStartSpec {
     /// The effort and speed the new agents run at; `None` keeps Settings' defaults.
     pub effort: Option<crate::state::EffortLevel>,
     pub speed: Option<crate::state::SpeedMode>,
-    pub pr_rules: PrDutyRuleSettings,
     pub scout_rules: ScoutRuleSettings,
     pub repeat_unchanged: bool,
-    pub has_open_pull_requests: bool,
     pub timestamp: String,
 }
 
@@ -650,10 +451,8 @@ pub fn build_duty_agents(
     count: usize,
     provider: ProviderColor,
     model_name: &str,
-    has_open_pull_requests: bool,
 ) -> Vec<DutyAgentCard> {
     let clamped = clamp_duty_agent_count(count);
-    let doing = initial_agent_doing(role, has_open_pull_requests);
     let taken = |nickname: &str| existing.iter().any(|agent| agent.nickname == nickname);
     (1..)
         .map(|number: usize| format!("{}-{number}", role.prefix()))
@@ -664,10 +463,9 @@ pub fn build_duty_agents(
             provider,
             model_name: model_name.to_owned(),
             busy: false,
-            doing: doing.clone(),
+            doing: "waiting to start".into(),
             sweep: None,
             repeat_unchanged: false,
-            review_worktrees: Vec::new(),
             effort: None,
             speed: None,
         })
@@ -686,14 +484,7 @@ fn with_run_choice(mut agents: Vec<DutyAgentCard>, spec: &DutyStartSpec) -> Vec<
 
 pub fn start_duty_entry(identifier: usize, spec: DutyStartSpec) -> (DutyRoleEntry, DutyFeedEvent) {
     let clamped = clamp_duty_agent_count(spec.agent_count);
-    let agents = build_duty_agents(
-        spec.role,
-        &[],
-        clamped,
-        spec.provider,
-        &spec.model_name,
-        spec.has_open_pull_requests,
-    );
+    let agents = build_duty_agents(spec.role, &[], clamped, spec.provider, &spec.model_name);
     let agents = with_run_choice(agents, &spec);
     let suffix = if clamped == 1 { "" } else { "s" };
     let role_lower = spec.role.title().to_lowercase();
@@ -708,7 +499,6 @@ pub fn start_duty_entry(identifier: usize, spec: DutyStartSpec) -> (DutyRoleEntr
         role: spec.role,
         paused: false,
         issues_filed: 0,
-        pr_rules: spec.pr_rules,
         scout_rules: spec.scout_rules,
         agents,
         feed: vec![event.clone()],
@@ -725,10 +515,8 @@ pub fn add_agents_to_duty_entry(entry: &mut DutyRoleEntry, spec: DutyStartSpec) 
         clamped,
         spec.provider,
         &spec.model_name,
-        spec.has_open_pull_requests,
     );
     entry.agents.extend(with_run_choice(additional, &spec));
-    entry.pr_rules = spec.pr_rules;
     entry.scout_rules = spec.scout_rules;
     let suffix = if clamped == 1 { "" } else { "s" };
     let event = DutyFeedEvent {
@@ -743,14 +531,12 @@ pub fn add_agents_to_duty_entry(entry: &mut DutyRoleEntry, spec: DutyStartSpec) 
 
 pub fn toggle_duty_pause(entry: &mut DutyRoleEntry, timestamp: String) -> DutyFeedEvent {
     entry.paused = !entry.paused;
-    let message = if entry.paused && entry.role == DutyRole::Scouts {
-        "Paused duty · in-flight sweeps finish, no new sweep starts"
-    } else if entry.paused && entry.role == DutyRole::MainWatcher {
-        "Paused duty · a running watch finishes, no new watch starts"
+    let message = if entry.paused && entry.review_swarm.is_some() {
+        "Paused review · in-flight reviews finish"
     } else if entry.paused {
-        "Paused duty · in-flight reviews finish, nothing new gets claimed"
+        "Paused Scouts · in-flight sweeps finish"
     } else {
-        "Resumed duty"
+        "Resumed"
     };
     let event = DutyFeedEvent {
         timestamp,

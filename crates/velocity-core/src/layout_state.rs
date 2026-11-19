@@ -118,7 +118,7 @@ impl Default for LayoutState {
             slash_selection: 0,
             new_project_open: false,
             duty_dialog_open: false,
-            duty_dialog_role: DutyRole::PrDuty,
+            duty_dialog_role: DutyRole::Scouts,
             swarm_dialog: None,
             goal_dialog: None,
             airc_open: false,
@@ -954,12 +954,7 @@ impl LayoutState {
             .find(|thread| thread.policy.identifier == identifier && !thread.policy.hidden)?;
         let duty = entry.duty.as_ref()?;
         let default_pill = self.default_model_pill();
-        Some(duty::project_duty_view(
-            duty,
-            self.data.pull_requests.len(),
-            self.data.merged_today,
-            &default_pill,
-        ))
+        Some(duty::project_duty_view(duty, &default_pill))
     }
 
     fn active_swarm_snapshot(&self) -> Option<SwarmViewSnapshot> {
@@ -1279,9 +1274,7 @@ impl LayoutState {
             NavigationIntent::Goal => self.open_goal_dialog(),
             NavigationIntent::Airc => self.open_airc(),
             NavigationIntent::Settings => self.view = NavigationView::Settings,
-            NavigationIntent::PrDuty => self.open_duty_dialog(DutyRole::PrDuty),
             NavigationIntent::Scouts => self.open_duty_dialog(DutyRole::Scouts),
-            NavigationIntent::MainWatcher => self.open_duty_dialog(DutyRole::MainWatcher),
             NavigationIntent::ShowNumbers => self.show_numbers = true,
             NavigationIntent::Jump(number) => {
                 let visible: Vec<_> = self

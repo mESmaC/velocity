@@ -48,7 +48,6 @@
   let choices: GoalSwarmChoices | null = null;
   let prompt = $state('');
   let keepGoing = $state(false);
-  let addPrDuty = $state(true);
   let submitting = $state(false);
   let error = $state('');
   let handledSubmits = 0;
@@ -142,7 +141,6 @@
     try {
       await queue;
       if (!view || Boolean(view.launch_note)) return;
-      const addPrDutyAgents = addPrDuty && view.pr_duty_shortfall > 0;
       // + Agents joins the swarm on its own prompt and keep-going choice (F16).
       onResult(
         request.into === null
@@ -152,13 +150,11 @@
               sources: view.choices.sources,
               mix: view.choices.rows,
               keep_going: keepGoing,
-              add_pr_duty: addPrDutyAgents,
             })
           : await goalSwarmCommands.addAgents({
               project_identifier: view.project_identifier,
               swarm_identifier: Number(request.into),
               mix: view.choices.rows,
-              add_pr_duty: addPrDutyAgents,
             }),
       );
     } catch (reason) {
@@ -394,14 +390,6 @@
               <input type="checkbox" bind:checked={keepGoing} />
               {view?.keep_going_label ?? ''}
             </label>{/if}
-          {#if view?.pr_duty_label && view.pr_duty_shortfall > 0}<label
-              class="check"
-            >
-              <input type="checkbox" bind:checked={addPrDuty} />
-              {view.pr_duty_label}
-            </label>{:else if view?.pr_duty_label}<span class="hint"
-              >{view.pr_duty_label}</span
-            >{/if}
         </div>
       </div>
     </div>

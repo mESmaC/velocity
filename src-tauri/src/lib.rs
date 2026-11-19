@@ -28,7 +28,6 @@ mod issue_panel;
 mod kept_worktrees;
 pub mod layout;
 mod machines;
-pub mod main_watch;
 mod new_project;
 mod parking;
 pub mod process_memory;
@@ -39,10 +38,10 @@ mod provider_agents;
 mod providers;
 mod ready_pool;
 mod restart;
-pub mod reviews;
 mod rosen;
 mod rosen_events;
 mod rosen_issue;
+mod rosen_landing;
 mod rosen_migration;
 mod rosen_mirror;
 mod rosen_rebase;
@@ -141,7 +140,6 @@ fn bindings() -> Builder<tauri::Wry> {
         github::list_pull_requests,
         github::get_pull_request,
         github::open_project_pull_request,
-        github::dispatch_pull_request,
         goal_swarm::get_goal_swarm_dialog,
         goal_swarm::read_goal_swarm_pool,
         goal_swarm::launch_goal_swarm,
@@ -359,9 +357,8 @@ pub fn run() -> anyhow::Result<()> {
             ready_pool::initialize(application.handle())?;
             skills::initialize(application.handle())?;
             interview::start(application.handle());
-            reviews::initialize(application.handle())?;
+            rosen_landing::initialize(application.handle())?;
             sweeps::initialize(application.handle())?;
-            main_watch::initialize(application.handle())?;
             airc_delivery::initialize(application.handle());
             airc_modal::initialize(application.handle());
             updates::initialize(application.handle());

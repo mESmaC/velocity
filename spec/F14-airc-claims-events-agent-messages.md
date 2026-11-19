@@ -27,8 +27,7 @@ Velocity posts them; agents never type them.
 | `overlap` (amber row) | two working or PR-open agents claim the same files | Velocity's claim comparison |
 | `shares` | an agent will make a small change in another agent's file and rebase after it merges | `airc_share` |
 | `waits` / `unblocked` | an agent waits for another agent's PR, then rebases after it merges | `airc_wait`, `pr://merged` |
-| `PR` · `changes` · `pushed` · `approved` · `merged` | the PR lifecycle (F6, F7) | GitHub; `approved` is PR duty's approval record (F7) |
-| `order` | PR duty sets a merge order | PR duty |
+| `PR` · `changes` · `pushed` · `approved` · `merged` | the PR lifecycle (F6, F7) | GitHub (historical PR events) |
 | `issue` | a scout or agent files an issue | GitHub |
 | `task` | a Task List item is added, changed or deleted (F8) | Task List |
 | `failed` | an agent stops on an error; its claim is held | agent runner |
@@ -36,13 +35,10 @@ Velocity posts them; agents never type them.
 | `swarm` | a swarm or goal swarm starts | you |
 | `left` | an agent leaves without a PR (e.g. nothing left to claim) | agent runner |
 | `rebased` | a merge touched an agent's files and it rebased (F6) | Velocity |
-| `updated` | PR duty merged `master` into a PR's branch; names the PR and its new head (F6) | PR duty |
-| `conflict` | a PR's update onto `master` conflicts in a way only its author can resolve; names the files and the owning agent (F6) | PR duty |
 | `stalled` · `at limit` · `released` | activity changes and claim release (§2.2) | Velocity |
-| `broken` · `reverted` | `master` broke after a merge, and its fix or revert (F7) | Main watcher |
 | `proved` | a design or confidence proof checks, with its level per language (F17) | Velocity |
 | `statement` | a theorem statement changed after review; the review resets (F17) | Velocity |
-| `stress` | a scout's or reviewer's stress script fails; the evidence for an issue or comment (F17) | scout, PR duty |
+| `stress` | a scout's or reviewer's stress script fails; the evidence for an issue or comment (F17) | Scout, review swarm |
 
 **What agents do** (enforced by the AGENTS.md "Coordination (AIRC)" section, F11):
 - **Claim before editing.**
@@ -73,7 +69,7 @@ Velocity posts them; agents never type them.
 - **Log discoveries** that other agents need (environment quirks, platform bugs) to the Discoveries ledger.
   Every merge is appended to Past work.
 - **Report Velocity's and Rosen's own problems.**
-  When a discovery is about Velocity itself rather than the project (its worktrees and paths, AIRC, the PR duty, scout or watch tools, agent shells, the build queue, the code graph or the app), the agent also passes `velocity_issue`, a one-line title of at most 200 characters, to `append_ledger`.
+  When a discovery is about Velocity itself rather than the project (its worktrees and paths, AIRC, the Scout or review swarm tools, agent shells, the build queue, the code graph or the app), the agent also passes `velocity_issue`, a one-line title of at most 200 characters, to `append_ledger`.
   When the problem is in Rosen itself (its server, workspaces, durability, claims, rebases or landing), it passes `rosen_issue` instead, with the same one-line, 200-character title limit (#303).
   Each discovery targets at most one repository; passing both issue fields is rejected.
   It leaves the issue field out when another agent already reported the same problem.
@@ -104,7 +100,7 @@ Available notices are batched into that prompt, with actionable notices first an
 A legacy PR merge that touches the recipient's claimed or edited files requests a rebase, while Rosen handles native lands through its own follow-through.
 GitHub review requests reach the PR author's agent through F6 follow-through, and their AIRC records remain in the log.
 An agent is never sent its own events (its claims and claim updates, its PR, pushes, waits, shares and rebases): it caused them, and the tool call that did returned the result.
-Routine lines about its work posted by others, such as PR duty's review claim and release of its PR or an approval, stay in the log.
+Routine lines about its work posted by others, such as review coverage, stay in the log.
 The event log stays readable on demand with `read_events`.
 `airc_claims { path?, task?, offset? }` filters held claims by repository-relative path, exact task text or piece key.
 With no filter it shows counts by agent, the caller's own claims and claims touching the caller's claimed files.
@@ -252,15 +248,13 @@ Heads-down holds agent messages until idle or a PR update, while events and user
 Per-line durable acknowledgements prevent replay when held messages keep the scan cursor behind.
 Quarantined senders’ messages stay in the modal log but are never pushed; quarantined recipients receive events and user comments.
 The modal uses `airc_send` for comments.
-A running PR duty review is a member too, as `duty-<nick>`.
 Once the review prompt is sent, actionable notices can extend the review, and informational notices ride along with a turn the reviewer is already taking.
-An idle PR duty agent has no session and receives nothing.
 
 **Runtime injection.**
-Every session Velocity starts, on every provider, gets an MCP server named `airc` in `session/new`: build threads (composer, dispatch and follow-through resume), scout sweeps, PR duty reviews and the spec interview.
+Every session Velocity starts, on every provider, gets an MCP server named `airc` in `session/new`: build threads (composer, dispatch and follow-through resume), Scout sweeps, review swarm sessions and the spec interview.
 It runs Velocity's own executable as `velocity --airc-mcp <app-data> <project-id> <member-id> <nick> <member-scope>`, so the server ships inside the app; the standalone `velocity-airc` binary takes the same arguments, with or without the switch.
 Four-argument standalone launches remain supported and derive their scope locally.
-Member ids are `thread-<thread id>`, `duty-<nick>` (scouts and PR duty) and `spec-<thread id>`.
+Member ids are `thread-<thread id>`, `duty-<nick>` (Scouts and review workers) and `spec-<thread id>`.
 A thread's nick is its workspace leaf, a duty agent's its role nick, and the spec interview's `spec`.
 
 **Acceptance:**

@@ -5,7 +5,7 @@
 
 | When | What happens |
 |---|---|
-| A thread starts, or any agent starts a job (PR duty review, scout sweep, swarm member, dispatched issue) | Create a worktree from the project's default branch (`master` when unset). Its first transcript step is `Worktree · <path> · creating from <base branch>` during setup, then `Worktree · <path> · created from <base branch>`. |
+| A thread starts, or any agent starts a job (scout sweep, swarm member, dispatched issue) | Create a worktree from the project's default branch (`master` when unset). Its first transcript step is `Worktree · <path> · creating from <base branch>` during setup, then `Worktree · <path> · created from <base branch>`. |
 | Its PR merges | Delete the worktree. Delete the local branch too if that setting is on (default on). Log both as steps with the space freed. |
 | Its PR is closed without merging | **Keep** the worktree. No automatic expiry. |
 | The thread fails | **Keep** the worktree. |

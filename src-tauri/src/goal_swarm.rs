@@ -1,7 +1,7 @@
 //! Tauri commands and runtime edges for Goal swarms (`SPEC.md` §3.1, F16).
 //!
 //! Draws the Goal swarm dialog from the cached work pool, launches all N agents at once in
-//! their `<nick>` worktrees, tops up PR duty when asked, posts goal swarm lifecycle lines,
+//! their `<nick>` worktrees, posts goal swarm lifecycle lines,
 //! and spawns the next round when `keep_going` is enabled.
 
 use std::sync::Mutex;
@@ -15,10 +15,8 @@ use velocity_core::layout_view::LayoutSnapshot;
 use velocity_core::swarm::{self, PullRequestStep, SwarmEventKind};
 use velocity_core::work_pool::WorkSources;
 use velocity_github::follow_through::FollowThrough;
-use velocity_store::duty::{StartDutyRequest, clock_timestamp};
-use velocity_store::goal_swarm_dialog::{
-    GoalMixRow, GoalPool, GoalSwarmChoices, GoalSwarmDialog, GoalSwarmDialogQuery,
-};
+use velocity_store::duty::clock_timestamp;
+use velocity_store::goal_swarm_dialog::{GoalPool, GoalSwarmDialog, GoalSwarmDialogQuery};
 use velocity_store::goal_swarm_view::goal_claims_board;
 use velocity_store::goal_swarms::{
     AddGoalAgentsRequest, GoalAgentSlot, LaunchGoalSwarmRequest, thread_goal_swarm,
@@ -56,7 +54,7 @@ pub async fn get_goal_swarm_dialog(
     .await
 }
 
-/// Reads the active project's work pool for the pool line and the PR duty check. Issues
+/// Reads the active project's work pool for the pool line. Issues
 /// come from GitHub and sections from `SPEC.md`, so the read runs off the UI thread.
 #[tauri::command]
 #[specta::specta]
@@ -98,15 +96,6 @@ pub async fn launch_goal_swarm(
 ) -> Result<LayoutSnapshot, String> {
     crate::layout::off_ui_thread(move || {
         velocity_rosen::memory::require_headroom()?;
-        if request.add_pr_duty {
-            report(ensure_pr_duty(
-                &application,
-                request.project_identifier,
-                &request.mix,
-                request.sources,
-                None,
-            ));
-        }
         let (swarm_id, slots, mix_summary) = {
             let mut store = lock(
                 application.state::<ManagedStateStore>().inner(),
@@ -145,15 +134,6 @@ pub async fn add_goal_agents(
 ) -> Result<LayoutSnapshot, String> {
     crate::layout::off_ui_thread(move || {
         velocity_rosen::memory::require_headroom()?;
-        if request.add_pr_duty {
-            report(ensure_pr_duty(
-                &application,
-                request.project_identifier,
-                &request.mix,
-                WorkSources::default(),
-                Some(request.swarm_identifier),
-            ));
-        }
         let slots = lock(
             application.state::<ManagedStateStore>().inner(),
             "persisted state",
@@ -273,53 +253,6 @@ fn cached_pool(application: &AppHandle, project: Option<u32>) -> Result<GoalPool
             .filter(|(saved, _)| Some(*saved) == project)
             .map_or(GoalPool::Reading, |(_, pool)| pool.clone()),
     )
-}
-
-fn ensure_pr_duty(
-    application: &AppHandle,
-    project_id: u32,
-    mix: &[GoalMixRow],
-    sources: WorkSources,
-    into: Option<u32>,
-) -> Result<(), String> {
-    let agents: u32 = mix.iter().fold(0, |sum, row| sum.saturating_add(row.count));
-    let mut choices = GoalSwarmChoices::new(agents, mix.to_vec());
-    choices.sources = sources;
-    let mut query = GoalSwarmDialogQuery::with_choices(choices);
-    query.into = into;
-    let pool = cached_pool(application, Some(project_id))?;
-    let shortfall = lock(
-        application.state::<ManagedStateStore>().inner(),
-        "persisted state",
-    )?
-    .goal_swarm_dialog(&query, &pool)
-    .map_or(0, |dialog| dialog.pr_duty_shortfall);
-    if shortfall == 0 {
-        return Ok(());
-    }
-    let outcome = {
-        let mut store = lock(
-            application.state::<ManagedStateStore>().inner(),
-            "persisted state",
-        )?;
-        let mut layout = lock(
-            application.state::<MainLayout>().inner(),
-            "main-window state",
-        )?;
-        store
-            .start_or_add_duty(
-                &mut layout,
-                StartDutyRequest::pr_duty(u8::try_from(shortfall).unwrap_or(u8::MAX)),
-                clock_timestamp(),
-            )
-            .map_err(|error| error.to_string())?
-    };
-    crate::layout::publish(application, &outcome.snapshot, None)?;
-    crate::duty::DutyEventPublished::new(outcome.role, outcome.event)
-        .emit(application)
-        .map_err(|error| error.to_string())?;
-    crate::reviews::wake(application);
-    Ok(())
 }
 
 fn spawn_goal_slots(

@@ -165,7 +165,6 @@ fn open_swarm(harness: &Harness) -> Outcome<(u32, Vec<GoalAgentSlot>)> {
             GoalMixRow::new(ProviderKind::Codex, EffortLevel::High, SpeedMode::Fast, 2),
         ],
         true,
-        false,
     );
     let mut store = harness
         .store

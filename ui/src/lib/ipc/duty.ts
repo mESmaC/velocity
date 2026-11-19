@@ -8,12 +8,10 @@ export type {
   DutyEventKind,
   DutyEventPublished,
   DutyFeedEvent,
-  DutyMergeMethod,
   DutyRole,
   DutyRuleChip,
   DutyViewSnapshot_Serialize as DutyViewSnapshot,
   PauseDutyRequest,
-  PrDutyRuleSettings,
   ScoutCadence,
   ScoutFocusArea,
   ScoutRuleSettings,
@@ -29,7 +27,7 @@ export const dutyCommands = {
   addAgents: commands.addDutyAgents,
   dismissAgent: commands.dismissDutyAgent,
   stop: commands.stopDuty,
-  /** A PR duty agent's latest review session; null before its first review. */
+  /** A review worker’s session; null before its first review. */
   agentTranscript: commands.getDutyAgentTranscript,
 };
 

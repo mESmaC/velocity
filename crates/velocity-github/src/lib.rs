@@ -2,25 +2,19 @@
 //! Every call runs `gh` as a child process with its arguments passed directly, never
 //! through a shell.
 
-mod approval;
 mod branch_pull_requests;
 mod command;
-mod duty_server;
 pub mod follow_through;
 pub mod follow_through_poll;
 mod issue_panel;
 mod issue_types;
 mod issues;
-mod landing;
 pub mod mcp_stdio;
-mod merge_gate;
 pub mod post_land_failures;
-mod proof_gate;
 mod pull_request_command;
 mod pull_request_files;
-mod pull_request_mutations;
+mod pull_request_history;
 mod pull_request_queries;
-mod pull_request_reviews;
 mod pull_request_types;
 mod pull_requests;
 mod repository;
@@ -34,15 +28,10 @@ mod scout_reference;
 mod scout_search;
 mod scout_server;
 pub mod velocity_reports;
-mod watch_server;
 
-pub use approval::{ReviewRecord, review_standing};
-pub use duty_server::{PrDutyReport, PrDutyServer, read_pr_duty_reports};
 pub use issue_panel::{IssuePanelCache, IssuePanelRow, IssuePanelSnapshot, SpecQuestion};
 pub use issue_types::*;
 pub use issues::IssueClient;
-pub use merge_gate::{StatementLockPlace, require_statement_lock};
-pub use proof_gate::check_proof_gate;
 pub use pull_request_command::PullRequestError;
 pub use pull_request_types::*;
 pub use pull_requests::PullRequestClient;
@@ -56,4 +45,3 @@ pub use scout_evidence::Reproduction;
 pub use scout_issues::{ScoutFinding, ScoutIssueError, ScoutIssueOutcome};
 pub use scout_reference::{ReferenceComparison, ReferenceComparisonResult};
 pub use scout_server::{ScoutReport, ScoutServer, filed_message, read_scout_reports};
-pub use watch_server::{WatchReport, WatchServer, WatchTarget, read_watch_reports};

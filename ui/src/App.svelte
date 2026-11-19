@@ -616,9 +616,8 @@
       submitRequests={newProjectSubmits}
     /></PaneBoundary
   >{/if}
-{#if layout?.duty_dialog_open}<PaneBoundary name="duty dialog" {revision}
+{#if layout?.duty_dialog_open}<PaneBoundary name="review dialog" {revision}
     ><DutyDialog
-      initialRole={layout.duty_dialog_role}
       {send}
       submitRequests={dutySubmits}
       onResult={receive}

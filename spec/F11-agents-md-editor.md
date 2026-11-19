@@ -29,7 +29,6 @@ It reads and writes the repo's `AGENTS.md`.
   - **The lint advises; it never blocks** (decided, Q8).
     It marks the words and lists them under Flagged.
     It never stops typing, saving or committing.
-  - **AGENTS.md changes in a PR:** when a line the PR changed in AGENTS.md trips the lint, PR duty rewrites that line as a direct rule in the branch update it makes before merging (the same tighten rewrite as Enter), and says so in its review.
     It never requests changes for wording alone.
     A vague word it can't resolve becomes an issue (F7 severity bar).
 - **Side panel:**

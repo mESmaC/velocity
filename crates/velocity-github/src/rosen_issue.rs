@@ -264,7 +264,7 @@ impl IssueClient {
             RosenIssueEffect::Watcher => (
                 "close",
                 format!(
-                    "Velocity main watcher · Rosen commit `{commit}` passed its post-land build. \
+                    "Velocity post-land verification · Rosen commit `{commit}` passed its post-land build. \
                      The 30-minute review window elapsed without review coverage."
                 ),
             ),

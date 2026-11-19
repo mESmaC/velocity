@@ -1,7 +1,7 @@
-#### Duty view
+#### Review view
 
 <!-- split-spec: {"order":896,"kind":"markdown","indentation":0} -->
-**Duty view:**
+**Review view:**
 
 <!-- split-spec links -->
 

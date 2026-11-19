@@ -8,11 +8,9 @@
   import type {
     TranscriptBlock,
     DutyEventKind,
-    DutyRole,
     DutyViewSnapshot,
     LayoutAction,
     LayoutSnapshot,
-    NavigationIntent,
     ProviderColor,
   } from './ipc';
 
@@ -38,9 +36,7 @@
   const SESSION_REFRESH_MS = 1500;
   let sessionNickname = $state<string | null>(null);
   let sessionBlocks = $state<TranscriptBlock[] | null>(null);
-  const hasReviewTranscript = $derived(
-    duty.role === 'pr_duty' || duty.title === 'Review swarm',
-  );
+  const hasReviewTranscript = $derived(duty.title === 'Review swarm');
 
   $effect(() => {
     const nickname = sessionNickname;
@@ -128,14 +124,8 @@
     void run(() => dutyCommands.stop({ role: duty.role }));
   }
 
-  const dialogIntents: Record<DutyRole, NavigationIntent> = {
-    pr_duty: 'PrDuty',
-    scouts: 'Scouts',
-    main_watcher: 'MainWatcher',
-  };
-
   function openDialog() {
-    send({ Request: { Navigation: dialogIntents[duty.role] } });
+    send({ Request: { Navigation: 'Scouts' } });
   }
 </script>
 
@@ -153,18 +143,10 @@
 <section class="thread-view duty-view" aria-label={duty.title}>
   <header class="thread-head">
     <h1>{duty.title}</h1>
-    <div class="meta" aria-label="Duty metadata">
+    <div class="meta" aria-label="Review metadata">
       <span>{duty.agent_count_label}</span>
-      {#if duty.role === 'pr_duty'}
-        <span>{duty.open_pull_request_count} named changes</span>
-        <span class="add">{duty.merged_today} landed today</span>
-      {:else if duty.role === 'main_watcher'}
-        <span>after every land</span>
-        <span>{duty.issues_filed} flaky tests filed</span>
-      {:else}
-        <span>{duty.issues_filed} issues filed</span>
-        <span>{duty.cadence_label}</span>
-      {/if}
+      <span>{duty.issues_filed} issues filed</span>
+      <span>{duty.cadence_label}</span>
       {#if duty.paused}
         <span class="duty-meta-paused">paused</span>
       {/if}

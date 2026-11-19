@@ -113,10 +113,7 @@ export const commands = {
 	startDuty: (request: StartDutyRequest_Deserialize) => __TAURI_INVOKE<LayoutSnapshot_Serialize>("start_duty", { request }),
 	pauseDuty: (request: PauseDutyRequest_Deserialize) => __TAURI_INVOKE<LayoutSnapshot_Serialize>("pause_duty", { request }),
 	addDutyAgents: (request: StartDutyRequest_Deserialize) => __TAURI_INVOKE<LayoutSnapshot_Serialize>("add_duty_agents", { request }),
-	/**
-	 *  Dismisses one duty agent (F7): it leaves the saved roster, its session stops, and a PR it
-	 *  held is released for the next agent.
-	 */
+	/**  Dismisses a Scout or review worker and stops its running session. */
 	dismissDutyAgent: (request: DismissDutyAgentRequest) => __TAURI_INVOKE<LayoutSnapshot_Serialize>("dismiss_duty_agent", { request }),
 	/**  Stops a duty role (F7): every agent on it is dismissed and the role leaves "On duty". */
 	stopDuty: (request: StopDutyRequest) => __TAURI_INVOKE<LayoutSnapshot_Serialize>("stop_duty", { request }),
@@ -124,21 +121,20 @@ export const commands = {
 	getPullRequest: (projectIdentifier: number, number: number) => __TAURI_INVOKE<PullRequestSnapshot_Serialize>("get_pull_request", { projectIdentifier, number }),
 	/**  Opens historical AIRC PR links on demand. */
 	openProjectPullRequest: (projectIdentifier: number, number: number) => __TAURI_INVOKE<LayoutSnapshot_Serialize | null>("open_project_pull_request", { projectIdentifier, number }),
-	dispatchPullRequest: (projectIdentifier: number, operation: PullRequestOperation_Deserialize) => __TAURI_INVOKE<PullRequestReceipt>("dispatch_pull_request", { projectIdentifier, operation }),
 	/**
 	 *  The Goal swarm dialog for the user's choices with one edit applied; asked again after
 	 *  every edit, and after the pool is read.
 	 */
 	getGoalSwarmDialog: (query: GoalSwarmDialogQuery_Deserialize) => __TAURI_INVOKE<GoalSwarmDialog_Serialize>("get_goal_swarm_dialog", { query }),
 	/**
-	 *  Reads the active project's work pool for the pool line and the PR duty check. Issues
+	 *  Reads the active project's work pool for the pool line. Issues
 	 *  come from GitHub and sections from `SPEC.md`, so the read runs off the UI thread.
 	 */
 	readGoalSwarmPool: (sources: WorkSources | null) => __TAURI_INVOKE<null>("read_goal_swarm_pool", { sources }),
 	/**  Starts all N goal swarm agents at once on one prompt and the chosen model mix (F16). */
 	launchGoalSwarm: (request: LaunchGoalSwarmRequest_Deserialize) => __TAURI_INVOKE<LayoutSnapshot_Serialize>("launch_goal_swarm", { request }),
 	/**  `+ Agents`: starts more agents on an existing goal swarm's prompt (F16). */
-	addGoalAgents: (request: AddGoalAgentsRequest_Deserialize) => __TAURI_INVOKE<LayoutSnapshot_Serialize>("add_goal_agents", { request }),
+	addGoalAgents: (request: AddGoalAgentsRequest) => __TAURI_INVOKE<LayoutSnapshot_Serialize>("add_goal_agents", { request }),
 	/**
 	 *  The goal swarm view's claims board (F16): every piece in the work pool with its holder
 	 *  and state, then the pieces this swarm merged. Issues come from GitHub and sections
@@ -264,20 +260,10 @@ export const UPDATE_STATUS_EVENT = "update://status" as const;
 export const WINDOW_STATE_EVENT = "window://state" as const;
 
 /* Types */
-export type AddGoalAgentsRequest = AddGoalAgentsRequest_Serialize | AddGoalAgentsRequest_Deserialize;
-
-export type AddGoalAgentsRequest_Deserialize = {
+export type AddGoalAgentsRequest = {
 	project_identifier: number,
 	swarm_identifier: number,
 	mix: GoalMixRow[],
-	add_pr_duty?: boolean,
-};
-
-export type AddGoalAgentsRequest_Serialize = {
-	project_identifier: number,
-	swarm_identifier: number,
-	mix: GoalMixRow[],
-	add_pr_duty: boolean,
 };
 
 export type AgentActivity = "thinking" | "executing" | "parked" | "stalled" | "at_limit" | "idle";
@@ -723,32 +709,6 @@ export type CoverageItem = {
 	covered: boolean,
 };
 
-export type CreatePullRequest = CreatePullRequest_Serialize | CreatePullRequest_Deserialize;
-
-export type CreatePullRequest_Deserialize = {
-	title: string,
-	body: string,
-	head_branch: string,
-	/**
-	 *  The caller may supply the project's configured branch; otherwise use
-	 *  GitHub's default branch rather than assuming a particular branch name.
-	 */
-	base_branch?: string | null,
-	draft: boolean,
-};
-
-export type CreatePullRequest_Serialize = {
-	title: string,
-	body: string,
-	head_branch: string,
-	/**
-	 *  The caller may supply the project's configured branch; otherwise use
-	 *  GitHub's default branch rather than assuming a particular branch name.
-	 */
-	base_branch: string | null,
-	draft: boolean,
-};
-
 export type CreatedProject = {
 	identifier: number,
 	name: string,
@@ -992,17 +952,9 @@ export type DutyDialogDefaults_Deserialize = {
 	models: SwarmModelCard_Deserialize[],
 	/**  Settings' default speed, where the dialog's Speed starts. */
 	speed: SpeedMode,
-	pr_duty_exists: boolean,
 	scouts_exists: boolean,
-	main_watcher_exists: boolean,
-	pr_rules: PrDutyRuleSettings,
 	scout_rules: ScoutRuleSettings,
-	/**
-	 *  The active project uses Rosen and reviews after the land (`rosen.toml`
-	 *  `review = "after-land"`), so the dialog doesn't offer PR duty (F7, #381). Only Rosen
-	 *  can say, so the window's command fills it in.
-	 */
-	lands_without_review?: boolean,
+	review_swarm: boolean,
 };
 
 export type DutyDialogDefaults_Serialize = {
@@ -1015,17 +967,9 @@ export type DutyDialogDefaults_Serialize = {
 	models: SwarmModelCard_Serialize[],
 	/**  Settings' default speed, where the dialog's Speed starts. */
 	speed: SpeedMode,
-	pr_duty_exists: boolean,
 	scouts_exists: boolean,
-	main_watcher_exists: boolean,
-	pr_rules: PrDutyRuleSettings,
 	scout_rules: ScoutRuleSettings,
-	/**
-	 *  The active project uses Rosen and reviews after the land (`rosen.toml`
-	 *  `review = "after-land"`), so the dialog doesn't offer PR duty (F7, #381). Only Rosen
-	 *  can say, so the window's command fills it in.
-	 */
-	lands_without_review: boolean,
+	review_swarm: boolean,
 };
 
 export type DutyEventKind = "merge" | "approve" | "changes" | "wait" | "file" | "sweep" | "claim" | "skip" | "task" | "you";
@@ -1049,11 +993,7 @@ export type DutyFeedItem = {
 	message: string,
 };
 
-export type DutyMergeMethod = "squash" | "rebase" | "merge_commit";
-
-export type DutyRole = "pr_duty" | "scouts" | 
-/**  Watches the base branch after merges (F7 Main watcher; the role name is proposed, Q22). */
-"main_watcher";
+export type DutyRole = "scouts";
 
 export type DutyRoleItem = DutyRoleItem_Serialize | DutyRoleItem_Deserialize;
 
@@ -1062,7 +1002,6 @@ export type DutyRoleItem_Deserialize = {
 	role: DutyRole,
 	paused: boolean,
 	issues_filed: number,
-	pr_rules: PrDutyRuleSettings,
 	scout_rules: ScoutRuleSettings,
 	agents: DutyAgentItem_Deserialize[],
 	feed: DutyFeedItem[],
@@ -1073,7 +1012,6 @@ export type DutyRoleItem_Serialize = {
 	role: DutyRole,
 	paused: boolean,
 	issues_filed: number,
-	pr_rules: PrDutyRuleSettings,
 	scout_rules: ScoutRuleSettings,
 	agents: DutyAgentItem_Serialize[],
 	feed: DutyFeedItem[],
@@ -1093,8 +1031,6 @@ export type DutyViewSnapshot_Deserialize = {
 	paused: boolean,
 	agent_count: string,
 	agent_count_label: string,
-	open_pull_request_count: string,
-	merged_today: string,
 	issues_filed: string,
 	cadence_label: string,
 	rules: DutyRuleChip[],
@@ -1111,8 +1047,6 @@ export type DutyViewSnapshot_Serialize = {
 	paused: boolean,
 	agent_count: string,
 	agent_count_label: string,
-	open_pull_request_count: string,
-	merged_today: string,
 	issues_filed: string,
 	cadence_label: string,
 	rules: DutyRuleChip[],
@@ -1501,8 +1435,6 @@ export type GoalSwarmDialog_Deserialize = {
 	pool?: PoolLine_Deserialize | null,
 	/**  Shown in place of the pool line while it is being read, or when reading it failed. */
 	pool_note?: string | null,
-	pr_duty_label?: string | null,
-	pr_duty_shortfall: number,
 	summary: string,
 	launch_label: string,
 	/**  Why Launch is unavailable, when it is. */
@@ -1529,8 +1461,6 @@ export type GoalSwarmDialog_Serialize = {
 	pool: PoolLine_Serialize | null,
 	/**  Shown in place of the pool line while it is being read, or when reading it failed. */
 	pool_note: string | null,
-	pr_duty_label: string | null,
-	pr_duty_shortfall: number,
 	summary: string,
 	launch_label: string,
 	/**  Why Launch is unavailable, when it is. */
@@ -2025,7 +1955,6 @@ export type LaunchGoalSwarmRequest_Deserialize = {
 	sources?: WorkSources,
 	mix: GoalMixRow[],
 	keep_going?: boolean,
-	add_pr_duty?: boolean,
 };
 
 export type LaunchGoalSwarmRequest_Serialize = {
@@ -2034,7 +1963,6 @@ export type LaunchGoalSwarmRequest_Serialize = {
 	sources: WorkSources,
 	mix: GoalMixRow[],
 	keep_going: boolean,
-	add_pr_duty: boolean,
 };
 
 export type LaunchRequest = "interview" | "thread" | "fan_out" | "task_swarm" | "issue_swarm" | "goal_swarm" | "issue_dispatch";
@@ -2051,8 +1979,6 @@ export type LaunchSwarmRequest_Deserialize = {
 	providers: ProviderKind[],
 	close_issues: boolean,
 	rebase_on_merge: boolean,
-	/**  Start PR duty, or add the agents it is short of (one reviewer per 3 open PRs). */
-	add_pr_duty: boolean,
 	into?: number | null,
 };
 
@@ -2065,8 +1991,6 @@ export type LaunchSwarmRequest_Serialize = {
 	providers: ProviderKind[],
 	close_issues: boolean,
 	rebase_on_merge: boolean,
-	/**  Start PR duty, or add the agents it is short of (one reviewer per 3 open PRs). */
-	add_pr_duty: boolean,
 	into: number | null,
 };
 
@@ -2330,8 +2254,6 @@ export type MachinesView_Serialize = {
 	recent_dispatch: string[],
 };
 
-export type MergeMethod = "SQUASH" | "REBASE" | "MERGE";
-
 export type MessageMode = "Open" | "HeadsDown" | "Quarantined";
 
 export type MirrorState = MirrorState_Serialize | MirrorState_Deserialize;
@@ -2491,13 +2413,13 @@ export type ModelPillView_Serialize = {
 
 export type NavigationIntent = NavigationIntent_Serialize | NavigationIntent_Deserialize;
 
-export type NavigationIntent_Deserialize = "Palette" | "NewThread" | "NewProject" | "Settings" | "ShowNumbers" | ({ Jump: string }) & { Answer?: never } | "Search" | "Task" | "Swarm" | "Goal" | "Airc" | "Dismiss" | "Submit" | "Dispatch" | "Resume" | "Fanout" | "PrDuty" | "Scouts" | "MainWatcher" | ({ Answer: string }) & { Jump?: never } | "Lock" | "SpecFile" | "Grill" | "Diff" | "Editor" | "SaveAgents" | 
+export type NavigationIntent_Deserialize = "Palette" | "NewThread" | "NewProject" | "Settings" | "ShowNumbers" | ({ Jump: string }) & { Answer?: never } | "Search" | "Task" | "Swarm" | "Goal" | "Airc" | "Dismiss" | "Submit" | "Dispatch" | "Resume" | "Fanout" | "Scouts" | ({ Answer: string }) & { Jump?: never } | "Lock" | "SpecFile" | "Grill" | "Diff" | "Editor" | "SaveAgents" | 
 /**  `B`: show the Board, or leave it for the Focus view when it is already showing. */
 "Board" | 
 /**  Leave the Board for the Focus view: the selected thread, or Home. */
 "Focus";
 
-export type NavigationIntent_Serialize = "Palette" | "NewThread" | "NewProject" | "Settings" | "ShowNumbers" | ({ Jump: string }) & { Answer?: never } | "Search" | "Task" | "Swarm" | "Goal" | "Airc" | "Dismiss" | "Submit" | "Dispatch" | "Resume" | "Fanout" | "PrDuty" | "Scouts" | "MainWatcher" | ({ Answer: string }) & { Jump?: never } | "Lock" | "SpecFile" | "Grill" | "Diff" | "Editor" | "SaveAgents" | 
+export type NavigationIntent_Serialize = "Palette" | "NewThread" | "NewProject" | "Settings" | "ShowNumbers" | ({ Jump: string }) & { Answer?: never } | "Search" | "Task" | "Swarm" | "Goal" | "Airc" | "Dismiss" | "Submit" | "Dispatch" | "Resume" | "Fanout" | "Scouts" | ({ Answer: string }) & { Jump?: never } | "Lock" | "SpecFile" | "Grill" | "Diff" | "Editor" | "SaveAgents" | 
 /**  `B`: show the Board, or leave it for the Focus view when it is already showing. */
 "Board" | 
 /**  Leave the Board for the Focus view: the selected thread, or Home. */
@@ -2547,13 +2469,6 @@ export type NewProjectRequest_Serialize = {
 	effort: EffortLevel,
 	speed: SpeedMode,
 	brief: string,
-};
-
-export type NewReviewComment = {
-	path: string,
-	line: number,
-	side: ReviewSide,
-	body: string,
 };
 
 export type NickDot = "Active" | "Idle" | "Hold" | "Left";
@@ -2839,15 +2754,6 @@ export type PoolLine_Serialize = {
 	spare: string | null,
 };
 
-export type PrDutyRuleSettings = {
-	review_theorem_statements: boolean,
-	ci_green_before_merge: boolean,
-	check_diff_against_spec: boolean,
-	re_review_on_new_commits: boolean,
-	delete_branch_after_merge: boolean,
-	merge_method: DutyMergeMethod,
-};
-
 export type ProcessMemory = {
 	pid: number,
 	role: string,
@@ -3023,7 +2929,7 @@ export type ProofCard = {
 	/**  The proof folders the PR changes, such as `proofs/ClaimLock/`. */
 	folders: string[],
 	theorem_count: number,
-	/**  Every check that decides a merge passed (the statement lock follows at approval). */
+	/**  The proof checks passed. */
 	proved: boolean,
 	checks: ProofCheck[],
 	theorems: ProofTheorem[],
@@ -3043,7 +2949,7 @@ export type ProofCheck = {
 
 /**  How one of the card's checks stands. */
 export type ProofCheckState = "Passed" | "Failed" | 
-/**  Not decided yet: the statement lock is taken only when PR duty approves. */
+/**  No result has been recorded for this check. */
 "Pending";
 
 /**  One language's row on the card. */
@@ -3652,71 +3558,6 @@ export type PullRequestLifecycleEvent = {
 	worktree_deleted: boolean,
 };
 
-export type PullRequestOperation = PullRequestOperation_Serialize | PullRequestOperation_Deserialize;
-
-export type PullRequestOperation_Deserialize = ({ Create: CreatePullRequest_Deserialize }) & { Close?: never; Comment?: never; Merge?: never; Reply?: never; RequestReview?: never; Resolve?: never; Review?: never } | ({ Review: {
-	number: number,
-	expected_head: string,
-	action: ReviewAction,
-	body: string,
-	comments?: NewReviewComment[],
-} }) & { Close?: never; Comment?: never; Create?: never; Merge?: never; Reply?: never; RequestReview?: never; Resolve?: never } | ({ Comment: {
-	number: number,
-	body: string,
-} }) & { Close?: never; Create?: never; Merge?: never; Reply?: never; RequestReview?: never; Resolve?: never; Review?: never } | ({ Reply: {
-	number: number,
-	thread: string,
-	body: string,
-} }) & { Close?: never; Comment?: never; Create?: never; Merge?: never; RequestReview?: never; Resolve?: never; Review?: never } | ({ Resolve: {
-	number: number,
-	thread: string,
-} }) & { Close?: never; Comment?: never; Create?: never; Merge?: never; Reply?: never; RequestReview?: never; Review?: never } | ({ RequestReview: {
-	number: number,
-	reviewers: string[],
-} }) & { Close?: never; Comment?: never; Create?: never; Merge?: never; Reply?: never; Resolve?: never; Review?: never } | ({ Merge: {
-	number: number,
-	expected_head: string,
-	method: MergeMethod,
-} }) & { Close?: never; Comment?: never; Create?: never; Reply?: never; RequestReview?: never; Resolve?: never; Review?: never } | ({ Close: {
-	number: number,
-} }) & { Comment?: never; Create?: never; Merge?: never; Reply?: never; RequestReview?: never; Resolve?: never; Review?: never };
-
-export type PullRequestOperation_Serialize = ({ Create: CreatePullRequest_Serialize }) & { Close?: never; Comment?: never; Merge?: never; Reply?: never; RequestReview?: never; Resolve?: never; Review?: never } | ({ Review: {
-	number: number,
-	expected_head: string,
-	action: ReviewAction,
-	body: string,
-	comments: NewReviewComment[],
-} }) & { Close?: never; Comment?: never; Create?: never; Merge?: never; Reply?: never; RequestReview?: never; Resolve?: never } | ({ Comment: {
-	number: number,
-	body: string,
-} }) & { Close?: never; Create?: never; Merge?: never; Reply?: never; RequestReview?: never; Resolve?: never; Review?: never } | ({ Reply: {
-	number: number,
-	thread: string,
-	body: string,
-} }) & { Close?: never; Comment?: never; Create?: never; Merge?: never; RequestReview?: never; Resolve?: never; Review?: never } | ({ Resolve: {
-	number: number,
-	thread: string,
-} }) & { Close?: never; Comment?: never; Create?: never; Merge?: never; Reply?: never; RequestReview?: never; Review?: never } | ({ RequestReview: {
-	number: number,
-	reviewers: string[],
-} }) & { Close?: never; Comment?: never; Create?: never; Merge?: never; Reply?: never; Resolve?: never; Review?: never } | ({ Merge: {
-	number: number,
-	expected_head: string,
-	method: MergeMethod,
-} }) & { Close?: never; Comment?: never; Create?: never; Reply?: never; RequestReview?: never; Resolve?: never; Review?: never } | ({ Close: {
-	number: number,
-} }) & { Comment?: never; Create?: never; Merge?: never; Reply?: never; RequestReview?: never; Resolve?: never; Review?: never };
-
-/**
- *  A successful write is reported without a follow-up read that could fail and
- *  make a caller retry an already-published comment, review or PR.
- */
-export type PullRequestReceipt = {
-	number: number,
-	operation: string,
-};
-
 export type PullRequestRepository = {
 	nameWithOwner: string,
 };
@@ -3907,13 +3748,9 @@ export type RepositoryPickerView_Serialize = {
 	typed: string | null,
 };
 
-export type ReviewAction = "APPROVE" | "REQUEST_CHANGES" | "COMMENT";
-
 export type ReviewCommit = {
 	oid: string,
 };
-
-export type ReviewSide = "LEFT" | "RIGHT";
 
 export type ReviewStage = "continuous_integration" | "review" | "fixing" | "approved";
 
@@ -4499,7 +4336,6 @@ export type StartDutyRequest_Deserialize = {
 	/**  The new agents' effort and speed; `None` keeps Settings' defaults. */
 	effort?: EffortLevel | null,
 	speed?: SpeedMode | null,
-	pr_rules?: PrDutyRuleSettings | null,
 	scout_rules?: ScoutRuleSettings | null,
 	/**  Only the scouts started by this request get this setting. */
 	repeat_unchanged?: boolean,
@@ -4513,7 +4349,6 @@ export type StartDutyRequest_Serialize = {
 	/**  The new agents' effort and speed; `None` keeps Settings' defaults. */
 	effort: EffortLevel | null,
 	speed: SpeedMode | null,
-	pr_rules: PrDutyRuleSettings | null,
 	scout_rules: ScoutRuleSettings | null,
 	/**  Only the scouts started by this request get this setting. */
 	repeat_unchanged: boolean,
@@ -4523,6 +4358,7 @@ export type Status = Status_Serialize | Status_Deserialize;
 
 export type Status_Deserialize = {
 	server?: string | null,
+	before_land: boolean,
 	machines: string[],
 	base: BaseStatus_Deserialize,
 	landing: LandingStatus_Deserialize,
@@ -4534,6 +4370,7 @@ export type Status_Deserialize = {
 
 export type Status_Serialize = {
 	server: string | null,
+	before_land: boolean,
 	machines: string[],
 	base: BaseStatus_Serialize,
 	landing: LandingStatus_Serialize,
@@ -4657,8 +4494,6 @@ export type SwarmDialog_Deserialize = {
 	items: SwarmDialogItem[],
 	models: SwarmModelCard_Deserialize[],
 	split_label: string,
-	pr_duty_label?: string | null,
-	pr_duty_shortfall: number,
 	worktree_root: string,
 	summary: string,
 	launch_label: string,
@@ -4674,8 +4509,6 @@ export type SwarmDialog_Serialize = {
 	items: SwarmDialogItem[],
 	models: SwarmModelCard_Serialize[],
 	split_label: string,
-	pr_duty_label: string | null,
-	pr_duty_shortfall: number,
 	worktree_root: string,
 	summary: string,
 	launch_label: string,

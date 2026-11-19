@@ -144,6 +144,12 @@
           await watchRosenStatus(project);
         }}
       />
+      {#if status?.before_land}
+        <p class="status-note" role="status">
+          Switch to <code>review = "after-land"</code> in
+          <code>rosen.toml</code> to enable automatic landing.
+        </p>
+      {/if}
       {#if status}
         {#each preferences.order as section, index (section)}
           <section class="status-section" aria-label={section}>
@@ -269,6 +275,11 @@
 {/if}
 
 <style>
+  .status-note {
+    margin: 0 0 8px;
+    color: var(--muted);
+  }
+
   .status-section {
     padding: var(--rosen-section-padding);
     border-bottom: var(--rosen-section-border);

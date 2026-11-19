@@ -1068,7 +1068,8 @@ pub struct ProjectItem {
     #[serde(default)]
     pub pending_interview: Option<PendingInterview>,
     /// Duty roles started on this project (F7).
-    #[serde(default)]
+    #[serde(default, deserialize_with = "duty::load_roles")]
+    #[specta(type = Vec<DutyRoleItem>)]
     pub duty_roles: Vec<DutyRoleItem>,
     /// Swarms launched on this project, newest first (F10).
     #[serde(default)]

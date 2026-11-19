@@ -42,6 +42,11 @@ Velocity is a Rust + Tauri desktop IDE for running coding agents in parallel.
 
 - Working implementation outweighs proofs, tests and docs combined. Generated files, lockfiles and §7 ticks count on neither side. Choose implementation before proof-only, test-only or doc-only work in the current milestone.
 
+## After-land review
+
+- Named changes land through Rosen on a clean merge. Reviewers claim landed work through the review swarm and report defects with evidence.
+- Rosen directs post-land verification, bisection and reverts. Velocity runs the checks and follows the results.
+
 ## Proofs
 
 - Proof agents handle F17 proof-list features after they land. Build the feature first and keep the implementation checkable against Lean-exported fixtures. File an issue to propose a change to the proof list. Run Charon or Aeneas only when the issue requests it.
@@ -59,9 +64,7 @@ Keep this list aligned with `rosen.toml`. Sensitive changes take priority in rev
 - `crates/velocity-store/` owns persisted state.
 - `crates/velocity-git/src/lifecycle.rs`, `crates/velocity-git/src/merged_worktree.rs` and `crates/velocity-git/src/review.rs` guard worktree deletion.
 - `crates/velocity-airc/src/claims.rs` implements the claim lock.
-- `crates/velocity-github/src/approval.rs` records approvals.
 - `.github/workflows/`, `scripts/check.ps1` and `scripts/check-ui.mjs` run checks.
-- `scripts/Get-PrDutyToken.ps1` handles GitHub App credentials.
 
 ## Done means
 

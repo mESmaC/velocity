@@ -39,12 +39,11 @@ struct Member {
 fn main() -> Outcome {
     let root = std::env::temp_dir().join(format!("velocity goal 385 {}", uuid::Uuid::new_v4()));
     std::fs::create_dir_all(&root)?;
-    let after_land = std::env::args().any(|argument| argument == "--after-land");
-    seed_repository(&root.join("repo"), after_land)?;
+    seed_repository(&root.join("repo"))?;
     let runtime = tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()?;
-    runtime.block_on(run(&root, after_land))?;
+    runtime.block_on(run(&root))?;
     println!(
         "PASS: three Rosen members, stack, landing, keep-going, restart and revert; {}",
         root.display()
@@ -52,18 +51,18 @@ fn main() -> Outcome {
     Ok(())
 }
 
-async fn run(root: &Path, after_land: bool) -> Outcome {
+async fn run(root: &Path) -> Outcome {
     let servers = Servers::new(root.join("app"));
     let source = ImportSource::for_checkout(&root.join("repo"), "master");
     let server = servers
         .ready(1, &source, Some(root.join("workspaces/.pool")))
         .await?;
-    let result = scenario(root, &server, after_land).await;
+    let result = scenario(root, &server).await;
     servers.shutdown_all().await;
     result
 }
 
-async fn scenario(root: &Path, server: &ProjectServer, after_land: bool) -> Outcome {
+async fn scenario(root: &Path, server: &ProjectServer) -> Outcome {
     let store = Mutex::new(seed_store(root)?);
     let channel = Channel::open(&root.join("app"), "1")?;
     let (swarm, mut members) = launch_three(&store, server).await?;
@@ -80,7 +79,7 @@ async fn scenario(root: &Path, server: &ProjectServer, after_land: bool) -> Outc
     stack_member(&store, server, &channel, &mut members).await?;
     let mut events = EventStream::open(server, 0).await?;
     for member in &members {
-        name_and_land(server, member, after_land).await?;
+        name_and_land(server, member).await?;
         take_land(&store, &mut events, &member.workspace.change).await?;
     }
     let first = &members[0];
@@ -105,7 +104,7 @@ async fn scenario(root: &Path, server: &ProjectServer, after_land: bool) -> Outc
     let next = prepare(&store, server, slot).await?;
     assert_ne!(next.workspace.root, first.workspace.root);
     claim_together(&store, &channel, std::slice::from_ref(&next))?;
-    name_and_land(server, &next, after_land).await?;
+    name_and_land(server, &next).await?;
     take_land(&store, &mut events, &next.workspace.change).await?;
     velocity_store::save_pending(&store)?;
     verify_restart_and_revert(root, swarm, first)?;
@@ -126,7 +125,6 @@ async fn launch_three(
             3,
         )],
         true,
-        false,
     );
     let (swarm, slots) = store
         .lock()
@@ -281,38 +279,11 @@ async fn stack_member(
     Ok(())
 }
 
-async fn name_and_land(server: &ProjectServer, member: &Member, after_land: bool) -> Outcome {
+async fn name_and_land(server: &ProjectServer, member: &Member) -> Outcome {
     cli(server, member, &["commit", "-m", "Implement goal task"])?;
-    if !after_land {
-        let standing =
-            velocity_rosen::duty::change_standing(server, &member.workspace.change).await?;
-        velocity_rosen::duty::approve(
-            server,
-            "smoke-reviewer",
-            &member.workspace.change,
-            &standing.head,
-        )
-        .await?;
-        let folder = member.workspace.root.with_file_name(".smoke-checkout");
-        let merge = velocity_rosen::duty::check_out_merge_result(
-            server,
-            "smoke-checker",
-            &member.workspace.change,
-            &folder,
-            false,
-        )
-        .await?;
-        velocity_rosen::duty::submit_receipt(
-            server,
-            "smoke-checker",
-            &member.workspace.change,
-            (&merge.head, &merge.base),
-        )
-        .await?;
-    }
     let outcome =
-        velocity_rosen::duty::land(server, "smoke-lander", &member.workspace.change).await?;
-    if !matches!(outcome, velocity_rosen::duty::LandOutcome::Landed { .. }) {
+        velocity_rosen::landing::land(server, "smoke-lander", &member.workspace.change).await?;
+    if !matches!(outcome, velocity_rosen::landing::LandOutcome::Landed { .. }) {
         return Err(format!("Land failed: {outcome:?}").into());
     }
     Ok(())
@@ -430,7 +401,7 @@ fn seed_store(root: &Path) -> Outcome<StateStore> {
     Ok(StateStore::load_or_default(root.join("state"))?)
 }
 
-fn seed_repository(repository: &Path, after_land: bool) -> Outcome {
+fn seed_repository(repository: &Path) -> Outcome {
     std::fs::create_dir_all(repository)?;
     for args in [
         vec!["init", "-b", "master"],
@@ -439,14 +410,9 @@ fn seed_repository(repository: &Path, after_land: bool) -> Outcome {
     ] {
         command(Command::new("git").current_dir(repository).args(args))?;
     }
-    let review = if after_land {
-        "review = \"after-land\"\n"
-    } else {
-        ""
-    };
     std::fs::write(
         repository.join("rosen.toml"),
-        format!("{review}[warm_pool]\nsize = 1\n"),
+        "review = \"after-land\"\n[warm_pool]\nsize = 1\n",
     )?;
     std::fs::write(
         repository.join("SPEC.md"),

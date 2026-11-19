@@ -79,7 +79,7 @@ When Kimi's folder is confirmed, the extra row is dropped, and Velocity removes 
   Velocity's links sit next to them.
   If a name clashes, your own skill wins and the card says so.
 
-**Every role gets them:** threads, swarm and goal swarm members, PR duty, scouts, the main watcher and spec interviews all see the always-on selection for their project.
+**Every role gets them:** threads, swarm and goal swarm members, Scouts, review swarm workers and spec interviews all see the always-on selection for their project.
 Skills add knowledge; they never remove a tool.
 
 **Pack specifics:**

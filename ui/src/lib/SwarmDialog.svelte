@@ -36,7 +36,6 @@
   let providers = $state<ProviderKind[]>([]);
   let closeIssues = $state(true);
   let rebaseOnMerge = $state(true);
-  let addPrDuty = $state(true);
   let submitting = $state(false);
   let error = $state('');
   let handledSubmits = 0;
@@ -129,7 +128,6 @@
         providers,
         close_issues: closeIssues,
         rebase_on_merge: rebaseOnMerge,
-        add_pr_duty: addPrDuty && view.pr_duty_shortfall > 0,
         into,
       };
       onResult(
@@ -265,14 +263,6 @@
               <input type="checkbox" bind:checked={closeIssues} />
               Close each issue when its change lands
             </label>{/if}
-          {#if view?.pr_duty_label && view.pr_duty_shortfall > 0}<label
-              class="check"
-            >
-              <input type="checkbox" bind:checked={addPrDuty} />
-              {view.pr_duty_label}
-            </label>{:else if view?.pr_duty_label}<span class="hint"
-              >{view.pr_duty_label}</span
-            >{/if}
         </div>
       </div>
     </div>

@@ -7,7 +7,7 @@ So the work is split:
 - **Builders prove.**
   Lean proves the design is right and the code matches it.
 - **Breakers test.**
-  Scouts and PR duty, whose job is to find failure, write every test and stress script.
+  Scouts and review workers write every test and stress script.
 
 Lean is the proving ground, not the test suite.
 
@@ -15,8 +15,7 @@ Lean is the proving ground, not the test suite.
 |---|---|---|
 | Building agents (threads, swarms, goal swarms) | Code first; then proofs for proof-list features, and a targeted test only for a critical contract | Test suites, stress scripts, Lean for anything off the proof list |
 | Scouts | Tests, stress scripts, issues with evidence | Fixes |
-| PR duty | Reviews of theorem statements, stress scripts to back a doubt | Proofs for the author |
-| Main watcher | Nothing new. It runs every test and stress script after each merge. | |
+| Review swarm | Reviews of landed changes and proof verification | Pre-land approvals |
 
 **Which features get proofs.**
 Only the features on the project's **proof list**: design decisions where a mistake loses work, corrupts data or breaks coordination, and where there is a real choice between designs.
@@ -41,7 +40,7 @@ Velocity's own proof list:
 **Implementation first.**
 Proofs never block building.
 The agent builds and runs the feature, then writes its proofs in the same PR.
-Implementation stays the larger part of every PR: proofs, tests and docs together are smaller than the code, and PR duty requests changes when they aren't.
+Implementation stays the larger part of each change.
 
 On after-land Rosen projects, proof-list verification follows the implementation's land in the Review swarm (F7, #382).
 Its proof changes land independently, and its completion report is tied to the checked source tree.
@@ -51,7 +50,7 @@ Lean and review coverage never gate another land; full tests, `lake build` and t
 - **Exactly three theorems:** `correct`, `cost_bound` and `optimal`, below.
   Lemmas are allowed only as steps toward them.
 - **No theorem about a single behaviour, case, key, value or example.**
-  That is a test, and PR duty requests changes.
+  That is a test.
 - **Size tripwire:** a design proof over 300 lines means the model is too detailed.
   The agent stops and files an issue.
 - **Model:** the feature as Lean definitions: its state, its operations and the SPEC.md section it implements, stated as a `Spec` predicate.
@@ -90,7 +89,7 @@ For each proof-list feature a PR touches (a file in `proofs/<Feature>/`, its roo
 - **model** otherwise, listed for each language the PR changes, or once with no language when it changes no code.
 
 A language's strongest level is code where a translator exists (Rust: Aeneas) and reference everywhere else until Q23 adds translators.
-The levels go on the proof check report and into PR duty's prompt with the other checks, one line per feature and language with its evidence.
+The levels go on the proof check report with the other checks, one line per feature and language with its evidence.
 A model-only level where a stronger one is available is flagged there and never fails the checks.
 
 **Generated translations** (Aeneas output) are marked generated in `.gitattributes`, so they stay out of language statistics and PR diffs.
@@ -101,77 +100,33 @@ Elsewhere, a fix has no Lean.
 The fixing agent copies the scout's script into `stress/` unchanged as part of its PR.
 Copying isn't writing: Velocity checks the file matches the issue's attachment byte for byte.
 
-**What Velocity checks** (in the PR's worktree, before PR duty sees it, and again on every push):
-- `lake build` succeeds for the PR's proof files.
+**What proof workers check after a land:**
+- `lake build` succeeds for the affected proof files.
 - No `sorry` or `admit`.
 - `#print axioms` lists only `propext`, `Classical.choice` and `Quot.sound`.
   This also catches `native_decide`, which adds an axiom of its own, and any `axiom` declaration.
-- **Statement lock.**
-  When PR duty approves, Velocity hashes every theorem statement.
-  If a statement changes afterwards, the approval is withdrawn, the review restarts and a `statement` event is posted.
-  Weakening a statement until its proof goes through is the cheat this catches.
 - The design proof names the spec section it covers.
   Existing `SPEC.md F5` or `SPEC.md §3.1` references keep working when the section moves.
   Direct `spec/` file references name an existing source and a heading ID in the project spec, either explicitly or in the source filename (for example `spec/F5-worktrees.md`).
   Proofs settings reads the proof list from whichever source file holds it.
 
-How the checks run *(proposed)*:
-- **Where and when.**
-  Every PR duty review of a new head runs them in the `review-pr-<n>` worktree (the PR merged onto the base branch), before the agent's turn starts.
-  A push is a new head, so the checks run again on every push.
-  The results open the review's prompt; a failure is named there for PR duty to request changes on.
-- **Which files.**
-  The `.lean` files the PR adds or modifies under `proofs/` (from the merge base to the head).
-  A PR that changes none skips the checks.
+How the checks run:
+- Review workers verify proof-list features at their landed commit and name affected spec sections.
 - **Build.**
   A project on Mathlib runs `lake exe cache get` first, so no workspace compiles Mathlib from source.
   Then `lake build`.
 - **Axiom audit.**
   `#print axioms` in a file covers only what its author chose to print, so Velocity elaborates its own audit file with `lake lean`: it imports a changed module and lists the axioms of every declaration it defines.
   Each changed module gets its own audit file, because modules that are fine alone can clash when imported together (two `Export.lean` files each define the top-level `main` their `lean_exe` needs).
-- **Statement lock.**
-  Approving through the PR duty MCP server hashes every `theorem` statement under `proofs/` at the approved head (read from git, not the checkout; comments and whitespace don't count) and keeps the hashes in the app data folder per PR.
-  The approval is refused if the statements can't be read.
-  When a later head changes or removes a locked statement, the `statement` event clears that approval in the approval record (as a `changes` event does), and the review's prompt restarts it as a full review of every theorem statement rather than a later round.
-- **Rosen statement lock** (#351).
-  On a before-land project, `rosen_duty_review` reads those statements from the review folder's conflict-free merge result and saves the lock in app data per project and change id before publishing approval.
-  Reading reviews refresh that folder from Rosen at the head being approved; local-check reviews require the prepared and checked merge result.
-  Lake's `.lake/` output and dependencies are excluded.
-  `rosen_duty_land` and Velocity's automatic lander for reading reviews both refuse a missing, unreadable or wrong-head lock, or a changed or removed locked statement in the landing tree, and require fresh review and approval.
-  Rosen already voids approval when the change's head moves.
-  After-land projects keep landing without approvals or statement-lock gates.
-
-**Merge gate:**
-- PR duty can't merge until the proofs check (locked, F7).
-- A missing design proof on a proof-list feature blocks the merge.
-- Lean for a feature off the list, or a theorem about a single behaviour, gets changes requested.
-- A confidence proof at the model level for a language that has a stronger level available is flagged on the proof card and left to the reviewer.
-  Sensitive paths need the reference level: a fixture table exported from the Lean model plus one test that checks the code against it.
-  The code level (Rust: an Aeneas translation) is required only when an issue asks for one (F7, #142).
-
-- PR duty's MCP approval requires nonempty `proof_review` explanations of proof-list scope, theorem-statement review and confidence level (including why a check is inapplicable).
-  Those explanations are mirrored with the review.
-  Missing design proofs, off-list Lean and unmet tier requirements require changes; applicability and semantic correctness are judged by the reviewer.
-- `pr_duty_checked`, approval and merge run the executable proof gate in the registered review workspace at the prepared head/base.
-  The checkout must match the committed content at that exact head, ignoring CRLF/LF-only differences from Windows generators; content changes and untracked files are refused.
-  Failed builds, placeholders, disallowed axioms, unnamed spec sections and changed modules absent from the Lake build refuse the operation.
-  An ordinary PR with no changed Lean skips Lake.
-  An unreadable check result fails closed.
-- The statement lock is saved before publishing an approval.
-  Merge also requires a readable lock with no changed or removed locked statement.
-  For a PR reviewed with local checks, a moved base requires preparation and checks again.
-
 **Where it runs:**
 - Proofs and stress scripts run locally, in each agent's workspace, on the machine that already runs the agents.
-- GitHub's checks gate the merge of a PR reviewed by reading (F7 "Checks before merge").
-  What they run is the project's choice.
 - Tests and stress scripts live in `stress/` (and the project's own test folder).
-  Scouts run them on every sweep and the main watcher runs them after every land.
+  Scouts run them on sweeps, and the release gate runs the full stress suite.
   They never run in per-PR GitHub CI.
 
 **Proof card** (in the land history, F6):
 - the proof folder, and "N theorems proved";
-- the four checks, each ticked: lake build; no sorry or admit; standard axioms; statements locked at review;
+- the check results for the build, placeholders and axiom audit;
 - every theorem: Design or Confidence, its name and its statement;
 - the level reached per language, e.g. "Rust · reference · fixture table checked by one test", "TypeScript · reference · scouts diff 10,000 stress inputs against it".
 
@@ -183,8 +138,6 @@ How the card is made *(proposed)*:
   The "Proved" step runs while the head is unchecked, is done when the checks pass and fails when one fails.
   It reads "No proofs" when the PR changes nothing to prove.
   A pass ticks "· proved" on the collapsed work line and posts a `proved` event naming the proof folders, the theorem count and each language's level.
-- **Statement lock check.**
-  Pending until PR duty approves that exact head, then ticked.
 - **Levels.**
   One row per feature and language, read as "How Velocity reads the level" says; a flagged model-only level is shown in amber.
   A PR that changes only a proof-list feature's fixture table still gets a card, with its fixture rows and levels.

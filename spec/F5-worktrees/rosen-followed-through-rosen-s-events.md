@@ -10,7 +10,7 @@
   The thread uses the default implementation model and receives the failing check output, culprit change and commit, and the later commits Rosen reports as blocking the inverse, with the instruction to make the base build again and touch nothing else.
   Each culprit has at most one fix-forward thread, including after restarts and deletion of its thread history; another culprit gets its own thread even while a repair runs.
   A repair uses the normal Rosen workspace and landing lifecycle, and its culprit record closes when a subsequent successful integration build covers that culprit, or a legacy build repair completes its revert.
-  Velocity lands the change: as soon as it merges cleanly when the project reviews after the land, otherwise after PR duty's review and the pre-land checks (F7 "A Rosen change").
+  Velocity lands the named change as soon as it combines cleanly with the base (F7).
   The note a Rosen workspace's agent gets says the same.
   Velocity saves the stream's cursor with each event that moves a thread, together with what the event leaves to do (a land's cleanup; a revert's workspace and message; a request for changes' message), and removes that work only once it is done.
   The cursor belongs to the server database that issued it, and Velocity logs and replays from zero if the database changes, the cursor is beyond the latest event, or an old save lacks the database identity (#482).

@@ -33,7 +33,7 @@ impl FixtureTable {
     }
 }
 
-/// Where the theorem statements stand against the lock taken when PR duty approved.
+/// Where the theorem statements stand against a historical statement lock.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum LockState {
     /// Not approved yet: the lock is taken at approval.
@@ -161,11 +161,9 @@ fn axiom_check(report: &ProofCheckReport, no_lean: bool) -> ProofCheck {
 fn lock_check(lock: &LockState) -> ProofCheck {
     let label = STATEMENT_LOCK_CHECK;
     match lock {
-        LockState::NotApproved => ProofCheck::new(
-            label,
-            ProofCheckState::Pending,
-            "locked when PR duty approves",
-        ),
+        LockState::NotApproved => {
+            ProofCheck::new(label, ProofCheckState::Pending, "historical statement lock")
+        }
         LockState::Unchanged => ProofCheck::new(label, ProofCheckState::Passed, ""),
         LockState::Changed(keys) => ProofCheck::new(
             label,

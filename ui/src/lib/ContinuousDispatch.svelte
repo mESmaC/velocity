@@ -69,7 +69,7 @@
     aria-label="Continuous dispatch"
   >
     <div class="section-h">Continuous dispatch</div>
-    <!-- The reference's stepper, as in the PR duty dialog. A number field was 24px wide and
+    <!-- The reference's stepper. A number field was 24px wide and
          the browser's spin arrows took most of it, so the count was cut off. -->
     <div class="dispatch-target">
       Keep

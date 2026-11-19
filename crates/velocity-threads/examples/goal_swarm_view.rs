@@ -112,7 +112,6 @@ fn launch(store: &mut StateStore) -> Outcome<(u32, Vec<u32>)> {
             GoalMixRow::new(ProviderKind::Codex, EffortLevel::Medium, SpeedMode::Fast, 1),
         ],
         false,
-        false,
     );
     let (swarm, slots) = store.open_goal_swarm(&request, "10:00".into())?;
     let mut threads = Vec::new();

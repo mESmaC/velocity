@@ -13,7 +13,7 @@ use std::time::Duration;
 use thiserror::Error;
 use velocity_core::thread_menu::{has_open_pull_request, owns_worktree};
 use velocity_git::{GitCommand, LifecycleEvent, LifecycleState, WorktreeError, WorktreeRecord};
-use velocity_github::{PullRequestClient, PullRequestError, PullRequestOperation};
+use velocity_github::{PullRequestClient, PullRequestError};
 use velocity_store::{ThreadItem, ThreadState};
 
 use crate::runtime::ThreadKey;
@@ -239,8 +239,7 @@ fn remove_leftover_folder(worktree: &Path) -> Result<(), DeletionError> {
 
 /// Closes the thread's PR through `gh`. A PR that already merged or closed needs nothing.
 pub fn close_pull_request(repository: &Path, number: u32) -> Result<(), DeletionError> {
-    let closed = PullRequestClient::discover(repository)
-        .and_then(|client| client.execute(PullRequestOperation::Close { number }));
+    let closed = PullRequestClient::discover(repository).and_then(|client| client.close(number));
     match closed {
         Ok(_) | Err(PullRequestError::Invalid(_)) => Ok(()),
         Err(source) => Err(DeletionError::PullRequest {

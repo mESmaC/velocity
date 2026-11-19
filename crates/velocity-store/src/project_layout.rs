@@ -40,11 +40,7 @@ pub(crate) fn read_model(store: &crate::StateStore) -> LayoutData {
         data.settled_expanded = project.settled_expanded;
         let merged_today = project.merged_today as usize;
         let task_count = project.tasks.len();
-        let mut entries: Vec<ThreadEntry> = project
-            .duty_roles
-            .iter()
-            .map(|duty| duty_entry(duty, merged_today))
-            .collect();
+        let mut entries: Vec<ThreadEntry> = project.duty_roles.iter().map(duty_entry).collect();
         data.swarms = crate::swarms::swarm_entries(project);
         entries.extend(data.swarms.iter().map(crate::swarms::swarm_row));
         data.goal_swarms = crate::goal_swarm_view::goal_swarm_entries(project);
@@ -121,9 +117,9 @@ fn project_palette(state: &PersistedState) -> Vec<PaletteItem> {
         .collect()
 }
 
-fn duty_entry(item: &DutyRoleItem, merged_today: usize) -> ThreadEntry {
+fn duty_entry(item: &DutyRoleItem) -> ThreadEntry {
     let core_entry = item.to_core();
-    let metadata = duty::duty_sidebar_summary(&core_entry, merged_today);
+    let metadata = duty::duty_sidebar_summary(&core_entry);
     ThreadEntry {
         policy: LayoutRow {
             identifier: core_entry.identifier,

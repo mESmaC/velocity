@@ -34,8 +34,6 @@ pub struct LaunchGoalSwarmRequest {
     pub mix: Vec<GoalMixRow>,
     #[serde(default)]
     pub keep_going: bool,
-    #[serde(default)]
-    pub add_pr_duty: bool,
 }
 
 impl LaunchGoalSwarmRequest {
@@ -44,7 +42,6 @@ impl LaunchGoalSwarmRequest {
         prompt: String,
         mix: Vec<GoalMixRow>,
         keep_going: bool,
-        add_pr_duty: bool,
     ) -> Self {
         Self {
             project_identifier,
@@ -52,7 +49,6 @@ impl LaunchGoalSwarmRequest {
             sources: WorkSources::default(),
             mix,
             keep_going,
-            add_pr_duty,
         }
     }
 }
@@ -62,22 +58,14 @@ pub struct AddGoalAgentsRequest {
     pub project_identifier: u32,
     pub swarm_identifier: u32,
     pub mix: Vec<GoalMixRow>,
-    #[serde(default)]
-    pub add_pr_duty: bool,
 }
 
 impl AddGoalAgentsRequest {
-    pub fn new(
-        project_identifier: u32,
-        swarm_identifier: u32,
-        mix: Vec<GoalMixRow>,
-        add_pr_duty: bool,
-    ) -> Self {
+    pub fn new(project_identifier: u32, swarm_identifier: u32, mix: Vec<GoalMixRow>) -> Self {
         Self {
             project_identifier,
             swarm_identifier,
             mix,
-            add_pr_duty,
         }
     }
 }

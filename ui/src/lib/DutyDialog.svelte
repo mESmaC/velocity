@@ -6,12 +6,9 @@
   import { dutyCommands, providerIcon } from './ipc';
   import type {
     DutyDialogDefaults,
-    DutyMergeMethod,
-    DutyRole,
     EffortLevel,
     LayoutAction,
     LayoutSnapshot,
-    PrDutyRuleSettings,
     ScoutCadence,
     ScoutFocusArea,
     ScoutRuleSettings,
@@ -21,46 +18,14 @@
   import './theme/new-project.css';
 
   let {
-    initialRole,
     send,
     submitRequests,
     onResult,
   }: {
-    initialRole: DutyRole;
     send: (action: LayoutAction) => void;
     submitRequests: number;
     onResult: (snapshot: LayoutSnapshot) => void;
   } = $props();
-
-  const roles: [DutyRole, string, string, string, string][] = [
-    [
-      'pr_duty',
-      'pr',
-      'PR duty',
-      'Watches open PRs: reviews the intent and every theorem statement, checks CI and proofs, and merges only what it approves.',
-      'With several agents, each one claims a PR so two never review the same one.',
-    ],
-    [
-      'scouts',
-      'scout',
-      'Scouts',
-      'Assumes every part of the app is broken and sets out to prove it: writes the tests and stress scripts, and files each issue with the failing one attached.',
-      'With several scouts, each takes a different area of the repo.',
-    ],
-    [
-      'main_watcher',
-      'branch',
-      'Main watcher',
-      'Watches master after every merge: runs every test and stress script, bisects a break to the merge that caused it, and opens a fix or revert PR.',
-      'One watcher takes each merge. With several, a merge that lands mid-watch goes to the next one.',
-    ],
-  ];
-
-  const mergeMethods: [DutyMergeMethod, string][] = [
-    ['squash', 'Squash'],
-    ['rebase', 'Rebase'],
-    ['merge_commit', 'Merge commit'],
-  ];
 
   const focusOptions: [ScoutFocusArea, string][] = [
     ['bugs', 'Bugs'],
@@ -88,7 +53,6 @@
 
   let dialog: HTMLDialogElement;
   let defaults = $state<DutyDialogDefaults | null>(null);
-  let role = $state<DutyRole>('pr_duty');
   let agentCount = $state(1);
   // A card is one model of one provider; a provider lists several, so the pair is the key.
   // A custom agent's provider is an object, so it is compared through its JSON.
@@ -97,14 +61,6 @@
   let chosenKey = $state<string | null>(null);
   let effort = $state<EffortLevel | null>(null);
   let speed = $state<SpeedMode>('regular');
-  let prRules = $state<PrDutyRuleSettings>({
-    review_theorem_statements: true,
-    ci_green_before_merge: true,
-    check_diff_against_spec: true,
-    re_review_on_new_commits: true,
-    delete_branch_after_merge: true,
-    merge_method: 'squash',
-  });
   let scoutRules = $state<ScoutRuleSettings>({
     focus_areas: ['bugs', 'stress', 'proof_gaps', 'spec_drift'],
     assume_every_part_fails: true,
@@ -118,7 +74,6 @@
   let handledSubmits = 0;
 
   onMount(() => {
-    role = initialRole;
     handledSubmits = submitRequests;
     void dutyCommands
       .defaults()
@@ -127,9 +82,7 @@
         const initial = loaded.models.find((card) => card.selected);
         chosenKey = initial ? cardKey(initial) : null;
         speed = loaded.speed;
-        prRules = loaded.pr_rules;
         scoutRules = loaded.scout_rules;
-        if (loaded.lands_without_review && role === 'pr_duty') role = 'scouts';
       })
       .catch(report);
   });
@@ -163,32 +116,7 @@
     }
   }
 
-  function roleExists(): boolean {
-    if (!defaults) return false;
-    if (role === 'pr_duty') return defaults.pr_duty_exists;
-    if (role === 'scouts') return defaults.scouts_exists;
-    return defaults.main_watcher_exists;
-  }
-
-  // A Rosen project that reviews after the land has no approval for PR duty to give (F7).
-  const reviewRole: (typeof roles)[number] = [
-    'scouts',
-    'scout',
-    'Review swarm',
-    'Reviews landed changes, scouts for defects and verifies proof-list features in Lean. Findings carry executed evidence. Lands keep moving.',
-    'The roster caps concurrent workers. Velocity starts more as the backlog grows; add agents to raise the cap.',
-  ];
-  const offeredRoles = $derived(
-    defaults?.lands_without_review
-      ? roles
-          .filter(([value]) => value !== 'pr_duty')
-          .map((card) => (card[0] === 'scouts' ? reviewRole : card))
-      : roles,
-  );
-
-  const reviewSwarm = $derived(
-    defaults?.lands_without_review && role === 'scouts',
-  );
+  const reviewSwarm = $derived(defaults?.review_swarm ?? false);
   const reviewWindows: [ScoutCadence, string][] = [
     ['every_thirty_minutes', '30m'],
     ['after_every_merge', '1m'],
@@ -198,10 +126,6 @@
     reviewSwarm && scoutRules.cadence === 'once'
       ? 'every_thirty_minutes'
       : scoutRules.cadence,
-  );
-
-  const selectedRole = $derived(
-    offeredRoles.find(([value]) => value === role) ?? roles[0],
   );
 
   const chosenModel = $derived(
@@ -214,21 +138,17 @@
     error = '';
     try {
       const request = {
-        role,
+        role: 'scouts' as const,
         agent_count: agentCount,
         provider: chosenModel?.provider ?? defaults?.provider ?? null,
         model_name: chosenModel?.model_name ?? defaults?.model_name ?? null,
         effort,
         speed,
-        pr_rules: prRules,
         scout_rules: { ...scoutRules, cadence: selectedCadence },
         repeat_unchanged:
-          role === 'scouts' &&
-          !reviewSwarm &&
-          selectedCadence !== 'once' &&
-          repeatUnchanged,
+          !reviewSwarm && selectedCadence !== 'once' && repeatUnchanged,
       };
-      const snapshot = roleExists()
+      const snapshot = defaults?.scouts_exists
         ? await dutyCommands.addAgents(request)
         : await dutyCommands.start(request);
       onResult(snapshot);
@@ -255,36 +175,10 @@
 >
   <div class="np">
     <div class="np-h">
-      <h2 id="duty-dialog-title">Start a duty agent</h2>
+      <h2 id="duty-dialog-title">{reviewSwarm ? 'Review swarm' : 'Scouts'}</h2>
       <span class="label">Esc to cancel</span>
     </div>
     <div class="np-body">
-      <fieldset class="field">
-        <legend class="label">Role</legend>
-        <div class="role-cards" role="group" aria-label="Role">
-          {#each offeredRoles as [value, icon, name, desc] (value)}
-            <button
-              type="button"
-              class="role-card"
-              class:on={role === value}
-              aria-pressed={role === value}
-              onclick={() => (role = value)}
-            >
-              <span class="mh"><Icon name={icon} />{name}</span>
-              <span class="md">{desc}</span>
-            </button>
-          {/each}
-        </div>
-        {#if defaults?.lands_without_review}
-          <div class="hint">
-            This project's rosen.toml sets review = "after-land": Velocity lands
-            each change once it combines cleanly with the base, with no
-            approval, so PR duty isn't offered. Builds, tests and review follow
-            the land.
-          </div>
-        {/if}
-      </fieldset>
-
       <div class="field">
         <div class="row2 spread">
           <span class="label">Agents</span>
@@ -302,9 +196,7 @@
             >
           </div>
         </div>
-        <div class="hint">
-          {selectedRole[4]}
-        </div>
+        <div class="hint"></div>
       </div>
 
       <div class="field">
@@ -366,164 +258,75 @@
         </div>
       </div>
 
-      {#if role === 'pr_duty'}
-        <div class="field">
-          <span class="label">Rules</span>
-          <div class="checks">
-            <label class="check locked">
-              <input type="checkbox" checked disabled />
-              Never merge without an approving review
-              <span class="lockt"><Icon name="lock" /> always on</span>
-            </label>
-            <label class="check locked">
-              <input type="checkbox" checked disabled />
-              Never merge unless the proofs check: lake build, no sorry, standard
-              axioms, statements unchanged since review
-              <span class="lockt"><Icon name="lock" /> always on</span>
-            </label>
-            <label class="check">
-              <input
-                type="checkbox"
-                bind:checked={prRules.review_theorem_statements}
-              />
-              Review every theorem statement against the claim and SPEC.md
-            </label>
-            <label class="check">
-              <input
-                type="checkbox"
-                bind:checked={prRules.ci_green_before_merge}
-              />
-              CI must be green before merging
-            </label>
-            <label class="check">
-              <input
-                type="checkbox"
-                bind:checked={prRules.check_diff_against_spec}
-              />
-              Check the diff against SPEC.md and the Task List
-            </label>
-            <label class="check">
-              <input
-                type="checkbox"
-                bind:checked={prRules.re_review_on_new_commits}
-              />
-              Re-review when new commits land
-            </label>
-            <label class="check">
-              <input
-                type="checkbox"
-                bind:checked={prRules.delete_branch_after_merge}
-              />
-              Delete the branch after merging
-            </label>
-          </div>
-          <div class="row2 spread sub-row">
-            <span class="label">Merge method</span>
-            <div class="seg sm" role="group" aria-label="Merge method">
-              {#each mergeMethods as [value, label] (value)}
-                <button
-                  type="button"
-                  class:on={prRules.merge_method === value}
-                  aria-pressed={prRules.merge_method === value}
-                  onclick={() => (prRules.merge_method = value)}>{label}</button
-                >
-              {/each}
-            </div>
-          </div>
+      <div class="field">
+        <span class="label">Look for</span>
+        <div class="focus-chips" role="group" aria-label="Look for">
+          {#each focusOptions as [area, label] (area)}
+            <button
+              type="button"
+              class:on={scoutRules.focus_areas.includes(area)}
+              aria-pressed={scoutRules.focus_areas.includes(area)}
+              onclick={() => toggleFocus(area)}>{label}</button
+            >
+          {/each}
         </div>
-      {:else if role === 'main_watcher'}
-        <div class="field">
-          <span class="label">Rules</span>
-          <div class="checks">
-            <label class="check locked">
-              <input type="checkbox" checked disabled />
-              Never push to master: every fix or revert is a PR
-              <span class="lockt"><Icon name="lock" /> always on</span>
+        <div class="checks sub-row">
+          <label class="check locked">
+            <input type="checkbox" checked disabled />
+            Never file duplicates (checks open and closed issues)
+            <span class="lockt"><Icon name="lock" /> always on</span>
+          </label>
+          <label class="check locked">
+            <input type="checkbox" checked disabled />
+            No issue without evidence: a failing test or stress script
+            <span class="lockt"><Icon name="lock" /> always on</span>
+          </label>
+          <label class="check">
+            <input
+              type="checkbox"
+              bind:checked={scoutRules.assume_every_part_fails}
+            />
+            Assume every part fails. Write tests and stress scripts to prove it
+          </label>
+          <label class="check">
+            <input
+              type="checkbox"
+              bind:checked={scoutRules.run_stress_against_models}
+            />
+            Run stress inputs against the Lean reference models
+          </label>
+          <label class="check">
+            <input
+              type="checkbox"
+              bind:checked={scoutRules.label_issues_for_dispatch}
+            />
+            Label issues so they can be dispatched straight to agents
+          </label>
+          {#if !reviewSwarm && scoutRules.cadence !== 'once'}
+            <label class="check">
+              <input type="checkbox" bind:checked={repeatUnchanged} />
+              Sweep an unchanged base every 30m with fresh generated inputs
             </label>
-            <label class="check locked">
-              <input type="checkbox" checked disabled />
-              After each merge: every test and stress script, then a bisect to the
-              merge that broke master
-              <span class="lockt"><Icon name="lock" /> always on</span>
-            </label>
-            <label class="check locked">
-              <input type="checkbox" checked disabled />
-              File each flaky test once, with failing evidence
-              <span class="lockt"><Icon name="lock" /> always on</span>
-            </label>
-          </div>
+          {/if}
         </div>
-      {:else}
-        <div class="field">
-          <span class="label">Look for</span>
-          <div class="focus-chips" role="group" aria-label="Look for">
-            {#each focusOptions as [area, label] (area)}
+        <div class="row2 spread sub-row">
+          <span class="label">{reviewSwarm ? 'Review window' : 'Sweep'}</span>
+          <div
+            class="seg sm"
+            role="group"
+            aria-label={reviewSwarm ? 'Review window' : 'Sweep'}
+          >
+            {#each offeredCadences as [value, label] (value)}
               <button
                 type="button"
-                class:on={scoutRules.focus_areas.includes(area)}
-                aria-pressed={scoutRules.focus_areas.includes(area)}
-                onclick={() => toggleFocus(area)}>{label}</button
+                class:on={selectedCadence === value}
+                aria-pressed={selectedCadence === value}
+                onclick={() => (scoutRules.cadence = value)}>{label}</button
               >
             {/each}
           </div>
-          <div class="checks sub-row">
-            <label class="check locked">
-              <input type="checkbox" checked disabled />
-              Never file duplicates (checks open and closed issues)
-              <span class="lockt"><Icon name="lock" /> always on</span>
-            </label>
-            <label class="check locked">
-              <input type="checkbox" checked disabled />
-              No issue without evidence: a failing test or stress script
-              <span class="lockt"><Icon name="lock" /> always on</span>
-            </label>
-            <label class="check">
-              <input
-                type="checkbox"
-                bind:checked={scoutRules.assume_every_part_fails}
-              />
-              Assume every part fails. Write tests and stress scripts to prove it
-            </label>
-            <label class="check">
-              <input
-                type="checkbox"
-                bind:checked={scoutRules.run_stress_against_models}
-              />
-              Run stress inputs against the Lean reference models
-            </label>
-            <label class="check">
-              <input
-                type="checkbox"
-                bind:checked={scoutRules.label_issues_for_dispatch}
-              />
-              Label issues so they can be dispatched straight to agents
-            </label>
-            {#if !reviewSwarm && scoutRules.cadence !== 'once'}
-              <label class="check">
-                <input type="checkbox" bind:checked={repeatUnchanged} />
-                Sweep an unchanged base every 30m with fresh generated inputs
-              </label>
-            {/if}
-          </div>
-          <div class="row2 spread sub-row">
-            <span class="label">{reviewSwarm ? 'Review window' : 'Sweep'}</span>
-            <div
-              class="seg sm"
-              role="group"
-              aria-label={reviewSwarm ? 'Review window' : 'Sweep'}
-            >
-              {#each offeredCadences as [value, label] (value)}
-                <button
-                  type="button"
-                  class:on={selectedCadence === value}
-                  aria-pressed={selectedCadence === value}
-                  onclick={() => (scoutRules.cadence = value)}>{label}</button
-                >
-              {/each}
-            </div>
-          </div>
         </div>
-      {/if}
+      </div>
     </div>
     <div class="np-f">
       {#if error}<p class="np-error" role="alert">{error}</p>{/if}
@@ -537,9 +340,7 @@
         disabled={submitting}
         onclick={submit}
       >
-        {roleExists()
-          ? `Add ${agentCount} to ${selectedRole[2]}`
-          : 'Start duty'}
+        {defaults?.scouts_exists ? 'Add agents' : 'Start'}
         <kbd>Ctrl</kbd><kbd>↵</kbd>
       </button>
     </div>

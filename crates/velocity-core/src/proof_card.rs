@@ -12,7 +12,7 @@
 pub enum ProofCheckState {
     Passed,
     Failed,
-    /// Not decided yet: the statement lock is taken only when PR duty approves.
+    /// No result has been recorded for this check.
     #[default]
     Pending,
 }
@@ -125,15 +125,14 @@ pub struct ProofCard {
     /// The proof folders the PR changes, such as `proofs/ClaimLock/`.
     pub folders: Vec<String>,
     pub theorem_count: u32,
-    /// Every check that decides a merge passed (the statement lock follows at approval).
+    /// The proof checks passed.
     pub proved: bool,
     pub checks: Vec<ProofCheck>,
     pub theorems: Vec<ProofTheorem>,
     pub levels: Vec<ProofLevel>,
 }
 
-/// The label of the statement-lock check, which turns from pending to passed when PR duty
-/// approves this head.
+/// The label used by historical proof cards with a statement lock.
 pub const STATEMENT_LOCK_CHECK: &str = "statements locked at review";
 
 impl ProofCard {
@@ -145,7 +144,7 @@ impl ProofCard {
         }
     }
 
-    /// Ticks the statement-lock check once PR duty approved exactly this head, without
+    /// Ticks a historical statement lock for the same head, without
     /// running the other checks again. Returns whether the card changed.
     pub fn locked_at(&mut self, approved_head: &str) -> bool {
         if approved_head != self.head {

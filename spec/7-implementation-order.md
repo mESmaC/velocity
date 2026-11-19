@@ -2,7 +2,6 @@
 ## 7. Implementation order
 
 Each milestone ends with a working app.
-PR duty checks an item off when it lands that item's PR (F7).
 
 **Bootstrap prerequisite** (AGENTS.md Proofs, F17)
 - [x] Pinned Lake project, Lean 4, Mathlib, Charon and Aeneas, with documented setup and extraction commands
@@ -34,20 +33,20 @@ PR duty checks an item off when it lands that item's PR (F7).
 - [x] Thread view: transcript, tool steps, diffs, header with workspace path, composer, slash menu (F4)
 - [x] Settings → Workspaces backed by Rosen, including guarded deletion, preparation changes and the live footer count (F5, F13, #423)
 
-**M4 · PR loop**
-- [x] GitHub integration: open PR, CI checks, reviews, comments, merge, close
+**M4 · Change follow-through**
+- [x] GitHub observation for legacy PR threads
 - [x] Live Rosen status pane with server, base, landing, claims, warm pool, mirror and owning-thread navigation (F6, #421)
 - [x] Rosen thread change track, header actions, land history and inline stored conflicts (F6, #422)
 - [x] PR follow-through: track, land history, auto-response to review comments, merge → workspace delete (F6)
 - [x] Closed-without-merge state with the workspace kept (F5, F6)
 - [x] Right-click menu and delete with 5 s undo (F12)
 
-**M5 · Duty agents**
-- [x] PR duty: claiming, review against SPEC.md, request changes, approve, merge; never merge unapproved; approval record bound to the head SHA; severity bar (Rule 4, F7, Q28)
+**M5 · Review**
+- [x] Use after-land review for Rosen projects, with Scouts, the review swarm and Rosen R12 verification (F7, #424)
 - [x] Scouts: sweeps, issue filing with repro, de-duplication (F7)
   - [x] Gate scheduled sweeps on base changes by default and keep idle review workers waiting for lands (#462)
   - [x] GitHub issue inventory (open and closed), executed failure evidence, duplicate assessment, dispatch labels and scout attribution; runnable backend filing path
-- [x] Duty view, start dialog, pause/resume, add agents (F7)
+- [x] Review view, start dialog, pause/resume, add agents (F7)
 
 **M6 · Task List, issues, swarm**
 - [x] Task List: states, add input, `T`, `/task`, palette, attribution, live agent state (F8)
@@ -56,7 +55,7 @@ PR duty checks an item off when it lands that item's PR (F7).
 - [x] Show open GitHub blockers in the issues rail and skip blocked issues in continuous dispatch (F8, F9, #472)
 - [x] Empty dispatch turns save their reason and hold the issue for independent review (F8, F9, #469)
 - [x] Deduplicate recent discovery reports and hold overlapping issue dispatch for land verification (F9, F14, #471)
-- [x] Swarm: dialog, launch, PR duty capacity, sidebar row, view, broadcast, + Items, rebase on merge, task done / issue close (F10)
+- [x] Swarm: dialog, launch, sidebar row, view, broadcast, + Items, rebase on merge, task done / issue close (F10)
 
 **M7 · AGENTS.md**
 - [x] Outliner editor with markdown round-trip (F11)
@@ -76,7 +75,7 @@ PR duty checks an item off when it lands that item's PR (F7).
 - [x] Atomic claim lock: `airc_claim` / `airc_release`, refusal lines, held claims on failure (F14, F16)
 - [x] AIRC MCP server injected into every provider's agent runtime (F14, F16)
 - [x] Work pool: open Task List items, open issues, unbuilt SPEC.md sections (F16)
-- [x] Dialog: prompt, count, model mix with "the rest", effort and speed per row, limits, pool size, PR duty capacity, keep going (F16)
+- [x] Dialog: prompt, count, model mix with "the rest", effort and speed per row, limits, pool size, keep going (F16)
 - [x] Launch, choosing → claimed → normal lifecycle, leave when nothing is left, keep going (F16)
 - [x] Fresh ACP sessions per work item with a bounded handoff and transcript boundaries (F8, F16, #456)
 - [x] Native goal-swarm selection and claim retries, with a five-piece first-turn shortlist for custom goals (F16, #463)
@@ -90,16 +89,13 @@ PR duty checks an item off when it lands that item's PR (F7).
 - [x] Targeted rebases, optimistic landing, conflicts sent back to the owning agent; rebuild the merge result whenever `master` moved; Shared files exempt from overlaps (F6, F14)
 - [x] Warm workspace pool from one base clone, prebuilt at the tip of `master` with a shared compiler cache; workspace guards (F5)
 - [x] Queue long agent commands in Rosen and resume the ACP thread with the result (#454, F5, F7)
-- [x] PR duty tiered review and intent review; Sensitive paths in AGENTS.md (F7)
 - [x] Reasoning effort by role, with Medium defaults for trivial reading reviews and duty sweeps (F15, #468)
-- [x] Main watcher duty role: post-merge suite, bisect, fix or revert PR (F7)
 - [x] Batch integration builds on the base and queue single-crate agent checks (#480, F5, F7)
 
 **M11 · Proofs** (F17)
 - [x] Lean toolchain and Mathlib cache in the warm pool (F5)
 - [x] Proof checks in the workspace: `lake build`, no `sorry`/`admit`, axiom audit, statement lock and review reset
 - [x] Proof card on the PR, "Proved" on the PR track, `proved`/`statement`/`stress` events
-- [x] Merge gate in PR duty; statement review; tiers updated (F7)
 - [x] Scouts: assume-it-fails sweeps, evidence required, Stress and Proof gaps focus areas, stress runs against Lean reference models
 - [x] Levels per language: reference by default (fixture table plus one test; compiled Lean model through FFI for stress), code on request (Aeneas for Rust), model
 - [x] AGENTS.md: Implementation first, Proofs, and Tests and docs sections; Covers check (F11)

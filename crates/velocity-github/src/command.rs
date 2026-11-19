@@ -17,16 +17,6 @@ pub(crate) fn gh(arguments: &[&str]) -> Command {
     command
 }
 
-/// `git -C <checkout>` for the watcher's commit checks. The checkout goes in `-C`, not the
-/// working directory, because CreateProcess rejects working directories over 260 characters.
-pub(crate) fn git_in(checkout: &std::path::Path) -> Command {
-    let mut command = hidden_command("git");
-    command
-        .args(["-c", "core.longpaths=true", "-C"])
-        .arg(checkout);
-    command
-}
-
 /// A `Command` that opens no console window. Velocity's release build is a windowed app, so on
 /// Windows a child started without `CREATE_NO_WINDOW` gets a console window of its own that
 /// flashes on screen (#232). Every process this crate starts is built here; clippy's

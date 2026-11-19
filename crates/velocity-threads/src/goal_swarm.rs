@@ -327,7 +327,7 @@ fn git_goal_prompt(
          - Worktree: `{}` on branch `{branch_name}` (removed automatically after your PR merges)\n\
          - Claimed piece in AIRC: {piece_instructions}\n\
          - Work-pool context: {}. Prior pushed work is optional; never use another thread's checkout.\n\
-         - Commit, push `{branch_name}`, open a PR against `{default_branch}`, and watch it until PR duty merges it: fix failed checks, answer every review comment, resolve addressed threads, and re-request review. Never merge your own PR.\n\
+         - Commit, push `{branch_name}`, open a PR against `{default_branch}`, and follow its checks and review: fix failed checks, answer every review comment, resolve addressed threads, and re-request review. Never merge your own PR.\n\
          - Use the path filter in `airc_claims` to check file ownership. Settle overlaps and dependency waits in AIRC; first claim wins.\n\
          - Implement and run the feature first; then write Lean proofs only if the feature is on the project's proof list in SPEC.md (Rule 8, F17).\n\n{spec}",
         goal_excerpt(&slot.prompt),

@@ -22,10 +22,10 @@ pub enum LandOutcome {
 /// Asks Rosen to land `change`.
 pub async fn land(
     server: &ProjectServer,
-    reviewer: &str,
+    actor: &str,
     change: &str,
 ) -> Result<LandOutcome, RosenError> {
-    let answer = session(server, reviewer).await?.land(change).await?;
+    let answer = session(server, actor).await?.land(change).await?;
     Ok(match answer.outcome {
         LandStatus::Landed { commit, .. } | LandStatus::AlreadyLanded { commit } => {
             LandOutcome::Landed {
@@ -39,4 +39,10 @@ pub async fn land(
             message,
         },
     })
+}
+
+/// Whether a queued notice still concerns a change that can be edited.
+pub async fn is_open(server: &ProjectServer, change: &str) -> Result<bool, RosenError> {
+    let client = crate::connection::requests(server.endpoint()).await?;
+    Ok(!client.change_show(change).await?.change.state.is_closed())
 }

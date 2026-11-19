@@ -1,4 +1,4 @@
-//! The stdio MCP framing Velocity's own duty servers share (F7 scouts and PR duty): one
+//! The stdio MCP framing Velocity's own duty servers share (F7 Scouts and the review swarm): one
 //! JSON-RPC request per line in, one response per line out, and the four methods an agent
 //! needs (`initialize`, `ping`, `tools/list`, `tools/call`).
 

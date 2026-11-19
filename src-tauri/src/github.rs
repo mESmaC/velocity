@@ -1,10 +1,7 @@
 use std::path::PathBuf;
-use tauri::{AppHandle, Manager, State, Window};
+use tauri::{State, Window};
 use velocity_core::layout_view::{LayoutAction, LayoutSnapshot};
-use velocity_github::{
-    PullRequest, PullRequestClient, PullRequestOperation, PullRequestReceipt, PullRequestSnapshot,
-    ReviewRecord,
-};
+use velocity_github::{PullRequest, PullRequestClient, PullRequestSnapshot};
 
 use crate::layout::MainLayout;
 use crate::state::ManagedStateStore;
@@ -44,31 +41,6 @@ pub async fn get_pull_request(
     let directory = project_directory(&store, project_identifier)?;
     tauri::async_runtime::spawn_blocking(move || {
         PullRequestClient::discover(&directory)?.snapshot(number)
-    })
-    .await
-    .map_err(|error| error.to_string())?
-    .map_err(|error| error.to_string())
-}
-
-#[tauri::command]
-#[specta::specta]
-pub async fn dispatch_pull_request(
-    application: AppHandle,
-    store: State<'_, ManagedStateStore>,
-    project_identifier: u32,
-    operation: PullRequestOperation,
-) -> Result<PullRequestReceipt, String> {
-    let directory = project_directory(&store, project_identifier)?;
-    let app_data = application
-        .path()
-        .app_data_dir()
-        .map_err(|error| error.to_string())?;
-    tauri::async_runtime::spawn_blocking(move || {
-        // Commands from the window are the user's own decisions: AIRC nick `you`.
-        let record = ReviewRecord::open(&app_data, &project_identifier.to_string(), "you")?;
-        PullRequestClient::discover(&directory)?
-            .with_review_record(record)
-            .execute(operation)
     })
     .await
     .map_err(|error| error.to_string())?

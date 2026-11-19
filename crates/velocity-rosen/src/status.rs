@@ -15,6 +15,7 @@ mod metadata;
 #[cfg_attr(feature = "bindings", derive(specta::Type))]
 pub struct Status {
     pub server: Option<String>,
+    pub before_land: bool,
     pub machines: Vec<String>,
     pub base: BaseStatus,
     pub landing: LandingStatus,
@@ -184,6 +185,7 @@ impl StatusFeed {
         }
         self.live = metadata.live;
         self.conflicts = metadata.conflicts;
+        status.before_land = self.config.review == ReviewMode::BeforeLand;
         status.base = metadata.base;
         status.landing = metadata.landing;
         if self.config.review != ReviewMode::AfterLand && self.config.recheck != RecheckMode::Merge

@@ -16,7 +16,7 @@ Issue discussion loads independently of Rosen state; a slow or failed comment fe
 
 **Issue dependencies (#472).** Issue rows show `Blocked by #n` for open GitHub blockers.
 When a decision sets an order between issues, record it as a GitHub issue dependency.
-The main watcher and review swarm can record dependencies between project issues with `scout_add_blocker { issue, blocker }`.
+The review swarm can record dependencies between project issues with `scout_add_blocker { issue, blocker }`.
 
 **Dispatch and Accept.** The hover action, `I` and the palette retain single-issue dispatch.
 Dispatch claims the repository-qualified issue atomically, opens the owning thread if one already exists, retains the issue title and launches in its own Rosen workspace.
@@ -33,7 +33,7 @@ When the blocker ends without a land or its land shows no evidence for the waiti
 
 **Issue follow-through.** Velocity's Rosen follower supplies the land and verified-build evidence and posts the land update (F5, Issues carried by Rosen changes).
 Under the #441 decision, the review swarm closes the issue after confirming that the landed change meets the issue's acceptance criteria.
-The main watcher handles closure after 30 minutes from verified post-land build success if no reviewer has covered that land; an objection rules out the fallback.
+Post-land verification handles closure after 30 minutes from verified post-land build success if no reviewer has covered that land; an objection rules out the fallback.
 Closure waits for the GitHub mirror to contain the landed commit and honours **Close issues**.
 A revert cancels pending closure and reopens the issue with the culprit output or reason.
 Discussion and closure happen asynchronously alongside the Work projection and landing.
@@ -43,7 +43,7 @@ The comment includes the agent's nick and a link to its saved Velocity thread wh
 Agents comment when starting, when a finding changes the plan and when blocked.
 On Rosen, Velocity posts the land comment with the change ID and commit.
 The author can call `issue_ready_to_close { issue, body }` to post completion evidence and add the `ready-to-close` label.
-The author leaves the issue open for the review swarm or main watcher (F7).
+The author leaves the issue open for the review swarm or post-land verification (F7).
 
 **Empty dispatch turns (#469).** Velocity adds the `no-change` label and posts an **Ended with no change** comment with the agent's last message and thread link when an automatically dispatched issue thread ends with an empty Rosen change (F8).
 Velocity retries an undelivered report across restarts and uses the Rosen change ID to avoid duplicate comments.
@@ -60,7 +60,7 @@ If the blocker still prevents a productive retry, the issue stays labelled.
   Clicking a row (or Enter, Space, →/←) expands it to show the recommendation and blocked count for a question, or the opening paragraph of the issue body, with an Open button that opens the issue (or its thread, once dispatched).
   Which rows are expanded is per project and survives refreshes.
   - **Accept** opens a one-line SPEC.md PR that records the answer as *(proposed)*.
-    PR duty lands it as Trivial (F7), and the blocked pieces become claimable.
+    The named change lands through Rosen (F7), and the blocked pieces become claimable.
   - Agents never wait on a question: they file it and claim other work (Rule 1).
   - **Why:** unanswered questions, not code, were what kept most of a milestone unclaimable.
 - **Dispatch** (hover button, `I`, or the palette): starts one agent on the issue, in its own workspace, with the normal lifecycle.

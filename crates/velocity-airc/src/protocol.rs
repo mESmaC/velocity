@@ -306,7 +306,7 @@ fn writing_tools() -> Vec<Value> {
         ),
         tool(
             "append_ledger",
-            "Record a discovery or past work. When a discovery is a problem in Velocity itself (its worktrees and paths, AIRC, the PR duty, scout or watch tools, agent shells and sandboxes, the build queue, the code graph, or the app) rather than in this project's code, also pass velocity_issue: a one-line issue title. Velocity then files it on its own repository, or adds it to an open issue about the same problem. For a problem in Rosen itself (its server, workspaces, durability, claims, rebases or landing), pass rosen_issue instead to file on mESmaC/rosen. Use only one issue field. Read the discoveries first and omit the issue field when another agent already reported the same problem.",
+            "Record a discovery or past work. When a discovery is a problem in Velocity itself (its worktrees and paths, AIRC, the review swarm or Scout tools, agent shells and sandboxes, the build queue, the code graph, or the app) rather than in this project's code, also pass velocity_issue: a one-line issue title. Velocity then files it on its own repository, or adds it to an open issue about the same problem. For a problem in Rosen itself (its server, workspaces, durability, claims, rebases or landing), pass rosen_issue instead to file on mESmaC/rosen. Use only one issue field. Read the discoveries first and omit the issue field when another agent already reported the same problem.",
             json!({"ledger":ledger,"text":string.clone(),
                 "velocity_issue":{"type":"string","minLength":1,"maxLength":200,
                     "description":"Only for a discovery about Velocity itself: the issue title"},

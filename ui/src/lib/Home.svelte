@@ -17,13 +17,7 @@
     { label: 'Dispatch an issue', key: 'I', icon: 'issue', intent: 'Dispatch' },
     { label: 'Resume last thread', key: 'R', icon: 'play', intent: 'Resume' },
     { label: 'Fan out ×3', key: 'F', icon: 'swarm', intent: 'Fanout' },
-    {
-      label: 'Put an agent on PR duty',
-      key: 'V',
-      icon: 'pr',
-      intent: 'PrDuty',
-    },
-    { label: 'Send scouts', key: 'S', icon: 'scout', intent: 'Scouts' },
+    { label: 'Start review agents', key: 'S', icon: 'scout', intent: 'Scouts' },
     { label: 'Swarm the Task List', key: 'W', icon: 'swarm', intent: 'Swarm' },
   ];
 </script>

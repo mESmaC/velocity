@@ -304,7 +304,7 @@
   background: var(--duty-agent-dismiss-hover-background);
   color: var(--text);
 }
-/* A PR duty agent's activity line opens its review session; it keeps the line's look. */
+/* A review worker's activity line opens its session; it keeps the line's look. */
 .duty-view .agent-card .open-session {
   width: 100%;
   padding: 0;

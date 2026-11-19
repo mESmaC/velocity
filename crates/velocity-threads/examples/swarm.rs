@@ -162,10 +162,6 @@ fn show_dialog(store: &StateStore, heading: &str) -> Outcome<()> {
         .collect();
     println!("models: {}", models.join(", "));
     println!("{}", dialog.split_label);
-    println!(
-        "PR duty: {:?} (add {})",
-        dialog.pr_duty_label, dialog.pr_duty_shortfall
-    );
     println!("footer: {} · {}", dialog.summary, dialog.launch_label);
     Ok(())
 }
@@ -178,7 +174,6 @@ fn launch(store: &mut StateStore) -> Outcome<Vec<(u32, PathBuf)>> {
         providers: vec![ProviderKind::Claude, ProviderKind::Codex],
         close_issues: true,
         rebase_on_merge: true,
-        add_pr_duty: false,
         into: None,
     };
     require_swarm_launch(store, &request)?;

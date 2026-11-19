@@ -52,7 +52,7 @@ pub fn plan_sweep(
 }
 
 /// Plans a duty agent's own detached checkout of `base_ref` (`<agent>-sweep`, F5), shared by
-/// scout sweeps and the Main watcher's watches, and its agent from its own provider.
+/// scout sweeps, and its agent from its own provider.
 pub fn plan_duty_checkout(
     settings: &Settings,
     (project, preferences): (&ProjectItem, &WorktreePreferences),

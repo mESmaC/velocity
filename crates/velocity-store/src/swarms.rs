@@ -60,8 +60,6 @@ pub struct LaunchSwarmRequest {
     pub providers: Vec<ProviderKind>,
     pub close_issues: bool,
     pub rebase_on_merge: bool,
-    /// Start PR duty, or add the agents it is short of (one reviewer per 3 open PRs).
-    pub add_pr_duty: bool,
     pub into: Option<u32>,
 }
 

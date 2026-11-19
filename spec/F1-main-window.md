@@ -43,7 +43,7 @@ There are two views of the same work, switched from the title bar or with `B`:
     A failed card is tinted red.
   - **In review:** threads whose PR is open.
   - **Finished:** threads that merged, are done, or abandoned.
-  - **On duty:** duty agents, in a last lane shown only when any exist.
+  - **Review:** Scouts and the review swarm.
     They are not work items.
 - The four pipeline lanes always show, with a one-line note when empty, so the pipeline keeps its shape.
 - A thread card shows the thread's state icon and colour, its title and the same meta line as its sidebar row.
@@ -80,8 +80,7 @@ Below them are footer links: AIRC (F14), with an unread badge that turns amber w
 | Dispatch an issue | `I` |
 | Resume last thread | `R` |
 | Fan out ×3 | `F` |
-| Put an agent on PR duty | `V` |
-| Send scouts | `S` |
+| Start review agents | `S` |
 | Swarm the Task List | `W` |
 
 **Command palette** (`Ctrl+K`): fuzzy search over commands, projects, threads and issues.
@@ -93,7 +92,6 @@ Commands:
 - settings
 - dispatch issue
 - fan out
-- PR duty
 - scouts
 - swarm the Task List
 - swarm the issues

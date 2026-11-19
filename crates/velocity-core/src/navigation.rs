@@ -48,9 +48,7 @@ pub enum NavigationIntent {
     Dispatch,
     Resume,
     Fanout,
-    PrDuty,
     Scouts,
-    MainWatcher,
     Answer(
         #[cfg_attr(feature = "bindings", serde(with = "crate::ipc_number"))]
         #[cfg_attr(feature = "bindings", specta(type = String))]
@@ -163,7 +161,6 @@ pub fn bare_key_intent(view: NavigationView, key: ShortcutKey) -> Option<Navigat
         Key::I => Some(Intent::Dispatch),
         Key::R => Some(Intent::Resume),
         Key::F => Some(Intent::Fanout),
-        Key::V => Some(Intent::PrDuty),
         Key::S => Some(match view {
             NavigationView::SpecReady => Intent::SpecFile,
             _ => Intent::Scouts,
@@ -227,12 +224,9 @@ pub fn route_bare_intent(
             | NavigationView::SpecLocked => None,
             _ => Some(intent),
         },
-        Intent::Dispatch
-        | Intent::Resume
-        | Intent::Fanout
-        | Intent::PrDuty
-        | Intent::Scouts
-        | Intent::MainWatcher => select_if(matches!(view, NavigationView::Home), intent),
+        Intent::Dispatch | Intent::Resume | Intent::Fanout | Intent::Scouts => {
+            select_if(matches!(view, NavigationView::Home), intent)
+        }
         Intent::Answer(number) => select_if(
             matches!(view, NavigationView::SpecAsk) && matches!(number, 1..=4),
             intent,

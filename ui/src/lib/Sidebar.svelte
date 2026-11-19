@@ -43,9 +43,6 @@
   };
 
   function rowIcon(row: SidebarRow): string {
-    if (row.group === 'Duty' && row.duty_role === 'pr_duty') return 'pr';
-    if (row.group === 'Duty' && row.duty_role === 'main_watcher')
-      return 'branch';
     if (row.goal) return 'goal';
     return icons[row.group] ?? 'circle';
   }
@@ -119,9 +116,9 @@
             <span>{group.title}</span>
             {#if group.group === 'Duty'}<button
                 class="icon-btn"
-                title="Add duty agents"
-                aria-label="Add duty agents"
-                onclick={() => send({ Request: { Navigation: 'PrDuty' } })}
+                title="Add review agents"
+                aria-label="Add review agents"
+                onclick={() => send({ Request: { Navigation: 'Scouts' } })}
                 ><Icon name="plus" /></button
               >{:else}<span>{group.count}</span>{/if}
           </div>{/if}
@@ -134,8 +131,8 @@
         {#if group.group === 'Duty' && group.rows.length === 0}
           <button
             class="duty-empty"
-            onclick={() => send({ Request: { Navigation: 'PrDuty' } })}
-            >No agents on duty · start one</button
+            onclick={() => send({ Request: { Navigation: 'Scouts' } })}
+            >No review agents · start one</button
           >
         {/if}
         {#each group.rows as row (row.identifier)}

@@ -27,7 +27,7 @@ pub const PULSE: [(PulseKind, &str); 6] = [
 pub fn group_title(group: ThreadGroup) -> &'static str {
     match group {
         ThreadGroup::Draft => "",
-        ThreadGroup::Duty => "On duty",
+        ThreadGroup::Duty => "Review",
         ThreadGroup::Swarm => "Swarms",
         ThreadGroup::Spec => "Spec interview",
         ThreadGroup::Working => "Running",
@@ -46,7 +46,7 @@ enum CommandTarget {
     SwarmIssues,
 }
 
-const COMMANDS: [(&str, &str, CommandTarget); 17] = {
+const COMMANDS: [(&str, &str, CommandTarget); 15] = {
     use CommandTarget::{Navigation, Settings, SwarmIssues};
     use NavigationIntent::*;
     [
@@ -68,13 +68,7 @@ const COMMANDS: [(&str, &str, CommandTarget); 17] = {
         ("Swarm open issues…", "swarm", SwarmIssues),
         ("Dispatch issue to agent…", "I", Navigation(Dispatch)),
         ("Fan out prompt across 3 models", "F", Navigation(Fanout)),
-        ("Put agents on PR duty…", "V", Navigation(PrDuty)),
-        ("Send scouts to review the repo…", "S", Navigation(Scouts)),
-        (
-            "Put an agent on main watch…",
-            "watch",
-            Navigation(MainWatcher),
-        ),
+        ("Start review agents…", "S", Navigation(Scouts)),
     ]
 };
 

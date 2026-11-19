@@ -113,9 +113,7 @@ pub fn workspace_note(change: &str) -> String {
          checkout. Every file you write is stored on the Rosen server within 2 seconds, so \
          there is nothing to commit, push or open: skip any git branch, commit, push and pull \
          request steps your instructions give. When the work is done, name it with \
-         `rosen commit -m \"<one-line summary>\"`; Velocity lands the change: as soon as it \
-         merges cleanly when the project's `rosen.toml` sets `review = \"after-land\"`, \
-         otherwise after PR duty's review. `rosen status` shows what is stored, `rosen diff` \
+         `rosen commit -m \"<one-line summary>\"`; Velocity lands the change as soon as it combines cleanly with the base. `rosen status` shows what is stored, `rosen diff` \
          your change, and \
          `rosen claim <paths>` claims files other agents might edit. The `rosen` MCP server \
          offers the same commands as tools (`status`, `diff`, `claim`, `overlaps`, `commit` \

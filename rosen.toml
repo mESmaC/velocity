@@ -57,21 +57,18 @@ sensitive = [
     ".github/workflows/",
     "scripts/check.ps1",
     "scripts/check-ui.mjs",
-    "scripts/Get-PrDutyToken.ps1",
     "crates/velocity-store/",
     "crates/velocity-git/src/lifecycle.rs",
     "crates/velocity-git/src/merged_worktree.rs",
     "crates/velocity-git/src/review.rs",
     "crates/velocity-airc/src/claims.rs",
-    "crates/velocity-github/src/approval.rs",
 ]
 
 # Build units are left to discovery: each package of the Cargo workspace is a
 # unit, read from the manifests at the base. `ui/`, `proofs/` and `scripts/`
 # lie in no unit, so a change to them counts as reaching every unit.
 
-# Retained for before-land mode. The integration suite covers these checks
-# when this project runs in after-land mode.
+# The after-land integration suite covers the fast set.
 [checks.pre_land]
 commands = [
     "node scripts/check-fast.mjs",

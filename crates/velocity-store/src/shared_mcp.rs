@@ -14,7 +14,7 @@ use crate::{StateStore, StoreError};
 /// The longest name the agents' configs all accept as an MCP server key.
 const MAX_NAME_LENGTH: usize = 64;
 
-/// Names of Velocity's own servers (`velocity-airc`, `velocity-pr-duty`, …) start with this.
+/// Names of Velocity's own servers (`velocity-airc`, `velocity-review-swarm`, …) start with this.
 /// A shared server with such a name would be dropped behind Velocity's, so it is refused.
 const RESERVED_PREFIX: &str = "velocity";
 

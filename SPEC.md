@@ -17,19 +17,16 @@ These hold for every feature. A feature that breaks one of them is wrong, whatev
 2. **The spec comes first.** Every new project starts with a spec interview. No build work starts until the spec is locked.
 3. **A task is finished when its change lands.** The agent names its work (`rosen commit -m`) and repairs anything a stored conflict or post-land revert sends back to it.
    - **Legacy GitHub projects:** an agent opens a PR, watches it until it merges, fixes CI and answers every review comment.
-4. **Landing follows the project's review policy.** On an after-land Rosen project, no approval gates a land: a named change lands as soon as it combines cleanly with the base. A batched integration build runs the build, lint and full tests, then bisects failures for fix-forward work (#480). Review, scouting and proof verification follow the land without blocking development (#382). The release is the gate (F7).
-   - **Before-land Rosen projects:** review and pre-land checks gate the land (F7).
-   - **Legacy GitHub projects:** never merge without approval. Only the PR duty agent that approved a PR merges it. Local checks use the live head and base branch when GitHub's cached record lags; checks and approval stay bound to that exact head (F6, #350).
+4. **Review follows landing.** Velocity uses Rosen's after-land policy, so a named change lands as soon as it combines cleanly with the base. A batched integration build runs the build, lint and full tests, then bisects failures for fix-forward work (#480). Review, scouting and proof verification follow the land without blocking development (#382). The release is the gate (F7).
 5. **One workspace per unit of work.** Every thread and agent has its own Rosen change and workspace. Rosen deletes the workspace when the change lands or is abandoned.
-   - **Legacy GitHub projects:** each job has its own git worktree, deleted after its PR merges. PR duty removes its review worktree after a confirmed merge once its review session has stopped (F7).
+   - **Legacy GitHub projects:** each job has its own git worktree, deleted after its PR merges.
 6. **AGENTS.md is direct and explicit.** Hedged or vague wording counts as a defect.
 7. **Agents coordinate through claims, not conversation.** AIRC coordinates work choice and project events; Rosen records path claims with claim, share and wait. Every agent claims its work and paths and waits for a dependency change to land before rebasing. Agents can message each other, but only when a claim, overlap or dependency needs words. A dependency wait is not an approval gate (Rule 1).
-8. **Implementation first.** Agents build working functionality before anything else. Features on the project's proof list are proven in Lean after their code, in the same PR (F17); everything else ships with no Lean. Tests and docs are low priority: a building agent adds a test only for a critical contract, and scouts and PR duty write the adversarial tests. Only the agents whose job is to break things write tests and stress scripts: scouts and PR duty. Lean is the proving ground, not the test suite.
-   - **On a Rosen project:** Lean for a proof-list feature follows its land, written and checked by proof agents. It no longer has to be in the same change. The release gate's `lake build` and axiom audit hold every release to it.
+8. **Implementation first.** Agents build working functionality before anything else.
+   Proof agents verify proof-list features in Lean after landing (F17).
+   Scouts and the review swarm write adversarial tests, and a building agent adds a targeted test only for a critical contract.
 
-**Rosen rules** *(decided, #381; the project owner, 2026-11-14)*: "With rosen, pr agents become basically obsolete. They existed to help settle github work faster and cleaner. But with rosen, we care about speed. Then we can have agents that can swarm the project to look for issues and review the code and implementations, use lean to verify implementations, and so on, without blocking development."
-- A Rosen project here is one whose `rosen.toml` sets `review = "after-land"` (Rosen R7 and R8, rosen#365; Velocity #380). A git project keeps the wording above, and so does a Rosen project that keeps `review = "before-land"`, Rosen's default: there PR duty still reviews and Rosen still lands nothing without its approval and a receipt for its pre-land checks (F7 "A Rosen change").
-- What stays: no work is lost (Rosen's durability, and a revert never discards the author's work), the integration build verifies the base with bisection and fix-forward repairs, and git projects work as before.
+- Velocity shows a notice offering the setting `review = "after-land"` when a project's configuration still specifies `before-land` (F7).
 - A failing or rejected Rosen mirror stays visible on its project until the next successful push; F5 specifies the project header, Settings, retry time and rejection notice (#402).
 - A confirmed integration failure gets one fix-forward thread on the default implementation model, with the failing command and output (#406, #480).
 - Agents use Rust formatting, UI type-check and lint, and one queued type-check of the Rust crate they change.
@@ -46,7 +43,7 @@ These hold for every feature. A feature that breaks one of them is wrong, whatev
 
 **Rosen vocabulary (#417):** workspace; change; automatic snapshot or named snapshot (`rosen commit -m`); name the change; land; base; stored conflict (`rosen resolve`); land history; abandoned; pre-land and post-land checks (green, culprit, reverted); path claims (`rosen claim`, `rosen share`, `rosen wait`).
 GitHub terminology applies to literal GitHub operations, issues and the git mirror.
-The migration is phased by the owner decision on #417: UI copy and spec wording first; Rust, saved fields and IPC names migrate with #421 (status pane), #422 (thread view), #423 (workspaces) and #424 (PR duty), then a final sweep follows their lands.
+The migration is phased by the owner decision on #417: UI copy and spec wording first; Rust, saved fields and IPC names migrate with #421 (status pane), #422 (thread view), #423 (workspaces) and #424 (after-land review), then a final sweep follows their lands.
 Until those changes land, code names, wire values and the §3.1 command/event spellings below remain the implemented names; renamed saved fields accept their old names with `#[serde(alias)]`.
 The existing GitHub workflow sections describe the legacy git backend while those changes replace it.
 
@@ -57,7 +54,7 @@ The existing GitHub workflow sections describe the legacy git backend while thos
 | **Thread** | One agent working on one piece of work, in its own workspace. |
 | **Spec interview** | The first thread of a new project. It interviews you and produces SPEC.md plus the first Task List. |
 | **Task List** | The project-level list of work, shown in the top-right panel. It is never a per-thread plan. |
-| **Duty agent** | A long-running agent with a standing role: **PR duty**, **Scout**, or the **Review swarm** on after-land Rosen projects (F7). Names are *(proposed)*. |
+| **Review agent** | A Scout or a worker in the after-land review swarm (F7). |
 | **Swarm** | One agent per open item (tasks, issues, or both), all started at once. |
 | **Goal swarm** | N agents given one identical prompt (e.g. "Implement the next unclaimed piece.") with a model mix and work sources you set. Each agent reads the prompt before choosing a matching piece from the enabled sources and claims it atomically in AIRC. |
 | **Workspace** | A Rosen workspace for one thread or agent, attached to its own change from the project base. |
@@ -82,7 +79,7 @@ The existing GitHub workflow sections describe the legacy git backend while thos
 | `done` | Settled | Spec locked (spec threads only). |
 | `merged` | Settled | PR merged and workspace deleted. The thread is finished. |
 
-The sidebar shows groups in this order: draft, On duty, Swarms, Spec interview, Running, named · watching, Failed, Settled. Settled is collapsed by default, shows its count and a chevron, and is the only collapsible group. Its expanded state is saved per project. Finished swarm members move there immediately; idle working threads and failures stay in their active groups. Search reveals matching settled threads even while collapsed. Empty groups are hidden, except "On duty", which shows a "start one" button when empty.
+The sidebar shows groups in this order: draft, Review, Swarms, Spec interview, Running, named · watching, Failed, Settled. Settled is collapsed by default, shows its count and a chevron, and is the only collapsible group. Its expanded state is saved per project. Finished swarm members move there immediately; idle working threads and failures stay in their active groups. Search reveals matching settled threads even while collapsed. Empty groups are hidden, except "Review", which offers to start agents when empty.
 
 Command errors clear after four seconds or the next successful dispatch. Key reports (`Keyboard`, `NumberHints`) don't count as a dispatch here: Enter's own key report would otherwise hide a failed send's error at once. Backend launch notices remain visible while set.
 
@@ -116,7 +113,7 @@ Both timeouts are set in Settings → Agents (F13).
 - **Per-agent caps:** max turns and max duration, set in Settings → Agents (F13). Off by default.
 - **Hitting a limit:** when an agent hits a cap or its provider's limit, its activity becomes `at limit`.
 - **Release after a grace period:** if an agent stays `at limit`, or its thread has failed (§2.1 `error`), for 10 minutes (decided, Q20; set in Settings → Agents), Velocity releases its claims. It posts a `released` event and the piece goes back to the pool (F16). The workspace is still kept (F5).
-- **An open PR keeps its claims** *(proposed)*. A thread with an open PR is never released. PR duty can still land that PR, and a second agent on the piece would open a duplicate.
+- **An open PR keeps its claims** *(proposed)*. A thread with an open PR is never released. A second agent on the piece would open a duplicate.
 - **Prior work is offered, never assigned** (decided, Q20). When the released agent pushed a branch, the `released` event names the branch and its last pushed commit. The work pool shows them on the piece, and the agent that claims it next is told "<nick> left work on `<branch>` at `<sha7>`". That agent starts in its own fresh workspace from `master` as always (Rule 5) and decides whether to merge the branch in. The released agent's workspace stays with its thread.
 - **At an account's limit** (#444, F15), Velocity resumes the thread on the next available account of the same provider.
   When every account is exhausted, a paused thread waits for an account to become available.
@@ -235,6 +232,7 @@ F5, F7 and §3.1 have a README for their introduction and separate files for the
 - [spec/F5-worktrees/accept-when-two-agents-heavy-builds-never-run.md](spec/F5-worktrees/accept-when-two-agents-heavy-builds-never-run.md)
 - [spec/F6-pr-follow-through.md](spec/F6-pr-follow-through.md)
 - [spec/F7-duty-agents/README.md](spec/F7-duty-agents/README.md)
+- [spec/F7-duty-agents/post-land-verification.md](spec/F7-duty-agents/post-land-verification.md)
 - [spec/F7-duty-agents/duty-view.md](spec/F7-duty-agents/duty-view.md)
 - [spec/F7-duty-agents/duty-view-rules.md](spec/F7-duty-agents/duty-view-rules.md)
 - [spec/F7-duty-agents/duty-view-agents.md](spec/F7-duty-agents/duty-view-agents.md)
@@ -244,116 +242,6 @@ F5, F7 and §3.1 have a README for their introduction and separate files for the
 - [spec/F7-duty-agents/duty-view-dismiss-and-stop.md](spec/F7-duty-agents/duty-view-dismiss-and-stop.md)
 - [spec/F7-duty-agents/velocity-s-fast-build-set.md](spec/F7-duty-agents/velocity-s-fast-build-set.md)
 - [spec/F7-duty-agents/measured-check-times.md](spec/F7-duty-agents/measured-check-times.md)
-- [spec/F7-duty-agents/pr-duty.md](spec/F7-duty-agents/pr-duty.md)
-- [spec/F7-duty-agents/pr-duty-for-git-projects.md](spec/F7-duty-agents/pr-duty-for-git-projects.md)
-- [spec/F7-duty-agents/pr-duty-claims-unclaimed-prs-one-pr-per.md](spec/F7-duty-agents/pr-duty-claims-unclaimed-prs-one-pr-per.md)
-- [spec/F7-duty-agents/pr-duty-reviews-the-diff-against-spec-md.md](spec/F7-duty-agents/pr-duty-reviews-the-diff-against-spec-md.md)
-- [spec/F7-duty-agents/pr-duty-checks-before-merge.md](spec/F7-duty-agents/pr-duty-checks-before-merge.md)
-- [spec/F7-duty-agents/pr-duty-checks-before-merge-review-by-reading.md](spec/F7-duty-agents/pr-duty-checks-before-merge-review-by-reading.md)
-- [spec/F7-duty-agents/pr-duty-checks-before-merge-velocity-lands-the-approved-head.md](spec/F7-duty-agents/pr-duty-checks-before-merge-velocity-lands-the-approved-head.md)
-- [spec/F7-duty-agents/pr-duty-checks-before-merge-velocity-lands-the-approved-head-checks-still-running.md](spec/F7-duty-agents/pr-duty-checks-before-merge-velocity-lands-the-approved-head-checks-still-running.md)
-- [spec/F7-duty-agents/pr-duty-checks-before-merge-velocity-lands-the-approved-head-a-failed-check.md](spec/F7-duty-agents/pr-duty-checks-before-merge-velocity-lands-the-approved-head-a-failed-check.md)
-- [spec/F7-duty-agents/pr-duty-checks-before-merge-velocity-lands-the-approved-head-a-conflict-with-the-base-branch.md](spec/F7-duty-agents/pr-duty-checks-before-merge-velocity-lands-the-approved-head-a-conflict-with-the-base-branch.md)
-- [spec/F7-duty-agents/pr-duty-checks-before-merge-velocity-lands-the-approved-head-an-open-review-thread.md](spec/F7-duty-agents/pr-duty-checks-before-merge-velocity-lands-the-approved-head-an-open-review-thread.md)
-- [spec/F7-duty-agents/pr-duty-checks-before-merge-velocity-lands-the-approved-head-the-merge-is-the-approver-s.md](spec/F7-duty-agents/pr-duty-checks-before-merge-velocity-lands-the-approved-head-the-merge-is-the-approver-s.md)
-- [spec/F7-duty-agents/pr-duty-checks-before-merge-local-checks.md](spec/F7-duty-agents/pr-duty-checks-before-merge-local-checks.md)
-- [spec/F7-duty-agents/pr-duty-checks-before-merge-an-approved-head-whose-github-checks.md](spec/F7-duty-agents/pr-duty-checks-before-merge-an-approved-head-whose-github-checks.md)
-- [spec/F7-duty-agents/pr-duty-checks-before-merge-with-the-checks-pass-rule-off.md](spec/F7-duty-agents/pr-duty-checks-before-merge-with-the-checks-pass-rule-off.md)
-- [spec/F7-duty-agents/pr-duty-checks-before-merge-why.md](spec/F7-duty-agents/pr-duty-checks-before-merge-why.md)
-- [spec/F7-duty-agents/pr-duty-checks-before-merge-what-it-gives-up.md](spec/F7-duty-agents/pr-duty-checks-before-merge-what-it-gives-up.md)
-- [spec/F7-duty-agents/pr-duty-rules.md](spec/F7-duty-agents/pr-duty-rules.md)
-- [spec/F7-duty-agents/pr-duty-rules-never-merge-without-an-approving-review.md](spec/F7-duty-agents/pr-duty-rules-never-merge-without-an-approving-review.md)
-- [spec/F7-duty-agents/pr-duty-rules-never-merge-unless-the-proofs-check.md](spec/F7-duty-agents/pr-duty-rules-never-merge-unless-the-proofs-check.md)
-- [spec/F7-duty-agents/pr-duty-rules-review-every-theorem-statement-against-the.md](spec/F7-duty-agents/pr-duty-rules-review-every-theorem-statement-against-the.md)
-- [spec/F7-duty-agents/pr-duty-rules-checks-pass-before-merge.md](spec/F7-duty-agents/pr-duty-rules-checks-pass-before-merge.md)
-- [spec/F7-duty-agents/pr-duty-rules-check-against-spec-md.md](spec/F7-duty-agents/pr-duty-rules-check-against-spec-md.md)
-- [spec/F7-duty-agents/pr-duty-rules-re-review-on-new-commits.md](spec/F7-duty-agents/pr-duty-rules-re-review-on-new-commits.md)
-- [spec/F7-duty-agents/pr-duty-rules-update-branches-with-master.md](spec/F7-duty-agents/pr-duty-rules-update-branches-with-master.md)
-- [spec/F7-duty-agents/pr-duty-rules-delete-the-branch-after-merge.md](spec/F7-duty-agents/pr-duty-rules-delete-the-branch-after-merge.md)
-- [spec/F7-duty-agents/pr-duty-rules-merge-method.md](spec/F7-duty-agents/pr-duty-rules-merge-method.md)
-- [spec/F7-duty-agents/pr-duty-each-review-runs-in-its-own.md](spec/F7-duty-agents/pr-duty-each-review-runs-in-its-own.md)
-- [spec/F7-duty-agents/pr-duty-how-a-review-runs.md](spec/F7-duty-agents/pr-duty-how-a-review-runs.md)
-- [spec/F7-duty-agents/pr-duty-how-a-review-runs-projects-never-wait-for-each-other.md](spec/F7-duty-agents/pr-duty-how-a-review-runs-projects-never-wait-for-each-other.md)
-- [spec/F7-duty-agents/pr-duty-how-a-review-runs-the-claim-posts-a-claim-event-nick-comment-on-the-pr-which.md](spec/F7-duty-agents/pr-duty-how-a-review-runs-the-claim-posts-a-claim-event-nick-comment-on-the-pr-which.md)
-- [spec/F7-duty-agents/pr-duty-how-a-review-runs-a-review-lasts-until-its-agent.md](spec/F7-duty-agents/pr-duty-how-a-review-runs-a-review-lasts-until-its-agent.md)
-- [spec/F7-duty-agents/pr-duty-how-a-review-runs-a-review-whose-pr-is-closed.md](spec/F7-duty-agents/pr-duty-how-a-review-runs-a-review-whose-pr-is-closed.md)
-- [spec/F7-duty-agents/pr-duty-how-a-review-runs-a-review-runs-in-the-pr.md](spec/F7-duty-agents/pr-duty-how-a-review-runs-a-review-runs-in-the-pr.md)
-- [spec/F7-duty-agents/pr-duty-how-a-review-runs-the-agent-records-decisions-only-through.md](spec/F7-duty-agents/pr-duty-how-a-review-runs-the-agent-records-decisions-only-through.md)
-- [spec/F7-duty-agents/pr-duty-how-a-review-runs-its-card-shows-n-current-step-the-feed-gets-the.md](spec/F7-duty-agents/pr-duty-how-a-review-runs-its-card-shows-n-current-step-the-feed-gets-the.md)
-- [spec/F7-duty-agents/pr-duty-how-a-review-runs-a-message-from-the-pr-duty.md](spec/F7-duty-agents/pr-duty-how-a-review-runs-a-message-from-the-pr-duty.md)
-- [spec/F7-duty-agents/pr-duty-how-a-review-runs-a-rosen-change.md](spec/F7-duty-agents/pr-duty-how-a-review-runs-a-rosen-change.md)
-- [spec/F7-duty-agents/pr-duty-how-a-review-runs-a-rosen-change-reviewed-by-reading.md](spec/F7-duty-agents/pr-duty-how-a-review-runs-a-rosen-change-reviewed-by-reading.md)
-- [spec/F7-duty-agents/pr-duty-how-a-review-runs-a-rosen-change-velocity-checks-and-lands-the-approved.md](spec/F7-duty-agents/pr-duty-how-a-review-runs-a-rosen-change-velocity-checks-and-lands-the-approved.md)
-- [spec/F7-duty-agents/pr-duty-how-a-review-runs-a-rosen-ch-and-lands-the-approved-it-asks-rosen-to-land-the-f39eb6c5.md](spec/F7-duty-agents/pr-duty-how-a-review-runs-a-rosen-ch-and-lands-the-approved-it-asks-rosen-to-land-the-f39eb6c5.md)
-- [spec/F7-duty-agents/pr-duty-how-a-review-runs-a-rosen-ch-lands-the-approved-when-rosen-wants-a-receipt-it-101b5029.md](spec/F7-duty-agents/pr-duty-how-a-review-runs-a-rosen-ch-lands-the-approved-when-rosen-wants-a-receipt-it-101b5029.md)
-- [spec/F7-duty-agents/pr-duty-how-a-review-runs-a-rosen-ch-ands-the-approved-the-commands-the-check-set-the-81d5073a.md](spec/F7-duty-agents/pr-duty-how-a-review-runs-a-rosen-ch-ands-the-approved-the-commands-the-check-set-the-81d5073a.md)
-- [spec/F7-duty-agents/pr-duty-how-a-review-runs-a-rosen-ch--the-approved-the-folder-holds-exactly-the-merge-3173977f.md](spec/F7-duty-agents/pr-duty-how-a-review-runs-a-rosen-ch--the-approved-the-folder-holds-exactly-the-merge-3173977f.md)
-- [spec/F7-duty-agents/pr-duty-how-a-review-runs-a-rosen-change-velocity-checks-and-lands-the-approved-every-command-passed.md](spec/F7-duty-agents/pr-duty-how-a-review-runs-a-rosen-change-velocity-checks-and-lands-the-approved-every-command-passed.md)
-- [spec/F7-duty-agents/pr-duty-how-a-review-runs-a-rosen-ch-he-approved-a-successful-land-is-checkpointed-as-2dae756e.md](spec/F7-duty-agents/pr-duty-how-a-review-runs-a-rosen-ch-he-approved-a-successful-land-is-checkpointed-as-2dae756e.md)
-- [spec/F7-duty-agents/pr-duty-how-a-review-runs-a-rosen-ch--and-lands-the-approved-it-takes-a-change-at-its-ef1e5b5e.md](spec/F7-duty-agents/pr-duty-how-a-review-runs-a-rosen-ch--and-lands-the-approved-it-takes-a-change-at-its-ef1e5b5e.md)
-- [spec/F7-duty-agents/pr-duty-how-a-review-runs-a-rosen-ch--lands-the-approved-each-check-takes-one-turn-in-1f184113.md](spec/F7-duty-agents/pr-duty-how-a-review-runs-a-rosen-ch--lands-the-approved-each-check-takes-one-turn-in-1f184113.md)
-- [spec/F7-duty-agents/pr-duty-how-a-review-runs-a-rosen-change-velocity-checks-and-lands-the-approved-a-command-failed.md](spec/F7-duty-agents/pr-duty-how-a-review-runs-a-rosen-change-velocity-checks-and-lands-the-approved-a-command-failed.md)
-- [spec/F7-duty-agents/pr-duty-how-a-review-runs-a-rosen-change-velocity-checks-and-lands-the-approved-the-merge-conflicts.md](spec/F7-duty-agents/pr-duty-how-a-review-runs-a-rosen-change-velocity-checks-and-lands-the-approved-the-merge-conflicts.md)
-- [spec/F7-duty-agents/pr-duty-how-a-review-runs-a-rosen-ch-d-lands-the-approved-the-checks-could-not-run-at-e6a8c2dc.md](spec/F7-duty-agents/pr-duty-how-a-review-runs-a-rosen-ch-d-lands-the-approved-the-checks-could-not-run-at-e6a8c2dc.md)
-- [spec/F7-duty-agents/pr-duty-how-a-review-runs-a-rosen-ch-the-approved-this-serial-checker-is-retained-for-6520576b.md](spec/F7-duty-agents/pr-duty-how-a-review-runs-a-rosen-ch-the-approved-this-serial-checker-is-retained-for-6520576b.md)
-- [spec/F7-duty-agents/pr-duty-how-a-review-runs-a-rosen-change-after-a-land-velocity-verifies-builds.md](spec/F7-duty-agents/pr-duty-how-a-review-runs-a-rosen-change-after-a-land-velocity-verifies-builds.md)
-- [spec/F7-duty-agents/pr-duty-how-a-review-runs-a-rosen-ch-ies-builds-checker-and-post-land-messages-remain-0d35a4d4.md](spec/F7-duty-agents/pr-duty-how-a-review-runs-a-rosen-ch-ies-builds-checker-and-post-land-messages-remain-0d35a4d4.md)
-- [spec/F7-duty-agents/pr-duty-how-a-review-runs-a-rosen-ch-y-verifies-builds-fast-builds-in-after-land-mode-b5d1a96c.md](spec/F7-duty-agents/pr-duty-how-a-review-runs-a-rosen-ch-y-verifies-builds-fast-builds-in-after-land-mode-b5d1a96c.md)
-- [spec/F7-duty-agents/pr-duty-how-a-review-runs-a-rosen-change-after-a-land-velocity-verifies-builds-full-tests.md](spec/F7-duty-agents/pr-duty-how-a-review-runs-a-rosen-change-after-a-land-velocity-verifies-builds-full-tests.md)
-- [spec/F7-duty-agents/pr-duty-how-a-review-runs-a-rosen-change-after-a-land-velocity-verifies-builds-every-command-passed.md](spec/F7-duty-agents/pr-duty-how-a-review-runs-a-rosen-change-after-a-land-velocity-verifies-builds-every-command-passed.md)
-- [spec/F7-duty-agents/pr-duty-how-a-review-runs-a-rosen-change-after-a-land-velocity-verifies-builds-a-command-failed.md](spec/F7-duty-agents/pr-duty-how-a-review-runs-a-rosen-change-after-a-land-velocity-verifies-builds-a-command-failed.md)
-- [spec/F7-duty-agents/pr-duty-how-a-review-runs-a-rosen-change-after-a-land-velocity-verifies-builds-build.md](spec/F7-duty-agents/pr-duty-how-a-review-runs-a-rosen-change-after-a-land-velocity-verifies-builds-build.md)
-- [spec/F7-duty-agents/pr-duty-how-a-review-runs-a-rosen-change-after-a-land-velocity-verifies-builds-test.md](spec/F7-duty-agents/pr-duty-how-a-review-runs-a-rosen-change-after-a-land-velocity-verifies-builds-test.md)
-- [spec/F7-duty-agents/pr-duty-how-a-review-runs-a-rosen-ch-es-builds-the-results-contradict-each-other-such-c87369f4.md](spec/F7-duty-agents/pr-duty-how-a-review-runs-a-rosen-ch-es-builds-the-results-contradict-each-other-such-c87369f4.md)
-- [spec/F7-duty-agents/pr-duty-how-a-review-runs-a-rosen-ch-city-verifies-builds-the-checks-could-not-run-at-2238b38e.md](spec/F7-duty-agents/pr-duty-how-a-review-runs-a-rosen-ch-city-verifies-builds-the-checks-could-not-run-at-2238b38e.md)
-- [spec/F7-duty-agents/pr-duty-how-a-review-runs-a-rosen-ch-city-verifies-builds-a-project-with-no-post-land-0aca7f21.md](spec/F7-duty-agents/pr-duty-how-a-review-runs-a-rosen-ch-city-verifies-builds-a-project-with-no-post-land-0aca7f21.md)
-- [spec/F7-duty-agents/pr-duty-how-a-review-runs-a-rosen-change-reviewed-with-the-local-checks.md](spec/F7-duty-agents/pr-duty-how-a-review-runs-a-rosen-change-reviewed-with-the-local-checks.md)
-- [spec/F7-duty-agents/pr-duty-how-a-review-runs-a-rosen-change-the-review-runs-in-the-project.md](spec/F7-duty-agents/pr-duty-how-a-review-runs-a-rosen-change-the-review-runs-in-the-project.md)
-- [spec/F7-duty-agents/pr-duty-how-a-review-runs-a-rosen-change-checks-in-a-plain-merge-tree.md](spec/F7-duty-agents/pr-duty-how-a-review-runs-a-rosen-change-checks-in-a-plain-merge-tree.md)
-- [spec/F7-duty-agents/pr-duty-how-a-review-runs-a-rosen-change-the-agent-works-only-through-pr.md](spec/F7-duty-agents/pr-duty-how-a-review-runs-a-rosen-change-the-agent-works-only-through-pr.md)
-- [spec/F7-duty-agents/pr-duty-how-a-review-runs-a-rosen-change-requested-changes-go-to-the-author.md](spec/F7-duty-agents/pr-duty-how-a-review-runs-a-rosen-change-requested-changes-go-to-the-author.md)
-- [spec/F7-duty-agents/pr-duty-how-a-review-runs-a-rosen-change-a-land-rosen-refuses-because-the.md](spec/F7-duty-agents/pr-duty-how-a-review-runs-a-rosen-change-a-land-rosen-refuses-because-the.md)
-- [spec/F7-duty-agents/pr-duty-approval-record.md](spec/F7-duty-agents/pr-duty-approval-record.md)
-- [spec/F7-duty-agents/pr-duty-approval-record-github-s-review-state-is-advisory.md](spec/F7-duty-agents/pr-duty-approval-record-github-s-review-state-is-advisory.md)
-- [spec/F7-duty-agents/pr-duty-approval-record-pr-duty-merges-only-the-head.md](spec/F7-duty-agents/pr-duty-approval-record-pr-duty-merges-only-the-head.md)
-- [spec/F7-duty-agents/pr-duty-approval-record-a-branch-update-pr-duty-made.md](spec/F7-duty-agents/pr-duty-approval-record-a-branch-update-pr-duty-made.md)
-- [spec/F7-duty-agents/pr-duty-approval-record-a-changes-event-newer-than-the.md](spec/F7-duty-agents/pr-duty-approval-record-a-changes-event-newer-than-the.md)
-- [spec/F7-duty-agents/pr-duty-approval-record-on-a-repository-whose-branch-protection.md](spec/F7-duty-agents/pr-duty-approval-record-on-a-repository-whose-branch-protection.md)
-- [spec/F7-duty-agents/pr-duty-review-the-intent-not-each-line.md](spec/F7-duty-agents/pr-duty-review-the-intent-not-each-line.md)
-- [spec/F7-duty-agents/pr-duty-severity-bar.md](spec/F7-duty-agents/pr-duty-severity-bar.md)
-- [spec/F7-duty-agents/pr-duty-severity-bar-everything-else-is-filed-as-an.md](spec/F7-duty-agents/pr-duty-severity-bar-everything-else-is-filed-as-an.md)
-- [spec/F7-duty-agents/pr-duty-severity-bar-every-blocking-finding-goes-in-the.md](spec/F7-duty-agents/pr-duty-severity-bar-every-blocking-finding-goes-in-the.md)
-- [spec/F7-duty-agents/pr-duty-severity-bar-when-a-reviewer-is-unsure-whether.md](spec/F7-duty-agents/pr-duty-severity-bar-when-a-reviewer-is-unsure-whether.md)
-- [spec/F7-duty-agents/pr-duty-severity-bar-why.md](spec/F7-duty-agents/pr-duty-severity-bar-why.md)
-- [spec/F7-duty-agents/pr-duty-review-the-statements-not-the-proofs.md](spec/F7-duty-agents/pr-duty-review-the-statements-not-the-proofs.md)
-- [spec/F7-duty-agents/pr-duty-review-the-statements-not-the-proofs-does-each-statement-say-what-the.md](spec/F7-duty-agents/pr-duty-review-the-statements-not-the-proofs-does-each-statement-say-what-the.md)
-- [spec/F7-duty-agents/pr-duty-review-the-statements-not-the-proofs-do-its-hypotheses-exclude-real-inputs.md](spec/F7-duty-agents/pr-duty-review-the-statements-not-the-proofs-do-its-hypotheses-exclude-real-inputs.md)
-- [spec/F7-duty-agents/pr-duty-review-the-statements-not-the-proofs-is-the-cost-model-honest-and.md](spec/F7-duty-agents/pr-duty-review-the-statements-not-the-proofs-is-the-cost-model-honest-and.md)
-- [spec/F7-duty-agents/pr-duty-pr-duty-writes-tests-too.md](spec/F7-duty-agents/pr-duty-pr-duty-writes-tests-too.md)
-- [spec/F7-duty-agents/pr-duty-tiered-review.md](spec/F7-duty-agents/pr-duty-tiered-review.md)
-- [spec/F7-duty-agents/pr-duty-tiered-review-trivial.md](spec/F7-duty-agents/pr-duty-tiered-review-trivial.md)
-- [spec/F7-duty-agents/pr-duty-tiered-review-normal.md](spec/F7-duty-agents/pr-duty-tiered-review-normal.md)
-- [spec/F7-duty-agents/pr-duty-tiered-review-sensitive.md](spec/F7-duty-agents/pr-duty-tiered-review-sensitive.md)
-- [spec/F7-duty-agents/pr-duty-tiered-review-reading-the-diff.md](spec/F7-duty-agents/pr-duty-tiered-review-reading-the-diff.md)
-- [spec/F7-duty-agents/pr-duty-tiered-review-sensitive-paths.md](spec/F7-duty-agents/pr-duty-tiered-review-sensitive-paths.md)
-- [spec/F7-duty-agents/pr-duty-the-release-gate.md](spec/F7-duty-agents/pr-duty-the-release-gate.md)
-- [spec/F7-duty-agents/pr-duty-the-release-gate-the-post-land-full-tests-green.md](spec/F7-duty-agents/pr-duty-the-release-gate-the-post-land-full-tests-green.md)
-- [spec/F7-duty-agents/pr-duty-the-release-gate-cargo-run-p-stress-all-passing.md](spec/F7-duty-agents/pr-duty-the-release-gate-cargo-run-p-stress-all-passing.md)
-- [spec/F7-duty-agents/pr-duty-the-release-gate-lake-build-in-proofs-passing-with.md](spec/F7-duty-agents/pr-duty-the-release-gate-lake-build-in-proofs-passing-with.md)
-- [spec/F7-duty-agents/pr-duty-the-release-gate-no-open-issue-labelled-release-blocker.md](spec/F7-duty-agents/pr-duty-the-release-gate-no-open-issue-labelled-release-blocker.md)
-- [spec/F7-duty-agents/pr-duty-landing-ticks-the-plan.md](spec/F7-duty-agents/pr-duty-landing-ticks-the-plan.md)
-- [spec/F7-duty-agents/main-watcher.md](spec/F7-duty-agents/main-watcher.md)
-- [spec/F7-duty-agents/main-watcher-after-each-merge-it-runs-every.md](spec/F7-duty-agents/main-watcher-after-each-merge-it-runs-every.md)
-- [spec/F7-duty-agents/main-watcher-when-master-breaks-it-bisects-the.md](spec/F7-duty-agents/main-watcher-when-master-breaks-it-bisects-the.md)
-- [spec/F7-duty-agents/main-watcher-targeted-delivery-tells-only-the-agents.md](spec/F7-duty-agents/main-watcher-targeted-delivery-tells-only-the-agents.md)
-- [spec/F7-duty-agents/main-watcher-it-tracks-flaky-tests-and-files.md](spec/F7-duty-agents/main-watcher-it-tracks-flaky-tests-and-files.md)
-- [spec/F7-duty-agents/main-watcher-never-push-to-master-every-fix.md](spec/F7-duty-agents/main-watcher-never-push-to-master-every-fix.md)
-- [spec/F7-duty-agents/main-watcher-how-a-watch-runs.md](spec/F7-duty-agents/main-watcher-how-a-watch-runs.md)
-- [spec/F7-duty-agents/main-watcher-how-a-watch-runs-the-runner-reads-the-base-branch.md](spec/F7-duty-agents/main-watcher-how-a-watch-runs-the-runner-reads-the-base-branch.md)
-- [spec/F7-duty-agents/main-watcher-how-a-watch-runs-a-watch-is-one-agent-turn.md](spec/F7-duty-agents/main-watcher-how-a-watch-runs-a-watch-is-one-agent-turn.md)
-- [spec/F7-duty-agents/main-watcher-how-a-watch-runs-the-watcher-records-verdicts-only-through.md](spec/F7-duty-agents/main-watcher-how-a-watch-runs-the-watcher-records-verdicts-only-through.md)
-- [spec/F7-duty-agents/main-watcher-how-a-watch-runs-flaky-tests-are-filed-through-the.md](spec/F7-duty-agents/main-watcher-how-a-watch-runs-flaky-tests-are-filed-through-the.md)
-- [spec/F7-duty-agents/main-watcher-how-a-watch-runs-a-message-from-the-main-watcher.md](spec/F7-duty-agents/main-watcher-how-a-watch-runs-a-message-from-the-main-watcher.md)
 - [spec/F7-duty-agents/review-swarm-on-after-land-rosen.md](spec/F7-duty-agents/review-swarm-on-after-land-rosen.md)
 - [spec/F7-duty-agents/review-swarm-on-after-land-rosen-review-swarm.md](spec/F7-duty-agents/review-swarm-on-after-land-rosen-review-swarm.md)
 - [spec/F7-duty-agents/review-swarm-on-after-land-rosen-a-worker-claims-the-oldest-unreviewed.md](spec/F7-duty-agents/review-swarm-on-after-land-rosen-a-worker-claims-the-oldest-unreviewed.md)

@@ -583,7 +583,7 @@ fn mirrored_change_request(review: &crate::PullRequestReview) -> bool {
     };
     let prefix = format!(
         "Changes requested at `{}` by ",
-        crate::approval::short_head(&commit.oid)
+        commit.oid.get(..8).unwrap_or(&commit.oid)
     );
     review
         .body

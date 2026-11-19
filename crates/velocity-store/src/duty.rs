@@ -3,14 +3,12 @@
 use crate::project_layout::{active_project, provider_color, read_model};
 use crate::projects::ProjectError;
 use crate::swarm_dialog::{SwarmModelCard, provider_model_name};
-use crate::{
-    EffortLevel, PersistedState, ProjectItem, ProviderKind, SpeedMode, StateStore, ThreadState,
-};
+use crate::{EffortLevel, PersistedState, ProjectItem, ProviderKind, SpeedMode, StateStore};
 use serde::{Deserialize, Serialize};
 use specta::Type;
 use velocity_core::duty::{
     self, DutyAgentCard, DutyEventKind, DutyFeedEvent, DutyRole, DutyRoleEntry, DutyStartSpec,
-    PrDutyRuleSettings, ScoutRuleSettings,
+    ScoutRuleSettings,
 };
 use velocity_core::layout_state::LayoutState;
 use velocity_core::layout_view::LayoutSnapshot;
@@ -30,10 +28,6 @@ pub struct DutyAgentItem {
     #[serde(default)]
     #[specta(skip)]
     pub repeat_unchanged: bool,
-    /// A PR duty agent's kept `review-pr-<n>` worktrees (F7), listed in Settings → Worktrees.
-    #[serde(default)]
-    #[specta(skip)]
-    pub review_worktrees: Vec<String>,
     /// The effort and speed its sessions run at, chosen in the Start a duty agent dialog
     /// (F7). `None` follows Settings' defaults for every session.
     #[serde(default)]
@@ -56,7 +50,6 @@ pub struct DutyRoleItem {
     pub role: DutyRole,
     pub paused: bool,
     pub issues_filed: u32,
-    pub pr_rules: PrDutyRuleSettings,
     pub scout_rules: ScoutRuleSettings,
     pub agents: Vec<DutyAgentItem>,
     pub feed: Vec<DutyFeedItem>,
@@ -71,7 +64,6 @@ impl DutyRoleItem {
         entry.review_swarm = self.review_swarm.clone();
         entry.paused = self.paused;
         entry.issues_filed = self.issues_filed as usize;
-        entry.pr_rules = self.pr_rules.clone();
         entry.scout_rules = self.scout_rules.clone();
         entry.agents = self
             .agents
@@ -84,7 +76,6 @@ impl DutyRoleItem {
                 doing: agent.doing.clone(),
                 sweep: agent.sweep.clone(),
                 repeat_unchanged: agent.repeat_unchanged,
-                review_worktrees: agent.review_worktrees.clone(),
                 effort: agent.effort.map(Into::into),
                 speed: agent.preferred_speed.map(Into::into),
             })
@@ -109,7 +100,6 @@ impl DutyRoleItem {
             review_swarm: entry.review_swarm,
             paused: entry.paused,
             issues_filed: u32::try_from(entry.issues_filed).unwrap_or(u32::MAX),
-            pr_rules: entry.pr_rules,
             scout_rules: entry.scout_rules,
             agents: entry
                 .agents
@@ -122,7 +112,6 @@ impl DutyRoleItem {
                     doing: agent.doing,
                     sweep: agent.sweep,
                     repeat_unchanged: agent.repeat_unchanged,
-                    review_worktrees: agent.review_worktrees,
                     effort: agent.effort.map(Into::into),
                     preferred_speed: agent.speed.map(Into::into),
                 })
@@ -182,27 +171,21 @@ pub struct ScoutRoster {
     pub scouts: Vec<DutyAgentItem>,
 }
 
-/// A project's PR duty as the review runner reads it.
+/// A Rosen project's background landing and verification work.
 #[derive(Clone)]
-pub struct PrDutyRoster {
-    /// Settings when the roster was read: each agent's ACP command comes from Providers.
-    pub settings: crate::Settings,
+pub struct LandingProject {
     pub project: ProjectItem,
     pub worktrees: velocity_core::worktree_settings::WorktreePreferences,
-    pub paused: bool,
-    pub rules: PrDutyRuleSettings,
-    pub agents: Vec<DutyAgentItem>,
 }
 
-/// A project's Main watcher as the watch runner reads it.
-#[derive(Clone)]
-pub struct WatchRoster {
-    /// Settings when the roster was read: each agent's ACP command comes from Providers.
-    pub settings: crate::Settings,
-    pub project: ProjectItem,
-    pub worktrees: velocity_core::worktree_settings::WorktreePreferences,
-    pub paused: bool,
-    pub watchers: Vec<DutyAgentItem>,
+pub(crate) fn load_roles<'de, D: serde::Deserializer<'de>>(
+    deserializer: D,
+) -> Result<Vec<DutyRoleItem>, D::Error> {
+    Vec::<serde_json::Value>::deserialize(deserializer)?
+        .into_iter()
+        .filter(|role| !matches!(role["role"].as_str(), Some("pr_duty" | "main_watcher")))
+        .map(|role| serde_json::from_value(role).map_err(serde::de::Error::custom))
+        .collect()
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, Type)]
@@ -217,16 +200,9 @@ pub struct DutyDialogDefaults {
     pub models: Vec<SwarmModelCard>,
     /// Settings' default speed, where the dialog's Speed starts.
     pub speed: SpeedMode,
-    pub pr_duty_exists: bool,
     pub scouts_exists: bool,
-    pub main_watcher_exists: bool,
-    pub pr_rules: PrDutyRuleSettings,
     pub scout_rules: ScoutRuleSettings,
-    /// The active project uses Rosen and reviews after the land (`rosen.toml`
-    /// `review = "after-land"`), so the dialog doesn't offer PR duty (F7, #381). Only Rosen
-    /// can say, so the window's command fills it in.
-    #[serde(default)]
-    pub lands_without_review: bool,
+    pub review_swarm: bool,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, Type)]
@@ -240,28 +216,10 @@ pub struct StartDutyRequest {
     pub effort: Option<EffortLevel>,
     #[serde(default)]
     pub speed: Option<SpeedMode>,
-    pub pr_rules: Option<PrDutyRuleSettings>,
     pub scout_rules: Option<ScoutRuleSettings>,
     /// Only the scouts started by this request get this setting.
     #[serde(default)]
     pub repeat_unchanged: bool,
-}
-
-impl StartDutyRequest {
-    /// Add `agent_count` PR duty agents on the default model, keeping the role's rules.
-    pub fn pr_duty(agent_count: u8) -> Self {
-        Self {
-            role: DutyRole::PrDuty,
-            agent_count,
-            provider: None,
-            model_name: None,
-            effort: None,
-            speed: None,
-            pr_rules: None,
-            scout_rules: None,
-            repeat_unchanged: false,
-        }
-    }
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, Type)]
@@ -309,7 +267,6 @@ impl StateStore {
         let model_name = settings.provider_model(provider);
         let models = duty_model_cards(settings, provider, &model_name);
         let project = active_project(&self.state);
-        let existing_pr = project.and_then(|proj| find_role(proj, DutyRole::PrDuty));
         let existing_scouts = project.and_then(|proj| find_role(proj, DutyRole::Scouts));
         DutyDialogDefaults {
             provider,
@@ -318,18 +275,11 @@ impl StateStore {
             model_configured,
             models,
             speed: settings.providers.default_speed,
-            pr_duty_exists: existing_pr.is_some(),
             scouts_exists: existing_scouts.is_some(),
-            main_watcher_exists: project
-                .and_then(|proj| find_role(proj, DutyRole::MainWatcher))
-                .is_some(),
-            pr_rules: existing_pr
-                .map(|item| item.pr_rules.clone())
-                .unwrap_or_default(),
             scout_rules: existing_scouts
                 .map(|item| item.scout_rules.clone())
                 .unwrap_or_default(),
-            lands_without_review: false,
+            review_swarm: false,
         }
     }
 
@@ -356,17 +306,8 @@ impl StateStore {
                     provider_model_name(&self.state.settings, provider)
                 }
             });
-        let has_open_pull_requests = project.threads.iter().any(|thread| {
-            thread.state == ThreadState::Review && thread.pull_request_number.is_some()
-        });
-        let (identifier, event) = apply_start_or_add(
-            project,
-            &request,
-            provider,
-            model_name,
-            has_open_pull_requests,
-            timestamp,
-        );
+        let (identifier, event) =
+            apply_start_or_add(project, &request, provider, model_name, timestamp);
         project.active_thread_id = Some(identifier);
         self.commit_duty_state(next)?;
         layout.replace_data(read_model(self));
@@ -512,8 +453,7 @@ impl StateStore {
     }
 
     /// Every project's Scouts role, for the sweep runner (F7), paused ones included so their
-    /// cards still say so. Rosen projects without a role are included with no agents: their
-    /// after-land build and test workers must run independently of PR duty (#380).
+    /// cards still say so.
     pub fn scout_rosters(&self) -> Vec<ScoutRoster> {
         self.state
             .projects
@@ -532,44 +472,14 @@ impl StateStore {
             .collect()
     }
 
-    /// Every project's PR duty role, for the review runner (F7), paused ones included so their
-    /// cards still say so.
-    pub fn pr_duty_rosters(&self) -> Vec<PrDutyRoster> {
+    pub fn landing_projects(&self) -> Vec<LandingProject> {
         self.state
             .projects
             .iter()
-            .filter_map(|project| {
-                let role = find_role(project, DutyRole::PrDuty);
-                if role.is_none() && !project.rosen_in_use() {
-                    return None;
-                }
-                Some(PrDutyRoster {
-                    settings: self.state.settings.clone(),
-                    project: project.clone(),
-                    worktrees: self.worktree_preferences(project),
-                    paused: role.is_some_and(|role| role.paused),
-                    rules: role.map(|role| role.pr_rules.clone()).unwrap_or_default(),
-                    agents: role.map(|role| role.agents.clone()).unwrap_or_default(),
-                })
-            })
-            .collect()
-    }
-
-    /// Every project's Main watcher, for the watch runner (F7), paused ones included so their
-    /// cards still say so.
-    pub fn main_watch_rosters(&self) -> Vec<WatchRoster> {
-        self.state
-            .projects
-            .iter()
-            .filter_map(|project| {
-                let role = find_role(project, DutyRole::MainWatcher)?;
-                Some(WatchRoster {
-                    settings: self.state.settings.clone(),
-                    project: project.clone(),
-                    worktrees: self.worktree_preferences(project),
-                    paused: role.paused,
-                    watchers: role.agents.clone(),
-                })
+            .filter(|project| project.rosen_in_use())
+            .map(|project| LandingProject {
+                project: project.clone(),
+                worktrees: self.worktree_preferences(project),
             })
             .collect()
     }
@@ -582,34 +492,18 @@ impl StateStore {
         project: u32,
         change: impl FnOnce(&mut DutyRoleEntry, &str) -> Vec<DutyFeedEvent>,
     ) -> Result<Option<Vec<DutyFeedEvent>>, ProjectError> {
-        self.update_duty(project, DutyRole::Scouts, change)
-    }
-
-    /// [`Self::update_scouts`] for any duty role. Rosen's checker also reports here without
-    /// PR duty agents, creating a feed-only entry when the project has no PR duty role.
-    pub fn update_duty(
-        &mut self,
-        project: u32,
-        role: DutyRole,
-        change: impl FnOnce(&mut DutyRoleEntry, &str) -> Vec<DutyFeedEvent>,
-    ) -> Result<Option<Vec<DutyFeedEvent>>, ProjectError> {
         let mut next = self.state.clone();
         let Some(project) = next.projects.iter_mut().find(|item| item.id == project) else {
             return Ok(None);
         };
-        let existing = project
+        let Some(saved) = project
             .duty_roles
-            .iter()
-            .position(|entry| entry.role == role);
-        let mut entry = match existing {
-            Some(index) => project.duty_roles[index].to_core(),
-            // The checker and post-land workers run without a staffed role. Keep their
-            // feed in the existing persisted view, without starting any duty agents.
-            None if role == DutyRole::PrDuty && project.rosen_in_use() => {
-                DutyRoleEntry::new(next_project_entry_id(project) as usize, role)
-            }
-            None => return Ok(None),
+            .iter_mut()
+            .find(|item| item.role == DutyRole::Scouts)
+        else {
+            return Ok(None);
         };
+        let mut entry = saved.to_core();
         let events = change(&mut entry, &clock_timestamp());
         entry.feed.extend(events.iter().cloned());
         // Sweeps run for as long as the app does; the feed keeps the recent part.
@@ -617,14 +511,10 @@ impl StateStore {
         entry.feed.drain(..overflow);
         let fallback = self.state.settings.providers.default_provider;
         let updated = DutyRoleItem::from_core(entry, fallback);
-        if let Some(index) = existing {
-            if project.duty_roles[index] == updated {
-                return Ok(Some(events));
-            }
-            project.duty_roles[index] = updated;
-        } else {
-            project.duty_roles.push(updated);
+        if *saved == updated {
+            return Ok(Some(events));
         }
+        *saved = updated;
         self.commit_duty_state(next)?;
         Ok(Some(events))
     }
@@ -707,7 +597,7 @@ fn apply_start_or_add(
     request: &StartDutyRequest,
     provider: ProviderKind,
     model_name: String,
-    has_open_pull_requests: bool,
+
     timestamp: String,
 ) -> (u32, DutyFeedEvent) {
     if let Some(existing) = project
@@ -723,16 +613,12 @@ fn apply_start_or_add(
             model_name,
             effort: request.effort.map(Into::into),
             speed: request.speed.map(Into::into),
-            pr_rules: request
-                .pr_rules
-                .clone()
-                .unwrap_or_else(|| core_entry.pr_rules.clone()),
             scout_rules: request
                 .scout_rules
                 .clone()
                 .unwrap_or_else(|| core_entry.scout_rules.clone()),
             repeat_unchanged: request.repeat_unchanged,
-            has_open_pull_requests,
+
             timestamp,
         };
         let event = duty::add_agents_to_duty_entry(&mut core_entry, spec);
@@ -748,10 +634,9 @@ fn apply_start_or_add(
             model_name,
             effort: request.effort.map(Into::into),
             speed: request.speed.map(Into::into),
-            pr_rules: request.pr_rules.clone().unwrap_or_default(),
             scout_rules: request.scout_rules.clone().unwrap_or_default(),
             repeat_unchanged: request.repeat_unchanged,
-            has_open_pull_requests,
+
             timestamp,
         };
         let (core_entry, event) = duty::start_duty_entry(id as usize, spec);
@@ -817,16 +702,15 @@ mod tests {
             std::env::temp_dir().join(format!("velocity-duty-dismiss-{}", std::process::id()));
         let mut store = StateStore::load_or_default(&directory)?;
         let spec = DutyStartSpec {
-            role: DutyRole::PrDuty,
+            role: DutyRole::Scouts,
             agent_count: 3,
             provider: ProviderColor::Claude,
             model_name: "model".into(),
             effort: None,
             speed: None,
-            pr_rules: PrDutyRuleSettings::default(),
             scout_rules: ScoutRuleSettings::default(),
             repeat_unchanged: false,
-            has_open_pull_requests: false,
+
             timestamp: "00:00".into(),
         };
         let (entry, _) = duty::start_duty_entry(7, spec);
@@ -836,29 +720,22 @@ mod tests {
         store.state.projects = vec![project];
         let mut layout = LayoutState::default();
         let request = DismissDutyAgentRequest {
-            role: DutyRole::PrDuty,
-            nickname: "pr-2".into(),
+            role: DutyRole::Scouts,
+            nickname: "scout-2".into(),
         };
-        let outcome = store.dismiss_duty_agent(&mut layout, &request, Some(41), "00:01".into())?;
-        assert_eq!(outcome.event.message, "Dismissed pr-2 · released #41");
+        let outcome = store.dismiss_duty_agent(&mut layout, &request, None, "00:01".into())?;
+        assert_eq!(outcome.event.message, "Dismissed scout-2");
         let loaded = StateStore::load_or_default(&directory)?;
         let role = loaded.state().projects[0].duty_roles[0].to_core();
         let nicknames: Vec<&str> = role.agents.iter().map(|a| a.nickname.as_str()).collect();
-        assert_eq!(nicknames, ["pr-1", "pr-3"]);
-        let added = duty::build_duty_agents(
-            role.role,
-            &role.agents,
-            1,
-            ProviderColor::Claude,
-            "m",
-            false,
-        );
-        assert_eq!(added[0].nickname, "pr-2");
+        assert_eq!(nicknames, ["scout-1", "scout-3"]);
+        let added = duty::build_duty_agents(role.role, &role.agents, 1, ProviderColor::Claude, "m");
+        assert_eq!(added[0].nickname, "scout-2");
         let stop = StopDutyRequest {
-            role: DutyRole::PrDuty,
+            role: DutyRole::Scouts,
         };
         let stopped = store.stop_duty(&mut layout, &stop, "00:02")?;
-        assert_eq!(stopped.nicknames, ["pr-1", "pr-3"]);
+        assert_eq!(stopped.nicknames, ["scout-1", "scout-3"]);
         let loaded = StateStore::load_or_default(&directory)?;
         assert!(loaded.state().projects[0].duty_roles.is_empty());
         assert_eq!(loaded.state().projects[0].active_thread_id, None);
@@ -872,16 +749,15 @@ mod tests {
     #[test]
     fn duty_run_choice_survives_adding_agents_and_old_records() -> Result<(), serde_json::Error> {
         let spec = |speed| DutyStartSpec {
-            role: DutyRole::PrDuty,
+            role: DutyRole::Scouts,
             agent_count: 1,
             provider: ProviderColor::Codex,
             model_name: "6.1 Sol".into(),
             effort: Some(velocity_core::state::EffortLevel::Medium),
             speed: Some(speed),
-            pr_rules: PrDutyRuleSettings::default(),
             scout_rules: ScoutRuleSettings::default(),
             repeat_unchanged: false,
-            has_open_pull_requests: false,
+
             timestamp: "00:00".into(),
         };
         let (entry, _) = duty::start_duty_entry(7, spec(velocity_core::state::SpeedMode::Fast));
@@ -892,7 +768,7 @@ mod tests {
         let speeds: Vec<_> = saved.agents.iter().map(|a| a.preferred_speed).collect();
         assert_eq!(speeds, [Some(SpeedMode::Fast), Some(SpeedMode::Regular)]);
         assert_eq!(saved.agents[0].effort, Some(EffortLevel::Medium));
-        let old = r#"{"nickname":"pr-1","provider":"claude","model_name":"Opus 5.5","busy":false,"doing":""}"#;
+        let old = r#"{"nickname":"scout-1","provider":"claude","model_name":"Opus 5.5","busy":false,"doing":""}"#;
         let old: DutyAgentItem = serde_json::from_str(old)?;
         assert_eq!((old.effort, old.preferred_speed), (None, None));
         assert!(!old.repeat_unchanged);
@@ -911,10 +787,9 @@ mod tests {
             model_name: "model".into(),
             effort: None,
             speed: None,
-            pr_rules: PrDutyRuleSettings::default(),
             scout_rules: ScoutRuleSettings::default(),
             repeat_unchanged,
-            has_open_pull_requests: false,
+
             timestamp: "00:00".into(),
         };
         let (mut entry, _) = duty::start_duty_entry(7, spec(false));

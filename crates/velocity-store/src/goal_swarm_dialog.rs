@@ -1,5 +1,5 @@
 //! The Goal swarm dialog's read model (SPEC.md F16): the agent count, the model mix with
-//! "the rest", the nick preview, limits, the pool line and the PR duty capacity check. The
+//! "the rest", the nick preview, limits, the pool line. The
 //! window holds only the user's choices: it sends them back with one edit, and Rust applies
 //! the edit and draws the dialog again.
 
@@ -11,7 +11,7 @@ use velocity_core::goal_swarm::{self, Mix, MixEdit, MixRow, PoolCounts, PoolLine
 use velocity_core::state::resolve_effective_speed;
 use velocity_core::work_pool::WorkSources;
 
-use crate::swarm_dialog::{pr_duty, provider_model_name};
+use crate::swarm_dialog::provider_model_name;
 use crate::{EffortLevel, ProjectItem, ProviderKind, Settings, SpeedMode, StateStore};
 
 /// One mix row as the window holds it: a provider's model, its effort and speed, and how
@@ -144,8 +144,6 @@ pub struct GoalSwarmDialog {
     pub pool: Option<PoolLine>,
     /// Shown in place of the pool line while it is being read, or when reading it failed.
     pub pool_note: Option<String>,
-    pub pr_duty_label: Option<String>,
-    pub pr_duty_shortfall: u32,
     pub summary: String,
     pub launch_label: String,
     /// Why Launch is unavailable, when it is.
@@ -180,9 +178,8 @@ impl StateStore {
         let sources = dialog_sources(project, query);
         let preferences = self.worktree_context().preferences;
         let root = preferences.project_override.unwrap_or(preferences.root);
-        let (pool_line, pool_note, pull_requests) = pool_view(pool, agents, sources);
+        let (pool_line, pool_note, _) = pool_view(pool, agents, sources);
         let rosen = project.version_control == crate::VersionControl::Rosen;
-        let (pr_duty_label, pr_duty_shortfall) = selected_pr_duty(project, pull_requests);
         let mut choices = choices(&mix);
         choices.sources = sources;
         let (workspace_rule, completion_rule, keep_going_label) = lifecycle_text(project, &root);
@@ -207,8 +204,6 @@ impl StateStore {
             limits: limits(settings, &mix),
             pool: pool_line,
             pool_note,
-            pr_duty_label,
-            pr_duty_shortfall,
             summary: summary(settings, &mix),
             launch_label: goal_swarm::launch_label(agents),
             launch_note: goal_launch_note(&self.state, sources),
@@ -224,17 +219,6 @@ fn goal_launch_note(state: &crate::PersistedState, sources: WorkSources) -> Opti
     crate::build_gate::require_launch(state, crate::build_gate::LaunchRequest::GoalSwarm)
         .err()
         .map(|error| error.to_string())
-}
-
-fn selected_pr_duty(project: &ProjectItem, pull_requests: u32) -> (Option<String>, u32) {
-    if project.version_control == crate::VersionControl::Rosen {
-        (None, 0)
-    } else {
-        pr_duty(
-            project,
-            usize::try_from(pull_requests).unwrap_or(usize::MAX),
-        )
-    }
 }
 
 fn dialog_sources(project: &ProjectItem, query: &GoalSwarmDialogQuery) -> WorkSources {

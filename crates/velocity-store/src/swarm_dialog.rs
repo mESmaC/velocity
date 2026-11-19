@@ -1,15 +1,14 @@
 //! The Swarm dialog's read model (SPEC.md F10): open items with their availability, the
-//! model cards, the round-robin split and the PR duty capacity check. The window holds only
+//! the model cards and the round-robin split. The window holds only
 //! the user's choices and asks for this again whenever one changes.
 
 use serde::{Deserialize, Serialize};
 use specta::Type;
-use velocity_core::duty::DutyRole;
 use velocity_core::swarm::{self, SwarmSource};
 use velocity_github::IssuePanelRow;
 
 use crate::swarms::SwarmItem;
-use crate::{ProjectItem, ProviderKind, StateStore, TaskState, ThreadState};
+use crate::{ProjectItem, ProviderKind, StateStore, TaskState};
 
 /// What the user has chosen so far. `None` items means the default: every open item.
 #[derive(Clone, Debug, Serialize, Deserialize, Type)]
@@ -51,8 +50,6 @@ pub struct SwarmDialog {
     pub items: Vec<SwarmDialogItem>,
     pub models: Vec<SwarmModelCard>,
     pub split_label: String,
-    pub pr_duty_label: Option<String>,
-    pub pr_duty_shortfall: u32,
     pub worktree_root: String,
     pub summary: String,
     pub launch_label: String,
@@ -100,8 +97,6 @@ impl StateStore {
             task_count: u32::try_from(task_count).unwrap_or(u32::MAX),
             issue_count: u32::try_from(issue_count).unwrap_or(u32::MAX),
             split_label: split_label(picked, &models),
-            pr_duty_label: pr_duty(project, picked).0,
-            pr_duty_shortfall: pr_duty(project, picked).1,
             summary: summary(picked, &root),
             launch_label: launch_label(picked),
             worktree_root: root,
@@ -199,32 +194,6 @@ fn split_label(picked: usize, models: &[SwarmModelCard]) -> String {
     swarm::split_label(picked, &names)
         .map(|split| format!("Round-robin: {split}"))
         .unwrap_or_else(|| "Pick more than one model to spread the swarm across them.".into())
-}
-
-/// The capacity line and how many PR duty agents to add (one reviewer per 3 open PRs).
-pub(crate) fn pr_duty(project: &ProjectItem, picked: usize) -> (Option<String>, u32) {
-    let reviewers = project
-        .duty_roles
-        .iter()
-        .filter(|duty| duty.role == DutyRole::PrDuty)
-        .map(|duty| duty.agents.len())
-        .sum();
-    let open = project
-        .threads
-        .iter()
-        .filter(|thread| {
-            thread.state == ThreadState::Review && thread.pull_request_number.is_some()
-        })
-        .count();
-    let shortfall = swarm::pr_duty_shortfall(picked, open, reviewers);
-    (
-        swarm::pr_duty_capacity_label(picked, open, reviewers),
-        if picked == 0 {
-            0
-        } else {
-            u32::try_from(shortfall).unwrap_or(u32::MAX)
-        },
-    )
 }
 
 fn summary(picked: usize, root: &str) -> String {

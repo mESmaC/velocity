@@ -49,8 +49,7 @@ fn navigation_launch_kind(intent: NavigationIntent) -> Option<LaunchKind> {
         // These open views, pickers or configuration dialogs. Their eventual
         // launch commands must check require_launch afresh before doing I/O.
         Palette | NewThread | NewProject | Settings | ShowNumbers | Jump(_) | Search | Task
-        | Swarm | Goal | Airc | Dismiss | Submit | Dispatch | Resume | PrDuty | Scouts
-        | MainWatcher | Answer(_) | Lock | SpecFile | Grill | Diff | Editor | SaveAgents
-        | Board | Focus => None,
+        | Swarm | Goal | Airc | Dismiss | Submit | Dispatch | Resume | Scouts | Answer(_)
+        | Lock | SpecFile | Grill | Diff | Editor | SaveAgents | Board | Focus => None,
     }
 }

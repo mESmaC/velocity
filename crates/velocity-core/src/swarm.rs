@@ -409,47 +409,6 @@ pub fn split_label(item_count: usize, model_names: &[String]) -> Option<String> 
     )
 }
 
-/// Reviewers PR duty is short of, aiming at one per three open PRs (F10 PR duty capacity).
-pub fn pr_duty_shortfall(
-    new_pull_requests: usize,
-    open_pull_requests: usize,
-    reviewers: usize,
-) -> usize {
-    (new_pull_requests + open_pull_requests)
-        .div_ceil(3)
-        .saturating_sub(reviewers)
-}
-
-/// The dialog's PR duty line, or `None` while nothing is selected.
-pub fn pr_duty_capacity_label(
-    new_pull_requests: usize,
-    open_pull_requests: usize,
-    reviewers: usize,
-) -> Option<String> {
-    if new_pull_requests == 0 {
-        return None;
-    }
-    let pull_requests = new_pull_requests + open_pull_requests;
-    let shortfall = pr_duty_shortfall(new_pull_requests, open_pull_requests, reviewers);
-    let agents = |count: usize| format!("{count} agent{}", if count == 1 { "" } else { "s" });
-    Some(match (shortfall, reviewers) {
-        (0, _) => format!(
-            "PR duty has {} · enough for {pull_requests} open PRs.",
-            agents(reviewers)
-        ),
-        (_, 0) => format!(
-            "Start PR duty with {} · without it the PRs wait as \u{201c}needs a reviewer\u{201d}",
-            agents(shortfall)
-        ),
-        _ => format!(
-            "Add {} to PR duty · {reviewers} reviewer{} for {pull_requests} open PRs is the bottleneck",
-            agents(shortfall),
-            if reviewers == 1 { "" } else { "s" }
-        ),
-    })
-}
-
-/// A member PR's lifecycle as the F6 watcher records it: number, stage, worktree deleted.
 #[derive(Clone, Copy, Debug)]
 pub struct PullRequestStep<'a> {
     pub number: u32,

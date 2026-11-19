@@ -16,8 +16,6 @@ Open it with the **Swarm** buttons on the Task List and Issues panels, `W`, the 
   - Each agent gets its own workspace under the configured location (locked).
   - Rebase only when a merged PR touches your files, otherwise once at landing (locked, F6).
   - Close each issue when its PR merges (default on).
-- **PR duty capacity:** aim for about 1 reviewer per 3 open PRs.
-  If PR duty is short, offer "Add N agents to PR duty"; if nobody is on PR duty, offer to start it.
   Without a reviewer, changes wait as "needs a reviewer".
 - **Footer:** "N workspaces on D: · all start now".
   Launch with `Ctrl+Enter`.

@@ -297,8 +297,7 @@ pub(crate) fn project_owners(project: &ProjectItem) -> Vec<WorktreeOwner> {
     owners
 }
 
-/// Each scout's sweep worktree (`<scout>-sweep`) and each PR duty agent's kept review
-/// worktrees (`review-pr-<n>`), listed with their duty role as the owner.
+/// Each scout's sweep worktree, listed with its role as the owner.
 fn sweep_owners(project: &ProjectItem) -> Vec<WorktreeOwner> {
     project
         .duty_roles
@@ -317,15 +316,7 @@ fn sweep_owners(project: &ProjectItem) -> Vec<WorktreeOwner> {
                             WorktreeDisplayStatus::Sweep,
                         )
                     });
-                let reviews = agent.review_worktrees.iter().map(move |path| {
-                    WorktreeOwner::new(
-                        role.id,
-                        format!("{} · review", agent.nickname),
-                        path.clone(),
-                        WorktreeDisplayStatus::Review,
-                    )
-                });
-                sweep.into_iter().chain(reviews)
+                sweep
             })
         })
         .collect()

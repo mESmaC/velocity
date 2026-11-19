@@ -167,7 +167,7 @@ async fn consume(
             | velocity_rosen::ProjectEventKind::RevertRefused
     ) {
         // The independent repair worker reads durable evidence, even while a build runs.
-        crate::reviews::wake(application);
+        crate::rosen_landing::wake(application);
     }
     if event.kind == velocity_rosen::ProjectEventKind::Mirror {
         report(crate::rosen_mirror::refresh(application, project).await);
@@ -292,9 +292,8 @@ fn take(
         ChangeEvent::Named | ChangeEvent::Rebased | ChangeEvent::Conflict => return Ok(None),
     };
     let thread = save(application, project, (seq, change), (progress, &message))?;
-    // A named change waits for a reviewer, and a land or a revert changes what PR duty and
-    // its checker have to do: they look now, not at their next 30-second tick.
-    crate::reviews::wake(application);
+    // Named work, lands, and reverts can change what the background runner can do.
+    crate::rosen_landing::wake(application);
     Ok(thread)
 }
 
@@ -413,9 +412,7 @@ async fn rebase_notice_pending(
 ) -> Result<bool, String> {
     if matches!(follow_up, RosenFollowUp::Regenerate { .. }) {
         // Generated-only rebases have no conflict records to use as a delivery gate.
-        velocity_rosen::duty::change_standing(server, change)
-            .await
-            .map(|standing| standing.open)
+        velocity_rosen::landing::is_open(server, change).await
     } else {
         velocity_rosen::has_open_conflicts(server, change).await
     }
@@ -502,9 +499,7 @@ pub(crate) fn record_landed(
     Ok(())
 }
 
-/// PR duty requested changes on thread `key`'s change `change` (F7): the thread goes back
-/// to fixing, and its agent gets `message`, resumed first if it had ended. The message is
-/// saved with the state, and sent by the follow-up pass this starts.
+/// Delivers a merge conflict to the change’s author via the durable follow-up queue.
 pub(crate) fn changes_requested(
     application: &AppHandle,
     key: ThreadKey,

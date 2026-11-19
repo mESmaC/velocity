@@ -164,7 +164,7 @@ fn dispatch_prompt(
         let delivery = if version_control == velocity_store::VersionControl::Rosen {
             "Name the Rosen change after making that one-line edit."
         } else {
-            "Route the one-line PR through normal PR duty review as Trivial."
+            "Open a small PR with the spec decision for the repository maintainers."
         };
         let recommendation = velocity_core::text_budget::prompt_excerpt(
             &question.recommendation,

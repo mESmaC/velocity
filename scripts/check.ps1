@@ -1,6 +1,6 @@
 <#
 .SYNOPSIS
-Runs every local check PR duty needs before approving (AGENTS.md), in one command.
+Runs the local project checks in one command.
 
 .DESCRIPTION
 Run it on the merge result: a Rosen build tree or the PR branch with master merged in.
@@ -46,7 +46,7 @@ param(
     [switch]$Full,
     # Print the changed paths and the checks they would run, then stop.
     [switch]$Plan,
-    # Place in the build queue (SPEC.md F5): PR duty's landing checks pass
+    # Place checks in the project build queue (SPEC.md F5). Runs pass
     # landing; an agent's check before marking a PR ready keeps the default.
     [ValidateSet('landing', 'ready', 'normal')]
     [string]$Priority = 'ready'

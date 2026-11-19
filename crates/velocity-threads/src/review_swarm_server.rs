@@ -131,7 +131,7 @@ impl ReviewSwarmServer {
             serde_json::from_value(arguments).map_err(|error| error.to_string())?;
         let server = ProjectServer::new(&self.launch.app_data, self.launch.project);
         if let Some(path) = request.path {
-            return self.runtime.block_on(crate::rosen_duty_tools::file_page(
+            return self.runtime.block_on(file_page(
                 &server,
                 self.review_trees.as_ref(),
                 &path,
@@ -539,4 +539,20 @@ impl SwarmLaunch {
             no_change_only: false,
         })
     }
+}
+
+async fn file_page(
+    server: &ProjectServer,
+    trees: Option<&ReviewTrees>,
+    path: &str,
+    offset: usize,
+) -> Result<Value, String> {
+    let trees =
+        trees.ok_or_else(|| "Read the change overview before requesting a patch".to_owned())?;
+    let patch = trees
+        .file(server, path)
+        .await
+        .map_err(|error| error.to_string())?
+        .ok_or_else(|| "Use one path from the change overview".to_owned())?;
+    velocity_github::mcp_stdio::review_diff_page(path, &patch, offset)
 }

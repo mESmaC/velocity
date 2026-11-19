@@ -5,7 +5,6 @@
 Every member takes its own Rosen workspace from the project's warm pool, with git worktrees as the F5 fallback when Rosen cannot start.
 The same native work choice and atomic AIRC piece lock apply to Rosen and git projects.
 Rosen members keep their change identity when they claim a piece; they never create or rename a git branch, open a PR or start a PR watcher.
-The goal dialog offers no PR duty capacity on a Rosen project.
 Its locked context names the piece, tells the agent to claim files in Rosen, build and lint through `rosen run`, and finish by naming its work with `rosen commit`.
 
 A named member change uses the ordinary Rosen landing path, including `review = "after-land"` (F7); goal swarms add no review or check gate.
@@ -69,7 +68,6 @@ The git lifecycle described below remains the fallback.
   If there are more agents than pieces, it says how many will find nothing and leave.
 - **Options:**
   - **Keep going** (off by default): after its PR merges, an agent claims the next unclaimed piece in a fresh workspace instead of stopping.
-  - **PR duty capacity:** the same check as the Swarm dialog (one reviewer per 3 open PRs).
 - **Launch N agents** (`Ctrl+Enter`).
 
 **Dialog state.**
@@ -80,8 +78,6 @@ Rust applies the edit, restores the "rest" rule and draws the dialog again.
 - **Nicks:** a model's short name is the last plain word of its name, in lower case (`sol`, `argon`, `fable`).
   The preview numbers on from the highest number that name has used in the project.
 - **Limits:** a line carries its provider's agent count, and adds the share used and the reset time once the provider reports them (Q14).
-- **Pool and PR duty:** both use the work pool read when the dialog opens.
-  PR duty is sized for the PRs the launch can open: the smaller of the agent count and the unclaimed pieces, plus the PRs already open.
 
 **What each agent does:**
 1.
@@ -108,7 +104,7 @@ Rust applies the edit, restores the "rest" rule and draws the dialog again.
    From here it is an ordinary thread (F4–F6).
    Velocity starts the implementation session, or continues the same session that interpreted the goal.
    Its implementation prompt names the chosen spec section when known and directs the member to read applicable headings with `graph_read`.
-   It settles overlaps and dependency waits in AIRC (F14), opens a PR, watches it until PR duty merges it, and its worktree is deleted.
+   It settles overlaps and dependency waits in AIRC (F14), opens a PR and follows its review, and its worktree is deleted.
    Merging ticks the task, closes the issue, or records the SPEC.md section as built in the project's state.
    Velocity records it at landing; the agent's PR never edits SPEC.md to mark it, so changes don't all touch SPEC.md.
 5.
@@ -120,7 +116,7 @@ The losers advance to the next candidate without duplicating work.
 
 **Work inventory.**
 A goal swarm reads only its enabled sources, including its pool preview and board, so a failure in a disabled source cannot prevent choosing work.
-Counts and PR duty capacity use the enabled pool.
+Counts use the enabled pool.
 The project-wide `get_work_pool` inventory continues to include every source.
 `get_work_pool` and the `velocity-threads` `work_pool` example read the same project-scoped inventory.
 Draft/done tasks, ownerless now tasks, closed issues, owner-decision questions (including unlabelled decision requests) and `release-blocker` issues are omitted using the continuous-dispatch eligibility rule (F8); owned work stays visible but does not count as available.

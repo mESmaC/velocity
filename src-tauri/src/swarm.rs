@@ -6,7 +6,7 @@ use tauri_specta::Event;
 use velocity_core::layout_view::LayoutSnapshot;
 use velocity_core::swarm::{self, PullRequestStep, SwarmEventKind, SwarmFeedEvent};
 use velocity_github::follow_through::FollowThrough;
-use velocity_store::duty::{StartDutyRequest, clock_timestamp};
+use velocity_store::duty::clock_timestamp;
 use velocity_store::swarm_dialog::{
     OpenIssues, SwarmDialog, SwarmDialogQuery, provider_model_name,
 };
@@ -96,9 +96,6 @@ fn launch(application: &AppHandle, request: LaunchSwarmRequest) -> Result<Layout
             "persisted state",
         )?;
         require_swarm_launch(&store, &request).map_err(|error| error.to_string())?;
-    }
-    if request.add_pr_duty {
-        report(add_pr_duty(application, &request));
     }
     let swarm = lock(
         application.state::<ManagedStateStore>().inner(),
@@ -211,53 +208,6 @@ fn open_issues(
     Ok((repository, issues))
 }
 
-/// Starts PR duty, or adds the agents it is short of, before the PRs arrive (F10).
-fn add_pr_duty(application: &AppHandle, request: &LaunchSwarmRequest) -> Result<(), String> {
-    let query = SwarmDialogQuery {
-        source: request.source,
-        items: Some(request.items.clone()),
-        providers: request.providers.clone(),
-        into: request.into,
-    };
-    let shortfall = get_swarm_dialog_now(application.clone(), query)?.pr_duty_shortfall;
-    if shortfall == 0 {
-        return Ok(());
-    }
-    let agents = u8::try_from(shortfall).unwrap_or(u8::MAX);
-    let outcome = {
-        let mut store = lock(
-            application.state::<ManagedStateStore>().inner(),
-            "persisted state",
-        )?;
-        // PR duty starts in the active project. A switch since the launch began must not
-        // add this project's duty agents to another one.
-        if !is_active(&store, request.project_identifier) {
-            return Err("PR duty not started: the project changed during the launch".into());
-        }
-        let mut layout = lock(
-            application.state::<MainLayout>().inner(),
-            "main-window state",
-        )?;
-        store
-            .start_or_add_duty(
-                &mut layout,
-                StartDutyRequest::pr_duty(agents),
-                clock_timestamp(),
-            )
-            .map_err(|error| error.to_string())?
-    };
-    crate::layout::publish(application, &outcome.snapshot, None)?;
-    crate::duty::DutyEventPublished {
-        role: outcome.role,
-        event: outcome.event,
-    }
-    .emit(application)
-    .map_err(|error| error.to_string())?;
-    crate::reviews::wake(application);
-    Ok(())
-}
-
-#[allow(clippy::too_many_arguments)]
 fn start_member(
     application: &AppHandle,
     request: &LaunchSwarmRequest,

@@ -1,10 +1,4 @@
-//! Velocity's own checks on a Rosen change (SPEC.md F7 "Checks before merge"; Rosen R8 and
-//! §9 "Build queue"): the project's pre-land commands, run on the change's merge result in
-//! one folder per project that keeps its build output from one check to the next.
-//!
-//! A check that started from an empty folder would build everything every time. Here the
-//! merge result is written beside the folder, and only the files that differ are moved in,
-//! so the build after it compiles what changed since the last check.
+//! Runs Rosen verification commands and keeps a reusable, exact build checkout.
 
 use std::collections::BTreeSet;
 use std::fs::File;

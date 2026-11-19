@@ -16,7 +16,6 @@ mod checkout;
 mod conflicts;
 pub mod connection;
 pub mod dispatch;
-pub mod duty;
 mod events;
 mod git_base;
 pub mod integration;
