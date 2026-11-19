@@ -36,7 +36,7 @@ impl Timings {
     pub fn report(&self) {
         let total: Duration = self.steps.iter().map(|step| step.elapsed).sum();
         let mut slowest: Vec<&Step> = self.steps.iter().collect();
-        slowest.sort_by(|left, right| right.elapsed.cmp(&left.elapsed));
+        slowest.sort_by_key(|step| std::cmp::Reverse(step.elapsed));
         println!("\nTime by step, slowest first ({} in all):", minutes(total));
         for step in &slowest {
             let result = if step.passed { "" } else { "  FAILED" };
