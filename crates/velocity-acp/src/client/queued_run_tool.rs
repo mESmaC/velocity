@@ -5,8 +5,11 @@ use std::net::{Ipv4Addr, TcpStream};
 use std::path::PathBuf;
 use std::time::Duration;
 
+use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
+
+use super::workflow_run_tool::WorkflowRequest;
 
 pub const QUEUED_RUN_SWITCH: &str = "--queued-run-mcp";
 pub const QUEUED_RUN_SERVER: &str = "velocity-run";
@@ -25,7 +28,26 @@ pub(super) const INSTRUCTIONS: &str = "Use `queue_run` from `velocity-run` for c
 #[derive(Deserialize, Serialize)]
 pub(super) struct Request {
     pub token: String,
-    pub command: RunCommand,
+    #[serde(flatten)]
+    pub work: Work,
+}
+
+/// What a tool asks the session's queue for: on the wire, the key `command` or `workflow`.
+#[derive(Deserialize, Serialize)]
+#[serde(rename_all = "lowercase")]
+pub(super) enum Work {
+    Command(RunCommand),
+    Workflow(WorkflowRequest),
+}
+
+/// What the queue answers an accepted request with.
+#[derive(Serialize)]
+#[serde(untagged)]
+pub(super) enum Accepted {
+    /// The file a queued command's output goes to.
+    Log(PathBuf),
+    /// The workflow run as the thread shows it.
+    Workflow(String),
 }
 
 #[derive(Deserialize, Serialize)]
@@ -83,22 +105,27 @@ pub fn request_queued_run(port: u16, token: &str, arguments: Value) -> Result<Va
     }
     let request = Request {
         token: token.to_owned(),
-        command,
+        work: Work::Command(command),
     };
-    submit(port, &request)
+    submit::<PathBuf>(port, &request, REQUEST_TIMEOUT)
         .map_err(|error| format!("Could not queue the command: {error}"))?
         .map(|path| json!({"queued": true, "log": path, "next": "End your turn. Velocity will send the result when the command finishes."}))
 }
 
-fn submit(port: u16, request: &Request) -> io::Result<Result<PathBuf, String>> {
+/// Sends `request` to the session and reads its answer, waiting up to `answer_timeout`.
+pub(super) fn submit<Answer: DeserializeOwned>(
+    port: u16,
+    request: &Request,
+    answer_timeout: Duration,
+) -> io::Result<Result<Answer, String>> {
     let address = (Ipv4Addr::LOCALHOST, port).into();
     let mut socket = TcpStream::connect_timeout(&address, REQUEST_TIMEOUT)?;
-    socket.set_read_timeout(Some(REQUEST_TIMEOUT))?;
+    socket.set_read_timeout(Some(answer_timeout))?;
     socket.set_write_timeout(Some(REQUEST_TIMEOUT))?;
     let mut line = serde_json::to_vec(request)?;
     line.push(b'\n');
     if line.len() as u64 > REQUEST_BYTES {
-        return Err(io::Error::other("Command arguments are too large"));
+        return Err(io::Error::other("The request is too large"));
     }
     socket.write_all(&line)?;
     let mut reply = String::new();

@@ -37,6 +37,7 @@ mod server;
 mod stack;
 pub mod status;
 pub mod thread_change;
+pub mod workflow_policy;
 mod workspace;
 pub mod workspace_settings;
 

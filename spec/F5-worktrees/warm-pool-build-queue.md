@@ -25,3 +25,4 @@
 Rule files:
 
 - [The run queue's classes overlap on purpose](warm-pool-build-queue-the-run-queue-s-classes-overlap.md)
+- [Agents request GitHub workflow runs the owner allows](warm-pool-build-queue-workflow-runs.md)

@@ -147,7 +147,9 @@ fn stalled(thread: &ThreadItem, settings: &AgentSettings, now: u64, queued_build
 }
 
 /// Tool rows retain the queue command while it waits and runs; neither counts as silence.
-/// `rosen run` is the machine-wide queue every agent is told to use (#308).
+/// `rosen run` is the machine-wide queue every agent is told to use (#308). A GitHub
+/// workflow run Velocity waits on for the agent (#508) is the same kind of wait: nudging or
+/// restarting the thread would only lose the result.
 pub fn in_build_queue(blocks: &[velocity_core::thread_view_model::TranscriptBlock]) -> bool {
     use velocity_core::thread_view_model::TranscriptBlock;
     let start = blocks
@@ -160,7 +162,8 @@ pub fn in_build_queue(blocks: &[velocity_core::thread_view_model::TranscriptBloc
             step.running
                 && (command.contains("build-queue.ps1")
                     || command.contains("scripts/check.ps1")
-                    || command.contains("rosen run"))
+                    || command.contains("rosen run")
+                    || command.starts_with(velocity_core::workflow_dispatch::RUN_TITLE))
         }),
         _ => false,
     })

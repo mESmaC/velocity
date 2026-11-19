@@ -23,6 +23,7 @@ toml = "1.2"
 uuid = { version = "1", features = ["v4"] }
 velocity-airc.workspace = true
 velocity-core.workspace = true
+velocity-github.workspace = true
 velocity-graph.workspace = true
 velocity-rosen.workspace = true
 

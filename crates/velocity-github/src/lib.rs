@@ -1,7 +1,8 @@
 //! GitHub access through the `gh` CLI, signed in with the user's own `gh auth login`.
 //! Every call runs `gh` as a child process with its arguments passed directly, never
 //! through a shell. Velocity uses GitHub only for issues (F9, scouts, post-land failure
-//! reports) and for listing and cloning repositories (F2); changes land through Rosen.
+//! reports), for listing and cloning repositories (F2) and for the workflow runs an owner
+//! lets agents request (#508); changes land through Rosen.
 
 mod command;
 mod dependency_graph;
@@ -24,6 +25,10 @@ mod scout_reference;
 mod scout_search;
 mod scout_server;
 pub mod velocity_reports;
+mod workflow_artifacts;
+mod workflow_report;
+mod workflow_runs;
+mod workflow_watch;
 
 pub use dependency_graph::DependencyGraph;
 pub use gh_command::GitHubCommandError;
@@ -42,3 +47,4 @@ pub use scout_evidence::Reproduction;
 pub use scout_issues::{ScoutFinding, ScoutIssueError, ScoutIssueOutcome};
 pub use scout_reference::{ReferenceComparison, ReferenceComparisonResult};
 pub use scout_server::{ScoutReport, ScoutServer, filed_message, read_scout_reports};
+pub use workflow_watch::{WorkflowDispatch, WorkflowOutcome, run_workflow};

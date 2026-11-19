@@ -18,7 +18,11 @@ use tokio::task::{JoinHandle, JoinSet};
 use tokio_util::sync::CancellationToken;
 
 use super::queued_run_command::{QueuedRun, RunResult};
-use super::queued_run_tool::{self, REQUEST_BYTES, REQUEST_TIMEOUT, Request};
+use super::queued_run_tool::{
+    self, Accepted, REQUEST_BYTES, REQUEST_TIMEOUT, Request, RunCommand, Work,
+};
+use super::workflow_run_tool::WorkflowRequest;
+use super::workflow_runs::WorkflowRun;
 use super::{AgentLaunch, SessionSetup, Shared};
 
 static EXECUTABLE: OnceLock<PathBuf> = OnceLock::new();
@@ -203,7 +207,10 @@ impl QueueHost {
 
     async fn accept(&self, mut socket: TcpStream, runs: &mut JoinSet<RunResult>) {
         let reply = match tokio::time::timeout(REQUEST_TIMEOUT, read_request(&mut socket)).await {
-            Ok(Ok(request)) if request.token == self.token => self.enqueue(request, runs),
+            Ok(Ok(request)) if request.token == self.token => match request.work {
+                Work::Command(command) => self.enqueue(command, runs).map(Accepted::Log),
+                Work::Workflow(workflow) => self.start_workflow(workflow, runs).await,
+            },
             Ok(Ok(_)) => Err("Invalid session token".into()),
             Ok(Err(error)) => Err(error.to_string()),
             Err(_) => Err("Timed out reading queued run request".into()),
@@ -214,11 +221,29 @@ impl QueueHost {
         }
     }
 
-    fn enqueue(&self, request: Request, runs: &mut JoinSet<RunResult>) -> Result<PathBuf, String> {
-        let policy = velocity_rosen::agent_run::policy(
-            &request.command.program,
-            &request.command.arguments,
-        )?;
+    /// Starts an owner-allowed GitHub workflow at once: it runs on GitHub, so unlike a
+    /// queued command it has no reason to wait for the agent to leave its workspace.
+    async fn start_workflow(
+        &self,
+        request: WorkflowRequest,
+        runs: &mut JoinSet<RunResult>,
+    ) -> Result<Accepted, String> {
+        let run = WorkflowRun::admit(request, &self.launch).await?;
+        let title = run.title.clone();
+        self.outstanding.fetch_add(1, Ordering::Release);
+        let _ = self
+            .events
+            .send(QueueEvent::Started(Box::new(run.started())));
+        runs.spawn(run.finish(self.stop.clone()));
+        Ok(Accepted::Workflow(title))
+    }
+
+    fn enqueue(
+        &self,
+        command: RunCommand,
+        runs: &mut JoinSet<RunResult>,
+    ) -> Result<PathBuf, String> {
+        let policy = velocity_rosen::agent_run::policy(&command.program, &command.arguments)?;
         // Checks and binding generation take the managed command's light Rust slots.
         let rosen = if policy != velocity_rosen::agent_run::AgentRun::Ordinary {
             velocity_rosen::agent_run::cli()
@@ -226,7 +251,7 @@ impl QueueHost {
         } else {
             &self.rosen
         };
-        let run = QueuedRun::new(request.command).map_err(|error| error.to_string())?;
+        let run = QueuedRun::new(command).map_err(|error| error.to_string())?;
         let log = run.log.clone();
         // Subscribe before acknowledging. A fast turn end must release this command
         // without allowing it to run during the agent's final handoff call.

@@ -6660,6 +6660,7 @@ dependencies = [
  "uuid",
  "velocity-airc",
  "velocity-core",
+ "velocity-github",
  "velocity-graph",
  "velocity-rosen",
  "windows",

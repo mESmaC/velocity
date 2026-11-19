@@ -132,12 +132,37 @@ impl GitHubCommand {
         )
     }
 
+    /// A REST request's answer as GitHub sent it, for an endpoint that may answer with no
+    /// body at all, such as a workflow dispatch.
+    pub fn answer(
+        &self,
+        method: &str,
+        endpoint: &str,
+        body: &Value,
+    ) -> Result<Vec<u8>, GitHubCommandError> {
+        self.output(
+            &["api", "--method", method, endpoint, "--input", "-"],
+            Some(body),
+            None,
+        )
+    }
+
     fn run<T: DeserializeOwned>(
         &self,
         arguments: &[&str],
         body: Option<&Value>,
         graphql_path: Option<&str>,
     ) -> Result<T, GitHubCommandError> {
+        let answer = self.output(arguments, body, graphql_path)?;
+        Ok(serde_json::from_slice(&answer)?)
+    }
+
+    fn output(
+        &self,
+        arguments: &[&str],
+        body: Option<&Value>,
+        graphql_path: Option<&str>,
+    ) -> Result<Vec<u8>, GitHubCommandError> {
         let input = body.map(serde_json::to_vec).transpose()?;
         let mut child = self.spawn(arguments, input.is_some(), graphql_path)?;
         if let Some(input) = input {
@@ -159,7 +184,7 @@ impl GitHubCommand {
                 message: String::from_utf8_lossy(&output.stderr).trim().to_owned(),
             });
         }
-        Ok(serde_json::from_slice(&output.stdout)?)
+        Ok(output.stdout)
     }
 
     fn spawn(

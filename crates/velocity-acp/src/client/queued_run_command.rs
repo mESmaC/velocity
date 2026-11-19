@@ -185,6 +185,15 @@ pub(super) struct RunResult {
 }
 
 impl RunResult {
+    /// A result that did not come from a queued command, such as a workflow run's.
+    pub fn new(id: ToolCallId, succeeded: bool, result: String) -> Self {
+        Self {
+            id,
+            succeeded,
+            result,
+        }
+    }
+
     pub fn into_update(self) -> (SessionUpdate, ContentBlock) {
         let status = if self.succeeded {
             ToolCallStatus::Completed

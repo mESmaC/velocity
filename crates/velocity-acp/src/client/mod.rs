@@ -36,6 +36,8 @@ mod token_usage;
 mod token_usage_context;
 mod turn_usage;
 mod updates;
+mod workflow_run_tool;
+mod workflow_runs;
 
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -85,6 +87,7 @@ pub use shared::{SharedServer, install_shared_servers, install_skill_prompt_reso
 pub use sign_in::sign_in;
 pub use title::{TitleReply, TitleRequest, request_title};
 pub use updates::{AgentSlashCommand, available_commands, entry_class};
+pub use workflow_run_tool::{WORKFLOW_RUN_TOOL, request_workflow_run, workflow_run_tool};
 
 use crate::{Placement, RunSettings, Steering, SteeringEffect, SteeringInput, Transcript};
 use queued_runs::{RunQueue, RunResults};

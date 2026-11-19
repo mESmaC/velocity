@@ -2,8 +2,8 @@ use std::io;
 
 use serde_json::Value;
 use velocity_acp::client::{
-    QUEUED_RUN_SERVER, QUEUED_RUN_SWITCH, QUEUED_RUN_TOKEN_ENV, QUEUED_RUN_TOOL, queued_run_tool,
-    request_queued_run,
+    QUEUED_RUN_SERVER, QUEUED_RUN_SWITCH, QUEUED_RUN_TOKEN_ENV, QUEUED_RUN_TOOL, WORKFLOW_RUN_TOOL,
+    queued_run_tool, request_queued_run, request_workflow_run, workflow_run_tool,
 };
 use velocity_github::mcp_stdio::{self, ToolServer};
 
@@ -42,18 +42,19 @@ impl ToolServer for Server {
     }
 
     fn instructions(&self) -> String {
-        "Queue a long command, then end your turn to receive its result from Velocity.".into()
+        "Queue a long command, or request a GitHub workflow run the project owner allows,          then end your turn to receive its result from Velocity."
+            .into()
     }
 
     fn tools(&self) -> Vec<Value> {
-        vec![queued_run_tool()]
+        vec![queued_run_tool(), workflow_run_tool()]
     }
 
     fn call(&mut self, name: Option<&str>, arguments: Value) -> Result<Value, String> {
-        if name == Some(QUEUED_RUN_TOOL) {
-            request_queued_run(self.port, &self.token, arguments)
-        } else {
-            Err("Unknown queued run tool".into())
+        match name {
+            Some(QUEUED_RUN_TOOL) => request_queued_run(self.port, &self.token, arguments),
+            Some(WORKFLOW_RUN_TOOL) => request_workflow_run(self.port, &self.token, arguments),
+            _ => Err("Unknown queued run tool".into()),
         }
     }
 }
