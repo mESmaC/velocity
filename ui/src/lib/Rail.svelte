@@ -122,6 +122,7 @@
     project={layout.project_identifier}
     collapse={layout.collapse_repository !== null}
     health={layout.collapse_mirror_health}
+    ci={layout.base_ci}
     {send}
   />
   {#if !layout.rosen_work}<IssuePanel {layout} {send} />{/if}

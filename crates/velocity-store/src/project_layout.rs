@@ -43,6 +43,12 @@ pub(crate) fn read_model(store: &crate::StateStore) -> LayoutData {
             .as_ref()
             .and(project.collapse_mirror_health.clone());
         data.rosen_mirror_divergence = project.rosen_mirror_divergence.clone();
+        // A project that left Rosen or lost its GitHub repository has no base CI to show.
+        data.base_ci = project
+            .github_remote
+            .as_ref()
+            .filter(|_| project.version_control == VersionControl::Rosen)
+            .and(project.base_ci.clone());
         if project.version_control == VersionControl::Rosen {
             data.rosen_work = Some(RosenWorkView {
                 items: project.rosen_work_items.clone(),

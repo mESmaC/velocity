@@ -10,6 +10,7 @@ pub mod airc_claims;
 mod airc_delivery;
 mod airc_events;
 mod airc_modal;
+mod base_ci;
 mod browser;
 mod build_gate;
 mod code_graph;
@@ -390,6 +391,7 @@ pub fn run() -> anyhow::Result<()> {
             skills::initialize(application.handle())?;
             interview::start(application.handle());
             rosen_landing::initialize(application.handle())?;
+            base_ci::initialize(application.handle());
             sweeps::initialize(application.handle())?;
             airc_delivery::initialize(application.handle());
             airc_modal::initialize(application.handle());

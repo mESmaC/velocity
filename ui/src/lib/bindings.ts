@@ -533,6 +533,51 @@ export type AircTabView = {
 /**  The type tag's colour family (F14: blue, green, amber, red). */
 export type AircTone = "Neutral" | "Claim" | "Info" | "Positive" | "Warning" | "Danger" | "Muted";
 
+/**
+ *  The CI state of a project's base on its GitHub mirror, kept with the project so it
+ *  shows at startup before the next read.
+ */
+export type BaseCi = BaseCi_Serialize | BaseCi_Deserialize;
+
+/**  What the project shows for its base's CI. */
+export type BaseCiState = 
+/**  No counted run has finished on the base and none is running. */
+"NotRun" | 
+/**  Nothing failed, and a run is queued or in progress. */
+"Running" | 
+/**  The newest finished run of every workflow passed. */
+"Green" | 
+/**  The newest finished run of at least one workflow failed. */
+"Failed";
+
+/**
+ *  The CI state of a project's base on its GitHub mirror, kept with the project so it
+ *  shows at startup before the next read.
+ */
+export type BaseCi_Deserialize = {
+	state?: BaseCiState,
+	/**  The base commit of the newest finished run. */
+	commit?: string | null,
+	/**  The failing jobs as `<workflow> · <job>`. */
+	failing?: string[],
+	/**  A newer run is queued or in progress, as after a fix lands. */
+	running?: boolean,
+};
+
+/**
+ *  The CI state of a project's base on its GitHub mirror, kept with the project so it
+ *  shows at startup before the next read.
+ */
+export type BaseCi_Serialize = {
+	state: BaseCiState,
+	/**  The base commit of the newest finished run. */
+	commit: string | null,
+	/**  The failing jobs as `<workflow> · <job>`. */
+	failing: string[],
+	/**  A newer run is queued or in progress, as after a fix lands. */
+	running: boolean,
+};
+
 export type BaseCoverage = {
 	commit: string,
 	updated: string,
@@ -2276,6 +2321,8 @@ export type LayoutSnapshot_Deserialize = {
 	collapse_repository?: string | null,
 	/**  Collapse's last land and downstream forwarder for that repository (#427). */
 	collapse_mirror_health?: CollapseMirrorHealth_Deserialize | null,
+	/**  GitHub CI on the project's mirrored base, as last read (#507). */
+	base_ci?: BaseCi_Deserialize | null,
 	rosen_work?: RosenWorkView_Deserialize | null,
 	rosen_migration_notice?: string | null,
 	view: NavigationView,
@@ -2344,6 +2391,8 @@ export type LayoutSnapshot_Serialize = {
 	collapse_repository: string | null,
 	/**  Collapse's last land and downstream forwarder for that repository (#427). */
 	collapse_mirror_health: CollapseMirrorHealth_Serialize | null,
+	/**  GitHub CI on the project's mirrored base, as last read (#507). */
+	base_ci: BaseCi_Serialize | null,
 	rosen_work: RosenWorkView_Serialize | null,
 	rosen_migration_notice: string | null,
 	view: NavigationView,

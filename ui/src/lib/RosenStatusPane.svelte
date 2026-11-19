@@ -4,6 +4,7 @@
     onRosenStatus,
     releaseCommands,
     watchRosenStatus,
+    type BaseCi,
     type CollapseMirrorHealth,
     type LayoutAction,
     type RosenStatusChanged,
@@ -16,6 +17,7 @@
     project,
     collapse,
     health = null,
+    ci = null,
     send,
   }: {
     project: number | null;
@@ -23,6 +25,8 @@
     collapse: boolean;
     // Collapse's last land and downstream forwarder for that mirror (#427).
     health?: CollapseMirrorHealth | null;
+    // GitHub CI on the mirrored base (#507), shown beside the integration state.
+    ci?: BaseCi | null;
     send: (action: LayoutAction) => void;
   } = $props();
 
@@ -42,6 +46,15 @@
     if (health.forwarder === 'Retrying' && health.next_attempt)
       line += ` · next attempt ${new Date(health.next_attempt).toLocaleTimeString()}`;
     return line;
+  }
+
+  function ciLine(ci: BaseCi) {
+    const at = ci.commit ? ` at ${ci.commit.slice(0, 10)}` : '';
+    if (ci.state === 'Failed')
+      return `GitHub CI failing${at}${ci.running ? ' · new run in progress' : ''}`;
+    if (ci.state === 'Running') return 'GitHub CI running';
+    if (ci.state === 'Green') return `GitHub CI green${at}`;
+    return 'GitHub CI has not run';
   }
 
   const sections = [
@@ -269,6 +282,17 @@
                 <p title={status.base.green ?? undefined}>
                   Last green {status.base.green?.slice(0, 10) ?? '—'}
                 </p>
+                {#if ci}
+                  <p
+                    class:failing={ci.state === 'Failed'}
+                    title={ci.commit ?? undefined}
+                  >
+                    {ciLine(ci)}
+                  </p>
+                  {#each ci.failing as job, index (index)}
+                    <p class="hint">{job}</p>
+                  {/each}
+                {/if}
                 {#if status.base.bisecting}<p>Bisect in progress</p>{/if}
                 {#if status.base.culprit}<p title={status.base.culprit}>
                     Culprit {status.base.culprit.slice(0, 10)}
@@ -484,6 +508,9 @@
   }
   .hint {
     color: var(--muted);
+  }
+  .failing {
+    color: var(--err);
   }
   .release {
     display: flex;

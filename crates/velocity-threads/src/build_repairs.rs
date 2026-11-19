@@ -127,7 +127,7 @@ pub fn repair_prompt(failure: &BuildFailure) -> String {
     format!("{heading}{excerpt}{notice}\n\n{instructions}")
 }
 
-fn failure_excerpt(output: &str, budget: usize) -> String {
+pub(crate) fn failure_excerpt(output: &str, budget: usize) -> String {
     let diagnostics = output
         .lines()
         .filter(|line| {

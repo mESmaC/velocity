@@ -11,6 +11,7 @@ pub mod agent_tasks;
 pub mod airc_members;
 pub mod build_gate;
 pub mod build_repairs;
+pub mod ci_repairs;
 pub mod claim_piece;
 pub mod continuous_dispatch;
 pub mod deleted_worktrees;
@@ -1050,6 +1051,15 @@ pub struct ProjectItem {
     #[serde(default)]
     #[specta(skip)]
     pub build_repairs: Vec<build_repairs::BuildRepair>,
+    /// One open fix-forward repair per failing GitHub CI workflow and job on the base,
+    /// kept until a green run of that workflow (#507).
+    #[serde(default)]
+    #[specta(skip)]
+    pub ci_repairs: Vec<ci_repairs::CiRepair>,
+    /// GitHub CI on the base as last read, shown at startup before the next read (#507).
+    #[serde(default)]
+    #[specta(skip)]
+    pub base_ci: Option<velocity_core::base_ci::BaseCi>,
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     #[specta(skip)]
     pub handoff_items: BTreeMap<String, handoff::Item>,
@@ -1193,6 +1203,8 @@ impl ProjectItem {
     pub fn new(identifier: u32, name: String, repository_path: String) -> Self {
         Self {
             build_repairs: Vec::new(),
+            ci_repairs: Vec::new(),
+            base_ci: None,
             handoff_items: BTreeMap::new(),
             id: identifier,
             name,

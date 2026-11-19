@@ -132,6 +132,8 @@ pub struct LayoutData {
     pub collapse_repository: Option<String>,
     /// Collapse's last land and downstream forwarder for that repository (#427).
     pub collapse_mirror_health: Option<crate::collapse::CollapseMirrorHealth>,
+    /// GitHub CI on the project's mirrored base, as last read (#507).
+    pub base_ci: Option<crate::base_ci::BaseCi>,
     pub rosen_work: Option<RosenWorkView>,
     pub rosen_migration_notice: Option<String>,
     pub settled_expanded: bool,
@@ -472,6 +474,8 @@ pub struct LayoutSnapshot {
     pub collapse_repository: Option<String>,
     /// Collapse's last land and downstream forwarder for that repository (#427).
     pub collapse_mirror_health: Option<crate::collapse::CollapseMirrorHealth>,
+    /// GitHub CI on the project's mirrored base, as last read (#507).
+    pub base_ci: Option<crate::base_ci::BaseCi>,
     pub rosen_work: Option<RosenWorkView>,
     pub rosen_migration_notice: Option<String>,
     pub view: NavigationView,

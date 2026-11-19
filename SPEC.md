@@ -29,6 +29,7 @@ These hold for every feature. A feature that breaks one of them is wrong, whatev
 - Velocity shows a notice offering the setting `review = "after-land"` when a project's configuration still specifies `before-land` (F7).
 - A failing or rejected Rosen mirror stays visible on its project until the next successful push; F5 specifies the project header, Settings, retry time and rejection notice (#402).
 - A confirmed integration failure gets one fix-forward thread on the default implementation model, with the failing command and output (#406, #480).
+- A failed GitHub CI job on a Rosen project's mirrored base is fixed forward the same way: one thread per workflow and job with the failed step and log excerpt, closed by that workflow's next green run (F5 Base CI, #507).
 - Agents use Rust formatting, UI type-check and lint, and one queued type-check of the Rust crate they change.
 - A release requires a green integration build on its exact commit.
   A beta release with that build and no open release-blocker issue skips the rest of the release gate (F1, #434).
@@ -193,6 +194,7 @@ F5, F7 and §3.1 have a README for their introduction and separate files for the
 - [spec/F5-worktrees/rosen-rebases-at-the-step-boundary-a-conflict.md](spec/F5-worktrees/rosen-rebases-at-the-step-boundary-a-conflict.md)
 - [spec/F5-worktrees/rosen-falling-back.md](spec/F5-worktrees/rosen-falling-back.md)
 - [spec/F5-worktrees/rosen-pin-bump.md](spec/F5-worktrees/rosen-pin-bump.md)
+- [spec/F5-worktrees/rosen-base-ci.md](spec/F5-worktrees/rosen-base-ci.md)
 - [spec/F5-worktrees/lifecycle.md](spec/F5-worktrees/lifecycle.md)
 - [spec/F5-worktrees/path.md](spec/F5-worktrees/path.md)
 - [spec/F5-worktrees/settings-worktrees.md](spec/F5-worktrees/settings-worktrees.md)

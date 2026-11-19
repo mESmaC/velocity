@@ -12,7 +12,7 @@ The window saves their order and collapsed state.
 | Section | Live information |
 |---|---|
 | Server | Running state, version, connected R14 machines, and the local run queue holders and waiter count |
-| Base | Base tip, last green commit, bisect progress, current culprit or revert, and Cut release |
+| Base | Base tip, last green commit, GitHub CI on the mirrored base with its failing jobs (F5 Base CI, #507), bisect progress, current culprit or revert, and Cut release |
 | Landing | Lands in the last hour, median time from naming to land for that hour, and post-land build and full-test backlog |
 | Claims and conflicts | Paths, claim holders, overlaps and open stored conflicts |
 | Warm pool | Ready workspace count and target |

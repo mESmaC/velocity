@@ -27,6 +27,7 @@ Rule files:
 - [Rebases at the step boundary (#271, #398)](rosen-rebases-at-the-step-boundary.md)
 - [Falling back](rosen-falling-back.md)
 - [Pin bumps (#513)](rosen-pin-bump.md)
+- [Base CI (#507)](rosen-base-ci.md)
 - [Lifecycle (decided)](lifecycle.md)
 - [Path](path.md)
 - [Settings → Workspaces](settings-worktrees.md)

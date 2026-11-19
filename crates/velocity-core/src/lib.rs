@@ -8,6 +8,7 @@ mod agents_markdown;
 pub mod agents_rewrite;
 pub mod agents_template;
 pub mod airc_modal;
+pub mod base_ci;
 pub mod board;
 pub mod build_gate;
 pub mod collapse;

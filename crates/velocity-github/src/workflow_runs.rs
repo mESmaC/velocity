@@ -43,6 +43,12 @@ pub(crate) struct WorkflowRun {
     pub html_url: String,
     pub run_started_at: Option<String>,
     pub updated_at: Option<String>,
+    /// What started the run, such as `push` or `workflow_dispatch`.
+    #[serde(default)]
+    pub event: Option<String>,
+    /// The workflow's file, which names a workflow that has no name of its own.
+    #[serde(default)]
+    pub path: Option<String>,
 }
 
 impl WorkflowRun {
@@ -61,6 +67,9 @@ pub(crate) struct WorkflowJob {
     pub html_url: Option<String>,
     #[serde(default)]
     pub steps: Vec<WorkflowStep>,
+    /// The runner labels the job asked for, such as `macos-latest`.
+    #[serde(default)]
+    pub labels: Vec<String>,
 }
 
 #[derive(Clone, Debug, Deserialize)]
@@ -112,7 +121,7 @@ impl WorkflowClient {
         &self.repository
     }
 
-    fn read<T: DeserializeOwned>(&self, path: &str) -> Result<T, GitHubCommandError> {
+    pub(crate) fn read<T: DeserializeOwned>(&self, path: &str) -> Result<T, GitHubCommandError> {
         let endpoint = format!("repos/{}{path}", self.repository);
         self.command.read(&["api", &endpoint])
     }

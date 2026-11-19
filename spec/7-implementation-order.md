@@ -102,6 +102,7 @@ Each milestone ends with a working app.
 - [x] Reasoning effort by role, with Medium defaults for trivial reading reviews and duty sweeps (F15, #468)
 - [x] Batch integration builds on the base and queue single-crate agent checks (#480, F5, F7)
 - [x] Apply the Rust command policy in agent shells and start agent checks at below-normal priority (#483, F5)
+- [x] Watch GitHub CI on the mirrored base: one fix-forward thread per failing workflow and job, closed by a green run, and the base's CI state in Rosen status (F5 Rosen · Base CI, #507)
 
 **M11 · Proofs** (F17)
 - [x] Lean toolchain and Mathlib cache in the warm pool (F5)

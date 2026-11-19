@@ -4,6 +4,7 @@
 //! reports), for listing and cloning repositories (F2) and for the workflow runs an owner
 //! lets agents request (#508); changes land through Rosen.
 
+pub mod base_ci;
 mod command;
 mod dependency_graph;
 mod gh_command;
