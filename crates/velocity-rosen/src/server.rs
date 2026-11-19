@@ -520,7 +520,9 @@ pub(crate) fn program_folder(program: &str) -> Option<PathBuf> {
         .into_iter()
         .chain(beside_app)
         .chain(on_path)
-        .find(|folder| folder.join(&program).is_file())
+        .find(|folder| {
+            !crate::agent_run::is_command_folder(folder) && folder.join(&program).is_file()
+        })
 }
 
 fn executable(name: &str) -> String {

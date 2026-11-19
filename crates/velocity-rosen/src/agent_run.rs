@@ -1,8 +1,8 @@
-//! The managed Rosen CLI and MCP queue share this policy. Agents' light Rust runs
+//! The agent shell, managed Rosen CLI and MCP queue share this policy. Light Rust runs
 //! (single-crate checks and binding generation) take one of a few machine-wide slots
 //! and start once their own memory fits above Rosen's reserve.
 
-use std::ffi::OsString;
+use std::ffi::{OsStr, OsString};
 use std::fs::{File, OpenOptions, TryLockError};
 use std::io;
 use std::path::{Path, PathBuf};
@@ -11,10 +11,19 @@ use std::sync::OnceLock;
 
 use rosen_client::run_queue::{HELD_ENV, POLL, RunClass, RunQueue};
 
-use crate::process::hidden_command;
+use crate::process::{background_command, hidden_command};
 
-static AGENT_CLI: OnceLock<Option<PathBuf>> = OnceLock::new();
-const PROGRAM_RECORD: &str = "rosen-program";
+static AGENT_COMMANDS: OnceLock<Option<AgentCommands>> = OnceLock::new();
+const APP_RECORD: &str = "velocity-program";
+const ROSEN_RECORD: &str = "rosen-program";
+const RUST_COMMANDS: &[&str] = &[
+    "cargo",
+    "rustc",
+    "cargo-clippy",
+    "cargo-tauri",
+    "clippy-driver",
+];
+const LAUNCHER: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/agent-launcher.exe"));
 const REFUSAL: &str = "The integration build covers Rust compilation, lint and tests. Agents may run cargo fmt or queue cargo check -p <crate>.";
 /// Light runs going at once on the machine. Each uses two Cargo jobs.
 const LIGHT_SLOTS: usize = 2;
@@ -26,6 +35,8 @@ const PROJECT_TARGET: &str = ".velocity-agent-target";
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub enum AgentRun {
     Ordinary,
+    /// Rust formatting or the managed Cargo.lock generator.
+    RustUtility,
     /// `cargo check -p <crate>`.
     RustCheck,
     /// The UI's `bindings` script, which builds and runs `export-bindings`.
@@ -38,31 +49,38 @@ pub fn policy(program: &str, arguments: &[String]) -> Result<AgentRun, &'static 
         return Ok(AgentRun::Bindings);
     }
     if name == "cargo" {
-        return match arguments {
-            [command, flag, package]
-                if command == "check" && flag == "-p" && package_name(package) =>
-            {
-                Ok(AgentRun::RustCheck)
-            }
-            [command, ..] if command == "fmt" => Ok(AgentRun::Ordinary),
-            _ => Err(REFUSAL),
-        };
+        return cargo_policy(arguments, true);
     }
     let invokes_rust = std::iter::once(program)
         .chain(arguments.iter().map(String::as_str))
         .any(heavy_script)
         || (matches!(name.as_str(), "cmd" | "powershell" | "pwsh" | "sh" | "bash")
             && heavy_script(&arguments.join(" ")));
-    if matches!(
-        name.as_str(),
-        "rustc" | "clippy-driver" | "cargo-clippy" | "cargo-tauri" | "stress"
-    ) || (name == "rustup" && arguments.first().is_some_and(|arg| arg == "run"))
+    if RUST_COMMANDS.contains(&name.as_str())
+        || name == "stress"
+        || (name == "rustup" && arguments.first().is_some_and(|arg| arg == "run"))
         || name == "rosen"
         || invokes_rust
     {
         return Err(REFUSAL);
     }
     Ok(AgentRun::Ordinary)
+}
+
+fn cargo_policy(arguments: &[String], managed: bool) -> Result<AgentRun, &'static str> {
+    match arguments {
+        [command, flag, package] if command == "check" && flag == "-p" && package_name(package) => {
+            Ok(AgentRun::RustCheck)
+        }
+        [command, ..] if command == "fmt" => Ok(AgentRun::RustUtility),
+        // Rebase repair needs to regenerate Cargo.lock without starting a Rust build.
+        [command, flag, version]
+            if managed && command == "metadata" && flag == "--format-version" && version == "1" =>
+        {
+            Ok(AgentRun::RustUtility)
+        }
+        _ => Err(REFUSAL),
+    }
 }
 
 /// `pnpm -C ui bindings`, `pnpm --dir ui bindings` or `pnpm run bindings`.
@@ -110,71 +128,154 @@ fn package_name(package: &str) -> bool {
             .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'_' | b'-'))
 }
 
-/// Put a native CLI entry point before the bundled Rosen program on agent PATHs.
-/// A hard link keeps the installed app's bytes shared when both are on one volume.
+struct AgentCommands {
+    folder: PathBuf,
+    rosen: Option<PathBuf>,
+}
+
+/// Install native console entry points before the real programs on agent PATHs.
 pub fn install(executable: &Path) {
-    let Some(rosen) = crate::server::program_folder("rosen")
-        .map(|folder| folder.join(format!("rosen{}", std::env::consts::EXE_SUFFIX)))
-    else {
-        return;
-    };
-    AGENT_CLI.get_or_init(|| {
-        create_cli(executable, &rosen)
+    AGENT_COMMANDS.get_or_init(|| {
+        create_commands(executable)
             .inspect_err(|error| {
-                eprintln!("Could not install the agent Rosen command: {error}");
+                eprintln!("Could not install the agent shell commands: {error}");
             })
             .ok()
     });
 }
 
-fn create_cli(executable: &Path, rosen: &Path) -> io::Result<PathBuf> {
-    let stamp = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map_err(io::Error::other)?
-        .as_nanos();
-    let folder = std::env::temp_dir().join(format!(
-        "velocity-agent-rosen-{}-{stamp}",
-        std::process::id()
-    ));
-    std::fs::create_dir_all(&folder)?;
-    let shim = folder.join(format!("rosen{}", std::env::consts::EXE_SUFFIX));
-    if std::fs::hard_link(executable, &shim).is_err() {
-        std::fs::copy(executable, &shim)?;
-    }
+fn create_commands(executable: &Path) -> io::Result<AgentCommands> {
+    let folder = tempfile::Builder::new()
+        .prefix("velocity-agent-")
+        .tempdir()?;
+    let path = folder.path();
     std::fs::write(
-        folder.join(PROGRAM_RECORD),
-        rosen.to_string_lossy().as_bytes(),
+        path.join(APP_RECORD),
+        executable.to_string_lossy().as_bytes(),
     )?;
-    Ok(shim)
+    let cargo = path.join(executable_file("cargo"));
+    std::fs::write(&cargo, LAUNCHER)?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&cargo, std::fs::Permissions::from_mode(0o700))?;
+    }
+    for name in &RUST_COMMANDS[1..] {
+        copy_launcher(&cargo, &path.join(executable_file(name)))?;
+    }
+    let rosen_name = executable_file("rosen");
+    let rosen = if let Some(real_rosen) = crate::server::program_folder("rosen") {
+        let program = std::path::absolute(real_rosen.join(&rosen_name))?;
+        std::fs::write(
+            path.join(ROSEN_RECORD),
+            program.to_string_lossy().as_bytes(),
+        )?;
+        let shim = path.join(rosen_name);
+        copy_launcher(&cargo, &shim)?;
+        Some(shim)
+    } else {
+        None
+    };
+    Ok(AgentCommands {
+        folder: folder.keep(),
+        rosen,
+    })
+}
+
+fn executable_file(name: &str) -> String {
+    format!("{name}{}", std::env::consts::EXE_SUFFIX)
+}
+
+fn copy_launcher(source: &Path, destination: &Path) -> io::Result<()> {
+    if std::fs::hard_link(source, destination).is_err() {
+        std::fs::copy(source, destination)?;
+    }
+    Ok(())
+}
+
+pub(crate) fn command_folder() -> Option<&'static Path> {
+    Some(&AGENT_COMMANDS.get()?.as_ref()?.folder)
+}
+
+pub(crate) fn is_command_folder(folder: &Path) -> bool {
+    folder.join(APP_RECORD).is_file() || folder.join(ROSEN_RECORD).is_file()
 }
 
 pub fn cli() -> Option<&'static Path> {
-    AGENT_CLI.get().and_then(Option::as_deref)
+    AGENT_COMMANDS.get()?.as_ref()?.rosen.as_deref()
 }
 
-/// Returns None in the normal app executable. The shim forwards Rosen's other
-/// subcommands, preserving their argument boundaries and inherited streams.
-pub fn serve() -> Option<io::Result<ExitStatus>> {
-    let executable = std::env::current_exe().ok()?;
-    if executable_name(executable.file_name()?.to_str()?) != "rosen" {
+/// App entry point for the console launcher, returning `None` for regular app calls.
+pub fn serve() -> Option<(String, io::Result<ExitStatus>)> {
+    let mut arguments = std::env::args_os().skip(1);
+    if arguments.next()? != "--velocity-agent-command" {
         return None;
     }
-    let record = executable.parent()?.join(PROGRAM_RECORD);
-    let arguments: Vec<_> = std::env::args_os().skip(1).collect();
-    Some(std::fs::read_to_string(record).and_then(|program| run(program, &arguments)))
+    let executable = PathBuf::from(arguments.next()?);
+    let folder = executable.parent()?;
+    let name = executable_name(executable.file_name()?.to_str()?);
+    let arguments: Vec<_> = arguments.collect();
+    let result = if name == "rosen" {
+        rosen_program(folder).and_then(|program| run_rosen(&program, &arguments))
+    } else {
+        run_direct(folder, &name, &arguments)
+    };
+    Some((name, result))
 }
 
-fn run(program: String, arguments: &[OsString]) -> io::Result<ExitStatus> {
-    let mut command = hidden_command(program);
+fn rosen_program(folder: &Path) -> io::Result<PathBuf> {
+    std::fs::read_to_string(folder.join(ROSEN_RECORD)).map(PathBuf::from)
+}
+
+fn run_direct(folder: &Path, name: &str, arguments: &[OsString]) -> io::Result<ExitStatus> {
+    if name != "cargo" {
+        return Err(io::Error::other(REFUSAL));
+    }
+    match cargo_policy(&policy_arguments(arguments), false).map_err(io::Error::other)? {
+        AgentRun::RustUtility => run_utility(OsStr::new(name), arguments),
+        AgentRun::RustCheck => run_light(&rosen_program(folder)?, &[], OsStr::new(name), arguments),
+        _ => Err(io::Error::other(REFUSAL)),
+    }
+}
+
+fn run_rosen(program: &Path, arguments: &[OsString]) -> io::Result<ExitStatus> {
     let subcommand = subcommand_index(arguments);
     if !arguments.get(subcommand).is_some_and(|arg| arg == "run") {
-        return command.args(arguments).status();
+        return hidden_command(program).args(arguments).status();
     }
     let run_arguments = &arguments[subcommand + 1..];
-    let (program_at, policy) = classify_run(run_arguments).map_err(io::Error::other)?;
-    if policy == AgentRun::Ordinary {
-        return command.args(arguments).env_remove(HELD_ENV).status();
+    let (program_at, run) = classify_run(run_arguments).map_err(io::Error::other)?;
+    match run {
+        AgentRun::Ordinary => hidden_command(program)
+            .args(arguments)
+            .env_remove(HELD_ENV)
+            .status(),
+        AgentRun::RustUtility => {
+            run_utility(&run_arguments[program_at], &run_arguments[program_at + 1..])
+        }
+        AgentRun::RustCheck | AgentRun::Bindings => run_light(
+            program,
+            &arguments[..subcommand],
+            &run_arguments[program_at],
+            &run_arguments[program_at + 1..],
+        ),
     }
+}
+
+fn run_utility(program: &OsStr, arguments: &[OsString]) -> io::Result<ExitStatus> {
+    let _slot = light_slot()?;
+    background_command(program)
+        .args(arguments)
+        .env("PATH", toolchain_path()?)
+        .status()
+}
+
+fn run_light(
+    rosen: &Path,
+    rosen_arguments: &[OsString],
+    program: &OsStr,
+    arguments: &[OsString],
+) -> io::Result<ExitStatus> {
     let directory = std::env::current_dir()?;
     let root = directory
         .ancestors()
@@ -191,10 +292,12 @@ fn run(program: String, arguments: &[OsString]) -> io::Result<ExitStatus> {
     // an integration build), which kept two-job checks waiting while gigabytes sat free.
     // A light run starts when its own memory fits above Rosen's reserve; the run below
     // still executes in a job capped at a build turn's memory.
-    command
-        .args(&arguments[..=subcommand])
-        .args(["--class", RunClass::Build.name(), "--"])
-        .args(&run_arguments[program_at..])
+    background_command(rosen)
+        .args(rosen_arguments)
+        .args(["run", "--class", RunClass::Build.name(), "--"])
+        .arg(program)
+        .args(arguments)
+        .env("PATH", toolchain_path()?)
         .env(HELD_ENV, RunClass::Build.name())
         .env("CARGO_BUILD_JOBS", "2")
         .env("CARGO_INCREMENTAL", "1")
@@ -203,6 +306,13 @@ fn run(program: String, arguments: &[OsString]) -> io::Result<ExitStatus> {
         .env("RUSTC_WORKSPACE_WRAPPER", "")
         .env("CARGO_TARGET_DIR", target)
         .status()
+}
+
+/// Cargo and the binding generator need the real tools for their own subprocesses.
+fn toolchain_path() -> io::Result<OsString> {
+    let path = std::env::var_os("PATH").unwrap_or_default();
+    let folders = std::env::split_paths(&path).filter(|folder| !is_command_folder(folder));
+    std::env::join_paths(folders).map_err(io::Error::other)
 }
 
 /// One target folder per Rosen project, beside its workspaces: registry dependencies
@@ -260,11 +370,14 @@ fn classify_run(arguments: &[OsString]) -> Result<(usize, AgentRun), &'static st
     let Some(program) = arguments.get(index).and_then(|value| value.to_str()) else {
         return Ok((index, AgentRun::Ordinary));
     };
-    let rest: Vec<_> = arguments[index + 1..]
+    policy(program, &policy_arguments(&arguments[index + 1..])).map(|policy| (index, policy))
+}
+
+fn policy_arguments(arguments: &[OsString]) -> Vec<String> {
+    arguments
         .iter()
         .map(|value| value.to_string_lossy().into_owned())
-        .collect();
-    policy(program, &rest).map(|policy| (index, policy))
+        .collect()
 }
 
 /// Takes the first free machine-wide light slot, waiting while all are taken. Slot 0

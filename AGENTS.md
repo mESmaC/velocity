@@ -21,7 +21,7 @@ Velocity is a Rust + Tauri desktop IDE for running coding agents in parallel.
 ## Shared files
 
 - Tick your matching §7 item in the same change. Register commands, events, modules, members and dependencies in the appropriate group and place new named groups alphabetically. Use the existing implementation if the base lands the same fix first.
-- When Rosen reports `regenerate`, regenerate `Cargo.lock` with `cargo metadata --format-version 1`, `ui/pnpm-lock.yaml` with `pnpm -C ui install --lockfile-only` and `ui/src/lib/bindings.ts` with `pnpm -C ui bindings`. Regenerate from the merged inputs and name the change again. Keep generated artifacts and registration lists in their respective `rosen.toml` lists.
+- When Rosen reports `regenerate`, regenerate `Cargo.lock` with `rosen run -- cargo metadata --format-version 1`, `ui/pnpm-lock.yaml` with `pnpm -C ui install --lockfile-only` and `ui/src/lib/bindings.ts` by queuing `pnpm -C ui bindings` or using `rosen run -- pnpm -C ui bindings`. Regenerate from the merged inputs and name the change again. Keep generated artifacts and registration lists in their respective `rosen.toml` lists.
 
 ## Commands
 

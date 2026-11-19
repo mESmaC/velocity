@@ -91,6 +91,7 @@ Each milestone ends with a working app.
 - [x] Queue long agent commands in Rosen and resume the ACP thread with the result (#454, F5, F7)
 - [x] Reasoning effort by role, with Medium defaults for trivial reading reviews and duty sweeps (F15, #468)
 - [x] Batch integration builds on the base and queue single-crate agent checks (#480, F5, F7)
+- [x] Apply the Rust command policy in agent shells and start agent checks at below-normal priority (#483, F5)
 
 **M11 · Proofs** (F17)
 - [x] Lean toolchain and Mathlib cache in the warm pool (F5)

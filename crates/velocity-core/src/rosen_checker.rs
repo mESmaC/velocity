@@ -33,9 +33,9 @@ pub fn regeneration_instructions(paths: &[String]) -> String {
     let mut message = String::new();
     for path in paths {
         let command = match path.replace('\\', "/").as_str() {
-            "Cargo.lock" => "cargo metadata --format-version 1",
+            "Cargo.lock" => "rosen run -- cargo metadata --format-version 1",
             "ui/pnpm-lock.yaml" => "pnpm -C ui install --lockfile-only",
-            "ui/src/lib/bindings.ts" => "pnpm -C ui bindings",
+            "ui/src/lib/bindings.ts" => "rosen run -- pnpm -C ui bindings",
             _ => continue,
         };
         message.push_str(&format!(

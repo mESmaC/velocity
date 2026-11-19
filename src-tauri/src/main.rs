@@ -9,11 +9,11 @@ fn main() -> anyhow::Result<()> {
     {
         velocity_app_lib::process_memory::start_helper_guard(&argument);
     }
-    if let Some(result) = velocity_rosen::agent_run::serve() {
+    if let Some((command, result)) = velocity_rosen::agent_run::serve() {
         let code = match result {
             Ok(status) => status.code().unwrap_or(1),
             Err(error) => {
-                eprintln!("rosen: {error}");
+                eprintln!("{command}: {error}");
                 1
             }
         };

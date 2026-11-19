@@ -20,7 +20,7 @@ pub fn agent_name(root: &Path) -> String {
 
 /// Environment for the agent's process, so the `rosen` CLI it runs reaches the project's
 /// server as this agent, on its change: `ROSEN_ENDPOINT`, `ROSEN_AGENT`, `ROSEN_CHANGE`,
-/// and Rosen's folder first on `PATH`. `claim`, `share` and `release` take the change only
+/// and the managed command folder first on `PATH`. `claim`, `share` and `release` take the change only
 /// from `ROSEN_CHANGE` or `--change`, never from the folder they run in.
 pub fn agent_environment(
     server: &ProjectServer,
@@ -49,16 +49,17 @@ pub fn agent_environment(
     environment
 }
 
-/// `existing` (a `PATH` value) with Rosen's folder first, so the agent's shell finds
-/// `rosen`. `None` when the `rosen` program isn't found.
+/// `existing` (a `PATH` value) with the managed commands and Rosen before other programs.
 pub fn path_with_rosen(existing: &str) -> Option<String> {
-    let folder = program_folder("rosen")?;
-    let folders = crate::agent_run::cli()
-        .and_then(Path::parent)
-        .map(Path::to_owned)
-        .into_iter()
-        .chain(std::iter::once(folder))
-        .chain(std::env::split_paths(existing));
+    let managed = crate::agent_run::command_folder().map(Path::to_owned);
+    let rosen = program_folder("rosen");
+    if managed.is_none() && rosen.is_none() {
+        return None;
+    }
+    let folders = managed.into_iter().chain(rosen).chain(
+        std::env::split_paths(existing)
+            .filter(|folder| !crate::agent_run::is_command_folder(folder)),
+    );
     let path = std::env::join_paths(folders).ok()?;
     Some(path.to_string_lossy().into_owned())
 }

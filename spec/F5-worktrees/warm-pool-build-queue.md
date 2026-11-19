@@ -5,7 +5,9 @@
   Velocity queues agents' single-crate Rust type checks and Lean checks through Rosen's machine-wide queue.
   Agent light Rust runs (`cargo check -p <crate>` and the UI's `bindings` script) take one of two machine-wide slots, use two Cargo jobs at below-normal priority, and share one incremental target directory per project beside its workspaces (#486).
   A light run starts when 3 GiB fits above Rosen's memory reserve, measured rather than charged at other turns' caps, so an integration build no longer holds every agent check.
-  Velocity refuses Rust compilation, clippy and tests on the managed `rosen run` and `queue_run` paths.
+  Velocity puts shims for `cargo`, `rustc`, `cargo-clippy`, `cargo-tauri` and `clippy-driver` first on every agent's `PATH` (#483).
+  Direct `cargo fmt` and `cargo check -p <crate>` take an agent light slot, and the shims refuse other direct invocations with the integration-build message shared by `rosen run` and `queue_run`.
+  The managed paths also accept `cargo metadata --format-version 1` and `pnpm -C ui bindings` for generated-file repair.
   Agents use Rust formatting, UI type-check and lint as applicable.
   Warm pool prepares install UI dependencies and fetch the Lean cache.
   Integration builds use Rosen's `verify` class and wait for a memory-budgeted turn.
