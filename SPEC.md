@@ -99,9 +99,10 @@ A thread's state (§2.1) says where it is in its lifecycle. Its **activity** say
 
 **Parked agents wake on events, not by polling.** A wait subscribes the agent to the `merged` event of the PR it waits on. When that event fires, Velocity resumes the session (`session/load`, or a new session with the transcript if the agent can't load one), rebases, and posts `unblocked`. If the PR is closed, fails or is deleted, the agent wakes and the wait ends. A dependency wait also ends after 20 minutes, including across app restarts; the resumed agent is told the wait expired and to coordinate with the holder or proceed. Expiry does not rebase or release either claim.
 
-**Stall timeout** (decided, Q20): 5 minutes without an ACP update. Two cases never count as silence:
+**Stall timeout** (decided, Q20): 5 minutes without an ACP update. Three cases never count as silence:
 - **A running tool call** gets 30 minutes *(proposed)*. A build, a test run or `lake build` reports nothing until it ends, and restarting the session would kill it and start it again.
 - **The build queue** (F5): an agent waiting in the queue, or running the build at its head, is never stalled.
+- **A busy subagent** (§3.2 Subagents, #436): its updates count as its parent's, a parent waiting on a running subagent gets the running tool call's timeout, and a subagent in the build queue keeps its parent out of the stall clock.
 
 Both timeouts are set in Settings → Agents (F13).
 

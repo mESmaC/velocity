@@ -7,7 +7,7 @@ use tauri::{AppHandle, Manager};
 use tauri_specta::Event;
 use velocity_acp::client::{AgentEvent, AgentInput, SessionSetup, TitleRequest};
 use velocity_core::layout_view::{LayoutIntent, LayoutSnapshot};
-use velocity_core::thread_view_model::TranscriptBlock;
+use velocity_core::thread_view_model::{SubagentView, TranscriptBlock};
 use velocity_core::work_pool::WorkPiece;
 use velocity_store::build_gate::{LaunchRequest, require_launch};
 use velocity_store::duty::clock_timestamp;
@@ -146,6 +146,15 @@ pub struct ThreadStepRecorded {
     pub thread_identifier: u32,
     /// The thread's newest transcript block after the update.
     pub block: TranscriptBlock,
+}
+
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize, specta::Type, Event)]
+#[tauri_specta(event_name = "thread://subagent")]
+pub struct ThreadSubagentChanged {
+    pub project_identifier: u32,
+    pub thread_identifier: u32,
+    /// The subagent as it is now: status, newest step and its whole transcript.
+    pub subagent: SubagentView,
 }
 
 pub(crate) fn lock<'guard, Value>(
@@ -1456,6 +1465,8 @@ fn finish_session(
             "Its session ended unexpectedly.",
         ),
     }
+    // Subagents still running when the session ended are over now.
+    emit_subagents(application, key);
     still_wanted
 }
 
@@ -1503,6 +1514,7 @@ fn apply_batch(
     {
         emit_step(application, key);
     }
+    emit_subagents(application, key);
     Ok(())
 }
 
@@ -1773,6 +1785,24 @@ fn emit_step(application: &AppHandle, key: ThreadKey) {
             project_identifier: key.0,
             thread_identifier: key.1,
             block,
+        };
+        report(event.emit(application).map_err(|error| error.to_string()));
+    }
+}
+
+/// Sends each subagent that changed since the last call (§3.2 Subagents).
+fn emit_subagents(application: &AppHandle, key: ThreadKey) {
+    let changed = lock(
+        application.state::<ManagedThreads>().inner(),
+        "thread sessions",
+    )
+    .map(|mut runtimes| runtimes.take_changed_subagents(key))
+    .unwrap_or_default();
+    for subagent in changed {
+        let event = ThreadSubagentChanged {
+            project_identifier: key.0,
+            thread_identifier: key.1,
+            subagent,
         };
         report(event.emit(application).map_err(|error| error.to_string()));
     }

@@ -116,9 +116,11 @@ fn step(
         )?;
         (
             runtimes.is_live(key) && !runtimes.is_setting_up(key),
+            // A subagent in the build queue keeps its parent out of the stall clock too.
             runtimes
                 .view(key)
-                .is_some_and(|view| velocity_threads::agent_activity::in_build_queue(&view.blocks)),
+                .is_some_and(|view| velocity_threads::agent_activity::in_build_queue(&view.blocks))
+                || runtimes.subagent_in_build_queue(key),
             runtimes.heartbeat(key),
         )
     };

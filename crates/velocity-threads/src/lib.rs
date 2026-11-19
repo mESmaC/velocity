@@ -27,6 +27,7 @@ mod review_swarm_server;
 mod review_swarm_session;
 pub mod runtime;
 pub mod shared_mcp;
+pub mod subagents;
 pub mod swarm;
 pub mod sweep;
 pub mod sweep_runner;

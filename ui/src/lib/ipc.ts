@@ -16,6 +16,7 @@ export * from './ipc/thread-change';
 export * from './ipc/skill-packs';
 export * from './ipc/shared-mcp';
 export * from './ipc/skills';
+export * from './ipc/subagents';
 export * from './ipc/swarm';
 export * from './ipc/updates';
 export * from './ipc/code-graph';

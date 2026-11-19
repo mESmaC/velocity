@@ -120,6 +120,13 @@ pub enum AgentEvent {
         placement: Placement,
         update: SessionUpdate,
     },
+    /// An update a subagent made, recorded in that subagent's own transcript rather than
+    /// the parent's (§3.2 Subagents). `spawn` is the parent's tool call that started it.
+    Subagent {
+        spawn: Arc<str>,
+        placement: Placement,
+        update: SessionUpdate,
+    },
     /// The grouped AIRC text in this prompt, with all original delivery identifiers.
     CoordinationPrompt {
         identifiers: Vec<String>,
@@ -161,6 +168,7 @@ struct Shared {
     worktree: PathBuf,
     terminals: Terminals,
     transcript: Mutex<Transcript<Arc<str>, SessionUpdate>>,
+    subagents: Mutex<crate::SubagentRouter>,
     events: UnboundedSender<AgentEvent>,
     /// Set while `session/load` replays history the thread's transcript already shows.
     replaying: AtomicBool,
@@ -179,6 +187,7 @@ impl Shared {
             terminals: Terminals::new(worktree.clone()),
             worktree,
             transcript: Mutex::new(Transcript::new()),
+            subagents: Mutex::default(),
             events,
             replaying: AtomicBool::new(false),
             mode_selection: Mutex::default(),
@@ -214,6 +223,10 @@ impl Shared {
                 .unwrap_or_else(PoisonError::into_inner)
                 .observe(&update);
         }
+        // Before the hand-off capture: a subagent's text is never the parent's note.
+        if self.record_subagent(&update) {
+            return;
+        }
         if handoff::capture(self, &update) {
             return;
         }
@@ -233,6 +246,37 @@ impl Shared {
             }
             None => self.emit(AgentEvent::SessionUpdate(update)),
         }
+    }
+
+    /// Files a subagent's update in that subagent's transcript and reports it. Returns
+    /// `false` for the parent's own updates. Replayed history is skipped, as the parent's
+    /// is, so the thread's copy of each subagent transcript keeps ACP's indices.
+    fn record_subagent(&self, update: &SessionUpdate) -> bool {
+        let Some(class) = entry_class(update) else {
+            return false;
+        };
+        if self.replaying.load(Ordering::Acquire) {
+            return crate::subagents::attributed_spawn(update).is_some();
+        }
+        let routed = self
+            .subagents
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .route(update, &class);
+        let Some((spawn, placement)) = routed else {
+            return false;
+        };
+        // A subagent's code reads are still this turn's reads.
+        self.code_reads
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .observe(update);
+        self.emit(AgentEvent::Subagent {
+            spawn,
+            placement,
+            update: update.clone(),
+        });
+        true
     }
 }
 
@@ -312,6 +356,7 @@ async fn run_admitted_session(
         worktree: setup.worktree.clone(),
         terminals: Terminals::new(setup.worktree.clone()),
         transcript: Mutex::new(Transcript::new()),
+        subagents: Mutex::default(),
         events,
         replaying: AtomicBool::new(false),
         mode_selection: Mutex::default(),

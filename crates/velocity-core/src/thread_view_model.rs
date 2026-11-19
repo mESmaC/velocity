@@ -334,6 +334,52 @@ pub struct ThreadDetailSnapshot {
     pub model_pill: ModelPillView,
     /// Present on spec interview threads (F3).
     pub interview: Option<InterviewView>,
+    /// The live session's subagents, oldest first (§3.2 Subagents, F4).
+    pub subagents: Vec<SubagentView>,
+}
+
+/// Where a subagent is (§3.2 Subagents).
+#[cfg_attr(
+    feature = "bindings",
+    derive(serde::Serialize, serde::Deserialize, specta::Type)
+)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SubagentStatus {
+    Running,
+    Done,
+    Failed,
+}
+
+/// One subagent a thread's agent started, with its own transcript (§3.2 Subagents, F4).
+#[cfg_attr(
+    feature = "bindings",
+    derive(serde::Serialize, serde::Deserialize, specta::Type)
+)]
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct SubagentView {
+    /// The parent's tool call that spawned it.
+    pub identifier: String,
+    /// The task description the parent gave it.
+    pub title: String,
+    /// The model the parent asked for; `None` runs the thread's own model.
+    pub model: Option<String>,
+    pub status: SubagentStatus,
+    /// Unix seconds when Velocity saw it start.
+    #[cfg_attr(feature = "bindings", serde(with = "crate::ipc_number"))]
+    #[cfg_attr(feature = "bindings", specta(type = String))]
+    pub started_at: usize,
+    /// Total tokens, when the agent reports them.
+    #[cfg_attr(feature = "bindings", serde(with = "crate::ipc_number::optional"))]
+    #[cfg_attr(feature = "bindings", specta(type = Option<String>))]
+    pub tokens: Option<usize>,
+    /// How many tool steps it made.
+    #[cfg_attr(feature = "bindings", serde(with = "crate::ipc_number"))]
+    #[cfg_attr(feature = "bindings", specta(type = String))]
+    pub step_count: usize,
+    /// Its newest tool step, as "Verb · argument".
+    pub current_step: Option<String>,
+    /// Its messages, tool steps and diffs, in order.
+    pub blocks: Vec<TranscriptBlock>,
 }
 
 /// A thread's transcript, shared rather than copied: the saved record, the layout's thread
@@ -352,6 +398,8 @@ pub struct LiveThreadView {
     /// and the header shows "titling · <model>". Titling never outlives the session that
     /// started it, so it is live state, not saved.
     pub titling_model: Option<String>,
+    /// The session's subagents, each with its own transcript (§3.2 Subagents).
+    pub subagents: Vec<SubagentView>,
 }
 
 impl LiveThreadView {
@@ -364,7 +412,14 @@ impl LiveThreadView {
             blocks: blocks.into(),
             agent_commands,
             titling_model,
+            subagents: Vec::new(),
         }
+    }
+
+    /// The same view with the session's subagents.
+    pub fn with_subagents(mut self, subagents: Vec<SubagentView>) -> Self {
+        self.subagents = subagents;
+        self
     }
 }
 
@@ -680,6 +735,8 @@ pub fn project_thread_detail(entry: &ThreadDetailEntry) -> ThreadDetailSnapshot 
             preserve_requested_fast: pill.preserve_requested_fast,
         },
         interview: None,
+        // Subagents are live session state; the layout adds them from the live view.
+        subagents: Vec::new(),
     }
 }
 

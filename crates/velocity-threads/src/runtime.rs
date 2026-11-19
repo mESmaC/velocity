@@ -17,10 +17,13 @@ use velocity_acp::available_commands;
 use velocity_acp::client::{
     AgentEvent, AgentInput, AgentLaunch, ClientError, SessionSetup, run_session,
 };
-use velocity_core::thread_view_model::{AgentCommandView, LiveThreadView, SessionWork};
+use velocity_core::thread_view_model::{
+    AgentCommandView, LiveThreadView, SessionWork, SubagentView,
+};
 use velocity_store::AgentActivity;
 
 use crate::follow_through::{Deliveries, DeliveryStatus};
+use crate::subagents::{Subagents, unix_now};
 use crate::transcript_view::LiveTranscript;
 
 /// `(project, thread)`: thread identifiers are unique within a project.
@@ -72,6 +75,8 @@ struct ThreadRuntime {
     session_tool_start: usize,
     deliveries: Deliveries,
     transcript: LiveTranscript,
+    /// The subagents the session's agent started, each with its own transcript (§3.2).
+    subagents: Subagents,
     inputs: UnboundedSender<AgentInput>,
     /// Client transcript chunks acknowledge inputs in FIFO order. Opening prompts are
     /// invisible here; steering stays visible until its own acknowledgement arrives.
@@ -180,6 +185,7 @@ impl ThreadRuntimes {
                 session_tool_start: 0,
                 deliveries: Deliveries::default(),
                 transcript: LiveTranscript::on_base(worktree, base_branch),
+                subagents: Subagents::new(worktree),
                 inputs,
                 pending_inputs: VecDeque::new(),
                 replaying_history: false,
@@ -284,6 +290,7 @@ impl ThreadRuntimes {
                 session_tool_start: 0,
                 deliveries: Deliveries::default(),
                 transcript: LiveTranscript::on_base(worktree, base_branch),
+                subagents: Subagents::new(worktree),
                 inputs,
                 pending_inputs: VecDeque::from([PendingInput::Opening]),
                 replaying_history: false,
@@ -620,6 +627,7 @@ impl ThreadRuntimes {
     pub fn rename_worktree(&mut self, key: ThreadKey, worktree: &str) {
         if let Some(thread) = self.threads.get_mut(&key) {
             thread.transcript.rename_worktree(worktree);
+            thread.subagents.rename_worktree(worktree);
         }
     }
 
@@ -786,6 +794,7 @@ impl ThreadRuntimes {
         }
         if let Some(thread) = self.threads.get_mut(&key) {
             thread.phase = SessionPhase::Ended;
+            thread.subagents.session_ended();
         }
         self.threads.contains_key(&key)
     }
@@ -800,6 +809,7 @@ impl ThreadRuntimes {
             }
             thread.transcript.record_error(headline, &text);
             thread.phase = SessionPhase::Ended;
+            thread.subagents.session_ended();
             // The session is over: nothing runs and nothing queued will be sent.
             thread.busy = false;
             thread.pending_inputs.clear();
@@ -834,6 +844,16 @@ impl ThreadRuntimes {
                     }
                 }
                 thread.transcript.record(*placement, update);
+                thread.subagents.observe(update, unix_now());
+            }
+            AgentEvent::Subagent {
+                spawn,
+                placement,
+                update,
+            } => {
+                thread
+                    .subagents
+                    .record(spawn, *placement, update, unix_now());
             }
             AgentEvent::SessionUpdate(update) => {
                 if let Some(commands) = available_commands(update) {
@@ -898,11 +918,29 @@ impl ThreadRuntimes {
 
     pub fn view(&self, key: ThreadKey) -> Option<LiveThreadView> {
         let thread = self.threads.get(&key)?;
-        Some(LiveThreadView::new(
-            thread.transcript.blocks(),
-            thread.agent_commands.clone(),
-            thread.titling_model.clone(),
-        ))
+        Some(
+            LiveThreadView::new(
+                thread.transcript.blocks(),
+                thread.agent_commands.clone(),
+                thread.titling_model.clone(),
+            )
+            .with_subagents(thread.subagents.views()),
+        )
+    }
+
+    /// The thread's subagents that changed since the last call (`thread://subagent`).
+    pub fn take_changed_subagents(&mut self, key: ThreadKey) -> Vec<SubagentView> {
+        self.threads
+            .get_mut(&key)
+            .map(|thread| thread.subagents.take_changed())
+            .unwrap_or_default()
+    }
+
+    /// Whether a running subagent of the thread waits in or runs the build queue (§2.2).
+    pub fn subagent_in_build_queue(&self, key: ThreadKey) -> bool {
+        self.threads
+            .get(&key)
+            .is_some_and(|thread| thread.subagents.in_build_queue())
     }
 }
 
@@ -912,12 +950,18 @@ fn progress(thread: &ThreadRuntime) -> ThreadProgress {
         && (thread.phase == SessionPhase::Ended || thread.transcript.queued().is_empty())
     {
         AgentActivity::Idle
-    } else if thread.busy && thread.transcript.has_running_tool() {
+    } else if thread.busy && (thread.transcript.has_running_tool() || thread.subagents.running()) {
+        // A parent waiting on a busy subagent is executing, not stalled (§2.2).
         AgentActivity::Executing
     } else {
         AgentActivity::Thinking
     };
-    let (added, deleted) = thread.transcript.line_counts();
+    let (parent_added, parent_deleted) = thread.transcript.line_counts();
+    let (subagent_added, subagent_deleted) = thread.subagents.line_counts();
+    let (added, deleted) = (
+        parent_added + subagent_added,
+        parent_deleted + subagent_deleted,
+    );
     ThreadProgress {
         activity,
         added: u32::try_from(added).unwrap_or(u32::MAX),
@@ -946,6 +990,7 @@ fn parked_runtime(worktree: &str, follows_pull_request: bool) -> ThreadRuntime {
         session_tool_start: 0,
         deliveries: Deliveries::default(),
         transcript: LiveTranscript::new(worktree),
+        subagents: Subagents::new(worktree),
         inputs,
         pending_inputs: VecDeque::new(),
         replaying_history: false,
@@ -1004,6 +1049,7 @@ fn queue_claimed_prompt(
     }
     thread.phase = SessionPhase::Running;
     thread.transcript.rename_worktree(worktree);
+    thread.subagents.rename_worktree(worktree);
     thread.transcript.worktree_ready();
     Some(())
 }

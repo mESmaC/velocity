@@ -880,6 +880,7 @@ impl LayoutState {
         let mut snapshot = thread_view_model::project_thread_detail(detail);
         if let Some(live) = self.live_thread(identifier) {
             snapshot.blocks = live.blocks.clone();
+            snapshot.subagents.clone_from(&live.subagents);
             if let Some(commands) = &live.agent_commands {
                 snapshot.agent_commands = commands.clone();
             }

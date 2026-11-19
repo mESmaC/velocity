@@ -20,7 +20,10 @@ impl ToolMutations {
     pub fn observe(&mut self, event: &AgentEvent) -> Vec<PathBuf> {
         match event {
             AgentEvent::FileWritten { path } => vec![path.clone()],
-            AgentEvent::Transcript { update, .. } => self.update(update),
+            // A subagent's edits are the thread's edits: they need claims too.
+            AgentEvent::Transcript { update, .. } | AgentEvent::Subagent { update, .. } => {
+                self.update(update)
+            }
             _ => Vec::new(),
         }
     }

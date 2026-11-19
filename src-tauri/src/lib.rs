@@ -219,6 +219,7 @@ fn event_bindings(builder: Builder<tauri::Wry>) -> Builder<tauri::Wry> {
         .typ::<skills::SkillPackInstallationsChanged>()
         .typ::<threads::ThreadStatusChanged>()
         .typ::<threads::ThreadStepRecorded>()
+        .typ::<threads::ThreadSubagentChanged>()
         .typ::<updates::UpdateStatusChanged>()
         .constant("AIRC_EVENT", airc_events::AircEventPublished::NAME)
         .constant(
@@ -242,6 +243,10 @@ fn event_bindings(builder: Builder<tauri::Wry>) -> Builder<tauri::Wry> {
         )
         .constant("THREAD_STATUS_EVENT", threads::ThreadStatusChanged::NAME)
         .constant("THREAD_STEP_EVENT", threads::ThreadStepRecorded::NAME)
+        .constant(
+            "THREAD_SUBAGENT_EVENT",
+            threads::ThreadSubagentChanged::NAME,
+        )
         .constant("UPDATE_STATUS_EVENT", updates::UpdateStatusChanged::NAME)
         .error_handling(tauri_specta::ErrorHandlingMode::Throw)
 }
@@ -321,6 +326,7 @@ pub fn run() -> anyhow::Result<()> {
         skills::SkillPackInstallationsChanged,
         threads::ThreadStatusChanged,
         threads::ThreadStepRecorded,
+        threads::ThreadSubagentChanged,
         updates::UpdateStatusChanged
     ]);
     let builder = tauri::Builder::default()

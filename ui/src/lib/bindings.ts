@@ -272,6 +272,8 @@ export const THREAD_STATUS_EVENT = "thread://status" as const;
 
 export const THREAD_STEP_EVENT = "thread://step" as const;
 
+export const THREAD_SUBAGENT_EVENT = "thread://subagent" as const;
+
 export const UPDATE_STATUS_EVENT = "update://status" as const;
 
 export const WINDOW_STATE_EVENT = "window://state" as const;
@@ -4215,6 +4217,54 @@ export type StopDutyRequest = {
 	role: DutyRole,
 };
 
+/**  Where a subagent is (§3.2 Subagents). */
+export type SubagentStatus = "Running" | "Done" | "Failed";
+
+/**  One subagent a thread's agent started, with its own transcript (§3.2 Subagents, F4). */
+export type SubagentView = SubagentView_Serialize | SubagentView_Deserialize;
+
+/**  One subagent a thread's agent started, with its own transcript (§3.2 Subagents, F4). */
+export type SubagentView_Deserialize = {
+	/**  The parent's tool call that spawned it. */
+	identifier: string,
+	/**  The task description the parent gave it. */
+	title: string,
+	/**  The model the parent asked for; `None` runs the thread's own model. */
+	model?: string | null,
+	status: SubagentStatus,
+	/**  Unix seconds when Velocity saw it start. */
+	started_at: string,
+	/**  Total tokens, when the agent reports them. */
+	tokens: string | null,
+	/**  How many tool steps it made. */
+	step_count: string,
+	/**  Its newest tool step, as "Verb · argument". */
+	current_step?: string | null,
+	/**  Its messages, tool steps and diffs, in order. */
+	blocks: TranscriptBlock_Deserialize[],
+};
+
+/**  One subagent a thread's agent started, with its own transcript (§3.2 Subagents, F4). */
+export type SubagentView_Serialize = {
+	/**  The parent's tool call that spawned it. */
+	identifier: string,
+	/**  The task description the parent gave it. */
+	title: string,
+	/**  The model the parent asked for; `None` runs the thread's own model. */
+	model: string | null,
+	status: SubagentStatus,
+	/**  Unix seconds when Velocity saw it start. */
+	started_at: string,
+	/**  Total tokens, when the agent reports them. */
+	tokens: string | null,
+	/**  How many tool steps it made. */
+	step_count: string,
+	/**  Its newest tool step, as "Verb · argument". */
+	current_step: string | null,
+	/**  Its messages, tool steps and diffs, in order. */
+	blocks: TranscriptBlock_Serialize[],
+};
+
 export type Supervision = Supervision_Serialize | Supervision_Deserialize;
 
 export type Supervision_Deserialize = {
@@ -4624,6 +4674,8 @@ export type ThreadDetailSnapshot_Deserialize = {
 	model_pill: ModelPillView_Deserialize,
 	/**  Present on spec interview threads (F3). */
 	interview?: InterviewView_Deserialize | null,
+	/**  The live session's subagents, oldest first (§3.2 Subagents, F4). */
+	subagents: SubagentView_Deserialize[],
 };
 
 export type ThreadDetailSnapshot_Serialize = {
@@ -4655,6 +4707,8 @@ export type ThreadDetailSnapshot_Serialize = {
 	model_pill: ModelPillView_Serialize,
 	/**  Present on spec interview threads (F3). */
 	interview: InterviewView_Serialize | null,
+	/**  The live session's subagents, oldest first (§3.2 Subagents, F4). */
+	subagents: SubagentView_Serialize[],
 };
 
 export type ThreadGroup = "Draft" | "Duty" | "Swarm" | "Spec" | "Working" | "Review" | "Error" | "Closed" | "Done" | "Merged" | "Settled";
@@ -4826,6 +4880,22 @@ export type ThreadStepRecorded_Serialize = {
 	thread_identifier: number,
 	/**  The thread's newest transcript block after the update. */
 	block: TranscriptBlock_Serialize,
+};
+
+export type ThreadSubagentChanged = ThreadSubagentChanged_Serialize | ThreadSubagentChanged_Deserialize;
+
+export type ThreadSubagentChanged_Deserialize = {
+	project_identifier: number,
+	thread_identifier: number,
+	/**  The subagent as it is now: status, newest step and its whole transcript. */
+	subagent: SubagentView_Deserialize,
+};
+
+export type ThreadSubagentChanged_Serialize = {
+	project_identifier: number,
+	thread_identifier: number,
+	/**  The subagent as it is now: status, newest step and its whole transcript. */
+	subagent: SubagentView_Serialize,
 };
 
 export type ThreadUsageRow = {

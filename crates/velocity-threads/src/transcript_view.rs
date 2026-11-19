@@ -76,6 +76,13 @@ impl LiveTranscript {
         }
     }
 
+    /// A subagent's transcript (§3.2 Subagents): its own ACP entries and no setup row.
+    pub fn subagent(worktree: &str) -> Self {
+        let mut transcript = Self::new(worktree);
+        transcript.entries.clear();
+        transcript
+    }
+
     /// Saved blocks precede the next session's independently numbered ACP entries.
     pub fn restore(worktree: &str, mut blocks: Vec<TranscriptBlock>) -> Self {
         let mut transcript = Self::new(worktree);

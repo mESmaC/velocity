@@ -24,6 +24,7 @@ pub mod run_settings;
 pub mod session_config;
 pub mod session_start;
 pub mod steering;
+pub mod subagents;
 pub mod terminal_output;
 pub mod tool_mutations;
 pub mod transcript;
@@ -44,6 +45,7 @@ pub use session_config::{
 };
 pub use session_start::{keep_first_by_name, mode_to_select};
 pub use steering::{Steering, SteeringEffect, SteeringInput};
+pub use subagents::{SubagentReport, SubagentRouter, agent_thread_states, subagent_report};
 pub use terminal_output::retained_output_start;
 pub use transcript::{Entry, EntryClass, MessageKey, Placement, Transcript};
 pub use usage_limits::{LimitReading, LimitWindowReading};
