@@ -7,13 +7,75 @@ use std::{
 
 type Result<T> = std::result::Result<T, Box<dyn Error>>;
 
+/// The binary holding every Rust harness, built once per run (#499).
+const HARNESS_BINARY: &str = "stress-harness";
+/// Names the harness `stress-harness` runs; see `stress/harness/main.rs`.
+const HARNESS_VARIABLE: &str = "VELOCITY_STRESS_HARNESS";
+/// Hands the built binary to `.ps1` scripts, so `stress-harness.psm1` does not build it again.
+const HARNESS_EXECUTABLE_VARIABLE: &str = "VELOCITY_STRESS_HARNESS_EXE";
+/// The `stress-harness.psm1` function a `.ps1` script runs its harness with.
+const HARNESS_HELPER: &str = "Invoke-StressHarness";
+
 pub fn run(root: &Path, entries: &[PathBuf], whole_suite: bool) -> bool {
     let mut failures = Vec::new();
+    let mut steps = entries.len();
     if whole_suite {
         workspace_checks(root, &mut failures);
+        steps += 2;
     }
-    run_entries(root, entries, &mut failures);
-    report(entries.len() + usize::from(whole_suite) * 2, &failures)
+    let mut harness = None;
+    if entries.iter().any(|entry| uses_harness(entry)) {
+        harness = build_harnesses(root, &mut failures);
+        steps += 1;
+    }
+    run_entries(root, entries, harness.as_deref(), &mut failures);
+    report(steps, &failures)
+}
+
+/// Whether the entry runs a Rust harness: every `.rs` script, and each `.ps1` script that
+/// calls the harness helper.
+fn uses_harness(entry: &Path) -> bool {
+    match entry.extension().and_then(|value| value.to_str()) {
+        Some("rs") => true,
+        Some("ps1") => fs::read_to_string(entry).is_ok_and(|text| text.contains(HARNESS_HELPER)),
+        _ => false,
+    }
+}
+
+/// Builds every Rust harness in one `cargo build`: one feature resolution, one target
+/// folder and the root lockfile, instead of a standalone project per harness (#499).
+fn build_harnesses(root: &Path, failures: &mut Vec<String>) -> Option<PathBuf> {
+    let label = "Build stress harnesses";
+    println!("\n==> {label}");
+    let mut command = Command::new("cargo");
+    command.args(["build", "--locked", "-p", "stress"]);
+    command.args(["--features", "harnesses", "--bin", HARNESS_BINARY]);
+    let executable = target_directory(root)
+        .join("debug")
+        .join(format!("{HARNESS_BINARY}{}", std::env::consts::EXE_SUFFIX));
+    let result = status(root, &mut command).and_then(|built| {
+        if !built {
+            return Ok(false);
+        }
+        if !executable.is_file() {
+            return Err(format!("the build left no {}", executable.display()).into());
+        }
+        Ok(true)
+    });
+    if matches!(result, Ok(true)) {
+        println!("PASS: {label}");
+        return Some(executable);
+    }
+    eprintln!("FAIL: {label}: {result:?}");
+    failures.push(label.to_owned());
+    None
+}
+
+/// The folder cargo builds into: `status` sets CARGO_TARGET_DIR to `<root>/target` when it
+/// is unset, and cargo resolves a relative one from the working folder, `root`.
+fn target_directory(root: &Path) -> PathBuf {
+    std::env::var_os("CARGO_TARGET_DIR")
+        .map_or_else(|| root.join("target"), |folder| root.join(folder))
 }
 
 fn workspace_checks(root: &Path, failures: &mut Vec<String>) {
@@ -35,7 +97,12 @@ fn workspace_checks(root: &Path, failures: &mut Vec<String>) {
     }
 }
 
-fn run_entries(root: &Path, entries: &[PathBuf], failures: &mut Vec<String>) {
+fn run_entries(
+    root: &Path,
+    entries: &[PathBuf],
+    harness: Option<&Path>,
+    failures: &mut Vec<String>,
+) {
     for entry in entries {
         let label = entry
             .strip_prefix(root)
@@ -43,7 +110,14 @@ fn run_entries(root: &Path, entries: &[PathBuf], failures: &mut Vec<String>) {
             .display()
             .to_string();
         println!("\n==> {label}");
-        match execute(root, entry) {
+        // A failed harness build fails each harness it would have run, without running
+        // a binary left from an earlier build.
+        if harness.is_none() && uses_harness(entry) {
+            eprintln!("FAIL: {label}: the stress harnesses did not build");
+            failures.push(label);
+            continue;
+        }
+        match execute(root, entry, harness) {
             Ok(true) => println!("PASS: {label}"),
             result => {
                 eprintln!("FAIL: {label}: {result:?}");
@@ -65,11 +139,14 @@ fn report(total: usize, failures: &[String]) -> bool {
     failures.is_empty()
 }
 
-fn execute(root: &Path, entry: &Path) -> Result<bool> {
+fn execute(root: &Path, entry: &Path, harness: Option<&Path>) -> Result<bool> {
     let mut command = match entry.extension().and_then(|value| value.to_str()) {
         Some("ps1") => {
             let mut command = Command::new("pwsh");
             command.args(["-NoProfile", "-File"]).arg(entry);
+            if let Some(harness) = harness {
+                command.env(HARNESS_EXECUTABLE_VARIABLE, harness);
+            }
             command
         }
         Some("py") => {
@@ -77,24 +154,14 @@ fn execute(root: &Path, entry: &Path) -> Result<bool> {
             command.arg(entry);
             command
         }
-        _ => {
-            let manifest = if entry.extension().is_some_and(|value| value == "rs") {
-                rust_manifest(root, entry)?
-            } else {
-                entry.to_path_buf()
-            };
-            let mut command = Command::new("cargo");
-            command.args(["run", "--manifest-path"]).arg(manifest);
+        Some("rs") => {
+            let name = entry.file_stem().ok_or("Rust evidence has no name")?;
+            let mut command = Command::new(harness.ok_or("the stress harnesses did not build")?);
+            command.env(HARNESS_VARIABLE, name);
             command
         }
+        _ => return Err(format!("{} is not a stress script", entry.display()).into()),
     };
-    // Standalone harnesses declare their own `[workspace]`, so they miss the root
-    // manifest's `debug = "line-tables-only"`. With full debug info velocity-acp's rlib
-    // passes 4 GiB, which MSVC link.exe rejects as an invalid library (LNK4003), and every
-    // symbol from it goes unresolved (#230).
-    if std::env::var_os("CARGO_PROFILE_DEV_DEBUG").is_none() {
-        command.env("CARGO_PROFILE_DEV_DEBUG", "line-tables-only");
-    }
     status(root, &mut command)
 }
 
@@ -115,47 +182,4 @@ fn status(root: &Path, command: &mut Command) -> Result<bool> {
     let status = command.status()?;
     println!("Exit status: {status}");
     Ok(status.success())
-}
-
-fn rust_manifest(root: &Path, entry: &Path) -> Result<PathBuf> {
-    let name = entry
-        .file_stem()
-        .ok_or("Rust evidence has no name")?
-        .to_string_lossy();
-    let directory = root.join(".tools/stress").join(name.as_ref());
-    fs::create_dir_all(&directory)?;
-    let source = fs::read_to_string(entry)?;
-    let mut manifest = format!(
-        "[package]\nname = {name:?}\nversion = \"0.0.0\"\nedition = \"2024\"\n[workspace]\n[[bin]]\nname = {name:?}\npath = {:?}\n[dependencies]\n",
-        entry.to_string_lossy().replace('\\', "/")
-    );
-    // Standalone evidence was written against these real libraries. Refer to its
-    // original file so its bytes and source-relative paths stay intact.
-    for crate_entry in fs::read_dir(root.join("crates"))? {
-        let path = crate_entry?.path();
-        let name = path
-            .file_name()
-            .ok_or("Crate has no name")?
-            .to_string_lossy();
-        if source.contains(&name.replace('-', "_")) {
-            manifest.push_str(&format!(
-                "{name} = {{ path = {:?} }}\n",
-                path.to_string_lossy().replace('\\', "/")
-            ));
-        }
-    }
-    // Evidence that builds ACP messages needs the protocol types and JSON. The copied
-    // lockfile pins both to the versions the workspace crates were built with.
-    for (library, package) in [
-        ("agent_client_protocol", "agent-client-protocol"),
-        ("serde_json", "serde_json"),
-    ] {
-        if source.contains(library) {
-            manifest.push_str(&format!("{package} = \"*\"\n"));
-        }
-    }
-    fs::copy(root.join("Cargo.lock"), directory.join("Cargo.lock"))?;
-    let path = directory.join("Cargo.toml");
-    fs::write(&path, manifest)?;
-    Ok(path)
 }

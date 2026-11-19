@@ -138,7 +138,8 @@ function Test-Changed([string[]]$Patterns) {
 }
 
 $rustPatterns = @(
-    'crates/*', 'src-tauri/*', 'stress/Cargo.toml', 'stress/src/*',
+    'crates/*', 'src-tauri/*', 'stress/Cargo.toml', 'stress/src/*', 'stress/harness/build.rs',
+    'stress/harness/spliced.rs', 'stress/harness/main.rs',
     'Cargo.toml', 'Cargo.lock', 'rust-toolchain.toml', '.cargo/*', 'rustfmt.toml', 'clippy.toml',
     # Read by include_str!/include_bytes!, or generated from Rust.
     'proofs/fixtures/*', 'ui/src/lib/theme/tokens.css', 'ui/src/lib/bindings.ts'

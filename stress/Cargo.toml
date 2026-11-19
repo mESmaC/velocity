@@ -4,6 +4,55 @@ version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 publish = false
+# Turns every Rust harness into a module of the `stress-harness` binary (#499).
+build = "harness/build.rs"
 
 [lints]
 workspace = true
+
+# The runner builds every Rust harness at once with `--features harnesses`, sharing the
+# root workspace's lockfile, target folder and one feature resolution (#499). Without the
+# feature, the workspace build, tests and clippy skip the harness binary, so harness code
+# keeps its own style (unwrap, expect) and `cargo run -p stress` compiles only the runner.
+[features]
+harnesses = [
+    "dep:agent-client-protocol",
+    "dep:serde_json",
+    "dep:tokio",
+    "dep:uuid",
+    "dep:velocity-acp",
+    "dep:velocity-airc",
+    "dep:velocity-core",
+    "dep:velocity-git",
+    "dep:velocity-github",
+    "dep:velocity-interview",
+    "dep:velocity-new-project",
+    "dep:velocity-proofs",
+    "dep:velocity-rosen",
+    "dep:velocity-skills",
+    "dep:velocity-store",
+    "dep:velocity-threads",
+]
+
+[dependencies]
+agent-client-protocol = { version = "5.0.0", optional = true }
+serde_json = { workspace = true, optional = true }
+tokio = { workspace = true, optional = true }
+uuid = { version = "1", features = ["v4"], optional = true }
+velocity-acp = { path = "../crates/velocity-acp", optional = true }
+velocity-airc = { workspace = true, optional = true }
+velocity-core = { workspace = true, features = ["bindings"], optional = true }
+velocity-git = { workspace = true, optional = true }
+velocity-github = { workspace = true, optional = true }
+velocity-interview = { workspace = true, optional = true }
+velocity-new-project = { workspace = true, optional = true }
+velocity-proofs = { workspace = true, optional = true }
+velocity-rosen = { workspace = true, optional = true }
+velocity-skills = { workspace = true, optional = true }
+velocity-store = { workspace = true, optional = true }
+velocity-threads = { workspace = true, optional = true }
+
+[[bin]]
+name = "stress-harness"
+path = "harness/main.rs"
+required-features = ["harnesses"]

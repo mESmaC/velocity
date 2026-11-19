@@ -1,0 +1,60 @@
+use agent_client_protocol::v1::schema::{ContentBlock, ContentChunk, SessionUpdate, StopReason};
+use velocity_acp::{EntryClass, MessageKey, Transcript, Steering, SteeringEffect, SteeringInput, client::{AgentEvent, AgentInput}};
+use velocity_core::thread_view_model::TranscriptBlock;
+use velocity_store::AgentActivity;
+use velocity_threads::{ThreadKey, ThreadRuntimes};
+
+fn report(name: &str, passed: bool, detail: impl std::fmt::Display) -> usize {
+    println!("{} {name}: {detail}", if passed { "PASS" } else { "FAIL" });
+    usize::from(!passed)
+}
+
+fn message(transcript: &mut Transcript<String, SessionUpdate>, text: &str) -> AgentEvent {
+    let update = SessionUpdate::UserMessageChunk(ContentChunk::new(ContentBlock::from(text.to_owned())));
+    let placement = transcript.record(EntryClass::UserMessage(MessageKey::Unnamed), update.clone());
+    AgentEvent::Transcript { placement, update }
+}
+
+fn queued(runtime: &ThreadRuntimes, key: ThreadKey, wanted: &str) -> bool {
+    runtime.view(key).expect("live view").blocks.iter().any(|block| matches!(
+        block, TranscriptBlock::UserMessage { text, queued: true } if text == wanted))
+}
+
+fn main() {
+    let key = (1, 1);
+    let mut runtime = ThreadRuntimes::default();
+    let mut inputs = runtime.start(key, r"C:\isolated fixture\worktree", "A");
+    let mut client: Steering<Vec<ContentBlock>, ()> = Steering::new(());
+    let mut transcript = Transcript::new();
+    let AgentInput::Send(first) = inputs.try_recv().expect("A input") else { panic!("expected send") };
+    assert!(matches!(client.step(SteeringInput::Send(first)), SteeringEffect::Prompt(_)));
+    runtime.apply(key, &message(&mut transcript, "A"));
+
+    // drive() emits TurnEnded before stepping the policy. Its separate native
+    // event consumer has not applied that event yet; the client is already idle.
+    let ended_a = AgentEvent::TurnEnded(Ok(StopReason::EndTurn));
+    assert!(matches!(client.step(SteeringInput::TurnEnded), SteeringEffect::Nothing));
+    runtime.steer(key, "B").expect("send B while the event pump lags");
+    let AgentInput::Send(second) = inputs.try_recv().expect("B input") else { panic!("expected send") };
+    assert!(matches!(client.step(SteeringInput::Send(second)), SteeringEffect::Prompt(_)));
+    runtime.steer(key, "C").expect("send C during B");
+    let AgentInput::Send(third) = inputs.try_recv().expect("C input") else { panic!("expected send") };
+    assert!(matches!(client.step(SteeringInput::Send(third)), SteeringEffect::Queued));
+
+    // Deliver the buffered client events in their actual FIFO order. The client
+    // still queues C behind B; no event reordering or message loss is simulated.
+    runtime.apply(key, &ended_a);
+    runtime.apply(key, &message(&mut transcript, "B"));
+    runtime.apply(key, &AgentEvent::Queued);
+    let mut failures = report("client-still-queues-C", client.queued().len() == 1, "C waits behind active B");
+    failures += report("C-remains-visibly-queued", queued(&runtime, key, "C"), "delivering A's end must not consume C");
+    let ended_b = AgentEvent::TurnEnded(Ok(StopReason::EndTurn));
+    let delivered = matches!(client.step(SteeringInput::TurnEnded), SteeringEffect::Prompt(ref sent) if sent.len() == 1);
+    failures += report("client-starts-C", delivered && client.is_busy(), "C is delivered, without interruption");
+    runtime.apply(key, &ended_b);
+    let progress = runtime.apply(key, &message(&mut transcript, "C")).expect("C progress");
+    failures += report("C-is-thinking-while-client-busy", progress.activity == AgentActivity::Thinking,
+        format!("client busy={}, actual={:?}", client.is_busy(), progress.activity));
+    println!("failures: {failures}");
+    std::process::exit(i32::from(failures != 0));
+}

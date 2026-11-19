@@ -125,7 +125,7 @@ jobs:
     env:
       # Keep the stress harness builds within runner memory.
       CARGO_BUILD_JOBS: '2'
-      # Match debug settings across the workspace and standalone stress manifests.
+      # Build the workspace and the stress harness binary without debug info (#499).
       CARGO_PROFILE_DEV_DEBUG: 'none'
     steps:
       - uses: actions/checkout@v4

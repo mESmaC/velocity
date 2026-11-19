@@ -5274,6 +5274,24 @@ checksum = "2b2231b7c3057d5e4ad0156fb3dc807d900806020c5ffa3ee6ff2c8c76fb8520"
 [[package]]
 name = "stress"
 version = "0.1.0"
+dependencies = [
+ "agent-client-protocol",
+ "serde_json",
+ "tokio",
+ "uuid",
+ "velocity-acp",
+ "velocity-airc",
+ "velocity-core",
+ "velocity-git",
+ "velocity-github",
+ "velocity-interview",
+ "velocity-new-project",
+ "velocity-proofs",
+ "velocity-rosen",
+ "velocity-skills",
+ "velocity-store",
+ "velocity-threads",
+]
 
 [[package]]
 name = "string_cache"
