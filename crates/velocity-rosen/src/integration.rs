@@ -97,6 +97,42 @@ pub fn last_green(server: &ProjectServer) -> Result<Option<String>, RosenError> 
         .optional()?)
 }
 
+/// Saves why an integration build failed, for the stuck-integration notice (#504).
+pub fn record_failure(
+    server: &ProjectServer,
+    commit: &str,
+    reason: &str,
+) -> Result<(), RosenError> {
+    progress(server)?.execute(
+        "INSERT INTO failures(commit_id,reason) VALUES (?1,?2)
+         ON CONFLICT(commit_id) DO UPDATE SET reason=excluded.reason",
+        params![commit, reason],
+    )?;
+    Ok(())
+}
+
+/// One line on the last finished integration build: why it failed, or which base passed.
+/// `None` when no integration build has finished.
+pub fn last_outcome(server: &ProjectServer) -> Result<Option<String>, RosenError> {
+    let last: Option<(String, bool, Option<String>)> = progress(server)?
+        .query_row(
+            "SELECT a.commit_id, a.passed, f.reason FROM attempts a
+             LEFT JOIN failures f ON f.commit_id=a.commit_id ORDER BY a.rowid DESC LIMIT 1",
+            [],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+        )
+        .optional()?;
+    Ok(last.map(|(commit, passed, reason)| {
+        let short = commit.get(..7).unwrap_or(&commit);
+        if passed {
+            format!("passed at {short} before these lands")
+        } else {
+            let reason = reason.unwrap_or_else(|| "no reason was recorded".into());
+            format!("failed at {short}: {reason}")
+        }
+    }))
+}
+
 pub fn unpublished(server: &ProjectServer) -> Result<Vec<String>, RosenError> {
     let database = progress(server)?;
     let mut query = database.prepare(
@@ -121,6 +157,9 @@ fn progress(server: &ProjectServer) -> Result<Connection, RosenError> {
         "CREATE TABLE IF NOT EXISTS attempts (
              commit_id TEXT NOT NULL UNIQUE, passed INTEGER NOT NULL,
              published INTEGER NOT NULL DEFAULT 0
+         );
+         CREATE TABLE IF NOT EXISTS failures (
+             commit_id TEXT NOT NULL UNIQUE, reason TEXT NOT NULL
          )",
     )?;
     Ok(connection)

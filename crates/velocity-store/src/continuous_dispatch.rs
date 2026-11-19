@@ -32,6 +32,33 @@ pub struct ContinuousDispatch {
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     #[specta(skip)]
     pub issue_overlaps: BTreeMap<u32, IssueOverlap>,
+    /// Issues whose GitHub record shows a Velocity land still waiting for a green
+    /// integration build (#504). They survive thread deletion, so the issue is not sent
+    /// to another agent that can only find nothing to do.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    #[specta(skip)]
+    pub landed_holds: BTreeMap<u32, LandedHold>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct LandedHold {
+    pub issue: ThreadIssue,
+    #[serde(default)]
+    pub commit: String,
+    /// The issue version the comments were read at. A newer version is read again.
+    #[serde(default)]
+    pub updated_at: String,
+    /// Unix seconds when Velocity first saw the land waiting.
+    #[serde(default)]
+    pub since: u64,
+}
+
+/// A landed change waiting for the integration build that closes its issue.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct LandedWait {
+    pub commit: Option<String>,
+    /// Unix seconds of the land, when known.
+    pub since: Option<u64>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -76,6 +103,55 @@ impl ContinuousDispatch {
                 && attempt.number == number
                 && attempt.updated_at == updated_at
         })
+    }
+}
+
+impl ProjectItem {
+    /// Whether `issue` has a landed change waiting for a green integration build (#504).
+    /// The work projection is authoritative when it tracks the issue; otherwise a merged
+    /// thread or the GitHub hold saved by dispatch is the evidence. `updated_at` limits the
+    /// hold to the issue version its comments were read at; `None` accepts any version.
+    pub fn landed_awaiting_integration(
+        &self,
+        issue: &ThreadIssue,
+        updated_at: Option<&str>,
+    ) -> Option<LandedWait> {
+        let key = velocity_core::work_pool::WorkKey::issue(&issue.repository, issue.number);
+        if let Some(item) = self.rosen_work_item(&key) {
+            return (item.status == velocity_core::work_pool::WorkStatus::Landed).then(|| {
+                LandedWait {
+                    commit: item.landed_commit.clone(),
+                    since: item.landed_at.as_deref().and_then(|at| at.parse().ok()),
+                }
+            });
+        }
+        let merged = self.threads.iter().find_map(|thread| {
+            let assigned = thread.issue.as_ref()?;
+            (thread.state == ThreadState::Merged
+                && assigned.number == issue.number
+                && assigned.repository.eq_ignore_ascii_case(&issue.repository))
+            .then(|| thread.rosen_issue.landed_commit())
+            .flatten()
+        });
+        if let Some(commit) = merged {
+            return Some(LandedWait {
+                commit: Some(commit.to_owned()),
+                since: None,
+            });
+        }
+        self.continuous_dispatch
+            .landed_holds
+            .get(&issue.number)
+            .filter(|hold| {
+                hold.issue
+                    .repository
+                    .eq_ignore_ascii_case(&issue.repository)
+                    && updated_at.is_none_or(|updated_at| hold.updated_at == updated_at)
+            })
+            .map(|hold| LandedWait {
+                commit: Some(hold.commit.clone()),
+                since: Some(hold.since),
+            })
     }
 }
 
@@ -153,6 +229,81 @@ impl StateStore {
             .find(|item| item.id == project)
             .ok_or(ThreadError::UnknownProject(project))?;
         item.continuous_dispatch.issue_overlaps = overlaps;
+        self.commit(next)?;
+        Ok(())
+    }
+
+    /// Records GitHub evidence that `issue` landed and waits for integration (#504). A
+    /// re-read of the same land keeps the first time it was seen, so the stuck-integration
+    /// notice measures the whole wait.
+    pub fn save_landed_hold(
+        &mut self,
+        project: u32,
+        issue: ThreadIssue,
+        commit: String,
+        updated_at: String,
+        now: u64,
+    ) -> Result<(), ThreadError> {
+        let mut next = self.state.clone();
+        let item = next
+            .projects
+            .iter_mut()
+            .find(|item| item.id == project)
+            .ok_or(ThreadError::UnknownProject(project))?;
+        let since = item
+            .continuous_dispatch
+            .landed_holds
+            .get(&issue.number)
+            .filter(|hold| {
+                hold.commit == commit
+                    && hold
+                        .issue
+                        .repository
+                        .eq_ignore_ascii_case(&issue.repository)
+            })
+            .map_or(now, |hold| hold.since);
+        let hold = LandedHold {
+            issue,
+            commit,
+            updated_at,
+            since,
+        };
+        let holds = &mut item.continuous_dispatch.landed_holds;
+        if holds.get(&hold.issue.number) == Some(&hold) {
+            return Ok(());
+        }
+        holds.insert(hold.issue.number, hold);
+        self.commit(next)?;
+        Ok(())
+    }
+
+    /// Drops holds for issues that left the open backlog or were found no longer landed.
+    pub fn prune_landed_holds(
+        &mut self,
+        project: u32,
+        repository: &str,
+        keep: impl Fn(u32) -> bool,
+    ) -> Result<(), ThreadError> {
+        let item = self
+            .project(project)
+            .ok_or(ThreadError::UnknownProject(project))?;
+        let retained = |number: &u32, hold: &LandedHold| {
+            hold.issue.repository.eq_ignore_ascii_case(repository) && keep(*number)
+        };
+        if item
+            .continuous_dispatch
+            .landed_holds
+            .iter()
+            .all(|(number, hold)| retained(number, hold))
+        {
+            return Ok(());
+        }
+        let mut next = self.state.clone();
+        if let Some(item) = next.projects.iter_mut().find(|item| item.id == project) {
+            item.continuous_dispatch
+                .landed_holds
+                .retain(|number, hold| retained(number, hold));
+        }
         self.commit(next)?;
         Ok(())
     }
@@ -523,6 +674,41 @@ mod tests {
         );
         loaded.finish_no_change_report(1, identifier)?;
         loaded.record_continuous_dispatch(1, thread, issue, "version-1".into())?;
+        std::fs::remove_dir_all(directory)?;
+        Ok(())
+    }
+
+    // Risk (#504): a landed issue whose thread history was deleted is sent to another
+    // agent after a restart. The GitHub land hold and its first-seen time must persist.
+    #[test]
+    fn landed_hold_survives_save_and_load() -> Result<(), Box<dyn std::error::Error>> {
+        let (directory, mut store) = legacy_store()?;
+        let issue = ThreadIssue::new("Owner/Repo".into(), 410);
+        let commit = "c".repeat(40);
+        store.save_landed_hold(1, issue.clone(), commit.clone(), "v1".into(), 100)?;
+        store.save_landed_hold(1, issue.clone(), commit.clone(), "v2".into(), 900)?;
+        drop(store);
+        let mut loaded = StateStore::load_or_default(&directory)?;
+        let project = loaded.project(1).ok_or("missing project")?;
+        let lookup = ThreadIssue::new("owner/repo".into(), 410);
+        let wait = project.landed_awaiting_integration(&lookup, Some("v2"));
+        assert_eq!(
+            wait,
+            Some(LandedWait {
+                commit: Some(commit),
+                since: Some(100)
+            })
+        );
+        assert!(
+            project
+                .landed_awaiting_integration(&lookup, Some("v3"))
+                .is_none()
+        );
+        loaded.prune_landed_holds(1, "owner/repo", |number| number != 410)?;
+        drop(loaded);
+        let reloaded = StateStore::load_or_default(&directory)?;
+        let project = reloaded.project(1).ok_or("missing project")?;
+        assert!(project.continuous_dispatch.landed_holds.is_empty());
         std::fs::remove_dir_all(directory)?;
         Ok(())
     }

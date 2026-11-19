@@ -381,6 +381,16 @@ impl IssueClient {
         Ok(())
     }
 
+    /// The landed commit when Velocity's comments show a land that no reopen, close or
+    /// "returned to dispatch" review followed (#504). Such an issue waits for its
+    /// integration build; the GitHub record survives local thread and project cleanup.
+    pub fn landed_awaiting_integration(
+        &self,
+        number: u32,
+    ) -> Result<Option<String>, GitHubCommandError> {
+        Ok(awaiting_integration(&self.issue_comment_bodies(number)?))
+    }
+
     fn has_rosen_comment(&self, number: u32, marker: &str) -> Result<bool, GitHubCommandError> {
         Ok(self
             .issue_comment_bodies(number)?
@@ -403,6 +413,28 @@ impl IssueClient {
         )?;
         Ok(comments.into_iter().map(|comment| comment.body).collect())
     }
+}
+
+/// Comments arrive oldest first, so the last Velocity marker decides.
+fn awaiting_integration(comments: &[String]) -> Option<String> {
+    let mut landed = None;
+    for marker in comments
+        .iter()
+        .filter_map(|body| body.lines().last())
+        .filter_map(|line| line.trim().strip_prefix("<!-- ")?.strip_suffix(" -->"))
+    {
+        if let Some(rest) = marker.strip_prefix("velocity-rosen-issue:") {
+            let mut fields = rest.split(':');
+            landed = match (fields.next(), fields.next()) {
+                (Some("landed"), Some(commit)) => Some(commit.to_owned()),
+                _ => None,
+            };
+        } else if marker.starts_with("velocity-no-change-review:") && marker.ends_with(":false") {
+            // A reviewer returned the issue to dispatch with remaining work.
+            landed = None;
+        }
+    }
+    landed
 }
 
 fn issue_has_no_change_label(issue: &GitHubIssue) -> bool {

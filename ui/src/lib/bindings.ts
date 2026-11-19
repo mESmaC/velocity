@@ -1042,6 +1042,8 @@ export type DispatchView_Deserialize = {
 	paused: boolean,
 	next: DispatchPreview[],
 	error?: string | null,
+	/**  Landed issues that have waited too long for a green integration build (#504). */
+	integration_notice?: string | null,
 };
 
 export type DispatchView_Serialize = {
@@ -1052,6 +1054,8 @@ export type DispatchView_Serialize = {
 	paused: boolean,
 	next: DispatchPreview[],
 	error: string | null,
+	/**  Landed issues that have waited too long for a green integration build (#504). */
+	integration_notice: string | null,
 };
 
 export type DutyAgentCard = {

@@ -12,9 +12,11 @@ use tauri::{AppHandle, Manager};
 use velocity_github::{GitHubIssue, IssueClient};
 use velocity_store::continuous_dispatch::has_capacity as project_has_capacity;
 use velocity_store::continuous_dispatch::{busy_count, can_finish_empty_dispatch};
+use velocity_store::issues::ThreadIssue;
 use velocity_store::{ProjectItem, TaskAttribution, VersionControl};
 use velocity_threads::continuous_dispatch::{
-    DispatchView, DispatchWork, dispatchable_task, ordered_issues, ordered_work, plan_task,
+    DispatchView, DispatchWork, dispatchable_task, integration_notice, ordered_issues,
+    ordered_work, plan_task, stalled_landed_issues,
 };
 
 #[derive(Clone, Default)]
@@ -77,7 +79,35 @@ fn view(application: &AppHandle, identifier: u32) -> Result<DispatchView, String
         &claimed,
         issues_known,
     );
-    Ok(DispatchView::new(project, &work, backlog.error))
+    let mut view = DispatchView::new(project, &work, backlog.error);
+    let stalled = stalled_landed_issues(
+        project,
+        &backlog.repository,
+        &backlog.issues,
+        unix_seconds(),
+    );
+    drop(store);
+    if !stalled.is_empty() {
+        let last_build = last_integration_outcome(application, identifier);
+        view.integration_notice = integration_notice(&stalled, last_build.as_deref());
+    }
+    Ok(view)
+}
+
+/// A missing or unreadable integration record still shows the wait, without a reason.
+fn last_integration_outcome(application: &AppHandle, identifier: u32) -> Option<String> {
+    let data = application.path().app_data_dir().ok()?;
+    let server = velocity_rosen::ProjectServer::new(&data, identifier);
+    velocity_rosen::integration::last_outcome(&server)
+        .ok()
+        .flatten()
+}
+
+fn unix_seconds() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs()
 }
 
 pub(crate) fn integration_idle(application: &AppHandle, identifier: u32) -> Result<bool, String> {
@@ -286,8 +316,44 @@ fn try_start_issue(
     {
         return Ok(());
     }
+    if hold_landed_issue(application, identifier, reader, &fresh)? {
+        return Ok(());
+    }
     start_issue(application, identifier, &repository, &fresh)?;
     overlap::refresh(application, identifier, reader)
+}
+
+/// Velocity's land comment is the evidence that outlives local thread history (#504).
+/// `true` when the issue landed and waits for integration, so it must not be dispatched.
+fn hold_landed_issue(
+    application: &AppHandle,
+    identifier: u32,
+    reader: &Reader,
+    issue: &GitHubIssue,
+) -> Result<bool, String> {
+    let client = reader
+        .client
+        .as_ref()
+        .ok_or("The dispatch issue source was removed")?;
+    let Some(commit) = client
+        .landed_awaiting_integration(issue.number)
+        .map_err(|error| error.to_string())?
+    else {
+        return Ok(false);
+    };
+    lock(
+        application.state::<ManagedStateStore>().inner(),
+        "persisted state",
+    )?
+    .save_landed_hold(
+        identifier,
+        ThreadIssue::new(client.repository().into(), issue.number),
+        commit,
+        issue.updated_at.clone(),
+        unix_seconds(),
+    )
+    .map_err(|error| error.to_string())?;
+    Ok(true)
 }
 
 fn include_overlap_waits(project: &ProjectItem, repository: &str, claimed: &mut HashSet<String>) {
@@ -313,7 +379,10 @@ fn refresh_backlog(
         // Failed reads also back off: an unavailable API must not be hammered every tick.
         reader.refreshed = Some(Instant::now());
         match read_issues(reader) {
-            Ok(backlog) => reader.backlog = backlog,
+            Ok(backlog) => {
+                reader.backlog = backlog;
+                prune_landed_holds(application, project, &reader.backlog)?;
+            }
             Err(error) => {
                 reader.backlog.issues.clear();
                 reader.backlog.error = Some(error.to_string());
@@ -323,6 +392,26 @@ fn refresh_backlog(
             .insert(project, reader.backlog.clone());
     }
     Ok(())
+}
+
+/// A closed issue no longer waits; its hold goes with it.
+fn prune_landed_holds(
+    application: &AppHandle,
+    project: u32,
+    backlog: &Backlog,
+) -> Result<(), String> {
+    if backlog.repository.is_empty() {
+        return Ok(());
+    }
+    let open: HashSet<u32> = backlog.issues.iter().map(|issue| issue.number).collect();
+    lock(
+        application.state::<ManagedStateStore>().inner(),
+        "persisted state",
+    )?
+    .prune_landed_holds(project, &backlog.repository, |number| {
+        open.contains(&number)
+    })
+    .map_err(|error| error.to_string())
 }
 
 fn reader<'a>(project: &ProjectItem, readers: &'a mut BTreeMap<u32, Reader>) -> &'a mut Reader {

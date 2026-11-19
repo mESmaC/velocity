@@ -178,10 +178,14 @@ impl<'a> OverlapContext<'a> {
                 .eq_ignore_ascii_case(self.client.repository())
                 && issues.iter().any(|issue| issue.number == *number)
         });
+        let client = self.client;
         for issue in issues {
             // A landed issue waits for its integration build, not for another issue, and
             // reviewing it against someone else's land only parks finished work (#505).
-            if active.contains_key(&issue.number) || has_landed(self.project, issue.number) {
+            let repository = client.repository();
+            if active.contains_key(&issue.number)
+                || has_landed(self.project, repository, issue.number)
+            {
                 waits.remove(&issue.number);
             } else {
                 self.update(
@@ -314,15 +318,21 @@ fn is_reference(path: &str) -> bool {
             .any(|folder| in_folder(folder))
 }
 
-/// Whether the project's thread for `number` has landed its change.
-fn has_landed(project: &ProjectItem, number: u32) -> bool {
-    project.threads.iter().any(|thread| {
-        thread
-            .issue
-            .as_ref()
-            .is_some_and(|issue| issue.number == number)
-            && thread.rosen_issue.landed_commit().is_some()
-    })
+/// Whether `number` has a landed change of its own, from a thread, the work projection
+/// or the GitHub land record dispatch saved (#504).
+fn has_landed(project: &ProjectItem, repository: &str, number: u32) -> bool {
+    let identity = ThreadIssue::new(repository.into(), number);
+    project.rosen_issue_completed(&identity)
+        || project
+            .landed_awaiting_integration(&identity, None)
+            .is_some()
+        || project.threads.iter().any(|thread| {
+            thread
+                .issue
+                .as_ref()
+                .is_some_and(|issue| issue.number == number)
+                && thread.rosen_issue.landed_commit().is_some()
+        })
 }
 
 fn blocker_thread<'a>(project: &'a ProjectItem, wait: &IssueOverlap) -> Option<&'a ThreadItem> {

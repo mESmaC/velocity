@@ -19,6 +19,14 @@ pub fn associate_issue_threads(
         let thread = issue_thread(project, &assignment);
         row.thread_identifier = thread.map(|thread| thread.id);
         row.thread_label = thread.map(velocity_store::issues::issue_thread_label);
+        // A landed issue stays open until a green integration build closes it (#504).
+        if thread.is_none()
+            && project
+                .landed_awaiting_integration(&assignment, None)
+                .is_some()
+        {
+            row.thread_label = Some("landed · waiting for integration".into());
+        }
     }
 }
 

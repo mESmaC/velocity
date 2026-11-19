@@ -18,6 +18,9 @@ pub struct DispatchView {
     pub paused: bool,
     pub next: Vec<DispatchPreview>,
     pub error: Option<String>,
+    /// Landed issues that have waited too long for a green integration build (#504).
+    #[serde(default)]
+    pub integration_notice: Option<String>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, Type)]
@@ -64,8 +67,57 @@ impl DispatchView {
             paused: project.continuous_dispatch.paused,
             next: work.iter().take(5).map(DispatchWork::preview).collect(),
             error,
+            integration_notice: None,
         }
     }
+}
+
+/// How long a landed issue may wait for a green integration build before the project
+/// says so (#504). Integration batches run at least every two hours.
+pub const INTEGRATION_WAIT_LIMIT_SECONDS: u64 = 6 * 60 * 60;
+
+/// Open issues whose landed change has waited past the limit, oldest wait first.
+pub fn stalled_landed_issues(
+    project: &ProjectItem,
+    repository: &str,
+    issues: &[GitHubIssue],
+    now: u64,
+) -> Vec<u32> {
+    let mut stalled: Vec<_> = issues
+        .iter()
+        .filter(|issue| issue.state == IssueState::Open)
+        .filter_map(|issue| {
+            let identity = ThreadIssue::new(repository.into(), issue.number);
+            let since = project
+                .landed_awaiting_integration(&identity, None)?
+                .since?;
+            (now.saturating_sub(since) >= INTEGRATION_WAIT_LIMIT_SECONDS)
+                .then_some((since, issue.number))
+        })
+        .collect();
+    stalled.sort_unstable();
+    stalled.into_iter().map(|(_, number)| number).collect()
+}
+
+/// "N landed issues wait for a green integration build", with the last build's outcome.
+pub fn integration_notice(stalled: &[u32], last_build: Option<&str>) -> Option<String> {
+    let (first, rest) = stalled.split_first()?;
+    let listed = std::iter::once(first)
+        .chain(rest.iter().take(4))
+        .map(|number| format!("#{number}"))
+        .collect::<Vec<_>>()
+        .join(", ");
+    let more = if rest.len() > 4 { ", …" } else { "" };
+    let count = stalled.len();
+    let subject = if count == 1 {
+        "1 landed issue waits".to_owned()
+    } else {
+        format!("{count} landed issues wait")
+    };
+    let reason = last_build.unwrap_or("no integration build has finished since they landed");
+    Some(format!(
+        "{subject} for a green integration build ({listed}{more}). Last build: {reason}"
+    ))
 }
 
 /// Shared automatic-work eligibility for continuous dispatch and the F16 work pool.
@@ -127,6 +179,10 @@ pub fn ordered_issues(
                 && !claimed.contains(&format!("issue:{}", issue.number))
                 && issue_thread(project, &identity).is_none()
                 && !project.rosen_issue_completed(&identity)
+                // A landed issue waits for its integration build to close it (#504).
+                && project
+                    .landed_awaiting_integration(&identity, Some(&issue.updated_at))
+                    .is_none()
                 && !project.continuous_dispatch.attempted(
                     repository,
                     issue.number,

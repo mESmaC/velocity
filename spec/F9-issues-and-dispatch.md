@@ -31,6 +31,7 @@ The check includes the active issue's claimed paths and is repeated before start
 After the blocking change lands, Velocity rechecks the current issue text against the source issue and the landed paths.
 A plausible fix goes to the independent review swarm to verify against the current base and close, or return with retry instructions.
 When the blocker ends without a land or its land shows no evidence for the waiting issue, the waiting issue returns to ordinary dispatch.
+The overlap check and its **Check against an overlapping land** review apply only to issues with no landed change of their own (#504).
 
 **Issue follow-through.** Velocity's Rosen follower supplies the land and verified-build evidence and posts the land update (F5, Issues carried by Rosen changes).
 Under the #441 decision, the review swarm closes the issue after confirming that the landed change meets the issue's acceptance criteria.

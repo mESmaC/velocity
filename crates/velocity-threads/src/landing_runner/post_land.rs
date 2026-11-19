@@ -224,7 +224,7 @@ impl<Host: LandingHost> Verify<Host> {
                     reverted,
                     kind,
                 }) => {
-                    self.record_failed_integration(batch);
+                    self.record_failed_integration(batch, failed);
                     if batch.after_land && kind == CheckKind::Test && !reverted {
                         self.say(DutyEventKind::Changes, format!(
                             "Integration build failed at {commit} in change {change} · fix forward"
@@ -236,7 +236,7 @@ impl<Host: LandingHost> Verify<Host> {
                     return;
                 }
                 Ok(Bisection::Unconfirmed) => {
-                    self.record_failed_integration(batch);
+                    self.record_failed_integration(batch, failed);
                     return self.settle(&batch.commit, unconfirmed_line(&batch.commit));
                 }
                 Err(error) => {
@@ -262,10 +262,16 @@ impl<Host: LandingHost> Verify<Host> {
         }
     }
 
-    fn record_failed_integration(&self, batch: &Batch) {
-        if batch.after_land
-            && batch.kind == CheckKind::Test
-            && let Err(error) = integration::result(&self.server, &batch.commit, false)
+    fn record_failed_integration(&self, batch: &Batch, failed: &FailedCheck) {
+        if !batch.after_land || batch.kind != CheckKind::Test {
+            return;
+        }
+        let exit = failed
+            .exit_code
+            .map_or_else(|| "timed out".to_owned(), |code| format!("exited {code}"));
+        let reason = format!("`{}` {exit}", failed.command);
+        if let Err(error) = integration::record_failure(&self.server, &batch.commit, &reason)
+            .and_then(|()| integration::result(&self.server, &batch.commit, false))
         {
             self.stopped(&batch.commit, &error.to_string());
         }

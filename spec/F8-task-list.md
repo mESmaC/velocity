@@ -50,6 +50,9 @@ Working and awaiting-land build threads count toward N; a land or an ended turn 
 A dispatch worker takes its next item in a fresh ACP session after cleanup, with a bounded handoff from Velocity and a session boundary in the existing conversation (#456).
 Failed and closed threads free capacity but retain issue ownership.
 An unchanged issue already dispatched stays out of dispatch while its GitHub issue has not closed after a land.
+An issue whose change has landed is not dispatched again while it waits for a green integration build; its issue row reads **landed · waiting for integration** until that build closes it or a revert reopens it for fix-forward (#504).
+Before starting an issue, dispatch reads Velocity's own land, reopen and close comments on it, so a land survives deleted thread history and is saved as a hold until the issue closes or changes.
+When landed issues have waited six hours without a green integration build, the Duty view shows **N landed issues wait for a green integration build** with the issue numbers and the last integration build's outcome.
 When continuous dispatch retires an issue thread after an empty turn, it saves **Ended with no change** and the last agent message in the thread view (#469).
 Dispatch holds the issue while the GitHub report is pending and then skips it while the `no-change` label is present (F9).
 Once a person or review agent removes the label, an open, unclaimed issue can be dispatched again.

@@ -119,6 +119,9 @@
         <div class="dispatch-issue">No available work</div>
       {/each}
     {/if}
+    {#if view.integration_notice}<p role="status">
+        {view.integration_notice}
+      </p>{/if}
     {#if error || view.error}<p role="status">{error || view.error}</p>{/if}
   </section>
 {/if}
