@@ -259,6 +259,14 @@ impl Channel {
         Ok(self.snapshot()?.last().map_or(0, |entry| entry.sequence))
     }
 
+    /// The server database and watermark for Velocity's saved thread positions.
+    pub fn server_event_head(&self) -> Result<Option<velocity_rosen::EventHead>, Error> {
+        self.remote
+            .as_ref()
+            .map(|remote| remote.event_head())
+            .transpose()
+    }
+
     pub fn presence(&self) -> Result<Vec<Presence>, Error> {
         if let Some(remote) = &self.remote {
             return remote.presence();

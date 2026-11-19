@@ -87,9 +87,9 @@ impl Deliveries {
 
     pub fn apply(&mut self, event: &AgentEvent) {
         match event {
-            AgentEvent::CoordinationPrompt { sequences, .. } => {
-                for sequence in sequences {
-                    if let Some(delivery) = self.pending.get_mut(&format!("airc:{sequence}")) {
+            AgentEvent::CoordinationPrompt { identifiers, .. } => {
+                for identifier in identifiers {
+                    if let Some(delivery) = self.pending.get_mut(identifier) {
                         delivery.phase = DeliveryPhase::Prompted;
                     }
                 }

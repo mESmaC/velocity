@@ -118,9 +118,9 @@ pub enum AgentEvent {
         placement: Placement,
         update: SessionUpdate,
     },
-    /// The grouped AIRC text in this prompt, with all original delivery sequences.
+    /// The grouped AIRC text in this prompt, with all original delivery identifiers.
     CoordinationPrompt {
-        sequences: Vec<u64>,
+        identifiers: Vec<String>,
         actions: usize,
         placement: Placement,
         update: SessionUpdate,
@@ -725,12 +725,12 @@ impl Turn<'_> {
                     block.clone(),
                 )));
         }
-        if let Some((message, sequences, actions)) = self.coordination.take_prompt() {
+        if let Some((message, identifiers, actions)) = self.coordination.take_prompt() {
             let block = ContentBlock::from(message);
             self.shared.record_with(
                 SessionUpdate::UserMessageChunk(ContentChunk::new(block.clone())),
                 |placement, update| AgentEvent::CoordinationPrompt {
-                    sequences,
+                    identifiers,
                     actions,
                     placement,
                     update,

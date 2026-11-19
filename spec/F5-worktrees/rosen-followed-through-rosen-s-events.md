@@ -13,6 +13,9 @@
   Velocity lands the change: as soon as it merges cleanly when the project reviews after the land, otherwise after PR duty's review and the pre-land checks (F7 "A Rosen change").
   The note a Rosen workspace's agent gets says the same.
   Velocity saves the stream's cursor with each event that moves a thread, together with what the event leaves to do (a land's cleanup; a revert's workspace and message; a request for changes' message), and removes that work only once it is done.
+  The cursor belongs to the server database that issued it, and Velocity logs and replays from zero if the database changes, the cursor is beyond the latest event, or an old save lacks the database identity (#482).
+  Recovery skips superseded lifecycle events and preserves effects already recorded, including a merged thread's completed land cleanup.
   Before running pending work it flushes that snapshot to disk even when ordinary saves are deferred; a failed save or workspace lookup keeps cleanup pending (#353).
   A crash or a failed step therefore never acknowledges unfinished work: it is redone when the follower starts or reconnects and every half minute, and a message already in the thread's saved transcript is not sent again.
   Every Rosen project with a thread that has a change is followed, merged threads included, so a revert after a restart is heard even when nothing else in the project is open.
+  A change lookup that returns `NotFound` retires the change reference of a done, closed or merged thread.

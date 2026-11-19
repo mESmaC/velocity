@@ -31,7 +31,14 @@ pub(crate) async fn refresh(
         project
             .threads
             .iter()
-            .filter_map(|thread| query(thread, change, force))
+            .filter_map(|thread| {
+                let (generation, query) = query(thread, change, force)?;
+                let finished = matches!(
+                    thread.state,
+                    ThreadState::Done | ThreadState::Closed | ThreadState::Merged
+                );
+                Some((generation, query, finished))
+            })
             .collect::<Vec<_>>()
     };
     if queries.is_empty() {
@@ -39,11 +46,17 @@ pub(crate) async fn refresh(
     }
     let server = crate::rosen::server(application, project).await?;
     let mut views = BTreeMap::new();
-    for (generation, query) in queries {
+    let mut missing = BTreeMap::new();
+    for (generation, query, finished) in queries {
+        let change = query.identifier.clone();
         match thread_change::read(&server, query).await {
-            Ok(view) => {
+            Ok(Some(view)) => {
                 views.insert(view.identifier.clone(), (generation, view));
             }
+            Ok(None) if finished => {
+                missing.insert(change, generation);
+            }
+            Ok(None) => eprintln!("Rosen project {project}: no change matches {change}"),
             Err(error) => report::<()>(Err(error.to_string())),
         }
     }
@@ -51,10 +64,13 @@ pub(crate) async fn refresh(
         application.state::<ManagedStateStore>().inner(),
         "persisted state",
     )?;
-    if store
+    let retired = store
+        .forget_missing_rosen_changes(project, &missing)
+        .map_err(|error| error.to_string())?;
+    let refreshed = store
         .save_rosen_change_views(project, views)
-        .map_err(|error| error.to_string())?
-    {
+        .map_err(|error| error.to_string())?;
+    if retired || refreshed {
         crate::rosen_events::publish_progress(application, &store)?;
     }
     Ok(())

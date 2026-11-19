@@ -203,6 +203,9 @@ impl StateStore {
         if let Some(thread) = item.threads.iter_mut().find(|thread| {
             thread.rosen_change.as_deref() == Some(change) && thread.state != ThreadState::Merged
         }) {
+            if seq <= item.rosen_replay_through && notice_handled(thread, message) {
+                return self.store_snapshot(next);
+            }
             // Regeneration is cumulative: later rebases may omit still-pending files.
             // A text-conflict notice must not discard that work either.
             let notice = if regeneration {
@@ -222,6 +225,93 @@ impl StateStore {
             thread.rosen_follow_ups.push(notice);
         }
         self.store_snapshot(next)
+    }
+
+    /// Validate the saved checkpoints before subscribing. An unbound position
+    /// from an older Velocity build is replayed once.
+    pub fn resume_rosen_events(
+        &mut self,
+        project: u32,
+        identity: &str,
+        latest: u64,
+    ) -> Result<(u64, u64, bool), StoreError> {
+        let Some(current) = self.project(project) else {
+            return Ok((0, 0, false));
+        };
+        let changed = current.rosen_event_server_identity.as_deref() != Some(identity);
+        let past_end = current.rosen_event_cursor > latest || current.rosen_replay_through > latest;
+        if !changed && !past_end {
+            return Ok((
+                current.rosen_event_cursor,
+                current.rosen_replay_through,
+                false,
+            ));
+        }
+        let replacing = changed && current.rosen_event_server_identity.is_some();
+        let mut next = self.state.clone();
+        let Some(item) = next.projects.iter_mut().find(|item| item.id == project) else {
+            return Ok((0, 0, false));
+        };
+        let previous = item.rosen_event_cursor;
+        item.rosen_legacy_replay_cursor = if item.rosen_event_server_identity.is_none() && !past_end
+        {
+            previous
+        } else {
+            0
+        };
+        item.rosen_event_cursor = 0;
+        item.rosen_event_server_identity = Some(identity.to_owned());
+        item.rosen_replay_through = latest;
+        for thread in &mut item.threads {
+            if replacing || thread.rosen_import_event > latest {
+                thread.rosen_import_event = 0;
+            }
+            thread.rosen_issue.rewind_events(replacing, latest);
+        }
+        for handoff in item.handoff_items.values_mut() {
+            handoff.rewind_events(replacing, latest);
+        }
+        self.store_snapshot(next)?;
+        if previous != 0 || replacing || past_end {
+            eprintln!(
+                "Rosen events for project {project}: restarting at 0 (saved {previous}, latest {latest}, database changed: {changed})"
+            );
+        }
+        Ok((0, latest, true))
+    }
+
+    /// Retire a closed thread's link only if it still refers to the failed lookup.
+    pub fn forget_missing_rosen_changes(
+        &mut self,
+        project: u32,
+        missing: &std::collections::BTreeMap<String, u64>,
+    ) -> Result<bool, StoreError> {
+        if missing.is_empty() {
+            return Ok(false);
+        }
+        let mut next = self.state.clone();
+        let Some(item) = next.projects.iter_mut().find(|item| item.id == project) else {
+            return Ok(false);
+        };
+        let mut changed = false;
+        for thread in &mut item.threads {
+            if matches!(
+                thread.state,
+                ThreadState::Done | ThreadState::Closed | ThreadState::Merged
+            ) && thread
+                .rosen_change
+                .as_ref()
+                .and_then(|change| missing.get(change))
+                == Some(&thread.rosen_progress_generation)
+            {
+                thread.rosen_change = None;
+                changed = true;
+            }
+        }
+        if changed {
+            self.store_snapshot(next)?;
+        }
+        Ok(changed)
     }
 
     /// Rebases without regeneration need no saved action: the periodic pass reads the basis.
@@ -255,7 +345,17 @@ impl StateStore {
         if seq == 0 && progress == RosenProgress::Landed {
             return Ok(None);
         }
-        self.record_rosen_progress(project, seq, change, (progress, message))
+        self.record_rosen_progress(project, seq, change, (progress, message), None)
+    }
+
+    pub fn save_rosen_named(
+        &mut self,
+        project: u32,
+        seq: u64,
+        change: &str,
+        commit: Option<&str>,
+    ) -> Result<Option<u32>, StoreError> {
+        self.record_rosen_progress(project, seq, change, (RosenProgress::Named, ""), commit)
     }
 
     /// Checkpoint the named work the checker landed only while its saved lifecycle is
@@ -280,7 +380,7 @@ impl StateStore {
         if current.is_none() {
             return Ok(None);
         }
-        self.record_rosen_progress(project, 0, change, (RosenProgress::Landed, ""))
+        self.record_rosen_progress(project, 0, change, (RosenProgress::Landed, ""), None)
     }
 
     fn record_rosen_progress(
@@ -289,6 +389,7 @@ impl StateStore {
         seq: u64,
         change: &str,
         (progress, message): (RosenProgress, &str),
+        named_commit: Option<&str>,
     ) -> Result<Option<u32>, StoreError> {
         let mut next = self.state.clone();
         let Some(item) = next.projects.iter_mut().find(|item| item.id == project) else {
@@ -306,9 +407,25 @@ impl StateStore {
             self.store_snapshot(next)?;
             return Ok(None);
         };
-        if seq != 0 && seq <= thread.rosen_import_event && progress == RosenProgress::Named {
+        let replaying = seq != 0 && seq <= item.rosen_replay_through;
+        // Before named commits were tracked, a fixing decision at an in-range
+        // checkpoint is evidence that its earlier name already moved to Review.
+        if replaying
+            && progress == RosenProgress::Named
+            && thread.review_stage == Some(ReviewStage::Fixing)
+            && thread.rosen_last_named_commit.is_none()
+            && seq <= item.rosen_legacy_replay_cursor
+        {
+            thread.rosen_last_named_commit = named_commit.map(str::to_owned);
             self.store_snapshot(next)?;
             return Ok(None);
+        }
+        if already_applied(thread, seq, replaying, (progress, message), named_commit) {
+            self.store_snapshot(next)?;
+            return Ok(None);
+        }
+        if progress == RosenProgress::Named {
+            thread.rosen_last_named_commit = named_commit.map(str::to_owned);
         }
         let identifier = thread.id;
         if progress == RosenProgress::ChangesRequested
@@ -320,12 +437,7 @@ impl StateStore {
         }
         thread.rosen_progress_generation = thread.rosen_progress_generation.saturating_add(1);
         let reverted = progress == RosenProgress::Reverted && thread.state == ThreadState::Merged;
-        let abandoned = progress == RosenProgress::Abandoned
-            && !matches!(thread.state, ThreadState::Done | ThreadState::Merged);
-        if progress == RosenProgress::Abandoned && !abandoned {
-            self.store_snapshot(next)?;
-            return Ok(None);
-        }
+        let abandoned = progress == RosenProgress::Abandoned;
         let landed = apply_progress(thread, progress);
         queue_follow_up(thread, progress, message);
         crate::goal_rosen::apply(item, identifier, progress);
@@ -408,6 +520,42 @@ impl StateStore {
         self.project(project)
             .map_or(0, |project| project.rosen_event_cursor)
     }
+}
+
+fn already_applied(
+    thread: &ThreadItem,
+    sequence: u64,
+    replaying: bool,
+    (progress, message): (RosenProgress, &str),
+    named_commit: Option<&str>,
+) -> bool {
+    match progress {
+        RosenProgress::Named => {
+            thread.state == ThreadState::Merged
+                || (sequence != 0 && sequence <= thread.rosen_import_event)
+                || (replaying
+                    && named_commit.is_some()
+                    && thread.rosen_last_named_commit.as_deref() == named_commit)
+        }
+        RosenProgress::Landed => thread.state == ThreadState::Merged,
+        RosenProgress::Abandoned => {
+            matches!(thread.state, ThreadState::Done | ThreadState::Merged)
+        }
+        RosenProgress::Reverted if replaying => {
+            thread.state != ThreadState::Merged && notice_handled(thread, message)
+        }
+        _ => false,
+    }
+}
+
+fn notice_handled(thread: &ThreadItem, message: &str) -> bool {
+    thread
+        .rosen_follow_ups
+        .iter()
+        .any(|notice| notice.message() == Some(message))
+        || thread.transcript.iter().any(
+            |block| matches!(block, TranscriptBlock::UserMessage { text, .. } if text == message),
+        )
 }
 
 /// Records what `progress` leaves to do. A land ends the thread's work, so it replaces
@@ -581,6 +729,56 @@ mod tests {
         store.state.projects = vec![project];
         store.store_snapshot(store.state.clone())?;
         Ok(store)
+    }
+
+    // Risk (#482): old positions survive a rebuilt database, suppressing a
+    // new name, or a rewind schedules cleanup again for a completed land.
+    #[test]
+    fn rebuilt_rosen_database_rebinds_saved_positions_after_reload()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let unique = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)?
+            .as_nanos();
+        let directory = std::env::temp_dir().join(format!("velocity-rosen-rewind-{unique}"));
+        let mut store = checkpoint_store(&directory)?;
+        store.update_thread(1, 4, |thread| thread.state = ThreadState::Working)?;
+        store.save_rosen_cursor(1, 475)?;
+        let failure = velocity_core::rosen_mirror::MirrorState::new(true, "rejected", None, None);
+        store.save_rosen_mirror(1, 142, Some(failure))?;
+
+        let mut store = StateStore::load_or_default(&directory)?;
+        assert_eq!(
+            store.resume_rosen_events(1, "replacement", 96)?,
+            (0, 96, true)
+        );
+        store.resume_rosen_mirror(1, "replacement", 0, None)?;
+        store.save_rosen_mirror(1, 0, None)?;
+        assert!(store.state.projects[0].rosen_mirror.is_none());
+        assert_eq!(store.save_rosen_named(1, 12, "abc", Some("head"))?, Some(4));
+        store.save_rosen_progress(1, 13, "abc", (RosenProgress::Landed, ""))?;
+        store.finish_rosen_follow_up(1, 4, &RosenFollowUp::FinishLanded)?;
+
+        let mut store = StateStore::load_or_default(&directory)?;
+        assert_eq!(
+            store.resume_rosen_events(1, "replacement", 96)?,
+            (13, 96, false)
+        );
+        assert_eq!(
+            store.resume_rosen_events(1, "replacement", 23)?,
+            (0, 23, true)
+        );
+        assert_eq!(
+            store.save_rosen_progress(1, 13, "abc", (RosenProgress::Landed, ""))?,
+            None
+        );
+        assert!(store.rosen_follow_ups(1).is_empty());
+        assert_eq!(store.resume_rosen_events(1, "newer", 500)?, (0, 500, true));
+        assert_eq!(
+            store.state.projects[0].threads[0].state,
+            ThreadState::Merged
+        );
+        std::fs::remove_dir_all(directory)?;
+        Ok(())
     }
 
     // Risk (audit of 59be908, finding b): a revert's cursor and state were saved before its

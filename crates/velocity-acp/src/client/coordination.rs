@@ -37,7 +37,7 @@ impl Coordination {
         }
     }
 
-    pub fn take_prompt(&mut self) -> Option<(String, Vec<u64>, usize)> {
+    pub fn take_prompt(&mut self) -> Option<(String, Vec<String>, usize)> {
         if self.deliveries.is_empty() {
             return None;
         }
@@ -47,12 +47,20 @@ impl Coordination {
             .iter()
             .filter(|item| item.priority == DeliveryPriority::NeedsAction)
             .count();
-        let sequences: Vec<_> = deliveries.iter().map(|item| item.sequence).collect();
+        let identifiers = deliveries.iter().map(Delivery::identifier).collect();
         let mut prompt = prompt_lines(&deliveries).join("\n");
         if prompt.len() > velocity_core::text_budget::PROMPT_BYTES {
             deliveries.sort_by_key(|delivery| delivery.priority != DeliveryPriority::NeedsAction);
-            let first = sequences.iter().min().copied().unwrap_or_default();
-            let last = sequences.iter().max().copied().unwrap_or_default();
+            let first = deliveries
+                .iter()
+                .map(|delivery| delivery.sequence)
+                .min()
+                .unwrap_or_default();
+            let last = deliveries
+                .iter()
+                .map(|delivery| delivery.sequence)
+                .max()
+                .unwrap_or_default();
             let hint = format!(
                 "\n[Notices clipped. Use read_feed with after {} and before {} for more details.]",
                 first.saturating_sub(1),
@@ -64,6 +72,6 @@ impl Coordination {
                 &hint,
             );
         }
-        Some((prompt, sequences, actions))
+        Some((prompt, identifiers, actions))
     }
 }

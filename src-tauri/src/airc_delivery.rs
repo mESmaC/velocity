@@ -3,6 +3,7 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use tauri::{AppHandle, Manager};
 use velocity_airc::Channel;
+use velocity_rosen::EventHead;
 use velocity_store::{ProjectItem, ThreadItem};
 use velocity_threads::DeliveryStatus;
 
@@ -43,7 +44,13 @@ pub fn initialize(application: &AppHandle) {
 /// leaves once, not every second: each leave locks and reads the channel (#322).
 type Left = BTreeSet<velocity_threads::ThreadKey>;
 /// Each native join is retained only for its current agent session.
-type Members = BTreeMap<velocity_threads::ThreadKey, (String, String)>;
+type Members = BTreeMap<velocity_threads::ThreadKey, Member>;
+
+struct Member {
+    session: String,
+    nick: String,
+    server_identity: Option<String>,
+}
 
 const LEFT_RECHECK_PASSES: u64 = 30;
 
@@ -95,8 +102,18 @@ fn project_cycle(
     }
     crate::agent_activity::cycle(application, project, &channel)?;
     crate::parking::cycle(application, project, &channel);
+    let head = channel
+        .server_event_head()
+        .map_err(|error| error.to_string())?;
     for thread in &project.threads {
-        if let Err(error) = deliver(application, (project.id, thread), &channel, left, members) {
+        if let Err(error) = deliver(
+            application,
+            (project.id, thread),
+            &channel,
+            head.as_ref(),
+            left,
+            members,
+        ) {
             eprintln!("Velocity AIRC thread {}: {error}", thread.id);
         }
     }
@@ -107,6 +124,7 @@ fn deliver(
     application: &AppHandle,
     (project, thread): (u32, &ThreadItem),
     channel: &Channel,
+    head: Option<&EventHead>,
     left: &mut Left,
     members: &mut Members,
 ) -> Result<(), String> {
@@ -140,8 +158,9 @@ fn deliver(
         return Ok(());
     };
     let session = session.ok_or("Missing live AIRC session")?;
-    let nick = member_nick(channel, key, &member, path, &session, members)?;
-    deliver_pending(application, key, thread, channel, &nick)
+    let identity = head.map(|head| head.identity.as_str());
+    let nick = member_nick(channel, key, &member, path, &session, identity, members)?;
+    deliver_pending(application, key, thread, channel, &nick, head)
 }
 
 fn member_nick(
@@ -150,17 +169,26 @@ fn member_nick(
     member: &str,
     path: &str,
     session: &str,
+    server_identity: Option<&str>,
     members: &mut Members,
 ) -> Result<String, String> {
-    if let Some((known_session, nick)) = members.get(&key)
-        && known_session == session
+    if let Some(known) = members.get(&key)
+        && known.session == session
+        && known.server_identity.as_deref() == server_identity
     {
-        return Ok(nick.clone());
+        return Ok(known.nick.clone());
     }
     let nick = channel
         .join(member, path)
         .map_err(|error| error.to_string())?;
-    members.insert(key, (session.to_owned(), nick.clone()));
+    members.insert(
+        key,
+        Member {
+            session: session.to_owned(),
+            nick: nick.clone(),
+            server_identity: server_identity.map(str::to_owned),
+        },
+    );
     Ok(nick)
 }
 
@@ -170,14 +198,26 @@ fn deliver_pending(
     thread: &ThreadItem,
     channel: &Channel,
     nick: &str,
+    head: Option<&EventHead>,
 ) -> Result<(), String> {
-    let member = format!("thread-{}", key.1);
+    let identity = head.map(|head| head.identity.as_str());
+    let identity_changed = thread.airc_server_identity.as_deref() != identity;
+    let past_end = head.is_some_and(|head| thread.airc_cursor > head.latest);
+    let rewound = past_end
+        || (identity_changed && (thread.airc_cursor != 0 || thread.airc_server_identity.is_some()));
+    let after = if rewound {
+        0
+    } else if thread.airc_server_identity.is_some() {
+        thread.airc_cursor
+    } else {
+        channel
+            .delivery_cursor(&format!("thread-{}", key.1), thread.airc_cursor)
+            .map_err(|error| error.to_string())?
+    };
     let cursor = velocity_airc::deliver_filtered(
         channel,
         nick,
-        channel
-            .delivery_cursor(&member, thread.airc_cursor)
-            .map_err(|error| error.to_string())?,
+        after,
         thread.activity == velocity_store::AgentActivity::Idle,
         crate::follow_through::follows_github_reviews(thread),
         |delivery| {
@@ -185,19 +225,29 @@ fn deliver_pending(
                 application.state::<ManagedThreads>().inner(),
                 "thread sessions",
             )?
-            .deliver_airc(key, delivery)
+            .deliver_airc(key, &delivery.clone().with_server_identity(identity))
             .map_err(|error| error.to_string())?;
             Ok(status == DeliveryStatus::Delivered)
         },
     )
     .map_err(|error| error.to_string())?;
-    if cursor != thread.airc_cursor {
+    if cursor != thread.airc_cursor || identity_changed {
         lock(
             application.state::<ManagedStateStore>().inner(),
             "persisted state",
         )?
-        .update_thread(key.0, key.1, |saved| saved.airc_cursor = cursor)
+        .update_thread(key.0, key.1, |saved| {
+            saved.airc_cursor = cursor;
+            saved.airc_server_identity = identity.map(str::to_owned);
+        })
         .map_err(|error| error.to_string())?;
+        if rewound {
+            let (project, thread_id) = key;
+            let previous = thread.airc_cursor;
+            eprintln!(
+                "Velocity AIRC project {project} thread {thread_id}: restarting at 0 (saved {previous}, database changed: {identity_changed}, past latest: {past_end})"
+            );
+        }
     }
     Ok(())
 }

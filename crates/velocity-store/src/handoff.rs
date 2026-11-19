@@ -42,6 +42,8 @@ pub struct Item {
     /// One verdict per reviewed head or land. An unreviewed mark withdraws its verdict.
     pub verdicts: BTreeMap<String, String>,
     sequence: u64,
+    #[serde(default)]
+    last_reverted: Option<String>,
 }
 
 impl Item {
@@ -57,6 +59,7 @@ impl Item {
             requested_rounds: 0,
             verdicts: BTreeMap::new(),
             sequence: 0,
+            last_reverted: None,
         }
     }
 
@@ -70,8 +73,17 @@ impl Item {
             return false;
         }
         match event {
-            IssueObservation::Landed(commit) => self.landed = Some((*commit).into()),
-            IssueObservation::Reverted { .. } => {
+            IssueObservation::Landed(commit) => {
+                if self.last_reverted.as_deref() == Some(commit) {
+                    return false;
+                }
+                self.landed = Some((*commit).into());
+            }
+            IssueObservation::Reverted { commit, .. } => {
+                if commit.is_some() && *commit == self.last_reverted.as_deref() {
+                    return false;
+                }
+                self.last_reverted = commit.map(str::to_owned).or_else(|| self.landed.clone());
                 self.landed = None;
                 self.reverts = self.reverts.saturating_add(1);
             }
@@ -79,6 +91,12 @@ impl Item {
         }
         self.sequence = sequence;
         true
+    }
+
+    pub(crate) fn rewind_events(&mut self, replacing: bool, latest: u64) {
+        if replacing || self.sequence > latest {
+            self.sequence = 0;
+        }
     }
 }
 

@@ -133,6 +133,14 @@ impl Remote {
         })
     }
 
+    pub(crate) fn event_head(&self) -> Result<velocity_rosen::EventHead, Error> {
+        self.run(async |client| {
+            velocity_rosen::EventHead::read(&client)
+                .await
+                .map_err(|error| Error::Invalid(error.to_string()))
+        })
+    }
+
     pub(crate) fn presence(&self) -> Result<Vec<Presence>, Error> {
         self.run(async |client| {
             Ok(client

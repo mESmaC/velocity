@@ -13,6 +13,7 @@
   The saved mode switches only after the import succeeds and the Git checkouts and saved project still match the version that was checked.
   Velocity stops the servers it started when it exits and before an update installs, so their binaries can be replaced.
   Velocity follows every Rosen project's `mirror` events, including projects with no threads, and restores the latest mirror state at startup even when its thread-event cursor has passed the failure (#402).
+  The saved mirror position belongs to the server database, and Velocity logs and restores it from zero when the database changes or the position exceeds the latest mirror event (#482).
   While the latest push has failed, the main window's project header and Settings → Workspaces → Version control show `failing · retrying` with the next retry time, or `rejected · needs a person` when Rosen says the push was rejected.
   Both show the error's first three lines and the last commit the mirror accepted, or say that no accepted commit is recorded.
   The first rejection in an incident raises one toast naming the project and writes one `failed` entry in its AIRC channel, addressed to the current duty agents.

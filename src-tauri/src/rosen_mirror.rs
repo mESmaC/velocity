@@ -11,34 +11,14 @@ pub(crate) async fn refresh(application: &AppHandle, project: u32) -> Result<(),
     let running = application.state::<crate::rosen::ManagedRosen>();
     let _one_at_a_time = running.follow_ups.lock().await;
     let server = crate::rosen::server(application, project).await?;
+    let client = server.connect().await.map_err(|error| error.to_string())?;
+    let head = velocity_rosen::EventHead::read(&client)
+        .await
+        .map_err(|error| error.to_string())?;
     let observation = velocity_rosen::mirror_status(&server)
         .await
         .map_err(|error| error.to_string())?;
-    let Some(observation) = observation else {
-        return Ok(());
-    };
-    let (name, was_rejected) = {
-        let store = lock(
-            application.state::<ManagedStateStore>().inner(),
-            "persisted state",
-        )?;
-        let Some(item) = store.project(project) else {
-            return Ok(());
-        };
-        if observation.sequence < item.rosen_mirror_sequence {
-            return Ok(());
-        }
-        (
-            item.name.clone(),
-            item.rosen_mirror_rejection_sequence.is_some(),
-        )
-    };
-    let rejection = observation
-        .state
-        .as_ref()
-        .filter(|state| state.rejected && !was_rejected);
-    let toast = rejection.map(|_| format!("{name}: Rosen mirror rejected · needs a person"));
-    publish(application, project, observation, toast)?;
+    publish(application, project, head, observation)?;
     let handle = application.clone();
     tauri::async_runtime::spawn_blocking(move || deliver_notices(&handle, project))
         .await
@@ -82,18 +62,29 @@ fn deliver_notices(application: &AppHandle, project: u32) -> Result<(), String> 
 fn publish(
     application: &AppHandle,
     project: u32,
-    observation: velocity_rosen::MirrorObservation,
-    toast: Option<String>,
+    head: velocity_rosen::EventHead,
+    observation: Option<velocity_rosen::MirrorObservation>,
 ) -> Result<(), String> {
     let mut store = lock(
         application.state::<ManagedStateStore>().inner(),
         "persisted state",
     )?;
-    let changed = store
-        .project(project)
-        .is_some_and(|item| item.rosen_mirror != observation.state);
+    let (sequence, state) = observation.map_or((0, None), |item| (item.sequence, item.state));
     store
-        .save_rosen_mirror(project, observation.sequence, observation.state)
+        .resume_rosen_mirror(project, &head.identity, sequence, state.as_ref())
+        .map_err(|error| error.to_string())?;
+    let Some(item) = store.project(project) else {
+        return Ok(());
+    };
+    if sequence < item.rosen_mirror_sequence {
+        return Ok(());
+    }
+    let changed = item.rosen_mirror != state;
+    let toast = (item.rosen_mirror_rejection_sequence.is_none()
+        && state.as_ref().is_some_and(|state| state.rejected))
+    .then(|| format!("{}: Rosen mirror rejected · needs a person", item.name));
+    store
+        .save_rosen_mirror(project, sequence, state)
         .map_err(|error| error.to_string())?;
     if changed || toast.is_some() {
         let mut layout = lock(application.state::<MainLayout>().inner(), "layout")?;

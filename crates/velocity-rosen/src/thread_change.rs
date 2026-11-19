@@ -26,9 +26,17 @@ pub struct ThreadChangeQuery {
 pub async fn read(
     server: &ProjectServer,
     query: ThreadChangeQuery,
-) -> Result<RosenChangeView, RosenError> {
+) -> Result<Option<RosenChangeView>, RosenError> {
     let client = requests(server.endpoint()).await?;
-    let record = client.change_show(&query.identifier).await?.change;
+    let record = match client.change_show(&query.identifier).await {
+        Ok(response) => response.change,
+        Err(rosen_client::Error::Server(error))
+            if error.code == rosen_client::protocol::ErrorCode::NotFound =>
+        {
+            return Ok(None);
+        }
+        Err(error) => return Err(error.into()),
+    };
     let config = client.project_config(None).await?.config;
     let proof_required =
         config.review.is_before_land() && !config.checks.pre_land.commands.is_empty();
@@ -63,7 +71,7 @@ pub async fn read(
     } else {
         facts.proved
     };
-    Ok(RosenChangeView {
+    Ok(Some(RosenChangeView {
         identifier: query.identifier,
         stage,
         name,
@@ -75,7 +83,7 @@ pub async fn read(
             facts.conflicts
         },
         lands,
-    })
+    }))
 }
 
 fn snapshot_name(record: &rosen_core::Change) -> Option<String> {

@@ -14,6 +14,7 @@ pub struct Delivery {
     pub sequence: u64,
     pub message: String,
     pub priority: DeliveryPriority,
+    server_identity: Option<String>,
     overlaps: Vec<Overlap>,
 }
 
@@ -24,8 +25,16 @@ struct Overlap {
 }
 
 impl Delivery {
+    pub fn with_server_identity(mut self, identity: Option<&str>) -> Self {
+        self.server_identity = identity.map(str::to_owned);
+        self
+    }
+
     pub fn identifier(&self) -> String {
-        format!("airc:{}", self.sequence)
+        match &self.server_identity {
+            Some(identity) => format!("airc:{identity}:{}", self.sequence),
+            None => format!("airc:{}", self.sequence),
+        }
     }
 }
 
@@ -242,6 +251,7 @@ pub(crate) fn routed(
             sequence: entry.sequence,
             message,
             priority,
+            server_identity: None,
             overlaps,
         });
     }
@@ -279,6 +289,7 @@ pub(crate) fn message_delivery(entry: &Entry, nick: &str) -> Option<Delivery> {
         sequence: entry.sequence,
         message: message_for(entry, nick)?,
         priority,
+        server_identity: None,
         overlaps: Vec::new(),
     })
 }

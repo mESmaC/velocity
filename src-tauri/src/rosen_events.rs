@@ -14,7 +14,7 @@ use std::path::PathBuf;
 use std::time::Duration;
 
 use tauri::{AppHandle, Manager};
-use velocity_rosen::{ChangeEvent, EventStream};
+use velocity_rosen::{ChangeEvent, EventReplay, EventStream};
 use velocity_store::rosen::{RosenFollowUp, RosenProgress};
 use velocity_threads::ThreadKey;
 
@@ -37,12 +37,7 @@ pub(crate) fn follow(application: &AppHandle, project: u32) {
 
 async fn follow_project(application: &AppHandle, project: u32) {
     let warm = crate::code_graph::follow_rosen_base(application, project);
-    let mut after = lock(
-        application.state::<ManagedStateStore>().inner(),
-        "persisted state",
-    )
-    .map(|store| store.rosen_event_cursor(project))
-    .unwrap_or(0);
+    let mut position = (String::new(), 0);
     loop {
         if !crate::rosen::rosen_in_use(application, project) {
             connection_state(application, project, false);
@@ -50,17 +45,29 @@ async fn follow_project(application: &AppHandle, project: u32) {
             return;
         }
         if !crate::rosen::paused(application) {
-            // What a crash or a failed step left undone, before anything new.
-            run_follow_ups(application, project).await;
-            report(crate::rosen_mirror::refresh(application, project).await);
-            match open(application, project, after).await {
-                Ok(mut stream) => {
+            match open(application, project, &mut position).await {
+                Ok((mut stream, replay, rewound)) => {
                     connection_state(application, project, false);
+                    if rewound {
+                        report(
+                            crate::rosen_thread::refresh(application, project, None, true).await,
+                        );
+                    }
+                    // What a crash or a failed step left undone, before anything new.
+                    run_follow_ups(application, project).await;
+                    report(crate::rosen_mirror::refresh(application, project).await);
                     if let Some(warm) = &warm {
                         let _ = warm.try_send(());
                     }
-                    follow_connected(application, project, &mut stream, &mut after, warm.as_ref())
-                        .await;
+                    follow_connected(
+                        application,
+                        project,
+                        &mut stream,
+                        &replay,
+                        &mut position.1,
+                        warm.as_ref(),
+                    )
+                    .await;
                 }
                 Err(error) => eprintln!("Rosen events for project {project}: {error}"),
             }
@@ -74,6 +81,7 @@ async fn follow_connected(
     application: &AppHandle,
     project: u32,
     stream: &mut EventStream,
+    replay: &EventReplay,
     after: &mut u64,
     warm: Option<&std::sync::mpsc::SyncSender<()>>,
 ) {
@@ -87,14 +95,18 @@ async fn follow_connected(
             }
             event = stream.next() => {
                 let Some(event) = event else { break };
-                if matches!(event.kind, Landed | Reverted) && let Some(warm) = warm {
-                    let _ = warm.try_send(());
-                }
-                if let Err(error) = consume(application, project, &event).await {
+                let superseded = replay.superseded(&event);
+                if let Err(error) = consume_connected(application, project, replay, &event, superseded).await {
                     report::<()>(Err(error));
                     break;
                 }
                 *after = (*after).max(event.seq);
+                if superseded {
+                    continue;
+                }
+                if matches!(event.kind, Landed | Reverted) && let Some(warm) = warm {
+                    let _ = warm.try_send(());
+                }
                 match event.kind {
                     Built | Green => report(crate::rosen_thread::refresh(application, project, None, false).await),
                     Landed | Reverted | Updated | Conflict | Rebased | PostLandFailure | Review => {
@@ -108,6 +120,28 @@ async fn follow_connected(
             }
         }
     }
+}
+
+async fn consume_connected(
+    application: &AppHandle,
+    project: u32,
+    replay: &EventReplay,
+    event: &velocity_rosen::ProjectEvent,
+    superseded: bool,
+) -> Result<(), String> {
+    if !superseded {
+        consume(application, project, event).await?;
+    }
+    // The last event of a rewind can be unrelated and carry no checkpoint of its own.
+    if event.seq == replay.boundary() {
+        lock(
+            application.state::<ManagedStateStore>().inner(),
+            "persisted state",
+        )?
+        .save_rosen_cursor(project, event.seq)
+        .map_err(|error| error.to_string())?;
+    }
+    Ok(())
 }
 
 fn connection_state(application: &AppHandle, project: u32, reconnecting: bool) {
@@ -168,6 +202,7 @@ async fn consume(
             )?;
             run_follow_ups(application, project).await;
         }
+        Some((change, ChangeEvent::Named)) => record_named(application, project, change, event)?,
         Some((change, meaning)) => {
             let output = velocity_rosen::revert_output(event);
             take(
@@ -185,11 +220,54 @@ async fn consume(
     Ok(())
 }
 
-async fn open(application: &AppHandle, project: u32, after: u64) -> Result<EventStream, String> {
+async fn open(
+    application: &AppHandle,
+    project: u32,
+    position: &mut (String, u64),
+) -> Result<(EventStream, EventReplay, bool), String> {
     let server = crate::rosen::server(application, project).await?;
-    EventStream::open(&server, after)
-        .await
-        .map_err(|error| error.to_string())
+    let mut rewound = false;
+    let (stream, replay) = EventStream::open_checked(&server, |head| {
+        let (saved, through, reset) = lock(
+            application.state::<ManagedStateStore>().inner(),
+            "persisted state",
+        )?
+        .resume_rosen_events(project, &head.identity, head.latest)
+        .map_err(|error| error.to_string())?;
+        rewound = reset;
+        let after = if !reset && position.0 == head.identity && position.1 <= head.latest {
+            saved.max(position.1)
+        } else {
+            saved
+        };
+        position.0.clone_from(&head.identity);
+        position.1 = after;
+        Ok((after, if after < through { through } else { 0 }))
+    })
+    .await?;
+    Ok((stream, replay, rewound))
+}
+
+fn record_named(
+    application: &AppHandle,
+    project: u32,
+    change: &str,
+    event: &velocity_rosen::ProjectEvent,
+) -> Result<(), String> {
+    let commit = event
+        .detail
+        .get("commit")
+        .and_then(|commit| commit.as_str());
+    let mut store = lock(
+        application.state::<ManagedStateStore>().inner(),
+        "persisted state",
+    )?;
+    store
+        .save_rosen_named(project, event.seq, change, commit)
+        .map_err(|error| error.to_string())?;
+    publish_progress(application, &store)?;
+    crate::reviews::wake(application);
+    Ok(())
 }
 
 /// Takes one event in: its thread's new state, the stream's cursor and what is left to do,
@@ -202,7 +280,6 @@ fn take(
     output: Option<&str>,
 ) -> Result<Option<u32>, String> {
     let (progress, message) = match meaning {
-        ChangeEvent::Named => (RosenProgress::Named, String::new()),
         ChangeEvent::Landed => (RosenProgress::Landed, String::new()),
         ChangeEvent::Abandoned => (RosenProgress::Abandoned, String::new()),
         ChangeEvent::Reverted => {
@@ -212,7 +289,7 @@ fn take(
         }
         // Handled by `rosen_rebase`: a rebase at the agent's step boundary, a conflict as a
         // message to it.
-        ChangeEvent::Rebased | ChangeEvent::Conflict => return Ok(None),
+        ChangeEvent::Named | ChangeEvent::Rebased | ChangeEvent::Conflict => return Ok(None),
     };
     let thread = save(application, project, (seq, change), (progress, &message))?;
     // A named change waits for a reviewer, and a land or a revert changes what PR duty and

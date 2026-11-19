@@ -774,6 +774,10 @@ pub struct ThreadItem {
     #[serde(default)]
     #[specta(skip)]
     pub rosen_import_event: u64,
+    /// The named snapshot whose review transition was recorded.
+    #[serde(default)]
+    #[specta(skip)]
+    pub rosen_last_named_commit: Option<String>,
     /// Original prompt until Rosen workspace setup succeeds; retained for manual retry.
     #[serde(default)]
     #[specta(skip)]
@@ -801,6 +805,9 @@ pub struct ThreadItem {
     #[serde(default)]
     #[specta(skip)]
     pub airc_cursor: u64,
+    #[serde(default)]
+    #[specta(skip)]
+    pub airc_server_identity: Option<String>,
     #[serde(default)]
     pub dependency_wait: Option<String>,
     /// The agent's ACP session id, which a parked thread loads again on resume (§2.2).
@@ -861,11 +868,13 @@ impl ThreadItem {
             rosen_change: None,
             rosen_change_view: None,
             rosen_import_event: 0,
+            rosen_last_named_commit: None,
             pending_rosen_launch: None,
             rosen_progress_generation: 0,
             goal_stack: None,
             follow_through: None,
             airc_cursor: 0,
+            airc_server_identity: None,
             dependency_wait: None,
             agent_session: None,
             context_handoff: None,
@@ -913,11 +922,13 @@ impl ThreadItem {
             rosen_change: None,
             rosen_change_view: None,
             rosen_import_event: 0,
+            rosen_last_named_commit: None,
             pending_rosen_launch: None,
             rosen_progress_generation: 0,
             goal_stack: None,
             follow_through: None,
             airc_cursor: 0,
+            airc_server_identity: None,
             dependency_wait: None,
             agent_session: None,
             context_handoff: None,
@@ -1089,12 +1100,26 @@ pub struct ProjectItem {
     #[serde(default)]
     #[specta(skip)]
     pub rosen_event_cursor: u64,
+    #[serde(default)]
+    #[specta(skip)]
+    pub rosen_event_server_identity: Option<String>,
+    /// Keep the replay boundary across a crash partway through recovery.
+    #[serde(default)]
+    #[specta(skip)]
+    pub rosen_replay_through: u64,
+    /// An in-range pre-upgrade checkpoint, for legacy review decisions.
+    #[serde(default)]
+    #[specta(skip)]
+    pub rosen_legacy_replay_cursor: u64,
     /// Latest mirror failure, retained while the push remains unsuccessful (F5).
     #[serde(default)]
     pub rosen_mirror: Option<velocity_core::rosen_mirror::MirrorState>,
     #[serde(default)]
     #[specta(skip)]
     pub rosen_mirror_sequence: u64,
+    #[serde(default)]
+    #[specta(skip)]
+    pub rosen_mirror_server_identity: Option<String>,
     /// One rejection notice until the mirror succeeds, even if a retry fails transiently.
     #[serde(default)]
     #[specta(skip)]
@@ -1149,8 +1174,12 @@ impl ProjectItem {
             version_control: VersionControl::default(),
             rosen_migration_notice: None,
             rosen_event_cursor: 0,
+            rosen_event_server_identity: None,
+            rosen_replay_through: 0,
+            rosen_legacy_replay_cursor: 0,
             rosen_mirror: None,
             rosen_mirror_sequence: 0,
+            rosen_mirror_server_identity: None,
             rosen_mirror_rejection_sequence: None,
             rosen_mirror_notices: Vec::new(),
         }

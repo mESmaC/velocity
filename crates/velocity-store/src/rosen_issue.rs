@@ -61,6 +61,12 @@ pub enum IssueObservation<'a> {
 }
 
 impl IssueProgress {
+    pub(crate) fn rewind_events(&mut self, replacing: bool, latest: u64) {
+        if replacing || self.sequence > latest {
+            self.sequence = 0;
+        }
+    }
+
     fn observe(
         &mut self,
         sequence: u64,

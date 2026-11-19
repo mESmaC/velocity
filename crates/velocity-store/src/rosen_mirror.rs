@@ -15,6 +15,41 @@ pub struct MirrorRejection {
 }
 
 impl StateStore {
+    pub fn resume_rosen_mirror(
+        &mut self,
+        project: u32,
+        identity: &str,
+        latest: u64,
+        state: Option<&MirrorState>,
+    ) -> Result<(), StoreError> {
+        let Some(current) = self.project(project) else {
+            return Ok(());
+        };
+        let changed = current.rosen_mirror_server_identity.as_deref() != Some(identity);
+        if !changed && current.rosen_mirror_sequence <= latest {
+            return Ok(());
+        }
+        let mut next = self.state.clone();
+        let Some(item) = next.projects.iter_mut().find(|item| item.id == project) else {
+            return Ok(());
+        };
+        let previous = item.rosen_mirror_sequence;
+        item.rosen_mirror_sequence = 0;
+        if item.rosen_mirror.as_ref() != state {
+            item.rosen_mirror_rejection_sequence = None;
+            item.rosen_mirror_notices.clear();
+        }
+        let replacing = item.rosen_mirror_server_identity.is_some() && changed;
+        item.rosen_mirror_server_identity = Some(identity.to_owned());
+        self.store_snapshot(next)?;
+        if previous != 0 || replacing {
+            eprintln!(
+                "Rosen mirror for project {project}: restarting at 0 (saved {previous}, latest {latest}, database changed: {changed})"
+            );
+        }
+        Ok(())
+    }
+
     pub fn save_rosen_mirror(
         &mut self,
         project: u32,

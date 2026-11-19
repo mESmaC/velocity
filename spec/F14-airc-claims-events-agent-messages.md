@@ -244,6 +244,7 @@ Routing borrows immutable cached history for modes, claims and checkout ownershi
 M8 message delivery registers live build-thread members as `thread-<thread-id>` with worktree-leaf nicks.
 Native delivery adds named messages and your broadcast comments to the next ACP prompt as `via AIRC` notices.
 A per-thread cursor in `state.json` advances only after the receiving turn succeeds.
+On Rosen projects the saved thread cursor belongs to the server database, and Velocity logs and begins at zero when that database changes or the cursor is past its latest event (#482).
 Pending input replays after restart; acknowledged input does not.
 Build threads acknowledge each underlying notice after the prompt that carried it completes successfully.
 A delivered line is not a message you sent: it never appears in the composer queue, and once the agent reads it the transcript shows it as a "from Velocity" notice.
