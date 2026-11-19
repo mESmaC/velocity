@@ -6,6 +6,7 @@ use serde::Serialize;
 use specta::Type;
 use sysinfo::{Pid, ProcessRefreshKind, ProcessesToUpdate, System, UpdateKind};
 use tauri::AppHandle;
+use velocity_threads::REVIEW_SWARM_SWITCH;
 
 const GIB: u64 = 1024 * 1024 * 1024;
 const WINDOW_BUDGET: u64 = 2 * GIB;
@@ -23,6 +24,7 @@ pub struct ProcessMemory {
 
 fn role(argument: Option<&str>) -> &'static str {
     match argument {
+        Some(REVIEW_SWARM_SWITCH) => "Review swarm MCP",
         Some("--airc-mcp") => "AIRC MCP",
         Some("--graph-mcp") => "Code graph MCP",
         Some("--graph-project") => "Project graph",
