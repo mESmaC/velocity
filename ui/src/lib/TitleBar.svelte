@@ -36,6 +36,8 @@
       <b data-tauri-drag-region>Velocity</b>
       <ProjectSwitcher
         name={layout?.project_name ?? ''}
+        project={layout?.project_identifier ?? null}
+        collapse={layout?.collapse_repository ?? null}
         {send}
         select={switchProject}
       />

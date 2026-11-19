@@ -648,7 +648,11 @@
 {#if layout?.airc_open && layout.project_identifier !== null}{#key layout.project_identifier}<PaneBoundary
       name="AIRC"
       {revision}
-      ><AircModal project={layout.project_identifier} {send} /></PaneBoundary
+      ><AircModal
+        project={layout.project_identifier}
+        collapse={layout.collapse_repository !== null}
+        {send}
+      /></PaneBoundary
     >{/key}{/if}
 {#if threadMenu}<ThreadMenu
     menu={threadMenu.view}

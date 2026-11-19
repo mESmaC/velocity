@@ -118,7 +118,11 @@
       </div>
     </section>
   {/if}
-  <RosenStatusPane project={layout.project_identifier} {send} />
+  <RosenStatusPane
+    project={layout.project_identifier}
+    collapse={layout.collapse_repository !== null}
+    {send}
+  />
   {#if !layout.rosen_work}<IssuePanel {layout} {send} />{/if}
   <footer class="rail-foot">
     <button onclick={() => send({ Request: { Navigation: 'Airc' } })}

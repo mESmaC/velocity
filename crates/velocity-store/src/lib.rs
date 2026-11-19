@@ -1147,6 +1147,11 @@ pub struct ProjectItem {
     #[serde(default)]
     #[specta(skip)]
     pub rosen_mirror_notices: Vec<rosen_mirror::MirrorRejection>,
+    /// The Collapse repository (`owner/repository`) Rosen mirrors to, read from Rosen's
+    /// mirror remote. `None` hides Open on Collapse (#429).
+    #[serde(default)]
+    #[specta(skip)]
+    pub collapse_repository: Option<String>,
 }
 
 /// The New project dialog's interview choices, kept until the spec interview
@@ -1204,6 +1209,7 @@ impl ProjectItem {
             rosen_mirror_server_identity: None,
             rosen_mirror_rejection_sequence: None,
             rosen_mirror_notices: Vec::new(),
+            collapse_repository: None,
         }
     }
 

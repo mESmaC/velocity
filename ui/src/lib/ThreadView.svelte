@@ -9,7 +9,11 @@
   import ThreadBrowser from './ThreadBrowser.svelte';
   import TranscriptBlocks from './TranscriptBlocks.svelte';
   import { followTranscript } from './follow-transcript';
-  import { threadChangeCommands, threadMenuCommands } from './ipc';
+  import {
+    collapseCommands,
+    threadChangeCommands,
+    threadMenuCommands,
+  } from './ipc';
   import type {
     LayoutAction,
     LayoutSnapshot,
@@ -59,6 +63,20 @@
   function openActions(next: 'name' | 'abandon' | null) {
     name = '';
     actions = { key: changeKey, panel: next, pending: false, error: '' };
+  }
+
+  // Open on Collapse for a land: hidden without a Collapse mirror (#429).
+  async function openOnCollapse(commit: string) {
+    const project = layout.project_identifier;
+    if (project === null) return;
+    const key = changeKey;
+    try {
+      await collapseCommands.open(project, commit);
+    } catch (error) {
+      // Never clobber a change action that is still running.
+      if (!pending)
+        actions = { key, panel, pending: false, error: String(error) };
+    }
   }
 
   async function runChange(action: RosenThreadAction) {
@@ -391,6 +409,7 @@
             {change}
             resolve={() => runChange('Resolve')}
             resolving={pending}
+            openOnCollapse={layout.collapse_repository ? openOnCollapse : null}
           />
         {/if}
 

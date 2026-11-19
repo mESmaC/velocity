@@ -2,6 +2,7 @@
   import { onMount, tick } from 'svelte';
   import Icon from './Icon.svelte';
   import {
+    collapseCommands,
     newProjectCommands,
     onLayoutIntent,
     onProjectSelected,
@@ -18,10 +19,15 @@
 
   let {
     name,
+    project,
+    collapse,
     send,
     select,
   }: {
     name: string;
+    project: number | null;
+    // The active project's Collapse mirror; null hides Open on Collapse (#429).
+    collapse: string | null;
     send: (action: LayoutAction) => void;
     select: (identifier: number) => void;
   } = $props();
@@ -111,6 +117,16 @@
     try {
       const path = await newProjectCommands.pickFolder();
       if (path) await open({ LocalFolder: { path } }, path);
+    } catch (reason) {
+      report(reason);
+    }
+  }
+
+  async function openOnCollapse(identifier: number) {
+    menu.hidePopover();
+    error = '';
+    try {
+      await collapseCommands.open(identifier);
     } catch (reason) {
       report(reason);
     }
@@ -320,6 +336,15 @@
     <button role="menuitem" onclick={() => void showGitHub()}
       ><Icon name="github" />Open from GitHub…</button
     >
+    {#if collapse && project !== null}
+      {@const identifier = project}
+      <button
+        role="menuitem"
+        title={`collapse.sh/${collapse}`}
+        onclick={() => void openOnCollapse(identifier)}
+        >Open on Collapse ↗<span class="sub">{collapse}</span></button
+      >
+    {/if}
     {#if opening}<p class="menu-note" role="status">{opening}</p>{/if}
   {/if}
 </div>

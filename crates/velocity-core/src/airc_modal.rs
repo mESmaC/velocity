@@ -25,6 +25,8 @@ pub struct AircRecord {
     velocity_issue: Option<(String, Option<u32>)>,
     rosen_issue: Option<(String, Option<u32>)>,
     task_undo_request: Option<String>,
+    /// The commit a Rosen land made, for its event's Open on Collapse action (#429).
+    land_commit: Option<String>,
 }
 
 impl AircRecord {
@@ -42,6 +44,7 @@ impl AircRecord {
             velocity_issue: None,
             rosen_issue: None,
             task_undo_request: None,
+            land_commit: None,
         }
     }
 
@@ -73,6 +76,11 @@ impl AircRecord {
 
     pub fn with_task_undo(mut self, request: u64) -> Self {
         self.task_undo_request = Some(request.to_string());
+        self
+    }
+
+    pub fn with_land_commit(mut self, commit: Option<String>) -> Self {
+        self.land_commit = commit;
         self
     }
 }
@@ -245,6 +253,8 @@ pub struct AircLineView {
     pub mention: bool,
     pub from_you: bool,
     pub task_undo_request: Option<String>,
+    /// Set on `merged` events Rosen recorded for a land.
+    pub land_commit: Option<String>,
 }
 
 #[cfg_attr(
@@ -555,6 +565,7 @@ fn line(record: &AircRecord, tag: &str, tone: AircTone, text: &str) -> AircLineV
         mention: false,
         from_you: record.nick == "you",
         task_undo_request: record.task_undo_request.clone(),
+        land_commit: None,
     }
 }
 
@@ -567,6 +578,7 @@ fn event_line(record: &AircRecord, nicks: &BTreeSet<String>) -> AircLineView {
     let mut named = nicks.clone();
     named.remove("you");
     view.spans = spans(record.event_text.as_ref().unwrap_or(&record.text), &named);
+    view.land_commit = record.land_commit.clone();
     view
 }
 

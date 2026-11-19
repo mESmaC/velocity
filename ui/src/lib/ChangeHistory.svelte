@@ -5,10 +5,13 @@
     change,
     resolve,
     resolving,
+    openOnCollapse,
   }: {
     change: RosenChangeView;
     resolve: () => void;
     resolving: boolean;
+    // Null when the project has no Collapse mirror (#429).
+    openOnCollapse: ((commit: string) => void) | null;
   } = $props();
 </script>
 
@@ -54,6 +57,15 @@
           {#if !land.failures.length}<div>Post-land checks pending</div>{/if}
         {:else if !land.failures.length}
           <div>Post-land checks pending</div>
+        {/if}
+        {#if openOnCollapse && !land.revert}
+          {@const open = openOnCollapse}
+          <button
+            type="button"
+            class="btn"
+            title="Open this land's commit page on collapse.sh"
+            onclick={() => open(land.commit)}>Open on Collapse ↗</button
+          >
         {/if}
       </article>
       {#each land.failures as failure, index (index)}

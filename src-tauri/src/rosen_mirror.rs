@@ -19,6 +19,16 @@ pub(crate) async fn refresh(application: &AppHandle, project: u32) -> Result<(),
         .await
         .map_err(|error| error.to_string())?;
     publish(application, project, head, observation)?;
+    let remote = velocity_rosen::mirror_remote(&server)
+        .await
+        .map_err(|error| error.to_string())?;
+    save_collapse_repository(
+        application,
+        project,
+        remote
+            .as_deref()
+            .and_then(velocity_core::collapse::repository_from_remote),
+    )?;
     let handle = application.clone();
     tauri::async_runtime::spawn_blocking(move || deliver_notices(&handle, project))
         .await
@@ -92,6 +102,27 @@ fn publish(
         if let Some(message) = toast {
             layout.show_toast(message, None);
         }
+        crate::layout::publish(application, &layout.snapshot(), None)?;
+    }
+    Ok(())
+}
+
+/// Shows or hides Open on Collapse when the mirror remote changes (#429).
+fn save_collapse_repository(
+    application: &AppHandle,
+    project: u32,
+    repository: Option<String>,
+) -> Result<(), String> {
+    let mut store = lock(
+        application.state::<ManagedStateStore>().inner(),
+        "persisted state",
+    )?;
+    let changed = store
+        .save_collapse_repository(project, repository)
+        .map_err(|error| error.to_string())?;
+    if changed {
+        let mut layout = lock(application.state::<MainLayout>().inner(), "layout")?;
+        store.refresh_layout(&mut layout);
         crate::layout::publish(application, &layout.snapshot(), None)?;
     }
     Ok(())

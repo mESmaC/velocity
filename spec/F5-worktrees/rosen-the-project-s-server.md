@@ -19,3 +19,7 @@
   The first rejection in an incident raises one toast naming the project and writes one `failed` entry in its AIRC channel, addressed to the current duty agents.
   Retrying the same rejection does not repeat the toast or channel entry, including after a Velocity restart; a channel failure leaves a durable notice to retry without hiding the project warning.
   The warning clears on the next successful push, including a recovery after a server restart, and a later rejection starts a new incident.
+  When the mirror remote is a Collapse repository, Velocity saves its `owner/repository` on each mirror refresh and offers Open on Collapse (#429).
+  The project switcher menu and the palette open the repository page at `https://collapse.sh/<owner>/<repository>`.
+  A standing land opens its commit page at `…/commit/<commit>`, which Collapse caches as immutable, from the Rosen status pane's Changes, the thread's land history, AIRC `merged` events and the palette entry for the selected thread.
+  A project without a Collapse mirror shows none of these actions.

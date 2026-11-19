@@ -126,7 +126,8 @@ fn dispatch(window: &Window, action: LayoutAction) -> Result<LayoutSnapshot, Str
     let intent = outcome
         .intent
         .filter(|intent| !crate::interview::handle_intent(window.app_handle(), intent))
-        .filter(|intent| !crate::issue_panel::handle_intent(window.app_handle(), intent));
+        .filter(|intent| !crate::issue_panel::handle_intent(window.app_handle(), intent))
+        .filter(|intent| !crate::collapse::handle_intent(window.app_handle(), intent));
     publish(window, &snapshot, intent.clone())?;
     if let Some((role, event)) = outcome.duty_event {
         crate::sweeps::instruct(window.app_handle(), role, &event.message);

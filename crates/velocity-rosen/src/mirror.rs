@@ -42,6 +42,40 @@ pub async fn mirror_status(
     Ok(observation)
 }
 
+/// The remote Rosen mirrors the base to, or `None` when the project has no mirror.
+/// Rosen keeps the configured remote in its metadata, whichever way it was set.
+pub async fn mirror_remote(server: &ProjectServer) -> Result<Option<String>, RosenError> {
+    let reading = server.clone();
+    tokio::task::spawn_blocking(move || read_mirror_remote(&reading))
+        .await
+        .map_err(|error| RosenError::MirrorData(error.to_string()))?
+}
+
+fn read_mirror_remote(server: &ProjectServer) -> Result<Option<String>, RosenError> {
+    let path = server.data_dir().join("metadata.sqlite");
+    if !path.is_file() {
+        return Ok(None);
+    }
+    let connection = Connection::open_with_flags(path, OpenFlags::SQLITE_OPEN_READ_ONLY)?;
+    connection.busy_timeout(std::time::Duration::from_secs(2))?;
+    let has_table = connection
+        .query_row(
+            "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'mirror'",
+            [],
+            |_| Ok(()),
+        )
+        .optional()?
+        .is_some();
+    if !has_table {
+        return Ok(None);
+    }
+    Ok(connection
+        .query_row("SELECT remote FROM mirror WHERE id = 1", [], |row| {
+            row.get(0)
+        })
+        .optional()?)
+}
+
 /// A restarted mirror can push beyond the failed commit while more lands keep
 /// arriving. An accepted descendant proves recovery even when the base is ahead.
 async fn recovered_after_restart(server: &ProjectServer, observation: &MirrorObservation) -> bool {

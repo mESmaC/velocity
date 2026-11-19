@@ -6,6 +6,7 @@
     aircCommands,
     aircRoutingCommands,
     aircModalCommands,
+    collapseCommands,
     onAircModal,
     issueCommands,
   } from './ipc';
@@ -21,9 +22,12 @@
 
   let {
     project,
+    collapse,
     send,
   }: {
     project: number;
+    // The project has a Collapse mirror, so land events offer Open on Collapse (#429).
+    collapse: boolean;
     send: (action: LayoutAction) => void;
   } = $props();
 
@@ -148,6 +152,15 @@
     }
   }
 
+  async function openOnCollapse(commit: string) {
+    error = '';
+    try {
+      await collapseCommands.open(project, commit);
+    } catch (reason) {
+      report(reason);
+    }
+  }
+
   function tone(value: NickTone): string {
     return typeof value === 'string' ? `nick-${value}` : `nick-${value.Hue}`;
   }
@@ -242,6 +255,16 @@
                       type="button"
                       disabled={undoing}
                       onclick={() => void undoTaskEvent(request)}>Undo</button
+                    >
+                  {/if}
+                  {#if collapse && typeof line.land_commit === 'string'}
+                    {@const commit = line.land_commit}
+                    <button
+                      class="btn"
+                      type="button"
+                      title="Open this land's commit page on collapse.sh"
+                      onclick={() => void openOnCollapse(commit)}
+                      >Open on Collapse ↗</button
                     >
                   {/if}</span
                 >

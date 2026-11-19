@@ -720,6 +720,7 @@ impl LayoutState {
             project_identifier: self.data.project_identifier,
             project_name: self.data.project_name.clone(),
             rosen_mirror: self.data.rosen_mirror.clone(),
+            collapse_repository: self.data.collapse_repository.clone(),
             rosen_work: self.data.rosen_work.clone(),
             rosen_migration_notice: self.data.rosen_migration_notice.clone(),
             rosen_reconnecting: self
@@ -1642,10 +1643,48 @@ impl LayoutState {
             shortcut: String::new(),
             target: PaletteTarget::Intent(LayoutIntent::DispatchIssue(issue.identifier)),
         }));
+        items.extend(self.collapse_palette_items());
         items
             .into_iter()
             .filter(|item| layout::fuzzy_match(&query, &normalized(&item.label)))
             .collect()
+    }
+
+    /// Open on Collapse for the project, and for the selected thread's latest land that
+    /// still stands. Both are absent without a Collapse mirror (#429).
+    fn collapse_palette_items(&self) -> Vec<PaletteItem> {
+        if self.data.collapse_repository.is_none() {
+            return Vec::new();
+        }
+        let mut items = vec![PaletteItem {
+            identifier: "collapse:project".into(),
+            label: "Open on Collapse · project".into(),
+            group: "project".into(),
+            shortcut: String::new(),
+            target: PaletteTarget::Intent(LayoutIntent::OpenOnCollapse(None)),
+        }];
+        let land = self
+            .selected_thread
+            .and_then(|selected| {
+                self.data
+                    .threads
+                    .iter()
+                    .find(|thread| thread.policy.identifier == selected)
+            })
+            .and_then(|thread| thread.detail.as_ref()?.rosen_change.as_ref())
+            .and_then(|change| change.lands.iter().rev().find(|land| land.revert.is_none()));
+        if let Some(land) = land {
+            items.push(PaletteItem {
+                identifier: "collapse:land".into(),
+                label: "Open on Collapse · land".into(),
+                group: "land".into(),
+                shortcut: String::new(),
+                target: PaletteTarget::Intent(LayoutIntent::OpenOnCollapse(Some(
+                    land.commit.clone(),
+                ))),
+            });
+        }
+        items
     }
 
     fn worktree_label(&self) -> String {

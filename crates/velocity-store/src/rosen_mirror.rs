@@ -85,6 +85,26 @@ impl StateStore {
         self.store_snapshot(next)
     }
 
+    /// Saves the project's Collapse repository and reports whether it changed (#429).
+    pub fn save_collapse_repository(
+        &mut self,
+        project: u32,
+        repository: Option<String>,
+    ) -> Result<bool, StoreError> {
+        let unchanged = self
+            .project(project)
+            .is_none_or(|item| item.collapse_repository == repository);
+        if unchanged {
+            return Ok(false);
+        }
+        let mut next = self.state.clone();
+        if let Some(item) = next.projects.iter_mut().find(|item| item.id == project) {
+            item.collapse_repository = repository;
+        }
+        self.store_snapshot(next)?;
+        Ok(true)
+    }
+
     pub fn finish_mirror_notice(&mut self, project: u32, sequence: u64) -> Result<(), StoreError> {
         let mut next = self.state.clone();
         if let Some(item) = next.projects.iter_mut().find(|item| item.id == project) {

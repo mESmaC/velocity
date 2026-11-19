@@ -33,6 +33,7 @@ fn launch_kind(intent: &LayoutIntent, interview_thread: bool) -> Option<LaunchKi
         | LayoutIntent::OpenTask(_)
         | LayoutIntent::OpenIssue(_)
         | LayoutIntent::OpenWorktreeInExplorer(_)
+        | LayoutIntent::OpenOnCollapse(_)
         | LayoutIntent::SettingsTab(_)
         | LayoutIntent::Usage
         | LayoutIntent::Updates

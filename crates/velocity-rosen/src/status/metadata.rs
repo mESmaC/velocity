@@ -275,8 +275,8 @@ fn mirror(connection: &Connection, tip: Option<&str>) -> rusqlite::Result<Mirror
     let Some(remote) = &status.remote else {
         return Ok(status);
     };
-    status.collapse = remote.starts_with("https://collapse.sh/")
-        || remote.starts_with("https://git.collapse.sh/");
+    // One rule with Open on Collapse, which also covers the API host new projects push to.
+    status.collapse = velocity_core::collapse::repository_from_remote(remote).is_some();
     let mut label = "Pending";
     if status
         .pushed

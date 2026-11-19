@@ -6,12 +6,22 @@
     owner,
     claims,
     open,
+    openOnCollapse,
   }: {
     change: ChangeRow;
     owner: OwningThread | undefined;
     claims: number;
     open: (identifier: string) => void;
+    // Null when the project has no Collapse mirror (#429).
+    openOnCollapse: ((commit: string) => void) | null;
   } = $props();
+
+  // A reverted change's commit is no longer in the base, so only standing lands link out.
+  const landedCommit = $derived(
+    change.phase === 'landed' || change.phase === 'green'
+      ? change.landed
+      : null,
+  );
 
   const phases = {
     editing: 'Editing',
@@ -57,6 +67,17 @@
   <div class="change">{@render details()}</div>
 {/if}
 
+{#if openOnCollapse && landedCommit}
+  {@const commit = landedCommit}
+  {@const openPage = openOnCollapse}
+  <button
+    type="button"
+    class="btn collapse"
+    title="Open this land's commit page on collapse.sh"
+    onclick={() => openPage(commit)}>Open on Collapse ↗</button
+  >
+{/if}
+
 {#if change.output}
   <details>
     <summary>Post-land check output</summary>
@@ -97,6 +118,9 @@
   .mono,
   pre {
     font-family: var(--mono);
+  }
+  .collapse {
+    margin: var(--sp-2) 0 0 var(--sp-2);
   }
   details {
     margin: var(--sp-2) 0 0 var(--sp-2);

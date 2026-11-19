@@ -232,6 +232,7 @@ fn record(entry: &Entry, project: u32, reported: &ReportedDiscoveries) -> AircRe
         entry.to.clone(),
     )
     .with_event_text(&shown.text)
+    .with_land_commit(land_commit(entry))
     .as_event(entry.is_event());
     let record = match &entry.velocity_issue {
         Some(title) => record.with_velocity_issue(title, reported.issue(project, entry.sequence)),
@@ -244,6 +245,16 @@ fn record(entry: &Entry, project: u32, reported: &ReportedDiscoveries) -> AircRe
         ),
         None => record,
     }
+}
+
+/// Rosen's `landed` event becomes a `merged` entry whose text is its detail,
+/// `{"commit": "<hex>"}`. Other `merged` entries carry no commit.
+fn land_commit(entry: &Entry) -> Option<String> {
+    if entry.kind != "merged" {
+        return None;
+    }
+    let detail: serde_json::Value = serde_json::from_str(&entry.text).ok()?;
+    detail.get("commit")?.as_str().map(str::to_owned)
 }
 
 fn mark_seen(application: &AppHandle, project: u32, seen: u64) -> Result<(), String> {

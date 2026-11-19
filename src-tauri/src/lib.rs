@@ -13,6 +13,7 @@ mod airc_modal;
 mod browser;
 mod build_gate;
 mod code_graph;
+mod collapse;
 mod continuous_dispatch;
 mod diagnostics;
 pub mod duty;
@@ -88,6 +89,7 @@ fn bindings() -> Builder<tauri::Wry> {
         code_graph::reset_code_graph_usage,
         code_graph::graph_status,
         code_graph::retry_graph_index,
+        collapse::open_on_collapse,
         continuous_dispatch::get_continuous_dispatch,
         continuous_dispatch::set_continuous_dispatch,
         token_usage::get_token_usage,

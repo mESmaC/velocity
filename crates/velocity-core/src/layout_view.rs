@@ -126,6 +126,8 @@ pub struct LayoutData {
     pub project_identifier: Option<u32>,
     pub project_name: String,
     pub rosen_mirror: Option<crate::rosen_mirror::MirrorState>,
+    /// The project's Collapse mirror as `owner/repository`; `None` hides Open on Collapse.
+    pub collapse_repository: Option<String>,
     pub rosen_work: Option<RosenWorkView>,
     pub rosen_migration_notice: Option<String>,
     pub settled_expanded: bool,
@@ -317,6 +319,8 @@ pub enum LayoutIntent {
         usize,
     ),
     OpenWorktreeInExplorer(String),
+    /// The project's Collapse repository page, or a landed commit's page (#429).
+    OpenOnCollapse(Option<String>),
     SettingsTab(String),
     Usage,
     Updates,
@@ -458,6 +462,8 @@ pub struct LayoutSnapshot {
     pub project_identifier: Option<u32>,
     pub project_name: String,
     pub rosen_mirror: Option<crate::rosen_mirror::MirrorState>,
+    /// The project's Collapse mirror as `owner/repository`; `None` hides Open on Collapse.
+    pub collapse_repository: Option<String>,
     pub rosen_work: Option<RosenWorkView>,
     pub rosen_migration_notice: Option<String>,
     pub view: NavigationView,

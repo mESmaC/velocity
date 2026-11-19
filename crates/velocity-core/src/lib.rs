@@ -10,6 +10,7 @@ pub mod agents_template;
 pub mod airc_modal;
 pub mod board;
 pub mod build_gate;
+pub mod collapse;
 pub mod duty;
 pub mod goal_swarm;
 pub mod goal_swarm_choice;

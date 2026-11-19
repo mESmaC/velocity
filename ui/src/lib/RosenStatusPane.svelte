@@ -1,5 +1,6 @@
 <script lang="ts">
   import {
+    collapseCommands,
     onRosenStatus,
     watchRosenStatus,
     type LayoutAction,
@@ -11,9 +12,14 @@
 
   let {
     project,
+    collapse,
     send,
-  }: { project: number | null; send: (action: LayoutAction) => void } =
-    $props();
+  }: {
+    project: number | null;
+    // The project has a Collapse mirror, so landed changes offer Open on Collapse (#429).
+    collapse: boolean;
+    send: (action: LayoutAction) => void;
+  } = $props();
 
   const sections = [
     'Server',
@@ -126,6 +132,15 @@
 
   function open(identifier: string) {
     send({ OpenThread: identifier });
+  }
+
+  async function openOnCollapse(commit: string) {
+    if (project === null) return;
+    try {
+      await collapseCommands.open(project, commit);
+    } catch (reason) {
+      error = String(reason);
+    }
   }
 
   const seconds = new Intl.NumberFormat(undefined, {
@@ -263,6 +278,7 @@
                   <RosenChangeRow
                     {change}
                     {open}
+                    openOnCollapse={collapse ? openOnCollapse : null}
                     owner={frame?.owners[change.id]}
                     claims={status.claims.filter(
                       (claim) =>
