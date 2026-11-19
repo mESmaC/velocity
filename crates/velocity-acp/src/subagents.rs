@@ -124,7 +124,7 @@ pub fn subagent_report(
         }
         SessionUpdate::ToolCallUpdate(update) => {
             let fields = &update.fields;
-            let spawning = is_spawn(&*update.tool_call_id.0)
+            let spawning = is_spawn(&update.tool_call_id.0)
                 || spawns_subagent(
                     fields.title.as_deref(),
                     update.meta.as_ref(),
