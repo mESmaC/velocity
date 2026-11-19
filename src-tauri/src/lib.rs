@@ -37,6 +37,7 @@ mod proofs_settings;
 mod provider_agents;
 mod providers;
 mod ready_pool;
+mod release;
 mod restart;
 mod rosen;
 mod rosen_events;
@@ -119,6 +120,7 @@ fn bindings() -> Builder<tauri::Wry> {
         machines::dispatch_to_machine,
         projects::list_projects,
         projects::switch_project,
+        release::cut_release,
         proofs_settings::get_proofs_settings,
         provider_agents::set_provider_command,
         provider_agents::add_custom_agent,

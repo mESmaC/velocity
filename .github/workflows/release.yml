@@ -5,6 +5,12 @@ name: Release
 # pre-release part (`v0.1.0-beta.2`) is published as a pre-release and builds no MSI,
 # because MSI versions must be numeric.
 #
+# Once the mirror is Collapse, GitHub receives only the default branch its forwarder
+# delivers, never tags (#431). Velocity then cuts a release by dispatching this workflow
+# with `tag`, the landed `commit` and Rosen's last `green` commit covering it; the
+# workflow creates the tag on that commit when it publishes, so nothing is tagged unless
+# the gate passes. A dispatch with only `tag` releases an existing tag.
+#
 # The gate and the build run side by side, and `publish` waits for both, so a release
 # takes as long as the slower of the two instead of their sum (#498). Nothing is
 # published unless the gate passes.
@@ -14,8 +20,16 @@ on:
   workflow_dispatch:
     inputs:
       tag:
-        description: Existing tag to release, e.g. v0.1.0-beta.2
+        description: Tag to release, e.g. v0.1.0-beta.2. Without `commit` it must exist.
         required: true
+      commit:
+        description: Landed commit to tag and release (40 hex). Velocity's Cut release sets it.
+        required: false
+        default: ''
+      green:
+        description: Rosen's last green commit, which covers `commit` (40 hex).
+        required: false
+        default: ''
 
 # Each job grants only the repository access it needs.
 permissions: {}
@@ -27,6 +41,10 @@ concurrency:
 env:
   CARGO_INCREMENTAL: '0'
   TAG: ${{ inputs.tag || github.ref_name }}
+  # A dispatch with `commit` builds that commit; the tag does not exist until publish.
+  RELEASE_COMMIT: ${{ inputs.commit }}
+  RELEASE_REF: ${{ inputs.commit || inputs.tag || github.ref_name }}
+  GREEN_COMMIT: ${{ inputs.green }}
   TAURI_CLI: '@tauri-apps/cli@2.12.4'
   # The rolling release whose `latest.json` every installed copy reads.
   MANIFEST_TAG: updater
@@ -52,12 +70,27 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
-          ref: ${{ env.TAG }}
+          ref: ${{ env.RELEASE_REF }}
+          # The gate checks the release commit is an ancestor of Rosen's green commit.
+          fetch-depth: 0
+      # A dispatched release names its commit; refuse a tag already on another commit
+      # before anything is built.
+      - name: Check the release tag is free or already on the release commit
+        if: env.RELEASE_COMMIT != ''
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          if ($env:RELEASE_COMMIT -cnotmatch '^[0-9a-f]{40}$') { throw "commit $env:RELEASE_COMMIT is not a full commit ID" }
+          if ($env:GREEN_COMMIT -and $env:GREEN_COMMIT -cnotmatch '^[0-9a-f]{40}$') { throw "green $env:GREEN_COMMIT is not a full commit ID" }
+          $tagged = gh api "repos/${{ github.repository }}/commits/$env:TAG" --jq .sha 2>$null
+          $global:LASTEXITCODE = 0
+          if ($tagged -and $tagged -cne $env:RELEASE_COMMIT) { throw "$env:TAG already exists on $tagged, not $env:RELEASE_COMMIT" }
       - name: Require green integration on the release commit
         shell: pwsh
         env:
           GH_TOKEN: ${{ github.token }}
-        run: pwsh -NoProfile -File scripts/release-gate.ps1 -Repository ${{ github.repository }} -IntegrationOnly
+        run: pwsh -NoProfile -File scripts/release-gate.ps1 -Repository ${{ github.repository }} -Green "$env:GREEN_COMMIT" -IntegrationOnly
       # Builds write to a Dev Drive: ReFS, without real-time scanning of every file the
       # compiler writes, which slows Rust builds on Windows runners the most (#498).
       - uses: samypr100/setup-dev-drive@562171fe8df7401fdf582d766cd3b6ab80d5b1a0 # v4.1.0
@@ -145,7 +178,7 @@ jobs:
         shell: pwsh
         env:
           GH_TOKEN: ${{ github.token }}
-        run: pwsh -NoProfile -File scripts/release-gate.ps1 -Repository ${{ github.repository }}
+        run: pwsh -NoProfile -File scripts/release-gate.ps1 -Repository ${{ github.repository }} -Green "$env:GREEN_COMMIT"
 
   build:
     name: Build and sign
@@ -159,7 +192,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
-          ref: ${{ env.TAG }}
+          ref: ${{ env.RELEASE_REF }}
       - uses: samypr100/setup-dev-drive@562171fe8df7401fdf582d766cd3b6ab80d5b1a0 # v4.1.0
         with:
           drive-size: 40GB
@@ -270,7 +303,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
-          ref: ${{ env.TAG }}
+          ref: ${{ env.RELEASE_REF }}
       - name: Install pinned Rust toolchain
         run: rustup show active-toolchain
       - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
@@ -322,7 +355,9 @@ jobs:
         run: |
           gh release view $env:TAG *> $null
           if ($LASTEXITCODE -ne 0) {
-            $flags = @('--generate-notes', '--verify-tag', '--title', "Velocity $env:VERSION")
+            # A dispatched release creates its tag here, on the gated commit (#431).
+            $target = if ($env:RELEASE_COMMIT) { @('--target', $env:RELEASE_COMMIT) } else { @('--verify-tag') }
+            $flags = @('--generate-notes') + $target + @('--title', "Velocity $env:VERSION")
             if ($env:PRERELEASE -eq 'true') { $flags += '--prerelease' }
             gh release create $env:TAG @flags
             if ($LASTEXITCODE -ne 0) { throw "Could not create the release" }

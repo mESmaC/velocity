@@ -79,6 +79,8 @@ export const commands = {
 	dispatchToMachine: (projectIdentifier: number, machine: string, prompt: string) => __TAURI_INVOKE<string>("dispatch_to_machine", { projectIdentifier, machine, prompt }),
 	listProjects: () => __TAURI_INVOKE<ProjectList>("list_projects"),
 	switchProject: (identifier: number) => __TAURI_INVOKE<LayoutSnapshot_Serialize>("switch_project", { identifier }),
+	/**  `cut_release` (§3.1): without `commit`, Rosen's last green commit is released. */
+	cutRelease: (projectIdentifier: number, version: string, commit: string | null) => __TAURI_INVOKE<ReleaseCut>("cut_release", { projectIdentifier, version, commit }),
 	getProofsSettings: (projectIdentifier: number) => __TAURI_INVOKE<ProofsSettingsView_Serialize>("get_proofs_settings", { projectIdentifier }),
 	/**
 	 *  Sets `provider`'s ACP agent command from its card: the program and its arguments as one
@@ -3521,6 +3523,14 @@ export type RailItem_Serialize = {
 	identifier: string,
 	title: string,
 	metadata: string,
+};
+
+/**  The release the workflow was started for. */
+export type ReleaseCut = {
+	tag: string,
+	commit: string,
+	/**  Rosen's last green commit, which covers `commit`. */
+	green: string,
 };
 
 export type Report = Report_Serialize | Report_Deserialize;

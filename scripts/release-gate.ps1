@@ -7,7 +7,10 @@ before it is released.
 On a Rosen project no approval gates a land, so the release is where everything
 is held to the full bar. Run it on the release commit. It stops at the first
 failure and exits non-zero:
-1. A green Velocity integration build on the exact release commit.
+1. A green Velocity integration build on the exact release commit, or with
+   -Green, on Rosen's last green commit (R12), which the release commit must be
+   an ancestor of. Rosen advances green as a prefix of the base, so the gate
+   reads that instead of re-deriving it from a status on every commit (#431).
 2. No open issue labelled release-blocker (gh, on the checkout's repository).
 3. cargo run -p stress -- --scripts: every stress script. --all would add the
    workspace tests, which the green integration build in step 1 already ran,
@@ -20,11 +23,17 @@ the full gate before building the release.
 
 .EXAMPLE
 pwsh -NoProfile -File scripts/release-gate.ps1
+
+.EXAMPLE
+pwsh -NoProfile -File scripts/release-gate.ps1 -Green <Rosen's last green commit>
 #>
 param(
     # The repository whose release-blocker issues count, as owner/name. Empty
     # reads it from the checkout's origin through gh.
     [string]$Repository = '',
+    # Rosen's last green commit covering the release commit, as Velocity's Cut
+    # release passes it. Empty requires the status on the release commit itself.
+    [string]$Green = '',
     [switch]$IntegrationOnly
 )
 $ErrorActionPreference = 'Stop'
@@ -58,14 +67,30 @@ function Confirm-Integration {
             Stop-Gate 'could not resolve the release repository'
         }
     }
-    $states = @(gh api --paginate "repos/$repo/commits/$commit/statuses" --jq '.[] | select(.context == "velocity/integration") | .state')
+    $checked = $commit
+    if ($Green) {
+        if ($Green -cnotmatch '^[0-9a-f]{40}$') {
+            Stop-Gate "$Green is not a full commit ID"
+        }
+        # Exit 0: an ancestor (or the same commit). 1: not an ancestor. Other: unknown commit.
+        git merge-base --is-ancestor $commit $Green
+        if ($LASTEXITCODE -ne 0) {
+            Stop-Gate "$commit is not covered by Rosen's green commit $Green"
+        }
+        $checked = $Green
+    }
+    $states = @(gh api --paginate "repos/$repo/commits/$checked/statuses" --jq '.[] | select(.context == "velocity/integration") | .state')
     if ($LASTEXITCODE -ne 0) {
-        Stop-Gate "could not read integration status on $commit"
+        Stop-Gate "could not read integration status on $checked"
     }
     if ($states.Count -eq 0 -or $states[0] -cne 'success') {
-        Stop-Gate "$commit has no green Velocity integration build"
+        Stop-Gate "$checked has no green Velocity integration build"
     }
-    Write-Host "==> Integration passed on $commit" -ForegroundColor Cyan
+    if ($checked -ne $commit) {
+        Write-Host "==> Integration passed on Rosen's green commit $checked, which covers $commit" -ForegroundColor Cyan
+    } else {
+        Write-Host "==> Integration passed on $commit" -ForegroundColor Cyan
+    }
 }
 
 Confirm-Integration

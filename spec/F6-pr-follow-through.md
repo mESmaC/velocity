@@ -12,7 +12,7 @@ The window saves their order and collapsed state.
 | Section | Live information |
 |---|---|
 | Server | Running state, version, connected R14 machines, and the local run queue holders and waiter count |
-| Base | Base tip, last green commit, bisect progress, and current culprit or revert |
+| Base | Base tip, last green commit, bisect progress, current culprit or revert, and Cut release |
 | Landing | Lands in the last hour, median time from naming to land for that hour, and post-land build and full-test backlog |
 | Claims and conflicts | Paths, claim holders, overlaps and open stored conflicts |
 | Warm pool | Ready workspace count and target |
@@ -23,6 +23,11 @@ An owned change row opens its thread.
 Rows show editing, named, landing, landed, green, reverted or abandoned.
 A landed row includes the resulting base commit.
 A reverted row shows the saved culprit output.
+
+Cut release takes a version and, optionally, a landed commit, and releases Rosen's last green commit when the commit is left empty (#431).
+Velocity refuses a commit the last green commit does not cover, because R12 advances green as a prefix of the base.
+It waits up to three minutes for GitHub's default branch to carry the green commit and its `velocity/integration` status, then dispatches `release.yml` with the tag, the commit and the green commit.
+The workflow refuses a tag that already names another commit, checks that the commit is an ancestor of the green commit, and creates the tag on the commit only when it publishes.
 
 #### Rosen thread view
 

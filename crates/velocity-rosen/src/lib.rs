@@ -29,6 +29,7 @@ pub mod policy;
 pub mod post_land;
 mod process;
 pub mod project;
+pub mod release;
 mod retry;
 pub mod review_swarm;
 mod server;
@@ -95,6 +96,8 @@ pub enum RosenError {
     Machine(String),
     #[error("{0} is not a valid Rosen agent name")]
     AgentName(String),
+    #[error("{0}")]
+    Release(String),
     #[error("{0} is not a commit or tree id")]
     InvalidId(String),
     #[error(transparent)]

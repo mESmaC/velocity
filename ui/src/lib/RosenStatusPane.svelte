@@ -2,6 +2,7 @@
   import {
     collapseCommands,
     onRosenStatus,
+    releaseCommands,
     watchRosenStatus,
     type LayoutAction,
     type RosenStatusChanged,
@@ -143,6 +144,33 @@
     }
   }
 
+  // Cut release (#431): the version to publish and, optionally, a landed commit the
+  // last green commit covers. Rust checks both and starts the release workflow.
+  let releaseVersion = $state('');
+  let releaseCommit = $state('');
+  let releasing = $state(false);
+  let releaseNote = $state('');
+
+  async function cutRelease() {
+    if (project === null || releasing) return;
+    releasing = true;
+    releaseNote = 'Waiting for GitHub to receive the green commit…';
+    try {
+      const cut = await releaseCommands.cut(
+        project,
+        releaseVersion,
+        releaseCommit.trim() || null,
+      );
+      releaseNote = `Release workflow started for ${cut.tag} at ${cut.commit.slice(0, 10)}`;
+      releaseVersion = '';
+      releaseCommit = '';
+    } catch (reason) {
+      releaseNote = String(reason);
+    } finally {
+      releasing = false;
+    }
+  }
+
   const seconds = new Intl.NumberFormat(undefined, {
     maximumFractionDigits: 2,
   });
@@ -226,6 +254,41 @@
                 {#if status.base.revert}<p title={status.base.revert}>
                     Revert {status.base.revert.slice(0, 10)}
                   </p>{/if}
+                {#if status.base.green}
+                  <form
+                    class="release"
+                    aria-label="Cut release"
+                    onsubmit={(event) => {
+                      event.preventDefault();
+                      void cutRelease();
+                    }}
+                  >
+                    <input
+                      aria-label="Release version"
+                      placeholder="Version, e.g. 0.1.0-beta.2"
+                      bind:value={releaseVersion}
+                      disabled={releasing}
+                    />
+                    <input
+                      class="mono"
+                      aria-label="Commit to release"
+                      title="A landed commit the last green commit covers. Empty releases the last green commit."
+                      placeholder={'Commit · default last green ' +
+                        status.base.green.slice(0, 10)}
+                      bind:value={releaseCommit}
+                      disabled={releasing}
+                    />
+                    <button
+                      type="submit"
+                      class="btn"
+                      disabled={releasing || !releaseVersion.trim()}
+                      >{releasing ? 'Starting release…' : 'Cut release'}</button
+                    >
+                  </form>
+                  {#if releaseNote}<p class="hint" role="status">
+                      {releaseNote}
+                    </p>{/if}
+                {/if}
               {:else if section === 'Landing'}
                 <p>
                   {status.landing.lands_last_hour} in the last hour
@@ -377,5 +440,20 @@
   }
   .hint {
     color: var(--muted);
+  }
+  .release {
+    display: flex;
+    flex-direction: column;
+    align-items: flex-start;
+    gap: var(--sp-2);
+    margin: var(--sp-3) 0 0;
+    padding: 0 var(--sp-3) 0 calc(var(--sp-3) + 10px + var(--sp-3));
+  }
+  .release input {
+    width: 100%;
+    font-size: var(--fs-sm);
+  }
+  .mono {
+    font-family: var(--mono);
   }
 </style>

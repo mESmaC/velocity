@@ -10,6 +10,7 @@ mod issue_types;
 mod issues;
 pub mod mcp_stdio;
 pub mod post_land_failures;
+mod release;
 mod repository;
 mod repository_client;
 mod repository_list;
