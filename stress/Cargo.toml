@@ -4,6 +4,7 @@ version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 publish = false
+default-run = "stress"
 # Turns every Rust harness into a module of the `stress-harness` binary (#499).
 build = "harness/build.rs"
 

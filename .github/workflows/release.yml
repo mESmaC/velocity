@@ -212,6 +212,7 @@ jobs:
         with:
           key: gate
           workspaces: '. -> ${{ env.CARGO_TARGET_DIR }}'
+          cache-workspace-crates: 'true'
       - name: Install UI dependencies
         run: pnpm -C ui install --frozen-lockfile
       # The stress suite creates projects and commits in them, as a developer machine does;
