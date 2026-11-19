@@ -3782,8 +3782,6 @@ export type RosenChangeView_Deserialize = {
 	identifier: string,
 	stage: RosenChangeStage,
 	name?: string | null,
-	proof_required: boolean,
-	proved: boolean,
 	conflicts: string[],
 	lands: RosenLandView_Deserialize[],
 };
@@ -3793,8 +3791,6 @@ export type RosenChangeView_Serialize = {
 	identifier: string,
 	stage: RosenChangeStage,
 	name: string | null,
-	proof_required: boolean,
-	proved: boolean,
 	conflicts: string[],
 	lands: RosenLandView_Serialize[],
 };

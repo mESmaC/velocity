@@ -20,7 +20,7 @@ pub struct ThreadChangeQuery {
     pub previous: Option<RosenChangeView>,
 }
 
-/// Use the protocol for change state, policy and commit trailers. The pinned protocol
+/// Use the protocol for change state and commit trailers. The pinned protocol
 /// exposes conflict IDs and the active land, so retained land attempts and conflict paths
 /// come from Rosen's read-only metadata ledger.
 pub async fn read(
@@ -37,15 +37,11 @@ pub async fn read(
         }
         Err(error) => return Err(error.into()),
     };
-    let config = client.project_config(None).await?.config;
-    let proof_required =
-        config.review.is_before_land() && !config.checks.pre_land.commands.is_empty();
-    let head = proof_required.then(|| record.head.to_string());
     let ledger_path = server.data_dir().join("metadata.sqlite");
     let identifier = query.identifier.clone();
     let imported_through = query.imported_through;
     let facts = tokio::task::spawn_blocking(move || {
-        read_ledger(&ledger_path, &identifier, head, imported_through)
+        read_ledger(&ledger_path, &identifier, imported_through)
     })
     .await
     .map_err(|error| RosenError::ThreadChange(error.to_string()))??;
@@ -66,17 +62,10 @@ pub async fn read(
         name.is_some(),
         query.fixing,
     );
-    let proved = if stage.finished() {
-        lands.last().is_some_and(|land| land.receipt.is_some())
-    } else {
-        facts.proved
-    };
     Ok(Some(RosenChangeView {
         identifier: query.identifier,
         stage,
         name,
-        proof_required: proof_required || proved,
-        proved,
         conflicts: if record.state.is_closed() {
             Vec::new()
         } else {
@@ -132,7 +121,6 @@ struct LandFact {
 
 struct LedgerFacts {
     may_have_named_work: bool,
-    proved: bool,
     conflicts: Vec<String>,
     lands: Vec<LandFact>,
 }
@@ -146,7 +134,6 @@ fn ledger(path: &Path) -> Result<Connection, RosenError> {
 fn read_ledger(
     path: &Path,
     change: &str,
-    head: Option<String>,
     imported_through: u64,
 ) -> Result<LedgerFacts, RosenError> {
     let mut connection = ledger(path)?;
@@ -161,19 +148,9 @@ fn read_ledger(
             (imported_through, change),
             |row| row.get(0),
         )?;
-    let proved = match head {
-        Some(head) => transaction.query_row(
-            "SELECT EXISTS(SELECT 1 FROM receipts r JOIN base_refs b ON b.target=r.base
-             WHERE r.change_id=?1 AND r.head=?2)",
-            (change, head),
-            |row| row.get(0),
-        )?,
-        None => false,
-    };
     let lands = read_lands(&transaction, change)?;
     Ok(LedgerFacts {
         may_have_named_work,
-        proved,
         conflicts,
         lands,
     })

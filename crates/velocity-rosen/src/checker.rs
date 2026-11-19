@@ -10,14 +10,13 @@ use rosen_client::protocol::CheckPriority;
 use rosen_client::run_queue::{self, RunClass, RunQueue, Turn};
 
 use crate::checkout::{self, MergeCheckout};
-use crate::policy::{CheckPolicy, policy_at};
 use crate::process::{background_command, hidden_command};
 use crate::workspace::session;
 use crate::{ProjectServer, RosenError};
 
-/// The Rosen identity Velocity submits receipts and lands under.
+/// The Rosen identity Velocity uses to land changes and inspect stored conflicts.
 pub const CHECKER: &str = "velocity-checker";
-/// The longest one pre-land command may run, as Rosen allows a prepare command.
+/// The longest one verification command may run.
 const COMMAND_LIMIT: Duration = Duration::from_secs(60 * 60);
 const POLL: Duration = Duration::from_millis(250);
 
@@ -50,31 +49,19 @@ pub struct FailedCommand {
     pub output: String,
 }
 
-/// A merge result staged beside the check folder, with the policy its base holds.
-#[derive(Clone, Debug)]
-pub struct StagedMerge {
-    pub merge: MergeCheckout,
-    /// Read at `merge.base`, the base the check runs on: its commands are the ones to run
-    /// and its check set the one the receipt names, whatever lands meanwhile.
-    pub policy: CheckPolicy,
-}
-
-/// Writes `change`'s current merge result beside `folder`, ready for [`apply_staged`], and
-/// reads the policy at its base. Nothing is staged when the merge conflicts. A folder
-/// Velocity did not check out is never touched.
+/// Inspects the change's current merge result for conflicts and generated paths.
+/// Rosen stages the result beside `folder` when the merge is clean.
 pub async fn stage_merge_result(
     server: &ProjectServer,
     change: &str,
     folder: &Path,
-) -> Result<StagedMerge, RosenError> {
+) -> Result<MergeCheckout, RosenError> {
     let staging = checkout::claim_checkout(folder)?;
     let checkout = session(server, CHECKER)
         .await?
         .check_out_merge_result(change, &staging)
         .await?;
-    let merge = MergeCheckout::from_result(checkout.merge);
-    let policy = policy_at(server, Some(&merge.base)).await?;
-    Ok(StagedMerge { merge, policy })
+    Ok(MergeCheckout::from_result(checkout.merge))
 }
 
 /// Brings `folder` to exactly the staged merge result (blocking). A file whose bytes are

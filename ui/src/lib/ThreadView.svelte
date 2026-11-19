@@ -84,7 +84,6 @@
       view.stage === 'Reopened' ||
       (view.stage === 'Conflict' && Boolean(view.lands.at(-1)?.revert));
     const labels = ['Editing', 'Named', 'Landing', 'Landed', 'Green'];
-    if (view.proof_required) labels.splice(2, 0, 'Proved');
     if (reopened) labels.splice(labels.length - 1, 1, 'Reverted', 'Reopened');
     if (view.stage === 'Abandoned')
       labels.splice(view.name ? 2 : 1, labels.length, 'Abandoned');
@@ -99,15 +98,12 @@
       state:
         label === 'Reverted' || (index === active && view.stage === 'Conflict')
           ? 'fail'
-          : label === 'Proved' && !view.proved
-            ? 'todo'
-            : index < active ||
-                (index === active &&
-                  ['Green', 'Abandoned'].includes(view.stage))
-              ? 'done'
-              : index === active
-                ? 'run'
-                : 'todo',
+          : index < active ||
+              (index === active && ['Green', 'Abandoned'].includes(view.stage))
+            ? 'done'
+            : index === active
+              ? 'run'
+              : 'todo',
     }));
   }
 

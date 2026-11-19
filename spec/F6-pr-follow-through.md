@@ -28,10 +28,11 @@ A reverted row shows the saved culprit output.
 
 The header shows the Rosen change ID and its workspace path.
 Name change records a named snapshot, Rebase brings the workspace onto the current base, and Abandon closes the change and lets Rosen remove the workspace.
-The change track shows Editing → Named → Landing → Landed → Green, with a Proved step when the review policy uses a pre-land receipt.
+The change track shows Editing → Named → Landing → Landed → Green.
 The sidebar uses the same stage and its colour.
 The transcript shows the files with stored conflicts and offers Resolve with agent, which queues the handoff for the owning agent's next turn boundary.
-After a land the transcript groups the coding work behind Show work and shows the landed commit, its Rosen change, receipt and approver trailers, and the recorded post-land results.
+After a land the transcript groups the coding work behind Show work and shows the landed commit, its Rosen change and the recorded post-land results.
+Historical lands retain any receipt and approver trailers Rosen recorded.
 A revert shows Reverted → Reopened with the inverse commit and failing output, restores the transcript and composer, and resumes the owning agent through the F5 recovery path.
 Land attempts and their evidence stay in the thread after a reland or restart.
 

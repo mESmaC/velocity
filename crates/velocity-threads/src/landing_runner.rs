@@ -156,16 +156,15 @@ async fn report_conflict<Host: LandingHost>(
     let Ok(root) = location.project_root() else {
         return;
     };
-    let Ok(staged) =
+    let Ok(merge) =
         checker::stage_merge_result(server, change, &root.join("landing-conflicts")).await
     else {
         return;
     };
-    if staged.merge.conflicts.is_empty() {
+    if merge.conflicts.is_empty() {
         return;
     }
     let branch = crate::launch::base_branch(&project.project);
-    let message =
-        velocity_core::rosen_checker::conflict_message(change, &branch, &staged.merge.conflicts);
+    let message = velocity_core::rosen_checker::conflict_message(change, &branch, &merge.conflicts);
     host.merge_conflict(project.project.id, thread, change, &message);
 }

@@ -234,8 +234,6 @@ pub struct RosenChangeView {
     pub identifier: String,
     pub stage: RosenChangeStage,
     pub name: Option<String>,
-    pub proof_required: bool,
-    pub proved: bool,
     pub conflicts: Vec<String>,
     pub lands: Vec<RosenLandView>,
 }
@@ -246,8 +244,6 @@ impl RosenChangeView {
             identifier,
             stage,
             name: None,
-            proof_required: false,
-            proved: false,
             conflicts: Vec::new(),
             lands: Vec::new(),
         }
@@ -812,10 +808,7 @@ fn worked_summary(entry: &ThreadDetailEntry) -> Option<WorkedSummaryView> {
         files_touched,
         added: entry.added,
         deleted: entry.deleted,
-        proved: entry
-            .rosen_change
-            .as_ref()
-            .is_some_and(|change| change.proved),
+        proved: false,
     })
 }
 
