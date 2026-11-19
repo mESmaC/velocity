@@ -3,11 +3,17 @@
 mod queued_run_access;
 
 fn main() -> anyhow::Result<()> {
+    if let Some(code) = velocity_acp::providers::serve_codex_app_server()? {
+        std::process::exit(code);
+    }
     if let Some(argument) = std::env::args_os()
         .nth(1)
         .and_then(|value| value.into_string().ok())
     {
         velocity_app_lib::process_memory::start_helper_guard(&argument);
+        if argument == velocity_browser::SWITCH {
+            return Ok(velocity_browser::serve_mcp()?);
+        }
     }
     if let Some((command, result)) = velocity_rosen::agent_run::serve() {
         let code = match result {
@@ -23,6 +29,7 @@ fn main() -> anyhow::Result<()> {
         return Ok(());
     }
     if let Ok(executable) = std::env::current_exe() {
+        velocity_acp::providers::enable_codex_startup_override(executable.clone());
         velocity_acp::client::enable_queued_runs(executable);
     }
     if velocity_app_lib::headless::serve()? {

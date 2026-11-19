@@ -156,8 +156,10 @@ pub type AgentProcess = Box<dyn ChildWrapper>;
 /// config as it would in a terminal: no isolated home, no empty config, no sandbox.
 pub fn spawn_agent(launch: &AgentLaunch, worktree: &Path) -> Result<AgentProcess, ClientError> {
     launch.prepare_account()?;
-    let mut command = hidden_command(find_program(launch.program.as_os_str()));
+    let program = find_program(launch.program.as_os_str());
+    let mut command = hidden_command(&program);
     launch.apply_environment(&mut command);
+    crate::providers::configure_codex_startup(&mut command, launch, &program);
     command
         .args(&launch.args)
         .args(launch.profile_args())
@@ -238,7 +240,7 @@ fn extend_search_path(command: &mut Command) {
 /// flashes on screen (#232). Every agent, sign-in, install, limits probe and terminal command is
 /// built here; clippy's `disallowed_methods` (`clippy.toml`) rejects a bare `Command::new`.
 #[allow(clippy::disallowed_methods)]
-pub(crate) fn hidden_command(program: impl AsRef<OsStr>) -> Command {
+pub fn hidden_command(program: impl AsRef<OsStr>) -> Command {
     let mut command = Command::new(program);
     #[cfg(windows)]
     {

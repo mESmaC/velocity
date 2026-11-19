@@ -79,6 +79,7 @@
   let zoomError = $state('');
   let zoomQueue = Promise.resolve();
   let openPane = $state<'threads' | 'activity' | null>(null);
+  let requestedBrowser = $state('');
   const intents: LayoutIntent[] = [];
   const shortcutKeys = new Set([
     'k',
@@ -517,7 +518,14 @@
     >
       <!-- The Board replaces the sidebar, one thread and the rail with every thread at once. -->
       {#if layout.view === 'Board'}<PaneBoundary name="board" {revision}
-          ><Board {layout} {send} /></PaneBoundary
+          ><Board
+            {layout}
+            {send}
+            openBrowser={(thread) => {
+              requestedBrowser = `${layout?.project_identifier}:${thread}`;
+              send({ OpenThread: thread });
+            }}
+          /></PaneBoundary
         >{:else}
         <div class="pane-switch" role="group" aria-label="Workspace panes">
           <button
@@ -558,6 +566,8 @@
               />{:else if layout.view === 'Thread' && layout.active_thread}<ThreadView
                 {layout}
                 thread={layout.active_thread}
+                browserRequested={requestedBrowser ===
+                  `${layout.project_identifier}:${layout.active_thread.identifier}`}
                 {send}
               />{:else if layout.view === 'Duty' && layout.active_duty}<DutyView
                 {layout}

@@ -87,6 +87,25 @@
       {#if preferences}
         {@const roles = preferences}
         <section>
+          <h2>Agent browser</h2>
+          <label class="worktree-setting-row">
+            <span>Concurrent browsers</span>
+            <input
+              type="number"
+              min="1"
+              max="16"
+              value={roles.agents.browser_limit}
+              disabled={saving}
+              onchange={(event) => {
+                const limit = event.currentTarget.valueAsNumber;
+                if (Number.isInteger(limit) && limit >= 1 && limit <= 16)
+                  roles.agents.browser_limit = limit;
+                event.currentTarget.value = String(roles.agents.browser_limit);
+              }}
+            />
+          </label>
+        </section>
+        <section>
           <h2>Reasoning effort</h2>
           {@render effortRow(
             'Implementation',

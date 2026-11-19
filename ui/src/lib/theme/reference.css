@@ -2,6 +2,11 @@
    copy. These values come from the winning reference rules, including the
    later title-bar overrides at design/main-window.html:947-973. */
 :root {
+  --browser-toolbar-gap: 0.5rem;
+  --browser-toolbar-padding: 0.5rem 0.75rem;
+  --browser-toolbar-border: 0.0625rem solid var(--line-mid);
+  --browser-controlled-outline: inset 0 0 0 0.0625rem var(--accent-line);
+  --browser-card-actions-padding: 0 0.75rem 0.5rem;
   --ui-default-zoom: 100%;
   --type-caption: 0.9375rem;
   --type-body: 1rem;

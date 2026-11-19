@@ -350,6 +350,13 @@ pub(crate) async fn land_thread(application: &AppHandle, key: ThreadKey) -> Vec<
     let plan = plan_deletion(&repository, &thread);
     let stop = stop_agent(application, key).await;
     let (kept, mut problems) = run_effects(plan, &thread, stop).await;
+    if let Err(error) =
+        crate::browser::delete(application, key, thread.browser_location.as_deref()).await
+    {
+        problems.push(format!(
+            "its browser profile could not be removed ({error})"
+        ));
+    }
     if let Some(change) = &thread.rosen_change
         && let Err(error) = crate::rosen::abandon(application, key.0, &thread, change).await
     {

@@ -547,6 +547,12 @@ pub struct AgentSettings {
     pub shared_mcp_servers: Vec<shared_mcp::SharedMcpServer>,
     #[serde(default = "default_trim_agent_context")]
     pub trim_agent_context: bool,
+    #[serde(default = "default_browser_limit")]
+    pub browser_limit: u32,
+}
+
+fn default_browser_limit() -> u32 {
+    3
 }
 
 fn default_sweep_effort() -> EffortLevel {
@@ -652,6 +658,7 @@ impl Settings {
                 sweep_effort: default_sweep_effort(),
                 shared_mcp_servers: Vec::new(),
                 trim_agent_context: default_trim_agent_context(),
+                browser_limit: default_browser_limit(),
             },
             proofs: ProofSettings {
                 stress_diff_input_count: core_settings.proofs.stress_diff_input_count,
@@ -757,6 +764,10 @@ pub struct ThreadItem {
     #[serde(deserialize_with = "deserialize_optional_non_empty_string")]
     #[specta(type = Option<String>)]
     pub worktree_path: Option<String>,
+    /// Bind the profile to its original location even when the workspace setting changes.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[specta(skip)]
+    pub browser_location: Option<String>,
     #[serde(default)]
     pub worktree_role: WorktreeRole,
     #[serde(default, skip_serializing)]
@@ -866,6 +877,7 @@ impl ThreadItem {
             activity: AgentActivity::Executing,
             branch_name: String::new(),
             worktree_path: None,
+            browser_location: None,
             worktree_role: WorktreeRole::Thread,
             worktree_path_id: None,
             pull_request_number: None,
@@ -920,6 +932,7 @@ impl ThreadItem {
             activity: AgentActivity::Executing,
             branch_name: thread.branch_name,
             worktree_path: Some(thread.worktree_path),
+            browser_location: None,
             // A thread started from the composer builds in its own worktree (F4, F5).
             worktree_role: WorktreeRole::Thread,
             worktree_path_id: None,
@@ -1595,6 +1608,7 @@ impl StateStore {
             || agents.claim_release_grace_minutes == 0
             || agents.max_turns == Some(0)
             || agents.max_duration_minutes == Some(0)
+            || !(1..=16).contains(&agents.browser_limit)
         {
             return Err(StoreError::AgentSetting);
         }

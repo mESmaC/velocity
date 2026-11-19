@@ -68,7 +68,9 @@ pub use limits::{
 };
 pub use live_limits::{subscribe_account_limits, subscribe_limits, subscription_limit_error};
 pub use probe::{AgentProbe, ProbedModel, probe_agent};
-pub use process::AgentLaunch;
+pub use process::{
+    AgentLaunch, AgentProcess, hidden_command, spawn_owned_command, stop_owned_process,
+};
 pub use program_path::program_found;
 pub use queued_run_command::is_queued_run_notice;
 pub use queued_run_tool::{

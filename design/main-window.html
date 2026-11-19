@@ -1184,6 +1184,16 @@ button.card:hover { border-color: rgba(255, 255, 255, .18); background: rgba(255
 .card.active { border-color: var(--accent-line); background: var(--accent-soft); }
 .card.paused { opacity: .6; }
 .card-title { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 12.5px; font-weight: 500; color: var(--text); }
+.browser-tabs, .browser-toolbar { display: flex; align-items: center; gap: 8px; padding: 8px 12px; border-bottom: 1px solid var(--line-mid); }
+.browser-tabs { overflow-x: auto; }
+.browser-tabs .btn { flex: 0 0 auto; }
+.browser-tabs .btn[aria-pressed="true"] { border-color: var(--accent-line); background: var(--accent-soft); }
+.browser-tabs[hidden], .thread-browser[hidden], #viewThread .transcript[hidden], #viewThread .dock[hidden] { display: none; }
+.thread-browser { display: flex; flex: 1; flex-direction: column; min-height: 0; overflow: hidden; }
+.browser-address { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--text-2); font-family: var(--mono); }
+.browser-viewport { flex: 1; display: grid; place-items: center; min-height: 0; overflow: hidden; background: var(--bg); color: var(--muted); }
+.browser-viewport.controlled { box-shadow: inset 0 0 0 1px var(--accent-line); }
+.browser-card-actions { display: flex; justify-content: flex-end; padding: 0 12px 8px; }
 .card-meta { grid-column: 2; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font: 10.5px var(--mono); color: var(--muted); }
 .card > svg { color: var(--muted); }
 .card[data-status="working"] > svg, .card[data-status="spec"] > svg { color: var(--accent); }
@@ -1307,6 +1317,23 @@ select { background: var(--surface); color: var(--text); border: 1px solid var(-
         <div class="head-actions" id="headActions"></div>
       </div>
       <div class="change-track" id="changeTrack" hidden></div>
+      <div class="browser-tabs" id="threadTabs" role="group" aria-label="Thread view" hidden>
+        <button class="btn" data-thread-pane="transcript" aria-pressed="true">Transcript</button>
+        <button class="btn" data-thread-pane="browser" aria-pressed="false">Browser</button>
+      </div>
+      <section class="thread-browser" id="threadBrowser" aria-label="Agent browser" hidden>
+        <div class="browser-tabs" role="group" aria-label="Browser tabs">
+          <button class="btn" aria-pressed="true">Velocity</button>
+          <button class="btn" aria-pressed="false">Vite documentation</button>
+        </div>
+        <div class="browser-toolbar">
+          <span class="browser-address" id="browserAddress">http://localhost:1420/</span>
+          <button class="btn" id="browserTake">Take over</button>
+        </div>
+        <div class="browser-viewport" id="browserPreview">
+          <span>Velocity preview · localhost:1420</span>
+        </div>
+      </section>
       <div class="transcript"><div class="transcript-inner" id="transcript"></div></div>
       <div class="dock">
         <div class="composer" data-composer>
@@ -1686,7 +1713,8 @@ function boardCard(t) {
     : t.change ? changeId(t) + ' · ' + changePhase(t)
     : t.changeName ? `${t.time} · +${t.add} −${t.del}` : '';
   const icon = t.isSwarm ? (t.goal ? I.goal : I.swarm) : t.duty ? I[t.role] : I[t.status];
-  return `<button class="card ${state.active === t.id ? 'active' : ''} ${t.paused ? 'paused' : ''}" data-status="${t.status}" data-id="${t.id}">${icon}<span class="card-title">${esc(t.title)}</span>${meta ? `<span class="card-meta">${esc(meta)}</span>` : ''}</button>`;
+  const browser = t.duty || t.spec || t.isSwarm ? '' : `<div class="browser-card-actions"><button class="btn" data-card-browser="${t.id}">Browser</button></div>`;
+  return `<div><button class="card ${state.active === t.id ? 'active' : ''} ${t.paused ? 'paused' : ''}" data-status="${t.status}" data-id="${t.id}">${icon}<span class="card-title">${esc(t.title)}</span>${meta ? `<span class="card-meta">${esc(meta)}</span>` : ''}</button>${browser}</div>`;
 }
 const workCard = (icon, title, meta) => `<article class="card work">${icon}<span class="card-title">${esc(title)}</span><span class="card-meta">${esc(meta)}</span></article>`;
 function renderBoard() {
@@ -1810,6 +1838,8 @@ $('#tasks').addEventListener('click', e => { const g = e.target.closest('[data-g
 
 /* ───────────── render: thread transcript ───────────── */
 function renderThreadView(t) {
+  $('#threadTabs').hidden = false;
+  showThreadPane('transcript');
   $('#tTitle').textContent = t.title;
   $('#tMeta').innerHTML = '<span class="mono">' + changeId(t) + '</span>' + wtChip(t) + '<span class="add">+' + (t.add || 0) + '</span><span class="del">−' + (t.del || 0) + '</span><span>' + (t.time || 'now') + '</span><span>' + runningSubagents(t) + ' subagents running</span>';
   $('#headActions').innerHTML = '<button class="btn" data-change-action="diff">Diff <kbd>D</kbd></button><button class="btn" data-change-action="editor">Editor <kbd>E</kbd></button><button class="btn primary" data-change-action="name">Name change</button><button class="btn" data-change-action="rebase">Rebase</button><button class="btn" data-change-action="abandon">Abandon</button>' + collapseAction(t);
@@ -1823,6 +1853,34 @@ function renderThreadView(t) {
     '<div class="diff"><div class="diff-h"><span>crates/velocity-threads/src/lib.rs</span><span class="add">+182 −12</span></div><pre><span class="c">@@ thread activity @@</span><span class="a">+pub struct ThreadActivity {</span><span class="a">+    pub subagents: Vec&lt;SubagentActivity&gt;,</span><span class="a">+}</span></pre></div><div class="msg-agent"><p>' + (['Green','Landed'].includes(changePhase(t)) ? 'Implementation landed. Post-land results follow below.' : 'Implementation is in progress. Workspace writes are automatically stored on Rosen.') + '</p></div>' + subagentCards(t) + landHistory(t) + (t.extra || []).join('');
 }
 
+function showThreadPane(pane) {
+  const browser = pane === 'browser';
+  $('#threadBrowser').hidden = !browser;
+  $('#viewThread .transcript').hidden = browser;
+  $('#viewThread .dock').hidden = browser;
+  for (const button of document.querySelectorAll('[data-thread-pane]')) {
+    button.setAttribute('aria-pressed', String(button.dataset.threadPane === pane));
+  }
+}
+$('#threadTabs').onclick = event => {
+  const button = event.target.closest('[data-thread-pane]');
+  if (button) showThreadPane(button.dataset.threadPane);
+};
+$('#browserTake').onclick = event => {
+  const button = event.currentTarget;
+  const taking = button.textContent === 'Take over';
+  button.textContent = taking ? 'Hand back' : 'Take over';
+  $('#browserPreview').classList.toggle('controlled', taking);
+};
+$('#threadBrowser .browser-tabs').onclick = event => {
+  const button = event.target.closest('button');
+  if (!button || $('#browserTake').textContent !== 'Hand back') return;
+  for (const tab of event.currentTarget.children) tab.setAttribute('aria-pressed', String(tab === button));
+  const url = button.textContent === 'Velocity' ? 'http://localhost:1420/' : 'https://vite.dev/guide/';
+  $('#browserAddress').textContent = url;
+  $('#browserPreview span').textContent = button.textContent;
+};
+
 /* ───────────── navigation ───────────── */
 const activeThread = () => state.threads.find(t => t.id === state.active);
 function select(id) {
@@ -1832,6 +1890,8 @@ function select(id) {
   state.active = id;
   $('#viewDoc').classList.remove('on'); $('#viewSettings').classList.remove('on');
   $('#changeTrack').hidden = true;
+  $('#threadTabs').hidden = true;
+  showThreadPane('transcript');
   $('#agentsLink').classList.remove('on');
   const t = activeThread();
   const isDraft = !t || t.status === 'draft';
@@ -1877,6 +1937,12 @@ function toastAct(msg, label, fn, ms = 5000) {
 $('#viewSwitch').addEventListener('click', e => { const b = e.target.closest('button'); if (b) setBoard(b.dataset.view === 'board'); });
 $('#board').addEventListener('click', e => {
   if (e.target.closest('[data-board-swarm]')) return openSwarm('tasks');
+  const browserCard = e.target.closest('[data-card-browser]');
+  if (browserCard) {
+    select(browserCard.dataset.cardBrowser);
+    showThreadPane('browser');
+    return;
+  }
   const card = e.target.closest('button.card'); if (card) { setBoard(false); select(card.dataset.id); }   // opening a card returns to Focus
 });
 $('#threads').addEventListener('click', e => {

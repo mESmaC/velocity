@@ -1,11 +1,13 @@
 //! Use private commit on Windows, the same quantity reported in event 2004.
 
+use std::collections::{HashMap, HashSet};
 use std::time::{Duration, Instant};
 
 use serde::Serialize;
 use specta::Type;
 use sysinfo::{Pid, ProcessRefreshKind, ProcessesToUpdate, System, UpdateKind};
-use tauri::AppHandle;
+use tauri::{AppHandle, Manager};
+use velocity_browser::{BrowserHub, BrowserKey, MEMORY_BUDGET};
 use velocity_threads::REVIEW_SWARM_SWITCH;
 
 const GIB: u64 = 1024 * 1024 * 1024;
@@ -26,6 +28,7 @@ fn role(argument: Option<&str>) -> &'static str {
     match argument {
         Some(REVIEW_SWARM_SWITCH) => "Review swarm MCP",
         Some("--airc-mcp") => "AIRC MCP",
+        Some(velocity_browser::SWITCH) => "Browser MCP",
         Some("--graph-mcp") => "Code graph MCP",
         Some("--graph-project") => "Project graph",
         Some("--graph-warm") => "Graph warmer",
@@ -57,7 +60,11 @@ fn mib(bytes: u64) -> u32 {
     u32::try_from(bytes.div_ceil(1024 * 1024)).unwrap_or(u32::MAX)
 }
 
-fn sample(current_pid: u32, current_role: &'static str) -> Result<Vec<ProcessMemory>, String> {
+fn sample(
+    current_pid: u32,
+    current_role: &'static str,
+    browsers: &[(BrowserKey, u32)],
+) -> Result<Vec<ProcessMemory>, String> {
     let mut system = System::new().map_err(|error| error.to_string())?;
     system.refresh_processes_specifics(ProcessesToUpdate::All, true, ProcessRefreshKind::nothing());
     let executable = std::env::current_exe().ok();
@@ -102,8 +109,110 @@ fn sample(current_pid: u32, current_role: &'static str) -> Result<Vec<ProcessMem
             }
         })
         .collect();
+    rows.extend(
+        browser_memory(&mut system, browsers)
+            .into_iter()
+            .map(|(_, row)| row),
+    );
     rows.sort_unstable_by_key(|row| (row.pid != current_pid, row.pid));
     Ok(rows)
+}
+
+fn browser_memory(
+    system: &mut System,
+    browsers: &[(BrowserKey, u32)],
+) -> Vec<(BrowserKey, ProcessMemory)> {
+    if browsers.is_empty() {
+        return Vec::new();
+    }
+    let mut children: HashMap<Pid, Vec<Pid>> = HashMap::new();
+    for process in system.processes().values() {
+        if let Some(parent) = process.parent() {
+            children.entry(parent).or_default().push(process.pid());
+        }
+    }
+    let groups: Vec<_> = browsers
+        .iter()
+        .map(|&(_, pid)| browser_tree(&children, Pid::from_u32(pid)))
+        .collect();
+    let pids: Vec<_> = groups.iter().flatten().copied().collect();
+    system.refresh_processes_specifics(
+        ProcessesToUpdate::Some(&pids),
+        true,
+        ProcessRefreshKind::nothing().with_memory(),
+    );
+    browsers
+        .iter()
+        .zip(groups)
+        .map(|(&(key, pid), group)| {
+            (
+                key,
+                ProcessMemory {
+                    pid,
+                    role: "Agent browser",
+                    memory_mib: mib(group
+                        .into_iter()
+                        .filter_map(|pid| system.process(pid))
+                        .map(charged)
+                        .sum()),
+                    budget_mib: mib(MEMORY_BUDGET),
+                },
+            )
+        })
+        .collect()
+}
+
+fn browser_tree(children: &HashMap<Pid, Vec<Pid>>, root: Pid) -> Vec<Pid> {
+    let mut members = vec![root];
+    let mut seen = HashSet::from([root]);
+    let mut index = 0;
+    while let Some(pid) = members.get(index) {
+        if let Some(children) = children.get(pid) {
+            members.extend(children.iter().copied().filter(|child| seen.insert(*child)));
+        }
+        index += 1;
+    }
+    members
+}
+
+pub fn enforce_browser_budgets(application: &AppHandle) {
+    let hub = application.state::<BrowserHub>().inner().clone();
+    tauri::async_runtime::spawn(async move {
+        let mut interval = tokio::time::interval(Duration::from_secs(5));
+        loop {
+            interval.tick().await;
+            let browsers = hub.processes();
+            if browsers.is_empty() {
+                continue;
+            }
+            let rows = tauri::async_runtime::spawn_blocking(move || {
+                let Ok(mut system) = System::new() else {
+                    return Vec::new();
+                };
+                system.refresh_processes_specifics(
+                    ProcessesToUpdate::All,
+                    true,
+                    ProcessRefreshKind::nothing(),
+                );
+                browser_memory(&mut system, &browsers)
+            })
+            .await
+            .unwrap_or_default();
+            for (key, row) in rows
+                .into_iter()
+                .filter(|(_, row)| row.memory_mib > row.budget_mib)
+            {
+                crate::diagnostics::record(
+                    "memory",
+                    &format!(
+                        "Agent browser PID {} reached {} MiB",
+                        row.pid, row.memory_mib
+                    ),
+                );
+                hub.suspend(key, row.pid).await;
+            }
+        }
+    });
 }
 
 fn enforce(limit: u64, mut exceeded: impl FnMut(u64), mut periodic: impl FnMut()) {
@@ -158,6 +267,7 @@ pub fn start_helper_guard(argument: &str) {
 }
 
 pub fn start(application: AppHandle) {
+    enforce_browser_budgets(&application);
     std::thread::spawn(move || {
         let pid = std::process::id();
         enforce(
@@ -173,7 +283,8 @@ pub fn start(application: AppHandle) {
                 application.exit(0);
             },
             || {
-                if let Ok(rows) = sample(pid, "Main window")
+                let browsers = application.state::<BrowserHub>().processes();
+                if let Ok(rows) = sample(pid, "Main window", &browsers)
                     && let Ok(message) = serde_json::to_string(&rows)
                 {
                     crate::diagnostics::record("memory", &message);
@@ -185,6 +296,7 @@ pub fn start(application: AppHandle) {
 
 #[tauri::command]
 #[specta::specta]
-pub async fn get_process_memory() -> Result<Vec<ProcessMemory>, String> {
-    crate::layout::off_ui_thread(|| sample(std::process::id(), "Main window")).await
+pub async fn get_process_memory(application: AppHandle) -> Result<Vec<ProcessMemory>, String> {
+    let browsers = application.state::<BrowserHub>().processes();
+    crate::layout::off_ui_thread(move || sample(std::process::id(), "Main window", &browsers)).await
 }

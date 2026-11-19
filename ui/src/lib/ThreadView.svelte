@@ -6,6 +6,7 @@
   import Icon from './Icon.svelte';
   import Markdown from './Markdown.svelte';
   import TokenUsage from './TokenUsage.svelte';
+  import ThreadBrowser from './ThreadBrowser.svelte';
   import TranscriptBlocks from './TranscriptBlocks.svelte';
   import { followTranscript } from './follow-transcript';
   import { threadChangeCommands, threadMenuCommands } from './ipc';
@@ -19,13 +20,20 @@
   let {
     layout,
     thread,
+    browserRequested,
     send,
   }: {
     layout: LayoutSnapshot;
     thread: ThreadDetailSnapshot;
+    browserRequested: boolean;
     send: (action: LayoutAction) => void;
   } = $props();
   let usageOpen = $state(false);
+  let browserOpen = $state(false);
+  $effect(() => {
+    const identifier = thread.identifier;
+    browserOpen = Boolean(identifier && browserRequested);
+  });
   let change = $derived(thread.rosen_change);
   let changeKey = $derived(
     `${layout.project_identifier}:${thread.identifier}:${change?.identifier}`,
@@ -311,88 +319,128 @@
     <ChangeTrack steps={changeSteps(change)} />
   {/if}
 
-  <div class="transcript" use:followTranscript={thread.identifier}>
-    <div class="transcript-inner">
-      <PaneState
-        name="Transcript"
-        rosen
-        loading={thread.agent_busy &&
-          !thread.blocks.some(
-            (block) =>
-              block.AgentMessage ||
-              block.ToolGroup ||
-              block.Diff ||
-              block.ErrorCard ||
-              block.Decision,
-          )}
-        empty={!thread.blocks.length &&
-          !thread.agent_busy &&
-          !change?.lands.length &&
-          !change?.conflicts.length &&
-          !thread.no_change_reason}
-        message="No updates yet · Send a message to start."
-      />
-      {#if change && thread.worked_summary && thread.transcript_mode !== 'FullTranscript'}
-        <div class="worked">
-          <Icon name="check" />
-          <span>
-            Task finished · {thread.worked_summary.tool_calls} tool calls · {thread
-              .worked_summary.files_touched} files ·
-            <span class="add">+{thread.worked_summary.added}</span>
-            <span class="del">−{thread.worked_summary.deleted}</span>
-            {thread.worked_summary.proved ? ' · proved' : ''}
-          </span>
-          <button
-            type="button"
-            class="mini"
-            onclick={() => send('ToggleShowWork')}
-          >
-            {thread.show_work ? 'Hide work' : 'Show work'}
-          </button>
-        </div>
-      {/if}
-      {#if thread.transcript_mode !== 'CollapsedWithLandHistory'}
-        <TranscriptBlocks
-          blocks={thread.blocks}
-          retry={thread.agent_busy ? undefined : retryResponse}
-          removeQueued={(index) =>
-            send({
-              Request: {
-                RemoveQueuedMessage: {
-                  identifier: thread.identifier,
-                  index: String(index),
-                },
-              },
-            })}
-        />
-      {/if}
-      {#if change}
-        <ChangeHistory
-          {change}
-          resolve={() => runChange('Resolve')}
-          resolving={pending}
-        />
-      {/if}
-
-      {#if thread.no_change_reason}
-        <div class="msg-agent">
-          <div class="status-line"><strong>Ended with no change</strong></div>
-          <Markdown text={thread.no_change_reason} />
-        </div>
-      {/if}
-    </div>
-  </div>
-
-  {#if !thread.no_change_reason && (!change || actionable)}
-    <div class="dock">
-      <Composer
-        {layout}
-        {send}
-        id="thread-composer"
-        placeholder={thread.composer_placeholder}
-        modelPill={thread.model_pill}
-        threadIdentifier={Number(thread.identifier)}
-      />
+  {#if layout.project_identifier !== null}
+    <div class="browser-tabs" role="group" aria-label="Thread view">
+      <button
+        class="btn"
+        type="button"
+        aria-pressed={!browserOpen}
+        onclick={() => (browserOpen = false)}>Transcript</button
+      >
+      <button
+        class="btn"
+        type="button"
+        aria-pressed={browserOpen}
+        onclick={() => (browserOpen = true)}>Browser</button
+      >
     </div>
   {/if}
+  {#if browserOpen && layout.project_identifier !== null}
+    {#key `${layout.project_identifier}:${thread.identifier}`}
+      <ThreadBrowser
+        project={layout.project_identifier}
+        thread={Number(thread.identifier)}
+      />
+    {/key}
+  {:else}
+    <div class="transcript" use:followTranscript={thread.identifier}>
+      <div class="transcript-inner">
+        <PaneState
+          name="Transcript"
+          rosen
+          loading={thread.agent_busy &&
+            !thread.blocks.some(
+              (block) =>
+                block.AgentMessage ||
+                block.ToolGroup ||
+                block.Diff ||
+                block.ErrorCard ||
+                block.Decision,
+            )}
+          empty={!thread.blocks.length &&
+            !thread.agent_busy &&
+            !change?.lands.length &&
+            !change?.conflicts.length &&
+            !thread.no_change_reason}
+          message="No updates yet · Send a message to start."
+        />
+        {#if change && thread.worked_summary && thread.transcript_mode !== 'FullTranscript'}
+          <div class="worked">
+            <Icon name="check" />
+            <span>
+              Task finished · {thread.worked_summary.tool_calls} tool calls · {thread
+                .worked_summary.files_touched} files ·
+              <span class="add">+{thread.worked_summary.added}</span>
+              <span class="del">−{thread.worked_summary.deleted}</span>
+              {thread.worked_summary.proved ? ' · proved' : ''}
+            </span>
+            <button
+              type="button"
+              class="mini"
+              onclick={() => send('ToggleShowWork')}
+            >
+              {thread.show_work ? 'Hide work' : 'Show work'}
+            </button>
+          </div>
+        {/if}
+        {#if thread.transcript_mode !== 'CollapsedWithLandHistory'}
+          <TranscriptBlocks
+            blocks={thread.blocks}
+            retry={thread.agent_busy ? undefined : retryResponse}
+            removeQueued={(index) =>
+              send({
+                Request: {
+                  RemoveQueuedMessage: {
+                    identifier: thread.identifier,
+                    index: String(index),
+                  },
+                },
+              })}
+          />
+        {/if}
+        {#if change}
+          <ChangeHistory
+            {change}
+            resolve={() => runChange('Resolve')}
+            resolving={pending}
+          />
+        {/if}
+
+        {#if thread.no_change_reason}
+          <div class="msg-agent">
+            <div class="status-line"><strong>Ended with no change</strong></div>
+            <Markdown text={thread.no_change_reason} />
+          </div>
+        {/if}
+      </div>
+    </div>
+
+    {#if !thread.no_change_reason && (!change || actionable)}
+      <div class="dock">
+        <Composer
+          {layout}
+          {send}
+          id="thread-composer"
+          placeholder={thread.composer_placeholder}
+          modelPill={thread.model_pill}
+          threadIdentifier={Number(thread.identifier)}
+        />
+      </div>
+    {/if}
+  {/if}
 </section>
+
+<style>
+  .browser-tabs {
+    display: flex;
+    align-items: center;
+    flex: 0 0 auto;
+    gap: var(--browser-toolbar-gap);
+    padding: var(--browser-toolbar-padding);
+    border-bottom: var(--browser-toolbar-border);
+  }
+  .browser-tabs .btn[aria-pressed='true'] {
+    border-color: var(--accent-line);
+    background: var(--accent-soft);
+  }
+</style>

@@ -10,6 +10,7 @@ pub mod airc_claims;
 mod airc_delivery;
 mod airc_events;
 mod airc_modal;
+mod browser;
 mod build_gate;
 mod code_graph;
 mod continuous_dispatch;
@@ -80,6 +81,12 @@ fn bindings() -> Builder<tauri::Wry> {
         airc_events::airc_ledger,
         airc_modal::get_airc_modal,
         airc_modal::set_airc_message_mode,
+        browser::browser_input,
+        browser::close_browser_view,
+        browser::hand_back_browser,
+        browser::open_browser_view,
+        browser::switch_browser_tab,
+        browser::take_over_browser,
         code_graph::get_code_graph,
         code_graph::set_code_graph,
         code_graph::reset_code_graph_usage,
@@ -192,6 +199,7 @@ fn event_bindings(builder: Builder<tauri::Wry>) -> Builder<tauri::Wry> {
         .typ::<airc_events::AircEventPublished>()
         .typ::<airc_events::AircMessagePublished>()
         .typ::<airc_modal::AircModalPublished>()
+        .typ::<browser::BrowserFrame>()
         .typ::<duty::DutyEventPublished>()
         .typ::<follow_through::PullRequestLifecycleEvent>()
         .typ::<window::WindowStateChanged>()
@@ -212,6 +220,7 @@ fn event_bindings(builder: Builder<tauri::Wry>) -> Builder<tauri::Wry> {
             airc_events::AircMessagePublished::NAME,
         )
         .constant("AIRC_MODAL_EVENT", airc_modal::AircModalPublished::NAME)
+        .constant("BROWSER_FRAME_EVENT", browser::BrowserFrame::NAME)
         .constant("DUTY_EVENT", duty::DutyEventPublished::NAME)
         .constant("PROJECT_SELECTED_EVENT", projects::ProjectSelected::NAME)
         .constant("PROVIDERS_EVENT", providers::ProvidersChanged::NAME)
@@ -298,6 +307,7 @@ pub fn run() -> anyhow::Result<()> {
         airc_events::AircEventPublished,
         airc_events::AircMessagePublished,
         airc_modal::AircModalPublished,
+        browser::BrowserFrame,
         duty::DutyEventPublished,
         window::WindowStateChanged,
         layout::LayoutStateChanged,
@@ -344,6 +354,7 @@ pub fn run() -> anyhow::Result<()> {
             bindings.mount_events(application);
             diagnostics::initialize(application.handle());
             let interrupted = state::initialize(application.handle())?;
+            browser::initialize(application.handle())?;
             airc_access::initialize(application.handle())?;
             projects::initialize(application.handle())?;
             providers::initialize(application.handle());

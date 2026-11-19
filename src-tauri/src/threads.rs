@@ -153,6 +153,7 @@ fn resume_follow_through(
     let handle = application.clone();
     tauri::async_runtime::spawn(async move {
         crate::handoff::add_preface(&handle, key, &mut setup).await;
+        crate::browser::configure(&handle, key, &mut setup);
         pump(&handle, key, spawn_session(agent, setup, inputs)).await;
     });
     updated?;
@@ -801,6 +802,7 @@ async fn run_thread_session(
         return fail(&application, key, "Could not claim work", &error);
     }
     add_work_handoff(&application, key, &mut setup);
+    crate::browser::configure(&application, key, &mut setup);
     setup.pause_on_subscription_limit = true;
     let session = spawn_session(plan.agent, setup, inputs);
     pump(&application, key, session).await;
@@ -1027,6 +1029,7 @@ impl GoalSelectionTurn {
     async fn stop(self, application: &AppHandle, key: ThreadKey) -> Result<(), GoalSwarmError> {
         let _ = self.inputs.send(AgentInput::Stop);
         let result = self.session.outcome.await;
+        crate::browser::stop(application, key).await;
         let confirmed = self.session.shutdown.confirmed();
         let mut runtimes = lock(
             application.state::<ManagedThreads>().inner(),
@@ -1064,6 +1067,7 @@ fn goal_session_setup(
             .shared_servers
             .extend(crate::rosen::mcp_server(&folder.path, &plan.agent.env));
     }
+    crate::browser::configure(application, key, &mut setup);
     setup.pause_on_subscription_limit = true;
     setup
 }
@@ -1534,6 +1538,7 @@ pub(crate) async fn pump(application: &AppHandle, key: ThreadKey, mut session: R
     if !current_session(application, key, &generation) {
         return;
     }
+    crate::browser::stop(application, key).await;
     let replace = handoff.accepted && shutdown.confirmed() && matches!(outcome, Ok(Ok(())));
     if finish_session(application, key, shutdown.confirmed(), outcome, replace) && replace {
         let handle = application.clone();

@@ -91,9 +91,13 @@ pub async fn set_settings(application: AppHandle, settings: Settings) -> Result<
         let mut guard = store
             .lock()
             .map_err(|_| String::from("Persisted state store lock is poisoned"))?;
-        guard
+        let saved = guard
             .set_settings(settings)
-            .map_err(|error| error.to_string())
+            .map_err(|error| error.to_string())?;
+        application
+            .state::<velocity_browser::BrowserHub>()
+            .limit(saved.agents.browser_limit);
+        Ok(saved)
     })
     .await
 }

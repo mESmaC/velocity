@@ -1,12 +1,13 @@
 //! Which command runs each provider's ACP agent (SPEC.md §3.2 Provider code). This is the
 //! only provider-specific part of a session.
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
+use std::sync::OnceLock;
 
 use serde_json::{Value, json};
 
 use crate::Provider;
-use crate::client::AgentLaunch;
+use crate::client::{AgentLaunch, hidden_command};
 
 /// How one provider's agent starts.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -53,14 +54,89 @@ fn trim_codex_context(launch: &mut AgentLaunch) {
         &mut config,
         json!({
             "skills": { "include_instructions": false },
-            "features": { "computer_use": false, "apps": false },
-            "plugins": {
-                "unified-computer-use@openai-bundled": { "enabled": false },
-                "computer-use@openai-bundled": { "enabled": false }
-            }
+            "features": { "apps": false },
         }),
     );
     launch.set_env(CONFIG, &config.to_string());
+}
+
+const CODEX_PATH: &str = "CODEX_PATH";
+const CODEX_ADAPTER: &str = "VELOCITY_CODEX_ADAPTER";
+const ORIGINAL_CODEX_PATH: &str = "VELOCITY_ORIGINAL_CODEX_PATH";
+static APP_EXECUTABLE: OnceLock<PathBuf> = OnceLock::new();
+
+pub fn enable_codex_startup_override(executable: PathBuf) {
+    let _ = APP_EXECUTABLE.set(executable);
+}
+
+pub(crate) fn configure_codex_startup(
+    command: &mut tokio::process::Command,
+    launch: &AgentLaunch,
+    program: &Path,
+) {
+    if launch.own_config != Some(Provider::Codex) {
+        return;
+    }
+    let Some(executable) = APP_EXECUTABLE.get() else {
+        return;
+    };
+    let original = launch
+        .env_value(CODEX_PATH)
+        .map(std::ffi::OsString::from)
+        .or_else(|| std::env::var_os(CODEX_PATH))
+        .unwrap_or_default();
+    command
+        .env(CODEX_PATH, executable)
+        .env(CODEX_ADAPTER, program)
+        .env(ORIGINAL_CODEX_PATH, original);
+}
+
+/// codex-acp starts App Server before applying CODEX_CONFIG to any session.
+/// Use its CLI passthrough to select the same bundled executable with startup overrides.
+pub fn serve_codex_app_server() -> std::io::Result<Option<i32>> {
+    let Some(adapter) = std::env::var_os(CODEX_ADAPTER) else {
+        return Ok(None);
+    };
+    let args: Vec<_> = std::env::args_os().skip(1).collect();
+    if args.first().is_none_or(|arg| arg != "app-server") {
+        return Ok(None);
+    }
+    let adapter = PathBuf::from(adapter);
+    let original = std::env::var_os(ORIGINAL_CODEX_PATH).filter(|path| !path.is_empty());
+    let mut command = if let Some(program) = original {
+        hidden_command(program).into_std()
+    } else {
+        bundled_cli(&adapter)
+    };
+    command
+        .env_remove(CODEX_PATH)
+        .env_remove(CODEX_ADAPTER)
+        .env_remove(ORIGINAL_CODEX_PATH)
+        .args(args)
+        .args([
+            "-c",
+            "features.computer_use=false",
+            "-c",
+            r#"plugins."unified-computer-use@openai-bundled".enabled=false"#,
+            "-c",
+            r#"plugins."computer-use@openai-bundled".enabled=false"#,
+        ]);
+    Ok(Some(command.status()?.code().unwrap_or(1)))
+}
+
+fn bundled_cli(adapter: &Path) -> std::process::Command {
+    if let Some(script) = adapter
+        .parent()
+        .map(|parent| parent.join("node_modules/@agentclientprotocol/codex-acp/dist/index.js"))
+        .filter(|script| script.is_file())
+    {
+        let mut command = hidden_command("node").into_std();
+        command.arg(script).arg("cli");
+        return command;
+    }
+    let mut command = hidden_command(adapter).into_std();
+    command.arg("cli");
+    command
 }
 
 fn merge_config(config: &mut Value, overrides: Value) {

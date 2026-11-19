@@ -4,9 +4,11 @@
   let {
     layout,
     send,
+    openBrowser,
   }: {
     layout: LayoutSnapshot;
     send: (action: LayoutAction) => void;
+    openBrowser: (thread: string) => void;
   } = $props();
 
   // The same icon per thread state as the sidebar, so a card and its row read alike.
@@ -54,20 +56,32 @@
         {#each lane.cards as card, index (`${card.kind}:${card.thread ?? card.title}:${index}`)}
           {@const thread = card.thread}
           {#if thread !== null}
-            <button
-              class="card"
-              class:active={card.active}
-              class:paused={card.paused}
-              data-status={card.group}
-              aria-current={card.active ? 'true' : undefined}
-              title={card.title}
-              onclick={() => send({ OpenThread: thread })}
-            >
-              <span class="status-icon"><Icon name={cardIcon(card)} /></span>
-              <span class="card-title">{card.title}</span>
-              {#if card.metadata}<span class="card-meta">{card.metadata}</span
-                >{/if}
-            </button>
+            <div>
+              <button
+                class="card"
+                class:active={card.active}
+                class:paused={card.paused}
+                data-status={card.group}
+                aria-current={card.active ? 'true' : undefined}
+                title={card.title}
+                onclick={() => send({ OpenThread: thread })}
+              >
+                <span class="status-icon"><Icon name={cardIcon(card)} /></span>
+                <span class="card-title">{card.title}</span>
+                {#if card.metadata}<span class="card-meta">{card.metadata}</span
+                  >{/if}
+              </button>
+              {#if card.group !== 'Duty' && card.group !== 'Swarm' && card.group !== 'Spec'}
+                <div class="browser-card-actions">
+                  <button
+                    class="btn"
+                    type="button"
+                    aria-label={`Open browser for ${card.title}`}
+                    onclick={() => openBrowser(thread)}>Browser</button
+                  >
+                </div>
+              {/if}
+            </div>
           {:else}
             <article class="card work" title={card.title}>
               <span class="status-icon"><Icon name={cardIcon(card)} /></span>
@@ -87,3 +101,11 @@
     </section>
   {/each}
 </section>
+
+<style>
+  .browser-card-actions {
+    display: flex;
+    justify-content: flex-end;
+    padding: var(--browser-card-actions-padding);
+  }
+</style>

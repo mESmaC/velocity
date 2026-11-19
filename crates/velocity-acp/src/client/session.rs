@@ -132,6 +132,15 @@ impl SessionSetup {
     }
 
     pub(super) async fn load_claude_project_instructions(&mut self) -> std::io::Result<()> {
+        self.session_metadata = Some(Meta::from_iter([(
+            "claudeCode".into(),
+            serde_json::json!({
+                "options": {
+                    "settings": { "deniedMcpServers": [{ "serverName": "computer-use" }] },
+                    "disallowedTools": ["mcp__computer-use"]
+                }
+            }),
+        )]));
         let instructions = match tokio::fs::read_to_string(self.worktree.join("AGENTS.md")).await {
             Ok(instructions) => instructions,
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
@@ -139,14 +148,16 @@ impl SessionSetup {
         };
         if !instructions.trim().is_empty() {
             // claude-agent-acp forwards the preset's append field to the Claude SDK.
-            self.session_metadata = Some(Meta::from_iter([(
-                "systemPrompt".into(),
-                serde_json::json!({
-                    "type": "preset",
-                    "preset": "claude_code",
-                    "append": format!("Project instructions from AGENTS.md:\n\n{instructions}"),
-                }),
-            )]));
+            if let Some(metadata) = &mut self.session_metadata {
+                metadata.insert(
+                    "systemPrompt".into(),
+                    serde_json::json!({
+                        "type": "preset",
+                        "preset": "claude_code",
+                        "append": format!("Project instructions from AGENTS.md:\n\n{instructions}"),
+                    }),
+                );
+            }
         }
         Ok(())
     }

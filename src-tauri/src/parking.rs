@@ -219,6 +219,7 @@ fn start_session(application: &AppHandle, key: ThreadKey, opening: Opening) -> R
     let handle = application.clone();
     tauri::async_runtime::spawn(async move {
         crate::handoff::add_preface(&handle, key, &mut setup).await;
+        crate::browser::configure(&handle, key, &mut setup);
         crate::threads::pump(&handle, key, spawn_session(agent, setup, inputs)).await;
     });
     Ok(())

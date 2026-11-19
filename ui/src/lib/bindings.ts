@@ -18,6 +18,12 @@ export const commands = {
 	getAircModal: (projectIdentifier: number) => __TAURI_INVOKE<AircModalView_Serialize>("get_airc_modal", { projectIdentifier }),
 	/**  User-owned delivery mode, independent of the agent's tool permissions. */
 	setAircMessageMode: (projectIdentifier: number, nick: string, mode: MessageMode) => __TAURI_INVOKE<null>("set_airc_message_mode", { projectIdentifier, nick, mode }),
+	browserInput: (project: number, thread: number, view: string, tab: string, input: BrowserInput) => __TAURI_INVOKE<null>("browser_input", { project, thread, view, tab, input }),
+	closeBrowserView: (project: number, thread: number, view: string) => __TAURI_INVOKE<null>("close_browser_view", { project, thread, view }),
+	handBackBrowser: (project: number, thread: number, view: string) => __TAURI_INVOKE<null>("hand_back_browser", { project, thread, view }),
+	openBrowserView: (project: number, thread: number) => __TAURI_INVOKE<BrowserView_Serialize>("open_browser_view", { project, thread }),
+	switchBrowserTab: (project: number, thread: number, view: string, tab: string) => __TAURI_INVOKE<null>("switch_browser_tab", { project, thread, view, tab }),
+	takeOverBrowser: (project: number, thread: number, view: string) => __TAURI_INVOKE<null>("take_over_browser", { project, thread, view }),
 	/**  The usage modal's code graph section for a project: its switch and the comparison. */
 	getCodeGraph: (projectIdentifier: number) => __TAURI_INVOKE<GraphComparison>("get_code_graph", { projectIdentifier }),
 	/**
@@ -223,6 +229,8 @@ export const AIRC_MESSAGE_EVENT = "airc://message" as const;
 
 export const AIRC_MODAL_EVENT = "airc://modal" as const;
 
+export const BROWSER_FRAME_EVENT = "browser-frame" as const;
+
 export const DUTY_EVENT = "duty://event" as const;
 
 export const ISSUE_PANEL_EVENT = "issue://panel" as const;
@@ -308,6 +316,7 @@ export type AgentSettings_Deserialize = {
 	/**  Settings → Agents → shared MCP servers, passed to every agent (§3.2 Tool access). */
 	shared_mcp_servers?: SharedMcpServer[],
 	trim_agent_context?: boolean,
+	browser_limit?: number,
 };
 
 export type AgentSettings_Serialize = {
@@ -323,6 +332,7 @@ export type AgentSettings_Serialize = {
 	/**  Settings → Agents → shared MCP servers, passed to every agent (§3.2 Tool access). */
 	shared_mcp_servers: SharedMcpServer[],
 	trim_agent_context: boolean,
+	browser_limit: number,
 };
 
 export type AircClaimFile = {
@@ -567,6 +577,40 @@ export type BoardPieceKind = "task" | "issue" | "spec";
 
 /**  How a board row is styled: the holder's state, open, or merged. */
 export type BoardRowState = "claimed" | "waiting" | "failed" | "open" | "merged";
+
+export type BrowserFrame = BrowserFrame_Serialize | BrowserFrame_Deserialize;
+
+export type BrowserFrame_Deserialize = {
+	project: number,
+	thread: number,
+	view: BrowserView_Deserialize,
+	frame?: Frame | null,
+};
+
+export type BrowserFrame_Serialize = {
+	project: number,
+	thread: number,
+	view: BrowserView_Serialize,
+	frame: Frame | null,
+};
+
+export type BrowserInput = { kind: "click"; x: number | null; y: number | null } | { kind: "key"; key: string; modifiers: number } | { kind: "text"; text: string } | { kind: "scroll"; x: number | null; y: number | null; horizontal: number | null; vertical: number | null };
+
+export type BrowserView = BrowserView_Serialize | BrowserView_Deserialize;
+
+export type BrowserView_Deserialize = {
+	view_id: string,
+	owner: boolean,
+	active?: string | null,
+	tabs: Tab[],
+};
+
+export type BrowserView_Serialize = {
+	view_id: string,
+	owner: boolean,
+	active: string | null,
+	tabs: Tab[],
+};
 
 export type ChangeRow = ChangeRow_Serialize | ChangeRow_Deserialize;
 
@@ -1190,6 +1234,12 @@ export type FollowThrough_Serialize = {
 	work_tool_start: number,
 	ci_state: string,
 	proof: ProofProgress_Serialize,
+};
+
+export type Frame = {
+	jpeg: string,
+	width: number | null,
+	height: number | null,
 };
 
 export type GitHubActor = {
@@ -4621,6 +4671,12 @@ export type SwarmViewSnapshot_Serialize = {
 	cards: SwarmCard_Serialize[],
 	feed: SwarmFeedEvent[],
 	composer_placeholder: string,
+};
+
+export type Tab = {
+	id: string,
+	title: string,
+	url: string,
 };
 
 export type TaskAttribution = { kind: "spec" } | { kind: "user" } | { kind: "thread"; thread_id: number };

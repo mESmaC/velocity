@@ -123,4 +123,7 @@ Each milestone ends with a working app.
 - [x] Bound Velocity MCP answers and generated prompts, with issue search and paginated channel and Task List reads (#465)
 - [x] Share the project graph, bound Velocity process memory, report memory in Usage and pause dispatch under memory pressure (#481)
 
+**M15 · Agent browser** (F20)
+- [x] Private offscreen agent browser with ACP tools, live thread view, owner takeover, memory accounting and thread cleanup (#488)
+
 ---
