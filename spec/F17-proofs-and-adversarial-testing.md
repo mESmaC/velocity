@@ -45,6 +45,7 @@ Implementation stays the larger part of each change.
 On after-land Rosen projects, proof-list verification follows the implementation's land in the Review swarm (F7, #382).
 Its proof changes land independently, and its completion report is tied to the checked source tree.
 Lean and review coverage never gate another land; full tests, `lake build` and the axiom audit gate the release.
+A `-beta` release whose exact commit Rosen reports green skips the stress suite, `lake build` and the axiom audit (F1 Updates, #434).
 
 **Design proof** (`proofs/<Feature>/Design.lean`, after the code, for every feature on the proof list):
 - **Exactly three theorems:** `correct`, `cost_bound` and `optimal`, below.

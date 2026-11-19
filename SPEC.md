@@ -31,6 +31,7 @@ These hold for every feature. A feature that breaks one of them is wrong, whatev
 - A confirmed integration failure gets one fix-forward thread on the default implementation model, with the failing command and output (#406, #480).
 - Agents use Rust formatting, UI type-check and lint, and one queued type-check of the Rust crate they change.
 - A release requires a green integration build on its exact commit.
+  A beta release with that build and no open release-blocker issue skips the rest of the release gate (F1, #434).
 - Discoveries can report problems in either Velocity or Rosen to their own repositories, with separate title matching and filing results (F14, #303).
 - Generated lockfiles and bindings are regenerated rather than line-merged; F5 specifies the commands in durable rebase notices, including rebases with no text conflicts (#404).
 - A Rosen project never falls back to a git worktree when workspace creation fails: transient errors retry Rosen for about a minute, and a lasting failure leaves the thread in `error` with the Rosen error and a retry action (F5, #407).

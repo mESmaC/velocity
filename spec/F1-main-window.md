@@ -69,6 +69,8 @@ There are two views of the same work, switched from the title bar or with `B`:
     There is one channel: the newest release, betas included.
     A `v*` tag publishes a release (`.github/workflows/release.yml`); development builds check only when asked and never install.
     A mirror forwarder delivers only the default branch, so Cut release in the Rosen status pane (F6) dispatches that workflow with the tag and landed commit, and the workflow creates the tag when it publishes (#431).
+    The release build runs beside the release gate, and publishing waits for both (#498).
+    A `-beta` release whose exact commit Rosen reports green, with no open release-blocker issue, skips the gate's stress suite and proofs; numbered releases always run the full gate (#434).
     A failed check or download shows in the modal, not as a window error.
 
 **Rail:** Rosen projects show Work (F8, F9) and Rosen status (F6).

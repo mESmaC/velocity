@@ -13,8 +13,13 @@ name: Release
 #
 # The gate and the build run side by side, and `publish` waits for both, so a release
 # takes as long as the slower of the two instead of their sum (#498). Nothing is
-# published unless the gate passes. Both start once `rosen` has fetched the pinned
-# Rosen, which they share instead of each compiling it (#433).
+# published unless the gate passes. The build and the stress suite start once `rosen`
+# has fetched the pinned Rosen, which they share instead of each compiling it (#433).
+#
+# The gate is three jobs (#434): `checks` reads integration and release-blocker issues in
+# a minute, then `stress` (Windows) and `proofs` (Linux) run in parallel. A `-beta` tag
+# whose exact commit Rosen reports green skips `stress` and `proofs`, so a beta takes
+# only as long as the build; numbered releases and other pre-releases run every job.
 on:
   push:
     tags: ['v*']
@@ -112,21 +117,18 @@ jobs:
   # The release is the gate (SPEC.md F7 "The release gate", #381): on a Rosen project no
   # approval gates a land, so nothing is published until the release commit passes
   # integration, the stress suite and the proofs, with no release-blocker open.
-  gate:
-    name: Release gate
-    needs: rosen
+  # `checks` is the gate's first stage; `stress` and `proofs` start only after it passes.
+  checks:
+    name: Release gate checks
     permissions:
       contents: read
       # The release gate lists open release-blocker issues.
       issues: read
       statuses: read
-    runs-on: windows-latest
-    timeout-minutes: 90
-    env:
-      # Keep the stress harness builds within runner memory.
-      CARGO_BUILD_JOBS: '2'
-      # Build the workspace and the stress harness binary without debug info (#499).
-      CARGO_PROFILE_DEV_DEBUG: 'none'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    outputs:
+      full_gate: ${{ steps.path.outputs.full_gate }}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -134,7 +136,7 @@ jobs:
           # The gate checks the release commit is an ancestor of Rosen's green commit.
           fetch-depth: 0
       # A dispatched release names its commit; refuse a tag already on another commit
-      # before anything is built.
+      # before anything is published.
       - name: Check the release tag is free or already on the release commit
         if: env.RELEASE_COMMIT != ''
         shell: pwsh
@@ -146,11 +148,48 @@ jobs:
           $tagged = gh api "repos/${{ github.repository }}/commits/$env:TAG" --jq .sha 2>$null
           $global:LASTEXITCODE = 0
           if ($tagged -and $tagged -cne $env:RELEASE_COMMIT) { throw "$env:TAG already exists on $tagged, not $env:RELEASE_COMMIT" }
-      - name: Require green integration on the release commit
+      - name: Require green integration and no release-blocker issue
+        id: checks
         shell: pwsh
         env:
           GH_TOKEN: ${{ github.token }}
-        run: pwsh -NoProfile -File scripts/release-gate.ps1 -Repository ${{ github.repository }} -Green "$env:GREEN_COMMIT" -IntegrationOnly
+        run: pwsh -NoProfile -File scripts/release-gate.ps1 -Repository ${{ github.repository }} -Green "$env:GREEN_COMMIT" -Stage Checks
+      # The owner's decision on #434: a `-beta` release skips the stress suite and the
+      # proofs when Rosen reports that exact commit green and no release-blocker is open.
+      # Numbered releases, and pre-releases other than betas, always run the full gate.
+      - name: Choose the full gate or the beta path
+        id: path
+        shell: pwsh
+        run: |
+          $beta = $env:TAG -cmatch '^v\d+\.\d+\.\d+-beta(\.|$)'
+          $exactGreen = '${{ steps.checks.outputs.exact-green }}' -eq 'true'
+          $full = -not ($beta -and $exactGreen)
+          if ($full) {
+            Write-Host "Full gate: beta=$beta, release commit green=$exactGreen"
+          } else {
+            Write-Host "Beta path: Rosen reports the release commit green, so stress and proofs are skipped"
+          }
+          "full_gate=$($full.ToString().ToLower())" >> $env:GITHUB_OUTPUT
+
+  stress:
+    name: Release gate stress
+    needs: [checks, rosen]
+    if: needs.checks.outputs.full_gate == 'true'
+    permissions:
+      contents: read
+    runs-on: windows-latest
+    timeout-minutes: 75
+    env:
+      # Keep the stress harness builds within runner memory.
+      CARGO_BUILD_JOBS: '2'
+      # Build the workspace and the stress harness binary without debug info (#499).
+      CARGO_PROFILE_DEV_DEBUG: 'none'
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ env.RELEASE_REF }}
+          # Keep the history the stress scripts had when this job was the whole gate.
+          fetch-depth: 0
       # Builds write to a Dev Drive: ReFS, without real-time scanning of every file the
       # compiler writes, which slows Rust builds on Windows runners the most (#498).
       - uses: samypr100/setup-dev-drive@562171fe8df7401fdf582d766cd3b6ab80d5b1a0 # v4.1.0
@@ -175,33 +214,6 @@ jobs:
           workspaces: '. -> ${{ env.CARGO_TARGET_DIR }}'
       - name: Install UI dependencies
         run: pnpm -C ui install --frozen-lockfile
-      # elan installs the toolchain proofs/lean-toolchain pins on first use; Mathlib's
-      # built files come from its cache rather than a build from source.
-      - name: Install Lean
-        shell: pwsh
-        run: |
-          Invoke-WebRequest -UseBasicParsing -Uri https://raw.githubusercontent.com/leanprover/elan/master/elan-init.ps1 -OutFile "$env:RUNNER_TEMP\elan-init.ps1"
-          & "$env:RUNNER_TEMP\elan-init.ps1" -NoPrompt 1 -DefaultToolchain none
-          # elan-init.ps1 is a script, so $LASTEXITCODE is whatever native command it ran
-          # last, not its result: it printed 0 and still failed this check. The installed
-          # executable is the evidence.
-          if (-not (Test-Path "$env:USERPROFILE\.elan\bin\elan.exe")) { throw "Could not install elan" }
-          $global:LASTEXITCODE = 0
-          "$env:USERPROFILE\.elan\bin" >> $env:GITHUB_PATH
-      # Cache Lake dependencies so the gate still builds and audits Velocity's proofs.
-      - name: Cache Mathlib and Lake dependencies
-        id: mathlib-cache
-        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
-        with:
-          path: proofs/.lake/packages
-          key: lake-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('proofs/lean-toolchain', 'proofs/lake-manifest.json') }}
-      - name: Fetch Mathlib's cache
-        if: steps.mathlib-cache.outputs.cache-hit != 'true'
-        shell: pwsh
-        working-directory: proofs
-        run: |
-          lake exe cache get
-          if ($LASTEXITCODE -ne 0) { throw "Could not fetch Mathlib's cache" }
       # The stress suite creates projects and commits in them, as a developer machine does;
       # a fresh runner has no git identity, so those commits failed (pr7-create-save).
       - name: Give git an identity for the gate's test commits
@@ -221,11 +233,48 @@ jobs:
         run: |
           "VELOCITY_ROSEN_BIN=$env:RUNNER_TEMP\rosen\bin" >> $env:GITHUB_ENV
           "$env:RUNNER_TEMP\rosen\bin" >> $env:GITHUB_PATH
-      - name: Run the release gate
+      - name: Run the stress suite
         shell: pwsh
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: pwsh -NoProfile -File scripts/release-gate.ps1 -Repository ${{ github.repository }} -Green "$env:GREEN_COMMIT"
+        run: pwsh -NoProfile -File scripts/release-gate.ps1 -Stage Stress
+
+  # The proofs are platform-independent Lean, so they run on Linux beside the stress
+  # suite instead of after it, where Mathlib's cache also downloads faster (#434).
+  proofs:
+    name: Release gate proofs
+    needs: checks
+    if: needs.checks.outputs.full_gate == 'true'
+    permissions:
+      contents: read
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ env.RELEASE_REF }}
+      # elan installs the toolchain proofs/lean-toolchain pins on first use; Mathlib's
+      # built files come from its cache rather than a build from source.
+      - name: Install Lean
+        shell: bash
+        run: |
+          set -euo pipefail
+          curl -sSfL https://raw.githubusercontent.com/leanprover/elan/master/elan-init.sh -o "$RUNNER_TEMP/elan-init.sh"
+          sh "$RUNNER_TEMP/elan-init.sh" -y --default-toolchain none
+          echo "$HOME/.elan/bin" >> "$GITHUB_PATH"
+      # Cache Lake dependencies so the gate still builds and audits Velocity's proofs.
+      - name: Cache Mathlib and Lake dependencies
+        id: mathlib-cache
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
+        with:
+          path: proofs/.lake/packages
+          key: lake-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('proofs/lean-toolchain', 'proofs/lake-manifest.json') }}
+      - name: Fetch Mathlib's cache
+        if: steps.mathlib-cache.outputs.cache-hit != 'true'
+        shell: bash
+        working-directory: proofs
+        run: lake exe cache get
+      - name: Build and audit the proofs
+        shell: pwsh
+        run: pwsh -NoProfile -File scripts/release-gate.ps1 -Stage Proofs
 
   build:
     name: Build and sign
@@ -366,9 +415,18 @@ jobs:
           path: dist/
           if-no-files-found: error
 
+  # A skipped job would skip `publish` too, so its condition names each job: the checks
+  # and the builds always pass, and stress and proofs pass unless the beta path skipped them.
   publish:
     name: Publish
-    needs: [gate, build, graph-indexer]
+    needs: [checks, stress, proofs, build, graph-indexer]
+    if: >-
+      !cancelled()
+      && needs.checks.result == 'success'
+      && needs.build.result == 'success'
+      && needs.graph-indexer.result == 'success'
+      && (needs.checks.outputs.full_gate == 'false'
+        || (needs.stress.result == 'success' && needs.proofs.result == 'success'))
     permissions:
       contents: write
     runs-on: ubuntu-latest
