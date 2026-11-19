@@ -69,10 +69,14 @@ fn sample(
     system.refresh_processes_specifics(ProcessesToUpdate::All, true, ProcessRefreshKind::nothing());
     let executable = std::env::current_exe().ok();
     let name = executable.as_deref().and_then(std::path::Path::file_name);
+    let tree = own_tree(&system, current_pid, name);
     let pids: Vec<_> = system
         .processes()
         .values()
-        .filter(|process| Some(process.name()) == name || process.pid().as_u32() == current_pid)
+        .filter(|process| {
+            (Some(process.name()) == name && tree.contains(&process.pid()))
+                || process.pid().as_u32() == current_pid
+        })
         .map(sysinfo::Process::pid)
         .collect();
     system.refresh_processes_specifics(
@@ -116,6 +120,33 @@ fn sample(
     );
     rows.sort_unstable_by_key(|row| (row.pid != current_pid, row.pid));
     Ok(rows)
+}
+
+/// This copy's processes: everything under its topmost ancestor that is the same
+/// executable (the launcher). Another Velocity on the machine, such as a dev build next
+/// to the installed app, runs the same executable name but never shows here (#494).
+fn own_tree(system: &System, current_pid: u32, name: Option<&std::ffi::OsStr>) -> HashSet<Pid> {
+    let mut root = Pid::from_u32(current_pid);
+    let mut seen = HashSet::from([root]);
+    while let Some(parent) = system
+        .process(root)
+        .and_then(sysinfo::Process::parent)
+        .filter(|parent| seen.insert(*parent))
+        .filter(|parent| {
+            system
+                .process(*parent)
+                .is_some_and(|process| Some(process.name()) == name)
+        })
+    {
+        root = parent;
+    }
+    let mut children: HashMap<Pid, Vec<Pid>> = HashMap::new();
+    for process in system.processes().values() {
+        if let Some(parent) = process.parent() {
+            children.entry(parent).or_default().push(process.pid());
+        }
+    }
+    browser_tree(&children, root).into_iter().collect()
 }
 
 fn browser_memory(

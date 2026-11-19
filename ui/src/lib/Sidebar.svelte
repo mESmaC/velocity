@@ -71,6 +71,7 @@
     <label class="search"
       ><Icon name="search" />
       <input
+        class="bare"
         id="thread-search"
         aria-label="Search threads"
         placeholder="Search"
@@ -95,7 +96,10 @@
     <PaneState
       name="Threads"
       rosen
-      empty={!layout.groups.some((group) => group.rows.length)}
+      empty={!layout.groups.some(
+        (group) =>
+          group.rows.length || (group.collapsed && group.count !== '0'),
+      )}
       message={layout.search
         ? 'No threads match your search.'
         : 'No threads yet · Start a new thread.'}

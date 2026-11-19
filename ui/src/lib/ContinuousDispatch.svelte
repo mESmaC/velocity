@@ -68,9 +68,16 @@
     class:compact
     aria-label="Continuous dispatch"
   >
-    <div class="section-h">Continuous dispatch</div>
-    <!-- The reference's stepper. A number field was 24px wide and
-         the browser's spin arrows took most of it, so the count was cut off. -->
+    <div class="dispatch-head">
+      <span class="section-h">Continuous dispatch</span>
+      <span
+        class="tag"
+        data-tone={view.slots === 0 ? undefined : view.paused ? 'warn' : 'ok'}
+        >{view.slots === 0 ? 'Off' : view.paused ? 'Paused' : 'On'}</span
+      >
+    </div>
+    <!-- A stepper, not a number field: a field 24px wide lost most of its width to
+         the browser's spin arrows, so the count was cut off. -->
     <div class="dispatch-target">
       Keep
       <div class="stepper" role="group" aria-label="Agents to keep busy">
@@ -90,24 +97,22 @@
           >+</button
         >
       </div>
-      agents busy
-    </div>
-    <div class="dispatch-status">
-      <span
-        >{view.busy} busy · {view.slots} slots{view.paused
-          ? ' · paused'
-          : ''}</span
-      >
+      busy
+      <span class="spacer"></span>
       <button
-        class="btn"
+        class="mini"
         type="button"
         disabled={pending || view.slots === 0}
         onclick={() => view && void update(view.slots, !view.paused)}
         >{view.paused ? 'Resume' : 'Pause'}</button
       >
     </div>
+    <div class="dispatch-status">
+      {view.busy} busy · {view.slots}
+      {view.slots === 1 ? 'slot' : 'slots'}
+    </div>
     {#if !compact}
-      <div class="section-h">Next work</div>
+      <div class="section-h next">Next work</div>
       {#each view.next as item (item.key)}
         <div class="dispatch-issue">{item.label} · {item.title}</div>
       {:else}
@@ -120,57 +125,76 @@
 
 <style>
   .dispatch-panel {
-    padding: var(--duty-agent-card-padding);
-    border: var(--duty-agent-card-border);
-    border-radius: var(--duty-agent-card-border-radius);
-    background: var(--duty-agent-card-background);
-    font-size: var(--duty-agent-doing-font-size);
-  }
-  .section-h {
-    font-size: var(--duty-section-heading-font-size);
-    margin-bottom: var(--duty-section-heading-margin-bottom);
+    display: grid;
+    gap: var(--sp-3);
+    padding: var(--sp-5) var(--sp-5) var(--sp-4);
+    border: 1px solid var(--line-dim);
+    border-radius: var(--r-md);
+    background: var(--card);
+    font-size: var(--fs-md);
+    color: var(--text-2);
   }
   .compact {
-    margin-bottom: var(--duty-agents-gap);
+    margin-bottom: var(--sp-3);
   }
-  .dispatch-target,
-  .dispatch-status {
+  .dispatch-head {
     display: flex;
     align-items: center;
-    gap: var(--duty-agents-gap);
-    margin-bottom: var(--duty-agents-gap);
+    justify-content: space-between;
+    gap: var(--sp-4);
+  }
+  .section-h {
+    color: var(--text);
+    font-size: var(--fs-md);
+    font-weight: var(--fw-semibold);
+  }
+  .section-h.next {
+    margin-top: var(--sp-3);
+    font-size: var(--fs-sm);
+  }
+  .dispatch-target {
+    display: flex;
+    align-items: center;
+    gap: var(--sp-3);
   }
   .stepper {
     display: inline-flex;
     align-items: center;
-    border: var(--duty-stepper-border);
-    border-radius: var(--duty-stepper-border-radius);
+    height: var(--h-sm);
+    border: 1px solid var(--line-mid);
+    border-radius: var(--r-sm);
+    background: rgba(0, 0, 0, 0.3);
+    overflow: hidden;
   }
   .stepper button {
-    width: var(--duty-stepper-button-width);
-    height: var(--duty-stepper-button-height);
+    width: 22px;
+    height: 100%;
     color: var(--text-2);
   }
   .stepper button:hover:not(:disabled) {
     color: var(--text);
     background: var(--surface-3);
   }
-  .stepper button:disabled {
-    color: var(--muted);
-  }
   .stepper span {
-    min-width: var(--duty-stepper-count-min-width);
+    min-width: 20px;
     text-align: center;
-    font: var(--duty-stepper-count-font);
+    color: var(--text);
+    font-weight: var(--fw-semibold);
   }
   .dispatch-status {
-    flex-wrap: wrap;
-    color: var(--text-2);
+    color: var(--muted);
+    font-size: var(--fs-sm);
   }
   .dispatch-issue {
-    padding: var(--duty-event-padding);
+    padding: var(--sp-1) 0;
+    font-size: var(--fs-sm);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
   }
   p {
-    color: var(--text-2);
+    margin: 0;
+    color: var(--warn);
+    font-size: var(--fs-sm);
   }
 </style>

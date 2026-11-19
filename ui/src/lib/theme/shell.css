@@ -2,9 +2,6 @@
   box-sizing: border-box;
   font-style: normal;
 }
-html {
-  font-size: var(--ui-zoom, var(--ui-default-zoom));
-}
 html,
 body,
 #app {
@@ -17,11 +14,16 @@ body {
   background: var(--bg);
   color: var(--text);
   font-family: var(--sans);
-  font-size: var(--reference-body-font-size);
-  line-height: var(--reference-body-line-height);
-  letter-spacing: var(--reference-body-letter-spacing);
+  font-size: var(--fs-md);
+  line-height: var(--lh);
+  letter-spacing: -0.003em;
+  /* Inter: a single-storey a and open digits. Tabular figures are opt-in (system.css). */
+  font-feature-settings:
+    'cv11' 1,
+    'ss03' 1;
   -webkit-font-smoothing: antialiased;
-  overflow-wrap: anywhere;
+  /* Long paths and ids may break anywhere; words in labels never do (see system.css). */
+  overflow-wrap: break-word;
 }
 #app {
   container: app / inline-size;
@@ -33,67 +35,81 @@ button {
   padding: 0;
   background: none;
   cursor: pointer;
-}
-:where(
-  button,
-  select,
-  input:not([type='checkbox'], [type='radio']),
-  input:is([type='checkbox'], [type='radio']):not(label *),
-  label:has(> input:is([type='checkbox'], [type='radio'])),
-  summary,
-  [role='button']
-) {
-  min-inline-size: var(--target-min);
-  min-block-size: var(--target-min);
+  /* A control's label is one unit: it truncates or the row wraps, but it never breaks
+     inside a word (#493). */
+  white-space: nowrap;
+  overflow-wrap: normal;
 }
 :where(input, select, textarea, button, img) {
   max-inline-size: 100%;
 }
-:where(small, sub, sup) {
-  font-size: var(--type-caption);
-}
-:where(select) {
+:where(input, select, textarea) {
   font: inherit;
+  color: inherit;
 }
-button:focus-visible {
+:where(small, sub, sup) {
+  font-size: var(--fs-sm);
+}
+:where(code, kbd, samp, pre) {
+  font-family: var(--mono);
+  font-feature-settings: normal;
+}
+:where(
+  button,
+  [role='button'],
+  summary,
+  select,
+  input:not(.bare),
+  textarea:not(.bare)
+):focus-visible {
   outline: none;
   /* Keep the ring when a raised control supplies its own shadow. */
   box-shadow: var(--focus) !important;
+}
+button:disabled {
+  opacity: 0.4;
+  cursor: default;
 }
 .app-shell {
   height: 100%;
   display: grid;
   grid-template-rows: auto minmax(0, 1fr);
-  /* Two faint pools of light behind the panes, on true black. */
   background: var(--ambient), var(--bg);
 }
+
+/* ── title bar ────────────────────────────────────────────────────────────── */
 .window-titlebar {
   display: grid;
   grid-template-columns: minmax(0, var(--sidebar-w)) minmax(0, 1fr) auto;
+  align-items: center;
+  min-height: var(--titlebar-h);
   user-select: none;
 }
 .brand {
   display: flex;
   align-items: center;
-  padding-inline-start: var(--reference-brand-padding-start);
+  gap: var(--sp-4);
+  min-width: 0;
+  padding-inline-start: var(--sp-7);
 }
 .brand b {
   flex: none;
   white-space: nowrap;
-  font-size: var(--reference-brand-font-size);
-  font-weight: var(--reference-brand-font-weight);
-  letter-spacing: var(--reference-brand-letter-spacing);
-  color: var(--reference-brand-color);
+  font-size: var(--fs-md);
+  font-weight: var(--fw-semibold);
+  letter-spacing: -0.01em;
+  color: var(--text);
 }
 .titlebar-space {
   min-width: 0;
 }
 .window-controls {
   display: flex;
+  align-self: start;
   justify-content: flex-end;
 }
 .window-controls button {
-  width: var(--reference-window-control-width);
+  width: 44px;
   height: var(--titlebar-h);
   display: grid;
   place-items: center;
@@ -104,58 +120,47 @@ button:focus-visible {
   color: var(--text);
 }
 .window-controls .close:hover {
-  background: var(--reference-close-hover-background);
-  color: var(--reference-close-hover-color);
+  background: #c42b1c;
+  color: #fff;
 }
 .window-controls svg {
-  width: var(--reference-window-icon-size);
-  height: var(--reference-window-icon-size);
+  width: var(--icon-md);
+  height: var(--icon-md);
   fill: none;
   stroke: currentColor;
-  stroke-width: var(--reference-window-icon-stroke);
+  stroke-width: 1.4;
   stroke-linecap: round;
   stroke-linejoin: round;
 }
 .window-error {
   position: fixed;
-  inset-inline: var(--reference-brand-padding-start);
+  inset-inline: var(--sp-7);
   top: var(--titlebar-h);
   color: var(--err);
-  font-size: var(--reference-body-font-size);
+  font-size: var(--fs-md);
 }
 
-/* Every scroll area gets the reference's thin glass scrollbar, not the system one. */
+/* Every scroll area gets a thin glass scrollbar that only shows its thumb. */
 ::-webkit-scrollbar {
-  width: var(--worktrees-scrollbar-size);
-  height: var(--worktrees-scrollbar-size);
+  width: 10px;
+  height: 10px;
 }
 ::-webkit-scrollbar-thumb {
-  background: var(--worktrees-scrollbar-thumb);
-  border-radius: var(--worktrees-scrollbar-radius);
-  border: var(--worktrees-scrollbar-border);
+  background: rgba(255, 255, 255, 0.12);
+  border-radius: var(--r-pill);
+  border: 3px solid transparent;
   background-clip: padding-box;
 }
 ::-webkit-scrollbar-thumb:hover {
-  background-color: var(--worktrees-scrollbar-hover);
+  background-color: rgba(255, 255, 255, 0.22);
 }
-::-webkit-scrollbar-track {
-  background: var(--worktrees-transparent);
+::-webkit-scrollbar-track,
+::-webkit-scrollbar-corner {
+  background: transparent;
 }
 ::-webkit-scrollbar-button {
   display: none;
 }
-::-webkit-scrollbar-corner {
-  background: var(--worktrees-transparent);
-}
-
 ::selection {
-  background: var(--polish-selection-background);
-}
-button:disabled {
-  opacity: var(--new-project-button-disabled-opacity);
-  cursor: default;
-}
-select:focus-visible {
-  outline: none;
-  box-shadow: var(--focus);
+  background: rgba(106, 141, 255, 0.45);
 }

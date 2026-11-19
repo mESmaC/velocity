@@ -7,6 +7,7 @@ use chrono::{Days, Local, NaiveDate};
 use serde::{Deserialize, Serialize};
 
 use crate::Error;
+use crate::usage::count;
 
 pub mod handoff;
 
@@ -215,20 +216,16 @@ impl Totals {
             key,
             label,
             detail,
-            input: self.counts.input.to_string(),
-            cached: self.counts.cached.to_string(),
-            output: self.counts.output.to_string(),
-            total: self
-                .counts
-                .input
-                .saturating_add(self.counts.output)
-                .to_string(),
+            input: count(self.counts.input),
+            cached: count(self.counts.cached),
+            output: count(self.counts.output),
+            total: count(self.counts.input.saturating_add(self.counts.output)),
             calls: self.calls.to_string(),
             sources: sources
                 .into_iter()
                 .map(|(source, tokens)| SourceRow {
                     label: source.label().to_owned(),
-                    tokens: tokens.to_string(),
+                    tokens: count(tokens),
                 })
                 .collect(),
         }

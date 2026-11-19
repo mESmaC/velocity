@@ -34,17 +34,28 @@
   {:else if processes.length === 0}
     <p class="usage-note">Waiting for process memory readings.</p>
   {/if}
-  {#each processes as process (process.pid)}
-    <div class="usage-window">
-      <div class="usage-window-line">
-        <b>{process.role}</b>
-        <span class="usage-window-label">PID {process.pid}</span>
-        <span class="usage-window-reset">
-          {process.memory_mib} / {process.budget_mib} MiB
-        </span>
-      </div>
-    </div>
-  {/each}
+  {#if processes.length}
+    <table class="usage-compare process-memory" aria-label="Process memory">
+      <thead>
+        <tr>
+          <th scope="col">Process</th>
+          <th scope="col">PID</th>
+          <th scope="col">Memory</th>
+          <th scope="col">Budget</th>
+        </tr>
+      </thead>
+      <tbody>
+        {#each processes as process (process.pid)}
+          <tr>
+            <th scope="row">{process.role}</th>
+            <td>{process.pid}</td>
+            <td>{process.memory_mib} MiB</td>
+            <td>{process.budget_mib} MiB</td>
+          </tr>
+        {/each}
+      </tbody>
+    </table>
+  {/if}
 </section>
 
 <style>

@@ -160,7 +160,6 @@
       {/if}
     </h1>
     <div class="meta">
-      {#if thread.account_label}<span>{thread.account_label}</span>{/if}
       {#if change}
         <span class="branch mono" title={change.identifier}>
           <Icon name="branch" /><span class="label">{change.identifier}</span>
@@ -196,9 +195,10 @@
     </div>
     <div class="head-actions">
       <button
-        class="usage-button"
+        class="btn ghost usage-button"
         aria-expanded={usageOpen}
-        onclick={() => (usageOpen = !usageOpen)}>Token usage</button
+        onclick={() => (usageOpen = !usageOpen)}
+        ><Icon name="usage" />Tokens</button
       >
       {#if thread.has_diff_action && (!change || thread.worktree_chip === 'Live')}
         <button
@@ -322,13 +322,13 @@
   {#if layout.project_identifier !== null}
     <div class="browser-tabs" role="group" aria-label="Thread view">
       <button
-        class="btn"
+        class="tab"
         type="button"
         aria-pressed={!browserOpen}
         onclick={() => (browserOpen = false)}>Transcript</button
       >
       <button
-        class="btn"
+        class="tab"
         type="button"
         aria-pressed={browserOpen}
         onclick={() => (browserOpen = true)}>Browser</button
@@ -431,16 +431,34 @@
 </section>
 
 <style>
+  /* Underlined tabs: the view under them is the content, not a choice in a form. */
   .browser-tabs {
     display: flex;
-    align-items: center;
+    align-items: flex-end;
     flex: 0 0 auto;
-    gap: var(--browser-toolbar-gap);
-    padding: var(--browser-toolbar-padding);
-    border-bottom: var(--browser-toolbar-border);
+    gap: var(--sp-7);
+    padding: 0 var(--sp-3);
+    border-bottom: 1px solid var(--line-dim);
   }
-  .browser-tabs .btn[aria-pressed='true'] {
-    border-color: var(--accent-line);
-    background: var(--accent-soft);
+  .tab {
+    position: relative;
+    height: 32px;
+    color: var(--muted);
+    font-size: var(--fs-md);
+    font-weight: var(--fw-medium);
+  }
+  .tab:hover {
+    color: var(--text-2);
+  }
+  .tab[aria-pressed='true'] {
+    color: var(--text);
+  }
+  .tab[aria-pressed='true']::after {
+    content: '';
+    position: absolute;
+    inset: auto 0 -1px;
+    height: 2px;
+    border-radius: 2px 2px 0 0;
+    background: var(--accent);
   }
 </style>

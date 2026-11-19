@@ -10,7 +10,8 @@
   - **Layout:**
     - The sidebar is one floating glass pane, and each rail panel is its own pane.
     - The main column has no panel: content sits straight on the window.
-    - The thread header has two lines: the title (1.25 rem) with Diff and Editor as pill buttons beside it, and the meta line (branch, workspace, diff counts, time) under it.
+    - The title bar is 40 px: the brand and project switcher on the left, the Focus / Board switch and the project pulse in the centre, and a search field that opens the command palette on the right.
+    - The thread header has two lines: the title (18 px) with Tokens, Diff and Editor beside it, and the meta line (branch, workspace, diff counts, time) as chips under it.
     - Side panes narrow as the window narrows, and the rail collapses below 76 rem of window width.
     - The sidebar collapses below 54 rem.
     - Threads and Activity buttons open the collapsed panes, and their keyboard shortcuts open the pane before focusing the search or task entry.
@@ -21,24 +22,27 @@
       - a 1px `rgba(255,255,255,.14)` edge and a 1px inner top highlight at 20%;
       - a soft `0 18px 50px rgba(0,0,0,.55)` lift, so panes float.
     - The composer takes an accent edge and a 3px accent ring on focus; chips brighten their rim on hover.
-    - Popovers, menus, dialogs and toasts are frosted glass: `rgba(44,44,48,.72)` → `rgba(26,26,28,.80)` with `blur(48px) saturate(1.9)` over the content beneath them.
-      The scrim dims to `rgba(0,0,0,.5)` and blurs.
+    - Popovers, menus, dialogs and toasts are opaque graphite (`--glass-pop`, `#25252a` → `#17171a`) with a 12% hairline and a deep shadow, so text behind them never shows through (#492).
+      The scrim dims to `rgba(0,0,0,.58)` and blurs slightly.
     - Cards in the content area take a faint top-lit fill and a `rgba(255,255,255,.09)` hairline.
       Tool steps sit together in one such card, and the running step is an accent-tinted row.
-  - **Shape:** corner radii 6 / 10 / 14 px.
-    The sidebar is 22 px, rail panels 20 px, the composer 24 px, thread rows 12 px, dialogs 18 px, menus 12 px.
+  - **Shape:** corner radii 4 / 6 / 8 / 12 / 16 px (`--r-xs` … `--r-xl`).
+    Panes and menus are 12 px, the composer and dialogs 16 px, cards 8 px, buttons and fields 6 px.
     Pills and toasts are fully round.
   - **Controls:** the accent is ion blue `#6a8dff`, used for the selected thread, focus rings, checkboxes, the primary button, the send button and anything running.
     `--accent-soft` (16%) fills and `--accent-line` (46%) rims are its two tints.
     - Thread rows are source-list rows.
       The selection is a small accent-tinted lozenge with an accent rim, not an outlined box.
-    - Segmented controls use a sliding raised segment, and buttons are subtle raised gradients.
+    - Segmented controls use a sliding raised segment, and buttons are subtle raised fills.
+      Buttons, segmented controls, fields, checkboxes and tags are shared controls (`system.css`), so they look and size the same on every screen; a label inside a control never wraps.
     - The send button is an accent filled circle with a black arrow, and shortcuts are keycaps.
-  - **Type:** SF Pro / system UI, falling back to Inter (bundled), with SF Mono falling back to JetBrains Mono for code and meta.
-    - The shared scale in `reference.css` uses 0.9375 rem for captions, 1 rem for body text, 1.125 rem for headings, 1.25 rem for titles and 1.5 rem for display text.
-    - The minimum interactive target is 1.75 rem on each axis.
-    - At default system text sizing and 100% UI zoom, captions are 15 CSS pixels, body text is 16 CSS pixels, and targets are at least 28 CSS pixels.
-    - UI zoom sets the root size, so typography, controls, spacing and pane breakpoints scale together on top of Windows display scaling.
+  - **Type:** Inter (bundled), with JetBrains Mono (bundled) for code, paths and ids.
+    Labels, counts and prose are never set in mono.
+    - The scale in `tokens.css` is 11 / 12 / 13 / 15 / 18 / 22 px (`--fs-xs` … `--fs-2xl`); body text is 13 px.
+    - Spacing steps are 2 / 4 / 6 / 8 / 10 / 12 / 16 / 20 / 24 / 32 px, and controls are 20 / 24 / 28 / 34 px tall (`--h-xs` … `--h-lg`).
+      Buttons and rows are at least 28 px; compact buttons inside rows and cards are 24 px.
+    - Counts that sit in columns or tick in place use tabular figures; body text does not.
+    - UI zoom scales the whole window's web view, so typography, controls, spacing and pane breakpoints scale together on top of Windows display scaling (#495).
     - There are no italics anywhere, including placeholders.
     - Hierarchy comes from weight and the label greys: titles `#fff`, primary `#f5f5f7`, secondary `#b4b4bd`, tertiary `#8a8a91`.
       The tertiary grey still passes 4.5:1 on black.
@@ -88,7 +92,7 @@
   Dialog bodies scroll within the window while the header and action footer remain visible.
   Keyboard focus keeps the accent ring on raised controls, disabled actions are dimmed, and Settings navigation uses the shared hover state.
 - Base tokens are copied exactly from the mockup's `:root` into `ui/src/lib/theme/tokens.css`.
-  Supplemental values live in `ui/src/lib/theme/reference.css`, including the shared type and target scale and the rem overrides for base lengths (#12, #445).
+  Shared controls live in `ui/src/lib/theme/system.css`, and the remaining per-component values in `ui/src/lib/theme/reference.css` (#12).
   Components use the token files; the reference is read-only.
   The Rust theme module mirrors the base tokens.
 - Fonts are bundled locally in the app.

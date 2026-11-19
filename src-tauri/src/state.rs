@@ -105,12 +105,15 @@ pub async fn set_settings(application: AppHandle, settings: Settings) -> Result<
 #[tauri::command]
 #[specta::specta]
 pub async fn get_ui_zoom(application: AppHandle) -> Result<UiZoomView, String> {
-    crate::layout::off_ui_thread(move || {
-        let store = application.state::<ManagedStateStore>();
+    let handle = application.clone();
+    let view = crate::layout::off_ui_thread(move || {
+        let store = handle.state::<ManagedStateStore>();
         let store = store.lock().map_err(|error| error.to_string())?;
         Ok(store.state().settings.ui_zoom.view())
     })
-    .await
+    .await?;
+    apply_ui_zoom(&application, &view);
+    Ok(view)
 }
 
 #[tauri::command]
@@ -119,12 +122,27 @@ pub async fn adjust_ui_zoom(
     application: AppHandle,
     adjustment: UiZoomAdjustment,
 ) -> Result<UiZoomView, String> {
-    crate::layout::off_ui_thread(move || {
-        let store = application.state::<ManagedStateStore>();
+    let handle = application.clone();
+    let view = crate::layout::off_ui_thread(move || {
+        let store = handle.state::<ManagedStateStore>();
         let mut store = store.lock().map_err(|error| error.to_string())?;
         store
             .adjust_ui_zoom(adjustment)
             .map_err(|error| error.to_string())
     })
-    .await
+    .await?;
+    apply_ui_zoom(&application, &view);
+    Ok(view)
+}
+
+/// Zooms the whole webview, as a browser's page zoom does. Scaling only the root font
+/// size left every pixel length (padding, icons, pane widths) at full size while the
+/// text shrank inside it (#495).
+fn apply_ui_zoom(application: &AppHandle, view: &UiZoomView) {
+    let Some(window) = application.get_webview_window(crate::window::MAIN_WINDOW) else {
+        return;
+    };
+    if let Err(error) = window.set_zoom(f64::from(view.percent) / 100.0) {
+        eprintln!("Velocity could not apply the UI zoom: {error}");
+    }
 }

@@ -68,30 +68,52 @@
   .change {
     display: flex;
     flex-direction: column;
-    gap: var(--rosen-row-gap);
+    gap: var(--sp-1);
     text-align: left;
     width: 100%;
-    padding: var(--rosen-row-padding);
-    border-radius: var(--rosen-row-radius);
-    border: var(--rosen-section-border);
-    background: var(--surface-2);
-    color: var(--text);
-    margin: var(--rosen-line-margin);
-    font-size: var(--rosen-line-size);
+    margin: var(--sp-2) 0 0;
+    padding: var(--sp-4) var(--sp-5);
+    border-radius: var(--r-md);
+    border: 1px solid var(--line-dim);
+    background: var(--card);
+    color: var(--text-2);
+    font-size: var(--fs-sm);
+    white-space: normal;
     overflow-wrap: anywhere;
   }
+  .change strong {
+    color: var(--text);
+    font-size: var(--fs-md);
+    font-weight: var(--fw-semibold);
+  }
+  .change .mono {
+    color: var(--muted);
+    font-size: var(--fs-xs);
+  }
   button.change:hover {
-    background: var(--surface-3);
+    border-color: var(--line-mid);
+    background: var(--surface-2);
   }
   .mono,
   pre {
     font-family: var(--mono);
   }
   details {
+    margin: var(--sp-2) 0 0 var(--sp-2);
     color: var(--text-2);
-    font-size: var(--rosen-line-size);
+    font-size: var(--fs-sm);
+  }
+  summary {
+    cursor: pointer;
+    color: var(--muted);
   }
   pre {
+    margin: var(--sp-2) 0 0;
+    padding: var(--sp-4) var(--sp-5);
+    border: 1px solid var(--line-dim);
+    border-radius: var(--r-sm);
+    background: rgba(0, 0, 0, 0.42);
+    font-size: var(--fs-xs);
     white-space: pre-wrap;
     overflow-wrap: anywhere;
   }

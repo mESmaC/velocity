@@ -1,20 +1,35 @@
+/* Issue and work rows in the rail: a title line, then one muted meta line. */
 .issue-meta {
   display: flex;
   flex-wrap: wrap;
-  gap: var(--issue-meta-gap);
+  align-items: center;
+  gap: var(--sp-2) var(--sp-3);
+  margin-top: 1px;
   text-align: left;
+  line-height: 18px;
+}
+.issue-meta > span:not(.tag) {
+  color: var(--muted);
 }
 .issue-agent {
   color: var(--swarm);
 }
 .issue-scout {
-  color: var(--duty);
+  color: var(--duty) !important;
   display: inline-flex;
   align-items: center;
-  gap: var(--layout-swarm-button-dispatch-gap);
+  gap: var(--sp-2);
+}
+.issue-scout .icon {
+  width: var(--icon-sm);
+  height: var(--icon-sm);
+}
+.issue-number {
+  font-size: var(--fs-xs);
+  color: var(--faint);
 }
 .issue-group {
-  padding: var(--layout-item-padding);
+  padding: var(--sp-3) var(--sp-4);
 }
 .issue-error {
   color: var(--err);
@@ -24,28 +39,35 @@
   display: flex;
   flex-direction: column;
   align-items: flex-start;
-  gap: var(--layout-item-gap);
-  padding: var(--layout-item-padding);
-  padding-left: var(--issue-detail-indent);
+  gap: var(--sp-4);
+  padding: var(--sp-2) var(--sp-4) var(--sp-5)
+    calc(var(--sp-4) + 16px + var(--sp-4));
 }
 .issue-summary {
-  margin: var(--layout-empty-margin);
-  font-size: var(--layout-item-font-size);
+  margin: 0;
+  font-size: var(--fs-sm);
+  line-height: var(--lh-prose);
   color: var(--text-2);
   overflow-wrap: anywhere;
   user-select: text;
+  white-space: normal;
 }
 .issue-blocker,
 .issue-blocks {
-  margin: var(--layout-empty-margin);
-  font: var(--layout-item-meta-font);
-  color: var(--warn);
+  margin: 0;
+  font-size: var(--fs-xs);
+  color: var(--warn) !important;
+}
+.issue-row.expanded {
+  border-radius: var(--r-md);
+  background: var(--card);
 }
 .issue-row.expanded > .issue-item {
-  background: var(--layout-item-hover-background);
+  background: transparent;
 }
 .issue-row.expanded > .issue-item .item-title {
   color: var(--text);
+  white-space: normal;
 }
 .issue-row:not(.taken):hover .issue-number,
 .issue-row:not(.taken):focus-within .issue-number {

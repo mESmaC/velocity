@@ -117,14 +117,6 @@
     errorTimer = setTimeout(clearError, 4000);
   }
 
-  $effect(() => {
-    if (zoom)
-      document.documentElement.style.setProperty(
-        '--ui-zoom',
-        `${zoom.percent}%`,
-      );
-  });
-
   async function readZoom() {
     zoomError = '';
     try {

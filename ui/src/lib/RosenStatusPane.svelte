@@ -5,6 +5,7 @@
     type LayoutAction,
     type RosenStatusChanged,
   } from './ipc';
+  import Icon from './Icon.svelte';
   import PaneState from './PaneState.svelte';
   import RosenChangeRow from './RosenChangeRow.svelte';
 
@@ -64,8 +65,14 @@
     ).length,
   );
 
+  // The rail passes a field of the layout snapshot, which is replaced on every publish.
+  // Reading the prop in the effect reran it each time: the pane blanked to "Loading",
+  // resubscribed and redrew several times a second (#491). A derived only changes
+  // when the project does.
+  const currentProject = $derived(project);
+
   $effect(() => {
-    const current = project;
+    const current = currentProject;
     let stopped = false;
     let stopListening: (() => void) | undefined;
     frame = null;
@@ -155,19 +162,19 @@
           <section class="status-section" aria-label={section}>
             <div class="section-heading">
               <button
-                class="mini"
+                class="section-toggle"
                 aria-expanded={!preferences.closed.includes(section)}
                 onclick={() => toggle(section)}
               >
-                {preferences.closed.includes(section) ? '›' : '⌄'}
+                <Icon name="chevron" />
                 {section}
               </button>
-              <button
-                class="mini"
-                aria-label={'Move ' + section + ' up'}
-                disabled={index === 0}
-                onclick={() => moveUp(index)}>↑</button
-              >
+              {#if index > 0}<button
+                  class="move-up"
+                  title="Move up"
+                  aria-label={'Move ' + section + ' up'}
+                  onclick={() => moveUp(index)}><Icon name="arrow" /></button
+                >{/if}
             </div>
             {#if !preferences.closed.includes(section)}
               {#if section === 'Server'}
@@ -275,24 +282,81 @@
 {/if}
 
 <style>
-  .status-note {
-    margin: 0 0 8px;
-    color: var(--muted);
+  .panel-body {
+    padding: var(--sp-2) var(--sp-3);
   }
-
+  .status-note {
+    margin: var(--sp-3) var(--sp-3) var(--sp-2);
+    color: var(--muted);
+    font-size: var(--fs-sm);
+  }
   .status-section {
-    padding: var(--rosen-section-padding);
-    border-bottom: var(--rosen-section-border);
+    padding: var(--sp-2) 0 var(--sp-4);
+  }
+  .status-section + .status-section {
+    border-top: 1px solid var(--line-dim);
   }
   .section-heading {
     display: flex;
     justify-content: space-between;
     align-items: center;
+    gap: var(--sp-2);
+    min-height: 28px;
+  }
+  .section-toggle {
+    display: inline-flex;
+    align-items: center;
+    gap: var(--sp-3);
+    flex: 1;
+    min-width: 0;
+    height: 26px;
+    padding: 0 var(--sp-3);
+    border-radius: var(--r-sm);
+    color: var(--text);
+    font-size: var(--fs-md);
+    font-weight: var(--fw-semibold);
+    text-align: left;
+  }
+  .section-toggle:hover {
+    background: var(--surface-2);
+  }
+  .section-toggle :global(.icon) {
+    width: 10px;
+    height: 10px;
+    color: var(--muted);
+    transition: transform 0.15s;
+  }
+  .section-toggle[aria-expanded='false'] :global(.icon) {
+    transform: rotate(-90deg);
+  }
+  /* Reordering is a rare action: the control appears when the section is hovered. */
+  .move-up {
+    display: inline-grid;
+    place-items: center;
+    width: 22px;
+    height: 22px;
+    border-radius: var(--r-sm);
+    color: var(--muted);
+    opacity: 0;
+  }
+  .move-up :global(.icon) {
+    width: var(--icon-sm);
+    height: var(--icon-sm);
+  }
+  .status-section:hover .move-up,
+  .move-up:focus-visible {
+    opacity: 1;
+  }
+  .move-up:hover {
+    background: var(--surface-3);
+    color: var(--text);
   }
   p {
-    margin: var(--rosen-line-margin);
-    font-size: var(--rosen-line-size);
-    line-height: var(--rosen-line-height);
+    margin: var(--sp-1) 0 0;
+    padding: 0 var(--sp-3) 0 calc(var(--sp-3) + 10px + var(--sp-3));
+    font-size: var(--fs-sm);
+    line-height: var(--lh);
+    color: var(--text-2);
     overflow-wrap: anywhere;
   }
   .hint {

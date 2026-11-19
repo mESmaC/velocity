@@ -1,17 +1,19 @@
+/* Settings → Providers (F15), and the composer's model menu. */
 .pv-list {
   display: flex;
   flex-direction: column;
-  gap: var(--providers-list-gap);
+  gap: var(--sp-5);
 }
 .pv {
   display: grid;
-  grid-template-columns: var(--providers-card-columns);
-  gap: var(--providers-card-gap);
-  padding: var(--providers-card-padding);
-  border: var(--worktrees-drive-border);
-  border-radius: var(--worktrees-drive-radius);
-  background: var(--worktrees-drive-background);
-  box-shadow: var(--worktrees-drive-shadow);
+  grid-template-columns: 20px minmax(0, 1fr) auto;
+  column-gap: var(--sp-5);
+  row-gap: var(--sp-3);
+  padding: var(--sp-7) var(--sp-7) var(--sp-6);
+  border: 1px solid var(--line-dim);
+  border-radius: var(--r-lg);
+  background: var(--card);
+  box-shadow: var(--glass-hi);
 }
 [data-provider='claude'] {
   --provider-color: var(--claude);
@@ -30,125 +32,158 @@
   --provider-color: var(--text-2);
 }
 .pv-mark {
-  padding: var(--providers-mark-padding);
+  display: grid;
+  place-items: center;
+  width: 20px;
+  height: 20px;
   color: var(--provider-color);
 }
 .pv-name {
   display: flex;
   align-items: baseline;
-  gap: var(--providers-name-gap);
-  font-size: var(--providers-name-font-size);
-  font-weight: var(--providers-name-font-weight);
+  flex-wrap: wrap;
+  gap: 0 var(--sp-4);
+  min-width: 0;
+  font-size: var(--fs-lg);
+  font-weight: var(--fw-semibold);
+  line-height: 20px;
+  color: var(--text);
 }
 .pv-name span {
-  font-size: var(--providers-name-detail-font-size);
-  font-weight: var(--providers-name-detail-font-weight);
+  font-size: var(--fs-sm);
+  font-weight: var(--fw-regular);
   color: var(--muted);
 }
 .pv-status {
   grid-column: 2;
   display: flex;
   align-items: center;
-  gap: var(--providers-status-gap);
-  font-size: var(--providers-status-font-size);
+  gap: var(--sp-3);
+  font-size: var(--fs-sm);
   color: var(--text-2);
 }
 .pv-status i {
   flex: none;
-  width: var(--providers-dot-size);
-  height: var(--providers-dot-size);
+  width: 6px;
+  height: 6px;
   border-radius: 50%;
   background: var(--ok);
+  box-shadow: 0 0 6px var(--ok);
 }
 .pv-status i.off {
   background: transparent;
-  border: var(--providers-dot-off-border);
+  border: 1px solid var(--muted);
+  box-shadow: none;
 }
 .pv-status i.wait {
   background: var(--warn);
+  box-shadow: 0 0 6px var(--warn);
 }
 .pv-actions {
   grid-column: 3;
   grid-row: 1 / 3;
-  align-self: center;
+  align-self: start;
   display: flex;
-  gap: var(--providers-actions-gap);
+  gap: var(--sp-3);
 }
 .pv-command,
-.pv-limit {
+.pv-limit,
+.pv > .pane-state {
   grid-column: 2 / 4;
-  font: var(--providers-meta-font);
-  color: var(--muted);
 }
-.pv-command code {
-  color: var(--text-2);
-}
+/* A labelled line inside the card: "ACP agent", an account, "Max agents at once". */
 .pv-command {
   display: flex;
   align-items: center;
-  gap: var(--providers-actions-gap);
-}
-/* The command reads as code until you click into it to edit (F15). */
-.pv-command-input {
-  flex: var(--worktrees-flex);
-  display: flex;
-  min-width: var(--worktrees-zero);
-  border: var(--worktrees-zero);
-  border-bottom: var(--providers-chip-border);
-}
-.pv-command-input:focus-within {
-  border-bottom-color: var(--worktrees-input-focus-border);
-}
-.pv-command-input input {
-  flex: var(--worktrees-flex);
-  min-width: var(--worktrees-zero);
-  width: var(--worktrees-zero);
-  background: var(--worktrees-none);
-  border: var(--worktrees-zero);
-  outline: var(--worktrees-zero);
-  font: var(--providers-meta-font);
-  color: var(--text-2);
+  gap: var(--sp-4);
+  min-height: var(--h-md);
+  font-size: var(--fs-sm);
+  color: var(--muted);
 }
 .pv-command > span {
   white-space: nowrap;
 }
-.pv-add-open {
-  margin-top: var(--providers-list-gap);
+.pv-command:first-of-type {
+  margin-top: var(--sp-4);
 }
-.pv-add {
-  display: flex;
-  flex-direction: column;
-  gap: var(--providers-list-gap);
-  margin-top: var(--providers-list-gap);
-  padding: var(--providers-card-padding);
-  border: var(--worktrees-drive-border);
-  border-radius: var(--worktrees-drive-radius);
-  background: var(--worktrees-drive-background);
-}
-.pv-add-row {
+/* The command and the account names read as text until you click into them (F15). */
+.pv-command-input {
+  flex: 1;
   display: flex;
   align-items: center;
-  gap: var(--worktrees-location-gap);
+  gap: var(--sp-4);
+  min-width: 0;
+  white-space: nowrap;
 }
-.pv-add-command {
-  flex: var(--worktrees-flex);
+.pv-command-input input {
+  flex: 1;
+  min-width: 0;
+  width: 0;
+  height: var(--h-md);
+  min-height: 0;
+  padding: 0 var(--sp-4);
+  border: 1px solid transparent;
+  border-radius: var(--r-sm);
+  background: transparent;
+  box-shadow: none;
+  font: var(--fs-sm) var(--mono);
+  color: var(--text);
+}
+.pv-command-input input:hover {
+  border-color: var(--line-dim);
+}
+.pv-command-input input:focus {
+  border-color: var(--accent-line);
+  background: var(--field);
+  box-shadow: var(--focus);
+}
+/* An account row: the account name, its default mark and its buttons. */
+.pv-command:has(+ .pv-limit) {
+  padding: 0 var(--sp-2) 0 0;
+  border-radius: var(--r-sm);
+  background: var(--card);
+}
+.pv-command:has(+ .pv-limit) .pv-command-input input {
+  font-family: var(--sans);
+  font-size: var(--fs-md);
+}
+.pv-command:has(+ .pv-limit) > span {
+  font-size: var(--fs-xs);
+  font-weight: var(--fw-medium);
+  color: var(--ok);
+}
+/* Max agents at once: a short number field next to its label, not across the card. */
+.pv-command-input:has(input[type='number']) {
+  flex: none;
+}
+.pv-command-input input[type='number'] {
+  flex: none;
+  width: 72px;
+  border-color: var(--line-mid);
+  background: var(--field);
+  font-family: var(--sans);
 }
 .pv-limit {
   display: flex;
   align-items: center;
-  gap: var(--providers-limit-gap);
-  margin: var(--providers-limit-margin);
+  gap: var(--sp-5);
+  padding: 0 var(--sp-4) var(--sp-2);
+  font-size: var(--fs-xs);
+  color: var(--muted);
+  font-variant-numeric: tabular-nums;
 }
 .pv-bar {
-  width: var(--providers-bar-width);
-  height: var(--providers-bar-height);
+  flex: none;
+  width: 120px;
+  height: 4px;
   overflow: hidden;
-  border-radius: var(--providers-bar-radius);
+  border-radius: var(--r-pill);
   background: var(--line-dim);
 }
 .pv-bar i {
   display: block;
   height: 100%;
+  border-radius: inherit;
   background: var(--provider-color);
 }
 .pv-models {
@@ -156,65 +191,116 @@
   display: flex;
   flex-wrap: wrap;
   align-items: center;
-  gap: var(--providers-models-gap);
-  margin: var(--providers-limit-margin);
+  gap: var(--sp-2);
+  margin-top: var(--sp-3);
+  padding-top: var(--sp-5);
+  border-top: 1px solid var(--line-dim);
 }
 .pv-models > span {
-  margin: var(--providers-models-label-margin);
-  font-size: var(--providers-chip-font-size);
+  width: 100%;
+  margin-bottom: var(--sp-2);
+}
+.pv-models > span {
+  font-size: var(--fs-xs);
+  font-weight: var(--fw-semibold);
+  letter-spacing: var(--tracking-caps);
+  text-transform: uppercase;
   color: var(--muted);
 }
 .pv-chip {
-  padding: var(--providers-chip-padding);
-  border: var(--providers-chip-border);
-  border-radius: var(--providers-chip-radius);
-  font-size: var(--providers-chip-font-size);
-  color: var(--muted);
-  text-decoration: line-through;
+  display: inline-flex;
+  align-items: center;
+  height: 22px;
+  padding: 0 var(--sp-4);
+  border: 1px dashed var(--line-mid);
+  border-radius: var(--r-pill);
+  background: transparent;
+  font-size: var(--fs-sm);
+  color: var(--faint);
+}
+.pv-chip:hover {
+  color: var(--text-2);
 }
 .pv-chip.on {
-  border-color: var(--providers-chip-on-border);
+  border-style: solid;
+  border-color: var(--line-mid);
+  background: var(--surface-2);
   color: var(--text);
-  text-decoration: none;
 }
+.pv-chip.on:hover {
+  background: var(--surface-3);
+}
+.pv-add-open {
+  margin-top: var(--sp-5);
+}
+.pv-add {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-5);
+  margin-top: var(--sp-5);
+  padding: var(--sp-7);
+  border: 1px dashed var(--line-mid);
+  border-radius: var(--r-lg);
+}
+.pv-add .worktree-description {
+  margin: 0;
+}
+.pv-add-row {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-4);
+}
+.pv-add-command {
+  flex: 1;
+}
+
+/* ── model choice (defaults and titles) ─────────────────────────────────── */
 .pv-cards {
   display: grid;
-  grid-template-columns: var(--new-project-models-columns);
-  gap: var(--new-project-models-gap);
+  grid-template-columns: repeat(auto-fill, minmax(200px, 1fr));
+  gap: var(--sp-4);
 }
 .pv-model {
   display: flex;
   flex-direction: column;
-  gap: var(--new-project-card-gap);
-  padding: var(--new-project-card-padding);
-  border: var(--new-project-card-border);
-  border-radius: var(--new-project-card-border-radius);
-  background: var(--new-project-card-background);
-  box-shadow: var(--new-project-card-box-shadow);
+  align-items: flex-start;
+  gap: var(--sp-2);
+  min-width: 0;
+  padding: var(--sp-5) var(--sp-6);
+  border: 1px solid var(--line-dim);
+  border-radius: var(--r-md);
+  background: var(--card);
+  box-shadow: var(--glass-hi);
   text-align: left;
+  white-space: normal;
 }
 .pv-model:hover {
-  border-color: var(--new-project-card-hover-border-color);
-  background: var(--new-project-card-hover-background);
+  border-color: var(--line-mid);
+  background: var(--surface-2);
 }
 .pv-model.on {
-  border-color: var(--new-project-card-on-border-color);
-  background: var(--new-project-card-on-background);
-  box-shadow: var(--new-project-card-on-box-shadow);
+  border-color: var(--accent-line);
+  background: var(--accent-soft);
+  box-shadow: inset 0 0 0 1px var(--accent-edge);
 }
 .pv-model.out {
-  border-style: var(--providers-out-border-style);
+  border-style: dashed;
+  background: transparent;
+  box-shadow: none;
 }
 .pv-model-head {
   display: flex;
   align-items: center;
-  gap: var(--new-project-card-heading-gap);
-  font-size: var(--new-project-card-heading-font-size);
-  font-weight: var(--new-project-card-heading-font-weight);
+  gap: var(--sp-3);
+  font-size: var(--fs-md);
+  font-weight: var(--fw-semibold);
   color: var(--text);
 }
+.pv-model-head .icon {
+  color: var(--provider-color);
+}
 .pv-model.out .pv-model-head {
-  font-weight: var(--providers-out-heading-weight);
+  font-weight: var(--fw-medium);
   color: var(--muted);
 }
 .pv-model.out:disabled {
@@ -224,85 +310,111 @@
   color: var(--text);
 }
 .pv-model-note {
-  font-size: var(--new-project-card-detail-font-size);
+  font-size: var(--fs-sm);
   color: var(--muted);
 }
 .pv-row {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  gap: var(--providers-row-gap);
-  padding: var(--providers-row-padding);
-  border-top: var(--providers-row-border);
-  font-size: var(--providers-row-font-size);
+  flex-wrap: wrap;
+  gap: var(--sp-4);
+  min-height: 44px;
+  padding: var(--sp-3) 0;
+  border-top: 1px solid var(--line-dim);
+  font-size: var(--fs-md);
   color: var(--text-2);
 }
 .pv-cards + .pv-row {
-  margin: var(--providers-row-first-margin);
+  margin-top: var(--sp-6);
 }
+/* .pv-seg is the shared segmented control at the small size. */
 .pv-seg {
   display: inline-flex;
-  align-self: flex-start;
-  gap: var(--new-project-segment-gap);
-  padding: var(--new-project-segment-padding);
-  border-radius: var(--new-project-segment-border-radius);
-  background: var(--new-project-segment-background);
-  box-shadow: var(--new-project-segment-box-shadow);
-  overflow: hidden;
+  flex: none;
+  align-items: center;
+  gap: var(--sp-1);
+  padding: var(--sp-1);
+  border-radius: var(--r-md);
+  background: rgba(255, 255, 255, 0.045);
+  box-shadow: inset 0 0 0 1px var(--line-dim);
 }
 .pv-seg button {
   display: inline-flex;
   align-items: center;
-  gap: var(--new-project-segment-button-gap);
-  height: var(--new-project-small-segment-button-height);
-  padding: var(--new-project-small-segment-button-padding);
-  border-radius: var(--new-project-segment-button-border-radius);
-  font-size: var(--new-project-small-segment-button-font-size);
+  gap: var(--sp-2);
+  height: 22px;
+  padding: 0 var(--sp-4);
+  border-radius: var(--r-sm);
+  font-size: var(--fs-sm);
+  font-weight: var(--fw-medium);
   color: var(--text-2);
+  white-space: nowrap;
+}
+.pv-seg button:hover:not(.on, :disabled) {
+  background: var(--surface-2);
+  color: var(--text);
 }
 .pv-seg button.on {
-  background: var(--new-project-segment-on-background);
-  color: var(--new-project-segment-on-color);
-  box-shadow: var(--new-project-segment-on-box-shadow);
+  background: var(--surface-4);
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.1),
+    0 1px 2px rgba(0, 0, 0, 0.4);
+  color: var(--text);
+}
+.pv-seg button .icon {
+  width: var(--icon-sm);
+  height: var(--icon-sm);
 }
 .pv-seg.dis {
-  opacity: var(--providers-segment-disabled-opacity);
+  opacity: 0.45;
 }
 .pv-seg.dis button {
   cursor: not-allowed;
 }
 .pv-title-note {
-  margin: var(--providers-title-note-margin);
-  font-size: var(--providers-title-note-font-size);
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: var(--sp-3);
+  margin: var(--sp-4) 0 0;
+  font-size: var(--fs-sm);
   color: var(--muted);
 }
 .pv-title-note.warn {
   color: var(--warn);
 }
 .pv-error {
-  font-size: var(--providers-title-note-font-size);
+  font-size: var(--fs-sm);
   color: var(--err);
 }
+
+/* ── the composer's model menu ──────────────────────────────────────────── */
 .composer-row:has(.model-menu) {
   position: relative;
 }
+/* Opaque, so the transcript behind it never shows through (#492). */
 .model-menu {
   position: absolute;
   right: 0;
-  bottom: var(--providers-menu-bottom);
-  z-index: var(--thread-menu-z-index);
-  min-width: var(--providers-menu-min-width);
+  bottom: calc(100% + var(--providers-menu-anchor-gap));
+  z-index: 40;
+  width: max-content;
+  min-width: 280px;
   display: flex;
   flex-direction: column;
-  max-height: var(--providers-menu-max-height);
   overflow: hidden;
-  padding: var(--thread-menu-padding);
-  border: var(--thread-menu-border);
-  border-radius: var(--thread-menu-radius);
+  padding: var(--sp-2);
+  border: 1px solid var(--pop-edge);
+  border-radius: var(--r-lg);
   background: var(--glass-pop);
-  box-shadow: var(--thread-menu-shadow);
+  box-shadow: var(--shadow-pop);
   backdrop-filter: var(--blur-pop);
   -webkit-backdrop-filter: var(--blur-pop);
+}
+.model-menu.below {
+  top: calc(100% + var(--providers-menu-anchor-gap));
+  bottom: auto;
 }
 .model-menu-list {
   flex: 1 1 auto;
@@ -310,74 +422,97 @@
   overflow-y: auto;
   overscroll-behavior: contain;
 }
-.model-menu.below {
-  top: var(--providers-menu-top);
-  bottom: auto;
-}
 .model-menu-head {
   display: flex;
   align-items: center;
-  gap: var(--providers-menu-head-gap);
-  padding: var(--providers-menu-head-padding);
-  font-size: var(--providers-menu-head-font-size);
+  gap: var(--sp-3);
+  padding: var(--sp-5) var(--sp-4) var(--sp-2);
+  font-size: var(--fs-xs);
+  font-weight: var(--fw-semibold);
+  letter-spacing: var(--tracking-caps);
+  text-transform: uppercase;
   color: var(--muted);
+}
+.model-menu-list > .model-menu-head:first-child {
+  padding-top: var(--sp-3);
+}
+.model-menu-head .icon {
+  width: var(--icon-sm);
+  height: var(--icon-sm);
+  color: var(--provider-color);
 }
 .model-menu-head span {
   margin-left: auto;
-  font: var(--providers-menu-head-meta-font);
+  font-weight: var(--fw-regular);
+  letter-spacing: 0;
+  text-transform: none;
 }
 .model-menu-item {
   display: flex;
   align-items: center;
   justify-content: space-between;
+  gap: var(--sp-4);
   width: 100%;
-  padding: var(--providers-menu-item-padding);
-  border-radius: var(--thread-menu-button-radius);
-  font-size: var(--thread-menu-button-font-size);
+  min-height: 30px;
+  padding: 0 var(--sp-4);
+  border-radius: var(--r-sm);
+  font-size: var(--fs-md);
   color: var(--text);
   text-align: left;
 }
 .model-menu-item:hover:not(:disabled),
 .model-menu-item:focus-visible {
-  background: var(--thread-menu-button-hover);
+  background: var(--surface-3);
 }
 .model-menu-item:disabled {
   color: var(--muted);
   cursor: default;
 }
+.model-menu-item.on {
+  background: var(--accent-soft);
+}
+/* The chosen account is marked by its check alone, so the chosen model stands out. */
+.model-menu-item.on:has(small) {
+  background: none;
+}
+.model-menu-item.on:has(small):hover {
+  background: var(--surface-3);
+}
 .model-menu-item.on::after {
   content: '✓';
-  color: var(--text-2);
+  color: var(--accent-hi);
 }
 .model-menu-item.sign-in {
   flex-direction: column;
   align-items: flex-start;
-  padding: var(--providers-menu-sign-in-padding);
+  gap: var(--sp-1);
+  padding: var(--sp-3) var(--sp-4);
   color: var(--text-2);
 }
 .model-menu-item small {
-  font: var(--thread-menu-detail-font);
+  font-size: var(--fs-xs);
   color: var(--muted);
 }
 .model-menu hr {
-  margin: var(--thread-menu-divider-margin);
+  margin: var(--sp-2) 0;
   border: 0;
-  border-top: var(--thread-menu-divider-top);
+  border-top: 1px solid var(--line-dim);
 }
 .model-menu-row {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  padding: var(--providers-menu-row-padding);
-  font-size: var(--providers-menu-row-font-size);
+  gap: var(--sp-4);
+  padding: var(--sp-2) var(--sp-4);
+  font-size: var(--fs-sm);
   color: var(--muted);
 }
 .model-menu-why {
-  margin: var(--providers-menu-why-margin);
-  font-size: var(--providers-menu-why-font-size);
+  margin-left: var(--sp-2);
+  font-size: var(--fs-xs);
 }
 .model-menu-error {
-  padding: var(--providers-menu-sign-in-padding);
-  font-size: var(--providers-menu-row-font-size);
+  padding: var(--sp-3) var(--sp-4);
+  font-size: var(--fs-sm);
   color: var(--err);
 }

@@ -197,15 +197,17 @@
               <div class="sk" class:on={card.installed}>
                 <div class="top">
                   <b>{card.catalog.name}</b>
-                  {#if card.suggestion_badge}<span class="sugg"
-                      >{card.suggestion_badge}</span
+                  {#if card.suggestion_badge}<span
+                      class="tag sugg"
+                      data-tone="accent">{card.suggestion_badge}</span
                     >{/if}<span class="kind">{card.catalog.kind_summary}</span>
                   <span class="repo"
                     >{card.catalog.repository} · {card.catalog.license}</span
                   >
                   {#if projectIdentifier !== null && (card.installed || card.selection.enabled)}
                     <button
-                      class="skill-toggle"
+                      class="mini skill-toggle"
+                      class:on={card.selection.enabled}
                       role="switch"
                       aria-checked={card.selection.enabled}
                       aria-label={card.installed
@@ -325,16 +327,19 @@
                 {/if}
                 <div class="row">
                   {#if card.installed}<button
+                      class="mini"
                       disabled={busy}
                       onclick={() => check(card.catalog.id)}
                       >Check for updates</button
                     >
                     <button
+                      class="mini ghost"
                       disabled={busy || status?.state === 'running'}
                       onclick={() => remove(card.catalog.id)}
                       >Remove pack</button
                     >
                   {:else}<button
+                      class="mini primary"
                       disabled={busy || status?.state === 'running'}
                       onclick={() => install(card.catalog.id)}
                       >{status?.state === 'failed'
@@ -360,6 +365,7 @@
             skill with a SKILL.md).
           </p>
           <form
+            class="sk-add"
             onsubmit={(event) => {
               event.preventDefault();
               install(repository);
@@ -373,6 +379,7 @@
               /></label
             >
             <button
+              class="btn"
               disabled={!repository.trim() ||
                 customInstallations.some(
                   (pack) => pack.status.state === 'running',
@@ -392,11 +399,13 @@
             {#if preview.up_to_date}<p>Already up to date.</p>{:else}
               <p>{preview.current_commit} → {preview.candidate_commit}</p>
               <pre>{preview.unified_diff}</pre>
-              <button disabled={busy} onclick={confirm}
+              <button class="btn primary" disabled={busy} onclick={confirm}
                 >Update to reviewed commit</button
               >
             {/if}
-            <button onclick={() => (preview = null)}>Close</button>
+            <button class="btn ghost" onclick={() => (preview = null)}
+              >Close</button
+            >
           </section>{/if}
       {/if}
     </div>

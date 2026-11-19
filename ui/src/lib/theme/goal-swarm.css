@@ -48,7 +48,9 @@
 .gs-step b {
   min-width: var(--goal-stepper-count-min-width);
   text-align: center;
-  font: var(--goal-stepper-count-font);
+  font-size: var(--fs-md);
+  font-weight: var(--fw-semibold);
+  font-variant-numeric: tabular-nums;
 }
 .gs-step.lg {
   height: var(--goal-stepper-large-height);
@@ -102,10 +104,13 @@
   min-width: 0;
   overflow: hidden;
   white-space: nowrap;
-  border-radius: var(--goal-bar-segment-border-radius);
-  font: var(--goal-bar-segment-font);
-  color: var(--goal-bar-segment-color);
-  background: var(--goal-bar-segment-sheen), var(--provider-color);
+  border: 1px solid color-mix(in srgb, var(--provider-color) 45%, transparent);
+  border-radius: var(--r-sm);
+  font-size: var(--fs-xs);
+  font-weight: var(--fw-semibold);
+  font-variant-numeric: tabular-nums;
+  color: var(--provider-color);
+  background: color-mix(in srgb, var(--provider-color) 16%, transparent);
 }
 .gs-bar .claude {
   --provider-color: var(--claude);
@@ -163,7 +168,7 @@
   stroke: none;
 }
 .gs-row .tag {
-  font: var(--goal-row-tag-font);
+  font-size: var(--fs-xs);
   color: var(--muted);
   text-align: right;
   white-space: nowrap;
@@ -195,7 +200,8 @@
 }
 .gs-tools .hint {
   margin-left: auto;
-  font-family: var(--mono);
+  font-size: var(--fs-xs);
+  color: var(--muted);
 }
 .gs-lim {
   display: flex;

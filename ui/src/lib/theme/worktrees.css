@@ -1,81 +1,116 @@
+/* Settings: the page shell (header, page nav, scrolling main) shared by every settings
+   page, and the Workspaces page itself. */
 .worktree-settings {
   display: flex;
-  flex: var(--worktrees-flex);
-  min-height: var(--worktrees-zero);
-  min-width: var(--worktrees-zero);
+  flex: 1;
+  min-height: 0;
+  min-width: 0;
   flex-direction: column;
 }
+/* The header is one line on every page, so switching pages never moves the nav (#497). */
 .worktree-settings-head {
   display: flex;
-  align-items: center;
-  flex-wrap: wrap;
-  gap: var(--glass-head-row-gap);
-  padding: var(--thread-head-padding);
-  border-bottom: var(--thread-head-border-bottom);
+  align-items: baseline;
+  gap: var(--sp-6);
+  min-width: 0;
+  padding: var(--sp-2) var(--sp-3) var(--sp-6);
+  border-bottom: 1px solid var(--line-dim);
 }
 .worktree-settings-head h1 {
-  margin: var(--worktrees-zero);
-  font-size: var(--thread-head-h1-font-size);
-  font-weight: var(--worktrees-head-font-weight);
-  letter-spacing: var(--thread-head-h1-letter-spacing);
-  color: var(--worktrees-title-color);
+  flex: none;
+  margin: 0;
+  font-size: var(--fs-xl);
+  font-weight: var(--fw-semibold);
+  letter-spacing: -0.015em;
+  color: var(--text);
 }
 .worktree-settings-head > span {
-  flex: var(--glass-head-meta-flex);
-  font: var(--worktrees-meta-font);
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: var(--fs-sm);
   color: var(--muted);
 }
 .worktree-settings-body {
-  flex: var(--worktrees-flex);
-  min-height: var(--worktrees-zero);
+  flex: 1;
+  min-height: 0;
+  min-width: 0;
   display: grid;
-  grid-template-columns: var(--worktrees-body-columns);
+  grid-template-columns: 184px minmax(0, 1fr);
 }
 .worktree-settings-nav {
   display: flex;
   flex-direction: column;
-  gap: var(--worktrees-nav-gap);
-  padding: var(--worktrees-nav-padding);
-  border-right: var(--worktrees-nav-border);
+  gap: var(--sp-1);
+  padding: var(--sp-6) var(--sp-5) var(--sp-6) var(--sp-2);
+  border-right: 1px solid var(--line-dim);
 }
 .worktree-settings-nav button {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  padding: var(--worktrees-nav-button-padding);
-  border-radius: var(--worktrees-nav-button-radius);
-  font-size: var(--worktrees-nav-button-font-size);
+  gap: var(--sp-4);
+  min-height: 30px;
+  padding: 0 var(--sp-5);
+  border-radius: var(--r-sm);
+  font-size: var(--fs-md);
+  font-weight: var(--fw-medium);
   color: var(--muted);
   text-align: left;
 }
-.worktree-settings-nav button.on {
-  background: var(--worktrees-nav-active-background);
+.worktree-settings-nav button:hover:not(:disabled):not(.on) {
   color: var(--text);
-  box-shadow: var(--worktrees-nav-active-shadow);
+  background: var(--surface-2);
+}
+.worktree-settings-nav button.on {
+  background: var(--surface-3);
+  color: var(--text);
+  box-shadow: inset 2px 0 0 var(--accent);
 }
 .worktree-settings-nav button:disabled {
   cursor: default;
 }
 .worktree-settings-nav button span {
-  font-size: var(--worktrees-nav-small-font-size);
+  font-size: var(--fs-xs);
+  color: var(--faint);
 }
 .worktree-settings-main {
-  min-height: var(--worktrees-zero);
-  min-width: var(--worktrees-zero);
+  min-height: 0;
+  min-width: 0;
   overflow-y: auto;
   overflow-x: hidden;
-  padding: var(--worktrees-main-padding);
+  padding: var(--sp-8) var(--sp-10) var(--sp-10);
+}
+.worktree-settings-main > section {
+  max-width: 720px;
+  margin-bottom: var(--sp-10);
+}
+.worktree-settings-main h2 {
+  margin: 0 0 var(--sp-2);
+  font-size: var(--fs-lg);
+  font-weight: var(--fw-semibold);
+  color: var(--text);
+}
+.worktree-description {
+  margin: 0 0 var(--sp-6);
+  font-size: var(--fs-sm);
+  line-height: var(--lh-prose);
+  color: var(--muted);
 }
 .appearance-zoom {
   display: flex;
   align-items: center;
   flex-wrap: wrap;
-  gap: var(--layout-edge-gap);
+  gap: var(--sp-4);
 }
 .appearance-zoom output {
-  font-variant-numeric: tabular-nums;
+  min-width: 48px;
+  text-align: center;
+  font-weight: var(--fw-semibold);
 }
-@container main-view (width < 40rem) {
+@container main-view (width < 640px) {
   .worktree-settings-body {
     grid-template-columns: minmax(0, 1fr);
     grid-template-rows: auto minmax(0, 1fr);
@@ -84,160 +119,164 @@
     flex-direction: row;
     flex-wrap: wrap;
     border-right: 0;
+    border-bottom: 1px solid var(--line-dim);
+  }
+  .worktree-settings-main {
+    padding: var(--sp-7);
   }
 }
-.worktree-settings-main > section {
-  max-width: var(--worktrees-section-width);
-  margin-bottom: var(--worktrees-section-margin);
-}
-.worktree-settings-main h2 {
-  margin: var(--worktrees-zero);
-  margin-bottom: var(--worktrees-heading-margin);
-  font-size: var(--worktrees-heading-size);
-  font-weight: var(--worktrees-heading-weight);
-}
-.worktree-description {
-  margin: var(--worktrees-zero);
-  margin-bottom: var(--worktrees-description-margin);
-  font-size: var(--worktrees-description-size);
-  line-height: var(--worktrees-description-line-height);
-  color: var(--muted);
-}
+
+/* ── drives ──────────────────────────────────────────────────────────────── */
 .worktree-drives {
   display: grid;
-  grid-template-columns: var(--worktrees-drive-columns);
-  gap: var(--worktrees-drive-gap);
-  margin-bottom: var(--worktrees-drive-margin);
+  grid-template-columns: repeat(auto-fill, minmax(200px, 1fr));
+  gap: var(--sp-4);
+  margin-bottom: var(--sp-6);
 }
 .worktree-drive {
   display: flex;
   flex-direction: column;
-  gap: var(--worktrees-drive-gap);
-  min-width: var(--worktrees-zero);
-  padding: var(--worktrees-drive-padding);
+  gap: var(--sp-4);
+  min-width: 0;
+  padding: var(--sp-5) var(--sp-6);
   text-align: left;
-  border: var(--worktrees-drive-border);
-  border-radius: var(--worktrees-drive-radius);
-  background: var(--worktrees-drive-background);
-  box-shadow: var(--worktrees-drive-shadow);
+  border: 1px solid var(--line-dim);
+  border-radius: var(--r-md);
+  background: var(--card);
+  box-shadow: var(--glass-hi);
+  white-space: normal;
 }
 .worktree-drive:hover {
-  border-color: var(--worktrees-drive-hover-border);
-  background: var(--worktrees-drive-hover-background);
+  border-color: var(--line-mid);
+  background: var(--surface-2);
 }
 .worktree-drive.on {
-  border-color: var(--worktrees-drive-on-border);
-  background: var(--worktrees-drive-on-background);
-  box-shadow: var(--worktrees-drive-on-shadow);
+  border-color: var(--accent-line);
+  background: var(--accent-soft);
+  box-shadow: inset 0 0 0 1px var(--accent-edge);
 }
 .drive-heading {
   display: flex;
   align-items: center;
-  gap: var(--worktrees-drive-gap);
-  font-size: var(--worktrees-drive-heading-size);
-  font-weight: var(--worktrees-drive-heading-weight);
+  gap: var(--sp-4);
+  min-width: 0;
+  font-size: var(--fs-md);
+  font-weight: var(--fw-semibold);
 }
 .drive-heading > span {
   margin-left: auto;
-  font: var(--worktrees-drive-meta-font);
+  font-size: var(--fs-xs);
+  font-weight: var(--fw-medium);
   color: var(--muted);
 }
 .drive-bar {
   display: block;
-  height: var(--worktrees-bar-height);
+  height: 4px;
   overflow: hidden;
-  border-radius: var(--worktrees-bar-radius);
+  border-radius: var(--r-pill);
   background: var(--line-dim);
 }
 .drive-bar > span {
   display: block;
-  height: var(--worktrees-full);
+  height: 100%;
   width: var(--worktree-drive-used);
+  border-radius: var(--r-pill);
   background: var(--text-2);
 }
+.worktree-drive.on .drive-bar > span {
+  background: var(--accent);
+}
 .drive-free {
-  font: var(--worktrees-drive-meta-font);
+  font-size: var(--fs-sm);
   color: var(--muted);
 }
 .worktree-drive.slow .drive-free {
   color: var(--warn);
 }
+
+/* ── location and setting rows ───────────────────────────────────────────── */
 .worktree-location-input {
   display: flex;
-  gap: var(--worktrees-location-gap);
+  gap: var(--sp-4);
   align-items: center;
 }
 .worktree-input {
-  flex: var(--worktrees-flex);
+  flex: 1;
   display: flex;
   align-items: center;
-  gap: var(--worktrees-input-gap);
-  height: var(--worktrees-input-height);
-  padding: var(--worktrees-input-padding);
-  border: var(--worktrees-input-border);
-  border-radius: var(--worktrees-input-radius);
-  background: var(--worktrees-input-background);
+  gap: var(--sp-3);
+  min-width: 0;
+  height: var(--h-md);
+  padding: 0 var(--sp-5);
+  border: 1px solid var(--line-mid);
+  border-radius: var(--r-sm);
+  background: var(--field);
 }
 .worktree-input:focus-within {
-  border-color: var(--worktrees-input-focus-border);
+  border-color: var(--accent-line);
   box-shadow: var(--focus);
 }
 .worktree-input input {
-  flex: var(--worktrees-flex);
-  min-width: var(--worktrees-zero);
-  width: var(--worktrees-zero);
-  background: var(--worktrees-none);
-  border: var(--worktrees-zero);
-  outline: var(--worktrees-zero);
-  font: var(--worktrees-input-font);
+  flex: 1;
+  min-width: 0;
+  width: 0;
+  min-height: 0;
+  padding: 0;
+  background: none;
+  border: 0;
+  outline: 0;
+  box-shadow: none !important;
+  font: var(--fs-sm) var(--mono);
   color: var(--text);
 }
 .worktree-input > span {
   color: var(--muted);
-  font: var(--worktrees-input-font);
+  font: var(--fs-sm) var(--mono);
   white-space: nowrap;
 }
+/* Settings buttons are the shared .btn and .mini. */
 .worktree-button {
-  height: var(--worktrees-button-height);
-  padding: var(--worktrees-button-padding);
-  border: var(--worktrees-button-border);
-  border-radius: var(--worktrees-button-radius);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: var(--sp-3);
+  height: var(--h-md);
+  padding: 0 var(--sp-6);
+  border: 1px solid var(--line-mid);
+  border-radius: var(--r-sm);
+  background: var(--surface-2);
+  box-shadow: var(--glass-hi);
   color: var(--text);
-  background: var(--worktrees-button-background);
-  box-shadow: var(--worktrees-button-shadow);
+  font-size: var(--fs-md);
+  font-weight: var(--fw-medium);
 }
-.worktree-button:not(.mini):hover:not(:disabled) {
-  border-color: var(--worktrees-button-hover-border);
-  background: var(--worktrees-button-hover-background);
+.worktree-button:hover:not(:disabled) {
+  border-color: var(--line);
+  background: var(--surface-3);
+}
+.worktree-button.mini {
+  height: var(--h-sm);
+  padding: 0 var(--sp-4);
+  font-size: var(--fs-sm);
 }
 .worktree-button.browse {
-  height: var(--worktrees-input-height);
+  flex: none;
 }
 .worktree-button:disabled {
   cursor: default;
   color: var(--muted);
-}
-.worktree-button.mini {
-  height: var(--worktrees-mini-height);
-  padding: var(--worktrees-mini-padding);
-  border: var(--worktrees-mini-border);
-  border-radius: var(--worktrees-mini-radius);
-  font-size: var(--worktrees-mini-font-size);
-  background: var(--worktrees-none);
-  box-shadow: var(--worktrees-none);
-  white-space: nowrap;
 }
 .worktree-button:focus-visible,
 .worktree-drive:focus-visible {
   box-shadow: var(--focus);
 }
 .worktree-path-preview {
-  margin-top: var(--worktrees-preview-margin);
-  padding: var(--worktrees-preview-padding);
-  border: var(--worktrees-preview-border);
-  border-radius: var(--worktrees-preview-radius);
-  background: var(--worktrees-preview-background);
-  font: var(--worktrees-preview-font);
+  margin-top: var(--sp-4);
+  padding: var(--sp-4) var(--sp-5);
+  border: 1px dashed var(--line-mid);
+  border-radius: var(--r-sm);
+  background: rgba(0, 0, 0, 0.25);
+  font: var(--fs-sm) / 1.6 var(--mono);
   color: var(--text-2);
   overflow-wrap: anywhere;
 }
@@ -252,44 +291,53 @@
   display: flex;
   align-items: center;
   justify-content: space-between;
-  gap: var(--worktrees-row-gap);
-  padding: var(--worktrees-row-padding);
-  border-top: var(--worktrees-row-border);
-  font-size: var(--worktrees-row-font-size);
+  flex-wrap: wrap;
+  gap: var(--sp-4) var(--sp-7);
+  min-height: 44px;
+  padding: var(--sp-4) 0;
+  border-top: 1px solid var(--line-dim);
+  font-size: var(--fs-md);
   color: var(--text-2);
 }
 .worktree-setting-row > .worktree-input {
-  flex: var(--worktrees-row-input-flex);
+  flex: 0 1 300px;
+}
+/* A number is short: its field is too, wherever the row puts it. */
+.worktree-setting-row > .worktree-input:has(input[type='number']) {
+  flex: 0 0 96px;
+}
+.worktree-setting-row input[type='number'] {
+  width: 96px;
+  font-family: var(--sans);
+  font-size: var(--fs-md);
 }
 .worktree-setting-row .worktree-check {
-  font-size: var(--worktrees-row-font-size);
+  font-size: var(--fs-md);
 }
 .worktree-setting-row .hint {
-  font-size: var(--worktrees-hint-font-size);
+  font-size: var(--fs-sm);
   color: var(--muted);
 }
 .worktree-location-notice {
-  margin: var(--worktrees-zero);
-  margin-top: var(--worktrees-note-margin);
-  font-size: var(--worktrees-note-font-size);
+  margin: var(--sp-4) 0 0;
+  font-size: var(--fs-sm);
   color: var(--warn);
 }
 .worktree-checks {
   display: flex;
   flex-direction: column;
-  gap: var(--worktrees-checks-gap);
+  gap: var(--sp-4);
 }
 .worktree-check {
   display: inline-flex;
-  gap: var(--worktrees-check-gap);
+  gap: var(--sp-4);
   align-items: center;
-  font-size: var(--worktrees-check-font-size);
+  font-size: var(--fs-md);
   color: var(--text-2);
   cursor: pointer;
 }
 .worktree-check input {
-  accent-color: var(--accent);
-  margin: var(--worktrees-zero);
+  margin: 0;
 }
 .worktree-check.locked {
   color: var(--text);
@@ -299,30 +347,36 @@
   margin-left: auto;
   display: inline-flex;
   align-items: center;
-  gap: var(--worktrees-lock-gap);
-  font-size: var(--worktrees-lock-font-size);
+  gap: var(--sp-2);
+  flex: none;
+  font-size: var(--fs-xs);
+  font-weight: var(--fw-medium);
   color: var(--duty);
+  white-space: nowrap;
 }
 .worktree-lock svg {
-  width: var(--worktrees-lock-size);
-  height: var(--worktrees-lock-size);
-  fill: var(--worktrees-none);
+  width: var(--icon-sm);
+  height: var(--icon-sm);
+  fill: none;
   stroke: currentColor;
-  stroke-width: var(--worktrees-lock-stroke);
+  stroke-width: 1.5;
 }
 .lifecycle-first {
-  margin-top: var(--worktrees-note-margin);
+  margin-top: var(--sp-4);
 }
+
+/* ── live workspaces ─────────────────────────────────────────────────────── */
 .worktree-summary {
   display: flex;
   align-items: center;
-  gap: var(--worktrees-summary-gap);
-  margin-bottom: var(--worktrees-summary-margin);
-  font-size: var(--worktrees-summary-font-size);
+  flex-wrap: wrap;
+  gap: var(--sp-4);
+  margin-bottom: var(--sp-5);
+  font-size: var(--fs-md);
   color: var(--text-2);
 }
 .worktree-summary .free-space {
-  font: var(--worktrees-meta-font);
+  font-size: var(--fs-sm);
   color: var(--muted);
 }
 .worktree-summary .mini {
@@ -330,19 +384,23 @@
 }
 .worktree-row {
   display: grid;
-  width: var(--worktrees-full);
-  grid-template-columns: var(--worktrees-table-columns);
-  gap: var(--worktrees-table-gap);
+  width: 100%;
+  grid-template-columns: 8px minmax(0, 1.4fr) minmax(0, 1fr) auto auto;
+  gap: var(--sp-5);
   align-items: center;
-  padding: var(--worktrees-table-padding);
-  border-top: var(--worktrees-row-border);
-  font-size: var(--worktrees-table-font-size);
+  min-height: 34px;
+  padding: var(--sp-2) var(--sp-4);
+  border-top: 1px solid var(--line-dim);
+  font-size: var(--fs-sm);
   text-align: left;
 }
+button.worktree-row:hover {
+  background: var(--surface-2);
+}
 .worktree-dot {
-  width: var(--worktrees-dot-size);
-  height: var(--worktrees-dot-size);
-  border-radius: var(--worktrees-dot-radius);
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
   background: var(--text-2);
 }
 .worktree-dot[data-tone='PullRequest'] {
@@ -361,14 +419,14 @@
   background: var(--muted);
 }
 .worktree-dot[data-tone='Deleted'] {
-  background: var(--worktrees-transparent);
-  border: var(--worktrees-dot-gone-border);
+  background: transparent;
+  border: 1px solid var(--muted);
 }
 .worktree-row .path {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-  font: var(--worktrees-path-font);
+  font: var(--fs-sm) var(--mono);
   color: var(--text);
 }
 .worktree-row .owner {
@@ -379,26 +437,24 @@
 }
 .worktree-row .size,
 .worktree-row .state {
-  font: var(--worktrees-table-meta-font);
+  font-size: var(--fs-xs);
   color: var(--muted);
   text-align: right;
-}
-.worktree-row .size {
   white-space: nowrap;
 }
 .worktree-row.gone {
-  opacity: var(--worktrees-gone-opacity);
+  opacity: 0.6;
 }
 .worktree-row.gone .path {
   text-decoration: line-through;
-  text-decoration-color: var(--worktrees-gone-decoration-color);
+  text-decoration-color: var(--faint);
 }
 .worktree-row.gone .state {
   color: var(--ok);
 }
 .worktree-size-note,
 .worktree-message {
-  font-size: var(--worktrees-note-font-size);
+  font-size: var(--fs-sm);
   color: var(--muted);
 }
 .worktree-message {
@@ -407,39 +463,41 @@
 .worktree-message.error {
   color: var(--err);
 }
-
 .workspace-commands {
   display: grid;
-  gap: var(--worktrees-input-gap);
-  margin: var(--worktrees-summary-margin) 0;
+  gap: var(--sp-3);
+  margin: var(--sp-5) 0;
   color: var(--text-2);
-  font-size: var(--worktrees-summary-font-size);
+  font-size: var(--fs-md);
 }
 .workspace-commands .worktree-description {
   margin: 0;
 }
 .workspace-commands textarea {
-  padding: var(--worktrees-nav-padding);
-  border: var(--worktrees-input-border);
-  border-radius: var(--worktrees-input-radius);
-  background: var(--worktrees-input-background);
-  color: var(--text);
-  font: var(--worktrees-input-font);
+  min-height: 88px;
   resize: vertical;
 }
 .workspace-inventory {
   width: 100%;
   table-layout: fixed;
   border-collapse: collapse;
-  font-size: var(--worktrees-table-font-size);
+  font-size: var(--fs-sm);
   text-align: left;
 }
 .workspace-inventory th,
 .workspace-inventory td {
-  padding: var(--worktrees-table-padding);
-  border-bottom: var(--worktrees-row-border);
+  height: 34px;
+  padding: 0 var(--sp-4);
+  border-bottom: 1px solid var(--line-dim);
   overflow: hidden;
   text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.workspace-inventory th {
+  font-size: var(--fs-xs);
+  font-weight: var(--fw-semibold);
+  letter-spacing: var(--tracking-caps);
+  text-transform: uppercase;
 }
 .workspace-inventory th,
 .workspace-inventory td:nth-child(3),
@@ -451,7 +509,7 @@
 }
 .workspace-inventory th:last-child,
 .workspace-inventory td:last-child {
-  width: 6rem;
+  width: 96px;
   text-align: right;
 }
 .workspace-inventory td code,
@@ -463,32 +521,19 @@
   white-space: nowrap;
 }
 .workspace-inventory td:nth-child(2) button {
-  color: var(--accent);
+  color: var(--accent-hi);
   text-align: left;
 }
 
-.worktree-settings-main::-webkit-scrollbar {
-  width: var(--worktrees-scrollbar-size);
-  height: var(--worktrees-scrollbar-size);
+/* ── proofs page ─────────────────────────────────────────────────────────── */
+/* The proof list is prose about each feature; only the names in it are code. */
+.worktree-settings .proof .thm {
+  row-gap: var(--sp-5);
 }
-.worktree-settings-main::-webkit-scrollbar-thumb {
-  background: var(--worktrees-scrollbar-thumb);
-  border-radius: var(--worktrees-scrollbar-radius);
-  border: var(--worktrees-scrollbar-border);
-  background-clip: padding-box;
+.worktree-settings .proof .thm code {
+  font: var(--fs-md) / var(--lh-prose) var(--sans);
+  color: var(--text-2);
 }
-.worktree-settings-main::-webkit-scrollbar-thumb:hover {
-  background-color: var(--worktrees-scrollbar-hover);
-}
-.worktree-settings-main::-webkit-scrollbar-track {
-  background: var(--worktrees-transparent);
-}
-
-.worktree-settings-nav button:hover:not(:disabled):not(.on) {
+.worktree-settings .proof .thm code b {
   color: var(--text);
-  background: var(--surface-3);
-}
-.worktree-settings-head,
-.worktree-settings-body {
-  min-width: 0;
 }

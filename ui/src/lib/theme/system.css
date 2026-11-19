@@ -1,0 +1,365 @@
+/* Shared controls. Every screen uses these instead of its own copy, so a button, a
+   segmented control or a field looks and sizes the same everywhere. Screen styles may
+   place them; they don't restyle them. */
+
+/* ── icons and keys ─────────────────────────────────────────────────────── */
+.icon {
+  width: var(--icon-md);
+  height: var(--icon-md);
+  flex: none;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.5;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+kbd {
+  display: inline-grid;
+  place-items: center;
+  min-width: 18px;
+  height: 18px;
+  padding: 0 var(--sp-2);
+  border-radius: var(--r-xs);
+  background: var(--surface-3);
+  box-shadow:
+    inset 0 -1px 0 var(--field),
+    inset 0 1px 0 rgba(255, 255, 255, 0.06);
+  color: var(--text-2);
+  font: var(--fw-medium) 10.5px/1 var(--mono);
+  white-space: nowrap;
+}
+.spacer {
+  flex: 1;
+}
+
+/* ── buttons ────────────────────────────────────────────────────────────── */
+/* .btn: the default button. .mini: the compact one used inside rows and cards.
+   Modifiers: .primary (the one main action), .solid (a strong neutral), .danger,
+   .ghost (no fill until hovered). */
+.btn,
+.mini {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: var(--sp-3);
+  height: var(--h-md);
+  padding: 0 var(--sp-6);
+  border: 1px solid var(--line-mid);
+  border-radius: var(--r-sm);
+  background: var(--surface-2);
+  box-shadow: var(--glass-hi);
+  color: var(--text);
+  font-size: var(--fs-md);
+  font-weight: var(--fw-medium);
+  line-height: 1;
+  white-space: nowrap;
+  text-decoration: none;
+}
+.mini {
+  height: var(--h-sm);
+  padding: 0 var(--sp-4);
+  font-size: var(--fs-sm);
+  gap: var(--sp-2);
+}
+.btn:hover:not(:disabled),
+.mini:hover:not(:disabled) {
+  border-color: var(--line);
+  background: var(--surface-3);
+}
+.btn:active:not(:disabled),
+.mini:active:not(:disabled) {
+  background: var(--surface-4);
+}
+.btn.primary,
+.mini.primary {
+  border-color: transparent;
+  background: var(--accent);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.28);
+  color: var(--on-accent);
+  font-weight: var(--fw-semibold);
+}
+.btn.primary:hover:not(:disabled),
+.mini.primary:hover:not(:disabled) {
+  background: var(--accent-hi);
+}
+.btn.solid,
+.mini.solid {
+  border-color: transparent;
+  background: var(--text);
+  box-shadow: none;
+  color: #0b0b0d;
+  font-weight: var(--fw-semibold);
+}
+.btn.solid:hover:not(:disabled),
+.mini.solid:hover:not(:disabled) {
+  background: #fff;
+}
+.btn.danger,
+.mini.danger {
+  border-color: var(--err-line);
+  background: var(--err-soft);
+  color: var(--err);
+}
+.btn.danger:hover:not(:disabled),
+.mini.danger:hover:not(:disabled) {
+  border-color: rgba(255, 115, 105, 0.5);
+  background: rgba(255, 115, 105, 0.22);
+}
+.btn.ghost,
+.mini.ghost {
+  border-color: transparent;
+  background: transparent;
+  box-shadow: none;
+  color: var(--text-2);
+}
+.btn.ghost:hover:not(:disabled),
+.mini.ghost:hover:not(:disabled) {
+  background: var(--surface-3);
+  color: var(--text);
+}
+.btn kbd,
+.mini kbd {
+  height: 16px;
+  min-width: 16px;
+  margin-inline-end: calc(-1 * var(--sp-2));
+  background: rgba(255, 255, 255, 0.08);
+  box-shadow: none;
+  color: var(--muted);
+}
+.btn.primary kbd,
+.btn.solid kbd {
+  background: rgba(0, 0, 0, 0.14);
+  color: inherit;
+}
+.icon-btn {
+  display: inline-grid;
+  place-items: center;
+  flex: none;
+  width: var(--h-md);
+  height: var(--h-md);
+  border-radius: var(--r-sm);
+  color: var(--text-2);
+}
+.icon-btn:hover:not(:disabled) {
+  background: var(--surface-3);
+  color: var(--text);
+}
+
+/* ── segmented control ──────────────────────────────────────────────────── */
+/* A row of mutually exclusive choices on one track. It never wraps inside a
+   choice; a row of segments that doesn't fit wraps as a whole (#493). */
+.seg,
+.view-switch {
+  display: inline-flex;
+  flex: none;
+  align-items: center;
+  gap: var(--sp-1);
+  padding: var(--sp-1);
+  border-radius: var(--r-md);
+  background: rgba(255, 255, 255, 0.045);
+  box-shadow: inset 0 0 0 1px var(--line-dim);
+  max-width: 100%;
+}
+.seg button,
+.view-switch button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: var(--sp-2);
+  flex: none;
+  min-width: 0;
+  height: var(--h-sm);
+  padding: 0 var(--sp-5);
+  border-radius: var(--r-sm);
+  color: var(--text-2);
+  font-size: var(--fs-md);
+  font-weight: var(--fw-medium);
+  white-space: nowrap;
+}
+.seg.sm button {
+  height: 22px;
+  padding: 0 var(--sp-4);
+  font-size: var(--fs-sm);
+}
+.seg button:hover:not(:disabled, .on),
+.view-switch button:hover:not(.on) {
+  color: var(--text);
+  background: var(--surface-2);
+}
+.seg button.on,
+.seg button[aria-pressed='true'],
+.view-switch button.on {
+  background: var(--surface-4);
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.1),
+    0 1px 2px rgba(0, 0, 0, 0.4);
+  color: var(--text);
+}
+
+/* ── fields ─────────────────────────────────────────────────────────────── */
+:where(
+  input:not(
+    [type='checkbox'],
+    [type='radio'],
+    [type='range'],
+    [type='color'],
+    .bare
+  ),
+  select:not(.bare),
+  textarea:not(.bare)
+) {
+  min-height: var(--h-md);
+  padding: 0 var(--sp-5);
+  border: 1px solid var(--line-mid);
+  border-radius: var(--r-sm);
+  background: var(--field);
+  color: var(--text);
+  font-size: var(--fs-md);
+  outline: none;
+}
+:where(textarea:not(.bare)) {
+  padding: var(--sp-4) var(--sp-5);
+  line-height: var(--lh);
+  font-family: var(--mono);
+  font-size: var(--fs-sm);
+}
+:where(input, textarea)::placeholder {
+  color: var(--faint);
+}
+:where(
+  input:not([type='checkbox'], [type='radio'], [type='range'], .bare),
+  select:not(.bare),
+  textarea:not(.bare)
+):focus {
+  border-color: var(--accent-line);
+  box-shadow: var(--focus);
+}
+:where(select:not(.bare)) {
+  appearance: none;
+  padding-inline-end: var(--sp-9);
+  background:
+    url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='10' height='6' fill='none' stroke='%23b6b6c0' stroke-width='1.5' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M1 1l4 4 4-4'/%3E%3C/svg%3E")
+      no-repeat right 10px center / 10px 6px,
+    var(--field);
+}
+:where(select) option {
+  background: #1c1c20;
+  color: var(--text);
+}
+/* Drawn by hand: WebView2's unchecked box is a bright white square on the dark panes. */
+input[type='checkbox'],
+input[type='radio'] {
+  appearance: none;
+  display: inline-grid;
+  place-items: center;
+  width: 15px;
+  height: 15px;
+  margin: 0;
+  flex: none;
+  border: 1px solid var(--line);
+  border-radius: var(--r-xs);
+  background: var(--field);
+  cursor: pointer;
+}
+input[type='radio'] {
+  border-radius: 50%;
+}
+input[type='checkbox']:hover:not(:disabled),
+input[type='radio']:hover:not(:disabled) {
+  border-color: var(--text-2);
+}
+input[type='checkbox']:checked {
+  border-color: var(--accent);
+  background:
+    url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='10' height='8' fill='none' stroke='%23fff' stroke-width='1.8' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M1 4l2.6 2.6L9 1'/%3E%3C/svg%3E")
+      no-repeat center / 10px 8px,
+    var(--accent);
+}
+input[type='radio']:checked {
+  border-color: var(--accent);
+  background: radial-gradient(circle, #fff 0 3px, var(--accent) 3.5px);
+}
+input[type='checkbox']:focus-visible,
+input[type='radio']:focus-visible {
+  box-shadow: var(--focus);
+}
+input[type='checkbox']:disabled,
+input[type='radio']:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+/* ── chips, tags and counts ─────────────────────────────────────────────── */
+/* .tag: a small status label. Tint it with data-tone. */
+.tag {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--sp-2);
+  height: 18px;
+  padding: 0 var(--sp-3);
+  border-radius: var(--r-xs);
+  background: var(--surface-3);
+  color: var(--text-2);
+  font-size: var(--fs-xs);
+  font-weight: var(--fw-medium);
+  line-height: 1;
+  white-space: nowrap;
+}
+.tag[data-tone='accent'] {
+  background: var(--accent-soft);
+  color: var(--accent-hi);
+}
+.tag[data-tone='ok'] {
+  background: var(--ok-soft);
+  color: var(--ok);
+}
+.tag[data-tone='warn'] {
+  background: var(--warn-soft);
+  color: var(--warn);
+}
+.tag[data-tone='err'] {
+  background: var(--err-soft);
+  color: var(--err);
+}
+.tag[data-tone='duty'] {
+  background: var(--duty-soft);
+  color: var(--duty);
+}
+.tag[data-tone='swarm'] {
+  background: var(--swarm-soft);
+  color: var(--swarm);
+}
+.tag[data-tone='info'] {
+  background: var(--info-soft);
+  color: var(--info);
+}
+
+/* Small caps label for a section inside a pane, a dialog or a settings page. */
+.section-label {
+  font-size: var(--fs-xs);
+  font-weight: var(--fw-semibold);
+  letter-spacing: var(--tracking-caps);
+  text-transform: uppercase;
+  color: var(--muted);
+}
+
+/* ── floating surfaces ──────────────────────────────────────────────────── */
+/* Menus, popovers, toasts and tooltips share one dense glass, so whatever sits
+   behind them never shows through (#492). */
+.surface-pop {
+  border: 1px solid var(--pop-edge);
+  border-radius: var(--r-lg);
+  background: var(--glass-pop);
+  box-shadow: var(--shadow-pop);
+  backdrop-filter: var(--blur-pop);
+  -webkit-backdrop-filter: var(--blur-pop);
+}
+
+/* Numbers that line up in columns or tick in place use tabular figures. Body text
+   doesn't: Inter's tabular set also widens hyphens. */
+.tnum,
+output,
+table td,
+.meter-value {
+  font-variant-numeric: tabular-nums;
+}

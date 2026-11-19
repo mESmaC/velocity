@@ -5,7 +5,7 @@ use tauri::{AppHandle, Manager, State, Webview, Window, WindowEvent};
 use tauri_specta::Event;
 use velocity_core::window::{WindowAction, WindowOperation, window_operation};
 
-const MAIN_WINDOW: &str = "main";
+pub const MAIN_WINDOW: &str = "main";
 const HEARTBEAT_TIMEOUT: Duration = Duration::from_secs(5);
 const PAGE_START_GRACE: Duration = Duration::from_secs(12);
 

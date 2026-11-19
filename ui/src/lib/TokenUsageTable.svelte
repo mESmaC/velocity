@@ -20,7 +20,11 @@
       <tr>
         <th scope="row">
           <details>
-            <summary>{row.label}</summary>
+            <summary
+              >{row.label}{#if row.detail}<span class="token-usage-detail"
+                  >{row.detail}</span
+                >{/if}</summary
+            >
             <small>{row.calls} usage records</small>
             <ul aria-label="Estimated input by source">
               {#each row.sources as source (source.label)}
@@ -30,7 +34,6 @@
               {/each}
             </ul>
           </details>
-          {#if row.detail}<small>{row.detail}</small>{/if}
         </th>
         <td>{row.input}</td>
         <td>{row.cached}</td>

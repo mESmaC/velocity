@@ -16,10 +16,15 @@
   let report = $state<Report | null>(null);
   let error = $state('');
 
+  // The thread view passes fields of the layout snapshot, which is replaced on every
+  // publish; deriveds keep the report from blanking and refetching each time (#491).
+  const currentProject = $derived(project);
+  const currentThread = $derived(thread);
+
   $effect(() => {
     const selection = period;
-    const projectIdentifier = project;
-    const threadIdentifier = thread;
+    const projectIdentifier = currentProject;
+    const threadIdentifier = currentThread;
     let stopped = false;
     let timer: ReturnType<typeof setTimeout>;
     report = null;

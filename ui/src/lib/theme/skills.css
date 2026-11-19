@@ -1,159 +1,198 @@
-.sk {
-  padding: var(--skills-0-padding);
-  border: var(--skills-0-border);
-  border-radius: var(--skills-0-border-radius);
-  display: var(--skills-0-display);
-  flex-direction: var(--skills-0-flex-direction);
-  gap: var(--skills-0-gap);
-}
-.sk.on {
-  border-color: var(--skills-1-border-color);
-}
-.sk .top {
-  display: var(--skills-2-display);
-  align-items: var(--skills-2-align-items);
-  gap: var(--skills-2-gap);
-}
-.sk .top b {
-  font-size: var(--skills-3-font-size);
-  font-weight: var(--skills-3-font-weight);
-}
-.sk .top .repo {
-  font: var(--skills-4-font);
-  color: var(--skills-4-color);
-}
-.sk .top .kind {
-  font-size: var(--skills-5-font-size);
-  color: var(--skills-5-color);
-}
-.sk .top .sw {
-  margin-left: var(--skills-6-margin-left);
-  align-self: var(--skills-6-align-self);
-}
-.sk .d {
-  font-size: var(--skills-7-font-size);
-  line-height: var(--skills-7-line-height);
-  color: var(--skills-7-color);
-}
-.sk .bund {
-  display: var(--skills-8-display);
-  flex-wrap: var(--skills-8-flex-wrap);
-  gap: var(--skills-8-gap);
-}
-.sk .bund .mchip:not(.on) {
-  text-decoration: var(--skills-9-text-decoration);
-  opacity: var(--skills-9-opacity);
-}
-.sk .bund .mchip small {
-  margin-left: var(--skills-10-margin-left);
-  color: var(--skills-10-color);
-  font: var(--skills-10-font);
-}
-.sk .meta {
-  display: var(--skills-11-display);
-  flex-wrap: var(--skills-11-flex-wrap);
-  gap: var(--skills-11-gap);
-  font: var(--skills-11-font);
-  color: var(--skills-11-color);
-}
-.sk .meta .ok {
-  color: var(--skills-12-color);
-}
-.sk .meta .no {
-  color: var(--skills-13-color);
-}
-.sk .meta .warn {
-  color: var(--skills-14-color);
-}
-.sk .row {
-  display: var(--skills-15-display);
-  align-items: var(--skills-15-align-items);
-  gap: var(--skills-15-gap);
-  font-size: var(--skills-15-font-size);
-  color: var(--skills-15-color);
-  padding-top: var(--skills-15-padding-top);
-  border-top: var(--skills-15-border-top);
-}
-.sk .row code {
-  color: var(--skills-16-color);
-}
-.sk .row .mini {
-  margin-left: var(--skills-17-margin-left);
-}
-.sk .sugg {
-  font: var(--skills-18-font);
-  padding: var(--skills-18-padding);
-  border-radius: var(--skills-18-border-radius);
-  color: var(--skills-18-color);
-  background: var(--skills-18-background);
-}
-.sk-budget {
-  display: var(--skills-19-display);
-  align-items: var(--skills-19-align-items);
-  gap: var(--skills-19-gap);
-  font-size: var(--skills-19-font-size);
-  color: var(--skills-19-color);
-  margin-bottom: var(--skills-19-margin-bottom);
-}
-.sk-budget .bar {
-  flex: var(--skills-20-flex);
-  height: var(--skills-20-height);
-  border-radius: var(--skills-20-border-radius);
-  background: var(--skills-20-background);
-  overflow: var(--skills-20-overflow);
-}
-.sk-budget .bar i {
-  display: var(--skills-21-display);
-  height: var(--skills-21-height);
-  background: var(--skills-21-background);
-}
-.sk-budget.warn .bar i {
-  background: var(--skills-22-background);
-}
-.sk-budget.warn {
-  color: var(--skills-23-color);
-}
-.sk-dirs {
-  display: var(--skills-24-display);
-  grid-template-columns: var(--skills-24-grid-template-columns);
-  gap: var(--skills-24-gap);
-  font-size: var(--skills-24-font-size);
-  color: var(--skills-24-color);
-}
-.sk-dirs code {
-  font: var(--skills-25-font);
-  color: var(--skills-25-color);
-}
-.skill-chip {
-  padding: var(--skills-chip-74);
-  border: var(--skills-chip-75);
-  border-radius: var(--skills-chip-76);
-  font-size: var(--skills-chip-77);
-  color: var(--skills-chip-78);
-  text-decoration: var(--skills-chip-79);
-}
-.skill-chip.on {
-  border-color: var(--skills-chip-80);
-  color: var(--skills-chip-81);
-  text-decoration: var(--skills-chip-82);
-}
-.skill-chip small {
-  margin-left: var(--skills-10-margin-left);
-  color: var(--skills-10-color);
-  font: var(--skills-10-font);
-}
+/* Settings → Skills (F18): the machine-wide pack library. */
 .skill-cards {
   display: flex;
   flex-direction: column;
-  gap: var(--skills-0-gap);
+  gap: var(--sp-5);
+}
+.sk {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-4);
+  padding: var(--sp-7);
+  border: 1px solid var(--line-dim);
+  border-radius: var(--r-lg);
+  background: var(--card);
+  box-shadow: var(--glass-hi);
+}
+.sk.on {
+  border-color: rgba(78, 211, 138, 0.28);
+}
+/* Name, badge and kind on the first line, the toggle at its end, the repository under it. */
+.sk .top {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: var(--sp-2) var(--sp-4);
+  min-width: 0;
+}
+.sk .top b {
+  font-size: var(--fs-lg);
+  font-weight: var(--fw-semibold);
+  color: var(--text);
+  white-space: nowrap;
+}
+.sk .top .kind {
+  font-size: var(--fs-sm);
+  color: var(--muted);
+}
+.sk .top .repo {
+  order: 1;
+  flex-basis: 100%;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font: var(--fs-xs) var(--mono);
+  color: var(--faint);
 }
 .skill-toggle {
   margin-left: auto;
 }
+.skill-toggle.on {
+  border-color: rgba(78, 211, 138, 0.32);
+  background: var(--ok-soft);
+  color: var(--ok);
+}
+.sk .d {
+  font-size: var(--fs-md);
+  line-height: var(--lh-prose);
+  color: var(--text-2);
+}
+.sk .meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--sp-2) var(--sp-3);
+  font-size: var(--fs-xs);
+  color: var(--muted);
+}
+.sk .meta > span {
+  display: inline-flex;
+  align-items: center;
+  min-height: 20px;
+  max-width: 100%;
+  padding: var(--sp-1) var(--sp-3);
+  border-radius: var(--r-xs);
+  background: var(--surface-2);
+}
+.sk .meta .ok {
+  color: var(--ok);
+}
+.sk .meta .no {
+  color: var(--err);
+}
+.sk .meta .warn {
+  color: var(--warn);
+}
+.sk .bund {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--sp-2);
+}
+.skill-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--sp-3);
+  height: 24px;
+  padding: 0 var(--sp-4);
+  border: 1px dashed var(--line-mid);
+  border-radius: var(--r-pill);
+  font-size: var(--fs-sm);
+  color: var(--faint);
+}
+.skill-chip:hover:not(:disabled) {
+  color: var(--text-2);
+}
+.skill-chip.on {
+  border-style: solid;
+  background: var(--surface-2);
+  color: var(--text);
+}
+.skill-chip small {
+  font-size: var(--fs-xs);
+  color: var(--muted);
+}
+.sk .row {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: var(--sp-4);
+  padding-top: var(--sp-5);
+  border-top: 1px solid var(--line-dim);
+  font-size: var(--fs-sm);
+  color: var(--muted);
+}
+.sk .row code {
+  font: var(--fs-sm) var(--mono);
+  color: var(--text-2);
+}
+.sk .row .mini:last-child {
+  margin-left: auto;
+}
+.sk-budget {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-5);
+  margin-bottom: var(--sp-3);
+  font-size: var(--fs-sm);
+  color: var(--muted);
+}
+.sk-budget meter {
+  flex: none;
+  width: 120px;
+  height: 4px;
+  border-radius: var(--r-pill);
+  appearance: none;
+  background: var(--line-dim);
+}
+.sk-budget meter::-webkit-meter-bar {
+  height: 4px;
+  border: 0;
+  border-radius: var(--r-pill);
+  background: var(--line-dim);
+}
+.sk-budget meter::-webkit-meter-optimum-value,
+.sk-budget meter::-webkit-meter-suboptimum-value,
+.sk-budget meter::-webkit-meter-even-less-good-value {
+  border-radius: var(--r-pill);
+  background: var(--accent);
+}
+.sk-budget:last-of-type {
+  margin-bottom: var(--sp-6);
+}
 .sk-budget.warn {
   color: var(--warn);
 }
+.sk-budget.warn meter::-webkit-meter-optimum-value {
+  background: var(--warn);
+}
+.sk-dirs {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  gap: var(--sp-2) var(--sp-5);
+  font-size: var(--fs-sm);
+  color: var(--muted);
+}
+.sk-dirs code {
+  font: var(--fs-sm) var(--mono);
+  color: var(--text-2);
+}
+.sk-add {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-4);
+}
+.sk-add .worktree-input > input {
+  font-family: var(--mono);
+}
 .worktree-settings-main pre {
+  max-height: 420px;
+  overflow: auto;
+  margin: var(--sp-4) 0;
+  padding: var(--sp-5);
+  border: 1px solid var(--line-dim);
+  border-radius: var(--r-md);
+  background: var(--field);
+  font: var(--fs-sm) / 1.55 var(--mono);
   white-space: pre-wrap;
   overflow-wrap: anywhere;
 }

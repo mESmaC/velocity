@@ -1,8 +1,6 @@
-/* The usage modal (SPEC.md F15 Usage, F19 Measuring it). Its frame copies the reference's
-   modal values through the --usage-modal-* tokens in reference.css. The limit rows reuse the
-   reference's popover values (the model menu heads) and the limit bar from Settings →
-   Providers. Provider colours come from the footer meter's [data-provider] rules in
-   layout.css. */
+/* The usage modal (SPEC.md F15 Usage, F19 Measuring it): token tables, process memory,
+   subscription limits and the code graph comparison. Provider colours come from the
+   [data-provider] rules in layout.css. */
 .usage-dialog {
   position: fixed;
   inset: 0;
@@ -22,77 +20,123 @@
   justify-content: center;
 }
 .usage-dialog::backdrop {
-  background: var(--usage-modal-scrim-background);
-  backdrop-filter: var(--usage-modal-scrim-backdrop-filter);
+  background: var(--scrim);
+  backdrop-filter: blur(2px);
 }
 .usage-modal {
   display: flex;
   flex-direction: column;
-  width: var(--usage-modal-width);
-  max-height: var(--usage-modal-max-height);
-  border: var(--usage-modal-border);
-  border-radius: var(--usage-modal-border-radius);
+  width: min(640px, calc(100vw - 48px));
+  max-height: min(820px, calc(100vh - 80px));
+  border: 1px solid var(--pop-edge);
+  border-radius: var(--r-xl);
   background: var(--glass-pop);
-  box-shadow: var(--usage-modal-box-shadow);
+  box-shadow: var(--shadow-pop);
   backdrop-filter: var(--blur-pop);
   -webkit-backdrop-filter: var(--blur-pop);
   overflow: hidden;
 }
 .usage-modal-head {
   display: flex;
-  align-items: baseline;
+  align-items: center;
   justify-content: space-between;
-  padding: var(--usage-modal-header-padding);
+  padding: var(--sp-7) var(--sp-8) var(--sp-5);
+  border-bottom: 1px solid var(--line-dim);
 }
 .usage-modal-head h2 {
   margin: 0;
-  font-size: var(--usage-modal-title-font-size);
-  font-weight: var(--usage-modal-title-font-weight);
-  letter-spacing: var(--usage-modal-title-letter-spacing);
-  color: var(--usage-modal-title-color);
+  font-size: var(--fs-xl);
+  font-weight: var(--fw-semibold);
+  letter-spacing: -0.015em;
+  color: var(--text);
 }
 .usage-modal .label {
-  font-size: var(--usage-modal-label-font-size);
-  color: var(--text-2);
+  font-size: var(--fs-xs);
+  color: var(--muted);
 }
 .usage-modal-body {
   display: flex;
   flex-direction: column;
-  gap: var(--usage-modal-body-gap);
+  gap: var(--sp-3);
   min-height: 0;
   overflow-y: auto;
-  padding: var(--usage-modal-body-padding);
+  padding: var(--sp-6) var(--sp-8) var(--sp-8);
+}
+.usage-modal-body > section {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-3);
+}
+.usage-modal-body > section + section {
+  margin-top: var(--sp-6);
 }
 .usage-title {
-  padding: var(--providers-menu-head-padding);
-  font-size: var(--providers-name-font-size);
-  font-weight: var(--providers-name-font-weight);
-  color: var(--text);
+  margin: 0;
+  font-size: var(--fs-xs);
+  font-weight: var(--fw-semibold);
+  letter-spacing: var(--tracking-caps);
+  text-transform: uppercase;
+  color: var(--muted);
+}
+.usage-graph-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--sp-4);
+  min-height: var(--h-md);
+}
+.usage-note {
+  margin: 0;
+  font-size: var(--fs-sm);
+  line-height: var(--lh-prose);
+  color: var(--muted);
+}
+.usage-modal hr {
+  margin: var(--sp-5) 0;
+  border: 0;
+  border-top: 1px solid var(--line-dim);
+}
+
+/* ── limits and process memory rows ─────────────────────────────────────── */
+.usage-provider {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-2);
+  padding: var(--sp-5) var(--sp-6);
+  border: 1px solid var(--line-dim);
+  border-radius: var(--r-md);
+  background: var(--card);
 }
 .usage-provider-head {
   display: flex;
   align-items: center;
-  gap: var(--providers-menu-head-gap);
-  padding: var(--providers-menu-head-padding);
-  font-size: var(--providers-menu-head-font-size);
-  color: var(--muted);
+  gap: var(--sp-3);
+  margin-bottom: var(--sp-2);
+  font-size: var(--fs-md);
+  font-weight: var(--fw-semibold);
+  color: var(--text);
+}
+.usage-provider-head .icon {
+  color: var(--provider-color);
 }
 .usage-provider-head span {
   margin-left: auto;
-  font: var(--providers-menu-head-meta-font);
+  font-size: var(--fs-xs);
+  font-weight: var(--fw-medium);
+  color: var(--muted);
 }
 .usage-window {
   display: flex;
   flex-direction: column;
-  gap: var(--providers-limit-gap);
-  padding: var(--providers-menu-item-padding);
+  gap: var(--sp-2);
+  padding: var(--sp-2) 0;
 }
 .usage-window-line {
   display: flex;
   align-items: center;
-  gap: var(--providers-status-gap);
+  gap: var(--sp-4);
   min-width: 0;
-  font-size: var(--providers-status-font-size);
+  font-size: var(--fs-sm);
   white-space: nowrap;
 }
 .usage-window-label {
@@ -103,22 +147,26 @@
 }
 .usage-window-line b {
   flex: none;
-  font-weight: var(--providers-name-font-weight);
+  min-width: 64px;
+  text-align: right;
+  font-weight: var(--fw-semibold);
+  font-variant-numeric: tabular-nums;
   color: var(--text);
 }
 .usage-window-reset {
   flex: none;
   margin-left: auto;
-  font: var(--providers-meta-font);
+  font-size: var(--fs-xs);
   color: var(--muted);
+  font-variant-numeric: tabular-nums;
 }
 .usage-bar {
   position: relative;
   display: block;
   flex: 1;
-  height: var(--providers-bar-height);
+  height: 6px;
   overflow: hidden;
-  border-radius: var(--providers-bar-radius);
+  border-radius: var(--r-pill);
   background: var(--line-dim);
 }
 .usage-bar > span {
@@ -126,115 +174,150 @@
   inset-block: 0;
   left: 0;
   width: var(--usage-left);
-}
-.usage-note {
-  margin: 0;
-  padding: var(--providers-menu-item-padding);
-  font: var(--providers-meta-font);
-  color: var(--muted);
-}
-.usage-modal hr {
-  margin: var(--thread-menu-divider-margin);
-  border: 0;
-  border-top: var(--thread-menu-divider-top);
+  border-radius: inherit;
 }
 .usage-link {
-  display: flex;
-  width: 100%;
-  padding: var(--thread-menu-button-padding);
-  border-radius: var(--thread-menu-button-radius);
-  font-size: var(--thread-menu-button-font-size);
+  align-self: flex-start;
+  display: inline-flex;
+  align-items: center;
+  height: var(--h-sm);
+  padding: 0 var(--sp-4);
+  border-radius: var(--r-sm);
+  font-size: var(--fs-sm);
   color: var(--text-2);
 }
 .usage-link:hover {
-  background: var(--thread-menu-button-hover);
+  background: var(--surface-3);
   color: var(--text);
 }
-.usage-graph-head {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-}
+
+/* ── segmented choice and buttons ───────────────────────────────────────── */
 .usage-seg {
   display: inline-flex;
-  gap: var(--usage-modal-segment-gap);
-  padding: var(--usage-modal-segment-padding);
-  border-radius: var(--usage-modal-segment-border-radius);
-  background: var(--usage-modal-segment-background);
-  box-shadow: var(--usage-modal-segment-box-shadow);
+  flex: none;
+  gap: var(--sp-1);
+  padding: var(--sp-1);
+  border-radius: var(--r-md);
+  background: rgba(255, 255, 255, 0.045);
+  box-shadow: inset 0 0 0 1px var(--line-dim);
 }
 .usage-seg button {
-  height: var(--usage-modal-segment-button-height);
-  padding: var(--usage-modal-segment-button-padding);
-  border-radius: var(--usage-modal-segment-button-border-radius);
-  font-size: var(--usage-modal-segment-button-font-size);
+  height: 22px;
+  padding: 0 var(--sp-4);
+  border-radius: var(--r-sm);
+  font-size: var(--fs-sm);
+  font-weight: var(--fw-medium);
   color: var(--text-2);
+  white-space: nowrap;
+}
+.usage-seg button:hover:not(.on, :disabled) {
+  background: var(--surface-2);
+  color: var(--text);
 }
 .usage-seg button.on {
-  background: var(--usage-modal-segment-on-background);
-  color: var(--usage-modal-segment-on-color);
-  box-shadow: var(--usage-modal-segment-on-box-shadow);
+  background: var(--surface-4);
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.1),
+    0 1px 2px rgba(0, 0, 0, 0.4);
+  color: var(--text);
 }
+.usage-button {
+  display: inline-flex;
+  align-items: center;
+  height: var(--h-sm);
+  padding: 0 var(--sp-4);
+  border: 1px solid var(--line-mid);
+  border-radius: var(--r-sm);
+  background: var(--surface-2);
+  box-shadow: var(--glass-hi);
+  font-size: var(--fs-sm);
+  font-weight: var(--fw-medium);
+  color: var(--text);
+  white-space: nowrap;
+}
+.usage-button:hover:not(:disabled) {
+  border-color: var(--line);
+  background: var(--surface-3);
+}
+
+/* ── tables ─────────────────────────────────────────────────────────────── */
+/* One line per row: the label truncates, the numbers stay right-aligned in their
+   columns (#494). */
 .usage-compare {
   width: 100%;
+  table-layout: fixed;
   border-collapse: collapse;
-  font-size: var(--providers-status-font-size);
+  font-size: var(--fs-sm);
 }
 .usage-compare th,
 .usage-compare td {
-  padding: var(--providers-menu-item-padding);
+  height: 30px;
+  padding: 0 var(--sp-4);
+  border-bottom: 1px solid var(--line-dim);
   text-align: right;
   white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.usage-compare thead th {
+  height: 26px;
+  white-space: normal;
+  line-height: 1.25;
+  vertical-align: bottom;
+  padding-bottom: var(--sp-2);
+  font-size: var(--fs-xs);
+  font-weight: var(--fw-semibold);
+  letter-spacing: var(--tracking-caps);
+  text-transform: uppercase;
+  color: var(--muted);
 }
 .usage-compare th:first-child,
 .usage-compare td:first-child {
+  width: 40%;
+  padding-left: 0;
   text-align: left;
+}
+.usage-compare th:last-child,
+.usage-compare td:last-child {
+  padding-right: 0;
+}
+.usage-compare tbody th {
+  font-weight: var(--fw-regular);
   color: var(--text-2);
 }
-.usage-compare thead th {
-  font-weight: var(--providers-name-font-weight);
-  color: var(--text);
-}
 .usage-compare td {
-  font: var(--providers-meta-font);
   color: var(--text);
+  font-variant-numeric: tabular-nums;
+}
+.usage-compare tbody tr:last-child > * {
+  border-bottom: 0;
 }
 .usage-verdict {
   margin: 0;
-  padding: var(--providers-menu-item-padding);
-  font-size: var(--providers-status-font-size);
+  padding: var(--sp-4) var(--sp-5);
+  border-radius: var(--r-sm);
+  background: var(--accent-soft);
+  font-size: var(--fs-sm);
   color: var(--text);
 }
 .usage-verdict.pending {
+  background: var(--surface-2);
   color: var(--muted);
 }
 .usage-graph-foot {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  padding: var(--providers-menu-item-padding);
-  font: var(--providers-meta-font);
+  gap: var(--sp-4);
+  font-size: var(--fs-xs);
   color: var(--muted);
 }
-.usage-button {
-  height: var(--usage-modal-button-height);
-  padding: var(--usage-modal-button-padding);
-  border: var(--usage-modal-button-border);
-  border-radius: var(--usage-modal-button-border-radius);
-  background: var(--usage-modal-button-background);
-  box-shadow: var(--usage-modal-button-box-shadow);
-  font-size: var(--usage-modal-button-font-size);
-  color: var(--text);
-}
-.usage-button:hover:not(:disabled) {
-  border-color: var(--usage-modal-button-hover-border-color);
-}
-
 .usage-note,
 .usage-verdict {
   overflow-wrap: anywhere;
 }
 
+/* ── code graph status ──────────────────────────────────────────────────── */
 .usage-state {
   color: var(--text);
 }
@@ -247,15 +330,15 @@
 .usage-index-progress {
   display: block;
   width: 100%;
-  height: var(--providers-bar-height);
+  height: 4px;
   accent-color: var(--ok);
 }
 .usage-graph-details {
-  padding-block: var(--usage-graph-details-padding);
+  padding-block: var(--sp-2);
 }
 .usage-graph-details summary {
-  padding: var(--providers-menu-item-padding);
-  font: var(--providers-meta-font);
+  padding: var(--sp-2) 0;
+  font-size: var(--fs-sm);
   color: var(--text-2);
   cursor: pointer;
 }
@@ -267,41 +350,86 @@
   overflow-wrap: anywhere;
 }
 
-.token-usage-table th,
-.token-usage-table td {
-  vertical-align: top;
+/* ── token usage table ──────────────────────────────────────────────────── */
+.token-usage-table + .token-usage-table {
+  margin-top: var(--sp-5);
 }
-
+.token-usage-table tbody th {
+  overflow: visible;
+}
+.token-usage-table details {
+  min-width: 0;
+}
 .token-usage-table summary {
-  cursor: pointer;
-  white-space: normal;
-  overflow-wrap: anywhere;
-}
-
-.token-usage-table small {
   display: block;
-  color: var(--muted);
-}
-
-.token-usage-table ul {
-  margin: 0;
-  padding: 4px 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  cursor: pointer;
   list-style: none;
 }
-
+.token-usage-table summary::-webkit-details-marker {
+  display: none;
+}
+.token-usage-table summary::before {
+  content: '';
+  display: inline-block;
+  width: 0;
+  height: 0;
+  margin-right: var(--sp-3);
+  vertical-align: 1px;
+  border-left: 4px solid var(--muted);
+  border-block: 3px solid transparent;
+  transition: transform var(--motion-duration-quick) var(--motion-ease-in-out);
+}
+.token-usage-table details[open] summary::before {
+  transform: rotate(90deg);
+}
+.token-usage-table summary:hover {
+  color: var(--text);
+}
+/* The row's detail line and the source breakdown sit under the label. */
+.token-usage-table tbody th:has(details[open]),
+.token-usage-table tbody tr:has(details[open]) > * {
+  height: auto;
+  padding-block: var(--sp-3);
+  vertical-align: top;
+  white-space: normal;
+}
+.token-usage-detail {
+  margin-left: var(--sp-3);
+  font-size: var(--fs-xs);
+  color: var(--muted);
+}
+.token-usage-table details small {
+  display: block;
+  margin: var(--sp-2) 0 0 var(--sp-6);
+  font-size: var(--fs-xs);
+  color: var(--muted);
+}
+.token-usage-table ul {
+  margin: var(--sp-2) 0 0 var(--sp-6);
+  padding: 0;
+  list-style: none;
+}
 .token-usage-table li {
   display: flex;
   justify-content: space-between;
-  gap: 8px;
-  max-width: 220px;
-  font: var(--providers-meta-font);
+  gap: var(--sp-4);
+  max-width: 240px;
+  font-size: var(--fs-xs);
+  line-height: 1.7;
   color: var(--text-2);
+  font-variant-numeric: tabular-nums;
+}
+.token-usage-table li span {
+  color: var(--muted);
 }
 
 .thread-token-usage {
   flex: 0 1 auto;
   max-height: 38vh;
   overflow: auto;
-  padding: var(--usage-modal-body-padding);
+  padding: var(--sp-6) var(--sp-8);
   border-bottom: 1px solid var(--line-dim);
 }

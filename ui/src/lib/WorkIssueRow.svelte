@@ -113,8 +113,8 @@
     <span class="item-title">{issue.title}</span>
     <span class="count issue-number">#{number}</span>
     <span class="item-meta issue-meta">
-      <span class="work-source">GitHub issue</span>
-      <span class="issue-agent"
+      <span class="tag work-source">Issue</span>
+      <span class="tag issue-agent" data-tone="swarm"
         >{workState(issue.item, owner === null ? 'Todo' : 'Claimed')}</span
       >
       {#if row?.blocked_by}<span class="issue-blocker"
@@ -143,9 +143,6 @@
       owner={owner?.toString() ?? null}
       {send}
     />
-    <button class="task-source" type="button" onclick={discussion}
-      >GitHub discussion</button
-    >
   </div>
   {#if expanded}
     <div class="issue-detail" id={detailsId} in:rise>
@@ -169,6 +166,9 @@
       {:else if summary}
         <p class="issue-summary">{summary}</p>
       {/if}
+      <button class="mini ghost" type="button" onclick={discussion}
+        >Open the GitHub discussion ↗</button
+      >
       {#each details?.comments ?? [] as comment (comment.id)}
         <div class="agent-comment">
           <span class="issue-agent">{comment.author}</span>
@@ -192,15 +192,21 @@
 
 <style>
   .issue-links {
-    padding: var(--layout-item-padding);
-    padding-left: var(--issue-detail-indent);
+    padding: 0 var(--sp-4) var(--sp-2) calc(var(--sp-4) + 16px + var(--sp-4));
+    font-size: var(--fs-xs);
+  }
+  /* Only rows with a thread or a change have links; the rest take no extra line. */
+  .issue-links:not(:has(*)) {
+    display: none;
   }
   .agent-comment {
     display: grid;
-    gap: var(--layout-item-gap);
-    padding: var(--layout-item-padding);
-    border-radius: var(--r-sm);
-    background: var(--surface-2);
+    gap: var(--sp-2);
+    width: 100%;
+    padding: var(--sp-4) var(--sp-5);
+    border: 1px solid var(--line-dim);
+    border-radius: var(--r-md);
+    background: var(--card);
     overflow-wrap: anywhere;
   }
   .agent-comment p {

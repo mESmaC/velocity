@@ -40,6 +40,7 @@
 >
   <div class="palette">
     <input
+      class="bare"
       bind:this={input}
       role="combobox"
       aria-label="Search commands, projects, threads and issues"
@@ -64,9 +65,15 @@
             title={item.label}
             tabindex="-1"
             onclick={() => choose(index)}
-            ><span class="palette-label">{item.label}</span><span
-              class="palette-group">{item.shortcut || item.group}</span
-            ></button
+            ><span class="palette-label">{item.label}</span
+            >{#if item.shortcut && !/^[a-z]{2,}$/.test(item.shortcut)}<span
+                class="palette-keys"
+                >{#each item.shortcut.split(' ') as key, keyIndex (keyIndex)}<kbd
+                    >{key}</kbd
+                  >{/each}</span
+              >{:else}<span class="palette-group"
+                >{item.shortcut || item.group}</span
+              >{/if}</button
           >
         </li>{/each}
     </ul>

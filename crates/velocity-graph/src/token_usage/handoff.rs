@@ -104,8 +104,8 @@ impl Cohort {
 
 impl Comparison {
     fn finish(&mut self, enabled: u64, disabled: u64) {
-        self.enabled.tokens = enabled.to_string();
-        self.disabled.tokens = disabled.to_string();
+        self.enabled.tokens = crate::usage::count(enabled);
+        self.disabled.tokens = crate::usage::count(disabled);
         if disabled == 0 {
             return;
         }

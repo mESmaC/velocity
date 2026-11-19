@@ -273,6 +273,7 @@
     >
       <Icon name="plus" />
       <input
+        class="bare"
         id="task-input"
         aria-label="Add a task"
         placeholder="Add a task…"
@@ -283,12 +284,3 @@
     </form>
   </div>
 </section>
-
-<style>
-  .work-panel :global(.work-source) {
-    padding: var(--layout-badge-padding);
-    border-radius: var(--layout-badge-border-radius);
-    background: var(--surface-3);
-    color: var(--text-2);
-  }
-</style>

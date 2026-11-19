@@ -107,6 +107,7 @@
           }}
         >
           <Icon name="plus" /><input
+            class="bare"
             id="task-input"
             aria-label="Add a task"
             placeholder="Add a task…"

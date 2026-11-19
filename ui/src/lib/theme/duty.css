@@ -168,120 +168,151 @@
   justify-content: center;
 }
 .duty-dialog::backdrop {
-  background: var(--new-project-scrim-background);
-  backdrop-filter: var(--new-project-scrim-backdrop-filter);
+  background: var(--scrim);
+  backdrop-filter: blur(2px);
 }
-/* With many signed-in models the body outgrows the window; it scrolls so the header and
-   the Start and Cancel buttons stay on screen. */
-.duty-dialog .np-body {
-  max-height: var(--duty-dialog-body-max-height);
-  overflow-y: auto;
-}
+/* The frame (.np) caps its height and scrolls the body, so the header and the Start
+   and Cancel buttons stay on screen however many models are signed in. */
 .duty-dialog .role-cards {
   display: grid;
-  grid-template-columns: var(--duty-role-cards-columns);
-  gap: var(--duty-role-cards-gap);
+  grid-template-columns: repeat(auto-fill, minmax(180px, 1fr));
+  gap: var(--sp-4);
 }
 .duty-dialog .role-card {
   display: flex;
   flex-direction: column;
-  gap: var(--duty-role-card-gap);
-  padding: var(--duty-role-card-padding);
-  border: var(--duty-role-card-border);
-  border-radius: var(--duty-role-card-border-radius);
+  gap: var(--sp-2);
+  padding: var(--sp-5) var(--sp-6);
+  border: 1px solid var(--line-dim);
+  border-radius: var(--r-md);
+  background: var(--card);
   text-align: left;
+  white-space: normal;
 }
 .duty-dialog .role-card:hover {
-  border-color: var(--duty-role-card-hover-border-color);
+  border-color: var(--line-mid);
 }
 .duty-dialog .role-card.on {
-  border-color: var(--duty-role-card-on-border-color);
-  background: var(--duty-role-card-on-background);
+  border-color: rgba(183, 156, 255, 0.45);
+  background: var(--duty-soft);
 }
 .duty-dialog .role-card .mh {
   display: flex;
   align-items: center;
-  gap: var(--duty-role-card-heading-gap);
-  font-size: var(--duty-role-card-heading-font-size);
-  font-weight: var(--duty-role-card-heading-font-weight);
+  gap: var(--sp-3);
+  font-size: var(--fs-md);
+  font-weight: var(--fw-semibold);
   color: var(--text);
 }
 .duty-dialog .role-card .mh .icon {
   color: var(--duty);
 }
 .duty-dialog .role-card .md {
-  font-size: var(--duty-role-card-detail-font-size);
-  line-height: var(--duty-role-card-detail-line-height);
+  font-size: var(--fs-sm);
+  line-height: var(--lh-prose);
   color: var(--muted);
 }
 .duty-dialog .stepper {
   display: inline-flex;
   align-items: center;
-  border: var(--duty-stepper-border);
-  border-radius: var(--duty-stepper-border-radius);
+  height: var(--h-md);
+  border: 1px solid var(--line-mid);
+  border-radius: var(--r-sm);
+  background: rgba(0, 0, 0, 0.3);
 }
 .duty-dialog .stepper button {
-  width: var(--duty-stepper-button-width);
-  height: var(--duty-stepper-button-height);
+  width: var(--h-md);
+  height: 100%;
   color: var(--text-2);
+  font-size: var(--fs-lg);
 }
 .duty-dialog .stepper button:hover {
   color: var(--text);
   background: var(--surface-3);
 }
 .duty-dialog .stepper span {
-  min-width: var(--duty-stepper-count-min-width);
+  min-width: 32px;
   text-align: center;
-  font: var(--duty-stepper-count-font);
+  font-size: var(--fs-md);
+  font-weight: var(--fw-semibold);
+  font-variant-numeric: tabular-nums;
 }
 .duty-dialog .checks {
   display: flex;
   flex-direction: column;
-  gap: var(--duty-checks-gap);
+  gap: var(--sp-1);
+  padding: var(--sp-2);
+  border: 1px solid var(--line-dim);
+  border-radius: var(--r-md);
 }
 .duty-dialog .checks .check {
   display: flex;
+  align-items: center;
+  gap: var(--sp-4);
+  min-height: 32px;
+  padding: var(--sp-2) var(--sp-4);
+  border-radius: var(--r-sm);
+  line-height: 1.4;
+}
+.duty-dialog .checks .check:hover:not(.locked) {
+  background: var(--surface-2);
 }
 .duty-dialog .check.locked {
   color: var(--text);
   cursor: default;
 }
+/* "always on" stays one tag at the end of its row; the sentence wraps before it does. */
 .duty-dialog .check .lockt {
   margin-left: auto;
+  flex: none;
   display: inline-flex;
   align-items: center;
-  gap: var(--duty-lockt-gap);
-  font-size: var(--duty-lockt-font-size);
+  gap: var(--sp-2);
+  height: 18px;
+  padding: 0 var(--sp-3);
+  border-radius: var(--r-xs);
+  background: var(--duty-soft);
+  font-size: var(--fs-xs);
+  font-weight: var(--fw-medium);
   color: var(--duty);
+  white-space: nowrap;
 }
 .duty-dialog .check .lockt .icon {
-  width: var(--duty-lockt-icon-size);
-  height: var(--duty-lockt-icon-size);
+  width: var(--icon-sm);
+  height: var(--icon-sm);
 }
 .duty-dialog .focus-chips {
   display: flex;
   flex-wrap: wrap;
-  gap: var(--duty-focus-chips-gap);
+  gap: var(--sp-2);
 }
 .duty-dialog .focus-chips button {
-  height: var(--duty-focus-chip-height);
-  padding: var(--duty-focus-chip-padding);
-  border: var(--duty-focus-chip-border);
-  border-radius: var(--duty-focus-chip-border-radius);
-  font-size: var(--duty-focus-chip-font-size);
+  height: 26px;
+  padding: 0 var(--sp-5);
+  border: 1px dashed var(--line-mid);
+  border-radius: var(--r-pill);
+  font-size: var(--fs-sm);
   color: var(--muted);
+  white-space: nowrap;
+}
+.duty-dialog .focus-chips button:hover {
+  color: var(--text-2);
 }
 .duty-dialog .focus-chips button.on {
-  border-color: var(--duty-focus-chip-on-border-color);
+  border-style: solid;
+  border-color: rgba(183, 156, 255, 0.45);
+  background: var(--duty-soft);
   color: var(--text);
-  background: var(--duty-focus-chip-on-background);
 }
 .duty-dialog .hint {
-  font-size: var(--duty-hint-font-size);
+  font-size: var(--fs-sm);
   color: var(--muted);
 }
+.duty-dialog .hint:empty {
+  display: none;
+}
 .duty-dialog .sub-row {
-  margin-top: var(--duty-sub-row-margin-top);
+  margin-top: var(--sp-3);
 }
 /* Dismiss one agent (F7, #282): a quiet × that shows while the card is hovered or focused. */
 .duty-view .agent-card .ah .dismiss {

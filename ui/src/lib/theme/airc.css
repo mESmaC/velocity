@@ -18,38 +18,38 @@
   justify-content: center;
 }
 .airc-dialog::backdrop {
-  background: var(--airc-scrim-background);
-  backdrop-filter: var(--airc-scrim-backdrop-filter);
+  background: var(--scrim);
+  backdrop-filter: blur(2px);
 }
 .airc {
   display: grid;
   grid-template-rows: auto auto minmax(0, 1fr) auto;
-  width: var(--airc-width);
-  height: var(--airc-height);
-  border: var(--airc-border);
-  border-radius: var(--airc-border-radius);
+  width: min(1040px, calc(100vw - 48px));
+  height: min(720px, calc(100vh - 80px));
+  border: 1px solid var(--pop-edge);
+  border-radius: var(--r-xl);
   background: var(--glass-pop);
-  box-shadow: var(--airc-box-shadow);
+  box-shadow: var(--shadow-pop);
   backdrop-filter: var(--blur-pop);
+  -webkit-backdrop-filter: var(--blur-pop);
   overflow: hidden;
 }
 .airc-h {
   display: flex;
   align-items: baseline;
-  flex-wrap: wrap;
-  gap: var(--airc-header-gap);
-  padding: var(--airc-header-padding);
+  gap: var(--sp-5);
+  padding: var(--sp-7) var(--sp-8) var(--sp-4);
 }
 .airc-h h2 {
   margin: 0;
-  font-size: var(--airc-title-font-size);
-  font-weight: var(--airc-title-font-weight);
-  letter-spacing: var(--airc-title-letter-spacing);
-  color: var(--airc-title-color);
+  font-size: var(--fs-xl);
+  font-weight: var(--fw-semibold);
+  letter-spacing: -0.015em;
+  color: var(--text);
 }
 .airc-h .chan {
-  font: var(--airc-channel-font);
-  color: var(--text);
+  font: var(--fw-semibold) var(--fs-md) var(--mono);
+  color: var(--accent-hi);
 }
 .airc-h .topic {
   flex: 1;
@@ -57,44 +57,66 @@
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-  font-size: var(--airc-topic-font-size);
+  font-size: var(--fs-sm);
   color: var(--muted);
 }
 .airc-h .label {
-  font-size: var(--airc-label-font-size);
-  color: var(--text-2);
+  flex: none;
+  font-size: var(--fs-xs);
+  color: var(--muted);
 }
 .airc-tabs {
   display: flex;
   flex-wrap: wrap;
-  gap: var(--airc-tabs-gap);
-  padding: var(--airc-tabs-padding);
-  border-bottom: var(--layout-hairline) solid var(--line-dim);
+  gap: var(--sp-6);
+  padding: 0 var(--sp-8);
+  border-bottom: 1px solid var(--line-dim);
 }
 .airc-tabs button {
-  padding: var(--airc-tab-padding);
-  border-bottom: var(--airc-tab-border);
-  font-size: var(--airc-tab-font-size);
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  gap: var(--sp-3);
+  height: 34px;
+  font-size: var(--fs-md);
+  font-weight: var(--fw-medium);
   color: var(--muted);
 }
 .airc-tabs button:hover {
   color: var(--text-2);
 }
 .airc-tabs button.on {
-  border-bottom-color: var(--text);
   color: var(--text);
 }
+.airc-tabs button.on::after {
+  content: '';
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: -1px;
+  height: 2px;
+  border-radius: 2px 2px 0 0;
+  background: var(--accent);
+}
 .airc-tabs button span {
-  margin-left: var(--airc-tab-count-margin);
-  font: var(--airc-tab-count-font);
+  min-width: 18px;
+  height: 16px;
+  padding: 0 var(--sp-2);
+  border-radius: var(--r-pill);
+  background: var(--surface-3);
+  font-size: var(--fs-xs);
+  line-height: 16px;
+  text-align: center;
   color: var(--muted);
+  font-variant-numeric: tabular-nums;
 }
 .airc-tabs button span.warn {
+  background: var(--warn-soft);
   color: var(--warn);
 }
 .airc-body {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) var(--airc-nicks-width);
+  grid-template-columns: minmax(0, 1fr) 220px;
   min-height: 0;
 }
 .airc-main {
@@ -102,17 +124,28 @@
   min-width: 0;
   overflow-x: hidden;
   overflow-y: auto;
-  padding: var(--airc-main-padding);
-  background: var(--airc-main-background);
+  padding: var(--sp-4) var(--sp-6);
+  background: rgba(0, 0, 0, 0.18);
+}
+/* An empty tab says so in the middle of the pane, not in its corner. */
+.airc-main:has(> .pane-state:only-child) {
+  display: grid;
+  place-items: center;
 }
 .airc-nicks {
   min-height: 0;
   min-width: 0;
   overflow-x: hidden;
   overflow-y: auto;
-  padding: var(--airc-nicks-padding);
-  border-left: var(--layout-hairline) solid var(--line-dim);
-  background: var(--airc-nicks-background);
+  padding: var(--sp-5) var(--sp-4);
+  border-left: 1px solid var(--line-dim);
+}
+.airc-nicks:empty::before {
+  content: 'No agents in the channel';
+  display: block;
+  padding: var(--sp-2) var(--sp-3);
+  font-size: var(--fs-sm);
+  color: var(--faint);
 }
 @container app (width < 48rem) {
   .airc-body {
@@ -120,7 +153,8 @@
     grid-template-rows: minmax(0, 3fr) minmax(0, 1fr);
   }
   .airc-nicks {
-    border-top: var(--layout-hairline) solid var(--line-dim);
+    border-left: 0;
+    border-top: 1px solid var(--line-dim);
   }
 }
 .al,
@@ -355,13 +389,21 @@
 .airc-in {
   display: flex;
   align-items: center;
-  gap: var(--airc-input-gap);
-  padding: var(--airc-input-padding);
-  border-top: var(--layout-hairline) solid var(--line-dim);
+  gap: var(--sp-4);
+  margin: var(--sp-5) var(--sp-6) var(--sp-6);
+  height: var(--h-lg);
+  padding: 0 var(--sp-5);
+  border: 1px solid var(--line-mid);
+  border-radius: var(--r-md);
+  background: var(--field);
+}
+.airc-in:focus-within {
+  border-color: var(--accent-line);
+  box-shadow: var(--focus);
 }
 .airc-in .me {
-  font: var(--airc-input-font);
-  color: var(--text-2);
+  font: var(--fw-semibold) var(--fs-sm) var(--mono);
+  color: var(--accent-hi);
 }
 .airc-in input {
   flex: 1;
@@ -370,11 +412,11 @@
   border: 0;
   outline: 0;
   background: none;
-  font: var(--airc-input-font);
+  font: var(--fs-md) var(--mono);
   color: var(--text);
 }
 .airc-in input::placeholder {
-  color: var(--muted);
+  color: var(--faint);
   font-family: var(--sans);
 }
 .airc-in .error {

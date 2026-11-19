@@ -47,8 +47,12 @@
     Custom: 'agents',
   };
 
+  // The sidebar passes a field of the layout snapshot, which is replaced on every
+  // publish; a derived keeps the code graph from blanking and refetching (#491).
+  const currentProject = $derived(project);
+
   $effect(() => {
-    const identifier = project;
+    const identifier = currentProject;
     if (identifier === null) return;
     let cancelled = false;
     let timer: ReturnType<typeof setTimeout>;

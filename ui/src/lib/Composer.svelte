@@ -103,6 +103,7 @@
     {send}
   />
   <textarea
+    class="bare"
     {id}
     aria-label="Prompt"
     {placeholder}

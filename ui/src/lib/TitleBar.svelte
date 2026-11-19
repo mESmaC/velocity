@@ -3,6 +3,7 @@
   import type { LayoutAction, LayoutSnapshot } from './ipc';
   import ProjectSwitcher from './ProjectSwitcher.svelte';
   import RosenMirror from './RosenMirror.svelte';
+  import Icon from './Icon.svelte';
 
   let {
     layout,
@@ -40,37 +41,46 @@
       />
     </div>
     <div class="titlebar-space" data-tauri-drag-region>
-      {#if layout && layout.project_identifier !== null}<div
-          class="view-switch"
-          role="group"
-          aria-label="View"
-        >
-          <button
-            class:on={layout.view !== 'Board'}
-            aria-pressed={layout.view !== 'Board'}
-            title="Focus: one agent in depth"
-            onclick={() => send({ Request: { Navigation: 'Focus' } })}
-            >Focus</button
+      <div class="titlebar-center" data-tauri-drag-region>
+        {#if layout && layout.project_identifier !== null}<div
+            class="view-switch"
+            role="group"
+            aria-label="View"
           >
-          <button
-            class:on={layout.view === 'Board'}
-            aria-pressed={layout.view === 'Board'}
-            title="Board: every agent at once (B)"
-            onclick={() => {
-              if (layout.view !== 'Board')
-                send({ Request: { Navigation: 'Board' } });
-            }}>Board</button
+            <button
+              class:on={layout.view !== 'Board'}
+              aria-pressed={layout.view !== 'Board'}
+              title="Focus: one agent in depth"
+              onclick={() => send({ Request: { Navigation: 'Focus' } })}
+              >Focus</button
+            >
+            <button
+              class:on={layout.view === 'Board'}
+              aria-pressed={layout.view === 'Board'}
+              title="Board: every agent at once (B)"
+              onclick={() => {
+                if (layout.view !== 'Board')
+                  send({ Request: { Navigation: 'Board' } });
+              }}>Board</button
+            >
+          </div>{/if}
+        {#if layout?.pulse.length}<div
+            class="pulse"
+            role="group"
+            aria-label="Project pulse"
           >
-        </div>{/if}
-      <div class="pulse" role="group" aria-label="Project pulse">
-        {@render pulseCounts()}
-        <button
-          title="Command palette (Ctrl+K)"
-          aria-label="Open command palette"
-          onclick={() => send({ Request: { Navigation: 'Palette' } })}
-          ><kbd>Ctrl</kbd><kbd>K</kbd></button
-        >
+            {@render pulseCounts()}
+          </div>{/if}
       </div>
+      <button
+        class="palette-trigger"
+        title="Command palette (Ctrl+K)"
+        aria-label="Open command palette"
+        onclick={() => send({ Request: { Navigation: 'Palette' } })}
+        ><Icon name="search" /><span>Search and run commands</span><kbd
+          >Ctrl</kbd
+        ><kbd>K</kbd></button
+      >
       <button
         class="btn pulse-trigger"
         popovertarget="compact-project-pulse"
@@ -97,9 +107,3 @@
   </header>
   <RosenMirror state={layout?.rosen_mirror ?? null} />
 </div>
-
-<style>
-  .window-titlebar {
-    min-height: var(--titlebar-h);
-  }
-</style>

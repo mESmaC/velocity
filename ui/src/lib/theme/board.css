@@ -1,173 +1,167 @@
-/* The Board view (F1): pipeline lanes of glass, one card per piece of work. Values come
-   from the "board" rules in design/main-window.html through reference.css. */
-
-/* The Focus | Board switch in the title bar. */
-.view-switch {
-  display: flex;
-  gap: var(--board-switch-gap);
-  padding: var(--board-switch-padding);
-  border: var(--layout-hairline) solid var(--pane-edge);
-  border-radius: var(--board-switch-border-radius);
-  background: var(--sheen), var(--pane);
-  backdrop-filter: var(--blur-pane);
-}
-.view-switch button {
-  flex: none;
-  height: var(--board-switch-button-height);
-  padding: var(--board-switch-button-padding);
-  border-radius: var(--board-switch-border-radius);
-  font-size: var(--board-switch-font-size);
-  font-weight: var(--board-switch-font-weight);
-  color: var(--text-2);
-  white-space: nowrap;
-}
-.view-switch button:hover {
-  color: var(--text);
-}
-.view-switch button.on {
-  background: var(--board-switch-on-background);
-  box-shadow: var(--board-switch-on-box-shadow);
-  color: var(--text);
-}
-.titlebar-space {
-  gap: var(--board-titlebar-gap);
-}
+/* The Board view (F1): pipeline lanes of glass, one card per piece of work. */
 
 /* On the Board the lanes take the whole window: no sidebar, no rail. */
 .workspace.board-mode {
-  grid-template-columns: var(--board-workspace-grid-template-columns);
+  grid-template-columns: minmax(0, 1fr);
   grid-template-areas: 'board';
 }
 .board {
   display: grid;
-  grid-template-columns: repeat(
-    auto-fit,
-    minmax(min(100%, var(--layout-lane-width)), 1fr)
-  );
-  gap: var(--board-gap);
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 280px), 1fr));
+  gap: var(--gutter);
   min-width: 0;
   min-height: 0;
-  padding: var(--board-padding);
+  padding: 0 var(--gutter) var(--gutter);
   overflow-y: auto;
   overflow-x: hidden;
 }
 .lane {
   min-width: 0;
-  min-height: var(--layout-options-width);
+  min-height: 320px;
   display: flex;
   flex-direction: column;
-  gap: var(--board-lane-gap);
-  padding: var(--board-lane-padding);
-  border: var(--layout-hairline) solid var(--pane-edge);
-  border-radius: var(--board-lane-border-radius);
+  gap: var(--sp-3);
+  padding: var(--sp-4);
+  border: 1px solid var(--pane-edge);
+  border-radius: var(--r-lg);
   background: var(--sheen), var(--pane);
   box-shadow: var(--pane-lift);
   backdrop-filter: var(--blur-pane);
+  -webkit-backdrop-filter: var(--blur-pane);
 }
 /* Work nobody has started is an outline, not a pane: it isn't in the pipeline yet. */
 .lane[data-lane='UpNext'] {
-  border: var(--board-lane-up-next-border);
+  border: 1px dashed var(--line-mid);
   background: transparent;
   box-shadow: none;
   backdrop-filter: none;
+  -webkit-backdrop-filter: none;
 }
 .lane-h {
   display: flex;
   align-items: center;
-  gap: var(--board-lane-head-gap);
-  padding: var(--board-lane-head-padding);
+  gap: var(--sp-4);
+  min-height: var(--h-md);
+  padding: 0 var(--sp-3);
 }
 .lane-h h2 {
-  flex: var(--layout-spacer-flex);
+  flex: 1;
   margin: 0;
-  font-size: var(--board-lane-title-font-size);
-  font-weight: var(--board-lane-title-font-weight);
+  font-size: var(--fs-md);
+  font-weight: var(--fw-semibold);
+  color: var(--text);
 }
 .lane-dot {
-  width: var(--board-lane-dot-size);
-  height: var(--board-lane-dot-size);
-  border-radius: var(--layout-pulse-dot-border-radius);
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
   background: var(--muted);
+  color: transparent;
+  box-shadow: 0 0 6px currentColor;
 }
 .lane-count {
-  font: var(--board-lane-count-font);
+  min-width: 20px;
+  height: 18px;
+  padding: 0 var(--sp-3);
+  border-radius: var(--r-pill);
+  background: var(--surface-3);
+  font-size: var(--fs-xs);
+  font-weight: var(--fw-semibold);
+  line-height: 18px;
+  text-align: center;
   color: var(--muted);
+  font-variant-numeric: tabular-nums;
 }
-.lane[data-lane='Running'] .lane-dot {
-  background: var(--accent);
+.lane[data-lane='Running'] {
+  --lane-color: var(--accent);
+  --lane-soft: var(--accent-soft);
 }
-.lane[data-lane='Running'] .lane-count {
-  color: var(--accent);
+.lane[data-lane='InReview'] {
+  --lane-color: var(--warn);
+  --lane-soft: var(--warn-soft);
 }
-.lane[data-lane='InReview'] .lane-dot {
-  background: var(--warn);
+.lane[data-lane='Finished'] {
+  --lane-color: var(--ok);
+  --lane-soft: var(--ok-soft);
 }
-.lane[data-lane='InReview'] .lane-count {
-  color: var(--warn);
+.lane[data-lane='OnDuty'] {
+  --lane-color: var(--duty);
+  --lane-soft: var(--duty-soft);
 }
-.lane[data-lane='Finished'] .lane-dot {
-  background: var(--ok);
-}
-.lane[data-lane='Finished'] .lane-count {
-  color: var(--ok);
-}
+.lane[data-lane='Running'] .lane-dot,
+.lane[data-lane='InReview'] .lane-dot,
+.lane[data-lane='Finished'] .lane-dot,
 .lane[data-lane='OnDuty'] .lane-dot {
-  background: var(--duty);
+  background: var(--lane-color);
+  color: var(--lane-color);
 }
+.lane[data-lane='Running'] .lane-count,
+.lane[data-lane='InReview'] .lane-count,
+.lane[data-lane='Finished'] .lane-count,
 .lane[data-lane='OnDuty'] .lane-count {
-  color: var(--duty);
+  background: var(--lane-soft);
+  color: var(--lane-color);
 }
 .lane-cards {
   display: flex;
   flex-direction: column;
-  gap: var(--board-lane-gap);
+  gap: var(--sp-3);
   min-height: 0;
   overflow-y: auto;
 }
+/* An empty lane says so in its middle, as a quiet placeholder. */
 .lane-empty {
+  flex: 1;
+  display: grid;
+  place-items: center;
   margin: 0;
-  padding: var(--board-lane-empty-padding);
-  font-size: var(--board-lane-empty-font-size);
-  color: var(--muted);
+  padding: var(--sp-10) var(--sp-6);
+  border: 1px dashed var(--line-dim);
+  border-radius: var(--r-md);
+  font-size: var(--fs-sm);
+  text-align: center;
+  color: var(--faint);
 }
 .card {
-  width: var(--board-card-width);
+  width: 100%;
   display: grid;
-  grid-template-columns: var(--board-card-grid-template-columns);
-  column-gap: var(--board-card-column-gap);
-  row-gap: var(--board-card-row-gap);
+  grid-template-columns: 16px minmax(0, 1fr);
+  column-gap: var(--sp-4);
+  row-gap: var(--sp-2);
   align-items: center;
-  padding: var(--board-card-padding);
-  border: var(--board-card-border);
-  border-radius: var(--board-card-border-radius);
-  background: var(--board-card-background);
+  padding: var(--sp-5) var(--sp-6);
+  border: 1px solid var(--line-dim);
+  border-radius: var(--r-md);
+  background: var(--card);
+  box-shadow: var(--glass-hi);
   text-align: left;
+  white-space: normal;
 }
 button.card:hover {
-  border-color: var(--board-card-hover-border-color);
-  background: var(--board-card-hover-background);
+  border-color: var(--line-mid);
+  background: var(--surface-2);
 }
 .card.active {
   border-color: var(--accent-line);
   background: var(--accent-soft);
 }
 .card.paused {
-  opacity: var(--board-card-paused-opacity);
+  opacity: 0.55;
 }
 .card-title {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-  font-size: var(--board-card-title-font-size);
-  font-weight: var(--board-card-title-font-weight);
+  font-size: var(--fs-md);
+  font-weight: var(--fw-medium);
   color: var(--text);
 }
 .card-meta {
-  grid-column: var(--board-card-meta-grid-column);
+  grid-column: 2;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-  font: var(--board-card-meta-font);
+  font-size: var(--fs-xs);
   color: var(--muted);
 }
 .card .status-icon {
@@ -193,8 +187,8 @@ button.card:hover {
   color: var(--duty);
 }
 .card[data-status='Error'] {
-  border-color: var(--board-card-error-border-color);
-  background: var(--board-card-error-background);
+  border-color: var(--err-line);
+  background: var(--err-soft);
 }
 .card[data-status='Error'] .status-icon,
 .card[data-status='Error'] .card-meta {

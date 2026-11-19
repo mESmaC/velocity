@@ -404,11 +404,12 @@ fn delta(on: &Totals, off: &Totals, average: impl Fn(&Totals) -> Option<f64>) ->
     }
 }
 
-/// `950`, `61.2k`, `2.6M`.
-fn count(value: u64) -> String {
+/// `950`, `61.2k`, `2.6M`. The token tables use it too, so a count reads the same
+/// everywhere (#494). The k range stops where one decimal would round to `1000.0k`.
+pub(crate) fn count(value: u64) -> String {
     match value {
         0..=999 => value.to_string(),
-        1_000..=999_999 => format!("{:.1}k", value as f64 / 1_000.0),
+        1_000..=999_949 => format!("{:.1}k", value as f64 / 1_000.0),
         _ => format!("{:.1}M", value as f64 / 1_000_000.0),
     }
 }

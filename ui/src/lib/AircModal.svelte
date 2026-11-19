@@ -301,6 +301,7 @@
       }}
     >
       <span class="me">&lt;you&gt;</span><input
+        class="bare"
         bind:this={input}
         bind:value={text}
         aria-label="Comment"
