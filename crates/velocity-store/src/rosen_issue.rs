@@ -61,6 +61,10 @@ pub enum IssueObservation<'a> {
 }
 
 impl IssueProgress {
+    pub(crate) fn was_reverted(&self) -> bool {
+        self.last_reverted.is_some()
+    }
+
     pub(crate) fn rewind_events(&mut self, replacing: bool, latest: u64) {
         if replacing || self.sequence > latest {
             self.sequence = 0;

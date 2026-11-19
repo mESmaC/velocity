@@ -4,6 +4,7 @@
 use serde::{Deserialize, Serialize};
 use velocity_core::thread_view_model::{RosenChangeStage, RosenChangeView, TranscriptBlock};
 
+use crate::rosen_work::WorkEvidence;
 use crate::{AgentActivity, ReviewStage, StateStore, StoreError, ThreadItem, ThreadState};
 
 /// What a Rosen event means for the thread whose change it names.
@@ -345,7 +346,25 @@ impl StateStore {
         if seq == 0 && progress == RosenProgress::Landed {
             return Ok(None);
         }
-        self.record_rosen_progress(project, seq, change, (progress, message), None)
+        self.record_rosen_progress(
+            project,
+            seq,
+            change,
+            (progress, message),
+            None,
+            WorkEvidence::default(),
+        )
+    }
+
+    pub fn save_rosen_work_progress(
+        &mut self,
+        project: u32,
+        seq: u64,
+        change: &str,
+        progress: (RosenProgress, &str),
+        evidence: WorkEvidence<'_>,
+    ) -> Result<Option<u32>, StoreError> {
+        self.record_rosen_progress(project, seq, change, progress, None, evidence)
     }
 
     pub fn save_rosen_named(
@@ -355,7 +374,14 @@ impl StateStore {
         change: &str,
         commit: Option<&str>,
     ) -> Result<Option<u32>, StoreError> {
-        self.record_rosen_progress(project, seq, change, (RosenProgress::Named, ""), commit)
+        self.record_rosen_progress(
+            project,
+            seq,
+            change,
+            (RosenProgress::Named, ""),
+            commit,
+            WorkEvidence::default(),
+        )
     }
 
     /// Checkpoint the named work the checker landed only while its saved lifecycle is
@@ -406,7 +432,7 @@ impl StateStore {
         if current.is_none() {
             return Ok(None);
         }
-        self.record_rosen_progress(project, 0, change, progress, None)
+        self.record_rosen_progress(project, 0, change, progress, None, WorkEvidence::default())
     }
 
     fn record_rosen_progress(
@@ -416,6 +442,7 @@ impl StateStore {
         change: &str,
         (progress, message): (RosenProgress, &str),
         named_commit: Option<&str>,
+        evidence: WorkEvidence<'_>,
     ) -> Result<Option<u32>, StoreError> {
         let mut next = self.state.clone();
         let Some(item) = next.projects.iter_mut().find(|item| item.id == project) else {
@@ -427,12 +454,19 @@ impl StateStore {
         item.rosen_event_cursor = item.rosen_event_cursor.max(seq);
         let thread = item
             .threads
-            .iter_mut()
-            .find(|thread| thread.rosen_change.as_deref() == Some(change));
-        let Some(thread) = thread else {
+            .iter()
+            .position(|thread| thread.rosen_change.as_deref() == Some(change));
+        let Some(index) = thread else {
+            crate::rosen_work::apply(item, change, progress, evidence);
             self.store_snapshot(next)?;
             return Ok(None);
         };
+        let identifier = item.threads[index].id;
+        crate::rosen_work::restore_thread(item, identifier);
+        if progress != RosenProgress::Named {
+            crate::rosen_work::apply(item, change, progress, evidence);
+        }
+        let thread = &mut item.threads[index];
         let replaying = seq != 0 && seq <= item.rosen_replay_through;
         // Before named commits were tracked, a fixing decision at an in-range
         // checkpoint is evidence that its earlier name already moved to Review.
@@ -452,8 +486,9 @@ impl StateStore {
         }
         if progress == RosenProgress::Named {
             thread.rosen_last_named_commit = named_commit.map(str::to_owned);
+            crate::rosen_work::apply(item, change, progress, evidence);
         }
-        let identifier = thread.id;
+        let thread = &mut item.threads[index];
         if progress == RosenProgress::ChangesRequested
             && thread.state != ThreadState::Merged
             && thread.review_stage != Some(ReviewStage::Fixing)

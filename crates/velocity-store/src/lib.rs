@@ -61,6 +61,7 @@ pub mod providers;
 pub mod rosen;
 pub mod rosen_issue;
 pub mod rosen_mirror;
+pub mod rosen_work;
 mod save_behind;
 pub mod shared_mcp;
 pub mod skills;
@@ -1121,6 +1122,8 @@ pub struct ProjectItem {
     #[specta(skip)]
     pub rosen_event_cursor: u64,
     #[serde(default)]
+    pub rosen_work_items: Vec<velocity_core::work_pool::WorkItem>,
+    #[serde(default)]
     #[specta(skip)]
     pub rosen_event_server_identity: Option<String>,
     /// Keep the replay boundary across a crash partway through recovery.
@@ -1194,6 +1197,7 @@ impl ProjectItem {
             version_control: VersionControl::default(),
             rosen_migration_notice: None,
             rosen_event_cursor: 0,
+            rosen_work_items: Vec::new(),
             rosen_event_server_identity: None,
             rosen_replay_through: 0,
             rosen_legacy_replay_cursor: 0,

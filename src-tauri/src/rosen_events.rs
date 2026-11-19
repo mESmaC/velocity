@@ -16,6 +16,7 @@ use std::time::Duration;
 use tauri::{AppHandle, Manager};
 use velocity_rosen::{ChangeEvent, EventReplay, EventStream};
 use velocity_store::rosen::{RosenFollowUp, RosenProgress};
+use velocity_store::rosen_work::WorkEvidence;
 use velocity_threads::ThreadKey;
 
 use crate::layout::MainLayout;
@@ -53,6 +54,7 @@ async fn follow_project(application: &AppHandle, project: u32) {
                             crate::rosen_thread::refresh(application, project, None, true).await,
                         );
                     }
+                    report(restore_work(application, project));
                     // What a crash or a failed step left undone, before anything new.
                     run_follow_ups(application, project).await;
                     report(crate::rosen_mirror::refresh(application, project).await);
@@ -175,11 +177,7 @@ async fn consume(
     if event.kind == velocity_rosen::ProjectEventKind::Review {
         crate::handoff::observe_review(application, project, event)?;
     }
-    let evidence = velocity_rosen::issue_event(event);
-    let has_evidence = evidence.is_some();
-    if let Some((change, meaning)) = evidence {
-        crate::rosen_issue::observe(application, project, change, event.seq, meaning)?;
-    }
+    let (has_evidence, work_evidence) = observe_work(application, project, event).await?;
     match velocity_rosen::change_event(event) {
         Some((change, ChangeEvent::Rebased)) => {
             crate::rosen_rebase::rebased(
@@ -211,6 +209,7 @@ async fn consume(
                 (event.seq, change),
                 meaning,
                 output.as_deref(),
+                work_evidence,
             )?;
             run_follow_ups(application, project).await;
         }
@@ -218,6 +217,37 @@ async fn consume(
         None => {}
     }
     Ok(())
+}
+
+async fn observe_work<'a>(
+    application: &AppHandle,
+    project: u32,
+    event: &'a velocity_rosen::ProjectEvent,
+) -> Result<(bool, WorkEvidence<'a>), String> {
+    use velocity_rosen::{IssueEvent, ProjectEventKind};
+
+    if matches!(
+        event.kind,
+        ProjectEventKind::Built | ProjectEventKind::Green
+    ) {
+        crate::rosen_issue::confirm_builds(application, project, event.seq).await?;
+    }
+    let Some((change, issue_event)) = velocity_rosen::issue_event(event) else {
+        return Ok((false, WorkEvidence::default()));
+    };
+    let evidence = match &issue_event {
+        IssueEvent::Landed(commit) => WorkEvidence {
+            commit: Some(commit),
+            revert_reason: None,
+        },
+        IssueEvent::Reverted { reason, .. } => WorkEvidence {
+            commit: None,
+            revert_reason: Some(reason),
+        },
+        _ => WorkEvidence::default(),
+    };
+    crate::rosen_issue::observe(application, project, change, event.seq, issue_event)?;
+    Ok((true, evidence))
 }
 
 async fn open(
@@ -278,6 +308,7 @@ fn take(
     (seq, change): (u64, &str),
     meaning: ChangeEvent,
     output: Option<&str>,
+    evidence: WorkEvidence<'_>,
 ) -> Result<Option<u32>, String> {
     let (progress, message) = match meaning {
         ChangeEvent::Landed => (RosenProgress::Landed, String::new()),
@@ -291,7 +322,13 @@ fn take(
         // message to it.
         ChangeEvent::Named | ChangeEvent::Rebased | ChangeEvent::Conflict => return Ok(None),
     };
-    let thread = save(application, project, (seq, change), (progress, &message))?;
+    let thread = save(
+        application,
+        project,
+        (seq, change),
+        (progress, &message),
+        evidence,
+    )?;
     // Named work, lands, and reverts can change what the background runner can do.
     crate::rosen_landing::wake(application);
     Ok(thread)
@@ -531,16 +568,31 @@ fn save(
     project: u32,
     (seq, change): (u64, &str),
     progress: (RosenProgress, &str),
+    evidence: WorkEvidence<'_>,
 ) -> Result<Option<u32>, String> {
     let mut store = lock(
         application.state::<ManagedStateStore>().inner(),
         "persisted state",
     )?;
     let thread = store
-        .save_rosen_progress(project, seq, change, progress)
+        .save_rosen_work_progress(project, seq, change, progress, evidence)
         .map_err(|error| error.to_string())?;
     publish_progress(application, &store)?;
     Ok(thread)
+}
+
+fn restore_work(application: &AppHandle, project: u32) -> Result<(), String> {
+    let mut store = lock(
+        application.state::<ManagedStateStore>().inner(),
+        "persisted state",
+    )?;
+    if store
+        .restore_rosen_work(project)
+        .map_err(|error| error.to_string())?
+    {
+        publish_progress(application, &store)?;
+    }
+    Ok(())
 }
 
 pub(crate) fn publish_progress(

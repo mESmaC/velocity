@@ -1,5 +1,6 @@
-//! Issue identity on the server-owned change, before its agent starts (#386).
-use rosen_client::protocol::{CommentTarget, ReadAnswer};
+//! Work identity on the server-owned change, before its agent starts.
+use rosen_client::protocol::{CommentTarget, ReadAnswer, ThreadFilter};
+use velocity_core::work_pool::WorkKey;
 
 use crate::{ProjectServer, RosenError, workspace::session};
 
@@ -51,21 +52,63 @@ async fn legacy_green(client: &rosen_client::Client) -> Result<Option<String>, R
 
 /// A resolved note on the root spec (or a folder source file) records the
 /// source issue without naming unfinished work or leaving an open review discussion.
-pub async fn record_issue(
+pub async fn record_work_sources(
     server: &ProjectServer,
     agent: &str,
     change: &str,
-    repository: &str,
-    number: u32,
+    project: u32,
+    items: &[WorkKey],
 ) -> Result<(), RosenError> {
+    if items.is_empty() {
+        return Ok(());
+    }
     let session = session(server, agent).await?;
     let path = issue_spec_path(session.client(), change).await?;
-    let target = CommentTarget::Line { path, line: 1 };
-    let note = session.comment(change, target, format!(
-        "Velocity source issue: {repository}#{number}. The thread retains this association; \
-         its named snapshot uses the (#{number}) suffix."
-    ), None).await?;
-    session.resolve_thread(note.id).await?;
+    let notes = session
+        .client()
+        .review_list(ThreadFilter {
+            change: change.to_owned(),
+            state: None,
+        })
+        .await?;
+    for item in items {
+        let (prefix, suffix) = match item {
+            WorkKey::Issue { repository, number } => (
+                format!("Velocity source issue: {repository}#{number}."),
+                format!(
+                    " The thread retains this association; its named snapshot uses the (#{number}) suffix."
+                ),
+            ),
+            WorkKey::Task { identifier } => (
+                format!("Velocity source task: project {project}, task {identifier}."),
+                String::new(),
+            ),
+            WorkKey::Spec { .. } => continue,
+        };
+        let identifier = if let Some(note) = notes.iter().find(|note| {
+            note.comments.first().is_some_and(|comment| {
+                comment
+                    .body
+                    .get(..prefix.len())
+                    .is_some_and(|body| body.eq_ignore_ascii_case(&prefix))
+            })
+        }) {
+            if note.state == rosen_core::ThreadState::Resolved {
+                continue;
+            }
+            note.id
+        } else {
+            let target = CommentTarget::Line {
+                path: path.clone(),
+                line: 1,
+            };
+            session
+                .comment(change, target, prefix + &suffix, None)
+                .await?
+                .id
+        };
+        session.resolve_thread(identifier).await?;
+    }
     Ok(())
 }
 

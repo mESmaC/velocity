@@ -120,10 +120,11 @@ pub fn ordered_issues(
     let mut ready: Vec<_> = issues
         .iter()
         .filter(|issue| {
+            let identity = ThreadIssue::new(repository.into(), issue.number);
             actionable(issue)
                 && !claimed.contains(&format!("issue:{}", issue.number))
-                && issue_thread(project, &ThreadIssue::new(repository.into(), issue.number))
-                    .is_none()
+                && issue_thread(project, &identity).is_none()
+                && !project.rosen_issue_completed(&identity)
                 && !project.continuous_dispatch.attempted(
                     repository,
                     issue.number,

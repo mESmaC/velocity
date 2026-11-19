@@ -19,22 +19,19 @@ pub(crate) async fn record_source(
     agent: &str,
     change: &str,
 ) -> Result<(), String> {
-    let issue = {
+    let items = {
         let store = lock(
             application.state::<ManagedStateStore>().inner(),
             "persisted state",
         )?;
         store
             .project(key.0)
-            .and_then(|project| project.threads.iter().find(|thread| thread.id == key.1))
-            .and_then(|thread| thread.issue.clone())
+            .map(|project| project.rosen_source_items(key.1))
+            .unwrap_or_default()
     };
-    if let Some(issue) = issue {
-        velocity_rosen::record_issue(server, agent, change, &issue.repository, issue.number)
-            .await
-            .map_err(|error| error.to_string())?;
-    }
-    Ok(())
+    velocity_rosen::record_work_sources(server, agent, change, key.0, &items)
+        .await
+        .map_err(|error| error.to_string())
 }
 
 pub(crate) fn workspace_note(application: &AppHandle, key: (u32, u32), change: &str) -> String {
@@ -82,7 +79,7 @@ pub(crate) fn observe(
 /// Called under the follower's follow-up lock. A mirror lag or failed GitHub call stays
 /// pending; a revert cancels a close before the next pass and queues a reopen instead.
 pub(crate) async fn follow_up(application: &AppHandle, project: u32) {
-    let covered = match confirm_builds(application, project).await {
+    let covered = match confirm_builds(application, project, 0).await {
         Ok(covered) => covered,
         Err(error) => {
             report::<()>(Err(error));
@@ -160,27 +157,54 @@ async fn issue_reviews(application: &AppHandle, project: u32) -> Result<IssueRev
         .map_err(|error| error.to_string())
 }
 
-async fn confirm_builds(application: &AppHandle, project: u32) -> Result<Vec<String>, String> {
-    let candidates = lock(
-        application.state::<ManagedStateStore>().inner(),
-        "persisted state",
-    )?
-    .rosen_issue_build_candidates(project);
-    if candidates.is_empty() {
+pub(crate) async fn confirm_builds(
+    application: &AppHandle,
+    project: u32,
+    sequence: u64,
+) -> Result<Vec<String>, String> {
+    let (candidates, commits) = {
+        let store = lock(
+            application.state::<ManagedStateStore>().inner(),
+            "persisted state",
+        )?;
+        let candidates = store.rosen_issue_build_candidates(project);
+        let mut commits: Vec<_> = candidates
+            .iter()
+            .map(|(_, commit)| commit.clone())
+            .collect();
+        if let Some(item) = store.project(project) {
+            commits.extend(item.rosen_work_items.iter().filter_map(|work| {
+                (work.status == velocity_core::work_pool::WorkStatus::Landed)
+                    .then_some(work.landed_commit.as_ref())
+                    .flatten()
+                    .cloned()
+            }));
+        }
+        commits.sort_unstable();
+        commits.dedup();
+        (candidates, commits)
+    };
+    if commits.is_empty() && sequence == 0 {
         return Ok(Vec::new());
     }
-    let server = crate::rosen::server(application, project).await?;
-    let commits: Vec<_> = candidates
-        .iter()
-        .map(|(_, commit)| commit.clone())
-        .collect();
-    let covered = velocity_rosen::issue_build_coverage(&server, &commits)
-        .await
-        .map_err(|error| error.to_string())?;
+    let covered = if commits.is_empty() {
+        Vec::new()
+    } else {
+        let server = crate::rosen::server(application, project).await?;
+        velocity_rosen::issue_build_coverage(&server, &commits)
+            .await
+            .map_err(|error| error.to_string())?
+    };
     let mut store = lock(
         application.state::<ManagedStateStore>().inner(),
         "persisted state",
     )?;
+    if store
+        .confirm_rosen_work_build(project, sequence, &covered)
+        .map_err(|error| error.to_string())?
+    {
+        crate::rosen_events::publish_progress(application, &store)?;
+    }
     for (thread, commit) in candidates {
         if covered.contains(&commit) {
             store

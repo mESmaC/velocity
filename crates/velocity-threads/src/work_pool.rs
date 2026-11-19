@@ -4,7 +4,9 @@ use std::path::{Path, PathBuf};
 use std::sync::{LazyLock, Mutex, PoisonError};
 use std::time::{Duration, Instant};
 use thiserror::Error;
-use velocity_core::work_pool::{WorkKey, WorkPiece, WorkPool, WorkSources, spec_files_pieces};
+use velocity_core::work_pool::{
+    WorkItem, WorkKey, WorkPiece, WorkPool, WorkSources, spec_files_pieces,
+};
 use velocity_github::{GitHubIssue, IssueClient};
 use velocity_spec::ProjectSpec;
 use velocity_store::issues::{ThreadIssue, issue_thread};
@@ -126,7 +128,37 @@ fn read_pool(
             ));
         }
     }
-    Ok(WorkPool::new(project.id, pieces))
+    let mut pool = WorkPool::new(project.id, pieces);
+    pool.rosen_items = projected_items(project, sources);
+    Ok(pool)
+}
+
+fn projected_items(project: &ProjectItem, sources: WorkSources) -> Vec<WorkItem> {
+    project
+        .rosen_work_items
+        .iter()
+        .filter_map(|item| {
+            if !sources.includes(&item.key) {
+                return None;
+            }
+            let mut item = item.clone();
+            if let WorkKey::Task { identifier } = &item.key {
+                let task = project.tasks.iter().find(|task| task.id == *identifier)?;
+                item.title.clone_from(&task.text);
+            }
+            if !item.status.completed()
+                && item.thread_identifier.is_some_and(|identifier| {
+                    !project
+                        .threads
+                        .iter()
+                        .any(|thread| thread.id == identifier && holds_work(thread))
+                })
+            {
+                return None;
+            }
+            Some(item)
+        })
+        .collect()
 }
 
 fn issue_pieces(
@@ -151,21 +183,13 @@ fn issue_pieces(
             .filter(|issue| crate::continuous_dispatch::actionable(issue))
         {
             let assignment = ThreadIssue::new(repository.clone(), issue.number);
-            if project.completed_goal_issues.iter().any(|completed| {
-                completed.number == assignment.number
-                    && completed
-                        .repository
-                        .eq_ignore_ascii_case(&assignment.repository)
-            }) {
+            if project.rosen_issue_completed(&assignment) {
                 continue;
             }
             let owner = issue_thread(project, &assignment).map(|thread| thread.id);
             issue_evidence(issue);
             pieces.push(WorkPiece::new(
-                WorkKey::Issue {
-                    repository: repository.to_lowercase(),
-                    number: issue.number,
-                },
+                WorkKey::issue(&repository, issue.number),
                 issue.title.clone(),
                 issue.url.clone(),
                 owner,
@@ -182,25 +206,28 @@ fn held_rosen_issues(project: &ProjectItem) -> Vec<WorkPiece> {
         .filter_map(|thread| {
             let issue = thread.issue.as_ref()?;
             if thread.rosen_change.is_none()
-                || thread.goal_member.is_none()
-                || thread.supervision.released
-                || matches!(thread.state, ThreadState::Merged | ThreadState::Done)
+                || !holds_work(thread)
+                || (thread.goal_member.is_none()
+                    && project
+                        .rosen_work_item(&WorkKey::issue(&issue.repository, issue.number))
+                        .is_none())
             {
                 return None;
             }
             // A reverted issue can already be closed in the mirror. Its original thread
             // still owns the fix and must stay visible on the board until it lands again.
             Some(WorkPiece::new(
-                WorkKey::Issue {
-                    repository: issue.repository.to_lowercase(),
-                    number: issue.number,
-                },
+                WorkKey::issue(&issue.repository, issue.number),
                 thread.title.clone(),
                 format!("{}#{}", issue.repository, issue.number),
                 Some(thread.id),
             ))
         })
         .collect()
+}
+
+fn holds_work(thread: &velocity_store::ThreadItem) -> bool {
+    !thread.supervision.released && !matches!(thread.state, ThreadState::Merged | ThreadState::Done)
 }
 
 /// The checkout's repository and its open issues, no older than `issue_age`. Only open issues
@@ -256,11 +283,10 @@ fn task_pieces(project: &ProjectItem) -> Vec<WorkPiece> {
             let owner = task
                 .assigned_thread_id
                 .and_then(|identifier| {
-                    project.threads.iter().find(|thread| {
-                        !thread.supervision.released
-                            && thread.id == identifier
-                            && !matches!(thread.state, ThreadState::Merged | ThreadState::Done)
-                    })
+                    project
+                        .threads
+                        .iter()
+                        .find(|thread| thread.id == identifier && holds_work(thread))
                 })
                 .map(|thread| thread.id);
             if task.state == TaskState::Now && owner.is_none() {

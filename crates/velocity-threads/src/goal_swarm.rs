@@ -591,6 +591,7 @@ impl ClaimContext<'_> {
                     ThreadError::UnknownTask(_)
                     | ThreadError::TaskUnavailable(_)
                     | ThreadError::IssueAssigned { .. }
+                    | ThreadError::IssueCompleted(_)
                     | ThreadError::SpecUnavailable(_) => Ok(None),
                     other => Err(other.into()),
                 }

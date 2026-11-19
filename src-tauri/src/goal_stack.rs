@@ -86,18 +86,16 @@ async fn stack(
     parent: &str,
 ) -> Result<String, String> {
     let server = crate::rosen::server(application, key.0).await?;
-    if let Some(stack) = &thread.goal_stack {
-        cleanup_source(application, key.0, stack).await?;
-        return thread
-            .rosen_change
-            .clone()
-            .ok_or("Missing stacked change".into());
-    }
     let original = Path::new(thread.worktree_path.as_deref().ok_or("Missing workspace")?);
     let source = thread
         .rosen_change
         .as_deref()
         .ok_or("Missing Rosen change")?;
+    if let Some(stack) = &thread.goal_stack {
+        crate::rosen::record_work_sources(application, key, original, source).await?;
+        cleanup_source(application, key.0, stack).await?;
+        return Ok(source.to_owned());
+    }
     let leaf = original.file_name().ok_or("Missing workspace name")?;
     let root = original
         .parent()
@@ -121,7 +119,7 @@ async fn stack(
         application.state::<ManagedStateStore>().inner(),
         "persisted state",
     )?
-    .update_thread(key.0, key.1, |saved| {
+    .update_rosen_work_thread(key.0, key.1, |saved| {
         saved.rosen_change = Some(created.change.clone());
         saved.worktree_path = Some(root.display().to_string());
         saved.goal_stack = Some(transition.clone());
@@ -130,6 +128,7 @@ async fn stack(
         saved.agent_session = None;
     })
     .map_err(|error| error.to_string())?;
+    crate::rosen::record_work_sources(application, key, &root, &created.change).await?;
     cleanup_source(application, key.0, &transition).await?;
     Ok(created.change)
 }

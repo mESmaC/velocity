@@ -323,6 +323,12 @@ fn apply_update(project: &mut ProjectItem, change: &TaskUpdate) -> Result<TaskIt
     // cannot close it again.
     if reopened {
         project.continuous_dispatch.task_attempts.remove(&task.id);
+        project.rosen_work_items.retain(|item| {
+            item.key
+                != (velocity_core::work_pool::WorkKey::Task {
+                    identifier: task.id,
+                })
+        });
         for thread in &mut project.threads {
             thread.task_ids.retain(|listed| *listed != task.id);
         }

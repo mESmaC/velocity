@@ -2845,6 +2845,7 @@ export type ProjectItem_Deserialize = {
 	goal_swarms?: GoalSwarmRecord_Deserialize[],
 	/**  New projects use Rosen. Older Git records migrate at startup (F5, #419). */
 	version_control?: VersionControl,
+	rosen_work_items?: WorkItem_Deserialize[],
 	/**  Latest mirror failure, retained while the push remains unsuccessful (F5). */
 	rosen_mirror?: MirrorState_Deserialize | null,
 };
@@ -2881,6 +2882,7 @@ export type ProjectItem_Serialize = {
 	goal_swarms: GoalSwarmRecord_Serialize[],
 	/**  New projects use Rosen. Older Git records migrate at startup (F5, #419). */
 	version_control: VersionControl,
+	rosen_work_items: WorkItem_Serialize[],
 	/**  Latest mirror failure, retained while the push remains unsuccessful (F5). */
 	rosen_mirror: MirrorState_Serialize | null,
 };
@@ -5213,6 +5215,41 @@ export type WindowStateChanged = {
 	maximized: boolean,
 };
 
+/**  One tracked item. Task keys are scoped by the containing project's identifier. */
+export type WorkItem = WorkItem_Serialize | WorkItem_Deserialize;
+
+/**  One tracked item. Task keys are scoped by the containing project's identifier. */
+export type WorkItem_Deserialize = {
+	key: WorkKey,
+	title: string,
+	thread_identifier?: number | null,
+	change?: string | null,
+	status: WorkStatus,
+	claimed_at?: string | null,
+	updated_at?: string | null,
+	landed_at?: string | null,
+	green_at?: string | null,
+	reverted_at?: string | null,
+	landed_commit?: string | null,
+	revert_reason?: string | null,
+};
+
+/**  One tracked item. Task keys are scoped by the containing project's identifier. */
+export type WorkItem_Serialize = {
+	key: WorkKey,
+	title: string,
+	thread_identifier: number | null,
+	change: string | null,
+	status: WorkStatus,
+	claimed_at: string | null,
+	updated_at: string | null,
+	landed_at: string | null,
+	green_at: string | null,
+	reverted_at: string | null,
+	landed_commit: string | null,
+	revert_reason: string | null,
+};
+
 export type WorkKey = { kind: "task"; identifier: number } | { kind: "issue"; repository: string; number: number } | { kind: "spec"; section: string };
 
 export type WorkPiece = WorkPiece_Serialize | WorkPiece_Deserialize;
@@ -5236,6 +5273,7 @@ export type WorkPool = WorkPool_Serialize | WorkPool_Deserialize;
 export type WorkPool_Deserialize = {
 	project_identifier: number,
 	pieces: WorkPiece_Deserialize[],
+	rosen_items?: WorkItem_Deserialize[],
 	available_tasks: number,
 	available_issues: number,
 	available_sections: number,
@@ -5244,6 +5282,7 @@ export type WorkPool_Deserialize = {
 export type WorkPool_Serialize = {
 	project_identifier: number,
 	pieces: WorkPiece_Serialize[],
+	rosen_items: WorkItem_Serialize[],
 	available_tasks: number,
 	available_issues: number,
 	available_sections: number,
@@ -5255,6 +5294,8 @@ export type WorkSources = {
 	issues: boolean,
 	sections: boolean,
 };
+
+export type WorkStatus = "claimed" | "in_change" | "landed" | "green" | "reopened";
 
 export type WorkedSummaryView = WorkedSummaryView_Serialize | WorkedSummaryView_Deserialize;
 

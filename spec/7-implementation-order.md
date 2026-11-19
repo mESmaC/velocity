@@ -54,6 +54,7 @@ Each milestone ends with a working app.
 - [x] Agent Task List tools, with autonomous edits and task pickup for continuous dispatch (F8, #439)
 - [x] Issues panel and single dispatch (F9)
 - [x] Show open GitHub blockers in the issues rail and skip blocked issues in continuous dispatch (F8, F9, #472)
+- [x] Project Rosen work-item state into the live work pool (F8, F9, F16, #474)
 - [x] Empty dispatch turns save their reason and hold the issue for independent review (F8, F9, #469)
 - [x] Deduplicate recent discovery reports and hold overlapping issue dispatch for land verification (F9, F14, #471)
 - [x] Swarm: dialog, launch, sidebar row, view, broadcast, + Items, rebase on merge, task done / issue close (F10)

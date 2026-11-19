@@ -1158,6 +1158,24 @@ async fn finish_goal_claimed(
     claimed: ClaimedGoalWork,
     selection: Option<GoalSelectionTurn>,
 ) {
+    if let Some(change) = &folder.rosen_change
+        && let Err(error) =
+            crate::rosen::record_work_sources(application, key, &folder.path, change).await
+    {
+        if let Some(turn) = selection {
+            report(
+                turn.stop(application, key)
+                    .await
+                    .map_err(|error| error.to_string()),
+            );
+        }
+        return fail(
+            application,
+            key,
+            "Could not record Rosen work sources",
+            &error,
+        );
+    }
     let path = folder.path.display().to_string();
     let prompt = work_handoff(application, key).map_or_else(
         || claimed.prompt.clone(),

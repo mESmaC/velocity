@@ -500,7 +500,7 @@ pub(crate) fn record_change(
         application.state::<ManagedStateStore>().inner(),
         "persisted state",
     )?
-    .update_thread(key.0, key.1, |thread| {
+    .update_rosen_work_thread(key.0, key.1, |thread| {
         thread.rosen_change = Some(change.to_owned());
     })
     .map_err(|error| error.to_string())?;
@@ -508,6 +508,17 @@ pub(crate) fn record_change(
         crate::rosen_status::ownership_changed(application);
     }
     Ok(recorded)
+}
+
+pub(crate) async fn record_work_sources(
+    application: &AppHandle,
+    key: ThreadKey,
+    root: &Path,
+    change: &str,
+) -> Result<(), String> {
+    let server = server(application, key.0).await?;
+    let agent = velocity_rosen::agent_name(root);
+    crate::rosen_issue::record_source(application, key, &server, &agent, change).await
 }
 
 /// Stops the thread's watcher and abandons its change; Rosen then deletes the workspace
@@ -581,8 +592,11 @@ pub(crate) fn prepare_resume(
     // while one runs.
     let handle = application.clone();
     let root = root.to_path_buf();
+    let key = (project, thread.id);
+    let change = change.to_owned();
     tauri::async_runtime::spawn(async move {
         report(watch_thread(&handle, project, &root).await);
+        report(record_work_sources(&handle, key, &root, &change).await);
     });
     Some(Ok(()))
 }

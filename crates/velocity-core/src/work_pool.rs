@@ -55,6 +55,13 @@ pub enum WorkKey {
 }
 
 impl WorkKey {
+    pub fn issue(repository: &str, number: u32) -> Self {
+        Self::Issue {
+            repository: repository.to_ascii_lowercase(),
+            number,
+        }
+    }
+
     /// The AIRC claim lock key for this piece (F14, F16). A goal swarm agent, a swarm
     /// member and a dispatched thread working on the same item all claim this key, so
     /// the first claim wins whichever path started it. An issue omits its repository:
@@ -67,6 +74,48 @@ impl WorkKey {
         };
         crate::goal_swarm_choice::canonical_piece_key(&raw)
     }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "bindings", derive(specta::Type))]
+#[serde(rename_all = "snake_case")]
+pub enum WorkStatus {
+    Claimed,
+    InChange,
+    Landed,
+    Green,
+    Reopened,
+}
+
+impl WorkStatus {
+    pub fn completed(self) -> bool {
+        matches!(self, Self::Landed | Self::Green)
+    }
+}
+
+/// One tracked item. Task keys are scoped by the containing project's identifier.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "bindings", derive(specta::Type))]
+pub struct WorkItem {
+    pub key: WorkKey,
+    pub title: String,
+    pub thread_identifier: Option<u32>,
+    pub change: Option<String>,
+    pub status: WorkStatus,
+    #[serde(default)]
+    pub claimed_at: Option<String>,
+    #[serde(default)]
+    pub updated_at: Option<String>,
+    #[serde(default)]
+    pub landed_at: Option<String>,
+    #[serde(default)]
+    pub green_at: Option<String>,
+    #[serde(default)]
+    pub reverted_at: Option<String>,
+    #[serde(default)]
+    pub landed_commit: Option<String>,
+    #[serde(default)]
+    pub revert_reason: Option<String>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -94,6 +143,8 @@ impl WorkPiece {
 pub struct WorkPool {
     pub project_identifier: u32,
     pub pieces: Vec<WorkPiece>,
+    #[serde(default)]
+    pub rosen_items: Vec<WorkItem>,
     pub available_tasks: u32,
     pub available_issues: u32,
     pub available_sections: u32,
@@ -105,6 +156,7 @@ impl WorkPool {
         let mut pool = Self {
             project_identifier,
             pieces: Vec::new(),
+            rosen_items: Vec::new(),
             available_tasks: 0,
             available_issues: 0,
             available_sections: 0,

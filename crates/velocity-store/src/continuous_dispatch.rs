@@ -110,6 +110,11 @@ pub fn has_capacity(project: &ProjectItem) -> bool {
 pub fn available_task(project: &ProjectItem, task: &TaskItem) -> bool {
     task.state == TaskState::Todo
         && task.assigned_thread_id.is_none()
+        && !project
+            .rosen_work_item(&velocity_core::work_pool::WorkKey::Task {
+                identifier: task.id,
+            })
+            .is_some_and(|item| item.status.completed())
         && project.continuous_dispatch.task_attempts.get(&task.id) != Some(&task.text)
 }
 
@@ -401,6 +406,7 @@ impl StateStore {
         if !item.continuous_dispatch.cleanup.contains(&identifier) {
             item.continuous_dispatch.cleanup.push(identifier);
         }
+        crate::rosen_work::remove_thread(item, identifier);
         self.commit(next)?;
         Ok(())
     }

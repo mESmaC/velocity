@@ -19,6 +19,8 @@ pub enum ThreadError {
     UnknownThread { project: u32, thread: u32 },
     #[error("Issue #{number} already belongs to thread {thread}")]
     IssueAssigned { number: u32, thread: u32 },
+    #[error("Issue #{0} already has a landed Rosen change")]
+    IssueCompleted(u32),
     #[error("Task {0} is not on this project's Task List")]
     UnknownTask(u32),
     #[error("Task {0} already has an agent or is still a draft")]
@@ -335,6 +337,7 @@ pub(crate) fn remove_thread_record(
         .position(|record| record.id == thread)
         .ok_or(ThreadError::UnknownThread { project, thread })?;
     let removed = item.threads.remove(position);
+    crate::rosen_work::remove_thread(item, thread);
     for later in &mut item.threads {
         if later.previous_work_thread == Some(thread) {
             later.previous_work_thread = removed.previous_work_thread;
@@ -391,10 +394,16 @@ pub(crate) fn insert_thread(
         .iter_mut()
         .find(|item| item.id == project)
         .ok_or(ThreadError::UnknownProject(project))?;
+    if let Some(issue) = &issue
+        && item.rosen_issue_completed(issue)
+    {
+        return Err(ThreadError::IssueCompleted(issue.number));
+    }
     let mut record = ThreadItem::for_build(thread, identifier);
     record.issue = issue;
     // Newest first, as the reference's sidebar lists new threads at the top of their group.
     item.threads.insert(0, record);
+    crate::rosen_work::track_claim(item, identifier);
     item.active_thread_id = Some(identifier);
     Ok(identifier)
 }
@@ -436,7 +445,7 @@ pub(crate) fn highest_entry_identifier(project: &ProjectItem) -> u32 {
         .unwrap_or(0)
 }
 
-fn thread_start_timestamp() -> String {
+pub(crate) fn thread_start_timestamp() -> String {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap_or_default()

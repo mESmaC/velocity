@@ -366,6 +366,7 @@ impl StateStore {
         if let Some(member) = record.goal_member.as_mut() {
             member.choosing = false;
         }
+        crate::rosen_work::track_claim(project, thread_id);
         self.commit(next).map_err(ThreadError::from)
     }
 
@@ -605,6 +606,9 @@ fn bind_piece_owner(
         }
         WorkKey::Issue { repository, number } => {
             let issue = ThreadIssue::new(repository.clone(), *number);
+            if project.rosen_issue_completed(&issue) {
+                return Err(ThreadError::IssueCompleted(*number));
+            }
             if let Some(existing) = issue_thread(project, &issue)
                 && existing.id != thread_id
             {

@@ -311,6 +311,7 @@ pub(crate) fn claim_task(
     if let Some(record) = project.threads.iter_mut().find(|item| item.id == thread) {
         record.task_ids.push(task);
     }
+    crate::rosen_work::track_claim(project, thread);
     Ok(())
 }
 
