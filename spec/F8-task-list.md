@@ -30,6 +30,7 @@ GitHub's issue state and the full-test result remain separate from the Work stat
 An issue can be Green while its GitHub discussion remains open (F9).
 Manually completed tasks join the group for their completion day; saved completions without a recoverable date appear under **Done · Date unavailable**.
 Reopening a completed item removes it from its Done group and restores it to active work.
+Click, Enter, Space and the arrow keys open or close each Done group.
 The Task List counter includes completed tasks in collapsed groups.
 
 **Rollout.** First add the Rosen lifecycle behind the live work pool while the existing panels keep working ([#474](https://github.com/mESmaC/velocity/issues/474)).
@@ -61,14 +62,14 @@ The sidebar's Duty controls and each Duty view show the slot and busy counts and
 Pausing stops new starts and leaves existing threads running.
 The saved spec lock still applies.
 
-On git projects and during the Rosen rollout, the Task List sits in the top-right panel and uses draft (before spec lock), todo, now (an agent is on it), and done (its change landed or PR merged, or someone marked it done).
+On git projects, the Task List sits in the top-right panel and uses draft (before spec lock), todo, now (an agent is on it), and done (its PR merged, or someone marked it done).
 The Task List counter shows `done/total`.
 
 **Adding tasks (decided):**
 - **You:**
   - an always-visible "Add a task" input pinned under the list (Enter adds and keeps focus)
   - `T` from anywhere
-  - the + in the panel header
+  - the + in the Work or Task List panel header
   - `/task <title>` in any composer
   - the palette
 - **Agents:** they have full create, read, update and delete over the Task List through `task_list`, `task_add`, `task_update` and `task_delete` (#309).

@@ -1,4 +1,13 @@
 ﻿import { commands } from '../bindings';
 
-export type { WorkKey, WorkPiece, WorkPool } from '../bindings';
-export const workPoolCommands = { get: commands.getWorkPool };
+export type {
+  WorkChange,
+  WorkItem,
+  WorkKey,
+  WorkPiece,
+  WorkPool,
+} from '../bindings';
+export const workPoolCommands = {
+  get: commands.getWorkPool,
+  change: commands.getWorkChange,
+};

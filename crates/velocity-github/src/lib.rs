@@ -29,7 +29,9 @@ mod scout_search;
 mod scout_server;
 pub mod velocity_reports;
 
-pub use issue_panel::{IssuePanelCache, IssuePanelRow, IssuePanelSnapshot, SpecQuestion};
+pub use issue_panel::{
+    IssueDiscussion, IssuePanelCache, IssuePanelRow, IssuePanelSnapshot, SpecQuestion,
+};
 pub use issue_types::*;
 pub use issues::IssueClient;
 pub use pull_request_command::PullRequestError;

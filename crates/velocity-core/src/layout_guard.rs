@@ -29,6 +29,7 @@ fn launch_kind(intent: &LayoutIntent, interview_thread: bool) -> Option<LaunchKi
         LayoutIntent::Navigation(intent) => navigation_launch_kind(*intent),
         LayoutIntent::SwitchProject(_)
         | LayoutIntent::SwarmIssues
+        | LayoutIntent::SwarmWork
         | LayoutIntent::OpenTask(_)
         | LayoutIntent::OpenPullRequest(_)
         | LayoutIntent::OpenIssue(_)

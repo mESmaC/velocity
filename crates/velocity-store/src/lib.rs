@@ -688,6 +688,8 @@ pub struct TaskItem {
     pub state: TaskState,
     pub added_by: TaskAttribution,
     pub assigned_thread_id: Option<u32>,
+    #[serde(default)]
+    pub completed_at: Option<u32>,
 }
 
 impl TaskItem {
@@ -698,6 +700,7 @@ impl TaskItem {
             state,
             added_by,
             assigned_thread_id: None,
+            completed_at: None,
             agent_request: None,
         }
     }
@@ -1076,6 +1079,9 @@ pub struct ProjectItem {
     #[serde(default)]
     pub settled_expanded: bool,
     #[serde(default)]
+    #[specta(skip)]
+    pub expanded_work_issues: Vec<velocity_core::work_pool::WorkKey>,
+    #[serde(default)]
     pub continuous_dispatch: continuous_dispatch::ContinuousDispatch,
     pub active_thread_id: Option<u32>,
     pub merged_today: u32,
@@ -1181,6 +1187,7 @@ impl ProjectItem {
             completed_goal_issues: Vec::new(),
             skills: velocity_core::skills::ProjectSkills::default(),
             settled_expanded: false,
+            expanded_work_issues: Vec::new(),
             continuous_dispatch: continuous_dispatch::ContinuousDispatch::default(),
             active_thread_id: None,
             merged_today: 0,

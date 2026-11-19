@@ -720,6 +720,7 @@ impl LayoutState {
             project_identifier: self.data.project_identifier,
             project_name: self.data.project_name.clone(),
             rosen_mirror: self.data.rosen_mirror.clone(),
+            rosen_work: self.data.rosen_work.clone(),
             rosen_migration_notice: self.data.rosen_migration_notice.clone(),
             rosen_reconnecting: self
                 .data
@@ -1231,6 +1232,10 @@ impl LayoutState {
         }
         if let LayoutIntent::SwarmIssues = intent {
             self.open_swarm_dialog(SwarmSource::Issues, None);
+            return None;
+        }
+        if let LayoutIntent::SwarmWork = intent {
+            self.open_swarm_dialog(SwarmSource::Both, None);
             return None;
         }
         if let LayoutIntent::SettingsTab(tab) = &intent

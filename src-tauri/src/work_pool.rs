@@ -4,6 +4,34 @@ use crate::threads::lock;
 use tauri::{AppHandle, Manager};
 use velocity_core::work_pool::WorkPool;
 
+#[derive(serde::Serialize, specta::Type)]
+pub struct WorkChange {
+    owner: String,
+    head: String,
+}
+
+#[tauri::command]
+#[specta::specta]
+pub async fn get_work_change(
+    application: AppHandle,
+    project_identifier: u32,
+    change: String,
+) -> Result<WorkChange, String> {
+    let server = crate::rosen::server(&application, project_identifier).await?;
+    let connection = velocity_rosen::connection::requests(server.endpoint())
+        .await
+        .map_err(|error| error.to_string())?;
+    let record = connection
+        .change_show(&change)
+        .await
+        .map_err(|error| error.to_string())?
+        .change;
+    Ok(WorkChange {
+        owner: record.owner.to_string(),
+        head: record.head.to_string(),
+    })
+}
+
 #[tauri::command]
 #[specta::specta]
 pub async fn get_work_pool(

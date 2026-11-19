@@ -2,7 +2,8 @@
 ### F10 · Swarm
 
 One agent per open item, all started at the same time, each in its own workspace.
-Open it with the **Swarm** buttons on the Task List and Issues panels, `W`, the home chip, or the palette.
+Open it with **Swarm** in Work on Rosen projects, with **Swarm** on either Task List or Issues on git projects, or with `W`, the home chip, or the palette.
+The Work entry opens the dialog with both sources selected.
 
 **Swarm dialog:**
 - **Source:** Task List · N, Issues · N, or Both · N.

@@ -10,9 +10,10 @@ Until GitHub catches up, local completion keeps the issue out of dispatch even i
 **Questions and details.** `spec-question` rows stay in a separate group at the top, ordered by how many pieces they block.
 Their expanded rows show the recommended answer from a `Recommended answer:` or `Recommendation:` paragraph and the blocked count from the `Blocks:` bullets.
 Expanding an ordinary issue shows its opening paragraph and the latest agent comments from #441, with attribution and a link to the GitHub discussion.
-Expansion starts collapsed and is saved per project.
+Expansion starts collapsed and is saved per project and repository-qualified issue, including across restarts.
 Click, Enter, Space and the arrow keys retain their row expansion behaviour.
-Issue discussion loads independently of Rosen state; a slow or failed comment fetch leaves work and dispatch available.
+Expanded issue rows load and refresh their latest agent comments independently of Rosen state.
+A slow or failed comment fetch leaves work and dispatch available, and the row can retry its discussion.
 
 **Issue dependencies (#472).** Issue rows show `Blocked by #n` for open GitHub blockers.
 When a decision sets an order between issues, record it as a GitHub issue dependency.

@@ -3,9 +3,14 @@ use std::path::PathBuf;
 use std::sync::Mutex;
 use std::time::{Duration, Instant};
 use tauri::{AppHandle, Manager};
+use tauri_plugin_opener::OpenerExt;
 use tauri_specta::Event;
 use velocity_core::layout_view::{LayoutAction, LayoutIntent, LayoutSnapshot};
-use velocity_github::{IssueClient, IssuePanelCache, IssuePanelSnapshot};
+use velocity_core::work_pool::WorkKey;
+use velocity_github::{
+    IssueClient, IssueDiscussion, IssuePanelCache, IssuePanelSnapshot, PullRequestError,
+};
+use velocity_store::VersionControl;
 use velocity_store::issues::{ThreadIssue, issue_thread};
 
 use crate::layout::MainLayout;
@@ -24,27 +29,124 @@ pub struct IssuePanelChanged {
 struct ProjectContext {
     identifier: u32,
     directory: PathBuf,
+    remote: Option<String>,
+}
+
+impl ProjectContext {
+    fn from_project(project: &velocity_store::ProjectItem) -> Self {
+        Self {
+            identifier: project.id,
+            directory: project.repository_path.clone().into(),
+            remote: if project.version_control == VersionControl::Rosen {
+                project.github_remote.clone()
+            } else {
+                None
+            },
+        }
+    }
+
+    fn issue_client(&self) -> Result<IssueClient, PullRequestError> {
+        match &self.remote {
+            Some(remote) => IssueClient::for_repository(&self.directory, remote),
+            None => IssueClient::discover(&self.directory),
+        }
+    }
 }
 
 fn selected_project(application: &AppHandle) -> Result<Option<ProjectContext>, String> {
     let store = application.state::<ManagedStateStore>();
     let store = lock(store.inner(), "persisted state")?;
-    Ok(store.active_project().map(|project| ProjectContext {
-        identifier: project.id,
-        directory: project.repository_path.clone().into(),
-    }))
+    Ok(store.active_project().map(ProjectContext::from_project))
 }
 
 #[tauri::command]
 #[specta::specta]
 pub async fn get_issue_panel(application: AppHandle) -> Result<IssuePanelSnapshot, String> {
-    crate::layout::off_ui_thread(move || {
+    tauri::async_runtime::spawn_blocking(move || {
         let panel = application.state::<IssuePanel>();
-        let project = selected_project(&application)?;
-        refresh(&application, project.clone(), &mut IssueReader::default())?;
-        let mut panel = lock(panel.inner(), "issues")?;
-        panel.select(project.map(|project| project.identifier));
-        Ok(panel.clone())
+        refresh(
+            &application,
+            selected_project(&application)?,
+            &mut IssueReader::default(),
+        )?;
+        Ok(lock(panel.inner(), "issues")?.clone())
+    })
+    .await
+    .map_err(|error| error.to_string())?
+}
+
+#[tauri::command]
+#[specta::specta]
+pub async fn get_issue_discussion(
+    application: AppHandle,
+    project_identifier: u32,
+    repository: String,
+    number: u32,
+) -> Result<IssueDiscussion, String> {
+    let project = require_project(&application, project_identifier)?;
+    tauri::async_runtime::spawn_blocking(move || {
+        IssueClient::for_repository(&project.directory, &repository)?.discussion(number)
+    })
+    .await
+    .map_err(|error| error.to_string())?
+    .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+#[specta::specta]
+pub fn open_issue_discussion(
+    application: AppHandle,
+    repository: String,
+    number: u32,
+) -> Result<(), String> {
+    let repository =
+        velocity_github::RepositoryName::parse(&repository).map_err(|error| error.to_string())?;
+    application
+        .opener()
+        .open_url(
+            format!(
+                "https://github.com/{}/issues/{number}",
+                repository.full_name()
+            ),
+            None::<&str>,
+        )
+        .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+#[specta::specta]
+pub async fn set_work_issue_expanded(
+    application: AppHandle,
+    project_identifier: u32,
+    repository: String,
+    number: u32,
+    expanded: bool,
+) -> Result<(), String> {
+    crate::layout::off_ui_thread(move || {
+        let key = WorkKey::issue(&repository, number);
+        let store = application.state::<ManagedStateStore>();
+        let mut store = lock(store.inner(), "persisted state")?;
+        let project = store
+            .active_project()
+            .filter(|project| project.id == project_identifier)
+            .ok_or("The selected project changed; refresh Work")?;
+        if project.expanded_work_issues.contains(&key) == expanded {
+            return Ok(());
+        }
+        store
+            .update_project::<_, velocity_store::projects::ProjectError>(
+                project_identifier,
+                |project| {
+                    if expanded {
+                        project.expanded_work_issues.push(key);
+                    } else {
+                        project.expanded_work_issues.retain(|issue| issue != &key);
+                    }
+                    Ok(())
+                },
+            )
+            .map_err(|error| error.to_string())?;
+        crate::rosen_events::publish_progress(&application, &store)
     })
     .await
 }
@@ -81,6 +183,44 @@ pub async fn dispatch_issue(
 ) -> Result<LayoutSnapshot, String> {
     let project = require_project(&application, project_identifier)?;
     let repository = panel_repository(&application, project_identifier)?;
+    dispatch_selected_issue(
+        application,
+        project,
+        repository,
+        number,
+        accept_recommendation,
+    )
+    .await
+}
+
+#[tauri::command]
+#[specta::specta]
+pub async fn dispatch_work_issue(
+    application: AppHandle,
+    project_identifier: u32,
+    repository: String,
+    number: u32,
+    accept_recommendation: bool,
+) -> Result<LayoutSnapshot, String> {
+    let project = require_project(&application, project_identifier)?;
+    dispatch_selected_issue(
+        application,
+        project,
+        repository,
+        number,
+        accept_recommendation,
+    )
+    .await
+}
+
+async fn dispatch_selected_issue(
+    application: AppHandle,
+    project: ProjectContext,
+    repository: String,
+    number: u32,
+    accept_recommendation: bool,
+) -> Result<LayoutSnapshot, String> {
+    let project_identifier = project.identifier;
     if let Some(snapshot) =
         open_assigned_thread(&application, project_identifier, &repository, number)?
     {
@@ -95,6 +235,13 @@ pub async fn dispatch_issue(
     let (plan, thread) = {
         let store = application.state::<ManagedStateStore>();
         let mut store = lock(store.inner(), "persisted state")?;
+        let identity = ThreadIssue::new(repository.clone(), number);
+        if store.project(project_identifier).is_some_and(|project| {
+            project.version_control == VersionControl::Rosen
+                && project.rosen_issue_completed(&identity)
+        }) {
+            return Err(format!("Issue #{number} has a landed change"));
+        }
         let plan = velocity_threads::plan_issue_dispatch(
             &store,
             project_identifier,
@@ -123,12 +270,10 @@ pub async fn open_project_issue(
     if open_assigned_thread(&application, project_identifier, &repository, number)?.is_some() {
         return Ok(());
     }
-    tauri::async_runtime::spawn_blocking(move || {
-        IssueClient::discover(&project.directory)?.open_in_browser(number)
-    })
-    .await
-    .map_err(|error| error.to_string())?
-    .map_err(|error| error.to_string())
+    tauri::async_runtime::spawn_blocking(move || project.issue_client()?.open_in_browser(number))
+        .await
+        .map_err(|error| error.to_string())?
+        .map_err(|error| error.to_string())
 }
 
 fn require_project(application: &AppHandle, identifier: u32) -> Result<ProjectContext, String> {
@@ -155,7 +300,7 @@ fn read_issue(
     repository: &str,
     number: u32,
 ) -> Result<(String, velocity_github::GitHubIssue), velocity_github::PullRequestError> {
-    let client = IssueClient::discover(&project.directory)?;
+    let client = project.issue_client()?;
     if !client.repository().eq_ignore_ascii_case(repository) {
         return Err(velocity_github::PullRequestError::Invalid(
             "The GitHub remote changed; refresh issues".into(),
@@ -176,8 +321,22 @@ fn open_assigned_thread(
         .active_project()
         .filter(|item| item.id == project)
         .ok_or("The selected project changed")?;
+    let identity = ThreadIssue::new(repository.into(), number);
+    let projected_owner = if project.version_control == VersionControl::Rosen {
+        project
+            .rosen_work_item(&WorkKey::issue(repository, number))
+            .and_then(|item| item.thread_identifier)
+            .filter(|identifier| {
+                project
+                    .threads
+                    .iter()
+                    .any(|thread| thread.id == *identifier)
+            })
+    } else {
+        None
+    };
     let Some(identifier) =
-        issue_thread(project, &ThreadIssue::new(repository.into(), number)).map(|thread| thread.id)
+        projected_owner.or_else(|| issue_thread(project, &identity).map(|thread| thread.id))
     else {
         return Ok(None);
     };
@@ -281,6 +440,11 @@ fn refresh(
     reader: &mut IssueReader,
 ) -> Result<(), String> {
     {
+        let store = application.state::<ManagedStateStore>();
+        let store = lock(store.inner(), "persisted state")?;
+        if store.active_project().map(ProjectContext::from_project) != project {
+            return Ok(());
+        }
         let panel = application.state::<IssuePanel>();
         let mut panel = lock(panel.inner(), "issues")?;
         panel.select(project.as_ref().map(|project| project.identifier));
@@ -293,7 +457,7 @@ fn refresh(
     let Some(project) = project else {
         return Ok(());
     };
-    let result = fetch_issues(&project.directory, reader);
+    let result = fetch_issues(&project, reader);
     if selected_project(application)?.as_ref() != Some(&project) {
         return Ok(());
     }
@@ -309,16 +473,19 @@ fn refresh(
 }
 
 fn fetch_issues(
-    directory: &std::path::Path,
+    project: &ProjectContext,
     reader: &mut IssueReader,
 ) -> Result<(String, Vec<velocity_github::IssuePanelRow>), String> {
-    if !IssueClient::has_origin(directory).map_err(|error| error.to_string())? {
+    if project.remote.is_none()
+        && (!project.directory.join(".git").exists()
+            || !IssueClient::has_origin(&project.directory).map_err(|error| error.to_string())?)
+    {
         *reader = IssueReader::default();
         return Ok((String::new(), Vec::new()));
     }
     let client = match reader.client.take() {
-        Some(client) if client.is_current(directory) => client,
-        _ => IssueClient::discover(directory).map_err(|error| error.to_string())?,
+        Some(client) if project.remote.is_some() || client.is_current(&project.directory) => client,
+        _ => project.issue_client().map_err(|error| error.to_string())?,
     };
     let panel = client
         .cached_panel(&mut reader.cache)

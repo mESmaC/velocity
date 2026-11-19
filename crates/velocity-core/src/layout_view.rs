@@ -91,6 +91,7 @@ pub struct TaskView {
     pub thread_identifier: Option<String>,
     pub attribution: Option<String>,
     pub attribution_thread: Option<String>,
+    pub completed_at: Option<u32>,
 }
 
 impl TaskView {
@@ -103,8 +104,19 @@ impl TaskView {
             thread_identifier: None,
             attribution: None,
             attribution_thread: None,
+            completed_at: None,
         }
     }
+}
+
+#[cfg_attr(
+    feature = "bindings",
+    derive(serde::Serialize, serde::Deserialize, specta::Type)
+)]
+#[derive(Clone, Debug)]
+pub struct RosenWorkView {
+    pub items: Vec<crate::work_pool::WorkItem>,
+    pub expanded_issues: Vec<crate::work_pool::WorkKey>,
 }
 
 /// Feature owners publish their real data here; the shell invents no activity.
@@ -114,6 +126,7 @@ pub struct LayoutData {
     pub project_identifier: Option<u32>,
     pub project_name: String,
     pub rosen_mirror: Option<crate::rosen_mirror::MirrorState>,
+    pub rosen_work: Option<RosenWorkView>,
     pub rosen_migration_notice: Option<String>,
     pub settled_expanded: bool,
     pub threads: Vec<ThreadEntry>,
@@ -292,6 +305,7 @@ pub enum LayoutIntent {
         usize,
     ),
     SwarmIssues,
+    SwarmWork,
     OpenTask(
         #[cfg_attr(feature = "bindings", serde(with = "crate::ipc_number"))]
         #[cfg_attr(feature = "bindings", specta(type = String))]
@@ -449,6 +463,7 @@ pub struct LayoutSnapshot {
     pub project_identifier: Option<u32>,
     pub project_name: String,
     pub rosen_mirror: Option<crate::rosen_mirror::MirrorState>,
+    pub rosen_work: Option<RosenWorkView>,
     pub rosen_migration_notice: Option<String>,
     pub view: NavigationView,
     pub settings_tab: String,

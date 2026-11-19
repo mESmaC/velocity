@@ -4,6 +4,7 @@ use std::time::{Duration, Instant};
 use serde::{Deserialize, Serialize};
 use specta::Type;
 
+use crate::pull_requests::Connection;
 use crate::{GitHubIssue, IssueClient, PullRequestError};
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, Type)]
@@ -155,6 +156,31 @@ impl IssuePanelSnapshot {
 /// Characters of an issue body an expanded row shows before it truncates.
 const SUMMARY_LIMIT: usize = 280;
 
+#[derive(Debug, Serialize, Type)]
+pub struct IssueDiscussion {
+    pub summary: String,
+    pub comments: Vec<IssueAgentComment>,
+}
+
+#[derive(Debug, Serialize, Type)]
+pub struct IssueAgentComment {
+    pub id: String,
+    pub author: String,
+    pub body: String,
+}
+
+fn agent_comment(body: &str) -> Option<(String, String)> {
+    let (byline, message) = body.split_once("\n\n")?;
+    let byline = byline.strip_prefix("Ready to close · ").unwrap_or(byline);
+    let author = byline.strip_prefix("Velocity agent")?;
+    let author = if author.is_empty() || author.starts_with(" · ") {
+        "Velocity agent"
+    } else {
+        author.strip_prefix(" `")?.split_once('`')?.0
+    };
+    Some((author.into(), message.trim().into()))
+}
+
 /// The first prose paragraph of an issue body: headings, HTML comments, images and code
 /// fences are skipped, since the rail has room for a few lines of plain text only.
 fn body_summary(body: &str) -> String {
@@ -213,6 +239,51 @@ pub struct IssuePanelCache {
 }
 
 impl IssueClient {
+    /// Read discussion on demand so comment latency stays outside the work inventory.
+    pub fn discussion(&self, number: u32) -> Result<IssueDiscussion, PullRequestError> {
+        #[derive(Deserialize)]
+        struct Comment {
+            id: String,
+            body: String,
+        }
+        #[derive(Deserialize)]
+        struct Discussion {
+            body: String,
+            comments: Connection<Comment>,
+        }
+        let query = "query($owner:String!,$name:String!,$number:Int!,$cursor:String) {
+          repository(owner:$owner,name:$name) { issue(number:$number) {
+            body
+            comments(first:100,after:$cursor) { nodes { id body }
+              pageInfo { hasNextPage endCursor } } } } }";
+        let variables = self.transport.variables(number);
+        let issue: Discussion =
+            self.transport
+                .graphql_at(query, variables.clone(), "/data/repository/issue")?;
+        let comments = self.transport.complete_connection(
+            query,
+            variables,
+            "/data/repository/issue/comments",
+            issue.comments,
+        )?;
+        Ok(IssueDiscussion {
+            summary: body_summary(&issue.body),
+            comments: comments
+                .into_iter()
+                .rev()
+                .filter_map(|comment| {
+                    let (author, body) = agent_comment(&comment.body)?;
+                    Some(IssueAgentComment {
+                        id: comment.id,
+                        author,
+                        body,
+                    })
+                })
+                .take(5)
+                .collect(),
+        })
+    }
+
     /// GitHub can close a blocker in another repository without editing the dependent issue.
     /// The probe includes the open blocker counts so the rail picks up those changes.
     /// Periodic full reads also catch changes that leave the timestamps and counts unchanged.

@@ -105,6 +105,7 @@ export const commands = {
 	 */
 	chooseModel: (projectIdentifier: number, threadIdentifier: number | null, choice: ModelMenuChoice) => __TAURI_INVOKE<ModelMenuView_Serialize>("choose_model", { projectIdentifier, threadIdentifier, choice }),
 	getWorkPool: (projectIdentifier: number) => __TAURI_INVOKE<WorkPool_Serialize>("get_work_pool", { projectIdentifier }),
+	getWorkChange: (projectIdentifier: number, change: string) => __TAURI_INVOKE<WorkChange>("get_work_change", { projectIdentifier, change }),
 	getWorkspaceSettings: () => __TAURI_INVOKE<WorktreeSettingsView_Serialize>("get_workspace_settings"),
 	setWorkspaceSettings: (edit: WorktreeSettingsEdit, projectIdentifier: number | null) => __TAURI_INVOKE<WorktreeSettingsView_Serialize>("set_workspace_settings", { edit, projectIdentifier }),
 	previewWorkspaceFolder: (folder: string) => __TAURI_INVOKE<WorktreePathPreview>("preview_workspace_folder", { folder }),
@@ -148,8 +149,12 @@ export const commands = {
 	 */
 	getGoalSwarmBoard: (swarmIdentifier: number) => __TAURI_INVOKE<GoalClaimsBoard_Serialize>("get_goal_swarm_board", { swarmIdentifier }),
 	getIssuePanel: () => __TAURI_INVOKE<IssuePanelSnapshot_Serialize>("get_issue_panel"),
+	getIssueDiscussion: (projectIdentifier: number, repository: string, number: number) => __TAURI_INVOKE<IssueDiscussion>("get_issue_discussion", { projectIdentifier, repository, number }),
+	openIssueDiscussion: (repository: string, number: number) => __TAURI_INVOKE<null>("open_issue_discussion", { repository, number }),
 	openProjectIssue: (projectIdentifier: number, number: number) => __TAURI_INVOKE<null>("open_project_issue", { projectIdentifier, number }),
 	dispatchIssue: (projectIdentifier: number, number: number, acceptRecommendation: boolean) => __TAURI_INVOKE<LayoutSnapshot_Serialize>("dispatch_issue", { projectIdentifier, number, acceptRecommendation }),
+	dispatchWorkIssue: (projectIdentifier: number, repository: string, number: number, acceptRecommendation: boolean) => __TAURI_INVOKE<LayoutSnapshot_Serialize>("dispatch_work_issue", { projectIdentifier, repository, number, acceptRecommendation }),
+	setWorkIssueExpanded: (projectIdentifier: number, repository: string, number: number, expanded: boolean) => __TAURI_INVOKE<null>("set_work_issue_expanded", { projectIdentifier, repository, number, expanded }),
 	/**  Expands or collapses one issue row in the rail (#209) and broadcasts the new snapshot. */
 	toggleIssueExpanded: (number: number) => __TAURI_INVOKE<IssuePanelSnapshot_Serialize>("toggle_issue_expanded", { number }),
 	watchRosenStatus: (projectIdentifier: number | null) => __TAURI_INVOKE<boolean>("watch_rosen_status", { projectIdentifier }),
@@ -1861,6 +1866,17 @@ export type InterviewView_Serialize = {
 	notice: string | null,
 };
 
+export type IssueAgentComment = {
+	id: string,
+	author: string,
+	body: string,
+};
+
+export type IssueDiscussion = {
+	summary: string,
+	comments: IssueAgentComment[],
+};
+
 export type IssuePanelChanged = IssuePanelChanged_Serialize | IssuePanelChanged_Deserialize;
 
 export type IssuePanelChanged_Deserialize = {
@@ -2070,7 +2086,7 @@ export type LayoutIntentRequested_Serialize = {
 	intent: LayoutIntent_Serialize,
 };
 
-export type LayoutIntent_Deserialize = ({ Navigation: NavigationIntent_Deserialize }) & { AddTask?: never; DispatchIssue?: never; OpenIssue?: never; OpenPullRequest?: never; OpenTask?: never; OpenWorktreeInExplorer?: never; RemoveQueuedMessage?: never; SettingsTab?: never; StartPrompt?: never; SteerThread?: never; SwitchProject?: never; ToggleProofListEntry?: never } | ({ SwitchProject: string }) & { AddTask?: never; DispatchIssue?: never; Navigation?: never; OpenIssue?: never; OpenPullRequest?: never; OpenTask?: never; OpenWorktreeInExplorer?: never; RemoveQueuedMessage?: never; SettingsTab?: never; StartPrompt?: never; SteerThread?: never; ToggleProofListEntry?: never } | ({ DispatchIssue: string }) & { AddTask?: never; Navigation?: never; OpenIssue?: never; OpenPullRequest?: never; OpenTask?: never; OpenWorktreeInExplorer?: never; RemoveQueuedMessage?: never; SettingsTab?: never; StartPrompt?: never; SteerThread?: never; SwitchProject?: never; ToggleProofListEntry?: never } | "SwarmIssues" | ({ OpenTask: string }) & { AddTask?: never; DispatchIssue?: never; Navigation?: never; OpenIssue?: never; OpenPullRequest?: never; OpenWorktreeInExplorer?: never; RemoveQueuedMessage?: never; SettingsTab?: never; StartPrompt?: never; SteerThread?: never; SwitchProject?: never; ToggleProofListEntry?: never } | ({ OpenPullRequest: string }) & { AddTask?: never; DispatchIssue?: never; Navigation?: never; OpenIssue?: never; OpenTask?: never; OpenWorktreeInExplorer?: never; RemoveQueuedMessage?: never; SettingsTab?: never; StartPrompt?: never; SteerThread?: never; SwitchProject?: never; ToggleProofListEntry?: never } | ({ OpenIssue: string }) & { AddTask?: never; DispatchIssue?: never; Navigation?: never; OpenPullRequest?: never; OpenTask?: never; OpenWorktreeInExplorer?: never; RemoveQueuedMessage?: never; SettingsTab?: never; StartPrompt?: never; SteerThread?: never; SwitchProject?: never; ToggleProofListEntry?: never } | ({ OpenWorktreeInExplorer: string }) & { AddTask?: never; DispatchIssue?: never; Navigation?: never; OpenIssue?: never; OpenPullRequest?: never; OpenTask?: never; RemoveQueuedMessage?: never; SettingsTab?: never; StartPrompt?: never; SteerThread?: never; SwitchProject?: never; ToggleProofListEntry?: never } | ({ SettingsTab: string }) & { AddTask?: never; DispatchIssue?: never; Navigation?: never; OpenIssue?: never; OpenPullRequest?: never; OpenTask?: never; OpenWorktreeInExplorer?: never; RemoveQueuedMessage?: never; StartPrompt?: never; SteerThread?: never; SwitchProject?: never; ToggleProofListEntry?: never } | "Usage" | "Updates" | ({ StartPrompt: string }) & { AddTask?: never; DispatchIssue?: never; Navigation?: never; OpenIssue?: never; OpenPullRequest?: never; OpenTask?: never; OpenWorktreeInExplorer?: never; RemoveQueuedMessage?: never; SettingsTab?: never; SteerThread?: never; SwitchProject?: never; ToggleProofListEntry?: never } | ({ SteerThread: {
+export type LayoutIntent_Deserialize = ({ Navigation: NavigationIntent_Deserialize }) & { AddTask?: never; DispatchIssue?: never; OpenIssue?: never; OpenPullRequest?: never; OpenTask?: never; OpenWorktreeInExplorer?: never; RemoveQueuedMessage?: never; SettingsTab?: never; StartPrompt?: never; SteerThread?: never; SwitchProject?: never; ToggleProofListEntry?: never } | ({ SwitchProject: string }) & { AddTask?: never; DispatchIssue?: never; Navigation?: never; OpenIssue?: never; OpenPullRequest?: never; OpenTask?: never; OpenWorktreeInExplorer?: never; RemoveQueuedMessage?: never; SettingsTab?: never; StartPrompt?: never; SteerThread?: never; ToggleProofListEntry?: never } | ({ DispatchIssue: string }) & { AddTask?: never; Navigation?: never; OpenIssue?: never; OpenPullRequest?: never; OpenTask?: never; OpenWorktreeInExplorer?: never; RemoveQueuedMessage?: never; SettingsTab?: never; StartPrompt?: never; SteerThread?: never; SwitchProject?: never; ToggleProofListEntry?: never } | "SwarmIssues" | "SwarmWork" | ({ OpenTask: string }) & { AddTask?: never; DispatchIssue?: never; Navigation?: never; OpenIssue?: never; OpenPullRequest?: never; OpenWorktreeInExplorer?: never; RemoveQueuedMessage?: never; SettingsTab?: never; StartPrompt?: never; SteerThread?: never; SwitchProject?: never; ToggleProofListEntry?: never } | ({ OpenPullRequest: string }) & { AddTask?: never; DispatchIssue?: never; Navigation?: never; OpenIssue?: never; OpenTask?: never; OpenWorktreeInExplorer?: never; RemoveQueuedMessage?: never; SettingsTab?: never; StartPrompt?: never; SteerThread?: never; SwitchProject?: never; ToggleProofListEntry?: never } | ({ OpenIssue: string }) & { AddTask?: never; DispatchIssue?: never; Navigation?: never; OpenPullRequest?: never; OpenTask?: never; OpenWorktreeInExplorer?: never; RemoveQueuedMessage?: never; SettingsTab?: never; StartPrompt?: never; SteerThread?: never; SwitchProject?: never; ToggleProofListEntry?: never } | ({ OpenWorktreeInExplorer: string }) & { AddTask?: never; DispatchIssue?: never; Navigation?: never; OpenIssue?: never; OpenPullRequest?: never; OpenTask?: never; RemoveQueuedMessage?: never; SettingsTab?: never; StartPrompt?: never; SteerThread?: never; SwitchProject?: never; ToggleProofListEntry?: never } | ({ SettingsTab: string }) & { AddTask?: never; DispatchIssue?: never; Navigation?: never; OpenIssue?: never; OpenPullRequest?: never; OpenTask?: never; OpenWorktreeInExplorer?: never; RemoveQueuedMessage?: never; StartPrompt?: never; SteerThread?: never; SwitchProject?: never; ToggleProofListEntry?: never } | "Usage" | "Updates" | ({ StartPrompt: string }) & { AddTask?: never; DispatchIssue?: never; Navigation?: never; OpenIssue?: never; OpenPullRequest?: never; OpenTask?: never; OpenWorktreeInExplorer?: never; RemoveQueuedMessage?: never; SettingsTab?: never; SteerThread?: never; SwitchProject?: never; ToggleProofListEntry?: never } | ({ SteerThread: {
 	identifier: string,
 	prompt: string,
 	queued: boolean,
@@ -2086,7 +2102,7 @@ export type LayoutIntent_Deserialize = ({ Navigation: NavigationIntent_Deseriali
 /**  Ready card: include or leave out one proposed proof-list entry (F3, F17). */
 ({ ToggleProofListEntry: string }) & { AddTask?: never; DispatchIssue?: never; Navigation?: never; OpenIssue?: never; OpenPullRequest?: never; OpenTask?: never; OpenWorktreeInExplorer?: never; RemoveQueuedMessage?: never; SettingsTab?: never; StartPrompt?: never; SteerThread?: never; SwitchProject?: never };
 
-export type LayoutIntent_Serialize = ({ Navigation: NavigationIntent_Serialize }) & { AddTask?: never; DispatchIssue?: never; OpenIssue?: never; OpenPullRequest?: never; OpenTask?: never; OpenWorktreeInExplorer?: never; RemoveQueuedMessage?: never; SettingsTab?: never; StartPrompt?: never; SteerThread?: never; SwitchProject?: never; ToggleProofListEntry?: never } | ({ SwitchProject: string }) & { AddTask?: never; DispatchIssue?: never; Navigation?: never; OpenIssue?: never; OpenPullRequest?: never; OpenTask?: never; OpenWorktreeInExplorer?: never; RemoveQueuedMessage?: never; SettingsTab?: never; StartPrompt?: never; SteerThread?: never; ToggleProofListEntry?: never } | ({ DispatchIssue: string }) & { AddTask?: never; Navigation?: never; OpenIssue?: never; OpenPullRequest?: never; OpenTask?: never; OpenWorktreeInExplorer?: never; RemoveQueuedMessage?: never; SettingsTab?: never; StartPrompt?: never; SteerThread?: never; SwitchProject?: never; ToggleProofListEntry?: never } | "SwarmIssues" | ({ OpenTask: string }) & { AddTask?: never; DispatchIssue?: never; Navigation?: never; OpenIssue?: never; OpenPullRequest?: never; OpenWorktreeInExplorer?: never; RemoveQueuedMessage?: never; SettingsTab?: never; StartPrompt?: never; SteerThread?: never; SwitchProject?: never; ToggleProofListEntry?: never } | ({ OpenPullRequest: string }) & { AddTask?: never; DispatchIssue?: never; Navigation?: never; OpenIssue?: never; OpenTask?: never; OpenWorktreeInExplorer?: never; RemoveQueuedMessage?: never; SettingsTab?: never; StartPrompt?: never; SteerThread?: never; SwitchProject?: never; ToggleProofListEntry?: never } | ({ OpenIssue: string }) & { AddTask?: never; DispatchIssue?: never; Navigation?: never; OpenPullRequest?: never; OpenTask?: never; OpenWorktreeInExplorer?: never; RemoveQueuedMessage?: never; SettingsTab?: never; StartPrompt?: never; SteerThread?: never; SwitchProject?: never; ToggleProofListEntry?: never } | ({ OpenWorktreeInExplorer: string }) & { AddTask?: never; DispatchIssue?: never; Navigation?: never; OpenIssue?: never; OpenPullRequest?: never; OpenTask?: never; RemoveQueuedMessage?: never; SettingsTab?: never; StartPrompt?: never; SteerThread?: never; SwitchProject?: never; ToggleProofListEntry?: never } | ({ SettingsTab: string }) & { AddTask?: never; DispatchIssue?: never; Navigation?: never; OpenIssue?: never; OpenPullRequest?: never; OpenTask?: never; OpenWorktreeInExplorer?: never; RemoveQueuedMessage?: never; StartPrompt?: never; SteerThread?: never; SwitchProject?: never; ToggleProofListEntry?: never } | "Usage" | "Updates" | ({ StartPrompt: string }) & { AddTask?: never; DispatchIssue?: never; Navigation?: never; OpenIssue?: never; OpenPullRequest?: never; OpenTask?: never; OpenWorktreeInExplorer?: never; RemoveQueuedMessage?: never; SettingsTab?: never; SteerThread?: never; SwitchProject?: never; ToggleProofListEntry?: never } | ({ SteerThread: {
+export type LayoutIntent_Serialize = ({ Navigation: NavigationIntent_Serialize }) & { AddTask?: never; DispatchIssue?: never; OpenIssue?: never; OpenPullRequest?: never; OpenTask?: never; OpenWorktreeInExplorer?: never; RemoveQueuedMessage?: never; SettingsTab?: never; StartPrompt?: never; SteerThread?: never; SwitchProject?: never; ToggleProofListEntry?: never } | ({ SwitchProject: string }) & { AddTask?: never; DispatchIssue?: never; Navigation?: never; OpenIssue?: never; OpenPullRequest?: never; OpenTask?: never; OpenWorktreeInExplorer?: never; RemoveQueuedMessage?: never; SettingsTab?: never; StartPrompt?: never; SteerThread?: never; ToggleProofListEntry?: never } | ({ DispatchIssue: string }) & { AddTask?: never; Navigation?: never; OpenIssue?: never; OpenPullRequest?: never; OpenTask?: never; OpenWorktreeInExplorer?: never; RemoveQueuedMessage?: never; SettingsTab?: never; StartPrompt?: never; SteerThread?: never; SwitchProject?: never; ToggleProofListEntry?: never } | "SwarmIssues" | "SwarmWork" | ({ OpenTask: string }) & { AddTask?: never; DispatchIssue?: never; Navigation?: never; OpenIssue?: never; OpenPullRequest?: never; OpenWorktreeInExplorer?: never; RemoveQueuedMessage?: never; SettingsTab?: never; StartPrompt?: never; SteerThread?: never; SwitchProject?: never; ToggleProofListEntry?: never } | ({ OpenPullRequest: string }) & { AddTask?: never; DispatchIssue?: never; Navigation?: never; OpenIssue?: never; OpenTask?: never; OpenWorktreeInExplorer?: never; RemoveQueuedMessage?: never; SettingsTab?: never; StartPrompt?: never; SteerThread?: never; SwitchProject?: never; ToggleProofListEntry?: never } | ({ OpenIssue: string }) & { AddTask?: never; DispatchIssue?: never; Navigation?: never; OpenPullRequest?: never; OpenTask?: never; OpenWorktreeInExplorer?: never; RemoveQueuedMessage?: never; SettingsTab?: never; StartPrompt?: never; SteerThread?: never; SwitchProject?: never; ToggleProofListEntry?: never } | ({ OpenWorktreeInExplorer: string }) & { AddTask?: never; DispatchIssue?: never; Navigation?: never; OpenIssue?: never; OpenPullRequest?: never; OpenTask?: never; RemoveQueuedMessage?: never; SettingsTab?: never; StartPrompt?: never; SteerThread?: never; SwitchProject?: never; ToggleProofListEntry?: never } | ({ SettingsTab: string }) & { AddTask?: never; DispatchIssue?: never; Navigation?: never; OpenIssue?: never; OpenPullRequest?: never; OpenTask?: never; OpenWorktreeInExplorer?: never; RemoveQueuedMessage?: never; StartPrompt?: never; SteerThread?: never; SwitchProject?: never; ToggleProofListEntry?: never } | "Usage" | "Updates" | ({ StartPrompt: string }) & { AddTask?: never; DispatchIssue?: never; Navigation?: never; OpenIssue?: never; OpenPullRequest?: never; OpenTask?: never; OpenWorktreeInExplorer?: never; RemoveQueuedMessage?: never; SettingsTab?: never; SteerThread?: never; SwitchProject?: never; ToggleProofListEntry?: never } | ({ SteerThread: {
 	identifier: string,
 	prompt: string,
 	queued: boolean,
@@ -2111,6 +2127,7 @@ export type LayoutSnapshot_Deserialize = {
 	project_identifier?: number | null,
 	project_name: string,
 	rosen_mirror?: MirrorState_Deserialize | null,
+	rosen_work?: RosenWorkView_Deserialize | null,
 	rosen_migration_notice?: string | null,
 	view: NavigationView,
 	settings_tab: string,
@@ -2172,6 +2189,7 @@ export type LayoutSnapshot_Serialize = {
 	project_identifier: number | null,
 	project_name: string,
 	rosen_mirror: MirrorState_Serialize | null,
+	rosen_work: RosenWorkView_Serialize | null,
 	rosen_migration_notice: string | null,
 	view: NavigationView,
 	settings_tab: string,
@@ -3898,6 +3916,18 @@ export type RosenThreadAction = { Name: {
 	message: string,
 } } | "Rebase" | "Abandon" | "Resolve";
 
+export type RosenWorkView = RosenWorkView_Serialize | RosenWorkView_Deserialize;
+
+export type RosenWorkView_Deserialize = {
+	items: WorkItem_Deserialize[],
+	expanded_issues: WorkKey[],
+};
+
+export type RosenWorkView_Serialize = {
+	items: WorkItem_Serialize[],
+	expanded_issues: WorkKey[],
+};
+
 export type ScoutCadence = "once" | "every_thirty_minutes" | "after_every_merge";
 
 export type ScoutFocusArea = "bugs" | "stress" | "proof_gaps" | "spec_drift" | "performance" | "security" | "dead_code" | "ux";
@@ -4708,6 +4738,7 @@ export type TaskItem_Deserialize = {
 	state: TaskState,
 	added_by: TaskAttribution,
 	assigned_thread_id?: number | null,
+	completed_at?: number | null,
 };
 
 export type TaskItem_Serialize = {
@@ -4716,6 +4747,7 @@ export type TaskItem_Serialize = {
 	state: TaskState,
 	added_by: TaskAttribution,
 	assigned_thread_id: number | null,
+	completed_at: number | null,
 };
 
 export type TaskState = "draft" | "todo" | "now" | "done";
@@ -4738,6 +4770,7 @@ export type TaskView_Deserialize = {
 	thread_identifier?: string | null,
 	attribution?: string | null,
 	attribution_thread?: string | null,
+	completed_at?: number | null,
 };
 
 /**  F8 task rows carry independent links for ownership and attribution. */
@@ -4749,6 +4782,7 @@ export type TaskView_Serialize = {
 	thread_identifier: string | null,
 	attribution: string | null,
 	attribution_thread: string | null,
+	completed_at: number | null,
 };
 
 export type ThreadDetailSnapshot = ThreadDetailSnapshot_Serialize | ThreadDetailSnapshot_Deserialize;
@@ -5213,6 +5247,11 @@ export type VersionControl = "rosen" | "git";
 
 export type WindowStateChanged = {
 	maximized: boolean,
+};
+
+export type WorkChange = {
+	owner: string,
+	head: string,
 };
 
 /**  One tracked item. Task keys are scoped by the containing project's identifier. */

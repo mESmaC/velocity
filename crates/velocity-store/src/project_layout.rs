@@ -3,7 +3,7 @@
 use crate::duty::DutyRoleItem;
 use crate::{
     AgentActivity, EffortLevel, InterviewRecord, InterviewStage, PersistedState, ProjectItem,
-    ProviderKind, ReviewStage, SpeedMode, TaskState, ThreadItem, ThreadState,
+    ProviderKind, ReviewStage, SpeedMode, TaskState, ThreadItem, ThreadState, VersionControl,
 };
 use std::collections::BTreeSet;
 use velocity_core::duty;
@@ -14,7 +14,8 @@ use velocity_core::interview_view::{
 };
 use velocity_core::layout::{LayoutRow, ThreadGroup};
 use velocity_core::layout_view::{
-    LayoutData, LayoutIntent, PaletteItem, PaletteTarget, ProviderColor, RailItem, ThreadEntry,
+    LayoutData, LayoutIntent, PaletteItem, PaletteTarget, ProviderColor, RailItem, RosenWorkView,
+    ThreadEntry,
 };
 use velocity_core::navigation::NavigationView;
 use velocity_core::thread_view::ThreadLifecycle;
@@ -36,6 +37,12 @@ pub(crate) fn read_model(store: &crate::StateStore) -> LayoutData {
         data.project_identifier = Some(project.id);
         data.project_name = project.name.clone();
         data.rosen_mirror = project.rosen_mirror.clone();
+        if project.version_control == VersionControl::Rosen {
+            data.rosen_work = Some(RosenWorkView {
+                items: project.rosen_work_items.clone(),
+                expanded_issues: project.expanded_work_issues.clone(),
+            });
+        }
         data.rosen_migration_notice = project.rosen_migration_notice.clone();
         data.settled_expanded = project.settled_expanded;
         let merged_today = project.merged_today as usize;

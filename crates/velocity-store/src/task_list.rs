@@ -307,6 +307,9 @@ fn apply_update(project: &mut ProjectItem, change: &TaskUpdate) -> Result<TaskIt
             return Err(TaskError::TaskInProgress(task.id));
         }
         Some(state) => {
+            if state != task.state {
+                task.completed_at = (state == TaskState::Done).then(crate::providers::unix_now);
+            }
             task.state = state;
             state == TaskState::Todo
         }
@@ -364,6 +367,7 @@ pub(crate) fn task_views(project: &ProjectItem) -> Vec<TaskView> {
             view.thread_identifier = owner.map(|thread| thread.id.to_string());
             view.attribution = attribution;
             view.attribution_thread = attribution_thread;
+            view.completed_at = task.completed_at;
             view
         })
         .collect()

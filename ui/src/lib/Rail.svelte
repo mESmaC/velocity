@@ -3,6 +3,7 @@
   import Icon from './Icon.svelte';
   import RosenStatusPane from './RosenStatusPane.svelte';
   import IssuePanel from './IssuePanel.svelte';
+  import WorkPanel from './WorkPanel.svelte';
   import { rise } from './motion';
   import type { LayoutAction, LayoutSnapshot } from './ipc';
   let {
@@ -10,10 +11,11 @@
     send,
   }: { layout: LayoutSnapshot; send: (action: LayoutAction) => void } =
     $props();
-  let taskList: globalThis.HTMLDivElement;
+  let taskList = $state<globalThis.HTMLDivElement>();
   let lastProject = $state<number | null>(null);
   let lastTask = $state<string | undefined>();
   $effect(() => {
+    if (layout.rosen_work) return;
     const project = layout.project_identifier;
     const newest = layout.tasks.at(-1)?.identifier;
     if (project === lastProject && newest && newest !== lastTask) {
@@ -27,89 +29,96 @@
 </script>
 
 <aside class="rail" aria-label="Project activity">
-  <section class="panel" aria-label="Task List">
-    <div class="panel-h">
-      <span class="label">Task List</span>
-      <div class="panel-actions">
-        <span class="count">{layout.task_count_label}</span><button
-          class="swarm-button"
-          onclick={() => send({ Request: { Navigation: 'Swarm' } })}
-          ><Icon name="swarm" />Swarm</button
-        >
-        <button
-          aria-label="Add a task"
-          title="Add a task (T)"
-          onclick={() => send({ Request: { Navigation: 'Task' } })}
-          ><Icon name="plus" /></button
-        >
-      </div>
-    </div>
-    <div class="panel-body task-body">
-      <div class="task-items" bind:this={taskList}>
-        {#each layout.tasks as task (task.identifier)}
-          <div
-            class="item task"
-            class:done={task.state === 'done'}
-            class:now={task.state === 'now'}
-            title={task.title}
-            in:rise
+  {#if layout.rosen_work && layout.project_identifier !== null}
+    {#key layout.project_identifier}
+      <WorkPanel {layout} project={layout.project_identifier} {send} />
+    {/key}
+  {:else}
+    <section class="panel" aria-label="Task List">
+      <div class="panel-h">
+        <span class="label">Task List</span>
+        <div class="panel-actions">
+          <span class="count">{layout.task_count_label}</span><button
+            class="swarm-button"
+            onclick={() => send({ Request: { Navigation: 'Swarm' } })}
+            ><Icon name="swarm" />Swarm</button
           >
-            <Icon
-              name={task.state === 'draft'
-                ? 'dashed'
-                : task.state === 'done'
-                  ? 'check'
-                  : task.state === 'now'
-                    ? 'play'
-                    : 'circle'}
-            />
-            <span class="item-title">{task.title}</span>
-            {#if task.metadata || task.attribution}
-              <div class="item-meta task-sources">
-                {#if task.thread_identifier}
-                  <button
-                    class="task-source"
-                    onclick={() =>
-                      task.thread_identifier &&
-                      send({ OpenThread: task.thread_identifier })}
-                    >{task.metadata}</button
-                  >
-                {/if}
-                {#if task.attribution_thread}
-                  <button
-                    class="task-source"
-                    onclick={() =>
-                      task.attribution_thread &&
-                      send({ OpenThread: task.attribution_thread })}
-                    >{task.attribution}</button
-                  >
-                {:else if task.attribution}<span>{task.attribution}</span>{/if}
-              </div>
-            {/if}
-          </div>
-        {:else}<p class="empty">
-            Tasks show up here as the spec takes shape.
-          </p>{/each}
+          <button
+            aria-label="Add a task"
+            title="Add a task (T)"
+            onclick={() => send({ Request: { Navigation: 'Task' } })}
+            ><Icon name="plus" /></button
+          >
+        </div>
       </div>
-      <form
-        class="task-add"
-        onsubmit={(event) => {
-          event.preventDefault();
-          send('SubmitTask');
-        }}
-      >
-        <Icon name="plus" /><input
-          id="task-input"
-          aria-label="Add a task"
-          placeholder="Add a task…"
-          value={layout.task_text}
-          oninput={(event) => send({ TaskText: event.currentTarget.value })}
-        /><kbd>T</kbd>
-      </form>
-    </div>
-  </section>
+      <div class="panel-body task-body">
+        <div class="task-items" bind:this={taskList}>
+          {#each layout.tasks as task (task.identifier)}
+            <div
+              class="item task"
+              class:done={task.state === 'done'}
+              class:now={task.state === 'now'}
+              title={task.title}
+              in:rise
+            >
+              <Icon
+                name={task.state === 'draft'
+                  ? 'dashed'
+                  : task.state === 'done'
+                    ? 'check'
+                    : task.state === 'now'
+                      ? 'play'
+                      : 'circle'}
+              />
+              <span class="item-title">{task.title}</span>
+              {#if task.metadata || task.attribution}
+                <div class="item-meta task-sources">
+                  {#if task.thread_identifier}
+                    <button
+                      class="task-source"
+                      onclick={() =>
+                        task.thread_identifier &&
+                        send({ OpenThread: task.thread_identifier })}
+                      >{task.metadata}</button
+                    >
+                  {/if}
+                  {#if task.attribution_thread}
+                    <button
+                      class="task-source"
+                      onclick={() =>
+                        task.attribution_thread &&
+                        send({ OpenThread: task.attribution_thread })}
+                      >{task.attribution}</button
+                    >
+                  {:else if task.attribution}<span>{task.attribution}</span
+                    >{/if}
+                </div>
+              {/if}
+            </div>
+          {:else}<p class="empty">
+              Tasks show up here as the spec takes shape.
+            </p>{/each}
+        </div>
+        <form
+          class="task-add"
+          onsubmit={(event) => {
+            event.preventDefault();
+            send('SubmitTask');
+          }}
+        >
+          <Icon name="plus" /><input
+            id="task-input"
+            aria-label="Add a task"
+            placeholder="Add a task…"
+            value={layout.task_text}
+            oninput={(event) => send({ TaskText: event.currentTarget.value })}
+          /><kbd>T</kbd>
+        </form>
+      </div>
+    </section>
+  {/if}
   <RosenStatusPane project={layout.project_identifier} {send} />
-  <IssuePanel {layout} {send} />
+  {#if !layout.rosen_work}<IssuePanel {layout} {send} />{/if}
   <footer class="rail-foot">
     <button onclick={() => send({ Request: { Navigation: 'Airc' } })}
       >AIRC{#if layout.airc_unread !== '0'}<span
