@@ -37,6 +37,20 @@ export const commands = {
 	retryGraphIndex: (projectIdentifier: number) => __TAURI_INVOKE<GraphStatus_Serialize>("retry_graph_index", { projectIdentifier }),
 	/**  `open_on_collapse` (§3.1): `commit` names a land; without it the repository page opens. */
 	openOnCollapse: (projectIdentifier: number, commit: string | null) => __TAURI_INVOKE<null>("open_on_collapse", { projectIdentifier, commit }),
+	/**
+	 *  `connect_collapse` (§3.1): opens Collapse's approval page and waits for the owner to
+	 *  approve. New agents get the MCP server once this returns.
+	 */
+	connectCollapse: () => __TAURI_INVOKE<CollapseConnection_Serialize>("connect_collapse"),
+	/**
+	 *  `disconnect_collapse` (§3.1): forgets the tokens on this machine. They stay valid on
+	 *  Collapse until revoked in its token list.
+	 */
+	disconnectCollapse: () => __TAURI_INVOKE<CollapseConnection_Serialize>("disconnect_collapse"),
+	/**  `get_collapse_connection` (§3.1). */
+	getCollapseConnection: () => __TAURI_INVOKE<CollapseConnection_Serialize>("get_collapse_connection"),
+	/**  `set_collapse_mcp { enabled }` (§3.1): the Settings switch. Running agents keep theirs. */
+	setCollapseMcp: (enabled: boolean) => __TAURI_INVOKE<CollapseConnection_Serialize>("set_collapse_mcp", { enabled }),
 	getContinuousDispatch: (projectIdentifier: number) => __TAURI_INVOKE<DispatchView_Serialize>("get_continuous_dispatch", { projectIdentifier }),
 	setContinuousDispatch: (projectIdentifier: number, slots: number, paused: boolean) => __TAURI_INVOKE<DispatchView_Serialize>("set_continuous_dispatch", { projectIdentifier, slots, paused }),
 	getTokenUsage: (period: Period, projectIdentifier: number | null, threadIdentifier: number | null) => __TAURI_INVOKE<Report_Serialize>("get_token_usage", { period, projectIdentifier, threadIdentifier }),
@@ -305,6 +319,11 @@ export type AgentSettings_Deserialize = {
 	shared_mcp_servers?: SharedMcpServer[],
 	trim_agent_context?: boolean,
 	browser_limit?: number,
+	/**
+	 *  Settings → Agents → shared MCP servers → Collapse: pass Collapse's read-only MCP
+	 *  server to every agent while Collapse is connected (#430).
+	 */
+	collapse_mcp?: boolean,
 };
 
 export type AgentSettings_Serialize = {
@@ -321,6 +340,11 @@ export type AgentSettings_Serialize = {
 	shared_mcp_servers: SharedMcpServer[],
 	trim_agent_context: boolean,
 	browser_limit: number,
+	/**
+	 *  Settings → Agents → shared MCP servers → Collapse: pass Collapse's read-only MCP
+	 *  server to every agent while Collapse is connected (#430).
+	 */
+	collapse_mcp: boolean,
 };
 
 export type AircClaimFile = {
@@ -677,6 +701,31 @@ export type Cohort = {
 	tokens: string,
 	review_rounds: number,
 	reverts: number,
+};
+
+/**  What Settings shows for Collapse's MCP server. */
+export type CollapseConnection = CollapseConnection_Serialize | CollapseConnection_Deserialize;
+
+/**  What Settings shows for Collapse's MCP server. */
+export type CollapseConnection_Deserialize = {
+	/**  The connected Collapse account, or `None` before Connect. */
+	account?: string | null,
+	/**  The Settings switch: agents get the server only while this is on and connected. */
+	enabled: boolean,
+	/**  The MCP server's name and URL as agents see them. */
+	name: string,
+	url: string,
+};
+
+/**  What Settings shows for Collapse's MCP server. */
+export type CollapseConnection_Serialize = {
+	/**  The connected Collapse account, or `None` before Connect. */
+	account: string | null,
+	/**  The Settings switch: agents get the server only while this is on and connected. */
+	enabled: boolean,
+	/**  The MCP server's name and URL as agents see them. */
+	name: string,
+	url: string,
 };
 
 export type Comparison = Comparison_Serialize | Comparison_Deserialize;

@@ -3,6 +3,7 @@ members = [
     "crates/velocity-acp",
     "crates/velocity-airc",
     "crates/velocity-browser",
+    "crates/velocity-collapse",
     "crates/velocity-core",
     "crates/velocity-git",
     "crates/velocity-github",
@@ -49,6 +50,7 @@ thiserror = "2.0"
 tokio = { version = "1.54", features = ["rt", "sync", "time"] }
 velocity-airc = { path = "crates/velocity-airc" }
 velocity-browser = { path = "crates/velocity-browser" }
+velocity-collapse = { path = "crates/velocity-collapse" }
 velocity-core = { path = "crates/velocity-core" }
 velocity-git = { path = "crates/velocity-git" }
 velocity-github = { path = "crates/velocity-github" }

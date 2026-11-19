@@ -550,6 +550,14 @@ pub struct AgentSettings {
     pub trim_agent_context: bool,
     #[serde(default = "default_browser_limit")]
     pub browser_limit: u32,
+    /// Settings → Agents → shared MCP servers → Collapse: pass Collapse's read-only MCP
+    /// server to every agent while Collapse is connected (#430).
+    #[serde(default = "default_collapse_mcp")]
+    pub collapse_mcp: bool,
+}
+
+fn default_collapse_mcp() -> bool {
+    true
 }
 
 fn default_browser_limit() -> u32 {
@@ -660,6 +668,7 @@ impl Settings {
                 shared_mcp_servers: Vec::new(),
                 trim_agent_context: default_trim_agent_context(),
                 browser_limit: default_browser_limit(),
+                collapse_mcp: default_collapse_mcp(),
             },
             proofs: ProofSettings {
                 stress_diff_input_count: core_settings.proofs.stress_diff_input_count,

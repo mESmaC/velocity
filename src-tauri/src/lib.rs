@@ -14,6 +14,7 @@ mod browser;
 mod build_gate;
 mod code_graph;
 mod collapse;
+mod collapse_connection;
 mod continuous_dispatch;
 mod diagnostics;
 pub mod duty;
@@ -90,6 +91,10 @@ fn bindings() -> Builder<tauri::Wry> {
         code_graph::graph_status,
         code_graph::retry_graph_index,
         collapse::open_on_collapse,
+        collapse_connection::connect_collapse,
+        collapse_connection::disconnect_collapse,
+        collapse_connection::get_collapse_connection,
+        collapse_connection::set_collapse_mcp,
         continuous_dispatch::get_continuous_dispatch,
         continuous_dispatch::set_continuous_dispatch,
         token_usage::get_token_usage,

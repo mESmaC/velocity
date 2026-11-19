@@ -25,6 +25,7 @@ Each milestone ends with a working app.
 - [x] ACP client (`agent-client-protocol`): spawn per thread, `session/new` in the workspace with AIRC as an MCP server, updates → transcript, auto-allow permissions, cancel, queued prompts, `fs`/`terminal` rooted at the workspace but not confined to it, full tool access with your config loaded and shared MCP servers (§3.2)
 - [x] Optional context hand-off within a long Rosen work item, with on/off outcomes in Usage (§2.2, F15, #467)
 - [x] Verify the agent's bypass mode at session startup and report a restricted mode before the first prompt (§3.2, #460)
+- [x] Collapse's read-only MCP server for every agent: browser sign-in, tokens in the OS credential store, and an on/off switch in Settings → Agents → Shared MCP servers (§3.2, C9, #430)
 - [x] Retry interrupted Rosen threads while their project server starts (§3.2, #476)
 - [x] ACP agents for Claude Code (`claude-agent-acp`), Codex (`codex-acp`), Kimi Code (`kimi acp`) and Antigravity (`agy acp`), each using its own OAuth login through `authenticate`; Settings → Providers, model menu, limit meter (F15)
 - [x] Custom ACP agents: Add an ACP agent (name, command, arguments), and an editable command on each provider card (F15)

@@ -25,11 +25,13 @@ export async function saveAgentSettings({
   titleEffort,
 }: AgentPreferences): Promise<AgentPreferences> {
   const current = await commands.getSettings();
-  // The shared MCP servers are edited on their own; keep the saved list, not a stale copy.
+  // The shared MCP servers and the Collapse switch are edited on their own; keep
+  // the saved values, not a stale copy.
   const shared_mcp_servers = current.agents.shared_mcp_servers ?? [];
+  const collapse_mcp = current.agents.collapse_mcp;
   const saved = await commands.setSettings({
     ...current,
-    agents: { ...agents, shared_mcp_servers },
+    agents: { ...agents, shared_mcp_servers, collapse_mcp },
     providers: {
       ...current.providers,
       default_effort: implementationEffort,

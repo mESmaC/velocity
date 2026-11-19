@@ -1,0 +1,23 @@
+[package]
+name = "velocity-collapse"
+description = "Connecting Velocity to a Collapse account: desktop sign-in and its stored credentials"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish = false
+
+[lints]
+workspace = true
+
+[dependencies]
+base64 = "0.22"
+reqwest = { version = "0.13", default-features = false, features = ["json", "native-tls"] }
+serde.workspace = true
+serde_json.workspace = true
+sha2 = "0.10"
+thiserror.workspace = true
+tokio = { version = "1.54", features = ["io-util", "net", "rt", "time"] }
+uuid = { version = "1", features = ["v4"] }
+
+[target.'cfg(windows)'.dependencies]
+keyring = { version = "3", features = ["windows-native"] }

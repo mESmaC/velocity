@@ -6692,6 +6692,7 @@ dependencies = [
  "velocity-acp",
  "velocity-airc",
  "velocity-browser",
+ "velocity-collapse",
  "velocity-core",
  "velocity-git",
  "velocity-github",
@@ -6723,6 +6724,21 @@ dependencies = [
  "uuid",
  "velocity-acp",
  "velocity-rosen",
+]
+
+[[package]]
+name = "velocity-collapse"
+version = "0.1.0"
+dependencies = [
+ "base64 0.22.1",
+ "keyring",
+ "reqwest",
+ "serde",
+ "serde_json",
+ "sha2 0.10.9",
+ "thiserror 2.0.21",
+ "tokio",
+ "uuid",
 ]
 
 [[package]]
@@ -6907,6 +6923,7 @@ dependencies = [
  "uuid",
  "velocity-acp",
  "velocity-airc",
+ "velocity-collapse",
  "velocity-core",
  "velocity-git",
  "velocity-github",
