@@ -16,6 +16,7 @@ pub mod goal_swarm;
 pub mod issue_activity;
 pub mod landing_runner;
 pub mod launch;
+pub mod local_release;
 pub mod machine_worker;
 pub mod naming;
 pub mod parking;

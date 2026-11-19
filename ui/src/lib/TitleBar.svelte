@@ -4,6 +4,7 @@
   import ProjectSwitcher from './ProjectSwitcher.svelte';
   import RosenMirror from './RosenMirror.svelte';
   import Icon from './Icon.svelte';
+  import LocalBuild from './LocalBuild.svelte';
 
   let {
     layout,
@@ -44,6 +45,7 @@
       />
     </div>
     <div class="titlebar-space" data-tauri-drag-region>
+      <LocalBuild />
       <div class="titlebar-center" data-tauri-drag-region>
         {#if layout && layout.project_identifier !== null}<div
             class="view-switch"

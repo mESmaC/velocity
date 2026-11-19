@@ -188,38 +188,51 @@ async fn install_download(
     bytes: &[u8],
 ) -> Result<(), String> {
     set_state(application, |state| state.phase = UpdatePhase::Installing);
+    hand_over(application, "The update was not installed", || match kind {
+        InstallKind::Portable => restart_portable(application, bytes),
+        // Launches the installer and exits Velocity; it only returns on failure.
+        InstallKind::Nsis | InstallKind::Msi => update
+            .install(bytes)
+            .map_err(|error| format!("Could not start the installer: {error}")),
+    })
+    .await
+}
+
+/// Makes way for another copy of Velocity, then runs `replace`, which puts that copy in
+/// place and exits this one. An update and a restart into a local build (#512) both go
+/// through here, so both keep state and resume threads the same way. When `replace` fails,
+/// work carries on in this copy.
+pub(crate) async fn hand_over(
+    application: &AppHandle,
+    not_done: &str,
+    replace: impl FnOnce() -> Result<(), String> + Send,
+) -> Result<(), String> {
     // The installer exits Velocity without an exit event, so save first, and don't
-    // install over changes that couldn't be saved.
-    crate::state::save_now(application)
-        .map_err(|error| format!("{error}. The update was not installed."))?;
+    // replace this copy over changes that couldn't be saved.
+    crate::state::save_now(application).map_err(|error| format!("{error}. {not_done}."))?;
     crate::rosen::shutdown_servers(application).await;
     let recovery =
         application.state::<std::sync::Arc<velocity_updates::supervision::RecoveryConnection>>();
     if let Err(error) = recovery.set_intentional_exit(true) {
         crate::rosen::restart_servers(application).await;
         return Err(format!(
-            "Could not hand off recovery to the update: {error}"
+            "Could not hand off recovery to the restart: {error}"
         ));
     }
-    let installed = match kind {
-        InstallKind::Portable => restart_portable(application, bytes),
-        // Launches the installer and exits Velocity; it only returns on failure.
-        InstallKind::Nsis | InstallKind::Msi => update
-            .install(bytes)
-            .map_err(|error| format!("Could not start the installer: {error}")),
-    };
-    if installed.is_err() {
+    let replaced = replace();
+    if replaced.is_err() {
         if let Err(error) = recovery.set_intentional_exit(false) {
             crate::diagnostics::record("recovery", &error.to_string());
         }
         crate::rosen::restart_servers(application).await;
     }
-    installed
+    replaced
 }
 
-/// The bytes were verified by `download`. The new executable takes the running one's name,
-/// starts with the same arguments, and this copy exits.
-fn restart_portable(application: &AppHandle, bytes: &[u8]) -> Result<(), String> {
+/// The caller vouches for the bytes: `download` verified an update's against the release
+/// key, and a local build's were made on this machine. The new executable takes the
+/// running one's name, starts with the same arguments, and this copy exits.
+pub(crate) fn restart_portable(application: &AppHandle, bytes: &[u8]) -> Result<(), String> {
     let executable = std::env::current_exe()
         .map_err(|error| format!("Could not find Velocity's executable: {error}"))?;
     velocity_updates::replace_running(&executable, bytes).map_err(|error| error.to_string())?;

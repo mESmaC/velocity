@@ -7,6 +7,7 @@ export * from './ipc/collapse';
 export * from './ipc/diagnostics';
 export * from './ipc/goal-swarm';
 export * from './ipc/issues';
+export * from './ipc/local-build';
 export * from './ipc/open-project';
 export * from './ipc/proofs-settings';
 export * from './ipc/providers';

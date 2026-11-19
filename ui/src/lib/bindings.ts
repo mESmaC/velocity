@@ -79,6 +79,12 @@ export const commands = {
 	adjustUiZoom: (adjustment: UiZoomAdjustment) => __TAURI_INVOKE<UiZoomView>("adjust_ui_zoom", { adjustment }),
 	getLayoutState: () => __TAURI_INVOKE<LayoutSnapshot_Serialize>("get_layout_state"),
 	dispatchLayout: (action: LayoutAction_Deserialize) => __TAURI_INVOKE<LayoutSnapshot_Serialize>("dispatch_layout", { action }),
+	getLocalBuildStatus: () => __TAURI_INVOKE<LocalBuildView_Serialize>("get_local_build_status"),
+	/**
+	 *  Restarts Velocity into the kept local build of `commit`. A failure shows in the title
+	 *  bar's status line, never as an error the window keeps showing.
+	 */
+	restartIntoLocalBuild: (commit: string) => __TAURI_INVOKE<LocalBuildView_Serialize>("restart_into_local_build", { commit }),
 	getMachines: (projectIdentifier: number) => __TAURI_INVOKE<MachinesView_Serialize>("get_machines", { projectIdentifier }),
 	enableMachineListener: (projectIdentifier: number, address: string) => __TAURI_INVOKE<null>("enable_machine_listener", { projectIdentifier, address }),
 	createMachineJoinKey: (projectIdentifier: number, address: string, expiresInSeconds: number, uses: number, role: Role) => __TAURI_INVOKE<string>("create_machine_join_key", { projectIdentifier, address, expiresInSeconds, uses, role }),
@@ -276,6 +282,8 @@ export const ISSUE_PANEL_EVENT = "issue://panel" as const;
 export const LAYOUT_INTENT_EVENT = "layout://intent" as const;
 
 export const LAYOUT_STATE_EVENT = "layout://state" as const;
+
+export const LOCAL_BUILD_STATUS_EVENT = "local-build://status" as const;
 
 export const PROJECT_SELECTED_EVENT = "project://selected" as const;
 
@@ -2423,6 +2431,66 @@ export type LintKind =
 "Modal" | 
 /**  A word with no standard an agent can check ("clean", "good"). */
 "Vague";
+
+/**  One restart the title bar offers. */
+export type LocalBuildOffer = {
+	commit: string,
+	label: string,
+	/**  The button's tooltip: which build, when it was made and what restarting does. */
+	title: string,
+};
+
+export type LocalBuildStatusChanged = LocalBuildStatusChanged_Serialize | LocalBuildStatusChanged_Deserialize;
+
+export type LocalBuildStatusChanged_Deserialize = {
+	view: LocalBuildView_Deserialize,
+};
+
+export type LocalBuildStatusChanged_Serialize = {
+	view: LocalBuildView_Serialize,
+};
+
+/**
+ *  The title bar's local-build controls, ready to render. Empty on every copy that has no
+ *  local build and isn't making one.
+ */
+export type LocalBuildView = LocalBuildView_Serialize | LocalBuildView_Deserialize;
+
+/**
+ *  The title bar's local-build controls, ready to render. Empty on every copy that has no
+ *  local build and isn't making one.
+ */
+export type LocalBuildView_Deserialize = {
+	/**  "Restart into <commit>": the newest build, unless this copy already runs it. */
+	restart?: LocalBuildOffer | null,
+	/**  "Restart into previous": the build before the one this copy runs. */
+	previous?: LocalBuildOffer | null,
+	/**  One line on a build or restart under way, or the last failure. */
+	status: string,
+	/**  The whole reason behind a failure, for the status line's tooltip. */
+	detail: string,
+	failed: boolean,
+	/**  A build or a restart is under way: the buttons wait for it. */
+	busy: boolean,
+};
+
+/**
+ *  The title bar's local-build controls, ready to render. Empty on every copy that has no
+ *  local build and isn't making one.
+ */
+export type LocalBuildView_Serialize = {
+	/**  "Restart into <commit>": the newest build, unless this copy already runs it. */
+	restart: LocalBuildOffer | null,
+	/**  "Restart into previous": the build before the one this copy runs. */
+	previous: LocalBuildOffer | null,
+	/**  One line on a build or restart under way, or the last failure. */
+	status: string,
+	/**  The whole reason behind a failure, for the status line's tooltip. */
+	detail: string,
+	failed: boolean,
+	/**  A build or a restart is under way: the buttons wait for it. */
+	busy: boolean,
+};
 
 export type LocalStatus = {
 	holders: string[],

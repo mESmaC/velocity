@@ -29,6 +29,7 @@ mod interview;
 mod issue_panel;
 mod kept_worktrees;
 pub mod layout;
+mod local_build;
 mod machines;
 mod new_project;
 mod parking;
@@ -114,6 +115,8 @@ fn bindings() -> Builder<tauri::Wry> {
         state::adjust_ui_zoom,
         layout::get_layout_state,
         layout::dispatch_layout,
+        local_build::get_local_build_status,
+        local_build::restart_into_local_build,
         machines::get_machines,
         machines::enable_machine_listener,
         machines::create_machine_join_key,
@@ -215,6 +218,7 @@ fn event_bindings(builder: Builder<tauri::Wry>) -> Builder<tauri::Wry> {
         .typ::<window::WindowStateChanged>()
         .typ::<layout::LayoutStateChanged>()
         .typ::<layout::LayoutIntentRequested>()
+        .typ::<local_build::LocalBuildStatusChanged>()
         .typ::<projects::ProjectSelected>()
         .typ::<providers::ProvidersChanged>()
         .typ::<swarm::SwarmEventPublished>()
@@ -240,6 +244,10 @@ fn event_bindings(builder: Builder<tauri::Wry>) -> Builder<tauri::Wry> {
         .constant("WINDOW_STATE_EVENT", window::WindowStateChanged::NAME)
         .constant("LAYOUT_STATE_EVENT", layout::LayoutStateChanged::NAME)
         .constant("LAYOUT_INTENT_EVENT", layout::LayoutIntentRequested::NAME)
+        .constant(
+            "LOCAL_BUILD_STATUS_EVENT",
+            local_build::LocalBuildStatusChanged::NAME,
+        )
         .constant("ROSEN_STATUS_EVENT", rosen_status::RosenStatusChanged::NAME)
         .constant(
             "SKILL_PACK_INSTALLATIONS_EVENT",
@@ -322,6 +330,7 @@ pub fn run() -> anyhow::Result<()> {
         window::WindowStateChanged,
         layout::LayoutStateChanged,
         layout::LayoutIntentRequested,
+        local_build::LocalBuildStatusChanged,
         projects::ProjectSelected,
         providers::ProvidersChanged,
         swarm::SwarmEventPublished,
@@ -384,6 +393,7 @@ pub fn run() -> anyhow::Result<()> {
             airc_delivery::initialize(application.handle());
             airc_modal::initialize(application.handle());
             updates::initialize(application.handle());
+            local_build::initialize(application.handle());
             velocity_reports::initialize(application.handle());
             restart::resume_interrupted(application.handle(), interrupted);
             rosen_migration::initialize(application.handle());

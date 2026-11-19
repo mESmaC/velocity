@@ -95,6 +95,30 @@
   gap: var(--sp-5);
   min-width: 0;
 }
+/* Velocity's own local builds (F1 Local builds): the restart offers, left of the view
+   switch. Absent on every copy without one. */
+.local-build {
+  grid-column: 1;
+  justify-self: start;
+  display: flex;
+  align-items: center;
+  gap: var(--sp-3);
+  min-width: 0;
+}
+.local-build button {
+  flex: none;
+}
+.local-build-status {
+  min-width: 0;
+  overflow: hidden;
+  color: var(--muted);
+  font-size: var(--fs-sm);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.local-build-status.failed {
+  color: var(--err);
+}
 .view-switch {
   border-radius: var(--r-pill);
 }

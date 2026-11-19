@@ -3,6 +3,7 @@
 //! the application so a fatal process exit resumes saved agent work (#397). Checking,
 //! downloading and verifying releases go through the Tauri updater in `src-tauri`.
 mod install_kind;
+pub mod local_build;
 mod portable;
 mod status;
 pub mod supervision;
