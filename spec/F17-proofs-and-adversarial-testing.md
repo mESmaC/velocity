@@ -39,14 +39,14 @@ Velocity's own proof list:
 
 **Implementation first.**
 Proofs never block building.
-The agent builds and runs the feature, then writes its proofs in the same PR.
+The agent builds and runs the feature before its proof work.
 Implementation stays the larger part of each change.
 
 On after-land Rosen projects, proof-list verification follows the implementation's land in the Review swarm (F7, #382).
 Its proof changes land independently, and its completion report is tied to the checked source tree.
 Lean and review coverage never gate another land; full tests, `lake build` and the axiom audit gate the release.
 
-**Design proof** (`proofs/<Feature>/Design.lean`, after the code, in the same PR, for every feature on the proof list):
+**Design proof** (`proofs/<Feature>/Design.lean`, after the code, for every feature on the proof list):
 - **Exactly three theorems:** `correct`, `cost_bound` and `optimal`, below.
   Lemmas are allowed only as steps toward them.
 - **No theorem about a single behaviour, case, key, value or example.**
@@ -145,13 +145,9 @@ How the card is made *(proposed)*:
   Each issue a scout files posts a `stress` event naming its evidence script.
 
 **Accept when:**
-- [ ] A building agent's PR adds tests only for critical contracts, and its implementation outweighs its proofs, tests and docs together.
-- [ ] A proof-list feature's PR can't merge without a design proof that checks.
-- [ ] A PR for a feature off the proof list contains no Lean.
-- [ ] A PR whose proofs use `sorry`, `admit`, `native_decide` or a new axiom can't merge.
-- [ ] Changing a theorem statement after approval withdraws the approval and posts a `statement` event.
+- [ ] A building agent's change adds tests only for critical contracts, and its implementation outweighs its proofs, tests and docs together.
+- [ ] The review swarm checks a proof-list feature's design proof after the implementation lands.
+- [ ] A change for a feature off the proof list contains no Lean.
+- [ ] The proof checks flag `sorry`, `admit`, `native_decide` and any disallowed axiom after landing.
 - [ ] Every issue a scout files carries a failing test or stress script.
 - [ ] The proof card shows each language's level, and a model-only level is flagged when a stronger one exists.
-- [ ] Per-PR GitHub CI runs only build and lint.
-- [ ] A normal PR is approved without a build or test run by its reviewer, and merges once GitHub's checks on its head pass.
-- [ ] A sensitive PR whose local checks pass on the merge result merges while its GitHub CI run is still pending or red.

@@ -1,8 +1,5 @@
-//! Velocity's proof checks (SPEC.md F17 "What Velocity checks"), run in a PR's worktree before
-//! PR duty reviews it and again on every push: `lake build`, no `sorry` or `admit`, the axiom
-//! audit, a named SPEC.md section in every design proof, and the statement lock that withdraws
-//! an approval when a theorem statement changes after it. The proof card on a PR (F17) is built
-//! from the same checks.
+//! Velocity's proof checks (F17): `lake build`, the placeholder scan, the axiom audit and
+//! the SPEC.md section check for design proofs. The proof card uses the same checks.
 
 mod axioms;
 mod card;
@@ -29,13 +26,10 @@ pub use levels::{
     FeatureEvidence, FeatureLevels, LanguageLevel, ProofLevel, feature_evidence, feature_levels,
     fixture_name, language_of, strongest_available, touched_features,
 };
-pub use lock_store::{
-    load_change_statement_lock, load_statement_lock, require_change_statement_lock,
-    save_change_statement_lock, save_statement_lock,
-};
+pub use lock_store::load_statement_lock;
 pub use report::{CheckStep, ProofCheckReport};
 pub use settings_page::proofs_settings;
-pub use statement_lock::{StatementLock, statements_in_tree};
+pub use statement_lock::StatementLock;
 
 #[derive(Debug, thiserror::Error)]
 pub enum ProofCheckError {
@@ -45,8 +39,6 @@ pub enum ProofCheckError {
     Io(#[from] std::io::Error),
     #[error("A statement lock is not valid JSON: {0}")]
     Json(#[from] serde_json::Error),
-    #[error("Statement lock: {0}; review and approve this head afresh")]
-    StatementLock(String),
     #[error("The change removes the Lake project's manifest, {0}: its proofs can't be built")]
     RemovedProject(String),
 }

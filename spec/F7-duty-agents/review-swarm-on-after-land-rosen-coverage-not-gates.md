@@ -1,10 +1,10 @@
 #### Review swarm on after-land Rosen projects (#382) · Coverage, not gates
 
 <!-- split-spec: {"order":1090,"kind":"markdown","indentation":0} -->
-- **Coverage, not gates:** the duty header and sidebar show the number of unreviewed landed changes, the oldest age and the configured review window.
+- **Coverage, not gates:** the Review header and sidebar show the number of unreviewed landed changes, the oldest age and the configured review window.
   The roster caps concurrent provider sessions; adding or dismissing agents changes that cap.
   Velocity starts more of those workers as the backlog grows or approaches its window.
-  The Duty dialog offers a review window of **1m** or **30m**.
+  The Review swarm start dialog offers a review window of **1m** or **30m**.
   Reviews drain continuously with either window.
   Idle workers wait for landed changes.
   Instructions reach running workers at their next message, and later work follows the latest instruction.
