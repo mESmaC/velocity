@@ -7,6 +7,9 @@ pub struct IssueUpdate<'a> {
     pub issue: u32,
     pub body: &'a str,
     pub ready: bool,
+    /// The body is the reason the work needs hardware, an upstream release or an owner
+    /// decision; the issue takes `needs-owner` and leaves dispatch (#506).
+    pub needs_owner: bool,
 }
 
 pub(crate) type IssueHandler<'a> = dyn Fn(IssueUpdate<'_>) -> Result<String, Error> + 'a;
@@ -39,11 +42,12 @@ pub(crate) fn call(
         issue,
         body,
         ready: name == "issue_ready_to_close",
+        needs_owner: name == "issue_needs_owner",
     })?;
     Ok(json!({"url": url}))
 }
 
-pub(crate) fn tools() -> [Value; 2] {
+pub(crate) fn tools() -> [Value; 3] {
     let fields =
         json!({"issue":{"type":"integer","minimum":1},"body":{"type":"string","minLength":1}});
     [
@@ -56,6 +60,12 @@ pub(crate) fn tools() -> [Value; 2] {
         protocol::tool(
             "issue_ready_to_close",
             "Post your completion evidence and add the ready-to-close label on a GitHub issue you hold in AIRC. This leaves the issue open for independent follow-through.",
+            fields.clone(),
+            &["issue", "body"],
+        ),
+        protocol::tool(
+            "issue_needs_owner",
+            "Add the needs-owner label on a GitHub issue you hold in AIRC, with the reason as the body. Use it when the work cannot proceed without hardware, an upstream release or an owner decision, then end your turn. The issue leaves dispatch until the owner removes the label.",
             fields,
             &["issue", "body"],
         ),

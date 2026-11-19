@@ -185,7 +185,7 @@ fn call(
         name if crate::task_tools::TASK_TOOLS.contains(&name) => {
             crate::task_tools::call(channel, member, name, arguments)
         }
-        name @ ("issue_comment" | "issue_ready_to_close") => {
+        name @ ("issue_comment" | "issue_ready_to_close" | "issue_needs_owner") => {
             issue_tools::call(channel, member, name, arguments, issue_handler)
         }
         "join" => Ok(json!({"nick":channel.join_with_session(member, nick, true)?})),

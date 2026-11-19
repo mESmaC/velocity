@@ -1,6 +1,7 @@
 //! Native background adapter for F8 continuous dispatch. It never uses the selected
 //! project's issue rail, so changing projects cannot redirect a background launch.
 mod overlap;
+mod parked;
 
 use crate::state::ManagedStateStore;
 use crate::threads::{ManagedThreads, lock, report};
@@ -163,6 +164,14 @@ pub(crate) fn integration_idle(application: &AppHandle, identifier: u32) -> Resu
 pub fn initialize(application: &AppHandle) {
     application.manage(Backlogs::default());
     application.manage(Dependencies::default());
+    // Without its executable or data folder Velocity cannot start a bounded review; a
+    // parked issue then returns to dispatch when its report passes the limit (#506).
+    if let (Ok(executable), Ok(data)) = (std::env::current_exe(), application.path().app_data_dir())
+    {
+        application.manage(velocity_threads::parked_review::ParkedReviews::new(
+            executable, data,
+        ));
+    }
     let application = application.clone();
     std::thread::spawn(move || monitor(application));
 }
@@ -174,6 +183,7 @@ struct Reader {
     refreshed: Option<Instant>,
     report_retry: BTreeMap<u32, Instant>,
     backlog: Backlog,
+    parked: parked::Parked,
 }
 
 fn monitor(application: AppHandle) {
@@ -317,6 +327,7 @@ fn pass(
     }
     refresh_backlog(application, project.id, reader)?;
     overlap::refresh(application, project.id, reader)?;
+    parked::refresh(application, project, reader)?;
     start_ready(application, project.id, Some(reader))
 }
 
@@ -515,6 +526,7 @@ fn reader<'a>(project: &ProjectItem, readers: &'a mut BTreeMap<u32, Reader>) -> 
         refreshed: None,
         report_retry: BTreeMap::new(),
         backlog: Backlog::default(),
+        parked: parked::Parked::new(),
     };
     let reader = readers.entry(project.id).or_insert_with(setup);
     if reader.directory != project.repository_path || reader.remote != project.github_remote {
@@ -776,9 +788,7 @@ fn report_no_change_issues(
             )));
             continue;
         }
-        if let Some(sweeps) = application.try_state::<velocity_threads::ScoutSweeps>() {
-            sweeps.request_no_change_review(project.id);
-        }
+        // The label now shows in the backlog, where the bounded review starts (#506).
         lock(
             application.state::<ManagedStateStore>().inner(),
             "persisted state",

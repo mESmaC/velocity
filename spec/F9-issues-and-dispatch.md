@@ -31,8 +31,9 @@ The Work panel uses change and land vocabulary for Rosen projects.
 **Overlapping issues (#471).** Continuous dispatch holds an issue while another open issue is being worked if the reports describe the same problem or their code graph references overlap.
 The check includes the active issue's claimed paths and is repeated before starting each issue.
 After the blocking change lands, Velocity rechecks the current issue text against the source issue and the landed paths.
-A plausible fix goes to the independent review swarm to verify against the current base and close, or return with retry instructions.
-When the blocker ends without a land or its land shows no evidence for the waiting issue, the waiting issue returns to ordinary dispatch.
+A land that shares code with the issue or may have fixed it parks the issue under `no-change` as **Check against an overlapping land** for a bounded review (#506).
+When the blocker ends without a land, the waiting issue returns to ordinary dispatch.
+When the land changed none of the issue's predicted code paths and the reports describe different problems, Velocity posts the land's files on the issue as evidence and returns it to dispatch in the same pass without a review (#506).
 The overlap check and its **Check against an overlapping land** review apply only to issues with no landed change of their own (#504).
 
 **Issue follow-through.** Velocity's Rosen follower supplies the land and verified-build evidence and posts the land update (F5, Issues carried by Rosen changes).
@@ -48,11 +49,21 @@ Agents comment when starting, when a finding changes the plan and when blocked.
 On Rosen, Velocity posts the land comment with the change ID and commit.
 The author can call `issue_ready_to_close { issue, body }` to post completion evidence and add the `ready-to-close` label.
 The author leaves the issue open for the review swarm or post-land verification (F7).
+An agent whose issue cannot proceed without hardware, an upstream release or an owner decision calls `issue_needs_owner { issue, body }`, which adds the `needs-owner` label with the reason (#506).
 
 **Empty dispatch turns (#469).** Velocity adds the `no-change` label and posts an **Ended with no change** comment with the agent's last message and thread link when an automatically dispatched issue thread ends with an empty Rosen change (F8).
 Velocity retries an undelivered report across restarts and uses the Rosen change ID to avoid duplicate comments.
-A person or review swarm agent can close the issue after independently verifying the current base meets its acceptance criteria, or post concrete retry instructions and remove the label.
-If the blocker still prevents a productive retry, the issue stays labelled.
+An issue already labelled `needs-owner` gets the comment without the `no-change` label (#506).
+
+**Parked reviews (#506).** An open issue labelled `no-change` leaves review without a staffed review swarm.
+A parked **Check against an overlapping land** whose land shares no code with the issue returns to dispatch within one dispatch pass, with the land's files as evidence.
+Every other report gets one bounded review run: a light, read-only session in a fresh workspace at the current base, one per project at a time and stopped after 20 minutes.
+The session uses `parked_review_read` and `parked_review_resolve` to close the issue with verification evidence, return it to dispatch with retry instructions, or move it to `needs-owner` with the reason.
+Its Rosen change is abandoned with anything the session wrote and is never landed.
+A report still pending two hours after it was posted returns the issue to dispatch with a note.
+Work that needs hardware, an upstream release or an owner decision takes `needs-owner` with the reason and never stays `no-change`.
+A person or review swarm agent can also close a parked issue after verifying the current base, post retry instructions and remove the label, or move it to `needs-owner`.
+A paused dispatch starts no bounded review; the evidence check and the two-hour limit still apply while the project has dispatch slots.
 
 **Git projects.** The existing Issues panel and dispatch apply while git project mode is supported.
 

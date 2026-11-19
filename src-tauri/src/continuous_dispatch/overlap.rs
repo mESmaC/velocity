@@ -119,12 +119,45 @@ fn active_issues<'a>(
         .collect()
 }
 
+/// What a blocker's land means for an issue that waited for it.
+enum LandCheck {
+    /// The blocker has not landed, or the issue is no longer ready for work.
+    Waiting,
+    /// The land may have fixed this issue or changed its code, so a review decides.
+    Review(String),
+    /// The land changed none of this issue's code (#506). `files` is the evidence.
+    Clear { commit: String, files: Vec<String> },
+}
+
+/// A parked overlap review's land: its files, and whether they leave the issue's code alone.
+pub(super) struct LandEvidence {
+    pub files: Vec<String>,
+    pub clear: bool,
+}
+
+/// Checks an overlap review that is already parked against its land (#506).
+pub(super) fn land_evidence(
+    client: &IssueClient,
+    project: &ProjectItem,
+    data: &Path,
+    issue: &GitHubIssue,
+    (source, commit): (u32, &str),
+) -> Result<LandEvidence, String> {
+    let mut context = OverlapContext::new(client, project, data);
+    let clear = context.clear_of_land(issue, source, commit)?.is_some();
+    Ok(LandEvidence {
+        files: context.land_files(commit)?,
+        clear,
+    })
+}
+
 struct OverlapContext<'a> {
     client: &'a IssueClient,
     project: &'a ProjectItem,
     data: &'a Path,
     server: ProjectServer,
-    landed: BTreeMap<String, BTreeSet<String>>,
+    /// Every file of each landed commit read so far, documents included.
+    landed: BTreeMap<String, Vec<String>>,
 }
 
 impl<'a> OverlapContext<'a> {
@@ -210,9 +243,18 @@ impl<'a> OverlapContext<'a> {
             if wait.review_commit.is_some() {
                 return Ok(());
             }
-            if let Some(commit) = self.overlapping_land(wait, issue.number)? {
-                wait.review_commit = Some(commit);
-                return Ok(());
+            match self.overlapping_land(wait, issue.number)? {
+                LandCheck::Review(commit) => {
+                    wait.review_commit = Some(commit);
+                    return Ok(());
+                }
+                // The evidence is mechanical, so no review parks the issue. The comment
+                // is posted before the wait goes; a failure keeps the wait for a retry.
+                LandCheck::Clear { commit, files } => self
+                    .client
+                    .post_overlap_clear(issue.number, wait.blocker, &commit, &files)
+                    .map_err(|error| error.to_string())?,
+                LandCheck::Waiting => {}
             }
         }
         let blocker = actionable(issue)
@@ -238,53 +280,58 @@ impl<'a> OverlapContext<'a> {
         Ok(())
     }
 
-    fn overlapping_land(
-        &mut self,
-        wait: &IssueOverlap,
-        number: u32,
-    ) -> Result<Option<String>, String> {
+    fn overlapping_land(&mut self, wait: &IssueOverlap, number: u32) -> Result<LandCheck, String> {
         let Some(commit) = blocker_thread(self.project, wait)
             .and_then(|thread| thread.rosen_issue.landed_commit())
             .map(str::to_owned)
         else {
-            return Ok(None);
+            return Ok(LandCheck::Waiting);
         };
         let issue = self.client.get(number).map_err(|error| error.to_string())?;
         if !actionable(&issue) {
-            return Ok(None);
+            return Ok(LandCheck::Waiting);
         }
-        let source = self
-            .client
-            .get(wait.blocker)
-            .map_err(|error| error.to_string())?;
+        Ok(match self.clear_of_land(&issue, wait.blocker, &commit)? {
+            Some(files) => LandCheck::Clear { commit, files },
+            None => LandCheck::Review(commit),
+        })
+    }
+
+    /// The land's files when `commit`, landed for issue `source`, changed none of `issue`'s
+    /// predicted code paths and the two issues describe different problems. `None` when
+    /// the land shares code with the issue or may have fixed it, so a review has to decide.
+    fn clear_of_land(
+        &mut self,
+        issue: &GitHubIssue,
+        source: u32,
+        commit: &str,
+    ) -> Result<Option<Vec<String>>, String> {
+        let source = self.client.get(source).map_err(|error| error.to_string())?;
         let mut paths = issue_paths(
             self.data,
             self.project,
-            &[issue_text(&issue), issue_text(&source)],
+            &[issue_text(issue), issue_text(&source)],
         )
         .into_iter()
         .map(code_paths);
-        let wanted = problem(&issue, paths.next().unwrap_or_default());
+        let wanted = problem(issue, paths.next().unwrap_or_default());
         if wanted.matches(&problem(&source, paths.next().unwrap_or_default())) {
-            return Ok(Some(commit));
-        }
-        if wanted.paths.is_empty() {
             return Ok(None);
         }
-        if !self.landed.contains_key(&commit) {
-            let paths = tauri::async_runtime::block_on(review_swarm::landed_commit_paths(
-                &self.server,
-                &commit,
-            ))
-            .map_err(|error| error.to_string())?;
-            self.landed
-                .insert(commit.clone(), code_paths(paths.into_iter().collect()));
+        let files = self.land_files(commit)?;
+        let landed_code = code_paths(files.iter().cloned().collect());
+        Ok(wanted.paths.is_disjoint(&landed_code).then_some(files))
+    }
+
+    fn land_files(&mut self, commit: &str) -> Result<Vec<String>, String> {
+        if let Some(files) = self.landed.get(commit) {
+            return Ok(files.clone());
         }
-        Ok(self
-            .landed
-            .get(&commit)
-            .is_some_and(|paths| !wanted.paths.is_disjoint(paths))
-            .then_some(commit))
+        let files =
+            tauri::async_runtime::block_on(review_swarm::landed_commit_paths(&self.server, commit))
+                .map_err(|error| error.to_string())?;
+        self.landed.insert(commit.to_owned(), files.clone());
+        Ok(files)
     }
 }
 
@@ -354,7 +401,6 @@ fn publish_reviews(
     client: &IssueClient,
     waits: &mut BTreeMap<u32, IssueOverlap>,
 ) -> Result<Vec<u32>, String> {
-    let mut published = false;
     let mut completed = Vec::new();
     for wait in waits.values() {
         let Some(commit) = wait.review_commit.as_deref() else {
@@ -378,15 +424,12 @@ fn publish_reviews(
             client
                 .post_overlap_review(wait.issue.number, wait.blocker, commit)
                 .map_err(|error| error.to_string())?;
-            published = true;
         }
         completed.push(wait.issue.number);
     }
     for number in &completed {
         waits.remove(number);
     }
-    if published && let Some(sweeps) = application.try_state::<velocity_threads::ScoutSweeps>() {
-        sweeps.request_no_change_review(identifier);
-    }
+    // The parked issue gets its bounded review once the label shows in the backlog (#506).
     Ok(completed)
 }

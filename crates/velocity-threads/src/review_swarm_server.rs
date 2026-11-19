@@ -9,7 +9,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use velocity_acp::client::{QUEUED_RUN_PORT_ENV, QUEUED_RUN_TOKEN_ENV, request_queued_run};
 use velocity_github::mcp_stdio::{ReviewDiffRequest, ToolServer, review_diff_tool};
-use velocity_github::{IssueClient, ScoutServer, read_scout_reports};
+use velocity_github::{IssueClient, ParkedOutcome, ScoutServer, read_scout_reports};
 use velocity_rosen::ProjectServer;
 use velocity_rosen::change_details::{self, ReviewTrees};
 use velocity_rosen::review_swarm::{self, LandedChange};
@@ -82,6 +82,8 @@ enum NoChangeReview {
         attempt: String,
         evidence: String,
         already_fixed: bool,
+        #[serde(default)]
+        needs_owner: bool,
     },
 }
 
@@ -207,17 +209,21 @@ impl ReviewSwarmServer {
                 attempt,
                 evidence,
                 already_fixed,
+                needs_owner,
             } => {
+                let outcome = match (already_fixed, needs_owner) {
+                    (true, true) => {
+                        return Err("An already fixed issue does not need the owner".into());
+                    }
+                    (true, false) => ParkedOutcome::AlreadyFixed,
+                    (false, true) => ParkedOutcome::NeedsOwner,
+                    (false, false) => ParkedOutcome::Returned,
+                };
+                let reviewer = format!("Velocity review swarm · `{}`", self.launch.nickname);
                 client
-                    .resolve_no_change(
-                        issue,
-                        &attempt,
-                        &self.launch.nickname,
-                        &evidence,
-                        already_fixed,
-                    )
+                    .resolve_no_change(issue, &attempt, &reviewer, &evidence, outcome)
                     .map_err(|error| error.to_string())?;
-                Ok(json!({"issue": issue, "closed": already_fixed}))
+                Ok(json!({"issue": issue, "closed": already_fixed, "needs_owner": needs_owner}))
             }
         }
     }
@@ -456,14 +462,15 @@ impl ToolServer for ReviewSwarmServer {
         if self.launch.repository.is_some() {
             tools.push(json!({
                 "name": "review_swarm_no_change",
-                "description": "List open no-change issues, read an issue with its discussion and attempt, or resolve that attempt after checking the evidence. Resolution closes an independently verified fix, or comments with concrete retry instructions and removes the no-change label.",
+                "description": "List open no-change issues, read an issue with its discussion and attempt, or resolve that attempt after checking the evidence. Resolution closes an independently verified fix, comments with concrete retry instructions and removes the no-change label, or moves work that needs hardware, an upstream release or an owner decision to needs-owner with the reason.",
                 "inputSchema": {"type": "object", "properties": {
                     "action": {"enum": ["list", "read", "resolve"]},
                     "offset": {"type": "integer", "minimum": 0, "description": "List offset, ten issues per page"},
                     "issue": {"type": "integer", "description": "Required for read and resolve"},
                     "attempt": {"type": "string", "description": "Required for resolve, returned by read"},
                     "already_fixed": {"type": "boolean", "description": "Required for resolve, true only when the current base satisfies the issue"},
-                    "evidence": {"type": "string", "description": "Required for resolve, verification evidence or instructions for the next agent"}
+                    "needs_owner": {"type": "boolean", "description": "Optional for resolve, true when the work needs hardware, an upstream release or an owner decision"},
+                    "evidence": {"type": "string", "description": "Required for resolve, verification evidence, instructions for the next agent or the reason the owner is needed"}
                 }, "required": ["action"], "additionalProperties": false}
             }));
         }

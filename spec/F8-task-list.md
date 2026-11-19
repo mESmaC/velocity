@@ -58,7 +58,7 @@ Before starting an issue, dispatch reads Velocity's own land, reopen and close c
 When landed issues have waited six hours without a green integration build, the Duty view shows **N landed issues wait for a green integration build** with the issue numbers and the last integration build's outcome.
 When continuous dispatch retires an issue thread after an empty turn, it saves **Ended with no change** and the last agent message in the thread view (#469).
 Dispatch holds the issue while the GitHub report is pending and then skips it while the `no-change` label is present (F9).
-Once a person or review agent removes the label, an open, unclaimed issue can be dispatched again.
+Once the bounded review, the two-hour limit, a person or a review agent removes the label, an open, unclaimed issue can be dispatched again (F9, #506).
 A dispatched task moves to now when its thread is saved and to done when that thread's change lands.
 An empty turn returns its task to todo and continuous dispatch skips it until the task is edited or explicitly returned to todo.
 Dispatch continues across project switches and app restarts.

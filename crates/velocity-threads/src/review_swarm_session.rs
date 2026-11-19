@@ -23,7 +23,6 @@ pub(crate) struct Job {
     index: usize,
     target: Option<review_swarm::LandedChange>,
     recovered: Option<SwarmLaunch>,
-    no_change_only: bool,
 }
 
 impl Job {
@@ -33,7 +32,6 @@ impl Job {
         index: usize,
         target: Option<review_swarm::LandedChange>,
         recovered: Option<SwarmLaunch>,
-        no_change_only: bool,
     ) -> Self {
         Self {
             runner,
@@ -41,7 +39,6 @@ impl Job {
             index,
             target,
             recovered,
-            no_change_only,
         }
     }
 
@@ -79,16 +76,12 @@ impl Job {
         let result = async {
             let mut launch = match &self.recovered {
                 Some(launch) => launch.clone(),
-                None => {
-                    let mut launch = SwarmLaunch::for_job(
-                        &self.runner,
-                        &self.roster,
-                        self.index,
-                        self.target.clone(),
-                    )?;
-                    launch.no_change_only = self.no_change_only;
-                    launch
-                }
+                None => SwarmLaunch::for_job(
+                    &self.runner,
+                    &self.roster,
+                    self.index,
+                    self.target.clone(),
+                )?,
             };
             launch.save(&self.runner.job_path(&key))?;
             self.work(
@@ -465,7 +458,7 @@ fn prompt(launch: &SwarmLaunch, roster: &ScoutRoster, instruction: Option<&str>)
     let no_change = "Use review_swarm_no_change to list the issues waiting after an empty turn. \
         Read their discussion, following the GitHub link for any clipped evidence, and verify their acceptance criteria against the current base. \
         Resolve an already-fixed issue with verification evidence or requeue it with concrete instructions. \
-        Leave the label in place if the blocker still prevents a productive retry.";
+        When the work needs hardware, an upstream release or an owner decision, resolve it with needs_owner and the reason.";
     if launch.no_change_only {
         return format!(
             "You are {}, a Review swarm duty agent. {no_change} {dependencies}\n\n\

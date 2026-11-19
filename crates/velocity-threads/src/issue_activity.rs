@@ -48,14 +48,13 @@ pub fn post_issue_update(
         .member
         .strip_prefix("thread-")
         .and_then(|member| member.parse::<u32>().ok());
-    client
-        .post_issue_progress(
-            update.issue,
-            &issue_byline(identifier, thread, Some(&update.claim.nick)),
-            update.body,
-            update.ready,
-        )
-        .map_err(|error| Error::Invalid(error.to_string()))
+    let byline = issue_byline(identifier, thread, Some(&update.claim.nick));
+    if update.needs_owner {
+        client.post_needs_owner(update.issue, &byline, update.body)
+    } else {
+        client.post_issue_progress(update.issue, &byline, update.body, update.ready)
+    }
+    .map_err(|error| Error::Invalid(error.to_string()))
 }
 
 pub fn issue_byline(project: u32, thread: Option<u32>, nick: Option<&str>) -> String {

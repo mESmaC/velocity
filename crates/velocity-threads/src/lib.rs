@@ -19,6 +19,7 @@ pub mod launch;
 pub mod local_release;
 pub mod machine_worker;
 pub mod naming;
+pub mod parked_review;
 pub mod parking;
 mod process;
 pub mod ready_pool;

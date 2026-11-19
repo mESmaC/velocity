@@ -32,6 +32,7 @@ fn role(argument: Option<&str>) -> &'static str {
         Some("--graph-mcp") => "Code graph MCP",
         Some("--graph-project") => "Project graph",
         Some("--graph-warm") => "Graph warmer",
+        Some(velocity_threads::parked_review::PARKED_REVIEW_SWITCH) => "Parked review MCP",
         Some("--scout-mcp") => "Scout MCP",
         Some("--queued-run-mcp") => "Run queue MCP",
         Some("machine") => "Dispatch worker",

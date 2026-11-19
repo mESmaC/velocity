@@ -49,7 +49,9 @@ pub(crate) fn workspace_note(application: &AppHandle, key: (u32, u32), change: &
              `rosen commit -m \"<one-line summary> (#{})\"`. Use the AIRC issue_comment tool \
              when you start, when a finding changes the plan, and when blocked. Use \
              issue_ready_to_close to post completion evidence and flag the issue for independent \
-             review. Leave the issue open. Velocity announces the land.",
+             review. Leave the issue open. Velocity announces the land. If the work cannot \
+             proceed without hardware, an upstream release or an owner decision, call \
+             issue_needs_owner with the reason and end your turn.",
             issue.repository, issue.number, issue.number,
         ));
     }

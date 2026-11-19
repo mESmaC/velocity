@@ -5,13 +5,65 @@ use serde_json::{Value, json};
 use crate::{GitHubCommandError, GitHubIssue, IssueClient, IssueState};
 
 const READY_LABEL: &str = "ready-to-close";
+const NEEDS_OWNER_LABEL: &str = "needs-owner";
 const NO_CHANGE_MARKER: &str = "<!-- velocity-issue-no-change:";
+/// The attempt of an overlap review: `overlap:<blocking issue>:<landed commit>`.
+const OVERLAP_ATTEMPT: &str = "overlap:";
+/// A land can change hundreds of files; the comment names the first of them.
+const LISTED_LAND_FILES: usize = 40;
 
 pub enum RosenIssueEffect<'a> {
     Landed { change: &'a str },
     Reviewed { by: &'a str },
     Watcher,
     Reverted { reason: &'a str },
+}
+
+/// How an issue parked under `no-change` leaves review (#506).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ParkedOutcome {
+    /// The current base already meets the acceptance criteria, so the issue closes.
+    AlreadyFixed,
+    /// Work remains: the issue goes back to dispatch with instructions or a note.
+    Returned,
+    /// The work needs hardware, an upstream release or an owner decision. The issue takes
+    /// `needs-owner` with the reason and loses `no-change`.
+    NeedsOwner,
+}
+
+impl ParkedOutcome {
+    /// The last field of the review marker. `true` and `false` predate `needs-owner`.
+    fn marker(self) -> &'static str {
+        match self {
+            Self::AlreadyFixed => "true",
+            Self::Returned => "false",
+            Self::NeedsOwner => "needs-owner",
+        }
+    }
+}
+
+/// The report that parked an issue under `no-change`.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ParkedReview {
+    pub attempt: String,
+    /// Unix seconds of the report comment. `None` when GitHub's time could not be read.
+    pub reported_at: Option<u64>,
+}
+
+impl ParkedReview {
+    /// The blocking issue and its landed commit when the report is an overlap review.
+    pub fn overlapping_land(&self) -> Option<(u32, &str)> {
+        let (source, commit) = self
+            .attempt
+            .strip_prefix(OVERLAP_ATTEMPT)?
+            .split_once(':')?;
+        Some((source.parse().ok()?, commit))
+    }
+}
+
+struct IssueComment {
+    body: String,
+    created_at: String,
 }
 
 impl IssueClient {
@@ -40,6 +92,26 @@ impl IssueClient {
         self.add_issue_comment(&issue.id, &format!("{heading}{byline}\n\n{body}"))
     }
 
+    /// An agent found that the work needs hardware, an upstream release or an owner
+    /// decision (#506). The label goes on first: a failed comment leaves the issue out of
+    /// dispatch, and the agent's retry posts the reason.
+    pub fn post_needs_owner(
+        &self,
+        number: u32,
+        byline: &str,
+        reason: &str,
+    ) -> Result<String, GitHubCommandError> {
+        let issue = self.read_issue(number)?;
+        self.label_issue(number, NEEDS_OWNER_LABEL)?;
+        if issue_has_no_change_label(&issue) {
+            self.remove_issue_label(number, Self::NO_CHANGE_LABEL)?;
+        }
+        self.add_issue_comment(
+            &issue.id,
+            &format!("Needs the owner · {byline}\n\n{reason}"),
+        )
+    }
+
     pub fn post_no_change(
         &self,
         number: u32,
@@ -58,7 +130,7 @@ impl IssueClient {
     ) -> Result<(), GitHubCommandError> {
         self.post_issue_for_verification(
             number,
-            &format!("overlap:{source}:{commit}"),
+            &format!("{OVERLAP_ATTEMPT}{source}:{commit}"),
             "Check against an overlapping land",
             "Velocity continuous dispatch",
             &format!(
@@ -67,6 +139,23 @@ impl IssueClient {
                  the fix is verified, or return it to dispatch with the remaining work."
             ),
         )
+    }
+
+    /// Evidence that a land this issue waited for changed none of its code (#506). The
+    /// issue takes no label and goes straight back to dispatch.
+    pub fn post_overlap_clear(
+        &self,
+        number: u32,
+        source: u32,
+        commit: &str,
+        files: &[String],
+    ) -> Result<(), GitHubCommandError> {
+        let marker = format!("<!-- velocity-overlap-clear:{source}:{commit} -->");
+        let body = format!(
+            "## Returned to dispatch after an overlapping land\n\nVelocity continuous dispatch\n\n{}",
+            overlap_clear_evidence(source, commit, files)
+        );
+        self.sync_rosen_issue(number, &marker, &body, None)
     }
 
     fn post_issue_for_verification(
@@ -83,7 +172,11 @@ impl IssueClient {
             return Ok(());
         }
         let issue = self.read_issue(number)?;
-        if issue.state == IssueState::Open && !issue_has_no_change_label(&issue) {
+        // An issue that already waits for the owner keeps that label alone (#506).
+        if issue.state == IssueState::Open
+            && !issue_has_no_change_label(&issue)
+            && !issue_has_label(&issue, NEEDS_OWNER_LABEL)
+        {
             self.label_issue(number, Self::NO_CHANGE_LABEL)?;
         }
         let end = reason.floor_char_boundary(60_000);
@@ -116,14 +209,7 @@ impl IssueClient {
         let (report, attempt) = comments
             .iter()
             .rev()
-            .find_map(|body| {
-                let attempt = body
-                    .lines()
-                    .last()?
-                    .strip_prefix(NO_CHANGE_MARKER)?
-                    .strip_suffix(" -->")?;
-                Some((body, attempt.to_owned()))
-            })
+            .find_map(|body| Some((body, report_attempt(body)?.to_owned())))
             .ok_or_else(|| {
                 GitHubCommandError::Missing("The no-change report is still pending".into())
             })?;
@@ -139,30 +225,57 @@ impl IssueClient {
         Ok((issue, discussion, attempt))
     }
 
+    /// The latest report that parked `number`, for an issue the caller saw labelled
+    /// `no-change`. `None` when no report comment exists, such as a label added by hand.
+    pub fn parked_review(&self, number: u32) -> Result<Option<ParkedReview>, GitHubCommandError> {
+        Ok(self
+            .issue_comments(number)?
+            .iter()
+            .rev()
+            .find_map(|comment| {
+                Some(ParkedReview {
+                    attempt: report_attempt(&comment.body)?.to_owned(),
+                    reported_at: unix_seconds(&comment.created_at),
+                })
+            }))
+    }
+
+    /// Ends the review of the current report. `reviewer` names who decided, such as
+    /// ``Velocity review swarm · `maple` `` or `Velocity continuous dispatch`.
     pub fn resolve_no_change(
         &self,
         number: u32,
         attempt: &str,
         reviewer: &str,
         evidence: &str,
-        close: bool,
+        outcome: ParkedOutcome,
     ) -> Result<(), GitHubCommandError> {
         let (_, _, current) = self.no_change_discussion(number)?;
         if current != attempt || evidence.trim().is_empty() {
             return Err(GitHubCommandError::Invalid(
-                "Review the current report and supply verification or retry instructions".into(),
+                "Review the current report and supply verification, retry instructions or the reason the owner is needed".into(),
             ));
         }
-        let decision = if close {
-            "verified already fixed"
-        } else {
-            "returned to dispatch"
+        let (decision, state) = match outcome {
+            ParkedOutcome::AlreadyFixed => ("verified already fixed", Some(IssueState::Closed)),
+            ParkedOutcome::Returned => ("returned to dispatch", None),
+            ParkedOutcome::NeedsOwner => ("found that this needs the owner", None),
         };
-        let marker = format!("<!-- velocity-no-change-review:{current}:{close} -->");
-        let body = format!("Velocity review swarm · `{reviewer}` {decision}.\n\n{evidence}");
-        self.sync_rosen_issue(number, &marker, &body, close.then_some(IssueState::Closed))?;
-        if !close {
-            self.remove_issue_label(number, Self::NO_CHANGE_LABEL)?;
+        let marker = format!(
+            "<!-- velocity-no-change-review:{current}:{} -->",
+            outcome.marker()
+        );
+        let body = format!("{reviewer} {decision}.\n\n{evidence}");
+        self.sync_rosen_issue(number, &marker, &body, state)?;
+        match outcome {
+            ParkedOutcome::AlreadyFixed => {}
+            ParkedOutcome::Returned => self.remove_issue_label(number, Self::NO_CHANGE_LABEL)?,
+            ParkedOutcome::NeedsOwner => {
+                // The owner label goes on before `no-change` comes off, so a failure
+                // between the two never leaves the issue open to dispatch.
+                self.label_issue(number, NEEDS_OWNER_LABEL)?;
+                self.remove_issue_label(number, Self::NO_CHANGE_LABEL)?;
+            }
         }
         Ok(())
     }
@@ -399,20 +512,83 @@ impl IssueClient {
     }
 
     fn issue_comment_bodies(&self, number: u32) -> Result<Vec<String>, GitHubCommandError> {
+        Ok(self
+            .issue_comments(number)?
+            .into_iter()
+            .map(|comment| comment.body)
+            .collect())
+    }
+
+    /// Oldest first.
+    fn issue_comments(&self, number: u32) -> Result<Vec<IssueComment>, GitHubCommandError> {
         #[derive(Deserialize)]
         struct Comment {
             body: String,
+            #[serde(rename = "createdAt")]
+            created_at: String,
         }
         let comments: Vec<Comment> = self.transport.connection(
             "query($owner:String!,$name:String!,$number:Int!,$cursor:String) {
               repository(owner:$owner,name:$name) { issue(number:$number) {
-                comments(first:100,after:$cursor) { nodes { body }
+                comments(first:100,after:$cursor) { nodes { body createdAt }
                   pageInfo { hasNextPage endCursor } } } } }",
             self.transport.variables(number),
             "/data/repository/issue/comments",
         )?;
-        Ok(comments.into_iter().map(|comment| comment.body).collect())
+        Ok(comments
+            .into_iter()
+            .map(|comment| IssueComment {
+                body: comment.body,
+                created_at: comment.created_at,
+            })
+            .collect())
     }
+}
+
+/// What an overlap review that needs no reviewer says (#506): the land's files are the
+/// evidence that it changed none of the issue's code.
+pub fn overlap_clear_evidence(source: u32, commit: &str, files: &[String]) -> String {
+    let mut evidence = format!(
+        "This issue waited for #{source}. Rosen commit `{commit}` landed for that issue and \
+         changed none of the code paths this issue is predicted to touch (documents \
+         excluded), so it needs no review against that land.\n\nFiles in the land:"
+    );
+    if files.is_empty() {
+        evidence.push_str("\n- none");
+    }
+    for file in files.iter().take(LISTED_LAND_FILES) {
+        evidence.push_str(&format!("\n- `{file}`"));
+    }
+    if files.len() > LISTED_LAND_FILES {
+        evidence.push_str(&format!("\n- and {} more", files.len() - LISTED_LAND_FILES));
+    }
+    evidence
+}
+
+/// The attempt a no-change or overlap report names in its closing marker.
+fn report_attempt(body: &str) -> Option<&str> {
+    body.lines()
+        .last()?
+        .strip_prefix(NO_CHANGE_MARKER)?
+        .strip_suffix(" -->")
+}
+
+/// GitHub's `2026-11-19T16:31:00Z` as Unix seconds.
+fn unix_seconds(timestamp: &str) -> Option<u64> {
+    let (date, time) = timestamp.strip_suffix('Z')?.split_once('T')?;
+    let mut date = date.split('-').map(|part| part.parse::<i64>().ok());
+    let (year, month, day) = (date.next()??, date.next()??, date.next()??);
+    let mut time = time.split(':').map(|part| part.parse::<i64>().ok());
+    let (hour, minute, second) = (time.next()??, time.next()??, time.next()??);
+    // Days since 1970-01-01 in the proleptic Gregorian calendar, counting years from
+    // March so the leap day falls last.
+    let year = if month <= 2 { year - 1 } else { year };
+    let shifted_month = if month > 2 { month - 3 } else { month + 9 };
+    let year_of_era = year.rem_euclid(400);
+    let day_of_year = (153 * shifted_month + 2) / 5 + day - 1;
+    let day_of_era = year_of_era * 365 + year_of_era / 4 - year_of_era / 100 + day_of_year;
+    let days = year.div_euclid(400) * 146_097 + day_of_era - 719_468;
+    u64::try_from(days * 86_400 + hour * 3_600 + minute * 60 + second).ok()
 }
 
 /// Comments arrive oldest first, so the last Velocity marker decides.
@@ -429,8 +605,9 @@ fn awaiting_integration(comments: &[String]) -> Option<String> {
                 (Some("landed"), Some(commit)) => Some(commit.to_owned()),
                 _ => None,
             };
-        } else if marker.starts_with("velocity-no-change-review:") && marker.ends_with(":false") {
-            // A reviewer returned the issue to dispatch with remaining work.
+        } else if marker.starts_with("velocity-no-change-review:") && !marker.ends_with(":true") {
+            // A reviewer returned the issue to dispatch with remaining work, or found
+            // that it needs the owner.
             landed = None;
         }
     }
@@ -438,8 +615,12 @@ fn awaiting_integration(comments: &[String]) -> Option<String> {
 }
 
 fn issue_has_no_change_label(issue: &GitHubIssue) -> bool {
+    issue_has_label(issue, IssueClient::NO_CHANGE_LABEL)
+}
+
+fn issue_has_label(issue: &GitHubIssue, name: &str) -> bool {
     issue
         .labels
         .iter()
-        .any(|label| label.eq_ignore_ascii_case(IssueClient::NO_CHANGE_LABEL))
+        .any(|label| label.eq_ignore_ascii_case(name))
 }

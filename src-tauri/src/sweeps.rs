@@ -12,6 +12,7 @@ use velocity_core::duty::DutyRole;
 use velocity_github::{IssueClient, ScoutServer};
 use velocity_interview::Interviews;
 use velocity_store::duty::ScoutRoster;
+use velocity_threads::parked_review::{PARKED_REVIEW_SWITCH, ParkedReviewServer};
 use velocity_threads::{
     REVIEW_SWARM_SWITCH, ReviewSwarmServer, SCOUT_SERVER_SWITCH, ScoutChange, ScoutSweeps,
     SweepHost,
@@ -26,6 +27,19 @@ use crate::threads::{lock, report};
 /// stdin/stdout and exit. `false` when Velocity was started normally.
 pub fn serve_scout_server() -> anyhow::Result<bool> {
     let arguments: Vec<String> = std::env::args().skip(1).collect();
+    // A bounded review of a parked issue has its own two tools (#506).
+    if arguments.first().map(String::as_str) == Some(PARKED_REVIEW_SWITCH) {
+        let [_, launch] = arguments.as_slice() else {
+            anyhow::bail!("Usage: {PARKED_REVIEW_SWITCH} <launch-file>");
+        };
+        let mut server =
+            ParkedReviewServer::open(std::path::Path::new(launch)).map_err(anyhow::Error::msg)?;
+        server.serve(
+            BufReader::new(std::io::stdin().lock()),
+            std::io::stdout().lock(),
+        )?;
+        return Ok(true);
+    }
     if arguments.first().map(String::as_str) == Some(REVIEW_SWARM_SWITCH) {
         if let [_, launch, mode, completion] = arguments.as_slice()
             && mode == "--complete"
