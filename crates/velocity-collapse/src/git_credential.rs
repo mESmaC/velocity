@@ -99,6 +99,9 @@ fn git_output(arguments: &[&str]) -> Result<String, CollapseError> {
 }
 
 /// `git` with no console window and no prompt: a missing helper must fail, not wait.
+/// This is the crate's one process helper, so it alone may call `Command::new` and set
+/// creation flags (`clippy.toml`, #232, #276).
+#[allow(clippy::disallowed_methods)]
 fn hidden_git() -> Command {
     let mut command = Command::new("git");
     command
