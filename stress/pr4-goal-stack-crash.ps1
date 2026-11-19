@@ -48,6 +48,6 @@ uuid = { version = "1", features = ["v4"] }
 [IO.File]::WriteAllText((Join-Path $harnessRoot 'main.rs'), $source)
 [IO.File]::WriteAllText((Join-Path $harnessRoot 'Cargo.toml'), $manifest)
 Copy-Item -LiteralPath (Join-Path $repositoryRoot 'Cargo.lock') -Destination (Join-Path $harnessRoot 'Cargo.lock')
-$env:CARGO_TARGET_DIR = Join-Path $repositoryRoot 'target'
+if (-not $env:CARGO_TARGET_DIR) { $env:CARGO_TARGET_DIR = Join-Path $repositoryRoot 'target' }
 cargo run --offline --manifest-path (Join-Path $harnessRoot 'Cargo.toml')
 exit $LASTEXITCODE

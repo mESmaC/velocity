@@ -92,7 +92,7 @@ $encoding = New-Object Text.UTF8Encoding($false)
 [IO.File]::WriteAllText((Join-Path $harnessRoot 'Cargo.toml'), $manifest, $encoding)
 [IO.File]::WriteAllText((Join-Path $harnessRoot 'src\main.rs'), $source, $encoding)
 Copy-Item -LiteralPath (Join-Path $repositoryRoot 'Cargo.lock') -Destination (Join-Path $harnessRoot 'Cargo.lock')
-$env:CARGO_TARGET_DIR = Join-Path $repositoryRoot '.tools\pr50-target'
+if (-not $env:CARGO_TARGET_DIR) { $env:CARGO_TARGET_DIR = Join-Path $repositoryRoot 'target' }
 $fixtureRoot = [IO.Path]::GetFullPath((Join-Path $harnessRoot ('fixture-' + [Guid]::NewGuid().ToString('N').Substring(0, 8))))
 if (-not $fixtureRoot.StartsWith($harnessRoot + '\', [StringComparison]::OrdinalIgnoreCase)) { throw 'Fixture path escaped this review checkout' }
 cargo run --manifest-path (Join-Path $harnessRoot 'Cargo.toml') --offline -- $fixtureRoot

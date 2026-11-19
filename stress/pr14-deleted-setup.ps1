@@ -4,15 +4,25 @@
 # All filesystem effects are confined to the isolated fixture; no agent is started.
 # Updated for #230: the native completion decision moved from an inline `let wanted = lock(..)`
 # block into `mark_worktree_ready`; the fixture now takes that function's unchanged body.
+# Updated for #485: use the native folder_ready path and extract its helpers without relying
+# on adjacent doc comments. Exercise the Git folder path and keep the persisted ID check.
 $ErrorActionPreference='Stop'
 $repositoryRoot=[IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..'))
 $harnessRoot=Join-Path $repositoryRoot '.tools\pr14-deleted-setup'
 New-Item -ItemType Directory -Path (Join-Path $harnessRoot 'src') -Force | Out-Null
 $native=Get-Content -Raw -LiteralPath (Join-Path $repositoryRoot 'src-tauri\src\threads.rs')
-$lock=[regex]::Matches($native,'(?s)pub\(crate\) fn lock<.*?(?=/// \x60start_thread)')
-$names=[regex]::Matches($native,'(?s)fn record_names\(.*?(?=/// Applies agent events)')
-$wanted=[regex]::Matches($native,'(?s)fn mark_worktree_ready\(.*?(?=/// Checks the worktree out)')
-if($lock.Count -ne 1 -or $names.Count -ne 1 -or $wanted.Count -ne 1){throw 'Native completion shape changed; inspect the current path before adapting this fixture'}
+function Get-NativeItem([string]$Signature) {
+    $items = [regex]::Matches($native, '(?ms)^' + [regex]::Escape($Signature) + '\b.*?^}')
+    if ($items.Count -ne 1) { throw "Native completion item changed: $Signature" }
+    return $items[0].Value
+}
+$nativeItems = @(
+    Get-NativeItem 'pub(crate) fn lock'
+    Get-NativeItem 'struct ThreadFolder'
+    Get-NativeItem 'fn folder_ready'
+    Get-NativeItem 'fn mark_worktree_ready'
+    Get-NativeItem 'fn record_names'
+) -join [Environment]::NewLine
 $storePath=(Join-Path $repositoryRoot 'crates\velocity-store').Replace('\','/')
 $threadsPath=(Join-Path $repositoryRoot 'crates\velocity-threads').Replace('\','/')
 $gitPath=(Join-Path $repositoryRoot 'crates\velocity-git').Replace('\','/')
@@ -29,7 +39,7 @@ velocity-git = { path = "$gitPath" }
 serde_json = "1"
 "@
 $source=@'
-use std::{fs, path::Path, process::{Command, exit}, sync::{Mutex, MutexGuard}};
+use std::{fs, path::{Path, PathBuf}, process::{Command, exit}, sync::{Mutex, MutexGuard}};
 use velocity_store::{PersistedState, ProviderKind, StateStore};
 use velocity_threads::{LaunchPlan, SessionInputs, StopOutcome, ThreadKey, ThreadRuntimes, plan_launch_with_preferences as plan_launch, title_worktree_name};
 
@@ -55,6 +65,16 @@ impl AppHandle {
     }
 }
 include!("native_functions.rs");
+
+fn complete_setup(application: &AppHandle, key: ThreadKey, path: PathBuf, branch: &str) -> bool {
+    let folder = ThreadFolder { path, branch_name: Some(branch.to_owned()), failure: None, rosen_change: None };
+    let path = folder.path.display().to_string();
+    if !folder_ready(application, key, &folder, &path) {
+        return false;
+    }
+    record_names(application, key, &path, folder.branch_name.as_deref()).expect("native record_names");
+    true
+}
 
 fn report(label: &str, passed: bool, detail: impl std::fmt::Display) -> usize {
     println!("{} {label}: {detail}", if passed { "PASS" } else { "FAIL" });
@@ -141,13 +161,13 @@ fn main() {
     assert!(new_completed.setup.is_ok(), "new fallback checkout and setup");
     let new_branch = new_completed.branch_name.as_deref().expect("new branch");
     let new_path = new_completed.worktree_path.display().to_string();
-    assert!(complete_setup(&application, new_key, new_path.clone(), new_branch), "new valid completion");
+    assert!(complete_setup(&application, new_key, new_completed.worktree_path.clone(), new_branch), "new valid completion");
     fs::write(new_completed.worktree_path.join("replacement-sentinel"), "replacement payload").expect("sentinel");
     let before = application.store.lock().expect("store").project(1).expect("project").threads[0].clone();
     failures += report("replacement-running-control",
         application.runtimes.lock().expect("runtimes").is_live(new_key),
         format!("old ID={}, new ID={}", old_key.1, new_key.1));
-    let accepted = complete_setup(&application, old_key, old_completed.worktree_path.display().to_string(), old_branch);
+    let accepted = complete_setup(&application, old_key, old_completed.worktree_path.clone(), old_branch);
     failures += report("deleted-completion-rejected", !accepted, format!("old completion accepted={accepted}"));
     let after = application.store.lock().expect("store").project(1).expect("project").threads[0].clone();
     failures += report("replacement-names-unchanged", before == after,
@@ -164,21 +184,18 @@ fn main() {
     failures += report("replacement-session-remains-live",
         application.runtimes.lock().expect("runtimes").is_live(new_key),
         "the deleted thread's agent end must not end the new thread's session");
+    failures += report("deleted-thread-id-not-reused", old_key != new_key,
+        format!("old ID={}, new ID={}", old_key.1, new_key.1));
     println!("failures: {failures}");
     exit(i32::from(failures != 0));
 }
 '@
-$completion = 'fn complete_setup(application: &AppHandle, key: ThreadKey, path: String, branch: &str) -> bool {' + [Environment]::NewLine +
-    '    let failure: Option<String> = None;' + [Environment]::NewLine +
-    '    let wanted = mark_worktree_ready(application, key, &path, failure.is_some());' + [Environment]::NewLine +
-    '    if wanted { record_names(application, key, &path, Some(branch)).expect("native record_names"); }' + [Environment]::NewLine +
-    '    wanted' + [Environment]::NewLine + '}'
 $encoding=New-Object Text.UTF8Encoding($false)
 [IO.File]::WriteAllText((Join-Path $harnessRoot 'Cargo.toml'),$manifest,$encoding)
 [IO.File]::WriteAllText((Join-Path $harnessRoot 'src\main.rs'),$source,$encoding)
-[IO.File]::WriteAllText((Join-Path $harnessRoot 'src\native_functions.rs'),$lock[0].Value+$names[0].Value+$wanted[0].Value+$completion,$encoding)
+[IO.File]::WriteAllText((Join-Path $harnessRoot 'src\native_functions.rs'),$nativeItems,$encoding)
 Copy-Item -LiteralPath (Join-Path $repositoryRoot 'Cargo.lock') -Destination (Join-Path $harnessRoot 'Cargo.lock')
-$env:CARGO_TARGET_DIR=Join-Path $repositoryRoot '.tools\pr14-target'
+if (-not $env:CARGO_TARGET_DIR) { $env:CARGO_TARGET_DIR = Join-Path $repositoryRoot 'target' }
 $fixtureRoot=[IO.Path]::GetFullPath((Join-Path $harnessRoot ('fixture-'+[Guid]::NewGuid().ToString('N').Substring(0,8))))
 if(-not $fixtureRoot.StartsWith($harnessRoot+'\',[StringComparison]::OrdinalIgnoreCase)){throw 'Fixture root escaped review checkout'}
 cargo run --manifest-path (Join-Path $harnessRoot 'Cargo.toml') --offline -- $fixtureRoot

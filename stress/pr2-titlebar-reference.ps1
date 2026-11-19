@@ -1,6 +1,7 @@
 [CmdletBinding()]
 param()
 
+# Updated for #445 and #485: resolve rem sizes at the reference's 16 px root size (100% zoom).
 $ErrorActionPreference = 'Stop'
 $repositoryDirectory = Split-Path -Parent $PSScriptRoot
 $reference = Get-Content -Raw (Join-Path $repositoryDirectory 'design/main-window.html')
@@ -9,23 +10,23 @@ $themeDirectory = Join-Path $repositoryDirectory 'ui/src/lib/theme'
 # Include semantic tokens if #12 authorizes a supplemental theme file.
 $tokens = (Get-ChildItem -LiteralPath $themeDirectory -Filter '*.css' -File |
     Sort-Object Name | ForEach-Object { Get-Content -Raw -LiteralPath $_.FullName }) -join "`n"
-$pixelTokens = @{}
 $rawTokens = @{}
 foreach ($token in [regex]::Matches($tokens, '(--[\w-]+)\s*:\s*([^;]+);')) {
     $rawTokens[$token.Groups[1].Value] = $token.Groups[2].Value.Trim()
 }
-foreach ($token in [regex]::Matches($tokens, '(--[\w-]+)\s*:\s*([\d.]+)px')) {
-    $pixelTokens[$token.Groups[1].Value] = [decimal]$token.Groups[2].Value
-}
-
 function Resolve-PixelValue {
     param([string] $Value)
     $resolved = [regex]::Replace($Value, 'var\((--[\w-]+)\)', {
         param($match)
-        if (-not $pixelTokens.ContainsKey($match.Groups[1].Value)) {
+        $length = $rawTokens[$match.Groups[1].Value]
+        if ($length -notmatch '^[\d.]+(?:px|rem)$') {
             throw "Unknown pixel token: $($match.Groups[1].Value)"
         }
-        return "$($pixelTokens[$match.Groups[1].Value])px"
+        return $length
+    })
+    $resolved = [regex]::Replace($resolved, '([\d.]+)rem\b', {
+        param($match)
+        return "$([decimal]$match.Groups[1].Value * 16)px"
     })
     if ($resolved -match '^\s*([\d.]+)px\s*$') { return [decimal]$Matches[1] }
     if ($resolved -match '^calc\(\s*([\d.]+)px\s*\+\s*([\d.]+)px\s*\)$') {

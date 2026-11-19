@@ -44,7 +44,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 '@ | Set-Content -LiteralPath (Join-Path $fixture 'src/main.rs')
-$env:CARGO_TARGET_DIR = Join-Path $root 'target'
+if (-not $env:CARGO_TARGET_DIR) { $env:CARGO_TARGET_DIR = Join-Path $root 'target' }
 & (Join-Path $root 'scripts/build-queue.ps1') cargo run --quiet --manifest-path (Join-Path $fixture 'Cargo.toml')
 exit $LASTEXITCODE
 

@@ -77,6 +77,6 @@ $encoding = New-Object Text.UTF8Encoding($false)
 [IO.File]::WriteAllText((Join-Path $harnessRoot 'Cargo.toml'), $manifest, $encoding)
 [IO.File]::WriteAllText((Join-Path $harnessRoot 'src\main.rs'), $source, $encoding)
 Copy-Item -LiteralPath (Join-Path $repositoryRoot 'Cargo.lock') -Destination (Join-Path $harnessRoot 'Cargo.lock')
-$env:CARGO_TARGET_DIR = Join-Path $repositoryRoot '.tools\pr43-target'
+if (-not $env:CARGO_TARGET_DIR) { $env:CARGO_TARGET_DIR = Join-Path $repositoryRoot 'target' }
 cargo run --manifest-path (Join-Path $harnessRoot 'Cargo.toml') --offline
 exit $LASTEXITCODE

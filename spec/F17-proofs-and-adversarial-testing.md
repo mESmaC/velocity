@@ -122,6 +122,7 @@ How the checks run:
 - Proofs and stress scripts run locally, in each agent's workspace, on the machine that already runs the agents.
 - Tests and stress scripts live in `stress/` (and the project's own test folder).
   Scouts run them on sweeps, and the release gate runs the full stress suite.
+  The Windows release gate runs stress scripts serially with a shared Cargo target directory and a two-job Cargo build limit.
   They never run in per-PR GitHub CI.
 
 **Proof card** (in the land history, F6):

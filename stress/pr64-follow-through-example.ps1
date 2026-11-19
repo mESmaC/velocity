@@ -2,6 +2,6 @@
 # when every Cargo target is checked after merging the two features.
 $ErrorActionPreference = 'Stop'
 $repositoryRoot = [IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..'))
-$env:CARGO_TARGET_DIR = Join-Path $repositoryRoot 'target'
+if (-not $env:CARGO_TARGET_DIR) { $env:CARGO_TARGET_DIR = Join-Path $repositoryRoot 'target' }
 cargo check --manifest-path (Join-Path $repositoryRoot 'Cargo.toml') -p velocity-store --example follow_through --locked
 exit $LASTEXITCODE
