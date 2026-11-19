@@ -13,7 +13,8 @@ name: Release
 #
 # The gate and the build run side by side, and `publish` waits for both, so a release
 # takes as long as the slower of the two instead of their sum (#498). Nothing is
-# published unless the gate passes.
+# published unless the gate passes. Both start once `rosen` has fetched the pinned
+# Rosen, which they share instead of each compiling it (#433).
 on:
   push:
     tags: ['v*']
@@ -50,11 +51,70 @@ env:
   MANIFEST_TAG: updater
 
 jobs:
+  # The gate and the build both need the pinned Rosen; this job gets it once for both (#433).
+  # A pinned Rosen release supplies prebuilt binaries, checked against the pinned rev and
+  # their SHA-256 sums. Without one, Rosen is built from source here, cached by rev, and
+  # the two jobs share the result through the `rosen-windows` artifact.
+  rosen:
+    name: Get Rosen
+    permissions:
+      contents: read
+    runs-on: windows-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ env.RELEASE_REF }}
+          sparse-checkout: |
+            .github/scripts
+            Cargo.toml
+            crates/velocity-rosen/Cargo.toml
+            rust-toolchain.toml
+          sparse-checkout-cone-mode: false
+      - name: Read the Rosen pin
+        id: rosen-pin
+        shell: pwsh
+        run: ./.github/scripts/rosen-pin.ps1
+      - name: Download the pinned Rosen release
+        id: prebuilt
+        shell: pwsh
+        run: >-
+          ./.github/scripts/rosen-fetch.ps1
+          -Url '${{ steps.rosen-pin.outputs.url }}'
+          -Rev '${{ steps.rosen-pin.outputs.rev }}'
+          -Release '${{ steps.rosen-pin.outputs.release }}'
+          -Destination "$env:RUNNER_TEMP\rosen\bin"
+      # Keyed on the pinned commit, not Velocity's lockfile: `cargo install --locked` builds
+      # from Rosen's own lockfile, so only a new pin or toolchain changes the binaries.
+      - name: Cache pinned Rosen installation
+        id: rosen-cache
+        if: steps.prebuilt.outputs.found != 'true'
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
+        with:
+          path: ${{ runner.temp }}/rosen
+          key: rosen-${{ runner.os }}-${{ runner.arch }}-${{ steps.rosen-pin.outputs.rev }}-${{ hashFiles('rust-toolchain.toml') }}
+      - name: Build Rosen
+        if: steps.prebuilt.outputs.found != 'true' && steps.rosen-cache.outputs.cache-hit != 'true'
+        shell: pwsh
+        run: |
+          rustup show active-toolchain
+          cargo install --locked --git '${{ steps.rosen-pin.outputs.url }}' --rev '${{ steps.rosen-pin.outputs.rev }}' --root "$env:RUNNER_TEMP\rosen" rosen-server rosen-cli
+          if ($LASTEXITCODE -ne 0) { throw "Could not build Rosen" }
+      - uses: actions/upload-artifact@v4
+        with:
+          name: rosen-windows
+          path: |
+            ${{ runner.temp }}/rosen/bin/rosen.exe
+            ${{ runner.temp }}/rosen/bin/rosen-server.exe
+          if-no-files-found: error
+          retention-days: 1
+
   # The release is the gate (SPEC.md F7 "The release gate", #381): on a Rosen project no
   # approval gates a land, so nothing is published until the release commit passes
   # integration, the stress suite and the proofs, with no release-blocker open.
   gate:
     name: Release gate
+    needs: rosen
     permissions:
       contents: read
       # The release gate lists open release-blocker issues.
@@ -151,24 +211,11 @@ jobs:
           git config --global user.email "release-gate@velocity.invalid"
       # Stress scripts start real Rosen servers (pr4-goal-stack-crash failed with
       # MissingBinary). Use the pinned Rosen the release carries.
-      - name: Read the Rosen pin
-        id: rosen-pin
-        shell: pwsh
-        run: ./.github/scripts/rosen-pin.ps1
-      # Keyed on the pinned commit, not Velocity's lockfile: `cargo install --locked` builds
-      # from Rosen's own lockfile, so only a new pin or toolchain changes the binaries.
-      - name: Cache pinned Rosen installation
-        id: rosen-cache
-        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
+      - name: Get the pinned Rosen
+        uses: actions/download-artifact@v4
         with:
-          path: ${{ runner.temp }}/rosen
-          key: rosen-${{ runner.os }}-${{ runner.arch }}-${{ steps.rosen-pin.outputs.rev }}-${{ hashFiles('rust-toolchain.toml') }}
-      - name: Build Rosen for the gate
-        if: steps.rosen-cache.outputs.cache-hit != 'true'
-        shell: pwsh
-        run: |
-          cargo install --locked --git '${{ steps.rosen-pin.outputs.url }}' --rev '${{ steps.rosen-pin.outputs.rev }}' --root "$env:RUNNER_TEMP\rosen" rosen-server rosen-cli
-          if ($LASTEXITCODE -ne 0) { throw "Could not build Rosen" }
+          name: rosen-windows
+          path: ${{ runner.temp }}/rosen/bin
       - name: Use the pinned Rosen
         shell: pwsh
         run: |
@@ -182,6 +229,7 @@ jobs:
 
   build:
     name: Build and sign
+    needs: rosen
     permissions:
       contents: read
     runs-on: windows-latest
@@ -228,25 +276,14 @@ jobs:
           # The app reports this version to the updater, so it must be the tag's.
           @{ version = $version } | ConvertTo-Json | Set-Content -Encoding utf8 "$env:RUNNER_TEMP\version.json"
 
-      # Rosen is Velocity's version control (SPEC.md F5). Its binaries are built from the
-      # commit Velocity pins and carried inside the app, so the portable download has them
-      # too; Velocity unpacks them on first use.
-      - name: Read the Rosen pin
-        id: rosen-pin
-        shell: pwsh
-        run: ./.github/scripts/rosen-pin.ps1
-      - name: Cache pinned Rosen installation
-        id: rosen-cache
-        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
+      # Rosen is Velocity's version control (SPEC.md F5). Its binaries are the commit
+      # Velocity pins, carried inside the app, so the portable download has them too;
+      # Velocity unpacks them on first use.
+      - name: Get the pinned Rosen
+        uses: actions/download-artifact@v4
         with:
-          path: ${{ runner.temp }}/rosen
-          key: rosen-${{ runner.os }}-${{ runner.arch }}-${{ steps.rosen-pin.outputs.rev }}-${{ hashFiles('rust-toolchain.toml') }}
-      - name: Build Rosen
-        if: steps.rosen-cache.outputs.cache-hit != 'true'
-        shell: pwsh
-        run: |
-          cargo install --locked --git '${{ steps.rosen-pin.outputs.url }}' --rev '${{ steps.rosen-pin.outputs.rev }}' --root "$env:RUNNER_TEMP\rosen" rosen-server rosen-cli
-          if ($LASTEXITCODE -ne 0) { throw "Could not build Rosen" }
+          name: rosen-windows
+          path: ${{ runner.temp }}/rosen/bin
       - name: Use the pinned Rosen
         shell: pwsh
         run: |

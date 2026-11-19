@@ -65,6 +65,12 @@ velocity-store = { path = "crates/velocity-store" }
 velocity-threads = { path = "crates/velocity-threads" }
 velocity-updates = { path = "crates/velocity-updates" }
 
+# The Rosen release built from the rosen-client rev above, whose prebuilt binaries Velocity's
+# release downloads instead of building Rosen (#433). Move it with the rev. Leave it empty
+# while the rev has no release; the release then builds Rosen from source once.
+[workspace.metadata.rosen]
+release = ""
+
 [workspace.lints.rust]
 unsafe_code = "forbid"
 
