@@ -199,6 +199,12 @@ impl ProjectServer {
             command.arg("--warm-pool-dir").arg(folder);
         }
         self.add_listener(&mut command)?;
+        // The server Velocity starts for a project is the one that pushes its mirror (Rosen
+        // R1, rosen#401). Without the mark a new or re-imported project's server never
+        // pushes; every push still checks the remote tip first, so a second machine's
+        // server is refused rather than overwriting. The variable, unlike the flag, is
+        // ignored by a Rosen older than #401 instead of stopping it from starting.
+        command.env("ROSEN_MIRROR_OWNER", &self.data_dir);
         command
             .current_dir(&self.data_dir)
             .stdin(Stdio::null())
