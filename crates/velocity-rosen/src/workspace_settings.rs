@@ -10,7 +10,8 @@ use toml_edit::{Array, DocumentMut, Item, Table, TableLike, value};
 
 use crate::{ProjectServer, RosenError, connection::requests, workspace::session};
 
-const SETTINGS_AGENT: &str = "velocity-settings";
+/// The agent the configuration changes Velocity proposes are owned by and landed as.
+pub const SETTINGS_AGENT: &str = "velocity-settings";
 
 #[derive(Debug, thiserror::Error)]
 pub enum WorkspaceSettingsError {
@@ -168,20 +169,104 @@ async fn write_preparation(
     expected: &WorkspacePreparation,
     edited: &WorkspacePreparation,
 ) -> Result<(), WorkspaceSettingsError> {
-    // Read the exact starting tree of the new change so a concurrent land cannot
-    // make this edit overwrite unrelated settings from an older base.
+    let source = read_config(client, starting_tree).await?;
+    let updated = edit_config(&source, expected, edited)?;
+    write_config(client, change, updated, "Update workspace preparation").await
+}
+
+/// Proposes a change that points `[mirror] remote` at `remote` (#427), so Rosen pushes
+/// every later land there once it lands. `None` when the landed file already names it.
+pub async fn propose_mirror_remote(
+    server: &ProjectServer,
+    remote: &str,
+) -> Result<Option<String>, WorkspaceSettingsError> {
+    let client = requests(server.endpoint()).await?;
+    let session = session(server, SETTINGS_AGENT).await?;
+    let record = session.new_change(None).await?;
+    let change = record.change.id.to_string();
+    let result = async {
+        let source = read_config(&client, record.change.head).await?;
+        let Some(updated) = edit_mirror_remote(&source, remote)? else {
+            return Ok(false);
+        };
+        write_config(
+            &client,
+            &change,
+            updated,
+            "Mirror landed history to Collapse",
+        )
+        .await?;
+        Ok(true)
+    }
+    .await;
+    match result {
+        Ok(true) => Ok(Some(change)),
+        Ok(false) => {
+            let _ = session.abandon(&change).await;
+            Ok(None)
+        }
+        Err(error) => {
+            // A stored edit stays for a person to finish; anything earlier left nothing.
+            if !matches!(
+                error,
+                WorkspaceSettingsError::Write { .. } | WorkspaceSettingsError::Name { .. }
+            ) {
+                let _ = session.abandon(&change).await;
+            }
+            Err(error)
+        }
+    }
+}
+
+/// The configuration with `[mirror] remote` set, or `None` when it already is. Comments
+/// and every other setting keep their text.
+fn edit_mirror_remote(
+    source: &str,
+    remote: &str,
+) -> Result<Option<String>, WorkspaceSettingsError> {
+    let mut document = source
+        .parse::<DocumentMut>()
+        .map_err(|error| invalid(error.to_string()))?;
+    let current = document
+        .get("mirror")
+        .and_then(|mirror| mirror.get("remote"))
+        .and_then(Item::as_str);
+    if current == Some(remote) {
+        return Ok(None);
+    }
+    table(&mut document, "mirror")?.insert("remote", value(remote));
+    let updated = document.to_string();
+    ProjectConfig::parse(&updated).map_err(|error| invalid(error.to_string()))?;
+    Ok(Some(updated))
+}
+
+/// The configuration in `starting_tree`, or empty when the base has none. Reading the
+/// new change's exact starting tree keeps a concurrent land from being overwritten by
+/// settings from an older base.
+async fn read_config(
+    client: &Client,
+    starting_tree: rosen_core::ObjectId,
+) -> Result<String, WorkspaceSettingsError> {
     let config = client
         .workspace_read(&starting_tree.to_string(), CONFIG_PATH)
         .await;
-    let source = match config {
+    match config {
         Ok(ReadAnswer::File { mode, data, .. }) if matches!(mode.as_str(), "100644" | "100755") => {
-            String::from_utf8(data).map_err(|error| invalid(error.to_string()))?
+            String::from_utf8(data).map_err(|error| invalid(error.to_string()))
         }
-        Ok(_) => return Err(invalid("expected a regular file")),
-        Err(Error::Server(error)) if error.code == ErrorCode::NotFound => String::new(),
-        Err(error) => return Err(error.into()),
-    };
-    let updated = edit_config(&source, expected, edited)?;
+        Ok(_) => Err(invalid("expected a regular file")),
+        Err(Error::Server(error)) if error.code == ErrorCode::NotFound => Ok(String::new()),
+        Err(error) => Err(error.into()),
+    }
+}
+
+/// Stores `updated` as the change's configuration and names the snapshot `message`.
+async fn write_config(
+    client: &Client,
+    change: &str,
+    updated: String,
+    message: &str,
+) -> Result<(), WorkspaceSettingsError> {
     let written = client
         .workspace_write(change, CONFIG_PATH, Some(updated.into_bytes()))
         .await
@@ -195,7 +280,7 @@ async fn write_preparation(
             change: change.to_owned(),
             tree: head,
             from: Some(head),
-            message: Some("Update workspace preparation".into()),
+            message: Some(message.into()),
         })
         .await
         .map_err(|source| WorkspaceSettingsError::Name {

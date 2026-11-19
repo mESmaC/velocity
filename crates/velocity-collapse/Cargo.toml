@@ -1,6 +1,6 @@
 [package]
 name = "velocity-collapse"
-description = "Connecting Velocity to a Collapse account: desktop sign-in and its stored credentials"
+description = "Connecting Velocity to a Collapse account: desktop sign-in, its stored credentials, and Collapse mirrors for projects"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true

@@ -74,8 +74,10 @@ pub async fn pick_project_folder(application: AppHandle) -> Result<Option<String
 #[specta::specta]
 pub async fn create_project(
     application: AppHandle,
-    request: NewProjectRequest,
+    mut request: NewProjectRequest,
 ) -> Result<CreatedProject, String> {
+    // The initial import pushes at once, so a Collapse mirror must exist first (#427).
+    crate::collapse_mirror::prepare_new_project(&mut request).await?;
     let host = application.clone();
     let created = tauri::async_runtime::spawn_blocking(move || {
         let created = velocity_new_project::create_project(

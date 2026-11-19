@@ -122,6 +122,7 @@ fn save_collapse_repository(
         application.state::<ManagedStateStore>().inner(),
         "persisted state",
     )?;
+    let mirrored = repository.is_some();
     let changed = store
         .save_collapse_repository(project, repository)
         .map_err(|error| error.to_string())?;
@@ -129,6 +130,10 @@ fn save_collapse_repository(
         let mut layout = lock(application.state::<MainLayout>().inner(), "layout")?;
         store.refresh_layout(&mut layout);
         crate::layout::publish(application, &layout.snapshot(), None)?;
+    }
+    if mirrored {
+        // A push just reached Collapse: read its land and forwarder state now (#427).
+        crate::collapse_mirror::refresh_soon(application);
     }
     Ok(())
 }

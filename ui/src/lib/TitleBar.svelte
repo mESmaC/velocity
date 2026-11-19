@@ -112,5 +112,6 @@
     state={layout?.rosen_mirror ?? null}
     divergence={layout?.rosen_mirror_divergence ?? null}
     project={layout?.project_identifier ?? null}
+    collapse={layout?.collapse_mirror_health ?? null}
   />
 </div>

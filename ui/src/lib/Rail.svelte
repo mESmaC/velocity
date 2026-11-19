@@ -121,6 +121,7 @@
   <RosenStatusPane
     project={layout.project_identifier}
     collapse={layout.collapse_repository !== null}
+    health={layout.collapse_mirror_health}
     {send}
   />
   {#if !layout.rosen_work}<IssuePanel {layout} {send} />{/if}

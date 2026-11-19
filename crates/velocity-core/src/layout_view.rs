@@ -130,6 +130,8 @@ pub struct LayoutData {
     pub rosen_mirror_divergence: Option<crate::rosen_mirror::MirrorDivergence>,
     /// The project's Collapse mirror as `owner/repository`; `None` hides Open on Collapse.
     pub collapse_repository: Option<String>,
+    /// Collapse's last land and downstream forwarder for that repository (#427).
+    pub collapse_mirror_health: Option<crate::collapse::CollapseMirrorHealth>,
     pub rosen_work: Option<RosenWorkView>,
     pub rosen_migration_notice: Option<String>,
     pub settled_expanded: bool,
@@ -468,6 +470,8 @@ pub struct LayoutSnapshot {
     pub rosen_mirror_divergence: Option<crate::rosen_mirror::MirrorDivergence>,
     /// The project's Collapse mirror as `owner/repository`; `None` hides Open on Collapse.
     pub collapse_repository: Option<String>,
+    /// Collapse's last land and downstream forwarder for that repository (#427).
+    pub collapse_mirror_health: Option<crate::collapse::CollapseMirrorHealth>,
     pub rosen_work: Option<RosenWorkView>,
     pub rosen_migration_notice: Option<String>,
     pub view: NavigationView,

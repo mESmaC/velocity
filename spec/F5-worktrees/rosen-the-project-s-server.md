@@ -30,3 +30,9 @@
   The project switcher menu and the palette open the repository page at `https://collapse.sh/<owner>/<repository>`.
   A standing land opens its commit page at `…/commit/<commit>`, which Collapse caches as immutable, from the Rosen status pane's Changes, the thread's land history, AIRC `merged` events and the palette entry for the selected thread.
   A project without a Collapse mirror shows none of these actions.
+  A Rosen project without a Collapse mirror offers Mirror to Collapse in the project switcher menu (#427).
+  It provisions a Collapse repository named after the project on the project's base branch as Create does (F2), then proposes and lands a `rosen.toml` change setting `[mirror] remote` to `https://api.collapse.sh/<owner>/<repository>.git`.
+  A refused land leaves the change open and the toast names it with Rosen's reason.
+  Collapse accepts a downstream remote only from the owner's browser session (Collapse C4), so a project that was on GitHub then opens the repository's Settings → Downstream remote, where the owner selects the GitHub repository.
+  While any project mirrors to Collapse, Velocity reads Collapse's dashboard with the personal token once a minute and after each mirror push, and saves each repository's last land and forwarder state with the project.
+  The Rosen status pane's Mirror section shows them (F6), and the project header warns while the forwarder is stopped or the repository is archived, with Open on Collapse to retry there.

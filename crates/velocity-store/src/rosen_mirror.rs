@@ -99,7 +99,30 @@ impl StateStore {
         }
         let mut next = self.state.clone();
         if let Some(item) = next.projects.iter_mut().find(|item| item.id == project) {
+            // Another repository's forwarder state would mislead until the next read.
+            item.collapse_mirror_health = None;
             item.collapse_repository = repository;
+        }
+        self.store_snapshot(next)?;
+        Ok(true)
+    }
+
+    /// Saves what Collapse last reported for the project's mirror and reports whether it
+    /// changed (#427). `None` clears it, as when Collapse no longer lists the repository.
+    pub fn save_collapse_mirror_health(
+        &mut self,
+        project: u32,
+        health: Option<velocity_core::collapse::CollapseMirrorHealth>,
+    ) -> Result<bool, StoreError> {
+        let unchanged = self
+            .project(project)
+            .is_none_or(|item| item.collapse_mirror_health == health);
+        if unchanged {
+            return Ok(false);
+        }
+        let mut next = self.state.clone();
+        if let Some(item) = next.projects.iter_mut().find(|item| item.id == project) {
+            item.collapse_mirror_health = health;
         }
         self.store_snapshot(next)?;
         Ok(true)
@@ -170,6 +193,42 @@ mod tests {
 
         let store = StateStore::load_or_default(&directory)?;
         assert_eq!(store.state.projects[0].rosen_mirror_divergence, None);
+        std::fs::remove_dir_all(directory)?;
+        Ok(())
+    }
+
+    // Risk (#427): a stopped forwarder lost on reload hides that GitHub stopped receiving
+    // lands, and health kept after the mirror moves describes another repository.
+    #[test]
+    fn collapse_mirror_health_survives_reload_until_the_repository_changes()
+    -> Result<(), Box<dyn std::error::Error>> {
+        use velocity_core::collapse::{CollapseMirrorHealth, ForwarderState};
+        let unique = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)?
+            .as_nanos();
+        let directory = std::env::temp_dir().join(format!("velocity-collapse-health-{unique}"));
+        let mut store = StateStore::load_or_default(&directory)?;
+        store.state.projects = vec![ProjectItem::new(1, "One".into(), r"C:\project one".into())];
+        store.store_snapshot(store.state.clone())?;
+        assert!(store.save_collapse_repository(1, Some("owner/one".into()))?);
+        let health = CollapseMirrorHealth {
+            forwarder: ForwarderState::Stopped,
+            behind: 0,
+            message: Some("! [rejected] main -> main (fetch first)".into()),
+            next_attempt: None,
+            last_land_at: Some("2026-11-19T20:00:00Z".into()),
+            last_land_agent: Some("issue-427@server".into()),
+            archived: false,
+        };
+        assert!(store.save_collapse_mirror_health(1, Some(health.clone()))?);
+        assert!(!store.save_collapse_mirror_health(1, Some(health.clone()))?);
+
+        let mut store = StateStore::load_or_default(&directory)?;
+        assert_eq!(store.state.projects[0].collapse_mirror_health, Some(health));
+        assert!(store.save_collapse_repository(1, Some("owner/two".into()))?);
+
+        let store = StateStore::load_or_default(&directory)?;
+        assert_eq!(store.state.projects[0].collapse_mirror_health, None);
         std::fs::remove_dir_all(directory)?;
         Ok(())
     }

@@ -4,6 +4,7 @@
   import Icon from './Icon.svelte';
   import ProviderSignInCards from './ProviderSignInCards.svelte';
   import {
+    collapseConnectionCommands,
     newProjectCommands,
     providerCommands,
     onProviders,
@@ -44,6 +45,10 @@
   const mirrors = ['none', 'collapse', 'github'] as const;
   const mirrorLabels = { none: 'None', collapse: 'Collapse', github: 'GitHub' };
   let mirrorKind = $state<(typeof mirrors)[number]>('none');
+  // The connected Collapse account (#427). Collapse is the default mirror once
+  // connected, and a blank name creates a repository named after the folder.
+  let collapseAccount = $state<string | null>(null);
+  let mirrorChosen = false;
   let folder = $state('');
   let repository = $state('');
   let effort = $state<EffortLevel>('high');
@@ -77,6 +82,15 @@
         speed = loaded.speed;
       })
       .catch(report);
+    void collapseConnectionCommands
+      .read()
+      .then((connection) => {
+        if (!active) return;
+        collapseAccount = connection.account ?? null;
+        if (connection.account && !mirrorChosen) mirrorKind = 'collapse';
+      })
+      // An unreadable connection only loses the default; Create reports it.
+      .catch(() => (collapseAccount = null));
     return () => {
       active = false;
       void listening.then((stop) => stop()).catch(report);
@@ -177,6 +191,7 @@
               aria-pressed={mirrorKind === choice}
               onclick={() => {
                 mirrorKind = choice;
+                mirrorChosen = true;
                 repository = '';
               }}>{mirrorLabels[choice]}</button
             >
@@ -187,15 +202,23 @@
             <span class="pre"
               >{mirrorKind === 'github'
                 ? 'github.com/'
-                : 'api.collapse.sh/'}</span
+                : collapseAccount
+                  ? `collapse.sh/${collapseAccount}/`
+                  : 'api.collapse.sh/'}</span
             >
             <input
               aria-label="Mirror repository"
               spellcheck="false"
-              placeholder="owner/repository"
+              placeholder={mirrorKind === 'collapse' && collapseAccount
+                ? 'new repository named after the folder'
+                : 'owner/repository'}
               bind:value={repository}
             />
           </label>
+          {#if mirrorKind === 'collapse' && !collapseAccount}<p class="np-note">
+              Connect Collapse in Settings · Agents to create the repository
+              here, or name one whose push token git already has.
+            </p>{/if}
         {/if}
       </fieldset>
       <div class="field">

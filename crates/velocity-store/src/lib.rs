@@ -1161,6 +1161,11 @@ pub struct ProjectItem {
     #[serde(default)]
     #[specta(skip)]
     pub collapse_repository: Option<String>,
+    /// Collapse's last land and downstream forwarder for that repository, as last read from
+    /// Collapse (#427). Kept so the project shows it at startup before the next read.
+    #[serde(default)]
+    #[specta(skip)]
+    pub collapse_mirror_health: Option<velocity_core::collapse::CollapseMirrorHealth>,
     /// The base and mirror branch diverged at the last catch-up from the mirror; cleared
     /// when a catch-up or adoption succeeds (#501).
     #[serde(default)]
@@ -1224,6 +1229,7 @@ impl ProjectItem {
             rosen_mirror_rejection_sequence: None,
             rosen_mirror_notices: Vec::new(),
             collapse_repository: None,
+            collapse_mirror_health: None,
             rosen_mirror_divergence: None,
         }
     }

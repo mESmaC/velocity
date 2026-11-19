@@ -148,6 +148,23 @@
     }
   }
 
+  // Rust creates the Collapse repository, stores its push token with git and
+  // lands the rosen.toml mirror change, then reports the outcome as a toast (#427).
+  let mirroring = $state(false);
+  async function mirrorToCollapse(identifier: number) {
+    if (mirroring) return;
+    mirroring = true;
+    error = '';
+    try {
+      await collapseCommands.mirror(identifier);
+      menu.hidePopover();
+    } catch (reason) {
+      report(reason);
+    } finally {
+      mirroring = false;
+    }
+  }
+
   async function searchRepositories(refresh: boolean) {
     const request = ++searchGeneration;
     reading = picker === null;
@@ -369,7 +386,19 @@
         onclick={() => void catchUpFromMirror(identifier)}
         >Catch up from mirror</button
       >
+      {#if !collapse}
+        <button
+          role="menuitem"
+          disabled={mirroring}
+          title="Create a Collapse repository for this project and push every land there"
+          onclick={() => void mirrorToCollapse(identifier)}
+          >Mirror to Collapse</button
+        >
+      {/if}
     {/if}
+    {#if mirroring}<p class="menu-note" role="status">
+        Setting up the Collapse mirror…
+      </p>{/if}
     {#if opening}<p class="menu-note" role="status">{opening}</p>{/if}
   {/if}
 </div>

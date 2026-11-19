@@ -13,8 +13,13 @@ New projects still start with a single `SPEC.md`.
 `Ctrl+Shift+N` opens the New project dialog.
 - **Location:** choose an absolute folder path or use Browse… to open the native folder picker.
   The dialog suggests a dedicated `Projects` folder under your home folder and requires a typed or browsed project path before Create can use it.
-- **Mirror:** choose an existing Collapse repository, an existing GitHub repository, or None.
-  Collapse account connection and automatic mirror provisioning are tracked in #427.
+- **Mirror:** choose Collapse, an existing GitHub repository, or None.
+  Collapse is the default once Collapse is connected in Settings → Agents → Shared MCP servers (#427).
+  Leave the Collapse name blank to create a private repository named after the folder, or name one; Create provisions it before the initial import pushes the base.
+  Provisioning creates the repository with the provisioning token, waits until Collapse reports it ready, mints a push token and stores it with `git credential approve` under the repository's URL (username `rosen`, `credential.useHttpPath=true`).
+  Velocity also sets `credential.https://api.collapse.sh.useHttpPath` in the user's git configuration so Rosen's pushes find the token, and refuses when git has no credential helper.
+  Velocity never stores or reads back the push token.
+  Without a Collapse connection the dialog still accepts an existing `owner/repository` whose push token git already has.
 - **Model for the interview:** choose a model, effort and speed.
 - **What are you building?** Enter a free-text brief.
 - **Create & start interview** (`Ctrl+Enter`) creates the folder when needed and starts the Rosen server with an initial base.

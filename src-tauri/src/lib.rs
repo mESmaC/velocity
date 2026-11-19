@@ -15,6 +15,7 @@ mod build_gate;
 mod code_graph;
 mod collapse;
 mod collapse_connection;
+mod collapse_mirror;
 mod continuous_dispatch;
 mod diagnostics;
 pub mod duty;
@@ -96,6 +97,7 @@ fn bindings() -> Builder<tauri::Wry> {
         collapse_connection::disconnect_collapse,
         collapse_connection::get_collapse_connection,
         collapse_connection::set_collapse_mcp,
+        collapse_mirror::mirror_to_collapse,
         continuous_dispatch::get_continuous_dispatch,
         continuous_dispatch::set_continuous_dispatch,
         token_usage::get_token_usage,
@@ -368,6 +370,7 @@ pub fn run() -> anyhow::Result<()> {
             projects::initialize(application.handle())?;
             providers::initialize(application.handle());
             rosen::initialize(application.handle())?;
+            collapse_mirror::initialize(application.handle());
             kept_worktrees::initialize(application.handle());
             github_requests::initialize(application.handle());
             issue_panel::initialize(application.handle());

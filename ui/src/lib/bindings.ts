@@ -51,6 +51,14 @@ export const commands = {
 	getCollapseConnection: () => __TAURI_INVOKE<CollapseConnection_Serialize>("get_collapse_connection"),
 	/**  `set_collapse_mcp { enabled }` (§3.1): the Settings switch. Running agents keep theirs. */
 	setCollapseMcp: (enabled: boolean) => __TAURI_INVOKE<CollapseConnection_Serialize>("set_collapse_mcp", { enabled }),
+	/**
+	 *  `mirror_to_collapse` (§3.1): makes Collapse the project's mirror. Creates the Collapse
+	 *  repository named after the project, stores its push token in git's credential helper,
+	 *  and lands a `rosen.toml` change pointing `[mirror] remote` at it. A project that was on
+	 *  GitHub then opens the repository's Downstream remote settings, where the owner keeps
+	 *  GitHub fed through Collapse's forwarder (C4). Says what happened in a toast.
+	 */
+	mirrorToCollapse: (projectIdentifier: number) => __TAURI_INVOKE<null>("mirror_to_collapse", { projectIdentifier }),
 	getContinuousDispatch: (projectIdentifier: number) => __TAURI_INVOKE<DispatchView_Serialize>("get_continuous_dispatch", { projectIdentifier }),
 	setContinuousDispatch: (projectIdentifier: number, slots: number, paused: boolean) => __TAURI_INVOKE<DispatchView_Serialize>("set_continuous_dispatch", { projectIdentifier, slots, paused }),
 	getTokenUsage: (period: Period, projectIdentifier: number | null, threadIdentifier: number | null) => __TAURI_INVOKE<Report_Serialize>("get_token_usage", { period, projectIdentifier, threadIdentifier }),
@@ -743,6 +751,50 @@ export type CollapseConnection_Serialize = {
 	url: string,
 };
 
+/**
+ *  The project's Collapse mirror as Collapse reports it: its last land and the forwarder
+ *  to the downstream remote (#427). Read with the personal token; holds no credential.
+ */
+export type CollapseMirrorHealth = CollapseMirrorHealth_Serialize | CollapseMirrorHealth_Deserialize;
+
+/**
+ *  The project's Collapse mirror as Collapse reports it: its last land and the forwarder
+ *  to the downstream remote (#427). Read with the personal token; holds no credential.
+ */
+export type CollapseMirrorHealth_Deserialize = {
+	forwarder: ForwarderState,
+	/**  Lands the downstream is behind while catching up. */
+	behind: number,
+	/**  The forwarder's last error, such as git's rejection while stopped. */
+	message?: string | null,
+	/**  RFC 3339 time of the next forward attempt while retrying. */
+	next_attempt?: string | null,
+	/**  RFC 3339 time Collapse received the latest land, and its `<nick>@<machine>` agent. */
+	last_land_at?: string | null,
+	last_land_agent?: string | null,
+	/**  The repository is archived on Collapse, which refuses mirror pushes. */
+	archived: boolean,
+};
+
+/**
+ *  The project's Collapse mirror as Collapse reports it: its last land and the forwarder
+ *  to the downstream remote (#427). Read with the personal token; holds no credential.
+ */
+export type CollapseMirrorHealth_Serialize = {
+	forwarder: ForwarderState,
+	/**  Lands the downstream is behind while catching up. */
+	behind: number,
+	/**  The forwarder's last error, such as git's rejection while stopped. */
+	message: string | null,
+	/**  RFC 3339 time of the next forward attempt while retrying. */
+	next_attempt: string | null,
+	/**  RFC 3339 time Collapse received the latest land, and its `<nick>@<machine>` agent. */
+	last_land_at: string | null,
+	last_land_agent: string | null,
+	/**  The repository is archived on Collapse, which refuses mirror pushes. */
+	archived: boolean,
+};
+
 export type Comparison = Comparison_Serialize | Comparison_Deserialize;
 
 export type ComparisonSide = {
@@ -1243,6 +1295,15 @@ export type FlaggedRule = {
 	phrase: string,
 	message: string,
 };
+
+/**  What Collapse's forwarder is doing with the repository's downstream remote (C4). */
+export type ForwarderState = 
+/**  No downstream remote is configured on Collapse. */
+"Unconfigured" | "Synced" | "CatchingUp" | "Retrying" | 
+/**  A rejected forward waits for the owner's Retry on Collapse. */
+"Stopped" | 
+/**  Collapse could not read the forward state. */
+"Unavailable";
 
 export type Frame = {
 	jpeg: string,
@@ -2165,6 +2226,8 @@ export type LayoutSnapshot_Deserialize = {
 	rosen_mirror_divergence?: MirrorDivergence | null,
 	/**  The project's Collapse mirror as `owner/repository`; `None` hides Open on Collapse. */
 	collapse_repository?: string | null,
+	/**  Collapse's last land and downstream forwarder for that repository (#427). */
+	collapse_mirror_health?: CollapseMirrorHealth_Deserialize | null,
 	rosen_work?: RosenWorkView_Deserialize | null,
 	rosen_migration_notice?: string | null,
 	view: NavigationView,
@@ -2231,6 +2294,8 @@ export type LayoutSnapshot_Serialize = {
 	rosen_mirror_divergence: MirrorDivergence | null,
 	/**  The project's Collapse mirror as `owner/repository`; `None` hides Open on Collapse. */
 	collapse_repository: string | null,
+	/**  Collapse's last land and downstream forwarder for that repository (#427). */
+	collapse_mirror_health: CollapseMirrorHealth_Serialize | null,
 	rosen_work: RosenWorkView_Serialize | null,
 	rosen_migration_notice: string | null,
 	view: NavigationView,

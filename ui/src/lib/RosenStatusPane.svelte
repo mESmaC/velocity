@@ -4,6 +4,7 @@
     onRosenStatus,
     releaseCommands,
     watchRosenStatus,
+    type CollapseMirrorHealth,
     type LayoutAction,
     type RosenStatusChanged,
   } from './ipc';
@@ -14,13 +15,34 @@
   let {
     project,
     collapse,
+    health = null,
     send,
   }: {
     project: number | null;
     // The project has a Collapse mirror, so landed changes offer Open on Collapse (#429).
     collapse: boolean;
+    // Collapse's last land and downstream forwarder for that mirror (#427).
+    health?: CollapseMirrorHealth | null;
     send: (action: LayoutAction) => void;
   } = $props();
+
+  const forwarderLabels: Record<CollapseMirrorHealth['forwarder'], string> = {
+    Unconfigured: 'no downstream remote',
+    Synced: 'in sync',
+    CatchingUp: 'catching up',
+    Retrying: 'retrying',
+    Stopped: 'stopped · needs a person',
+    Unavailable: 'state unavailable',
+  };
+
+  function forwarderLine(health: CollapseMirrorHealth) {
+    let line = `Forwarder ${forwarderLabels[health.forwarder]}`;
+    if (health.forwarder === 'CatchingUp' && health.behind > 0)
+      line += ` · ${health.behind} lands behind`;
+    if (health.forwarder === 'Retrying' && health.next_attempt)
+      line += ` · next attempt ${new Date(health.next_attempt).toLocaleTimeString()}`;
+    return line;
+  }
 
   const sections = [
     'Server',
@@ -330,8 +352,30 @@
                     Last pushed {status.mirror.pushed?.slice(0, 10) ?? '—'}
                   </p>
                   {#if status.mirror.error}<p>{status.mirror.error}</p>{/if}
-                  {#if status.mirror.collapse}<p class="hint">
-                      Forwarder status unavailable
+                  {#if status.mirror.collapse && health}
+                    <p class="hint">
+                      Last land on Collapse {health.last_land_at
+                        ? new Date(health.last_land_at).toLocaleString()
+                        : '—'}{health.last_land_agent
+                        ? ` · ${health.last_land_agent}`
+                        : ''}
+                    </p>
+                    <p
+                      class:hint={health.forwarder !== 'Stopped' &&
+                        !health.archived}
+                    >
+                      {health.archived
+                        ? 'Archived on Collapse · lands are refused'
+                        : forwarderLine(health)}
+                    </p>
+                    {#if health.message && health.forwarder !== 'Synced'}<p
+                        class="hint"
+                      >
+                        {health.message}
+                      </p>{/if}
+                  {:else if status.mirror.collapse}<p class="hint">
+                      Forwarder status unavailable · connect Collapse in
+                      Settings
                     </p>{/if}
                 {:else}
                   <p class="hint">No mirror connected.</p>

@@ -38,6 +38,10 @@ pub(crate) fn read_model(store: &crate::StateStore) -> LayoutData {
         data.project_name = project.name.clone();
         data.rosen_mirror = project.rosen_mirror.clone();
         data.collapse_repository = project.collapse_repository.clone();
+        data.collapse_mirror_health = project
+            .collapse_repository
+            .as_ref()
+            .and(project.collapse_mirror_health.clone());
         data.rosen_mirror_divergence = project.rosen_mirror_divergence.clone();
         if project.version_control == VersionControl::Rosen {
             data.rosen_work = Some(RosenWorkView {

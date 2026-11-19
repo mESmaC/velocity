@@ -1,18 +1,26 @@
 <script lang="ts">
-  import { rosenMirrorCommands } from './ipc';
-  import type { MirrorDivergence, MirrorState } from './ipc';
+  import { collapseCommands, rosenMirrorCommands } from './ipc';
+  import type {
+    CollapseMirrorHealth,
+    MirrorDivergence,
+    MirrorState,
+  } from './ipc';
 
   // `state` is renamed here: the name would shadow the `$state` rune.
   let {
     state: mirror,
     divergence = null,
     project = null,
+    collapse = null,
   }: {
     state: MirrorState | null;
     // The base and mirror diverged at the last catch-up (#501); Rust keeps it.
     // Only the project header shows it; Settings shows push failures alone.
     divergence?: MirrorDivergence | null;
     project?: number | null;
+    // Collapse's forwarder to the downstream remote (#427). Only a stopped
+    // forwarder or an archived repository needs the owner, so only those show.
+    collapse?: CollapseMirrorHealth | null;
   } = $props();
 
   let running = $state('');
@@ -73,6 +81,33 @@
           >Catch up again</button
         >
         {#if running}<span role="status">{running}</span>{/if}
+      </div>
+    {/if}
+    {#if error}<p role="alert">{error}</p>{/if}
+  </section>
+{/if}
+{#if collapse && (collapse.forwarder === 'Stopped' || collapse.archived)}
+  <section
+    class="mirror-status rejected"
+    role="status"
+    aria-label="Collapse forwarder status"
+  >
+    <strong
+      >{collapse.archived
+        ? 'Collapse repository archived · lands are refused'
+        : 'Collapse forwarder stopped · needs a person'}</strong
+    >
+    {#if collapse.message}<pre>{collapse.message}</pre>{/if}
+    {#if project !== null}
+      <div class="mirror-actions">
+        <button
+          class="mini"
+          title="Retry or change the downstream remote on Collapse"
+          onclick={() =>
+            void run('Opening…', (identifier) =>
+              collapseCommands.open(identifier).then(() => null),
+            )}>Open on Collapse ↗</button
+        >
       </div>
     {/if}
     {#if error}<p role="alert">{error}</p>{/if}
