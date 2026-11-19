@@ -29,6 +29,7 @@ pub use save_behind::save_pending;
 
 pub mod interview;
 pub mod issues;
+mod landed_today;
 pub mod migration;
 mod new_project;
 
@@ -1085,6 +1086,10 @@ pub struct ProjectItem {
     pub continuous_dispatch: continuous_dispatch::ContinuousDispatch,
     pub active_thread_id: Option<u32>,
     pub merged_today: u32,
+    /// The local day `merged_today` counts lands for (see `landed_today`).
+    #[serde(default)]
+    #[specta(skip)]
+    pub(crate) merged_day: u32,
     pub tasks: Vec<TaskItem>,
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     #[specta(skip)]
@@ -1206,6 +1211,7 @@ impl ProjectItem {
             continuous_dispatch: continuous_dispatch::ContinuousDispatch::default(),
             active_thread_id: None,
             merged_today: 0,
+            merged_day: 0,
             tasks: Vec::new(),
             task_undo: BTreeMap::new(),
             threads: Vec::new(),

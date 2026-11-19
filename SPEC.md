@@ -80,7 +80,9 @@ The existing GitHub workflow sections describe the legacy git backend while thos
 | `done` | Settled | Spec locked (spec threads only). |
 | `merged` | Settled | PR merged and workspace deleted. The thread is finished. |
 
-The sidebar shows groups in this order: draft, Review, Swarms, Spec interview, Running, named · watching, Failed, Settled. Settled is collapsed by default, shows its count and a chevron, and is the only collapsible group. Its expanded state is saved per project. Finished swarm members move there immediately; idle working threads and failures stay in their active groups. Search reveals matching settled threads even while collapsed. Empty groups are hidden, except "Review", which offers to start agents when empty.
+The sidebar shows groups in this order: draft, Review, Swarms, Spec interview, Running, named · watching, Failed, Settled. Settled is collapsed by default, shows its count and a chevron, and is the only collapsible group. Its expanded state is saved per project. While collapsed it still lists the open thread, so the thread in the main view is always in the sidebar. Finished swarm members move there immediately; idle working threads and failures stay in their active groups. Search reveals matching settled threads even while collapsed. Empty groups are hidden, except "Review", which offers to start agents when empty.
+The draft row, New thread, shows at the top while no thread is open, and takes the first row number.
+The empty message shows only when the project has no threads at all, or none match the search; settled threads count even while collapsed.
 
 Command errors clear after four seconds or the next successful dispatch. Key reports (`Keyboard`, `NumberHints`) don't count as a dispatch here: Enter's own key report would otherwise hide a failed send's error at once. Backend launch notices remain visible while set.
 

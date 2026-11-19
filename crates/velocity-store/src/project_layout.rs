@@ -51,7 +51,7 @@ pub(crate) fn read_model(store: &crate::StateStore) -> LayoutData {
         }
         data.rosen_migration_notice = project.rosen_migration_notice.clone();
         data.settled_expanded = project.settled_expanded;
-        let merged_today = project.merged_today as usize;
+        let merged_today = project.landed_on(crate::landed_today::local_day()) as usize;
         let task_count = project.tasks.len();
         let mut entries: Vec<ThreadEntry> = project.duty_roles.iter().map(duty_entry).collect();
         data.swarms = crate::swarms::swarm_entries(project);

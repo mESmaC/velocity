@@ -15,6 +15,11 @@ pub const GROUPS: [ThreadGroup; 8] = [
     ThreadGroup::Settled,
 ];
 
+/// The sidebar row of the unsent new thread. No stored thread has this identifier, so
+/// opening it by number finds nothing and the composer stays as it is.
+pub const DRAFT_ROW: usize = usize::MAX;
+pub const DRAFT_ROW_TITLE: &str = "New thread";
+
 pub const PULSE: [(PulseKind, &str); 6] = [
     (PulseKind::Duty, "on duty"),
     (PulseKind::Spec, "in spec"),

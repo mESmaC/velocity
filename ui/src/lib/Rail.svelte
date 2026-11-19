@@ -126,13 +126,18 @@
   />
   {#if !layout.rosen_work}<IssuePanel {layout} {send} />{/if}
   <footer class="rail-foot">
-    <button onclick={() => send({ Request: { Navigation: 'Airc' } })}
+    <button
+      title="Agent chat (A)"
+      onclick={() => send({ Request: { Navigation: 'Airc' } })}
+      ><span class="rail-foot-mark" aria-hidden="true">↖</span
       >AIRC{#if layout.airc_unread !== '0'}<span
           class="badge"
           class:alert={layout.overlap_unread}>{layout.airc_unread}</span
         >{/if}</button
-    ><button onclick={() => send({ Request: { SettingsTab: 'agents' } })}
-      >AGENTS.md</button
+    ><button
+      title="Edit AGENTS.md"
+      onclick={() => send({ Request: { SettingsTab: 'agents' } })}
+      ><span class="rail-foot-mark" aria-hidden="true">↖</span>AGENTS.md</button
     >
   </footer>
 </aside>

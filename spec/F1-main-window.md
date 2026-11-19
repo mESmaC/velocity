@@ -22,7 +22,7 @@ There are two views of the same work, switched from the title bar or with `B`:
   - running
   - changes watched
   - failed
-  - landed today
+  - landed today: changes that landed since local midnight, counted as each land arrives and kept across a restart
 - A `Ctrl K` button that opens the palette.
 - The window controls.
 
@@ -78,6 +78,7 @@ There are two views of the same work, switched from the title bar or with `B`:
 **Rail:** Rosen projects show Work (F8, F9) and Rosen status (F6).
 Git projects show Task List and Open Issues.
 Below them are footer links: AIRC (F14), with an unread badge that turns amber when an overlap is unread, and AGENTS.md.
+Each is a text link with the reference's ↖ mark, not a filled button.
 
 **Home (empty) view:** a composer and quick chips:
 

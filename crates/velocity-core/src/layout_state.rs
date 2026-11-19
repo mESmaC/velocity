@@ -1432,6 +1432,9 @@ impl LayoutState {
         GROUPS
             .into_iter()
             .filter_map(|group| {
+                if group == ThreadGroup::Draft {
+                    return self.draft_group(&query, &mut number);
+                }
                 let roots: Vec<_> = self
                     .data
                     .threads
@@ -1453,20 +1456,58 @@ impl LayoutState {
                 let collapsed = group == ThreadGroup::Settled
                     && !self.data.settled_expanded
                     && query.is_empty();
-                let rows = if collapsed {
-                    Vec::new()
-                } else {
-                    self.sidebar_rows(&roots, selected, &mut number)
-                };
+                // Collapsed Settled still lists the open thread, so the thread in the main
+                // view is never missing from the sidebar (#497).
+                let listed: Vec<_> = roots
+                    .into_iter()
+                    .filter(|root| {
+                        !collapsed || self.selected_thread == Some(root.policy.identifier)
+                    })
+                    .collect();
                 Some(SidebarGroup {
                     collapsed,
                     group,
                     title: layout_catalog::group_title(group).into(),
                     count,
-                    rows,
+                    rows: self.sidebar_rows(&listed, selected, &mut number),
                 })
             })
             .collect()
+    }
+
+    /// The unsent new thread, as the row at the top of the sidebar (§2.1, #497). It shows
+    /// while no thread is open, so the composer on Home always has its row.
+    fn draft_group(&self, query: &[char], number: &mut usize) -> Option<SidebarGroup> {
+        let shown = self.data.project_identifier.is_some()
+            && self.selected_thread.is_none()
+            && layout::substring_match(query, &normalized(layout_catalog::DRAFT_ROW_TITLE));
+        if !shown {
+            return None;
+        }
+        *number = number.saturating_add(1);
+        Some(SidebarGroup {
+            collapsed: false,
+            group: ThreadGroup::Draft,
+            title: layout_catalog::group_title(ThreadGroup::Draft).into(),
+            count: 1,
+            rows: vec![SidebarRow {
+                identifier: layout_catalog::DRAFT_ROW,
+                title: layout_catalog::DRAFT_ROW_TITLE.into(),
+                titling: false,
+                metadata: String::new(),
+                change_stage: None,
+                group: ThreadGroup::Draft,
+                duty_role: None,
+                member: false,
+                expanded: false,
+                active: matches!(self.view, NavigationView::Home),
+                paused: false,
+                agents: 0,
+                number: Some(*number),
+                segments: Vec::new(),
+                goal: false,
+            }],
+        })
     }
 
     fn sidebar_rows(

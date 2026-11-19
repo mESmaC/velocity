@@ -988,13 +988,17 @@ button.duty-empty:hover {
   height: 24px;
   padding: 0 var(--sp-4);
   border-radius: var(--r-sm);
-  color: var(--muted);
+  color: var(--text-2);
   font-size: var(--fs-sm);
   font-weight: var(--fw-medium);
 }
 .rail-foot button:hover {
   background: var(--surface-3);
   color: var(--text);
+}
+/* The reference's ↖ marks each footer link as one that opens elsewhere in the window. */
+.rail-foot-mark {
+  color: var(--muted);
 }
 .badge {
   display: inline-grid;

@@ -36,7 +36,6 @@
         <span class="branch"><Icon name="branch" />{thread.branch}</span>
       {/if}
       <span>{interview.status_label}</span>
-      {#if thread.account_label}<span>{thread.account_label}</span>{/if}
       {#if thread.model_pill.model_name}<span
           >{thread.model_pill.model_name}</span
         >{/if}

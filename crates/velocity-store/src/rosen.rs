@@ -501,6 +501,9 @@ impl StateStore {
         let abandoned = progress == RosenProgress::Abandoned;
         let landed = apply_progress(thread, progress, message);
         queue_follow_up(thread, progress, message);
+        if landed {
+            item.record_land(crate::landed_today::local_day());
+        }
         crate::goal_rosen::apply(item, identifier, progress);
         crate::swarms::record_rosen_activity(item, identifier, progress);
         if abandoned {

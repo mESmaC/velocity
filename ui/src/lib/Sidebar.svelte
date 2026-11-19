@@ -97,8 +97,7 @@
       name="Threads"
       rosen
       empty={!layout.groups.some(
-        (group) =>
-          group.rows.length || (group.collapsed && group.count !== '0'),
+        (group) => group.group !== 'Draft' && group.count !== '0',
       )}
       message={layout.search
         ? 'No threads match your search.'
@@ -148,9 +147,16 @@
               data-status={row.group}
               aria-current={row.active ? 'page' : undefined}
               title={row.title}
-              onclick={() => send({ OpenThread: row.identifier })}
+              onclick={() =>
+                send(
+                  row.group === 'Draft'
+                    ? { Request: { Navigation: 'NewThread' } }
+                    : { OpenThread: row.identifier },
+                )}
               oncontextmenu={(event) => {
                 event.preventDefault();
+                // The unsent new thread has nothing to rename, stop or delete.
+                if (row.group === 'Draft') return;
                 openMenu(
                   row.identifier,
                   event.clientX,
@@ -192,9 +198,6 @@
         {/each}
       </section>
     {/each}
-    {#if layout.groups.length === 0}<p class="empty">
-        No matching threads.
-      </p>{/if}
   </nav>
   <footer class="sidebar-foot">
     <button
