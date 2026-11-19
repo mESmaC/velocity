@@ -1,6 +1,6 @@
 //! Durable project mirror state, independent of the thread event cursor (F5, #402).
 
-use velocity_core::rosen_mirror::MirrorState;
+use velocity_core::rosen_mirror::{MirrorDivergence, MirrorState};
 
 use crate::{StateStore, StoreError};
 
@@ -105,6 +105,27 @@ impl StateStore {
         Ok(true)
     }
 
+    /// Saves the divergence the last catch-up from the mirror found, or clears it, and
+    /// reports whether it changed (#501).
+    pub fn save_mirror_divergence(
+        &mut self,
+        project: u32,
+        divergence: Option<MirrorDivergence>,
+    ) -> Result<bool, StoreError> {
+        let unchanged = self
+            .project(project)
+            .is_none_or(|item| item.rosen_mirror_divergence == divergence);
+        if unchanged {
+            return Ok(false);
+        }
+        let mut next = self.state.clone();
+        if let Some(item) = next.projects.iter_mut().find(|item| item.id == project) {
+            item.rosen_mirror_divergence = divergence;
+        }
+        self.store_snapshot(next)?;
+        Ok(true)
+    }
+
     pub fn finish_mirror_notice(&mut self, project: u32, sequence: u64) -> Result<(), StoreError> {
         let mut next = self.state.clone();
         if let Some(item) = next.projects.iter_mut().find(|item| item.id == project) {
@@ -112,5 +133,44 @@ impl StateStore {
                 .retain(|notice| notice.sequence != sequence);
         }
         self.store_snapshot(next)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use velocity_core::rosen_mirror::MirrorDivergence;
+
+    use crate::{ProjectItem, StateStore};
+
+    // Risk (#501): a divergence lost on reload hides that the base and mirror need a
+    // person, and one that survives its clearing shows a stale notice after a catch-up.
+    #[test]
+    fn mirror_divergence_survives_reload_until_cleared() -> Result<(), Box<dyn std::error::Error>> {
+        let unique = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)?
+            .as_nanos();
+        let directory = std::env::temp_dir().join(format!("velocity-mirror-divergence-{unique}"));
+        let mut store = StateStore::load_or_default(&directory)?;
+        store.state.projects = vec![ProjectItem::new(1, "One".into(), r"C:\project one".into())];
+        store.store_snapshot(store.state.clone())?;
+        let divergence = MirrorDivergence {
+            base_commit: "a".repeat(40),
+            mirror_commit: "b".repeat(40),
+            detail: "base main and mirror branch main have diverged".into(),
+        };
+        assert!(store.save_mirror_divergence(1, Some(divergence.clone()))?);
+        assert!(!store.save_mirror_divergence(1, Some(divergence.clone()))?);
+
+        let mut store = StateStore::load_or_default(&directory)?;
+        assert_eq!(
+            store.state.projects[0].rosen_mirror_divergence,
+            Some(divergence)
+        );
+        assert!(store.save_mirror_divergence(1, None)?);
+
+        let store = StateStore::load_or_default(&directory)?;
+        assert_eq!(store.state.projects[0].rosen_mirror_divergence, None);
+        std::fs::remove_dir_all(directory)?;
+        Ok(())
     }
 }

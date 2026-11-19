@@ -126,6 +126,8 @@ pub struct LayoutData {
     pub project_identifier: Option<u32>,
     pub project_name: String,
     pub rosen_mirror: Option<crate::rosen_mirror::MirrorState>,
+    /// The base and mirror branch diverged when the project last caught up (#501).
+    pub rosen_mirror_divergence: Option<crate::rosen_mirror::MirrorDivergence>,
     /// The project's Collapse mirror as `owner/repository`; `None` hides Open on Collapse.
     pub collapse_repository: Option<String>,
     pub rosen_work: Option<RosenWorkView>,
@@ -462,6 +464,8 @@ pub struct LayoutSnapshot {
     pub project_identifier: Option<u32>,
     pub project_name: String,
     pub rosen_mirror: Option<crate::rosen_mirror::MirrorState>,
+    /// The base and mirror branch diverged when the project last caught up (#501).
+    pub rosen_mirror_divergence: Option<crate::rosen_mirror::MirrorDivergence>,
     /// The project's Collapse mirror as `owner/repository`; `None` hides Open on Collapse.
     pub collapse_repository: Option<String>,
     pub rosen_work: Option<RosenWorkView>,

@@ -25,6 +25,7 @@ pub mod machines;
 pub mod memory;
 mod migration;
 mod mirror;
+mod mirror_catch_up;
 pub mod policy;
 pub mod post_land;
 mod process;
@@ -53,6 +54,7 @@ pub use git_base::synchronize_git_base;
 pub use issue::{issue_build_coverage, record_work_sources};
 pub use migration::{Migration, migration_event_cursor};
 pub use mirror::{MirrorObservation, mirror_remote, mirror_status};
+pub use mirror_catch_up::{CatchUp, FastForward, adopt_mirror_tip, catch_up_from_mirror};
 pub use retry::retry_workspace;
 pub use rosen_client::Error as ClientError;
 pub use rosen_client::protocol::Event as ProjectEvent;
@@ -84,6 +86,8 @@ pub enum RosenError {
     MirrorMetadata(#[from] rusqlite::Error),
     #[error("invalid Rosen mirror event: {0}")]
     MirrorData(String),
+    #[error("Rosen refused: {0}")]
+    MirrorRefused(String),
     #[error(
         "rosen-server was not found next to Velocity, in the folder {BINARY_FOLDER_ENV} names, or on PATH"
     )]

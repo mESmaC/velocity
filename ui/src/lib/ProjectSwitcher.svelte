@@ -8,6 +8,7 @@
     onProjectSelected,
     openProjectCommands,
     projectCommands,
+    rosenMirrorCommands,
   } from './ipc';
   import type {
     LayoutAction,
@@ -21,6 +22,7 @@
     name,
     project,
     collapse,
+    rosen,
     send,
     select,
   }: {
@@ -28,6 +30,8 @@
     project: number | null;
     // The active project's Collapse mirror; null hides Open on Collapse (#429).
     collapse: string | null;
+    // The active project uses Rosen, so it offers Catch up from mirror (#501).
+    rosen: boolean;
     send: (action: LayoutAction) => void;
     select: (identifier: number) => void;
   } = $props();
@@ -127,6 +131,18 @@
     error = '';
     try {
       await collapseCommands.open(identifier);
+    } catch (reason) {
+      report(reason);
+    }
+  }
+
+  // Rust catches the project up and reports the outcome as a toast; a
+  // divergence also shows in the project's mirror notice.
+  async function catchUpFromMirror(identifier: number) {
+    menu.hidePopover();
+    error = '';
+    try {
+      await rosenMirrorCommands.catchUp(identifier);
     } catch (reason) {
       report(reason);
     }
@@ -343,6 +359,15 @@
         title={`collapse.sh/${collapse}`}
         onclick={() => void openOnCollapse(identifier)}
         >Open on Collapse ↗<span class="sub">{collapse}</span></button
+      >
+    {/if}
+    {#if rosen && project !== null}
+      {@const identifier = project}
+      <button
+        role="menuitem"
+        title="Move Rosen's base forward to the mirror when another machine landed there"
+        onclick={() => void catchUpFromMirror(identifier)}
+        >Catch up from mirror</button
       >
     {/if}
     {#if opening}<p class="menu-note" role="status">{opening}</p>{/if}

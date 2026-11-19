@@ -1161,6 +1161,11 @@ pub struct ProjectItem {
     #[serde(default)]
     #[specta(skip)]
     pub collapse_repository: Option<String>,
+    /// The base and mirror branch diverged at the last catch-up from the mirror; cleared
+    /// when a catch-up or adoption succeeds (#501).
+    #[serde(default)]
+    #[specta(skip)]
+    pub rosen_mirror_divergence: Option<velocity_core::rosen_mirror::MirrorDivergence>,
 }
 
 /// The New project dialog's interview choices, kept until the spec interview
@@ -1219,6 +1224,7 @@ impl ProjectItem {
             rosen_mirror_rejection_sequence: None,
             rosen_mirror_notices: Vec::new(),
             collapse_repository: None,
+            rosen_mirror_divergence: None,
         }
     }
 

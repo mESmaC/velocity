@@ -38,6 +38,7 @@
         name={layout?.project_name ?? ''}
         project={layout?.project_identifier ?? null}
         collapse={layout?.collapse_repository ?? null}
+        rosen={layout?.rosen_work != null}
         {send}
         select={switchProject}
       />
@@ -107,5 +108,9 @@
       >
     </div>
   </header>
-  <RosenMirror state={layout?.rosen_mirror ?? null} />
+  <RosenMirror
+    state={layout?.rosen_mirror ?? null}
+    divergence={layout?.rosen_mirror_divergence ?? null}
+    project={layout?.project_identifier ?? null}
+  />
 </div>

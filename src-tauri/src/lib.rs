@@ -163,6 +163,8 @@ fn bindings() -> Builder<tauri::Wry> {
         issue_panel::dispatch_work_issue,
         issue_panel::set_work_issue_expanded,
         issue_panel::toggle_issue_expanded,
+        rosen_mirror::adopt_mirror_tip,
+        rosen_mirror::catch_up_from_mirror,
         rosen_status::watch_rosen_status,
         rosen_thread::run_rosen_thread_action,
         shared_mcp::edit_shared_mcp_servers,

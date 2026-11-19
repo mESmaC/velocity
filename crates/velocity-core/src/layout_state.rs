@@ -720,6 +720,7 @@ impl LayoutState {
             project_identifier: self.data.project_identifier,
             project_name: self.data.project_name.clone(),
             rosen_mirror: self.data.rosen_mirror.clone(),
+            rosen_mirror_divergence: self.data.rosen_mirror_divergence.clone(),
             collapse_repository: self.data.collapse_repository.clone(),
             rosen_work: self.data.rosen_work.clone(),
             rosen_migration_notice: self.data.rosen_migration_notice.clone(),

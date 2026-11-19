@@ -29,6 +29,18 @@ pub(crate) struct ManagedRosen {
     pool_sizes: tokio::sync::Mutex<BTreeMap<u32, usize>>,
     /// Held while a pass runs Rosen events' follow-ups (`rosen_events`).
     pub(crate) follow_ups: tokio::sync::Mutex<()>,
+    /// Each project's catch-up from its mirror this run, done once on its first start (#501).
+    catch_ups: std::sync::Mutex<BTreeMap<u32, std::sync::Arc<tokio::sync::OnceCell<()>>>>,
+}
+
+impl ManagedRosen {
+    /// The project's catch-up for this run, shared so concurrent first starts wait for one.
+    pub(crate) fn catch_up_once(&self, project: u32) -> std::sync::Arc<tokio::sync::OnceCell<()>> {
+        self.catch_ups
+            .lock()
+            .map(|mut catch_ups| std::sync::Arc::clone(catch_ups.entry(project).or_default()))
+            .unwrap_or_default()
+    }
 }
 
 /// How often every open Rosen thread is checked for a running watcher: one that ended,
@@ -45,6 +57,7 @@ pub(crate) fn initialize(application: &AppHandle) -> anyhow::Result<()> {
         budgeted: std::sync::Mutex::new(BTreeSet::new()),
         pool_sizes: tokio::sync::Mutex::new(BTreeMap::new()),
         follow_ups: tokio::sync::Mutex::new(()),
+        catch_ups: std::sync::Mutex::new(BTreeMap::new()),
     });
     let handle = application.clone();
     tauri::async_runtime::spawn(async move {
@@ -202,7 +215,7 @@ pub(crate) async fn pool_target(application: &AppHandle, project: u32) -> u32 {
     u32::try_from(sizes.get(&project).copied().unwrap_or(0)).unwrap_or(u32::MAX)
 }
 
-/// The project's server, started and imported.
+/// The project's server, started, imported and, once per run, caught up from its mirror.
 pub(crate) async fn server(application: &AppHandle, project: u32) -> Result<ProjectServer, String> {
     let source = {
         let store = lock(
@@ -241,6 +254,8 @@ pub(crate) async fn server(application: &AppHandle, project: u32) -> Result<Proj
     if let Some(folder) = pool.filter(|_| first) {
         size_disk_budget(&server, folder).await;
     }
+    // Before any caller can land: a base behind its mirror would push non-fast-forward.
+    crate::rosen_mirror::catch_up_once(application, project, &server).await;
     Ok(server)
 }
 

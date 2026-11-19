@@ -171,6 +171,17 @@ export const commands = {
 	setWorkIssueExpanded: (projectIdentifier: number, repository: string, number: number, expanded: boolean) => __TAURI_INVOKE<null>("set_work_issue_expanded", { projectIdentifier, repository, number, expanded }),
 	/**  Expands or collapses one issue row in the rail (#209) and broadcasts the new snapshot. */
 	toggleIssueExpanded: (number: number) => __TAURI_INVOKE<IssuePanelSnapshot_Serialize>("toggle_issue_expanded", { number }),
+	/**
+	 *  `adopt_mirror_tip` (§3.1): adopts the diverged mirror tip the project's notice shows,
+	 *  for a mirror whose edits were already ported into Rosen (Rosen #396). Rust takes the
+	 *  tip from the saved divergence; Rosen refuses a tip that moved or was not ported.
+	 */
+	adoptMirrorTip: (projectIdentifier: number) => __TAURI_INVOKE<null>("adopt_mirror_tip", { projectIdentifier }),
+	/**
+	 *  `catch_up_from_mirror` (§3.1): the project's Catch up from mirror action. Says what
+	 *  happened in a toast, and shows a divergence in the project's mirror notice.
+	 */
+	catchUpFromMirror: (projectIdentifier: number) => __TAURI_INVOKE<null>("catch_up_from_mirror", { projectIdentifier }),
 	watchRosenStatus: (projectIdentifier: number | null) => __TAURI_INVOKE<boolean>("watch_rosen_status", { projectIdentifier }),
 	runRosenThreadAction: (projectIdentifier: number, threadIdentifier: number, change: string, action: RosenThreadAction) => __TAURI_INVOKE<null>("run_rosen_thread_action", { projectIdentifier, threadIdentifier, change, action }),
 	/**
@@ -2150,6 +2161,8 @@ export type LayoutSnapshot_Deserialize = {
 	project_identifier?: number | null,
 	project_name: string,
 	rosen_mirror?: MirrorState_Deserialize | null,
+	/**  The base and mirror branch diverged when the project last caught up (#501). */
+	rosen_mirror_divergence?: MirrorDivergence | null,
 	/**  The project's Collapse mirror as `owner/repository`; `None` hides Open on Collapse. */
 	collapse_repository?: string | null,
 	rosen_work?: RosenWorkView_Deserialize | null,
@@ -2214,6 +2227,8 @@ export type LayoutSnapshot_Serialize = {
 	project_identifier: number | null,
 	project_name: string,
 	rosen_mirror: MirrorState_Serialize | null,
+	/**  The base and mirror branch diverged when the project last caught up (#501). */
+	rosen_mirror_divergence: MirrorDivergence | null,
 	/**  The project's Collapse mirror as `owner/repository`; `None` hides Open on Collapse. */
 	collapse_repository: string | null,
 	rosen_work: RosenWorkView_Serialize | null,
@@ -2350,6 +2365,19 @@ export type MachinesView_Serialize = {
 };
 
 export type MessageMode = "Open" | "HeadsDown" | "Quarantined";
+
+/**
+ *  A base and mirror branch that have diverged, found by catching up from the mirror
+ *  (#501). Nothing moved; a person reconciles them or adopts the mirror tip (Rosen #396).
+ */
+export type MirrorDivergence = {
+	/**  The tip of Rosen's base. */
+	base_commit: string,
+	/**  The tip of the mirror branch. */
+	mirror_commit: string,
+	/**  Rosen's refusal: both tips and the commits each side has that the other lacks. */
+	detail: string,
+};
 
 export type MirrorState = MirrorState_Serialize | MirrorState_Deserialize;
 
