@@ -7,8 +7,9 @@ use std::process::{Child, Output, Stdio};
 use std::time::{Duration, Instant};
 use thiserror::Error;
 
+/// Why a `gh` call for an issue, label, status or repository read failed.
 #[derive(Debug, Error)]
-pub enum PullRequestError {
+pub enum GitHubCommandError {
     #[error("GitHub transport I/O failed: {0}")]
     Process(#[from] std::io::Error),
     #[error("gh failed ({code:?}): {message}")]
@@ -21,18 +22,16 @@ pub enum PullRequestError {
     Missing(String),
     #[error("{0}")]
     Invalid(String),
-    #[error("Approval record: {0}")]
-    Record(#[from] velocity_airc::Error),
 }
 
 /// How long one `gh` call may run. GitHub answers in seconds; a call still running after
 /// this is hung (a stalled connection, a prompt nobody can answer), and whatever waits on
-/// it, a PR duty pass or a merge, would otherwise wait for good.
+/// it, such as an issue panel refresh or a post-land report, would otherwise wait for good.
 const DEADLINE: Duration = Duration::from_secs(120);
 /// How often a running `gh` is checked for its exit.
 const POLL: Duration = Duration::from_millis(10);
 
-pub(crate) struct PullRequestCommand {
+pub(crate) struct GitHubCommand {
     directory: PathBuf,
     /// Where this client was created, so each `gh` call is counted against its feature.
     caller: &'static Location<'static>,
@@ -42,7 +41,7 @@ pub(crate) struct PullRequestCommand {
     created_at: Instant,
 }
 
-impl PullRequestCommand {
+impl GitHubCommand {
     /// A Rosen project can have a GitHub mirror without a local git checkout. Keep gh's
     /// working directory short and pass the validated repository explicitly to its API.
     #[track_caller]
@@ -60,7 +59,7 @@ impl PullRequestCommand {
     }
 
     #[track_caller]
-    pub fn new(directory: &Path) -> Result<(Self, String), PullRequestError> {
+    pub fn new(directory: &Path) -> Result<(Self, String), GitHubCommandError> {
         let caller = Location::caller();
         let directory = std::fs::canonicalize(directory)?;
         // CreateProcess and Git's repository discovery reject long working
@@ -68,7 +67,7 @@ impl PullRequestCommand {
         let root = directory
             .ancestors()
             .last()
-            .ok_or_else(|| PullRequestError::Invalid("Checkout has no filesystem root".into()))?;
+            .ok_or_else(|| GitHubCommandError::Invalid("Checkout has no filesystem root".into()))?;
         let repository = origin_url(&directory)?;
         Ok((
             Self {
@@ -91,15 +90,15 @@ impl PullRequestCommand {
                 .is_some_and(|origin| origin == self.origin)
     }
 
-    pub fn read<T: DeserializeOwned>(&self, arguments: &[&str]) -> Result<T, PullRequestError> {
+    pub fn read<T: DeserializeOwned>(&self, arguments: &[&str]) -> Result<T, GitHubCommandError> {
         self.run(arguments, None, None)
     }
 
-    /// A command's plain-text output, such as `gh pr diff`.
-    pub fn text(&self, arguments: &[&str]) -> Result<String, PullRequestError> {
+    /// A command's plain-text output.
+    pub fn text(&self, arguments: &[&str]) -> Result<String, GitHubCommandError> {
         let output = finish(self.spawn(arguments, false, None)?, DEADLINE)?;
         if !output.status.success() {
-            return Err(PullRequestError::Command {
+            return Err(GitHubCommandError::Command {
                 code: output.status.code(),
                 message: String::from_utf8_lossy(&output.stderr).trim().to_owned(),
             });
@@ -112,7 +111,7 @@ impl PullRequestCommand {
         method: &str,
         endpoint: &str,
         body: &Value,
-    ) -> Result<T, PullRequestError> {
+    ) -> Result<T, GitHubCommandError> {
         self.run(
             &["api", "--method", method, endpoint, "--input", "-"],
             Some(body),
@@ -125,7 +124,7 @@ impl PullRequestCommand {
         &self,
         path: &str,
         body: &Value,
-    ) -> Result<T, PullRequestError> {
+    ) -> Result<T, GitHubCommandError> {
         self.run(
             &["api", "--method", "POST", "graphql", "--input", "-"],
             Some(body),
@@ -138,14 +137,14 @@ impl PullRequestCommand {
         arguments: &[&str],
         body: Option<&Value>,
         graphql_path: Option<&str>,
-    ) -> Result<T, PullRequestError> {
+    ) -> Result<T, GitHubCommandError> {
         let input = body.map(serde_json::to_vec).transpose()?;
         let mut child = self.spawn(arguments, input.is_some(), graphql_path)?;
         if let Some(input) = input {
             let written = child
                 .stdin
                 .take()
-                .ok_or_else(|| PullRequestError::Missing("gh stdin".into()))?
+                .ok_or_else(|| GitHubCommandError::Missing("gh stdin".into()))?
                 .write_all(&input);
             if let Err(error) = written {
                 let _ = child.kill();
@@ -155,7 +154,7 @@ impl PullRequestCommand {
         }
         let output = finish(child, DEADLINE)?;
         if !output.status.success() {
-            return Err(PullRequestError::Command {
+            return Err(GitHubCommandError::Command {
                 code: output.status.code(),
                 message: String::from_utf8_lossy(&output.stderr).trim().to_owned(),
             });
@@ -168,7 +167,7 @@ impl PullRequestCommand {
         arguments: &[&str],
         has_input: bool,
         graphql_path: Option<&str>,
-    ) -> Result<Child, PullRequestError> {
+    ) -> Result<Child, GitHubCommandError> {
         crate::request_counter::record(
             self.caller,
             crate::request_counter::operation(arguments, graphql_path),
@@ -191,7 +190,7 @@ impl PullRequestCommand {
 }
 
 /// Waits for `child` and collects what it printed, stopping it when it runs past `limit`.
-fn finish(mut child: Child, limit: Duration) -> Result<Output, PullRequestError> {
+fn finish(mut child: Child, limit: Duration) -> Result<Output, GitHubCommandError> {
     // Read on their own threads: a child that fills a pipe nobody reads never exits.
     let stdout = collect(child.stdout.take());
     let stderr = collect(child.stderr.take());
@@ -204,7 +203,7 @@ fn finish(mut child: Child, limit: Duration) -> Result<Output, PullRequestError>
             // The readers end when the pipes close; nothing waits for them.
             let _ = child.kill();
             let _ = child.wait();
-            return Err(PullRequestError::TimedOut(limit.as_secs()));
+            return Err(GitHubCommandError::TimedOut(limit.as_secs()));
         }
         std::thread::sleep(POLL);
     };
@@ -226,17 +225,17 @@ fn collect<Pipe: Read + Send + 'static>(pipe: Option<Pipe>) -> std::thread::Join
     })
 }
 
-fn origin_url(directory: &Path) -> Result<String, PullRequestError> {
+fn origin_url(directory: &Path) -> Result<String, GitHubCommandError> {
     let repository = gix::discover(directory).map_err(|error| {
-        PullRequestError::Invalid(format!("Could not open Git checkout: {error}"))
+        GitHubCommandError::Invalid(format!("Could not open Git checkout: {error}"))
     })?;
     let remote = repository
         .find_remote("origin")
-        .map_err(|error| PullRequestError::Invalid(format!("Could not read origin: {error}")))?;
+        .map_err(|error| GitHubCommandError::Invalid(format!("Could not read origin: {error}")))?;
     let mut url = remote
         .url(gix::remote::Direction::Fetch)
         .cloned()
-        .ok_or_else(|| PullRequestError::Invalid("Origin has no fetch URL".into()))?;
+        .ok_or_else(|| GitHubCommandError::Invalid("Origin has no fetch URL".into()))?;
     // gh uses its own credential store. Git remote userinfo must never become
     // process arguments, even when the checkout's origin embeds credentials.
     url.set_user(None);

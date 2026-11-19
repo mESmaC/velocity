@@ -9,7 +9,6 @@ use velocity_acp::client::{AgentEvent, AgentInput, SessionSetup, TitleRequest};
 use velocity_core::layout_view::{LayoutIntent, LayoutSnapshot};
 use velocity_core::thread_view_model::TranscriptBlock;
 use velocity_core::work_pool::WorkPiece;
-use velocity_github::follow_through::AgentFollowUp;
 use velocity_store::build_gate::{LaunchRequest, require_launch};
 use velocity_store::duty::clock_timestamp;
 use velocity_store::{AgentActivity, ThreadState};
@@ -19,8 +18,8 @@ use velocity_threads::goal_swarm::{
     choose_and_claim_selecting,
 };
 use velocity_threads::{
-    DeliveryStatus, LaunchPlan, RunningSession, SessionInputs, StopOutcome, ThreadKey,
-    ThreadProgress, ThreadRuntimes, agent_launch_for_account, resolve_title, spawn_session,
+    LaunchPlan, RunningSession, SessionInputs, StopOutcome, ThreadKey, ThreadProgress,
+    ThreadRuntimes, resolve_title, spawn_session,
 };
 
 use crate::layout::MainLayout;
@@ -37,26 +36,6 @@ pub fn action_lock(
         "thread sessions",
     )?
     .action_lock(key))
-}
-
-pub fn follow_through_hooks() -> crate::follow_through::Hooks {
-    crate::follow_through::Hooks::new(deliver_follow_up, stop_follow_through, work_snapshot)
-}
-
-fn deliver_follow_up(
-    application: &AppHandle,
-    key: ThreadKey,
-    pending: &AgentFollowUp,
-) -> Result<DeliveryStatus, String> {
-    let delivered = lock(
-        application.state::<ManagedThreads>().inner(),
-        "thread sessions",
-    )?
-    .deliver_follow_up(key, &pending.identifier, &pending.message);
-    match delivered {
-        Ok(status) => Ok(status),
-        Err(_) => resume_follow_through(application, key, pending),
-    }
 }
 
 /// Apply the saved run settings and the AIRC instructions for this thread's launch origin.
@@ -90,74 +69,6 @@ fn configure_session(
     setup.graph_task_title = title;
     crate::handoff::configure(application, key, &mut setup);
     setup
-}
-
-fn resume_follow_through(
-    application: &AppHandle,
-    key: ThreadKey,
-    pending: &AgentFollowUp,
-) -> Result<DeliveryStatus, String> {
-    let (project, thread, settings) = {
-        let mut store = lock(
-            application.state::<ManagedStateStore>().inner(),
-            "persisted state",
-        )?;
-        let (project, mut thread) = store
-            .follow_through_thread(key.0, key.1)
-            .map_err(|error| error.to_string())?;
-        if thread.activity == AgentActivity::AtLimit {
-            return Ok(DeliveryStatus::Pending);
-        }
-        let settings = store.settings();
-        let Some(account) = settings.available_account(
-            thread.provider,
-            thread.preferred_account.unwrap_or(thread.provider_account),
-            velocity_store::providers::unix_now(),
-        ) else {
-            return Ok(DeliveryStatus::Pending);
-        };
-        thread.bind_provider_account(account);
-        store
-            .update_thread(key.0, key.1, |thread| thread.bind_provider_account(account))
-            .map_err(|error| error.to_string())?;
-        (project, thread, settings)
-    };
-    let path = thread.worktree_path.as_deref().ok_or("Missing workspace")?;
-    let (mut agent, bypass_modes) =
-        agent_launch_for_account(&settings, thread.provider, thread.provider_account)
-            .map_err(|error| error.to_string())?;
-    let mut setup = SessionSetup::new(path.into(), bypass_modes)
-        .with_run_settings(velocity_threads::thread_run_settings(&thread));
-    match crate::rosen::prepare_resume(application, key.0, &thread, &mut agent, &mut setup) {
-        Some(prepared) => prepared?,
-        None => velocity_git::verify_thread_worktree(
-            std::path::Path::new(&project.repository_path),
-            std::path::Path::new(path),
-            &thread.branch_name,
-        )
-        .map_err(|error| error.to_string())?,
-    }
-    setup.airc =
-        crate::airc_access::for_thread(application, key, std::path::Path::new(path), &thread);
-    setup.resume = crate::handoff::resume_context(&thread, &thread.transcript);
-    crate::airc_claims::attach(application, key, &setup, &thread.branch_name)?;
-    let inputs = lock(
-        application.state::<ManagedThreads>().inner(),
-        "thread sessions",
-    )?
-    .resume_follow_through(key, path, &pending.identifier, &pending.message)
-    .map_err(|error| error.to_string())?;
-    let updated = save_activity(application, key, AgentActivity::Thinking, None)
-        .and_then(|_| refresh(application, key, false));
-    setup.pause_on_subscription_limit = true;
-    let handle = application.clone();
-    tauri::async_runtime::spawn(async move {
-        crate::handoff::add_preface(&handle, key, &mut setup).await;
-        crate::browser::configure(&handle, key, &mut setup);
-        pump(&handle, key, spawn_session(agent, setup, inputs)).await;
-    });
-    updated?;
-    Ok(DeliveryStatus::Pending)
 }
 
 pub(crate) fn stop_follow_through(application: &AppHandle, key: ThreadKey) -> Result<bool, String> {
@@ -219,18 +130,6 @@ fn finish_stopping(
     }
 }
 
-fn work_snapshot(
-    application: &AppHandle,
-    key: ThreadKey,
-) -> Option<velocity_core::thread_view_model::SessionWork> {
-    lock(
-        application.state::<ManagedThreads>().inner(),
-        "thread sessions",
-    )
-    .ok()?
-    .work_snapshot(key)
-}
-
 #[derive(Clone, Debug, serde::Serialize, serde::Deserialize, specta::Type, Event)]
 #[tauri_specta(event_name = "thread://status")]
 pub struct ThreadStatusChanged {
@@ -264,9 +163,6 @@ pub fn handle_intent(
     intent: &LayoutIntent,
 ) -> Result<Option<LayoutSnapshot>, String> {
     match intent {
-        LayoutIntent::OpenPullRequest(number) => {
-            open_pull_request(application, *number).map(|_| None)
-        }
         LayoutIntent::StartPrompt(prompt) => start_thread(application, prompt).map(Some),
         LayoutIntent::SteerThread {
             identifier, prompt, ..
@@ -292,32 +188,6 @@ pub fn handle_intent(
         }
         _ => Ok(None),
     }
-}
-
-fn open_pull_request(application: &AppHandle, number: usize) -> Result<(), String> {
-    let directory =
-        {
-            let store = lock(
-                application.state::<ManagedStateStore>().inner(),
-                "persisted state",
-            )?;
-            let project = store.active_project().ok_or("Select a project first")?;
-            if !project.threads.iter().any(|thread| {
-                thread.pull_request_number.map(|value| value as usize) == Some(number)
-            }) {
-                return Err("The change does not belong to a thread in this project".into());
-            }
-            std::path::PathBuf::from(&project.repository_path)
-        };
-    let number = u32::try_from(number).map_err(|error| error.to_string())?;
-    tauri::async_runtime::spawn_blocking(move || {
-        report(
-            velocity_github::PullRequestClient::discover(&directory)
-                .and_then(|client| client.open_in_browser(number))
-                .map_err(|error| error.to_string()),
-        );
-    });
-    Ok(())
 }
 
 /// Records the thread, shows it, and starts its worktree and agent in the background (F4).
@@ -1475,19 +1345,12 @@ fn record_names(
 }
 
 pub(crate) fn setup_no_longer_wanted(application: &AppHandle, key: ThreadKey) -> bool {
-    let merged = lock(
-        application.state::<ManagedStateStore>().inner(),
-        "persisted state",
-    )
-    .map(|store| store.thread_has_merged_pull_request(key.0, key.1))
-    .unwrap_or(true);
-    let live = lock(
+    !lock(
         application.state::<ManagedThreads>().inner(),
         "thread sessions",
     )
     .map(|runtimes| runtimes.is_live(key))
-    .unwrap_or(false);
-    merged || !live
+    .unwrap_or(false)
 }
 
 /// Applies agent events as they arrive. A burst of streamed chunks is applied together and

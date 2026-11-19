@@ -27,8 +27,7 @@ pub mod waits;
 pub use channel::{Channel, EVENT_TAGS, Entry, Event, Presence};
 pub use claims::{Claim, ClaimResult, piece_key};
 pub use delivery::{
-    Delivery, DeliveryPriority, deliver_filtered, deliver_messages, deliver_targeted, message_for,
-    prompt_lines,
+    Delivery, DeliveryPriority, deliver_messages, deliver_targeted, message_for, prompt_lines,
 };
 pub use issue_tools::IssueUpdate;
 pub use launch::{

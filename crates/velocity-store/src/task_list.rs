@@ -415,9 +415,6 @@ fn thread_label(thread: &ThreadItem) -> String {
     }
 }
 fn review_label(thread: &ThreadItem) -> &'static str {
-    if crate::follow_through::merged_awaiting_cleanup(thread) {
-        return crate::follow_through::MERGED_CLEANING_UP;
-    }
     match thread.review_stage {
         Some(crate::ReviewStage::ContinuousIntegration) => "checking",
         Some(crate::ReviewStage::Fixing) => "addressing review",

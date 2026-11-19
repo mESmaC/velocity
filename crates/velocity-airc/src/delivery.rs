@@ -114,33 +114,14 @@ pub fn deliver_targeted(
     nick: &str,
     after: u64,
     idle: bool,
-    deliver: impl FnMut(&Delivery) -> Result<bool, String>,
-) -> Result<u64, Error> {
-    deliver_filtered(channel, nick, after, idle, false, deliver)
-}
-
-/// A legacy PR author receives GitHub review prompts from follow-through.
-pub fn deliver_filtered(
-    channel: &Channel,
-    nick: &str,
-    after: u64,
-    idle: bool,
-    follows_github_reviews: bool,
     mut deliver: impl FnMut(&Delivery) -> Result<bool, String>,
 ) -> Result<u64, Error> {
     if channel.server_backed() {
-        return crate::remote_delivery::deliver(
-            channel,
-            nick,
-            after,
-            idle,
-            follows_github_reviews,
-            deliver,
-        );
+        return crate::remote_delivery::deliver(channel, nick, after, idle, deliver);
     }
     let mut cursor = after;
     let mut held = false;
-    for (sequence, delivery) in pending(channel, nick, after, idle, follows_github_reviews)? {
+    for (sequence, delivery) in pending(channel, nick, after, idle)? {
         match delivery {
             Pending::Held => held = true,
             Pending::Message(message) => {
@@ -170,7 +151,6 @@ fn pending(
     nick: &str,
     after: u64,
     idle: bool,
-    follows_github_reviews: bool,
 ) -> Result<Vec<(u64, Pending)>, Error> {
     let tail = channel.read(after)?;
     if tail.is_empty() {
@@ -191,9 +171,7 @@ fn pending(
         .map(|entry| {
             let delivery = if acknowledged.contains(&entry.sequence) {
                 Pending::Skip
-            } else if let Some(message) =
-                routed(entry, nick, &history, mode, follows_github_reviews, false)
-            {
+            } else if let Some(message) = routed(entry, nick, &history, mode, false) {
                 if hold(entry, nick, &history, mode, idle) {
                     Pending::Held
                 } else {
@@ -212,12 +190,8 @@ pub(crate) fn routed(
     nick: &str,
     entries: &[Entry],
     mode: crate::MessageMode,
-    follows_github_reviews: bool,
     native_land: bool,
 ) -> Option<Delivery> {
-    if follows_github_reviews && entry.kind == "changes" && entry.pull_request.is_some() {
-        return None;
-    }
     if crate::routing::event_for(entry, nick, entries)
         || crate::routing::broken_for(entry, nick, entries)
     {

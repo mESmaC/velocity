@@ -5,17 +5,18 @@ use serde::Deserialize;
 use serde_json::json;
 
 use crate::issue_types::IssueState;
-use crate::pull_requests::Connection;
-use crate::{GitHubIssue, IssueInventory, PullRequestClient, PullRequestError};
+use crate::repository_client::{Connection, RepositoryClient};
+use crate::{GitHubCommandError, GitHubIssue, IssueInventory};
 
 const ISSUE_FIELDS: &str = "id number title body url state author { login }
     createdAt updatedAt closedAt milestone { number } labels(first:100) { nodes { name } totalCount }";
 const BLOCKER_FIELDS: &str = "number state repository { nameWithOwner }";
 
-/// Uses the same signed-in gh transport and long-path repository discovery as
-/// PRs. No credential, shell, or provider-specific path is introduced here.
+/// Reads and writes one repository's issues through the signed-in gh transport, with
+/// long-path repository discovery. No credential, shell, or provider-specific path is
+/// introduced here.
 pub struct IssueClient {
-    pub(crate) transport: PullRequestClient,
+    pub(crate) transport: RepositoryClient,
     pub(crate) directory: PathBuf,
 }
 
@@ -74,12 +75,12 @@ struct Label {
 }
 
 impl IssueClient {
-    pub fn has_origin(directory: &Path) -> Result<bool, PullRequestError> {
+    pub fn has_origin(directory: &Path) -> Result<bool, GitHubCommandError> {
         let repository = gix::discover(directory)
-            .map_err(|error| PullRequestError::Invalid(error.to_string()))?;
+            .map_err(|error| GitHubCommandError::Invalid(error.to_string()))?;
         Ok(repository.find_remote("origin").is_ok())
     }
-    /// See `PullRequestClient::is_current`.
+    /// See `RepositoryClient::is_current`.
     pub fn is_current(&self, directory: &Path) -> bool {
         self.transport.is_current(directory)
     }
@@ -88,7 +89,7 @@ impl IssueClient {
         &self.transport.repository
     }
 
-    pub fn open_issues(&self) -> Result<Vec<GitHubIssue>, PullRequestError> {
+    pub fn open_issues(&self) -> Result<Vec<GitHubIssue>, GitHubCommandError> {
         let query = format!(
             "query($owner:String!,$name:String!,$cursor:String) {{ repository(owner:$owner,name:$name) {{ issues(first:100,after:$cursor,states:OPEN,orderBy:{{field:CREATED_AT,direction:ASC}}) {{ nodes {{ {ISSUE_FIELDS} {} }} pageInfo {{ hasNextPage endCursor }} }} }} }}",
             dependency_fields(),
@@ -104,7 +105,7 @@ impl IssueClient {
             .collect()
     }
 
-    pub(crate) fn read_issue(&self, number: u32) -> Result<GitHubIssue, PullRequestError> {
+    pub(crate) fn read_issue(&self, number: u32) -> Result<GitHubIssue, GitHubCommandError> {
         let query = format!(
             "query($owner:String!,$name:String!,$number:Int!) {{ repository(owner:$owner,name:$name) {{ issue(number:$number) {{ {ISSUE_FIELDS} {} }} }} }}",
             dependency_fields(),
@@ -117,9 +118,9 @@ impl IssueClient {
         self.decode_issue_with_dependencies(issue)
     }
 
-    pub(crate) fn add_blocker(&self, issue: u32, blocker: u32) -> Result<(), PullRequestError> {
+    pub(crate) fn add_blocker(&self, issue: u32, blocker: u32) -> Result<(), GitHubCommandError> {
         if issue == 0 || blocker == 0 || issue == blocker {
-            return Err(PullRequestError::Invalid(
+            return Err(GitHubCommandError::Invalid(
                 "Use two distinct, positive issue numbers".into(),
             ));
         }
@@ -145,10 +146,10 @@ impl IssueClient {
         )?;
         let issue_id = ids
             .issue
-            .ok_or_else(|| PullRequestError::Missing(format!("issue #{issue}")))?;
+            .ok_or_else(|| GitHubCommandError::Missing(format!("issue #{issue}")))?;
         let blocker_id = ids
             .blocker
-            .ok_or_else(|| PullRequestError::Missing(format!("issue #{blocker}")))?;
+            .ok_or_else(|| GitHubCommandError::Missing(format!("issue #{blocker}")))?;
         let _: IssueId = self.transport.graphql_at(
             "mutation($input:AddBlockedByInput!) { addBlockedBy(input:$input) { issue { id } } }",
             json!({"input": {"issueId": issue_id.id, "blockingIssueId": blocker_id.id}}),
@@ -158,25 +159,25 @@ impl IssueClient {
     }
 
     #[track_caller]
-    pub fn discover(directory: &Path) -> Result<Self, PullRequestError> {
+    pub fn discover(directory: &Path) -> Result<Self, GitHubCommandError> {
         Ok(Self {
-            transport: PullRequestClient::discover(directory)?,
+            transport: RepositoryClient::discover(directory)?,
             directory: std::fs::canonicalize(directory)?,
         })
     }
 
     /// A Rosen project can keep its GitHub identity without a Git checkout.
     #[track_caller]
-    pub fn for_repository(directory: &Path, repository: &str) -> Result<Self, PullRequestError> {
+    pub fn for_repository(directory: &Path, repository: &str) -> Result<Self, GitHubCommandError> {
         Ok(Self {
-            transport: PullRequestClient::for_repository(repository)?,
+            transport: RepositoryClient::for_repository(repository)?,
             directory: std::fs::canonicalize(directory)?,
         })
     }
 
     /// GraphQL's issues connection excludes PRs and has no search-index delay or
     /// 1,000-result search cap. Every open and closed page is included.
-    pub fn inventory(&self) -> Result<IssueInventory, PullRequestError> {
+    pub fn inventory(&self) -> Result<IssueInventory, GitHubCommandError> {
         let query = format!(
             "query($owner:String!,$name:String!,$cursor:String) {{
               repository(owner:$owner,name:$name) {{ issues(first:100,after:$cursor,
@@ -195,7 +196,7 @@ impl IssueClient {
         IssueInventory::new(self.transport.repository.clone(), issues)
     }
 
-    pub(crate) fn label_identifiers(&self) -> Result<BTreeMap<String, String>, PullRequestError> {
+    pub(crate) fn label_identifiers(&self) -> Result<BTreeMap<String, String>, GitHubCommandError> {
         #[derive(Deserialize)]
         struct RepositoryLabel {
             name: String,
@@ -219,7 +220,7 @@ impl IssueClient {
         title: &str,
         body: &str,
         labels: &[String],
-    ) -> Result<GitHubIssue, PullRequestError> {
+    ) -> Result<GitHubIssue, GitHubCommandError> {
         let repository: serde_json::Value = self.transport.graphql_at(
             "query($owner:String!,$name:String!) { repository(owner:$owner,name:$name) { id } }",
             self.transport.variables(0),
@@ -233,7 +234,7 @@ impl IssueClient {
         self.decode_issue(issue)
     }
 
-    fn decode_issue(&self, mut node: IssueNode) -> Result<GitHubIssue, PullRequestError> {
+    fn decode_issue(&self, mut node: IssueNode) -> Result<GitHubIssue, GitHubCommandError> {
         if node.labels.total_count != node.labels.nodes.len() {
             let mut variables = self.transport.variables(node.issue.number);
             variables["cursor"] = serde_json::Value::Null;
@@ -260,7 +261,7 @@ impl IssueClient {
     fn decode_issue_with_dependencies(
         &self,
         node: IssueWithDependencies,
-    ) -> Result<GitHubIssue, PullRequestError> {
+    ) -> Result<GitHubIssue, GitHubCommandError> {
         let mut issue = self.decode_issue(node.node)?;
         issue.open_blocker_count = node.issue_dependencies_summary.blocked_by;
         // The connection includes closed issues. Skip extra pages when the summary says none are open.

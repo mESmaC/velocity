@@ -241,18 +241,6 @@
           aria-expanded={panel === 'abandon'}
           onclick={() => openActions('abandon')}>Abandon</button
         >
-      {:else if thread.pull_request_number !== null}
-        <button
-          type="button"
-          class="btn primary"
-          title="Open on GitHub"
-          onclick={() =>
-            send({
-              Request: { OpenPullRequest: thread.pull_request_number ?? '0' },
-            })}
-        >
-          GitHub PR #{thread.pull_request_number} ↗
-        </button>
       {/if}
     </div>
   </header>

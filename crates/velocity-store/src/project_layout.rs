@@ -208,11 +208,6 @@ fn thread_detail(thread: &ThreadItem, settings: &crate::Settings) -> ThreadDetai
         no_change_reason: thread.no_change_reason.clone(),
         show_work: false,
         worked_summary: None,
-        pull_request_history: thread
-            .follow_through
-            .as_ref()
-            .filter(|watch| rosen_change.is_none() && watch.number != 0)
-            .map(|watch| watch.view()),
         rosen_change,
         blocks: thread.transcript.clone(),
         previous_work_thread: thread.previous_work_thread.map(|id| id as usize),
@@ -351,9 +346,6 @@ pub(crate) fn thread_metadata(thread: &ThreadItem) -> String {
     }
     if thread.state == ThreadState::Review {
         let stage = match thread.review_stage {
-            _ if crate::follow_through::merged_awaiting_cleanup(thread) => {
-                crate::follow_through::MERGED_CLEANING_UP
-            }
             Some(ReviewStage::ContinuousIntegration) => "waiting on CI",
             Some(ReviewStage::Fixing) => "addressing review",
             Some(ReviewStage::Approved) => "approved · merging",

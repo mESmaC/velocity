@@ -20,7 +20,7 @@
   - change
   - workspace path (click → open in Explorer)
   - +/− line counts and age
-  - Diff (`D`), Editor (`E`), and `PR #n ↗` once a PR exists
+  - Diff (`D`) and Editor (`E`)
 - **Transcript:** user message, agent messages, tool steps (verb, argument, result, running indicator) and diffs.
   User and agent messages render sanitized GitHub-flavoured markdown (headings, lists, links, tables and fenced code), with emphasis shown upright.
   Threads and spec interviews open at the latest content and follow streamed output and new question cards while at the bottom; scrolling up suspends following until the reader returns to the bottom.
@@ -36,7 +36,7 @@
   - A message sent while the agent is busy shows "queued · sends when the current step finishes" and a `remove` link.
     The message stays with Velocity, not the agent, until the turn ends, so `remove` withdraws it (the `RemoveQueuedMessage` intent).
     The messages queued during a turn go to the agent together as its next prompt.
-    Lines Velocity delivers to the agent (F14, PR follow-through) never join this queue; the transcript shows them as "from Velocity" notices once read.
+    Lines Velocity delivers to the agent (F14, Rosen follow-ups) never join this queue; the transcript shows them as "from Velocity" notices once read.
   - A message the agent never received (no session to resume, a missing workspace) leaves the transcript and goes back to the composer as you typed it, with the error, but only while its thread is still open and the composer is still empty.
     A message the agent received never comes back to the composer, even if saving or redrawing the thread fails afterwards.
 - **Slash menu:** `/task`, `/fanout 3`, `/review`, `/compact`, `/model`, followed by the active session's advertised commands and descriptions (`available_commands_update`, §3.2), filtered by the typed prefix.

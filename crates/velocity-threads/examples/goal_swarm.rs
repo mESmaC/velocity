@@ -16,14 +16,12 @@ use velocity_airc::Channel;
 use velocity_core::airc_modal::{AircMember, AircMemberState};
 use velocity_core::work_pool::{WorkKey, WorkPiece, WorkPool};
 use velocity_git::{execute_worktree_setup, remove_merged_worktree};
-use velocity_github::PullRequestSnapshot;
-use velocity_github::follow_through::FollowThrough;
 use velocity_store::airc_members::airc_members;
 use velocity_store::goal_swarm_dialog::GoalMixRow;
 use velocity_store::goal_swarms::{GoalAgentSlot, LaunchGoalSwarmRequest};
 use velocity_store::{
-    EffortLevel, PersistedState, ProjectItem, ProviderKind, SpeedMode, StateStore, TaskAttribution,
-    TaskItem, TaskState,
+    AgentActivity, EffortLevel, PersistedState, ProjectItem, ProviderKind, SpeedMode, StateStore,
+    TaskAttribution, TaskItem, TaskState, ThreadState,
 };
 use velocity_threads::goal_swarm::{
     ClaimPhaseOutcome, ClaimedGoalWork, KeepGoingOutcome, choose_and_claim_with,
@@ -500,46 +498,37 @@ fn land_merge(harness: &Harness, thread_id: u32, pr_number: u32) -> Outcome {
             harness.channel.release(&member, claim.key())?;
         }
     }
-    let snapshot = merged_snapshot(pr_number, &branch)?;
-    let mut watch = FollowThrough::default();
-    watch.observe(&snapshot);
-    watch.cleaned_up();
     harness
         .store
         .lock()
         .map_err(|error| format!("store lock: {error}"))?
-        .save_follow_through(1, thread_id, &snapshot, watch)?;
+        .update_project(1, |project| {
+            finish_merged_member(project, thread_id, pr_number);
+            Ok::<_, velocity_store::projects::ProjectError>(())
+        })?;
     Ok(())
 }
 
-fn merged_snapshot(number: u32, branch: &str) -> Outcome<PullRequestSnapshot> {
-    Ok(serde_json::from_value(serde_json::json!({
-        "pull_request": {
-            "id": format!("PR_{number}"),
-            "number": number,
-            "title": format!("Complete {branch}"),
-            "body": "",
-            "url": format!("https://example.invalid/pr/{number}"),
-            "state": "MERGED",
-            "isDraft": false,
-            "author": null,
-            "headRefOid": format!("deadbeef{number}"),
-            "headRefName": branch,
-            "baseRefName": "master",
-            "additions": 42,
-            "deletions": 5,
-            "createdAt": "2099-01-01T00:00:00Z",
-            "updatedAt": "2099-01-01T00:00:00Z",
-            "closedAt": "2099-01-01T00:00:00Z",
-            "mergedAt": "2099-01-01T00:00:00Z",
-            "reviewDecision": "APPROVED",
-            "mergeStateStatus": "CLEAN"
-        },
-        "checks": [],
-        "reviews": [],
-        "comments": [],
-        "review_threads": []
-    }))?)
+/// Git fallback members have no PR follow-through since #426, so the fixture records the
+/// merge itself, with the Task List effect a Rosen land has (F8, F16).
+fn finish_merged_member(project: &mut ProjectItem, thread_id: u32, pr_number: u32) {
+    let Some(thread) = project.threads.iter_mut().find(|item| item.id == thread_id) else {
+        return;
+    };
+    thread.state = ThreadState::Merged;
+    thread.activity = AgentActivity::Idle;
+    thread.pull_request_number = Some(pr_number);
+    let (task_ids, section) = (thread.task_ids.clone(), thread.spec_section.clone());
+    for task in &mut project.tasks {
+        if task.assigned_thread_id == Some(thread_id) || task_ids.contains(&task.id) {
+            task.state = TaskState::Done;
+        }
+    }
+    if let Some(section) = section
+        && !project.built_spec_sections.contains(&section)
+    {
+        project.built_spec_sections.push(section);
+    }
 }
 
 fn verify_final_state(harness: &Harness, swarm_id: u32) -> Outcome {

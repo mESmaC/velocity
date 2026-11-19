@@ -34,13 +34,14 @@ Each milestone ends with a working app.
 - [x] Settings → Workspaces backed by Rosen, including guarded deletion, preparation changes and the live footer count (F5, F13, #423)
 
 **M4 · Change follow-through**
-- [x] GitHub observation for legacy PR threads
+- [x] GitHub observation for legacy PR threads (removed in #426)
 - [x] Live Rosen status pane with server, base, landing, claims, warm pool, mirror and owning-thread navigation (F6, #421)
 - [x] Rosen thread change track, header actions, land history and inline stored conflicts (F6, #422)
 - [x] Return refused Rosen lands to the author with repair instructions and show the refusal on the thread card (F6, #487)
-- [x] PR follow-through: track, land history, auto-response to review comments, merge → workspace delete (F6)
-- [x] Closed-without-merge state with the workspace kept (F5, F6)
+- [x] PR follow-through: track, land history, auto-response to review comments, merge → workspace delete (F6; removed in #426)
+- [x] Closed-without-merge state with the workspace kept (F5, F6; removed in #426)
 - [x] Right-click menu and delete with 5 s undo (F12)
+- [x] Shrink `velocity-github` to issues and repository listing, with no PR reads, polling or PR IPC (F6, F9, #426)
 
 **M5 · Review**
 - [x] Use after-land review for Rosen projects, with Scouts, the review swarm and Rosen R12 verification (F7, #424)

@@ -1,9 +1,8 @@
 //! The sidebar thread's right-click menu (SPEC.md F12).
 //!
 //! Which entries a thread gets, and what its Delete entry says it will do, follow the
-//! reference's `ctxFor`: the worktree entries only while a worktree is on disk, the PR
-//! entry only while the PR is not merged, and a red Delete whose label and detail depend on
-//! the thread. Draft and duty rows have no menu.
+//! reference's `ctxFor`: the worktree entries only while a worktree is on disk, and a red
+//! Delete whose label and detail depend on the thread. Draft and duty rows have no menu.
 
 use crate::state::ThreadState;
 
@@ -14,7 +13,6 @@ pub struct ThreadMenuFacts {
     /// Duty agents' threads are never deleted from the sidebar (F7, F12).
     pub duty: bool,
     pub worktree_path: Option<String>,
-    pub pull_request_number: Option<u32>,
     /// The agent's process is set up or running in this app session.
     pub agent_running: bool,
     /// A failed Rosen launch that can retry its workspace setup.
@@ -30,7 +28,6 @@ impl ThreadMenuFacts {
             state,
             duty: false,
             worktree_path: None,
-            pull_request_number: None,
             agent_running: false,
             retry_workspace: false,
             worktree_bytes: None,
@@ -47,7 +44,6 @@ pub enum ThreadMenuAction {
     RetryWorkspace,
     OpenWorktree,
     CopyWorktreePath,
-    OpenPullRequest,
     Delete,
 }
 
@@ -70,11 +66,6 @@ pub enum ThreadMenuEntry {
 /// checkout, so its path, if any, is never a worktree Velocity may remove (F3, F5).
 pub fn owns_worktree(state: ThreadState, worktree_path: Option<&str>) -> bool {
     worktree_path.is_some() && !matches!(state, ThreadState::Merged | ThreadState::Spec)
-}
-
-/// Whether the thread's PR is still open, so deleting the thread closes it.
-pub fn has_open_pull_request(state: ThreadState, pull_request_number: Option<u32>) -> bool {
-    pull_request_number.is_some() && !matches!(state, ThreadState::Merged | ThreadState::Closed)
 }
 
 /// The menu for one thread, or `None` when the row has no menu.
@@ -106,15 +97,6 @@ pub fn thread_menu(facts: &ThreadMenuFacts) -> Option<Vec<ThreadMenuEntry>> {
             None,
         ));
     }
-    if let Some(number) = facts.pull_request_number
-        && facts.state != ThreadState::Merged
-    {
-        entries.push(item(
-            ThreadMenuAction::OpenPullRequest,
-            &format!("Open GitHub PR #{number}"),
-            None,
-        ));
-    }
     if !entries.is_empty() {
         entries.push(ThreadMenuEntry::Separator);
     }
@@ -137,8 +119,6 @@ pub fn thread_menu(facts: &ThreadMenuFacts) -> Option<Vec<ThreadMenuEntry>> {
 pub struct SwarmMenuFacts {
     /// Members whose agent is set up or running in this app session.
     pub agents_running: usize,
-    /// The members' PRs that are still open, which deleting closes.
-    pub open_pull_requests: Vec<u32>,
     /// Members that still have their own worktree on disk.
     pub worktrees: usize,
     /// Bytes on disk under those worktrees, as far as they could be measured.
@@ -159,11 +139,6 @@ pub fn swarm_menu(facts: &SwarmMenuFacts) -> Vec<ThreadMenuEntry> {
         0 => {}
         1 => parts.push("stops the agent".to_owned()),
         count => parts.push(format!("stops {count} agents")),
-    }
-    match facts.open_pull_requests.as_slice() {
-        [] => {}
-        [number] => parts.push(format!("closes change #{number}")),
-        numbers => parts.push(format!("closes {} named changes", numbers.len())),
     }
     if facts.worktrees > 0 {
         parts.push(format!("{} freed", size_label(facts.worktree_bytes)));
@@ -193,16 +168,11 @@ fn item(action: ThreadMenuAction, label: &str, detail: Option<String>) -> Thread
     }
 }
 
-/// "stops the agent · closes change #n · 247 MB freed", or why nothing is freed.
+/// "stops the agent · 247 MB freed", or why nothing is freed.
 fn delete_detail(facts: &ThreadMenuFacts, worktree: bool) -> String {
     let mut parts = Vec::new();
     if facts.agent_running {
         parts.push("stops the agent".to_owned());
-    }
-    if has_open_pull_request(facts.state, facts.pull_request_number)
-        && let Some(number) = facts.pull_request_number
-    {
-        parts.push(format!("closes change #{number}"));
     }
     if worktree && let Some(bytes) = facts.worktree_bytes {
         parts.push(format!("{} freed", size_label(bytes)));

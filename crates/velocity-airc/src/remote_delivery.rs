@@ -14,7 +14,6 @@ pub(crate) fn deliver(
     nick: &str,
     after: u64,
     idle: bool,
-    follows_github_reviews: bool,
     mut deliver: impl FnMut(&Delivery) -> Result<bool, String>,
 ) -> Result<u64, Error> {
     let remote = channel
@@ -44,7 +43,6 @@ pub(crate) fn deliver(
                 nick,
                 &history,
                 crate::MessageMode::Open,
-                follows_github_reviews,
                 pending.entry.kind == "merged" && pending.entry.pull_request.is_none(),
             )
         };

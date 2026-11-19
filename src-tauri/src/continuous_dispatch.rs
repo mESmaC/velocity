@@ -341,7 +341,7 @@ fn reader<'a>(project: &ProjectItem, readers: &'a mut BTreeMap<u32, Reader>) -> 
     reader
 }
 
-fn read_issues(reader: &mut Reader) -> Result<Backlog, velocity_github::PullRequestError> {
+fn read_issues(reader: &mut Reader) -> Result<Backlog, velocity_github::GitHubCommandError> {
     let directory = Path::new(&reader.directory);
     if reader.remote.is_none()
         && reader

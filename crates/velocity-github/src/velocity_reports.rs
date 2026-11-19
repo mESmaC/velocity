@@ -11,7 +11,7 @@ use std::path::Path;
 use serde::{Deserialize, Serialize};
 
 use crate::command::gh;
-use crate::pull_request_command::PullRequestError;
+use crate::gh_command::GitHubCommandError;
 
 /// Where Velocity's own issues live.
 pub const VELOCITY_REPOSITORY: &str = "mESmaC/velocity";
@@ -163,7 +163,7 @@ impl ReportedDiscoveries {
 
     /// Reads the saved record. A missing file means nothing has been reported yet; a damaged
     /// one is an error, so reporting stops rather than filing every discovery again.
-    pub fn load(app_data: &Path) -> Result<Self, PullRequestError> {
+    pub fn load(app_data: &Path) -> Result<Self, GitHubCommandError> {
         match std::fs::read(app_data.join(REPORTS_FILE)) {
             Ok(bytes) => Ok(serde_json::from_slice(&bytes)?),
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(Self::default()),
@@ -172,13 +172,13 @@ impl ReportedDiscoveries {
     }
 
     /// Writes the record through a temporary file, so a crash mid-write keeps the old one.
-    pub fn save(&self, app_data: &Path) -> Result<(), PullRequestError> {
+    pub fn save(&self, app_data: &Path) -> Result<(), GitHubCommandError> {
         std::fs::create_dir_all(app_data)?;
         let mut file = tempfile::NamedTempFile::new_in(app_data)?;
         file.write_all(&serde_json::to_vec_pretty(self)?)?;
         file.as_file().sync_all()?;
         file.persist(app_data.join(REPORTS_FILE))
-            .map_err(|error| PullRequestError::Process(error.error))?;
+            .map_err(|error| GitHubCommandError::Process(error.error))?;
         Ok(())
     }
 
@@ -209,7 +209,7 @@ pub fn report_to(
     recent: &[RecentDiscovery],
     mentioned_paths: impl FnOnce(&[(&str, &str)]) -> Vec<BTreeSet<String>>,
     retry: bool,
-) -> Result<ReportOutcome, PullRequestError> {
+) -> Result<ReportOutcome, GitHubCommandError> {
     let repository = destination.repository();
     let open = open_issues(repository)?;
     let body = issue_body(report);
@@ -293,7 +293,7 @@ fn join_issue(
     number: u32,
     report: &DiscoveryReport,
     retry: bool,
-) -> Result<ReportOutcome, PullRequestError> {
+) -> Result<ReportOutcome, GitHubCommandError> {
     let endpoint = format!("repos/{repository}/issues/{number}/comments");
     let evidence = quote(&report.text);
     let body = format!(
@@ -344,7 +344,7 @@ fn file_issue(
     repository: &str,
     report: &DiscoveryReport,
     body: &str,
-) -> Result<u32, PullRequestError> {
+) -> Result<u32, GitHubCommandError> {
     let number = run(&[
         "api",
         &format!("repos/{repository}/issues"),
@@ -358,7 +358,7 @@ fn file_issue(
     number
         .trim()
         .parse()
-        .map_err(|_| PullRequestError::Missing("the new issue's number".into()))
+        .map_err(|_| GitHubCommandError::Missing("the new issue's number".into()))
 }
 
 #[derive(Deserialize)]
@@ -368,7 +368,7 @@ struct OpenIssue {
     body: String,
 }
 
-fn open_issues(repository: &str) -> Result<Vec<OpenIssue>, PullRequestError> {
+fn open_issues(repository: &str) -> Result<Vec<OpenIssue>, GitHubCommandError> {
     let output = run(&[
         "api",
         "--paginate",
@@ -382,7 +382,7 @@ fn open_issues(repository: &str) -> Result<Vec<OpenIssue>, PullRequestError> {
         .collect()
 }
 
-fn issue_is_open(repository: &str, number: u32) -> Result<bool, PullRequestError> {
+fn issue_is_open(repository: &str, number: u32) -> Result<bool, GitHubCommandError> {
     let state = run(&[
         "api",
         &format!("repos/{repository}/issues/{number}"),
@@ -482,10 +482,10 @@ fn quote(text: &str) -> String {
         .join("\n")
 }
 
-fn run(arguments: &[&str]) -> Result<String, PullRequestError> {
+fn run(arguments: &[&str]) -> Result<String, GitHubCommandError> {
     let output = gh(arguments).output()?;
     if !output.status.success() {
-        return Err(PullRequestError::Command {
+        return Err(GitHubCommandError::Command {
             code: output.status.code(),
             message: String::from_utf8_lossy(&output.stderr).trim().to_owned(),
         });

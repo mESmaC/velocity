@@ -566,9 +566,6 @@ pub async fn generate_design_system(
 pub enum SuggestionCheck {
     /// Opening or scanning a project reads the checkout and the tip already fetched.
     Opened,
-    /// `master` moved: fetch it first, so a project that gains a UI gets the suggestion
-    /// even before the main checkout pulls.
-    Merged,
 }
 
 /// Re-runs the project scan in the background and switches its suggestions on, unless you
@@ -602,7 +599,6 @@ fn recheck(application: &AppHandle, identifier: u32, check: SuggestionCheck) -> 
     // a switch you flipped meanwhile is kept.
     let tip = match check {
         SuggestionCheck::Opened => velocity_skills::suggestions::known_tip(&root, &branch),
-        SuggestionCheck::Merged => velocity_skills::suggestions::fetched_tip(&root, &branch),
     };
     let suggestions = velocity_skills::suggestions::scan_project(&root, tip.as_deref());
     let mut store = state.lock().map_err(|error| error.to_string())?;

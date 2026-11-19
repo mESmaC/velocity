@@ -1,9 +1,9 @@
 //! F10 without a window: seed a throwaway repository and project, open the Swarm dialog,
 //! launch a swarm through the real store, planner and `git worktree` setup (no agents), then
-//! replay a real merged PR through the legacy F6 save path. Rosen rebases members at their
-//! step boundaries, so the swarm no longer computes a targeted rebase overlap (#425).
+//! mark one member merged. Rosen rebases members at their step boundaries, so the swarm no
+//! longer computes a targeted rebase overlap (#425), and no member follows a GitHub PR (#426).
 //!
-//! cargo run -p velocity-threads --example swarm -- <empty scratch folder> <github checkout> <merged PR>
+//! cargo run -p velocity-threads --example swarm -- <empty scratch folder>
 
 // A console example: its children share its console, so no hidden_command (#232).
 #![allow(clippy::disallowed_methods)]
@@ -11,9 +11,7 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 
 use velocity_core::layout_state::LayoutState;
-use velocity_core::swarm::{PullRequestStep, SwarmSource, pull_request_event};
-use velocity_github::PullRequestClient;
-use velocity_github::follow_through::FollowThrough;
+use velocity_core::swarm::SwarmSource;
 use velocity_store::swarm_dialog::{OpenIssues, SwarmDialogQuery};
 use velocity_store::swarms::{LaunchSwarmRequest, SwarmItem};
 use velocity_store::{
@@ -27,8 +25,6 @@ type Outcome<T> = Result<T, Box<dyn std::error::Error>>;
 fn main() -> Outcome<()> {
     let arguments: Vec<String> = std::env::args().skip(1).collect();
     let scratch = PathBuf::from(arguments.first().ok_or("missing <scratch folder>")?);
-    let checkout = PathBuf::from(arguments.get(1).ok_or("missing <github checkout>")?);
-    let merged: u32 = arguments.get(2).ok_or("missing <merged PR>")?.parse()?;
     let repository = seed_repository(&scratch)?;
     let state = scratch.join("state");
     seed_state(&state, &repository, &scratch.join("worktrees"))?;
@@ -44,7 +40,9 @@ fn main() -> Outcome<()> {
         thread.pull_request_number = Some(12);
         thread.review_stage = Some(velocity_store::ReviewStage::Fixing);
     })?;
-    merge_member(&mut store, &checkout, merged, members[2].0)?;
+    store.update_thread(1, members[2].0, |thread| {
+        thread.state = ThreadState::Merged;
+    })?;
     show_layout(&store, "after a fixing PR and a merge")?;
     show_dialog(&store, "dialog after launch")?;
     store.remove_thread(1, members[1].0)?;
@@ -239,26 +237,5 @@ fn show_layout(store: &StateStore, heading: &str) -> Outcome<()> {
     }
     let legend: Vec<_> = swarm.legend.iter().map(|item| item.label.clone()).collect();
     println!("  legend: {}", legend.join(" · "));
-    Ok(())
-}
-
-fn merge_member(store: &mut StateStore, checkout: &Path, number: u32, thread: u32) -> Outcome<()> {
-    let snapshot = PullRequestClient::discover(checkout)?.snapshot(number)?;
-    store.update_thread(1, thread, |record| {
-        record.branch_name = snapshot.pull_request.head_ref_name.clone();
-    })?;
-    let mut watch = FollowThrough::default();
-    watch.observe(&snapshot);
-    watch.cleaned_up();
-    store.save_follow_through(1, thread, &snapshot, watch.clone())?;
-    let after = PullRequestStep {
-        number,
-        stage: &watch.stage,
-        worktree_deleted: watch.worktree_deleted,
-    };
-    println!(
-        "\nfeed line for the merge: {:?}",
-        pull_request_event(None, after, "task done")
-    );
     Ok(())
 }

@@ -10,9 +10,7 @@ use std::sync::atomic::AtomicBool;
 
 use tauri::{AppHandle, Manager};
 use velocity_core::layout_view::LayoutSnapshot;
-use velocity_core::thread_menu::{
-    SwarmMenuFacts, ThreadMenuEntry, has_open_pull_request, owns_worktree,
-};
+use velocity_core::thread_menu::{SwarmMenuFacts, ThreadMenuEntry, owns_worktree};
 use velocity_store::ThreadItem;
 use velocity_store::swarms::swarm_member_threads;
 use velocity_threads::Deletion;
@@ -90,12 +88,6 @@ pub async fn swarm_menu(
             .filter(|thread| runtimes.is_live((project, thread.id)))
             .count();
     }
-    facts.open_pull_requests = swarm
-        .members
-        .iter()
-        .filter(|thread| has_open_pull_request(thread.state.into(), thread.pull_request_number))
-        .filter_map(|thread| thread.pull_request_number)
-        .collect();
     let paths: Vec<PathBuf> = swarm
         .members
         .iter()

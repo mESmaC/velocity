@@ -2,7 +2,7 @@
 use serde::Deserialize;
 use serde_json::{Value, json};
 
-use crate::{GitHubIssue, IssueClient, IssueState, PullRequestError};
+use crate::{GitHubCommandError, GitHubIssue, IssueClient, IssueState};
 
 const READY_LABEL: &str = "ready-to-close";
 const NO_CHANGE_MARKER: &str = "<!-- velocity-issue-no-change:";
@@ -17,7 +17,7 @@ pub enum RosenIssueEffect<'a> {
 impl IssueClient {
     pub const NO_CHANGE_LABEL: &str = "no-change";
 
-    pub fn open_no_change_issues(&self) -> Result<Vec<GitHubIssue>, PullRequestError> {
+    pub fn open_no_change_issues(&self) -> Result<Vec<GitHubIssue>, GitHubCommandError> {
         Ok(self
             .open_issues()?
             .into_iter()
@@ -31,7 +31,7 @@ impl IssueClient {
         byline: &str,
         body: &str,
         ready: bool,
-    ) -> Result<String, PullRequestError> {
+    ) -> Result<String, GitHubCommandError> {
         let issue = self.read_issue(number)?;
         if ready {
             self.label_issue(number, READY_LABEL)?;
@@ -46,7 +46,7 @@ impl IssueClient {
         change: &str,
         byline: &str,
         reason: &str,
-    ) -> Result<(), PullRequestError> {
+    ) -> Result<(), GitHubCommandError> {
         self.post_issue_for_verification(number, change, "Ended with no change", byline, reason)
     }
 
@@ -55,7 +55,7 @@ impl IssueClient {
         number: u32,
         source: u32,
         commit: &str,
-    ) -> Result<(), PullRequestError> {
+    ) -> Result<(), GitHubCommandError> {
         self.post_issue_for_verification(
             number,
             &format!("overlap:{source}:{commit}"),
@@ -76,7 +76,7 @@ impl IssueClient {
         heading: &str,
         byline: &str,
         reason: &str,
-    ) -> Result<(), PullRequestError> {
+    ) -> Result<(), GitHubCommandError> {
         let marker = format!("{NO_CHANGE_MARKER}{attempt} -->");
         if self.has_rosen_comment(number, &marker)? {
             // A reviewer may have removed the label before the local acknowledgement.
@@ -105,10 +105,10 @@ impl IssueClient {
     pub fn no_change_discussion(
         &self,
         number: u32,
-    ) -> Result<(GitHubIssue, Vec<String>, String), PullRequestError> {
+    ) -> Result<(GitHubIssue, Vec<String>, String), GitHubCommandError> {
         let issue = self.read_issue(number)?;
         if issue.state != IssueState::Open || !issue_has_no_change_label(&issue) {
-            return Err(PullRequestError::Invalid(
+            return Err(GitHubCommandError::Invalid(
                 "The issue is no longer waiting for no-change review".into(),
             ));
         }
@@ -125,7 +125,7 @@ impl IssueClient {
                 Some((body, attempt.to_owned()))
             })
             .ok_or_else(|| {
-                PullRequestError::Missing("The no-change report is still pending".into())
+                GitHubCommandError::Missing("The no-change report is still pending".into())
             })?;
         let mut discussion = vec![report.clone()];
         discussion.extend(
@@ -146,10 +146,10 @@ impl IssueClient {
         reviewer: &str,
         evidence: &str,
         close: bool,
-    ) -> Result<(), PullRequestError> {
+    ) -> Result<(), GitHubCommandError> {
         let (_, _, current) = self.no_change_discussion(number)?;
         if current != attempt || evidence.trim().is_empty() {
-            return Err(PullRequestError::Invalid(
+            return Err(GitHubCommandError::Invalid(
                 "Review the current report and supply verification or retry instructions".into(),
             ));
         }
@@ -167,7 +167,7 @@ impl IssueClient {
         Ok(())
     }
 
-    fn label_issue(&self, number: u32, name: &str) -> Result<(), PullRequestError> {
+    fn label_issue(&self, number: u32, name: &str) -> Result<(), GitHubCommandError> {
         let labels = format!("repos/{}/labels", self.repository());
         let label = format!("{labels}/{name}");
         if self
@@ -195,7 +195,7 @@ impl IssueClient {
         Ok(())
     }
 
-    fn remove_issue_label(&self, number: u32, label: &str) -> Result<(), PullRequestError> {
+    fn remove_issue_label(&self, number: u32, label: &str) -> Result<(), GitHubCommandError> {
         let endpoint = format!("repos/{}/issues/{number}/labels/{label}", self.repository());
         self.transport
             .command
@@ -203,7 +203,7 @@ impl IssueClient {
         Ok(())
     }
 
-    fn add_issue_comment(&self, subject: &str, body: &str) -> Result<String, PullRequestError> {
+    fn add_issue_comment(&self, subject: &str, body: &str) -> Result<String, GitHubCommandError> {
         self.transport.graphql_at(
             "mutation($input:AddCommentInput!) { addComment(input:$input) { commentEdge { node { url } } } }",
             json!({"input":{"subjectId":subject,"body":body}}),
@@ -219,9 +219,9 @@ impl IssueClient {
         commit: &str,
         sequence: u64,
         effect: RosenIssueEffect<'_>,
-    ) -> Result<bool, PullRequestError> {
+    ) -> Result<bool, GitHubCommandError> {
         if !self.repository().eq_ignore_ascii_case(repository) {
-            return Err(PullRequestError::Invalid(
+            return Err(GitHubCommandError::Invalid(
                 "The thread's issue repository differs from the project's mirror".into(),
             ));
         }
@@ -275,7 +275,7 @@ impl IssueClient {
     }
 
     /// Publishes a pass on the exact mirrored base tested by Velocity.
-    pub fn publish_integration_success(&self, commit: &str) -> Result<bool, PullRequestError> {
+    pub fn publish_integration_success(&self, commit: &str) -> Result<bool, GitHubCommandError> {
         if !self.rosen_commit_mirrored(commit)? {
             return Ok(false);
         }
@@ -311,9 +311,9 @@ impl IssueClient {
     }
 
     /// Returns false while the mirror's default branch has not caught up to the land.
-    pub fn rosen_commit_mirrored(&self, commit: &str) -> Result<bool, PullRequestError> {
+    pub fn rosen_commit_mirrored(&self, commit: &str) -> Result<bool, GitHubCommandError> {
         if commit.len() != 40 || !commit.bytes().all(|byte| byte.is_ascii_hexdigit()) {
-            return Err(PullRequestError::Invalid(
+            return Err(GitHubCommandError::Invalid(
                 "Invalid landed commit SHA".into(),
             ));
         }
@@ -321,7 +321,7 @@ impl IssueClient {
             .transport
             .default_branch
             .as_deref()
-            .ok_or_else(|| PullRequestError::Missing("default branch".into()))?;
+            .ok_or_else(|| GitHubCommandError::Missing("default branch".into()))?;
         let mut variables = self.transport.variables(0);
         variables["branch"] = format!("refs/heads/{branch}").into();
         // Resolve the branch via GraphQL so names with slashes need no URL escaping.
@@ -348,7 +348,7 @@ impl IssueClient {
         marker: &str,
         body: &str,
         state: Option<IssueState>,
-    ) -> Result<(), PullRequestError> {
+    ) -> Result<(), GitHubCommandError> {
         let issue = self.read_issue(number)?;
         if !self.has_rosen_comment(number, marker)? {
             self.add_issue_comment(&issue.id, &format!("{body}\n\n{marker}"))?;
@@ -381,14 +381,14 @@ impl IssueClient {
         Ok(())
     }
 
-    fn has_rosen_comment(&self, number: u32, marker: &str) -> Result<bool, PullRequestError> {
+    fn has_rosen_comment(&self, number: u32, marker: &str) -> Result<bool, GitHubCommandError> {
         Ok(self
             .issue_comment_bodies(number)?
             .iter()
             .any(|body| body.lines().last() == Some(marker)))
     }
 
-    fn issue_comment_bodies(&self, number: u32) -> Result<Vec<String>, PullRequestError> {
+    fn issue_comment_bodies(&self, number: u32) -> Result<Vec<String>, GitHubCommandError> {
         #[derive(Deserialize)]
         struct Comment {
             body: String,

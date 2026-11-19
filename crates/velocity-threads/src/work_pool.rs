@@ -17,7 +17,7 @@ pub enum WorkPoolError {
     #[error("Could not read the project spec (SPEC.md and spec/): {0}")]
     Spec(#[from] std::io::Error),
     #[error(transparent)]
-    GitHub(#[from] velocity_github::PullRequestError),
+    GitHub(#[from] velocity_github::GitHubCommandError),
 }
 
 /// How old an open-issue list a display read (the claims board) may show. A swarm's claims,

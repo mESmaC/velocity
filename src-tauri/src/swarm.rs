@@ -4,16 +4,13 @@
 use tauri::{AppHandle, Manager};
 use tauri_specta::Event;
 use velocity_core::layout_view::LayoutSnapshot;
-use velocity_core::swarm::{self, PullRequestStep, SwarmEventKind, SwarmFeedEvent};
-use velocity_github::follow_through::FollowThrough;
+use velocity_core::swarm::{self, SwarmEventKind, SwarmFeedEvent};
+use velocity_store::ThreadState;
 use velocity_store::duty::clock_timestamp;
 use velocity_store::swarm_dialog::{
     OpenIssues, SwarmDialog, SwarmDialogQuery, provider_model_name,
 };
-use velocity_store::swarms::{
-    LaunchSwarmRequest, SwarmItem, live_members, swarm_finished, thread_swarm,
-};
-use velocity_store::{ThreadItem, ThreadState};
+use velocity_store::swarms::{LaunchSwarmRequest, SwarmItem, live_members};
 use velocity_threads::swarm::{OpenIssue, plan_swarm_member, require_swarm_launch};
 
 use crate::issue_panel::IssuePanel;
@@ -397,93 +394,6 @@ fn snapshot(application: &AppHandle) -> Result<LayoutSnapshot, String> {
     )?;
     store.refresh_follow_through_layout(&mut layout);
     Ok(layout.snapshot())
-}
-
-/// Feed lines from a member's PR lifecycle (F6): opened, changes requested, resolved,
-/// landed and closed, for members of legacy git projects. Rosen members report through
-/// their change events, and Rosen rebases them at their step boundaries (F10).
-pub(crate) fn record_pull_request_observation(
-    application: &AppHandle,
-    project: u32,
-    thread: &ThreadItem,
-    before: Option<&FollowThrough>,
-    after: &FollowThrough,
-) {
-    let Some((swarm, agent, finished_item)) = member_context(application, project, thread) else {
-        return;
-    };
-    let Some((kind, message)) =
-        swarm::pull_request_event(before.map(step), step(after), &finished_item)
-    else {
-        return;
-    };
-    let event = SwarmFeedEvent::new(&clock_timestamp(), &format!("a{agent}"), kind, message);
-    report(post_event(application, project, swarm, event));
-    if kind == SwarmEventKind::Landed {
-        report(announce_finished(application, project, swarm));
-    }
-}
-
-fn step(watch: &FollowThrough) -> PullRequestStep<'_> {
-    PullRequestStep {
-        number: watch.number,
-        stage: watch.stage.as_str(),
-        worktree_deleted: watch.worktree_deleted,
-    }
-}
-
-/// The member's swarm, agent number, and what merging it finishes.
-fn member_context(
-    application: &AppHandle,
-    project: u32,
-    thread: &ThreadItem,
-) -> Option<(u32, u32, String)> {
-    let store = lock(
-        application.state::<ManagedStateStore>().inner(),
-        "persisted state",
-    )
-    .ok()?;
-    let (swarm, agent) = thread_swarm(store.project(project)?, thread.id)?;
-    let finished = match &thread.issue {
-        Some(issue) if swarm.close_issues => format!("issue #{} closed", issue.number),
-        Some(issue) => format!("issue #{} left open", issue.number),
-        None => "task done".into(),
-    };
-    Some((swarm.id, agent, finished))
-}
-
-fn announce_finished(application: &AppHandle, project: u32, swarm: u32) -> Result<(), String> {
-    let (finished, count, title) = {
-        let store = lock(
-            application.state::<ManagedStateStore>().inner(),
-            "persisted state",
-        )?;
-        let Some(item) = store.project(project) else {
-            return Ok(());
-        };
-        let Some(record) = item.swarms.iter().find(|record| record.id == swarm) else {
-            return Ok(());
-        };
-        let count = live_members(item, record).count();
-        (swarm_finished(item, record), count, record.title())
-    };
-    if !finished {
-        return Ok(());
-    }
-    let message = format!("Swarm finished · all {count} changes landed");
-    let event = SwarmFeedEvent::new(
-        &clock_timestamp(),
-        "swarm",
-        SwarmEventKind::Finished,
-        message,
-    );
-    post_event(application, project, swarm, event)?;
-    let mut layout = lock(
-        application.state::<MainLayout>().inner(),
-        "main-window state",
-    )?;
-    layout.show_toast(format!("{title} finished · {count} changes landed"), None);
-    crate::layout::publish(application, &layout.snapshot(), None)
 }
 
 /// A member stopped on an error; its worktree is kept (§2.1, F5).

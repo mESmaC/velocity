@@ -4,11 +4,10 @@
 Right-clicking a thread in the sidebar opens a menu:
 - Open workspace in Explorer
 - Copy workspace path
-- Open PR #n on GitHub
 - **Delete …** (shown in red)
 
 The delete label depends on the thread:
-- **Delete thread and workspace**, with what it will do underneath: "stops the agent · closes PR #n · 247 MB freed"
+- **Delete thread and workspace**, with what it will do underneath: "stops the agent · 247 MB freed"
 - **Delete swarm and its N workspaces** (swarm row)
 - **Delete thread** (merged threads, whose workspace is already gone, and spec threads)
 

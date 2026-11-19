@@ -1,7 +1,7 @@
 use std::ffi::OsStr;
 use std::process::Command;
 
-/// `gh <arguments>`, counted against the caller like every `PullRequestCommand` call (SPEC.md
+/// `gh <arguments>`, counted against the caller like every `GitHubCommand` call (SPEC.md
 /// F6), so the request totals cover the browser, new-project and repository-list calls too.
 #[track_caller]
 pub(crate) fn gh(arguments: &[&str]) -> Command {

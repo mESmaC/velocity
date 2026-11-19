@@ -12,16 +12,14 @@ use velocity_airc::{Channel, Event};
 use velocity_core::goal_swarm::{GoalEventKind, GoalFeedEvent, PoolCounts};
 use velocity_core::goal_swarm_view::GoalClaimsBoard;
 use velocity_core::layout_view::LayoutSnapshot;
-use velocity_core::swarm::{self, PullRequestStep, SwarmEventKind};
 use velocity_core::work_pool::WorkSources;
-use velocity_github::follow_through::FollowThrough;
+use velocity_store::ThreadState;
 use velocity_store::duty::clock_timestamp;
 use velocity_store::goal_swarm_dialog::{GoalPool, GoalSwarmDialog, GoalSwarmDialogQuery};
 use velocity_store::goal_swarm_view::goal_claims_board;
 use velocity_store::goal_swarms::{
     AddGoalAgentsRequest, GoalAgentSlot, LaunchGoalSwarmRequest, thread_goal_swarm,
 };
-use velocity_store::{ThreadItem, ThreadState};
 use velocity_threads::goal_swarm::{KeepGoingOutcome, evaluate_keep_going, plan_goal_member};
 
 use crate::layout::MainLayout;
@@ -358,42 +356,6 @@ fn finish_goal_launch(
     Ok(snapshot)
 }
 
-/// Records PR lifecycle transitions on a goal swarm member and runs `keep_going` on merge.
-pub(crate) fn record_pull_request_observation(
-    application: &AppHandle,
-    project: u32,
-    thread: &ThreadItem,
-    before: Option<&FollowThrough>,
-    after: &FollowThrough,
-) {
-    let Some((swarm_id, nick, finished_item)) = member_pr_context(application, project, thread)
-    else {
-        return;
-    };
-    let Some((swarm_kind, detail)) =
-        swarm::pull_request_event(before.map(step), step(after), &finished_item)
-    else {
-        return;
-    };
-    let Some(kind) = goal_pr_kind(swarm_kind) else {
-        return;
-    };
-    let event = GoalFeedEvent::new(&clock_timestamp(), &nick, kind, format!("{nick} {detail}"));
-    report(record_event_and_publish(
-        application,
-        project,
-        swarm_id,
-        event,
-    ));
-    if kind == GoalEventKind::Landed {
-        let handle = application.clone();
-        let merged_thread = thread.id;
-        tauri::async_runtime::spawn(async move {
-            report(run_keep_going(&handle, project, merged_thread).await);
-        });
-    }
-}
-
 pub(crate) async fn run_keep_going(
     application: &AppHandle,
     project_id: u32,
@@ -449,43 +411,6 @@ fn apply_keep_going(
             crate::threads::refresh(application, (project_id, thread_id), false).map(|_| ())
         }
     }
-}
-
-fn member_pr_context(
-    application: &AppHandle,
-    project: u32,
-    thread: &ThreadItem,
-) -> Option<(u32, String, String)> {
-    let store = lock(
-        application.state::<ManagedStateStore>().inner(),
-        "persisted state",
-    )
-    .ok()?;
-    let (swarm, nick) = thread_goal_swarm(store.project(project)?, thread.id)?;
-    let finished = if let Some(issue) = &thread.issue {
-        format!("issue #{} landed", issue.number)
-    } else if !thread.task_ids.is_empty() {
-        "task done".into()
-    } else if thread.spec_section.is_some() {
-        "spec item built".into()
-    } else {
-        "landed".into()
-    };
-    Some((swarm.id, nick, finished))
-}
-
-fn goal_pr_kind(kind: SwarmEventKind) -> Option<GoalEventKind> {
-    match kind {
-        SwarmEventKind::Named => Some(GoalEventKind::Named),
-        SwarmEventKind::Changes => Some(GoalEventKind::Changes),
-        SwarmEventKind::Landed => Some(GoalEventKind::Landed),
-        SwarmEventKind::Failed => Some(GoalEventKind::Failed),
-        _ => None,
-    }
-}
-
-fn step(watch: &FollowThrough) -> PullRequestStep<'_> {
-    PullRequestStep::new(watch.number, watch.stage.as_str(), watch.worktree_deleted)
 }
 
 /// Records a goal swarm member stopping on an error while keeping its worktree (§2.1, F5).

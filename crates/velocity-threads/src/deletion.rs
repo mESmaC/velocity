@@ -11,9 +11,8 @@ use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use thiserror::Error;
-use velocity_core::thread_menu::{has_open_pull_request, owns_worktree};
+use velocity_core::thread_menu::owns_worktree;
 use velocity_git::{GitCommand, LifecycleEvent, LifecycleState, WorktreeError, WorktreeRecord};
-use velocity_github::{PullRequestClient, PullRequestError};
 use velocity_store::{ThreadItem, ThreadState};
 
 use crate::runtime::ThreadKey;
@@ -48,12 +47,6 @@ pub enum DeletionError {
     MainCheckout(String),
     #[error(transparent)]
     Guard(#[from] velocity_git::MergedWorktreeError),
-    #[error("Could not close PR #{number}: {source}")]
-    PullRequest {
-        number: u32,
-        #[source]
-        source: Box<PullRequestError>,
-    },
 }
 
 /// What one Delete takes: a thread, or a swarm or goal swarm with its members (F10, F12).
@@ -130,7 +123,6 @@ pub struct DeletionPlan {
     pub repository: PathBuf,
     pub branch: String,
     pub remove_worktree: Option<PathBuf>,
-    pub close_pull_request: Option<u32>,
 }
 
 /// Plans the deletion of `thread`, whose project is checked out at `repository`. The
@@ -159,9 +151,6 @@ pub fn plan_deletion(repository: &Path, thread: &ThreadItem) -> DeletionPlan {
         repository: repository.to_path_buf(),
         branch: thread.branch_name.clone(),
         remove_worktree,
-        close_pull_request: thread
-            .pull_request_number
-            .filter(|_| has_open_pull_request(state, thread.pull_request_number)),
     }
 }
 
@@ -235,18 +224,6 @@ fn remove_leftover_folder(worktree: &Path) -> Result<(), DeletionError> {
             source,
         }
     })
-}
-
-/// Closes the thread's PR through `gh`. A PR that already merged or closed needs nothing.
-pub fn close_pull_request(repository: &Path, number: u32) -> Result<(), DeletionError> {
-    let closed = PullRequestClient::discover(repository).and_then(|client| client.close(number));
-    match closed {
-        Ok(_) | Err(PullRequestError::Invalid(_)) => Ok(()),
-        Err(source) => Err(DeletionError::PullRequest {
-            number,
-            source: Box::new(source),
-        }),
-    }
 }
 
 #[cfg(test)]

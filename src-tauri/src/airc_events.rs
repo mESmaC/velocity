@@ -4,7 +4,6 @@ use tauri::{AppHandle, Manager};
 use tauri_specta::Event as SpectaEvent;
 use velocity_airc::{Channel, Entry, Event};
 use velocity_core::duty::{DutyEventKind, DutyFeedEvent};
-use velocity_github::{PullRequestSnapshot, follow_through::FollowThrough};
 use velocity_store::ThreadItem;
 
 use crate::state::ManagedStateStore;
@@ -108,111 +107,6 @@ pub(crate) fn record_mirror_rejected(
     );
     let event = Event::new("failed", "velocity", &message).addressed_to(recipients);
     post_event(application, project, event).map(|_| ())
-}
-
-/// Posts F6/F7 PR lifecycle events (`PR`, `pushed`, `merged` + Past work ledger)
-/// observed on `snapshot` relative to `before`.
-pub(crate) fn record_pull_request_observation(
-    application: &AppHandle,
-    project_identifier: u32,
-    thread: &ThreadItem,
-    before: Option<&FollowThrough>,
-    after: &FollowThrough,
-    snapshot: &PullRequestSnapshot,
-) {
-    if after.number == 0 {
-        return;
-    }
-    let nick = thread_nick(thread);
-    let number = after.number;
-    let title = snapshot.pull_request.title.as_str();
-    let head = after.head.as_str();
-    let opened = before.is_none_or(|previous| previous.number == 0);
-    if opened {
-        report(
-            Event::pull_request_opened(&nick, number, title, head)
-                .map_err(|error| error.to_string())
-                .and_then(|event| post_event(application, project_identifier, event)),
-        );
-    } else if before.is_some_and(|previous| !previous.head.is_empty() && previous.head != head) {
-        report(
-            Event::pull_request_pushed(&nick, number, head)
-                .map_err(|error| error.to_string())
-                .and_then(|event| post_event(application, project_identifier, event)),
-        );
-    }
-    record_proved(application, project_identifier, &nick, before, after);
-    if after.stage == "merged" && after.worktree_deleted {
-        // `master` moved: ready worktrees catch up and rebuild at the new tip (F5).
-        crate::ready_pool::wake(application, Some(project_identifier));
-        // A project that gains a UI or an engine gets its skill suggestion now (F18).
-        crate::skills::recheck_suggestions(
-            application,
-            project_identifier,
-            crate::skills::SuggestionCheck::Merged,
-        );
-        report(record_merged(
-            application,
-            project_identifier,
-            &nick,
-            number,
-            title,
-            head,
-        ));
-    }
-}
-
-/// Posts `proved` (F14, F17) when Velocity's proof checks first pass at a PR head, naming
-/// the proof folders, the theorem count and each language's level.
-fn record_proved(
-    application: &AppHandle,
-    project_identifier: u32,
-    nick: &str,
-    before: Option<&FollowThrough>,
-    after: &FollowThrough,
-) {
-    let already = before.is_some_and(|previous| previous.proved() && previous.head == after.head);
-    let Some(card) = after.proof.card.as_ref().filter(|_| after.proved()) else {
-        return;
-    };
-    if already {
-        return;
-    }
-    let text = format!("proved #{} · {}", after.number, card.summary());
-    let event = Event::new("proved", nick, &text).for_pull_request(after.number, Some(&after.head));
-    report(post_event(application, project_identifier, event));
-}
-
-fn record_merged(
-    application: &AppHandle,
-    project_identifier: u32,
-    nick: &str,
-    number: u32,
-    title: &str,
-    head: &str,
-) -> Result<(), String> {
-    let channel = open_channel(application, project_identifier)?;
-    if channel
-        .events(0)
-        .map_err(|error| error.to_string())?
-        .iter()
-        .any(|entry| entry.kind == "merged" && entry.pull_request == Some(number))
-    {
-        return Ok(());
-    }
-    let files = merged_files(application, project_identifier, number)?;
-    if let Some(entry) = channel
-        .post_pull_request_merged_with_files(nick, number, title, head, files)
-        .map_err(|error| error.to_string())?
-    {
-        AircEventPublished {
-            project_identifier,
-            entry,
-        }
-        .emit(application)
-        .map_err(|error| error.to_string())?;
-    }
-    Ok(())
 }
 
 /// Posts an `issue` event when a scout files an issue during a sweep (F7, F14).
@@ -344,17 +238,4 @@ pub async fn airc_ledger(
             .map_err(|error| error.to_string())
     })
     .await
-}
-
-fn merged_files(application: &AppHandle, project: u32, number: u32) -> Result<Vec<String>, String> {
-    let repository = lock(
-        application.state::<ManagedStateStore>().inner(),
-        "persisted state",
-    )?
-    .project(project)
-    .map(|project| project.repository_path.clone())
-    .ok_or("Unknown project")?;
-    velocity_github::PullRequestClient::discover(std::path::Path::new(&repository))
-        .and_then(|client| client.changed_files(number))
-        .map_err(|error| error.to_string())
 }

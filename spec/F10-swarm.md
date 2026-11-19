@@ -47,7 +47,7 @@ Right-clicking the row deletes the swarm (F12).
 - **Composer:** a message goes to every agent still working; each picks it up at its next step.
 
 **Landing a member** ticks its task done or completes its issue, removes its change from the rail and removes its workspace.
-Legacy git projects keep their PR follow-through (F6) until they migrate to Rosen; their cards show the change's checks and review.
+Members on legacy git projects have no PR follow-through (F6, #426); their feed shows starts, failures and your messages.
 
 **Accept when:**
 - [ ] All selected agents start immediately, unless a provider concurrency cap is set (F15, off by default; §8 Q4).

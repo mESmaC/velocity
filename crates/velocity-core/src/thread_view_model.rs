@@ -296,52 +296,6 @@ pub struct WorkedSummaryView {
     feature = "bindings",
     derive(serde::Serialize, serde::Deserialize, specta::Type)
 )]
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct PullRequestHistoryCard {
-    pub identifier: String,
-    pub title: String,
-    pub body: String,
-    pub path: Option<String>,
-    pub line: Option<u32>,
-    pub resolved: bool,
-    pub tool: Option<ToolStepRow>,
-}
-
-#[cfg_attr(
-    feature = "bindings",
-    derive(serde::Serialize, serde::Deserialize, specta::Type)
-)]
-#[derive(Clone, Debug)]
-pub struct PullRequestTrackStep {
-    pub label: String,
-    pub state: String,
-}
-
-#[cfg_attr(
-    feature = "bindings",
-    derive(serde::Serialize, serde::Deserialize, specta::Type)
-)]
-#[derive(Clone, Debug, Default)]
-pub struct PullRequestHistoryView {
-    pub coding_tool_count: Option<u32>,
-    pub coding_file_count: Option<u32>,
-    pub coding_additions: u32,
-    pub coding_deletions: u32,
-    pub status: String,
-    pub stage: String,
-    pub track: Vec<PullRequestTrackStep>,
-    pub cards: Vec<PullRequestHistoryCard>,
-    pub cleanup_error: Option<String>,
-    /// The proof card (F17), shown under the "opened" card, when the PR changes proofs.
-    pub proof: Option<crate::proof_card::ProofCard>,
-    /// Velocity's proof checks passed at the current head ("· proved" on the work line).
-    pub proved: bool,
-}
-
-#[cfg_attr(
-    feature = "bindings",
-    derive(serde::Serialize, serde::Deserialize, specta::Type)
-)]
 #[derive(Clone, Debug)]
 pub struct ThreadDetailSnapshot {
     pub account_label: Option<String>,
@@ -373,7 +327,6 @@ pub struct ThreadDetailSnapshot {
     pub show_work: bool,
     pub transcript_mode: TranscriptModeView,
     pub worked_summary: Option<WorkedSummaryView>,
-    pub pull_request_history: Option<PullRequestHistoryView>,
     pub rosen_change: Option<RosenChangeView>,
     pub blocks: SharedBlocks,
     pub agent_commands: Vec<AgentCommandView>,
@@ -457,7 +410,6 @@ pub struct ThreadDetailEntry {
     pub no_change_reason: Option<String>,
     pub show_work: bool,
     pub worked_summary: Option<WorkedSummaryView>,
-    pub pull_request_history: Option<PullRequestHistoryView>,
     pub rosen_change: Option<RosenChangeView>,
     pub blocks: SharedBlocks,
     pub previous_work_thread: Option<usize>,
@@ -505,7 +457,6 @@ impl ThreadDetailEntry {
             no_change_reason: None,
             show_work: false,
             worked_summary: None,
-            pull_request_history: None,
             rosen_change: None,
             blocks: SharedBlocks::default(),
             previous_work_thread: None,
@@ -715,7 +666,6 @@ pub fn project_thread_detail(entry: &ThreadDetailEntry) -> ThreadDetailSnapshot 
         show_work: entry.show_work,
         transcript_mode: mode,
         worked_summary: worked_summary(entry),
-        pull_request_history: entry.pull_request_history.clone(),
         rosen_change: entry.rosen_change.clone(),
         blocks: entry.blocks.clone(),
         agent_commands: entry.agent_commands.clone(),
@@ -776,15 +726,6 @@ fn worked_summary(entry: &ThreadDetailEntry) -> Option<WorkedSummaryView> {
             .is_some_and(|change| !change.lands.is_empty() && change.stage.finished())
     {
         return entry.worked_summary.clone();
-    }
-    if let Some(history) = &entry.pull_request_history {
-        return Some(WorkedSummaryView {
-            tool_calls: history.coding_tool_count.unwrap_or(0) as usize,
-            files_touched: history.coding_file_count.unwrap_or(0) as usize,
-            added: history.coding_additions as usize,
-            deleted: history.coding_deletions as usize,
-            proved: history.proved,
-        });
     }
     let tool_calls = entry
         .blocks

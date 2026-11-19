@@ -311,11 +311,6 @@ pub enum LayoutIntent {
         #[cfg_attr(feature = "bindings", specta(type = String))]
         usize,
     ),
-    OpenPullRequest(
-        #[cfg_attr(feature = "bindings", serde(with = "crate::ipc_number"))]
-        #[cfg_attr(feature = "bindings", specta(type = String))]
-        usize,
-    ),
     OpenIssue(
         #[cfg_attr(feature = "bindings", serde(with = "crate::ipc_number"))]
         #[cfg_attr(feature = "bindings", specta(type = String))]

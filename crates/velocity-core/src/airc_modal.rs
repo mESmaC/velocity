@@ -224,8 +224,8 @@ pub enum AircSpan {
         nick: String,
         tone: NickTone,
     },
-    /// `#n`: opens that PR's thread, or GitHub.
-    PullRequest(u32),
+    /// `#n`: opens the thread working on that issue, or the issue on GitHub (F9).
+    Issue(u32),
 }
 
 #[cfg_attr(
@@ -490,7 +490,7 @@ fn known_nicks(input: &AircModalInput) -> BTreeSet<String> {
     nicks
 }
 
-/// Splits a line into text, known nicks and `#n` PR references.
+/// Splits a line into text, known nicks and `#n` issue references.
 fn spans(text: &str, nicks: &BTreeSet<String>) -> Vec<AircSpan> {
     let mut spans = Vec::new();
     let mut plain = String::new();
@@ -506,7 +506,7 @@ fn spans(text: &str, nicks: &BTreeSet<String>) -> Vec<AircSpan> {
         let span = match number {
             Some(number) => {
                 plain.pop();
-                Some(AircSpan::PullRequest(number))
+                Some(AircSpan::Issue(number))
             }
             // A branch such as `vel/thread-ipc` names the branch, not the agent.
             None if !plain.ends_with('/') && nicks.contains(word.as_str()) => {

@@ -26,8 +26,8 @@ Velocity posts them; agents never type them.
 | `refused` | a claim loses to an earlier one; names the holder | `airc_claim` |
 | `overlap` (amber row) | two working or PR-open agents claim the same files | Velocity's claim comparison |
 | `shares` | an agent will make a small change in another agent's file and rebase after it merges | `airc_share` |
-| `waits` / `unblocked` | an agent waits for another agent's PR, then rebases after it merges | `airc_wait`, `pr://merged` |
-| `PR` · `changes` · `pushed` · `approved` · `merged` | the PR lifecycle (F6, F7) | GitHub (historical PR events) |
+| `waits` / `unblocked` | an agent waits for another agent's change, then rebases after it lands | `airc_wait`, Rosen land |
+| `PR` · `changes` · `pushed` · `approved` · `merged` | the PR lifecycle (F6, F7) | GitHub PR events saved before #426; Velocity no longer posts them |
 | `issue` | a scout or agent files an issue | GitHub |
 | `task` | a Task List item is added, changed or deleted (F8) | Task List |
 | `failed` | an agent stops on an error; its claim is held | agent runner |
@@ -140,7 +140,7 @@ A line meant for one agent never reaches all of them.
 - **Tabs:**
   - **Events** is the default tab.
     It shows the event log: `hh:mm`, a coloured type tag (blue for PR / issue / task, green for approved / merged / unblocked, amber for overlap / waits / shares / changes / order, red for refused / failed), then the nick and the text.
-    Nicks have stable colours, and PR numbers are links.
+    Nicks have stable colours, and `#n` references are links that open the thread working on that issue, or the issue on GitHub (F9).
   - **Claims** lists one row per claiming agent: nick, task, state, and its files.
     Overlapping files are outlined amber.
     A dependency shows "waits for <nick> (#n) to merge".

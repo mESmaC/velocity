@@ -9,10 +9,9 @@ use tauri_plugin_clipboard_manager::ClipboardExt;
 use tauri_plugin_opener::OpenerExt;
 use velocity_core::layout_view::LayoutSnapshot;
 use velocity_core::thread_menu::{ThreadMenuAction, ThreadMenuEntry, ThreadMenuFacts, thread_menu};
-use velocity_github::PullRequestClient;
 use velocity_store::ThreadItem;
 use velocity_store::deleted_worktrees::DeletedWorktree;
-use velocity_threads::deletion::{AGENT_EXIT_WAIT, UNDO_WINDOW, close_pull_request};
+use velocity_threads::deletion::{AGENT_EXIT_WAIT, UNDO_WINDOW};
 use velocity_threads::{
     Deletion, DeletionPlan, PendingDeletions, StopOutcome, ThreadKey, plan_deletion,
 };
@@ -142,7 +141,6 @@ pub async fn get_thread_menu(
     let facts = ThreadMenuFacts {
         retry_workspace: thread.pending_rosen_launch.is_some(),
         worktree_path: thread.worktree_path,
-        pull_request_number: thread.pull_request_number,
         agent_running,
         worktree_bytes,
         ..ThreadMenuFacts::new(thread.state.into())
@@ -176,7 +174,7 @@ pub async fn run_thread_menu_action(
         )
         .map(|_| ());
     }
-    let (repository, thread) = find_thread(&application, project_identifier, thread_identifier)?;
+    let (_, thread) = find_thread(&application, project_identifier, thread_identifier)?;
     let worktree = thread.worktree_path.clone().unwrap_or_default();
     match action {
         ThreadMenuAction::RetryWorkspace => {
@@ -193,17 +191,6 @@ pub async fn run_thread_menu_action(
                 .write_text(worktree.clone())
                 .map_err(|error| error.to_string())?;
             show_toast(&application, format!("Copied {worktree}"), None)
-        }
-        ThreadMenuAction::OpenPullRequest => {
-            let number = thread
-                .pull_request_number
-                .ok_or("The thread has no change")?;
-            tauri::async_runtime::spawn_blocking(move || {
-                PullRequestClient::discover(&repository)?.open_in_browser(number)
-            })
-            .await
-            .map_err(|error| error.to_string())?
-            .map_err(|error| error.to_string())
         }
         ThreadMenuAction::Delete => {
             delete_thread_now(application, project_identifier, thread_identifier).map(|_| ())
@@ -461,11 +448,6 @@ async fn run_effects(
             problems.push(format!(
                 "its workspace is kept until it can be removed ({error})"
             ));
-        }
-        if let Some(number) = plan.close_pull_request
-            && let Err(error) = close_pull_request(&plan.repository, number)
-        {
-            problems.push(format!("its change stays open ({error})"));
         }
         (removed.err().and(kept), problems)
     })

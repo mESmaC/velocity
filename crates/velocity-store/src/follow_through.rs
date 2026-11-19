@@ -1,8 +1,6 @@
-//! Persist watcher cursors, outbox and thread lifecycle together, before publication.
-use crate::{
-    AgentActivity, ProjectItem, ReviewStage, StateStore, StoreError, ThreadItem, ThreadState,
-};
-use velocity_github::{PullRequestSnapshot, PullRequestState, follow_through::FollowThrough};
+//! Thread lookups for follow-through work (F6): the retained thread a resumed turn, parking
+//! or Rosen event acts on, and the Task List effects of a land and a revert.
+use crate::{ProjectItem, StateStore, ThreadItem, ThreadState};
 
 #[derive(Debug, thiserror::Error)]
 pub enum FollowThroughError {
@@ -17,23 +15,6 @@ pub enum FollowThroughError {
 }
 
 impl StateStore {
-    pub fn follow_through_observer(&self, project: u32, thread: u32) -> Option<FollowThrough> {
-        let record = self
-            .project(project)?
-            .threads
-            .iter()
-            .find(|record| record.id == thread)?;
-        Some(record.follow_through.clone().unwrap_or_else(|| {
-            self.state
-                .thread_started_at
-                .get(&project)
-                .and_then(|threads| threads.get(&thread))
-                .map_or_else(FollowThrough::default, |started| {
-                    FollowThrough::for_thread(started.clone())
-                })
-        }))
-    }
-
     pub fn follow_through_thread(
         &self,
         project_identifier: u32,
@@ -56,13 +37,6 @@ impl StateStore {
         Ok((project.clone(), thread.clone()))
     }
 
-    pub fn thread_has_merged_pull_request(&self, project: u32, thread: u32) -> bool {
-        self.project(project)
-            .and_then(|project| project.threads.iter().find(|item| item.id == thread))
-            .and_then(|thread| thread.follow_through.as_ref())
-            .is_some_and(|watch| watch.stage == "merged")
-    }
-
     pub fn refresh_follow_through_layout(
         &self,
         layout: &mut velocity_core::layout_state::LayoutState,
@@ -70,76 +44,9 @@ impl StateStore {
         layout.replace_data(crate::project_layout::read_model(self));
         crate::build_gate::sync_layout(&self.state, layout);
     }
-
-    pub fn save_follow_through(
-        &mut self,
-        project_identifier: u32,
-        thread_identifier: u32,
-        snapshot: &PullRequestSnapshot,
-        follow_through: FollowThrough,
-    ) -> Result<bool, StoreError> {
-        if !follow_through.should_follow(&snapshot.pull_request) {
-            return Ok(false);
-        }
-        let mut next = self.state.clone();
-        let Some(thread) = next
-            .projects
-            .iter_mut()
-            .find(|project| project.id == project_identifier)
-            .and_then(|project| {
-                project
-                    .threads
-                    .iter_mut()
-                    .find(|thread| thread.id == thread_identifier)
-            })
-        else {
-            return Ok(false);
-        };
-        let previous = thread.clone();
-        thread.pull_request_number = Some(snapshot.pull_request.number);
-        thread.additions = snapshot.pull_request.additions;
-        thread.deletions = snapshot.pull_request.deletions;
-        thread.state = match snapshot.pull_request.state {
-            PullRequestState::Open => ThreadState::Review,
-            PullRequestState::Closed => ThreadState::Closed,
-            PullRequestState::Merged if follow_through.worktree_deleted => ThreadState::Merged,
-            // A merged PR is not finished until its checkout is actually gone.
-            PullRequestState::Merged => ThreadState::Review,
-        };
-        thread.review_stage = match follow_through.stage.as_str() {
-            "ci" => Some(ReviewStage::ContinuousIntegration),
-            "fixing" => Some(ReviewStage::Fixing),
-            "approved" | "merged" => Some(ReviewStage::Approved),
-            "review" => Some(ReviewStage::Review),
-            _ => None,
-        };
-        if thread.state == ThreadState::Merged {
-            thread.activity = AgentActivity::Idle;
-        }
-        thread.follow_through = Some(follow_through);
-        if *thread == previous {
-            return Ok(false);
-        }
-        if thread.state == ThreadState::Merged && previous.state != ThreadState::Merged {
-            finish_thread_tasks(&mut next, project_identifier, thread_identifier);
-        }
-        self.store_snapshot(next)?;
-        Ok(true)
-    }
 }
 
-/// GitHub merged the thread's PR, but the thread stays in review until its worktree is gone
-/// (F5, F6). Its label says the merge happened rather than "approved · merging" (#278).
-pub(crate) const MERGED_CLEANING_UP: &str = "merged · deleting worktree";
-
-pub(crate) fn merged_awaiting_cleanup(thread: &ThreadItem) -> bool {
-    thread
-        .follow_through
-        .as_ref()
-        .is_some_and(|watch| watch.stage == "merged" && !watch.worktree_deleted)
-}
-
-/// A task is done when its PR merged (F8): the merged thread's tasks tick off (F10).
+/// A task is done when its change lands (F8): the landed thread's tasks tick off (F10).
 pub(crate) fn finish_thread_tasks(state: &mut crate::PersistedState, project: u32, thread: u32) {
     let Some(project) = state.projects.iter_mut().find(|item| item.id == project) else {
         return;
@@ -199,5 +106,59 @@ pub(crate) fn reopen_thread_tasks(state: &mut crate::PersistedState, project: u3
         project
             .built_spec_sections
             .retain(|built| *built != section);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::{PersistedState, ProjectItem, StateStore, ThreadItem};
+
+    /// Risk: saves written before #426 carry a GitHub PR record on each thread. Dropping the
+    /// field must not stop `state.json` from loading or lose the thread it was saved on.
+    #[test]
+    fn saves_with_a_legacy_pull_request_record_still_load() -> Result<(), Box<dyn std::error::Error>>
+    {
+        let directory = std::env::temp_dir().join(format!(
+            "velocity-legacy-pr-record-{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)?
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&directory)?;
+        let mut project = ProjectItem::new(1, "legacy".into(), directory.display().to_string());
+        project
+            .threads
+            .push(ThreadItem::new(7, "Merged PR thread".into()));
+        let mut state = PersistedState::default();
+        state.projects.push(project);
+        let mut legacy = serde_json::to_value(state)?;
+        legacy["projects"][0]["threads"][0]
+            .as_object_mut()
+            .ok_or("missing thread")?
+            .insert(
+                "follow_through".into(),
+                serde_json::json!({
+                    "number": 12,
+                    "url": "https://github.com/owner/repository/pull/12",
+                    "stage": "merged",
+                    "worktree_deleted": true,
+                    "history": [{"identifier": "opened", "title": "PR #12 opened"}],
+                }),
+            );
+        std::fs::write(directory.join("state.json"), serde_json::to_vec(&legacy)?)?;
+        let store = StateStore::load_or_default(&directory)?;
+        let thread = store
+            .project(1)
+            .and_then(|project| project.threads.iter().find(|thread| thread.id == 7))
+            .ok_or("the legacy thread was lost")?;
+        assert_eq!(thread.title, "Merged PR thread");
+        assert!(
+            serde_json::to_value(thread)?
+                .get("follow_through")
+                .is_none(),
+            "the next save drops the legacy record"
+        );
+        std::fs::remove_dir_all(directory)?;
+        Ok(())
     }
 }

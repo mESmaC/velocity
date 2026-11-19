@@ -5,7 +5,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::issues::valid_scout_nick;
 use crate::{
-    GitHubIssue, IssueClient, IssueInventory, IssueReviewToken, PullRequestError, Reproduction,
+    GitHubCommandError, GitHubIssue, IssueClient, IssueInventory, IssueReviewToken, Reproduction,
 };
 
 type FilingLocks = Mutex<BTreeMap<String, Arc<Mutex<()>>>>;
@@ -14,7 +14,7 @@ static FILING_LOCKS: LazyLock<FilingLocks> = LazyLock::new(Mutex::default);
 #[derive(Debug, thiserror::Error)]
 pub enum ScoutIssueError {
     #[error(transparent)]
-    GitHub(#[from] PullRequestError),
+    GitHub(#[from] GitHubCommandError),
     #[error("Could not execute or read failure evidence: {0}")]
     Evidence(#[from] std::io::Error),
     #[error("Invalid scout request: {0}")]

@@ -7,14 +7,13 @@
     aircRoutingCommands,
     aircModalCommands,
     onAircModal,
-    pullRequestCommands,
+    issueCommands,
   } from './ipc';
   import type {
     AircLineView,
     AircModalView,
     AircTab,
     LayoutAction,
-    LayoutSnapshot,
     NickTone,
     MessageMode,
   } from './ipc';
@@ -23,11 +22,9 @@
   let {
     project,
     send,
-    onResult,
   }: {
     project: number;
     send: (action: LayoutAction) => void;
-    onResult: (snapshot: LayoutSnapshot) => void;
   } = $props();
 
   let dialog: HTMLDialogElement;
@@ -132,13 +129,10 @@
       .catch(report);
   }
 
-  function openPullRequest(number: number) {
-    pullRequestCommands
+  function openIssue(number: number) {
+    issueCommands
       .open(project, number)
-      .then((snapshot) => {
-        if (snapshot) onResult(snapshot);
-        dismiss();
-      })
+      .then(() => dismiss())
       .catch(report);
   }
 
@@ -316,8 +310,7 @@
   line: AircLineView,
 )}{#each line.spans as span, index (index)}{#if 'Text' in span}{span.Text}{:else if 'Nick' in span && span.Nick}<b
         class={tone(span.Nick.tone)}>{span.Nick.nick}</b
-      >{:else if 'PullRequest' in span && span.PullRequest !== undefined}<button
+      >{:else if 'Issue' in span && span.Issue !== undefined}<button
         class="ref"
-        onclick={() => openPullRequest(span.PullRequest ?? 0)}
-        >#{span.PullRequest}</button
+        onclick={() => openIssue(span.Issue ?? 0)}>#{span.Issue}</button
       >{/if}{/each}{/snippet}

@@ -214,12 +214,11 @@ fn deliver_pending(
             .delivery_cursor(&format!("thread-{}", key.1), thread.airc_cursor)
             .map_err(|error| error.to_string())?
     };
-    let cursor = velocity_airc::deliver_filtered(
+    let cursor = velocity_airc::deliver_targeted(
         channel,
         nick,
         after,
         thread.activity == velocity_store::AgentActivity::Idle,
-        crate::follow_through::follows_github_reviews(thread),
         |delivery| {
             let status = lock(
                 application.state::<ManagedThreads>().inner(),

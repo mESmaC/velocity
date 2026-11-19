@@ -1,23 +1,17 @@
 //! GitHub access through the `gh` CLI, signed in with the user's own `gh auth login`.
 //! Every call runs `gh` as a child process with its arguments passed directly, never
-//! through a shell.
+//! through a shell. Velocity uses GitHub only for issues (F9, scouts, post-land failure
+//! reports) and for listing and cloning repositories (F2); changes land through Rosen.
 
-mod branch_pull_requests;
 mod command;
-pub mod follow_through;
-pub mod follow_through_poll;
+mod gh_command;
 mod issue_panel;
 mod issue_types;
 mod issues;
 pub mod mcp_stdio;
 pub mod post_land_failures;
-mod pull_request_command;
-mod pull_request_files;
-mod pull_request_history;
-mod pull_request_queries;
-mod pull_request_types;
-mod pull_requests;
 mod repository;
+mod repository_client;
 mod repository_list;
 mod request_counter;
 mod rosen_issue;
@@ -29,14 +23,12 @@ mod scout_search;
 mod scout_server;
 pub mod velocity_reports;
 
+pub use gh_command::GitHubCommandError;
 pub use issue_panel::{
     IssueDiscussion, IssuePanelCache, IssuePanelRow, IssuePanelSnapshot, SpecQuestion,
 };
 pub use issue_types::*;
 pub use issues::IssueClient;
-pub use pull_request_command::PullRequestError;
-pub use pull_request_types::*;
-pub use pull_requests::PullRequestClient;
 pub use repository::{
     GitHubError, RepositoryName, Visibility, clone_repository, create_repository, repository_exists,
 };

@@ -4,8 +4,8 @@ use std::time::{Duration, Instant};
 use serde::{Deserialize, Serialize};
 use specta::Type;
 
-use crate::pull_requests::Connection;
-use crate::{GitHubIssue, IssueClient, PullRequestError};
+use crate::repository_client::Connection;
+use crate::{GitHubCommandError, GitHubIssue, IssueClient};
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, Type)]
 pub struct SpecQuestion {
@@ -240,7 +240,7 @@ pub struct IssuePanelCache {
 
 impl IssueClient {
     /// Read discussion on demand so comment latency stays outside the work inventory.
-    pub fn discussion(&self, number: u32) -> Result<IssueDiscussion, PullRequestError> {
+    pub fn discussion(&self, number: u32) -> Result<IssueDiscussion, GitHubCommandError> {
         #[derive(Deserialize)]
         struct Comment {
             id: String,
@@ -290,7 +290,7 @@ impl IssueClient {
     pub fn cached_panel(
         &self,
         cache: &mut IssuePanelCache,
-    ) -> Result<(String, Vec<IssuePanelRow>), PullRequestError> {
+    ) -> Result<(String, Vec<IssuePanelRow>), GitHubCommandError> {
         let probe = self.probe_open_issues()?;
         let fresh = cache
             .read_at
@@ -311,7 +311,7 @@ impl IssueClient {
         Ok(panel)
     }
 
-    fn probe_open_issues(&self) -> Result<Vec<serde_json::Value>, PullRequestError> {
+    fn probe_open_issues(&self) -> Result<Vec<serde_json::Value>, GitHubCommandError> {
         self.transport.connection(
             "query($owner:String!,$name:String!,$cursor:String) { repository(owner:$owner,name:$name) {
               issues(states:OPEN,first:100,after:$cursor,orderBy:{field:CREATED_AT,direction:ASC}) {
@@ -322,7 +322,7 @@ impl IssueClient {
         )
     }
 
-    pub fn panel(&self) -> Result<(String, Vec<IssuePanelRow>), PullRequestError> {
+    pub fn panel(&self) -> Result<(String, Vec<IssuePanelRow>), GitHubCommandError> {
         let mut rows: Vec<_> = self
             .open_issues()?
             .into_iter()
@@ -342,11 +342,11 @@ impl IssueClient {
         Ok((self.transport.repository.clone(), rows))
     }
 
-    pub fn get(&self, number: u32) -> Result<GitHubIssue, PullRequestError> {
+    pub fn get(&self, number: u32) -> Result<GitHubIssue, GitHubCommandError> {
         self.read_issue(number)
     }
 
-    pub fn open_in_browser(&self, number: u32) -> Result<(), PullRequestError> {
+    pub fn open_in_browser(&self, number: u32) -> Result<(), GitHubCommandError> {
         let output = crate::command::gh(&[
             "issue",
             "view",
@@ -357,7 +357,7 @@ impl IssueClient {
         ])
         .output()?;
         if !output.status.success() {
-            return Err(PullRequestError::Command {
+            return Err(GitHubCommandError::Command {
                 code: output.status.code(),
                 message: String::from_utf8_lossy(&output.stderr).trim().into(),
             });

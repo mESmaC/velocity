@@ -31,7 +31,6 @@ fn launch_kind(intent: &LayoutIntent, interview_thread: bool) -> Option<LaunchKi
         | LayoutIntent::SwarmIssues
         | LayoutIntent::SwarmWork
         | LayoutIntent::OpenTask(_)
-        | LayoutIntent::OpenPullRequest(_)
         | LayoutIntent::OpenIssue(_)
         | LayoutIntent::OpenWorktreeInExplorer(_)
         | LayoutIntent::SettingsTab(_)

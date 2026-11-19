@@ -8,7 +8,7 @@ use tauri_specta::Event;
 use velocity_core::layout_view::{LayoutAction, LayoutIntent, LayoutSnapshot};
 use velocity_core::work_pool::WorkKey;
 use velocity_github::{
-    IssueClient, IssueDiscussion, IssuePanelCache, IssuePanelSnapshot, PullRequestError,
+    GitHubCommandError, IssueClient, IssueDiscussion, IssuePanelCache, IssuePanelSnapshot,
 };
 use velocity_store::VersionControl;
 use velocity_store::issues::{ThreadIssue, issue_thread};
@@ -45,7 +45,7 @@ impl ProjectContext {
         }
     }
 
-    fn issue_client(&self) -> Result<IssueClient, PullRequestError> {
+    fn issue_client(&self) -> Result<IssueClient, GitHubCommandError> {
         match &self.remote {
             Some(remote) => IssueClient::for_repository(&self.directory, remote),
             None => IssueClient::discover(&self.directory),
@@ -299,10 +299,10 @@ fn read_issue(
     project: &ProjectContext,
     repository: &str,
     number: u32,
-) -> Result<(String, velocity_github::GitHubIssue), velocity_github::PullRequestError> {
+) -> Result<(String, velocity_github::GitHubIssue), velocity_github::GitHubCommandError> {
     let client = project.issue_client()?;
     if !client.repository().eq_ignore_ascii_case(repository) {
-        return Err(velocity_github::PullRequestError::Invalid(
+        return Err(velocity_github::GitHubCommandError::Invalid(
             "The GitHub remote changed; refresh issues".into(),
         ));
     }

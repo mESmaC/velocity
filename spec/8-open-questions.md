@@ -26,3 +26,4 @@
 | Q25 | Decided: yes, a little faster. Providers count it inside their ordinary usage, with no category of its own (F15). | F15 |
 | Q26 | Decided: Claude Code reads `.claude/skills/`; Codex and Antigravity read `.agents/skills/`, the Agent Skills standard folder both packs' docs name. Kimi Code's folder is unverified, so Velocity links into both `.kimi-code/skills/` and `.agents/skills/` until it is confirmed, then drops the extra row. The mapping is a data table in `velocity-skills`, so a correction changes one row (F18, #161). | F18 |
 | Q27 | Should "Add a skill pack" also search the skills.sh registry, or take only GitHub repos? | F18 |
+| Q28 | Decided (#426): issues stay on GitHub. Collapse v0 has no issues, so F9, scouts and post-land failure reports keep using GitHub until Collapse adds issues, when the question is revisited. | F7, F9 |

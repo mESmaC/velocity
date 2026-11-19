@@ -1,7 +1,11 @@
 use serde::{Deserialize, Serialize};
 use specta::Type;
 
-use crate::GitHubActor;
+/// A GitHub account named on an issue or comment.
+#[derive(Clone, Debug, Serialize, Deserialize, Type)]
+pub struct GitHubActor {
+    pub login: String,
+}
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, Type)]
 #[serde(rename_all = "SCREAMING_SNAKE_CASE")]
@@ -79,7 +83,7 @@ impl IssueInventory {
     pub(crate) fn new(
         repository: String,
         issues: Vec<GitHubIssue>,
-    ) -> Result<Self, crate::PullRequestError> {
+    ) -> Result<Self, crate::GitHubCommandError> {
         let mut reviewed: Vec<_> = issues
             .iter()
             .map(|issue| {
@@ -89,7 +93,7 @@ impl IssueInventory {
                     content_hash: content_hash(&serde_json::to_vec(issue)?)?,
                 })
             })
-            .collect::<Result<_, crate::PullRequestError>>()?;
+            .collect::<Result<_, crate::GitHubCommandError>>()?;
         reviewed.sort_by_key(|issue| issue.number);
         Ok(Self {
             review_token: IssueReviewToken {
@@ -102,11 +106,11 @@ impl IssueInventory {
     }
 }
 
-pub(crate) fn content_hash(bytes: &[u8]) -> Result<String, crate::PullRequestError> {
+pub(crate) fn content_hash(bytes: &[u8]) -> Result<String, crate::GitHubCommandError> {
     let mut hasher = gix::hash::hasher(gix::hash::Kind::Sha256);
     hasher.update(bytes);
     hasher
         .try_finalize()
         .map(|hash| hash.to_string())
-        .map_err(|error| crate::PullRequestError::Invalid(error.to_string()))
+        .map_err(|error| crate::GitHubCommandError::Invalid(error.to_string()))
 }

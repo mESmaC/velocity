@@ -818,8 +818,6 @@ pub struct ThreadItem {
     #[serde(default)]
     #[specta(skip)]
     pub rosen_issue: rosen_issue::IssueProgress,
-    #[serde(default)]
-    pub follow_through: Option<velocity_github::follow_through::FollowThrough>,
     /// Last AIRC message whose receiving turn completed (F14).
     #[serde(default)]
     #[specta(skip)]
@@ -893,7 +891,6 @@ impl ThreadItem {
             pending_rosen_launch: None,
             rosen_progress_generation: 0,
             goal_stack: None,
-            follow_through: None,
             airc_cursor: 0,
             airc_server_identity: None,
             dependency_wait: None,
@@ -949,7 +946,6 @@ impl ThreadItem {
             pending_rosen_launch: None,
             rosen_progress_generation: 0,
             goal_stack: None,
-            follow_through: None,
             airc_cursor: 0,
             airc_server_identity: None,
             dependency_wait: None,
@@ -1027,12 +1023,7 @@ impl ThreadItem {
     pub fn normalize(self) -> Self {
         let (item, core_record) = self.into_core_record();
         let normalized = core_state::normalize_thread_record(core_record);
-        let mut item = item.apply_core_record(normalized);
-        // Older saves repeat a PR thread's tool cards once per resumed session.
-        if let Some(follow_through) = item.follow_through.as_mut() {
-            follow_through.compact_work_cards();
-        }
-        item
+        item.apply_core_record(normalized)
     }
 
     pub fn switch_model(self, next_model_name: String, next_model_supports_fast: bool) -> Self {

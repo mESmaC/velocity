@@ -124,10 +124,6 @@ export const commands = {
 	dismissDutyAgent: (request: DismissDutyAgentRequest) => __TAURI_INVOKE<LayoutSnapshot_Serialize>("dismiss_duty_agent", { request }),
 	/**  Stops a duty role (F7): every agent on it is dismissed and the role leaves "On duty". */
 	stopDuty: (request: StopDutyRequest) => __TAURI_INVOKE<LayoutSnapshot_Serialize>("stop_duty", { request }),
-	listPullRequests: (projectIdentifier: number) => __TAURI_INVOKE<PullRequest_Serialize[]>("list_pull_requests", { projectIdentifier }),
-	getPullRequest: (projectIdentifier: number, number: number) => __TAURI_INVOKE<PullRequestSnapshot_Serialize>("get_pull_request", { projectIdentifier, number }),
-	/**  Opens historical AIRC PR links on demand. */
-	openProjectPullRequest: (projectIdentifier: number, number: number) => __TAURI_INVOKE<LayoutSnapshot_Serialize | null>("open_project_pull_request", { projectIdentifier, number }),
 	/**
 	 *  The Goal swarm dialog for the user's choices with one edit applied; asked again after
 	 *  every edit, and after the pool is read.
@@ -248,16 +244,6 @@ export const PROJECT_SELECTED_EVENT = "project://selected" as const;
 
 export const PROVIDERS_EVENT = "provider://status" as const;
 
-export const PR_CI_EVENT = "pr://ci" as const;
-
-export const PR_CLOSED_EVENT = "pr://closed" as const;
-
-export const PR_MERGED_EVENT = "pr://merged" as const;
-
-export const PR_OPENED_EVENT = "pr://opened" as const;
-
-export const PR_REVIEW_EVENT = "pr://review" as const;
-
 export const ROSEN_STATUS_EVENT = "rosen://status" as const;
 
 export const SKILL_PACK_INSTALLATIONS_EVENT = "skills://installations" as const;
@@ -299,11 +285,6 @@ export type AgentCommand_Deserialize = {
 export type AgentCommand_Serialize = {
 	program: string,
 	arguments: string[],
-};
-
-export type AgentFollowUp = {
-	identifier: string,
-	message: string,
 };
 
 export type AgentSettings = AgentSettings_Serialize | AgentSettings_Deserialize;
@@ -472,12 +453,12 @@ export type AircNickRow = {
 	detail: string,
 };
 
-export type AircSpan = ({ Text: string }) & { Nick?: never; PullRequest?: never } | ({ Nick: {
+export type AircSpan = ({ Text: string }) & { Issue?: never; Nick?: never } | ({ Nick: {
 	nick: string,
 	tone: NickTone,
-} }) & { PullRequest?: never; Text?: never } | 
-/**  `#n`: opens that PR's thread, or GitHub. */
-({ PullRequest: number }) & { Nick?: never; Text?: never };
+} }) & { Issue?: never; Text?: never } | 
+/**  `#n`: opens the thread working on that issue, or the issue on GitHub (F9). */
+({ Issue: number }) & { Nick?: never; Text?: never };
 
 export type AircTab = "Events" | "Claims" | "Messages" | "Discoveries" | "PastWork";
 
@@ -1193,62 +1174,10 @@ export type FlaggedRule = {
 	message: string,
 };
 
-export type FollowThrough = FollowThrough_Serialize | FollowThrough_Deserialize;
-
-export type FollowThrough_Deserialize = {
-	thread_started_at?: string | null,
-	number?: number,
-	url?: string,
-	head?: string,
-	stage?: string,
-	status?: string,
-	track?: string[],
-	history?: PullRequestHistoryCard_Deserialize[],
-	pending?: AgentFollowUp[],
-	observed?: { [key in string]: string },
-	worktree_deleted?: boolean,
-	cleanup_error?: string | null,
-	coding_tool_count?: number | null,
-	coding_file_count?: number | null,
-	coding_additions?: number,
-	coding_deletions?: number,
-	work_session_identifier?: string | null,
-	work_tool_start?: number,
-	ci_state?: string,
-	proof?: ProofProgress_Deserialize,
-};
-
-export type FollowThrough_Serialize = {
-	thread_started_at: string | null,
-	number: number,
-	url: string,
-	head: string,
-	stage: string,
-	status: string,
-	track: string[],
-	history: PullRequestHistoryCard_Serialize[],
-	pending: AgentFollowUp[],
-	observed: { [key in string]: string },
-	worktree_deleted: boolean,
-	cleanup_error: string | null,
-	coding_tool_count: number | null,
-	coding_file_count: number | null,
-	coding_additions: number,
-	coding_deletions: number,
-	work_session_identifier: string | null,
-	work_tool_start: number,
-	ci_state: string,
-	proof: ProofProgress_Serialize,
-};
-
 export type Frame = {
 	jpeg: string,
 	width: number | null,
 	height: number | null,
-};
-
-export type GitHubActor = {
-	login: string,
 };
 
 /**  One repository the signed-in account owns or can see through an organisation. */
@@ -2117,11 +2046,11 @@ export type LayoutIntentRequested_Serialize = {
 	intent: LayoutIntent_Serialize,
 };
 
-export type LayoutIntent_Deserialize = ({ Navigation: NavigationIntent_Deserialize }) & { AddTask?: never; DispatchIssue?: never; OpenIssue?: never; OpenPullRequest?: never; OpenTask?: never; OpenWorktreeInExplorer?: never; RemoveQueuedMessage?: never; SettingsTab?: never; StartPrompt?: never; SteerThread?: never; SwitchProject?: never; ToggleProofListEntry?: never } | ({ SwitchProject: string }) & { AddTask?: never; DispatchIssue?: never; Navigation?: never; OpenIssue?: never; OpenPullRequest?: never; OpenTask?: never; OpenWorktreeInExplorer?: never; RemoveQueuedMessage?: never; SettingsTab?: never; StartPrompt?: never; SteerThread?: never; ToggleProofListEntry?: never } | ({ DispatchIssue: string }) & { AddTask?: never; Navigation?: never; OpenIssue?: never; OpenPullRequest?: never; OpenTask?: never; OpenWorktreeInExplorer?: never; RemoveQueuedMessage?: never; SettingsTab?: never; StartPrompt?: never; SteerThread?: never; SwitchProject?: never; ToggleProofListEntry?: never } | "SwarmIssues" | "SwarmWork" | ({ OpenTask: string }) & { AddTask?: never; DispatchIssue?: never; Navigation?: never; OpenIssue?: never; OpenPullRequest?: never; OpenWorktreeInExplorer?: never; RemoveQueuedMessage?: never; SettingsTab?: never; StartPrompt?: never; SteerThread?: never; SwitchProject?: never; ToggleProofListEntry?: never } | ({ OpenPullRequest: string }) & { AddTask?: never; DispatchIssue?: never; Navigation?: never; OpenIssue?: never; OpenTask?: never; OpenWorktreeInExplorer?: never; RemoveQueuedMessage?: never; SettingsTab?: never; StartPrompt?: never; SteerThread?: never; SwitchProject?: never; ToggleProofListEntry?: never } | ({ OpenIssue: string }) & { AddTask?: never; DispatchIssue?: never; Navigation?: never; OpenPullRequest?: never; OpenTask?: never; OpenWorktreeInExplorer?: never; RemoveQueuedMessage?: never; SettingsTab?: never; StartPrompt?: never; SteerThread?: never; SwitchProject?: never; ToggleProofListEntry?: never } | ({ OpenWorktreeInExplorer: string }) & { AddTask?: never; DispatchIssue?: never; Navigation?: never; OpenIssue?: never; OpenPullRequest?: never; OpenTask?: never; RemoveQueuedMessage?: never; SettingsTab?: never; StartPrompt?: never; SteerThread?: never; SwitchProject?: never; ToggleProofListEntry?: never } | ({ SettingsTab: string }) & { AddTask?: never; DispatchIssue?: never; Navigation?: never; OpenIssue?: never; OpenPullRequest?: never; OpenTask?: never; OpenWorktreeInExplorer?: never; RemoveQueuedMessage?: never; StartPrompt?: never; SteerThread?: never; SwitchProject?: never; ToggleProofListEntry?: never } | "Usage" | "Updates" | ({ StartPrompt: string }) & { AddTask?: never; DispatchIssue?: never; Navigation?: never; OpenIssue?: never; OpenPullRequest?: never; OpenTask?: never; OpenWorktreeInExplorer?: never; RemoveQueuedMessage?: never; SettingsTab?: never; SteerThread?: never; SwitchProject?: never; ToggleProofListEntry?: never } | ({ SteerThread: {
+export type LayoutIntent_Deserialize = ({ Navigation: NavigationIntent_Deserialize }) & { AddTask?: never; DispatchIssue?: never; OpenIssue?: never; OpenTask?: never; OpenWorktreeInExplorer?: never; RemoveQueuedMessage?: never; SettingsTab?: never; StartPrompt?: never; SteerThread?: never; SwitchProject?: never; ToggleProofListEntry?: never } | ({ SwitchProject: string }) & { AddTask?: never; DispatchIssue?: never; Navigation?: never; OpenIssue?: never; OpenTask?: never; OpenWorktreeInExplorer?: never; RemoveQueuedMessage?: never; SettingsTab?: never; StartPrompt?: never; SteerThread?: never; ToggleProofListEntry?: never } | ({ DispatchIssue: string }) & { AddTask?: never; Navigation?: never; OpenIssue?: never; OpenTask?: never; OpenWorktreeInExplorer?: never; RemoveQueuedMessage?: never; SettingsTab?: never; StartPrompt?: never; SteerThread?: never; SwitchProject?: never; ToggleProofListEntry?: never } | "SwarmIssues" | "SwarmWork" | ({ OpenTask: string }) & { AddTask?: never; DispatchIssue?: never; Navigation?: never; OpenIssue?: never; OpenWorktreeInExplorer?: never; RemoveQueuedMessage?: never; SettingsTab?: never; StartPrompt?: never; SteerThread?: never; SwitchProject?: never; ToggleProofListEntry?: never } | ({ OpenIssue: string }) & { AddTask?: never; DispatchIssue?: never; Navigation?: never; OpenTask?: never; OpenWorktreeInExplorer?: never; RemoveQueuedMessage?: never; SettingsTab?: never; StartPrompt?: never; SteerThread?: never; SwitchProject?: never; ToggleProofListEntry?: never } | ({ OpenWorktreeInExplorer: string }) & { AddTask?: never; DispatchIssue?: never; Navigation?: never; OpenIssue?: never; OpenTask?: never; RemoveQueuedMessage?: never; SettingsTab?: never; StartPrompt?: never; SteerThread?: never; SwitchProject?: never; ToggleProofListEntry?: never } | ({ SettingsTab: string }) & { AddTask?: never; DispatchIssue?: never; Navigation?: never; OpenIssue?: never; OpenTask?: never; OpenWorktreeInExplorer?: never; RemoveQueuedMessage?: never; StartPrompt?: never; SteerThread?: never; SwitchProject?: never; ToggleProofListEntry?: never } | "Usage" | "Updates" | ({ StartPrompt: string }) & { AddTask?: never; DispatchIssue?: never; Navigation?: never; OpenIssue?: never; OpenTask?: never; OpenWorktreeInExplorer?: never; RemoveQueuedMessage?: never; SettingsTab?: never; SteerThread?: never; SwitchProject?: never; ToggleProofListEntry?: never } | ({ SteerThread: {
 	identifier: string,
 	prompt: string,
 	queued: boolean,
-} }) & { AddTask?: never; DispatchIssue?: never; Navigation?: never; OpenIssue?: never; OpenPullRequest?: never; OpenTask?: never; OpenWorktreeInExplorer?: never; RemoveQueuedMessage?: never; SettingsTab?: never; StartPrompt?: never; SwitchProject?: never; ToggleProofListEntry?: never } | 
+} }) & { AddTask?: never; DispatchIssue?: never; Navigation?: never; OpenIssue?: never; OpenTask?: never; OpenWorktreeInExplorer?: never; RemoveQueuedMessage?: never; SettingsTab?: never; StartPrompt?: never; SwitchProject?: never; ToggleProofListEntry?: never } | 
 /**
  *  Withdraws a message you queued that the agent has not read yet (F4). `index` counts
  *  the thread's queued rows, oldest first.
@@ -2129,15 +2058,15 @@ export type LayoutIntent_Deserialize = ({ Navigation: NavigationIntent_Deseriali
 ({ RemoveQueuedMessage: {
 	identifier: string,
 	index: string,
-} }) & { AddTask?: never; DispatchIssue?: never; Navigation?: never; OpenIssue?: never; OpenPullRequest?: never; OpenTask?: never; OpenWorktreeInExplorer?: never; SettingsTab?: never; StartPrompt?: never; SteerThread?: never; SwitchProject?: never; ToggleProofListEntry?: never } | ({ AddTask: string }) & { DispatchIssue?: never; Navigation?: never; OpenIssue?: never; OpenPullRequest?: never; OpenTask?: never; OpenWorktreeInExplorer?: never; RemoveQueuedMessage?: never; SettingsTab?: never; StartPrompt?: never; SteerThread?: never; SwitchProject?: never; ToggleProofListEntry?: never } | 
+} }) & { AddTask?: never; DispatchIssue?: never; Navigation?: never; OpenIssue?: never; OpenTask?: never; OpenWorktreeInExplorer?: never; SettingsTab?: never; StartPrompt?: never; SteerThread?: never; SwitchProject?: never; ToggleProofListEntry?: never } | ({ AddTask: string }) & { DispatchIssue?: never; Navigation?: never; OpenIssue?: never; OpenTask?: never; OpenWorktreeInExplorer?: never; RemoveQueuedMessage?: never; SettingsTab?: never; StartPrompt?: never; SteerThread?: never; SwitchProject?: never; ToggleProofListEntry?: never } | 
 /**  Ready card: include or leave out one proposed proof-list entry (F3, F17). */
-({ ToggleProofListEntry: string }) & { AddTask?: never; DispatchIssue?: never; Navigation?: never; OpenIssue?: never; OpenPullRequest?: never; OpenTask?: never; OpenWorktreeInExplorer?: never; RemoveQueuedMessage?: never; SettingsTab?: never; StartPrompt?: never; SteerThread?: never; SwitchProject?: never };
+({ ToggleProofListEntry: string }) & { AddTask?: never; DispatchIssue?: never; Navigation?: never; OpenIssue?: never; OpenTask?: never; OpenWorktreeInExplorer?: never; RemoveQueuedMessage?: never; SettingsTab?: never; StartPrompt?: never; SteerThread?: never; SwitchProject?: never };
 
-export type LayoutIntent_Serialize = ({ Navigation: NavigationIntent_Serialize }) & { AddTask?: never; DispatchIssue?: never; OpenIssue?: never; OpenPullRequest?: never; OpenTask?: never; OpenWorktreeInExplorer?: never; RemoveQueuedMessage?: never; SettingsTab?: never; StartPrompt?: never; SteerThread?: never; SwitchProject?: never; ToggleProofListEntry?: never } | ({ SwitchProject: string }) & { AddTask?: never; DispatchIssue?: never; Navigation?: never; OpenIssue?: never; OpenPullRequest?: never; OpenTask?: never; OpenWorktreeInExplorer?: never; RemoveQueuedMessage?: never; SettingsTab?: never; StartPrompt?: never; SteerThread?: never; ToggleProofListEntry?: never } | ({ DispatchIssue: string }) & { AddTask?: never; Navigation?: never; OpenIssue?: never; OpenPullRequest?: never; OpenTask?: never; OpenWorktreeInExplorer?: never; RemoveQueuedMessage?: never; SettingsTab?: never; StartPrompt?: never; SteerThread?: never; SwitchProject?: never; ToggleProofListEntry?: never } | "SwarmIssues" | "SwarmWork" | ({ OpenTask: string }) & { AddTask?: never; DispatchIssue?: never; Navigation?: never; OpenIssue?: never; OpenPullRequest?: never; OpenWorktreeInExplorer?: never; RemoveQueuedMessage?: never; SettingsTab?: never; StartPrompt?: never; SteerThread?: never; SwitchProject?: never; ToggleProofListEntry?: never } | ({ OpenPullRequest: string }) & { AddTask?: never; DispatchIssue?: never; Navigation?: never; OpenIssue?: never; OpenTask?: never; OpenWorktreeInExplorer?: never; RemoveQueuedMessage?: never; SettingsTab?: never; StartPrompt?: never; SteerThread?: never; SwitchProject?: never; ToggleProofListEntry?: never } | ({ OpenIssue: string }) & { AddTask?: never; DispatchIssue?: never; Navigation?: never; OpenPullRequest?: never; OpenTask?: never; OpenWorktreeInExplorer?: never; RemoveQueuedMessage?: never; SettingsTab?: never; StartPrompt?: never; SteerThread?: never; SwitchProject?: never; ToggleProofListEntry?: never } | ({ OpenWorktreeInExplorer: string }) & { AddTask?: never; DispatchIssue?: never; Navigation?: never; OpenIssue?: never; OpenPullRequest?: never; OpenTask?: never; RemoveQueuedMessage?: never; SettingsTab?: never; StartPrompt?: never; SteerThread?: never; SwitchProject?: never; ToggleProofListEntry?: never } | ({ SettingsTab: string }) & { AddTask?: never; DispatchIssue?: never; Navigation?: never; OpenIssue?: never; OpenPullRequest?: never; OpenTask?: never; OpenWorktreeInExplorer?: never; RemoveQueuedMessage?: never; StartPrompt?: never; SteerThread?: never; SwitchProject?: never; ToggleProofListEntry?: never } | "Usage" | "Updates" | ({ StartPrompt: string }) & { AddTask?: never; DispatchIssue?: never; Navigation?: never; OpenIssue?: never; OpenPullRequest?: never; OpenTask?: never; OpenWorktreeInExplorer?: never; RemoveQueuedMessage?: never; SettingsTab?: never; SteerThread?: never; SwitchProject?: never; ToggleProofListEntry?: never } | ({ SteerThread: {
+export type LayoutIntent_Serialize = ({ Navigation: NavigationIntent_Serialize }) & { AddTask?: never; DispatchIssue?: never; OpenIssue?: never; OpenTask?: never; OpenWorktreeInExplorer?: never; RemoveQueuedMessage?: never; SettingsTab?: never; StartPrompt?: never; SteerThread?: never; SwitchProject?: never; ToggleProofListEntry?: never } | ({ SwitchProject: string }) & { AddTask?: never; DispatchIssue?: never; Navigation?: never; OpenIssue?: never; OpenTask?: never; OpenWorktreeInExplorer?: never; RemoveQueuedMessage?: never; SettingsTab?: never; StartPrompt?: never; SteerThread?: never; ToggleProofListEntry?: never } | ({ DispatchIssue: string }) & { AddTask?: never; Navigation?: never; OpenIssue?: never; OpenTask?: never; OpenWorktreeInExplorer?: never; RemoveQueuedMessage?: never; SettingsTab?: never; StartPrompt?: never; SteerThread?: never; SwitchProject?: never; ToggleProofListEntry?: never } | "SwarmIssues" | "SwarmWork" | ({ OpenTask: string }) & { AddTask?: never; DispatchIssue?: never; Navigation?: never; OpenIssue?: never; OpenWorktreeInExplorer?: never; RemoveQueuedMessage?: never; SettingsTab?: never; StartPrompt?: never; SteerThread?: never; SwitchProject?: never; ToggleProofListEntry?: never } | ({ OpenIssue: string }) & { AddTask?: never; DispatchIssue?: never; Navigation?: never; OpenTask?: never; OpenWorktreeInExplorer?: never; RemoveQueuedMessage?: never; SettingsTab?: never; StartPrompt?: never; SteerThread?: never; SwitchProject?: never; ToggleProofListEntry?: never } | ({ OpenWorktreeInExplorer: string }) & { AddTask?: never; DispatchIssue?: never; Navigation?: never; OpenIssue?: never; OpenTask?: never; RemoveQueuedMessage?: never; SettingsTab?: never; StartPrompt?: never; SteerThread?: never; SwitchProject?: never; ToggleProofListEntry?: never } | ({ SettingsTab: string }) & { AddTask?: never; DispatchIssue?: never; Navigation?: never; OpenIssue?: never; OpenTask?: never; OpenWorktreeInExplorer?: never; RemoveQueuedMessage?: never; StartPrompt?: never; SteerThread?: never; SwitchProject?: never; ToggleProofListEntry?: never } | "Usage" | "Updates" | ({ StartPrompt: string }) & { AddTask?: never; DispatchIssue?: never; Navigation?: never; OpenIssue?: never; OpenTask?: never; OpenWorktreeInExplorer?: never; RemoveQueuedMessage?: never; SettingsTab?: never; SteerThread?: never; SwitchProject?: never; ToggleProofListEntry?: never } | ({ SteerThread: {
 	identifier: string,
 	prompt: string,
 	queued: boolean,
-} }) & { AddTask?: never; DispatchIssue?: never; Navigation?: never; OpenIssue?: never; OpenPullRequest?: never; OpenTask?: never; OpenWorktreeInExplorer?: never; RemoveQueuedMessage?: never; SettingsTab?: never; StartPrompt?: never; SwitchProject?: never; ToggleProofListEntry?: never } | 
+} }) & { AddTask?: never; DispatchIssue?: never; Navigation?: never; OpenIssue?: never; OpenTask?: never; OpenWorktreeInExplorer?: never; RemoveQueuedMessage?: never; SettingsTab?: never; StartPrompt?: never; SwitchProject?: never; ToggleProofListEntry?: never } | 
 /**
  *  Withdraws a message you queued that the agent has not read yet (F4). `index` counts
  *  the thread's queued rows, oldest first.
@@ -2145,9 +2074,9 @@ export type LayoutIntent_Serialize = ({ Navigation: NavigationIntent_Serialize }
 ({ RemoveQueuedMessage: {
 	identifier: string,
 	index: string,
-} }) & { AddTask?: never; DispatchIssue?: never; Navigation?: never; OpenIssue?: never; OpenPullRequest?: never; OpenTask?: never; OpenWorktreeInExplorer?: never; SettingsTab?: never; StartPrompt?: never; SteerThread?: never; SwitchProject?: never; ToggleProofListEntry?: never } | ({ AddTask: string }) & { DispatchIssue?: never; Navigation?: never; OpenIssue?: never; OpenPullRequest?: never; OpenTask?: never; OpenWorktreeInExplorer?: never; RemoveQueuedMessage?: never; SettingsTab?: never; StartPrompt?: never; SteerThread?: never; SwitchProject?: never; ToggleProofListEntry?: never } | 
+} }) & { AddTask?: never; DispatchIssue?: never; Navigation?: never; OpenIssue?: never; OpenTask?: never; OpenWorktreeInExplorer?: never; SettingsTab?: never; StartPrompt?: never; SteerThread?: never; SwitchProject?: never; ToggleProofListEntry?: never } | ({ AddTask: string }) & { DispatchIssue?: never; Navigation?: never; OpenIssue?: never; OpenTask?: never; OpenWorktreeInExplorer?: never; RemoveQueuedMessage?: never; SettingsTab?: never; StartPrompt?: never; SteerThread?: never; SwitchProject?: never; ToggleProofListEntry?: never } | 
 /**  Ready card: include or leave out one proposed proof-list entry (F3, F17). */
-({ ToggleProofListEntry: string }) & { AddTask?: never; DispatchIssue?: never; Navigation?: never; OpenIssue?: never; OpenPullRequest?: never; OpenTask?: never; OpenWorktreeInExplorer?: never; RemoveQueuedMessage?: never; SettingsTab?: never; StartPrompt?: never; SteerThread?: never; SwitchProject?: never };
+({ ToggleProofListEntry: string }) & { AddTask?: never; DispatchIssue?: never; Navigation?: never; OpenIssue?: never; OpenTask?: never; OpenWorktreeInExplorer?: never; RemoveQueuedMessage?: never; SettingsTab?: never; StartPrompt?: never; SteerThread?: never; SwitchProject?: never };
 
 export type LayoutSnapshot = LayoutSnapshot_Serialize | LayoutSnapshot_Deserialize;
 
@@ -3023,36 +2952,6 @@ export type ProjectSkills_Serialize = {
 	declined: string[],
 };
 
-/**  The proof card for one PR head. */
-export type ProofCard = {
-	/**  The PR head the checks ran on. */
-	head: string,
-	/**  The proof folders the PR changes, such as `proofs/ClaimLock/`. */
-	folders: string[],
-	theorem_count: number,
-	/**  The proof checks passed. */
-	proved: boolean,
-	checks: ProofCheck[],
-	theorems: ProofTheorem[],
-	levels: ProofLevel[],
-};
-
-/**
- *  One of the card's checks: lake build, no sorry or admit, standard axioms, statements
- *  locked at review (and the design proof's SPEC.md section, shown only when it fails).
- */
-export type ProofCheck = {
-	label: string,
-	state: ProofCheckState,
-	/**  Why it failed or is pending; empty when it passed. */
-	detail: string,
-};
-
-/**  How one of the card's checks stands. */
-export type ProofCheckState = "Passed" | "Failed" | 
-/**  No result has been recorded for this check. */
-"Pending";
-
 /**  One language's row on the card. */
 export type ProofLevel = {
 	language: string,
@@ -3092,44 +2991,8 @@ export type ProofListFeature = {
 	detail: string,
 };
 
-/**
- *  Velocity's proof checks on the PR (SPEC.md F17), run in the thread's worktree once per
- *  head: the head they last finished on and the card they produced there.
- */
-export type ProofProgress = ProofProgress_Serialize | ProofProgress_Deserialize;
-
-/**
- *  Velocity's proof checks on the PR (SPEC.md F17), run in the thread's worktree once per
- *  head: the head they last finished on and the card they produced there.
- */
-export type ProofProgress_Deserialize = {
-	/**  Empty until the checks first finish. */
-	checked_head?: string,
-	/**  `None` when the PR changes no proof file or fixture table. */
-	card?: ProofCard | null,
-};
-
-/**
- *  Velocity's proof checks on the PR (SPEC.md F17), run in the thread's worktree once per
- *  head: the head they last finished on and the card they produced there.
- */
-export type ProofProgress_Serialize = {
-	/**  Empty until the checks first finish. */
-	checked_head: string,
-	/**  `None` when the PR changes no proof file or fixture table. */
-	card: ProofCard | null,
-};
-
 export type ProofSettings = {
 	stress_diff_input_count: number,
-};
-
-/**  One proven theorem, or one fixture table the PR adds or changes. */
-export type ProofTheorem = {
-	/**  `Design`, `Confidence`, `Fixture`, or the file's own name for any other proof file. */
-	kind: string,
-	name: string,
-	statement: string,
 };
 
 /**  Everything the Proofs page shows for one project. */
@@ -3567,217 +3430,6 @@ export type ProvidersView_Serialize = {
 	title_warning: boolean,
 };
 
-export type PullRequest = PullRequest_Serialize | PullRequest_Deserialize;
-
-export type PullRequestCheck = PullRequestCheck_Serialize | PullRequestCheck_Deserialize;
-
-export type PullRequestCheck_Deserialize = { __typename: "CheckRun"; name: string; status: string; conclusion?: string | null; detailsUrl?: string | null } | { __typename: "StatusContext"; context: string; state: string; targetUrl?: string | null };
-
-export type PullRequestCheck_Serialize = { __typename: "CheckRun"; name: string; status: string; conclusion: string | null; detailsUrl: string | null } | { __typename: "StatusContext"; context: string; state: string; targetUrl: string | null };
-
-export type PullRequestComment = PullRequestComment_Serialize | PullRequestComment_Deserialize;
-
-export type PullRequestComment_Deserialize = {
-	id: string,
-	body: string,
-	url: string,
-	author?: GitHubActor | null,
-	createdAt: string,
-	updatedAt: string,
-};
-
-export type PullRequestComment_Serialize = {
-	id: string,
-	body: string,
-	url: string,
-	author: GitHubActor | null,
-	createdAt: string,
-	updatedAt: string,
-};
-
-export type PullRequestHistoryCard = PullRequestHistoryCard_Serialize | PullRequestHistoryCard_Deserialize;
-
-export type PullRequestHistoryCard_Deserialize = {
-	identifier: string,
-	title: string,
-	body: string,
-	path?: string | null,
-	line?: number | null,
-	resolved: boolean,
-	tool?: ToolStepRow | null,
-};
-
-export type PullRequestHistoryCard_Serialize = {
-	identifier: string,
-	title: string,
-	body: string,
-	path: string | null,
-	line: number | null,
-	resolved: boolean,
-	tool: ToolStepRow | null,
-};
-
-export type PullRequestHistoryView = PullRequestHistoryView_Serialize | PullRequestHistoryView_Deserialize;
-
-export type PullRequestHistoryView_Deserialize = {
-	coding_tool_count?: number | null,
-	coding_file_count?: number | null,
-	coding_additions: number,
-	coding_deletions: number,
-	status: string,
-	stage: string,
-	track: PullRequestTrackStep[],
-	cards: PullRequestHistoryCard_Deserialize[],
-	cleanup_error?: string | null,
-	/**  The proof card (F17), shown under the "opened" card, when the PR changes proofs. */
-	proof?: ProofCard | null,
-	/**  Velocity's proof checks passed at the current head ("· proved" on the work line). */
-	proved: boolean,
-};
-
-export type PullRequestHistoryView_Serialize = {
-	coding_tool_count: number | null,
-	coding_file_count: number | null,
-	coding_additions: number,
-	coding_deletions: number,
-	status: string,
-	stage: string,
-	track: PullRequestTrackStep[],
-	cards: PullRequestHistoryCard_Serialize[],
-	cleanup_error: string | null,
-	/**  The proof card (F17), shown under the "opened" card, when the PR changes proofs. */
-	proof: ProofCard | null,
-	/**  Velocity's proof checks passed at the current head ("· proved" on the work line). */
-	proved: boolean,
-};
-
-export type PullRequestLifecycleEvent = {
-	project_identifier: number,
-	thread_identifier: number,
-	number: number,
-	stage: string,
-	worktree_deleted: boolean,
-};
-
-export type PullRequestRepository = {
-	nameWithOwner: string,
-};
-
-export type PullRequestReview = PullRequestReview_Serialize | PullRequestReview_Deserialize;
-
-export type PullRequestReviewThread = PullRequestReviewThread_Serialize | PullRequestReviewThread_Deserialize;
-
-export type PullRequestReviewThread_Deserialize = {
-	id: string,
-	path: string,
-	line?: number | null,
-	startLine?: number | null,
-	isResolved: boolean,
-	isOutdated: boolean,
-	comments?: PullRequestComment_Deserialize[],
-};
-
-export type PullRequestReviewThread_Serialize = {
-	id: string,
-	path: string,
-	line: number | null,
-	startLine: number | null,
-	isResolved: boolean,
-	isOutdated: boolean,
-	comments: PullRequestComment_Serialize[],
-};
-
-export type PullRequestReview_Deserialize = {
-	id: string,
-	body: string,
-	state: string,
-	author?: GitHubActor | null,
-	submittedAt?: string | null,
-	commit?: ReviewCommit | null,
-};
-
-export type PullRequestReview_Serialize = {
-	id: string,
-	body: string,
-	state: string,
-	author: GitHubActor | null,
-	submittedAt: string | null,
-	commit: ReviewCommit | null,
-};
-
-export type PullRequestSnapshot = PullRequestSnapshot_Serialize | PullRequestSnapshot_Deserialize;
-
-export type PullRequestSnapshot_Deserialize = {
-	pull_request: PullRequest_Deserialize,
-	checks: PullRequestCheck_Deserialize[],
-	reviews: PullRequestReview_Deserialize[],
-	comments: PullRequestComment_Deserialize[],
-	review_threads: PullRequestReviewThread_Deserialize[],
-};
-
-export type PullRequestSnapshot_Serialize = {
-	pull_request: PullRequest_Serialize,
-	checks: PullRequestCheck_Serialize[],
-	reviews: PullRequestReview_Serialize[],
-	comments: PullRequestComment_Serialize[],
-	review_threads: PullRequestReviewThread_Serialize[],
-};
-
-export type PullRequestState = "OPEN" | "CLOSED" | "MERGED";
-
-export type PullRequestTrackStep = {
-	label: string,
-	state: string,
-};
-
-export type PullRequest_Deserialize = {
-	id: string,
-	number: number,
-	title: string,
-	body: string,
-	url: string,
-	state: PullRequestState,
-	isDraft: boolean,
-	author?: GitHubActor | null,
-	headRefOid: string,
-	headRefName: string,
-	baseRefName: string,
-	additions: number,
-	deletions: number,
-	changedFiles?: number,
-	createdAt: string,
-	updatedAt: string,
-	closedAt?: string | null,
-	mergedAt?: string | null,
-	reviewDecision?: string | null,
-	mergeStateStatus: string,
-	headRepository?: PullRequestRepository | null,
-};
-
-export type PullRequest_Serialize = {
-	id: string,
-	number: number,
-	title: string,
-	body: string,
-	url: string,
-	state: PullRequestState,
-	isDraft: boolean,
-	author: GitHubActor | null,
-	headRefOid: string,
-	headRefName: string,
-	baseRefName: string,
-	additions: number,
-	deletions: number,
-	changedFiles: number,
-	createdAt: string,
-	updatedAt: string,
-	closedAt: string | null,
-	mergedAt: string | null,
-	reviewDecision: string | null,
-	mergeStateStatus: string,
-	headRepository: PullRequestRepository | null,
-};
-
 export type PulseCount = PulseCount_Serialize | PulseCount_Deserialize;
 
 export type PulseCount_Deserialize = {
@@ -3847,10 +3499,6 @@ export type RepositoryPickerView_Serialize = {
 	 *  row so any repository you can see still opens.
 	 */
 	typed: string | null,
-};
-
-export type ReviewCommit = {
-	oid: string,
 };
 
 export type ReviewStage = "continuous_integration" | "review" | "fixing" | "approved";
@@ -4896,7 +4544,6 @@ export type ThreadDetailSnapshot_Deserialize = {
 	show_work: boolean,
 	transcript_mode: TranscriptModeView,
 	worked_summary?: WorkedSummaryView_Deserialize | null,
-	pull_request_history?: PullRequestHistoryView_Deserialize | null,
 	rosen_change?: RosenChangeView_Deserialize | null,
 	blocks: TranscriptBlock_Deserialize[],
 	agent_commands: AgentCommandView[],
@@ -4928,7 +4575,6 @@ export type ThreadDetailSnapshot_Serialize = {
 	show_work: boolean,
 	transcript_mode: TranscriptModeView,
 	worked_summary: WorkedSummaryView_Serialize | null,
-	pull_request_history: PullRequestHistoryView_Serialize | null,
 	rosen_change: RosenChangeView_Serialize | null,
 	blocks: TranscriptBlock_Serialize[],
 	agent_commands: AgentCommandView[],
@@ -4966,7 +4612,6 @@ export type ThreadItem_Deserialize = {
 	pull_request_number?: number | null,
 	/**  The Rosen change the thread works on, when its workspace came from Rosen (F5). */
 	rosen_change?: string | null,
-	follow_through?: FollowThrough_Deserialize | null,
 	dependency_wait?: string | null,
 	/**  The agent's ACP session id, which a parked thread loads again on resume (§2.2). */
 	agent_session?: string | null,
@@ -5008,7 +4653,6 @@ export type ThreadItem_Serialize = {
 	pull_request_number: number | null,
 	/**  The Rosen change the thread works on, when its workspace came from Rosen (F5). */
 	rosen_change: string | null,
-	follow_through: FollowThrough_Serialize | null,
 	dependency_wait: string | null,
 	/**  The agent's ACP session id, which a parked thread loads again on resume (§2.2). */
 	agent_session: string | null,
@@ -5038,7 +4682,7 @@ export type ThreadItem_Serialize = {
 	goal_member: GoalThreadMember_Serialize | null,
 };
 
-export type ThreadMenuAction = "RetryWorkspace" | "OpenWorktree" | "CopyWorktreePath" | "OpenPullRequest" | "Delete";
+export type ThreadMenuAction = "RetryWorkspace" | "OpenWorktree" | "CopyWorktreePath" | "Delete";
 
 export type ThreadMenuEntry = ThreadMenuEntry_Serialize | ThreadMenuEntry_Deserialize;
 

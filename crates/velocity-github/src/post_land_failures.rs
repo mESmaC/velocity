@@ -8,8 +8,8 @@ use std::path::Path;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
-use crate::pull_request_command::PullRequestCommand;
-use crate::{PullRequestError, RepositoryName};
+use crate::gh_command::GitHubCommand;
+use crate::{GitHubCommandError, RepositoryName};
 
 const LABEL: &str = "post-land-failure";
 
@@ -80,7 +80,7 @@ pub struct PendingReports {
 }
 
 impl PendingReports {
-    pub fn load(path: &Path) -> Result<Self, PullRequestError> {
+    pub fn load(path: &Path) -> Result<Self, GitHubCommandError> {
         match std::fs::read(path) {
             Ok(bytes) => Ok(serde_json::from_slice(&bytes)?),
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(Self::default()),
@@ -109,16 +109,16 @@ impl PendingReports {
         }
     }
 
-    pub fn save(&self, path: &Path) -> Result<(), PullRequestError> {
+    pub fn save(&self, path: &Path) -> Result<(), GitHubCommandError> {
         let directory = path
             .parent()
-            .ok_or_else(|| PullRequestError::Invalid("Outbox has no parent".into()))?;
+            .ok_or_else(|| GitHubCommandError::Invalid("Outbox has no parent".into()))?;
         std::fs::create_dir_all(directory)?;
         let mut file = tempfile::NamedTempFile::new_in(directory)?;
         file.write_all(&serde_json::to_vec(self)?)?;
         file.as_file().sync_all()?;
         file.persist(path)
-            .map_err(|error| PullRequestError::Process(error.error))?;
+            .map_err(|error| GitHubCommandError::Process(error.error))?;
         Ok(())
     }
 }
@@ -136,10 +136,10 @@ struct Comment {
 
 /// File one issue per culprit and command/status. Diagnostic output can contain timings
 /// and paths that vary between runs; repeated evidence belongs on that same open issue.
-pub fn publish(report: &FailureReport) -> Result<u32, PullRequestError> {
+pub fn publish(report: &FailureReport) -> Result<u32, GitHubCommandError> {
     let repository = RepositoryName::parse(&report.repository)
-        .map_err(|error| PullRequestError::Invalid(error.to_string()))?;
-    let command = PullRequestCommand::for_repository(&repository);
+        .map_err(|error| GitHubCommandError::Invalid(error.to_string()))?;
+    let command = GitHubCommand::for_repository(&repository);
     let _lock = report_lock(&repository.full_name())?;
     let endpoint = format!("repos/{}", repository.full_name());
     let failure = failure_marker(report);
@@ -182,7 +182,7 @@ pub fn publish(report: &FailureReport) -> Result<u32, PullRequestError> {
 
 /// Two open projects may mirror the same repository. Serialise their read/create cycle
 /// on this machine so simultaneous confirmations still create only one issue.
-fn report_lock(repository: &str) -> Result<std::fs::File, PullRequestError> {
+fn report_lock(repository: &str) -> Result<std::fs::File, GitHubCommandError> {
     let directory = std::env::temp_dir().join("velocity-post-land-report-locks");
     std::fs::create_dir_all(&directory)?;
     let name = repository.replace('/', "--").to_ascii_lowercase();
@@ -207,12 +207,12 @@ fn failure_marker(report: &FailureReport) -> String {
 }
 
 fn comment_once(
-    command: &PullRequestCommand,
+    command: &GitHubCommand,
     endpoint: &str,
     issue: &Issue,
     body: &str,
     occurrence: &str,
-) -> Result<(), PullRequestError> {
+) -> Result<(), GitHubCommandError> {
     if issue
         .body
         .as_ref()
@@ -237,7 +237,7 @@ fn comment_once(
     Ok(())
 }
 
-fn ensure_label(command: &PullRequestCommand, endpoint: &str) -> Result<(), PullRequestError> {
+fn ensure_label(command: &GitHubCommand, endpoint: &str) -> Result<(), GitHubCommandError> {
     #[derive(Deserialize)]
     struct Label {
         name: String,

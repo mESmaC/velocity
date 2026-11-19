@@ -16,8 +16,6 @@ mod code_graph;
 mod continuous_dispatch;
 mod diagnostics;
 pub mod duty;
-mod follow_through;
-mod github;
 mod github_requests;
 mod goal_stack;
 mod goal_swarm;
@@ -33,7 +31,6 @@ mod new_project;
 mod parking;
 pub mod process_memory;
 mod projects;
-mod proof_card;
 mod proofs_settings;
 mod provider_agents;
 mod providers;
@@ -144,9 +141,6 @@ fn bindings() -> Builder<tauri::Wry> {
         duty::add_duty_agents,
         duty::dismiss_duty_agent,
         duty::stop_duty,
-        github::list_pull_requests,
-        github::get_pull_request,
-        github::open_project_pull_request,
         goal_swarm::get_goal_swarm_dialog,
         goal_swarm::read_goal_swarm_pool,
         goal_swarm::launch_goal_swarm,
@@ -205,7 +199,6 @@ fn event_bindings(builder: Builder<tauri::Wry>) -> Builder<tauri::Wry> {
         .typ::<airc_modal::AircModalPublished>()
         .typ::<browser::BrowserFrame>()
         .typ::<duty::DutyEventPublished>()
-        .typ::<follow_through::PullRequestLifecycleEvent>()
         .typ::<window::WindowStateChanged>()
         .typ::<layout::LayoutStateChanged>()
         .typ::<layout::LayoutIntentRequested>()
@@ -233,11 +226,6 @@ fn event_bindings(builder: Builder<tauri::Wry>) -> Builder<tauri::Wry> {
         .constant("WINDOW_STATE_EVENT", window::WindowStateChanged::NAME)
         .constant("LAYOUT_STATE_EVENT", layout::LayoutStateChanged::NAME)
         .constant("LAYOUT_INTENT_EVENT", layout::LayoutIntentRequested::NAME)
-        .constant("PR_OPENED_EVENT", follow_through::PR_OPENED_EVENT)
-        .constant("PR_CI_EVENT", follow_through::PR_CI_EVENT)
-        .constant("PR_REVIEW_EVENT", follow_through::PR_REVIEW_EVENT)
-        .constant("PR_MERGED_EVENT", follow_through::PR_MERGED_EVENT)
-        .constant("PR_CLOSED_EVENT", follow_through::PR_CLOSED_EVENT)
         .constant("ROSEN_STATUS_EVENT", rosen_status::RosenStatusChanged::NAME)
         .constant(
             "SKILL_PACK_INSTALLATIONS_EVENT",
@@ -363,7 +351,6 @@ pub fn run() -> anyhow::Result<()> {
             projects::initialize(application.handle())?;
             providers::initialize(application.handle());
             rosen::initialize(application.handle())?;
-            follow_through::initialize(application.handle(), threads::follow_through_hooks());
             kept_worktrees::initialize(application.handle());
             github_requests::initialize(application.handle());
             issue_panel::initialize(application.handle());
