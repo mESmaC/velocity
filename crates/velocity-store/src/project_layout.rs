@@ -303,6 +303,9 @@ pub(crate) fn thread_metadata(thread: &ThreadItem) -> String {
     if thread.no_change_reason.is_some() {
         return "Ended with no change".into();
     }
+    if let Some(refusal) = &thread.rosen_land_refusal {
+        return refusal.clone();
+    }
     if thread.provider_queued
         && thread.activity != AgentActivity::Idle
         && matches!(

@@ -770,6 +770,10 @@ pub struct ThreadItem {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[specta(skip)]
     pub rosen_change_view: Option<velocity_core::thread_view_model::RosenChangeView>,
+    /// Latest land refusal, shown while the author repairs the change.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[specta(skip)]
+    pub rosen_land_refusal: Option<String>,
     /// Named snapshots through this event were imported from Git history.
     #[serde(default)]
     #[specta(skip)]
@@ -867,6 +871,7 @@ impl ThreadItem {
             pull_request_number: None,
             rosen_change: None,
             rosen_change_view: None,
+            rosen_land_refusal: None,
             rosen_import_event: 0,
             rosen_last_named_commit: None,
             pending_rosen_launch: None,
@@ -921,6 +926,7 @@ impl ThreadItem {
             pull_request_number: None,
             rosen_change: None,
             rosen_change_view: None,
+            rosen_land_refusal: None,
             rosen_import_event: 0,
             rosen_last_named_commit: None,
             pending_rosen_launch: None,

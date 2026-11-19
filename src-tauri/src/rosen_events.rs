@@ -499,19 +499,31 @@ pub(crate) fn record_landed(
     Ok(())
 }
 
-/// Delivers a merge conflict to the change’s author via the durable follow-up queue.
-pub(crate) fn changes_requested(
+/// Sends a land refusal to the change's author via the durable follow-up queue.
+pub(crate) fn record_land_refusal(
     application: &AppHandle,
-    key: ThreadKey,
+    project: u32,
     change: &str,
+    generation: u64,
     message: &str,
-) -> Result<(), String> {
-    // Sequence 0 leaves the stream's cursor where it is: this is not one of its events.
-    let progress = (RosenProgress::ChangesRequested, message);
-    save(application, key.0, (0, change), progress)?;
+) -> Result<bool, String> {
+    {
+        let mut store = lock(
+            application.state::<ManagedStateStore>().inner(),
+            "persisted state",
+        )?;
+        if store
+            .checkpoint_rosen_land_refusal(project, change, generation, message)
+            .map_err(|error| error.to_string())?
+            .is_none()
+        {
+            return Ok(false);
+        }
+        report(publish_progress(application, &store));
+    }
     let handle = application.clone();
-    tauri::async_runtime::spawn(async move { run_follow_ups(&handle, key.0).await });
-    Ok(())
+    tauri::async_runtime::spawn(async move { run_follow_ups(&handle, project).await });
+    Ok(true)
 }
 
 fn save(

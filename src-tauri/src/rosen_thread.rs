@@ -103,7 +103,8 @@ fn query(
         thread.rosen_progress_generation,
         ThreadChangeQuery {
             identifier: identifier.clone(),
-            fixing: thread.review_stage == Some(ReviewStage::Fixing),
+            fixing: thread.rosen_land_refusal.is_some()
+                || thread.review_stage == Some(ReviewStage::Fixing),
             imported_through: thread.rosen_import_event,
             previous: previous.cloned(),
         },

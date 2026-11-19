@@ -366,6 +366,32 @@ impl StateStore {
         change: &str,
         generation: u64,
     ) -> Result<Option<u32>, StoreError> {
+        self.checkpoint_rosen_progress(project, change, generation, (RosenProgress::Landed, ""))
+    }
+
+    /// Record a refusal and queue its author message only for the generation that was refused.
+    pub fn checkpoint_rosen_land_refusal(
+        &mut self,
+        project: u32,
+        change: &str,
+        generation: u64,
+        message: &str,
+    ) -> Result<Option<u32>, StoreError> {
+        self.checkpoint_rosen_progress(
+            project,
+            change,
+            generation,
+            (RosenProgress::ChangesRequested, message),
+        )
+    }
+
+    fn checkpoint_rosen_progress(
+        &mut self,
+        project: u32,
+        change: &str,
+        generation: u64,
+        progress: (RosenProgress, &str),
+    ) -> Result<Option<u32>, StoreError> {
         let current = self.project(project).and_then(|project| {
             project.threads.iter().find(|thread| {
                 thread.rosen_change.as_deref() == Some(change)
@@ -380,7 +406,7 @@ impl StateStore {
         if current.is_none() {
             return Ok(None);
         }
-        self.record_rosen_progress(project, 0, change, (RosenProgress::Landed, ""), None)
+        self.record_rosen_progress(project, 0, change, progress, None)
     }
 
     fn record_rosen_progress(
@@ -438,7 +464,7 @@ impl StateStore {
         thread.rosen_progress_generation = thread.rosen_progress_generation.saturating_add(1);
         let reverted = progress == RosenProgress::Reverted && thread.state == ThreadState::Merged;
         let abandoned = progress == RosenProgress::Abandoned;
-        let landed = apply_progress(thread, progress);
+        let landed = apply_progress(thread, progress, message);
         queue_follow_up(thread, progress, message);
         crate::goal_rosen::apply(item, identifier, progress);
         if abandoned {
@@ -588,7 +614,9 @@ fn queue_follow_up(thread: &mut ThreadItem, progress: RosenProgress, message: &s
 
 /// Moves the thread through review as its change does. Returns true when the thread has
 /// just become merged, so its tasks are done.
-fn apply_progress(thread: &mut ThreadItem, progress: RosenProgress) -> bool {
+fn apply_progress(thread: &mut ThreadItem, progress: RosenProgress, message: &str) -> bool {
+    thread.rosen_land_refusal = (progress == RosenProgress::ChangesRequested)
+        .then(|| message.lines().next().unwrap_or(message).to_owned());
     if let Some(view) = &mut thread.rosen_change_view {
         view.stage = match progress {
             RosenProgress::Named if thread.state != ThreadState::Merged => RosenChangeStage::Named,
@@ -635,8 +663,8 @@ fn apply_progress(thread: &mut ThreadItem, progress: RosenProgress) -> bool {
             false
         }
         RosenProgress::ChangesRequested if thread.state != ThreadState::Merged => {
-            thread.state = ThreadState::Review;
-            thread.review_stage = Some(ReviewStage::Fixing);
+            thread.state = ThreadState::Working;
+            thread.review_stage = None;
             false
         }
         RosenProgress::ChangesRequested => false,
@@ -862,6 +890,54 @@ mod tests {
         assert_eq!(project.tasks[0].assigned_thread_id, Some(4));
         assert!(project.built_spec_sections.is_empty());
         std::fs::remove_dir_all(&directory)?;
+        Ok(())
+    }
+
+    // Risk (#487): restarting between a refused land and delivery loses the author's
+    // repair prompt, or a delayed refusal sends the newly named head back to Working.
+    #[test]
+    fn land_refusal_survives_reload_until_the_change_is_named_again()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let unique = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)?
+            .as_nanos();
+        let directory = std::env::temp_dir().join(format!("velocity-land-refusal-{unique}"));
+        let mut store = checkpoint_store(&directory)?;
+        let refused_generation = store.state.projects[0].threads[0].rosen_progress_generation;
+        let reason = "Land refused · regeneration required for Cargo.lock";
+        let message = format!("{reason}\n\nRun `rosen rebase` and regenerate Cargo.lock.");
+        assert_eq!(
+            store.checkpoint_rosen_land_refusal(1, "abc", refused_generation, &message)?,
+            Some(4),
+        );
+
+        let mut store = StateStore::load_or_default(&directory)?;
+        let thread = &store.state.projects[0].threads[0];
+        assert_eq!(thread.state, ThreadState::Working);
+        assert_eq!(thread.review_stage, None);
+        assert_eq!(crate::project_layout::thread_metadata(thread), reason);
+        assert!(matches!(
+            thread.rosen_follow_ups.as_slice(),
+            [RosenFollowUp::Deliver { message: pending, .. }] if pending == &message
+        ));
+
+        store.save_rosen_named(1, 10, "abc", Some("repaired-head"))?;
+        assert_eq!(
+            store.checkpoint_rosen_land_refusal(1, "abc", refused_generation, &message)?,
+            None,
+        );
+        let thread = &store.state.projects[0].threads[0];
+        assert_eq!(thread.state, ThreadState::Review);
+        assert!(thread.rosen_land_refusal.is_none());
+        assert_eq!(
+            store.checkpoint_rosen_land(1, "abc", thread.rosen_progress_generation)?,
+            Some(4),
+        );
+        assert_eq!(
+            store.state.projects[0].threads[0].state,
+            ThreadState::Merged
+        );
+        std::fs::remove_dir_all(directory)?;
         Ok(())
     }
 }

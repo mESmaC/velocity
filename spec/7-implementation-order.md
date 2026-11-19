@@ -37,6 +37,7 @@ Each milestone ends with a working app.
 - [x] GitHub observation for legacy PR threads
 - [x] Live Rosen status pane with server, base, landing, claims, warm pool, mirror and owning-thread navigation (F6, #421)
 - [x] Rosen thread change track, header actions, land history and inline stored conflicts (F6, #422)
+- [x] Return refused Rosen lands to the author with repair instructions and show the refusal on the thread card (F6, #487)
 - [x] PR follow-through: track, land history, auto-response to review comments, merge → workspace delete (F6)
 - [x] Closed-without-merge state with the workspace kept (F5, F6)
 - [x] Right-click menu and delete with 5 s undo (F12)

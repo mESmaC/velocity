@@ -50,13 +50,14 @@ impl LandingHost for TauriLandingHost {
         crate::rosen_events::record_landed(&self.0, project, change, generation)
     }
 
-    fn merge_conflict(&self, project: u32, thread: u32, change: &str, message: &str) {
-        report(crate::rosen_events::changes_requested(
-            &self.0,
-            (project, thread),
-            change,
-            message,
-        ));
+    fn land_refused(
+        &self,
+        project: u32,
+        change: &str,
+        generation: u64,
+        message: &str,
+    ) -> Result<bool, String> {
+        crate::rosen_events::record_land_refusal(&self.0, project, change, generation, message)
     }
 
     fn activity(&self, project: u32, actor: &str, kind: DutyEventKind, message: String) {

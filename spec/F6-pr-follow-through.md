@@ -30,6 +30,10 @@ The header shows the Rosen change ID and its workspace path.
 Name change records a named snapshot, Rebase brings the workspace onto the current base, and Abandon closes the change and lets Rosen remove the workspace.
 The change track shows Editing → Named → Landing → Landed → Green.
 The sidebar uses the same stage and its colour.
+When Rosen refuses a land for regeneration or conflicts, Velocity returns the thread to Working and wakes its agent in the same pass with the affected paths and repair instructions.
+For regeneration, the agent rebases the workspace, runs the generators for the listed files on the merged inputs and names the repaired change for another land attempt.
+Velocity retries any other refusal once on a later pass and, if Rosen still refuses, returns the thread to Working with Rosen's reason and advice.
+The thread card shows the refusal until the author names the change again.
 The transcript shows the files with stored conflicts and offers Resolve with agent, which queues the handoff for the owning agent's next turn boundary.
 After a land the transcript groups the coding work behind Show work and shows the landed commit, its Rosen change and the recorded post-land results.
 Historical lands retain any receipt and approver trailers Rosen recorded.

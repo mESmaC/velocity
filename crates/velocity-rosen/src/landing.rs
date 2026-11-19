@@ -8,15 +8,15 @@ use crate::{ProjectServer, RosenError};
 /// What a land request came to.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum LandOutcome {
-    Landed {
-        commit: String,
-    },
-    /// Refused, with Rosen's stable code (`unapproved`, `receipt_stale`, `needs_recheck`,
-    /// `merge_conflict`, ...) and its advice.
-    Refused {
-        code: String,
-        message: String,
-    },
+    Landed { commit: String },
+    Refused(LandRefusal),
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum LandRefusal {
+    Regenerate { paths: Vec<String> },
+    Conflict { paths: Vec<String>, message: String },
+    Other { code: String, message: String },
 }
 
 /// Asks Rosen to land `change`.
@@ -33,11 +33,17 @@ pub async fn land(
             }
         }
         LandStatus::Refused {
-            reason, message, ..
-        } => LandOutcome::Refused {
-            code: reason,
+            reason,
             message,
-        },
+            paths,
+        } => LandOutcome::Refused(match reason.as_str() {
+            "regeneration_required" => LandRefusal::Regenerate { paths },
+            "merge_conflict" | "conflicts" => LandRefusal::Conflict { paths, message },
+            _ => LandRefusal::Other {
+                code: reason,
+                message,
+            },
+        }),
     })
 }
 
