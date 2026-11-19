@@ -3,7 +3,7 @@
 <!-- split-spec: {"order":919,"kind":"markdown","indentation":0} -->
 **Velocity's fast build set (#387).**
 `rosen.toml` keeps the fast commands in `checks.pre_land` and the full commands in `checks.post_land`; the integration suite covers the fast checks after landing.
-`node scripts/check-fast.mjs` runs locked `cargo check` and clippy on changed crates and their transitive reverse dependencies, including optional, build and target-specific dependencies.
+`node scripts/check-fast.mjs` runs locked clippy on all targets of changed crates and their transitive reverse dependencies, including optional, build and target-specific dependencies.
 Each check folder compares its inputs with its last successful run, so batching, deleted files and a bisection going backwards are covered.
 A missing or incompatible record, a workspace manifest, lockfile, toolchain, Cargo configuration or checker-script change checks all crates.
 Embedded files count against their owning crate.

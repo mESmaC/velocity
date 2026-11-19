@@ -177,7 +177,8 @@ function run(plan) {
   }
   if (selected.packages.length) {
     const packages = selected.packages.flatMap((name) => ["-p", name]);
-    command("cargo", ["check", "--locked", "--all-targets", ...packages]);
+    // Clippy type-checks every target and fails on any compile error, so a separate
+    // `cargo check` first only analysed the same crates twice (#435).
     command("cargo", [
       "clippy",
       "--locked",
