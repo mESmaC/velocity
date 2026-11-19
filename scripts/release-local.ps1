@@ -6,8 +6,8 @@ Builds a Velocity installer on this machine (#498).
 One command for a local release build, without the waits that made it slow:
 - Rosen's binaries are built once per pinned commit and kept under the target
   folder, instead of a cold `cargo install` into a throwaway folder every time.
-- The UI is built first, and its process is stopped if Vite prints its result
-  but does not exit (#44), instead of stalling the release.
+- The UI is built first; Vite exits by itself once it prints its result
+  (ui/vite.config.ts explains the hang this used to work around, #44 and #500).
 - The release profile is incremental locally (Cargo.toml), so a change to one
   crate rebuilds only what changed.
 The installer and the portable executable are copied to -OutDir.
@@ -26,8 +26,6 @@ param(
 $ErrorActionPreference = 'Stop'
 $root = Split-Path -Parent $PSScriptRoot
 Set-Location -LiteralPath $root
-# Vite's Windows path probe runs `net use`; keep System32 first on PATH (#44).
-$env:Path = (Join-Path $env:SystemRoot 'System32') + ';' + $env:Path
 $target = if ($env:CARGO_TARGET_DIR) { $env:CARGO_TARGET_DIR } else { Join-Path $root 'target' }
 if (-not $OutDir) { $OutDir = Join-Path $target "release-local\$Version" }
 $started = Get-Date
@@ -72,35 +70,10 @@ function Get-RosenBinaries {
     $bin
 }
 
-function Stop-Tree([int]$ProcessId) {
-    Get-CimInstance Win32_Process -Filter "ParentProcessId=$ProcessId" |
-        ForEach-Object { Stop-Tree $_.ProcessId }
-    Stop-Process -Id $ProcessId -Force -ErrorAction SilentlyContinue
-}
-
 function Build-Ui {
     Write-Step 'Building the UI'
-    $log = Join-Path $target 'release-local-ui.log'
-    New-Item -ItemType Directory -Force (Split-Path $log) | Out-Null
-    $process = Start-Process pnpm.cmd -ArgumentList '-C', 'ui', 'build' -NoNewWindow -PassThru `
-        -RedirectStandardOutput $log -RedirectStandardError "$log.err"
-    $deadline = (Get-Date).AddMinutes(10)
-    $builtAt = $null
-    while (-not $process.HasExited) {
-        if (-not $builtAt -and (Select-String -Path $log -Pattern 'built in' -Quiet)) { $builtAt = Get-Date }
-        # Vite printed its result; give it 20 s to exit before stopping it (#44).
-        if ($builtAt -and ((Get-Date) - $builtAt).TotalSeconds -gt 20) {
-            Write-Host 'Vite finished but did not exit; stopping it (#44).'
-            Stop-Tree $process.Id
-            return
-        }
-        if ((Get-Date) -gt $deadline) { Stop-Tree $process.Id; throw 'UI build ran over 10 minutes' }
-        Start-Sleep -Milliseconds 500
-    }
-    if ($process.ExitCode -ne 0) {
-        Get-Content "$log.err" -Tail 30 | Write-Host
-        throw "UI build failed (exit $($process.ExitCode))"
-    }
+    pnpm -C ui build
+    if ($LASTEXITCODE -ne 0) { throw "UI build failed (exit $LASTEXITCODE)" }
 }
 
 $rosen = Get-RosenBinaries

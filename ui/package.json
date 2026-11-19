@@ -5,8 +5,8 @@
   "type": "module",
   "packageManager": "pnpm@10.34.9",
   "scripts": {
-    "dev": "vite --host 127.0.0.1",
-    "build": "vite build",
+    "dev": "vite --configLoader native --host 127.0.0.1",
+    "build": "vite build --configLoader native",
     "check": "svelte-check --tsconfig ./tsconfig.json --fail-on-warnings",
     "lint": "eslint . --max-warnings 0 && prettier --check .",
     "format": "prettier --write .",
