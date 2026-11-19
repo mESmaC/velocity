@@ -207,7 +207,7 @@ pub fn report_to(
     destination: ReportRepository,
     report: &DiscoveryReport,
     recent: &[RecentDiscovery],
-    mentioned_paths: impl Fn(&str) -> BTreeSet<String>,
+    mentioned_paths: impl FnOnce(&[(&str, &str)]) -> Vec<BTreeSet<String>>,
     retry: bool,
 ) -> Result<ReportOutcome, PullRequestError> {
     let repository = destination.repository();
@@ -216,36 +216,61 @@ pub fn report_to(
     if retry && let Some(previous) = open.iter().find(|issue| issue.body == body) {
         return Ok(ReportOutcome::Filed(previous.number));
     }
-    let wanted = report_problem(&report.title, &report.text, &mentioned_paths);
-    let mut matches = BTreeMap::new();
-    for issue in &open {
-        let evidence = issue
-            .body
-            .split_once("\n\n> ")
-            .map_or(issue.body.as_str(), |(_, text)| text);
-        let problem = report_problem(&issue.title, evidence, &mentioned_paths);
-        if let Some(score) = wanted.match_score(&problem) {
-            matches.insert(issue.number, score);
-        }
-    }
-    for entry in recent
-        .iter()
-        .filter(|entry| entry.is_recent(destination, report))
-    {
-        let problem = report_problem(&entry.report.title, &entry.report.text, &mentioned_paths);
-        if let Some(score) = wanted.match_score(&problem) {
-            let best = matches.entry(entry.issue).or_default();
-            *best = f64::max(*best, score);
-        }
-    }
-    let mut matches: Vec<_> = matches.into_iter().collect();
-    matches.sort_by(|left, right| right.1.total_cmp(&left.1).then(left.0.cmp(&right.0)));
-    for (number, _) in matches {
+    let candidates = matching_issues(destination, report, &open, recent, mentioned_paths);
+    for (number, _) in candidates {
         if open.iter().any(|issue| issue.number == number) || issue_is_open(repository, number)? {
             return join_issue(repository, number, report, retry);
         }
     }
     file_issue(repository, report, &body).map(ReportOutcome::Filed)
+}
+
+fn matching_issues(
+    destination: ReportRepository,
+    report: &DiscoveryReport,
+    open: &[OpenIssue],
+    recent: &[RecentDiscovery],
+    mentioned_paths: impl FnOnce(&[(&str, &str)]) -> Vec<BTreeSet<String>>,
+) -> Vec<(u32, f64)> {
+    let open_reports = open.iter().map(|issue| {
+        let evidence = issue
+            .body
+            .split_once("\n\n> ")
+            .map_or(issue.body.as_str(), |(_, text)| text);
+        (issue.number, (issue.title.as_str(), evidence))
+    });
+    let recent_reports = recent
+        .iter()
+        .filter(|entry| entry.is_recent(destination, report))
+        .map(|entry| {
+            (
+                entry.issue,
+                (entry.report.title.as_str(), entry.report.text.as_str()),
+            )
+        });
+    let mut numbers = Vec::new();
+    let mut descriptions = vec![(report.title.as_str(), report.text.as_str())];
+    for (number, description) in open_reports.chain(recent_reports) {
+        numbers.push(number);
+        descriptions.push(description);
+    }
+    let mut paths = mentioned_paths(&descriptions).into_iter();
+    let wanted = IssueProblem::new(
+        &report.title,
+        &report.text,
+        paths.next().unwrap_or_default(),
+    );
+    let mut matches = BTreeMap::new();
+    for (number, (title, evidence)) in numbers.into_iter().zip(descriptions.into_iter().skip(1)) {
+        let problem = IssueProblem::new(title, evidence, paths.next().unwrap_or_default());
+        if let Some(score) = wanted.match_score(&problem) {
+            let best = matches.entry(number).or_default();
+            *best = f64::max(*best, score);
+        }
+    }
+    let mut matches: Vec<_> = matches.into_iter().collect();
+    matches.sort_by(|left, right| right.1.total_cmp(&left.1).then(left.0.cmp(&right.0)));
+    matches
 }
 
 impl RecentDiscovery {
@@ -416,21 +441,6 @@ impl IssueProblem {
         (title_shared >= 2 && (title_overlap >= SAME_PROBLEM || corroborated))
             .then_some(title_overlap + evidence_overlap / 2.0)
     }
-}
-
-fn report_problem(
-    title: &str,
-    evidence: &str,
-    mentioned_paths: &impl Fn(&str) -> BTreeSet<String>,
-) -> IssueProblem {
-    IssueProblem::new(
-        title,
-        evidence,
-        mentioned_paths(title)
-            .into_iter()
-            .chain(mentioned_paths(evidence))
-            .collect(),
-    )
 }
 
 /// Normalize inflections so the same failure can be described in different words.

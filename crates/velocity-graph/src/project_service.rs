@@ -1,11 +1,12 @@
 //! Local graph worker. All connections for a project share one live index.
 
+use std::collections::BTreeSet;
 use std::ffi::OsString;
 use std::fs::OpenOptions;
 use std::io;
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use rosen_client::Endpoint;
 use rosen_client::protocol::transport::{self, BoxStream, Listener};
@@ -18,6 +19,8 @@ use crate::{Error, Index, Tools};
 
 pub const PROJECT_SWITCH: &str = "--graph-project";
 const FRAME_LIMIT: u64 = 256 * 1024;
+const MENTION_BATCH_BYTES: usize = 64 * 1024;
+const MENTION_REFRESH_INTERVAL: Duration = Duration::from_secs(30);
 const IO_TIMEOUT: Duration = Duration::from_secs(2);
 pub(crate) const QUERY_TIMEOUT: Duration = Duration::from_secs(90);
 const IDLE_TIMEOUT: Duration = Duration::from_secs(300);
@@ -29,6 +32,7 @@ pub(crate) enum Action {
     Task(String),
     Tool { name: String, arguments: Value },
     WarmBase,
+    Mentions(Vec<(String, String)>),
 }
 
 #[derive(Serialize, Deserialize)]
@@ -44,6 +48,8 @@ pub(crate) struct Reply {
     pub text: String,
     pub outcome: ToolOutcome,
     pub failed: bool,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    mentions: Vec<BTreeSet<String>>,
 }
 
 impl Reply {
@@ -52,6 +58,7 @@ impl Reply {
             text,
             outcome: ToolOutcome::Other,
             failed: false,
+            mentions: Vec::new(),
         }
     }
 }
@@ -229,6 +236,7 @@ pub fn serve_project(arguments: &[OsString]) -> Result<(), Error> {
 struct ProjectGraph {
     endpoint: Option<String>,
     tools: Option<Tools>,
+    mention_refresh: Option<(PathBuf, Instant)>,
 }
 
 impl ProjectGraph {
@@ -257,28 +265,52 @@ impl ProjectGraph {
                     text,
                     outcome,
                     failed: false,
+                    mentions: Vec::new(),
                 },
                 Err(error) => Reply {
                     text: error.message,
                     outcome: error.outcome,
                     failed: true,
+                    mentions: Vec::new(),
                 },
             },
+            Action::Mentions(texts) => {
+                let graph = &tools.index().graph;
+                let mentions = texts
+                    .into_iter()
+                    .map(|(title, body)| {
+                        let mut paths = graph.mentioned_paths(&title);
+                        paths.extend(graph.mentioned_paths(&body));
+                        paths
+                    })
+                    .collect();
+                Reply {
+                    mentions,
+                    ..Reply::plain(String::new())
+                }
+            }
         })
     }
 
     fn select(&mut self, cache: &Path, request: &Request) -> Result<&mut Tools, Error> {
-        let warm = matches!(request.action, Action::WarmBase);
-        let endpoint = request.rosen.clone().map(Endpoint::new);
+        let mentions = matches!(request.action, Action::Mentions(_));
+        let base =
+            matches!(request.action, Action::WarmBase) || mentions && request.rosen.is_some();
         let rosen =
-            warm || rosen_client::snapshot::WorkspaceMarker::path(&request.workspace).is_file();
+            base || rosen_client::snapshot::WorkspaceMarker::path(&request.workspace).is_file();
+        let address = request.rosen.as_ref().filter(|_| rosen);
         if self.tools.as_ref().is_some_and(|tools| {
-            tools.index().is_rosen() != rosen || self.endpoint != request.rosen
+            tools.index().is_rosen() != rosen || self.endpoint.as_ref() != address
         }) {
             self.tools = None;
         }
+        let same_workspace = self
+            .tools
+            .as_ref()
+            .is_some_and(|tools| tools.index().root() == request.workspace);
         if self.tools.is_none() {
-            let index = if warm {
+            let endpoint = address.cloned().map(Endpoint::new);
+            let index = if base {
                 let endpoint = endpoint
                     .ok_or_else(|| Error::Invalid("Missing project Rosen endpoint".into()))?;
                 Index::open_revision(endpoint, "base", cache)?
@@ -286,22 +318,89 @@ impl ProjectGraph {
                 Index::open_workspace(&request.workspace, cache, endpoint)?
             };
             self.tools = Some(Tools::new(index));
-            self.endpoint = request.rosen.clone();
+            self.endpoint = address.cloned();
         }
         let tools = self
             .tools
             .as_mut()
             .ok_or_else(|| Error::Invalid("Project graph unavailable".into()))?;
-        if warm {
+        if base {
             tools.select_base()?;
         } else {
             tools.select_workspace(&request.workspace)?;
             if !rosen {
-                tools.refresh(&request.changed)?;
+                let refresh = mentions
+                    && self.mention_refresh.as_ref().is_none_or(|(root, checked)| {
+                        root != &request.workspace || checked.elapsed() >= MENTION_REFRESH_INTERVAL
+                    });
+                if refresh {
+                    // Issue queries have no connection watching this checkout for edits.
+                    if same_workspace {
+                        tools.refresh(&[String::new()])?;
+                    }
+                    self.mention_refresh = Some((request.workspace.clone(), Instant::now()));
+                } else {
+                    tools.refresh(&request.changed)?;
+                }
             }
         }
         Ok(tools)
     }
+}
+
+/// Resolve issue references against the same worker that serves agent graph queries.
+pub fn mentioned_paths(
+    executable: &Path,
+    app_data: &Path,
+    project: &str,
+    root: &Path,
+    endpoint: Option<Endpoint>,
+    texts: &[(&str, &str)],
+) -> Vec<BTreeSet<String>> {
+    let project = Project::new(
+        crate::usage::folder(app_data, project),
+        executable.into(),
+        endpoint,
+    );
+    let mut paths = vec![BTreeSet::new(); texts.len()];
+    let mut remaining = texts;
+    let mut offset = 0;
+    while let Some(first) = remaining.first() {
+        let mut bytes = 0;
+        let length = remaining
+            .iter()
+            .take_while(|text| {
+                bytes += mention_size(text);
+                bytes <= MENTION_BATCH_BYTES
+            })
+            .count()
+            .max(1);
+        let (batch, rest) = remaining.split_at(length);
+        if length > 1 || mention_size(first) <= FRAME_LIMIT as usize - 1024 {
+            let action = Action::Mentions(
+                batch
+                    .iter()
+                    .map(|&(title, body)| (title.to_owned(), body.to_owned()))
+                    .collect(),
+            );
+            let Ok(reply) = project.request(root, Vec::new(), action, QUERY_TIMEOUT) else {
+                break;
+            };
+            for (path, found) in paths[offset..offset + length]
+                .iter_mut()
+                .zip(reply.mentions)
+            {
+                *path = found;
+            }
+        }
+        remaining = rest;
+        offset += length;
+    }
+    paths
+}
+
+fn mention_size(text: &(&str, &str)) -> usize {
+    serde_json::to_vec(text).map_or(usize::MAX, |bytes| bytes.len() + 1)
 }
 
 pub fn warm_project(executable: &Path, app_data: &Path, project: &str, endpoint: Endpoint) {

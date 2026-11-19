@@ -75,6 +75,7 @@ Its accuracy rules come from the A.TXY address memory in MCL4-COE and `elem`: ro
   Cache misses are resolved under the project's build lock, with a second cache check before parsing.
 - **Shared project graph.**
   The MCP connections forward workspace queries to one project worker with one live graph and search index.
+  Continuous dispatch and discovery reporting use the same worker to resolve code references in issues against the project base.
   Workspaces at the same Rosen tree reuse the index, and switching to a different tree applies file changes to the current project view.
   On Rosen, each tool call checks the workspace marker Rosen advances when it stores a snapshot.
   The marker also wakes the background indexer so Usage can show workspaces catching up.

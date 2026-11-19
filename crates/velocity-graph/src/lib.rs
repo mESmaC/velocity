@@ -35,7 +35,7 @@ pub use mcp::{
     SERVER_NAME, SERVER_SWITCH, WARM_SWITCH, serve, serve_stdio, server_arguments, task_context,
     warm, warm_stdio,
 };
-pub use project_service::{PROJECT_SWITCH, serve_project, warm_project};
+pub use project_service::{PROJECT_SWITCH, mentioned_paths, serve_project, warm_project};
 pub use tools::Tools;
 
 #[derive(Debug, thiserror::Error)]

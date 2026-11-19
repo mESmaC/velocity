@@ -5,7 +5,6 @@ use std::path::Path;
 use tauri::{AppHandle, Manager};
 use velocity_airc::Claim;
 use velocity_github::{GitHubIssue, IssueClient, IssueState, velocity_reports::IssueProblem};
-use velocity_graph::Graph;
 use velocity_rosen::{ProjectServer, review_swarm};
 use velocity_store::{
     ProjectItem, ThreadItem, ThreadState, continuous_dispatch::IssueOverlap, issues::ThreadIssue,
@@ -13,7 +12,7 @@ use velocity_store::{
 use velocity_threads::continuous_dispatch::actionable;
 
 use super::{Reader, dispatch_claims};
-use crate::{state::ManagedStateStore, threads::lock};
+use crate::{graph_access::issue_paths, state::ManagedStateStore, threads::lock};
 
 pub(super) fn refresh(
     application: &AppHandle,
@@ -47,8 +46,7 @@ pub(super) fn refresh(
         .path()
         .app_data_dir()
         .map_err(|error| error.to_string())?;
-    let graph = reader.graph.get(&data, &project);
-    OverlapContext::new(client, &project, graph, &data).recheck(issues, working, &mut waits)?;
+    OverlapContext::new(client, &project, &data).recheck(issues, working, &mut waits)?;
     lock(state.inner(), "persisted state")?
         .save_issue_overlaps(identifier, waits.clone())
         .map_err(|error| error.to_string())?;
@@ -124,22 +122,17 @@ fn active_issues<'a>(
 struct OverlapContext<'a> {
     client: &'a IssueClient,
     project: &'a ProjectItem,
-    graph: Option<&'a Graph>,
+    data: &'a Path,
     server: ProjectServer,
     landed: BTreeMap<String, BTreeSet<String>>,
 }
 
 impl<'a> OverlapContext<'a> {
-    fn new(
-        client: &'a IssueClient,
-        project: &'a ProjectItem,
-        graph: Option<&'a Graph>,
-        data: &Path,
-    ) -> Self {
+    fn new(client: &'a IssueClient, project: &'a ProjectItem, data: &'a Path) -> Self {
         Self {
             client,
             project,
-            graph,
+            data,
             server: ProjectServer::new(data, project.id),
             landed: BTreeMap::new(),
         }
@@ -151,10 +144,20 @@ impl<'a> OverlapContext<'a> {
         working: BTreeMap<u32, WorkingIssue<'_>>,
         waits: &mut BTreeMap<u32, IssueOverlap>,
     ) -> Result<(), String> {
+        let candidates: Vec<_> = issues
+            .iter()
+            .filter(|issue| working.contains_key(&issue.number) || actionable(issue))
+            .collect();
+        let descriptions: Vec<_> = candidates.iter().map(|issue| issue_text(issue)).collect();
+        let mut paths: BTreeMap<_, _> = candidates
+            .into_iter()
+            .map(|issue| issue.number)
+            .zip(issue_paths(self.data, self.project, &descriptions))
+            .collect();
         let active: BTreeMap<_, _> = working
             .into_iter()
             .map(|(number, working)| {
-                let mut problem = problem(self.graph, working.issue);
+                let mut problem = problem(working.issue, paths.remove(&number).unwrap_or_default());
                 problem.paths.extend(working.files);
                 (
                     number,
@@ -175,7 +178,12 @@ impl<'a> OverlapContext<'a> {
             if active.contains_key(&issue.number) {
                 waits.remove(&issue.number);
             } else {
-                self.update(issue, &active, waits)?;
+                self.update(
+                    issue,
+                    paths.remove(&issue.number).unwrap_or_default(),
+                    &active,
+                    waits,
+                )?;
             }
         }
         Ok(())
@@ -184,6 +192,7 @@ impl<'a> OverlapContext<'a> {
     fn update(
         &mut self,
         issue: &GitHubIssue,
+        paths: BTreeSet<String>,
         active: &BTreeMap<u32, ActiveIssue>,
         waits: &mut BTreeMap<u32, IssueOverlap>,
     ) -> Result<(), String> {
@@ -197,7 +206,7 @@ impl<'a> OverlapContext<'a> {
             }
         }
         let blocker = actionable(issue)
-            .then(|| problem(self.graph, issue))
+            .then(|| problem(issue, paths))
             .and_then(|wanted| {
                 active
                     .iter()
@@ -234,12 +243,18 @@ impl<'a> OverlapContext<'a> {
         if !actionable(&issue) {
             return Ok(None);
         }
-        let wanted = problem(self.graph, &issue);
         let source = self
             .client
             .get(wait.blocker)
             .map_err(|error| error.to_string())?;
-        if wanted.matches(&problem(self.graph, &source)) {
+        let mut paths = issue_paths(
+            self.data,
+            self.project,
+            &[issue_text(&issue), issue_text(&source)],
+        )
+        .into_iter();
+        let wanted = problem(&issue, paths.next().unwrap_or_default());
+        if wanted.matches(&problem(&source, paths.next().unwrap_or_default())) {
             return Ok(Some(commit));
         }
         if wanted.paths.is_empty() {
@@ -262,12 +277,11 @@ impl<'a> OverlapContext<'a> {
     }
 }
 
-fn problem(graph: Option<&Graph>, issue: &GitHubIssue) -> IssueProblem {
-    let paths = graph.map_or_else(BTreeSet::new, |graph| {
-        let mut paths = graph.mentioned_paths(&issue.title);
-        paths.extend(graph.mentioned_paths(&issue.body));
-        paths
-    });
+fn issue_text(issue: &GitHubIssue) -> (&str, &str) {
+    (&issue.title, &issue.body)
+}
+
+fn problem(issue: &GitHubIssue, paths: BTreeSet<String>) -> IssueProblem {
     IssueProblem::new(&issue.title, &issue.body, paths)
 }
 

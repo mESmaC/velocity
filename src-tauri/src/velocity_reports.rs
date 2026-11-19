@@ -15,7 +15,7 @@ use velocity_github::{
 };
 use velocity_store::ProjectItem;
 
-use crate::graph_access::IssueGraph;
+use crate::graph_access::issue_paths;
 use crate::state::ManagedStateStore;
 use crate::threads::lock;
 
@@ -24,9 +24,8 @@ const PASS_INTERVAL: Duration = Duration::from_secs(30);
 pub fn initialize(application: &AppHandle) {
     let application = application.clone();
     std::thread::spawn(move || {
-        let mut graphs = BTreeMap::new();
         loop {
-            if let Err(error) = report_all(&application, &mut graphs) {
+            if let Err(error) = report_all(&application) {
                 eprintln!("Discovery issue reports: {error}");
             }
             std::thread::sleep(PASS_INTERVAL);
@@ -34,10 +33,7 @@ pub fn initialize(application: &AppHandle) {
     });
 }
 
-fn report_all(
-    application: &AppHandle,
-    graphs: &mut BTreeMap<u32, IssueGraph>,
-) -> Result<(), String> {
+fn report_all(application: &AppHandle) -> Result<(), String> {
     let app_data = application
         .path()
         .app_data_dir()
@@ -49,13 +45,12 @@ fn report_all(
         )?;
         store.state().projects.clone()
     };
-    graphs.retain(|identifier, _| projects.iter().any(|project| project.id == *identifier));
     let mut saved = ReportedDiscoveries::load(&app_data).map_err(|error| error.to_string())?;
     let destinations = destination_projects(&projects);
     for project in &projects {
         // One project's failure (gh signed out, offline) leaves its cursor where it was, so
         // the next pass retries; the other projects still report.
-        if let Err(error) = report_project(&app_data, project, &mut saved, &destinations, graphs) {
+        if let Err(error) = report_project(&app_data, project, &mut saved, &destinations) {
             eprintln!(
                 "Discovery issue reports for project {}: {error}",
                 project.name
@@ -94,7 +89,6 @@ fn report_project(
     project: &ProjectItem,
     saved: &mut ReportedDiscoveries,
     destinations: &BTreeMap<ReportRepository, &ProjectItem>,
-    graphs: &mut BTreeMap<u32, IssueGraph>,
 ) -> Result<(), String> {
     let cursor = saved
         .projects
@@ -116,16 +110,12 @@ fn report_project(
         saved.save(app_data).map_err(|error| error.to_string())?;
         let report =
             DiscoveryReport::new(title, &entry.text, &entry.nick, &project.name, &entry.time);
-        let graph = if let Some(project) = destinations.get(&repository) {
-            graphs.entry(project.id).or_default().get(app_data, project)
-        } else {
-            None
-        };
+        let target = destinations.get(&repository);
         let outcome = velocity_reports::report_to(
             repository,
             &report,
             &saved.recent,
-            |text| graph.map_or_else(Default::default, |graph| graph.mentioned_paths(text)),
+            |texts| target.map_or_else(Vec::new, |project| issue_paths(app_data, project, texts)),
             retry,
         )
         .map_err(|error| error.to_string())?;

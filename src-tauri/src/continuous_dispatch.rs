@@ -2,7 +2,6 @@
 //! project's issue rail, so changing projects cannot redirect a background launch.
 mod overlap;
 
-use crate::graph_access::IssueGraph;
 use crate::state::ManagedStateStore;
 use crate::threads::{ManagedThreads, lock, report};
 use std::collections::{BTreeMap, HashSet};
@@ -120,7 +119,6 @@ struct Reader {
     client: Option<IssueClient>,
     refreshed: Option<Instant>,
     report_retry: BTreeMap<u32, Instant>,
-    graph: IssueGraph,
     backlog: Backlog,
 }
 
@@ -334,7 +332,6 @@ fn reader<'a>(project: &ProjectItem, readers: &'a mut BTreeMap<u32, Reader>) -> 
         client: None,
         refreshed: None,
         report_retry: BTreeMap::new(),
-        graph: IssueGraph::default(),
         backlog: Backlog::default(),
     };
     let reader = readers.entry(project.id).or_insert_with(setup);
