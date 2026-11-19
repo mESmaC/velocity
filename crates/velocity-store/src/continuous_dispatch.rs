@@ -32,6 +32,11 @@ pub struct ContinuousDispatch {
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     #[specta(skip)]
     pub issue_overlaps: BTreeMap<u32, IssueOverlap>,
+    /// Open issues whose one overlap hold has ended (#525). They are never held on
+    /// overlap again, so a hold cannot repeat behind each next running issue.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    #[specta(skip)]
+    pub overlap_released: BTreeMap<u32, ThreadIssue>,
     /// Issues whose GitHub record shows a Velocity land still waiting for a green
     /// integration build (#504). They survive thread deletion, so the issue is not sent
     /// to another agent that can only find nothing to do.
@@ -69,6 +74,51 @@ pub struct IssueOverlap {
     pub blocker_thread: Option<u32>,
     #[serde(default)]
     pub review_commit: Option<String>,
+    /// Files the blocker's open change has edited that this issue also names (#525).
+    #[serde(default)]
+    pub paths: Vec<String>,
+}
+
+impl IssueOverlap {
+    pub fn new(
+        issue: ThreadIssue,
+        blocker: u32,
+        blocker_thread: Option<u32>,
+        paths: Vec<String>,
+    ) -> Self {
+        Self {
+            issue,
+            blocker,
+            blocker_thread,
+            review_commit: None,
+            paths,
+        }
+    }
+
+    /// The short state shown on the issue's Work card.
+    pub fn label(&self) -> String {
+        if self.review_commit.is_some() {
+            format!("Checking against #{}", self.blocker)
+        } else {
+            format!("Held behind #{}", self.blocker)
+        }
+    }
+
+    /// Why continuous dispatch has not started the issue, for its Work card.
+    pub fn reason(&self) -> String {
+        if self.review_commit.is_some() {
+            format!(
+                "#{} landed. A review checks this issue against that land before dispatch.",
+                self.blocker
+            )
+        } else {
+            format!(
+                "#{}'s open change edits files this issue names. \
+                 Dispatch starts this issue when that change lands or ends.",
+                self.blocker
+            )
+        }
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -107,6 +157,18 @@ impl ContinuousDispatch {
 }
 
 impl ProjectItem {
+    /// The overlap hold that keeps `issue` out of continuous dispatch, if any (#525).
+    pub fn overlap_hold(&self, issue: &ThreadIssue) -> Option<&IssueOverlap> {
+        self.continuous_dispatch
+            .issue_overlaps
+            .get(&issue.number)
+            .filter(|wait| {
+                wait.issue
+                    .repository
+                    .eq_ignore_ascii_case(&issue.repository)
+            })
+    }
+
     /// Whether `issue` has a landed change waiting for a green integration build (#504).
     /// The work projection is authoritative when it tracks the issue; otherwise a merged
     /// thread or the GitHub hold saved by dispatch is the evidence. `updated_at` limits the
@@ -211,15 +273,20 @@ pub fn can_finish_empty_dispatch(thread: &crate::ThreadItem) -> bool {
 }
 
 impl StateStore {
+    /// Saves the current overlap holds with the issues whose hold has ended (#525). Both
+    /// go in one write, so a restart never sees an ended hold without its release.
     pub fn save_issue_overlaps(
         &mut self,
         project: u32,
         overlaps: BTreeMap<u32, IssueOverlap>,
+        released: BTreeMap<u32, ThreadIssue>,
     ) -> Result<(), ThreadError> {
         let item = self
             .project(project)
             .ok_or(ThreadError::UnknownProject(project))?;
-        if item.continuous_dispatch.issue_overlaps == overlaps {
+        if item.continuous_dispatch.issue_overlaps == overlaps
+            && item.continuous_dispatch.overlap_released == released
+        {
             return Ok(());
         }
         let mut next = self.state.clone();
@@ -229,6 +296,7 @@ impl StateStore {
             .find(|item| item.id == project)
             .ok_or(ThreadError::UnknownProject(project))?;
         item.continuous_dispatch.issue_overlaps = overlaps;
+        item.continuous_dispatch.overlap_released = released;
         self.commit(next)?;
         Ok(())
     }
@@ -709,6 +777,46 @@ mod tests {
         let reloaded = StateStore::load_or_default(&directory)?;
         let project = reloaded.project(1).ok_or("missing project")?;
         assert!(project.continuous_dispatch.landed_holds.is_empty());
+        std::fs::remove_dir_all(directory)?;
+        Ok(())
+    }
+
+    // Risk (#525): a restart that forgets an ended overlap hold lets dispatch hold the
+    // same issue again behind the next running issue, so it never starts. The hold's
+    // overlapping files and the release must persist together.
+    #[test]
+    fn overlap_release_survives_save_and_load() -> Result<(), Box<dyn std::error::Error>> {
+        let (directory, mut store) = legacy_store()?;
+        let held = ThreadIssue::new("Owner/Repo".into(), 126);
+        let returned = ThreadIssue::new("Owner/Repo".into(), 133);
+        let wait = IssueOverlap::new(held.clone(), 109, Some(7), vec!["web/explore.tsx".into()]);
+        store.save_issue_overlaps(
+            1,
+            BTreeMap::from([(126, wait.clone())]),
+            BTreeMap::from([(133, returned.clone())]),
+        )?;
+        drop(store);
+        let mut loaded = StateStore::load_or_default(&directory)?;
+        let project = loaded.project(1).ok_or("missing project")?;
+        let lookup = ThreadIssue::new("owner/repo".into(), 126);
+        assert_eq!(project.overlap_hold(&lookup), Some(&wait));
+        assert_eq!(
+            project.continuous_dispatch.overlap_released,
+            BTreeMap::from([(133, returned.clone())])
+        );
+        loaded.save_issue_overlaps(
+            1,
+            BTreeMap::new(),
+            BTreeMap::from([(126, held.clone()), (133, returned.clone())]),
+        )?;
+        drop(loaded);
+        let reloaded = StateStore::load_or_default(&directory)?;
+        let project = reloaded.project(1).ok_or("missing project")?;
+        assert!(project.overlap_hold(&lookup).is_none());
+        assert_eq!(
+            project.continuous_dispatch.overlap_released,
+            BTreeMap::from([(126, held), (133, returned)])
+        );
         std::fs::remove_dir_all(directory)?;
         Ok(())
     }

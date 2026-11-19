@@ -31,6 +31,7 @@
   const row = $derived(issue.row);
   const question = $derived(row?.question);
   const owner = $derived(row?.thread_identifier ?? null);
+  const hold = $derived(row?.hold ?? null);
   const canDispatch = $derived(row && !issue.item && owner === null);
   let details = $state<IssueDiscussion>();
   const summary = $derived(details?.summary || row?.summary);
@@ -120,6 +121,9 @@
       {#if row?.blocked_by}<span class="issue-blocker"
           >Blocked by {row.blocked_by}</span
         >{/if}
+      {#if hold}<span class="issue-blocker" title={hold.reason}
+          >{hold.label}</span
+        >{/if}
       {#if row?.unblocks}<span
           class="issue-unblocks"
           title={`${row.unblocks} open ${row.unblocks === 1 ? 'issue waits' : 'issues wait'} on this one. Continuous dispatch starts the issue that unblocks the most work first.`}
@@ -140,6 +144,14 @@
       title={blocked ?? 'Dispatch an agent on this issue'}
       onclick={dispatch}><Icon name="play" />Dispatch</button
     >
+  {/if}
+  {#if hold}
+    <div class="issue-hold">
+      <span>{hold.reason}</span>
+      {#each hold.paths as path (path)}
+        <span class="issue-hold-path">{path}</span>
+      {/each}
+    </div>
   {/if}
   <div class="issue-links">
     <WorkItemDetails

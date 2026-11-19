@@ -1,11 +1,14 @@
-//! Keep overlapping issues out of continuous dispatch while an earlier issue is worked.
+//! Keep an issue out of continuous dispatch while another issue's open Rosen change edits
+//! files it names. An issue is held this way once: when the hold ends it is dispatched.
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
+use std::sync::Mutex;
+use std::time::{Duration, Instant};
 
 use tauri::{AppHandle, Manager};
 use velocity_airc::Claim;
 use velocity_github::{GitHubIssue, IssueClient, IssueState, velocity_reports::IssueProblem};
-use velocity_rosen::{ProjectServer, review_swarm};
+use velocity_rosen::{ProjectServer, change_details, review_swarm};
 use velocity_store::{
     ProjectItem, ThreadItem, ThreadState, continuous_dispatch::IssueOverlap, issues::ThreadIssue,
 };
@@ -32,6 +35,7 @@ pub(super) fn refresh(
         .cloned()
         .ok_or("The project was removed")?;
     let mut waits = project.continuous_dispatch.issue_overlaps.clone();
+    let mut released = project.continuous_dispatch.overlap_released.clone();
     if project.continuous_dispatch.slots == 0 && waits.is_empty() {
         return Ok(());
     }
@@ -46,9 +50,14 @@ pub(super) fn refresh(
         .path()
         .app_data_dir()
         .map_err(|error| error.to_string())?;
-    OverlapContext::new(client, &project, &data).recheck(issues, working, &mut waits)?;
+    OverlapContext::new(client, &project, &data).recheck(
+        issues,
+        working,
+        &mut waits,
+        &mut released,
+    )?;
     lock(state.inner(), "persisted state")?
-        .save_issue_overlaps(identifier, waits.clone())
+        .save_issue_overlaps(identifier, waits.clone(), released.clone())
         .map_err(|error| error.to_string())?;
     let reviewed = publish_reviews(application, identifier, client, &mut waits)?;
     if !reviewed.is_empty() {
@@ -57,30 +66,47 @@ pub(super) fn refresh(
             .backlog
             .issues
             .retain(|issue| !reviewed.contains(&issue.number));
+        // The review ends the issue's one hold: whatever it returns is dispatched (#525).
+        released.extend(
+            reviewed
+                .iter()
+                .map(|&number| (number, ThreadIssue::new(repository.into(), number))),
+        );
         lock(state.inner(), "persisted state")?
-            .save_issue_overlaps(identifier, waits)
+            .save_issue_overlaps(identifier, waits, released)
             .map_err(|error| error.to_string())?;
     }
     Ok(())
 }
 
-struct ActiveIssue {
-    thread: Option<u32>,
-    problem: IssueProblem,
+/// An issue being worked whose open Rosen change has edited code.
+struct Blocker {
+    thread: u32,
+    /// The code files the change has edited against its parent, as Rosen reports them.
+    edited: BTreeSet<String>,
 }
 
-struct WorkingIssue<'a> {
-    issue: &'a GitHubIssue,
+struct WorkingIssue {
     thread: Option<u32>,
-    files: BTreeSet<String>,
+    /// The thread's open Rosen change, once it has one.
+    change: Option<String>,
 }
 
-fn active_issues<'a>(
+/// How long one read of an open change's edited files is reused. Dispatch rechecks
+/// overlaps every second, and a hold that starts this much later costs at most a merge.
+const EDITED_FILES_REFRESH: Duration = Duration::from_secs(30);
+
+/// Edited code files by project and open change, with the time they were read.
+type EditedFiles = BTreeMap<(u32, String), (Instant, BTreeSet<String>)>;
+
+static EDITED_FILES: Mutex<EditedFiles> = Mutex::new(BTreeMap::new());
+
+fn active_issues(
     project: &ProjectItem,
     repository: &str,
-    issues: &'a [GitHubIssue],
+    issues: &[GitHubIssue],
     claims: &[Claim],
-) -> BTreeMap<u32, WorkingIssue<'a>> {
+) -> BTreeMap<u32, WorkingIssue> {
     issues
         .iter()
         .filter(|issue| issue.state == IssueState::Open)
@@ -98,21 +124,16 @@ fn active_issues<'a>(
                     && matches!(thread.state, ThreadState::Working | ThreadState::Review)
             });
             let piece = format!("issue:{}", issue.number);
-            let claim = claims.iter().find(|claim| claim.piece == piece);
-            if thread.is_none() && claim.is_none() {
+            // A claim alone marks the issue as taken. Its claimed paths are intent, not
+            // edits, so they hold nothing (#525).
+            if thread.is_none() && !claims.iter().any(|claim| claim.piece == piece) {
                 return None;
             }
-            let files = claim
-                .into_iter()
-                .flat_map(|claim| &claim.files)
-                .map(|path| path.replace('\\', "/"))
-                .collect();
             Some((
                 issue.number,
                 WorkingIssue {
-                    issue,
                     thread: thread.map(|thread| thread.id),
-                    files,
+                    change: thread.and_then(|thread| thread.rosen_change.clone()),
                 },
             ))
         })
@@ -174,70 +195,101 @@ impl<'a> OverlapContext<'a> {
     fn recheck(
         &mut self,
         issues: &[GitHubIssue],
-        working: BTreeMap<u32, WorkingIssue<'_>>,
+        working: BTreeMap<u32, WorkingIssue>,
         waits: &mut BTreeMap<u32, IssueOverlap>,
+        released: &mut BTreeMap<u32, ThreadIssue>,
     ) -> Result<(), String> {
-        let candidates: Vec<_> = issues
-            .iter()
-            .filter(|issue| working.contains_key(&issue.number) || actionable(issue))
-            .collect();
-        let descriptions: Vec<_> = candidates.iter().map(|issue| issue_text(issue)).collect();
-        let mut paths: BTreeMap<_, _> = candidates
-            .into_iter()
-            .map(|issue| issue.number)
-            .zip(
-                issue_paths(self.data, self.project, &descriptions)
-                    .into_iter()
-                    .map(code_paths),
-            )
-            .collect();
-        let active: BTreeMap<_, _> = working
-            .into_iter()
-            .map(|(number, working)| {
-                let mut problem = problem(working.issue, paths.remove(&number).unwrap_or_default());
-                problem.paths.extend(code_paths(working.files));
-                (
-                    number,
-                    ActiveIssue {
-                        thread: working.thread,
-                        problem,
-                    },
-                )
-            })
-            .collect();
-        waits.retain(|number, wait| {
-            wait.issue
-                .repository
-                .eq_ignore_ascii_case(self.client.repository())
-                && issues.iter().any(|issue| issue.number == *number)
-        });
         let client = self.client;
+        let repository = client.repository();
+        let open = |issue: &ThreadIssue| {
+            issue.repository.eq_ignore_ascii_case(repository)
+                && issues.iter().any(|open| open.number == issue.number)
+        };
+        waits.retain(|_, wait| open(&wait.issue));
+        released.retain(|_, issue| open(issue));
+        let blockers = self.blockers(&working)?;
+        let mut holdable = Vec::new();
         for issue in issues {
             // A landed issue waits for its integration build, not for another issue, and
             // reviewing it against someone else's land only parks finished work (#505).
-            let repository = client.repository();
-            if active.contains_key(&issue.number)
+            if working.contains_key(&issue.number)
                 || has_landed(self.project, repository, issue.number)
             {
-                waits.remove(&issue.number);
-            } else {
-                self.update(
-                    issue,
-                    paths.remove(&issue.number).unwrap_or_default(),
-                    &active,
-                    waits,
-                )?;
+                end_hold(issue.number, waits, released);
+            } else if waits.contains_key(&issue.number)
+                || (!blockers.is_empty()
+                    && actionable(issue)
+                    && !released.contains_key(&issue.number))
+            {
+                holdable.push(issue);
             }
         }
+        // Only an issue that can be held needs the files its text names.
+        let named = if blockers.is_empty() {
+            vec![BTreeSet::new(); holdable.len()]
+        } else {
+            let descriptions: Vec<_> = holdable.iter().map(|issue| issue_text(issue)).collect();
+            issue_paths(self.data, self.project, &descriptions)
+        };
+        for (issue, paths) in holdable.into_iter().zip(named) {
+            self.update(issue, code_paths(paths), &blockers, waits, released)?;
+        }
         Ok(())
+    }
+
+    /// The working issues that can hold another: each has an open Rosen change that has
+    /// edited code. Predicted paths and claimed paths never hold an issue (#525).
+    fn blockers(
+        &self,
+        working: &BTreeMap<u32, WorkingIssue>,
+    ) -> Result<BTreeMap<u32, Blocker>, String> {
+        let project = self.project.id;
+        let mut read = lock(&EDITED_FILES, "the edited files of open changes")?;
+        read.retain(|(owner, change), _| {
+            *owner != project
+                || working
+                    .values()
+                    .any(|issue| issue.change.as_ref() == Some(change))
+        });
+        let mut blockers = BTreeMap::new();
+        for (&number, issue) in working {
+            let (Some(thread), Some(change)) = (issue.thread, &issue.change) else {
+                continue;
+            };
+            let key = (project, change.clone());
+            let (current, last) = match read.get(&key) {
+                Some((at, edited)) if at.elapsed() < EDITED_FILES_REFRESH => {
+                    (Some(edited.clone()), None)
+                }
+                known => (None, known.map(|(_, edited)| edited.clone())),
+            };
+            let edited = current.unwrap_or_else(|| {
+                // A failed read keeps the last files read. A change never read holds
+                // nothing: Rosen merges and reports conflicts, so a missed hold costs
+                // less than a stalled dispatch.
+                let edited = tauri::async_runtime::block_on(change_details::changed_paths(
+                    &self.server,
+                    change,
+                ))
+                .map(|paths| code_paths(paths.into_iter().collect()))
+                .unwrap_or_else(|_| last.unwrap_or_default());
+                read.insert(key, (Instant::now(), edited.clone()));
+                edited
+            });
+            if !edited.is_empty() {
+                blockers.insert(number, Blocker { thread, edited });
+            }
+        }
+        Ok(blockers)
     }
 
     fn update(
         &mut self,
         issue: &GitHubIssue,
         paths: BTreeSet<String>,
-        active: &BTreeMap<u32, ActiveIssue>,
+        blockers: &BTreeMap<u32, Blocker>,
         waits: &mut BTreeMap<u32, IssueOverlap>,
+        released: &mut BTreeMap<u32, ThreadIssue>,
     ) -> Result<(), String> {
         if let Some(wait) = waits.get_mut(&issue.number) {
             if wait.review_commit.is_some() {
@@ -257,26 +309,63 @@ impl<'a> OverlapContext<'a> {
                 LandCheck::Waiting => {}
             }
         }
-        let blocker = actionable(issue)
-            .then(|| problem(issue, paths))
-            .and_then(|wanted| {
-                active
-                    .iter()
-                    .find(|(_, peer)| wanted.overlaps(&peer.problem))
-            });
-        if let Some((&blocker, peer)) = blocker {
-            waits.insert(
-                issue.number,
-                IssueOverlap {
-                    issue: ThreadIssue::new(self.client.repository().into(), issue.number),
-                    blocker,
-                    blocker_thread: peer.thread,
-                    review_commit: None,
-                },
-            );
-        } else {
-            waits.remove(&issue.number);
+        let number = issue.number;
+        let ready = actionable(issue);
+        if let Some(wait) = waits.get(&number) {
+            // One hold per issue (#525): it lasts only while the same blocker's open
+            // change still edits a file this issue names, and never moves to another.
+            let shared = blockers
+                .get(&wait.blocker)
+                .filter(|blocker| {
+                    ready && wait.blocker_thread.is_none_or(|id| id == blocker.thread)
+                })
+                .map(|blocker| shared_files(&paths, blocker))
+                .unwrap_or_default();
+            if shared.is_empty() {
+                end_hold(number, waits, released);
+            } else if let Some(wait) = waits.get_mut(&number) {
+                wait.paths = shared;
+            }
+            return Ok(());
         }
+        if ready && !released.contains_key(&number) {
+            self.hold(number, &paths, blockers, waits, released)?;
+        }
+        Ok(())
+    }
+
+    /// Holds `number` behind the first working issue whose open change has edited a file
+    /// the issue names. Without such a file the issue stays free for dispatch.
+    fn hold(
+        &self,
+        number: u32,
+        paths: &BTreeSet<String>,
+        blockers: &BTreeMap<u32, Blocker>,
+        waits: &mut BTreeMap<u32, IssueOverlap>,
+        released: &mut BTreeMap<u32, ThreadIssue>,
+    ) -> Result<(), String> {
+        let overlap = blockers
+            .iter()
+            .map(|(&blocker, peer)| (blocker, peer.thread, shared_files(paths, peer)))
+            .find(|(_, _, shared)| !shared.is_empty());
+        let Some((blocker, thread, shared)) = overlap else {
+            return Ok(());
+        };
+        let identity = ThreadIssue::new(self.client.repository().into(), number);
+        // GitHub's record outlives local state: an issue a review already returned from
+        // an overlapping land is dispatched, not held again.
+        if self
+            .client
+            .overlap_review_returned(number)
+            .map_err(|error| error.to_string())?
+        {
+            released.insert(number, identity);
+            return Ok(());
+        }
+        waits.insert(
+            number,
+            IssueOverlap::new(identity, blocker, Some(thread), shared),
+        );
         Ok(())
     }
 
@@ -343,10 +432,28 @@ fn problem(issue: &GitHubIssue, paths: BTreeSet<String>) -> IssueProblem {
     IssueProblem::new(&issue.title, &issue.body, paths)
 }
 
+/// The files `blocker`'s open change has edited that the waiting issue also names.
+fn shared_files(named: &BTreeSet<String>, blocker: &Blocker) -> Vec<String> {
+    named.intersection(&blocker.edited).cloned().collect()
+}
+
+/// Ends `number`'s overlap hold. An open issue is held on overlap once (#525): held
+/// again behind each next running issue, it never starts, and every cycle costs a review.
+fn end_hold(
+    number: u32,
+    waits: &mut BTreeMap<u32, IssueOverlap>,
+    released: &mut BTreeMap<u32, ThreadIssue>,
+) {
+    if let Some(wait) = waits.remove(&number) {
+        released.insert(number, wait.issue);
+    }
+}
+
 /// Code paths only. Specs, design references and other documents are cited by most
 /// issues, so sharing one says nothing about a conflict; Rosen's claims and the merge
 /// settle edits there. Counting them held every collapse.sh issue behind one thread and
-/// turned each of its lands into false overlap reviews (#505).
+/// turned each of its lands into false overlap reviews (#505). Operations scripts under
+/// `ops/` are shared the same way and hold nothing either (#525).
 fn code_paths(paths: BTreeSet<String>) -> BTreeSet<String> {
     paths
         .into_iter()
@@ -357,9 +464,11 @@ fn code_paths(paths: BTreeSet<String>) -> BTreeSet<String> {
 fn is_reference(path: &str) -> bool {
     let path = path.replace('\\', "/").to_ascii_lowercase();
     let in_folder = |folder: &str| path.starts_with(folder) || path.contains(&format!("/{folder}"));
+    // `ops/` counts at the repository root only: a nested `ops` folder is a code module.
     [".md", ".png", ".svg", ".jpg"]
         .iter()
         .any(|extension| path.ends_with(extension))
+        || path.starts_with("ops/")
         || ["spec/", "design/", "docs/"]
             .iter()
             .any(|folder| in_folder(folder))

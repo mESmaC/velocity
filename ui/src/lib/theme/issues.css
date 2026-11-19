@@ -58,6 +58,23 @@
   font-size: var(--fs-xs);
   color: var(--warn) !important;
 }
+/* Why continuous dispatch holds this issue, then the blocker's overlapping files (#525).
+   The lines sit under the title, in the item's text column. */
+.issue-hold {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: var(--sp-1);
+  padding: 0 var(--sp-4) var(--sp-2) calc(var(--sp-4) + 16px + var(--sp-4));
+  font-size: var(--fs-xs);
+  color: var(--muted);
+  overflow-wrap: anywhere;
+  user-select: text;
+}
+.issue-hold-path {
+  font-family: var(--mono);
+  color: var(--warn);
+}
 /* Why continuous dispatch takes this issue first (#510). */
 .issue-unblocks {
   margin: 0;

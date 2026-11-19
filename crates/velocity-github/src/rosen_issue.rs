@@ -504,6 +504,19 @@ impl IssueClient {
         Ok(awaiting_integration(&self.issue_comment_bodies(number)?))
     }
 
+    /// Whether a review already checked this issue against an overlapping land and
+    /// returned it to dispatch with work remaining (#525). The GitHub record survives
+    /// local state, so such an issue is never held on overlap a second time.
+    pub fn overlap_review_returned(&self, number: u32) -> Result<bool, GitHubCommandError> {
+        Ok(self.issue_comment_bodies(number)?.iter().any(|body| {
+            body.lines()
+                .last()
+                .and_then(|line| line.trim().strip_prefix("<!-- velocity-no-change-review:"))
+                .and_then(|marker| marker.strip_suffix(" -->"))
+                .is_some_and(|marker| marker.starts_with("overlap:") && marker.ends_with(":false"))
+        }))
+    }
+
     fn has_rosen_comment(&self, number: u32, marker: &str) -> Result<bool, GitHubCommandError> {
         Ok(self
             .issue_comment_bodies(number)?

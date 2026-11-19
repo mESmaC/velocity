@@ -28,13 +28,18 @@ The opening prompt fits in 4,000 characters and links to the full GitHub descrip
 Accept starts work scoped to recording the recommended one-line proposed answer in the spec through the ordinary Rosen lifecycle.
 The Work panel uses change and land vocabulary for Rosen projects.
 
-**Overlapping issues (#471).** Continuous dispatch holds an issue while another open issue is being worked if the reports describe the same problem or their code graph references overlap.
-The check includes the active issue's claimed paths and is repeated before starting each issue.
+**Overlapping issues (#471).** Continuous dispatch holds an issue while another open issue is being worked only when that issue's open Rosen change has edited a code file the waiting issue names (#525).
+Predicted paths, claimed paths, similar titles, documents, spec and design files and root `ops/` scripts never hold an issue, because Rosen merges and reports conflicts and a speculative hold costs more than a rare conflict.
+The check reads each open change's edited files from Rosen at most every 30 seconds and is repeated before starting each issue.
 After the blocking change lands, Velocity rechecks the current issue text against the source issue and the landed paths.
 A land that shares code with the issue or may have fixed it parks the issue under `no-change` as **Check against an overlapping land** for a bounded review (#506).
 When the blocker ends without a land, the waiting issue returns to ordinary dispatch.
 When the land changed none of the issue's predicted code paths and the reports describe different problems, Velocity posts the land's files on the issue as evidence and returns it to dispatch in the same pass without a review (#506).
 The overlap check and its **Check against an overlapping land** review apply only to issues with no landed change of their own (#504).
+An open issue is held on overlap once (#525).
+When its hold ends, through a review, a land without evidence or a blocker whose change no longer edits its files, dispatch starts the issue and never holds it on overlap again.
+An issue whose GitHub record shows an overlap review that returned it to dispatch is never held.
+A held issue's Work card shows the hold, its reason and the blocker's overlapping files.
 
 **Issue follow-through.** Velocity's Rosen follower supplies the land and verified-build evidence and posts the land update (F5, Issues carried by Rosen changes).
 Under the #441 decision, the review swarm closes the issue after confirming that the landed change meets the issue's acceptance criteria.

@@ -34,7 +34,7 @@ mod workflow_watch;
 pub use dependency_graph::DependencyGraph;
 pub use gh_command::GitHubCommandError;
 pub use issue_panel::{
-    IssueDiscussion, IssuePanelCache, IssuePanelRow, IssuePanelSnapshot, SpecQuestion,
+    IssueDiscussion, IssueHold, IssuePanelCache, IssuePanelRow, IssuePanelSnapshot, SpecQuestion,
 };
 pub use issue_types::*;
 pub use issues::IssueClient;

@@ -1994,6 +1994,16 @@ export type IssueDiscussion = {
 	comments: IssueAgentComment[],
 };
 
+/**
+ *  An overlap hold as the Work card shows it: the state, the reason, and the files the
+ *  blocker's open change has edited that the held issue also names.
+ */
+export type IssueHold = {
+	label: string,
+	reason: string,
+	paths: string[],
+};
+
 export type IssuePanelChanged = IssuePanelChanged_Serialize | IssuePanelChanged_Deserialize;
 
 export type IssuePanelChanged_Deserialize = {
@@ -2022,6 +2032,8 @@ export type IssuePanelRow_Deserialize = {
 	unblocks?: number,
 	thread_identifier?: number | null,
 	thread_label?: string | null,
+	/**  Why continuous dispatch holds this issue instead of starting it (#525). */
+	hold?: IssueHold | null,
 };
 
 export type IssuePanelRow_Serialize = {
@@ -2040,6 +2052,8 @@ export type IssuePanelRow_Serialize = {
 	unblocks: number,
 	thread_identifier: number | null,
 	thread_label: string | null,
+	/**  Why continuous dispatch holds this issue instead of starting it (#525). */
+	hold: IssueHold | null,
 };
 
 export type IssuePanelSnapshot = IssuePanelSnapshot_Serialize | IssuePanelSnapshot_Deserialize;

@@ -27,6 +27,10 @@ pub fn associate_issue_threads(
         {
             row.thread_label = Some("landed · waiting for integration".into());
         }
+        // The card says why dispatch has not started the issue and which files overlap (#525).
+        row.hold = project.overlap_hold(&assignment).map(|wait| {
+            velocity_github::IssueHold::new(wait.label(), wait.reason(), wait.paths.clone())
+        });
     }
 }
 

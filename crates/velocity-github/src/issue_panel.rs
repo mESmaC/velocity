@@ -67,6 +67,28 @@ pub struct IssuePanelRow {
     pub unblocks: u32,
     pub thread_identifier: Option<u32>,
     pub thread_label: Option<String>,
+    /// Why continuous dispatch holds this issue instead of starting it (#525).
+    #[serde(default)]
+    pub hold: Option<IssueHold>,
+}
+
+/// An overlap hold as the Work card shows it: the state, the reason, and the files the
+/// blocker's open change has edited that the held issue also names.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, Type)]
+pub struct IssueHold {
+    pub label: String,
+    pub reason: String,
+    pub paths: Vec<String>,
+}
+
+impl IssueHold {
+    pub fn new(label: String, reason: String, paths: Vec<String>) -> Self {
+        Self {
+            label,
+            reason,
+            paths,
+        }
+    }
 }
 
 impl IssuePanelRow {
@@ -96,6 +118,7 @@ impl IssuePanelRow {
             unblocks: 0,
             thread_identifier: None,
             thread_label: None,
+            hold: None,
         }
     }
 }
