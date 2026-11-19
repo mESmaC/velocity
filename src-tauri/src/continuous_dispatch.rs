@@ -9,13 +9,13 @@ use std::path::Path;
 use std::sync::Mutex;
 use std::time::{Duration, Instant};
 use tauri::{AppHandle, Manager};
-use velocity_github::{GitHubIssue, IssueClient};
+use velocity_github::{DependencyGraph, GitHubIssue, IssueClient};
 use velocity_store::continuous_dispatch::has_capacity as project_has_capacity;
 use velocity_store::continuous_dispatch::{busy_count, can_finish_empty_dispatch};
 use velocity_store::issues::ThreadIssue;
 use velocity_store::{ProjectItem, TaskAttribution, VersionControl};
 use velocity_threads::continuous_dispatch::{
-    DispatchView, DispatchWork, dispatchable_task, integration_notice, ordered_issues,
+    DispatchView, DispatchWork, dispatchable_issue, dispatchable_task, integration_notice,
     ordered_work, plan_task, stalled_landed_issues,
 };
 
@@ -27,6 +27,25 @@ struct Backlog {
 }
 
 type Backlogs = Mutex<BTreeMap<u32, Backlog>>;
+
+/// Which open issues wait on which across every project's repository (#510).
+type Dependencies = Mutex<DependencyGraph>;
+
+/// Issues in a project dispatch does not read can still wait on a ready issue. Their
+/// dependencies change rarely, so these projects are read far less often than a backlog.
+const DEPENDENCY_REFRESH: Duration = Duration::from_secs(10 * 60);
+
+/// How many open issues each of `repository`'s issues unblocks, for the dispatch order and
+/// the Work pool card. Empty until the first issue read.
+pub(crate) fn unblock_counts(
+    application: &AppHandle,
+    repository: &str,
+) -> Result<BTreeMap<u32, u32>, String> {
+    let Some(dependencies) = application.try_state::<Dependencies>() else {
+        return Ok(BTreeMap::new());
+    };
+    Ok(lock(dependencies.inner(), "issue dependencies")?.unblock_counts(repository))
+}
 
 #[tauri::command]
 #[specta::specta]
@@ -66,6 +85,7 @@ fn view(application: &AppHandle, identifier: u32) -> Result<DispatchView, String
         .is_some_and(|backlog| backlog.error.is_none());
     let backlog = backlog.unwrap_or_default();
     let mut claimed = claimed_pieces(application, identifier)?;
+    let unblocks = unblock_counts(application, &backlog.repository)?;
     let store = lock(
         application.state::<ManagedStateStore>().inner(),
         "persisted state",
@@ -78,6 +98,7 @@ fn view(application: &AppHandle, identifier: u32) -> Result<DispatchView, String
         &backlog.issues,
         &claimed,
         issues_known,
+        &unblocks,
     );
     let mut view = DispatchView::new(project, &work, backlog.error);
     let stalled = stalled_landed_issues(
@@ -133,12 +154,15 @@ pub(crate) fn integration_idle(application: &AppHandle, identifier: u32) -> Resu
             &backlog.issues,
             &claimed,
             true,
+            // Only emptiness matters here, not the order.
+            &BTreeMap::new(),
         )
         .is_empty())
 }
 
 pub fn initialize(application: &AppHandle) {
     application.manage(Backlogs::default());
+    application.manage(Dependencies::default());
     let application = application.clone();
     std::thread::spawn(move || monitor(application));
 }
@@ -155,18 +179,19 @@ struct Reader {
 fn monitor(application: AppHandle) {
     let mut readers = BTreeMap::new();
     let mut failed = BTreeMap::<u32, Instant>::new();
+    let mut dependency_reads = BTreeMap::<u32, Instant>::new();
     loop {
         if !crate::rosen::paused(&application) {
             match projects(&application) {
                 Ok(projects) => {
-                    for project in projects {
+                    for project in &projects {
                         if failed
                             .get(&project.id)
                             .is_some_and(|time| time.elapsed() < Duration::from_secs(30))
                         {
                             continue;
                         }
-                        let result = pass(&application, &project, &mut readers);
+                        let result = pass(&application, project, &mut readers);
                         if let Err(error) = result {
                             failed.insert(project.id, Instant::now());
                             report(save_error(&application, project.id, error));
@@ -174,12 +199,76 @@ fn monitor(application: AppHandle) {
                             failed.remove(&project.id);
                         }
                     }
+                    report(read_other_dependencies(
+                        &application,
+                        &projects,
+                        &mut readers,
+                        &mut dependency_reads,
+                    ));
                 }
                 Err(error) => report::<()>(Err(error)),
             }
         }
         std::thread::sleep(Duration::from_secs(1));
     }
+}
+
+/// Reads the dependencies of one project that dispatch passes over, when one is due (#510).
+/// One per tick, so a long project list never holds up the next dispatch pass.
+fn read_other_dependencies(
+    application: &AppHandle,
+    dispatched: &[ProjectItem],
+    readers: &mut BTreeMap<u32, Reader>,
+    read: &mut BTreeMap<u32, Instant>,
+) -> Result<(), String> {
+    let (existing, due) = {
+        let store = lock(
+            application.state::<ManagedStateStore>().inner(),
+            "persisted state",
+        )?;
+        let projects = &store.state().projects;
+        let existing: HashSet<u32> = projects.iter().map(|project| project.id).collect();
+        let due = projects
+            .iter()
+            .filter(|project| !dispatched.iter().any(|other| other.id == project.id))
+            .find(|project| {
+                read.get(&project.id)
+                    .is_none_or(|time| time.elapsed() >= DEPENDENCY_REFRESH)
+            })
+            .cloned();
+        (existing, due)
+    };
+    lock(
+        application.state::<Dependencies>().inner(),
+        "issue dependencies",
+    )?
+    .retain_sources(|project| existing.contains(&project));
+    // A project that leaves dispatch is due at once: its backlog is no longer refreshed.
+    read.retain(|project, _| {
+        existing.contains(project) && !dispatched.iter().any(|other| other.id == *project)
+    });
+    let Some(project) = due else {
+        return Ok(());
+    };
+    read.insert(project.id, Instant::now());
+    // A project that cannot be read now keeps its last dependencies until the next attempt.
+    if let Ok(backlog) = read_issues(reader(&project, readers)) {
+        record_dependencies(application, project.id, &backlog)?;
+    }
+    Ok(())
+}
+
+fn record_dependencies(
+    application: &AppHandle,
+    project: u32,
+    backlog: &Backlog,
+) -> Result<(), String> {
+    lock(
+        application.state::<Dependencies>().inner(),
+        "issue dependencies",
+    )?
+    .replace_source(project, &backlog.repository, &backlog.issues);
+    Ok(())
 }
 
 fn projects(application: &AppHandle) -> Result<Vec<ProjectItem>, String> {
@@ -242,6 +331,7 @@ fn start_ready(
     let defaults = Backlog::default();
     let backlog = reader.as_ref().map_or(&defaults, |reader| &reader.backlog);
     let mut claimed = claimed_pieces(application, identifier)?;
+    let unblocks = unblock_counts(application, &backlog.repository)?;
     let work = {
         let store = lock(
             application.state::<ManagedStateStore>().inner(),
@@ -255,6 +345,7 @@ fn start_ready(
             &backlog.issues,
             &claimed,
             reader.is_some() && backlog.error.is_none(),
+            &unblocks,
         )
     };
     for item in work {
@@ -263,7 +354,7 @@ fn start_ready(
         }
         match item {
             DispatchWork::Task(task) => start_task(application, identifier, task.id)?,
-            DispatchWork::Issue(issue) => {
+            DispatchWork::Issue(issue, _) => {
                 let reader = reader
                     .as_deref_mut()
                     .ok_or("The dispatch issue source was removed")?;
@@ -381,6 +472,8 @@ fn refresh_backlog(
         match read_issues(reader) {
             Ok(backlog) => {
                 reader.backlog = backlog;
+                // A failed read keeps the last dependencies, so the order holds through it.
+                record_dependencies(application, project, &reader.backlog)?;
                 prune_landed_holds(application, project, &reader.backlog)?;
             }
             Err(error) => {
@@ -489,7 +582,7 @@ fn start_issue(
         if !project_has_capacity(project) || has_user_task(project, &claimed) {
             return Ok(());
         }
-        if ordered_issues(project, repository, std::slice::from_ref(issue), &claimed).is_empty() {
+        if !dispatchable_issue(project, repository, issue, &claimed) {
             return Ok(());
         }
         if project

@@ -120,6 +120,11 @@
       {#if row?.blocked_by}<span class="issue-blocker"
           >Blocked by {row.blocked_by}</span
         >{/if}
+      {#if row?.unblocks}<span
+          class="issue-unblocks"
+          title={`${row.unblocks} open ${row.unblocks === 1 ? 'issue waits' : 'issues wait'} on this one. Continuous dispatch starts the issue that unblocks the most work first.`}
+          >Unblocks {row.unblocks}</span
+        >{/if}
       {#if row?.labels.length}<span>{row.labels.join(' · ')}</span>{/if}
       {#if row?.scout}
         <span class="issue-scout"><Icon name="scout" />{row.scout}</span>

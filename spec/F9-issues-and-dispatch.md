@@ -16,6 +16,8 @@ Expanded issue rows load and refresh their latest agent comments independently o
 A slow or failed comment fetch leaves work and dispatch available, and the row can retry its discussion.
 
 **Issue dependencies (#472).** Issue rows show `Blocked by #n` for open GitHub blockers.
+A Work row shows `Unblocks n` when n open issues wait on it, directly or through other open issues, in any project's repository (#510).
+Continuous dispatch starts the highest count first (F8), **Next work** lists it as `unblocks n`, and the owner overrides the order by dispatching a row by hand.
 When a decision sets an order between issues, record it as a GitHub issue dependency.
 The review swarm can record dependencies between project issues with `scout_add_blocker { issue, blocker }`.
 

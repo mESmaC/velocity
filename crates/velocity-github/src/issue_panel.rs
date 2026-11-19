@@ -61,6 +61,10 @@ pub struct IssuePanelRow {
     #[serde(default)]
     pub summary: String,
     pub blocked_by: Option<String>,
+    /// Open issues that wait on this one, directly or through others (#510).
+    /// Continuous dispatch starts the highest count first.
+    #[serde(default)]
+    pub unblocks: u32,
     pub thread_identifier: Option<u32>,
     pub thread_label: Option<String>,
 }
@@ -89,6 +93,7 @@ impl IssuePanelRow {
             question,
             summary: body_summary(&issue.body),
             blocked_by,
+            unblocks: 0,
             thread_identifier: None,
             thread_label: None,
         }

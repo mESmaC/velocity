@@ -285,6 +285,7 @@ impl IssueClient {
             .flatten()
             .filter(|blocker| blocker.state == IssueState::Open)
             .map(|blocker| {
+                // `DependencyGraph` reads this form back.
                 let repository = blocker.repository.name_with_owner;
                 if repository.eq_ignore_ascii_case(self.repository()) {
                     format!("#{}", blocker.number)

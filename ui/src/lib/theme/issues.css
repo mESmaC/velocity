@@ -58,6 +58,12 @@
   font-size: var(--fs-xs);
   color: var(--warn) !important;
 }
+/* Why continuous dispatch takes this issue first (#510). */
+.issue-unblocks {
+  margin: 0;
+  font-size: var(--fs-xs);
+  color: var(--info) !important;
+}
 .issue-row.expanded {
   border-radius: var(--r-md);
   background: var(--card);

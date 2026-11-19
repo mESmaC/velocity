@@ -1,7 +1,7 @@
 //! Continuous work selection and the Duty projection (F8). No UI owns scheduling state.
 use serde::{Deserialize, Serialize};
 use specta::Type;
-use std::collections::HashSet;
+use std::collections::{BTreeMap, HashSet};
 use velocity_github::{GitHubIssue, IssueClient, IssueState};
 use velocity_store::continuous_dispatch::{available_task, busy_count};
 use velocity_store::issues::{ThreadIssue, issue_thread};
@@ -28,31 +28,38 @@ pub struct DispatchPreview {
     pub key: String,
     pub label: String,
     pub title: String,
+    /// Open issues that wait on this one; the reason it comes first (#510).
+    #[serde(default)]
+    pub unblocks: u32,
 }
 
 pub enum DispatchWork {
     Task(TaskItem),
-    Issue(Box<GitHubIssue>),
+    /// An issue and how many open issues wait on it (#510).
+    Issue(Box<GitHubIssue>, u32),
 }
 
 impl DispatchWork {
     fn preview(&self) -> DispatchPreview {
-        let (key, label, title) = match self {
+        let (key, label, title, unblocks) = match self {
             Self::Task(task) => (
                 format!("task:{}", task.id),
                 format!("Task #{}", task.id),
                 &task.text,
+                0,
             ),
-            Self::Issue(issue) => (
+            Self::Issue(issue, unblocks) => (
                 format!("issue:{}", issue.number),
                 format!("#{}", issue.number),
                 &issue.title,
+                *unblocks,
             ),
         };
         DispatchPreview {
             key,
             label,
             title: title.clone(),
+            unblocks,
         }
     }
 }
@@ -165,47 +172,58 @@ fn needs_owner_decision(text: &str) -> bool {
     .any(|phrase| text.contains(phrase))
 }
 
+/// Whether continuous dispatch may start an agent on this issue now.
+pub fn dispatchable_issue(
+    project: &ProjectItem,
+    repository: &str,
+    issue: &GitHubIssue,
+    claimed: &HashSet<String>,
+) -> bool {
+    let identity = ThreadIssue::new(repository.into(), issue.number);
+    actionable(issue)
+        && !claimed.contains(&format!("issue:{}", issue.number))
+        && issue_thread(project, &identity).is_none()
+        && !project.rosen_issue_completed(&identity)
+        // A landed issue waits for its integration build to close it (#504).
+        && project
+            .landed_awaiting_integration(&identity, Some(&issue.updated_at))
+            .is_none()
+        && !project
+            .continuous_dispatch
+            .attempted(repository, issue.number, &issue.updated_at)
+        && !project
+            .continuous_dispatch
+            .reporting_no_change(repository, issue.number)
+}
+
+/// Ready issues with the number of open issues each unblocks, critical path first (#510):
+/// the issue the most open work waits on, then milestone (none last), then age.
+/// `unblocks` comes from `DependencyGraph::unblock_counts`; a missing issue unblocks nothing.
 pub fn ordered_issues(
     project: &ProjectItem,
     repository: &str,
     issues: &[GitHubIssue],
     claimed: &HashSet<String>,
-) -> Vec<GitHubIssue> {
+    unblocks: &BTreeMap<u32, u32>,
+) -> Vec<(GitHubIssue, u32)> {
     let mut ready: Vec<_> = issues
         .iter()
-        .filter(|issue| {
-            let identity = ThreadIssue::new(repository.into(), issue.number);
-            actionable(issue)
-                && !claimed.contains(&format!("issue:{}", issue.number))
-                && issue_thread(project, &identity).is_none()
-                && !project.rosen_issue_completed(&identity)
-                // A landed issue waits for its integration build to close it (#504).
-                && project
-                    .landed_awaiting_integration(&identity, Some(&issue.updated_at))
-                    .is_none()
-                && !project.continuous_dispatch.attempted(
-                    repository,
-                    issue.number,
-                    &issue.updated_at,
-                )
-                && !project
-                    .continuous_dispatch
-                    .reporting_no_change(repository, issue.number)
+        .filter(|issue| dispatchable_issue(project, repository, issue, claimed))
+        .map(|issue| {
+            let unblocked = unblocks.get(&issue.number).copied().unwrap_or(0);
+            (issue.clone(), unblocked)
         })
-        .cloned()
         .collect();
-    ready.sort_by(|left, right| {
-        left.milestone
+    let milestone = |issue: &GitHubIssue| {
+        issue
+            .milestone
             .as_ref()
-            .map(|milestone| milestone.number)
-            .unwrap_or(u32::MAX)
-            .cmp(
-                &right
-                    .milestone
-                    .as_ref()
-                    .map(|milestone| milestone.number)
-                    .unwrap_or(u32::MAX),
-            )
+            .map_or(u32::MAX, |milestone| milestone.number)
+    };
+    ready.sort_by(|(left, left_unblocks), (right, right_unblocks)| {
+        right_unblocks
+            .cmp(left_unblocks)
+            .then_with(|| milestone(left).cmp(&milestone(right)))
             .then_with(|| left.created_at.cmp(&right.created_at))
             .then_with(|| left.number.cmp(&right.number))
     });
@@ -229,6 +247,7 @@ pub fn ordered_work(
     issues: &[GitHubIssue],
     claimed: &HashSet<String>,
     issues_known: bool,
+    unblocks: &BTreeMap<u32, u32>,
 ) -> Vec<DispatchWork> {
     if !project.spec_locked || project.version_control != VersionControl::Rosen {
         return Vec::new();
@@ -243,9 +262,9 @@ pub fn ordered_work(
     let mut work: Vec<_> = user.into_iter().cloned().map(DispatchWork::Task).collect();
     if issues_known {
         work.extend(
-            ordered_issues(project, repository, issues, claimed)
+            ordered_issues(project, repository, issues, claimed, unblocks)
                 .into_iter()
-                .map(|issue| DispatchWork::Issue(Box::new(issue))),
+                .map(|(issue, unblocked)| DispatchWork::Issue(Box::new(issue), unblocked)),
         );
         work.extend(other.into_iter().cloned().map(DispatchWork::Task));
     }

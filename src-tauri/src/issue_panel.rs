@@ -508,6 +508,11 @@ fn update_links(application: &AppHandle) -> Result<(), String> {
     };
     if let Some(repository) = panel.repository.clone() {
         velocity_threads::dispatch::associate_issue_threads(project, &repository, &mut panel.rows);
+        // The card shows why dispatch takes an issue first (#510).
+        let unblocks = crate::continuous_dispatch::unblock_counts(application, &repository)?;
+        for row in &mut panel.rows {
+            row.unblocks = unblocks.get(&row.number).copied().unwrap_or(0);
+        }
     }
     panel.revision = panel.revision.wrapping_add(1);
     let layout = application.state::<MainLayout>();

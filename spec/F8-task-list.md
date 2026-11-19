@@ -41,7 +41,10 @@ Git projects keep the existing Task List and Issues panels and their PR lifecycl
 
 **Continuous dispatch (Rosen projects):** Each project can save **Keep N agents busy** (off at 0) and a pause state.
 Velocity fills free slots with ordinary build threads on the default model, using the selected item's title and work prompt.
-The queue takes user-added tasks first, then issues by milestone number (no milestone last) and age, then agent-added and spec-generated tasks.
+The queue takes user-added tasks first, then issues, then agent-added and spec-generated tasks.
+Issues go critical path first: the issue with the most open issues transitively blocked by it through GitHub issue dependencies, then milestone number (no milestone last), then age (#510).
+The count joins the open issues of every project's repository, so an issue that another project's issues wait on counts them too.
+Projects that continuous dispatch does not read have their dependencies read every ten minutes.
 Within each task group, the oldest task number goes first.
 The work inventory excludes claimed items, owner-decision questions, release blockers and issues labelled `no-change`.
 Continuous dispatch also skips GitHub issues with an open GitHub blocker and makes them eligible on the first issue refresh after their last blocker closes (#472).

@@ -1026,10 +1026,22 @@ export type DispatchAttempt_Serialize = {
 	updated_at: string,
 };
 
-export type DispatchPreview = {
+export type DispatchPreview = DispatchPreview_Serialize | DispatchPreview_Deserialize;
+
+export type DispatchPreview_Deserialize = {
 	key: string,
 	label: string,
 	title: string,
+	/**  Open issues that wait on this one; the reason it comes first (#510). */
+	unblocks?: number,
+};
+
+export type DispatchPreview_Serialize = {
+	key: string,
+	label: string,
+	title: string,
+	/**  Open issues that wait on this one; the reason it comes first (#510). */
+	unblocks: number,
 };
 
 export type DispatchView = DispatchView_Serialize | DispatchView_Deserialize;
@@ -1040,7 +1052,7 @@ export type DispatchView_Deserialize = {
 	slots: number,
 	busy: number,
 	paused: boolean,
-	next: DispatchPreview[],
+	next: DispatchPreview_Deserialize[],
 	error?: string | null,
 	/**  Landed issues that have waited too long for a green integration build (#504). */
 	integration_notice?: string | null,
@@ -1052,7 +1064,7 @@ export type DispatchView_Serialize = {
 	slots: number,
 	busy: number,
 	paused: boolean,
-	next: DispatchPreview[],
+	next: DispatchPreview_Serialize[],
 	error: string | null,
 	/**  Landed issues that have waited too long for a green integration build (#504). */
 	integration_notice: string | null,
@@ -1995,6 +2007,11 @@ export type IssuePanelRow_Deserialize = {
 	/**  The body's opening paragraph, shown when the row is expanded (#209). */
 	summary?: string,
 	blocked_by?: string | null,
+	/**
+	 *  Open issues that wait on this one, directly or through others (#510).
+	 *  Continuous dispatch starts the highest count first.
+	 */
+	unblocks?: number,
 	thread_identifier?: number | null,
 	thread_label?: string | null,
 };
@@ -2008,6 +2025,11 @@ export type IssuePanelRow_Serialize = {
 	/**  The body's opening paragraph, shown when the row is expanded (#209). */
 	summary: string,
 	blocked_by: string | null,
+	/**
+	 *  Open issues that wait on this one, directly or through others (#510).
+	 *  Continuous dispatch starts the highest count first.
+	 */
+	unblocks: number,
 	thread_identifier: number | null,
 	thread_label: string | null,
 };

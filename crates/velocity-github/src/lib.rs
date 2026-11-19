@@ -4,6 +4,7 @@
 //! reports) and for listing and cloning repositories (F2); changes land through Rosen.
 
 mod command;
+mod dependency_graph;
 mod gh_command;
 mod issue_panel;
 mod issue_types;
@@ -24,6 +25,7 @@ mod scout_search;
 mod scout_server;
 pub mod velocity_reports;
 
+pub use dependency_graph::DependencyGraph;
 pub use gh_command::GitHubCommandError;
 pub use issue_panel::{
     IssueDiscussion, IssuePanelCache, IssuePanelRow, IssuePanelSnapshot, SpecQuestion,
