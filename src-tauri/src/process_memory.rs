@@ -145,11 +145,11 @@ pub fn start_helper_guard(argument: &str) {
         enforce(
             budget(role),
             |bytes| {
-                eprintln!(
+                crate::diagnostics::record_helper_memory(&format!(
                     "{role} PID {} exceeded its memory budget at {} MiB",
                     std::process::id(),
                     mib(bytes)
-                );
+                ));
                 std::process::exit(1);
             },
             || {},

@@ -6593,6 +6593,7 @@ version = "0.1.0"
 dependencies = [
  "agent-client-protocol",
  "anyhow",
+ "dirs",
  "serde",
  "serde_json",
  "specta",
