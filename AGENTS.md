@@ -62,7 +62,7 @@ Keep this list aligned with `rosen.toml`. Sensitive changes take priority in rev
 
 - `rosen.toml` configures checks, merge rules and the mirror.
 - `crates/velocity-store/` owns persisted state.
-- `crates/velocity-git/src/lifecycle.rs`, `crates/velocity-git/src/merged_worktree.rs` and `crates/velocity-git/src/review.rs` guard worktree deletion.
+- `crates/velocity-git/src/lifecycle.rs` and `crates/velocity-git/src/merged_worktree.rs` guard worktree deletion.
 - `crates/velocity-airc/src/claims.rs` implements the claim lock.
 - `.github/workflows/`, `scripts/check.ps1` and `scripts/check-ui.mjs` run checks.
 

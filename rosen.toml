@@ -60,7 +60,6 @@ sensitive = [
     "crates/velocity-store/",
     "crates/velocity-git/src/lifecycle.rs",
     "crates/velocity-git/src/merged_worktree.rs",
-    "crates/velocity-git/src/review.rs",
     "crates/velocity-airc/src/claims.rs",
 ]
 

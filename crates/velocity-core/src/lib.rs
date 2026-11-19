@@ -30,7 +30,6 @@ pub mod proof_card;
 pub mod proofs_settings;
 pub mod ready_pool;
 pub mod review_diff;
-pub mod review_tier;
 pub mod rosen_checker;
 pub mod rosen_mirror;
 pub mod scout_sweep;

@@ -40,8 +40,8 @@ that handles those.
 - **Pull requests followed to merge.** An agent opens its pull request, then
   watches it: it fixes CI, answers review comments, and its worktree is removed
   when the pull request merges.
-- **Duty agents.** PR duty reviews and merges pull requests. Scouts look for
-  bugs and file each one with the failing script that shows it.
+- **Review.** The review swarm checks landed Rosen changes against the spec.
+  Scouts look for bugs and file each one with the failing script that shows it.
 - **Four providers.** Anthropic (Claude Code), Codex, Antigravity and Kimi Code.
   Each signs in with its own OAuth login; Velocity never stores an API key.
   Settings → Providers installs a missing agent, and a usage panel shows how
@@ -92,8 +92,8 @@ You need:
    questions, then lock the spec.
 4. Start a thread from the composer, or launch a swarm on the Task List and the
    open issues.
-5. Start a PR duty agent from **On duty** in the sidebar, so pull requests are
-   reviewed and merged as they arrive.
+5. Start the review swarm from **Review** in the sidebar to review changes as
+   they land.
 
 ## How it is built
 

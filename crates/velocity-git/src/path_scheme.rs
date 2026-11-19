@@ -1,8 +1,8 @@
 //! Worktree path scheme and per-project leaf allocation (SPEC.md F5).
 //!
 //! Worktrees live under `<drive><folder>\<project>\<branch-without-vel/>` (or a
-//! per-project override root). Duty reviews use `review-pr-<n>`, scout sweeps use
-//! `<agent>-sweep`, and spec interviews work in the main checkout with no worktree.
+//! per-project override root). Scout sweeps use `<agent>-sweep`, and spec interviews
+//! work in the main checkout with no worktree.
 
 /// Jobs that may request a worktree when starting (F3, F5).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -11,18 +11,14 @@ pub enum JobKind<Slug, AgentId> {
     SpecInterview,
     /// Build thread, swarm member, goal swarm member, or dispatched issue (`vel/<slug>`).
     Branch(Slug),
-    /// PR duty review (`review-pr-<n>`).
-    DutyReview(u64),
     /// Scout sweep (`<agent>-sweep`).
     ScoutSweep(AgentId),
 }
 
-/// The project-unique worktree folder leaf (`<branch-without-vel/>`, `review-pr-<n>`,
-/// or `<agent>-sweep`).
+/// The project-unique worktree folder leaf (`<branch-without-vel/>` or `<agent>-sweep`).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum WorktreeLeaf<Slug, AgentId> {
     Branch(Slug),
-    DutyReview(u64),
     ScoutSweep(AgentId),
 }
 
@@ -57,7 +53,6 @@ pub fn leaf_for_job<Slug, AgentId>(
     match job {
         JobKind::SpecInterview => None,
         JobKind::Branch(slug) => Some(WorktreeLeaf::Branch(slug)),
-        JobKind::DutyReview(pr_number) => Some(WorktreeLeaf::DutyReview(pr_number)),
         JobKind::ScoutSweep(agent_id) => Some(WorktreeLeaf::ScoutSweep(agent_id)),
     }
 }
@@ -82,9 +77,6 @@ pub fn same_leaf_id(first: WorktreeLeaf<u64, u64>, second: WorktreeLeaf<u64, u64
     match (first, second) {
         (WorktreeLeaf::Branch(first_slug), WorktreeLeaf::Branch(second_slug)) => {
             first_slug == second_slug
-        }
-        (WorktreeLeaf::DutyReview(first_pr), WorktreeLeaf::DutyReview(second_pr)) => {
-            first_pr == second_pr
         }
         (WorktreeLeaf::ScoutSweep(first_agent), WorktreeLeaf::ScoutSweep(second_agent)) => {
             first_agent == second_agent

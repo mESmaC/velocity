@@ -202,7 +202,6 @@ pub fn format_leaf_folder(job: &JobKind<String, String>) -> Result<Option<String
     };
     let raw_leaf = match leaf {
         crate::path_scheme::WorktreeLeaf::Branch(slug) => strip_velocity_branch_prefix(&slug),
-        crate::path_scheme::WorktreeLeaf::DutyReview(pr_number) => format!("review-pr-{pr_number}"),
         crate::path_scheme::WorktreeLeaf::ScoutSweep(agent_id) => {
             let clean_agent = strip_velocity_branch_prefix(&agent_id);
             if clean_agent.is_empty() {

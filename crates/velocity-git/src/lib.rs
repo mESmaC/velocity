@@ -21,7 +21,6 @@ mod merged_worktree;
 pub mod path_scheme;
 mod ready_pool;
 mod repository;
-mod review;
 pub mod setup;
 mod short_checkout;
 mod sweep;
@@ -62,7 +61,6 @@ pub use repository::{
     GitError, commit_file, commit_files, current_branch, folder_is_occupied, initialize_repository,
     is_repository, main_checkout, opened_project_default_branch, publish_instructions,
 };
-pub use review::{ReviewCheckout, prepare_review_worktree, remove_review_worktree, review_tier};
 pub use setup::{
     SetupAction, SetupPhase, WorktreeSettings, can_start_agent, default_settings,
     plan_setup_actions, resolve_cargo_target_dir,

@@ -1,6 +1,6 @@
 # Retired stress scripts
 
-Removed by the Rosen snapshot `Retire PR duty and keep Rosen review after landing (#424)`.
+Removed by Rosen land `4a24ab9e4c8170587d41c27d8cd7a11ab222657a` (`Retire PR duty and keep Rosen review after landing (#424)`).
 
 | Script | Risk | Reason for retirement |
 | --- | --- | --- |
