@@ -431,7 +431,7 @@ impl ToolServer for ParkedReviewServer {
                 "name": "parked_review_resolve",
                 "description": "End the review. already_fixed closes the issue with your verification evidence. return_to_dispatch removes the no-change label and gives the next agent your instructions. needs_owner moves work that needs hardware, an upstream release or an owner decision to the needs-owner label with your reason. When the issue waits on other issues, use return_to_dispatch with blocked_by: they are linked as GitHub issue dependencies and dispatch starts the issue when they close. needs_owner is refused for a reason that only waits on other issues.",
                 "inputSchema": {"type": "object", "properties": {
-                    "outcome": {"enum": ["already_fixed", "return_to_dispatch", "needs_owner"]},
+                    "outcome": {"type": "string", "enum": ["already_fixed", "return_to_dispatch", "needs_owner"]},
                     "evidence": {"type": "string", "minLength": 1, "description": "Verification evidence, instructions for the next agent or the reason the owner is needed"},
                     "blocked_by": {"type": "array", "items": {"type": "string"}, "description": "Issues this one waits on, as #12 for this repository or owner/name#12 for another"}
                 }, "required": ["outcome", "evidence"], "additionalProperties": false}

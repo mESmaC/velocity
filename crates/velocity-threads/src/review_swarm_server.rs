@@ -469,7 +469,7 @@ impl ToolServer for ReviewSwarmServer {
                 "name": "review_swarm_no_change",
                 "description": "List open no-change issues, read an issue with its discussion and attempt, or resolve that attempt after checking the evidence. Resolution closes an independently verified fix, comments with concrete retry instructions and removes the no-change label, or moves work that needs hardware, an upstream release or an owner decision to needs-owner with the reason. An issue that waits on other issues is requeued with blocked_by, which links them as GitHub issue dependencies; needs_owner is refused for a reason that only waits on other issues.",
                 "inputSchema": {"type": "object", "properties": {
-                    "action": {"enum": ["list", "read", "resolve"]},
+                    "action": {"type": "string", "enum": ["list", "read", "resolve"]},
                     "offset": {"type": "integer", "minimum": 0, "description": "List offset, ten issues per page"},
                     "issue": {"type": "integer", "description": "Required for read and resolve"},
                     "attempt": {"type": "string", "description": "Required for resolve, returned by read"},

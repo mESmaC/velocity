@@ -542,7 +542,9 @@ fn tool_list() -> Vec<Value> {
             "Rank symbols, files and subsystems for a name or a plain-language description. Each result: address, kind, name, file:lines, signature. [exact] marks the only record with exactly that name.",
             json!({
                 "query": {"type": "string", "description": "A name (Channel::open, plan_deletion) or words (\"approval record merge gate\")"},
-                "plane": {"type": "integer", "enum": [1, 2, 3], "description": "1 symbols, 2 files, 3 subsystems"},
+                // A range, not an integer enum: Gemini accepts `enum` only on strings and
+                // rejects the agent's whole request when a tool has one (Antigravity).
+                "plane": {"type": "integer", "minimum": 1, "maximum": 3, "description": "1 symbols, 2 files, 3 subsystems"},
                 "kind": {"type": "string", "description": "fn, method, type, trait, alias, mod, macro, const, section, file or subsystem"},
                 "limit": {"type": "integer", "minimum": 1, "maximum": 30},
             }),
