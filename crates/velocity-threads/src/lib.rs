@@ -20,6 +20,7 @@ pub mod launch;
 pub mod local_release;
 pub mod machine_worker;
 pub mod naming;
+pub mod overlap_paths;
 pub mod parked_review;
 pub mod parking;
 mod process;

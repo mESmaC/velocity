@@ -34,6 +34,36 @@ pub async fn policy_at(
     })
 }
 
+/// The generated artifacts and registration lists in the base's `rosen.toml`. Rosen
+/// regenerates the first and keeps both sides' additions in the second, so an edit to
+/// either never counts as an overlap (Rosen SPEC §2).
+#[derive(Clone, Debug, Default)]
+pub struct MergedPaths {
+    patterns: Vec<PathPattern>,
+}
+
+impl MergedPaths {
+    /// Whether Rosen merges two changes' edits to `path` without a conflict.
+    pub fn contains(&self, path: &str) -> bool {
+        let path = path.replace('\\', "/");
+        self.patterns.iter().any(|pattern| pattern.matches(&path))
+    }
+}
+
+/// Reads the generated and registration lists in force at the current base. A project
+/// without a base has none.
+pub async fn merged_paths(server: &ProjectServer) -> Result<MergedPaths, RosenError> {
+    let client = crate::connection::requests(server.endpoint()).await?;
+    let config = client.base_config().await?;
+    Ok(MergedPaths {
+        patterns: config
+            .generated
+            .into_iter()
+            .chain(config.registration_lists)
+            .collect(),
+    })
+}
+
 pub(crate) fn object(id: &str) -> Result<ObjectId, RosenError> {
     id.parse().map_err(|_| RosenError::InvalidId(id.to_owned()))
 }

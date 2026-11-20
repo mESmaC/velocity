@@ -43,6 +43,10 @@ The Work panel uses change and land vocabulary for Rosen projects.
 
 **Overlapping issues (#471).** Continuous dispatch holds an issue while another open issue is being worked only when that issue's open Rosen change has edited a code file the waiting issue names (#525).
 Predicted paths, claimed paths, similar titles, documents, spec and design files and root `ops/` scripts never hold an issue, because Rosen merges and reports conflicts and a speculative hold costs more than a rare conflict.
+The generated artifacts and registration lists in the base's `rosen.toml` never hold an issue either, because Rosen regenerates the first and keeps both sides' additions in the second (#505).
+A path named by more than a third of the ready backlog, and by more than three of its issues, holds nothing, because a file everyone touches says nothing about who conflicts (#505).
+The ready backlog is every open issue that is being worked, held or free for dispatch.
+The same paths are left out when a land is checked against a waiting issue's code.
 The check reads each open change's edited files from Rosen at most every 30 seconds and is repeated before starting each issue.
 After the blocking change lands, Velocity rechecks the current issue text against the source issue and the landed paths.
 A land that shares code with the issue or may have fixed it parks the issue under `no-change` as **Check against an overlapping land** for a bounded review (#506).
