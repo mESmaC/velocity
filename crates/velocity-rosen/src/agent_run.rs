@@ -321,7 +321,7 @@ fn run_light(
         .find(|path| path.join(".rosen").exists() || path.join(".git").exists())
         .unwrap_or(&directory);
     let target = light_target(root);
-    let _turn = light_turn(&target)?;
+    let _turn = light_turn(&target, root, &directory)?;
     light_command(rosen, rosen_arguments, program, &target)?
         .args(arguments)
         .status()
@@ -338,7 +338,7 @@ pub(crate) fn light_output(
     let rosen = crate::server::program_folder("rosen")
         .map(|folder| folder.join(executable_file("rosen")))
         .ok_or_else(|| io::Error::other("the rosen program was not found"))?;
-    let _turn = light_turn(target)?;
+    let _turn = light_turn(target, directory, directory)?;
     light_command(&rosen, &[], OsStr::new(program), target)?
         .args(arguments)
         .current_dir(directory)
@@ -352,14 +352,16 @@ struct LightTurn {
     _slot: File,
 }
 
-/// Waits for the target folder, a slot and memory, in that order.
-fn light_turn(target: &Path) -> io::Result<LightTurn> {
+/// Waits for the target folder, a slot and memory, in that order, then prepares the shared
+/// target folder for `workspace_root`.
+fn light_turn(target: &Path, workspace_root: &Path, directory: &Path) -> io::Result<LightTurn> {
     std::fs::create_dir_all(target)?;
     // Cargo locks a target folder for a whole build, so runs that share one wait here
     // rather than in a machine slot.
     let project = locked(&target.join(".velocity-light-run.lock"))?;
     let slot = light_slot()?;
     wait_for_memory()?;
+    crate::light_target::prepare(target, workspace_root, directory)?;
     Ok(LightTurn {
         _project: project,
         _slot: slot,
@@ -404,9 +406,10 @@ fn toolchain_path() -> io::Result<OsString> {
     toolchain_path_from(&path)
 }
 
-/// One target folder per Rosen project, beside its workspaces: registry dependencies
-/// build once, and each workspace's own crates keep separate artifacts because their
-/// path is part of the package ID. Elsewhere the workspace keeps its own.
+/// One target folder per Rosen project, beside its workspaces: registry and git
+/// dependencies build once, while switching workspaces invalidates local crate
+/// fingerprints and build-script outputs so Cargo cannot reuse another workspace's
+/// compiled crates (#527). Elsewhere the workspace keeps its own.
 pub(crate) fn light_target(root: &Path) -> PathBuf {
     match root.parent() {
         Some(project) if root.join(".rosen").exists() => project_target(project),

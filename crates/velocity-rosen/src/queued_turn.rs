@@ -155,9 +155,13 @@ pub fn acquire(
             )
         }
         AgentRun::RustUtility => acquire_utility(&queue, request.timeout, &cancelled),
-        AgentRun::RustCheck | AgentRun::Bindings => {
-            acquire_light(&queue, request.worktree, request.timeout, &cancelled)
-        }
+        AgentRun::RustCheck | AgentRun::Bindings => acquire_light(
+            &queue,
+            request.worktree,
+            request.directory,
+            request.timeout,
+            &cancelled,
+        ),
     }
 }
 
@@ -221,6 +225,7 @@ fn acquire_utility(
 fn acquire_light(
     queue: &RunQueue,
     worktree: &Path,
+    directory: &Path,
     timeout: Duration,
     cancelled: &impl Fn() -> bool,
 ) -> Result<QueuedTurn, QueuedTurnError> {
@@ -252,6 +257,7 @@ fn acquire_light(
         "waiting for 3.0 GiB memory headroom above Rosen's reserve",
         || Ok(queue.memory_headroom().fits(LIGHT_MEMORY).then_some(())),
     )?;
+    crate::light_target::prepare(&target, worktree, directory)?;
     Ok(QueuedTurn::Light {
         _project: project,
         _slot: slot,
