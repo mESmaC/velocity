@@ -3,7 +3,8 @@
 //!
 //! The updates use the agent's wire shapes: each `Agent` call names itself in
 //! `_meta.claudeCode.toolName`, and every update made inside it carries
-//! `_meta.claudeCode.parentToolUseId`, except post-tool hook reports, which omit the stamp.
+//! `_meta.claudeCode.parentToolUseId`, except a later report of a tool call that omits the
+//! stamp, which stays with the subagent the call's first update named.
 use agent_client_protocol::v1::schema::SessionUpdate;
 use serde_json::{Value, json};
 use velocity_acp::client::{AgentEvent, entry_class};
@@ -109,7 +110,7 @@ fn claude_turn() -> Vec<Value> {
         spawn("toolu_B", "Inspect store save path", Some("sonnet")),
         tool("toolu_A", "a1", "read", "Read ui/src/lib/ipc.ts"),
         tool("toolu_B", "b1", "search", "grep save_state"),
-        // A post-tool hook report: no `parentToolUseId`.
+        // A later report of the subagent's call without `parentToolUseId`.
         json!({"sessionUpdate": "tool_call_update", "toolCallId": "a1", "status": "completed",
             "_meta": {"claudeCode": {"toolName": "Read"}}}),
         message(Some("toolu_B"), "The save path is in velocity-store."),

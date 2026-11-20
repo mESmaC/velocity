@@ -46,8 +46,8 @@ pub fn attributed_spawn(update: &SessionUpdate) -> Option<&str> {
 #[derive(Default)]
 pub struct SubagentRouter {
     /// The subagent each of its tool calls belongs to. A later update for the call may
-    /// lack the attribution: claude-agent-acp's post-tool hook reports carry only the
-    /// tool name.
+    /// lack the attribution: claude-agent-acp stamps a progress beat only while the
+    /// subagent's task is live, so one sent after it settled carries only the tool name.
     tool_calls: HashMap<Arc<str>, Arc<str>>,
     transcripts: HashMap<Arc<str>, Transcript<Arc<str>, ()>>,
     /// The native subagent sessions announced so far, by session id.
