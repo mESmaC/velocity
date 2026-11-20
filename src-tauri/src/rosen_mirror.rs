@@ -445,7 +445,7 @@ async fn run_startup_catch_up(
             let _ = application
                 .state::<crate::rosen::ManagedRosen>()
                 .end_catch_up_retry(project);
-            return Ok(());
+            Ok(())
         }
         Ok(MirrorTip::UpToDate | MirrorTip::Ahead) => {
             set_mirror_behind(application, project, None);
@@ -453,7 +453,7 @@ async fn run_startup_catch_up(
             let _ = application
                 .state::<crate::rosen::ManagedRosen>()
                 .end_catch_up_retry(project);
-            return Ok(());
+            Ok(())
         }
         Ok(MirrorTip::Behind {
             commits,
