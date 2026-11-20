@@ -72,6 +72,49 @@ pub fn watch_rosen_status(
     Ok(project.is_some())
 }
 
+/// Switches a `before-land` Rosen project to `review = "after-land"` in `rosen.toml` (#524).
+#[tauri::command]
+#[specta::specta]
+pub async fn switch_to_after_land(
+    application: AppHandle,
+    project_identifier: u32,
+) -> Result<String, String> {
+    if !crate::rosen::uses_rosen(&application, project_identifier) {
+        return Err("Only Rosen projects use rosen.toml review modes".into());
+    }
+    let check_folder = pre_land_check_folder(&application, project_identifier)?;
+    let server = crate::rosen::server(&application, project_identifier).await?;
+    let outcome = velocity_rosen::after_land_switch::switch_to_after_land(&server, &check_folder)
+        .await
+        .map_err(|error| error.to_string())?;
+    crate::rosen_landing::wake(&application);
+    Ok(match outcome {
+        velocity_rosen::after_land_switch::SwitchOutcome::AlreadyAfterLand => {
+            "Project already uses review = \"after-land\"".into()
+        }
+        velocity_rosen::after_land_switch::SwitchOutcome::Switched { commit } => {
+            let short = velocity_core::project_health::short_commit(&commit);
+            format!("Switched to review = \"after-land\" at {short}")
+        }
+    })
+}
+
+fn pre_land_check_folder(
+    application: &AppHandle,
+    project_identifier: u32,
+) -> Result<std::path::PathBuf, String> {
+    let store = application.state::<ManagedStateStore>();
+    let store = lock(store.inner(), "persisted state")?;
+    let project = store
+        .landing_projects()
+        .into_iter()
+        .find(|entry| entry.project.id == project_identifier)
+        .ok_or_else(|| "Project not found".to_owned())?;
+    velocity_threads::project_workspace_root(&project.project, &project.worktrees)
+        .map(|root| root.join("pre-land-switch"))
+        .ok_or_else(|| "Could not resolve the project's workspace root".to_owned())
+}
+
 async fn follow(application: &AppHandle, project: u32, server: velocity_rosen::ProjectServer) {
     let mut status = Status::default();
     loop {

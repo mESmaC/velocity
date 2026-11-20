@@ -212,6 +212,8 @@ export const commands = {
 	 *  happened in a toast, and shows a divergence in the project's mirror notice.
 	 */
 	catchUpFromMirror: (projectIdentifier: number) => __TAURI_INVOKE<null>("catch_up_from_mirror", { projectIdentifier }),
+	/**  Switches a `before-land` Rosen project to `review = "after-land"` in `rosen.toml` (#524). */
+	switchToAfterLand: (projectIdentifier: number) => __TAURI_INVOKE<string>("switch_to_after_land", { projectIdentifier }),
 	watchRosenStatus: (projectIdentifier: number | null) => __TAURI_INVOKE<boolean>("watch_rosen_status", { projectIdentifier }),
 	runRosenThreadAction: (projectIdentifier: number, threadIdentifier: number, change: string, action: RosenThreadAction) => __TAURI_INVOKE<null>("run_rosen_thread_action", { projectIdentifier, threadIdentifier, change, action }),
 	/**

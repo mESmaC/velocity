@@ -3,6 +3,7 @@
     collapseCommands,
     onRosenStatus,
     releaseCommands,
+    switchToAfterLand as requestSwitchToAfterLand,
     watchRosenStatus,
     type BaseCi,
     type CollapseMirrorHealth,
@@ -123,6 +124,7 @@
     let stopListening: (() => void) | undefined;
     frame = null;
     error = '';
+    switchNote = '';
     enabled = current !== null;
     async function connect() {
       const unlisten = await onRosenStatus(({ payload }) => {
@@ -181,6 +183,22 @@
     return Number.isFinite(at)
       ? `State feed last sent ${new Date(at).toLocaleString()}`
       : 'State feed has sent nothing yet';
+  }
+
+  // Switch a before-land project to review = "after-land" (#524).
+  let switchingReview = $state(false);
+  let switchNote = $state('');
+  async function switchToAfterLand() {
+    if (project === null || switchingReview) return;
+    switchingReview = true;
+    switchNote = 'Switching rosen.toml to after-land…';
+    try {
+      switchNote = await requestSwitchToAfterLand(project);
+    } catch (reason) {
+      switchNote = String(reason);
+    } finally {
+      switchingReview = false;
+    }
   }
 
   // Send Collapse its live state: Rust shares the push token with the feed and lands
@@ -260,10 +278,24 @@
         }}
       />
       {#if status?.before_land}
-        <p class="status-note" role="status">
-          Switch to <code>review = "after-land"</code> in
-          <code>rosen.toml</code> to enable automatic landing.
-        </p>
+        <div class="status-note" role="status">
+          <p class="note-line">
+            Switch to <code>review = "after-land"</code> in
+            <code>rosen.toml</code> to enable automatic landing.
+          </p>
+          <div class="note-action">
+            <button
+              class="mini"
+              disabled={switchingReview}
+              title="Set review = &quot;after-land&quot; in rosen.toml, approve, run pre-land checks and land"
+              onclick={() => void switchToAfterLand()}
+              >{switchingReview ? 'Switching…' : 'Switch to after-land'}</button
+            >
+          </div>
+          {#if switchNote}
+            <p class="hint note-line">{switchNote}</p>
+          {/if}
+        </div>
       {/if}
       {#if status}
         {#each preferences.order as section, index (section)}
@@ -506,6 +538,17 @@
     margin: var(--sp-3) var(--sp-3) var(--sp-2);
     color: var(--muted);
     font-size: var(--fs-sm);
+  }
+  .note-line {
+    margin: 0;
+    padding: 0;
+    color: inherit;
+  }
+  .note-action {
+    margin-top: var(--sp-2);
+  }
+  .note-action + .note-line {
+    margin-top: var(--sp-2);
   }
   .status-section {
     padding: var(--sp-2) 0 var(--sp-4);

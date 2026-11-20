@@ -9,6 +9,7 @@ import {
 export type { ChangeRow, OwningThread, RosenStatusChanged } from '../bindings';
 
 export const watchRosenStatus = commands.watchRosenStatus;
+export const switchToAfterLand = commands.switchToAfterLand;
 export const onRosenStatus = (callback: EventCallback<RosenStatusChanged>) =>
   listen(ROSEN_STATUS_EVENT, callback);
 

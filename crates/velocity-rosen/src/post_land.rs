@@ -9,10 +9,11 @@
 use std::path::Path;
 
 use rosen_client::protocol::{
-    BisectJob, BisectResult, BisectState, ErrorCode, LogRequest, PostLandJob, PostLandWork,
+    BisectJob, BisectResult, BisectState, DiffRequest, ErrorCode, LogRequest, PostLandJob,
+    PostLandWork, ReadAnswer,
 };
-use rosen_client::{AgentId, Client, ObjectId};
-use rosen_core::project_config::{RecheckMode, ReviewMode};
+use rosen_client::{AgentId, ChangeParent, Client, ObjectId};
+use rosen_core::project_config::{CONFIG_PATH, ProjectConfig, RecheckMode, ReviewMode};
 
 pub use rosen_client::protocol::{CheckKind, CheckPriority};
 
@@ -95,6 +96,63 @@ pub async fn after_land_at(server: &ProjectServer, base: Option<&str>) -> Result
     let client = crate::connection::requests(server.endpoint()).await?;
     let at = base.map(crate::policy::object).transpose()?;
     Ok(client.project_config(at).await?.config.review == ReviewMode::AfterLand)
+}
+
+/// Whether `proposed_toml` changes only `review` from `before-land` to `after-land`.
+/// Comparing the parsed `ProjectConfig` against the parent base ensures a migration change
+/// cannot alter sensitive paths, checks or other settings under cover of switching modes.
+pub fn is_after_land_switch(base: &ProjectConfig, proposed_toml: &str) -> bool {
+    if base.review != ReviewMode::BeforeLand {
+        return false;
+    }
+    let Ok(proposed) = ProjectConfig::parse(proposed_toml) else {
+        return false;
+    };
+    let mut expected = base.clone();
+    expected.review = ReviewMode::AfterLand;
+    proposed == expected
+}
+
+/// Whether `change` sits directly on a base commit, touches only `rosen.toml` and switches
+/// `review` from `before-land` to `after-land` without altering any other setting (#524).
+pub async fn switches_to_after_land(
+    server: &ProjectServer,
+    change: &str,
+) -> Result<bool, RosenError> {
+    let client = crate::connection::requests(server.endpoint()).await?;
+    let record = client.change_show(change).await?.change;
+    let ChangeParent::Base(parent_base) = record.parent else {
+        return Ok(false);
+    };
+    let diff = client
+        .diff(DiffRequest {
+            to: Some(change.to_owned()),
+            context: Some(0),
+            ..DiffRequest::default()
+        })
+        .await?;
+    if diff.files.len() != 1 || diff.files[0].path != CONFIG_PATH {
+        return Ok(false);
+    }
+    let Some(proposed_toml) = read_proposed_config(&client, record.head).await? else {
+        return Ok(false);
+    };
+    let base_config = client.project_config(Some(parent_base)).await?.config;
+    Ok(is_after_land_switch(&base_config, &proposed_toml))
+}
+
+async fn read_proposed_config(
+    client: &Client,
+    head: ObjectId,
+) -> Result<Option<String>, RosenError> {
+    match client.workspace_read(&head.to_string(), CONFIG_PATH).await {
+        Ok(ReadAnswer::File { mode, data, .. }) if matches!(mode.as_str(), "100644" | "100755") => {
+            Ok(String::from_utf8(data).ok())
+        }
+        Ok(_) => Ok(None),
+        Err(rosen_client::Error::Server(error)) if error.code == ErrorCode::NotFound => Ok(None),
+        Err(error) => Err(error.into()),
+    }
 }
 
 /// Confirmed, non-reverting test failures retained by Rosen, including across restarts.

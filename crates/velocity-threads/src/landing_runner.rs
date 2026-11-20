@@ -176,17 +176,25 @@ impl RosenLanding {
         let (runner, host) = (self.clone(), host.clone());
         tokio::spawn(async move {
             let server = ProjectServer::new(&runner.app_data, id);
-            if matches!(
-                velocity_rosen::post_land::after_land(&server).await,
-                Ok(true)
-            ) {
+            if let Ok(base_after_land) = velocity_rosen::post_land::after_land(&server).await {
                 for thread in project
                     .project
                     .threads
                     .iter()
                     .filter(|thread| named(thread))
                 {
-                    if let Some(change) = &thread.rosen_change {
+                    let Some(change) = &thread.rosen_change else {
+                        continue;
+                    };
+                    // On a before-land base, only a rosen.toml-only switch to after-land
+                    // gets a land request; unrelated changes keep Rosen's before-land gate (#524).
+                    let land_allowed = base_after_land
+                        || matches!(
+                            velocity_rosen::post_land::switches_to_after_land(&server, change)
+                                .await,
+                            Ok(true)
+                        );
+                    if land_allowed {
                         runner.land(&host, &server, &project, thread, change).await;
                     }
                 }
@@ -251,7 +259,10 @@ impl RosenLanding {
         let project_id = project.project.id;
         let generation = thread.rosen_progress_generation;
         let key = (project_id, thread.id);
-        if matches!(&refusal, LandRefusal::Other { .. }) && self.retry_later(key, generation) {
+        if matches!(&refusal, LandRefusal::Other { .. })
+            && !is_before_land_gate(&refusal)
+            && self.retry_later(key, generation)
+        {
             return;
         }
         let branch = crate::launch::base_branch(&project.project);
@@ -325,11 +336,27 @@ pub fn refusal_instructions(
                 rosen_checker::conflict_message(change, base_branch, &paths)
             },
         ),
-        LandRefusal::Other { code, message } => (
-            code,
-            format!(
-                "Rosen refused the retry.\n\n{message}\n\nRun `rosen status` and address the refusal. {name_again}"
+        LandRefusal::Other { code, message } => match code.as_str() {
+            "unapproved" | "no_receipt" | "receipt_stale" => (
+                code,
+                format!(
+                    "Rosen's before-land policy refused the land.\n\n{message}\n\nTo complete the switch to `after-land`, use Switch to after-land in the Rosen status pane, or approve this head (`rosen review approve {change} --head <head>`), submit the pre-land receipt (`rosen receipt submit {change} --head <head> --base <base>`) and run `rosen land {change}`. Do not name the change again, because a new snapshot voids approvals and receipts."
+                ),
             ),
-        ),
+            _ => (
+                code,
+                format!(
+                    "Rosen refused the retry.\n\n{message}\n\nRun `rosen status` and address the refusal. {name_again}"
+                ),
+            ),
+        },
     }
+}
+
+fn is_before_land_gate(refusal: &LandRefusal) -> bool {
+    matches!(
+        refusal,
+        LandRefusal::Other { code, .. }
+            if matches!(code.as_str(), "unapproved" | "no_receipt" | "receipt_stale")
+    )
 }

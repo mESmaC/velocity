@@ -175,6 +175,7 @@ fn bindings() -> Builder<tauri::Wry> {
         issue_panel::toggle_issue_expanded,
         rosen_mirror::adopt_mirror_tip,
         rosen_mirror::catch_up_from_mirror,
+        rosen_status::switch_to_after_land,
         rosen_status::watch_rosen_status,
         rosen_thread::run_rosen_thread_action,
         shared_mcp::edit_shared_mcp_servers,

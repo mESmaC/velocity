@@ -5,6 +5,7 @@
 //! workspace in place of a git worktree. Git worktrees are used only when a project
 //! chooses git; Rosen failures retain a retryable launch.
 
+pub mod after_land_switch;
 mod agent;
 pub mod agent_run;
 pub mod bindings_check;

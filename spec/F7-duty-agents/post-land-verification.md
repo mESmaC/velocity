@@ -2,8 +2,9 @@
 
 Velocity asks Rosen to land a named change on a clean merge with the base.
 Rosen projects opened in Velocity use `review = "after-land"`.
-Rosen status offers the one-line configuration change if the base still specifies `review = "before-land"`.
-The notice leaves the project usable.
+Rosen status offers the one-line configuration change and a Switch to after-land action if the base still specifies `review = "before-land"` (#524).
+The notice leaves the project usable, and unrelated named changes on a `before-land` base receive no automatic land request.
+A named change sitting directly on the base that edits only `rosen.toml` to set `review = "after-land"` still reaches Rosen so a reviewed and receipted switch lands, and the status pane action proposes, approves on behalf of the owner, runs any configured pre-land checks, submits the receipt and lands that one-line switch.
 
 A change that registers a Tauri command, event or constant without regenerating `ui/src/lib/bindings.ts` merges cleanly, so Velocity checks the bindings before it asks Rosen to land such a change (#503).
 The check applies to a project that has `src-tauri/src/bin/export-bindings.rs`, and to a named change that edits `src-tauri/src/lib.rs`, the exporter, `bindings.ts` itself, a Rust file that names specta (`specta::Type`, `tauri_specta::Event`, `specta::specta`) or a Rust file it removes.
