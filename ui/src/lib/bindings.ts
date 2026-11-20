@@ -83,6 +83,8 @@ export const commands = {
 	 */
 	logWindowError: (source: string, message: string) => __TAURI_INVOKE<void>("log_window_error", { source, message }),
 	getProcessMemory: () => __TAURI_INVOKE<ProcessMemory[]>("get_process_memory"),
+	/**  `get_project_health` (§3.1): returns the active health signals for one project (#509). */
+	getProjectHealth: (projectIdentifier: number) => __TAURI_INVOKE<ProjectHealthView_Serialize>("get_project_health", { projectIdentifier }),
 	getSettings: () => __TAURI_INVOKE<Settings_Serialize>("get_settings"),
 	setSettings: (settings: Settings_Deserialize) => __TAURI_INVOKE<Settings_Serialize>("set_settings", { settings }),
 	getUiZoom: () => __TAURI_INVOKE<UiZoomView>("get_ui_zoom"),
@@ -294,6 +296,8 @@ export const LAYOUT_INTENT_EVENT = "layout://intent" as const;
 export const LAYOUT_STATE_EVENT = "layout://state" as const;
 
 export const LOCAL_BUILD_STATUS_EVENT = "local-build://status" as const;
+
+export const PROJECT_HEALTH_EVENT = "project://health" as const;
 
 export const PROJECT_SELECTED_EVENT = "project://selected" as const;
 
@@ -1863,6 +1867,10 @@ export type GraphStatus_Serialize = {
 	threads: ThreadUsageRow[],
 };
 
+export type HealthSeverity = "Info" | "Warning" | "Error";
+
+export type HealthSignalKind = "MirrorBehind" | "IntegrationUncovered" | "BaseRed" | "LandedIssuesWaiting" | "IssueParked" | "ReviewStalled" | "DispatchIdle" | "PostLandStopped";
+
 /**  A model you hid from the pickers by clicking its chip (F15 Models). */
 export type HiddenModel = {
 	provider: ProviderKind,
@@ -2643,6 +2651,8 @@ export type MirrorState_Deserialize = {
 	/**  Decimal Unix milliseconds, preserved as a string across IPC. */
 	retry_at_ms?: string | null,
 	last_pushed_commit?: string | null,
+	/**  The Rosen base tip that could not be pushed, shown beside `last_pushed_commit` (#509). */
+	base_commit?: string | null,
 };
 
 export type MirrorState_Serialize = {
@@ -2651,6 +2661,8 @@ export type MirrorState_Serialize = {
 	/**  Decimal Unix milliseconds, preserved as a string across IPC. */
 	retry_at_ms: string | null,
 	last_pushed_commit: string | null,
+	/**  The Rosen base tip that could not be pushed, shown beside `last_pushed_commit` (#509). */
+	base_commit?: string,
 };
 
 export type MirrorStatus = MirrorStatus_Serialize | MirrorStatus_Deserialize;
@@ -3164,6 +3176,70 @@ export type ProcessMemory = {
 	role: string,
 	memory_mib: number,
 	budget_mib: number,
+};
+
+export type ProjectHealthChanged = ProjectHealthChanged_Serialize | ProjectHealthChanged_Deserialize;
+
+export type ProjectHealthChanged_Deserialize = {
+	view: ProjectHealthView_Deserialize,
+};
+
+export type ProjectHealthChanged_Serialize = {
+	view: ProjectHealthView_Serialize,
+};
+
+/**  One active health signal on a project, with the automatic action taken and when (#509). */
+export type ProjectHealthItem = ProjectHealthItem_Serialize | ProjectHealthItem_Deserialize;
+
+/**  One active health signal on a project, with the automatic action taken and when (#509). */
+export type ProjectHealthItem_Deserialize = {
+	/**  Stable per-project identifier so repeated checks update one entry in place. */
+	key: string,
+	kind: HealthSignalKind,
+	severity: HealthSeverity,
+	/**  What went wrong or waited past its threshold. */
+	signal: string,
+	/**  The automatic action Velocity took, or why it could not act. */
+	action: string,
+	/**  Optional evidence such as both tips, skip reasons, last failure, or test and process. */
+	detail?: string | null,
+	/**  Optional thread to open from the strip (e.g. a fix-forward or stalled review thread). */
+	thread_identifier?: string | null,
+	/**  Decimal Unix milliseconds when Velocity last acted or updated this signal. */
+	acted_at_ms: string,
+};
+
+/**  One active health signal on a project, with the automatic action taken and when (#509). */
+export type ProjectHealthItem_Serialize = {
+	/**  Stable per-project identifier so repeated checks update one entry in place. */
+	key: string,
+	kind: HealthSignalKind,
+	severity: HealthSeverity,
+	/**  What went wrong or waited past its threshold. */
+	signal: string,
+	/**  The automatic action Velocity took, or why it could not act. */
+	action: string,
+	/**  Optional evidence such as both tips, skip reasons, last failure, or test and process. */
+	detail?: string,
+	/**  Optional thread to open from the strip (e.g. a fix-forward or stalled review thread). */
+	thread_identifier?: string,
+	/**  Decimal Unix milliseconds when Velocity last acted or updated this signal. */
+	acted_at_ms: string,
+};
+
+/**  All active health signals for one project, shown on the project health strip (#509). */
+export type ProjectHealthView = ProjectHealthView_Serialize | ProjectHealthView_Deserialize;
+
+/**  All active health signals for one project, shown on the project health strip (#509). */
+export type ProjectHealthView_Deserialize = {
+	project_identifier: number,
+	items: ProjectHealthItem_Deserialize[],
+};
+
+/**  All active health signals for one project, shown on the project health strip (#509). */
+export type ProjectHealthView_Serialize = {
+	project_identifier: number,
+	items: ProjectHealthItem_Serialize[],
 };
 
 export type ProjectItem = ProjectItem_Serialize | ProjectItem_Deserialize;

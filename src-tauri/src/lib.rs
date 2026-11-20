@@ -35,6 +35,7 @@ mod machines;
 mod new_project;
 mod parking;
 pub mod process_memory;
+mod project_health;
 mod projects;
 mod proofs_settings;
 mod provider_agents;
@@ -112,6 +113,7 @@ fn bindings() -> Builder<tauri::Wry> {
         window::window_heartbeat,
         diagnostics::log_window_error,
         process_memory::get_process_memory,
+        project_health::get_project_health,
         state::get_settings,
         state::set_settings,
         state::get_ui_zoom,
@@ -222,6 +224,7 @@ fn event_bindings(builder: Builder<tauri::Wry>) -> Builder<tauri::Wry> {
         .typ::<layout::LayoutStateChanged>()
         .typ::<layout::LayoutIntentRequested>()
         .typ::<local_build::LocalBuildStatusChanged>()
+        .typ::<project_health::ProjectHealthChanged>()
         .typ::<projects::ProjectSelected>()
         .typ::<providers::ProvidersChanged>()
         .typ::<swarm::SwarmEventPublished>()
@@ -250,6 +253,10 @@ fn event_bindings(builder: Builder<tauri::Wry>) -> Builder<tauri::Wry> {
         .constant(
             "LOCAL_BUILD_STATUS_EVENT",
             local_build::LocalBuildStatusChanged::NAME,
+        )
+        .constant(
+            "PROJECT_HEALTH_EVENT",
+            project_health::ProjectHealthChanged::NAME,
         )
         .constant("ROSEN_STATUS_EVENT", rosen_status::RosenStatusChanged::NAME)
         .constant(
@@ -334,6 +341,7 @@ pub fn run() -> anyhow::Result<()> {
         layout::LayoutStateChanged,
         layout::LayoutIntentRequested,
         local_build::LocalBuildStatusChanged,
+        project_health::ProjectHealthChanged,
         projects::ProjectSelected,
         providers::ProvidersChanged,
         swarm::SwarmEventPublished,
@@ -393,6 +401,7 @@ pub fn run() -> anyhow::Result<()> {
             interview::start(application.handle());
             rosen_landing::initialize(application.handle())?;
             base_ci::initialize(application.handle());
+            project_health::initialize(application.handle());
             sweeps::initialize(application.handle())?;
             airc_delivery::initialize(application.handle());
             airc_modal::initialize(application.handle());

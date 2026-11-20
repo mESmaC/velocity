@@ -195,6 +195,7 @@ F5, F7 and §3.1 have a README for their introduction and separate files for the
 - [spec/F5-worktrees/rosen-falling-back.md](spec/F5-worktrees/rosen-falling-back.md)
 - [spec/F5-worktrees/rosen-pin-bump.md](spec/F5-worktrees/rosen-pin-bump.md)
 - [spec/F5-worktrees/rosen-base-ci.md](spec/F5-worktrees/rosen-base-ci.md)
+- [spec/F5-worktrees/project-health.md](spec/F5-worktrees/project-health.md)
 - [spec/F5-worktrees/lifecycle.md](spec/F5-worktrees/lifecycle.md)
 - [spec/F5-worktrees/path.md](spec/F5-worktrees/path.md)
 - [spec/F5-worktrees/settings-worktrees.md](spec/F5-worktrees/settings-worktrees.md)

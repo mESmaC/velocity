@@ -252,6 +252,72 @@ async fn retry_catch_up(
     }
 }
 
+/// What a health-triggered mirror push retry / catch-up did (#509).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) enum MirrorRetryOutcome {
+    UpToDate,
+    RetriedPush,
+    CaughtUp {
+        commits: usize,
+        new_base: String,
+    },
+    Diverged {
+        base_commit: String,
+        mirror_commit: String,
+    },
+    NotApplicable(String),
+}
+
+/// Retries a stalled mirror push or applies #501 catch-up when the mirror is ahead (#509).
+/// Rosen's `mirror_catch_up` fetches the mirror, wakes its push worker when the base is
+/// ahead, fast-forwards when the mirror is ahead, or returns both tips on divergence.
+pub(crate) async fn retry_for_health(
+    application: &AppHandle,
+    project: u32,
+    server: &ProjectServer,
+) -> Result<MirrorRetryOutcome, String> {
+    let outcome = velocity_rosen::catch_up_from_mirror(server)
+        .await
+        .map_err(|error| error.to_string())?;
+    let name = project_name(application, project)?;
+    let (divergence, toast_message, result) = match outcome {
+        CatchUp::NotApplicable(reason) => (None, None, MirrorRetryOutcome::NotApplicable(reason)),
+        CatchUp::UpToDate => (None, None, MirrorRetryOutcome::UpToDate),
+        CatchUp::Ahead => (None, None, MirrorRetryOutcome::RetriedPush),
+        CatchUp::FastForwarded(moved) => {
+            for failure in &moved.rebase_errors {
+                crate::diagnostics::record("rosen mirror", &format!("{name}: {failure}"));
+            }
+            let message = format!(
+                "{name}: caught up {} commit(s) from the mirror to {}",
+                moved.commits,
+                short(&moved.new_base)
+            );
+            let result = MirrorRetryOutcome::CaughtUp {
+                commits: moved.commits,
+                new_base: moved.new_base,
+            };
+            (None, Some(message), result)
+        }
+        CatchUp::Diverged(divergence) => {
+            let result = MirrorRetryOutcome::Diverged {
+                base_commit: divergence.base_commit.clone(),
+                mirror_commit: divergence.mirror_commit.clone(),
+            };
+            let message = format!("{name}: Rosen base and mirror have diverged · needs a person");
+            (Some(divergence), Some(message), result)
+        }
+    };
+    let changed = publish_divergence(application, project, divergence, None)?;
+    if let Some(message) = toast_message
+        && (changed || matches!(result, MirrorRetryOutcome::CaughtUp { .. }))
+    {
+        let _ = toast(application, message);
+    }
+    let _ = refresh(application, project).await;
+    Ok(result)
+}
+
 /// `catch_up_from_mirror` (§3.1): the project's Catch up from mirror action. Says what
 /// happened in a toast, and shows a divergence in the project's mirror notice.
 #[tauri::command]

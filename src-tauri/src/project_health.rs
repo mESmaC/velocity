@@ -1,0 +1,1291 @@
+//! Per-project health checks with safe automatic remediation (#509).
+//!
+//! Replaces external watcher scripts by observing each Rosen project's mirror, integration
+//! builds, GitHub base CI, stalled landed issues (#504), parked no-change issues (#506),
+//! threads stuck in review (#487), idle continuous-dispatch slots, and post-land checks
+//! stopped for running too long (#486).
+
+use std::collections::{BTreeMap, HashMap};
+use std::path::Path;
+use std::sync::{Mutex, MutexGuard};
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
+
+use tauri::{AppHandle, Manager};
+use tauri_specta::Event;
+use velocity_core::base_ci::BaseCiState;
+use velocity_core::project_health::{
+    DISPATCH_IDLE_LIMIT_SECONDS, HealthSeverity, HealthSignalKind, INTEGRATION_UNCOVERED_LANDS,
+    INTEGRATION_UNCOVERED_SECONDS, MIRROR_BEHIND_LIMIT_SECONDS, ProjectHealthItem,
+    ProjectHealthView, REVIEW_STUCK_LIMIT_SECONDS, format_duration, format_stopped_check_detail,
+    short_commit,
+};
+use velocity_core::rosen_checker::StoppedCheck;
+use velocity_rosen::landing::LandCheckOutcome;
+use velocity_rosen::{ProjectServer, integration, post_land};
+use velocity_store::continuous_dispatch::busy_count;
+use velocity_store::{ProjectItem, ReviewStage, ThreadState};
+use velocity_threads::continuous_dispatch::summarize_skipped_issues;
+use velocity_threads::landing_runner::refusal_instructions;
+
+use crate::continuous_dispatch::DispatchHealthSnapshot;
+use crate::rosen_mirror::MirrorRetryOutcome;
+use crate::state::ManagedStateStore;
+
+const SOURCE: &str = "project health";
+const FIRST_CHECK: Duration = Duration::from_secs(30);
+const CHECK_INTERVAL: Duration = Duration::from_secs(60);
+const MIRROR_RETRY_COOLDOWN_SECS: u64 = 10 * 60;
+const REVIEW_CHECK_COOLDOWN_SECS: u64 = 10 * 60;
+const RECENT_ACTION_TTL_SECS: u64 = 20 * 60;
+const MANUAL_PARKED_LIMIT_SECS: u64 = 2 * 60 * 60;
+
+#[derive(Clone, serde::Serialize, specta::Type, Event)]
+#[tauri_specta(event_name = "project://health")]
+pub struct ProjectHealthChanged {
+    pub view: ProjectHealthView,
+}
+
+#[derive(Default)]
+pub struct ManagedProjectHealth {
+    state: Mutex<HealthRegistry>,
+}
+
+#[derive(Default)]
+struct HealthRegistry {
+    projects: BTreeMap<u32, ProjectHealthTracker>,
+    views: BTreeMap<u32, Vec<ProjectHealthItem>>,
+}
+
+#[derive(Default)]
+struct ProjectHealthTracker {
+    mirror_attempt: Option<MirrorAttempt>,
+    review_seen_secs: HashMap<(u32, u64), u64>,
+    review_checked: HashMap<(u32, u64), ReviewAttempt>,
+    recent_actions: BTreeMap<String, RecentAction>,
+    free_slot_since: Option<u64>,
+    last_seen_dispatch: Option<u64>,
+    last_logged_skip: Option<String>,
+    parked: BTreeMap<u32, ParkedRecord>,
+    stopped_check: Option<StoppedCheckRecord>,
+    acted_times: HashMap<String, (String, String, u64)>,
+}
+
+#[derive(Clone)]
+struct MirrorAttempt {
+    base_commit: String,
+    pushed_commit: Option<String>,
+    at_secs: u64,
+    action: String,
+    severity: HealthSeverity,
+}
+
+#[derive(Clone)]
+struct ReviewAttempt {
+    at_secs: u64,
+    action: String,
+    severity: HealthSeverity,
+}
+
+#[derive(Clone)]
+struct RecentAction {
+    item: ProjectHealthItem,
+    expires_secs: u64,
+}
+
+#[derive(Clone)]
+enum ParkedRecord {
+    Manual {
+        seen_secs: u64,
+    },
+    Failed {
+        error: String,
+        acted_at_ms: u64,
+    },
+    Resolved {
+        action: String,
+        acted_at_ms: u64,
+        expires_secs: u64,
+    },
+}
+
+#[derive(Clone)]
+struct StoppedCheckRecord {
+    commit: String,
+    command: String,
+    stopped: StoppedCheck,
+    acted_at_ms: u64,
+}
+
+fn registry(managed: &ManagedProjectHealth) -> MutexGuard<'_, HealthRegistry> {
+    managed
+        .state
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+}
+
+pub fn initialize(application: &AppHandle) {
+    application.manage(ManagedProjectHealth::default());
+    let handle = application.clone();
+    tauri::async_runtime::spawn(async move {
+        tokio::time::sleep(FIRST_CHECK).await;
+        loop {
+            check_all_projects(&handle).await;
+            tokio::time::sleep(CHECK_INTERVAL).await;
+        }
+    });
+}
+
+/// `get_project_health` (§3.1): returns the active health signals for one project (#509).
+#[tauri::command]
+#[specta::specta]
+pub fn get_project_health(application: AppHandle, project_identifier: u32) -> ProjectHealthView {
+    let items = application
+        .try_state::<ManagedProjectHealth>()
+        .map(|managed| {
+            registry(&managed)
+                .views
+                .get(&project_identifier)
+                .cloned()
+                .unwrap_or_default()
+        })
+        .unwrap_or_default();
+    ProjectHealthView {
+        project_identifier,
+        items,
+    }
+}
+
+/// Records that a post-land check was stopped for running too long (#486, #509).
+pub(crate) fn record_post_land_stopped(
+    application: &AppHandle,
+    project: u32,
+    commit: &str,
+    command: &str,
+    stopped: &StoppedCheck,
+) {
+    let now_ms = unix_millis();
+    let detail = format_stopped_check_detail(
+        command,
+        stopped.test.as_deref(),
+        stopped.process.as_deref(),
+        &stopped.reason,
+    );
+    crate::diagnostics::record(
+        "post-land",
+        &format!(
+            "Project {project} post-land check stopped on {}: {detail}",
+            short_commit(commit)
+        ),
+    );
+    let Some(managed) = application.try_state::<ManagedProjectHealth>() else {
+        return;
+    };
+    let item = stopped_check_item(commit, command, stopped, now_ms);
+    let updated = {
+        let mut reg = registry(&managed);
+        reg.projects.entry(project).or_default().stopped_check = Some(StoppedCheckRecord {
+            commit: commit.to_owned(),
+            command: command.to_owned(),
+            stopped: stopped.clone(),
+            acted_at_ms: now_ms,
+        });
+        let list = reg.views.entry(project).or_default();
+        upsert_item(list, item);
+        list.clone()
+    };
+    emit_view(application, project, updated);
+}
+
+/// Prunes parked issue records for issues no longer labelled `no-change`, keeping recent
+/// automatic resolutions briefly visible on the health strip (#509).
+pub(crate) fn retain_parked_issues(application: &AppHandle, project: u32, active: &[u32]) {
+    let Some(managed) = application.try_state::<ManagedProjectHealth>() else {
+        return;
+    };
+    let now = unix_seconds();
+    let mut reg = registry(&managed);
+    if let Some(tracker) = reg.projects.get_mut(&project) {
+        tracker.parked.retain(|number, record| match record {
+            ParkedRecord::Resolved { expires_secs, .. } => *expires_secs > now,
+            ParkedRecord::Manual { .. } | ParkedRecord::Failed { .. } => active.contains(number),
+        });
+    }
+}
+
+pub(crate) fn record_parked_resolved(
+    application: &AppHandle,
+    project: u32,
+    issue: u32,
+    action: &str,
+) {
+    let now_ms = unix_millis();
+    let now = now_ms / 1000;
+    crate::diagnostics::record(SOURCE, &format!("Project {project} #{issue}: {action}"));
+    let Some(managed) = application.try_state::<ManagedProjectHealth>() else {
+        return;
+    };
+    let record = ParkedRecord::Resolved {
+        action: action.to_owned(),
+        acted_at_ms: now_ms,
+        expires_secs: now.saturating_add(RECENT_ACTION_TTL_SECS),
+    };
+    let item = parked_item(issue, &record, now);
+    let updated = {
+        let mut reg = registry(&managed);
+        reg.projects
+            .entry(project)
+            .or_default()
+            .parked
+            .insert(issue, record);
+        if let Some(item) = item {
+            let list = reg.views.entry(project).or_default();
+            upsert_item(list, item);
+            Some(list.clone())
+        } else {
+            None
+        }
+    };
+    if let Some(items) = updated {
+        emit_view(application, project, items);
+    }
+}
+
+pub(crate) fn record_parked_failure(
+    application: &AppHandle,
+    project: u32,
+    issue: u32,
+    error: &str,
+) {
+    let Some(managed) = application.try_state::<ManagedProjectHealth>() else {
+        return;
+    };
+    let now_ms = unix_millis();
+    let record = ParkedRecord::Failed {
+        error: error.to_owned(),
+        acted_at_ms: now_ms,
+    };
+    let item = parked_item(issue, &record, now_ms / 1000);
+    let updated = {
+        let mut reg = registry(&managed);
+        reg.projects
+            .entry(project)
+            .or_default()
+            .parked
+            .insert(issue, record);
+        if let Some(item) = item {
+            let list = reg.views.entry(project).or_default();
+            upsert_item(list, item);
+            Some(list.clone())
+        } else {
+            None
+        }
+    };
+    if let Some(items) = updated {
+        emit_view(application, project, items);
+    }
+}
+
+pub(crate) fn record_parked_manual(application: &AppHandle, project: u32, issue: u32) {
+    let Some(managed) = application.try_state::<ManagedProjectHealth>() else {
+        return;
+    };
+    let now = unix_seconds();
+    let mut reg = registry(&managed);
+    reg.projects
+        .entry(project)
+        .or_default()
+        .parked
+        .entry(issue)
+        .or_insert(ParkedRecord::Manual { seen_secs: now });
+}
+
+async fn check_all_projects(application: &AppHandle) {
+    let Ok(app_data) = application.path().app_data_dir() else {
+        return;
+    };
+    let projects = rosen_projects(application);
+    for project in projects {
+        check_project(application, &app_data, &project).await;
+    }
+}
+
+fn rosen_projects(application: &AppHandle) -> Vec<ProjectItem> {
+    let Some(store) = application.try_state::<ManagedStateStore>() else {
+        return Vec::new();
+    };
+    let Ok(store) = store.lock() else {
+        return Vec::new();
+    };
+    store
+        .state()
+        .projects
+        .iter()
+        .filter(|project| project.rosen_in_use())
+        .cloned()
+        .collect()
+}
+
+async fn check_project(application: &AppHandle, app_data: &Path, project: &ProjectItem) {
+    let server = ProjectServer::new(app_data, project.id);
+    let now_ms = unix_millis();
+    let now = now_ms / 1000;
+    let dispatch = crate::continuous_dispatch::health_snapshot(application, project.id, now)
+        .unwrap_or_default();
+    let mut items = Vec::new();
+    if let Some(item) = check_mirror(application, project, &server, now, now_ms).await {
+        items.push(item);
+    }
+    let last_outcome = read_last_outcome(&server).await;
+    if let Some(item) = check_integration_uncovered(
+        application,
+        project,
+        &server,
+        last_outcome.as_deref(),
+        now,
+        now_ms,
+    )
+    .await
+    {
+        items.push(item);
+    }
+    items.extend(check_base_red(application, project, &server, now_ms).await);
+    if let Some(item) = check_landed_waiting(&dispatch, last_outcome.as_deref(), now_ms) {
+        items.push(item);
+    }
+    items.extend(collect_parked_items(application, project.id, now));
+    items.extend(check_review_stalled(application, project, &server, now, now_ms).await);
+    if let Some(item) = check_dispatch_idle(application, project, &dispatch, now, now_ms) {
+        items.push(item);
+    }
+    if let Some(item) = check_post_land_stopped(application, project.id, &server).await {
+        items.push(item);
+    }
+    items.extend(collect_recent_actions(application, project.id, now, &items));
+    stabilize_and_publish(application, project.id, items, now_ms);
+}
+
+/// Signal 1: Mirror behind the base for more than 10 min (#509).
+async fn check_mirror(
+    application: &AppHandle,
+    project: &ProjectItem,
+    server: &ProjectServer,
+    now: u64,
+    now_ms: u64,
+) -> Option<ProjectHealthItem> {
+    if let Some(divergence) = &project.rosen_mirror_divergence {
+        let detail = format!(
+            "Base {} · mirror {}",
+            short_commit(&divergence.base_commit),
+            short_commit(&divergence.mirror_commit)
+        );
+        return Some(
+            ProjectHealthItem::new(
+                "mirror-behind",
+                HealthSignalKind::MirrorBehind,
+                HealthSeverity::Error,
+                "Mirror diverged from Rosen base",
+                "Showing mirror notice with both tips",
+                now_ms,
+            )
+            .with_detail(Some(detail)),
+        );
+    }
+    let lag = velocity_rosen::mirror_lag(server).await.ok().flatten()?;
+    let waited = lag
+        .behind_since_secs
+        .map_or(0, |since| now.saturating_sub(since));
+    if !lag.rejected && !lag.not_owner && waited < MIRROR_BEHIND_LIMIT_SECONDS {
+        return None;
+    }
+    let tips = format!(
+        "Base {} · mirror {}",
+        short_commit(&lag.base_commit),
+        lag.pushed_commit.as_deref().map_or("none", short_commit)
+    );
+    let signal = if waited >= MIRROR_BEHIND_LIMIT_SECONDS {
+        format!("Mirror behind base for {}", format_duration(waited))
+    } else {
+        "Mirror behind Rosen base".to_owned()
+    };
+    if lag.not_owner {
+        return Some(
+            ProjectHealthItem::new(
+                "mirror-behind",
+                HealthSignalKind::MirrorBehind,
+                HealthSeverity::Warning,
+                signal,
+                "This Rosen server is not the mirror owner",
+                now_ms,
+            )
+            .with_detail(Some(tips)),
+        );
+    }
+    let attempt = retry_mirror_if_due(application, project, server, &lag, now).await?;
+    let detail = match &lag.error {
+        Some(error) => Some(format!(
+            "{tips} · {}",
+            error.lines().next().unwrap_or(error)
+        )),
+        None => Some(tips),
+    };
+    Some(
+        ProjectHealthItem::new(
+            "mirror-behind",
+            HealthSignalKind::MirrorBehind,
+            attempt.severity,
+            signal,
+            attempt.action,
+            attempt.at_secs.saturating_mul(1000),
+        )
+        .with_detail(detail),
+    )
+}
+
+async fn retry_mirror_if_due(
+    application: &AppHandle,
+    project: &ProjectItem,
+    server: &ProjectServer,
+    lag: &velocity_rosen::MirrorLag,
+    now: u64,
+) -> Option<MirrorAttempt> {
+    let previous = with_tracker(application, project.id, |tracker| {
+        tracker.mirror_attempt.clone()
+    });
+    if let Some(prev) = previous
+        && prev.base_commit == lag.base_commit
+        && prev.pushed_commit == lag.pushed_commit
+        && now.saturating_sub(prev.at_secs) < MIRROR_RETRY_COOLDOWN_SECS
+    {
+        return Some(prev);
+    }
+    if crate::rosen::paused(application) {
+        return Some(MirrorAttempt {
+            base_commit: lag.base_commit.clone(),
+            pushed_commit: lag.pushed_commit.clone(),
+            at_secs: now,
+            action: "Cannot retry push: Rosen servers are paused".into(),
+            severity: HealthSeverity::Warning,
+        });
+    }
+    let (action, severity, caught_up) =
+        match crate::rosen_mirror::retry_for_health(application, project.id, server).await {
+            Ok(MirrorRetryOutcome::UpToDate) => return None,
+            Ok(MirrorRetryOutcome::RetriedPush) => (
+                "Retried mirror push".to_owned(),
+                HealthSeverity::Warning,
+                None,
+            ),
+            Ok(MirrorRetryOutcome::CaughtUp { commits, new_base }) => (
+                format!(
+                    "Caught up {commits} commit(s) from mirror to {} (#501)",
+                    short_commit(&new_base)
+                ),
+                HealthSeverity::Info,
+                Some(new_base),
+            ),
+            Ok(MirrorRetryOutcome::Diverged {
+                base_commit,
+                mirror_commit,
+            }) => (
+                format!(
+                    "Mirror diverged · showing both tips ({} vs {})",
+                    short_commit(&base_commit),
+                    short_commit(&mirror_commit)
+                ),
+                HealthSeverity::Error,
+                None,
+            ),
+            Ok(MirrorRetryOutcome::NotApplicable(reason)) => {
+                (reason, HealthSeverity::Warning, None)
+            }
+            Err(error) => (
+                format!("Mirror push retry failed: {error}"),
+                HealthSeverity::Error,
+                None,
+            ),
+        };
+    crate::diagnostics::record(SOURCE, &format!("{}: {action}", project.name));
+    if caught_up.is_some() {
+        record_recent_action(
+            application,
+            project.id,
+            ProjectHealthItem::new(
+                "mirror-caught-up",
+                HealthSignalKind::MirrorBehind,
+                HealthSeverity::Info,
+                "Mirror was ahead of Rosen base",
+                action,
+                now.saturating_mul(1000),
+            ),
+            now,
+        );
+        return None;
+    }
+    let attempt = MirrorAttempt {
+        base_commit: lag.base_commit.clone(),
+        pushed_commit: lag.pushed_commit.clone(),
+        at_secs: now,
+        action,
+        severity,
+    };
+    with_tracker(application, project.id, |tracker| {
+        tracker.mirror_attempt = Some(attempt.clone());
+    });
+    Some(attempt)
+}
+
+/// Signal 2: Integration build hasn't covered the base for N lands or H hours (#509).
+async fn check_integration_uncovered(
+    application: &AppHandle,
+    project: &ProjectItem,
+    server: &ProjectServer,
+    last_outcome: Option<&str>,
+    now: u64,
+    now_ms: u64,
+) -> Option<ProjectHealthItem> {
+    let reading = server.clone();
+    let uncovered = tauri::async_runtime::spawn_blocking(move || integration::uncovered(&reading))
+        .await
+        .ok()?
+        .ok()?;
+    let waited = uncovered.since.map(|since| now.saturating_sub(since));
+    let overdue = waited.is_some_and(|secs| secs >= INTEGRATION_UNCOVERED_SECONDS);
+    if uncovered.lands == 0 || !(overdue || uncovered.lands >= INTEGRATION_UNCOVERED_LANDS) {
+        return None;
+    }
+    let signal = match waited {
+        Some(secs) => format!(
+            "Integration build has not covered the base for {} ({} lands)",
+            format_duration(secs),
+            uncovered.lands
+        ),
+        None => format!(
+            "Integration build has not covered the last {} lands",
+            uncovered.lands
+        ),
+    };
+    let (action, severity) = start_or_explain_integration(application, project.id, server).await;
+    let detail = last_outcome.map(|outcome| format!("Last build: {outcome}"));
+    Some(
+        ProjectHealthItem::new(
+            "integration-uncovered",
+            HealthSignalKind::IntegrationUncovered,
+            severity,
+            signal,
+            action,
+            now_ms,
+        )
+        .with_detail(detail),
+    )
+}
+
+async fn start_or_explain_integration(
+    application: &AppHandle,
+    project: u32,
+    server: &ProjectServer,
+) -> (String, HealthSeverity) {
+    if crate::rosen_landing::is_verifying(application, project) {
+        return ("Integration build is running".into(), HealthSeverity::Info);
+    }
+    if crate::rosen::paused(application) {
+        return (
+            "Cannot start integration build: Rosen servers are paused".into(),
+            HealthSeverity::Warning,
+        );
+    }
+    if velocity_rosen::memory::is_low() {
+        return (
+            "Cannot start integration build: machine memory is low".into(),
+            HealthSeverity::Warning,
+        );
+    }
+    match integration::try_slot() {
+        Ok(Some(slot)) => drop(slot),
+        Ok(None) => {
+            return (
+                "Cannot start integration build: another project holds the integration slot".into(),
+                HealthSeverity::Warning,
+            );
+        }
+        Err(error) => {
+            return (
+                format!("Cannot start integration build: slot lock error ({error})"),
+                HealthSeverity::Error,
+            );
+        }
+    }
+    let batch = match post_land::next_batch(server).await {
+        Ok(Some(batch)) => batch,
+        Ok(None) => {
+            return (
+                "Cannot start integration build: waiting on an unfixed post-land failure or no pending batch".into(),
+                HealthSeverity::Warning,
+            );
+        }
+        Err(error) => {
+            return (
+                format!("Cannot start integration build: Rosen server unreachable ({error})"),
+                HealthSeverity::Error,
+            );
+        }
+    };
+    let idle = crate::continuous_dispatch::integration_idle(application, project).unwrap_or(false);
+    let reading = server.clone();
+    let commit = batch.commit.clone();
+    let due =
+        tauri::async_runtime::spawn_blocking(move || integration::due(&reading, &commit, idle))
+            .await
+            .ok()
+            .and_then(Result::ok);
+    if due == Some(false) {
+        return (
+            format!(
+                "Cannot start integration build: last build already failed at {} (waiting for a fix to land)",
+                short_commit(&batch.commit)
+            ),
+            HealthSeverity::Warning,
+        );
+    }
+    crate::rosen_landing::wake(application);
+    (
+        format!(
+            "Started integration build on {}",
+            short_commit(&batch.commit)
+        ),
+        HealthSeverity::Info,
+    )
+}
+
+/// Signal 3: Integration or GitHub CI red on the base (#507, #509).
+async fn check_base_red(
+    application: &AppHandle,
+    project: &ProjectItem,
+    server: &ProjectServer,
+    now_ms: u64,
+) -> Vec<ProjectHealthItem> {
+    let mut items = Vec::new();
+    if let Some(ci) = &project.base_ci
+        && ci.state == BaseCiState::Failed
+    {
+        let repair_thread = project.ci_repairs.first().map(|repair| repair.thread);
+        let action = match repair_thread {
+            Some(thread) => format!("Fix-forward thread #{thread} active"),
+            None if !project.spec_locked => {
+                "Cannot start fix-forward thread: project spec is not locked".into()
+            }
+            None => "Queued fix-forward thread on next GitHub CI check".into(),
+        };
+        let commit = ci
+            .commit
+            .as_deref()
+            .map(|id| format!(" at {}", short_commit(id)))
+            .unwrap_or_default();
+        let detail = (!ci.failing.is_empty()).then(|| ci.failing.join(" · "));
+        items.push(
+            ProjectHealthItem::new(
+                "base-red:ci",
+                HealthSignalKind::BaseRed,
+                HealthSeverity::Error,
+                format!("GitHub CI red on base{commit}"),
+                action,
+                now_ms,
+            )
+            .with_detail(detail)
+            .with_thread(repair_thread),
+        );
+    }
+    let failures = velocity_rosen::build_repairs::build_failures(server)
+        .await
+        .unwrap_or_default();
+    if !failures.is_empty() || !project.build_repairs.is_empty() {
+        let repair_thread = project.build_repairs.first().map(|repair| repair.thread);
+        let action = match repair_thread {
+            Some(thread) => format!("Fix-forward thread #{thread} active"),
+            None if !project.spec_locked => {
+                "Cannot start fix-forward thread: project spec is not locked".into()
+            }
+            None => {
+                crate::rosen_landing::wake(application);
+                "Triggered fix-forward thread for red integration build".into()
+            }
+        };
+        let detail = failures
+            .first()
+            .map(|failure| format!("Culprit {}", short_commit(&failure.commit)));
+        items.push(
+            ProjectHealthItem::new(
+                "base-red:integration",
+                HealthSignalKind::BaseRed,
+                HealthSeverity::Error,
+                "Integration build red on base",
+                action,
+                now_ms,
+            )
+            .with_detail(detail)
+            .with_thread(repair_thread),
+        );
+    }
+    items
+}
+
+/// Signal 4: Landed issue still open > H hours with no green integration (#504, #509).
+fn check_landed_waiting(
+    dispatch: &DispatchHealthSnapshot,
+    last_outcome: Option<&str>,
+    now_ms: u64,
+) -> Option<ProjectHealthItem> {
+    let (first, rest) = dispatch.stalled_landed.split_first()?;
+    let listed = std::iter::once(first)
+        .chain(rest.iter().take(4))
+        .map(|number| format!("#{number}"))
+        .collect::<Vec<_>>()
+        .join(", ");
+    let more = if rest.len() > 4 { ", …" } else { "" };
+    let count = dispatch.stalled_landed.len();
+    let subject = if count == 1 {
+        "1 landed issue waits".to_owned()
+    } else {
+        format!("{count} landed issues wait")
+    };
+    let signal = format!("{subject} for a green integration build ({listed}{more})");
+    let reason = last_outcome.unwrap_or("no integration build has finished");
+    Some(
+        ProjectHealthItem::new(
+            "landed-waiting",
+            HealthSignalKind::LandedIssuesWaiting,
+            HealthSeverity::Warning,
+            signal,
+            "Waiting for a green integration build to close landed issues",
+            now_ms,
+        )
+        .with_detail(Some(format!("Last build: {reason}"))),
+    )
+}
+
+/// Signal 5: Issue parked more than the set time (#506, #509).
+fn collect_parked_items(application: &AppHandle, project: u32, now: u64) -> Vec<ProjectHealthItem> {
+    with_tracker(application, project, |tracker| {
+        tracker
+            .parked
+            .iter()
+            .filter_map(|(&issue, record)| parked_item(issue, record, now))
+            .collect()
+    })
+}
+
+fn parked_item(issue: u32, record: &ParkedRecord, now: u64) -> Option<ProjectHealthItem> {
+    match record {
+        ParkedRecord::Resolved {
+            action,
+            acted_at_ms,
+            expires_secs,
+        } if *expires_secs > now => Some(ProjectHealthItem::new(
+            format!("parked:{issue}"),
+            HealthSignalKind::IssueParked,
+            HealthSeverity::Info,
+            format!("Issue #{issue} parked under no-change"),
+            action.clone(),
+            *acted_at_ms,
+        )),
+        ParkedRecord::Failed { error, acted_at_ms } => Some(
+            ProjectHealthItem::new(
+                format!("parked:{issue}"),
+                HealthSignalKind::IssueParked,
+                HealthSeverity::Warning,
+                format!("Issue #{issue} parked under no-change"),
+                "Could not resolve parked no-change issue",
+                *acted_at_ms,
+            )
+            .with_detail(Some(error.clone())),
+        ),
+        ParkedRecord::Manual { seen_secs }
+            if now.saturating_sub(*seen_secs) >= MANUAL_PARKED_LIMIT_SECS =>
+        {
+            Some(ProjectHealthItem::new(
+                format!("parked:{issue}"),
+                HealthSignalKind::IssueParked,
+                HealthSeverity::Warning,
+                format!(
+                    "Issue #{issue} parked under no-change for {} (no bot report)",
+                    format_duration(now.saturating_sub(*seen_secs))
+                ),
+                "Needs manual review to remove no-change",
+                seen_secs.saturating_mul(1000),
+            ))
+        }
+        _ => None,
+    }
+}
+
+/// Signal 6: Thread in review more than 20 min without landing (#487, #509).
+async fn check_review_stalled(
+    application: &AppHandle,
+    project: &ProjectItem,
+    server: &ProjectServer,
+    now: u64,
+    now_ms: u64,
+) -> Vec<ProjectHealthItem> {
+    let mut items = Vec::new();
+    let branch = project.default_branch.trim();
+    let base_branch = if branch.is_empty() { "master" } else { branch };
+    let review_threads: Vec<_> = project
+        .threads
+        .iter()
+        .filter(|thread| {
+            thread.state == ThreadState::Review
+                && thread.review_stage != Some(ReviewStage::Fixing)
+                && thread.rosen_change.is_some()
+        })
+        .collect();
+    let active_keys: Vec<(u32, u64)> = review_threads
+        .iter()
+        .map(|thread| (thread.id, thread.rosen_progress_generation))
+        .collect();
+    with_tracker(application, project.id, |tracker| {
+        tracker
+            .review_seen_secs
+            .retain(|key, _| active_keys.contains(key));
+        tracker
+            .review_checked
+            .retain(|key, _| active_keys.contains(key));
+    });
+    for thread in review_threads {
+        let Some(change) = thread.rosen_change.as_deref() else {
+            continue;
+        };
+        let key = (thread.id, thread.rosen_progress_generation);
+        let since = review_since(application, project.id, server, change, key, now).await;
+        let waited = now.saturating_sub(since);
+        if waited < REVIEW_STUCK_LIMIT_SECONDS {
+            continue;
+        }
+        let attempt = check_stalled_review_thread(
+            application,
+            project.id,
+            server,
+            thread,
+            change,
+            base_branch,
+            now,
+        )
+        .await;
+        items.push(
+            ProjectHealthItem::new(
+                format!("review-stalled:{}", thread.id),
+                HealthSignalKind::ReviewStalled,
+                attempt.severity,
+                format!(
+                    "Thread #{} in review for {} without landing",
+                    thread.id,
+                    format_duration(waited)
+                ),
+                attempt.action,
+                attempt.at_secs.saturating_mul(1000).min(now_ms),
+            )
+            .with_detail(Some(thread.title.clone()))
+            .with_thread(Some(thread.id)),
+        );
+    }
+    items
+}
+
+async fn review_since(
+    application: &AppHandle,
+    project: u32,
+    server: &ProjectServer,
+    change: &str,
+    key: (u32, u64),
+    now: u64,
+) -> u64 {
+    if let Ok(Some(named_at)) = velocity_rosen::landing::named_since(server, change).await {
+        return named_at;
+    }
+    with_tracker(application, project, |tracker| {
+        *tracker.review_seen_secs.entry(key).or_insert(now)
+    })
+}
+
+async fn check_stalled_review_thread(
+    application: &AppHandle,
+    project: u32,
+    server: &ProjectServer,
+    thread: &velocity_store::ThreadItem,
+    change: &str,
+    base_branch: &str,
+    now: u64,
+) -> ReviewAttempt {
+    let key = (thread.id, thread.rosen_progress_generation);
+    if let Some(prev) = with_tracker(application, project, |tracker| {
+        tracker.review_checked.get(&key).cloned()
+    }) && now.saturating_sub(prev.at_secs) < REVIEW_CHECK_COOLDOWN_SECS
+    {
+        return prev;
+    }
+    let attempt = match velocity_rosen::landing::land_check(server, change).await {
+        Ok(LandCheckOutcome::AlreadyLanded { commit }) => {
+            let _ = crate::rosen_events::record_landed(
+                application,
+                project,
+                change,
+                thread.rosen_progress_generation,
+            );
+            let action = format!(
+                "Change already landed at {} · synced thread state",
+                short_commit(&commit)
+            );
+            record_recent_review_action(application, project, thread, &action, now);
+            ReviewAttempt {
+                at_secs: now,
+                action,
+                severity: HealthSeverity::Info,
+            }
+        }
+        Ok(LandCheckOutcome::Refused(refusal)) => {
+            let (reason, instructions) = refusal_instructions(change, base_branch, refusal);
+            let message = format!("Land refused · {reason}\n\n{instructions}");
+            let sent = crate::rosen_events::record_land_refusal(
+                application,
+                project,
+                change,
+                thread.rosen_progress_generation,
+                &message,
+            );
+            let action = match sent {
+                Ok(_) => format!("Asked Rosen and sent land refusal ({reason}) to author (#487)"),
+                Err(error) => format!("Land refused ({reason}) · could not deliver: {error}"),
+            };
+            crate::diagnostics::record(
+                SOURCE,
+                &format!("Project {project} thread #{}: {action}", thread.id),
+            );
+            record_recent_review_action(application, project, thread, &action, now);
+            ReviewAttempt {
+                at_secs: now,
+                action,
+                severity: HealthSeverity::Warning,
+            }
+        }
+        Ok(LandCheckOutcome::Landable) => {
+            crate::rosen_landing::wake(application);
+            ReviewAttempt {
+                at_secs: now,
+                action: "Change is landable · retried landing".into(),
+                severity: HealthSeverity::Info,
+            }
+        }
+        Err(error) => ReviewAttempt {
+            at_secs: now,
+            action: format!("Could not ask Rosen for land refusal: {error}"),
+            severity: HealthSeverity::Warning,
+        },
+    };
+    with_tracker(application, project, |tracker| {
+        tracker.review_checked.insert(key, attempt.clone());
+    });
+    attempt
+}
+
+fn record_recent_review_action(
+    application: &AppHandle,
+    project: u32,
+    thread: &velocity_store::ThreadItem,
+    action: &str,
+    now: u64,
+) {
+    record_recent_action(
+        application,
+        project,
+        ProjectHealthItem::new(
+            format!("review-stalled:{}", thread.id),
+            HealthSignalKind::ReviewStalled,
+            HealthSeverity::Info,
+            format!("Thread #{} was in review over 20 min", thread.id),
+            action.to_owned(),
+            now.saturating_mul(1000),
+        )
+        .with_detail(Some(thread.title.clone()))
+        .with_thread(Some(thread.id)),
+        now,
+    );
+}
+
+/// Signal 7: Slots free and ready/open issues, but nothing dispatched for 10 min (#509).
+fn check_dispatch_idle(
+    application: &AppHandle,
+    project: &ProjectItem,
+    dispatch: &DispatchHealthSnapshot,
+    now: u64,
+    now_ms: u64,
+) -> Option<ProjectHealthItem> {
+    let slots = project.continuous_dispatch.slots;
+    let busy = busy_count(project);
+    let has_free_slot = slots > 0 && !project.continuous_dispatch.paused && busy < slots;
+    let has_candidates = dispatch.ready_count > 0
+        || !dispatch.skipped.is_empty()
+        || dispatch.backlog_error.is_some();
+    if !has_free_slot || !has_candidates {
+        with_tracker(application, project.id, |tracker| {
+            tracker.free_slot_since = None;
+            tracker.last_logged_skip = None;
+        });
+        return None;
+    }
+    let since = with_tracker(application, project.id, |tracker| {
+        if dispatch.last_dispatched_secs != tracker.last_seen_dispatch {
+            tracker.last_seen_dispatch = dispatch.last_dispatched_secs;
+            tracker.free_slot_since = Some(now);
+            tracker.last_logged_skip = None;
+        }
+        *tracker.free_slot_since.get_or_insert(now)
+    });
+    let waited = now.saturating_sub(since);
+    if waited < DISPATCH_IDLE_LIMIT_SECONDS {
+        return None;
+    }
+    let detail = dispatch_idle_detail(project, dispatch);
+    let should_log = with_tracker(application, project.id, |tracker| {
+        if tracker.last_logged_skip.as_deref() == Some(detail.as_str()) {
+            false
+        } else {
+            tracker.last_logged_skip = Some(detail.clone());
+            true
+        }
+    });
+    if should_log {
+        crate::diagnostics::record(
+            SOURCE,
+            &format!(
+                "{}: slots free ({busy}/{slots}) for {} with nothing dispatched · {detail}",
+                project.name,
+                format_duration(waited)
+            ),
+        );
+    }
+    let action = if !dispatch.skipped.is_empty() {
+        format!(
+            "Logged why {} open issue(s) were skipped",
+            dispatch.skipped.len()
+        )
+    } else {
+        "Logged why continuous dispatch is idle".into()
+    };
+    Some(
+        ProjectHealthItem::new(
+            "dispatch-idle",
+            HealthSignalKind::DispatchIdle,
+            HealthSeverity::Warning,
+            format!(
+                "Slots free ({busy}/{slots}) for {} with nothing dispatched",
+                format_duration(waited)
+            ),
+            action,
+            now_ms,
+        )
+        .with_detail(Some(detail)),
+    )
+}
+
+fn dispatch_idle_detail(project: &ProjectItem, dispatch: &DispatchHealthSnapshot) -> String {
+    let mut parts = Vec::new();
+    if let Some(error) = &dispatch.backlog_error {
+        parts.push(format!("backlog error: {error}"));
+    }
+    if !project.spec_locked {
+        parts.push("spec is not locked".into());
+    }
+    if velocity_rosen::memory::is_low() {
+        parts.push("machine memory is low".into());
+    }
+    if !dispatch.skipped.is_empty() {
+        parts.push(summarize_skipped_issues(&dispatch.skipped, 6));
+    } else if dispatch.ready_count > 0 && parts.is_empty() {
+        parts.push(format!(
+            "{} ready work item(s) waiting for dispatch pass",
+            dispatch.ready_count
+        ));
+    } else if parts.is_empty() {
+        parts.push(format!("{} open issue(s) inspected", dispatch.open_issues));
+    }
+    parts.join(" · ")
+}
+
+/// Signal 8: Post-land check stopped for running too long (#486, #509).
+async fn check_post_land_stopped(
+    application: &AppHandle,
+    project: u32,
+    server: &ProjectServer,
+) -> Option<ProjectHealthItem> {
+    let record = with_tracker(application, project, |tracker| {
+        tracker.stopped_check.clone()
+    })?;
+    let reading = server.clone();
+    let green = tauri::async_runtime::spawn_blocking(move || integration::last_green(&reading))
+        .await
+        .ok()
+        .and_then(Result::ok)
+        .flatten();
+    if green.as_deref() == Some(record.commit.as_str()) {
+        with_tracker(application, project, |tracker| {
+            tracker.stopped_check = None;
+        });
+        return None;
+    }
+    Some(stopped_check_item(
+        &record.commit,
+        &record.command,
+        &record.stopped,
+        record.acted_at_ms,
+    ))
+}
+
+fn stopped_check_item(
+    commit: &str,
+    command: &str,
+    stopped: &StoppedCheck,
+    acted_at_ms: u64,
+) -> ProjectHealthItem {
+    let detail = format_stopped_check_detail(
+        command,
+        stopped.test.as_deref(),
+        stopped.process.as_deref(),
+        &stopped.reason,
+    );
+    ProjectHealthItem::new(
+        "post-land-stopped",
+        HealthSignalKind::PostLandStopped,
+        HealthSeverity::Error,
+        format!("Post-land check stopped on {}", short_commit(commit)),
+        "Stopped hung check and reported test and process (#486)",
+        acted_at_ms,
+    )
+    .with_detail(Some(detail))
+}
+
+async fn read_last_outcome(server: &ProjectServer) -> Option<String> {
+    let reading = server.clone();
+    tauri::async_runtime::spawn_blocking(move || integration::last_outcome(&reading))
+        .await
+        .ok()?
+        .ok()
+        .flatten()
+}
+
+fn record_recent_action(application: &AppHandle, project: u32, item: ProjectHealthItem, now: u64) {
+    with_tracker(application, project, |tracker| {
+        tracker.recent_actions.insert(
+            item.key.clone(),
+            RecentAction {
+                item,
+                expires_secs: now.saturating_add(RECENT_ACTION_TTL_SECS),
+            },
+        );
+    });
+}
+
+fn collect_recent_actions(
+    application: &AppHandle,
+    project: u32,
+    now: u64,
+    active: &[ProjectHealthItem],
+) -> Vec<ProjectHealthItem> {
+    with_tracker(application, project, |tracker| {
+        tracker
+            .recent_actions
+            .retain(|_, entry| entry.expires_secs > now);
+        tracker
+            .recent_actions
+            .values()
+            .filter(|entry| !active.iter().any(|item| item.key == entry.item.key))
+            .map(|entry| entry.item.clone())
+            .collect()
+    })
+}
+
+/// Preserves each signal's `acted_at_ms` across periodic polls while its action and detail
+/// are unchanged, so the strip shows when the action was actually taken rather than "now".
+fn stabilize_and_publish(
+    application: &AppHandle,
+    project: u32,
+    mut items: Vec<ProjectHealthItem>,
+    now_ms: u64,
+) {
+    let Some(managed) = application.try_state::<ManagedProjectHealth>() else {
+        return;
+    };
+    let changed = {
+        let mut reg = registry(&managed);
+        let tracker = reg.projects.entry(project).or_default();
+        let active_keys: Vec<String> = items.iter().map(|item| item.key.clone()).collect();
+        tracker
+            .acted_times
+            .retain(|key, _| active_keys.contains(key));
+        for item in &mut items {
+            let detail = item.detail.clone().unwrap_or_default();
+            let stamped = item.acted_at_ms.parse::<u64>().unwrap_or(now_ms);
+            match tracker.acted_times.get(&item.key) {
+                Some((prev_action, prev_detail, prev_at))
+                    if prev_action == &item.action && prev_detail == &detail =>
+                {
+                    item.acted_at_ms = prev_at.to_string();
+                }
+                _ => {
+                    tracker
+                        .acted_times
+                        .insert(item.key.clone(), (item.action.clone(), detail, stamped));
+                }
+            }
+        }
+        let previous = reg.views.get(&project);
+        if previous == Some(&items) {
+            false
+        } else {
+            reg.views.insert(project, items.clone());
+            true
+        }
+    };
+    if changed {
+        emit_view(application, project, items);
+    }
+}
+
+fn upsert_item(list: &mut Vec<ProjectHealthItem>, item: ProjectHealthItem) {
+    if let Some(existing) = list.iter_mut().find(|entry| entry.key == item.key) {
+        *existing = item;
+    } else {
+        list.push(item);
+    }
+}
+
+fn emit_view(application: &AppHandle, project: u32, items: Vec<ProjectHealthItem>) {
+    let view = ProjectHealthView {
+        project_identifier: project,
+        items,
+    };
+    if let Err(error) = (ProjectHealthChanged { view }).emit(application) {
+        eprintln!("Could not publish project health for project {project}: {error}");
+    }
+}
+
+fn with_tracker<T: Default>(
+    application: &AppHandle,
+    project: u32,
+    action: impl FnOnce(&mut ProjectHealthTracker) -> T,
+) -> T {
+    let Some(managed) = application.try_state::<ManagedProjectHealth>() else {
+        return T::default();
+    };
+    let mut reg = registry(&managed);
+    action(reg.projects.entry(project).or_default())
+}
+
+fn unix_seconds() -> u64 {
+    unix_millis() / 1000
+}
+
+fn unix_millis() -> u64 {
+    let millis = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_millis();
+    u64::try_from(millis).unwrap_or(u64::MAX)
+}

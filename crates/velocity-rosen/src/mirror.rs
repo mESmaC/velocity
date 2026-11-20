@@ -16,6 +16,19 @@ pub struct MirrorObservation {
     attempted_commit: Option<String>,
 }
 
+/// Snapshot of a mirror that is behind the project's Rosen base (#509).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct MirrorLag {
+    pub remote: String,
+    pub base_commit: String,
+    pub pushed_commit: Option<String>,
+    /// Unix seconds when the oldest unpushed commit landed (or the last mirror event).
+    pub behind_since_secs: Option<u64>,
+    pub rejected: bool,
+    pub not_owner: bool,
+    pub error: Option<String>,
+}
+
 #[derive(Deserialize)]
 struct MirrorDetail {
     status: String,
@@ -49,6 +62,127 @@ pub async fn mirror_remote(server: &ProjectServer) -> Result<Option<String>, Ros
     tokio::task::spawn_blocking(move || read_mirror_remote(&reading))
         .await
         .map_err(|error| RosenError::MirrorData(error.to_string()))?
+}
+
+/// Returns how the mirror trails the base, or `None` when synced or unconfigured (#509).
+pub async fn mirror_lag(server: &ProjectServer) -> Result<Option<MirrorLag>, RosenError> {
+    let reading = server.clone();
+    tokio::task::spawn_blocking(move || read_mirror_lag(&reading))
+        .await
+        .map_err(|error| RosenError::MirrorData(error.to_string()))?
+}
+
+fn read_mirror_lag(server: &ProjectServer) -> Result<Option<MirrorLag>, RosenError> {
+    let path = server.data_dir().join("metadata.sqlite");
+    if !path.is_file() {
+        return Ok(None);
+    }
+    let mut connection = Connection::open_with_flags(path, OpenFlags::SQLITE_OPEN_READ_ONLY)?;
+    connection.busy_timeout(std::time::Duration::from_secs(2))?;
+    let transaction = connection.transaction()?;
+    if !has_table(&transaction, "mirror")? || !has_table(&transaction, "base_refs")? {
+        return Ok(None);
+    }
+    let Some((remote, pushed)): Option<(String, Option<String>)> = transaction
+        .query_row(
+            "SELECT remote, pushed FROM mirror WHERE id = 1",
+            [],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .optional()?
+    else {
+        return Ok(None);
+    };
+    let Some((base_ref, base_commit)): Option<(String, String)> = transaction
+        .query_row("SELECT name, target FROM base_refs LIMIT 1", [], |row| {
+            Ok((row.get(0)?, row.get(1)?))
+        })
+        .optional()?
+    else {
+        return Ok(None);
+    };
+    if pushed.as_deref() == Some(base_commit.as_str()) {
+        return Ok(None);
+    }
+    let behind_since_ms = oldest_unpushed_ms(&transaction, &base_ref, pushed.as_deref())?;
+    let (rejected, not_owner, error, event_ms) = latest_mirror_event(&transaction, &remote)?;
+    Ok(Some(MirrorLag {
+        remote,
+        base_commit,
+        pushed_commit: pushed,
+        behind_since_secs: behind_since_ms.or(event_ms).map(|ms| ms / 1000),
+        rejected,
+        not_owner,
+        error,
+    }))
+}
+
+fn has_table(connection: &Connection, name: &str) -> Result<bool, rusqlite::Error> {
+    connection.query_row(
+        "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?1)",
+        [name],
+        |row| row.get(0),
+    )
+}
+
+fn oldest_unpushed_ms(
+    connection: &Connection,
+    base_ref: &str,
+    pushed: Option<&str>,
+) -> Result<Option<u64>, rusqlite::Error> {
+    if !has_table(connection, "base_history")? || !has_table(connection, "events")? {
+        return Ok(None);
+    }
+    connection.query_row(
+        "WITH unpushed AS (
+             SELECT h.commit_id FROM base_history h
+             WHERE h.ref_name = ?1
+               AND h.seq > COALESCE(
+                   (SELECT seq FROM base_history WHERE ref_name = ?1 AND commit_id = ?2),
+                   0
+               )
+         )
+         SELECT MIN(created_at) FROM events
+         WHERE kind IN ('landed', 'reverted')
+           AND json_extract(detail, '$.commit') IN (SELECT commit_id FROM unpushed)",
+        rusqlite::params![base_ref, pushed],
+        |row| row.get(0),
+    )
+}
+
+fn latest_mirror_event(
+    connection: &Connection,
+    remote: &str,
+) -> Result<(bool, bool, Option<String>, Option<u64>), rusqlite::Error> {
+    if !has_table(connection, "events")? {
+        return Ok((false, false, None, None));
+    }
+    let row: Option<(String, u64)> = connection
+        .query_row(
+            "SELECT detail, created_at FROM events WHERE kind = 'mirror' ORDER BY seq DESC LIMIT 1",
+            [],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .optional()?;
+    let Some((raw, created_at)) = row else {
+        return Ok((false, false, None, None));
+    };
+    let Ok(detail) = serde_json::from_str::<MirrorDetail>(&raw) else {
+        return Ok((false, false, None, Some(created_at)));
+    };
+    if detail
+        .remote
+        .as_deref()
+        .is_some_and(|failed_remote| failed_remote != remote)
+    {
+        return Ok((false, false, None, None));
+    }
+    let not_owner = detail.status == "not_owner";
+    let rejected = detail.status == "failed" && detail.rejected;
+    let error = (detail.status == "failed")
+        .then_some(detail.error)
+        .flatten();
+    Ok((rejected, not_owner, error, Some(created_at)))
 }
 
 fn read_mirror_remote(server: &ProjectServer) -> Result<Option<String>, RosenError> {
@@ -158,13 +292,16 @@ fn failure_state(
     let retry_at = detail
         .retry_in_ms
         .map(|delay| created_at.saturating_add(delay).to_string());
-    Some(MirrorState::new(
-        detail.rejected,
-        detail
-            .error
-            .as_deref()
-            .unwrap_or("Rosen reported no mirror error output."),
-        retry_at,
-        pushed,
-    ))
+    Some(
+        MirrorState::new(
+            detail.rejected,
+            detail
+                .error
+                .as_deref()
+                .unwrap_or("Rosen reported no mirror error output."),
+            retry_at,
+            pushed,
+        )
+        .with_base_commit(base),
+    )
 }

@@ -1,6 +1,6 @@
 //! Runs Rosen verification commands and keeps a reusable, exact build checkout.
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeSet, HashMap, HashSet};
 use std::fs::File;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
@@ -8,6 +8,9 @@ use std::time::{Duration, Instant};
 
 use rosen_client::protocol::CheckPriority;
 use rosen_client::run_queue::{self, RunClass, RunQueue, Turn};
+use sysinfo::{Pid, ProcessRefreshKind, ProcessesToUpdate, System, UpdateKind};
+use velocity_core::project_health::extract_running_test;
+use velocity_core::rosen_checker::StoppedCheck;
 
 use crate::checkout::{self, MergeCheckout};
 use crate::process::{background_command, hidden_command};
@@ -48,6 +51,8 @@ pub struct FailedCommand {
     pub exit_code: Option<i32>,
     /// Standard output and error together, with a diagnostic on a silence timeout.
     pub output: String,
+    /// Present when the runner stopped the command at a time or silence limit (#486).
+    pub stopped: Option<StoppedCheck>,
 }
 
 /// Inspects the change's current merge result for conflicts and generated paths.
@@ -185,20 +190,41 @@ fn run_held_commands(
             std::thread::sleep(POLL);
         }
         let outcome = run_one(folder, command, &log, (priority, held), silence_limit)?;
-        let exit_code = match outcome {
+        let (exit_code, stop_info) = match outcome {
             CommandOutcome::Exited(0) => continue,
-            CommandOutcome::Exited(code) => Some(code),
-            CommandOutcome::TimeLimit | CommandOutcome::SilenceLimit => None,
+            CommandOutcome::Exited(code) => (Some(code), None),
+            CommandOutcome::TimeLimit { process } => {
+                (None, Some(("stopped after 60 minutes time limit", process)))
+            }
+            CommandOutcome::SilenceLimit { process } => (
+                None,
+                Some(("stopped after 10 minutes without new output", process)),
+            ),
         };
         let bytes = std::fs::read(&log).unwrap_or_default();
         let mut output = String::from_utf8_lossy(&bytes).into_owned();
-        if matches!(outcome, CommandOutcome::SilenceLimit) {
-            output.push_str("\n[Velocity] Stopped after 10 minutes without new output.\n");
-        }
+        let stopped = stop_info.map(|(reason, process)| {
+            let test = extract_running_test(&output);
+            let mut note = format!("\n[Velocity] Command {reason}.");
+            if let Some(test) = &test {
+                note.push_str(&format!(" Test: {test}."));
+            }
+            if let Some(process) = &process {
+                note.push_str(&format!(" Process: {process}."));
+            }
+            note.push('\n');
+            output.push_str(&note);
+            StoppedCheck {
+                test,
+                process,
+                reason: reason.to_owned(),
+            }
+        });
         return Ok(Some(FailedCommand {
             command: command.clone(),
             exit_code,
             output,
+            stopped,
         }));
     }
     Ok(None)
@@ -220,8 +246,8 @@ fn class_of(priority: Priority) -> RunClass {
 
 enum CommandOutcome {
     Exited(i32),
-    TimeLimit,
-    SilenceLimit,
+    TimeLimit { process: Option<String> },
+    SilenceLimit { process: Option<String> },
 }
 
 /// A process ended by a signal counts as status 1. `held` is the run queue turn the
@@ -264,8 +290,9 @@ fn run_one(
             return Ok(CommandOutcome::Exited(status.code().unwrap_or(1)));
         }
         if started.elapsed() >= COMMAND_LIMIT {
+            let process = active_descendant_process(child.id());
             stop_tree(&mut child);
-            return Ok(CommandOutcome::TimeLimit);
+            return Ok(CommandOutcome::TimeLimit { process });
         }
         if let Some(limit) = silence_limit {
             let length = output.metadata().ok().map(|metadata| metadata.len());
@@ -274,8 +301,9 @@ fn run_one(
                 last_output = Instant::now();
                 log_length = length;
             } else if last_output.elapsed() >= limit {
+                let process = active_descendant_process(child.id());
                 stop_tree(&mut child);
-                return Ok(CommandOutcome::SilenceLimit);
+                return Ok(CommandOutcome::SilenceLimit { process });
             }
         }
         std::thread::sleep(POLL);
@@ -308,6 +336,63 @@ fn shell_program(program: &str, priority: Priority) -> Command {
     match priority {
         Priority::Landing => hidden_command(program),
         Priority::Background => background_command(program),
+    }
+}
+
+/// Reads the deepest active descendant under `root_pid` right before stopping the tree,
+/// so a timed-out or silent post-land check names the hung process (#486).
+fn active_descendant_process(root_pid: u32) -> Option<String> {
+    let mut system = System::new().ok()?;
+    system.refresh_processes_specifics(ProcessesToUpdate::All, true, ProcessRefreshKind::nothing());
+    let mut children: HashMap<Pid, Vec<Pid>> = HashMap::new();
+    for process in system.processes().values() {
+        if let Some(parent) = process.parent() {
+            children.entry(parent).or_default().push(process.pid());
+        }
+    }
+    let root = Pid::from_u32(root_pid);
+    let mut queue = vec![(root, 0usize)];
+    let mut seen = HashSet::from([root]);
+    let mut index = 0;
+    while let Some(&(pid, depth)) = queue.get(index) {
+        if let Some(next) = children.get(&pid) {
+            for &child in next {
+                if seen.insert(child) {
+                    queue.push((child, depth + 1));
+                }
+            }
+        }
+        index += 1;
+    }
+    let pids: Vec<Pid> = queue.iter().map(|(pid, _)| *pid).collect();
+    system.refresh_processes_specifics(
+        ProcessesToUpdate::Some(&pids),
+        true,
+        ProcessRefreshKind::nothing().with_cmd(UpdateKind::Always),
+    );
+    let deepest = queue
+        .into_iter()
+        .filter(|(pid, _)| system.process(*pid).is_some())
+        .max_by_key(|&(pid, depth)| (depth, pid.as_u32()))?;
+    let process = system.process(deepest.0)?;
+    Some(format_process(process))
+}
+
+fn format_process(process: &sysinfo::Process) -> String {
+    let name = process.name().to_string_lossy();
+    let pid = process.pid().as_u32();
+    let args: Vec<String> = process
+        .cmd()
+        .iter()
+        .skip(1)
+        .take(3)
+        .map(|arg| arg.to_string_lossy().into_owned())
+        .filter(|arg| !arg.is_empty())
+        .collect();
+    if args.is_empty() {
+        format!("{name} (PID {pid})")
+    } else {
+        format!("{name} {} (PID {pid})", args.join(" "))
     }
 }
 

@@ -16,8 +16,9 @@ use velocity_store::continuous_dispatch::{busy_count, can_finish_empty_dispatch}
 use velocity_store::issues::ThreadIssue;
 use velocity_store::{ProjectItem, TaskAttribution, VersionControl};
 use velocity_threads::continuous_dispatch::{
-    DispatchView, DispatchWork, dispatchable_issue, dispatchable_task, integration_notice,
-    ordered_work, plan_task, stalled_landed_issues, uncovered_base_notice,
+    DispatchView, DispatchWork, SkippedIssue, dispatchable_issue, dispatchable_task,
+    integration_notice, issue_skip_reason, ordered_work, plan_task, stalled_landed_issues,
+    uncovered_base_notice,
 };
 
 #[derive(Clone, Default)]
@@ -213,10 +214,91 @@ pub(crate) fn integration_idle(application: &AppHandle, identifier: u32) -> Resu
         .is_empty())
 }
 
+/// When continuous dispatch last started a task or issue for each project, in Unix seconds (#509).
+type LastDispatched = Mutex<BTreeMap<u32, u64>>;
+
+/// Project-level continuous dispatch state for project health checks (#509).
+#[derive(Clone, Debug, Default)]
+pub(crate) struct DispatchHealthSnapshot {
+    pub backlog_error: Option<String>,
+    pub open_issues: usize,
+    pub ready_count: usize,
+    pub skipped: Vec<SkippedIssue>,
+    pub stalled_landed: Vec<u32>,
+    pub last_dispatched_secs: Option<u64>,
+}
+
+/// Reads the current dispatch backlog, skip reasons, stalled landed issues and last dispatch
+/// time for `identifier` without issuing any GitHub requests (#509).
+pub(crate) fn health_snapshot(
+    application: &AppHandle,
+    identifier: u32,
+    now: u64,
+) -> Option<DispatchHealthSnapshot> {
+    let backlog = application
+        .try_state::<Backlogs>()
+        .and_then(|backlogs| lock(backlogs.inner(), "dispatch backlog").ok())
+        .and_then(|backlogs| backlogs.get(&identifier).cloned())
+        .unwrap_or_default();
+    let last_dispatched_secs = application
+        .try_state::<LastDispatched>()
+        .and_then(|times| lock(times.inner(), "last dispatched").ok())
+        .and_then(|times| times.get(&identifier).copied());
+    let mut claimed = claimed_pieces(application, identifier).unwrap_or_default();
+    let unblocks = unblock_counts(application, &backlog.repository).unwrap_or_default();
+    let store = lock(
+        application.state::<ManagedStateStore>().inner(),
+        "persisted state",
+    )
+    .ok()?;
+    let project = store.project(identifier)?;
+    let issues_known = backlog.error.is_none();
+    let stalled_landed = stalled_landed_issues(project, &backlog.repository, &backlog.issues, now);
+    let skipped = if issues_known {
+        backlog
+            .issues
+            .iter()
+            .filter_map(|issue| {
+                issue_skip_reason(project, &backlog.repository, issue, &claimed, now)
+            })
+            .collect()
+    } else {
+        Vec::new()
+    };
+    include_overlap_waits(project, &backlog.repository, &mut claimed);
+    include_launch_holds(project, &backlog.repository, &mut claimed);
+    let ready_count = ordered_work(
+        project,
+        &backlog.repository,
+        &backlog.issues,
+        &claimed,
+        issues_known,
+        &unblocks,
+    )
+    .len();
+    Some(DispatchHealthSnapshot {
+        backlog_error: backlog.error,
+        open_issues: backlog.issues.len(),
+        ready_count,
+        skipped,
+        stalled_landed,
+        last_dispatched_secs,
+    })
+}
+
+fn record_dispatched(application: &AppHandle, identifier: u32) {
+    if let Some(times) = application.try_state::<LastDispatched>()
+        && let Ok(mut times) = lock(times.inner(), "last dispatched")
+    {
+        times.insert(identifier, unix_seconds());
+    }
+}
+
 pub fn initialize(application: &AppHandle) {
     application.manage(Backlogs::default());
     application.manage(Dependencies::default());
     application.manage(IntegrationRecords::default());
+    application.manage(LastDispatched::default());
     // Without its executable or data folder Velocity cannot start a bounded review; a
     // parked issue then returns to dispatch when its report passes the limit (#506).
     if let (Ok(executable), Ok(data)) = (std::env::current_exe(), application.path().app_data_dir())
@@ -828,6 +910,7 @@ fn start_issue(
         (plan.launch, thread)
     };
     crate::threads::start_planned_with_selection(application, plan, thread, false)?;
+    record_dispatched(application, identifier);
     Ok(())
 }
 
@@ -858,6 +941,7 @@ fn start_task(application: &AppHandle, identifier: u32, task: u32) -> Result<(),
         (plan, thread)
     };
     crate::threads::start_planned_with_selection(application, plan, thread, false)?;
+    record_dispatched(application, identifier);
     Ok(())
 }
 

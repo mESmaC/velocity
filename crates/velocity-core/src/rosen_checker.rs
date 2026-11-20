@@ -7,6 +7,14 @@ use crate::scout_sweep::feed_line;
 /// The most of a failed command's output its author is sent: the end, where the error is.
 const OUTPUT_TAIL: usize = 4000;
 
+/// What a stopped post-land check was running when its time or silence limit hit (#486).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct StoppedCheck {
+    pub test: Option<String>,
+    pub process: Option<String>,
+    pub reason: String,
+}
+
 /// A check command that did not pass.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct FailedCheck {
@@ -15,6 +23,8 @@ pub struct FailedCheck {
     pub exit_code: Option<i32>,
     /// What it printed, standard output and error together.
     pub output: String,
+    /// Present when the command was stopped at a time or silence limit (#486).
+    pub stopped: Option<StoppedCheck>,
 }
 
 /// What the author's agent is told when its approved change no longer merges onto the base.
@@ -125,9 +135,19 @@ pub fn refused_line(change: &str, reason: &str) -> String {
 /// What Rosen is told a failed post-land command printed. Rosen keeps it with the revert and
 /// hands it to the reverted change's owner, so it names the command and holds only the end.
 pub fn failed_check_report(failed: &FailedCheck) -> String {
-    let ended = match failed.exit_code {
-        Some(code) => format!("exited with status {code}"),
-        None => "ran too long and was stopped".to_owned(),
+    let ended = match (failed.exit_code, &failed.stopped) {
+        (Some(code), _) => format!("exited with status {code}"),
+        (None, Some(stopped)) => {
+            let mut details = vec![stopped.reason.clone()];
+            if let Some(test) = &stopped.test {
+                details.push(format!("test: {test}"));
+            }
+            if let Some(process) = &stopped.process {
+                details.push(format!("process: {process}"));
+            }
+            format!("ran too long and was stopped ({})", details.join(" · "))
+        }
+        (None, None) => "ran too long and was stopped".to_owned(),
     };
     format!("`{}` {ended}.\n\n{}", failed.command, tail(&failed.output))
 }

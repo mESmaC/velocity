@@ -58,7 +58,7 @@ pub use events::{IssueEvent, issue_event};
 pub use git_base::synchronize_git_base;
 pub use issue::{issue_build_coverage, record_work_sources};
 pub use migration::{Migration, migration_event_cursor};
-pub use mirror::{MirrorObservation, mirror_remote, mirror_status};
+pub use mirror::{MirrorLag, MirrorObservation, mirror_lag, mirror_remote, mirror_status};
 pub use mirror_catch_up::{CatchUp, FastForward, adopt_mirror_tip, catch_up_from_mirror};
 pub use retry::retry_workspace;
 pub use rosen_client::Error as ClientError;

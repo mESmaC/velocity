@@ -28,6 +28,7 @@ pub mod layout_state;
 pub mod layout_view;
 pub mod navigation;
 pub mod new_project;
+pub mod project_health;
 pub mod projects;
 pub mod proof_card;
 pub mod proofs_settings;

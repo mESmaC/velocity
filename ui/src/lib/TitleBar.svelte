@@ -2,6 +2,7 @@
   import WindowControls from './WindowControls.svelte';
   import type { LayoutAction, LayoutSnapshot } from './ipc';
   import ProjectSwitcher from './ProjectSwitcher.svelte';
+  import ProjectHealthStrip from './ProjectHealthStrip.svelte';
   import RosenMirror from './RosenMirror.svelte';
   import RosenServerNotice from './RosenServerNotice.svelte';
   import Icon from './Icon.svelte';
@@ -119,4 +120,5 @@
     project={layout?.project_identifier ?? null}
     collapse={layout?.collapse_mirror_health ?? null}
   />
+  <ProjectHealthStrip project={layout?.project_identifier ?? null} {send} />
 </div>

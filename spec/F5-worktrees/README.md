@@ -28,6 +28,7 @@ Rule files:
 - [Falling back](rosen-falling-back.md)
 - [Pin bumps (#513)](rosen-pin-bump.md)
 - [Base CI (#507)](rosen-base-ci.md)
+- [Project health checks (#509)](project-health.md)
 - [Lifecycle (decided)](lifecycle.md)
 - [Path](path.md)
 - [Settings → Workspaces](settings-worktrees.md)

@@ -133,11 +133,25 @@
       >
     {/if}
     <pre>{mirror.error}</pre>
-    <span
-      >Last mirrored commit: <code
-        >{mirror.last_pushed_commit ?? 'no accepted commit recorded'}</code
-      ></span
-    >
+    {#if mirror.base_commit}
+      <span
+        >Rosen base <code title={mirror.base_commit}
+          >{short(mirror.base_commit)}</code
+        >
+        · last mirrored commit
+        <code title={mirror.last_pushed_commit ?? undefined}
+          >{mirror.last_pushed_commit
+            ? short(mirror.last_pushed_commit)
+            : 'none'}</code
+        ></span
+      >
+    {:else}
+      <span
+        >Last mirrored commit: <code
+          >{mirror.last_pushed_commit ?? 'no accepted commit recorded'}</code
+        ></span
+      >
+    {/if}
   </section>
 {/if}
 

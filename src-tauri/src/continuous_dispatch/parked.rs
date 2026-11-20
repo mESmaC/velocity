@@ -71,6 +71,8 @@ pub(super) fn refresh(
     reader
         .parked
         .retain(|number, _| waiting.iter().any(|issue| issue.number == *number));
+    let waiting_numbers: Vec<u32> = waiting.iter().map(|issue| issue.number).collect();
+    crate::project_health::retain_parked_issues(application, project.id, &waiting_numbers);
     if waiting.is_empty() {
         return Ok(());
     }
@@ -118,6 +120,12 @@ impl Context<'_> {
         entry.failed = None;
         self.check(entry, issue).unwrap_or_else(|error| {
             entry.failed = Some(Instant::now());
+            crate::project_health::record_parked_failure(
+                self.application,
+                self.project.id,
+                issue.number,
+                &error,
+            );
             report::<()>(Err(format!(
                 "Could not resolve the parked review of {}#{}: {error}",
                 self.client.repository(),
@@ -142,13 +150,26 @@ impl Context<'_> {
             entry.updated_at = Some(issue.updated_at.clone());
         }
         let Some(report) = &mut entry.report else {
+            crate::project_health::record_parked_manual(
+                self.application,
+                self.project.id,
+                issue.number,
+            );
             return Ok(false);
         };
         let since = report.review.reported_at.unwrap_or(report.seen);
         let expired = unix_seconds().saturating_sub(since) >= PARKED_LIMIT_SECONDS;
         if !report.land_checked {
             match self.resolve_clear_land(report, issue) {
-                Ok(true) => return Ok(true),
+                Ok(true) => {
+                    crate::project_health::record_parked_resolved(
+                        self.application,
+                        self.project.id,
+                        issue.number,
+                        "Returned to dispatch (overlapping land touched none of its code)",
+                    );
+                    return Ok(true);
+                }
                 Ok(false) => report.land_checked = true,
                 // A land that cannot be read must not hold the issue past the limit.
                 Err(error) if !expired => return Err(error),
@@ -157,6 +178,12 @@ impl Context<'_> {
         }
         if expired {
             self.resolve(issue.number, &report.review, LIMIT_NOTE)?;
+            crate::project_health::record_parked_resolved(
+                self.application,
+                self.project.id,
+                issue.number,
+                "Returned to dispatch after two-hour no-change review limit",
+            );
             return Ok(true);
         }
         self.start_review(issue, report)?;

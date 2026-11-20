@@ -174,6 +174,156 @@ fn stalled_notice(stalled: &[u32]) -> Option<String> {
     ))
 }
 
+/// Why an open issue was not dispatched when a slot was free (#509).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SkipCategory {
+    Overlap,
+    Label,
+    Blocker,
+    Decision,
+    Claimed,
+    LaunchHold,
+    Attempted,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct SkippedIssue {
+    pub number: u32,
+    pub category: SkipCategory,
+    pub reason: String,
+}
+
+const SKIP_LABELS: &[&str] = &[
+    "spec-question",
+    "needs-decision",
+    "needs-owner",
+    "release-blocker",
+    "owner-decision",
+    // An owner hold, e.g. collapse.sh#10 (#505).
+    "on-hold",
+    IssueClient::NO_CHANGE_LABEL,
+];
+
+/// Explains why an open issue was skipped by continuous dispatch (#509).
+/// Returns `None` if the issue is closed, already has an active thread, already landed,
+/// or is currently dispatchable.
+pub fn issue_skip_reason(
+    project: &ProjectItem,
+    repository: &str,
+    issue: &GitHubIssue,
+    claimed: &HashSet<String>,
+    now: u64,
+) -> Option<SkippedIssue> {
+    if issue.state != IssueState::Open {
+        return None;
+    }
+    let identity = ThreadIssue::new(repository.into(), issue.number);
+    if issue_thread(project, &identity).is_some()
+        || project.rosen_issue_completed(&identity)
+        || project
+            .landed_awaiting_integration(&identity, Some(&issue.updated_at))
+            .is_some()
+    {
+        return None;
+    }
+    if let Some(wait) = project
+        .continuous_dispatch
+        .issue_overlaps
+        .get(&issue.number)
+        .filter(|wait| wait.issue.repository.eq_ignore_ascii_case(repository))
+    {
+        return Some(SkippedIssue {
+            number: issue.number,
+            category: SkipCategory::Overlap,
+            reason: format!("overlap: {}", wait.reason()),
+        });
+    }
+    if issue.has_open_blockers() {
+        let blockers = if issue.open_blockers.is_empty() {
+            format!("{} open blocker(s)", issue.open_blocker_count)
+        } else {
+            format!("blocked by {}", issue.open_blockers.join(", "))
+        };
+        return Some(SkippedIssue {
+            number: issue.number,
+            category: SkipCategory::Blocker,
+            reason: blockers,
+        });
+    }
+    if let Some(label) = issue.labels.iter().find(|label| {
+        SKIP_LABELS
+            .iter()
+            .any(|skip| label.eq_ignore_ascii_case(skip))
+    }) {
+        return Some(SkippedIssue {
+            number: issue.number,
+            category: SkipCategory::Label,
+            reason: format!("label: {label}"),
+        });
+    }
+    if needs_owner_decision(&format!("{}\n{}", issue.title, issue.body)) {
+        return Some(SkippedIssue {
+            number: issue.number,
+            category: SkipCategory::Decision,
+            reason: "awaits owner decision".into(),
+        });
+    }
+    if project
+        .continuous_dispatch
+        .launch_holds(now)
+        .any(|held| held.number == issue.number && held.repository.eq_ignore_ascii_case(repository))
+    {
+        return Some(SkippedIssue {
+            number: issue.number,
+            category: SkipCategory::LaunchHold,
+            reason: "launch failure backoff".into(),
+        });
+    }
+    if claimed.contains(&format!("issue:{}", issue.number)) {
+        return Some(SkippedIssue {
+            number: issue.number,
+            category: SkipCategory::Claimed,
+            reason: "claimed in AIRC".into(),
+        });
+    }
+    if project
+        .continuous_dispatch
+        .reporting_no_change(repository, issue.number)
+    {
+        return Some(SkippedIssue {
+            number: issue.number,
+            category: SkipCategory::Attempted,
+            reason: "reporting no-change".into(),
+        });
+    }
+    if project
+        .continuous_dispatch
+        .attempted(repository, issue.number, &issue.updated_at)
+    {
+        return Some(SkippedIssue {
+            number: issue.number,
+            category: SkipCategory::Attempted,
+            reason: "already attempted at this version".into(),
+        });
+    }
+    None
+}
+
+/// Formats skipped issues for the project health strip and `velocity.log` (#509).
+pub fn summarize_skipped_issues(skipped: &[SkippedIssue], limit: usize) -> String {
+    let shown: Vec<String> = skipped
+        .iter()
+        .take(limit)
+        .map(|item| format!("#{} ({})", item.number, item.reason))
+        .collect();
+    let remaining = skipped.len().saturating_sub(limit);
+    if remaining > 0 {
+        format!("{} · +{remaining} more", shown.join(", "))
+    } else {
+        shown.join(", ")
+    }
+}
+
 /// Shared automatic-work eligibility for continuous dispatch and the F16 work pool.
 /// Owner questions wait for an answer even before somebody labels them (#356, #389).
 pub fn actionable(issue: &GitHubIssue) -> bool {
@@ -181,17 +331,9 @@ pub fn actionable(issue: &GitHubIssue) -> bool {
         || issue.has_open_blockers()
         || issue.is_spec_question()
         || issue.labels.iter().any(|label| {
-            [
-                "needs-decision",
-                "needs-owner",
-                "release-blocker",
-                "owner-decision",
-                // An owner hold, e.g. collapse.sh#10 (#505).
-                "on-hold",
-                IssueClient::NO_CHANGE_LABEL,
-            ]
-            .iter()
-            .any(|skip| label.eq_ignore_ascii_case(skip))
+            SKIP_LABELS
+                .iter()
+                .any(|skip| label.eq_ignore_ascii_case(skip))
         })
     {
         return false;

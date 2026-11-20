@@ -8,6 +8,9 @@ pub struct MirrorState {
     /// Decimal Unix milliseconds, preserved as a string across IPC.
     pub retry_at_ms: Option<String>,
     pub last_pushed_commit: Option<String>,
+    /// The Rosen base tip that could not be pushed, shown beside `last_pushed_commit` (#509).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub base_commit: Option<String>,
 }
 
 /// A base and mirror branch that have diverged, found by catching up from the mirror
@@ -60,6 +63,12 @@ impl MirrorState {
             error: error.lines().take(3).collect::<Vec<_>>().join("\n"),
             retry_at_ms,
             last_pushed_commit,
+            base_commit: None,
         }
+    }
+
+    pub fn with_base_commit(mut self, base_commit: Option<String>) -> Self {
+        self.base_commit = base_commit;
+        self
     }
 }

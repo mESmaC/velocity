@@ -39,6 +39,15 @@ pub trait LandingHost: Clone + Send + Sync + 'static {
         generation: u64,
         message: &str,
     ) -> Result<bool, String>;
+    /// Called when a post-land or integration check was stopped for running too long (#486, #509).
+    fn post_land_stopped(
+        &self,
+        _project: u32,
+        _commit: &str,
+        _command: &str,
+        _stopped: &rosen_checker::StoppedCheck,
+    ) {
+    }
 }
 
 #[derive(Default)]
@@ -75,6 +84,14 @@ impl RosenLanding {
 
     pub fn wake(&self) {
         self.wake.notify_one();
+    }
+
+    /// Whether a post-land or integration verification pass is currently running for `project`.
+    pub fn is_verifying(&self, project: u32) -> bool {
+        self.lock()
+            .verifying_projects
+            .iter()
+            .any(|&(id, _)| id == project)
     }
 
     pub async fn run<Host: LandingHost>(self, host: Host) {
@@ -244,7 +261,11 @@ fn named(thread: &velocity_store::ThreadItem) -> bool {
     thread.state == ThreadState::Review && thread.review_stage == Some(ReviewStage::Review)
 }
 
-fn refusal_instructions(change: &str, base_branch: &str, refusal: LandRefusal) -> (String, String) {
+pub fn refusal_instructions(
+    change: &str,
+    base_branch: &str,
+    refusal: LandRefusal,
+) -> (String, String) {
     let name_again = NAME_AGAIN;
     match refusal {
         LandRefusal::Regenerate { paths } => (

@@ -29,6 +29,12 @@ pub fn wake(application: &AppHandle) {
     }
 }
 
+pub fn is_verifying(application: &AppHandle, project: u32) -> bool {
+    application
+        .try_state::<RosenLanding>()
+        .is_some_and(|runner| runner.is_verifying(project))
+}
+
 #[derive(Clone)]
 struct TauriLandingHost(AppHandle);
 
@@ -58,6 +64,16 @@ impl LandingHost for TauriLandingHost {
         message: &str,
     ) -> Result<bool, String> {
         crate::rosen_events::record_land_refusal(&self.0, project, change, generation, message)
+    }
+
+    fn post_land_stopped(
+        &self,
+        project: u32,
+        commit: &str,
+        command: &str,
+        stopped: &velocity_core::rosen_checker::StoppedCheck,
+    ) {
+        crate::project_health::record_post_land_stopped(&self.0, project, commit, command, stopped);
     }
 
     fn activity(&self, project: u32, actor: &str, kind: DutyEventKind, message: String) {

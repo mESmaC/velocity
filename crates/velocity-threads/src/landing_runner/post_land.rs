@@ -199,6 +199,10 @@ impl<Host: LandingHost> Verify<Host> {
                 Err(error) => self.stopped(&batch.commit, &error.to_string()),
             };
         };
+        if let Some(stopped) = &failed.stopped {
+            self.host
+                .post_land_stopped(self.project, &batch.commit, &failed.command, stopped);
+        }
         self.bisect(batch, &failed, &suffix).await;
         false
     }
@@ -249,7 +253,17 @@ impl<Host: LandingHost> Verify<Host> {
             // bisection must never substitute the project's full-test commands.
             let (passed, output, suffix) = match self.test(&step.commit, batch).await {
                 Ok((None, suffix)) => (true, String::new(), suffix),
-                Ok((Some(failed), suffix)) => (false, failure_report(batch, &failed), suffix),
+                Ok((Some(failed), suffix)) => {
+                    if let Some(stopped) = &failed.stopped {
+                        self.host.post_land_stopped(
+                            self.project,
+                            &step.commit,
+                            &failed.command,
+                            stopped,
+                        );
+                    }
+                    (false, failure_report(batch, &failed), suffix)
+                }
                 // Rosen keeps the bisection: the next pass fails the batch again and
                 // carries on from this step.
                 Err(why) => {
@@ -266,10 +280,21 @@ impl<Host: LandingHost> Verify<Host> {
         if !batch.after_land || batch.kind != CheckKind::Test {
             return;
         }
-        let exit = failed
-            .exit_code
-            .map_or_else(|| "timed out".to_owned(), |code| format!("exited {code}"));
-        let reason = format!("`{}` {exit}", failed.command);
+        let exit = match (failed.exit_code, &failed.stopped) {
+            (Some(code), _) => format!("exited {code}"),
+            (None, Some(stopped)) => velocity_core::project_health::format_stopped_check_detail(
+                &failed.command,
+                stopped.test.as_deref(),
+                stopped.process.as_deref(),
+                &stopped.reason,
+            ),
+            (None, None) => "timed out".to_owned(),
+        };
+        let reason = if failed.stopped.is_some() {
+            exit
+        } else {
+            format!("`{}` {exit}", failed.command)
+        };
         if let Err(error) = integration::record_failure(&self.server, &batch.commit, &reason)
             .and_then(|()| integration::result(&self.server, &batch.commit, false))
         {
@@ -340,6 +365,7 @@ impl<Host: LandingHost> Verify<Host> {
                     command: failed.command,
                     exit_code: failed.exit_code,
                     output: failed.output,
+                    stopped: failed.stopped,
                 }),
                 suffix,
             )),
