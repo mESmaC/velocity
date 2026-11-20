@@ -2376,6 +2376,8 @@ export type LayoutSnapshot_Deserialize = {
 	project_identifier?: number | null,
 	project_name: string,
 	rosen_mirror?: MirrorState_Deserialize | null,
+	/**  The project's Rosen base trails its mirror while a catch-up is pending (#520). */
+	rosen_mirror_behind?: MirrorBehind_Deserialize | null,
 	/**  The base and mirror branch diverged when the project last caught up (#501). */
 	rosen_mirror_divergence?: MirrorDivergence | null,
 	/**  The project's Collapse mirror as `owner/repository`; `None` hides Open on Collapse. */
@@ -2455,6 +2457,8 @@ export type LayoutSnapshot_Serialize = {
 	project_identifier: number | null,
 	project_name: string,
 	rosen_mirror: MirrorState_Serialize | null,
+	/**  The project's Rosen base trails its mirror while a catch-up is pending (#520). */
+	rosen_mirror_behind: MirrorBehind_Serialize | null,
 	/**  The base and mirror branch diverged when the project last caught up (#501). */
 	rosen_mirror_divergence: MirrorDivergence | null,
 	/**  The project's Collapse mirror as `owner/repository`; `None` hides Open on Collapse. */
@@ -2664,6 +2668,49 @@ export type MachinesView_Serialize = {
 };
 
 export type MessageMode = "Open" | "HeadsDown" | "Quarantined";
+
+/**
+ *  A project whose Rosen base trails its Git mirror while a catch-up is pending or
+ *  running (#520). Kept in memory for the current run and cleared as soon as the base
+ *  catches up or diverges.
+ */
+export type MirrorBehind = MirrorBehind_Serialize | MirrorBehind_Deserialize;
+
+/**
+ *  A project whose Rosen base trails its Git mirror while a catch-up is pending or
+ *  running (#520). Kept in memory for the current run and cleared as soon as the base
+ *  catches up or diverges.
+ */
+export type MirrorBehind_Deserialize = {
+	/**  How many commits the mirror branch holds beyond Rosen's base. */
+	commits: number,
+	/**  Rosen's current base commit. */
+	base_commit: string,
+	/**  The mirror branch tip ahead of the base. */
+	mirror_commit: string,
+	/**  Whether a catch-up is running right now (versus waiting for a retry). */
+	catching_up: boolean,
+	/**  Why the latest catch-up attempt did not finish, while a retry waits. */
+	error?: string | null,
+};
+
+/**
+ *  A project whose Rosen base trails its Git mirror while a catch-up is pending or
+ *  running (#520). Kept in memory for the current run and cleared as soon as the base
+ *  catches up or diverges.
+ */
+export type MirrorBehind_Serialize = {
+	/**  How many commits the mirror branch holds beyond Rosen's base. */
+	commits: number,
+	/**  Rosen's current base commit. */
+	base_commit: string,
+	/**  The mirror branch tip ahead of the base. */
+	mirror_commit: string,
+	/**  Whether a catch-up is running right now (versus waiting for a retry). */
+	catching_up: boolean,
+	/**  Why the latest catch-up attempt did not finish, while a retry waits. */
+	error?: string,
+};
 
 /**
  *  A base and mirror branch that have diverged, found by catching up from the mirror

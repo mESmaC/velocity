@@ -394,6 +394,7 @@ pub fn run() -> anyhow::Result<()> {
             projects::initialize(application.handle())?;
             providers::initialize(application.handle());
             rosen::initialize(application.handle())?;
+            rosen_mirror::initialize(application.handle());
             collapse_mirror::initialize(application.handle());
             kept_worktrees::initialize(application.handle());
             github_requests::initialize(application.handle());

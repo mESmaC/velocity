@@ -2,6 +2,7 @@
   import { collapseCommands, rosenMirrorCommands } from './ipc';
   import type {
     CollapseMirrorHealth,
+    MirrorBehind,
     MirrorDivergence,
     MirrorState,
   } from './ipc';
@@ -9,11 +10,14 @@
   // `state` is renamed here: the name would shadow the `$state` rune.
   let {
     state: mirror,
+    behind = null,
     divergence = null,
     project = null,
     collapse = null,
   }: {
     state: MirrorState | null;
+    // The project's base trails its mirror while a catch-up is pending (#520).
+    behind?: MirrorBehind | null;
     // The base and mirror diverged at the last catch-up (#501); Rust keeps it.
     // Only the project header shows it; Settings shows push failures alone.
     divergence?: MirrorDivergence | null;
@@ -48,6 +52,41 @@
   }
 </script>
 
+{#if behind && !divergence}
+  <section
+    class="mirror-status"
+    role="status"
+    aria-label="Rosen mirror catch-up"
+  >
+    <strong
+      >Behind the mirror by {behind.commits}
+      {behind.commits === 1 ? 'commit' : 'commits'} · {behind.catching_up
+        ? 'catching up…'
+        : 'catch-up pending'}</strong
+    >
+    <span
+      >Rosen base <code title={behind.base_commit}
+        >{short(behind.base_commit)}</code
+      >
+      · mirror tip
+      <code title={behind.mirror_commit}>{short(behind.mirror_commit)}</code
+      ></span
+    >
+    {#if behind.error}<pre>{behind.error}</pre>{/if}
+    {#if project !== null && !behind.catching_up}
+      <div class="mirror-actions">
+        <button
+          class="mini"
+          disabled={running !== ''}
+          onclick={() => void run('Catching up…', rosenMirrorCommands.catchUp)}
+          >Catch up now</button
+        >
+        {#if running}<span role="status">{running}</span>{/if}
+      </div>
+    {/if}
+    {#if error}<p role="alert">{error}</p>{/if}
+  </section>
+{/if}
 {#if divergence}
   <section
     class="mirror-status rejected"

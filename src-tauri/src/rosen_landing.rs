@@ -76,13 +76,21 @@ impl LandingHost for TauriLandingHost {
         crate::project_health::record_post_land_stopped(&self.0, project, commit, command, stopped);
     }
 
+    fn catch_up_before_land(
+        &self,
+        project: u32,
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send + '_>> {
+        Box::pin(async move {
+            crate::rosen_mirror::check_and_catch_up(&self.0, project).await;
+        })
+    }
+
     fn orphaned_verified(&self, project: u32) {
         let handle = self.0.clone();
         tauri::async_runtime::spawn(async move {
             crate::rosen_events::run_follow_ups(&handle, project).await;
         });
     }
-
     fn activity(&self, project: u32, actor: &str, kind: DutyEventKind, message: String) {
         report(self.publish_activity(project, actor, kind, message));
     }

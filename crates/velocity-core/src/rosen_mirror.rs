@@ -13,6 +13,45 @@ pub struct MirrorState {
     pub base_commit: Option<String>,
 }
 
+/// A project whose Rosen base trails its Git mirror while a catch-up is pending or
+/// running (#520). Kept in memory for the current run and cleared as soon as the base
+/// catches up or diverges.
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "bindings", derive(specta::Type))]
+pub struct MirrorBehind {
+    /// How many commits the mirror branch holds beyond Rosen's base.
+    pub commits: u32,
+    /// Rosen's current base commit.
+    pub base_commit: String,
+    /// The mirror branch tip ahead of the base.
+    pub mirror_commit: String,
+    /// Whether a catch-up is running right now (versus waiting for a retry).
+    pub catching_up: bool,
+    /// Why the latest catch-up attempt did not finish, while a retry waits.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub error: Option<String>,
+}
+
+impl MirrorBehind {
+    pub fn new(
+        commits: u32,
+        base_commit: String,
+        mirror_commit: String,
+        catching_up: bool,
+        error: Option<String>,
+    ) -> Self {
+        Self {
+            commits,
+            base_commit,
+            mirror_commit,
+            catching_up,
+            error: error
+                .map(|text| text.lines().take(3).collect::<Vec<_>>().join("\n"))
+                .filter(|text| !text.trim().is_empty()),
+        }
+    }
+}
+
 /// A base and mirror branch that have diverged, found by catching up from the mirror
 /// (#501). Nothing moved; a person reconciles them or adopts the mirror tip (Rosen #396).
 #[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]

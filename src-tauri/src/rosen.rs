@@ -35,6 +35,10 @@ pub(crate) struct ManagedRosen {
     catch_ups: std::sync::Mutex<BTreeMap<u32, std::sync::Arc<tokio::sync::OnceCell<()>>>>,
     /// Projects whose catch-up on start failed and is tried again until Rosen answers (#501).
     catch_up_retries: std::sync::Mutex<BTreeSet<u32>>,
+    /// Per-project lock serializing mirror tip checks and catch-ups (#520).
+    catch_up_locks: std::sync::Mutex<BTreeMap<u32, Arc<tokio::sync::Mutex<()>>>>,
+    /// Last mirror rejection sequence for which automatic catch-up recovery ran (#520).
+    recovered_rejections: std::sync::Mutex<BTreeMap<u32, u64>>,
 }
 
 impl ManagedRosen {
@@ -66,6 +70,28 @@ impl ManagedRosen {
             .map(|mut catch_ups| std::sync::Arc::clone(catch_ups.entry(project).or_default()))
             .unwrap_or_default()
     }
+
+    /// Serializes mirror catch-up work per project across startup, polls, lands and retries.
+    pub(crate) fn catch_up_lock(&self, project: u32) -> Arc<tokio::sync::Mutex<()>> {
+        self.catch_up_locks
+            .lock()
+            .map(|mut locks| Arc::clone(locks.entry(project).or_default()))
+            .unwrap_or_default()
+    }
+
+    /// Claims one automatic catch-up recovery pass for mirror rejection `sequence` (#520).
+    pub(crate) fn claim_rejection_recovery(&self, project: u32, sequence: u64) -> bool {
+        self.recovered_rejections
+            .lock()
+            .is_ok_and(|mut seen| seen.insert(project, sequence) != Some(sequence))
+    }
+
+    /// Clears the rejection recovery marker once the project's mirror is healthy again.
+    pub(crate) fn clear_rejection_recovery(&self, project: u32) {
+        if let Ok(mut seen) = self.recovered_rejections.lock() {
+            seen.remove(&project);
+        }
+    }
 }
 
 /// How often every open Rosen thread is checked for a running watcher: one that ended,
@@ -95,6 +121,8 @@ pub(crate) fn initialize(application: &AppHandle) -> anyhow::Result<()> {
         follow_ups: tokio::sync::Mutex::new(()),
         catch_ups: std::sync::Mutex::new(BTreeMap::new()),
         catch_up_retries: std::sync::Mutex::new(BTreeSet::new()),
+        catch_up_locks: std::sync::Mutex::new(BTreeMap::new()),
+        recovered_rejections: std::sync::Mutex::new(BTreeMap::new()),
     });
     let handle = application.clone();
     tauri::async_runtime::spawn(async move {

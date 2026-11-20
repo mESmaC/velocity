@@ -122,6 +122,7 @@
     project={layout.project_identifier}
     collapse={layout.collapse_repository !== null}
     health={layout.collapse_mirror_health}
+    behind={layout.rosen_mirror_behind}
     ci={layout.base_ci}
     {send}
   />

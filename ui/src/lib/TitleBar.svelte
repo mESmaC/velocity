@@ -116,6 +116,7 @@
   <RosenServerNotice notice={layout?.rosen_server_notice ?? null} />
   <RosenMirror
     state={layout?.rosen_mirror ?? null}
+    behind={layout?.rosen_mirror_behind ?? null}
     divergence={layout?.rosen_mirror_divergence ?? null}
     project={layout?.project_identifier ?? null}
     collapse={layout?.collapse_mirror_health ?? null}

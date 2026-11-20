@@ -41,6 +41,9 @@ pub struct LayoutState {
     /// Projects whose Rosen server still runs another build until Velocity restarts (#515).
     /// Kept apart from `data` like the transport status: it describes this run only.
     server_notices: BTreeMap<u32, RosenServerNotice>,
+    /// Projects whose Rosen base trails its Git mirror while a catch-up is pending (#520).
+    /// Kept apart from `data` like the transport status: it describes this run only.
+    mirror_behind: BTreeMap<u32, crate::rosen_mirror::MirrorBehind>,
     issue_rows: BTreeMap<u32, Vec<RailItem>>,
     /// The machine-wide library supplies the composer's `$` menu (F4, F18).
     installed_skills: Vec<SkillMenuEntry>,
@@ -108,6 +111,31 @@ impl LayoutState {
             self.changed();
         }
     }
+
+    /// Shows or clears that `project`'s Rosen base is behind its mirror while a catch-up
+    /// is pending (#520). Returns whether the active project's displayed state changed.
+    pub fn set_rosen_mirror_behind(
+        &mut self,
+        project: u32,
+        behind: Option<crate::rosen_mirror::MirrorBehind>,
+    ) -> bool {
+        if self.mirror_behind.get(&project) == behind.as_ref() {
+            return false;
+        }
+        match behind {
+            Some(behind) => {
+                self.mirror_behind.insert(project, behind);
+            }
+            None => {
+                self.mirror_behind.remove(&project);
+            }
+        }
+        let shown = self.data.project_identifier == Some(project);
+        if shown {
+            self.changed();
+        }
+        shown
+    }
 }
 
 impl Default for LayoutState {
@@ -117,6 +145,7 @@ impl Default for LayoutState {
             workspace_count: None,
             reconnecting_projects: BTreeSet::new(),
             server_notices: BTreeMap::new(),
+            mirror_behind: BTreeMap::new(),
             issue_rows: BTreeMap::new(),
             installed_skills: Vec::new(),
             live: BTreeMap::new(),
@@ -756,6 +785,10 @@ impl LayoutState {
             project_identifier: self.data.project_identifier,
             project_name: self.data.project_name.clone(),
             rosen_mirror: self.data.rosen_mirror.clone(),
+            rosen_mirror_behind: self
+                .data
+                .project_identifier
+                .and_then(|project| self.mirror_behind.get(&project).cloned()),
             rosen_mirror_divergence: self.data.rosen_mirror_divergence.clone(),
             collapse_repository: self.data.collapse_repository.clone(),
             collapse_live_state: self.data.collapse_live_state,

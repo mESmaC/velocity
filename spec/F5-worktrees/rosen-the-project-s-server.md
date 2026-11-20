@@ -22,6 +22,10 @@
   Velocity follows every Rosen project's `mirror` events, including projects with no threads, and restores the latest mirror state at startup even when its thread-event cursor has passed the failure (#402).
   The saved mirror position belongs to the server database, and Velocity logs and restores it from zero when the database changes or the position exceeds the latest mirror event (#482).
   The first time a run starts a project's server, Velocity catches it up from its mirror before any land can go out, and the project switcher's Catch up from mirror does the same on demand (#501).
+  While Velocity runs, it also checks each Rosen project's mirror branch tip every two minutes, checks immediately when Collapse's dashboard reports a newer land, and checks right before every land (#520).
+  The tip check runs a lightweight `git ls-remote` (and a local ancestry check when the base is ahead) without pausing landing; only when the mirror holds commits Rosen lacks does it count how many commits the base trails and run Rosen's catch-up.
+  While a catch-up is pending or running, the project header and the Rosen status pane's Mirror section show `Behind the mirror by N`, naming both tips and offering Catch up now when waiting to retry.
+  When a mirror push is refused because the remote is ahead and the server's base is an ancestor of that tip, Velocity runs Rosen's catch-up and wakes the mirror push worker instead of raising a `rejected · needs a person` notice or AIRC entry (#520).
   Rosen's `mirror catch-up` (Rosen #416) fetches the mirror branch and, when the base is an ancestor of its tip, moves the base there and rebases open changes, whose agents are told as for any base move.
   Catching up keeps the server's database, with its events, cursors and channel history; Velocity never re-imports or replaces a database to catch up.
   A base that matches or is ahead of its mirror is left as it is, and a project with no mirror has nothing to catch up.

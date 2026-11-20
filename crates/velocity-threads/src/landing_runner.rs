@@ -48,6 +48,13 @@ pub trait LandingHost: Clone + Send + Sync + 'static {
         _stopped: &rosen_checker::StoppedCheck,
     ) {
     }
+    /// Checks the project's mirror tip and catches up before a land (#520).
+    fn catch_up_before_land(
+        &self,
+        _project: u32,
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send + '_>> {
+        Box::pin(async {})
+    }
     /// Called when orphaned landed commits on `project` have a green integration build (#519).
     fn orphaned_verified(&self, _project: u32) {}
 }
@@ -169,6 +176,8 @@ impl RosenLanding {
         change: &str,
     ) {
         let id = project.project.id;
+        host.catch_up_before_land(id).await;
+        let gate_started = Instant::now();
         match self
             .bindings_gate(host, server, project, thread, change)
             .await
@@ -180,6 +189,9 @@ impl RosenLanding {
                 let instructions = format!("{repair}{NAME_AGAIN}");
                 return self.send_refusal(host, project, thread, change, (reason, instructions));
             }
+        }
+        if gate_started.elapsed() >= Duration::from_secs(5) {
+            host.catch_up_before_land(id).await;
         }
         let started = Instant::now();
         match landing::land(server, checker::CHECKER, change).await {

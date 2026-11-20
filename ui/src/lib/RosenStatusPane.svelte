@@ -7,6 +7,7 @@
     type BaseCi,
     type CollapseMirrorHealth,
     type LayoutAction,
+    type MirrorBehind,
     type RosenStatusChanged,
   } from './ipc';
   import Icon from './Icon.svelte';
@@ -17,6 +18,7 @@
     project,
     collapse,
     health = null,
+    behind = null,
     ci = null,
     send,
   }: {
@@ -25,6 +27,8 @@
     collapse: boolean;
     // Collapse's last land and downstream forwarder for that mirror (#427).
     health?: CollapseMirrorHealth | null;
+    // The project's base trails its mirror while a catch-up is pending (#520).
+    behind?: MirrorBehind | null;
     // GitHub CI on the mirrored base (#507), shown beside the integration state.
     ci?: BaseCi | null;
     send: (action: LayoutAction) => void;
@@ -396,6 +400,14 @@
               {:else if section === 'Mirror'}
                 {#if status.mirror.remote}
                   <p>{status.mirror.state} · {status.mirror.remote}</p>
+                  {#if behind}
+                    <p>
+                      Behind the mirror by {behind.commits}
+                      {behind.commits === 1 ? 'commit' : 'commits'} · {behind.catching_up
+                        ? 'catching up…'
+                        : 'catch-up pending'}
+                    </p>
+                  {/if}
                   <p class="hint" title={status.mirror.pushed ?? undefined}>
                     Last pushed {status.mirror.pushed?.slice(0, 10) ?? '—'}
                   </p>

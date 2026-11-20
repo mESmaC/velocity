@@ -1,6 +1,11 @@
 import { commands, type LayoutSnapshot_Serialize } from '../bindings';
 export type { MirrorState_Serialize as MirrorState } from '../bindings';
 
+// The project's Rosen base trails its mirror while a catch-up is pending (#520).
+export type MirrorBehind = NonNullable<
+  LayoutSnapshot_Serialize['rosen_mirror_behind']
+>;
+
 // The base and mirror branch the project's last catch-up found diverged (#501).
 export type MirrorDivergence = NonNullable<
   LayoutSnapshot_Serialize['rosen_mirror_divergence']

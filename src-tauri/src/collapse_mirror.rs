@@ -183,6 +183,7 @@ pub async fn mirror_to_collapse(
     .await
     .map_err(|error| error.to_string())?;
     let server = crate::rosen::server(&application, project_identifier).await?;
+    crate::rosen_mirror::check_and_catch_up(&application, project_identifier).await;
     let root = provisioned.collapse_root();
     let link = CollapseLink {
         remote: Some(&provisioned.mirror_url),
@@ -224,6 +225,7 @@ pub async fn send_collapse_live_state(
     let root = velocity_core::collapse::collapse_root(&repository)
         .ok_or("The project's Collapse mirror does not name an owner and repository")?;
     let server = crate::rosen::server(&application, project_identifier).await?;
+    crate::rosen_mirror::check_and_catch_up(&application, project_identifier).await;
     share_push_token(&server, &subject, &repository, &root).await?;
     let link = CollapseLink {
         remote: None,
@@ -407,8 +409,17 @@ pub(crate) async fn refresh_health(application: &AppHandle) -> Result<(), String
         "persisted state",
     )?;
     let mut changed = false;
+    let mut moved_projects = Vec::new();
     for (project, repository) in mirrored {
+        let previous_land = store
+            .project(project)
+            .and_then(|item| item.collapse_mirror_health.as_ref())
+            .and_then(|health| health.last_land_at.clone());
         let health = rows.iter().find(|row| row.is(&repository)).map(health);
+        let next_land = health.as_ref().and_then(|item| item.last_land_at.clone());
+        if next_land.is_some() && next_land != previous_land {
+            moved_projects.push(project);
+        }
         changed |= store
             .save_collapse_mirror_health(project, health)
             .map_err(|error| error.to_string())?;
@@ -417,6 +428,11 @@ pub(crate) async fn refresh_health(application: &AppHandle) -> Result<(), String
         let mut layout = lock(application.state::<MainLayout>().inner(), "layout")?;
         store.refresh_layout(&mut layout);
         crate::layout::publish(application, &layout.snapshot(), None)?;
+    }
+    drop(store);
+    for project in moved_projects {
+        // Another machine may have just landed to Collapse; check the tip now (#520).
+        crate::rosen_mirror::check_soon(application, project);
     }
     Ok(())
 }
