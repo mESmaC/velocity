@@ -77,7 +77,7 @@ impl RosenLanding {
     fn checked_gate(&self, key: (u32, u32), generation: u64) -> Option<Gate> {
         let state = self.lock();
         let note = state.bindings.get(&key)?;
-        (note.generation == generation).then(|| match &note.verdict {
+        (note.generation == generation).then_some(match &note.verdict {
             None => Gate::Waiting,
             Some(BindingsVerdict::Stale) => Gate::Stale,
             // No verdict is no reason to hold a change: it lands, and the feed says so.
