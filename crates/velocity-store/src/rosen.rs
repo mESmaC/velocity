@@ -1132,10 +1132,12 @@ mod tests {
         Ok(())
     }
 
+    type PendingFollowUp = (u32, Option<String>, Vec<RosenFollowUp>);
+
     fn assert_second_revert_reopened(
         store: &StateStore,
         message: &str,
-    ) -> (Vec<(u32, Option<String>, Vec<RosenFollowUp>)>, u64) {
+    ) -> (Vec<PendingFollowUp>, u64) {
         let thread = &store.state.projects[0].threads[0];
         assert_eq!(thread.state, ThreadState::Review);
         assert_eq!(thread.review_stage, Some(ReviewStage::Fixing));
