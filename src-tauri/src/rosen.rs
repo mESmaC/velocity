@@ -247,6 +247,9 @@ pub(crate) async fn server(application: &AppHandle, project: u32) -> Result<Proj
         managed.servers.ready(project, &source, pool.clone()).await
     }
     .map_err(|error| error.to_string())?;
+    if let Some(update) = managed.servers.take_update(project) {
+        report(show_server_update(application, project, &update));
+    }
     let first = managed
         .budgeted
         .lock()
@@ -257,6 +260,46 @@ pub(crate) async fn server(application: &AppHandle, project: u32) -> Result<Proj
     // Before any caller can land: a base behind its mirror would push non-fast-forward.
     crate::rosen_mirror::catch_up_once(application, project, &server).await;
     Ok(server)
+}
+
+/// Tells the owner what became of a project server found running another Rosen build than
+/// this Velocity's (#515): a toast once it is replaced, or a notice on the project, until
+/// Velocity restarts, saying which build still runs and why.
+fn show_server_update(
+    application: &AppHandle,
+    project: u32,
+    update: &velocity_rosen::ServerUpdate,
+) -> Result<(), String> {
+    let name = lock(
+        application.state::<ManagedStateStore>().inner(),
+        "persisted state",
+    )?
+    .project(project)
+    .map(|item| item.name.clone())
+    .unwrap_or_default();
+    let headline = update.headline();
+    crate::diagnostics::record(
+        "rosen server",
+        &format!(
+            "{name}: {headline}{}",
+            update
+                .reason()
+                .map(|reason| format!(" ({reason})"))
+                .unwrap_or_default()
+        ),
+    );
+    let mut layout = lock(
+        application.state::<crate::layout::MainLayout>().inner(),
+        "layout",
+    )?;
+    match update.reason() {
+        None => layout.show_toast(format!("{name}: {headline}"), None),
+        Some(reason) => layout.set_rosen_server_notice(
+            project,
+            velocity_core::layout_view::RosenServerNotice::new(headline, reason.to_owned()),
+        ),
+    }
+    crate::layout::publish(application, &layout.snapshot(), None)
 }
 
 /// Lets Rosen's workspaces use most of the free space on their volume (see

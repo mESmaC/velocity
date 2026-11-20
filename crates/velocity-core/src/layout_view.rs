@@ -119,6 +119,26 @@ pub struct RosenWorkView {
     pub expanded_issues: Vec<crate::work_pool::WorkKey>,
 }
 
+/// A project's Rosen server that still runs another build than this Velocity's, because it
+/// could not be replaced at start (#515). The next start of Velocity tries again.
+#[cfg_attr(
+    feature = "bindings",
+    derive(serde::Serialize, serde::Deserialize, specta::Type)
+)]
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct RosenServerNotice {
+    /// `running Rosen cd537b7; restart to update`.
+    pub headline: String,
+    /// Why the server was not replaced.
+    pub reason: String,
+}
+
+impl RosenServerNotice {
+    pub fn new(headline: String, reason: String) -> Self {
+        Self { headline, reason }
+    }
+}
+
 /// Feature owners publish their real data here; the shell invents no activity.
 #[derive(Clone, Default)]
 pub struct LayoutData {
@@ -465,6 +485,8 @@ pub struct LayoutSnapshot {
     pub revision: u32,
     /// The selected project's Rosen event stream is reconnecting.
     pub rosen_reconnecting: bool,
+    /// The selected project's Rosen server could not be replaced with this build (#515).
+    pub rosen_server_notice: Option<RosenServerNotice>,
     pub project_identifier: Option<u32>,
     pub project_name: String,
     pub rosen_mirror: Option<crate::rosen_mirror::MirrorState>,

@@ -14,9 +14,29 @@ pub type Binaries = &'static [(&'static str, &'static [u8])];
 /// which every crate built on it then loaded.
 static BINARIES: OnceLock<Binaries> = OnceLock::new();
 
-/// Called once by the app's `main` before anything looks for Rosen.
-pub fn provide(binaries: Binaries) {
+/// The Rosen commit the provided binaries were built from, when the build names it.
+static COMMIT: OnceLock<String> = OnceLock::new();
+
+/// Written beside the unpacked binaries, holding the Rosen commit they were built from. A
+/// running server only reports its version, so this is how a later Velocity names the
+/// build it finds still serving a project (#515).
+const COMMIT_FILE: &str = "rosen-commit";
+
+/// Called once by the app's `main` before anything looks for Rosen. `commit` is the Rosen
+/// commit the binaries were built from, when the build knows it.
+pub fn provide(binaries: Binaries, commit: Option<String>) {
     let _ = BINARIES.set(binaries);
+    if let Some(commit) = commit {
+        let _ = COMMIT.set(commit);
+    }
+}
+
+/// The Rosen commit `executable` was built from, when a release unpacked it and named it.
+pub(crate) fn commit_beside(executable: &Path) -> Option<String> {
+    let named = std::fs::read_to_string(executable.parent()?.join(COMMIT_FILE)).ok()?;
+    let commit = named.trim();
+    let hexadecimal = commit.bytes().all(|byte| byte.is_ascii_hexdigit());
+    (hexadecimal && !commit.is_empty()).then(|| commit.to_ascii_lowercase())
 }
 
 /// The folder holding the unpacked binaries, unpacking them the first time. `None` when
@@ -38,6 +58,10 @@ fn unpack(binaries: Binaries) -> Option<PathBuf> {
     std::fs::create_dir_all(&folder).ok()?;
     for (name, bytes) in binaries {
         write_once(&folder.join(name), bytes).ok()?;
+    }
+    // The binaries are usable without their commit's name, so a failure here is ignored.
+    if let Some(commit) = COMMIT.get() {
+        let _ = write_once(&folder.join(COMMIT_FILE), commit.as_bytes());
     }
     Some(folder)
 }

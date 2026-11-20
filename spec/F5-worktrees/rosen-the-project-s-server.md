@@ -12,6 +12,13 @@
   The original Git checkouts are kept, and uncommitted work stops only that project's migration with an actionable sidebar notice.
   The saved mode switches only after the import succeeds and the Git checkouts and saved project still match the version that was checked.
   Velocity stops the servers it started when it exits and before an update installs, so their binaries can be replaced.
+  A server outlives a Velocity that ended without stopping it, so the first time a run makes a project's server ready it compares the running server's executable with the `rosen-server` it would start itself, by path and then by content (#515).
+  A server running another build is replaced before that run starts a watcher or a land on it: Velocity waits for its own lands on that server, sends Rosen's `shutdown` request, waits for the process to exit and starts its own build on the same data folder and endpoint.
+  Velocity never ends a server's process, and watchers in other processes journal while the server is away (Rosen R2).
+  Only a Velocity that carries Rosen, or is given it by `VELOCITY_ROSEN_BIN`, replaces a server; one that finds Rosen beside its executable or on `PATH` leaves a running server as it is.
+  A release writes the Rosen commit its binaries were built from in `rosen-commit` beside them, which is how a build is named; a build without that file is named by its folder.
+  Once a server is replaced, a toast says `<project>: Rosen updated to <commit>`.
+  When it cannot be replaced, the project header shows `running Rosen <old>; restart to update` with the reason until Velocity restarts, and when Velocity's own build would not start the previous build is started again, so the project keeps a server.
   Velocity follows every Rosen project's `mirror` events, including projects with no threads, and restores the latest mirror state at startup even when its thread-event cursor has passed the failure (#402).
   The saved mirror position belongs to the server database, and Velocity logs and restores it from zero when the database changes or the position exceeds the latest mirror event (#482).
   The first time a run starts a project's server, Velocity catches it up from its mirror before any land can go out, and the project switcher's Catch up from mirror does the same on demand (#501).

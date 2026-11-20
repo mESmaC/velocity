@@ -14,8 +14,14 @@ static ROSEN_BINARIES: [(&str, &[u8]); 2] = [
 ];
 
 fn main() -> anyhow::Result<()> {
+    // The release builds Rosen from the commit the workspace manifest pins, so that names
+    // the binaries: a later Velocity shows it for a server still running this build (#515).
     #[cfg(feature = "bundled-rosen")]
-    velocity_rosen::bundled::provide(&ROSEN_BINARIES);
+    velocity_rosen::bundled::provide(
+        &ROSEN_BINARIES,
+        velocity_core::rosen_pin::RosenPin::parse(include_str!("../../Cargo.toml"))
+            .map(|pin| pin.revision),
+    );
     if let Some(code) = velocity_acp::providers::serve_codex_app_server()? {
         std::process::exit(code);
     }

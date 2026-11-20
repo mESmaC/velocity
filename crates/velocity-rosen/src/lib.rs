@@ -34,6 +34,7 @@ pub mod release;
 mod retry;
 pub mod review_swarm;
 mod server;
+mod server_update;
 mod stack;
 pub mod status;
 pub mod thread_change;
@@ -62,6 +63,7 @@ pub use rosen_client::protocol::Event as ProjectEvent;
 pub use rosen_client::protocol::EventKind as ProjectEventKind;
 pub use rosen_core::claim::PathPattern;
 pub use server::{BINARY_FOLDER_ENV, ImportSource, ProjectServer, Servers, binary_folder};
+pub use server_update::{RosenBuild, ServerUpdate};
 pub use stack::stack_workspace;
 pub use workspace::{
     AgentWorkspace, Watches, abandon_change, create_workspace, create_workspace_retaining_change,

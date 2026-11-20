@@ -3,6 +3,7 @@
   import type { LayoutAction, LayoutSnapshot } from './ipc';
   import ProjectSwitcher from './ProjectSwitcher.svelte';
   import RosenMirror from './RosenMirror.svelte';
+  import RosenServerNotice from './RosenServerNotice.svelte';
   import Icon from './Icon.svelte';
   import LocalBuild from './LocalBuild.svelte';
 
@@ -110,6 +111,7 @@
       >
     </div>
   </header>
+  <RosenServerNotice notice={layout?.rosen_server_notice ?? null} />
   <RosenMirror
     state={layout?.rosen_mirror ?? null}
     divergence={layout?.rosen_mirror_divergence ?? null}

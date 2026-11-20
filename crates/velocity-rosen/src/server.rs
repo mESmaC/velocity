@@ -1,7 +1,7 @@
 //! Each project's Rosen server. Velocity starts it with an explicit data folder and
 //! endpoint, since one server holds one project, and imports the project's repository once.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
 use std::sync::Arc;
@@ -13,6 +13,7 @@ use rosen_client::{Client, Endpoint, Error as ClientError};
 
 use crate::RosenError;
 use crate::connection::{Connection, requests};
+use crate::server_update::ServerUpdate;
 
 /// A folder holding `rosen-server` and `rosen`, for a build that doesn't ship them beside
 /// Velocity's own executable (a development build).
@@ -159,15 +160,19 @@ impl ProjectServer {
     }
 
     fn start(&self) -> Result<Child, RosenError> {
+        self.start_binary(&binary_folder()?.join(executable("rosen-server")))
+    }
+
+    /// Starts the server from `binary`, on this project's data folder and endpoint.
+    pub(crate) fn start_binary(&self, binary: &Path) -> Result<Child, RosenError> {
         std::fs::create_dir_all(&self.data_dir).map_err(|source| RosenError::Io {
             action: "create",
             path: self.data_dir.clone(),
             source,
         })?;
-        let binary = binary_folder()?.join(executable("rosen-server"));
-        let spawned = match self.server_command(&binary, true)?.spawn() {
+        let spawned = match self.server_command(binary, true)?.spawn() {
             Ok(child) => Ok(child),
-            Err(_) => self.server_command(&binary, false)?.spawn(),
+            Err(_) => self.server_command(binary, false)?.spawn(),
         };
         spawned.map_err(|error| RosenError::Start(format!("{}: {error}", binary.display())))
     }
@@ -231,7 +236,10 @@ impl ProjectServer {
         Ok(())
     }
 
-    async fn wait_until_listening(&self, child: &mut Child) -> Result<Arc<Connection>, RosenError> {
+    pub(crate) async fn wait_until_listening(
+        &self,
+        child: &mut Child,
+    ) -> Result<Arc<Connection>, RosenError> {
         let deadline = tokio::time::Instant::now() + START_TIMEOUT;
         let mut delay = Duration::from_millis(20);
         loop {
@@ -383,6 +391,10 @@ pub struct Servers {
     registry: std::sync::Mutex<BTreeMap<u32, ProjectServer>>,
     starting: std::sync::Mutex<BTreeMap<u32, Arc<tokio::sync::Mutex<()>>>>,
     stopped: AtomicBool,
+    /// Projects whose running server this run has compared with its own Rosen build (#515).
+    compared: std::sync::Mutex<BTreeSet<u32>>,
+    /// What became of each server found running another build, until the app shows it.
+    updates: std::sync::Mutex<BTreeMap<u32, ServerUpdate>>,
 }
 
 impl Servers {
@@ -392,6 +404,8 @@ impl Servers {
             registry: std::sync::Mutex::new(BTreeMap::new()),
             starting: std::sync::Mutex::new(BTreeMap::new()),
             stopped: AtomicBool::new(false),
+            compared: std::sync::Mutex::new(BTreeSet::new()),
+            updates: std::sync::Mutex::new(BTreeMap::new()),
         }
     }
 
@@ -442,6 +456,7 @@ impl Servers {
         if self.stopped() {
             return Err(RosenError::Stopped);
         }
+        self.update_once(project, &server).await;
         let client = server.connect().await?;
         // Stopped while this start was connecting: the server it started goes too.
         if self.stopped() {
@@ -459,6 +474,31 @@ impl Servers {
             client.project_config(None).await?;
         }
         Ok(server)
+    }
+
+    /// Replaces `project`'s running server when it is another Rosen build than this
+    /// Velocity's (#515). Once per run, the first time the project is made ready: every
+    /// watcher and land this run starts on the server comes after that, so none is cut
+    /// short, and a server that could not be replaced is left alone until the next start.
+    async fn update_once(&self, project: u32, server: &ProjectServer) {
+        let first = self
+            .compared
+            .lock()
+            .is_ok_and(|mut compared| compared.insert(project));
+        if !first {
+            return;
+        }
+        if let Some(update) = server.update_running().await
+            && let Ok(mut updates) = self.updates.lock()
+        {
+            updates.insert(project, update);
+        }
+    }
+
+    /// What became of `project`'s server when it was found running another Rosen build,
+    /// handed over once for the app to show.
+    pub fn take_update(&self, project: u32) -> Option<ServerUpdate> {
+        self.updates.lock().ok()?.remove(&project)
     }
 
     fn registered(&self) -> Vec<ProjectServer> {
@@ -530,6 +570,6 @@ pub(crate) fn program_folder(program: &str) -> Option<PathBuf> {
         })
 }
 
-fn executable(name: &str) -> String {
+pub(crate) fn executable(name: &str) -> String {
     format!("{name}{}", std::env::consts::EXE_SUFFIX)
 }

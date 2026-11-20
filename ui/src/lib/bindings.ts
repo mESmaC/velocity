@@ -2312,6 +2312,8 @@ export type LayoutSnapshot_Deserialize = {
 	revision: number,
 	/**  The selected project's Rosen event stream is reconnecting. */
 	rosen_reconnecting: boolean,
+	/**  The selected project's Rosen server could not be replaced with this build (#515). */
+	rosen_server_notice?: RosenServerNotice | null,
 	project_identifier?: number | null,
 	project_name: string,
 	rosen_mirror?: MirrorState_Deserialize | null,
@@ -2382,6 +2384,8 @@ export type LayoutSnapshot_Serialize = {
 	revision: number,
 	/**  The selected project's Rosen event stream is reconnecting. */
 	rosen_reconnecting: boolean,
+	/**  The selected project's Rosen server could not be replaced with this build (#515). */
+	rosen_server_notice: RosenServerNotice | null,
 	project_identifier: number | null,
 	project_name: string,
 	rosen_mirror: MirrorState_Serialize | null,
@@ -3898,6 +3902,17 @@ export type RosenLandView_Serialize = {
 	checks_passed: boolean,
 	revert: string | null,
 	failures: RosenLandFailureView[],
+};
+
+/**
+ *  A project's Rosen server that still runs another build than this Velocity's, because it
+ *  could not be replaced at start (#515). The next start of Velocity tries again.
+ */
+export type RosenServerNotice = {
+	/**  `running Rosen cd537b7; restart to update`. */
+	headline: string,
+	/**  Why the server was not replaced. */
+	reason: string,
 };
 
 export type RosenStatusChanged = RosenStatusChanged_Serialize | RosenStatusChanged_Deserialize;

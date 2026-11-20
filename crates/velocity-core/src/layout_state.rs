@@ -38,6 +38,9 @@ pub struct LayoutState {
     data: LayoutData,
     workspace_count: Option<usize>,
     reconnecting_projects: BTreeSet<u32>,
+    /// Projects whose Rosen server still runs another build until Velocity restarts (#515).
+    /// Kept apart from `data` like the transport status: it describes this run only.
+    server_notices: BTreeMap<u32, RosenServerNotice>,
     issue_rows: BTreeMap<u32, Vec<RailItem>>,
     /// The machine-wide library supplies the composer's `$` menu (F4, F18).
     installed_skills: Vec<SkillMenuEntry>,
@@ -95,6 +98,14 @@ impl LayoutState {
         }
         changed
     }
+
+    /// Shows on `project` that its Rosen server could not be replaced with this build.
+    pub fn set_rosen_server_notice(&mut self, project: u32, notice: RosenServerNotice) {
+        if self.server_notices.get(&project) != Some(&notice) {
+            self.server_notices.insert(project, notice);
+            self.changed();
+        }
+    }
 }
 
 impl Default for LayoutState {
@@ -103,6 +114,7 @@ impl Default for LayoutState {
             data: LayoutData::default(),
             workspace_count: None,
             reconnecting_projects: BTreeSet::new(),
+            server_notices: BTreeMap::new(),
             issue_rows: BTreeMap::new(),
             installed_skills: Vec::new(),
             live: BTreeMap::new(),
@@ -730,6 +742,10 @@ impl LayoutState {
                 .data
                 .project_identifier
                 .is_some_and(|project| self.reconnecting_projects.contains(&project)),
+            rosen_server_notice: self
+                .data
+                .project_identifier
+                .and_then(|project| self.server_notices.get(&project).cloned()),
             view: self.view,
             settings_tab: self.settings_tab.clone(),
             selected_thread: self.selected_thread,
