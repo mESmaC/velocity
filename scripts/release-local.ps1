@@ -1,4 +1,4 @@
-<#
+﻿<#
 .SYNOPSIS
 Builds a Velocity installer on this machine (#498).
 
@@ -10,20 +10,31 @@ One command for a local release build, without the waits that made it slow:
   (ui/vite.config.ts explains the hang this used to work around, #44 and #500).
 - The release profile is incremental locally (Cargo.toml), so a change to one
   crate rebuilds only what changed.
-The installer and the portable executable are copied to -OutDir.
-The downloads are not signed with the updater key, which only CI holds.
-The Linux code graph indexer Collapse pins is not built here. Publishing the GitHub
-release starts .github/workflows/graph-indexer.yml, which attaches it (#518).
+The installer, portable executable, checksums and an unsigned release notice
+(`RELEASE-NOTES.md`) are copied to -OutDir.
+The downloads are not signed with the updater key, which only CI holds, and
+the updater manifest (`updater/latest.json`) is never moved here (#521).
+With -Publish, the downloads are uploaded to GitHub as a draft prerelease
+(`--draft --prerelease --latest=false`) labelled as an unsigned local build
+so it never looks like the current release to installed copies.
+The Linux code graph indexer Collapse pins is not built here.
 
 .EXAMPLE
 pwsh -NoProfile -File scripts/release-local.ps1 -Version 0.1.0-beta.13
+
+.EXAMPLE
+pwsh -NoProfile -File scripts/release-local.ps1 -Version 0.1.0-beta.13 -Publish
 #>
 param(
     [Parameter(Mandatory)]
     [ValidatePattern('^\d+\.\d+\.\d+(-[0-9A-Za-z.-]+)?$')]
     [string]$Version,
     # Where the installer, portable executable and checksums are copied.
-    [string]$OutDir = ''
+    [string]$OutDir = '',
+    # Upload the local build to GitHub as a draft unsigned release (--latest=false).
+    [switch]$Publish,
+    # GitHub repository (owner/name) for -Publish. Empty uses the checkout's default.
+    [string]$Repository = ''
 )
 $ErrorActionPreference = 'Stop'
 $root = Split-Path -Parent $PSScriptRoot
@@ -103,5 +114,45 @@ Copy-Item (Join-Path $release 'velocity-app.exe') (Join-Path $OutDir "Velocity_$
 Get-ChildItem $OutDir -File -Filter 'Velocity_*' | ForEach-Object {
     "$((Get-FileHash $_.FullName -Algorithm SHA256).Hash.ToLower())  $($_.Name)"
 } | Set-Content -Encoding utf8 (Join-Path $OutDir 'SHA256SUMS.txt')
+
+$notesPath = Join-Path $OutDir 'RELEASE-NOTES.md'
+$tag = "v$Version"
+$title = "Velocity $Version (unsigned local build)"
+@"
+<!-- velocity-unsigned-release -->
+> [!WARNING]
+> **Unsigned local build — not offered to installed copies.**
+> Built locally with ``scripts/release-local.ps1`` outside the signed ``release.yml`` pipeline.
+> These downloads are not signed with the updater key, and the updater manifest (``updater/latest.json``) was **not** updated.
+> Installed copies of Velocity will not be offered this version automatically.
+<!-- /velocity-unsigned-release -->
+"@ | Set-Content -Encoding utf8 $notesPath
+
+$assets = @(
+    (Join-Path $OutDir "Velocity_${Version}_x64-setup.exe"),
+    (Join-Path $OutDir "Velocity_${Version}_x64-portable.exe"),
+    (Join-Path $OutDir 'SHA256SUMS.txt')
+)
+
 Write-Step "Done: $OutDir"
-Write-Host 'Publishing these as a GitHub release starts the Graph indexer workflow, which attaches the Linux velocity-graph archive Collapse pins.'
+Write-Host "NOTE: Downloads are unsigned. The updater manifest (updater/latest.json) was NOT moved; installed copies will not be offered $Version." -ForegroundColor Yellow
+
+if ($Publish) {
+    $repoArgs = if ($Repository) { @('--repo', $Repository) } else { @() }
+    Write-Step "Uploading $tag as a draft unsigned release"
+    gh release view $tag @repoArgs *> $null
+    if ($LASTEXITCODE -eq 0) {
+        gh release edit $tag @repoArgs --draft --prerelease --latest=false --title $title --notes-file $notesPath
+        if ($LASTEXITCODE -ne 0) { throw "Could not update draft release $tag" }
+        gh release upload $tag @repoArgs @assets --clobber
+        if ($LASTEXITCODE -ne 0) { throw "Could not upload local downloads to $tag" }
+    } else {
+        gh release create $tag @repoArgs --draft --prerelease --latest=false --title $title --notes-file $notesPath @assets
+        if ($LASTEXITCODE -ne 0) { throw "Could not create draft release $tag" }
+    }
+    Write-Host "Draft release $tag updated ($title). The updater manifest (updater/latest.json) was NOT moved." -ForegroundColor Yellow
+} else {
+    Write-Host "To upload as a draft without looking like the current release:"
+    Write-Host "  pwsh -NoProfile -File scripts/release-local.ps1 -Version $Version -Publish"
+    Write-Host "To publish a signed release that updates updater/latest.json for installed copies, use Cut release in Velocity or .github/workflows/release.yml."
+}

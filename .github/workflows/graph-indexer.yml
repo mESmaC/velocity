@@ -151,3 +151,45 @@ jobs:
             cat "$archive.sha256"
             echo '```'
           } >> "$GITHUB_STEP_SUMMARY"
+      # A published release without latest.json and updater signatures bypassed release.yml
+      # and never moved updater/latest.json. Mark it --latest=false and label it clearly so
+      # it never looks like the current release offered to installed copies (#521).
+      - name: Label unsigned releases as not offered to installed copies
+        shell: bash
+        run: |
+          set -euo pipefail
+          assets="$(gh release view "$TAG" --json assets --jq '.assets[].name')"
+          if grep -qxF "latest.json" <<<"$assets" && grep -q '\.sig$' <<<"$assets"; then
+            exit 0
+          fi
+          current_title="$(gh release view "$TAG" --json name --jq '.name // ""')"
+          current_body="$(gh release view "$TAG" --json body --jq '.body // ""')"
+          new_title="$current_title"
+          if [ -z "$new_title" ]; then
+            new_title="Velocity ${TAG#v} (unsigned · not offered to installed copies)"
+          elif ! grep -qi 'unsigned' <<<"$new_title"; then
+            new_title="${new_title} (unsigned · not offered to installed copies)"
+          fi
+          notes_file="$(mktemp)"
+          if grep -q '<!-- velocity-unsigned-release -->' <<<"$current_body"; then
+            printf '%s\n' "$current_body" > "$notes_file"
+          else
+            printf '%s\n' \
+              '<!-- velocity-unsigned-release -->' \
+              '> [!WARNING]' \
+              '> **Unsigned release — not offered to installed copies.**' \
+              '> This release did not go through the signed `release.yml` pipeline and did not update the updater manifest (`updater/latest.json`).' \
+              '> Installed copies of Velocity will not be offered this version automatically.' \
+              '<!-- /velocity-unsigned-release -->' > "$notes_file"
+            if [ -n "$current_body" ]; then
+              printf '\n%s\n' "$current_body" >> "$notes_file"
+            fi
+          fi
+          gh release edit "$TAG" --prerelease --latest=false --title "$new_title" --notes-file "$notes_file"
+          rm -f "$notes_file"
+          {
+            echo
+            echo "### Unsigned release notice"
+            echo
+            echo "\`$TAG\` has no signed updater manifest (\`latest.json\` / \`.sig\`). Marked \`--latest=false\` and labelled as not offered to installed copies; \`updater/latest.json\` was **not** moved."
+          } >> "$GITHUB_STEP_SUMMARY"

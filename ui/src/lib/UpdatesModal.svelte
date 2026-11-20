@@ -62,6 +62,12 @@
             </div>
           </div>{/if}
         {#if update.warning}<p class="usage-note">{update.warning}</p>{/if}
+        {#if update.manifest_notice}<p
+            class="usage-note updates-manifest-notice"
+            role="status"
+          >
+            {update.manifest_notice}
+          </p>{/if}
       </section>
       {#if update.notes}<hr />
         <section aria-label="Release notes">

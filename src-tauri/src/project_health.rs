@@ -5,7 +5,7 @@
 //! threads stuck in review (#487), idle continuous-dispatch slots, and post-land checks
 //! stopped for running too long (#486).
 
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::path::Path;
 use std::sync::{Mutex, MutexGuard};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
@@ -19,7 +19,9 @@ use velocity_core::project_health::{
     ProjectHealthView, REVIEW_STUCK_LIMIT_SECONDS, format_duration, format_stopped_check_detail,
     short_commit,
 };
+use velocity_core::release::ManifestLag;
 use velocity_core::rosen_checker::StoppedCheck;
+use velocity_github::{IssueClient, RefusedReleaseGate};
 use velocity_rosen::landing::LandCheckOutcome;
 use velocity_rosen::{ProjectServer, integration, post_land};
 use velocity_store::continuous_dispatch::busy_count;
@@ -38,6 +40,8 @@ const MIRROR_RETRY_COOLDOWN_SECS: u64 = 10 * 60;
 const REVIEW_CHECK_COOLDOWN_SECS: u64 = 10 * 60;
 const RECENT_ACTION_TTL_SECS: u64 = 20 * 60;
 const MANUAL_PARKED_LIMIT_SECS: u64 = 2 * 60 * 60;
+const RELEASE_HEALTH_COOLDOWN_SECS: u64 = 15 * 60;
+const RELEASE_GATE_POLL_SECS: u64 = 2 * 60;
 
 #[derive(Clone, serde::Serialize, specta::Type, Event)]
 #[tauri_specta(event_name = "project://health")]
@@ -68,6 +72,22 @@ struct ProjectHealthTracker {
     parked: BTreeMap<u32, ParkedRecord>,
     stopped_check: Option<StoppedCheckRecord>,
     acted_times: HashMap<String, (String, String, u64)>,
+    release_health: Option<ReleaseHealthCache>,
+    pending_release: Option<PendingRelease>,
+    retried_release_runs: HashSet<u64>,
+}
+
+#[derive(Clone)]
+struct ReleaseHealthCache {
+    checked_at_secs: u64,
+    manifest_lag: Option<ManifestLag>,
+    refused_gate: Option<RefusedReleaseGate>,
+}
+
+#[derive(Clone)]
+struct PendingRelease {
+    tag: String,
+    commit: String,
 }
 
 #[derive(Clone)]
@@ -299,6 +319,27 @@ pub(crate) fn record_parked_manual(application: &AppHandle, project: u32, issue:
         .or_insert(ParkedRecord::Manual { seen_secs: now });
 }
 
+/// Queues a release cut that started an integration build so Velocity dispatches
+/// `release.yml` automatically once `commit` has a green `velocity/integration` status (#521).
+pub(crate) fn queue_pending_release(
+    application: &AppHandle,
+    project: u32,
+    tag: String,
+    commit: String,
+) {
+    with_tracker(application, project, |tracker| {
+        tracker.pending_release = Some(PendingRelease { tag, commit });
+        tracker.release_health = None;
+    });
+}
+
+/// Clears the cached GitHub release/manifest health check for `project` (#521).
+pub(crate) fn invalidate_release_health(application: &AppHandle, project: u32) {
+    with_tracker(application, project, |tracker| {
+        tracker.release_health = None;
+    });
+}
+
 async fn check_all_projects(application: &AppHandle) {
     let Ok(app_data) = application.path().app_data_dir() else {
         return;
@@ -360,6 +401,7 @@ async fn check_project(application: &AppHandle, app_data: &Path, project: &Proje
     if let Some(item) = check_post_land_stopped(application, project.id, &server).await {
         items.push(item);
     }
+    items.extend(check_release_health(application, project, &server, now, now_ms).await);
     items.extend(collect_recent_actions(application, project.id, now, &items));
     stabilize_and_publish(application, project.id, items, now_ms);
 }
@@ -1159,6 +1201,394 @@ fn stopped_check_item(
         acted_at_ms,
     )
     .with_detail(Some(detail))
+}
+
+/// Signals 9 & 10: Updater manifest lag behind published releases, and refused release
+/// gates lacking a green `velocity/integration` status (#521).
+async fn check_release_health(
+    application: &AppHandle,
+    project: &ProjectItem,
+    server: &ProjectServer,
+    now: u64,
+    now_ms: u64,
+) -> Vec<ProjectHealthItem> {
+    let Some(repository) = project.github_remote.as_deref() else {
+        return Vec::new();
+    };
+    let mut items = Vec::new();
+    if let Some(item) =
+        check_pending_release(application, project, repository, server, now, now_ms).await
+    {
+        items.push(item);
+    }
+    let Some(cache) = read_release_health(application, project, repository, now).await else {
+        return items;
+    };
+    if let Some(lag) = &cache.manifest_lag {
+        items.push(manifest_lag_item(lag, now_ms));
+    }
+    if let Some(gate) = &cache.refused_gate
+        && let Some(item) =
+            handle_refused_gate(application, project, repository, server, gate, now, now_ms).await
+    {
+        items.push(item);
+    }
+    items
+}
+
+async fn read_release_health(
+    application: &AppHandle,
+    project: &ProjectItem,
+    repository: &str,
+    now: u64,
+) -> Option<ReleaseHealthCache> {
+    let cached = with_tracker(application, project.id, |tracker| {
+        tracker.release_health.clone()
+    });
+    if let Some(cache) = cached {
+        let ttl = if cache.refused_gate.is_some() {
+            RELEASE_GATE_POLL_SECS
+        } else {
+            RELEASE_HEALTH_COOLDOWN_SECS
+        };
+        if now.saturating_sub(cache.checked_at_secs) < ttl {
+            return Some(cache);
+        }
+    }
+    let directory = Path::new(&project.repository_path).to_path_buf();
+    let repo = repository.to_owned();
+    let fetched = tauri::async_runtime::spawn_blocking(move || {
+        let client = IssueClient::for_repository(&directory, &repo).ok()?;
+        let manifest_lag = client.manifest_lag().ok().flatten();
+        let refused_gate = client.latest_refused_release_gate().ok().flatten();
+        Some(ReleaseHealthCache {
+            checked_at_secs: now,
+            manifest_lag,
+            refused_gate,
+        })
+    })
+    .await
+    .ok()
+    .flatten()?;
+    with_tracker(application, project.id, |tracker| {
+        tracker.release_health = Some(fetched.clone());
+    });
+    Some(fetched)
+}
+
+fn manifest_lag_item(lag: &ManifestLag, now_ms: u64) -> ProjectHealthItem {
+    let action = if lag.latest_signed {
+        "Published release has not updated updater/latest.json; cut a signed release to offer it to installed copies"
+    } else {
+        "Newest published release is unsigned; installed copies stay on the manifest version until a signed release updates updater/latest.json"
+    };
+    let detail = format!(
+        "updater/latest.json: {} · newest published release: {}",
+        lag.manifest_version, lag.latest_tag
+    );
+    ProjectHealthItem::new(
+        "updater-manifest-behind",
+        HealthSignalKind::UpdaterManifestBehind,
+        HealthSeverity::Warning,
+        format!(
+            "Updater manifest is behind ({} vs {})",
+            lag.manifest_version, lag.latest_release
+        ),
+        action,
+        now_ms,
+    )
+    .with_detail(Some(detail))
+}
+
+async fn check_pending_release(
+    application: &AppHandle,
+    project: &ProjectItem,
+    repository: &str,
+    server: &ProjectServer,
+    now: u64,
+    now_ms: u64,
+) -> Option<ProjectHealthItem> {
+    let pending = with_tracker(application, project.id, |tracker| {
+        tracker.pending_release.clone()
+    })?;
+    if let Some(green) = publish_and_find_green(project, repository, server, &pending.commit).await
+    {
+        return dispatch_pending_release(
+            application,
+            project,
+            repository,
+            &pending,
+            &green,
+            now,
+            now_ms,
+        )
+        .await;
+    }
+    let (action, severity) =
+        start_or_explain_release_integration(application, project.id, &pending.commit);
+    Some(ProjectHealthItem::new(
+        "release-gate-pending",
+        HealthSignalKind::ReleaseGateRefused,
+        severity,
+        format!(
+            "Release {} waits for green integration on {}",
+            pending.tag,
+            short_commit(&pending.commit)
+        ),
+        action,
+        now_ms,
+    ))
+}
+
+async fn dispatch_pending_release(
+    application: &AppHandle,
+    project: &ProjectItem,
+    repository: &str,
+    pending: &PendingRelease,
+    green: &str,
+    now: u64,
+    now_ms: u64,
+) -> Option<ProjectHealthItem> {
+    match dispatch_release_blocking(project, repository, &pending.tag, &pending.commit, green).await
+    {
+        Ok(()) => {
+            with_tracker(application, project.id, |tracker| {
+                tracker.pending_release = None;
+                tracker.release_health = None;
+            });
+            let action = format!(
+                "Dispatched release {} at {} after green integration {}",
+                pending.tag,
+                short_commit(&pending.commit),
+                short_commit(green)
+            );
+            crate::diagnostics::record(SOURCE, &format!("{}: {action}", project.name));
+            record_recent_action(
+                application,
+                project.id,
+                ProjectHealthItem::new(
+                    "release-gate-dispatched",
+                    HealthSignalKind::ReleaseGateRefused,
+                    HealthSeverity::Info,
+                    format!("Queued release {} ready", pending.tag),
+                    action,
+                    now_ms,
+                ),
+                now,
+            );
+            None
+        }
+        Err(error) => Some(ProjectHealthItem::new(
+            "release-gate-pending",
+            HealthSignalKind::ReleaseGateRefused,
+            HealthSeverity::Error,
+            format!("Queued release {} failed to dispatch", pending.tag),
+            error,
+            now_ms,
+        )),
+    }
+}
+
+async fn handle_refused_gate(
+    application: &AppHandle,
+    project: &ProjectItem,
+    repository: &str,
+    server: &ProjectServer,
+    gate: &RefusedReleaseGate,
+    now: u64,
+    now_ms: u64,
+) -> Option<ProjectHealthItem> {
+    let already_retried = with_tracker(application, project.id, |tracker| {
+        tracker.retried_release_runs.contains(&gate.run_id)
+    });
+    if already_retried {
+        return None;
+    }
+    let label = gate
+        .tag
+        .as_deref()
+        .map(|tag| format!(" for {tag}"))
+        .unwrap_or_default();
+    if let Some(green) = publish_and_find_green(project, repository, server, &gate.commit).await {
+        return recover_refused_gate(
+            application,
+            project,
+            repository,
+            gate,
+            &label,
+            &green,
+            now,
+            now_ms,
+        )
+        .await;
+    }
+    let (action, severity) =
+        start_or_explain_release_integration(application, project.id, &gate.commit);
+    Some(
+        ProjectHealthItem::new(
+            "release-gate-refused",
+            HealthSignalKind::ReleaseGateRefused,
+            severity,
+            format!(
+                "Release gate refused{label} ({} has no green integration build)",
+                short_commit(&gate.commit)
+            ),
+            action,
+            now_ms,
+        )
+        .with_detail((!gate.url.is_empty()).then(|| gate.url.clone())),
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn recover_refused_gate(
+    application: &AppHandle,
+    project: &ProjectItem,
+    repository: &str,
+    gate: &RefusedReleaseGate,
+    label: &str,
+    green: &str,
+    now: u64,
+    now_ms: u64,
+) -> Option<ProjectHealthItem> {
+    if let Some(tag) = gate.tag.as_deref()
+        && let Err(error) =
+            dispatch_release_blocking(project, repository, tag, &gate.commit, green).await
+    {
+        return Some(
+            ProjectHealthItem::new(
+                "release-gate-refused",
+                HealthSignalKind::ReleaseGateRefused,
+                HealthSeverity::Error,
+                format!("Release gate refused{label}"),
+                format!("Could not re-dispatch release.yml: {error}"),
+                now_ms,
+            )
+            .with_detail((!gate.url.is_empty()).then(|| gate.url.clone())),
+        );
+    }
+    with_tracker(application, project.id, |tracker| {
+        tracker.retried_release_runs.insert(gate.run_id);
+        tracker.release_health = None;
+    });
+    let action = match gate.tag.as_deref() {
+        Some(tag) => format!(
+            "Integration passed at {}; re-dispatched release.yml for {tag}",
+            short_commit(green)
+        ),
+        None => format!(
+            "Integration passed at {}; release can now be cut",
+            short_commit(green)
+        ),
+    };
+    crate::diagnostics::record(SOURCE, &format!("{}: {action}", project.name));
+    record_recent_action(
+        application,
+        project.id,
+        ProjectHealthItem::new(
+            "release-gate-recovered",
+            HealthSignalKind::ReleaseGateRefused,
+            HealthSeverity::Info,
+            format!("Release gate satisfied{label}"),
+            action,
+            now_ms,
+        ),
+        now,
+    );
+    None
+}
+
+async fn publish_and_find_green(
+    project: &ProjectItem,
+    repository: &str,
+    server: &ProjectServer,
+    commit: &str,
+) -> Option<String> {
+    let reading = server.clone();
+    let local_green =
+        tauri::async_runtime::spawn_blocking(move || integration::last_green(&reading))
+            .await
+            .ok()
+            .and_then(Result::ok)
+            .flatten();
+    let directory = Path::new(&project.repository_path).to_path_buf();
+    let repo = repository.to_owned();
+    let target = commit.to_owned();
+    tauri::async_runtime::spawn_blocking(move || {
+        let client = IssueClient::for_repository(&directory, &repo).ok()?;
+        if let Some(green) = local_green.as_deref() {
+            let _ = client.publish_integration_success(green);
+        }
+        client
+            .integration_status_covering(&target)
+            .ok()
+            .flatten()
+            .map(|coverage| coverage.commit)
+    })
+    .await
+    .ok()
+    .flatten()
+}
+
+async fn dispatch_release_blocking(
+    project: &ProjectItem,
+    repository: &str,
+    tag: &str,
+    commit: &str,
+    green: &str,
+) -> Result<(), String> {
+    let directory = Path::new(&project.repository_path).to_path_buf();
+    let (repo, tag, commit, green) = (
+        repository.to_owned(),
+        tag.to_owned(),
+        commit.to_owned(),
+        green.to_owned(),
+    );
+    tauri::async_runtime::spawn_blocking(move || {
+        let client =
+            IssueClient::for_repository(&directory, &repo).map_err(|error| error.to_string())?;
+        client
+            .dispatch_release(&tag, &commit, &green)
+            .map_err(|error| error.to_string())
+    })
+    .await
+    .map_err(|error| error.to_string())?
+}
+
+fn start_or_explain_release_integration(
+    application: &AppHandle,
+    project: u32,
+    commit: &str,
+) -> (String, HealthSeverity) {
+    if crate::rosen_landing::is_verifying(application, project) {
+        return (
+            format!(
+                "Integration build is running to cover {}",
+                short_commit(commit)
+            ),
+            HealthSeverity::Info,
+        );
+    }
+    if crate::rosen::paused(application) {
+        return (
+            "Cannot start integration build for release gate: Rosen servers are paused".into(),
+            HealthSeverity::Warning,
+        );
+    }
+    if velocity_rosen::memory::is_low() {
+        return (
+            "Cannot start integration build for release gate: machine memory is low".into(),
+            HealthSeverity::Warning,
+        );
+    }
+    crate::rosen_landing::request_integration(application, project, Some(commit.to_owned()));
+    (
+        format!(
+            "Started integration build for {} to satisfy the release gate",
+            short_commit(commit)
+        ),
+        HealthSeverity::Info,
+    )
 }
 
 async fn read_last_outcome(server: &ProjectServer) -> Option<String> {

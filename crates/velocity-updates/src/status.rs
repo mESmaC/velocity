@@ -7,6 +7,17 @@ pub struct AvailableUpdate {
     pub notes: String,
 }
 
+/// The updater manifest (`updater/latest.json`) lags behind a newer published release (#521).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ManifestLag {
+    pub manifest_version: String,
+    pub latest_release: String,
+    /// Whether this running copy is older than `latest_release`.
+    pub current_is_behind: bool,
+    /// True when the newest published release carries signed updater assets.
+    pub latest_signed: bool,
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum UpdatePhase {
     /// No check has run since Velocity started.
@@ -31,6 +42,8 @@ pub struct UpdateState {
     pub install_kind: InstallKind,
     pub phase: UpdatePhase,
     pub available: Option<AvailableUpdate>,
+    /// Set when `updater/latest.json` is older than the newest published release (#521).
+    pub manifest_lag: Option<ManifestLag>,
     /// When the last check finished, as the clock shows it ("22:15").
     pub checked_at: Option<String>,
 }
@@ -42,6 +55,7 @@ impl UpdateState {
             install_kind,
             phase: UpdatePhase::NotChecked,
             available: None,
+            manifest_lag: None,
             checked_at: None,
         }
     }
@@ -54,13 +68,19 @@ impl UpdateState {
         )
     }
 
-    pub fn checked(&mut self, found: Option<AvailableUpdate>, at: &str) {
+    pub fn checked(
+        &mut self,
+        found: Option<AvailableUpdate>,
+        manifest_lag: Option<ManifestLag>,
+        at: &str,
+    ) {
         self.phase = if found.is_some() {
             UpdatePhase::Available
         } else {
             UpdatePhase::UpToDate
         };
         self.available = found;
+        self.manifest_lag = manifest_lag;
         self.checked_at = Some(at.to_owned());
     }
 
@@ -116,6 +136,8 @@ pub struct UpdateView {
     pub notes: String,
     /// Shown above the install button: what restarting does to working agents.
     pub warning: String,
+    /// Shown when `updater/latest.json` is behind the newest published release (#521).
+    pub manifest_notice: String,
     pub install_label: String,
     pub action: UpdateAction,
     pub action_label: String,
@@ -142,6 +164,11 @@ impl UpdateState {
             } else {
                 String::new()
             },
+            manifest_notice: self
+                .manifest_lag
+                .as_ref()
+                .map(manifest_lag_notice)
+                .unwrap_or_default(),
             install_label: self.install_kind.label().to_owned(),
             action_label: match action {
                 UpdateAction::None => String::new(),
@@ -177,11 +204,18 @@ impl UpdateState {
                 String::new(),
                 UpdateAction::None,
             ),
-            UpdatePhase::UpToDate => (
-                format!("Velocity {current} is up to date"),
-                checked,
-                UpdateAction::Check,
-            ),
+            UpdatePhase::UpToDate => {
+                let headline = match &self.manifest_lag {
+                    Some(lag) if lag.current_is_behind => {
+                        format!(
+                            "Velocity {current} · manifest behind {}",
+                            lag.latest_release
+                        )
+                    }
+                    _ => format!("Velocity {current} is up to date"),
+                };
+                (headline, checked, UpdateAction::Check)
+            }
             UpdatePhase::Available => (
                 format!("Velocity {next} is available"),
                 format!("You have {current}. {checked}"),
@@ -203,6 +237,27 @@ impl UpdateState {
                 UpdateAction::Check,
             ),
         }
+    }
+}
+
+fn manifest_lag_notice(lag: &ManifestLag) -> String {
+    if lag.current_is_behind {
+        if lag.latest_signed {
+            format!(
+                "Updater manifest (updater/latest.json) reports {}, behind published release {}. Installed copies will not be offered newer releases until the manifest is updated.",
+                lag.manifest_version, lag.latest_release
+            )
+        } else {
+            format!(
+                "Updater manifest (updater/latest.json) reports {}, behind published release {} (unsigned). Installed copies will not be offered newer releases until a signed release updates the manifest.",
+                lag.manifest_version, lag.latest_release
+            )
+        }
+    } else {
+        format!(
+            "Updater manifest (updater/latest.json) is behind at {} (newest published release is {}). Other installed copies are not being offered newer releases.",
+            lag.manifest_version, lag.latest_release
+        )
     }
 }
 

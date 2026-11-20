@@ -35,6 +35,14 @@ pub fn is_verifying(application: &AppHandle, project: u32) -> bool {
         .is_some_and(|runner| runner.is_verifying(project))
 }
 
+/// Requests an immediate integration build for `project` (bypassing the batch wait),
+/// optionally targeting `commit` so the release gate can pass (#521).
+pub fn request_integration(application: &AppHandle, project: u32, commit: Option<String>) {
+    if let Some(runner) = application.try_state::<RosenLanding>() {
+        runner.request_integration(project, commit);
+    }
+}
+
 #[derive(Clone)]
 struct TauriLandingHost(AppHandle);
 

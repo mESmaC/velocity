@@ -40,6 +40,8 @@ pub enum HealthSignalKind {
     ReviewStalled,
     DispatchIdle,
     PostLandStopped,
+    UpdaterManifestBehind,
+    ReleaseGateRefused,
 }
 
 /// One active health signal on a project, with the automatic action taken and when (#509).

@@ -105,7 +105,11 @@ export const commands = {
 	dispatchToMachine: (projectIdentifier: number, machine: string, prompt: string) => __TAURI_INVOKE<string>("dispatch_to_machine", { projectIdentifier, machine, prompt }),
 	listProjects: () => __TAURI_INVOKE<ProjectList>("list_projects"),
 	switchProject: (identifier: number) => __TAURI_INVOKE<LayoutSnapshot_Serialize>("switch_project", { identifier }),
-	/**  `cut_release` (§3.1): without `commit`, Rosen's last green commit is released. */
+	/**
+	 *  `cut_release` (§3.1): without `commit`, releases the newest commit with a green
+	 *  `velocity/integration` status; with an unverified commit, starts an integration build
+	 *  immediately and queues the release so the release gate is never left refused (#431, #521).
+	 */
 	cutRelease: (projectIdentifier: number, version: string, commit: string | null) => __TAURI_INVOKE<ReleaseCut>("cut_release", { projectIdentifier, version, commit }),
 	getProofsSettings: (projectIdentifier: number) => __TAURI_INVOKE<ProofsSettingsView_Serialize>("get_proofs_settings", { projectIdentifier }),
 	/**
@@ -1900,7 +1904,7 @@ export type GraphStatus_Serialize = {
 
 export type HealthSeverity = "Info" | "Warning" | "Error";
 
-export type HealthSignalKind = "MirrorBehind" | "IntegrationUncovered" | "BaseRed" | "LandedIssuesWaiting" | "IssueParked" | "ReviewStalled" | "DispatchIdle" | "PostLandStopped";
+export type HealthSignalKind = "MirrorBehind" | "IntegrationUncovered" | "BaseRed" | "LandedIssuesWaiting" | "IssueParked" | "ReviewStalled" | "DispatchIdle" | "PostLandStopped" | "UpdaterManifestBehind" | "ReleaseGateRefused";
 
 /**  A model you hid from the pickers by clicking its chip (F15 Models). */
 export type HiddenModel = {
@@ -3995,12 +3999,19 @@ export type RailItem_Serialize = {
 	metadata: string,
 };
 
-/**  The release the workflow was started for. */
+/**  The release the workflow was started (or queued) for. */
 export type ReleaseCut = {
 	tag: string,
 	commit: string,
-	/**  Rosen's last green commit, which covers `commit`. */
+	/**  The green commit covering `commit`, or empty while waiting for an integration build. */
 	green: string,
+	/**
+	 *  True when Velocity started an integration build and queued the release instead of
+	 *  dispatching `release.yml` immediately (#521).
+	 */
+	waiting_for_integration: boolean,
+	/**  Human-readable status for the Rosen status pane (#521). */
+	note: string,
 };
 
 export type Report = Report_Serialize | Report_Deserialize;
@@ -5557,6 +5568,8 @@ export type UpdateView_Deserialize = {
 	notes: string,
 	/**  Shown above the install button: what restarting does to working agents. */
 	warning: string,
+	/**  Shown when `updater/latest.json` is behind the newest published release (#521). */
+	manifest_notice: string,
 	install_label: string,
 	action: UpdateAction,
 	action_label: string,
@@ -5574,6 +5587,8 @@ export type UpdateView_Serialize = {
 	notes: string,
 	/**  Shown above the install button: what restarting does to working agents. */
 	warning: string,
+	/**  Shown when `updater/latest.json` is behind the newest published release (#521). */
+	manifest_notice: string,
 	install_label: string,
 	action: UpdateAction,
 	action_label: string,

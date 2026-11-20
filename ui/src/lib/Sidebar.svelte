@@ -228,7 +228,10 @@
     <button
       class="icon-btn updates-trigger"
       class:ready={update?.badge}
-      title={update?.badge ? update.headline : 'Updates'}
+      class:behind={Boolean(update?.manifest_notice && !update?.badge)}
+      title={update?.badge
+        ? update.headline
+        : update?.manifest_notice || 'Updates'}
       aria-label="Updates"
       aria-expanded={updatesOpen}
       onclick={() => {

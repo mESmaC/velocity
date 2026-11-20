@@ -24,8 +24,9 @@ Rows show editing, named, landing, landed, green, reverted or abandoned.
 A landed row includes the resulting base commit.
 A reverted row shows the saved culprit output.
 
-Cut release takes a version and, optionally, a landed commit, and releases Rosen's last green commit when the commit is left empty (#431).
-Velocity refuses a commit the last green commit does not cover, because R12 advances green as a prefix of the base.
+Cut release takes a version and, optionally, a landed commit, and releases the newest commit with a green `velocity/integration` status when the commit is left empty (#431, #521).
+When Rosen's last green commit has no `velocity/integration` status on GitHub yet, Velocity publishes a local green pass immediately, or cuts from the newest commit on GitHub that has one while starting an immediate integration build for the newer base (#521).
+When a requested commit has no green `velocity/integration` status yet, Velocity starts an immediate integration build covering it and dispatches `release.yml` automatically once it passes, instead of leaving the release gate refused (#521).
 It waits up to three minutes for GitHub's default branch to carry the green commit and its `velocity/integration` status, then dispatches `release.yml` with the tag, the commit and the green commit.
 The workflow refuses a tag that already names another commit, checks that the commit is an ancestor of the green commit, and creates the tag on the commit only when it publishes.
 

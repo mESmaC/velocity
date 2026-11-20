@@ -12,7 +12,9 @@ pub use install_kind::{InstallKind, classify, detect};
 pub use portable::{
     REPLACED_MARKER, UpdateError, relaunch, remove_previous, replace_running, wait_for_previous,
 };
-pub use status::{AvailableUpdate, UpdateAction, UpdatePhase, UpdateState, UpdateView};
+pub use status::{
+    AvailableUpdate, ManifestLag, UpdateAction, UpdatePhase, UpdateState, UpdateView,
+};
 
 /// The local wall-clock time a check finished, as the panel shows it.
 pub fn local_clock() -> String {

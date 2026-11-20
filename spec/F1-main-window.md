@@ -85,6 +85,9 @@ There are two views of the same work, switched from the title bar or with `B`:
     Installing an update restarts Velocity only when you press the button; fatal process exits recover automatically (§3.2).
     There is one channel: the newest release, betas included.
     A `v*` tag publishes a release (`.github/workflows/release.yml`); development builds check only when asked and never install.
+    A local build (`scripts/release-local.ps1`) never signs downloads or moves `updater/latest.json`, uploads only as a draft labelled as an unsigned local build (`--draft --prerelease --latest=false`), and clearly states that the updater manifest was not moved (#521).
+    Any published `v*` release missing signed updater assets (`latest.json` and `.sig`) is marked `--latest=false` and labelled as not offered to installed copies, and `release.yml` reports when `updater/latest.json` was not moved (#521).
+    Each update check also compares `updater/latest.json` against the newest published `v*` release and reports in the Updates modal and sidebar trigger when the manifest is behind (#521).
     A mirror forwarder delivers only the default branch, so Cut release in the Rosen status pane (F6) dispatches that workflow with the tag and landed commit, and the workflow creates the tag when it publishes (#431).
     The release build runs beside the release gate, and publishing waits for both (#498).
     A `-beta` release whose exact commit Rosen reports green, with no open release-blocker issue, skips the gate's stress suite and proofs; numbered releases always run the full gate (#434).

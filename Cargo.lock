@@ -6692,6 +6692,7 @@ dependencies = [
  "agent-client-protocol",
  "anyhow",
  "dirs",
+ "reqwest",
  "serde",
  "serde_json",
  "specta",

@@ -458,12 +458,14 @@ jobs:
       - name: Publish the release
         shell: pwsh
         run: |
+          $exists = $true
           gh release view $env:TAG *> $null
           if ($LASTEXITCODE -ne 0) {
+            $exists = $false
             # A dispatched release creates its tag here, on the gated commit (#431).
             $target = if ($env:RELEASE_COMMIT) { @('--target', $env:RELEASE_COMMIT) } else { @('--verify-tag') }
             $flags = @('--generate-notes') + $target + @('--title', "Velocity $env:VERSION")
-            if ($env:PRERELEASE -eq 'true') { $flags += '--prerelease' }
+            if ($env:PRERELEASE -eq 'true') { $flags += @('--prerelease', '--latest=false') }
             gh release create $env:TAG @flags
             if ($LASTEXITCODE -ne 0) { throw "Could not create the release" }
           }
@@ -477,6 +479,26 @@ jobs:
           }
           gh release upload $env:TAG (Get-ChildItem dist -File).FullName --clobber
           if ($LASTEXITCODE -ne 0) { throw "Could not upload the downloads" }
+          # If this tag started as a draft or unsigned local release, promote it cleanly
+          # now that signed downloads are uploaded (#521).
+          if ($exists) {
+            $editFlags = @('--draft=false', '--title', "Velocity $env:VERSION")
+            if ($env:PRERELEASE -eq 'true') {
+              $editFlags += @('--prerelease', '--latest=false')
+            } else {
+              $editFlags += @('--prerelease=false', '--latest=true')
+            }
+            $currentBody = gh release view $env:TAG --json body --jq .body | Out-String
+            if ($currentBody -match '(?s)<!-- velocity-unsigned-release -->.*?<!-- /velocity-unsigned-release -->') {
+              $cleaned = ($currentBody -replace '(?s)<!-- velocity-unsigned-release -->.*?<!-- /velocity-unsigned-release -->\s*', '').Trim()
+              if (-not $cleaned) {
+                $cleaned = "Signed release published by release.yml; updater manifest updated to $env:VERSION."
+              }
+              $editFlags += @('--notes', $cleaned)
+            }
+            gh release edit $env:TAG @editFlags
+            if ($LASTEXITCODE -ne 0) { throw "Could not finalize release $env:TAG" }
+          }
 
       - name: Publish the update manifest
         shell: pwsh
@@ -511,6 +533,9 @@ jobs:
           }
           gh release upload $env:MANIFEST_TAG dist/latest.json --clobber
           if ($LASTEXITCODE -ne 0) { throw "Could not publish the update manifest" }
+          if ($env:GITHUB_STEP_SUMMARY) {
+            "Updater manifest (``$env:MANIFEST_TAG/latest.json``) updated to **$version**." >> $env:GITHUB_STEP_SUMMARY
+          }
 
       # The release is published by now; the last two steps only record where its time
       # went (#434) and never fail it. The script comes from the workflow's own commit,
@@ -530,3 +555,22 @@ jobs:
           -Repository '${{ github.repository }}'
           -RunId '${{ github.run_id }}'
           -Tag "$env:TAG"
+
+  # Record clearly in the run summary when the updater manifest was not moved (#521).
+  manifest-not-moved:
+    name: Updater manifest status
+    needs: [checks, stress, proofs, build, graph-indexer, publish]
+    if: always() && needs.publish.result != 'success'
+    permissions: {}
+    runs-on: ubuntu-latest
+    steps:
+      - name: Report that the updater manifest was not moved
+        shell: bash
+        run: |
+          msg="Updater manifest (${MANIFEST_TAG}/latest.json) was NOT moved for ${TAG} (checks=${{ needs.checks.result }}, build=${{ needs.build.result }}, publish=${{ needs.publish.result }}). Installed copies will not be offered this release."
+          echo "::warning::${msg}"
+          {
+            echo "### Updater manifest not moved"
+            echo
+            echo "${msg}"
+          } >> "$GITHUB_STEP_SUMMARY"

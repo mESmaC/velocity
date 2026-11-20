@@ -40,6 +40,7 @@ pub use issue_panel::{
 };
 pub use issue_types::*;
 pub use issues::IssueClient;
+pub use release::{RefusedReleaseGate, check_repository_manifest_lag};
 pub use repository::{
     GitHubError, RepositoryName, Visibility, clone_repository, create_repository, repository_exists,
 };

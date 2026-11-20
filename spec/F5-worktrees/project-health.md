@@ -12,6 +12,8 @@ Velocity monitors each Rosen project in the background, performs safe automatic 
 | Thread in review more than 20 min without landing | Ask Rosen for the land refusal (`land_check`), sync if already landed, retry if landable, or send the refusal to the author (#487). |
 | Slots free and open issues present, but nothing dispatched for 10 min | Log why each open issue was skipped (overlap, label, blocker, owner decision, hold, or claim) to `velocity.log` and show the summary on the strip. |
 | A post-land check stopped for running too long | Capture the active child process before stopping the tree, parse the running test from the log, and report both on the strip and in the failure report (#486). |
+| Updater manifest (`updater/latest.json`) is behind the newest published `v*` release | Compare the manifest version with the newest non-draft published release and report both versions on the strip (#521). |
+| Release gate refused because the release commit has no green `velocity/integration` status | Publish a local green pass or start an immediate integration build covering that commit, and re-dispatch `release.yml` once green (#521). |
 
 Each strip row shows its severity, signal, automatic action taken or block reason, timestamp, optional detail line, and a link to open an owning thread when one exists.
 When every signal is clear, the strip stays hidden.

@@ -115,9 +115,15 @@ impl<Host: LandingHost> Verify<Host> {
             };
             let batch = match next {
                 Ok(Some(batch)) => batch,
-                // Every local land is covered: also check orphaned lands from other machines (#519).
+                // Every local land is covered: check forced release integrations (#521)
+                // and orphaned lands from other machines (#519).
                 Ok(None) => {
                     if self.kind == CheckKind::Test {
+                        if let Some(target) = self.runner.take_forced_integration(self.project)
+                            && let Some(commit) = target
+                        {
+                            self.verify_forced_commit(&commit).await;
+                        }
                         self.verify_orphaned_lands().await;
                     }
                     return;
@@ -264,14 +270,53 @@ impl<Host: LandingHost> Verify<Host> {
         }
     }
 
-    async fn integrate(&self, batch: &Batch) {
-        let idle = self.host.integration_idle(self.project);
-        match integration::due(&self.server, &batch.commit, idle) {
-            Ok(true) => {}
-            Ok(false) => return,
+    /// Runs an integration build for a commit requested by the release flow when Rosen has
+    /// no pending post-land batch covering it (#521).
+    async fn verify_forced_commit(&self, commit: &str) {
+        if self.settled(commit) {
+            return;
+        }
+        if matches!(integration::passed(&self.server, commit), Ok(true)) {
+            self.runner.wake();
+            return;
+        }
+        let Ok(Some(batch)) = post_land::orphaned_batch(&self.server, &[commit.to_owned()]).await
+        else {
+            return;
+        };
+        if self.settled(&batch.commit) {
+            return;
+        }
+        if matches!(integration::passed(&self.server, &batch.commit), Ok(true)) {
+            self.runner.wake();
+            return;
+        }
+        let _slot = match integration::try_slot() {
+            Ok(Some(slot)) => slot,
+            Ok(None) => {
+                self.runner
+                    .request_integration(self.project, Some(commit.to_owned()));
+                return;
+            }
             Err(error) => {
                 self.stopped(&batch.commit, &error.to_string());
                 return;
+            }
+        };
+        self.run_orphaned_batch(&batch).await;
+    }
+
+    async fn integrate(&self, batch: &Batch) {
+        let forced = self.runner.has_forced_integration(self.project);
+        if !forced {
+            let idle = self.host.integration_idle(self.project);
+            match integration::due(&self.server, &batch.commit, idle) {
+                Ok(true) => {}
+                Ok(false) => return,
+                Err(error) => {
+                    self.stopped(&batch.commit, &error.to_string());
+                    return;
+                }
             }
         }
         let _slot = match integration::try_slot() {
@@ -282,6 +327,7 @@ impl<Host: LandingHost> Verify<Host> {
                 return;
             }
         };
+        let _ = self.runner.take_forced_integration(self.project);
         self.verify(batch).await;
     }
 

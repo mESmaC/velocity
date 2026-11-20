@@ -2,20 +2,33 @@
 //! background check. `velocity-updates` holds the state and how this copy was installed;
 //! this module runs the Tauri updater, which verifies every package against the release
 //! signing key before anything is installed, and publishes `update://status`.
+use std::cmp::Ordering;
 use std::sync::{Mutex, MutexGuard};
 use std::time::Duration;
 
+use serde::Deserialize;
 use tauri::{AppHandle, Manager};
 use tauri_plugin_updater::{Update, UpdaterExt};
 use tauri_specta::Event;
+use velocity_core::release::{
+    ManifestLag as CoreManifestLag, PublishedRelease, compare_versions, detect_manifest_lag,
+    version_from_release_tag,
+};
+use velocity_github::velocity_reports::VELOCITY_REPOSITORY;
 use velocity_store::{AgentActivity, ThreadState};
-use velocity_updates::{AvailableUpdate, InstallKind, UpdatePhase, UpdateState, UpdateView};
+use velocity_updates::{
+    AvailableUpdate, InstallKind, ManifestLag, UpdatePhase, UpdateState, UpdateView,
+};
 
 use crate::state::ManagedStateStore;
 
 /// The first check waits until startup work (projects, providers, the warm pool) settles.
 const FIRST_CHECK: Duration = Duration::from_secs(30);
 const CHECK_INTERVAL: Duration = Duration::from_secs(6 * 60 * 60);
+const MANIFEST_URL: &str =
+    "https://github.com/mESmaC/velocity/releases/download/updater/latest.json";
+const RELEASES_API_URL: &str = "https://api.github.com/repos/mESmaC/velocity/releases?per_page=20";
+const MANIFEST_FETCH_TIMEOUT: Duration = Duration::from_secs(10);
 
 pub struct ManagedUpdates {
     state: Mutex<UpdateState>,
@@ -103,16 +116,22 @@ async fn check(application: &AppHandle) {
     let Some(updates) = application.try_state::<ManagedUpdates>() else {
         return;
     };
-    let kind = {
+    let (kind, current_version) = {
         let mut state = lock(&updates.state);
         if !state.can_check() {
             return;
         }
         state.phase = UpdatePhase::Checking;
-        state.install_kind
+        (state.install_kind, state.current_version.clone())
     };
     publish(application);
     let result = find(application, kind).await;
+    let found_version = result
+        .as_ref()
+        .ok()
+        .and_then(|found| found.as_ref())
+        .map(|update| update.version.clone());
+    let manifest_lag = check_manifest_lag(&current_version, found_version.as_deref()).await;
     set_state(application, |state| match result {
         Ok(found) => {
             let available = found.as_ref().map(|update| AvailableUpdate {
@@ -120,10 +139,117 @@ async fn check(application: &AppHandle) {
                 notes: update.body.clone().unwrap_or_default(),
             });
             *lock(&updates.found) = found;
-            state.checked(available, &velocity_updates::local_clock());
+            state.checked(available, manifest_lag, &velocity_updates::local_clock());
         }
-        Err(message) => state.failed(&message),
+        Err(message) => {
+            state.manifest_lag = manifest_lag;
+            state.failed(&message);
+        }
     });
+}
+
+/// Compares Velocity's `updater/latest.json` against the newest published GitHub release
+/// so installed copies report when the updater manifest is behind (#521).
+async fn check_manifest_lag(
+    current_version: &str,
+    known_manifest_version: Option<&str>,
+) -> Option<ManifestLag> {
+    let lag = match fetch_manifest_lag_http(known_manifest_version).await {
+        Some(lag) => Some(lag),
+        None => tauri::async_runtime::spawn_blocking(|| {
+            velocity_github::check_repository_manifest_lag(VELOCITY_REPOSITORY)
+                .ok()
+                .flatten()
+        })
+        .await
+        .ok()
+        .flatten(),
+    }?;
+    let current_is_behind =
+        compare_versions(current_version, &lag.latest_release) == Some(Ordering::Less);
+    Some(ManifestLag {
+        manifest_version: lag.manifest_version,
+        latest_release: lag.latest_release,
+        current_is_behind,
+        latest_signed: lag.latest_signed,
+    })
+}
+
+#[derive(Deserialize)]
+struct GitHubReleaseAsset {
+    name: String,
+}
+
+#[derive(Deserialize)]
+struct GitHubReleaseEntry {
+    tag_name: String,
+    #[serde(default)]
+    draft: bool,
+    #[serde(default)]
+    assets: Vec<GitHubReleaseAsset>,
+}
+
+async fn fetch_manifest_lag_http(known_manifest_version: Option<&str>) -> Option<CoreManifestLag> {
+    #[derive(Deserialize)]
+    struct Manifest {
+        version: String,
+    }
+    let client = reqwest::Client::builder()
+        .timeout(MANIFEST_FETCH_TIMEOUT)
+        .user_agent("velocity-updater")
+        .build()
+        .ok()?;
+    let manifest_version = match known_manifest_version {
+        Some(version) => version.to_owned(),
+        None => {
+            client
+                .get(MANIFEST_URL)
+                .send()
+                .await
+                .ok()?
+                .error_for_status()
+                .ok()?
+                .json::<Manifest>()
+                .await
+                .ok()?
+                .version
+        }
+    };
+    let releases: Vec<GitHubReleaseEntry> = client
+        .get(RELEASES_API_URL)
+        .send()
+        .await
+        .ok()?
+        .error_for_status()
+        .ok()?
+        .json()
+        .await
+        .ok()?;
+    let published = to_published_releases(releases);
+    detect_manifest_lag(&manifest_version, &published)
+}
+
+fn to_published_releases(releases: Vec<GitHubReleaseEntry>) -> Vec<PublishedRelease> {
+    releases
+        .into_iter()
+        .filter_map(|release| {
+            let version = version_from_release_tag(&release.tag_name)?;
+            let has_manifest = release
+                .assets
+                .iter()
+                .any(|asset| asset.name == "latest.json");
+            let has_signature = release
+                .assets
+                .iter()
+                .any(|asset| asset.name.ends_with(".sig"));
+            Some(PublishedRelease {
+                tag: release.tag_name,
+                version,
+                draft: release.draft,
+                signed: has_manifest && has_signature,
+            })
+        })
+        .collect()
 }
 
 /// Each install kind has its own entry in the manifest, so a portable copy never runs

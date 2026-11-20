@@ -217,14 +217,16 @@
   async function cutRelease() {
     if (project === null || releasing) return;
     releasing = true;
-    releaseNote = 'Waiting for GitHub to receive the green commit…';
+    releaseNote = 'Checking green integration status on GitHub…';
     try {
       const cut = await releaseCommands.cut(
         project,
         releaseVersion,
         releaseCommit.trim() || null,
       );
-      releaseNote = `Release workflow started for ${cut.tag} at ${cut.commit.slice(0, 10)}`;
+      releaseNote =
+        cut.note ||
+        `Release workflow started for ${cut.tag} at ${cut.commit.slice(0, 10)}`;
       releaseVersion = '';
       releaseCommit = '';
     } catch (reason) {
@@ -328,7 +330,7 @@
                 {#if status.base.revert}<p title={status.base.revert}>
                     Revert {status.base.revert.slice(0, 10)}
                   </p>{/if}
-                {#if status.base.green}
+                {#if status.base.green || status.base.tip}
                   <form
                     class="release"
                     aria-label="Cut release"
@@ -346,9 +348,11 @@
                     <input
                       class="mono"
                       aria-label="Commit to release"
-                      title="A landed commit the last green commit covers. Empty releases the last green commit."
-                      placeholder={'Commit · default last green ' +
-                        status.base.green.slice(0, 10)}
+                      title="A landed commit to release. Empty releases the newest commit with a green integration build."
+                      placeholder={status.base.green
+                        ? 'Commit · default last green ' +
+                          status.base.green.slice(0, 10)
+                        : 'Commit · default newest green'}
                       bind:value={releaseCommit}
                       disabled={releasing}
                     />

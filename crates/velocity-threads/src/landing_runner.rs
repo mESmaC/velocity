@@ -73,6 +73,8 @@ struct RunnerState {
     reporting_notes: HashMap<u32, String>,
     repairing_projects: HashMap<u32, bool>,
     repair_deadlines: HashMap<u32, u64>,
+    /// Projects with an urgent integration build requested by the release flow (#521).
+    forced_integrations: HashMap<u32, Option<String>>,
 }
 
 #[derive(Clone)]
@@ -101,6 +103,32 @@ impl RosenLanding {
             .verifying_projects
             .iter()
             .any(|&(id, _)| id == project)
+    }
+
+    /// Requests an immediate integration build for `project` (bypassing the 10-land / 2-hour
+    /// batch wait), optionally targeting `commit` so the release gate can pass (#521).
+    pub fn request_integration(&self, project: u32, commit: Option<String>) {
+        {
+            let mut state = self.lock();
+            state
+                .forced_integrations
+                .entry(project)
+                .and_modify(|existing| {
+                    if commit.is_some() {
+                        *existing = commit.clone();
+                    }
+                })
+                .or_insert(commit);
+        }
+        self.wake();
+    }
+
+    pub(super) fn has_forced_integration(&self, project: u32) -> bool {
+        self.lock().forced_integrations.contains_key(&project)
+    }
+
+    pub(super) fn take_forced_integration(&self, project: u32) -> Option<Option<String>> {
+        self.lock().forced_integrations.remove(&project)
     }
 
     pub async fn run<Host: LandingHost>(self, host: Host) {

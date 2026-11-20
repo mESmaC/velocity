@@ -3,8 +3,17 @@
 .updates-trigger.ready {
   color: var(--accent);
 }
+.updates-trigger.behind {
+  color: var(--warn);
+}
 .updates-progress > span {
   background: var(--accent);
+}
+.updates-manifest-notice {
+  color: var(--warn);
+  background: var(--warn-soft);
+  border-radius: var(--r-sm);
+  padding: var(--sp-3) var(--sp-4);
 }
 .updates-notes {
   white-space: pre-line;
