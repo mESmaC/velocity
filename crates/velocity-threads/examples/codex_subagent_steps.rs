@@ -67,7 +67,7 @@ impl Client {
             ) => announcement
                 .map(|announcement| AgentEvent::SubagentSession {
                     spawn: Arc::clone(&spawn),
-                    update: announcement,
+                    update: *announcement,
                 })
                 .into_iter()
                 .chain([AgentEvent::Subagent {

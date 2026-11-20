@@ -259,7 +259,7 @@ impl Shared {
                 if let Some(announcement) = announcement {
                     self.emit(AgentEvent::SubagentSession {
                         spawn: Arc::clone(&spawn),
-                        update: announcement,
+                        update: *announcement,
                     });
                 }
                 // A subagent's code reads are still this turn's reads.

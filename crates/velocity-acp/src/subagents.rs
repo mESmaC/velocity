@@ -69,7 +69,8 @@ pub enum SessionRoute {
     Entry {
         spawn: Arc<str>,
         placement: Placement,
-        announcement: Option<SessionUpdate>,
+        // Boxed: a `SessionUpdate` is far larger than the other variants (clippy::large_enum_variant).
+        announcement: Option<Box<SessionUpdate>>,
     },
     /// A fact about the subagent `spawn` for [`session_report`]: its announcement or state
     /// from its parent, or its own model or token use.
@@ -135,7 +136,7 @@ impl SubagentRouter {
                 },
             });
         };
-        let announcement = native.held.take();
+        let announcement = native.held.take().map(Box::new);
         let placement = self
             .transcripts
             .entry(Arc::clone(session))
