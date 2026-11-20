@@ -829,6 +829,14 @@ pub struct ThreadItem {
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     #[specta(skip)]
     pub rosen_follow_ups: Vec<rosen::RosenFollowUp>,
+    /// Current conflict resolution wait or failure status shown on the Stored conflicts card (#522).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[specta(skip)]
+    pub rosen_resolution_status: Option<rosen::RosenResolutionStatus>,
+    /// Latest background Rosen follow-up delivery error shown as a notice on the thread (#522).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[specta(skip)]
+    pub rosen_follow_up_error: Option<String>,
     /// Issue effects survive event replay, failed GitHub calls and application restarts.
     #[serde(default)]
     #[specta(skip)]
@@ -937,6 +945,8 @@ impl ThreadItem {
             interview: None,
             goal_member: None,
             rosen_follow_ups: Vec::new(),
+            rosen_resolution_status: None,
+            rosen_follow_up_error: None,
             rosen_issue: Default::default(),
         }
     }
@@ -993,6 +1003,8 @@ impl ThreadItem {
             interview: None,
             goal_member: None,
             rosen_follow_ups: Vec::new(),
+            rosen_resolution_status: None,
+            rosen_follow_up_error: None,
             rosen_issue: Default::default(),
         }
         .normalize()

@@ -233,6 +233,16 @@ impl RosenChangeStage {
     }
 }
 
+/// Status of a conflict resolution handoff shown on the Stored conflicts card (F6, #522).
+#[derive(Clone, Debug, PartialEq, Eq, serde::Deserialize, serde::Serialize)]
+#[cfg_attr(feature = "bindings", derive(specta::Type))]
+pub struct RosenResolutionView {
+    pub pending: bool,
+    pub status: String,
+    #[serde(default)]
+    pub offer_abandon: bool,
+}
+
 /// The change's server state and retained evidence for each of its lands (F6).
 #[derive(Clone, Debug, PartialEq, Eq, serde::Deserialize, serde::Serialize)]
 #[cfg_attr(feature = "bindings", derive(specta::Type))]
@@ -242,6 +252,10 @@ pub struct RosenChangeView {
     pub name: Option<String>,
     pub conflicts: Vec<String>,
     pub lands: Vec<RosenLandView>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub resolution: Option<RosenResolutionView>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub follow_up_error: Option<String>,
 }
 
 impl RosenChangeView {
@@ -252,6 +266,8 @@ impl RosenChangeView {
             name: None,
             conflicts: Vec::new(),
             lands: Vec::new(),
+            resolution: None,
+            follow_up_error: None,
         }
     }
 }

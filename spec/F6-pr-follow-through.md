@@ -40,7 +40,11 @@ When Rosen refuses a land for regeneration or conflicts, Velocity returns the th
 For regeneration, the agent rebases the workspace, runs the generators for the listed files on the merged inputs and names the repaired change for another land attempt.
 Velocity retries any other refusal once on a later pass and, if Rosen still refuses, returns the thread to Working with Rosen's reason and advice.
 The thread card shows the refusal until the author names the change again.
-The transcript shows the files with stored conflicts and offers Resolve with agent, which queues the handoff for the owning agent's next turn boundary.
+The transcript shows the files with stored conflicts and offers Resolve with agent.
+Clicking Resolve with agent delivers immediately when the thread is idle or its session has ended, resuming the session and recreating a missing workspace from the change when possible (#522).
+When delivery must wait or a resolution is already pending, the Stored conflicts card shows that resolution is queued and where it is waiting until the agent receives the prompt in the transcript.
+If a missing workspace cannot be recreated, the card explains why the change cannot be resolved here and offers Abandon.
+Background Rosen follow-up delivery failures appear as a notice on the thread.
 After a land the transcript groups the coding work behind Show work and shows the landed commit, its Rosen change and the recorded post-land results.
 Historical lands retain any receipt and approver trailers Rosen recorded.
 A revert shows Reverted → Reopened with the inverse commit and failing output, restores the transcript and composer, and resumes the owning agent through the F5 recovery path.

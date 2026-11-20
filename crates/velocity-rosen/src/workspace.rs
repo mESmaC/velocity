@@ -154,11 +154,16 @@ async fn open_on(
     })
 }
 
+/// Whether `root` currently holds an initialized Rosen workspace on disk.
+pub fn has_workspace(root: &Path) -> bool {
+    root.is_dir() && rosen_client::snapshot::WorkspaceMarker::path(root).is_file()
+}
+
 /// Readies `root` for a workspace. `true` when it already is one, which is kept as it is.
 /// Folders a guarded deletion left behind, empty of files, are cleared; a folder that
 /// holds files is never replaced.
 fn prepare_root(root: &Path) -> Result<bool, RosenError> {
-    if rosen_client::snapshot::WorkspaceMarker::path(root).is_file() {
+    if has_workspace(root) {
         return Ok(true);
     }
     if root.exists() {

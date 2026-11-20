@@ -192,6 +192,22 @@
 .change-conflicts {
   padding-inline-start: var(--sp-9);
 }
+.change-resolution {
+  margin: var(--sp-3) 0 0;
+  font-size: var(--fs-sm);
+  color: var(--text-2);
+  overflow-wrap: anywhere;
+}
+.change-resolution.blocked {
+  color: var(--err);
+}
+.change-conflicts-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--sp-3);
+  margin-top: var(--sp-4);
+}
 
 /* ── change track ────────────────────────────────────────────────────────── */
 .change-track {

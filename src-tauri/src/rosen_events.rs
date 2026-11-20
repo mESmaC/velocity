@@ -15,11 +15,12 @@ use std::time::Duration;
 
 use tauri::{AppHandle, Manager};
 use velocity_rosen::{ChangeEvent, EventReplay, EventStream};
-use velocity_store::rosen::{RosenFollowUp, RosenProgress};
+use velocity_store::rosen::{RosenFollowUp, RosenProgress, RosenResolutionStatus};
 use velocity_store::rosen_work::WorkEvidence;
 use velocity_threads::ThreadKey;
 
 use crate::layout::MainLayout;
+use crate::rosen_rebase::BoundaryOutcome;
 use crate::state::ManagedStateStore;
 use crate::threads::{lock, report};
 
@@ -334,14 +335,65 @@ fn take(
     Ok(thread)
 }
 
+enum FollowUpStep {
+    Finished,
+    Waiting(String),
+    WorkspaceMissing(String),
+    Failed(String),
+}
+
 /// Runs what `project`'s Rosen events left to do, oldest first per thread. A step that fails
 /// stays, with the ones after it, for the next pass; nothing is dropped. One pass runs at a
 /// time across projects, so two never send one message.
 pub(crate) async fn run_follow_ups(application: &AppHandle, project: u32) {
     let running = application.state::<crate::rosen::ManagedRosen>();
     let _one_at_a_time = running.follow_ups.lock().await;
+    let pending = match load_and_flush_follow_ups(application, project).await {
+        Ok(pending) => pending,
+        Err(error) => return report::<()>(Err(error)),
+    };
+    for (thread, change, follow_ups) in pending {
+        run_thread_follow_ups(
+            application,
+            (project, thread),
+            change.as_deref(),
+            &follow_ups,
+            false,
+        )
+        .await;
+    }
+    crate::rosen_issue::follow_up(application, project).await;
+}
+
+/// Immediately attempts to deliver `key`'s queued conflict resolution inside the follow-up lock,
+/// updating the thread notice and Stored conflicts card with the live outcome (#522).
+pub(crate) async fn deliver_conflict_now(
+    application: &AppHandle,
+    key: ThreadKey,
+    already_pending: bool,
+) -> Result<(), String> {
+    let running = application.state::<crate::rosen::ManagedRosen>();
+    let _one_at_a_time = running.follow_ups.lock().await;
+    let pending = load_and_flush_follow_ups(application, key.0).await?;
+    if let Some((_, change, follow_ups)) = pending.into_iter().find(|(id, _, _)| *id == key.1) {
+        run_thread_follow_ups(
+            application,
+            key,
+            change.as_deref(),
+            &follow_ups,
+            already_pending,
+        )
+        .await;
+    }
+    Ok(())
+}
+
+async fn load_and_flush_follow_ups(
+    application: &AppHandle,
+    project: u32,
+) -> Result<Vec<(u32, Option<String>, Vec<RosenFollowUp>)>, String> {
     let handle = application.clone();
-    let pending = match tauri::async_runtime::spawn_blocking(move || {
+    tauri::async_runtime::spawn_blocking(move || {
         let pending = lock(
             handle.state::<ManagedStateStore>().inner(),
             "persisted state",
@@ -355,30 +407,137 @@ pub(crate) async fn run_follow_ups(application: &AppHandle, project: u32) {
         Ok::<_, String>(pending)
     })
     .await
-    {
-        Ok(Ok(pending)) => pending,
-        Ok(Err(error)) => return report::<()>(Err(error)),
-        Err(error) => return report::<()>(Err(error.to_string())),
-    };
-    for (thread, change, follow_ups) in pending {
-        let key = (project, thread);
-        for follow_up in follow_ups {
-            match follow_up_once(application, key, change.as_deref(), &follow_up).await {
-                Ok(true) => {
-                    if let Err(error) = finish(application, key, &follow_up) {
-                        report::<()>(Err(error));
-                        break;
-                    }
-                }
-                Ok(false) => break,
-                Err(error) => {
+    .map_err(|error| error.to_string())?
+}
+
+async fn run_thread_follow_ups(
+    application: &AppHandle,
+    key: ThreadKey,
+    change: Option<&str>,
+    follow_ups: &[RosenFollowUp],
+    already_pending_click: bool,
+) {
+    for (index, follow_up) in follow_ups.iter().enumerate() {
+        let has_conflict = follow_ups[index..]
+            .iter()
+            .any(|item| matches!(item, RosenFollowUp::Conflict { .. }));
+        match follow_up_once(application, key, change, follow_up).await {
+            FollowUpStep::Finished => {
+                if let Err(error) = finish(application, key, follow_up) {
                     report::<()>(Err(error));
                     break;
                 }
             }
+            step => {
+                record_follow_up_stop(
+                    application,
+                    key,
+                    follow_up,
+                    step,
+                    has_conflict,
+                    already_pending_click,
+                );
+                break;
+            }
         }
     }
-    crate::rosen_issue::follow_up(application, project).await;
+}
+
+fn record_follow_up_stop(
+    application: &AppHandle,
+    key: ThreadKey,
+    follow_up: &RosenFollowUp,
+    step: FollowUpStep,
+    has_conflict: bool,
+    already_pending_click: bool,
+) {
+    match step {
+        FollowUpStep::Finished => {}
+        FollowUpStep::Waiting(reason) => {
+            if has_conflict {
+                let status = if already_pending_click {
+                    format!("Resolution already queued · {reason}")
+                } else {
+                    format!("Resolution queued · sent at the next step boundary · {reason}")
+                };
+                update_resolution_feedback(
+                    application,
+                    key,
+                    Some(RosenResolutionStatus::new(status, false)),
+                    Some(None),
+                );
+            }
+        }
+        FollowUpStep::WorkspaceMissing(reason) => {
+            let notice = follow_up_error_notice(follow_up, &reason);
+            let card = has_conflict.then(|| {
+                let status = if already_pending_click {
+                    format!("Resolution already queued · {reason}")
+                } else {
+                    format!("Can't resolve here · {reason}")
+                };
+                RosenResolutionStatus::new(status, true)
+            });
+            update_resolution_feedback(application, key, card, Some(Some(notice)));
+            report::<()>(Err(reason));
+        }
+        FollowUpStep::Failed(error) => {
+            let notice = follow_up_error_notice(follow_up, &error);
+            let card = has_conflict.then(|| {
+                let status = if already_pending_click {
+                    format!("Resolution already queued · delivery failed: {error}")
+                } else {
+                    format!("Resolution queued · delivery failed: {error}")
+                };
+                RosenResolutionStatus::new(status, false)
+            });
+            update_resolution_feedback(application, key, card, Some(Some(notice)));
+            report::<()>(Err(error));
+        }
+    }
+}
+
+fn follow_up_error_notice(follow_up: &RosenFollowUp, error: &str) -> String {
+    let action = match follow_up {
+        RosenFollowUp::Conflict { .. } => "deliver Rosen conflict resolution",
+        RosenFollowUp::Regenerate { .. } => "deliver Rosen regeneration notice",
+        RosenFollowUp::Reopen { .. } => "reopen reverted Rosen change",
+        RosenFollowUp::Deliver { .. } => "deliver Rosen update",
+        RosenFollowUp::FinishLanded | RosenFollowUp::FinishAbandoned => {
+            "finish closed Rosen thread"
+        }
+    };
+    format!("Could not {action}: {error}")
+}
+
+fn update_resolution_feedback(
+    application: &AppHandle,
+    key: ThreadKey,
+    resolution: Option<RosenResolutionStatus>,
+    follow_up_error: Option<Option<String>>,
+) {
+    let Ok(mut store) = lock(
+        application.state::<ManagedStateStore>().inner(),
+        "persisted state",
+    ) else {
+        return;
+    };
+    let mut changed = false;
+    if let Some(status) = resolution {
+        match store.set_rosen_resolution_status(key.0, key.1, Some(status)) {
+            Ok(updated) => changed |= updated,
+            Err(error) => report::<()>(Err(error.to_string())),
+        }
+    }
+    if let Some(error) = follow_up_error {
+        match store.set_rosen_follow_up_error(key.0, key.1, error) {
+            Ok(updated) => changed |= updated,
+            Err(error) => report::<()>(Err(error.to_string())),
+        }
+    }
+    if changed {
+        report(publish_progress(application, &store));
+    }
 }
 
 async fn follow_up_once(
@@ -386,7 +545,7 @@ async fn follow_up_once(
     key: ThreadKey,
     change: Option<&str>,
     follow_up: &RosenFollowUp,
-) -> Result<bool, String> {
+) -> FollowUpStep {
     if let RosenFollowUp::Conflict { message, .. } | RosenFollowUp::Regenerate { message, .. } =
         follow_up
     {
@@ -396,23 +555,32 @@ async fn follow_up_once(
         follow_up,
         RosenFollowUp::FinishLanded | RosenFollowUp::FinishAbandoned
     ) {
-        return finish_work(application, key).await;
+        return match finish_work(application, key).await {
+            Ok(true) => FollowUpStep::Finished,
+            Ok(false) => FollowUpStep::Waiting("waiting for workspace setup to finish".into()),
+            Err(error) => FollowUpStep::Failed(error),
+        };
     }
-    match follow_up {
+    let result = match follow_up {
         RosenFollowUp::Reopen { message, .. } => {
             let Some(change) = change else {
-                return Ok(true);
+                return FollowUpStep::Finished;
             };
-            reopen_reverted(application, key, change).await?;
-            deliver(application, key, follow_up, message)
+            match reopen_reverted(application, key, change).await {
+                Ok(()) => deliver(application, key, follow_up, message),
+                Err(error) => Err(error),
+            }
         }
         RosenFollowUp::Deliver { message, .. } => deliver(application, key, follow_up, message),
         RosenFollowUp::FinishLanded
         | RosenFollowUp::FinishAbandoned
         | RosenFollowUp::Conflict { .. }
         | RosenFollowUp::Regenerate { .. } => Ok(()),
+    };
+    match result {
+        Ok(()) => FollowUpStep::Finished,
+        Err(error) => FollowUpStep::Failed(error),
     }
-    .map(|()| true)
 }
 
 /// Recheck current server state, since a queued event may already have been resolved.
@@ -423,29 +591,51 @@ async fn deliver_rebase_notice(
     change: Option<&str>,
     follow_up: &RosenFollowUp,
     message: &str,
-) -> Result<bool, String> {
+) -> FollowUpStep {
     let Some(change) = change else {
-        return Ok(true);
+        return FollowUpStep::Finished;
     };
-    if lock(
+    match lock(
         application.state::<ManagedStateStore>().inner(),
         "persisted state",
-    )?
-    .rosen_follow_up_delivered(key.0, key.1, follow_up)
-    {
-        return Ok(true);
+    ) {
+        Ok(store) if store.rosen_follow_up_delivered(key.0, key.1, follow_up) => {
+            return FollowUpStep::Finished;
+        }
+        Ok(_) => {}
+        Err(error) => return FollowUpStep::Failed(error),
     }
-    let server = crate::rosen::server(application, key.0).await?;
-    if !rebase_notice_pending(&server, change, follow_up).await? {
-        return Ok(true);
+    let server = match crate::rosen::server(application, key.0).await {
+        Ok(server) => server,
+        Err(error) => return FollowUpStep::Failed(error),
+    };
+    match rebase_notice_pending(&server, change, follow_up).await {
+        Ok(false) => {
+            report(crate::rosen_thread::refresh(application, key.0, Some(change), true).await);
+            return FollowUpStep::Finished;
+        }
+        Ok(true) => {}
+        Err(error) => return FollowUpStep::Failed(error),
     }
-    if !crate::rosen_rebase::apply_at_boundary(application, key).await {
-        return Ok(false);
+    match crate::rosen_rebase::prepare_at_boundary(application, key, Some(change), true).await {
+        BoundaryOutcome::Ready => {}
+        BoundaryOutcome::Waiting(reason) => return FollowUpStep::Waiting(reason),
+        BoundaryOutcome::WorkspaceMissing(reason) => {
+            return FollowUpStep::WorkspaceMissing(reason);
+        }
+        BoundaryOutcome::Failed(error) => return FollowUpStep::Failed(error),
     }
-    if rebase_notice_pending(&server, change, follow_up).await? {
-        deliver(application, key, follow_up, message)?;
+    match rebase_notice_pending(&server, change, follow_up).await {
+        Ok(false) => {
+            report(crate::rosen_thread::refresh(application, key.0, Some(change), true).await);
+            FollowUpStep::Finished
+        }
+        Ok(true) => match deliver(application, key, follow_up, message) {
+            Ok(()) => FollowUpStep::Finished,
+            Err(error) => FollowUpStep::Failed(error),
+        },
+        Err(error) => FollowUpStep::Failed(error),
     }
-    Ok(true)
 }
 
 async fn rebase_notice_pending(
@@ -482,12 +672,14 @@ fn deliver(
 }
 
 fn finish(application: &AppHandle, key: ThreadKey, done: &RosenFollowUp) -> Result<(), String> {
-    lock(
+    let mut store = lock(
         application.state::<ManagedStateStore>().inner(),
         "persisted state",
-    )?
-    .finish_rosen_follow_up(key.0, key.1, done)
-    .map_err(|error| error.to_string())
+    )?;
+    store
+        .finish_rosen_follow_up(key.0, key.1, done)
+        .map_err(|error| error.to_string())?;
+    publish_progress(application, &store)
 }
 
 /// Rosen reverted thread `key`'s landed change and reopened it (Rosen R12; F7 "After a

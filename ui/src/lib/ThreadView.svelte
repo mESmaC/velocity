@@ -201,11 +201,13 @@
     panel: 'name' | 'abandon' | null;
     pending: boolean;
     error: string;
+    source: 'resolve' | 'other';
   }>({
     key: '',
     panel: null,
     pending: false,
     error: '',
+    source: 'other',
   });
   let name = $state('');
   let panel = $derived(actions.key === changeKey ? actions.panel : null);
@@ -216,7 +218,13 @@
 
   function openActions(next: 'name' | 'abandon' | null) {
     name = '';
-    actions = { key: changeKey, panel: next, pending: false, error: '' };
+    actions = {
+      key: changeKey,
+      panel: next,
+      pending: false,
+      error: '',
+      source: 'other',
+    };
   }
 
   // Open on Collapse for a land: hidden without a Collapse mirror (#429).
@@ -229,7 +237,13 @@
     } catch (error) {
       // Never clobber a change action that is still running.
       if (!pending)
-        actions = { key, panel, pending: false, error: String(error) };
+        actions = {
+          key,
+          panel,
+          pending: false,
+          error: String(error),
+          source: 'other',
+        };
     }
   }
 
@@ -238,7 +252,8 @@
     if (!change || project === null || pending) return;
     const key = changeKey;
     const currentPanel = panel;
-    actions = { key, panel: currentPanel, pending: true, error: '' };
+    const source = action === 'Resolve' ? 'resolve' : 'other';
+    actions = { key, panel: currentPanel, pending: true, error: '', source };
     try {
       await threadChangeCommands.run(
         project,
@@ -247,7 +262,7 @@
         action,
       );
       if (actions.key !== key) return;
-      actions = { key, panel: null, pending: false, error: '' };
+      actions = { key, panel: null, pending: false, error: '', source };
     } catch (error) {
       if (actions.key === key)
         actions = {
@@ -255,6 +270,7 @@
           panel: currentPanel,
           pending: false,
           error: String(error),
+          source,
         };
     }
   }
@@ -485,6 +501,9 @@
   {#if actions.key === changeKey && actions.error}
     <div class="change-action" role="alert">{actions.error}</div>
   {/if}
+  {#if change?.follow_up_error && (actions.key !== changeKey || actions.error !== change.follow_up_error)}
+    <div class="change-action" role="alert">{change.follow_up_error}</div>
+  {/if}
 
   {#if usageOpen && layout.project_identifier !== null}
     <div class="thread-token-usage">
@@ -588,7 +607,12 @@
           <ChangeHistory
             {change}
             resolve={() => runChange('Resolve')}
+            abandon={actionable ? () => runChange('Abandon') : undefined}
             resolving={pending}
+            resolveError={actions.key === changeKey &&
+            actions.source === 'resolve'
+              ? actions.error
+              : ''}
             openOnCollapse={layout.collapse_repository ? openOnCollapse : null}
           />
         {/if}

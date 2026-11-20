@@ -92,15 +92,45 @@ impl RosenFollowUp {
     }
 }
 
+/// Default pending text shown on the Stored conflicts card until delivery or a specific wait (#522).
+pub const DEFAULT_RESOLUTION_STATUS: &str = "Resolution queued · sent at the next step boundary";
+
+/// Why a pending conflict resolution has not yet reached the agent (#522).
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RosenResolutionStatus {
+    pub status: String,
+    #[serde(default)]
+    pub offer_abandon: bool,
+}
+
+impl RosenResolutionStatus {
+    pub fn new(status: String, offer_abandon: bool) -> Self {
+        Self {
+            status,
+            offer_abandon,
+        }
+    }
+}
+
+/// Outcome of queueing a manual conflict resolution for a Rosen thread (#522).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum QueueResolution {
+    Queued,
+    AlreadyPending,
+    Unavailable,
+}
+
 impl StateStore {
     /// Put the Resolve action through the same durable turn-boundary delivery as a conflict event.
+    /// Returns whether a new resolution was queued or an undelivered one was already pending (#522).
     pub fn queue_rosen_resolution(
         &mut self,
         project: u32,
         identifier: u32,
         change: &str,
         message: String,
-    ) -> Result<(), StoreError> {
+        live_transcript_len: usize,
+    ) -> Result<QueueResolution, StoreError> {
         let mut next = self.state.clone();
         let Some(thread) = next
             .projects
@@ -114,20 +144,119 @@ impl StateStore {
                 })
             })
         else {
-            return Ok(());
+            return Ok(QueueResolution::Unavailable);
         };
-        if thread
+        let mark = thread.transcript.len().max(live_transcript_len);
+        // Drop any Conflict follow-up that already counts as delivered so an explicit click
+        // never finishes silently without sending a prompt (#522).
+        drop_delivered_conflicts(thread);
+        if let Some(existing) = thread
             .rosen_follow_ups
-            .iter()
-            .any(|pending| matches!(pending, RosenFollowUp::Conflict { .. }))
+            .iter_mut()
+            .find(|pending| matches!(pending, RosenFollowUp::Conflict { .. }))
         {
-            return Ok(());
+            *existing = RosenFollowUp::Conflict { message, mark };
+            self.store_snapshot(next)?;
+            return Ok(QueueResolution::AlreadyPending);
         }
-        thread.rosen_follow_ups.push(RosenFollowUp::Conflict {
-            message,
-            mark: thread.transcript.len(),
-        });
-        self.store_snapshot(next)
+        thread
+            .rosen_follow_ups
+            .push(RosenFollowUp::Conflict { message, mark });
+        thread.rosen_resolution_status = Some(RosenResolutionStatus::new(
+            DEFAULT_RESOLUTION_STATUS.to_owned(),
+            false,
+        ));
+        self.store_snapshot(next)?;
+        Ok(QueueResolution::Queued)
+    }
+
+    /// Updates the Stored conflicts card's resolution status when it changed (#522).
+    pub fn set_rosen_resolution_status(
+        &mut self,
+        project: u32,
+        identifier: u32,
+        status: Option<RosenResolutionStatus>,
+    ) -> Result<bool, StoreError> {
+        let unchanged = self
+            .project(project)
+            .and_then(|item| item.threads.iter().find(|thread| thread.id == identifier))
+            .is_none_or(|thread| thread.rosen_resolution_status == status);
+        if unchanged {
+            return Ok(false);
+        }
+        let mut next = self.state.clone();
+        if let Some(thread) = next
+            .projects
+            .iter_mut()
+            .find(|item| item.id == project)
+            .and_then(|item| item.threads.iter_mut().find(|t| t.id == identifier))
+        {
+            thread.rosen_resolution_status = status;
+        }
+        self.store_snapshot(next)?;
+        Ok(true)
+    }
+
+    /// Records or clears the latest background follow-up delivery error for a thread (#522).
+    pub fn set_rosen_follow_up_error(
+        &mut self,
+        project: u32,
+        identifier: u32,
+        error: Option<String>,
+    ) -> Result<bool, StoreError> {
+        let unchanged = self
+            .project(project)
+            .and_then(|item| item.threads.iter().find(|thread| thread.id == identifier))
+            .is_none_or(|thread| thread.rosen_follow_up_error == error);
+        if unchanged {
+            return Ok(false);
+        }
+        let mut next = self.state.clone();
+        if let Some(thread) = next
+            .projects
+            .iter_mut()
+            .find(|item| item.id == project)
+            .and_then(|item| item.threads.iter_mut().find(|t| t.id == identifier))
+        {
+            thread.rosen_follow_up_error = error;
+        }
+        self.store_snapshot(next)?;
+        Ok(true)
+    }
+
+    /// Drops any pending Conflict follow-up and its card status when Rosen has no open conflicts.
+    pub fn clear_rosen_conflict_follow_up(
+        &mut self,
+        project: u32,
+        identifier: u32,
+    ) -> Result<bool, StoreError> {
+        let needs_clear = self
+            .project(project)
+            .and_then(|item| item.threads.iter().find(|thread| thread.id == identifier))
+            .is_some_and(|thread| {
+                thread.rosen_resolution_status.is_some()
+                    || thread
+                        .rosen_follow_ups
+                        .iter()
+                        .any(|pending| matches!(pending, RosenFollowUp::Conflict { .. }))
+            });
+        if !needs_clear {
+            return Ok(false);
+        }
+        let mut next = self.state.clone();
+        if let Some(thread) = next
+            .projects
+            .iter_mut()
+            .find(|item| item.id == project)
+            .and_then(|item| item.threads.iter_mut().find(|t| t.id == identifier))
+        {
+            thread
+                .rosen_follow_ups
+                .retain(|pending| !matches!(pending, RosenFollowUp::Conflict { .. }));
+            thread.rosen_resolution_status = None;
+        }
+        self.store_snapshot(next)?;
+        Ok(true)
     }
 
     /// Updates the cached view only for the same registered change. Read failures retain the
@@ -154,6 +283,14 @@ impl StateStore {
         if let Some(item) = next.projects.iter_mut().find(|item| item.id == project) {
             for thread in &mut item.threads {
                 if let Some((_, view)) = thread.rosen_change.as_ref().and_then(|id| views.get(id)) {
+                    if view.conflicts.is_empty()
+                        && !thread
+                            .rosen_follow_ups
+                            .iter()
+                            .any(|pending| matches!(pending, RosenFollowUp::Conflict { .. }))
+                    {
+                        thread.rosen_resolution_status = None;
+                    }
                     thread.rosen_change_view = Some(view.clone());
                 }
             }
@@ -218,6 +355,9 @@ impl StateStore {
                 thread
                     .rosen_follow_ups
                     .retain(|pending| !matches!(pending, RosenFollowUp::Conflict { .. }));
+                thread.rosen_resolution_status.get_or_insert_with(|| {
+                    RosenResolutionStatus::new(DEFAULT_RESOLUTION_STATUS.to_owned(), false)
+                });
                 RosenFollowUp::Conflict {
                     message: message.to_owned(),
                     mark: thread.transcript.len(),
@@ -577,6 +717,10 @@ impl StateStore {
             return Ok(());
         };
         item.rosen_follow_ups.remove(index);
+        item.rosen_follow_up_error = None;
+        if matches!(done, RosenFollowUp::Conflict { .. }) {
+            item.rosen_resolution_status = None;
+        }
         self.store_snapshot(next)
     }
 
@@ -613,6 +757,22 @@ fn already_applied(
     }
 }
 
+fn drop_delivered_conflicts(thread: &mut ThreadItem) {
+    let drop_flags: Vec<bool> = thread
+        .rosen_follow_ups
+        .iter()
+        .map(|pending| {
+            matches!(pending, RosenFollowUp::Conflict { .. }) && pending.delivered(thread)
+        })
+        .collect();
+    let mut index = 0;
+    thread.rosen_follow_ups.retain(|_| {
+        let keep = !drop_flags[index];
+        index += 1;
+        keep
+    });
+}
+
 fn notice_handled(thread: &ThreadItem, message: &str) -> bool {
     thread
         .rosen_follow_ups
@@ -631,10 +791,14 @@ fn queue_follow_up(thread: &mut ThreadItem, progress: RosenProgress, message: &s
         RosenProgress::Named => return,
         RosenProgress::Landed => {
             thread.rosen_follow_ups.clear();
+            thread.rosen_resolution_status = None;
+            thread.rosen_follow_up_error = None;
             RosenFollowUp::FinishLanded
         }
         RosenProgress::Abandoned => {
             thread.rosen_follow_ups.clear();
+            thread.rosen_resolution_status = None;
+            thread.rosen_follow_up_error = None;
             RosenFollowUp::FinishAbandoned
         }
         RosenProgress::Reverted => RosenFollowUp::Reopen {
@@ -976,6 +1140,76 @@ mod tests {
             store.state.projects[0].threads[0].state,
             ThreadState::Merged
         );
+        std::fs::remove_dir_all(directory)?;
+        Ok(())
+    }
+
+    // Risk (#522): conflict resolution wait status and background delivery errors must survive
+    // reload, and a stale delivered Conflict follow-up must not drop an explicit Resolve click.
+    #[test]
+    fn conflict_resolution_status_and_follow_up_error_survive_reload()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let unique = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)?
+            .as_nanos();
+        let directory = std::env::temp_dir().join(format!("velocity-resolution-status-{unique}"));
+        let mut store = checkpoint_store(&directory)?;
+        let prompt = "Resolve the stored conflicts in Rosen change abc.".to_owned();
+        assert_eq!(
+            store.queue_rosen_resolution(1, 4, "abc", prompt.clone(), 0)?,
+            QueueResolution::Queued,
+        );
+        assert_eq!(
+            store.queue_rosen_resolution(1, 4, "abc", prompt.clone(), 0)?,
+            QueueResolution::AlreadyPending,
+        );
+        assert!(store.set_rosen_resolution_status(
+            1,
+            4,
+            Some(RosenResolutionStatus::new(
+                "Can't resolve here · workspace missing".into(),
+                true,
+            )),
+        )?);
+        assert!(store.set_rosen_follow_up_error(
+            1,
+            4,
+            Some("Could not deliver Rosen conflict resolution: workspace missing".into()),
+        )?);
+
+        let mut loaded = StateStore::load_or_default(&directory)?;
+        let thread = &loaded.state.projects[0].threads[0];
+        assert_eq!(
+            thread.rosen_resolution_status,
+            Some(RosenResolutionStatus::new(
+                "Can't resolve here · workspace missing".into(),
+                true,
+            ))
+        );
+        assert_eq!(
+            thread.rosen_follow_up_error.as_deref(),
+            Some("Could not deliver Rosen conflict resolution: workspace missing")
+        );
+
+        // Simulate an earlier identical prompt already in the saved transcript with a stale mark:
+        // a new explicit Resolve click must replace it with a fresh mark above the transcript.
+        loaded.update_thread(1, 4, |item| {
+            item.transcript = std::sync::Arc::new(vec![TranscriptBlock::UserMessage {
+                text: prompt.clone(),
+                queued: false,
+            }]);
+        })?;
+        assert_eq!(
+            loaded.queue_rosen_resolution(1, 4, "abc", prompt.clone(), 1)?,
+            QueueResolution::Queued,
+        );
+        let follow_up = loaded.state.projects[0].threads[0].rosen_follow_ups[0].clone();
+        assert!(!loaded.rosen_follow_up_delivered(1, 4, &follow_up));
+
+        loaded.finish_rosen_follow_up(1, 4, &follow_up)?;
+        let thread = &loaded.state.projects[0].threads[0];
+        assert!(thread.rosen_resolution_status.is_none());
+        assert!(thread.rosen_follow_up_error.is_none());
         std::fs::remove_dir_all(directory)?;
         Ok(())
     }

@@ -4087,6 +4087,8 @@ export type RosenChangeView_Deserialize = {
 	name?: string | null,
 	conflicts: string[],
 	lands: RosenLandView_Deserialize[],
+	resolution?: RosenResolutionView_Deserialize | null,
+	follow_up_error?: string | null,
 };
 
 /**  The change's server state and retained evidence for each of its lands (F6). */
@@ -4096,6 +4098,8 @@ export type RosenChangeView_Serialize = {
 	name: string | null,
 	conflicts: string[],
 	lands: RosenLandView_Serialize[],
+	resolution?: RosenResolutionView_Serialize,
+	follow_up_error?: string,
 };
 
 export type RosenLandFailureView = {
@@ -4127,6 +4131,23 @@ export type RosenLandView_Serialize = {
 	checks_passed: boolean,
 	revert: string | null,
 	failures: RosenLandFailureView[],
+};
+
+/**  Status of a conflict resolution handoff shown on the Stored conflicts card (F6, #522). */
+export type RosenResolutionView = RosenResolutionView_Serialize | RosenResolutionView_Deserialize;
+
+/**  Status of a conflict resolution handoff shown on the Stored conflicts card (F6, #522). */
+export type RosenResolutionView_Deserialize = {
+	pending: boolean,
+	status: string,
+	offer_abandon?: boolean,
+};
+
+/**  Status of a conflict resolution handoff shown on the Stored conflicts card (F6, #522). */
+export type RosenResolutionView_Serialize = {
+	pending: boolean,
+	status: string,
+	offer_abandon: boolean,
 };
 
 /**

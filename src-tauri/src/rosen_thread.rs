@@ -129,22 +129,29 @@ pub async fn run_rosen_thread_action(
     action: RosenThreadAction,
 ) -> Result<(), String> {
     let key = (project_identifier, thread_identifier);
+    if matches!(action, RosenThreadAction::Resolve) {
+        let _thread = open_thread(&application, key, &change)?;
+        let server = crate::rosen::server(&application, key.0).await?;
+        return queue_resolution(&application, &server, key, &change).await;
+    }
     let lease = action_lock(&application, key)?;
     let _action = lease.lock().await;
     let thread = open_thread(&application, key, &change)?;
     let server = crate::rosen::server(&application, key.0).await?;
-    if matches!(action, RosenThreadAction::Resolve) {
-        queue_resolution(&application, &server, key, &change).await?;
+    let runtimes = application.state::<ManagedThreads>();
+    let reserved = if matches!(action, RosenThreadAction::Abandon) {
+        lock(runtimes.inner(), "thread sessions")?
+            .begin_rebase_update(key)
+            .is_ok()
     } else {
-        let runtimes = application.state::<ManagedThreads>();
-        if !lock(runtimes.inner(), "thread sessions")?.begin_workspace_update(key) {
-            return Err("Wait for the agent to finish its current turn".into());
-        }
-        let result = update_workspace(&application, &server, key, &thread, &change, action).await;
-        lock(runtimes.inner(), "thread sessions")?.finish_workspace_update(key);
-        result?;
+        lock(runtimes.inner(), "thread sessions")?.begin_workspace_update(key)
+    };
+    if !reserved {
+        return Err("Wait for the agent to finish its current turn".into());
     }
-    Ok(())
+    let result = update_workspace(&application, &server, key, &thread, &change, action).await;
+    lock(runtimes.inner(), "thread sessions")?.finish_workspace_update(key);
+    result
 }
 
 fn open_thread(
@@ -175,21 +182,52 @@ async fn queue_resolution(
     key: ThreadKey,
     change: &str,
 ) -> Result<(), String> {
-    let message = thread_change::resolution_prompt(server, change)
+    let Some(message) = thread_change::resolution_prompt(server, change)
         .await
         .map_err(|error| error.to_string())?
-        .ok_or_else(|| "Rosen has no open conflicts for this change".to_owned())?;
-    lock(
-        application.state::<ManagedStateStore>().inner(),
-        "persisted state",
+    else {
+        let cleared = lock(
+            application.state::<ManagedStateStore>().inner(),
+            "persisted state",
+        )?
+        .clear_rosen_conflict_follow_up(key.0, key.1)
+        .map_err(|error| error.to_string())?;
+        if cleared {
+            let store = lock(
+                application.state::<ManagedStateStore>().inner(),
+                "persisted state",
+            )?;
+            report(crate::rosen_events::publish_progress(application, &store));
+        }
+        report(refresh(application, key.0, Some(change), true).await);
+        return Err("Rosen has no open conflicts for this change".to_owned());
+    };
+    let live_len = lock(
+        application.state::<ManagedThreads>().inner(),
+        "thread sessions",
     )?
-    .queue_rosen_resolution(key.0, key.1, change, message)
-    .map_err(|error| error.to_string())?;
-    let handle = application.clone();
-    tauri::async_runtime::spawn(async move {
-        crate::rosen_events::run_follow_ups(&handle, key.0).await;
-    });
-    Ok(())
+    .view(key)
+    .map_or(0, |view| view.blocks.len());
+    let queued = {
+        let mut store = lock(
+            application.state::<ManagedStateStore>().inner(),
+            "persisted state",
+        )?;
+        let outcome = store
+            .queue_rosen_resolution(key.0, key.1, change, message, live_len)
+            .map_err(|error| error.to_string())?;
+        if outcome == velocity_store::rosen::QueueResolution::Unavailable {
+            return Err("This thread no longer has that open Rosen change".into());
+        }
+        crate::rosen_events::publish_progress(application, &store)?;
+        outcome
+    };
+    crate::rosen_events::deliver_conflict_now(
+        application,
+        key,
+        queued == velocity_store::rosen::QueueResolution::AlreadyPending,
+    )
+    .await
 }
 
 async fn update_workspace(
@@ -200,6 +238,17 @@ async fn update_workspace(
     change: &str,
     action: RosenThreadAction,
 ) -> Result<(), String> {
+    if matches!(action, RosenThreadAction::Abandon) {
+        let root = thread.worktree_path.as_deref().map(Path::new);
+        let result = crate::rosen::abandon(application, key.0, thread, change).await;
+        if result.is_err()
+            && let Some(root) = root
+            && root.is_dir()
+        {
+            report(crate::rosen::watch(application, server, root).await);
+        }
+        return result;
+    }
     let root = thread
         .worktree_path
         .as_deref()
@@ -222,14 +271,7 @@ async fn update_workspace(
                 .map_err(|error| error.to_string())?;
             apply_waiting_rebase(application, server, key.0, root).await
         }
-        RosenThreadAction::Abandon => {
-            let result = crate::rosen::abandon(application, key.0, thread, change).await;
-            if result.is_err() && root.is_dir() {
-                report(crate::rosen::watch(application, server, root).await);
-            }
-            result
-        }
-        RosenThreadAction::Resolve => Ok(()),
+        RosenThreadAction::Abandon | RosenThreadAction::Resolve => Ok(()),
     }
 }
 

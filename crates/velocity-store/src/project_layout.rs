@@ -19,7 +19,9 @@ use velocity_core::layout_view::{
 };
 use velocity_core::navigation::NavigationView;
 use velocity_core::thread_view::ThreadLifecycle;
-use velocity_core::thread_view_model::{RosenChangeStage, RosenChangeView, ThreadDetailEntry};
+use velocity_core::thread_view_model::{
+    RosenChangeStage, RosenChangeView, RosenResolutionView, ThreadDetailEntry,
+};
 
 pub(crate) fn active_project(state: &PersistedState) -> Option<&ProjectItem> {
     usize::try_from(state.active_project_index)
@@ -235,15 +237,34 @@ fn thread_detail(thread: &ThreadItem, settings: &crate::Settings) -> ThreadDetai
 
 fn rosen_change(thread: &ThreadItem) -> Option<RosenChangeView> {
     let identifier = thread.rosen_change.as_ref()?;
-    if let Some(view) = &thread.rosen_change_view
+    let mut view = if let Some(view) = &thread.rosen_change_view
         && &view.identifier == identifier
     {
-        return Some(view.clone());
-    }
-    Some(RosenChangeView::new(
-        identifier.clone(),
-        rosen_stage(thread),
-    ))
+        view.clone()
+    } else {
+        RosenChangeView::new(identifier.clone(), rosen_stage(thread))
+    };
+    let has_pending_conflict = thread
+        .rosen_follow_ups
+        .iter()
+        .any(|pending| matches!(pending, crate::rosen::RosenFollowUp::Conflict { .. }));
+    view.resolution = if !view.conflicts.is_empty()
+        && (has_pending_conflict || thread.rosen_resolution_status.is_some())
+    {
+        let status = thread.rosen_resolution_status.as_ref();
+        Some(RosenResolutionView {
+            pending: has_pending_conflict,
+            status: status.map_or_else(
+                || crate::rosen::DEFAULT_RESOLUTION_STATUS.to_owned(),
+                |entry| entry.status.clone(),
+            ),
+            offer_abandon: status.is_some_and(|entry| entry.offer_abandon),
+        })
+    } else {
+        None
+    };
+    view.follow_up_error = thread.rosen_follow_up_error.clone();
+    Some(view)
 }
 
 fn rosen_stage(thread: &ThreadItem) -> RosenChangeStage {

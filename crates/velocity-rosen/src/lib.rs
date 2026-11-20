@@ -73,7 +73,8 @@ pub use server_update::{RosenBuild, ServerUpdate};
 pub use stack::stack_workspace;
 pub use workspace::{
     AgentWorkspace, Watches, abandon_change, create_change, create_workspace,
-    create_workspace_retaining_change, open_workspace_within, rebase_pending, reopen_workspace,
+    create_workspace_retaining_change, has_workspace, open_workspace_within, rebase_pending,
+    reopen_workspace,
 };
 pub use workspace_wait::{CreationWait, creation_wait};
 

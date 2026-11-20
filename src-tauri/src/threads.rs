@@ -1493,10 +1493,18 @@ pub(crate) async fn pump(application: &AppHandle, key: ThreadKey, mut session: R
         return;
     }
     crate::browser::stop(application, key).await;
-    let replace = handoff.accepted && shutdown.confirmed() && matches!(outcome, Ok(Ok(())));
-    if finish_session(application, key, shutdown.confirmed(), outcome, replace) && replace {
+    let clean_exit = matches!(outcome, Ok(Ok(())));
+    let replace = handoff.accepted && shutdown.confirmed() && clean_exit;
+    let still_wanted = finish_session(application, key, shutdown.confirmed(), outcome, replace);
+    if still_wanted && replace {
         let handle = application.clone();
         tauri::async_runtime::spawn_blocking(move || crate::handoff::resume(&handle, key));
+    } else if still_wanted && clean_exit {
+        // A follow-up waiting for the agent's step can deliver now that the session ended cleanly.
+        let handle = application.clone();
+        tauri::async_runtime::spawn(async move {
+            crate::rosen_events::run_follow_ups(&handle, key.0).await;
+        });
     }
 }
 

@@ -72,6 +72,8 @@ pub async fn read(
             facts.conflicts
         },
         lands,
+        resolution: None,
+        follow_up_error: None,
     }))
 }
 

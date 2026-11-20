@@ -724,6 +724,58 @@ impl ThreadRuntimes {
         self.is_at_step_boundary(key) && self.workspace_updates.insert(key)
     }
 
+    /// Why a Rosen rebase or conflict notice cannot update `key`'s workspace right now.
+    /// An ended (non-parked) session has no running process touching files, so it does not
+    /// block applying a rebase before resuming it (#522).
+    pub fn rebase_boundary_blocker(&self, key: ThreadKey) -> Option<&'static str> {
+        if self.stopping.contains_key(&key) {
+            return Some("waiting for the agent session to stop");
+        }
+        if self.workspace_updates.contains(&key) {
+            return Some("workspace update in progress");
+        }
+        let thread = self.threads.get(&key)?;
+        if self.handoff_closing.contains(&key) {
+            return thread
+                .busy
+                .then_some("waiting for the agent's current step");
+        }
+        if self.parked.contains(&key) {
+            return Some("waiting for the parked agent to wake");
+        }
+        match thread.phase {
+            SessionPhase::Ended => None,
+            SessionPhase::SettingUp | SessionPhase::Selecting => {
+                Some("waiting for the agent session to start")
+            }
+            SessionPhase::Running => {
+                if thread.busy
+                    || !thread.pending_inputs.is_empty()
+                    || thread.deliveries.airc_wake_pending()
+                {
+                    Some("waiting for the agent's current step")
+                } else if !thread.transcript.queued().is_empty() {
+                    Some("waiting for queued messages")
+                } else {
+                    None
+                }
+            }
+        }
+    }
+
+    /// Reserve the workspace for a Rosen rebase or conflict delivery when no running agent
+    /// step is active. Returns the reason to wait if the agent is mid-step or starting (#522).
+    pub fn begin_rebase_update(&mut self, key: ThreadKey) -> Result<(), &'static str> {
+        if let Some(reason) = self.rebase_boundary_blocker(key) {
+            return Err(reason);
+        }
+        if self.workspace_updates.insert(key) {
+            Ok(())
+        } else {
+            Err("workspace update in progress")
+        }
+    }
+
     /// Release inputs even when application failed: edits stay on disk and a later
     /// boundary retries. Ended and parked sessions retain their messages for resume.
     pub fn finish_workspace_update(&mut self, key: ThreadKey) {

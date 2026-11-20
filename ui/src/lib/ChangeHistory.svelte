@@ -4,15 +4,25 @@
   let {
     change,
     resolve,
+    abandon,
     resolving,
+    resolveError = '',
     openOnCollapse,
   }: {
     change: RosenChangeView;
     resolve: () => void;
+    abandon?: () => void;
     resolving: boolean;
+    resolveError?: string;
     // Null when the project has no Collapse mirror (#429).
     openOnCollapse: ((commit: string) => void) | null;
   } = $props();
+
+  let confirmAbandon = $state(false);
+  $effect(() => {
+    void change.identifier;
+    if (!change.resolution?.offer_abandon) confirmAbandon = false;
+  });
 </script>
 
 {#if change.conflicts.length}
@@ -23,9 +33,51 @@
         <li class="mono">{path}</li>
       {/each}
     </ul>
-    <button type="button" class="btn" disabled={resolving} onclick={resolve}>
-      Resolve with agent
-    </button>
+    {#if change.resolution}
+      <p
+        class="change-resolution"
+        class:blocked={change.resolution.offer_abandon}
+        role={change.resolution.offer_abandon ? 'alert' : 'status'}
+      >
+        {change.resolution.status}
+      </p>
+    {/if}
+    {#if resolveError}
+      <p class="change-resolution blocked" role="alert">{resolveError}</p>
+    {/if}
+    <div class="change-conflicts-actions">
+      <button type="button" class="btn" disabled={resolving} onclick={resolve}>
+        {resolving ? 'Resolving…' : 'Resolve with agent'}
+      </button>
+      {#if change.resolution?.offer_abandon && abandon}
+        {@const runAbandon = abandon}
+        {#if confirmAbandon}
+          <span class="change-resolution">Abandon this change?</span>
+          <button
+            type="button"
+            class="btn"
+            disabled={resolving}
+            onclick={() => {
+              confirmAbandon = false;
+              runAbandon();
+            }}>Abandon change</button
+          >
+          <button
+            type="button"
+            class="btn"
+            disabled={resolving}
+            onclick={() => (confirmAbandon = false)}>Cancel</button
+          >
+        {:else}
+          <button
+            type="button"
+            class="btn"
+            disabled={resolving}
+            onclick={() => (confirmAbandon = true)}>Abandon</button
+          >
+        {/if}
+      {/if}
+    </div>
   </section>
 {/if}
 
