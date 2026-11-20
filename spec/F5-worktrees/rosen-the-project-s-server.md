@@ -26,6 +26,8 @@
   Catching up keeps the server's database, with its events, cursors and channel history; Velocity never re-imports or replaces a database to catch up.
   A base that matches or is ahead of its mirror is left as it is, and a project with no mirror has nothing to catch up.
   When the base moves, a toast names the project, the commits caught up and the open changes rebased; the action also reports when nothing moved.
+  A catch-up on start that fails, such as a mirror fetch with the network not up yet, raises one toast naming the project and is tried again after 30 seconds, then at waits that double up to ten minutes, until Rosen answers a catch-up, and a toast then says how it ended.
+  The failure and each new reason are written to the diagnostics log, and the project's action ends the retries when it gets an answer first.
   When the histories have diverged nothing moves, and the project header's mirror notice shows both tips and Rosen's list of the commits on each side, until a later catch-up or an adoption succeeds.
   The notice offers Adopt mirror tip, which adopts the mirror tip as Rosen #396 does when the mirror's edits were already ported into Rosen, and shows Rosen's refusal otherwise, and Catch up again.
   While the latest push has failed, the main window's project header and Settings → Workspaces → Version control show `failing · retrying` with the next retry time, or `rejected · needs a person` when Rosen says the push was rejected.

@@ -9,7 +9,7 @@ use velocity_rosen::{CatchUp, ProjectServer};
 
 use crate::layout::MainLayout;
 use crate::state::ManagedStateStore;
-use crate::threads::lock;
+use crate::threads::{lock, report};
 
 /// Refresh on startup, mirror events and the periodic retry, one observation at a time.
 pub(crate) async fn refresh(application: &AppHandle, project: u32) -> Result<(), String> {
@@ -151,27 +151,105 @@ fn save_collapse_repository(
 /// finishes a catch-up it began even after Velocity stops waiting for it.
 const CATCH_UP_WAIT: Duration = Duration::from_secs(120);
 
+/// How long a catch-up that failed on start waits before it is tried again. Each later
+/// wait doubles, up to [`CATCH_UP_RETRY_LIMIT`], because Rosen pauses landing while it
+/// fetches the mirror.
+const CATCH_UP_RETRY: Duration = Duration::from_secs(30);
+const CATCH_UP_RETRY_LIMIT: Duration = Duration::from_secs(10 * 60);
+
 /// Catches the project up from its mirror the first time this run readies its server
 /// (#501), so the machine that sat idle lands fast-forward again with no manual step.
-/// Concurrent first callers wait for the one catch-up; later calls return at once.
+/// Concurrent first callers wait for the one catch-up; later calls return at once. A
+/// catch-up that failed is tried again in the background until Rosen answers.
 pub(crate) async fn catch_up_once(application: &AppHandle, project: u32, server: &ProjectServer) {
     let once = application
         .state::<crate::rosen::ManagedRosen>()
         .catch_up_once(project);
     once.get_or_init(|| async {
-        let caught_up = catch_up(application, project, server, false);
-        let result = match tokio::time::timeout(CATCH_UP_WAIT, caught_up).await {
-            Ok(result) => result,
-            Err(_) => Err("still running after two minutes; Rosen finishes it".into()),
+        let Err(error) = catch_up_within_wait(application, project, server).await else {
+            return;
         };
-        if let Err(error) = result {
-            crate::diagnostics::record(
-                "rosen mirror",
-                &format!("Catch-up from the mirror for project {project}: {error}"),
-            );
-        }
+        report_failed_catch_up(application, project, &error);
+        application
+            .state::<crate::rosen::ManagedRosen>()
+            .begin_catch_up_retry(project);
+        let (handle, server) = (application.clone(), server.clone());
+        tauri::async_runtime::spawn(async move {
+            retry_catch_up(&handle, project, &server, error).await;
+        });
     })
     .await;
+}
+
+async fn catch_up_within_wait(
+    application: &AppHandle,
+    project: u32,
+    server: &ProjectServer,
+) -> Result<(), String> {
+    let caught_up = catch_up(application, project, server, false);
+    match tokio::time::timeout(CATCH_UP_WAIT, caught_up).await {
+        Ok(result) => result,
+        Err(_) => Err("still running after two minutes; Rosen finishes it".into()),
+    }
+}
+
+/// Says once that the catch-up on start failed. A land before one gets through goes out
+/// on a base behind the mirror, and the two histories then diverge.
+fn report_failed_catch_up(application: &AppHandle, project: u32, error: &str) {
+    crate::diagnostics::record(
+        "rosen mirror",
+        &format!("Catch-up from the mirror for project {project}: {error}"),
+    );
+    report(project_name(application, project).and_then(|name| {
+        let message = format!("{name}: could not catch up from the mirror · trying again");
+        toast(application, message)
+    }));
+}
+
+/// Tries a catch-up that failed on start again until Rosen answers one, here or for the
+/// project's action, or the project leaves Rosen. A mirror fetch that failed once, with
+/// the network not up yet, would otherwise leave the base behind its mirror all run.
+async fn retry_catch_up(
+    application: &AppHandle,
+    project: u32,
+    server: &ProjectServer,
+    mut last_error: String,
+) {
+    let mut wait = CATCH_UP_RETRY;
+    loop {
+        tokio::time::sleep(wait).await;
+        wait = (wait * 2).min(CATCH_UP_RETRY_LIMIT);
+        let retries = || {
+            application
+                .state::<crate::rosen::ManagedRosen>()
+                .retries_catch_up(project)
+        };
+        if retries() && !crate::rosen::rosen_in_use(application, project) {
+            application
+                .state::<crate::rosen::ManagedRosen>()
+                .end_catch_up_retry(project);
+        }
+        if !retries() {
+            return;
+        }
+        // Connecting starts a stopped server, which an update or an exit must not find running.
+        if crate::rosen::paused(application) {
+            continue;
+        }
+        match catch_up_within_wait(application, project, server).await {
+            // Rosen answered, and `catch_up` ended the retries and said what happened.
+            Ok(()) => return,
+            Err(error) if error != last_error => {
+                crate::diagnostics::record(
+                    "rosen mirror",
+                    &format!("Catch-up from the mirror for project {project}: {error}"),
+                );
+                last_error = error;
+            }
+            // The same failure again is already in the log.
+            Err(_) => {}
+        }
+    }
 }
 
 /// `catch_up_from_mirror` (§3.1): the project's Catch up from mirror action. Says what
@@ -220,7 +298,7 @@ pub async fn adopt_mirror_tip(
 
 /// Catches up, saves or clears the divergence, and toasts what changed. `asked` is the
 /// project's action, which always says what happened; startup speaks only when the base
-/// moved or a new divergence needs a person.
+/// moved, a new divergence needs a person, or it had said that its catch-up failed.
 async fn catch_up(
     application: &AppHandle,
     project: u32,
@@ -230,13 +308,13 @@ async fn catch_up(
     let outcome = velocity_rosen::catch_up_from_mirror(server)
         .await
         .map_err(|error| error.to_string())?;
-    let name = lock(
-        application.state::<ManagedStateStore>().inner(),
-        "persisted state",
-    )?
-    .project(project)
-    .map(|item| item.name.clone())
-    .unwrap_or_default();
+    // Rosen answered, so a catch-up that failed on start needs no further tries, and the
+    // owner who was told it failed is told how it ended.
+    let asked = application
+        .state::<crate::rosen::ManagedRosen>()
+        .end_catch_up_retry(project)
+        || asked;
+    let name = project_name(application, project)?;
     if let CatchUp::FastForwarded(moved) = &outcome {
         for failure in &moved.rebase_errors {
             crate::diagnostics::record("rosen mirror", &format!("{name}: {failure}"));
@@ -320,6 +398,16 @@ fn publish_divergence(
         crate::layout::publish(application, &layout.snapshot(), None)?;
     }
     Ok(changed)
+}
+
+fn project_name(application: &AppHandle, project: u32) -> Result<String, String> {
+    Ok(lock(
+        application.state::<ManagedStateStore>().inner(),
+        "persisted state",
+    )?
+    .project(project)
+    .map(|item| item.name.clone())
+    .unwrap_or_default())
 }
 
 fn toast(application: &AppHandle, message: String) -> Result<(), String> {

@@ -33,9 +33,32 @@ pub(crate) struct ManagedRosen {
     pub(crate) follow_ups: tokio::sync::Mutex<()>,
     /// Each project's catch-up from its mirror this run, done once on its first start (#501).
     catch_ups: std::sync::Mutex<BTreeMap<u32, std::sync::Arc<tokio::sync::OnceCell<()>>>>,
+    /// Projects whose catch-up on start failed and is tried again until Rosen answers (#501).
+    catch_up_retries: std::sync::Mutex<BTreeSet<u32>>,
 }
 
 impl ManagedRosen {
+    /// Records that `project`'s failed catch-up on start is being tried again.
+    pub(crate) fn begin_catch_up_retry(&self, project: u32) {
+        if let Ok(mut retries) = self.catch_up_retries.lock() {
+            retries.insert(project);
+        }
+    }
+
+    /// Whether `project`'s catch-up is still being tried again.
+    pub(crate) fn retries_catch_up(&self, project: u32) -> bool {
+        self.catch_up_retries
+            .lock()
+            .is_ok_and(|retries| retries.contains(&project))
+    }
+
+    /// Ends `project`'s retries once Rosen answered a catch-up; true when one was waiting.
+    pub(crate) fn end_catch_up_retry(&self, project: u32) -> bool {
+        self.catch_up_retries
+            .lock()
+            .is_ok_and(|mut retries| retries.remove(&project))
+    }
+
     /// The project's catch-up for this run, shared so concurrent first starts wait for one.
     pub(crate) fn catch_up_once(&self, project: u32) -> std::sync::Arc<tokio::sync::OnceCell<()>> {
         self.catch_ups
@@ -71,6 +94,7 @@ pub(crate) fn initialize(application: &AppHandle) -> anyhow::Result<()> {
         pool_sizes: tokio::sync::Mutex::new(BTreeMap::new()),
         follow_ups: tokio::sync::Mutex::new(()),
         catch_ups: std::sync::Mutex::new(BTreeMap::new()),
+        catch_up_retries: std::sync::Mutex::new(BTreeSet::new()),
     });
     let handle = application.clone();
     tauri::async_runtime::spawn(async move {
