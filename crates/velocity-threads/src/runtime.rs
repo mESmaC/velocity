@@ -642,6 +642,18 @@ impl ThreadRuntimes {
         }
     }
 
+    /// Shows what the thread's workspace, still being made, waits on (#514). `true` when
+    /// the line changed, so the window is told only then.
+    pub fn workspace_waiting(&mut self, key: ThreadKey, reason: Option<&str>) -> bool {
+        let Some(thread) = self.threads.get_mut(&key) else {
+            return false;
+        };
+        matches!(
+            thread.phase,
+            SessionPhase::SettingUp | SessionPhase::Selecting
+        ) && thread.transcript.setup_waiting(reason)
+    }
+
     /// The thread's folder is a Rosen workspace for `change` (F5).
     pub fn rosen_workspace_ready(&mut self, key: ThreadKey, change: &str) {
         if let Some(thread) = self.threads.get_mut(&key) {

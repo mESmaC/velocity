@@ -41,6 +41,7 @@ pub mod thread_change;
 pub mod workflow_policy;
 mod workspace;
 pub mod workspace_settings;
+mod workspace_wait;
 
 pub use agent::{
     McpCommand, agent_environment, agent_name, mcp_command, path_with_rosen, run_queue_note,
@@ -66,9 +67,10 @@ pub use server::{BINARY_FOLDER_ENV, ImportSource, ProjectServer, Servers, binary
 pub use server_update::{RosenBuild, ServerUpdate};
 pub use stack::stack_workspace;
 pub use workspace::{
-    AgentWorkspace, Watches, abandon_change, create_workspace, create_workspace_retaining_change,
-    rebase_pending, reopen_workspace,
+    AgentWorkspace, Watches, abandon_change, create_change, create_workspace,
+    create_workspace_retaining_change, open_workspace_within, rebase_pending, reopen_workspace,
 };
+pub use workspace_wait::{CreationWait, creation_wait};
 
 use std::path::PathBuf;
 
@@ -114,6 +116,11 @@ pub enum RosenError {
         change: String,
         source: Box<rosen_client::Error>,
     },
+    #[error(
+        "Rosen made no workspace at {root} in {seconds} seconds, on the shared connection \
+         or on one of its own"
+    )]
+    WorkspaceWait { root: PathBuf, seconds: u64 },
     #[error("the watcher on {0} ended as it started")]
     WatchEnded(PathBuf),
     #[error("could not {action} {path}: {source}")]

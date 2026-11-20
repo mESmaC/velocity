@@ -43,6 +43,60 @@ pub struct ContinuousDispatch {
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     #[specta(skip)]
     pub landed_holds: BTreeMap<u32, LandedHold>,
+    /// Dispatch threads that failed before their agent's first turn (#514), by thread.
+    /// The issue is already back in dispatch; the reason still has to reach it as a
+    /// comment, across restarts and failed GitHub calls.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    #[specta(skip)]
+    pub launch_failure_reports: BTreeMap<u32, LaunchFailureReport>,
+    /// How often in a row each issue's thread failed before starting (#514), by issue
+    /// number. A launch that keeps failing must not start threads for ever.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    #[specta(skip)]
+    pub unstarted_failures: BTreeMap<u32, UnstartedFailures>,
+}
+
+/// How many times in a row an issue's thread may fail before its first turn and be
+/// dispatched again on the next pass (#514). Later failures still return the issue, but
+/// dispatch then waits before each further try, so a launch that cannot succeed neither
+/// starts threads for ever nor fills the issue with comments.
+pub const UNSTARTED_RETURNS: u32 = 3;
+
+/// The wait before the first try past [`UNSTARTED_RETURNS`]. It doubles with each further
+/// failure, up to a day.
+const UNSTARTED_WAIT_SECONDS: u64 = 60 * 60;
+
+/// Why a dispatch thread never started, waiting to be posted on its issue (#514).
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct LaunchFailureReport {
+    pub issue: ThreadIssue,
+    #[serde(default)]
+    pub reason: String,
+    /// Which failure in a row this is for the issue, from 1.
+    #[serde(default)]
+    pub failure: u32,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct UnstartedFailures {
+    pub issue: ThreadIssue,
+    #[serde(default)]
+    pub count: u32,
+    /// Unix seconds of the newest failure.
+    #[serde(default)]
+    pub last: u64,
+}
+
+impl UnstartedFailures {
+    /// Unix seconds until which dispatch leaves the issue alone; `None` while it may be
+    /// tried again at once.
+    pub fn held_until(&self) -> Option<u64> {
+        let past = self.count.checked_sub(UNSTARTED_RETURNS + 1)?;
+        let wait = UNSTARTED_WAIT_SECONDS
+            .saturating_mul(1u64.checked_shl(past).unwrap_or(u64::MAX))
+            .min(24 * 60 * 60);
+        Some(self.last.saturating_add(wait))
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -140,6 +194,33 @@ pub struct DispatchAttempt {
 }
 
 impl ContinuousDispatch {
+    /// Issues whose launches failed too often in a row to be tried again yet (#514).
+    pub fn launch_holds(&self, now: u64) -> impl Iterator<Item = &ThreadIssue> {
+        self.unstarted_failures
+            .values()
+            .filter(move |failures| failures.held_until().is_some_and(|until| now < until))
+            .map(|failures| &failures.issue)
+    }
+
+    /// Counts one more failed start for `issue` and returns how many it has had in a row.
+    fn count_unstarted_failure(&mut self, issue: &ThreadIssue, now: u64) -> u32 {
+        let count = self
+            .unstarted_failures
+            .get(&issue.number)
+            .filter(|counted| same_issue(&counted.issue, issue))
+            .map_or(0, |counted| counted.count)
+            .saturating_add(1);
+        self.unstarted_failures.insert(
+            issue.number,
+            UnstartedFailures {
+                issue: issue.clone(),
+                count,
+                last: now,
+            },
+        );
+        count
+    }
+
     pub fn reporting_no_change(&self, repository: &str, number: u32) -> bool {
         self.no_change_reports.values().any(|report| {
             report.issue.number == number
@@ -270,6 +351,22 @@ pub fn can_finish_empty_dispatch(thread: &crate::ThreadItem) -> bool {
                 velocity_core::thread_view_model::TranscriptBlock::UserMessage { queued: true, .. }
             )
         })
+}
+
+fn same_issue(left: &ThreadIssue, right: &ThreadIssue) -> bool {
+    left.number == right.number && left.repository.eq_ignore_ascii_case(&right.repository)
+}
+
+/// A dispatch thread whose launch failed before its agent's session began: it did no
+/// work, so the failure says nothing about its issue (#514). A session that began may
+/// have left edits in the workspace, so such a thread keeps its issue.
+pub fn failed_before_first_turn(thread: &crate::ThreadItem) -> bool {
+    thread.started_by_dispatch
+        && thread.state == ThreadState::Error
+        && thread.supervision.turns == 0
+        && thread.agent_session.is_none()
+        && !thread.supervision.released
+        && thread.interview.is_none()
 }
 
 impl StateStore {
@@ -656,6 +753,126 @@ impl StateStore {
         Ok(())
     }
 
+    /// A dispatch thread that failed before its agent's first turn did no work (#514). Its
+    /// issue goes back to dispatch in the same save: the attempt is forgotten, so the
+    /// failure does not count as one, and the failed thread, kept with its error, no
+    /// longer owns the issue. `reason` waits in `launch_failure_reports` for its comment.
+    /// Past [`UNSTARTED_RETURNS`] failures in a row dispatch waits before each further
+    /// try and posts no more comments. `now` is Unix seconds.
+    /// Returns whether the thread was such a failure; other threads are left untouched.
+    pub fn return_unstarted_dispatch(
+        &mut self,
+        project: u32,
+        identifier: u32,
+        reason: &str,
+        now: u64,
+    ) -> Result<bool, ThreadError> {
+        let mut next = self.state.clone();
+        let item = next
+            .projects
+            .iter_mut()
+            .find(|item| item.id == project)
+            .ok_or(ThreadError::UnknownProject(project))?;
+        let Some(thread) = item
+            .threads
+            .iter_mut()
+            .find(|thread| thread.id == identifier && failed_before_first_turn(thread))
+        else {
+            return Ok(false);
+        };
+        let Some(issue) = thread.issue.clone() else {
+            return Ok(false);
+        };
+        thread.supervision.released = true;
+        let dispatch = &mut item.continuous_dispatch;
+        let failure = dispatch.count_unstarted_failure(&issue, now);
+        if failure <= UNSTARTED_RETURNS {
+            dispatch.launch_failure_reports.insert(
+                identifier,
+                LaunchFailureReport {
+                    issue: issue.clone(),
+                    reason: reason.to_owned(),
+                    failure,
+                },
+            );
+        }
+        dispatch.attempts.retain(|attempt| {
+            attempt.number != issue.number
+                || !attempt.repository.eq_ignore_ascii_case(&issue.repository)
+        });
+        crate::rosen_work::remove_thread(item, identifier);
+        self.commit(next)?;
+        Ok(true)
+    }
+
+    /// Forgets failed starts of issues that left the open backlog, and of issues whose
+    /// thread has since run a turn: that launch worked (#514).
+    pub fn prune_unstarted_failures(
+        &mut self,
+        project: u32,
+        repository: &str,
+        open: impl Fn(u32) -> bool,
+    ) -> Result<(), ThreadError> {
+        let item = self
+            .project(project)
+            .ok_or(ThreadError::UnknownProject(project))?;
+        // Only a thread started after the newest failure shows that launches work again.
+        let started = |failures: &UnstartedFailures| {
+            item.threads.iter().any(|thread| {
+                thread.supervision.turns > 0
+                    && thread.supervision.started >= failures.last
+                    && thread
+                        .issue
+                        .as_ref()
+                        .is_some_and(|assigned| same_issue(assigned, &failures.issue))
+            })
+        };
+        let dropped: Vec<u32> = item
+            .continuous_dispatch
+            .unstarted_failures
+            .iter()
+            .filter(|(number, failures)| {
+                failures.issue.repository.eq_ignore_ascii_case(repository)
+                    && (!open(**number) || started(failures))
+            })
+            .map(|(number, _)| *number)
+            .collect();
+        if dropped.is_empty() {
+            return Ok(());
+        }
+        let mut next = self.state.clone();
+        if let Some(item) = next.projects.iter_mut().find(|item| item.id == project) {
+            item.continuous_dispatch
+                .unstarted_failures
+                .retain(|number, _| !dropped.contains(number));
+        }
+        self.commit(next)?;
+        Ok(())
+    }
+
+    /// The failure's comment reached its issue, or its issue is gone.
+    pub fn finish_launch_failure_report(
+        &mut self,
+        project: u32,
+        identifier: u32,
+    ) -> Result<(), ThreadError> {
+        let mut next = self.state.clone();
+        let dispatch = &mut next
+            .projects
+            .iter_mut()
+            .find(|item| item.id == project)
+            .ok_or(ThreadError::UnknownProject(project))?
+            .continuous_dispatch;
+        if dispatch
+            .launch_failure_reports
+            .remove(&identifier)
+            .is_some()
+        {
+            self.commit(next)?;
+        }
+        Ok(())
+    }
+
     pub fn finish_dispatch_cleanup(
         &mut self,
         project: u32,
@@ -817,6 +1034,62 @@ mod tests {
             project.continuous_dispatch.overlap_released,
             BTreeMap::from([(126, held), (133, returned)])
         );
+        std::fs::remove_dir_all(directory)?;
+        Ok(())
+    }
+
+    // Risk (#514): a restart between a failed start and its comment must not lose the
+    // reason, re-own the issue for the failed thread, or forget how often the launch
+    // failed, which is what stops a launch that cannot succeed from starting for ever.
+    #[test]
+    fn unstarted_failure_survives_save_and_load() -> Result<(), Box<dyn std::error::Error>> {
+        let (directory, mut store) = legacy_store()?;
+        store.set_continuous_dispatch(1, 2, false)?;
+        let issue = ThreadIssue::new("Owner/Repo".into(), 421);
+        let mut identifier = 0;
+        for failure in 1..=UNSTARTED_RETURNS + 1 {
+            let thread = NewThread::new(
+                "Issue".into(),
+                format!("vel/issue-421-{failure}"),
+                directory
+                    .join(format!("agent-{failure}"))
+                    .display()
+                    .to_string(),
+                &store.settings(),
+            );
+            // The same issue version every time: a returned start is no attempt.
+            identifier = store.record_continuous_dispatch(1, thread, issue.clone(), "v1".into())?;
+            assert!(!store.return_unstarted_dispatch(1, identifier, "still working", 100)?);
+            store.update_thread(1, identifier, |thread| thread.state = ThreadState::Error)?;
+            assert!(store.return_unstarted_dispatch(1, identifier, "pipe busy", 100)?);
+        }
+        drop(store);
+        let mut loaded = StateStore::load_or_default(&directory)?;
+        let project = loaded.project(1).ok_or("missing project")?;
+        let dispatch = &project.continuous_dispatch;
+        assert!(dispatch.attempts.is_empty());
+        assert!(crate::issues::issue_thread(project, &issue).is_none());
+        // Failures past the limit post no comment and hold the issue for an hour.
+        assert_eq!(dispatch.launch_failure_reports.len(), 3);
+        assert!(!dispatch.launch_failure_reports.contains_key(&identifier));
+        assert_eq!(dispatch.launch_holds(100 + 3599).count(), 1);
+        assert_eq!(dispatch.launch_holds(100 + 3600).count(), 0);
+        let first = *dispatch
+            .launch_failure_reports
+            .keys()
+            .next()
+            .ok_or("missing report")?;
+        assert_eq!(dispatch.launch_failure_reports[&first].reason, "pipe busy");
+        loaded.finish_launch_failure_report(1, first)?;
+        loaded.prune_unstarted_failures(1, "owner/repo", |_| false)?;
+        drop(loaded);
+        let reloaded = StateStore::load_or_default(&directory)?;
+        let dispatch = &reloaded
+            .project(1)
+            .ok_or("missing project")?
+            .continuous_dispatch;
+        assert_eq!(dispatch.launch_failure_reports.len(), 2);
+        assert!(dispatch.unstarted_failures.is_empty());
         std::fs::remove_dir_all(directory)?;
         Ok(())
     }

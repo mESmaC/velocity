@@ -4,6 +4,8 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
 use agent_client_protocol::v1::schema::{EnvVariable, McpServer, McpServerStdio};
@@ -47,6 +49,17 @@ impl ManagedRosen {
 /// or never started, is started again. Its first snapshot covers the whole workspace,
 /// so the edits made meanwhile are stored then.
 const WATCH_CHECK: Duration = Duration::from_secs(30);
+
+/// How long a thread's workspace may take on Velocity's shared Rosen connection before a
+/// second attempt starts on a connection of its own, and how long both may then take
+/// before the launch fails with the reason (#514). A workspace usually takes seconds.
+const WORKSPACE_WAIT_LIMIT: Duration = Duration::from_secs(3 * 60);
+
+/// How often a thread whose workspace is still being made is told what it waits on.
+const WORKSPACE_WAIT_CHECK: Duration = Duration::from_secs(10);
+
+/// Shown on the thread once the second, direct attempt at its workspace has started.
+const DIRECT_ATTEMPT_NOTE: &str = "no workspace after 3 min, so a direct attempt runs too";
 
 pub(crate) fn initialize(application: &AppHandle) -> anyhow::Result<()> {
     let app_data = application.path().app_data_dir()?;
@@ -394,49 +407,104 @@ async fn acquire_workspace(
     .map_err(|error| error.to_string())?
     .1
     .rosen_change;
-    let created = if let Some(change) = existing {
-        velocity_rosen::reopen_workspace(server, agent, &change, &request.worktree_path)
-            .await
-            .map_err(|error| error.to_string())?;
-        Ok(velocity_rosen::AgentWorkspace::new(
-            change,
-            request.worktree_path.clone(),
-            "reopened",
-            false,
-        ))
-    } else {
-        velocity_rosen::create_workspace_retaining_change(
-            server,
-            agent,
-            &request.worktree_path,
-            None,
-        )
-        .await
+    // A change the thread already has is a retry: only its workspace is still missing.
+    let change = match existing {
+        Some(change) => change,
+        None => {
+            let change = velocity_rosen::create_change(server, agent, None)
+                .await
+                .map_err(|error| error.to_string())?;
+            keep_change(application, key, server, agent, &change).await?;
+            change
+        }
     };
-    keep_workspace(application, key, server, agent, created).await
+    let fell_back = Arc::new(AtomicBool::new(false));
+    let reporter = tauri::async_runtime::spawn(report_workspace_wait(
+        application.clone(),
+        key,
+        Arc::clone(&fell_back),
+    ));
+    let opened = velocity_rosen::open_workspace_within(
+        server,
+        agent,
+        &change,
+        &request.worktree_path,
+        WORKSPACE_WAIT_LIMIT,
+        || {
+            fell_back.store(true, Ordering::Relaxed);
+            direct_attempt_started(application, key, &request.worktree_path);
+        },
+    )
+    .await;
+    reporter.abort();
+    opened.map_err(|error| {
+        format!("created Rosen change {change} but could not prepare its workspace: {error}")
+    })
 }
 
-async fn keep_workspace(
+fn direct_attempt_started(application: &AppHandle, key: ThreadKey, root: &Path) {
+    crate::diagnostics::record(
+        "rosen workspace",
+        &format!(
+            "{} had no workspace after {} seconds; a direct attempt runs too",
+            root.display(),
+            WORKSPACE_WAIT_LIMIT.as_secs()
+        ),
+    );
+    show_workspace_wait(application, key, Some(DIRECT_ATTEMPT_NOTE));
+}
+
+/// Saves the thread's new change before its workspace is made, so deletion abandons it and
+/// a retry reuses it. The change is given up only when it cannot be saved, as when the
+/// thread was deleted meanwhile. One the thread already has is never abandoned here: a
+/// retry that found its change recorded used to be read as a deleted thread (#514).
+async fn keep_change(
     application: &AppHandle,
     key: ThreadKey,
     server: &ProjectServer,
     agent: &str,
-    created: Result<velocity_rosen::AgentWorkspace, velocity_rosen::RosenError>,
-) -> Result<velocity_rosen::AgentWorkspace, String> {
-    // Record even a partially created workspace before returning a retryable error.
-    let change = match &created {
-        Ok(workspace) => &workspace.change,
-        Err(velocity_rosen::RosenError::WorkspaceNotCreated { change, .. }) => change,
-        Err(error) => return Err(error.to_string()),
+    change: &str,
+) -> Result<(), String> {
+    let Err(error) = record_change(application, key, change) else {
+        return Ok(());
     };
-    match record_change(application, key, change) {
-        Ok(true) => created.map_err(|error| error.to_string()),
-        saved => {
-            let _ = velocity_rosen::abandon_change(server, agent, change).await;
-            Err(saved
-                .err()
-                .unwrap_or_else(|| "The thread was deleted during Rosen workspace creation".into()))
+    let _ = velocity_rosen::abandon_change(server, agent, change).await;
+    Err(format!(
+        "Rosen change {change} could not be saved on the thread, so it was abandoned: {error}"
+    ))
+}
+
+/// While a thread's workspace is being made, says on the thread what the machine's run
+/// queue shows it waits on: a warm pool prepare, or a starving queue (#514).
+async fn report_workspace_wait(application: AppHandle, key: ThreadKey, fell_back: Arc<AtomicBool>) {
+    loop {
+        tokio::time::sleep(WORKSPACE_WAIT_CHECK).await;
+        let wait = tauri::async_runtime::spawn_blocking(velocity_rosen::creation_wait)
+            .await
+            .ok()
+            .flatten();
+        let mut reasons = Vec::new();
+        if let Some(wait) = wait {
+            reasons.push(wait.describe(velocity_updates::local_clock_at));
         }
+        if fell_back.load(Ordering::Relaxed) {
+            reasons.push(DIRECT_ATTEMPT_NOTE.to_owned());
+        }
+        let reason = (!reasons.is_empty()).then(|| reasons.join(" · "));
+        show_workspace_wait(&application, key, reason.as_deref());
+    }
+}
+
+fn show_workspace_wait(application: &AppHandle, key: ThreadKey, reason: Option<&str>) {
+    let changed = lock(
+        application
+            .state::<crate::threads::ManagedThreads>()
+            .inner(),
+        "thread sessions",
+    )
+    .is_ok_and(|mut runtimes| runtimes.workspace_waiting(key, reason));
+    if changed {
+        report(crate::threads::refresh(application, key, false).map(|_| ()));
     }
 }
 

@@ -36,14 +36,146 @@ impl AgentWorkspace {
 }
 
 pub(crate) async fn session(server: &ProjectServer, agent: &str) -> Result<Session, RosenError> {
+    let connection = crate::connection::requests(server.endpoint()).await?;
+    session_on(&connection, server, agent)
+}
+
+fn session_on(
+    connection: &crate::connection::Connection,
+    server: &ProjectServer,
+    agent: &str,
+) -> Result<Session, RosenError> {
     let agent = rosen_client::identity::parse_agent(agent)
         .map_err(|_| RosenError::AgentName(agent.to_owned()))?;
-    let connection = crate::connection::requests(server.endpoint()).await?;
     Ok(Session::from_client(
         connection.client(),
         server.endpoint().clone(),
         agent,
     ))
+}
+
+/// Creates a change owned by `agent`, stacked on `on` when given, with no workspace yet.
+/// The caller saves the change before any file is written, so a slow or failed workspace
+/// never leaves a change that no thread knows (#514).
+pub async fn create_change(
+    server: &ProjectServer,
+    agent: &str,
+    on: Option<&str>,
+) -> Result<String, RosenError> {
+    let record = session(server, agent).await?.new_change(on).await?;
+    Ok(record.change.id.to_string())
+}
+
+/// Gives `change` its workspace at `root`, as [`reopen_workspace`] does, without waiting on
+/// one connection for ever (#514). After `limit` with no workspace, `fell_back` is called
+/// and a second attempt starts on a connection of its own, which is what
+/// `rosen change new --workspace` has: a request held up on Velocity's shared connection
+/// cannot delay it. Both attempts then run for `limit` more and the first workspace wins.
+/// Rosen publishes a workspace by renaming it into place, so the attempt that loses finds
+/// the folder taken and writes nothing into it.
+pub async fn open_workspace_within(
+    server: &ProjectServer,
+    agent: &str,
+    change: &str,
+    root: &Path,
+    limit: std::time::Duration,
+    fell_back: impl FnOnce(),
+) -> Result<AgentWorkspace, RosenError> {
+    if prepare_root(root)? {
+        let root = root.to_path_buf();
+        return Ok(AgentWorkspace::new(
+            change.to_owned(),
+            root,
+            "reopened",
+            false,
+        ));
+    }
+    let shared = open_on(server, agent, change, root, false);
+    tokio::pin!(shared);
+    if let Ok(opened) = tokio::time::timeout(limit, &mut shared).await {
+        return opened;
+    }
+    fell_back();
+    let direct = open_on(server, agent, change, root, true);
+    tokio::pin!(direct);
+    let deadline = tokio::time::sleep(limit);
+    tokio::pin!(deadline);
+    let (mut shared_failed, mut direct_failed) = (false, None);
+    loop {
+        tokio::select! {
+            opened = &mut shared, if !shared_failed => match opened {
+                Ok(workspace) => return Ok(workspace),
+                // The direct attempt may have taken the folder first; its result decides.
+                Err(_) => shared_failed = true,
+            },
+            opened = &mut direct, if direct_failed.is_none() => match opened {
+                Ok(workspace) => return Ok(workspace),
+                Err(error) => direct_failed = Some(error),
+            },
+            () = &mut deadline => {
+                return Err(RosenError::WorkspaceWait {
+                    root: root.to_path_buf(),
+                    seconds: limit.as_secs().saturating_mul(2),
+                });
+            }
+        }
+        if shared_failed && let Some(error) = direct_failed.take() {
+            return Err(error);
+        }
+    }
+}
+
+/// One attempt at `change`'s workspace: on the connection Velocity's requests share, or
+/// on one opened for this attempt alone and closed with it.
+async fn open_on(
+    server: &ProjectServer,
+    agent: &str,
+    change: &str,
+    root: &Path,
+    dedicated: bool,
+) -> Result<AgentWorkspace, RosenError> {
+    let sparse = rosen_client::Sparse::all();
+    let report = if dedicated {
+        let connection = crate::connection::Connection::dedicated(server.endpoint()).await?;
+        session_on(&connection, server, agent)?
+            .open_workspace(change, root, sparse)
+            .await?
+    } else {
+        session(server, agent)
+            .await?
+            .open_workspace(change, root, sparse)
+            .await?
+    };
+    Ok(AgentWorkspace {
+        change: change.to_owned(),
+        root: root.to_path_buf(),
+        method: report.method.as_str(),
+        prepared: report.prepared,
+    })
+}
+
+/// Readies `root` for a workspace. `true` when it already is one, which is kept as it is.
+/// Folders a guarded deletion left behind, empty of files, are cleared; a folder that
+/// holds files is never replaced.
+fn prepare_root(root: &Path) -> Result<bool, RosenError> {
+    if rosen_client::snapshot::WorkspaceMarker::path(root).is_file() {
+        return Ok(true);
+    }
+    if root.exists() {
+        remove_empty_folders(root).map_err(|source| RosenError::Io {
+            action: "replace",
+            path: root.to_path_buf(),
+            source,
+        })?;
+    }
+    if let Some(parent) = root.parent() {
+        std::fs::create_dir_all(parent).map_err(|source| RosenError::Io {
+            action: "create",
+            path: parent.to_path_buf(),
+            source,
+        })?;
+    }
+    Ok(false)
 }
 
 /// Creates a change owned by `agent` and its workspace at `root`, which must not exist
@@ -111,15 +243,8 @@ pub async fn reopen_workspace(
     change: &str,
     root: &Path,
 ) -> Result<(), RosenError> {
-    if rosen_client::snapshot::WorkspaceMarker::path(root).is_file() {
+    if prepare_root(root)? {
         return Ok(());
-    }
-    if root.exists() {
-        remove_empty_folders(root).map_err(|source| RosenError::Io {
-            action: "replace",
-            path: root.to_path_buf(),
-            source,
-        })?;
     }
     session(server, agent)
         .await?

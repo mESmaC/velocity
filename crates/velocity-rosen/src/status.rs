@@ -11,6 +11,8 @@ use crate::{ProjectServer, RosenError};
 mod local;
 mod metadata;
 
+pub(crate) use local::queue_root;
+
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize)]
 #[cfg_attr(feature = "bindings", derive(specta::Type))]
 pub struct Status {

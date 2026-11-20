@@ -180,6 +180,23 @@ impl IssueClient {
         self.sync_rosen_issue(number, &marker, &body, None)
     }
 
+    /// A dispatch thread failed before its agent's first turn (#514). The issue takes no
+    /// label: it is already back in dispatch, and the comment says why the thread failed
+    /// and what happens next. `attempt` names the thread, so a retried post after an
+    /// ambiguous response reuses its comment.
+    pub fn post_launch_failure(
+        &self,
+        number: u32,
+        attempt: &str,
+        byline: &str,
+        reason: &str,
+        next: &str,
+    ) -> Result<(), GitHubCommandError> {
+        let marker = format!("<!-- velocity-launch-failed:{attempt} -->");
+        let body = format!("## Thread failed before it started\n\n{byline}\n\n{reason}\n\n{next}");
+        self.sync_rosen_issue(number, &marker, &body, None)
+    }
+
     /// `park_blocked` is whether an issue with open blockers still takes `no-change`.
     fn post_issue_for_verification(
         &self,

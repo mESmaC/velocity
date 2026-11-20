@@ -18,3 +18,10 @@ pub use status::{AvailableUpdate, UpdateAction, UpdatePhase, UpdateState, Update
 pub fn local_clock() -> String {
     chrono::Local::now().format("%H:%M").to_string()
 }
+
+/// `time` as the local wall-clock time of day, such as `12:27`.
+pub fn local_clock_at(time: std::time::SystemTime) -> String {
+    chrono::DateTime::<chrono::Local>::from(time)
+        .format("%H:%M")
+        .to_string()
+}

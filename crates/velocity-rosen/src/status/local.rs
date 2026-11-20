@@ -139,7 +139,7 @@ fn pool_root(server: &ProjectServer) -> PathBuf {
 }
 
 // Match RunQueue::machine's location for its filesystem notifications.
-fn queue_root() -> Option<PathBuf> {
+pub(crate) fn queue_root() -> Option<PathBuf> {
     if let Some(folder) = std::env::var_os(QUEUE_ENV) {
         return Some(folder.into());
     }

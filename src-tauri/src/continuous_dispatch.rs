@@ -369,6 +369,7 @@ fn pass(
 ) -> Result<(), String> {
     let reader = reader(project, readers);
     report_no_change_issues(application, project, reader)?;
+    report_launch_failures(application, project, reader)?;
     cleanup_empty_threads(application, project)?;
     finish_empty_threads(application, project)?;
     if project_has_capacity(project) {
@@ -400,6 +401,7 @@ fn start_ready(
         )?;
         let project = store.project(identifier).ok_or("The project was removed")?;
         include_overlap_waits(project, &backlog.repository, &mut claimed);
+        include_launch_holds(project, &backlog.repository, &mut claimed);
         ordered_work(
             project,
             &backlog.repository,
@@ -519,6 +521,106 @@ fn include_overlap_waits(project: &ProjectItem, repository: &str, claimed: &mut 
     );
 }
 
+/// Issues whose threads failed before starting too often in a row wait out their hold
+/// like claimed work (#514).
+fn include_launch_holds(project: &ProjectItem, repository: &str, claimed: &mut HashSet<String>) {
+    claimed.extend(
+        project
+            .continuous_dispatch
+            .launch_holds(unix_seconds())
+            .filter(|issue| issue.repository.eq_ignore_ascii_case(repository))
+            .map(|issue| format!("issue:{}", issue.number)),
+    );
+}
+
+/// A dispatch thread failed before its agent's session began (#514). It did no work, so
+/// its issue goes back to dispatch now and the failure does not count as an attempt.
+/// The next pass posts the reason on the issue. Other threads are left as they are.
+pub(crate) fn return_unstarted(
+    application: &AppHandle,
+    key: velocity_threads::ThreadKey,
+    headline: &str,
+    detail: &str,
+) {
+    // The detail can carry the agent's last stderr lines; the comment needs the cause.
+    let detail: String = detail.chars().take(1500).collect();
+    let reason = format!("{headline}\n\n{}", detail.trim());
+    let returned = lock(
+        application.state::<ManagedStateStore>().inner(),
+        "persisted state",
+    )
+    .and_then(|mut store| {
+        store
+            .return_unstarted_dispatch(key.0, key.1, &reason, unix_seconds())
+            .map_err(|error| error.to_string())
+    });
+    match returned {
+        // The claim on the issue would keep it out of dispatch as long as the attempt did.
+        Ok(true) => report(crate::airc_claims::release(application, key)),
+        Ok(false) => {}
+        Err(error) => report::<()>(Err(error)),
+    }
+}
+
+fn report_launch_failures(
+    application: &AppHandle,
+    project: &ProjectItem,
+    reader: &mut Reader,
+) -> Result<(), String> {
+    for (&thread, pending) in &project.continuous_dispatch.launch_failure_reports {
+        if reader
+            .report_retry
+            .get(&thread)
+            .is_some_and(|time| time.elapsed() < Duration::from_secs(30))
+        {
+            continue;
+        }
+        let byline = velocity_threads::issue_activity::issue_byline(project.id, Some(thread), None);
+        let attempt = format!("{}-{thread}-{}", project.id, pending.failure);
+        let result =
+            IssueClient::for_repository(Path::new(&reader.directory), &pending.issue.repository)
+                .and_then(|client| {
+                    client.post_launch_failure(
+                        pending.issue.number,
+                        &attempt,
+                        &byline,
+                        &pending.reason,
+                        &launch_failure_outlook(pending.failure),
+                    )
+                });
+        if let Err(error) = result {
+            reader.report_retry.insert(thread, Instant::now());
+            report::<()>(Err(format!(
+                "Could not report the failed start on {}#{}: {error}",
+                pending.issue.repository, pending.issue.number
+            )));
+            continue;
+        }
+        lock(
+            application.state::<ManagedStateStore>().inner(),
+            "persisted state",
+        )?
+        .finish_launch_failure_report(project.id, thread)
+        .map_err(|error| error.to_string())?;
+        reader.report_retry.remove(&thread);
+    }
+    Ok(())
+}
+
+/// What the issue's comment says happens after failed start number `failure` in a row.
+fn launch_failure_outlook(failure: u32) -> String {
+    let returned = "The agent ran no turn, so this does not count as an attempt. \
+                    The issue is back in continuous dispatch.";
+    if failure < velocity_store::continuous_dispatch::UNSTARTED_RETURNS {
+        return format!("{returned} It starts again on the next pass.");
+    }
+    format!(
+        "{returned} This was failed start {failure} in a row. If the next one fails too, \
+         dispatch waits an hour before each further try, doubling up to a day, and posts \
+         no more comments until a thread starts."
+    )
+}
+
 fn refresh_backlog(
     application: &AppHandle,
     project: u32,
@@ -559,14 +661,21 @@ fn prune_landed_holds(
         return Ok(());
     }
     let open: HashSet<u32> = backlog.issues.iter().map(|issue| issue.number).collect();
-    lock(
+    let mut store = lock(
         application.state::<ManagedStateStore>().inner(),
         "persisted state",
-    )?
-    .prune_landed_holds(project, &backlog.repository, |number| {
-        open.contains(&number)
-    })
-    .map_err(|error| error.to_string())
+    )?;
+    store
+        .prune_landed_holds(project, &backlog.repository, |number| {
+            open.contains(&number)
+        })
+        .map_err(|error| error.to_string())?;
+    // The same read ends the count of failed starts for closed and started issues (#514).
+    store
+        .prune_unstarted_failures(project, &backlog.repository, |number| {
+            open.contains(&number)
+        })
+        .map_err(|error| error.to_string())
 }
 
 fn reader<'a>(project: &ProjectItem, readers: &'a mut BTreeMap<u32, Reader>) -> &'a mut Reader {
@@ -886,6 +995,16 @@ fn cleanup_empty_threads(application: &AppHandle, project: &ProjectItem) -> Resu
         let Some(change) = thread.rosen_change.as_deref() else {
             continue;
         };
+        // A thread that runs again, or is still starting, keeps its change until it is
+        // idle: cleanup never abandons work under a live agent or a launch (#514).
+        if !lock(
+            application.state::<ManagedThreads>().inner(),
+            "thread sessions",
+        )?
+        .is_at_step_boundary((project.id, *identifier))
+        {
+            continue;
+        }
         tauri::async_runtime::block_on(async {
             if let Some(root) = thread.worktree_path.as_deref() {
                 crate::rosen::stop_watch(application, Path::new(root)).await;

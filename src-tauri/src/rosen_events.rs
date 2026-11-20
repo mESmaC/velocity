@@ -392,10 +392,13 @@ async fn follow_up_once(
     {
         return deliver_rebase_notice(application, key, change, follow_up, message).await;
     }
+    if matches!(
+        follow_up,
+        RosenFollowUp::FinishLanded | RosenFollowUp::FinishAbandoned
+    ) {
+        return finish_work(application, key).await;
+    }
     match follow_up {
-        RosenFollowUp::FinishLanded | RosenFollowUp::FinishAbandoned => {
-            finish_work(application, key).await
-        }
         RosenFollowUp::Reopen { message, .. } => {
             let Some(change) = change else {
                 return Ok(true);
@@ -404,7 +407,10 @@ async fn follow_up_once(
             deliver(application, key, follow_up, message)
         }
         RosenFollowUp::Deliver { message, .. } => deliver(application, key, follow_up, message),
-        RosenFollowUp::Conflict { .. } | RosenFollowUp::Regenerate { .. } => Ok(()),
+        RosenFollowUp::FinishLanded
+        | RosenFollowUp::FinishAbandoned
+        | RosenFollowUp::Conflict { .. }
+        | RosenFollowUp::Regenerate { .. } => Ok(()),
     }
     .map(|()| true)
 }
@@ -609,21 +615,29 @@ pub(crate) fn publish_progress(
 
 /// Stop the finished item's session and watcher before its worker takes new work.
 /// A repeated follow-up is safe after a crash or a cleanup failure.
-async fn finish_work(application: &AppHandle, key: ThreadKey) -> Result<(), String> {
+///
+/// A thread still creating its workspace or starting its agent is left alone (#514):
+/// `false` keeps the follow-up for the next pass, and the launch itself runs it again
+/// once the workspace is there. Nothing is stopped or released until then.
+async fn finish_work(application: &AppHandle, key: ThreadKey) -> Result<bool, String> {
     let handle = application.clone();
     let stopped = tauri::async_runtime::spawn_blocking(move || {
+        if crate::threads::is_starting(&handle, key)? {
+            return Ok(false);
+        }
         crate::threads::stop_follow_through(&handle, key)
     })
     .await
     .map_err(|error| error.to_string())??;
     if !stopped {
-        return Err("The finished item's agent is still starting; cleanup will retry".into());
+        return Ok(false);
     }
     if let Some(root) = workspace(application, key)? {
         crate::rosen::stop_watch(application, &root).await;
     }
     crate::airc_claims::release(application, key)?;
-    crate::goal_swarm::run_keep_going(application, key.0, key.1).await
+    crate::goal_swarm::run_keep_going(application, key.0, key.1).await?;
+    Ok(true)
 }
 
 fn workspace(application: &AppHandle, key: ThreadKey) -> Result<Option<PathBuf>, String> {

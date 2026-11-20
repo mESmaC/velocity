@@ -71,6 +71,45 @@ fn configure_session(
     setup
 }
 
+/// Whether the thread is still creating its workspace or starting its agent. Nothing of
+/// it has run yet, so cleanup that found its work finished waits for it (#514).
+pub(crate) fn is_starting(application: &AppHandle, key: ThreadKey) -> Result<bool, String> {
+    {
+        let runtimes = lock(
+            application.state::<ManagedThreads>().inner(),
+            "thread sessions",
+        )?;
+        if runtimes.is_setting_up(key) {
+            return Ok(true);
+        }
+        if !runtimes.is_live(key) {
+            return Ok(false);
+        }
+    }
+    let store = lock(
+        application.state::<ManagedStateStore>().inner(),
+        "persisted state",
+    )?;
+    Ok(store
+        .project(key.0)
+        .and_then(|project| project.threads.iter().find(|thread| thread.id == key.1))
+        .is_some_and(|thread| thread.supervision.turns == 0 && thread.agent_session.is_none()))
+}
+
+/// Whether the thread's change landed or was abandoned, as Rosen's events recorded it.
+fn work_closed(application: &AppHandle, key: ThreadKey) -> bool {
+    lock(
+        application.state::<ManagedStateStore>().inner(),
+        "persisted state",
+    )
+    .is_ok_and(|store| {
+        store
+            .project(key.0)
+            .and_then(|project| project.threads.iter().find(|thread| thread.id == key.1))
+            .is_some_and(|thread| matches!(thread.state, ThreadState::Done | ThreadState::Merged))
+    })
+}
+
 pub(crate) fn stop_follow_through(application: &AppHandle, key: ThreadKey) -> Result<bool, String> {
     let stopped = {
         let mut runtimes = lock(
@@ -331,6 +370,16 @@ fn plan_workspace_retry(
         .map_err(|error| error.to_string())?;
     if thread.state != ThreadState::Error || thread.pending_rosen_launch.is_none() {
         return Err("This thread has no failed Rosen workspace launch".into());
+    }
+    // Dispatch took the issue back when this thread failed before starting (#514).
+    if let Some(issue) = &thread.issue
+        && let Some(owner) = velocity_store::issues::issue_thread(&project, issue)
+        && owner.id != thread.id
+    {
+        return Err(format!(
+            "Thread {} now works on this thread's issue",
+            owner.id
+        ));
     }
     let preferences = store.worktree_preferences(&project);
     let plan = velocity_threads::workspace_retry::plan_retry(
@@ -600,12 +649,18 @@ async fn run_thread(
     if !finish_workspace_launch(&application, key) {
         return;
     }
-    if setup_no_longer_wanted(&application, key) {
+    // A change that landed or was abandoned while its workspace was being made gets no
+    // agent: the launch ends here and the cleanup that waited for it runs now (#514).
+    let closed = work_closed(&application, key);
+    if closed || setup_no_longer_wanted(&application, key) {
         if let Ok(mut runtimes) = lock(
             application.state::<ManagedThreads>().inner(),
             "thread sessions",
         ) {
             runtimes.session_ended(key);
+        }
+        if closed {
+            crate::rosen_events::run_follow_ups(&application, key.0).await;
         }
         return;
     }
@@ -1647,6 +1702,7 @@ pub(crate) fn fail(application: &AppHandle, key: ThreadKey, headline: &str, deta
             .map_err(|error| error.to_string())
     });
     report(saved.map(|_| ()));
+    crate::continuous_dispatch::return_unstarted(application, key, headline, detail);
     crate::airc_events::record_thread_failed(application, key.0, key.1, headline, detail);
     crate::swarm::record_member_failed(application, key, headline);
     crate::goal_swarm::record_member_failed(application, key, headline);

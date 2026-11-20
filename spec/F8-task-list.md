@@ -52,6 +52,10 @@ Issues can carry the labels `spec-question`, `needs-decision`, `needs-owner`, `o
 Working and awaiting-land build threads count toward N; a land or an ended turn with no named work and an empty Rosen diff frees its slot.
 A dispatch worker takes its next item in a fresh ACP session after cleanup, with a bounded handoff from Velocity and a session boundary in the existing conversation (#456).
 Failed and closed threads free capacity but retain issue ownership.
+A dispatch thread that fails before its agent's session begins did no work, so its issue returns to dispatch on the next pass, the failure does not count as an attempt, and Velocity comments the reason on the issue (#514).
+The failed thread is kept with its error and no longer owns the issue.
+After three such failures in a row for one issue, dispatch waits an hour before each further try, doubling up to a day, and posts no more comments until a thread for the issue starts.
+Cleanup of a finished item waits while its thread is still creating its workspace or starting its agent, and runs once the thread is idle (#514).
 An unchanged issue already dispatched stays out of dispatch while its GitHub issue has not closed after a land.
 An issue whose change has landed is not dispatched again while it waits for a green integration build; its issue row reads **landed · waiting for integration** until that build closes it or a revert reopens it for fix-forward (#504).
 Before starting an issue, dispatch reads Velocity's own land, reopen and close comments on it, so a land survives deleted thread history and is saved as a hold until the issue closes or changes.

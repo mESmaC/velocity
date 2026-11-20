@@ -127,6 +127,25 @@ impl LiveTranscript {
         }
     }
 
+    /// Says what a workspace still being made waits on (#514), or clears it with `None`.
+    /// A finished setup step is left alone. Returns whether the line changed.
+    pub fn setup_waiting(&mut self, reason: Option<&str>) -> bool {
+        let creating = setup_step(&self.worktree, &self.base_branch, true).result_text;
+        let Some(EntryView::Setup(step)) = self.entries.first_mut() else {
+            return false;
+        };
+        if !step.running {
+            return false;
+        }
+        let text = match reason {
+            Some(reason) => format!("{creating} · {reason}"),
+            None => creating,
+        };
+        let changed = step.result_text != text;
+        step.result_text = text;
+        changed
+    }
+
     /// A Rosen workspace took the worktree's place (F5): the first step names its change.
     pub fn rosen_workspace_ready(&mut self, change: &str) {
         let worktree = self.worktree.clone();
