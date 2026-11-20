@@ -8,6 +8,7 @@
   A light run starts when 3 GiB fits above Rosen's memory reserve, measured rather than charged at other turns' caps, so an integration build no longer holds every agent check.
   Velocity puts shims for `cargo`, `rustc`, `cargo-clippy`, `cargo-tauri` and `clippy-driver` first on every agent's `PATH` (#483).
   Direct `cargo fmt` and `cargo check -p <crate>` take an agent light slot, and the shims refuse other direct invocations with the integration-build message shared by `rosen run` and `queue_run`.
+  A shim reached inside a turn already held (`ROSEN_RUN_HELD` set, as in a queued light run) runs the real tool at once, found outside the shim folders, and never waits for a turn of its own: that turn's holder is its own ancestor (#548).
   The managed paths also accept `cargo metadata --format-version 1` and `pnpm -C ui bindings` for generated-file repair.
   Agents use Rust formatting, UI type-check and lint as applicable.
   Warm pool prepares install UI dependencies and fetch the Lean cache.

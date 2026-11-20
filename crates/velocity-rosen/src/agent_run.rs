@@ -233,6 +233,9 @@ fn run_direct(folder: &Path, name: &str, arguments: &[OsString]) -> io::Result<E
         return Err(io::Error::other(REFUSAL));
     }
     match cargo_policy(&policy_arguments(arguments), false).map_err(io::Error::other)? {
+        AgentRun::RustUtility | AgentRun::RustCheck if inside_held_turn() => {
+            run_held(name, arguments)
+        }
         AgentRun::RustUtility => run_utility(OsStr::new(name), arguments),
         AgentRun::RustCheck => run_light(&rosen_program(folder)?, &[], OsStr::new(name), arguments),
         _ => Err(io::Error::other(REFUSAL)),
@@ -246,6 +249,10 @@ fn run_rosen(program: &Path, arguments: &[OsString]) -> io::Result<ExitStatus> {
     }
     let run_arguments = &arguments[subcommand + 1..];
     let (program_at, run) = classify_run(run_arguments).map_err(io::Error::other)?;
+    if run != AgentRun::Ordinary && inside_held_turn() {
+        // `rosen run` sees the held turn and starts at once (#548).
+        return hidden_command(program).args(arguments).status();
+    }
     match run {
         AgentRun::Ordinary => hidden_command(program)
             .args(arguments)
@@ -261,6 +268,37 @@ fn run_rosen(program: &Path, arguments: &[OsString]) -> io::Result<ExitStatus> {
             &run_arguments[program_at + 1..],
         ),
     }
+}
+
+/// Whether this process already runs inside a turn that Velocity or `rosen run` holds. A
+/// queued light run holds its project's light-run lock and a machine slot; a managed
+/// command under it that waited for its own turn would wait on that ancestor forever (#548).
+fn inside_held_turn() -> bool {
+    std::env::var_os(HELD_ENV).is_some()
+}
+
+/// Runs the real `name` inside a held turn. It is resolved here, skipping managed command
+/// folders, so a `PATH` that still names this shim's folder cannot start the shim again.
+fn run_held(name: &str, arguments: &[OsString]) -> io::Result<ExitStatus> {
+    let path = toolchain_path()?;
+    let program = real_program(name, &path).ok_or_else(|| {
+        io::Error::other(format!(
+            "Could not find {name} outside Velocity's managed commands"
+        ))
+    })?;
+    background_command(program)
+        .args(arguments)
+        .env("PATH", path)
+        .status()
+}
+
+/// The first `name` executable on `path` outside a managed command folder.
+fn real_program(name: &str, path: &OsStr) -> Option<PathBuf> {
+    let file = executable_file(name);
+    std::env::split_paths(path)
+        .filter(|folder| !is_command_folder(folder))
+        .map(|folder| folder.join(&file))
+        .find(|candidate| candidate.is_file())
 }
 
 fn run_utility(program: &OsStr, arguments: &[OsString]) -> io::Result<ExitStatus> {
@@ -490,6 +528,25 @@ fn lock_file(path: &Path) -> io::Result<File> {
 #[cfg(test)]
 mod tests {
     use super::{AgentRun, policy};
+
+    #[test]
+    fn held_run_never_resolves_the_shim() -> std::io::Result<()> {
+        // Risk (#548): a held light run that resolved `cargo` to the shim waited on its own
+        // ancestor's light-run lock forever.
+        let shim = tempfile::tempdir()?;
+        let toolchain = tempfile::tempdir()?;
+        let cargo = super::executable_file("cargo");
+        std::fs::write(shim.path().join(&cargo), b"")?;
+        std::fs::write(shim.path().join(super::APP_RECORD), b"")?;
+        std::fs::write(toolchain.path().join(&cargo), b"")?;
+        let path =
+            std::env::join_paths([shim.path(), toolchain.path()]).map_err(std::io::Error::other)?;
+        assert_eq!(
+            super::real_program("cargo", &path),
+            Some(toolchain.path().join(&cargo))
+        );
+        Ok(())
+    }
 
     #[test]
     fn pnpm_bindings_uses_the_light_run_policy() {
