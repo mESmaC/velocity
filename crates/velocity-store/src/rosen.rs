@@ -407,6 +407,9 @@ impl StateStore {
             if replacing || thread.rosen_import_event > latest {
                 thread.rosen_import_event = 0;
             }
+            if replacing || thread.rosen_last_reverted_event > latest {
+                thread.rosen_last_reverted_event = 0;
+            }
             thread.rosen_issue.rewind_events(replacing, latest);
         }
         for handoff in item.handoff_items.values_mut() {
@@ -603,30 +606,47 @@ impl StateStore {
         };
         let identifier = item.threads[index].id;
         crate::rosen_work::restore_thread(item, identifier);
-        if progress != RosenProgress::Named {
+        if !matches!(progress, RosenProgress::Named | RosenProgress::Reverted) {
             crate::rosen_work::apply(item, change, progress, evidence);
         }
         let thread = &mut item.threads[index];
         let replaying = seq != 0 && seq <= item.rosen_replay_through;
-        // Before named commits were tracked, a fixing decision at an in-range
-        // checkpoint is evidence that its earlier name already moved to Review.
+        let legacy_cursor = item.rosen_legacy_replay_cursor;
         if replaying
-            && progress == RosenProgress::Named
-            && thread.review_stage == Some(ReviewStage::Fixing)
-            && thread.rosen_last_named_commit.is_none()
-            && seq <= item.rosen_legacy_replay_cursor
+            && record_legacy_progress(
+                thread,
+                seq,
+                legacy_cursor,
+                (progress, message),
+                named_commit,
+                evidence.commit,
+            )
         {
-            thread.rosen_last_named_commit = named_commit.map(str::to_owned);
             self.store_snapshot(next)?;
             return Ok(None);
         }
-        if already_applied(thread, seq, replaying, (progress, message), named_commit) {
+        if already_applied(
+            thread,
+            seq,
+            replaying,
+            progress,
+            named_commit,
+            evidence.commit,
+        ) {
             self.store_snapshot(next)?;
             return Ok(None);
         }
-        if progress == RosenProgress::Named {
-            thread.rosen_last_named_commit = named_commit.map(str::to_owned);
-            crate::rosen_work::apply(item, change, progress, evidence);
+        match progress {
+            RosenProgress::Named => {
+                thread.rosen_last_named_commit = named_commit.map(str::to_owned);
+                crate::rosen_work::apply(item, change, progress, evidence);
+            }
+            RosenProgress::Reverted => {
+                thread.rosen_last_reverted_commit = evidence.commit.map(str::to_owned);
+                thread.rosen_last_reverted_event = seq;
+                crate::rosen_work::apply(item, change, progress, evidence);
+            }
+            _ => {}
         }
         let thread = &mut item.threads[index];
         if progress == RosenProgress::ChangesRequested
@@ -731,12 +751,52 @@ impl StateStore {
     }
 }
 
+/// Recognizes and backfills pre-upgrade named/reverted events at or before the legacy
+/// checkpoint so a one-time upgrade rewind stays idempotent without suppressing newer events.
+fn record_legacy_progress(
+    thread: &mut ThreadItem,
+    sequence: u64,
+    legacy_cursor: u64,
+    (progress, message): (RosenProgress, &str),
+    named_commit: Option<&str>,
+    reverted_commit: Option<&str>,
+) -> bool {
+    if sequence > legacy_cursor {
+        return false;
+    }
+    match progress {
+        // Before named commits were tracked, a fixing decision at an in-range
+        // checkpoint is evidence that its earlier name already moved to Review.
+        RosenProgress::Named
+            if thread.review_stage == Some(ReviewStage::Fixing)
+                && thread.rosen_last_named_commit.is_none() =>
+        {
+            thread.rosen_last_named_commit = named_commit.map(str::to_owned);
+            true
+        }
+        // Before revert identities were tracked, an in-range revert whose notice is
+        // already pending or in the transcript was applied before the upgrade (#523).
+        RosenProgress::Reverted
+            if thread.state != ThreadState::Merged
+                && thread.rosen_last_reverted_commit.is_none()
+                && thread.rosen_last_reverted_event == 0
+                && notice_handled(thread, message) =>
+        {
+            thread.rosen_last_reverted_commit = reverted_commit.map(str::to_owned);
+            thread.rosen_last_reverted_event = sequence;
+            true
+        }
+        _ => false,
+    }
+}
+
 fn already_applied(
     thread: &ThreadItem,
     sequence: u64,
     replaying: bool,
-    (progress, message): (RosenProgress, &str),
+    progress: RosenProgress,
     named_commit: Option<&str>,
+    reverted_commit: Option<&str>,
 ) -> bool {
     match progress {
         RosenProgress::Named => {
@@ -751,9 +811,16 @@ fn already_applied(
             matches!(thread.state, ThreadState::Done | ThreadState::Merged)
         }
         RosenProgress::Reverted if replaying => {
-            thread.state != ThreadState::Merged && notice_handled(thread, message)
+            revert_already_applied(thread, sequence, reverted_commit)
         }
         _ => false,
+    }
+}
+
+fn revert_already_applied(thread: &ThreadItem, sequence: u64, culprit: Option<&str>) -> bool {
+    match (culprit, thread.rosen_last_reverted_commit.as_deref()) {
+        (Some(culprit), Some(recorded)) => culprit == recorded,
+        _ => sequence != 0 && sequence == thread.rosen_last_reverted_event,
     }
 }
 
@@ -1009,6 +1076,192 @@ mod tests {
             ThreadState::Merged
         );
         std::fs::remove_dir_all(directory)?;
+        Ok(())
+    }
+
+    // Risk (#523): on a rewind after two land/revert cycles with identical check output,
+    // matching the prior transcript message suppresses the second revert, leaving the
+    // thread in Review with no Reopen follow-up. Replaying the same revert must stay a no-op.
+    #[test]
+    fn rewind_applies_distinct_revert_with_identical_notice_once()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let unique = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)?
+            .as_nanos();
+        let directory = std::env::temp_dir().join(format!("velocity-rosen-revert-id-{unique}"));
+        let message = "Your Rosen change `abc` landed, then failed: check exited with code 1";
+        let _seeded = seed_reverted_then_named(&directory, message)?;
+
+        // Reload after naming the repair, then rewind past an offline second land and revert.
+        let mut store = StateStore::load_or_default(&directory)?;
+        assert_eq!(store.resume_rosen_events(1, "db-a", 6)?, (0, 6, true));
+        let second = revert_evidence("second land");
+        assert_eq!(
+            store.save_rosen_work_progress(
+                1,
+                6,
+                "abc",
+                (RosenProgress::Reverted, message),
+                second
+            )?,
+            Some(4),
+        );
+        let (pending, generation) = assert_second_revert_reopened(&store, message);
+
+        // Replaying the same second revert across reload and database replacement is a no-op.
+        let mut store = StateStore::load_or_default(&directory)?;
+        assert_eq!(store.resume_rosen_events(1, "db-b", 6)?, (0, 6, true));
+        assert_eq!(
+            store.save_rosen_work_progress(
+                1,
+                1,
+                "abc",
+                (RosenProgress::Reverted, message),
+                second
+            )?,
+            None,
+        );
+        assert_eq!(store.rosen_follow_ups(1), pending);
+        assert_eq!(
+            store.state.projects[0].threads[0].rosen_progress_generation,
+            generation
+        );
+
+        verify_legacy_unbound_cursor_reverts(&directory, message)?;
+        std::fs::remove_dir_all(directory)?;
+        Ok(())
+    }
+
+    fn assert_second_revert_reopened(
+        store: &StateStore,
+        message: &str,
+    ) -> (Vec<(u32, Option<String>, Vec<RosenFollowUp>)>, u64) {
+        let thread = &store.state.projects[0].threads[0];
+        assert_eq!(thread.state, ThreadState::Review);
+        assert_eq!(thread.review_stage, Some(ReviewStage::Fixing));
+        assert_eq!(
+            thread.rosen_last_reverted_commit.as_deref(),
+            Some("second land")
+        );
+        assert_eq!(thread.rosen_last_reverted_event, 6);
+        assert_eq!(
+            store.state.projects[0].rosen_work_items[0].status,
+            velocity_core::work_pool::WorkStatus::Reopened
+        );
+        let pending = store.rosen_follow_ups(1);
+        let [(4, Some(_), steps)] = pending.as_slice() else {
+            panic!("expected one reopen follow-up: {pending:?}");
+        };
+        assert_eq!(steps.len(), 1);
+        assert!(
+            matches!(&steps[0], RosenFollowUp::Reopen { message: text, .. } if text == message)
+        );
+        assert!(!store.rosen_follow_up_delivered(1, 4, &steps[0]));
+        (pending, thread.rosen_progress_generation)
+    }
+
+    fn revert_evidence(culprit: &str) -> WorkEvidence<'_> {
+        WorkEvidence {
+            commit: Some(culprit),
+            revert_reason: Some("check exited with code 1"),
+        }
+    }
+
+    fn seed_reverted_then_named(
+        directory: &std::path::Path,
+        message: &str,
+    ) -> Result<StateStore, StoreError> {
+        let mut store = checkpoint_store(directory)?;
+        store.save_rosen_work_progress(
+            1,
+            2,
+            "abc",
+            (RosenProgress::Landed, ""),
+            WorkEvidence {
+                commit: Some("first land"),
+                revert_reason: None,
+            },
+        )?;
+        store.save_rosen_work_progress(
+            1,
+            3,
+            "abc",
+            (RosenProgress::Reverted, message),
+            revert_evidence("first land"),
+        )?;
+        for (thread, _, steps) in store.rosen_follow_ups(1) {
+            for step in steps {
+                store.finish_rosen_follow_up(1, thread, &step)?;
+            }
+        }
+        let mut delivered = store.state.clone();
+        delivered.projects[0].threads[0].transcript =
+            Arc::new(vec![TranscriptBlock::UserMessage {
+                text: message.into(),
+                queued: false,
+            }]);
+        store.store_snapshot(delivered)?;
+        store.save_rosen_named(1, 4, "abc", Some("second head"))?;
+        Ok(store)
+    }
+
+    fn seed_legacy_unbound_review(
+        directory: &std::path::Path,
+        message: &str,
+    ) -> Result<StateStore, StoreError> {
+        let mut store = seed_reverted_then_named(directory, message)?;
+        let mut legacy = store.state.clone();
+        legacy.projects[0].rosen_event_server_identity = None;
+        legacy.projects[0].rosen_replay_through = 0;
+        legacy.projects[0].threads[0].rosen_last_reverted_commit = None;
+        legacy.projects[0].threads[0].rosen_last_reverted_event = 0;
+        store.store_snapshot(legacy)?;
+        StateStore::load_or_default(directory)
+    }
+
+    fn verify_legacy_unbound_cursor_reverts(
+        directory: &std::path::Path,
+        message: &str,
+    ) -> Result<(), StoreError> {
+        // Rewind from pre-upgrade cursor 4 directly to a superseded-land second revert at 6.
+        let mut missed = seed_legacy_unbound_review(&directory.join("legacy-missed"), message)?;
+        assert_eq!(missed.resume_rosen_events(1, "db-legacy", 6)?, (0, 6, true));
+        assert_eq!(
+            missed.save_rosen_work_progress(
+                1,
+                6,
+                "abc",
+                (RosenProgress::Reverted, message),
+                revert_evidence("second land"),
+            )?,
+            Some(4),
+        );
+        assert_second_revert_reopened(&missed, message);
+
+        // Rewind from pre-upgrade cursor 4 with no newer revert skips seq 3 and backfills it.
+        let mut same = seed_legacy_unbound_review(&directory.join("legacy-same"), message)?;
+        assert_eq!(same.resume_rosen_events(1, "db-legacy", 4)?, (0, 4, true));
+        assert_eq!(
+            same.save_rosen_work_progress(
+                1,
+                3,
+                "abc",
+                (RosenProgress::Reverted, message),
+                revert_evidence("first land"),
+            )?,
+            None,
+        );
+        assert!(same.rosen_follow_ups(1).is_empty());
+        assert_eq!(
+            same.state.projects[0].threads[0]
+                .rosen_last_reverted_commit
+                .as_deref(),
+            Some("first land")
+        );
+        assert_eq!(
+            same.state.projects[0].threads[0].rosen_last_reverted_event,
+            3
+        );
         Ok(())
     }
 

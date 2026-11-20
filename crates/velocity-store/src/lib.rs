@@ -812,6 +812,14 @@ pub struct ThreadItem {
     #[serde(default)]
     #[specta(skip)]
     pub rosen_last_named_commit: Option<String>,
+    /// The reverted land commit whose reopen transition was recorded (#523).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[specta(skip)]
+    pub rosen_last_reverted_commit: Option<String>,
+    /// The Rosen event sequence whose revert transition was recorded (#523).
+    #[serde(default)]
+    #[specta(skip)]
+    pub rosen_last_reverted_event: u64,
     /// Original prompt until Rosen workspace setup succeeds; retained for manual retry.
     #[serde(default)]
     #[specta(skip)]
@@ -911,6 +919,8 @@ impl ThreadItem {
             rosen_land_refusal: None,
             rosen_import_event: 0,
             rosen_last_named_commit: None,
+            rosen_last_reverted_commit: None,
+            rosen_last_reverted_event: 0,
             pending_rosen_launch: None,
             rosen_progress_generation: 0,
             goal_stack: None,
@@ -969,6 +979,8 @@ impl ThreadItem {
             rosen_land_refusal: None,
             rosen_import_event: 0,
             rosen_last_named_commit: None,
+            rosen_last_reverted_commit: None,
+            rosen_last_reverted_event: 0,
             pending_rosen_launch: None,
             rosen_progress_generation: 0,
             goal_stack: None,

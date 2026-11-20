@@ -8,6 +8,8 @@ use crate::rosen::RosenProgress;
 use crate::threads::{ThreadError, thread_start_timestamp};
 use crate::{ProjectItem, StateStore, StoreError, TaskState, ThreadItem, ThreadState};
 
+/// Commit and diagnostic evidence carried by a Rosen land or revert event.
+/// `commit` holds the landed commit for `Landed` and the reverted culprit commit for `Reverted`.
 #[derive(Clone, Copy, Default)]
 pub struct WorkEvidence<'a> {
     pub commit: Option<&'a str>,
@@ -250,7 +252,7 @@ pub(crate) fn apply(
             RosenProgress::Landed if !item.status.completed() || replaced_land => {
                 WorkStatus::Landed
             }
-            RosenProgress::Reverted if item.status.completed() => WorkStatus::Reopened,
+            RosenProgress::Reverted if item.status != WorkStatus::Reopened => WorkStatus::Reopened,
             _ => item.status,
         };
         let new_land = progress == RosenProgress::Landed

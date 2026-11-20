@@ -241,8 +241,8 @@ async fn observe_work<'a>(
             commit: Some(commit),
             revert_reason: None,
         },
-        IssueEvent::Reverted { reason, .. } => WorkEvidence {
-            commit: None,
+        IssueEvent::Reverted { commit, reason } => WorkEvidence {
+            commit: *commit,
             revert_reason: Some(reason),
         },
         _ => WorkEvidence::default(),
