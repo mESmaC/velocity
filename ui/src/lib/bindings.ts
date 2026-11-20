@@ -54,11 +54,21 @@ export const commands = {
 	/**
 	 *  `mirror_to_collapse` (§3.1): makes Collapse the project's mirror. Creates the Collapse
 	 *  repository named after the project, stores its push token in git's credential helper,
-	 *  and lands a `rosen.toml` change pointing `[mirror] remote` at it. A project that was on
-	 *  GitHub then opens the repository's Downstream remote settings, where the owner keeps
-	 *  GitHub fed through Collapse's forwarder (C4). Says what happened in a toast.
+	 *  and lands a `rosen.toml` change pointing `[mirror] remote` at it and naming its
+	 *  `collapse` root, so Rosen also sends its live state and ledger entries and runs the
+	 *  owner's actions from Collapse (#517). A project that was on GitHub then opens the
+	 *  repository's Downstream remote settings, where the owner keeps GitHub fed through
+	 *  Collapse's forwarder (C4). Says what happened in a toast.
 	 */
 	mirrorToCollapse: (projectIdentifier: number) => __TAURI_INVOKE<null>("mirror_to_collapse", { projectIdentifier }),
+	/**
+	 *  `send_collapse_live_state` (§3.1): for a project that already mirrors to Collapse
+	 *  without the `collapse` root (#517). Gives Rosen's state feed, ledger push and relay the
+	 *  mirror's push token under their own endpoints, lands a `rosen.toml` change naming just
+	 *  the root, and lets the relay run. A project whose root is already landed keeps its
+	 *  file and gets the token and the relay, which mends a feed Collapse answers with 401.
+	 */
+	sendCollapseLiveState: (projectIdentifier: number) => __TAURI_INVOKE<null>("send_collapse_live_state", { projectIdentifier }),
 	getContinuousDispatch: (projectIdentifier: number) => __TAURI_INVOKE<DispatchView_Serialize>("get_continuous_dispatch", { projectIdentifier }),
 	setContinuousDispatch: (projectIdentifier: number, slots: number, paused: boolean) => __TAURI_INVOKE<DispatchView_Serialize>("set_continuous_dispatch", { projectIdentifier, slots, paused }),
 	getTokenUsage: (period: Period, projectIdentifier: number | null, threadIdentifier: number | null) => __TAURI_INVOKE<Report_Serialize>("get_token_usage", { period, projectIdentifier, threadIdentifier }),
@@ -2321,6 +2331,11 @@ export type LayoutSnapshot_Deserialize = {
 	rosen_mirror_divergence?: MirrorDivergence | null,
 	/**  The project's Collapse mirror as `owner/repository`; `None` hides Open on Collapse. */
 	collapse_repository?: string | null,
+	/**
+	 *  The landed `rosen.toml` names the Collapse root, so Rosen sends Collapse its live
+	 *  state; `false` with a repository offers Send Collapse its live state (#517).
+	 */
+	collapse_live_state: boolean,
 	/**  Collapse's last land and downstream forwarder for that repository (#427). */
 	collapse_mirror_health?: CollapseMirrorHealth_Deserialize | null,
 	/**  GitHub CI on the project's mirrored base, as last read (#507). */
@@ -2393,6 +2408,11 @@ export type LayoutSnapshot_Serialize = {
 	rosen_mirror_divergence: MirrorDivergence | null,
 	/**  The project's Collapse mirror as `owner/repository`; `None` hides Open on Collapse. */
 	collapse_repository: string | null,
+	/**
+	 *  The landed `rosen.toml` names the Collapse root, so Rosen sends Collapse its live
+	 *  state; `false` with a repository offers Send Collapse its live state (#517).
+	 */
+	collapse_live_state: boolean,
 	/**  Collapse's last land and downstream forwarder for that repository (#427). */
 	collapse_mirror_health: CollapseMirrorHealth_Serialize | null,
 	/**  GitHub CI on the project's mirrored base, as last read (#507). */
@@ -2631,6 +2651,19 @@ export type MirrorStatus_Deserialize = {
 	pushed?: string | null,
 	state?: string | null,
 	error?: string | null,
+	/**
+	 *  The configuration in force names the Collapse root, so Rosen sends Collapse its
+	 *  live state and ledger entries and reads the owner's relayed actions (#517).
+	 */
+	live_state: boolean,
+	/**
+	 *  When the newest event Collapse acknowledged from the state feed was recorded, in
+	 *  Unix milliseconds. Rosen records what the endpoint holds, not when it was sent;
+	 *  the feed sends within a minute of an event. `None` before the first delivery.
+	 */
+	feed_sent_at?: string | null,
+	/**  Why the state feed last failed or stopped, while nothing newer was delivered. */
+	feed_error?: string | null,
 };
 
 export type MirrorStatus_Serialize = {
@@ -2639,6 +2672,19 @@ export type MirrorStatus_Serialize = {
 	pushed: string | null,
 	state: string | null,
 	error: string | null,
+	/**
+	 *  The configuration in force names the Collapse root, so Rosen sends Collapse its
+	 *  live state and ledger entries and reads the owner's relayed actions (#517).
+	 */
+	live_state: boolean,
+	/**
+	 *  When the newest event Collapse acknowledged from the state feed was recorded, in
+	 *  Unix milliseconds. Rosen records what the endpoint holds, not when it was sent;
+	 *  the feed sends within a minute of an event. `None` before the first delivery.
+	 */
+	feed_sent_at: string | null,
+	/**  Why the state feed last failed or stopped, while nothing newer was delivered. */
+	feed_error: string | null,
 };
 
 export type ModelCardView = {

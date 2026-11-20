@@ -85,23 +85,34 @@ impl StateStore {
         self.store_snapshot(next)
     }
 
-    /// Saves the project's Collapse repository and reports whether it changed (#429).
+    /// Saves the project's Collapse repository (#429) and whether the landed `rosen.toml`
+    /// names its Collapse root (#517), and reports whether either changed. `live_state`
+    /// of `None` keeps what was saved, for a refresh that could not read the configuration.
     pub fn save_collapse_repository(
         &mut self,
         project: u32,
         repository: Option<String>,
+        live_state: Option<bool>,
     ) -> Result<bool, StoreError> {
-        let unchanged = self
-            .project(project)
-            .is_none_or(|item| item.collapse_repository == repository);
-        if unchanged {
+        let Some(current) = self.project(project) else {
+            return Ok(false);
+        };
+        let moved = current.collapse_repository != repository;
+        // Live state belongs to the mirrored repository: none without one, and another
+        // repository's is unknown until its configuration is read.
+        let kept = !moved && current.collapse_live_state;
+        let live_state = repository.is_some() && live_state.unwrap_or(kept);
+        if !moved && current.collapse_live_state == live_state {
             return Ok(false);
         }
         let mut next = self.state.clone();
         if let Some(item) = next.projects.iter_mut().find(|item| item.id == project) {
-            // Another repository's forwarder state would mislead until the next read.
-            item.collapse_mirror_health = None;
+            if moved {
+                // Another repository's forwarder state would mislead until the next read.
+                item.collapse_mirror_health = None;
+            }
             item.collapse_repository = repository;
+            item.collapse_live_state = live_state;
         }
         self.store_snapshot(next)?;
         Ok(true)
@@ -210,7 +221,11 @@ mod tests {
         let mut store = StateStore::load_or_default(&directory)?;
         store.state.projects = vec![ProjectItem::new(1, "One".into(), r"C:\project one".into())];
         store.store_snapshot(store.state.clone())?;
-        assert!(store.save_collapse_repository(1, Some("owner/one".into()))?);
+        assert!(store.save_collapse_repository(1, Some("owner/one".into()), Some(false))?);
+        // Risk (#517): a linked project that reloads as unlinked offers to land the
+        // `collapse` root again, and an unread configuration must not unlink it.
+        assert!(store.save_collapse_repository(1, Some("owner/one".into()), Some(true))?);
+        assert!(!store.save_collapse_repository(1, Some("owner/one".into()), None)?);
         let health = CollapseMirrorHealth {
             forwarder: ForwarderState::Stopped,
             behind: 0,
@@ -225,10 +240,12 @@ mod tests {
 
         let mut store = StateStore::load_or_default(&directory)?;
         assert_eq!(store.state.projects[0].collapse_mirror_health, Some(health));
-        assert!(store.save_collapse_repository(1, Some("owner/two".into()))?);
+        assert!(store.state.projects[0].collapse_live_state);
+        assert!(store.save_collapse_repository(1, Some("owner/two".into()), None)?);
 
         let store = StateStore::load_or_default(&directory)?;
         assert_eq!(store.state.projects[0].collapse_mirror_health, None);
+        assert!(!store.state.projects[0].collapse_live_state);
         std::fs::remove_dir_all(directory)?;
         Ok(())
     }

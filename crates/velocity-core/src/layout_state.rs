@@ -734,6 +734,7 @@ impl LayoutState {
             rosen_mirror: self.data.rosen_mirror.clone(),
             rosen_mirror_divergence: self.data.rosen_mirror_divergence.clone(),
             collapse_repository: self.data.collapse_repository.clone(),
+            collapse_live_state: self.data.collapse_live_state,
             collapse_mirror_health: self.data.collapse_mirror_health.clone(),
             base_ci: self.data.base_ci.clone(),
             rosen_work: self.data.rosen_work.clone(),

@@ -18,8 +18,10 @@ New projects still start with a single `SPEC.md`.
   Leave the Collapse name blank to create a private repository named after the folder, or name one; Create provisions it before the initial import pushes the base.
   Provisioning creates the repository with the provisioning token, waits until Collapse reports it ready, mints a push token and stores it with `git credential approve` under the repository's URL (username `rosen`, `credential.useHttpPath=true`).
   Velocity also sets `credential.https://api.collapse.sh.useHttpPath` in the user's git configuration so Rosen's pushes find the token, and refuses when git has no credential helper.
-  Velocity never stores or reads back the push token.
-  Without a Collapse connection the dialog still accepts an existing `owner/repository` whose push token git already has.
+  The new `rosen.toml` also names the repository's `collapse` root, `https://api.collapse.sh/<owner>/<repository>`, so Rosen sends Collapse its live state and ledger entries and runs the owner's actions from Collapse (F5, #517).
+  The push token is stored under the state feed and ledger URLs as well, where Rosen looks for it, and the new project's server allows the relay.
+  Velocity never stores the push token, and reads it from the credential helper only to copy it to the state feed and ledger URLs of a project whose mirror already has one.
+  Without a Collapse connection the dialog still accepts an existing `owner/repository` whose push token git already has, and copies that token to those URLs.
 - **Model for the interview:** choose a model, effort and speed.
 - **What are you building?** Enter a free-text brief.
 - **Create & start interview** (`Ctrl+Enter`) creates the folder when needed and starts the Rosen server with an initial base.

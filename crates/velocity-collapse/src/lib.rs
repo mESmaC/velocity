@@ -16,7 +16,7 @@ mod url_text;
 pub use connect::connect;
 pub use credential::{CollapseCredentials, forget_credentials, load_credentials};
 pub use health::{RepositoryActivity, repository_activity};
-pub use provision::{MirrorRequest, ProvisionedMirror, provision_mirror};
+pub use provision::{MirrorRequest, ProvisionedMirror, provision_mirror, share_push_token};
 
 /// Collapse's read-only MCP endpoint (Collapse C9), streamable HTTP with a bearer token.
 pub const MCP_URL: &str = "https://api.collapse.sh/mcp";

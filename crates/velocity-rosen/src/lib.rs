@@ -12,6 +12,7 @@ pub mod bundled;
 pub mod change_details;
 pub mod checker;
 mod checkout;
+pub mod collapse_link;
 mod conflicts;
 pub mod connection;
 pub mod dispatch;

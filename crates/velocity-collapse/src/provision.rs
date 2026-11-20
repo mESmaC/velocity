@@ -36,6 +36,30 @@ impl ProvisionedMirror {
     pub fn repository(&self) -> String {
         format!("{}/{}", self.owner, self.name)
     }
+
+    /// The root `rosen.toml`'s `collapse` key names: `https://api.collapse.sh/<owner>/<name>`.
+    /// Rosen sends its state feed and ledger entries, and reads relayed actions, under it.
+    pub fn collapse_root(&self) -> String {
+        format!("{API}/{}/{}", self.owner, self.name)
+    }
+}
+
+/// The endpoints under a Collapse root that Rosen asks git's credential helper about: the
+/// state feed, whose token the action relay shares, and the ledger push (Rosen R9, R13, R14).
+fn feed_urls(root: &str) -> Vec<String> {
+    let root = root.trim_end_matches('/');
+    vec![format!("{root}/rosen/state"), format!("{root}/ledgers")]
+}
+
+/// Gives Rosen's state feed, ledger push and relay under `root` the push token git's
+/// credential helper already holds for `remote`, the project's mirror (#517). `false` when
+/// the helper holds none, so the caller mints one with [`provision_mirror`].
+pub async fn share_push_token(remote: &str, root: &str) -> Result<bool, CollapseError> {
+    let remote = remote.to_owned();
+    let urls = feed_urls(root);
+    tokio::task::spawn_blocking(move || crate::git_credential::share_push_secret(&remote, &urls))
+        .await
+        .map_err(|error| CollapseError::Git(error.to_string()))?
 }
 
 /// What to provision: `owner` defaults to the connected account. Only the account's own
@@ -74,7 +98,8 @@ struct MintedToken {
 }
 
 /// Creates the repository when it is missing, waits until Collapse has set it up, mints a
-/// push token and stores it in the git credential helper under the mirror URL.
+/// push token and stores it in the git credential helper under the mirror URL and the
+/// endpoints Rosen's state feed, ledger push and relay authenticate at.
 pub async fn provision_mirror(
     credentials: &CollapseCredentials,
     request: &MirrorRequest<'_>,
@@ -91,8 +116,9 @@ pub async fn provision_mirror(
     };
     wait_until_ready(&client, credentials, &mut mirror).await?;
     let secret = mint_push_token(&client, credentials, &mirror).await?;
-    let url = mirror.mirror_url.clone();
-    tokio::task::spawn_blocking(move || crate::git_credential::store_push_secret(&url, &secret))
+    let mut urls = vec![mirror.mirror_url.clone()];
+    urls.extend(feed_urls(&mirror.collapse_root()));
+    tokio::task::spawn_blocking(move || crate::git_credential::store_push_secret(&urls, &secret))
         .await
         .map_err(|error| CollapseError::Git(error.to_string()))??;
     Ok(mirror)

@@ -54,6 +54,15 @@ pub struct MirrorStatus {
     pub pushed: Option<String>,
     pub state: Option<String>,
     pub error: Option<String>,
+    /// The configuration in force names the Collapse root, so Rosen sends Collapse its
+    /// live state and ledger entries and reads the owner's relayed actions (#517).
+    pub live_state: bool,
+    /// When the newest event Collapse acknowledged from the state feed was recorded, in
+    /// Unix milliseconds. Rosen records what the endpoint holds, not when it was sent;
+    /// the feed sends within a minute of an event. `None` before the first delivery.
+    pub feed_sent_at: Option<String>,
+    /// Why the state feed last failed or stopped, while nothing newer was delivered.
+    pub feed_error: Option<String>,
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize)]
@@ -165,8 +174,9 @@ impl StatusFeed {
         target: u32,
     ) -> Result<Duration, RosenError> {
         let server = self.server.clone();
+        let feed = self.config.state_feed_url();
         let local = tokio::task::spawn_blocking(move || {
-            let metadata = metadata::read(&server)?;
+            let metadata = metadata::read(&server, feed.as_deref())?;
             Ok::<_, RosenError>((metadata, local::read(&server)))
         });
         if status.server.is_none() {
@@ -195,6 +205,7 @@ impl StatusFeed {
             status.landing.builds_pending = 0;
         }
         status.mirror = metadata.mirror;
+        status.mirror.live_state = self.config.collapse.is_some();
         status.machines = metadata.machines;
         status.local = local;
         status.local.target = self.config.warm_pool.size.max(target);

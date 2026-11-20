@@ -26,11 +26,15 @@ pub enum ProjectError {
     Refused(String),
 }
 
-const DEFAULTS: &str = r#"review = "after-land"
+/// The top-level keys of a new project's `rosen.toml`. A `collapse` root follows them,
+/// since a key written after a table header would belong to that table.
+const DEFAULT_KEYS: &str = r#"review = "after-land"
 ignore = [".env", ".env.*", "*.pem", "*.pfx", "*.p12", "*.key"]
 generated = ["Cargo.lock", "pnpm-lock.yaml", "ui/pnpm-lock.yaml", "ui/src/lib/bindings.ts"]
 registration_lists = ["Cargo.toml", "src-tauri/src/lib.rs", "ui/src/lib/ipc.ts"]
+"#;
 
+const DEFAULT_TABLES: &str = r#"
 [warm_pool]
 size = 8
 
@@ -126,6 +130,12 @@ async fn import_initial_base(
         String::from("main")
     };
     let inherited = checkout.then(|| ImportSource::for_checkout(root, &branch));
+    // Only a Collapse mirror chosen here sends live state at once (#517): Velocity has
+    // just stored its push token for the feed. An inherited `origin` on Collapse keeps
+    // mirroring, and the project offers Send Collapse its live state.
+    let collapse = mirror
+        .and_then(velocity_core::collapse::repository_from_remote)
+        .and_then(|repository| velocity_core::collapse::collapse_root(&repository));
     let mirror = mirror
         .or_else(|| inherited.as_ref()?.mirror.as_deref())
         .filter(|remote| {
@@ -136,7 +146,7 @@ async fn import_initial_base(
                     .is_some_and(|authority| authority.contains('@'))
             })
         });
-    write_defaults(root, mirror)?;
+    write_defaults(root, mirror, collapse.as_deref())?;
     velocity_git::agents_template::install_default_agents(root, name)?;
     // The pinned Rosen import requires a Git commit. Use an isolated bare repository
     // so the user's checkout, index and refs stay independent of the Rosen base.
@@ -158,13 +168,19 @@ async fn import_initial_base(
         .ok_or_else(|| ProjectError::Refused("Rosen did not establish the project base".into()))
 }
 
-fn write_defaults(root: &Path, mirror: Option<&str>) -> io::Result<()> {
+fn write_defaults(root: &Path, mirror: Option<&str>, collapse: Option<&str>) -> io::Result<()> {
     let path = root.join("rosen.toml");
-    let mut content = DEFAULTS.to_owned();
-    if let Some(mirror) = mirror.filter(|remote| !remote.contains('@')) {
-        // JSON's quoted string syntax is also valid for these TOML URL values.
-        let url = serde_json::to_string(mirror).map_err(io::Error::other)?;
-        content.push_str(&format!("\n[mirror]\nremote = {url}\n"));
+    // JSON's quoted string syntax is also valid for these TOML URL values.
+    let quoted = |url: &str| serde_json::to_string(url).map_err(io::Error::other);
+    let mirror = mirror.filter(|remote| !remote.contains('@'));
+    let mut content = DEFAULT_KEYS.to_owned();
+    // The root is written only with the mirror it belongs to (Rosen R9, R13, R14).
+    if let Some(collapse) = collapse.filter(|_| mirror.is_some()) {
+        content.push_str(&format!("collapse = {}\n", quoted(collapse)?));
+    }
+    content.push_str(DEFAULT_TABLES);
+    if let Some(mirror) = mirror {
+        content.push_str(&format!("\n[mirror]\nremote = {}\n", quoted(mirror)?));
     }
     if path.exists() {
         return Ok(());

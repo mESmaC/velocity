@@ -22,6 +22,7 @@
     name,
     project,
     collapse,
+    collapseLiveState,
     rosen,
     send,
     select,
@@ -30,6 +31,9 @@
     project: number | null;
     // The active project's Collapse mirror; null hides Open on Collapse (#429).
     collapse: string | null;
+    // rosen.toml names the mirror's Collapse root, so Rosen sends Collapse its live
+    // state; false offers Send Collapse its live state (#517).
+    collapseLiveState: boolean;
     // The active project uses Rosen, so it offers Catch up from mirror (#501).
     rosen: boolean;
     send: (action: LayoutAction) => void;
@@ -162,6 +166,23 @@
       report(reason);
     } finally {
       mirroring = false;
+    }
+  }
+
+  // Rust gives Rosen's state feed the mirror's push token and lands the rosen.toml
+  // `collapse` root, then reports the outcome as a toast (#517).
+  let linking = $state(false);
+  async function sendLiveState(identifier: number) {
+    if (linking) return;
+    linking = true;
+    error = '';
+    try {
+      await collapseCommands.sendLiveState(identifier);
+      menu.hidePopover();
+    } catch (reason) {
+      report(reason);
+    } finally {
+      linking = false;
     }
   }
 
@@ -394,10 +415,21 @@
           onclick={() => void mirrorToCollapse(identifier)}
           >Mirror to Collapse</button
         >
+      {:else if !collapseLiveState}
+        <button
+          role="menuitem"
+          disabled={linking}
+          title="Collapse receives this project's commits only. Send its open changes, review queue and post-land state too, and let Collapse's Approve and Land act here"
+          onclick={() => void sendLiveState(identifier)}
+          >Send Collapse its live state</button
+        >
       {/if}
     {/if}
     {#if mirroring}<p class="menu-note" role="status">
         Setting up the Collapse mirror…
+      </p>{/if}
+    {#if linking}<p class="menu-note" role="status">
+        Linking Collapse to this project's live state…
       </p>{/if}
     {#if opening}<p class="menu-note" role="status">{opening}</p>{/if}
   {/if}

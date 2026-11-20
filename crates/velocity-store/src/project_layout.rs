@@ -38,6 +38,7 @@ pub(crate) fn read_model(store: &crate::StateStore) -> LayoutData {
         data.project_name = project.name.clone();
         data.rosen_mirror = project.rosen_mirror.clone();
         data.collapse_repository = project.collapse_repository.clone();
+        data.collapse_live_state = project.collapse_live_state;
         data.collapse_mirror_health = project
             .collapse_repository
             .as_ref()

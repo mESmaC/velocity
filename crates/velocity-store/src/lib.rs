@@ -1176,6 +1176,11 @@ pub struct ProjectItem {
     #[serde(default)]
     #[specta(skip)]
     pub collapse_repository: Option<String>,
+    /// The landed `rosen.toml` names that repository's Collapse root, so Rosen sends
+    /// Collapse its live state. `false` offers Send Collapse its live state (#517).
+    #[serde(default)]
+    #[specta(skip)]
+    pub collapse_live_state: bool,
     /// Collapse's last land and downstream forwarder for that repository, as last read from
     /// Collapse (#427). Kept so the project shows it at startup before the next read.
     #[serde(default)]
@@ -1247,6 +1252,7 @@ impl ProjectItem {
             rosen_mirror_rejection_sequence: None,
             rosen_mirror_notices: Vec::new(),
             collapse_repository: None,
+            collapse_live_state: false,
             collapse_mirror_health: None,
             rosen_mirror_divergence: None,
         }

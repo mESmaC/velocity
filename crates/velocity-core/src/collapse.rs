@@ -61,6 +61,15 @@ pub fn mirror_remote(repository: &str) -> Option<String> {
         .then(|| format!("https://api.collapse.sh/{owner}/{name}.git"))
 }
 
+/// The Collapse root `rosen.toml`'s `collapse` key names for `owner/repository` (#517).
+/// Rosen sends its state feed to `<root>/rosen/state` and ledger entries to
+/// `<root>/ledgers`, and reads the owner's relayed actions under it (Rosen R9, R13, R14).
+pub fn collapse_root(repository: &str) -> Option<String> {
+    let (owner, name) = repository.split_once('/')?;
+    (valid_segment(owner) && valid_segment(name))
+        .then(|| format!("https://api.collapse.sh/{owner}/{name}"))
+}
+
 /// A Collapse repository name for a project folder or project name (#427). Collapse takes
 /// GitHub's rules: letters, digits, `-`, `_` and `.`, at most 100 characters. Other
 /// characters become `-`, repeats collapse, and the ends are trimmed of separators.

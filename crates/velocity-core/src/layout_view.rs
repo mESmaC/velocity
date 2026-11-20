@@ -150,6 +150,9 @@ pub struct LayoutData {
     pub rosen_mirror_divergence: Option<crate::rosen_mirror::MirrorDivergence>,
     /// The project's Collapse mirror as `owner/repository`; `None` hides Open on Collapse.
     pub collapse_repository: Option<String>,
+    /// The landed `rosen.toml` names the Collapse root, so Rosen sends Collapse its live
+    /// state; `false` with a repository offers Send Collapse its live state (#517).
+    pub collapse_live_state: bool,
     /// Collapse's last land and downstream forwarder for that repository (#427).
     pub collapse_mirror_health: Option<crate::collapse::CollapseMirrorHealth>,
     /// GitHub CI on the project's mirrored base, as last read (#507).
@@ -494,6 +497,9 @@ pub struct LayoutSnapshot {
     pub rosen_mirror_divergence: Option<crate::rosen_mirror::MirrorDivergence>,
     /// The project's Collapse mirror as `owner/repository`; `None` hides Open on Collapse.
     pub collapse_repository: Option<String>,
+    /// The landed `rosen.toml` names the Collapse root, so Rosen sends Collapse its live
+    /// state; `false` with a repository offers Send Collapse its live state (#517).
+    pub collapse_live_state: bool,
     /// Collapse's last land and downstream forwarder for that repository (#427).
     pub collapse_mirror_health: Option<crate::collapse::CollapseMirrorHealth>,
     /// GitHub CI on the project's mirrored base, as last read (#507).

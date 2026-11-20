@@ -170,6 +170,30 @@
     send({ OpenThread: identifier });
   }
 
+  // The state feed line of the Mirror section (#517). Rosen records which event
+  // Collapse last acknowledged, so the time is when that event happened.
+  function feedLine(sentAt: string | null | undefined) {
+    const at = sentAt ? Number(sentAt) : Number.NaN;
+    return Number.isFinite(at)
+      ? `State feed last sent ${new Date(at).toLocaleString()}`
+      : 'State feed has sent nothing yet';
+  }
+
+  // Send Collapse its live state: Rust shares the push token with the feed and lands
+  // the rosen.toml `collapse` root; a toast says how it went.
+  let linking = $state(false);
+  async function sendLiveState() {
+    if (project === null || linking) return;
+    linking = true;
+    try {
+      await collapseCommands.sendLiveState(project);
+    } catch (reason) {
+      error = String(reason);
+    } finally {
+      linking = false;
+    }
+  }
+
   async function openOnCollapse(commit: string) {
     if (project === null) return;
     try {
@@ -401,6 +425,36 @@
                       Forwarder status unavailable · connect Collapse in
                       Settings
                     </p>{/if}
+                  {#if status.mirror.collapse}
+                    {#if !status.mirror.live_state}
+                      <p>
+                        Collapse receives commits only · no live state is sent
+                      </p>
+                    {:else if status.mirror.feed_error}
+                      <p class="failing">State feed failing</p>
+                      <p class="hint">{status.mirror.feed_error}</p>
+                      <p class="hint">
+                        {feedLine(status.mirror.feed_sent_at)}
+                      </p>
+                    {:else}
+                      <p class="hint">
+                        {feedLine(status.mirror.feed_sent_at)}
+                      </p>
+                    {/if}
+                    {#if !status.mirror.live_state || status.mirror.feed_error}
+                      <div class="feed-action">
+                        <button
+                          class="mini"
+                          disabled={linking}
+                          title="Give Rosen's state feed the mirror's push token and land the collapse root in rosen.toml"
+                          onclick={() => void sendLiveState()}
+                          >{linking
+                            ? 'Linking…'
+                            : 'Send Collapse its live state'}</button
+                        >
+                      </div>
+                    {/if}
+                  {/if}
                 {:else}
                   <p class="hint">No mirror connected.</p>
                 {/if}
@@ -518,6 +572,10 @@
     align-items: flex-start;
     gap: var(--sp-2);
     margin: var(--sp-3) 0 0;
+    padding: 0 var(--sp-3) 0 calc(var(--sp-3) + 10px + var(--sp-3));
+  }
+  .feed-action {
+    margin: var(--sp-2) 0 0;
     padding: 0 var(--sp-3) 0 calc(var(--sp-3) + 10px + var(--sp-3));
   }
   .release input {

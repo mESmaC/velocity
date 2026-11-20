@@ -27,12 +27,19 @@ pub(crate) async fn refresh(application: &AppHandle, project: u32) -> Result<(),
     let remote = velocity_rosen::mirror_remote(&server)
         .await
         .map_err(|error| error.to_string())?;
+    // A configuration that could not be read keeps the saved answer, so a linked project
+    // is not offered Send Collapse its live state again (#517).
+    let live_state = velocity_rosen::collapse_link::collapse_root(&server)
+        .await
+        .ok()
+        .map(|root| root.is_some());
     save_collapse_repository(
         application,
         project,
         remote
             .as_deref()
             .and_then(velocity_core::collapse::repository_from_remote),
+        live_state,
     )?;
     let handle = application.clone();
     tauri::async_runtime::spawn_blocking(move || deliver_notices(&handle, project))
@@ -112,11 +119,13 @@ fn publish(
     Ok(())
 }
 
-/// Shows or hides Open on Collapse when the mirror remote changes (#429).
+/// Shows or hides Open on Collapse when the mirror remote changes (#429), and Send
+/// Collapse its live state when `rosen.toml` gains or loses its Collapse root (#517).
 fn save_collapse_repository(
     application: &AppHandle,
     project: u32,
     repository: Option<String>,
+    live_state: Option<bool>,
 ) -> Result<(), String> {
     let mut store = lock(
         application.state::<ManagedStateStore>().inner(),
@@ -124,7 +133,7 @@ fn save_collapse_repository(
     )?;
     let mirrored = repository.is_some();
     let changed = store
-        .save_collapse_repository(project, repository)
+        .save_collapse_repository(project, repository, live_state)
         .map_err(|error| error.to_string())?;
     if changed {
         let mut layout = lock(application.state::<MainLayout>().inner(), "layout")?;

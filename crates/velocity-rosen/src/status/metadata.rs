@@ -30,7 +30,8 @@ const PRESENCE: i64 = 90_000;
 
 // R9 carries lifecycle notifications but omits event times and several read-only
 // fields. Read the pinned daemon's metadata together, without writing or migrating it.
-pub(super) fn read(server: &ProjectServer) -> Result<Metadata, RosenError> {
+/// `feed` is the state feed endpoint the configuration in force names, if any.
+pub(super) fn read(server: &ProjectServer, feed: Option<&str>) -> Result<Metadata, RosenError> {
     let mut connection = Connection::open_with_flags(
         server.data_dir().join("metadata.sqlite"),
         OpenFlags::SQLITE_OPEN_READ_ONLY,
@@ -40,14 +41,14 @@ pub(super) fn read(server: &ProjectServer) -> Result<Metadata, RosenError> {
         .busy_timeout(Duration::from_millis(200))
         .map_err(data_error)?;
     let transaction = connection.transaction().map_err(data_error)?;
-    snapshot(&transaction).map_err(data_error)
+    snapshot(&transaction, feed).map_err(data_error)
 }
 
 fn data_error(error: rusqlite::Error) -> RosenError {
     RosenError::StatusData(error.to_string())
 }
 
-fn snapshot(connection: &Connection) -> rusqlite::Result<Metadata> {
+fn snapshot(connection: &Connection, feed: Option<&str>) -> rusqlite::Result<Metadata> {
     let now = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .unwrap_or_default();
@@ -63,7 +64,10 @@ fn snapshot(connection: &Connection) -> rusqlite::Result<Metadata> {
         .min()
         .map(|deadline| Duration::from_millis(deadline.saturating_sub(now).max(1) as u64))
         .unwrap_or(Duration::from_secs(86_400));
-    let mirror = mirror(connection, base.tip.as_deref())?;
+    let mut mirror = mirror(connection, base.tip.as_deref())?;
+    if let Some(endpoint) = feed {
+        (mirror.feed_sent_at, mirror.feed_error) = state_feed(connection, endpoint)?;
+    }
     Ok(Metadata {
         base,
         landing,
@@ -310,6 +314,64 @@ fn mirror(connection: &Connection, tip: Option<&str>) -> rusqlite::Result<Mirror
     }
     status.state = Some(label.into());
     Ok(status)
+}
+
+/// What the state feed delivered to `endpoint` (#517): when the newest event Collapse
+/// acknowledged was recorded, and the feed's latest failure while nothing newer arrived.
+/// Rosen publishes `recovered` only within one run, so a delivery after the failure is
+/// what proves a feed that recovered across a restart.
+fn state_feed(
+    connection: &Connection,
+    endpoint: &str,
+) -> rusqlite::Result<(Option<String>, Option<String>)> {
+    if !table(connection, "events")? {
+        return Ok((None, None));
+    }
+    let delivered: i64 = if table(connection, "state_push")? {
+        connection
+            .query_row(
+                "SELECT delivered FROM state_push WHERE endpoint = ?1",
+                [endpoint],
+                |row| row.get(0),
+            )
+            .optional()?
+            .unwrap_or_default()
+    } else {
+        0
+    };
+    let sent_at = connection
+        .query_row(
+            "SELECT created_at FROM events WHERE seq <= ?1 ORDER BY seq DESC LIMIT 1",
+            [delivered],
+            |row| row.get::<_, i64>(0),
+        )
+        .optional()?
+        .map(|at| at.to_string());
+    let error = connection
+        .query_row(
+            "SELECT json_extract(detail, '$.status'), json_extract(detail, '$.error'),
+                    json_extract(detail, '$.endpoint'), seq
+               FROM events WHERE kind = 'state_push' ORDER BY seq DESC LIMIT 1",
+            [],
+            |row| {
+                Ok((
+                    row.get::<_, Option<String>>(0)?,
+                    row.get::<_, Option<String>>(1)?,
+                    row.get::<_, Option<String>>(2)?,
+                    row.get::<_, i64>(3)?,
+                ))
+            },
+        )
+        .optional()?
+        .filter(|(status, _, failed_endpoint, sequence)| {
+            matches!(status.as_deref(), Some("failed" | "stopped"))
+                && failed_endpoint
+                    .as_deref()
+                    .is_none_or(|failed| failed == endpoint)
+                && *sequence > delivered
+        })
+        .map(|(_, error, _, _)| error.unwrap_or_else(|| "Rosen reported no error".into()));
+    Ok((sent_at, error))
 }
 
 fn changes(

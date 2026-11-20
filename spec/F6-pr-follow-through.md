@@ -16,7 +16,7 @@ The window saves their order and collapsed state.
 | Landing | Lands in the last hour, median time from naming to land for that hour, and post-land build and full-test backlog |
 | Claims and conflicts | Paths, claim holders, overlaps and open stored conflicts |
 | Warm pool | Ready workspace count and target |
-| Mirror | Mirror state and last pushed commit; for a Collapse mirror, Collapse's last land with its agent and the downstream forwarder state (in sync, catching up with lands behind, retrying with the next attempt, stopped with git's message, or no downstream) |
+| Mirror | Mirror state and last pushed commit; for a Collapse mirror, Collapse's last land with its agent and the downstream forwarder state (in sync, catching up with lands behind, retrying with the next attempt, stopped with git's message, or no downstream), and the state feed to Collapse (when it last sent, failing with Rosen's error, or commits only with Send Collapse its live state, #517) |
 | Changes | Open changes and recent outcomes with the owning thread, line counts, claims, overlaps, conflicts and stacked parent |
 
 An owned change row opens its thread.

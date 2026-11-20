@@ -8,9 +8,9 @@ use tauri::{AppHandle, Manager};
 use tauri_plugin_dialog::DialogExt;
 use tauri_specta::Event;
 use velocity_new_project::{
-    CreatedProject, NewProjectDefaults, NewProjectRequest, OpenProjectRequest, Publication,
-    RepositoryPicker, RepositoryPickerView, new_project_defaults, projects_directory,
-    validate_project_root,
+    CreatedProject, NewProjectDefaults, NewProjectRequest, OpenProjectRequest,
+    ProjectLocationRequest, ProjectMirror, Publication, RepositoryPicker, RepositoryPickerView,
+    new_project_defaults, projects_directory, validate_project_root,
 };
 
 use crate::layout::{LayoutStateChanged, MainLayout};
@@ -78,6 +78,13 @@ pub async fn create_project(
 ) -> Result<CreatedProject, String> {
     // The initial import pushes at once, so a Collapse mirror must exist first (#427).
     crate::collapse_mirror::prepare_new_project(&mut request).await?;
+    let mirrors_to_collapse = matches!(
+        &request.location,
+        ProjectLocationRequest::RosenFolder {
+            mirror: ProjectMirror::Collapse { .. },
+            ..
+        }
+    );
     let host = application.clone();
     let created = tauri::async_runtime::spawn_blocking(move || {
         let created = velocity_new_project::create_project(
@@ -92,6 +99,10 @@ pub async fn create_project(
     .await
     .map_err(|error| format!("Create stopped: {error}"))??;
     crate::rosen::server(&host, created.identifier).await?;
+    if mirrors_to_collapse {
+        // The new `rosen.toml` names the Collapse root; the relay is the server's setting.
+        crate::collapse_mirror::allow_relay_after_create(&host, created.identifier).await;
+    }
     crate::interview::start(&host);
     Ok(created)
 }

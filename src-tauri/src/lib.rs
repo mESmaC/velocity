@@ -101,6 +101,7 @@ fn bindings() -> Builder<tauri::Wry> {
         collapse_connection::get_collapse_connection,
         collapse_connection::set_collapse_mcp,
         collapse_mirror::mirror_to_collapse,
+        collapse_mirror::send_collapse_live_state,
         continuous_dispatch::get_continuous_dispatch,
         continuous_dispatch::set_continuous_dispatch,
         token_usage::get_token_usage,

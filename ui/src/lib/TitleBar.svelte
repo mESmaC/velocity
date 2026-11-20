@@ -40,6 +40,7 @@
         name={layout?.project_name ?? ''}
         project={layout?.project_identifier ?? null}
         collapse={layout?.collapse_repository ?? null}
+        collapseLiveState={layout?.collapse_live_state ?? false}
         rosen={layout?.rosen_work != null}
         {send}
         select={switchProject}

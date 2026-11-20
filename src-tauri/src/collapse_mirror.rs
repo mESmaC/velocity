@@ -2,6 +2,11 @@
 //! push token to git's credential helper, point Rosen's `[mirror] remote` at it, and show
 //! what Collapse reports about the repository's last land and downstream forwarder.
 //!
+//! The same `rosen.toml` change names the repository's Collapse root (#517), which is the
+//! key Rosen's state feed, ledger push and action relay read. Without it Collapse receives
+//! commits and nothing else. The relay runs only the kinds the server's operator allowed,
+//! and Velocity owns the project's server, so linking allows what Collapse offers.
+//!
 //! Velocity keeps no push token: provisioning passes it to `git credential approve`, and
 //! the account tokens stay in the OS credential store (§1, #430).
 
@@ -11,19 +16,19 @@ use std::time::Duration;
 
 use tauri::{AppHandle, Manager};
 use tauri_plugin_opener::OpenerExt;
-use velocity_collapse::{
-    CollapseCredentials, MirrorRequest, ProvisionedMirror, RepositoryActivity,
-};
+use velocity_collapse::{CollapseCredentials, MirrorRequest, RepositoryActivity};
 use velocity_core::collapse::{CollapseMirrorHealth, ForwarderState};
 use velocity_new_project::{NewProjectRequest, ProjectLocationRequest, ProjectMirror};
+use velocity_rosen::collapse_link::{CollapseLink, allow_collapse_relay, propose_collapse_link};
 use velocity_rosen::landing::{LandOutcome, LandRefusal};
-use velocity_rosen::workspace_settings::{SETTINGS_AGENT, propose_mirror_remote};
+use velocity_rosen::workspace_settings::SETTINGS_AGENT;
 
 use crate::layout::MainLayout;
 use crate::state::ManagedStateStore;
 use crate::threads::lock;
 
 const NOT_CONNECTED: &str = "Connect Collapse in Settings → Agents → Shared MCP servers first, so Velocity can create the repository";
+const NO_PUSH_TOKEN: &str = "Git's credential helper holds no push token for this project's Collapse mirror. Connect Collapse in Settings → Agents → Shared MCP servers so Velocity can create one";
 /// How often Collapse's forwarder state is read while any project mirrors to Collapse.
 const HEALTH_INTERVAL: Duration = Duration::from_secs(60);
 /// New projects start their Rosen base on `main` (F2).
@@ -53,11 +58,11 @@ pub(crate) async fn prepare_new_project(request: &mut NewProjectRequest) -> Resu
     velocity_new_project::validate_project_root(folder).map_err(|error| error.to_string())?;
     let typed = typed_repository(repository);
     let Some(credentials) = load_credentials().await? else {
-        return if typed.contains('/') {
-            Ok(())
-        } else {
-            Err(NOT_CONNECTED.into())
-        };
+        if !typed.contains('/') {
+            return Err(NOT_CONNECTED.into());
+        }
+        share_hand_stored_token(&typed).await;
+        return Ok(());
     };
     let (owner, name) = match typed.split_once('/') {
         Some((owner, name)) => (Some(owner.to_owned()), name.to_owned()),
@@ -79,6 +84,25 @@ pub(crate) async fn prepare_new_project(request: &mut NewProjectRequest) -> Resu
     Ok(())
 }
 
+/// The new project's `rosen.toml` names the Collapse root (#517), and Rosen's feed asks
+/// the helper for the push token under its own endpoints. A token stored by hand for the
+/// mirror is copied there. Without one the Rosen status pane shows the feed failing and
+/// offers Send Collapse its live state, so nothing here stops Create.
+async fn share_hand_stored_token(repository: &str) {
+    let (Some(remote), Some(root)) = (
+        velocity_core::collapse::mirror_remote(repository),
+        velocity_core::collapse::collapse_root(repository),
+    ) else {
+        return;
+    };
+    if let Err(error) = velocity_collapse::share_push_token(&remote, &root).await {
+        crate::diagnostics::record(
+            "collapse mirror",
+            &format!("{repository}: could not share the push token with the state feed: {error}"),
+        );
+    }
+}
+
 /// The dialog's text without Collapse's git host or `.git`, as `owner/name`, `name` or empty.
 fn typed_repository(repository: &str) -> String {
     let trimmed = repository.trim().trim_end_matches('/');
@@ -98,11 +122,13 @@ fn folder_repository_name(folder: &Path) -> Result<String, String> {
         })
 }
 
-/// What Mirror to Collapse needs from the saved project.
+/// What Mirror to Collapse and Send Collapse its live state need from the saved project.
 struct MirrorSubject {
     name: String,
     branch: String,
     on_github: bool,
+    /// The Collapse repository the project already mirrors to.
+    repository: Option<String>,
 }
 
 fn mirror_subject(application: &AppHandle, project: u32) -> Result<MirrorSubject, String> {
@@ -114,24 +140,21 @@ fn mirror_subject(application: &AppHandle, project: u32) -> Result<MirrorSubject
     if item.version_control != velocity_store::VersionControl::Rosen {
         return Err("Mirror to Collapse is available after the project migrates to Rosen".into());
     }
-    if let Some(repository) = &item.collapse_repository {
-        return Err(format!(
-            "{} already mirrors to Collapse ({repository})",
-            item.name
-        ));
-    }
     Ok(MirrorSubject {
         name: item.name.clone(),
         branch: item.default_branch.clone(),
         on_github: item.github_remote.is_some(),
+        repository: item.collapse_repository.clone(),
     })
 }
 
 /// `mirror_to_collapse` (§3.1): makes Collapse the project's mirror. Creates the Collapse
 /// repository named after the project, stores its push token in git's credential helper,
-/// and lands a `rosen.toml` change pointing `[mirror] remote` at it. A project that was on
-/// GitHub then opens the repository's Downstream remote settings, where the owner keeps
-/// GitHub fed through Collapse's forwarder (C4). Says what happened in a toast.
+/// and lands a `rosen.toml` change pointing `[mirror] remote` at it and naming its
+/// `collapse` root, so Rosen also sends its live state and ledger entries and runs the
+/// owner's actions from Collapse (#517). A project that was on GitHub then opens the
+/// repository's Downstream remote settings, where the owner keeps GitHub fed through
+/// Collapse's forwarder (C4). Says what happened in a toast.
 #[tauri::command]
 #[specta::specta]
 pub async fn mirror_to_collapse(
@@ -139,6 +162,12 @@ pub async fn mirror_to_collapse(
     project_identifier: u32,
 ) -> Result<(), String> {
     let subject = mirror_subject(&application, project_identifier)?;
+    if let Some(repository) = &subject.repository {
+        return Err(format!(
+            "{} already mirrors to Collapse ({repository})",
+            subject.name
+        ));
+    }
     let credentials = load_credentials().await?.ok_or(NOT_CONNECTED)?;
     let name = velocity_core::collapse::repository_name_for(&subject.name)
         .ok_or("The project's name has no letters or digits to name a Collapse repository")?;
@@ -154,7 +183,12 @@ pub async fn mirror_to_collapse(
     .await
     .map_err(|error| error.to_string())?;
     let server = crate::rosen::server(&application, project_identifier).await?;
-    let message = point_mirror(&server, &subject.name, &provisioned).await?;
+    let root = provisioned.collapse_root();
+    let link = CollapseLink {
+        remote: Some(&provisioned.mirror_url),
+        root: &root,
+    };
+    let message = land_link(&server, &subject.name, &provisioned.repository(), &link).await?;
     toast(&application, message)?;
     crate::rosen_mirror::refresh(&application, project_identifier).await?;
     if subject.on_github
@@ -169,38 +203,153 @@ pub async fn mirror_to_collapse(
     refresh_health(&application).await
 }
 
-/// Proposes and lands the `[mirror] remote` change; the toast says where it stands.
-async fn point_mirror(
+/// `send_collapse_live_state` (§3.1): for a project that already mirrors to Collapse
+/// without the `collapse` root (#517). Gives Rosen's state feed, ledger push and relay the
+/// mirror's push token under their own endpoints, lands a `rosen.toml` change naming just
+/// the root, and lets the relay run. A project whose root is already landed keeps its
+/// file and gets the token and the relay, which mends a feed Collapse answers with 401.
+#[tauri::command]
+#[specta::specta]
+pub async fn send_collapse_live_state(
+    application: AppHandle,
+    project_identifier: u32,
+) -> Result<(), String> {
+    let subject = mirror_subject(&application, project_identifier)?;
+    let repository = subject.repository.clone().ok_or_else(|| {
+        format!(
+            "{} has no Collapse mirror; use Mirror to Collapse first",
+            subject.name
+        )
+    })?;
+    let root = velocity_core::collapse::collapse_root(&repository)
+        .ok_or("The project's Collapse mirror does not name an owner and repository")?;
+    let server = crate::rosen::server(&application, project_identifier).await?;
+    share_push_token(&server, &subject, &repository, &root).await?;
+    let link = CollapseLink {
+        remote: None,
+        root: &root,
+    };
+    let message = land_link(&server, &subject.name, &repository, &link).await?;
+    toast(&application, message)?;
+    crate::rosen_mirror::refresh(&application, project_identifier).await?;
+    refresh_health(&application).await
+}
+
+/// Rosen asks git's credential helper for the push token under the feed's own endpoints,
+/// where a token stored for the mirror URL is not found. Copies the mirror's token there,
+/// or mints one when the helper holds none and Collapse is connected.
+async fn share_push_token(
+    server: &velocity_rosen::ProjectServer,
+    subject: &MirrorSubject,
+    repository: &str,
+    root: &str,
+) -> Result<(), String> {
+    let remote = velocity_rosen::mirror_remote(server)
+        .await
+        .map_err(|error| error.to_string())?;
+    if let Some(remote) = remote
+        && velocity_collapse::share_push_token(&remote, root)
+            .await
+            .map_err(|error| error.to_string())?
+    {
+        return Ok(());
+    }
+    let credentials = load_credentials().await?.ok_or(NO_PUSH_TOKEN)?;
+    let (owner, name) = repository
+        .split_once('/')
+        .ok_or("Unknown Collapse mirror")?;
+    velocity_collapse::provision_mirror(
+        &credentials,
+        &MirrorRequest {
+            owner: Some(owner),
+            name,
+            default_branch: &subject.branch,
+            description: "",
+        },
+    )
+    .await
+    .map_err(|error| error.to_string())?;
+    Ok(())
+}
+
+/// Proposes and lands the `rosen.toml` link, then lets the relay run; the toast says
+/// where it stands.
+async fn land_link(
     server: &velocity_rosen::ProjectServer,
     project: &str,
-    provisioned: &ProvisionedMirror,
+    repository: &str,
+    link: &CollapseLink<'_>,
 ) -> Result<String, String> {
-    let repository = provisioned.repository();
-    let change = propose_mirror_remote(server, &provisioned.mirror_url)
+    let change = propose_collapse_link(server, link)
         .await
         .map_err(|error| error.to_string())?;
-    let Some(change) = change else {
-        return Ok(format!(
-            "{project}: rosen.toml already mirrors to {repository}"
-        ));
-    };
-    let outcome = velocity_rosen::landing::land(server, SETTINGS_AGENT, &change)
-        .await
-        .map_err(|error| error.to_string())?;
-    Ok(match outcome {
-        LandOutcome::Landed { .. } => {
-            format!("{project}: lands now mirror to Collapse · {repository}")
-        }
-        LandOutcome::Refused(refusal) => {
-            let reason = match refusal {
-                LandRefusal::Regenerate { paths } => format!("regenerate {}", paths.join(", ")),
-                LandRefusal::Conflict { message, .. } | LandRefusal::Other { message, .. } => {
-                    message
+    let mirroring = link.remote.is_some();
+    let message = match change {
+        None if mirroring => format!("{project}: rosen.toml already mirrors to {repository}"),
+        None => format!("{project}: rosen.toml already sends {repository} its live state"),
+        Some(change) => {
+            let outcome = velocity_rosen::landing::land(server, SETTINGS_AGENT, &change)
+                .await
+                .map_err(|error| error.to_string())?;
+            match outcome {
+                LandOutcome::Landed { .. } if mirroring => {
+                    format!("{project}: lands and live state now go to Collapse · {repository}")
                 }
-            };
-            format!("{project}: {repository} is ready · change {change} waits to land: {reason}")
+                LandOutcome::Landed { .. } => {
+                    format!("{project}: Collapse now receives live state · {repository}")
+                }
+                LandOutcome::Refused(refusal) => format!(
+                    "{project}: {repository} is ready · change {change} waits to land: {}",
+                    refusal_reason(refusal)
+                ),
+            }
         }
-    })
+    };
+    Ok(format!("{message}{}", relay_note(server, project).await))
+}
+
+fn refusal_reason(refusal: LandRefusal) -> String {
+    match refusal {
+        LandRefusal::Regenerate { paths } => format!("regenerate {}", paths.join(", ")),
+        LandRefusal::Conflict { message, .. } | LandRefusal::Other { message, .. } => message,
+    }
+}
+
+/// Lets the project's server run the actions Collapse's owner pages offer, and says so in
+/// the toast: this is the one place the owner hands Collapse authority over the server.
+/// A failure leaves the mirror and the feed working, so it is reported, not returned.
+async fn relay_note(server: &velocity_rosen::ProjectServer, project: &str) -> String {
+    match allow_collapse_relay(server).await {
+        Ok(kinds) => format!(
+            " · Collapse's owner actions run here ({})",
+            kinds.join(", ")
+        ),
+        Err(error) => {
+            crate::diagnostics::record(
+                "collapse relay",
+                &format!("{project}: could not allow Collapse's actions: {error}"),
+            );
+            format!(" · Collapse's actions stay off: {error}")
+        }
+    }
+}
+
+/// Create with a Collapse mirror wrote the `collapse` root with the first `rosen.toml`
+/// (F2), so the new project's server only needs its relay allowed.
+pub(crate) async fn allow_relay_after_create(application: &AppHandle, project: u32) {
+    let allowed = match crate::rosen::server(application, project).await {
+        Ok(server) => allow_collapse_relay(&server)
+            .await
+            .map(|_| ())
+            .map_err(|error| error.to_string()),
+        Err(error) => Err(error),
+    };
+    if let Err(error) = allowed {
+        crate::diagnostics::record(
+            "collapse relay",
+            &format!("Project {project}: could not allow Collapse's actions: {error}"),
+        );
+    }
 }
 
 fn toast(application: &AppHandle, message: String) -> Result<(), String> {
