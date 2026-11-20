@@ -36,7 +36,7 @@ pub(super) struct QueuedRun {
 
 enum ExecutionOutcome {
     Exited(ExitStatus),
-    TimedOut(QueueTimeoutReport),
+    TimedOut(Box<QueueTimeoutReport>),
     Failed(io::Error),
 }
 

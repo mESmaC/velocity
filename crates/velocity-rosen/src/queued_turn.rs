@@ -119,7 +119,7 @@ impl fmt::Display for QueueTimeoutReport {
 #[derive(Debug)]
 pub enum QueuedTurnError {
     Cancelled,
-    TimedOut(QueueTimeoutReport),
+    TimedOut(Box<QueueTimeoutReport>),
     Io(io::Error),
 }
 
@@ -181,11 +181,8 @@ fn acquire_rosen(
             let waited = started.elapsed();
             let waiting_for = waiter.waiting_for();
             drop(waiter);
-            return Err(QueuedTurnError::TimedOut(QueueTimeoutReport::read(
-                queue,
-                class.name(),
-                waited,
-                waiting_for,
+            return Err(QueuedTurnError::TimedOut(Box::new(
+                QueueTimeoutReport::read(queue, class.name(), waited, waiting_for),
             )));
         }
         std::thread::sleep(POLL);
@@ -206,13 +203,15 @@ fn acquire_utility(
             return Ok(QueuedTurn::Utility { _slot: slot });
         }
         if started.elapsed() >= timeout {
-            return Err(QueuedTurnError::TimedOut(QueueTimeoutReport::read(
-                queue,
-                "light-rust",
-                started.elapsed(),
-                Some(format!(
-                    "waiting for a free light Rust slot ({LIGHT_SLOTS} slots)"
-                )),
+            return Err(QueuedTurnError::TimedOut(Box::new(
+                QueueTimeoutReport::read(
+                    queue,
+                    "light-rust",
+                    started.elapsed(),
+                    Some(format!(
+                        "waiting for a free light Rust slot ({LIGHT_SLOTS} slots)"
+                    )),
+                ),
             )));
         }
         std::thread::sleep(POLL);
@@ -276,11 +275,13 @@ fn wait_step<T>(
             return Ok(value);
         }
         if started.elapsed() >= timeout {
-            return Err(QueuedTurnError::TimedOut(QueueTimeoutReport::read(
-                queue,
-                "light-rust",
-                started.elapsed(),
-                Some(reason.to_owned()),
+            return Err(QueuedTurnError::TimedOut(Box::new(
+                QueueTimeoutReport::read(
+                    queue,
+                    "light-rust",
+                    started.elapsed(),
+                    Some(reason.to_owned()),
+                ),
             )));
         }
         std::thread::sleep(POLL);
