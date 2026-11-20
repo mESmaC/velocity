@@ -15,6 +15,7 @@
     placeholder,
     modelPill,
     showWorktreePill = false,
+    draftContext = null,
     threadIdentifier,
   }: {
     layout: LayoutSnapshot;
@@ -23,6 +24,7 @@
     placeholder: string;
     modelPill: ModelPillView;
     showWorktreePill?: boolean;
+    draftContext?: string | null;
     /** A thread identifier edits that thread. `null` targets the home draft. */
     threadIdentifier?: number | null;
   } = $props();
@@ -102,6 +104,21 @@
     opener={textarea}
     {send}
   />
+  {#if draftContext}
+    <div class="composer-context" aria-label="Draft context">
+      <span class="pill context-pill">
+        <Icon name="branch" />
+        <span>{draftContext}</span>
+        <button
+          type="button"
+          class="context-clear"
+          aria-label="Remove context"
+          title="Remove context"
+          onclick={() => send('ClearDraftContext')}>×</button
+        >
+      </span>
+    </div>
+  {/if}
   <textarea
     class="bare"
     {id}

@@ -287,6 +287,8 @@ export const AIRC_MODAL_EVENT = "airc://modal" as const;
 
 export const BROWSER_FRAME_EVENT = "browser-frame" as const;
 
+export const COLLAPSE_LINK_EVENT = "collapse://link" as const;
+
 export const DUTY_EVENT = "duty://event" as const;
 
 export const ISSUE_PANEL_EVENT = "issue://panel" as const;
@@ -817,6 +819,35 @@ export type CollapseConnection_Serialize = {
 	name: string,
 	url: string,
 };
+
+/**  `collapse://link` (§3.1): emitted when a `velocity://collapse/...` deep link arrives (#479). */
+export type CollapseLinkOpened = CollapseLinkOpened_Serialize | CollapseLinkOpened_Deserialize;
+
+/**  `collapse://link` (§3.1): emitted when a `velocity://collapse/...` deep link arrives (#479). */
+export type CollapseLinkOpened_Deserialize = 
+/**
+ *  Matched a local project whose Collapse mirror is `repository`; Rust focused that
+ *  project and opened an unsent draft thread.
+ */
+{ kind: "opened"; project_identifier: number; repository: string; draft_context?: string | null } | 
+/**
+ *  No local project mirrors `repository`; Rust changed nothing and the window shows
+ *  `notice`, offering nothing else.
+ */
+{ kind: "unmatched"; repository: string; notice: string };
+
+/**  `collapse://link` (§3.1): emitted when a `velocity://collapse/...` deep link arrives (#479). */
+export type CollapseLinkOpened_Serialize = 
+/**
+ *  Matched a local project whose Collapse mirror is `repository`; Rust focused that
+ *  project and opened an unsent draft thread.
+ */
+{ kind: "opened"; project_identifier: number; repository: string; draft_context: string | null } | 
+/**
+ *  No local project mirrors `repository`; Rust changed nothing and the window shows
+ *  `notice`, offering nothing else.
+ */
+{ kind: "unmatched"; repository: string; notice: string };
 
 /**
  *  The project's Collapse mirror as Collapse reports it: its last land and the forwarder
@@ -2278,13 +2309,13 @@ export type LayoutAction_Deserialize = "ToggleSettled" | ({ Request: LayoutInten
 /**  The swarm view's + Items: the Swarm dialog adding open items to that swarm (F10). */
 ({ AddSwarmItems: string }) & { AddGoalAgents?: never; ComposerText?: never; Keyboard?: never; NumberHints?: never; OpenThread?: never; PaletteSearch?: never; PaletteSelect?: never; Request?: never; SidebarSearch?: never; SlashSelect?: never; TaskText?: never; ToggleSwarm?: never } | 
 /**  The goal swarm view's + Agents: the Goal swarm dialog adding agents on its prompt (F16). */
-({ AddGoalAgents: string }) & { AddSwarmItems?: never; ComposerText?: never; Keyboard?: never; NumberHints?: never; OpenThread?: never; PaletteSearch?: never; PaletteSelect?: never; Request?: never; SidebarSearch?: never; SlashSelect?: never; TaskText?: never; ToggleSwarm?: never } | ({ Keyboard: KeyboardInput }) & { AddGoalAgents?: never; AddSwarmItems?: never; ComposerText?: never; NumberHints?: never; OpenThread?: never; PaletteSearch?: never; PaletteSelect?: never; Request?: never; SidebarSearch?: never; SlashSelect?: never; TaskText?: never; ToggleSwarm?: never } | ({ NumberHints: NumberHintEvent }) & { AddGoalAgents?: never; AddSwarmItems?: never; ComposerText?: never; Keyboard?: never; OpenThread?: never; PaletteSearch?: never; PaletteSelect?: never; Request?: never; SidebarSearch?: never; SlashSelect?: never; TaskText?: never; ToggleSwarm?: never } | ({ ComposerText: string }) & { AddGoalAgents?: never; AddSwarmItems?: never; Keyboard?: never; NumberHints?: never; OpenThread?: never; PaletteSearch?: never; PaletteSelect?: never; Request?: never; SidebarSearch?: never; SlashSelect?: never; TaskText?: never; ToggleSwarm?: never } | ({ SlashSelect: string }) & { AddGoalAgents?: never; AddSwarmItems?: never; ComposerText?: never; Keyboard?: never; NumberHints?: never; OpenThread?: never; PaletteSearch?: never; PaletteSelect?: never; Request?: never; SidebarSearch?: never; TaskText?: never; ToggleSwarm?: never } | "SlashNext" | "SlashPrevious" | "SlashComplete" | "ToggleShowWork" | ({ TaskText: string }) & { AddGoalAgents?: never; AddSwarmItems?: never; ComposerText?: never; Keyboard?: never; NumberHints?: never; OpenThread?: never; PaletteSearch?: never; PaletteSelect?: never; Request?: never; SidebarSearch?: never; SlashSelect?: never; ToggleSwarm?: never } | "SubmitComposer" | "SubmitTask";
+({ AddGoalAgents: string }) & { AddSwarmItems?: never; ComposerText?: never; Keyboard?: never; NumberHints?: never; OpenThread?: never; PaletteSearch?: never; PaletteSelect?: never; Request?: never; SidebarSearch?: never; SlashSelect?: never; TaskText?: never; ToggleSwarm?: never } | ({ Keyboard: KeyboardInput }) & { AddGoalAgents?: never; AddSwarmItems?: never; ComposerText?: never; NumberHints?: never; OpenThread?: never; PaletteSearch?: never; PaletteSelect?: never; Request?: never; SidebarSearch?: never; SlashSelect?: never; TaskText?: never; ToggleSwarm?: never } | ({ NumberHints: NumberHintEvent }) & { AddGoalAgents?: never; AddSwarmItems?: never; ComposerText?: never; Keyboard?: never; OpenThread?: never; PaletteSearch?: never; PaletteSelect?: never; Request?: never; SidebarSearch?: never; SlashSelect?: never; TaskText?: never; ToggleSwarm?: never } | ({ ComposerText: string }) & { AddGoalAgents?: never; AddSwarmItems?: never; Keyboard?: never; NumberHints?: never; OpenThread?: never; PaletteSearch?: never; PaletteSelect?: never; Request?: never; SidebarSearch?: never; SlashSelect?: never; TaskText?: never; ToggleSwarm?: never } | ({ SlashSelect: string }) & { AddGoalAgents?: never; AddSwarmItems?: never; ComposerText?: never; Keyboard?: never; NumberHints?: never; OpenThread?: never; PaletteSearch?: never; PaletteSelect?: never; Request?: never; SidebarSearch?: never; TaskText?: never; ToggleSwarm?: never } | "SlashNext" | "SlashPrevious" | "SlashComplete" | "ToggleShowWork" | "ClearDraftContext" | ({ TaskText: string }) & { AddGoalAgents?: never; AddSwarmItems?: never; ComposerText?: never; Keyboard?: never; NumberHints?: never; OpenThread?: never; PaletteSearch?: never; PaletteSelect?: never; Request?: never; SidebarSearch?: never; SlashSelect?: never; ToggleSwarm?: never } | "SubmitComposer" | "SubmitTask";
 
 export type LayoutAction_Serialize = "ToggleSettled" | ({ Request: LayoutIntent_Serialize }) & { AddGoalAgents?: never; AddSwarmItems?: never; ComposerText?: never; Keyboard?: never; NumberHints?: never; OpenThread?: never; PaletteSearch?: never; PaletteSelect?: never; SidebarSearch?: never; SlashSelect?: never; TaskText?: never; ToggleSwarm?: never } | ({ SidebarSearch: string }) & { AddGoalAgents?: never; AddSwarmItems?: never; ComposerText?: never; Keyboard?: never; NumberHints?: never; OpenThread?: never; PaletteSearch?: never; PaletteSelect?: never; Request?: never; SlashSelect?: never; TaskText?: never; ToggleSwarm?: never } | ({ PaletteSearch: string }) & { AddGoalAgents?: never; AddSwarmItems?: never; ComposerText?: never; Keyboard?: never; NumberHints?: never; OpenThread?: never; PaletteSelect?: never; Request?: never; SidebarSearch?: never; SlashSelect?: never; TaskText?: never; ToggleSwarm?: never } | ({ PaletteSelect: string }) & { AddGoalAgents?: never; AddSwarmItems?: never; ComposerText?: never; Keyboard?: never; NumberHints?: never; OpenThread?: never; PaletteSearch?: never; Request?: never; SidebarSearch?: never; SlashSelect?: never; TaskText?: never; ToggleSwarm?: never } | "PaletteNext" | "PalettePrevious" | "PaletteAccept" | ({ OpenThread: string }) & { AddGoalAgents?: never; AddSwarmItems?: never; ComposerText?: never; Keyboard?: never; NumberHints?: never; PaletteSearch?: never; PaletteSelect?: never; Request?: never; SidebarSearch?: never; SlashSelect?: never; TaskText?: never; ToggleSwarm?: never } | ({ ToggleSwarm: string }) & { AddGoalAgents?: never; AddSwarmItems?: never; ComposerText?: never; Keyboard?: never; NumberHints?: never; OpenThread?: never; PaletteSearch?: never; PaletteSelect?: never; Request?: never; SidebarSearch?: never; SlashSelect?: never; TaskText?: never } | 
 /**  The swarm view's + Items: the Swarm dialog adding open items to that swarm (F10). */
 ({ AddSwarmItems: string }) & { AddGoalAgents?: never; ComposerText?: never; Keyboard?: never; NumberHints?: never; OpenThread?: never; PaletteSearch?: never; PaletteSelect?: never; Request?: never; SidebarSearch?: never; SlashSelect?: never; TaskText?: never; ToggleSwarm?: never } | 
 /**  The goal swarm view's + Agents: the Goal swarm dialog adding agents on its prompt (F16). */
-({ AddGoalAgents: string }) & { AddSwarmItems?: never; ComposerText?: never; Keyboard?: never; NumberHints?: never; OpenThread?: never; PaletteSearch?: never; PaletteSelect?: never; Request?: never; SidebarSearch?: never; SlashSelect?: never; TaskText?: never; ToggleSwarm?: never } | ({ Keyboard: KeyboardInput }) & { AddGoalAgents?: never; AddSwarmItems?: never; ComposerText?: never; NumberHints?: never; OpenThread?: never; PaletteSearch?: never; PaletteSelect?: never; Request?: never; SidebarSearch?: never; SlashSelect?: never; TaskText?: never; ToggleSwarm?: never } | ({ NumberHints: NumberHintEvent }) & { AddGoalAgents?: never; AddSwarmItems?: never; ComposerText?: never; Keyboard?: never; OpenThread?: never; PaletteSearch?: never; PaletteSelect?: never; Request?: never; SidebarSearch?: never; SlashSelect?: never; TaskText?: never; ToggleSwarm?: never } | ({ ComposerText: string }) & { AddGoalAgents?: never; AddSwarmItems?: never; Keyboard?: never; NumberHints?: never; OpenThread?: never; PaletteSearch?: never; PaletteSelect?: never; Request?: never; SidebarSearch?: never; SlashSelect?: never; TaskText?: never; ToggleSwarm?: never } | ({ SlashSelect: string }) & { AddGoalAgents?: never; AddSwarmItems?: never; ComposerText?: never; Keyboard?: never; NumberHints?: never; OpenThread?: never; PaletteSearch?: never; PaletteSelect?: never; Request?: never; SidebarSearch?: never; TaskText?: never; ToggleSwarm?: never } | "SlashNext" | "SlashPrevious" | "SlashComplete" | "ToggleShowWork" | ({ TaskText: string }) & { AddGoalAgents?: never; AddSwarmItems?: never; ComposerText?: never; Keyboard?: never; NumberHints?: never; OpenThread?: never; PaletteSearch?: never; PaletteSelect?: never; Request?: never; SidebarSearch?: never; SlashSelect?: never; ToggleSwarm?: never } | "SubmitComposer" | "SubmitTask";
+({ AddGoalAgents: string }) & { AddSwarmItems?: never; ComposerText?: never; Keyboard?: never; NumberHints?: never; OpenThread?: never; PaletteSearch?: never; PaletteSelect?: never; Request?: never; SidebarSearch?: never; SlashSelect?: never; TaskText?: never; ToggleSwarm?: never } | ({ Keyboard: KeyboardInput }) & { AddGoalAgents?: never; AddSwarmItems?: never; ComposerText?: never; NumberHints?: never; OpenThread?: never; PaletteSearch?: never; PaletteSelect?: never; Request?: never; SidebarSearch?: never; SlashSelect?: never; TaskText?: never; ToggleSwarm?: never } | ({ NumberHints: NumberHintEvent }) & { AddGoalAgents?: never; AddSwarmItems?: never; ComposerText?: never; Keyboard?: never; OpenThread?: never; PaletteSearch?: never; PaletteSelect?: never; Request?: never; SidebarSearch?: never; SlashSelect?: never; TaskText?: never; ToggleSwarm?: never } | ({ ComposerText: string }) & { AddGoalAgents?: never; AddSwarmItems?: never; Keyboard?: never; NumberHints?: never; OpenThread?: never; PaletteSearch?: never; PaletteSelect?: never; Request?: never; SidebarSearch?: never; SlashSelect?: never; TaskText?: never; ToggleSwarm?: never } | ({ SlashSelect: string }) & { AddGoalAgents?: never; AddSwarmItems?: never; ComposerText?: never; Keyboard?: never; NumberHints?: never; OpenThread?: never; PaletteSearch?: never; PaletteSelect?: never; Request?: never; SidebarSearch?: never; TaskText?: never; ToggleSwarm?: never } | "SlashNext" | "SlashPrevious" | "SlashComplete" | "ToggleShowWork" | "ClearDraftContext" | ({ TaskText: string }) & { AddGoalAgents?: never; AddSwarmItems?: never; ComposerText?: never; Keyboard?: never; NumberHints?: never; OpenThread?: never; PaletteSearch?: never; PaletteSelect?: never; Request?: never; SidebarSearch?: never; SlashSelect?: never; ToggleSwarm?: never } | "SubmitComposer" | "SubmitTask";
 
 export type LayoutIntent = LayoutIntent_Serialize | LayoutIntent_Deserialize;
 
@@ -2401,6 +2432,8 @@ export type LayoutSnapshot_Deserialize = {
 	airc_unread: string,
 	overlap_unread: boolean,
 	composer_text: string,
+	/**  Optional validated context attached to the unsent home draft (e.g. `"Land abc1234"`, #479). */
+	draft_context?: string | null,
 	task_text: string,
 	build_allowed: boolean,
 	build_block_reason?: string | null,
@@ -2478,6 +2511,8 @@ export type LayoutSnapshot_Serialize = {
 	airc_unread: string,
 	overlap_unread: boolean,
 	composer_text: string,
+	/**  Optional validated context attached to the unsent home draft (e.g. `"Land abc1234"`, #479). */
+	draft_context: string | null,
 	task_text: string,
 	build_allowed: boolean,
 	build_block_reason: string | null,

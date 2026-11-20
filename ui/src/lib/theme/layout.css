@@ -640,6 +640,37 @@ button.duty-empty:hover {
     var(--pane-lift),
     0 0 0 3px rgba(106, 141, 255, 0.14);
 }
+.composer-context {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--sp-2);
+  margin-bottom: var(--sp-2);
+}
+.context-pill {
+  background: var(--surface-2);
+  border: 1px solid var(--line-mid);
+  color: var(--text);
+  padding-right: var(--sp-2);
+}
+.context-pill:hover {
+  background: var(--surface-2);
+  color: var(--text);
+}
+.context-clear {
+  display: inline-grid;
+  place-items: center;
+  width: var(--h-xs);
+  height: var(--h-xs);
+  border-radius: 50%;
+  color: var(--muted);
+  font-size: var(--fs-md);
+  line-height: 1;
+}
+.context-clear:hover,
+.context-clear:focus-visible {
+  background: var(--surface-3);
+  color: var(--text);
+}
 .composer textarea {
   resize: none;
   background: none;
@@ -1236,6 +1267,31 @@ button.duty-empty:hover {
   pointer-events: auto;
 }
 .toast .mini {
+  color: var(--text);
+}
+.collapse-link-notice {
+  position: fixed;
+  left: 50%;
+  bottom: var(--sp-9);
+  transform: translateX(-50%);
+  z-index: 45;
+  display: flex;
+  align-items: center;
+  gap: var(--sp-5);
+  max-width: min(640px, calc(100vw - var(--sp-10)));
+  padding: var(--sp-4) var(--sp-5) var(--sp-4) var(--sp-6);
+  border: 1px solid var(--pop-edge);
+  border-radius: var(--r-md);
+  background: var(--glass-pop);
+  box-shadow: var(--shadow-pop);
+  backdrop-filter: var(--blur-pop);
+  -webkit-backdrop-filter: var(--blur-pop);
+  font-size: var(--fs-md);
+  line-height: var(--lh);
+  color: var(--text);
+}
+.collapse-link-notice .mini {
+  flex: none;
   color: var(--text);
 }
 

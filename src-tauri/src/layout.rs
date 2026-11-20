@@ -96,7 +96,11 @@ fn read_layout(window: &Window) -> Result<LayoutSnapshot, String> {
     let mut state = state
         .lock()
         .map_err(|error| format!("Could not read main-window state: {error}"))?;
-    Ok(build_gate::layout_snapshot(store.state(), &mut state))
+    let snapshot = build_gate::layout_snapshot(store.state(), &mut state);
+    drop(state);
+    drop(store);
+    crate::collapse::flush_pending_link(window.app_handle());
+    Ok(snapshot)
 }
 
 fn dispatch(window: &Window, action: LayoutAction) -> Result<LayoutSnapshot, String> {

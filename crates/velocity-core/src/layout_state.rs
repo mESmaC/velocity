@@ -70,6 +70,8 @@ pub struct LayoutState {
     form_open: bool,
     overlay_open: bool,
     composer_text: String,
+    /// Optional validated context for the unsent home draft (e.g. `"Land abc1234"`, #479).
+    draft_context: Option<String>,
     /// The message as typed, restored to the composer if sending fails.
     /// One entry per send still on its way, oldest first: sends to one thread are
     /// delivered in order, so each answer belongs to the oldest matching entry.
@@ -138,6 +140,7 @@ impl Default for LayoutState {
             form_open: false,
             overlay_open: false,
             composer_text: String::new(),
+            draft_context: None,
             sent_steering: Vec::new(),
             pending_sends: PendingSends::default(),
             task_text: String::new(),
@@ -209,6 +212,7 @@ impl LayoutState {
         self.form_open = false;
         self.overlay_open = false;
         self.composer_text.clear();
+        self.draft_context = None;
         self.task_text.clear();
         self.show_numbers = false;
         self.selected_thread = None;
@@ -636,6 +640,18 @@ impl LayoutState {
         self.changed();
     }
 
+    /// Opens a fresh, unsent draft thread on Home with an optional validated context label
+    /// (such as `"Land abc1234"` from a Collapse deep link, #479). Never sends a prompt.
+    pub fn open_draft_thread(&mut self, draft_context: Option<String>) {
+        self.close_overlays();
+        self.selected_thread = None;
+        self.view = NavigationView::Home;
+        self.composer_text.clear();
+        self.slash_selection = 0;
+        self.draft_context = draft_context;
+        self.changed();
+    }
+
     pub fn apply(&mut self, action: LayoutAction) -> Option<LayoutIntent> {
         let intent = self.reduce(action);
         let intent = intent.and_then(|intent| self.guard_intent(intent));
@@ -651,7 +667,8 @@ impl LayoutState {
             | LayoutAction::SlashNext
             | LayoutAction::SlashPrevious
             | LayoutAction::SlashComplete
-            | LayoutAction::ToggleShowWork => {
+            | LayoutAction::ToggleShowWork
+            | LayoutAction::ClearDraftContext => {
                 self.edit_composer(action);
                 None
             }
@@ -719,6 +736,7 @@ impl LayoutState {
             LayoutAction::SlashPrevious => self.move_slash(false),
             LayoutAction::SlashComplete => self.complete_slash(),
             LayoutAction::ToggleShowWork => self.toggle_show_work(),
+            LayoutAction::ClearDraftContext => self.draft_context = None,
             _ => {}
         }
     }
@@ -791,6 +809,7 @@ impl LayoutState {
             airc_unread: self.airc_badge().unread,
             overlap_unread: self.airc_badge().alert,
             composer_text: self.composer_text.clone(),
+            draft_context: self.draft_context.clone(),
             task_text: self.task_text.clone(),
             build_allowed: self.build_block_reason().is_none(),
             build_block_reason: self.build_block_reason().map(str::to_owned),
@@ -1144,7 +1163,13 @@ impl LayoutState {
         let intent = match effect {
             ComposerSubmitEffect::Nothing => return None,
             ComposerSubmitEffect::AddTask => LayoutIntent::AddTask(text.clone()),
-            ComposerSubmitEffect::StartThreadFromDraft => LayoutIntent::StartPrompt(text.clone()),
+            ComposerSubmitEffect::StartThreadFromDraft => {
+                let prompt = match &self.draft_context {
+                    Some(context) => format!("{context}\n\n{text}"),
+                    None => text.clone(),
+                };
+                LayoutIntent::StartPrompt(prompt)
+            }
             ComposerSubmitEffect::SendPromptNow | ComposerSubmitEffect::QueueForNextStep => {
                 LayoutIntent::SteerThread {
                     identifier: self.selected_thread?,
@@ -1155,6 +1180,9 @@ impl LayoutState {
         };
         let intent = self.guard_intent(intent)?;
         self.composer_text.clear();
+        if matches!(intent, LayoutIntent::StartPrompt(_)) {
+            self.draft_context = None;
+        }
         self.slash_selection = 0;
         self.record_steering(&intent);
         if let (
@@ -1330,6 +1358,7 @@ impl LayoutState {
             NavigationIntent::NewThread => {
                 self.selected_thread = None;
                 self.view = NavigationView::Home;
+                self.draft_context = None;
             }
             NavigationIntent::Board if !matches!(self.view, NavigationView::Board) => {
                 self.view = NavigationView::Board;

@@ -39,6 +39,11 @@
   The project switcher menu and the palette open the repository page at `https://collapse.sh/<owner>/<repository>`.
   A standing land opens its commit page at `…/commit/<commit>`, which Collapse caches as immutable, from the Rosen status pane's Changes, the thread's land history, AIRC `merged` events and the palette entry for the selected thread.
   A project without a Collapse mirror shows none of these actions.
+  In the reverse direction, Velocity registers the `velocity://` scheme on install and keeps a single running instance so links from Collapse reach the running window (#479).
+  Opening `velocity://collapse/<owner>/<name>` focuses the local project whose Collapse mirror matches `<owner>/<name>` and opens an unsent draft thread in it.
+  Opening `velocity://collapse/<owner>/<name>/land/<commit>` does the same and attaches `Land <short commit>` as dismissible context on that draft.
+  When no local project matches, Velocity changes nothing and shows a notice naming the repository that instructs the user to enroll this machine with a join key from the project's owner (Settings → Workspaces → Machines), offering nothing else.
+  Rust parses every link, ignores unknown paths and query parameters, and never sends a message, starts an agent, runs a command or passes link text into a prompt or a shell.
   A Rosen project without a Collapse mirror offers Mirror to Collapse in the project switcher menu (#427).
   It provisions a Collapse repository named after the project on the project's base branch as Create does (F2), then proposes and lands one `rosen.toml` change setting `[mirror] remote` to `https://api.collapse.sh/<owner>/<repository>.git` and the top-level `collapse` root to `https://api.collapse.sh/<owner>/<repository>` (#517).
   A refused land leaves the change open and the toast names it with Rosen's reason.

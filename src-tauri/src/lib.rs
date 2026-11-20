@@ -219,6 +219,7 @@ fn event_bindings(builder: Builder<tauri::Wry>) -> Builder<tauri::Wry> {
         .typ::<airc_events::AircMessagePublished>()
         .typ::<airc_modal::AircModalPublished>()
         .typ::<browser::BrowserFrame>()
+        .typ::<collapse::CollapseLinkOpened>()
         .typ::<duty::DutyEventPublished>()
         .typ::<window::WindowStateChanged>()
         .typ::<layout::LayoutStateChanged>()
@@ -242,6 +243,7 @@ fn event_bindings(builder: Builder<tauri::Wry>) -> Builder<tauri::Wry> {
         )
         .constant("AIRC_MODAL_EVENT", airc_modal::AircModalPublished::NAME)
         .constant("BROWSER_FRAME_EVENT", browser::BrowserFrame::NAME)
+        .constant("COLLAPSE_LINK_EVENT", collapse::CollapseLinkOpened::NAME)
         .constant("DUTY_EVENT", duty::DutyEventPublished::NAME)
         .constant("PROJECT_SELECTED_EVENT", projects::ProjectSelected::NAME)
         .constant("PROVIDERS_EVENT", providers::ProvidersChanged::NAME)
@@ -336,6 +338,7 @@ pub fn run() -> anyhow::Result<()> {
         airc_events::AircMessagePublished,
         airc_modal::AircModalPublished,
         browser::BrowserFrame,
+        collapse::CollapseLinkOpened,
         duty::DutyEventPublished,
         window::WindowStateChanged,
         layout::LayoutStateChanged,
@@ -369,6 +372,7 @@ pub fn run() -> anyhow::Result<()> {
         .manage(application_environment())
         .manage(recovery.clone())
         .manage(agents::ManagedAgents::default())
+        .manage(collapse::PendingCollapseLink::default())
         .manage(goal_swarm::GoalSwarmPool::default())
         .manage(layout::MainLayout::default())
         .manage(new_project::ManagedRepositoryPicker::default())

@@ -1,9 +1,15 @@
+import { listen, type EventCallback } from '@tauri-apps/api/event';
 import {
+  COLLAPSE_LINK_EVENT,
   commands,
   type CollapseConnection,
+  type CollapseLinkOpened_Serialize,
   type LayoutSnapshot_Serialize,
 } from '../bindings';
-export type { CollapseConnection } from '../bindings';
+export type {
+  CollapseConnection,
+  CollapseLinkOpened_Serialize as CollapseLinkOpened,
+} from '../bindings';
 
 // What Collapse last reported for the project's mirror: its last land and the
 // forwarder to the downstream remote (#427). Rust reads it; the window shows it.
@@ -35,3 +41,9 @@ export const collapseConnectionCommands = {
   setEnabled: (enabled: boolean): Promise<CollapseConnection> =>
     commands.setCollapseMcp(enabled),
 };
+
+// Open in Velocity (#479): Rust parses `velocity://collapse/...` links and emits
+// either the matched project with optional draft context or an unmatched notice.
+export const onCollapseLink = (
+  callback: EventCallback<CollapseLinkOpened_Serialize>,
+) => listen(COLLAPSE_LINK_EVENT, callback);

@@ -30,6 +30,7 @@
     placeholder="Ask anything. @ files, $ skills, / commands"
     modelPill={layout.composer_model_pill}
     showWorktreePill={true}
+    draftContext={layout.draft_context}
     threadIdentifier={null}
   />
   <div class="starters">

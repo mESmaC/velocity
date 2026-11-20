@@ -31,6 +31,7 @@
   import PaneBoundary from './lib/PaneBoundary.svelte';
   import {
     layoutCommands,
+    onCollapseLink,
     onLayoutState,
     onLayoutIntent,
     projectCommands,
@@ -80,6 +81,7 @@
   let zoomQueue = Promise.resolve();
   let openPane = $state<'threads' | 'activity' | null>(null);
   let requestedBrowser = $state('');
+  let collapseNotice = $state('');
   const intents: LayoutIntent[] = [];
   const shortcutKeys = new Set([
     'k',
@@ -395,6 +397,10 @@
       if (event.defaultPrevented || document.querySelector('dialog:modal'))
         return;
       if (document.querySelector('#compact-project-pulse:popover-open')) return;
+      if (collapseNotice) {
+        collapseNotice = '';
+        return;
+      }
       if (dismissCompactPane(layout)) return;
       closeThreadMenu();
     }
@@ -461,6 +467,21 @@
         return;
       }
       stops.push(stopIntent);
+      const stopCollapseLink = await onCollapseLink((event) => {
+        if (!active) return;
+        if (event.payload.kind === 'opened') {
+          collapseNotice = '';
+          intents.push({ Navigation: 'NewThread' });
+          flush();
+          return;
+        }
+        collapseNotice = event.payload.notice;
+      });
+      if (!active) {
+        stopCollapseLink();
+        return;
+      }
+      stops.push(stopCollapseLink);
       const snapshot = await layoutCommands.getState();
       if (active) receive(snapshot);
     }
@@ -664,6 +685,21 @@
     close={closeThreadMenu}
   />{/if}
 <Toast toast={layout?.toast ?? null} undo={undoDelete} />
+{#if collapseNotice}
+  <div
+    class="collapse-link-notice"
+    role="status"
+    aria-label="Collapse link notice"
+  >
+    <span>{collapseNotice}</span>
+    <button
+      type="button"
+      class="mini"
+      aria-label="Dismiss notice"
+      onclick={() => (collapseNotice = '')}>Dismiss</button
+    >
+  </div>
+{/if}
 <Tooltip />
 {#if error || layout?.launch_notice}<p class="layout-error" role="alert">
     {error || layout?.launch_notice}

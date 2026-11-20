@@ -21,6 +21,9 @@ pub fn initialize(application: &AppHandle) {
 }
 
 pub fn open(application: &AppHandle, argument: &str) {
+    if crate::collapse::open_link(application, argument) {
+        return;
+    }
     let Some((project, thread)) = argument
         .strip_prefix("velocity://thread/")
         .and_then(|path| path.split_once('/'))

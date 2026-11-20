@@ -478,6 +478,7 @@ pub enum LayoutAction {
     SlashPrevious,
     SlashComplete,
     ToggleShowWork,
+    ClearDraftContext,
     TaskText(String),
     SubmitComposer,
     SubmitTask,
@@ -557,6 +558,8 @@ pub struct LayoutSnapshot {
     pub airc_unread: usize,
     pub overlap_unread: bool,
     pub composer_text: String,
+    /// Optional validated context attached to the unsent home draft (e.g. `"Land abc1234"`, #479).
+    pub draft_context: Option<String>,
     pub task_text: String,
     pub build_allowed: bool,
     pub build_block_reason: Option<String>,

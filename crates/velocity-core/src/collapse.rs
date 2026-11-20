@@ -31,11 +31,68 @@ pub fn repository_page(repository: &str) -> Option<String> {
     (valid_segment(owner) && valid_segment(name)).then(|| format!("{PAGE_HOST}{owner}/{name}"))
 }
 
+/// A parsed `velocity://collapse/...` link (#479). Only `<owner>/<name>` and optional
+/// `/land/<commit>` parse; unknown paths, query parameters and fragments are ignored so
+/// arbitrary link text never reaches a prompt or a shell.
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "bindings", derive(specta::Type))]
+pub struct CollapseDeepLink {
+    /// `<owner>/<name>` matching `ProjectItem::collapse_repository`.
+    pub repository: String,
+    /// Lowercase hex commit from `/land/<commit>`, when the link named a land.
+    pub commit: Option<String>,
+}
+
+/// Parses a `velocity://collapse/<owner>/<name>` or
+/// `velocity://collapse/<owner>/<name>/land/<commit>` deep link (#479).
+/// Unknown paths, query parameters and fragments are ignored; invalid segments return `None`.
+pub fn parse_deep_link(raw: &str) -> Option<CollapseDeepLink> {
+    let after_scheme = strip_prefix_ignoring_case(raw.trim(), "velocity://")?;
+    let without_fragment = after_scheme.split('#').next()?;
+    let without_query = without_fragment.split('?').next()?;
+    let path = without_query.strip_suffix('/').unwrap_or(without_query);
+    let mut segments = path.split('/');
+    let host = segments.next()?;
+    if !host.eq_ignore_ascii_case("collapse") {
+        return None;
+    }
+    let owner = segments.next()?;
+    let name = segments.next()?;
+    if !valid_segment(owner) || !valid_segment(name) {
+        return None;
+    }
+    let commit = match (segments.next(), segments.next(), segments.next()) {
+        (None, None, None) => None,
+        (Some("land"), Some(commit), None) if is_commit(commit) => {
+            Some(commit.to_ascii_lowercase())
+        }
+        _ => return None,
+    };
+    Some(CollapseDeepLink {
+        repository: format!("{owner}/{name}"),
+        commit,
+    })
+}
+
+/// The draft context label `"Land <short commit>"` for a validated hex commit (#479).
+pub fn land_context_label(commit: &str) -> Option<String> {
+    if !is_commit(commit) {
+        return None;
+    }
+    let short = commit.get(..7).unwrap_or(commit).to_ascii_lowercase();
+    Some(format!("Land {short}"))
+}
+
+/// The notice shown when a `velocity://collapse/<owner>/<name>` link matches no project (#479).
+pub fn unmatched_project_notice(repository: &str) -> String {
+    format!(
+        "No project matches {repository}. Enroll this machine with a join key from the project's owner (Settings → Workspaces → Machines)."
+    )
+}
+
 /// A landed commit's page, which Collapse caches as immutable.
 pub fn land_page(repository: &str, commit: &str) -> Option<String> {
-    let is_commit =
-        (7..=64).contains(&commit.len()) && commit.bytes().all(|byte| byte.is_ascii_hexdigit());
-    if !is_commit {
+    if !is_commit(commit) {
         return None;
     }
     Some(format!(
@@ -154,4 +211,8 @@ fn valid_segment(segment: &str) -> bool {
         && segment
             .bytes()
             .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_' | b'.'))
+}
+
+fn is_commit(commit: &str) -> bool {
+    (7..=64).contains(&commit.len()) && commit.bytes().all(|byte| byte.is_ascii_hexdigit())
 }

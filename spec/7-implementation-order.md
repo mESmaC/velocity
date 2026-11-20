@@ -39,6 +39,7 @@ Each milestone ends with a working app.
 - [x] Live Rosen status pane with server, base, landing, claims, warm pool, mirror and owning-thread navigation (F6, #421)
 - [x] Rosen thread change track, header actions, land history and inline stored conflicts (F6, #422)
 - [x] Open on Collapse for the project and each land, hidden without a Collapse mirror (F5, F6, #429)
+- [x] Open in Velocity: `velocity://collapse/<owner>/<name>` and `.../land/<commit>` deep links focus the matching project with an unsent draft thread (and optional `Land <short commit>` context) or show the unmatched-repository notice (F5, F6, #479)
 - [x] Cut release for any landed commit while the mirror is Collapse: Rosen's last green commit, a workflow dispatch, and the tag created by the release workflow (F1, F6, #431)
 - [x] Return refused Rosen lands to the author with repair instructions and show the refusal on the thread card (F6, #487)
 - [x] Catch Rosen projects up from their mirror on start and from the project menu, never rebuilding the server (F5, #501)
