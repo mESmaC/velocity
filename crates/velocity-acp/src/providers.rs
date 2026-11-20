@@ -174,8 +174,10 @@ pub fn provider_agent(provider: Provider) -> Option<ProviderAgent> {
         Provider::Anthropic => ("claude-agent-acp", &[], &["bypassPermissions"]),
         Provider::Codex => ("codex-acp", &[], &CODEX_FULL_ACCESS),
         Provider::KimiCode => ("kimi", &["acp"], &[]),
-        // `yolo` is Antigravity's unrestricted mode (§3.2 Antigravity, Rule 1).
-        Provider::Antigravity => ("agy", &["acp"], &["yolo"]),
+        // Antigravity CLI 1.5 has no unrestricted session mode (its modes are `default`,
+        // `accept-edits`, `auto` and `plan`, and `yolo` is gone), so a session that asked for
+        // one failed to start. The launch flag approves every tool call instead (Rule 1).
+        Provider::Antigravity => ("agy", &["acp", "--dangerously-skip-permissions"], &[]),
         Provider::Custom(_) => return None,
     };
     let mut launch = AgentLaunch::new(PathBuf::from(program));
