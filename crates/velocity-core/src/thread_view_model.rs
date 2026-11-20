@@ -92,6 +92,12 @@ pub struct ToolStepRow {
     pub verb: String,
     pub argument: String,
     pub result_text: String,
+    /// The ACP tool call that produced this step, so a spawning step links to its subagent card (F4).
+    #[cfg_attr(
+        feature = "bindings",
+        serde(default, skip_serializing_if = "Option::is_none")
+    )]
+    pub tool_call_id: Option<String>,
 }
 
 #[cfg_attr(
@@ -368,6 +374,13 @@ pub struct SubagentView {
     #[cfg_attr(feature = "bindings", serde(with = "crate::ipc_number"))]
     #[cfg_attr(feature = "bindings", specta(type = String))]
     pub started_at: usize,
+    /// Unix seconds when Velocity saw it finish (`Done` or `Failed`); `None` while running.
+    #[cfg_attr(
+        feature = "bindings",
+        serde(default, with = "crate::ipc_number::optional")
+    )]
+    #[cfg_attr(feature = "bindings", specta(type = Option<String>))]
+    pub ended_at: Option<usize>,
     /// Total tokens, when the agent reports them.
     #[cfg_attr(feature = "bindings", serde(with = "crate::ipc_number::optional"))]
     #[cfg_attr(feature = "bindings", specta(type = Option<String>))]
@@ -420,6 +433,14 @@ impl LiveThreadView {
     pub fn with_subagents(mut self, subagents: Vec<SubagentView>) -> Self {
         self.subagents = subagents;
         self
+    }
+
+    /// How many of the session's subagents are currently running (F4).
+    pub fn running_subagents(&self) -> usize {
+        self.subagents
+            .iter()
+            .filter(|subagent| subagent.status == SubagentStatus::Running)
+            .count()
     }
 }
 
@@ -661,18 +682,21 @@ pub fn initial_worktree_step_group(worktree_path: &str, base_branch: &str) -> Ve
                 verb: "Workspace".into(),
                 argument: worktree_path.into(),
                 result_text: format!("created from {base_branch}"),
+                tool_call_id: None,
             },
             ToolStepKind::SkillLoaded => ToolStepRow {
                 running: false,
                 verb: "Skill".into(),
                 argument: String::new(),
                 result_text: String::new(),
+                tool_call_id: None,
             },
             ToolStepKind::ToolCall => ToolStepRow {
                 running: false,
                 verb: "Tool".into(),
                 argument: String::new(),
                 result_text: String::new(),
+                tool_call_id: None,
             },
         })
         .collect()

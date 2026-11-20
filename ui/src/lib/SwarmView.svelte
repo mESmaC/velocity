@@ -1,6 +1,7 @@
 <script lang="ts">
   import Composer from './Composer.svelte';
   import Icon from './Icon.svelte';
+  import { formatRunningSubagents } from './subagent-format';
   import type {
     LayoutAction,
     LayoutSnapshot,
@@ -106,6 +107,11 @@
                     ? 'var(--warn)'
                     : undefined}>{card.doing}</span
                 >
+                {#if card.running_subagents !== '0'}<span class="card-subagents"
+                    >· {formatRunningSubagents(
+                      Number(card.running_subagents),
+                    )}</span
+                  >{/if}
               </span>
               <span class="sc-f">
                 <Icon name={providerIcons[card.provider]} />

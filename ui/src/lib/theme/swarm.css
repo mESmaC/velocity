@@ -213,6 +213,11 @@
 .sc-doing.failed {
   color: var(--err);
 }
+.sc-doing .card-subagents {
+  flex: none;
+  color: var(--accent-hi);
+  white-space: nowrap;
+}
 .sc-f {
   display: flex;
   align-items: center;

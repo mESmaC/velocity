@@ -131,6 +131,10 @@ pub struct GoalAgentCard {
     pub track: Vec<TrackStep>,
     pub doing: String,
     pub waiting: bool,
+    /// How many subagents this agent's thread currently has running (F4, F16).
+    #[cfg_attr(feature = "bindings", serde(with = "crate::ipc_number"))]
+    #[cfg_attr(feature = "bindings", specta(type = String))]
+    pub running_subagents: usize,
 }
 
 #[cfg_attr(
@@ -315,6 +319,7 @@ pub fn goal_card(agent: &GoalAgentProgress) -> GoalAgentCard {
         track: goal_track(agent),
         doing: goal_doing(agent),
         waiting: agent.waits(),
+        running_subagents: 0,
     }
 }
 

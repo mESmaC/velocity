@@ -174,6 +174,10 @@ pub struct SwarmCard {
     pub agent_label: String,
     pub added: u32,
     pub deleted: u32,
+    /// How many subagents this member's thread currently has running (F4, F10).
+    #[cfg_attr(feature = "bindings", serde(with = "crate::ipc_number"))]
+    #[cfg_attr(feature = "bindings", specta(type = String))]
+    pub running_subagents: usize,
 }
 
 #[cfg_attr(
@@ -331,6 +335,7 @@ pub fn member_card(member: &MemberProgress) -> SwarmCard {
         agent_label: format!("a{} · {}", member.agent_number, member.model_name),
         added: member.added,
         deleted: member.deleted,
+        running_subagents: 0,
     }
 }
 

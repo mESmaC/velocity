@@ -217,6 +217,7 @@ fn tool_row(step: &ToolStep) -> ToolStepRow {
             ToolCallStatus::Failed => "failed".into(),
             _ => String::new(),
         },
+        tool_call_id: None,
     }
 }
 

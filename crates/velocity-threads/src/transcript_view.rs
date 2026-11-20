@@ -24,6 +24,7 @@ const DIFF_CONTEXT_LINES: usize = 3;
 
 #[derive(Clone, Debug)]
 struct ToolView {
+    call_id: Option<String>,
     title: String,
     name: Option<String>,
     kind: ToolKind,
@@ -338,6 +339,7 @@ fn setup_step(worktree: &str, base_branch: &str, running: bool) -> ToolStepRow {
         } else {
             format!("created from {base_branch}")
         },
+        tool_call_id: None,
     }
 }
 
@@ -381,6 +383,7 @@ fn new_entry(update: &SessionUpdate, worktree: &str) -> EntryView {
         SessionUpdate::ToolCall(call) => EntryView::Tool(Box::new(tool_view(call, worktree))),
         SessionUpdate::ToolCallUpdate(update) => {
             let mut tool = ToolView {
+                call_id: Some(update.tool_call_id.0.to_string()),
                 title: String::new(),
                 name: None,
                 kind: ToolKind::Other,
@@ -410,6 +413,9 @@ fn merge(entry: &mut EntryView, update: &SessionUpdate, worktree: &str) {
             **tool = tool_view(call, worktree);
         }
         (EntryView::Tool(tool), SessionUpdate::ToolCallUpdate(update)) => {
+            if tool.call_id.is_none() {
+                tool.call_id = Some(update.tool_call_id.0.to_string());
+            }
             apply_fields(tool, &update.fields, worktree);
         }
         _ => {}
@@ -428,6 +434,7 @@ fn chunk_text(chunk: &ContentChunk) -> String {
 fn tool_view(call: &ToolCall, worktree: &str) -> ToolView {
     let first_path = call.locations.first().map(|location| &location.path);
     ToolView {
+        call_id: Some(call.tool_call_id.0.to_string()),
         skill: loaded_skill(&call.title, call.raw_input.as_ref(), first_path),
         title: call.title.clone(),
         name: call.name.clone(),
@@ -537,6 +544,7 @@ fn tool_step(tool: &ToolView) -> ToolStepRow {
             verb: "Skill".into(),
             argument: skill.clone(),
             result_text,
+            tool_call_id: tool.call_id.clone(),
         };
     }
     ToolStepRow {
@@ -544,6 +552,7 @@ fn tool_step(tool: &ToolView) -> ToolStepRow {
         verb: tool_verb(tool),
         argument: tool.location.clone().unwrap_or_else(|| tool.title.clone()),
         result_text,
+        tool_call_id: tool.call_id.clone(),
     }
 }
 

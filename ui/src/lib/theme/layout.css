@@ -467,6 +467,11 @@
 .agents-count {
   font: var(--fw-medium) var(--fs-xs) var(--mono);
 }
+.subagents-count {
+  font: var(--fw-medium) var(--fs-xs) var(--mono);
+  color: var(--accent-hi);
+  white-space: nowrap;
+}
 .thread.paused .t-meta {
   color: var(--warn);
 }

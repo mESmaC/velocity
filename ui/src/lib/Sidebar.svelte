@@ -5,6 +5,7 @@
   import UsageModal from './UsageModal.svelte';
   import UpdatesModal from './UpdatesModal.svelte';
   import { rise } from './motion';
+  import { formatRunningSubagents } from './subagent-format';
   import {
     onUpdateStatus,
     updateCommands,
@@ -174,6 +175,13 @@
               >
               {#if row.agents !== '0'}<span class="agents-count"
                   >×{row.agents}</span
+                >{:else if row.running_subagents !== '0'}<span
+                  class="subagents-count"
+                  title={formatRunningSubagents(Number(row.running_subagents))}
+                  >{formatRunningSubagents(
+                    Number(row.running_subagents),
+                    'short',
+                  )}</span
                 >{/if}
               {#if row.metadata}<span
                   class="t-meta"

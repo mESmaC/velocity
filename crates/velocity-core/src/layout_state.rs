@@ -434,9 +434,10 @@ impl LayoutState {
         if self.data.project_identifier != Some(project) {
             return false;
         }
-        let titling = |live: &LiveThreadView| live.titling_model.is_some();
+        let summary =
+            |live: &LiveThreadView| (live.titling_model.is_some(), live.running_subagents());
         self.selected_thread == Some(identifier)
-            || self.live.get(&(project, identifier)).map(titling) != Some(titling(view))
+            || self.live.get(&(project, identifier)).map(summary) != Some(summary(view))
     }
 
     /// Opens a thread the backend just started, as if it had been clicked (F4).
@@ -448,6 +449,11 @@ impl LayoutState {
     fn live_thread(&self, identifier: usize) -> Option<&LiveThreadView> {
         let project = self.data.project_identifier?;
         self.live.get(&(project, identifier))
+    }
+
+    fn running_subagents(&self, identifier: usize) -> usize {
+        self.live_thread(identifier)
+            .map_or(0, LiveThreadView::running_subagents)
     }
 
     /// A spec interview moves from scan to ask to ready while it is open, and each phase
@@ -982,12 +988,20 @@ impl LayoutState {
 
     fn active_swarm_snapshot(&self) -> Option<SwarmViewSnapshot> {
         let entry = self.listed_swarm(self.selected_thread?, false)?;
-        Some(swarm::project_swarm_view(&entry))
+        let mut snapshot = swarm::project_swarm_view(&entry);
+        for card in &mut snapshot.cards {
+            card.running_subagents = self.running_subagents(card.identifier);
+        }
+        Some(snapshot)
     }
 
     fn active_goal_swarm_snapshot(&self) -> Option<GoalSwarmViewSnapshot> {
         let entry = self.listed_goal_swarm(self.selected_thread?, false)?;
-        Some(goal_swarm_view::project_goal_swarm_view(&entry))
+        let mut snapshot = goal_swarm_view::project_goal_swarm_view(&entry);
+        for card in &mut snapshot.cards {
+            card.running_subagents = self.running_subagents(card.identifier);
+        }
+        Some(snapshot)
     }
 
     fn default_model_pill(&self) -> ModelPillView {
@@ -1524,6 +1538,7 @@ impl LayoutState {
                 number: Some(*number),
                 segments: Vec::new(),
                 goal: false,
+                running_subagents: 0,
             }],
         })
     }
@@ -1587,6 +1602,7 @@ impl LayoutState {
                 .goal_swarms
                 .iter()
                 .any(|goal| goal.identifier == entry.policy.identifier),
+            running_subagents: self.running_subagents(entry.policy.identifier),
         }
     }
 

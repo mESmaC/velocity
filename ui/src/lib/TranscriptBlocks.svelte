@@ -1,17 +1,34 @@
 <script lang="ts">
   import PaneState from './PaneState.svelte';
   import Markdown from './Markdown.svelte';
+  import SubagentCard from './SubagentCard.svelte';
   import { rise } from './motion';
-  import type { DiffLineRole, TranscriptBlock } from './ipc';
+  import {
+    findUnmatchedSubagents,
+    partitionToolGroup,
+  } from './subagent-format';
+  import type { DiffLineRole, SubagentView, TranscriptBlock } from './ipc';
   let {
     blocks,
     removeQueued,
     retry,
+    subagents = [],
+    activeSubagentId = null,
+    defaultModel = '',
+    nowSeconds = 0,
+    openSubagent,
+    showUnmatched = true,
   }: {
     blocks: TranscriptBlock[];
     retry?: () => void | Promise<void>;
     /** Withdraws the queued message at this position among the queued rows (F4). */
     removeQueued?: (index: number) => void;
+    subagents?: SubagentView[];
+    activeSubagentId?: string | null;
+    defaultModel?: string;
+    nowSeconds?: number;
+    openSubagent?: (identifier: string, opener: HTMLElement) => void;
+    showUnmatched?: boolean;
   } = $props();
 
   // Queued rows sit at the end in send order; each one's position among them.
@@ -19,6 +36,16 @@
     let next = 0;
     return blocks.map((block) => (block.UserMessage?.queued ? next++ : -1));
   });
+
+  const subagentById = $derived(
+    new Map(subagents.map((subagent) => [subagent.identifier, subagent])),
+  );
+
+  // Subagents without a matching parent tool call (for example Codex native subagent
+  // sessions, §3.2 Subagents) render in a group at the end of the transcript.
+  const unmatchedSubagents = $derived(
+    showUnmatched ? findUnmatchedSubagents(blocks, subagents) : [],
+  );
 
   const diffLineClasses: Record<DiffLineRole, string> = {
     Added: 'a',
@@ -56,22 +83,48 @@
       <Markdown text={block.AgentMessage.paragraphs.join('\n\n')} />
     </div>
   {:else if block.ToolGroup}
-    <div class="tools" in:rise>
-      {#each block.ToolGroup.steps as step, stepIndex (stepIndex)}
-        <div class="tool" class:running={step.running} in:rise>
-          {#if step.running}
-            <span class="working-dots" aria-hidden="true"
-              ><i></i><i></i><i></i></span
-            >
-          {:else}
-            <span class="ok">✓</span>
-          {/if}
-          <span class="verb" title={step.verb}>{step.verb}</span>
-          <span class="arg" title={step.argument}>{step.argument}</span>
-          <span class="res" title={step.result_text}>{step.result_text}</span>
+    {#each partitionToolGroup(block.ToolGroup.steps, subagentById) as segment, segmentIndex (segmentIndex)}
+      {#if segment.kind === 'tools'}
+        <div class="tools" in:rise>
+          {#each segment.steps as step, stepIndex (stepIndex)}
+            <div class="tool" class:running={step.running} in:rise>
+              {#if step.running}
+                <span class="working-dots" aria-hidden="true"
+                  ><i></i><i></i><i></i></span
+                >
+              {:else}
+                <span class="ok">✓</span>
+              {/if}
+              <span class="verb" title={step.verb}>{step.verb}</span>
+              <span class="arg" title={step.argument}>{step.argument}</span>
+              <span class="res" title={step.result_text}
+                >{step.result_text}</span
+              >
+            </div>
+          {/each}
         </div>
-      {/each}
-    </div>
+      {:else}
+        <div class="subagent-section" in:rise>
+          <div class="section-h">
+            {segment.subagents.length === 1
+              ? 'Agent · subagent'
+              : `Agent · ${segment.subagents.length} parallel subagents`}
+          </div>
+          <div class="subagent-group">
+            {#each segment.subagents as subagent (subagent.identifier)}
+              <SubagentCard
+                {subagent}
+                {defaultModel}
+                {nowSeconds}
+                selected={activeSubagentId === subagent.identifier}
+                onOpen={(identifier, opener) =>
+                  openSubagent?.(identifier, opener)}
+              />
+            {/each}
+          </div>
+        </div>
+      {/if}
+    {/each}
   {:else if block.Diff}
     <div class="diff" in:rise>
       <div class="diff-h">
@@ -112,3 +165,23 @@
     </div>
   {/if}
 {/each}
+{#if unmatchedSubagents.length > 0}
+  <div class="subagent-section" in:rise>
+    <div class="section-h">
+      {unmatchedSubagents.length === 1
+        ? 'Agent · subagent'
+        : `Agent · ${unmatchedSubagents.length} subagents`}
+    </div>
+    <div class="subagent-group">
+      {#each unmatchedSubagents as subagent (subagent.identifier)}
+        <SubagentCard
+          {subagent}
+          {defaultModel}
+          {nowSeconds}
+          selected={activeSubagentId === subagent.identifier}
+          onOpen={(identifier, opener) => openSubagent?.(identifier, opener)}
+        />
+      {/each}
+    </div>
+  </div>
+{/if}

@@ -2,6 +2,7 @@
   import Composer from './Composer.svelte';
   import Icon from './Icon.svelte';
   import { goalSwarmCommands } from './ipc';
+  import { formatRunningSubagents } from './subagent-format';
   import type {
     BoardPieceKind,
     GoalClaimsBoard,
@@ -205,6 +206,11 @@
                     ? 'var(--warn)'
                     : undefined}>{card.doing}</span
                 >
+                {#if card.running_subagents !== '0'}<span class="card-subagents"
+                    >· {formatRunningSubagents(
+                      Number(card.running_subagents),
+                    )}</span
+                  >{/if}
               </span>
             </button>
           {/each}

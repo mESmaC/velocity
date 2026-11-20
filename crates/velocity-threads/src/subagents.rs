@@ -30,6 +30,7 @@ struct SubagentNode {
     /// Its spawning call returns before it finishes (§3.2 Subagents).
     background: bool,
     started_at: u64,
+    ended_at: Option<u64>,
     tokens: Option<u64>,
     /// Codex child threads, whose `agentsStates` report this subagent's status.
     threads: Vec<String>,
@@ -69,9 +70,8 @@ impl Subagents {
                 .nodes
                 .iter_mut()
                 .find(|node| node.threads.contains(&thread))
-                && node.status != thread_status(status)
+                && set_status(node, thread_status(status), now)
             {
-                node.status = thread_status(status);
                 self.changed.insert(node.spawn.clone());
             }
         }
@@ -98,13 +98,15 @@ impl Subagents {
     /// The session ended: nothing it started still runs. A subagent cut off mid-call
     /// failed; a background one is reported done, as its parent saw it to the end.
     pub fn session_ended(&mut self) {
+        let now = unix_now();
         for node in &mut self.nodes {
             if node.status == SubagentStatus::Running {
-                node.status = if node.background {
+                let status = if node.background {
                     SubagentStatus::Done
                 } else {
                     SubagentStatus::Failed
                 };
+                set_status(node, status, now);
                 self.changed.insert(node.spawn.clone());
             }
         }
@@ -175,10 +177,12 @@ impl Subagents {
             }
         }
         if let Some(status) = report.status {
-            node.status = call_status(node, status);
+            let next = call_status(node, status);
+            set_status(node, next, now);
         }
         if let Some(activity) = report.activity {
-            node.status = activity_status(node.status, activity);
+            let next = activity_status(node.status, activity);
+            set_status(node, next, now);
         }
     }
 
@@ -193,6 +197,7 @@ impl Subagents {
                     status: SubagentStatus::Running,
                     background: false,
                     started_at: now,
+                    ended_at: None,
                     tokens: None,
                     threads: Vec::new(),
                     transcript: LiveTranscript::subagent(&self.worktree),
@@ -202,6 +207,20 @@ impl Subagents {
         };
         &mut self.nodes[index]
     }
+}
+
+/// Updates a subagent's status, recording its finish time once it leaves `Running`.
+fn set_status(node: &mut SubagentNode, status: SubagentStatus, now: u64) -> bool {
+    let changed = node.status != status;
+    node.status = status;
+    match status {
+        SubagentStatus::Running => node.ended_at = None,
+        SubagentStatus::Done | SubagentStatus::Failed if node.ended_at.is_none() => {
+            node.ended_at = Some(now);
+        }
+        SubagentStatus::Done | SubagentStatus::Failed => {}
+    }
+    changed
 }
 
 /// A subagent's status after its spawning call reports `status`. A background subagent's
@@ -245,6 +264,9 @@ fn view(node: &SubagentNode) -> SubagentView {
         model: node.model.clone(),
         status: node.status,
         started_at: usize::try_from(node.started_at).unwrap_or(usize::MAX),
+        ended_at: node
+            .ended_at
+            .map(|ended| usize::try_from(ended).unwrap_or(usize::MAX)),
         tokens: node
             .tokens
             .map(|tokens| usize::try_from(tokens).unwrap_or(usize::MAX)),

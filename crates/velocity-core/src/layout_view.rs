@@ -292,6 +292,10 @@ pub struct SidebarRow {
     pub segments: Vec<SwarmStage>,
     /// A goal swarm row: the target icon instead of the swarm icon (F16).
     pub goal: bool,
+    /// How many subagents this thread currently has running (F4).
+    #[cfg_attr(feature = "bindings", serde(with = "crate::ipc_number"))]
+    #[cfg_attr(feature = "bindings", specta(type = String))]
+    pub running_subagents: usize,
 }
 
 #[cfg_attr(

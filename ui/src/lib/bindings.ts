@@ -1443,6 +1443,8 @@ export type GoalAgentCard_Deserialize = {
 	track: TrackStep[],
 	doing: string,
 	waiting: boolean,
+	/**  How many subagents this agent's thread currently has running (F4, F16). */
+	running_subagents: string,
 };
 
 /**
@@ -1463,6 +1465,8 @@ export type GoalAgentCard_Serialize = {
 	track: TrackStep[],
 	doing: string,
 	waiting: boolean,
+	/**  How many subagents this agent's thread currently has running (F4, F16). */
+	running_subagents: string,
 };
 
 export type GoalBoardRow = GoalBoardRow_Serialize | GoalBoardRow_Deserialize;
@@ -4097,6 +4101,8 @@ export type SidebarRow_Deserialize = {
 	segments: SwarmStage[],
 	/**  A goal swarm row: the target icon instead of the swarm icon (F16). */
 	goal: boolean,
+	/**  How many subagents this thread currently has running (F4). */
+	running_subagents: string,
 };
 
 export type SidebarRow_Serialize = {
@@ -4121,6 +4127,8 @@ export type SidebarRow_Serialize = {
 	segments: SwarmStage[],
 	/**  A goal swarm row: the target icon instead of the swarm icon (F16). */
 	goal: boolean,
+	/**  How many subagents this thread currently has running (F4). */
+	running_subagents: string,
 };
 
 /**  A dashed card for a provider you can't pick yet; clicking it starts its sign-in. */
@@ -4551,6 +4559,8 @@ export type SubagentView_Deserialize = {
 	status: SubagentStatus,
 	/**  Unix seconds when Velocity saw it start. */
 	started_at: string,
+	/**  Unix seconds when Velocity saw it finish (`Done` or `Failed`); `None` while running. */
+	ended_at?: string | null,
 	/**  Total tokens, when the agent reports them. */
 	tokens: string | null,
 	/**  How many tool steps it made. */
@@ -4572,6 +4582,8 @@ export type SubagentView_Serialize = {
 	status: SubagentStatus,
 	/**  Unix seconds when Velocity saw it start. */
 	started_at: string,
+	/**  Unix seconds when Velocity saw it finish (`Done` or `Failed`); `None` while running. */
+	ended_at: string | null,
 	/**  Total tokens, when the agent reports them. */
 	tokens: string | null,
 	/**  How many tool steps it made. */
@@ -4622,6 +4634,8 @@ export type SwarmCard_Deserialize = {
 	agent_label: string,
 	added: number,
 	deleted: number,
+	/**  How many subagents this member's thread currently has running (F4, F10). */
+	running_subagents: string,
 };
 
 export type SwarmCard_Serialize = {
@@ -4638,6 +4652,8 @@ export type SwarmCard_Serialize = {
 	agent_label: string,
 	added: number,
 	deleted: number,
+	/**  How many subagents this member's thread currently has running (F4, F10). */
+	running_subagents: string,
 };
 
 export type SwarmDialog = SwarmDialog_Serialize | SwarmDialog_Deserialize;
@@ -5252,11 +5268,24 @@ export type ToastView_Serialize = {
 	undo_deletion: number | null,
 };
 
-export type ToolStepRow = {
+export type ToolStepRow = ToolStepRow_Serialize | ToolStepRow_Deserialize;
+
+export type ToolStepRow_Deserialize = {
 	running: boolean,
 	verb: string,
 	argument: string,
 	result_text: string,
+	/**  The ACP tool call that produced this step, so a spawning step links to its subagent card (F4). */
+	tool_call_id?: string | null,
+};
+
+export type ToolStepRow_Serialize = {
+	running: boolean,
+	verb: string,
+	argument: string,
+	result_text: string,
+	/**  The ACP tool call that produced this step, so a spawning step links to its subagent card (F4). */
+	tool_call_id?: string,
 };
 
 export type ToolUsageRow = {
@@ -5277,7 +5306,7 @@ export type TranscriptBlock_Deserialize = ({ UserMessage: {
 } }) & { AgentMessage?: never; Decision?: never; Diff?: never; ErrorCard?: never; Notice?: never; StatusLine?: never; ToolGroup?: never } | ({ AgentMessage: {
 	paragraphs: string[],
 } }) & { Decision?: never; Diff?: never; ErrorCard?: never; Notice?: never; StatusLine?: never; ToolGroup?: never; UserMessage?: never } | ({ ToolGroup: {
-	steps: ToolStepRow[],
+	steps: ToolStepRow_Deserialize[],
 } }) & { AgentMessage?: never; Decision?: never; Diff?: never; ErrorCard?: never; Notice?: never; StatusLine?: never; UserMessage?: never } | ({ Diff: {
 	block: DiffBlockView_Deserialize,
 } }) & { AgentMessage?: never; Decision?: never; ErrorCard?: never; Notice?: never; StatusLine?: never; ToolGroup?: never; UserMessage?: never } | ({ StatusLine: {
@@ -5307,7 +5336,7 @@ export type TranscriptBlock_Serialize = ({ UserMessage: {
 } }) & { AgentMessage?: never; Decision?: never; Diff?: never; ErrorCard?: never; Notice?: never; StatusLine?: never; ToolGroup?: never } | ({ AgentMessage: {
 	paragraphs: string[],
 } }) & { Decision?: never; Diff?: never; ErrorCard?: never; Notice?: never; StatusLine?: never; ToolGroup?: never; UserMessage?: never } | ({ ToolGroup: {
-	steps: ToolStepRow[],
+	steps: ToolStepRow_Serialize[],
 } }) & { AgentMessage?: never; Decision?: never; Diff?: never; ErrorCard?: never; Notice?: never; StatusLine?: never; UserMessage?: never } | ({ Diff: {
 	block: DiffBlockView_Serialize,
 } }) & { AgentMessage?: never; Decision?: never; ErrorCard?: never; Notice?: never; StatusLine?: never; ToolGroup?: never; UserMessage?: never } | ({ StatusLine: {
