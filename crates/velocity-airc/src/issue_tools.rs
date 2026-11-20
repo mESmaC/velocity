@@ -10,9 +10,29 @@ pub struct IssueUpdate<'a> {
     /// The body is the reason the work needs hardware, an upstream release or an owner
     /// decision; the issue takes `needs-owner` and leaves dispatch (#506).
     pub needs_owner: bool,
+    /// The issues this one waits on, as `#12` or `owner/name#12`. They become GitHub
+    /// issue dependencies, which hold the issue until they close (#511).
+    pub blocked_by: &'a [String],
 }
 
 pub(crate) type IssueHandler<'a> = dyn Fn(IssueUpdate<'_>) -> Result<String, Error> + 'a;
+
+/// A tool's optional `blocked_by` list. A bare number is read as that issue.
+pub(crate) fn blocked_by(arguments: &Value) -> Result<Vec<String>, Error> {
+    let invalid = || Error::Invalid("blocked_by must be a list of issues such as #12".into());
+    match arguments.get("blocked_by") {
+        None | Some(Value::Null) => Ok(Vec::new()),
+        Some(Value::Array(names)) => names
+            .iter()
+            .map(|name| match name {
+                Value::String(name) => Ok(name.clone()),
+                Value::Number(number) => Ok(number.to_string()),
+                _ => Err(invalid()),
+            })
+            .collect(),
+        Some(_) => Err(invalid()),
+    }
+}
 
 pub(crate) fn call(
     channel: &Channel,
@@ -31,6 +51,13 @@ pub(crate) fn call(
     if body.is_empty() {
         return Err(Error::Invalid("An issue comment needs a body".into()));
     }
+    let ready = name == "issue_ready_to_close";
+    let blockers = blocked_by(arguments)?;
+    if ready && !blockers.is_empty() {
+        return Err(Error::Invalid(
+            "An issue that still waits on others is not ready to close".into(),
+        ));
+    }
     let key = format!("issue:{issue}");
     let claim = channel
         .claims()?
@@ -41,8 +68,9 @@ pub(crate) fn call(
         claim: &claim,
         issue,
         body,
-        ready: name == "issue_ready_to_close",
+        ready,
         needs_owner: name == "issue_needs_owner",
+        blocked_by: &blockers,
     })?;
     Ok(json!({"url": url}))
 }
@@ -50,23 +78,26 @@ pub(crate) fn call(
 pub(crate) fn tools() -> [Value; 3] {
     let fields =
         json!({"issue":{"type":"integer","minimum":1},"body":{"type":"string","minLength":1}});
+    let mut waiting = fields.clone();
+    waiting["blocked_by"] = json!({"type":"array","items":{"type":"string"},
+        "description":"Issues this one waits on, as #12 for this repository or owner/name#12 for another. They are linked as GitHub issue dependencies."});
     [
         protocol::tool(
             "issue_comment",
-            "Post a progress comment on a GitHub issue you hold in AIRC. Use it when starting, when a finding changes the plan, or when blocked.",
-            fields.clone(),
+            "Post a progress comment on a GitHub issue you hold in AIRC. Use it when starting, when a finding changes the plan, or when blocked. When the issue waits on other issues, name them in blocked_by and end your turn: they are recorded as GitHub issue dependencies and dispatch starts the issue again when they close. Never hold an issue with a label for that.",
+            waiting.clone(),
             &["issue", "body"],
         ),
         protocol::tool(
             "issue_ready_to_close",
             "Post your completion evidence and add the ready-to-close label on a GitHub issue you hold in AIRC. This leaves the issue open for independent follow-through.",
-            fields.clone(),
+            fields,
             &["issue", "body"],
         ),
         protocol::tool(
             "issue_needs_owner",
-            "Add the needs-owner label on a GitHub issue you hold in AIRC, with the reason as the body. Use it when the work cannot proceed without hardware, an upstream release or an owner decision, then end your turn. The issue leaves dispatch until the owner removes the label.",
-            fields,
+            "Add the needs-owner label on a GitHub issue you hold in AIRC, with the reason as the body. Use it when the work cannot proceed without hardware, an upstream release or an owner decision, then end your turn. The issue leaves dispatch until the owner removes the label. A reason that only waits on other issues is refused: use issue_comment with blocked_by for those.",
+            waiting,
             &["issue", "body"],
         ),
     ]

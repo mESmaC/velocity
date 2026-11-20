@@ -118,46 +118,6 @@ impl IssueClient {
         self.decode_issue_with_dependencies(issue)
     }
 
-    pub(crate) fn add_blocker(&self, issue: u32, blocker: u32) -> Result<(), GitHubCommandError> {
-        if issue == 0 || blocker == 0 || issue == blocker {
-            return Err(GitHubCommandError::Invalid(
-                "Use two distinct, positive issue numbers".into(),
-            ));
-        }
-        #[derive(Deserialize)]
-        struct IssueId {
-            id: String,
-        }
-        #[derive(Deserialize)]
-        struct DependencyIds {
-            issue: Option<IssueId>,
-            blocker: Option<IssueId>,
-        }
-        let mut variables = self.transport.variables(issue);
-        variables["blocker"] = json!(blocker);
-        let ids: DependencyIds = self.transport.graphql_at(
-            "query($owner:String!,$name:String!,$number:Int!,$blocker:Int!) {
-                repository(owner:$owner,name:$name) {
-                    issue(number:$number) { id } blocker: issue(number:$blocker) { id }
-                }
-            }",
-            variables,
-            "/data/repository",
-        )?;
-        let issue_id = ids
-            .issue
-            .ok_or_else(|| GitHubCommandError::Missing(format!("issue #{issue}")))?;
-        let blocker_id = ids
-            .blocker
-            .ok_or_else(|| GitHubCommandError::Missing(format!("issue #{blocker}")))?;
-        let _: IssueId = self.transport.graphql_at(
-            "mutation($input:AddBlockedByInput!) { addBlockedBy(input:$input) { issue { id } } }",
-            json!({"input": {"issueId": issue_id.id, "blockingIssueId": blocker_id.id}}),
-            "/data/addBlockedBy/issue",
-        )?;
-        Ok(())
-    }
-
     #[track_caller]
     pub fn discover(directory: &Path) -> Result<Self, GitHubCommandError> {
         Ok(Self {

@@ -119,6 +119,9 @@ fn report_project(
             retry,
         )
         .map_err(|error| error.to_string())?;
+        // Before the report is recorded: a failed link leaves it pending, and the retry
+        // finds the issue it already opened and links again (#511).
+        link_blockers(repository, outcome.issue(), &report)?;
         let reports = saved.projects.entry(project.id).or_default();
         reports.record_issue(repository, entry.sequence, outcome.issue());
         saved.remember(repository, outcome.issue(), report);
@@ -128,6 +131,26 @@ fn report_project(
     if reports.cursor != last {
         reports.cursor = last;
         saved.save(app_data).map_err(|error| error.to_string())?;
+    }
+    Ok(())
+}
+
+/// Links the blockers a discovery declares to the issue it was reported on. A blocker
+/// GitHub refuses, such as an issue that does not exist, is logged and left out so the
+/// project's later reports still go through.
+fn link_blockers(
+    repository: ReportRepository,
+    issue: u32,
+    report: &DiscoveryReport,
+) -> Result<(), String> {
+    let refused = velocity_reports::link_declared_blockers(repository, issue, report)
+        .map_err(|error| error.to_string())?;
+    if !refused.is_empty() {
+        eprintln!(
+            "Discovery issue reports: GitHub refused to link {} as blockers of {}#{issue}",
+            refused.join(", "),
+            repository.repository(),
+        );
     }
     Ok(())
 }

@@ -454,7 +454,7 @@ fn rosen_server(launch: &SwarmLaunch, environment: &[(String, String)]) -> Optio
 }
 
 fn prompt(launch: &SwarmLaunch, roster: &ScoutRoster, instruction: Option<&str>) -> String {
-    let dependencies = "When a decision sets an order between issues, use scout_add_blocker to record the dependency on GitHub.";
+    let dependencies = "When a decision sets an order between issues, or an issue waits on another, use scout_add_blocker to record the dependency on GitHub; never hold an issue with a label for that.";
     let no_change = "Use review_swarm_no_change to list the issues waiting after an empty turn. \
         Read their discussion, following the GitHub link for any clipped evidence, and verify their acceptance criteria against the current base. \
         Resolve an already-fixed issue with verification evidence or requeue it with concrete instructions. \

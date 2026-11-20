@@ -8,6 +8,7 @@ pub mod base_ci;
 mod command;
 mod dependency_graph;
 mod gh_command;
+mod issue_dependencies;
 mod issue_panel;
 mod issue_types;
 mod issues;

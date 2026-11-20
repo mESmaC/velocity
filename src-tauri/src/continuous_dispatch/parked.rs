@@ -197,6 +197,7 @@ impl Context<'_> {
                 RESOLVER,
                 note,
                 ParkedOutcome::Returned,
+                &[],
             )
             .map_err(|error| error.to_string())
     }

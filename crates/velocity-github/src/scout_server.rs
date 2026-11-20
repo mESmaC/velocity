@@ -13,6 +13,7 @@ use std::path::PathBuf;
 
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
+use velocity_core::issue_dependencies::IssueReference;
 use velocity_core::text_budget::{json_text_page, preview};
 
 use crate::scout_search::Search;
@@ -130,10 +131,19 @@ impl ScoutServer {
         struct Request {
             issue: u32,
             blocker: u32,
+            /// The blocker's repository when it is not this project's (#511).
+            #[serde(default)]
+            blocker_repository: Option<String>,
         }
-        let Request { issue, blocker } = serde_json::from_value(arguments)?;
-        self.client()?.add_blocker(issue, blocker)?;
-        Ok(json!({"issue": issue, "blocked_by": blocker}))
+        let request: Request = serde_json::from_value(arguments)?;
+        let blocker = IssueReference::new(request.blocker_repository.as_deref(), request.blocker)
+            .ok_or_else(|| {
+            ScoutIssueError::Invalid(
+                "Use a positive blocker number and a repository named owner/name".into(),
+            )
+        })?;
+        let linked = self.client()?.link_blockers(request.issue, &[blocker])?;
+        Ok(json!({"issue": request.issue, "blocked_by": linked}))
     }
 
     /// The arguments are a [`ScoutFinding`] without the scout and the review, which the
@@ -186,7 +196,7 @@ impl ScoutServer {
 
     fn record(&self, outcome: &ScoutIssueOutcome, evidence: &str) -> Result<(), ScoutIssueError> {
         let report = match outcome {
-            ScoutIssueOutcome::Filed { issue } => ScoutReport::Filed {
+            ScoutIssueOutcome::Filed { issue, .. } => ScoutReport::Filed {
                 number: issue.number,
                 title: issue.title.clone(),
                 evidence: evidence.to_owned(),
@@ -243,10 +253,11 @@ fn tool_list() -> Vec<Value> {
         comparison_tool(),
         json!({
             "name": "scout_add_blocker",
-            "description": "Record a decided order between two issues in this project's GitHub repository. The issue must wait for the blocker to close before continuous dispatch can start it.",
+            "description": "Record that an issue in this project's GitHub repository waits on another issue, as a GitHub issue dependency. Continuous dispatch starts the issue when the blocker closes. Use this, never a hold label such as needs-owner, whenever one issue waits on another.",
             "inputSchema": {"type": "object", "properties": {
                 "issue": {"type":"integer","minimum":1,"description":"The issue that must wait"},
-                "blocker": {"type":"integer","minimum":1,"description":"The issue that must close first"}
+                "blocker": {"type":"integer","minimum":1,"description":"The issue that must close first"},
+                "blocker_repository": {"type":"string","description":"The blocker's repository as owner/name when it is not this project's"}
             }, "required":["issue", "blocker"], "additionalProperties":false},
         }),
         json!({
@@ -273,13 +284,14 @@ fn tool_list() -> Vec<Value> {
         }),
         json!({
             "name": "scout_file",
-            "description": "File one finding. Velocity runs the reproduction (it must exit with a failing status), attaches the script and its output, and refuses duplicates of open or closed issues. publish false previews the issue; publish true files it.",
+            "description": "File one finding. Velocity runs the reproduction (it must exit with a failing status), attaches the script and its output, and refuses duplicates of open or closed issues. publish false previews the issue; publish true files it. When the finding waits on other issues, name them in blocked_by: they become GitHub issue dependencies and dispatch starts the issue when they close. The needs-owner label is refused for a finding that only waits on other issues.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
                     "title": string,
                     "description": string,
                     "labels": strings,
+                    "blocked_by": {"type": "array", "items": {"type": "string"}, "description": "Issues that must close first, as #12 for this repository or owner/name#12 for another."},
                     "duplicate_assessment": {"type": "string", "description": "How this differs from every similar open or closed issue."},
                     "duplicate_of": {"type": "integer", "description": "The existing issue this duplicates, if any; nothing is filed."},
                     "reproduction": driver_schema(),
@@ -308,7 +320,7 @@ impl crate::mcp_stdio::ToolServer for ScoutServer {
 
     fn instructions(&self) -> String {
         format!(
-            "You are {}. Search with scout_issues before filing each finding with scout_file. Read likely duplicates with scout_issue and find repository labels with scout_labels.",
+            "You are {}. Search with scout_issues before filing each finding with scout_file. Read likely duplicates with scout_issue and find repository labels with scout_labels. When an issue waits on another, pass blocked_by to scout_file or use scout_add_blocker; never hold it with a label.",
             self.scout
         )
     }

@@ -5,6 +5,9 @@ use crate::{
 };
 use serde_json::{Value, json};
 use std::io::{BufRead, Write};
+use velocity_core::issue_dependencies::{
+    IssueReference, blocker_list, parse_blockers, with_declared_blockers,
+};
 use velocity_core::text_budget::tool_answer;
 
 #[derive(Default)]
@@ -92,7 +95,7 @@ fn instructions(nick: &str, continuous_dispatch: bool) -> String {
         "Use task_add, task_update and task_delete only when the user explicitly asks you to add, change or remove Task List items. Otherwise file issues."
     };
     format!(
-        "You joined this project's AIRC channel as {nick}. Check ownership with airc_claims using the candidate task or piece as the task filter. Call airc_claim with the task, branch and every file BEFORE editing, and with piece set to the work item's identity (task:<id>, issue:<number> or spec:<section>) when it has one; on refusal the holder is named, so check the next candidate. Extend your existing task claim to add files. Record airc_share or a dependency wait before editing an overlapping file. Messages require named recipients and an intent. task_list reads the project Task List at any time. {task_rule} Task List changes never edit SPEC.md or start an interview. A discovery about Velocity itself (its worktrees, AIRC, duty tools, agent shells, build queue or app), not this project, goes in append_ledger with velocity_issue set, and Velocity files it on its own repository. A discovery about Rosen itself (its server, workspaces, durability, claims, rebases or landing) uses rosen_issue instead and is filed on mESmaC/rosen. Use only one issue field. Search read_ledger with ledger discovery and the problem's terms before reporting it."
+        "You joined this project's AIRC channel as {nick}. Check ownership with airc_claims using the candidate task or piece as the task filter. Call airc_claim with the task, branch and every file BEFORE editing, and with piece set to the work item's identity (task:<id>, issue:<number> or spec:<section>) when it has one; on refusal the holder is named, so check the next candidate. Extend your existing task claim to add files. Record airc_share or a dependency wait before editing an overlapping file. Messages require named recipients and an intent. task_list reads the project Task List at any time. {task_rule} Task List changes never edit SPEC.md or start an interview. A discovery about Velocity itself (its worktrees, AIRC, duty tools, agent shells, build queue or app), not this project, goes in append_ledger with velocity_issue set, and Velocity files it on its own repository. A discovery about Rosen itself (its server, workspaces, durability, claims, rebases or landing) uses rosen_issue instead and is filed on mESmaC/rosen. Use only one issue field. Search read_ledger with ledger discovery and the problem's terms before reporting it. An issue that waits on other issues names them in blocked_by, which records GitHub issue dependencies; never hold it with a label."
     )
 }
 
@@ -230,14 +233,38 @@ fn append_ledger(channel: &Channel, member: &str, arguments: &Value) -> Result<V
     let rosen_issue = title("rosen_issue");
     let reported_velocity = velocity_issue.is_some();
     let reported_rosen = rosen_issue.is_some();
+    let blockers = report_blockers(arguments, reported_velocity || reported_rosen)?;
+    // The blockers ride on the text's closing line, which the filing edge links (#511).
+    let entry = with_declared_blockers(text(arguments, "text")?, &blockers);
     channel.append_ledger_report(
         member,
         ledger(arguments)?,
-        text(arguments, "text")?,
+        &entry,
         velocity_issue,
         rosen_issue,
     )?;
-    Ok(json!({"appended":true,"velocity_issue":reported_velocity,"rosen_issue":reported_rosen}))
+    Ok(
+        json!({"appended":true,"velocity_issue":reported_velocity,"rosen_issue":reported_rosen,
+        "blocked_by":blocker_list(&blockers)}),
+    )
+}
+
+/// The issues a reported discovery waits on. Each names its repository: the report is
+/// filed on Velocity's or Rosen's repository, not the project the agent works in.
+fn report_blockers(arguments: &Value, reported: bool) -> Result<Vec<IssueReference>, Error> {
+    let names = issue_tools::blocked_by(arguments)?;
+    if !names.is_empty() && !reported {
+        return Err(Error::Invalid(
+            "blocked_by goes with velocity_issue or rosen_issue".into(),
+        ));
+    }
+    let blockers = parse_blockers(&names).map_err(Error::Invalid)?;
+    if blockers.iter().any(|blocker| !blocker.names_repository()) {
+        return Err(Error::Invalid(
+            "Name each blocker's repository, as owner/name#12".into(),
+        ));
+    }
+    Ok(blockers)
 }
 
 const LOG_PAGE: &str = "Newest first, up to 50 by default. Filter by query over text, files or symbols, or by sequence with after/before. The response gives the remaining count and next_before for older matches. To read an oversized entry, pass its sequence, then pass next_offset as offset to continue its JSON.";
@@ -306,8 +333,10 @@ fn writing_tools() -> Vec<Value> {
         ),
         tool(
             "append_ledger",
-            "Record a discovery or past work. When a discovery is a problem in Velocity itself (its worktrees and paths, AIRC, the review swarm or Scout tools, agent shells and sandboxes, the build queue, the code graph, or the app) rather than in this project's code, also pass velocity_issue: a one-line issue title. Velocity then files it on its own repository, or adds it to an open issue about the same problem. For a problem in Rosen itself (its server, workspaces, durability, claims, rebases or landing), pass rosen_issue instead to file on mESmaC/rosen. Use only one issue field. Read the discoveries first and omit the issue field when another agent already reported the same problem.",
+            "Record a discovery or past work. When a discovery is a problem in Velocity itself (its worktrees and paths, AIRC, the review swarm or Scout tools, agent shells and sandboxes, the build queue, the code graph, or the app) rather than in this project's code, also pass velocity_issue: a one-line issue title. Velocity then files it on its own repository, or adds it to an open issue about the same problem. For a problem in Rosen itself (its server, workspaces, durability, claims, rebases or landing), pass rosen_issue instead to file on mESmaC/rosen. Use only one issue field. Read the discoveries first and omit the issue field when another agent already reported the same problem. When the reported problem waits on other issues, name them in blocked_by and Velocity links them as GitHub issue dependencies.",
             json!({"ledger":ledger,"text":string.clone(),
+                "blocked_by":{"type":"array","items":{"type":"string"},
+                    "description":"Only with velocity_issue or rosen_issue: issues that must close first, each as owner/name#12"},
                 "velocity_issue":{"type":"string","minLength":1,"maxLength":200,
                     "description":"Only for a discovery about Velocity itself: the issue title"},
                 "rosen_issue":{"type":"string","minLength":1,"maxLength":200,

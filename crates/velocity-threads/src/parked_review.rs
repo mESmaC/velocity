@@ -311,7 +311,9 @@ fn prompt(request: &ParkedReviewRequest) -> String {
          parked_review_resolve once: already_fixed with verification evidence when the base \
          meets every criterion, return_to_dispatch with concrete instructions for the next \
          agent when work remains, or needs_owner with the reason when the work needs \
-         hardware, an upstream release or an owner decision. End your turn after resolving.",
+         hardware, an upstream release or an owner decision. When the issue waits on other \
+         issues, use return_to_dispatch and name them in blocked_by; never hold it with \
+         needs_owner for that. End your turn after resolving.",
         request.repository,
         request.issue,
         velocity_core::text_budget::preview(&request.title, 300),
@@ -331,6 +333,9 @@ enum Decision {
 struct Resolution {
     outcome: Decision,
     evidence: String,
+    /// The issues this one waits on, linked as GitHub dependencies (#511).
+    #[serde(default)]
+    blocked_by: Vec<String>,
 }
 
 /// The session's MCP server: it reads and resolves the one issue of its launch file.
@@ -390,6 +395,7 @@ impl ParkedReviewServer {
             Decision::ReturnToDispatch => ParkedOutcome::Returned,
             Decision::NeedsOwner => ParkedOutcome::NeedsOwner,
         };
+        let blockers = velocity_core::issue_dependencies::parse_blockers(&resolution.blocked_by)?;
         self.client()?
             .resolve_no_change(
                 self.launch.issue,
@@ -397,6 +403,7 @@ impl ParkedReviewServer {
                 "Velocity bounded review",
                 &resolution.evidence,
                 outcome,
+                &blockers,
             )
             .map_err(|error| error.to_string())?;
         Ok(json!({"issue": self.launch.issue, "resolved": true,
@@ -422,10 +429,11 @@ impl ToolServer for ParkedReviewServer {
             }),
             json!({
                 "name": "parked_review_resolve",
-                "description": "End the review. already_fixed closes the issue with your verification evidence. return_to_dispatch removes the no-change label and gives the next agent your instructions. needs_owner moves work that needs hardware, an upstream release or an owner decision to the needs-owner label with your reason.",
+                "description": "End the review. already_fixed closes the issue with your verification evidence. return_to_dispatch removes the no-change label and gives the next agent your instructions. needs_owner moves work that needs hardware, an upstream release or an owner decision to the needs-owner label with your reason. When the issue waits on other issues, use return_to_dispatch with blocked_by: they are linked as GitHub issue dependencies and dispatch starts the issue when they close. needs_owner is refused for a reason that only waits on other issues.",
                 "inputSchema": {"type": "object", "properties": {
                     "outcome": {"enum": ["already_fixed", "return_to_dispatch", "needs_owner"]},
-                    "evidence": {"type": "string", "minLength": 1, "description": "Verification evidence, instructions for the next agent or the reason the owner is needed"}
+                    "evidence": {"type": "string", "minLength": 1, "description": "Verification evidence, instructions for the next agent or the reason the owner is needed"},
+                    "blocked_by": {"type": "array", "items": {"type": "string"}, "description": "Issues this one waits on, as #12 for this repository or owner/name#12 for another"}
                 }, "required": ["outcome", "evidence"], "additionalProperties": false}
             }),
         ]

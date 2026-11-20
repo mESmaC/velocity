@@ -1,11 +1,12 @@
 //! GitHub comments and the durable effects of landed Rosen issue work.
 use serde::Deserialize;
 use serde_json::{Value, json};
+use velocity_core::issue_dependencies::IssueReference;
 
+use crate::issue_dependencies::{NEEDS_OWNER_LABEL, refuse_dependency_hold, waits_line};
 use crate::{GitHubCommandError, GitHubIssue, IssueClient, IssueState};
 
 const READY_LABEL: &str = "ready-to-close";
-const NEEDS_OWNER_LABEL: &str = "needs-owner";
 const NO_CHANGE_MARKER: &str = "<!-- velocity-issue-no-change:";
 /// The attempt of an overlap review: `overlap:<blocking issue>:<landed commit>`.
 const OVERLAP_ATTEMPT: &str = "overlap:";
@@ -77,41 +78,53 @@ impl IssueClient {
             .collect())
     }
 
+    /// `blockers` are the issues this one waits on (#511). They are linked as GitHub
+    /// dependencies before the comment, so a failed link posts nothing and the agent's
+    /// retry does both.
     pub fn post_issue_progress(
         &self,
         number: u32,
         byline: &str,
         body: &str,
         ready: bool,
+        blockers: &[IssueReference],
     ) -> Result<String, GitHubCommandError> {
         let issue = self.read_issue(number)?;
+        let waits = waits_line(&self.link_blockers(number, blockers)?);
         if ready {
             self.label_issue(number, READY_LABEL)?;
         }
         let heading = if ready { "Ready to close · " } else { "" };
-        self.add_issue_comment(&issue.id, &format!("{heading}{byline}\n\n{body}"))
+        self.add_issue_comment(&issue.id, &format!("{heading}{byline}\n\n{body}{waits}"))
     }
 
     /// An agent found that the work needs hardware, an upstream release or an owner
     /// decision (#506). The label goes on first: a failed comment leaves the issue out of
-    /// dispatch, and the agent's retry posts the reason.
+    /// dispatch, and the agent's retry posts the reason. A reason that only waits on other
+    /// issues is refused: those are linked as `blockers`, never held by the label (#511).
     pub fn post_needs_owner(
         &self,
         number: u32,
         byline: &str,
         reason: &str,
+        blockers: &[IssueReference],
     ) -> Result<String, GitHubCommandError> {
+        refuse_dependency_hold(reason)?;
         let issue = self.read_issue(number)?;
+        let waits = waits_line(&self.link_blockers(number, blockers)?);
         self.label_issue(number, NEEDS_OWNER_LABEL)?;
         if issue_has_no_change_label(&issue) {
             self.remove_issue_label(number, Self::NO_CHANGE_LABEL)?;
         }
         self.add_issue_comment(
             &issue.id,
-            &format!("Needs the owner · {byline}\n\n{reason}"),
+            &format!("Needs the owner · {byline}\n\n{reason}{waits}"),
         )
     }
 
+    /// An issue that waits on open blockers gets the comment without the `no-change`
+    /// label (#511): its dependencies already hold it, and dispatch starts it when they
+    /// close with no label to remove.
     pub fn post_no_change(
         &self,
         number: u32,
@@ -119,7 +132,12 @@ impl IssueClient {
         byline: &str,
         reason: &str,
     ) -> Result<(), GitHubCommandError> {
-        self.post_issue_for_verification(number, change, "Ended with no change", byline, reason)
+        self.post_issue_for_verification(
+            number,
+            change,
+            ("Ended with no change", byline, reason),
+            false,
+        )
     }
 
     pub fn post_overlap_review(
@@ -128,16 +146,20 @@ impl IssueClient {
         source: u32,
         commit: &str,
     ) -> Result<(), GitHubCommandError> {
+        let reason = format!(
+            "This issue waited for #{source}. Rosen commit `{commit}` landed for that issue. \
+             Check this issue's acceptance criteria against the current base. Close it if \
+             the fix is verified, or return it to dispatch with the remaining work."
+        );
         self.post_issue_for_verification(
             number,
             &format!("{OVERLAP_ATTEMPT}{source}:{commit}"),
-            "Check against an overlapping land",
-            "Velocity continuous dispatch",
-            &format!(
-                "This issue waited for #{source}. Rosen commit `{commit}` landed for that issue. \
-                 Check this issue's acceptance criteria against the current base. Close it if \
-                 the fix is verified, or return it to dispatch with the remaining work."
+            (
+                "Check against an overlapping land",
+                "Velocity continuous dispatch",
+                reason.as_str(),
             ),
+            true,
         )
     }
 
@@ -158,13 +180,13 @@ impl IssueClient {
         self.sync_rosen_issue(number, &marker, &body, None)
     }
 
+    /// `park_blocked` is whether an issue with open blockers still takes `no-change`.
     fn post_issue_for_verification(
         &self,
         number: u32,
         attempt: &str,
-        heading: &str,
-        byline: &str,
-        reason: &str,
+        (heading, byline, reason): (&str, &str, &str),
+        park_blocked: bool,
     ) -> Result<(), GitHubCommandError> {
         let marker = format!("{NO_CHANGE_MARKER}{attempt} -->");
         if self.has_rosen_comment(number, &marker)? {
@@ -176,6 +198,7 @@ impl IssueClient {
         if issue.state == IssueState::Open
             && !issue_has_no_change_label(&issue)
             && !issue_has_label(&issue, NEEDS_OWNER_LABEL)
+            && (park_blocked || !issue.has_open_blockers())
         {
             self.label_issue(number, Self::NO_CHANGE_LABEL)?;
         }
@@ -242,6 +265,9 @@ impl IssueClient {
 
     /// Ends the review of the current report. `reviewer` names who decided, such as
     /// ``Velocity review swarm · `maple` `` or `Velocity continuous dispatch`.
+    /// `blockers` are issues the review found this one waits on (#511): they are linked
+    /// as GitHub dependencies, and an issue that only waits on them returns to dispatch
+    /// instead of taking `needs-owner`.
     pub fn resolve_no_change(
         &self,
         number: u32,
@@ -249,6 +275,7 @@ impl IssueClient {
         reviewer: &str,
         evidence: &str,
         outcome: ParkedOutcome,
+        blockers: &[IssueReference],
     ) -> Result<(), GitHubCommandError> {
         let (_, _, current) = self.no_change_discussion(number)?;
         if current != attempt || evidence.trim().is_empty() {
@@ -257,15 +284,24 @@ impl IssueClient {
             ));
         }
         let (decision, state) = match outcome {
+            ParkedOutcome::AlreadyFixed if !blockers.is_empty() => {
+                return Err(GitHubCommandError::Invalid(
+                    "An already fixed issue waits on no other issue".into(),
+                ));
+            }
             ParkedOutcome::AlreadyFixed => ("verified already fixed", Some(IssueState::Closed)),
             ParkedOutcome::Returned => ("returned to dispatch", None),
-            ParkedOutcome::NeedsOwner => ("found that this needs the owner", None),
+            ParkedOutcome::NeedsOwner => {
+                refuse_dependency_hold(evidence)?;
+                ("found that this needs the owner", None)
+            }
         };
+        let waits = waits_line(&self.link_blockers(number, blockers)?);
         let marker = format!(
             "<!-- velocity-no-change-review:{current}:{} -->",
             outcome.marker()
         );
-        let body = format!("{reviewer} {decision}.\n\n{evidence}");
+        let body = format!("{reviewer} {decision}.\n\n{evidence}{waits}");
         self.sync_rosen_issue(number, &marker, &body, state)?;
         match outcome {
             ParkedOutcome::AlreadyFixed => {}
@@ -280,7 +316,7 @@ impl IssueClient {
         Ok(())
     }
 
-    fn label_issue(&self, number: u32, name: &str) -> Result<(), GitHubCommandError> {
+    pub(crate) fn label_issue(&self, number: u32, name: &str) -> Result<(), GitHubCommandError> {
         let labels = format!("repos/{}/labels", self.repository());
         let label = format!("{labels}/{name}");
         if self
@@ -308,7 +344,11 @@ impl IssueClient {
         Ok(())
     }
 
-    fn remove_issue_label(&self, number: u32, label: &str) -> Result<(), GitHubCommandError> {
+    pub(crate) fn remove_issue_label(
+        &self,
+        number: u32,
+        label: &str,
+    ) -> Result<(), GitHubCommandError> {
         let endpoint = format!("repos/{}/issues/{number}/labels/{label}", self.repository());
         self.transport
             .command

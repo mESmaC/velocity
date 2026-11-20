@@ -79,6 +79,9 @@ Velocity posts them; agents never type them.
   It compares titles and discovery text, using file and symbol references resolved through the destination's code graph when available.
   Matching reports add an **Also seen by** comment with the agent, project, recorded time and evidence on the existing open issue.
   A report quotes at most 20,000 characters of the discovery.
+  A reported discovery that waits on other issues passes them to `append_ledger` as `blocked_by`, each as `owner/name#n` (#511).
+  The entry carries them on a closing `Blocked by:` line, and Velocity links each one to the filed or matching issue as a GitHub issue dependency before it records the report.
+  A blocker GitHub refuses, such as an issue that does not exist, is left out and logged, and any other failure is retried on the next pass.
   It uses GitHub's REST API, which keeps working when a swarm has spent the GraphQL budget.
   A per-project cursor and each report's issue number, separated by destination repository, are saved in `velocity-reports.json` in the app data folder; existing Velocity records still load, and a failed report leaves the cursor in place and is retried on the next pass.
   Each report is marked pending before GitHub is asked and recorded as soon as it answers.

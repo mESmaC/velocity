@@ -49,10 +49,13 @@ pub fn post_issue_update(
         .strip_prefix("thread-")
         .and_then(|member| member.parse::<u32>().ok());
     let byline = issue_byline(identifier, thread, Some(&update.claim.nick));
+    // The issues this one waits on become GitHub dependencies, never a hold label (#511).
+    let blockers = velocity_core::issue_dependencies::parse_blockers(update.blocked_by)
+        .map_err(Error::Invalid)?;
     if update.needs_owner {
-        client.post_needs_owner(update.issue, &byline, update.body)
+        client.post_needs_owner(update.issue, &byline, update.body, &blockers)
     } else {
-        client.post_issue_progress(update.issue, &byline, update.body, update.ready)
+        client.post_issue_progress(update.issue, &byline, update.body, update.ready, &blockers)
     }
     .map_err(|error| Error::Invalid(error.to_string()))
 }

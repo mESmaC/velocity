@@ -2,7 +2,9 @@ use std::collections::BTreeMap;
 use std::sync::{Arc, LazyLock, Mutex};
 
 use serde::{Deserialize, Serialize};
+use velocity_core::issue_dependencies::{IssueReference, parse_blockers};
 
+use crate::issue_dependencies::{NEEDS_OWNER_LABEL, refuse_dependency_hold};
 use crate::issues::valid_scout_nick;
 use crate::{
     GitHubCommandError, GitHubIssue, IssueClient, IssueInventory, IssueReviewToken, Reproduction,
@@ -39,6 +41,10 @@ pub struct ScoutFinding {
     pub duplicate_assessment: String,
     pub duplicate_of: Option<u32>,
     pub reproduction: Reproduction,
+    /// The issues this finding waits on, as `#12` or `owner/name#12` (#511). They become
+    /// GitHub dependencies of the filed issue.
+    #[serde(default)]
+    pub blocked_by: Vec<String>,
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -52,9 +58,17 @@ pub enum ScoutIssueOutcome {
         title: String,
         body: String,
         labels: Vec<String>,
+        #[serde(skip_serializing_if = "Vec::is_empty")]
+        blocked_by: Vec<String>,
     },
     Filed {
         issue: GitHubIssue,
+        /// The blockers linked as GitHub dependencies.
+        #[serde(skip_serializing_if = "Vec::is_empty")]
+        blocked_by: Vec<String>,
+        /// Why the filed issue's blockers could not be linked, with what to do.
+        #[serde(skip_serializing_if = "Option::is_none")]
+        unlinked: Option<String>,
     },
 }
 
@@ -66,12 +80,18 @@ impl IssueClient {
         finding: &ScoutFinding,
         publish: bool,
     ) -> Result<ScoutIssueOutcome, ScoutIssueError> {
-        finding.validate()?;
+        let blockers = finding.validate()?;
         let inventory = self.inventory()?;
         if let Some(duplicate) = finding.duplicate(&inventory, None)? {
             return Ok(duplicate);
         }
         let labels = self.resolve_labels(&finding.labels)?;
+        // A blocker that does not exist is refused before the reproduction runs.
+        let blockers = self.resolve_blockers(&blockers)?;
+        let blocked_by: Vec<String> = blockers
+            .iter()
+            .map(|blocker| blocker.name.clone())
+            .collect();
         let evidence = finding.reproduction.run(&self.directory)?;
         let body = finding.body(&evidence.attachment)?;
         let filing_lock = filing_lock(&inventory.repository)?;
@@ -89,10 +109,19 @@ impl IssueClient {
                 title: finding.title.clone(),
                 body,
                 labels: finding.labels.clone(),
+                blocked_by,
             });
         }
+        let issue = self.create(&finding.title, &body, &labels)?;
+        // The issue exists now, so a failed link is reported with it instead of as a
+        // failure that would make the scout file a duplicate.
+        let unlinked = self.add_blocked_by(&issue.id, &blockers).err().map(|error| {
+            format!("Its blockers were not all linked ({error}). Record each with scout_add_blocker.")
+        });
         Ok(ScoutIssueOutcome::Filed {
-            issue: self.create(&finding.title, &body, &labels)?,
+            issue,
+            blocked_by,
+            unlinked,
         })
     }
 
@@ -120,7 +149,8 @@ fn filing_lock(repository: &str) -> Result<Arc<Mutex<()>>, ScoutIssueError> {
 }
 
 impl ScoutFinding {
-    fn validate(&self) -> Result<(), ScoutIssueError> {
+    /// The finding's blockers, once its fields are acceptable.
+    fn validate(&self) -> Result<Vec<IssueReference>, ScoutIssueError> {
         if !valid_scout_nick(&self.scout) {
             return Err(ScoutIssueError::Invalid(
                 "Scout nick must be scout-N (1–16 characters)".into(),
@@ -144,7 +174,16 @@ impl ScoutFinding {
                 "At least one dispatch label is required".into(),
             ));
         }
-        Ok(())
+        // A finding that waits on other issues links them; it never holds itself with
+        // the owner's label (#511).
+        if self
+            .labels
+            .iter()
+            .any(|label| label.eq_ignore_ascii_case(NEEDS_OWNER_LABEL))
+        {
+            refuse_dependency_hold(&self.description)?;
+        }
+        parse_blockers(&self.blocked_by).map_err(ScoutIssueError::Invalid)
     }
 
     fn duplicate(

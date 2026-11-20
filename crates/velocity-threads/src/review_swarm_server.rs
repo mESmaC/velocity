@@ -84,6 +84,9 @@ enum NoChangeReview {
         already_fixed: bool,
         #[serde(default)]
         needs_owner: bool,
+        /// The issues this one waits on, linked as GitHub dependencies (#511).
+        #[serde(default)]
+        blocked_by: Vec<String>,
     },
 }
 
@@ -210,7 +213,9 @@ impl ReviewSwarmServer {
                 evidence,
                 already_fixed,
                 needs_owner,
+                blocked_by,
             } => {
+                let blockers = velocity_core::issue_dependencies::parse_blockers(&blocked_by)?;
                 let outcome = match (already_fixed, needs_owner) {
                     (true, true) => {
                         return Err("An already fixed issue does not need the owner".into());
@@ -221,7 +226,7 @@ impl ReviewSwarmServer {
                 };
                 let reviewer = format!("Velocity review swarm · `{}`", self.launch.nickname);
                 client
-                    .resolve_no_change(issue, &attempt, &reviewer, &evidence, outcome)
+                    .resolve_no_change(issue, &attempt, &reviewer, &evidence, outcome, &blockers)
                     .map_err(|error| error.to_string())?;
                 Ok(json!({"issue": issue, "closed": already_fixed, "needs_owner": needs_owner}))
             }
@@ -462,7 +467,7 @@ impl ToolServer for ReviewSwarmServer {
         if self.launch.repository.is_some() {
             tools.push(json!({
                 "name": "review_swarm_no_change",
-                "description": "List open no-change issues, read an issue with its discussion and attempt, or resolve that attempt after checking the evidence. Resolution closes an independently verified fix, comments with concrete retry instructions and removes the no-change label, or moves work that needs hardware, an upstream release or an owner decision to needs-owner with the reason.",
+                "description": "List open no-change issues, read an issue with its discussion and attempt, or resolve that attempt after checking the evidence. Resolution closes an independently verified fix, comments with concrete retry instructions and removes the no-change label, or moves work that needs hardware, an upstream release or an owner decision to needs-owner with the reason. An issue that waits on other issues is requeued with blocked_by, which links them as GitHub issue dependencies; needs_owner is refused for a reason that only waits on other issues.",
                 "inputSchema": {"type": "object", "properties": {
                     "action": {"enum": ["list", "read", "resolve"]},
                     "offset": {"type": "integer", "minimum": 0, "description": "List offset, ten issues per page"},
@@ -470,6 +475,7 @@ impl ToolServer for ReviewSwarmServer {
                     "attempt": {"type": "string", "description": "Required for resolve, returned by read"},
                     "already_fixed": {"type": "boolean", "description": "Required for resolve, true only when the current base satisfies the issue"},
                     "needs_owner": {"type": "boolean", "description": "Optional for resolve, true when the work needs hardware, an upstream release or an owner decision"},
+                    "blocked_by": {"type": "array", "items": {"type": "string"}, "description": "Optional for resolve, issues this one waits on, as #12 for this repository or owner/name#12 for another"},
                     "evidence": {"type": "string", "description": "Required for resolve, verification evidence, instructions for the next agent or the reason the owner is needed"}
                 }, "required": ["action"], "additionalProperties": false}
             }));

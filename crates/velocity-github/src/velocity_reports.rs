@@ -9,6 +9,7 @@ use std::io::Write;
 use std::path::Path;
 
 use serde::{Deserialize, Serialize};
+use velocity_core::issue_dependencies::{IssueReference, declared_blockers};
 
 use crate::command::gh;
 use crate::gh_command::GitHubCommandError;
@@ -223,6 +224,85 @@ pub fn report_to(
         }
     }
     file_issue(repository, report, &body).map(ReportOutcome::Filed)
+}
+
+/// Links the issues a discovery names on its `Blocked by:` lines to the issue it was
+/// reported on, as GitHub issue dependencies (#511). A bare `#12` is an issue of the
+/// destination repository. Links that exist are kept, so a retried report is safe.
+/// Returns the blockers GitHub refused, such as an issue that does not exist: those are
+/// final, while any other failure is an error the next pass retries.
+pub fn link_declared_blockers(
+    destination: ReportRepository,
+    issue: u32,
+    report: &DiscoveryReport,
+) -> Result<Vec<String>, GitHubCommandError> {
+    let repository = destination.repository();
+    let blockers: Vec<_> = declared_blockers(&report.text)
+        .into_iter()
+        .filter(|blocker| !blocker.is_issue(repository, repository, issue))
+        .collect();
+    if blockers.is_empty() {
+        return Ok(Vec::new());
+    }
+    let endpoint = format!("repos/{repository}/issues/{issue}/dependencies/blocked_by");
+    let linked: HashSet<u64> = run(&["api", "--paginate", &endpoint, "--jq", ".[].id"])?
+        .lines()
+        .filter_map(|line| line.trim().parse().ok())
+        .collect();
+    let mut refused = Vec::new();
+    for blocker in blockers {
+        let name = blocker.relative_to(repository);
+        match link_blocker(repository, &endpoint, &linked, &blocker) {
+            Ok(true) => {}
+            Ok(false) => refused.push(name),
+            Err(error) if is_refusal(&error) => refused.push(name),
+            Err(error) => return Err(error),
+        }
+    }
+    Ok(refused)
+}
+
+/// `false` when the blocker is a pull request, which GitHub cannot link.
+fn link_blocker(
+    repository: &str,
+    endpoint: &str,
+    linked: &HashSet<u64>,
+    blocker: &IssueReference,
+) -> Result<bool, GitHubCommandError> {
+    // The dependency API takes the blocker's database ID, which reaches other repositories.
+    let found = run(&[
+        "api",
+        &format!(
+            "repos/{}/issues/{}",
+            blocker.repository_or(repository),
+            blocker.number()
+        ),
+        "--jq",
+        "select(.pull_request == null) | .id",
+    ])?;
+    let Ok(identifier) = found.trim().parse::<u64>() else {
+        return Ok(false);
+    };
+    if !linked.contains(&identifier) {
+        run(&[
+            "api",
+            "--method",
+            "POST",
+            endpoint,
+            "-F",
+            &format!("issue_id={identifier}"),
+            "--jq",
+            ".id",
+        ])?;
+    }
+    Ok(true)
+}
+
+/// GitHub answered that this link cannot exist: a missing or removed issue, or a
+/// dependency it rejects. Retrying would fail the same way and hold up later reports.
+fn is_refusal(error: &GitHubCommandError) -> bool {
+    matches!(error, GitHubCommandError::Command { message, .. }
+        if ["HTTP 404", "HTTP 410", "HTTP 422"].iter().any(|status| message.contains(status)))
 }
 
 fn matching_issues(

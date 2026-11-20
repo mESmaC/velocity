@@ -36,6 +36,12 @@ type Dependencies = Mutex<DependencyGraph>;
 /// dependencies change rarely, so these projects are read far less often than a backlog.
 const DEPENDENCY_REFRESH: Duration = Duration::from_secs(10 * 60);
 
+/// How many retired dependency holds one issue read converts (#511). Each takes several
+/// GitHub requests, and the dispatch pass waits for them.
+const HOLDS_PER_READ: usize = 5;
+/// How long a hold that could not be converted waits before the next attempt.
+const HOLD_RETRY: Duration = Duration::from_secs(60 * 60);
+
 /// How many open issues each of `repository`'s issues unblocks, for the dispatch order and
 /// the Work pool card. Empty until the first issue read.
 pub(crate) fn unblock_counts(
@@ -182,6 +188,8 @@ struct Reader {
     client: Option<IssueClient>,
     refreshed: Option<Instant>,
     report_retry: BTreeMap<u32, Instant>,
+    /// Issues whose retired dependency hold could not be converted, and when that failed.
+    hold_retry: BTreeMap<u32, Instant>,
     backlog: Backlog,
     parked: parked::Parked,
 }
@@ -262,10 +270,52 @@ fn read_other_dependencies(
     };
     read.insert(project.id, Instant::now());
     // A project that cannot be read now keeps its last dependencies until the next attempt.
-    if let Ok(backlog) = read_issues(reader(&project, readers)) {
+    let reader = reader(&project, readers);
+    if let Ok(backlog) = read_issues(reader) {
         record_dependencies(application, project.id, &backlog)?;
+        convert_dependency_holds(reader, &backlog);
     }
     Ok(())
+}
+
+/// The sweep that retires `needs-owner` as a dependency hold (#511). An open issue whose
+/// body still says `Held for dependencies: waits for #N …` gets GitHub links to those
+/// issues, loses the label and has the line rewritten, so each note is converted once and
+/// dispatch then starts the issue when its blockers close. It runs on issues already
+/// read, a few per read so a long list never stalls dispatch. The converted issues keep
+/// their label in `backlog` until the next read shows the links.
+fn convert_dependency_holds(reader: &mut Reader, backlog: &Backlog) {
+    let Some(client) = &reader.client else {
+        return;
+    };
+    let held: Vec<u32> = backlog
+        .issues
+        .iter()
+        .filter(|issue| IssueClient::has_dependency_hold(issue))
+        .map(|issue| issue.number)
+        .filter(|number| {
+            reader
+                .hold_retry
+                .get(number)
+                .is_none_or(|time| time.elapsed() >= HOLD_RETRY)
+        })
+        .take(HOLDS_PER_READ)
+        .collect();
+    for number in held {
+        match client.convert_dependency_hold(number) {
+            Ok(_) => {
+                reader.hold_retry.remove(&number);
+            }
+            Err(error) => {
+                // The issue stays held as it was; a blocker that is not an issue needs a person.
+                reader.hold_retry.insert(number, Instant::now());
+                report::<()>(Err(format!(
+                    "Could not convert the dependency hold on {}#{number} into GitHub links: {error}",
+                    backlog.repository
+                )));
+            }
+        }
+    }
 }
 
 fn record_dependencies(
@@ -482,6 +532,7 @@ fn refresh_backlog(
         reader.refreshed = Some(Instant::now());
         match read_issues(reader) {
             Ok(backlog) => {
+                convert_dependency_holds(reader, &backlog);
                 reader.backlog = backlog;
                 // A failed read keeps the last dependencies, so the order holds through it.
                 record_dependencies(application, project, &reader.backlog)?;
@@ -525,6 +576,7 @@ fn reader<'a>(project: &ProjectItem, readers: &'a mut BTreeMap<u32, Reader>) -> 
         client: None,
         refreshed: None,
         report_retry: BTreeMap::new(),
+        hold_retry: BTreeMap::new(),
         backlog: Backlog::default(),
         parked: parked::Parked::new(),
     };

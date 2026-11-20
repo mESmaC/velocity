@@ -51,7 +51,9 @@ pub(crate) fn workspace_note(application: &AppHandle, key: (u32, u32), change: &
              issue_ready_to_close to post completion evidence and flag the issue for independent \
              review. Leave the issue open. Velocity announces the land. If the work cannot \
              proceed without hardware, an upstream release or an owner decision, call \
-             issue_needs_owner with the reason and end your turn.",
+             issue_needs_owner with the reason and end your turn. If it waits on other \
+             issues, call issue_comment with blocked_by naming them and end your turn; \
+             never hold an issue with a label for that.",
             issue.repository, issue.number, issue.number,
         ));
     }

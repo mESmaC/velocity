@@ -21,6 +21,19 @@ Continuous dispatch starts the highest count first (F8), **Next work** lists it 
 When a decision sets an order between issues, record it as a GitHub issue dependency.
 The review swarm can record dependencies between project issues with `scout_add_blocker { issue, blocker }`.
 
+**Dependencies when filing (#511).** An issue that waits on other issues is held by GitHub `blocked_by` links alone, and never by a hold label.
+Every tool that files or updates an issue takes the blockers as `blocked_by`, a list of `#n` for the same repository or `owner/name#n` for another.
+`scout_file`, `issue_comment`, `issue_needs_owner`, `parked_review_resolve` and `review_swarm_no_change` link them on the issue they write, and `scout_add_blocker` takes `blocker_repository` for a blocker in another repository.
+A reported discovery carries its blockers to the filed issue (F14).
+A link that already exists is kept, a blocker that does not exist is refused before `scout_file` runs the reproduction, and the comment names the linked issues.
+The tools refuse `needs-owner` when its reason only waits on other issues: it names issues beside waiting words and names no hardware, upstream release or owner decision.
+The refusal lists those issues and says to pass them as `blocked_by` instead.
+Dispatch starts a linked issue when its blockers close, with no label change.
+An empty dispatch turn on an issue with open blockers posts its **Ended with no change** comment without the `no-change` label.
+Each issue read also converts any open issue whose body still carries a `Held for dependencies:` line that names issues.
+The conversion links those issues, removes `needs-owner` and rewrites the line to name the links, in that order, so a failure leaves the issue held and each note is converted once.
+At most five notes are converted per read, and a note that cannot be converted is retried hourly.
+
 **Dispatch and Accept.** The hover action, `I` and the palette retain single-issue dispatch.
 Dispatch claims the repository-qualified issue atomically, opens the owning thread if one already exists, retains the issue title and launches in its own Rosen workspace.
 Issue dispatch, continuous dispatch, swarms and dispatch workers pause new agent starts while the machine is below Rosen's commit reserve or its available physical memory is at most 4 GiB, capped at one fifth of installed memory (#481).
@@ -55,6 +68,7 @@ On Rosen, Velocity posts the land comment with the change ID and commit.
 The author can call `issue_ready_to_close { issue, body }` to post completion evidence and add the `ready-to-close` label.
 The author leaves the issue open for the review swarm or post-land verification (F7).
 An agent whose issue cannot proceed without hardware, an upstream release or an owner decision calls `issue_needs_owner { issue, body }`, which adds the `needs-owner` label with the reason (#506).
+An agent whose issue waits on other issues calls `issue_comment { issue, body, blocked_by }` and ends its turn (#511).
 
 **Empty dispatch turns (#469).** Velocity adds the `no-change` label and posts an **Ended with no change** comment with the agent's last message and thread link when an automatically dispatched issue thread ends with an empty Rosen change (F8).
 Velocity retries an undelivered report across restarts and uses the Rosen change ID to avoid duplicate comments.
