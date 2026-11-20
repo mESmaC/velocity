@@ -10,9 +10,12 @@ use std::path::Path;
 use std::sync::Mutex;
 use std::time::{Duration, Instant};
 use tauri::{AppHandle, Manager};
-use velocity_github::{DependencyGraph, GitHubIssue, IssueClient};
+use velocity_github::{
+    DependencyGraph, ExternalIssueState, GitHubIssue, IssueClient, IssueState,
+    REMOTE_PROGRESS_WINDOW_SECONDS,
+};
 use velocity_store::continuous_dispatch::has_capacity as project_has_capacity;
-use velocity_store::continuous_dispatch::{busy_count, can_finish_empty_dispatch};
+use velocity_store::continuous_dispatch::{RemoteWorkHold, busy_count, can_finish_empty_dispatch};
 use velocity_store::issues::ThreadIssue;
 use velocity_store::{ProjectItem, TaskAttribution, VersionControl};
 use velocity_threads::continuous_dispatch::{
@@ -55,6 +58,8 @@ const DEPENDENCY_REFRESH: Duration = Duration::from_secs(10 * 60);
 const HOLDS_PER_READ: usize = 5;
 /// How long a hold that could not be converted waits before the next attempt.
 const HOLD_RETRY: Duration = Duration::from_secs(60 * 60);
+/// Grace period for a freshly posted land comment whose mirror push is still in flight (#519).
+const MIRROR_LAG_HOLD_SECONDS: u64 = 10 * 60;
 
 /// How many open issues each of `repository`'s issues unblocks, for the dispatch order and
 /// the Work pool card. Empty until the first issue read.
@@ -113,6 +118,7 @@ fn view(application: &AppHandle, identifier: u32) -> Result<DispatchView, String
     )?;
     let project = store.project(identifier).ok_or("The project was removed")?;
     include_overlap_waits(project, &backlog.repository, &mut claimed);
+    include_remote_work_holds(project, &backlog.repository, &backlog.issues, &mut claimed);
     let work = ordered_work(
         project,
         &backlog.repository,
@@ -193,7 +199,7 @@ pub(crate) fn integration_idle(application: &AppHandle, identifier: u32) -> Resu
     let Some(backlog) = known else {
         return Ok(false);
     };
-    let claimed = claimed_pieces(application, identifier)?;
+    let mut claimed = claimed_pieces(application, identifier)?;
     let store = lock(
         application.state::<ManagedStateStore>().inner(),
         "persisted state",
@@ -201,6 +207,7 @@ pub(crate) fn integration_idle(application: &AppHandle, identifier: u32) -> Resu
     let Some(project) = store.project(identifier) else {
         return Ok(false);
     };
+    include_remote_work_holds(project, &backlog.repository, &backlog.issues, &mut claimed);
     Ok(busy_count(project) == 0
         && ordered_work(
             project,
@@ -267,6 +274,7 @@ pub(crate) fn health_snapshot(
     };
     include_overlap_waits(project, &backlog.repository, &mut claimed);
     include_launch_holds(project, &backlog.repository, &mut claimed);
+    include_remote_work_holds(project, &backlog.repository, &backlog.issues, &mut claimed);
     let ready_count = ordered_work(
         project,
         &backlog.repository,
@@ -473,6 +481,8 @@ fn projects(application: &AppHandle) -> Result<Vec<ProjectItem>, String> {
             !project.continuous_dispatch.cleanup.is_empty()
                 || !project.continuous_dispatch.no_change_reports.is_empty()
                 || !project.continuous_dispatch.issue_overlaps.is_empty()
+                || !project.continuous_dispatch.landed_holds.is_empty()
+                || !project.continuous_dispatch.remote_work_holds.is_empty()
                 || (project.version_control == VersionControl::Rosen
                     && (project.continuous_dispatch.slots > 0
                         || project
@@ -531,6 +541,7 @@ fn start_ready(
         let project = store.project(identifier).ok_or("The project was removed")?;
         include_overlap_waits(project, &backlog.repository, &mut claimed);
         include_launch_holds(project, &backlog.repository, &mut claimed);
+        include_remote_work_holds(project, &backlog.repository, &backlog.issues, &mut claimed);
         ordered_work(
             project,
             &backlog.repository,
@@ -590,6 +601,13 @@ fn try_start_issue(
     {
         *issue = fresh.clone();
     }
+    if fresh.state != IssueState::Open {
+        return Ok(());
+    }
+    if hold_external_issue(application, identifier, reader, &fresh)? {
+        overlap::refresh(application, identifier, reader)?;
+        return Ok(());
+    }
     overlap::refresh(application, identifier, reader)?;
     if !reader
         .backlog
@@ -599,16 +617,14 @@ fn try_start_issue(
     {
         return Ok(());
     }
-    if hold_landed_issue(application, identifier, reader, &fresh)? {
-        return Ok(());
-    }
     start_issue(application, identifier, &repository, &fresh)?;
     overlap::refresh(application, identifier, reader)
 }
 
-/// Velocity's land comment is the evidence that outlives local thread history (#504).
-/// `true` when the issue landed and waits for integration, so it must not be dispatched.
-fn hold_landed_issue(
+/// Velocity's comments outlive local thread history and cross machines (#504, #519).
+/// `true` when the issue already landed on the mirror or another machine is actively
+/// working on it, so this machine must not open a Rosen change for it.
+fn hold_external_issue(
     application: &AppHandle,
     identifier: u32,
     reader: &Reader,
@@ -618,25 +634,148 @@ fn hold_landed_issue(
         .client
         .as_ref()
         .ok_or("The dispatch issue source was removed")?;
-    let Some(commit) = client
-        .landed_awaiting_integration(issue.number)
+    let now = unix_seconds();
+    let identity = ThreadIssue::new(client.repository().into(), issue.number);
+    match client
+        .external_issue_state(issue.number, now)
         .map_err(|error| error.to_string())?
-    else {
+    {
+        Some(ExternalIssueState::Landed { commit, landed_at }) => {
+            handle_external_land(application, identifier, client, issue, commit, landed_at)
+        }
+        Some(ExternalIssueState::InProgressElsewhere { started_at }) => {
+            let hold = RemoteWorkHold::new(
+                identity,
+                issue.updated_at.clone(),
+                started_at,
+                started_at.saturating_add(REMOTE_PROGRESS_WINDOW_SECONDS),
+            );
+            lock(
+                application.state::<ManagedStateStore>().inner(),
+                "persisted state",
+            )?
+            .save_remote_work_hold(identifier, hold)
+            .map_err(|error| error.to_string())?;
+            Ok(true)
+        }
+        None => {
+            clear_stale_external_holds(application, identifier, issue.number)?;
+            Ok(false)
+        }
+    }
+}
+
+fn handle_external_land(
+    application: &AppHandle,
+    identifier: u32,
+    client: &IssueClient,
+    issue: &GitHubIssue,
+    commit: String,
+    landed_at: Option<u64>,
+) -> Result<bool, String> {
+    let now = unix_seconds();
+    let identity = ThreadIssue::new(client.repository().into(), issue.number);
+    if commit_in_mirror_or_local(application, identifier, client, &commit)? {
+        lock(
+            application.state::<ManagedStateStore>().inner(),
+            "persisted state",
+        )?
+        .save_landed_hold(
+            identifier,
+            identity,
+            commit,
+            issue.updated_at.clone(),
+            landed_at.unwrap_or(now),
+        )
+        .map_err(|error| error.to_string())?;
+        crate::rosen_landing::wake(application);
+        return Ok(true);
+    }
+    if let Some(at) = landed_at
+        && now.saturating_sub(at) < MIRROR_LAG_HOLD_SECONDS
+    {
+        let hold = RemoteWorkHold::new(
+            identity,
+            issue.updated_at.clone(),
+            at,
+            at.saturating_add(MIRROR_LAG_HOLD_SECONDS),
+        );
+        lock(
+            application.state::<ManagedStateStore>().inner(),
+            "persisted state",
+        )?
+        .save_remote_work_hold(identifier, hold)
+        .map_err(|error| error.to_string())?;
+        return Ok(true);
+    }
+    clear_stale_external_holds(application, identifier, issue.number)?;
+    Ok(false)
+}
+
+fn commit_in_mirror_or_local(
+    application: &AppHandle,
+    identifier: u32,
+    client: &IssueClient,
+    commit: &str,
+) -> Result<bool, String> {
+    if commit.len() != 40 || !commit.bytes().all(|byte| byte.is_ascii_hexdigit()) {
         return Ok(false);
+    }
+    if client
+        .rosen_commit_mirrored(commit)
+        .map_err(|error| error.to_string())?
+    {
+        return Ok(true);
+    }
+    Ok(local_base_contains(application, identifier, commit))
+}
+
+fn local_base_contains(application: &AppHandle, project: u32, commit: &str) -> bool {
+    let Ok(data) = application.path().app_data_dir() else {
+        return false;
     };
-    lock(
+    let server = velocity_rosen::ProjectServer::new(&data, project);
+    matches!(
+        tauri::async_runtime::block_on(velocity_rosen::post_land::base_contains_commit(
+            &server, commit
+        )),
+        Ok(true)
+    )
+}
+
+fn clear_stale_external_holds(
+    application: &AppHandle,
+    identifier: u32,
+    number: u32,
+) -> Result<(), String> {
+    let mut store = lock(
         application.state::<ManagedStateStore>().inner(),
         "persisted state",
-    )?
-    .save_landed_hold(
-        identifier,
-        ThreadIssue::new(client.repository().into(), issue.number),
-        commit,
-        issue.updated_at.clone(),
-        unix_seconds(),
-    )
-    .map_err(|error| error.to_string())?;
-    Ok(true)
+    )?;
+    store
+        .clear_remote_work_hold(identifier, number)
+        .map_err(|error| error.to_string())?;
+    store
+        .remove_landed_hold(identifier, number)
+        .map_err(|error| error.to_string())
+}
+
+fn include_remote_work_holds(
+    project: &ProjectItem,
+    repository: &str,
+    issues: &[GitHubIssue],
+    claimed: &mut HashSet<String>,
+) {
+    let now = unix_seconds();
+    for issue in issues {
+        let identity = ThreadIssue::new(repository.into(), issue.number);
+        if project
+            .remote_work_hold(&identity, Some(&issue.updated_at), now)
+            .is_some()
+        {
+            claimed.insert(format!("issue:{}", issue.number));
+        }
+    }
 }
 
 fn include_overlap_waits(project: &ProjectItem, repository: &str, claimed: &mut HashSet<String>) {
@@ -799,6 +938,11 @@ fn prune_landed_holds(
             open.contains(&number)
         })
         .map_err(|error| error.to_string())?;
+    store
+        .prune_remote_work_holds(project, &backlog.repository, |number| {
+            open.contains(&number)
+        })
+        .map_err(|error| error.to_string())?;
     // The same read ends the count of failed starts for closed and started issues (#514).
     store
         .prune_unstarted_failures(project, &backlog.repository, |number| {
@@ -885,6 +1029,16 @@ fn start_issue(
             return Ok(());
         }
         if !dispatchable_issue(project, repository, issue, &claimed) {
+            return Ok(());
+        }
+        if project
+            .remote_work_hold(
+                &ThreadIssue::new(repository.into(), issue.number),
+                Some(&issue.updated_at),
+                unix_seconds(),
+            )
+            .is_some()
+        {
             return Ok(());
         }
         if project

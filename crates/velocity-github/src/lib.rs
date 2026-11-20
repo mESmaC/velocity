@@ -45,7 +45,10 @@ pub use repository::{
 };
 pub use repository_list::{GitHubRepository, checkout_repository, list_your_repositories};
 pub use request_counter::{RequestTotal, request_totals};
-pub use rosen_issue::{ParkedOutcome, ParkedReview, RosenIssueEffect, overlap_clear_evidence};
+pub use rosen_issue::{
+    ExternalIssueState, IntegrationCoverage, ParkedOutcome, ParkedReview,
+    REMOTE_PROGRESS_WINDOW_SECONDS, RosenIssueEffect, overlap_clear_evidence,
+};
 pub use scout_evidence::Reproduction;
 pub use scout_issues::{ScoutFinding, ScoutIssueError, ScoutIssueOutcome};
 pub use scout_reference::{ReferenceComparison, ReferenceComparisonResult};

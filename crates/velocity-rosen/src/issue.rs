@@ -5,7 +5,8 @@ use velocity_core::work_pool::WorkKey;
 use crate::{ProjectServer, RosenError, workspace::session};
 
 /// Landed commits covered by Velocity's integration build or the corresponding
-/// legacy built prefix.
+/// legacy built prefix. Commits absent from this server's local history are treated
+/// as uncovered rather than failing the whole batch (#519).
 pub async fn issue_build_coverage(
     server: &ProjectServer,
     commits: &[String],
@@ -14,19 +15,33 @@ pub async fn issue_build_coverage(
         return Ok(Vec::new());
     }
     let client = crate::connection::requests(server.endpoint()).await?;
-    let green = if crate::post_land::after_land(server).await? {
-        crate::integration::last_green(server)?
-    } else {
-        legacy_green(&client).await?
-    };
-    let Some(green) = green else {
+    let mut greens = Vec::new();
+    if let Some(green) = crate::integration::last_green(server)? {
+        greens.push(green);
+    }
+    if !crate::post_land::after_land(server).await?
+        && let Some(green) = legacy_green(&client).await?
+        && !greens.contains(&green)
+    {
+        greens.push(green);
+    }
+    if greens.is_empty() {
         return Ok(Vec::new());
-    };
+    }
     let mut covered = Vec::new();
     for commit in commits {
-        let identifier = crate::policy::object(commit)?;
-        if client.merge_base(commit, &green).await?.merge_base == Some(identifier) {
-            covered.push(commit.clone());
+        let Ok(identifier) = crate::policy::object(commit) else {
+            continue;
+        };
+        for green in &greens {
+            match client.merge_base(commit, green).await {
+                Ok(answer) if answer.merge_base == Some(identifier) => {
+                    covered.push(commit.clone());
+                    break;
+                }
+                Ok(_) | Err(rosen_client::Error::Server(_)) => {}
+                Err(error) => return Err(error.into()),
+            }
         }
     }
     Ok(covered)

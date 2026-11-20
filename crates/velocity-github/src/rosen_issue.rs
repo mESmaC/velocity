@@ -12,6 +12,41 @@ const NO_CHANGE_MARKER: &str = "<!-- velocity-issue-no-change:";
 const OVERLAP_ATTEMPT: &str = "overlap:";
 /// A land can change hundreds of files; the comment names the first of them.
 const LISTED_LAND_FILES: usize = 40;
+/// The status context Velocity posts on a commit its integration build passed.
+const INTEGRATION_CONTEXT: &str = "velocity/integration";
+/// How many commits between a landed commit and the default branch tip are checked for a
+/// green `velocity/integration` status when neither endpoint carries one (#519).
+const INTEGRATION_STATUS_LOOKBACK: usize = 10;
+/// How long another machine's recent starting/progress comment keeps an issue out of
+/// dispatch before a stalled remote run is retried (#519).
+pub const REMOTE_PROGRESS_WINDOW_SECONDS: u64 = 2 * 60 * 60;
+
+/// What an issue's GitHub comments show another machine (or a deleted thread) has landed
+/// or is actively working on (#504, #519).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum ExternalIssueState {
+    /// Comments show a Velocity land marker with no later reopen, close or non-fixed
+    /// parked review.
+    Landed {
+        commit: String,
+        /// Unix seconds when the land comment was posted, when readable.
+        landed_at: Option<u64>,
+    },
+    /// Comments show a recent `issue-N` starting/progress comment with no later ended,
+    /// failed, landed, reopened, closed, dependency-wait or needs-owner comment.
+    InProgressElsewhere {
+        /// Unix seconds when the latest active comment was posted.
+        started_at: u64,
+    },
+}
+
+/// A green `velocity/integration` status on GitHub covering a landed commit (#519).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct IntegrationCoverage {
+    pub commit: String,
+    /// Unix seconds when GitHub recorded the green status, when readable.
+    pub passed_at: Option<u64>,
+}
 
 pub enum RosenIssueEffect<'a> {
     Landed { change: &'a str },
@@ -454,7 +489,6 @@ impl IssueClient {
             context: String,
             state: String,
         }
-        const CONTEXT: &str = "velocity/integration";
         let statuses = format!(
             "repos/{}/commits/{commit}/statuses?per_page=100",
             self.repository()
@@ -462,7 +496,7 @@ impl IssueClient {
         let existing: Vec<Status> = self.transport.command.read(&["api", &statuses])?;
         if existing
             .iter()
-            .find(|status| status.context == CONTEXT)
+            .find(|status| status.context == INTEGRATION_CONTEXT)
             .is_some_and(|status| status.state == "success")
         {
             return Ok(true);
@@ -472,7 +506,7 @@ impl IssueClient {
             "POST",
             &endpoint,
             &json!({
-                "context": CONTEXT,
+                "context": INTEGRATION_CONTEXT,
                 "state": "success",
                 "description": "Velocity integration build passed"
             }),
@@ -482,11 +516,53 @@ impl IssueClient {
 
     /// Returns false while the mirror's default branch has not caught up to the land.
     pub fn rosen_commit_mirrored(&self, commit: &str) -> Result<bool, GitHubCommandError> {
-        if commit.len() != 40 || !commit.bytes().all(|byte| byte.is_ascii_hexdigit()) {
-            return Err(GitHubCommandError::Invalid(
-                "Invalid landed commit SHA".into(),
-            ));
+        validate_commit_sha(commit)?;
+        let tip = self.default_branch_tip()?;
+        Ok(self.compare_to_tip(commit, &tip)?.is_some())
+    }
+
+    /// Whether any machine has already posted a green `velocity/integration` commit status
+    /// on `commit` or a newer commit on the mirror's default branch (#519).
+    pub fn integration_status_covering(
+        &self,
+        commit: &str,
+    ) -> Result<Option<IntegrationCoverage>, GitHubCommandError> {
+        validate_commit_sha(commit)?;
+        let tip = self.default_branch_tip()?;
+        let Some(descendants) = self.compare_to_tip(commit, &tip)? else {
+            return Ok(None);
+        };
+        if let Some(passed_at) = self.integration_status_at(&tip)? {
+            return Ok(Some(IntegrationCoverage {
+                commit: tip,
+                passed_at,
+            }));
         }
+        if commit != tip
+            && let Some(passed_at) = self.integration_status_at(commit)?
+        {
+            return Ok(Some(IntegrationCoverage {
+                commit: commit.to_owned(),
+                passed_at,
+            }));
+        }
+        for sha in descendants
+            .into_iter()
+            .rev()
+            .filter(|sha| sha != &tip && sha != commit)
+            .take(INTEGRATION_STATUS_LOOKBACK)
+        {
+            if let Some(passed_at) = self.integration_status_at(&sha)? {
+                return Ok(Some(IntegrationCoverage {
+                    commit: sha,
+                    passed_at,
+                }));
+            }
+        }
+        Ok(None)
+    }
+
+    fn default_branch_tip(&self) -> Result<String, GitHubCommandError> {
         let branch = self
             .transport
             .default_branch
@@ -495,19 +571,83 @@ impl IssueClient {
         let mut variables = self.transport.variables(0);
         variables["branch"] = format!("refs/heads/{branch}").into();
         // Resolve the branch via GraphQL so names with slashes need no URL escaping.
-        let tip: String = self.transport.graphql_at(
+        self.transport.graphql_at(
             "query($owner:String!,$name:String!,$branch:String!) {
               repository(owner:$owner,name:$name) { ref(qualifiedName:$branch) { target { oid } } } }",
             variables,
             "/data/repository/ref/target/oid",
-        )?;
+        )
+    }
+
+    /// Returns `Some(descendant_shas)` when `commit` is an ancestor of (or identical to)
+    /// `tip` on GitHub, and `None` when `commit` is missing or not in `tip`'s history.
+    fn compare_to_tip(
+        &self,
+        commit: &str,
+        tip: &str,
+    ) -> Result<Option<Vec<String>>, GitHubCommandError> {
         let endpoint = format!("repos/{}/compare/{commit}...{tip}", self.repository());
+        #[derive(Deserialize)]
+        struct ComparedCommit {
+            sha: String,
+        }
         #[derive(Deserialize)]
         struct Comparison {
             status: String,
+            #[serde(default)]
+            commits: Vec<ComparedCommit>,
         }
-        let comparison: Comparison = self.transport.command.read(&["api", &endpoint])?;
-        Ok(matches!(comparison.status.as_str(), "ahead" | "identical"))
+        let comparison: Comparison = match self.transport.command.read(&["api", &endpoint]) {
+            Ok(comparison) => comparison,
+            Err(GitHubCommandError::Command { message, .. })
+                if message.contains("HTTP 404") || message.contains("Not Found") =>
+            {
+                return Ok(None);
+            }
+            Err(error) => return Err(error),
+        };
+        if !matches!(comparison.status.as_str(), "ahead" | "identical") {
+            return Ok(None);
+        }
+        Ok(Some(
+            comparison
+                .commits
+                .into_iter()
+                .map(|entry| entry.sha)
+                .collect(),
+        ))
+    }
+
+    /// `Some(passed_at)` when `commit` carries a green `velocity/integration` status.
+    fn integration_status_at(
+        &self,
+        commit: &str,
+    ) -> Result<Option<Option<u64>>, GitHubCommandError> {
+        #[derive(Deserialize)]
+        struct Status {
+            context: String,
+            state: String,
+            #[serde(default)]
+            updated_at: Option<String>,
+            #[serde(default)]
+            created_at: Option<String>,
+        }
+        let endpoint = format!(
+            "repos/{}/commits/{commit}/statuses?per_page=100",
+            self.repository()
+        );
+        let statuses: Vec<Status> = self.transport.command.read(&["api", &endpoint])?;
+        Ok(statuses
+            .into_iter()
+            .find(|status| status.context == INTEGRATION_CONTEXT)
+            .filter(|status| status.state == "success")
+            .map(|status| {
+                status
+                    .updated_at
+                    .or(status.created_at)
+                    .as_deref()
+                    .and_then(unix_seconds)
+            }))
     }
 
     /// The marker makes a retry after an ambiguous mutation response reuse its comment.
@@ -559,6 +699,22 @@ impl IssueClient {
         number: u32,
     ) -> Result<Option<String>, GitHubCommandError> {
         Ok(awaiting_integration(&self.issue_comment_bodies(number)?))
+    }
+
+    /// Whether the issue's GitHub comments show a Velocity land or a recent `issue-N`
+    /// starting/progress comment with no later ended or landed comment (#504, #519).
+    pub fn external_issue_state(
+        &self,
+        number: u32,
+        now: u64,
+    ) -> Result<Option<ExternalIssueState>, GitHubCommandError> {
+        let comments = self.issue_comments(number)?;
+        Ok(classify_external_issue_state(
+            number,
+            &comments,
+            now,
+            REMOTE_PROGRESS_WINDOW_SECONDS,
+        ))
     }
 
     /// Whether a review already checked this issue against an overlapping land and
@@ -664,15 +820,11 @@ fn unix_seconds(timestamp: &str) -> Option<u64> {
 /// Comments arrive oldest first, so the last Velocity marker decides.
 fn awaiting_integration(comments: &[String]) -> Option<String> {
     let mut landed = None;
-    for marker in comments
-        .iter()
-        .filter_map(|body| body.lines().last())
-        .filter_map(|line| line.trim().strip_prefix("<!-- ")?.strip_suffix(" -->"))
-    {
+    for marker in comments.iter().filter_map(|body| comment_marker(body)) {
         if let Some(rest) = marker.strip_prefix("velocity-rosen-issue:") {
             let mut fields = rest.split(':');
             landed = match (fields.next(), fields.next()) {
-                (Some("landed"), Some(commit)) => Some(commit.to_owned()),
+                (Some("landed"), Some(commit)) if !commit.is_empty() => Some(commit.to_owned()),
                 _ => None,
             };
         } else if marker.starts_with("velocity-no-change-review:") && !marker.ends_with(":true") {
@@ -682,6 +834,117 @@ fn awaiting_integration(comments: &[String]) -> Option<String> {
         }
     }
     landed
+}
+
+fn validate_commit_sha(commit: &str) -> Result<(), GitHubCommandError> {
+    if commit.len() != 40 || !commit.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+        return Err(GitHubCommandError::Invalid(
+            "Invalid landed commit SHA".into(),
+        ));
+    }
+    Ok(())
+}
+
+fn comment_marker(body: &str) -> Option<&str> {
+    body.lines()
+        .last()?
+        .trim()
+        .strip_prefix("<!-- ")?
+        .strip_suffix(" -->")
+}
+
+/// Comments arrive oldest first. A land marker takes precedence over any later duplicate
+/// starting comment until a reopen, close or non-fixed review clears the land (#519).
+fn classify_external_issue_state(
+    number: u32,
+    comments: &[IssueComment],
+    now: u64,
+    window_seconds: u64,
+) -> Option<ExternalIssueState> {
+    let mut landed: Option<(String, Option<u64>)> = None;
+    let mut in_progress: Option<u64> = None;
+    for comment in comments {
+        let timestamp = unix_seconds(&comment.created_at);
+        if let Some(marker) = comment_marker(&comment.body) {
+            if let Some(rest) = marker.strip_prefix("velocity-rosen-issue:") {
+                let mut fields = rest.split(':');
+                landed = match (fields.next(), fields.next()) {
+                    (Some("landed"), Some(commit)) if !commit.is_empty() => {
+                        Some((commit.to_owned(), timestamp))
+                    }
+                    _ => None,
+                };
+                in_progress = None;
+                continue;
+            }
+            if marker.starts_with("velocity-no-change-review:") {
+                if !marker.ends_with(":true") {
+                    landed = None;
+                }
+                in_progress = None;
+                continue;
+            }
+            if marker.starts_with("velocity-issue-no-change:")
+                || marker.starts_with("velocity-launch-failed:")
+                || marker.starts_with("velocity-overlap-clear:")
+            {
+                in_progress = None;
+                continue;
+            }
+        }
+        if comment.body.trim_start().starts_with("Needs the owner · ") {
+            in_progress = None;
+            continue;
+        }
+        if let Some((ready, message)) = issue_agent_comment(&comment.body, number) {
+            if ends_with_dependency_wait(message) {
+                in_progress = None;
+            } else if ready || in_progress.is_some() || is_starting_comment(message, number) {
+                in_progress = timestamp.or(in_progress);
+            }
+        }
+    }
+    if let Some((commit, landed_at)) = landed {
+        return Some(ExternalIssueState::Landed { commit, landed_at });
+    }
+    let started_at = in_progress?;
+    (now.saturating_sub(started_at) < window_seconds)
+        .then_some(ExternalIssueState::InProgressElsewhere { started_at })
+}
+
+fn issue_agent_comment(body: &str, number: u32) -> Option<(bool, &str)> {
+    let (byline, message) = body.split_once("\n\n")?;
+    let byline = byline.trim();
+    let (ready, rest) = match byline.strip_prefix("Ready to close · ") {
+        Some(rest) => (true, rest),
+        None => (false, byline),
+    };
+    let nick = rest.strip_prefix("Velocity agent `")?.split_once('`')?.0;
+    let prefix = format!("issue-{number}");
+    let matches_issue = nick == prefix
+        || nick
+            .strip_prefix(&prefix)
+            .is_some_and(|tail| tail.starts_with('-') && tail.len() > 1);
+    matches_issue.then_some((ready, message.trim()))
+}
+
+fn is_starting_comment(message: &str, number: u32) -> bool {
+    let lower = message.trim_start().to_ascii_lowercase();
+    let starts_with_starting = lower.strip_prefix("starting").is_some_and(|rest| {
+        rest.is_empty()
+            || rest
+                .chars()
+                .next()
+                .is_some_and(|character| !character.is_ascii_alphanumeric())
+    });
+    starts_with_starting || lower.contains(&format!("starting #{number}"))
+}
+
+fn ends_with_dependency_wait(message: &str) -> bool {
+    message.lines().last().is_some_and(|line| {
+        let line = line.trim();
+        line.starts_with("Waits for ") && line.ends_with(", recorded as GitHub issue dependencies.")
+    })
 }
 
 fn issue_has_no_change_label(issue: &GitHubIssue) -> bool {

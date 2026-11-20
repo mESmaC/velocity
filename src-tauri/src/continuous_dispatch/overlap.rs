@@ -17,7 +17,7 @@ use velocity_store::{
 use velocity_threads::continuous_dispatch::actionable;
 use velocity_threads::overlap_paths::{is_reference, widely_shared};
 
-use super::{Reader, dispatch_claims};
+use super::{Reader, dispatch_claims, unix_seconds};
 use crate::{graph_access::issue_paths, state::ManagedStateStore, threads::lock};
 
 pub(super) fn refresh(
@@ -45,7 +45,8 @@ pub(super) fn refresh(
     let claims = dispatch_claims(application, identifier)?;
     let repository = client.repository();
     let issues = &reader.backlog.issues;
-    let working = active_issues(&project, repository, issues, &claims);
+    let now = unix_seconds();
+    let working = active_issues(&project, repository, issues, &claims, now);
     if working.is_empty() && waits.is_empty() {
         return Ok(());
     }
@@ -58,6 +59,7 @@ pub(super) fn refresh(
         working,
         &mut waits,
         &mut released,
+        now,
     )?;
     lock(state.inner(), "persisted state")?
         .save_issue_overlaps(identifier, waits.clone(), released.clone())
@@ -135,11 +137,17 @@ fn active_issues(
     repository: &str,
     issues: &[GitHubIssue],
     claims: &[Claim],
+    now: u64,
 ) -> BTreeMap<u32, WorkingIssue> {
     issues
         .iter()
         .filter(|issue| issue.state == IssueState::Open)
         .filter_map(|issue| {
+            // A skipped external issue (already landed or in progress on another machine)
+            // never acts as a local overlap blocker (#519).
+            if is_skipped_external(project, repository, issue, now) {
+                return None;
+            }
             let thread = project.threads.iter().find(|thread| {
                 thread.issue.as_ref().is_some_and(|key| {
                     key.number == issue.number && key.repository.eq_ignore_ascii_case(repository)
@@ -247,6 +255,7 @@ impl<'a> OverlapContext<'a> {
         working: BTreeMap<u32, WorkingIssue>,
         waits: &mut BTreeMap<u32, IssueOverlap>,
         released: &mut BTreeMap<u32, ThreadIssue>,
+        now: u64,
     ) -> Result<(), String> {
         let client = self.client;
         let repository = client.repository();
@@ -254,25 +263,30 @@ impl<'a> OverlapContext<'a> {
             issue.repository.eq_ignore_ascii_case(repository)
                 && issues.iter().any(|open| open.number == issue.number)
         };
-        waits.retain(|_, wait| open(&wait.issue));
+        waits.retain(|_, wait| {
+            open(&wait.issue)
+                && !blocker_skipped_external(self.project, repository, issues, wait.blocker, now)
+        });
         released.retain(|_, issue| open(issue));
         let blockers = self.blockers(&working)?;
         let (mut holdable, mut backlog) = (Vec::new(), Vec::new());
         for issue in issues {
             let number = issue.number;
             let worked = working.contains_key(&number);
-            // A landed issue waits for its integration build, not for another issue, and
-            // reviewing it against someone else's land only parks finished work (#505).
-            let landed = !worked && has_landed(self.project, repository, number);
-            if worked || landed {
+            // A landed or remotely worked issue waits elsewhere, not for another issue,
+            // and reviewing it against someone else's land only parks finished work (#505, #519).
+            let skipped = !worked && is_skipped_external(self.project, repository, issue, now);
+            if worked {
                 end_hold(number, waits, released);
+            } else if skipped {
+                waits.remove(&number);
             } else if waits.contains_key(&number)
                 || (!blockers.is_empty() && actionable(issue) && !released.contains_key(&number))
             {
                 holdable.push(issue);
             }
             // The ready backlog: every issue being worked, held or free for dispatch.
-            if worked || waits.contains_key(&number) || (!landed && actionable(issue)) {
+            if worked || waits.contains_key(&number) || (!skipped && actionable(issue)) {
                 backlog.push(issue);
             }
         }
@@ -517,6 +531,38 @@ fn end_hold(
     if let Some(wait) = waits.remove(&number) {
         released.insert(number, wait.issue);
     }
+}
+
+/// Whether `issue` is already landed or actively worked on another machine (#504, #519).
+fn is_skipped_external(
+    project: &ProjectItem,
+    repository: &str,
+    issue: &GitHubIssue,
+    now: u64,
+) -> bool {
+    let identity = ThreadIssue::new(repository.into(), issue.number);
+    has_landed(project, repository, issue.number)
+        || project
+            .remote_work_hold(&identity, Some(&issue.updated_at), now)
+            .is_some()
+}
+
+fn blocker_skipped_external(
+    project: &ProjectItem,
+    repository: &str,
+    issues: &[GitHubIssue],
+    blocker: u32,
+    now: u64,
+) -> bool {
+    let identity = ThreadIssue::new(repository.into(), blocker);
+    let updated_at = issues
+        .iter()
+        .find(|issue| issue.number == blocker)
+        .map(|issue| issue.updated_at.as_str());
+    has_landed(project, repository, blocker)
+        || project
+            .remote_work_hold(&identity, updated_at, now)
+            .is_some()
 }
 
 /// Whether `number` has a landed change of its own, from a thread, the work projection

@@ -279,6 +279,16 @@ pub fn issue_skip_reason(
             reason: "launch failure backoff".into(),
         });
     }
+    if project
+        .remote_work_hold(&identity, Some(&issue.updated_at), now)
+        .is_some()
+    {
+        return Some(SkippedIssue {
+            number: issue.number,
+            category: SkipCategory::Claimed,
+            reason: "in progress on another machine".into(),
+        });
+    }
     if claimed.contains(&format!("issue:{}", issue.number)) {
         return Some(SkippedIssue {
             number: issue.number,

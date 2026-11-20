@@ -26,6 +26,12 @@ pub fn associate_issue_threads(
                 .is_some()
         {
             row.thread_label = Some("landed · waiting for integration".into());
+        } else if thread.is_none()
+            && project
+                .remote_work_hold(&assignment, None, now_unix_seconds())
+                .is_some()
+        {
+            row.thread_label = Some("in progress elsewhere".into());
         }
         // The card says why dispatch has not started the issue and which files overlap (#525).
         row.hold = project.overlap_hold(&assignment).map(|wait| {
@@ -228,4 +234,11 @@ fn issue_brief(
         &format!("{header}{excerpt}{notice}\n\n{instructions}"),
         SHORT_PROMPT_BYTES,
     )
+}
+
+fn now_unix_seconds() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs()
 }

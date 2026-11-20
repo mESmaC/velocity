@@ -1,16 +1,26 @@
 //! GitHub effects are run by the Rosen event follower, never by the checker (#386).
-use std::path::PathBuf;
+use std::collections::BTreeMap;
+use std::path::{Path, PathBuf};
+use std::sync::Mutex;
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use tauri::{AppHandle, Manager};
-use velocity_github::RosenIssueEffect;
+use velocity_github::{IssueState, RosenIssueEffect};
 use velocity_rosen::{
     IssueEvent,
     review_swarm::{self, IssueCloser, IssueReviews},
 };
+use velocity_store::continuous_dispatch::LandedHold;
 use velocity_store::rosen_issue::{IssueAction, IssueObservation};
 
 use crate::state::ManagedStateStore;
 use crate::threads::{lock, report};
+
+/// How often an orphaned landed hold without a local green build polls GitHub for
+/// another machine's `velocity/integration` status (#519).
+const ORPHANED_STATUS_REFRESH: Duration = Duration::from_secs(2 * 60);
+
+static ORPHANED_STATUS_CHECKS: Mutex<BTreeMap<(u32, u32), Instant>> = Mutex::new(BTreeMap::new());
 
 pub(crate) async fn record_source(
     application: &AppHandle,
@@ -115,6 +125,7 @@ pub(crate) async fn follow_up(application: &AppHandle, project: u32) {
             report::<()>(Err(error));
         }
     }
+    follow_orphaned_holds(application, project, &covered).await;
 }
 
 async fn follow_thread(
@@ -161,33 +172,42 @@ async fn issue_reviews(application: &AppHandle, project: u32) -> Result<IssueRev
         .map_err(|error| error.to_string())
 }
 
+type BuildTargets = (Vec<(u32, String)>, Vec<LandedHold>, Vec<String>);
+
+fn build_check_targets(application: &AppHandle, project: u32) -> Result<BuildTargets, String> {
+    let store = lock(
+        application.state::<ManagedStateStore>().inner(),
+        "persisted state",
+    )?;
+    let candidates = store.rosen_issue_build_candidates(project);
+    let orphaned = store
+        .project(project)
+        .map(velocity_store::ProjectItem::orphaned_landed_holds)
+        .unwrap_or_default();
+    let mut commits: Vec<_> = candidates
+        .iter()
+        .map(|(_, commit)| commit.clone())
+        .collect();
+    commits.extend(orphaned.iter().map(|hold| hold.commit.clone()));
+    if let Some(item) = store.project(project) {
+        commits.extend(item.rosen_work_items.iter().filter_map(|work| {
+            (work.status == velocity_core::work_pool::WorkStatus::Landed)
+                .then_some(work.landed_commit.as_ref())
+                .flatten()
+                .cloned()
+        }));
+    }
+    commits.sort_unstable();
+    commits.dedup();
+    Ok((candidates, orphaned, commits))
+}
+
 pub(crate) async fn confirm_builds(
     application: &AppHandle,
     project: u32,
     sequence: u64,
 ) -> Result<Vec<String>, String> {
-    let (candidates, commits) = {
-        let store = lock(
-            application.state::<ManagedStateStore>().inner(),
-            "persisted state",
-        )?;
-        let candidates = store.rosen_issue_build_candidates(project);
-        let mut commits: Vec<_> = candidates
-            .iter()
-            .map(|(_, commit)| commit.clone())
-            .collect();
-        if let Some(item) = store.project(project) {
-            commits.extend(item.rosen_work_items.iter().filter_map(|work| {
-                (work.status == velocity_core::work_pool::WorkStatus::Landed)
-                    .then_some(work.landed_commit.as_ref())
-                    .flatten()
-                    .cloned()
-            }));
-        }
-        commits.sort_unstable();
-        commits.dedup();
-        (candidates, commits)
-    };
+    let (candidates, orphaned, commits) = build_check_targets(application, project)?;
     if commits.is_empty() && sequence == 0 {
         return Ok(Vec::new());
     }
@@ -199,6 +219,7 @@ pub(crate) async fn confirm_builds(
             .await
             .map_err(|error| error.to_string())?
     };
+    let now = unix_seconds();
     let mut store = lock(
         application.state::<ManagedStateStore>().inner(),
         "persisted state",
@@ -213,6 +234,13 @@ pub(crate) async fn confirm_builds(
         if covered.contains(&commit) {
             store
                 .confirm_rosen_issue_build(project, thread, &commit)
+                .map_err(|error| error.to_string())?;
+        }
+    }
+    for hold in orphaned {
+        if covered.contains(&hold.commit) {
+            store
+                .confirm_landed_hold_build(project, hold.issue.number, &hold.commit, now)
                 .map_err(|error| error.to_string())?;
         }
     }
@@ -292,4 +320,148 @@ fn finish(
     )?
     .finish_rosen_issue(project, thread, action)
     .map_err(|error| error.to_string())
+}
+
+/// Closes orphaned lands from other machines once a green integration build (here or on
+/// GitHub) covers the commit and the 30-minute review window has elapsed (#519).
+async fn follow_orphaned_holds(application: &AppHandle, project: u32, covered: &[String]) {
+    let (directory, holds) = match lock(
+        application.state::<ManagedStateStore>().inner(),
+        "persisted state",
+    ) {
+        Ok(store) => match store.project(project) {
+            Some(item) => (
+                PathBuf::from(&item.repository_path),
+                item.orphaned_landed_holds(),
+            ),
+            None => return,
+        },
+        Err(error) => return report::<()>(Err(error)),
+    };
+    for mut hold in holds {
+        if let Err(error) =
+            follow_orphaned_hold(application, project, &directory, &mut hold, covered).await
+        {
+            report::<()>(Err(error));
+        }
+    }
+}
+
+async fn follow_orphaned_hold(
+    application: &AppHandle,
+    project: u32,
+    directory: &Path,
+    hold: &mut LandedHold,
+    covered: &[String],
+) -> Result<(), String> {
+    let now = unix_seconds();
+    if hold.green_since.is_none() && covered.contains(&hold.commit) {
+        confirm_orphaned_green(application, project, hold, now)?;
+    } else if hold.green_since.is_none() && status_check_due(project, hold.issue.number) {
+        let (dir, repo, commit) = (
+            directory.to_path_buf(),
+            hold.issue.repository.clone(),
+            hold.commit.clone(),
+        );
+        let status = tauri::async_runtime::spawn_blocking(move || {
+            let client = velocity_github::IssueClient::for_repository(&dir, &repo)
+                .map_err(|error| error.to_string())?;
+            client
+                .integration_status_covering(&commit)
+                .map_err(|error| error.to_string())
+        })
+        .await
+        .map_err(|error| error.to_string())??;
+        if let Some(coverage) = status {
+            confirm_orphaned_green(
+                application,
+                project,
+                hold,
+                coverage.passed_at.unwrap_or(now),
+            )?;
+        }
+    }
+    if !hold.watcher_due(now) {
+        return Ok(());
+    }
+    let (dir, snapshot) = (directory.to_path_buf(), hold.clone());
+    let done = tauri::async_runtime::spawn_blocking(move || close_orphaned_hold(&dir, &snapshot))
+        .await
+        .map_err(|error| error.to_string())??;
+    if done {
+        lock(
+            application.state::<ManagedStateStore>().inner(),
+            "persisted state",
+        )?
+        .remove_landed_hold(project, hold.issue.number)
+        .map_err(|error| error.to_string())?;
+        if let Ok(mut checks) = ORPHANED_STATUS_CHECKS.lock() {
+            checks.remove(&(project, hold.issue.number));
+        }
+    }
+    Ok(())
+}
+
+fn confirm_orphaned_green(
+    application: &AppHandle,
+    project: u32,
+    hold: &mut LandedHold,
+    green_at: u64,
+) -> Result<(), String> {
+    lock(
+        application.state::<ManagedStateStore>().inner(),
+        "persisted state",
+    )?
+    .confirm_landed_hold_build(project, hold.issue.number, &hold.commit, green_at)
+    .map_err(|error| error.to_string())?;
+    hold.green_since.get_or_insert(green_at);
+    Ok(())
+}
+
+fn status_check_due(project: u32, number: u32) -> bool {
+    let Ok(mut checks) = ORPHANED_STATUS_CHECKS.lock() else {
+        return false;
+    };
+    let key = (project, number);
+    if checks
+        .get(&key)
+        .is_some_and(|at| at.elapsed() < ORPHANED_STATUS_REFRESH)
+    {
+        return false;
+    }
+    checks.insert(key, Instant::now());
+    true
+}
+
+fn close_orphaned_hold(directory: &Path, hold: &LandedHold) -> Result<bool, String> {
+    let client = velocity_github::IssueClient::for_repository(directory, &hold.issue.repository)
+        .map_err(|error| error.to_string())?;
+    let issue = client
+        .get(hold.issue.number)
+        .map_err(|error| error.to_string())?;
+    if issue.state != IssueState::Open {
+        return Ok(true);
+    }
+    let current = client
+        .landed_awaiting_integration(hold.issue.number)
+        .map_err(|error| error.to_string())?;
+    if current.as_deref() != Some(hold.commit.as_str()) {
+        return Ok(true);
+    }
+    client
+        .follow_rosen_issue(
+            &hold.issue.repository,
+            hold.issue.number,
+            &hold.commit,
+            0,
+            RosenIssueEffect::Watcher,
+        )
+        .map_err(|error| error.to_string())
+}
+
+fn unix_seconds() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs()
 }

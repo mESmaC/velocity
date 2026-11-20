@@ -48,6 +48,8 @@ pub trait LandingHost: Clone + Send + Sync + 'static {
         _stopped: &rosen_checker::StoppedCheck,
     ) {
     }
+    /// Called when orphaned landed commits on `project` have a green integration build (#519).
+    fn orphaned_verified(&self, _project: u32) {}
 }
 
 #[derive(Default)]

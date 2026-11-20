@@ -298,6 +298,113 @@ async fn bisection(client: &Client, state: BisectState) -> Result<Bisection, Ros
     })
 }
 
+/// Base commit covering one or more orphaned lands that need post-land verification (#519).
+#[derive(Clone, Debug)]
+pub struct OrphanedBatch {
+    pub commit: String,
+    pub after_land: bool,
+    pub commands: Vec<String>,
+    /// The subset of requested orphaned commits present in `commit`'s history.
+    pub covered: Vec<String>,
+}
+
+/// Whether `commit` is already in this server's local base history (#519).
+pub async fn base_contains_commit(
+    server: &ProjectServer,
+    commit: &str,
+) -> Result<bool, RosenError> {
+    let client = crate::connection::requests(server.endpoint()).await?;
+    let Some((_, tip)) = base_tip(&client).await? else {
+        return Ok(false);
+    };
+    is_ancestor(&client, commit, &tip).await
+}
+
+/// Resolves the base tip and check commands to verify orphaned landed commits (#519).
+/// Catches up from the mirror once when any requested commit is not yet in the local base.
+pub async fn orphaned_batch(
+    server: &ProjectServer,
+    commits: &[String],
+) -> Result<Option<OrphanedBatch>, RosenError> {
+    if commits.is_empty() {
+        return Ok(None);
+    }
+    let client = crate::connection::requests(server.endpoint()).await?;
+    let Some(mut tip) = base_tip(&client).await? else {
+        return Ok(None);
+    };
+    let mut covered = ancestors_of(&client, commits, &tip.1).await?;
+    if covered.len() < commits.len()
+        && matches!(
+            crate::catch_up_from_mirror(server).await,
+            Ok(crate::CatchUp::FastForwarded(_))
+        )
+        && let Some(updated) = base_tip(&client).await?
+    {
+        tip = updated;
+        covered = ancestors_of(&client, commits, &tip.1).await?;
+    }
+    if covered.is_empty() {
+        return Ok(None);
+    }
+    let policy = client.project_config(Some(tip.0)).await?;
+    let after_land = policy.config.review == ReviewMode::AfterLand;
+    let mut commands = policy.config.checks.post_land.commands.clone();
+    if after_land
+        && !commands
+            .iter()
+            .any(|command| command == integration::FULL_SUITE)
+    {
+        commands.splice(..0, policy.config.checks.pre_land.commands.iter().cloned());
+    }
+    Ok(Some(OrphanedBatch {
+        commit: tip.1,
+        after_land,
+        commands,
+        covered,
+    }))
+}
+
+async fn base_tip(client: &Client) -> Result<Option<(ObjectId, String)>, RosenError> {
+    let request = LogRequest {
+        at: None,
+        paths: Vec::new(),
+        limit: Some(1),
+    };
+    Ok(client
+        .log(request)
+        .await?
+        .entries
+        .into_iter()
+        .next()
+        .map(|entry| (entry.commit, entry.commit.to_string())))
+}
+
+async fn ancestors_of(
+    client: &Client,
+    commits: &[String],
+    tip: &str,
+) -> Result<Vec<String>, RosenError> {
+    let mut covered = Vec::new();
+    for commit in commits {
+        if is_ancestor(client, commit, tip).await? {
+            covered.push(commit.clone());
+        }
+    }
+    Ok(covered)
+}
+
+async fn is_ancestor(client: &Client, commit: &str, tip: &str) -> Result<bool, RosenError> {
+    let Ok(identifier) = crate::policy::object(commit) else {
+        return Ok(false);
+    };
+    match client.merge_base(commit, tip).await {
+        Ok(answer) => Ok(answer.merge_base == Some(identifier)),
+        Err(rosen_client::Error::Server(_)) => Ok(false),
+        Err(error) => Err(error.into()),
+    }
+}
+
 /// The immutable Rosen base snapshot used by the code graph.
 pub struct BaseSnapshot {
     client: std::sync::Arc<crate::connection::Connection>,

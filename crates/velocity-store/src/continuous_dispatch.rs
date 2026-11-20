@@ -43,6 +43,11 @@ pub struct ContinuousDispatch {
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     #[specta(skip)]
     pub landed_holds: BTreeMap<u32, LandedHold>,
+    /// Issues whose GitHub comments show another machine started working on them recently
+    /// or posted a land not yet visible on the mirror (#519).
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    #[specta(skip)]
+    pub remote_work_holds: BTreeMap<u32, RemoteWorkHold>,
     /// Dispatch threads that failed before their agent's first turn (#514), by thread.
     /// The issue is already back in dispatch; the reason still has to reach it as a
     /// comment, across restarts and failed GitHub calls.
@@ -110,6 +115,49 @@ pub struct LandedHold {
     /// Unix seconds when Velocity first saw the land waiting.
     #[serde(default)]
     pub since: u64,
+    /// Unix seconds when a green integration build covering `commit` was first observed (#519).
+    #[serde(default)]
+    pub green_since: Option<u64>,
+}
+
+impl LandedHold {
+    /// Whether the 30-minute review window after verified post-land green has elapsed.
+    pub fn watcher_due(&self, now: u64) -> bool {
+        const REVIEW_WINDOW: u64 = 30 * 60;
+        self.green_since
+            .is_some_and(|green| now.saturating_sub(green) >= REVIEW_WINDOW)
+    }
+}
+
+/// An issue whose GitHub comments show another machine started working on it recently
+/// or posted a land not yet visible on the mirror (#519).
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RemoteWorkHold {
+    pub issue: ThreadIssue,
+    /// The issue version the comments were read at. A newer version is read again.
+    #[serde(default)]
+    pub updated_at: String,
+    /// Unix seconds when the other machine's comment was posted.
+    #[serde(default)]
+    pub started_at: u64,
+    /// Unix seconds when this hold expires so a stalled remote run is retried.
+    #[serde(default)]
+    pub expires_at: u64,
+}
+
+impl RemoteWorkHold {
+    pub fn new(issue: ThreadIssue, updated_at: String, started_at: u64, expires_at: u64) -> Self {
+        Self {
+            issue,
+            updated_at,
+            started_at,
+            expires_at,
+        }
+    }
+
+    pub fn is_active(&self, now: u64) -> bool {
+        now < self.expires_at
+    }
 }
 
 /// A landed change waiting for the integration build that closes its issue.
@@ -296,6 +344,42 @@ impl ProjectItem {
                 since: Some(hold.since),
             })
     }
+
+    /// Whether another machine's recent GitHub comment keeps `issue` out of dispatch (#519).
+    /// `updated_at` limits the hold to the issue version its comments were read at.
+    pub fn remote_work_hold(
+        &self,
+        issue: &ThreadIssue,
+        updated_at: Option<&str>,
+        now: u64,
+    ) -> Option<&RemoteWorkHold> {
+        self.continuous_dispatch
+            .remote_work_holds
+            .get(&issue.number)
+            .filter(|hold| {
+                same_issue(&hold.issue, issue)
+                    && hold.is_active(now)
+                    && updated_at.is_none_or(|version| hold.updated_at == version)
+            })
+    }
+
+    /// Mirrored landed holds that no local thread on this machine owns and closes (#519).
+    pub fn orphaned_landed_holds(&self) -> Vec<LandedHold> {
+        self.continuous_dispatch
+            .landed_holds
+            .values()
+            .filter(|hold| {
+                !self.threads.iter().any(|thread| {
+                    thread
+                        .issue
+                        .as_ref()
+                        .is_some_and(|assigned| same_issue(assigned, &hold.issue))
+                        && thread.rosen_issue.landed_commit() == Some(hold.commit.as_str())
+                })
+            })
+            .cloned()
+            .collect()
+    }
 }
 
 pub fn busy_count(project: &ProjectItem) -> u32 {
@@ -400,8 +484,7 @@ impl StateStore {
     }
 
     /// Records GitHub evidence that `issue` landed and waits for integration (#504). A
-    /// re-read of the same land keeps the first time it was seen, so the stuck-integration
-    /// notice measures the whole wait.
+    /// re-read of the same land keeps the earlier seen time and any confirmed green time.
     pub fn save_landed_hold(
         &mut self,
         project: u32,
@@ -416,29 +499,153 @@ impl StateStore {
             .iter_mut()
             .find(|item| item.id == project)
             .ok_or(ThreadError::UnknownProject(project))?;
-        let since = item
+        let existing = item
             .continuous_dispatch
             .landed_holds
             .get(&issue.number)
-            .filter(|hold| {
-                hold.commit == commit
-                    && hold
-                        .issue
-                        .repository
-                        .eq_ignore_ascii_case(&issue.repository)
-            })
-            .map_or(now, |hold| hold.since);
+            .filter(|hold| hold.commit == commit && same_issue(&hold.issue, &issue));
+        let since = existing.map_or(now, |hold| hold.since.min(now));
+        let green_since = existing.and_then(|hold| hold.green_since);
         let hold = LandedHold {
             issue,
             commit,
             updated_at,
             since,
+            green_since,
         };
+        let removed_remote = item
+            .continuous_dispatch
+            .remote_work_holds
+            .remove(&hold.issue.number)
+            .is_some();
         let holds = &mut item.continuous_dispatch.landed_holds;
-        if holds.get(&hold.issue.number) == Some(&hold) {
+        if holds.get(&hold.issue.number) == Some(&hold) && !removed_remote {
             return Ok(());
         }
         holds.insert(hold.issue.number, hold);
+        self.commit(next)?;
+        Ok(())
+    }
+
+    /// Records the first time a green integration build covered an orphaned land (#519).
+    pub fn confirm_landed_hold_build(
+        &mut self,
+        project: u32,
+        number: u32,
+        commit: &str,
+        green_at: u64,
+    ) -> Result<(), ThreadError> {
+        let mut next = self.state.clone();
+        let Some(hold) = next
+            .projects
+            .iter_mut()
+            .find(|item| item.id == project)
+            .and_then(|item| item.continuous_dispatch.landed_holds.get_mut(&number))
+            .filter(|hold| hold.commit == commit)
+        else {
+            return Ok(());
+        };
+        if hold.green_since.is_some() {
+            return Ok(());
+        }
+        hold.green_since = Some(green_at);
+        self.commit(next)?;
+        Ok(())
+    }
+
+    /// Drops one landed hold once its orphaned issue closed or is no longer landed (#519).
+    pub fn remove_landed_hold(&mut self, project: u32, number: u32) -> Result<(), ThreadError> {
+        let item = self
+            .project(project)
+            .ok_or(ThreadError::UnknownProject(project))?;
+        if !item.continuous_dispatch.landed_holds.contains_key(&number) {
+            return Ok(());
+        }
+        let mut next = self.state.clone();
+        if let Some(item) = next.projects.iter_mut().find(|item| item.id == project) {
+            item.continuous_dispatch.landed_holds.remove(&number);
+        }
+        self.commit(next)?;
+        Ok(())
+    }
+
+    /// Saves a hold for an issue another machine is working on (#519).
+    pub fn save_remote_work_hold(
+        &mut self,
+        project: u32,
+        hold: RemoteWorkHold,
+    ) -> Result<(), ThreadError> {
+        let item = self
+            .project(project)
+            .ok_or(ThreadError::UnknownProject(project))?;
+        if item
+            .continuous_dispatch
+            .remote_work_holds
+            .get(&hold.issue.number)
+            == Some(&hold)
+        {
+            return Ok(());
+        }
+        let mut next = self.state.clone();
+        let item = next
+            .projects
+            .iter_mut()
+            .find(|item| item.id == project)
+            .ok_or(ThreadError::UnknownProject(project))?;
+        item.continuous_dispatch
+            .remote_work_holds
+            .insert(hold.issue.number, hold);
+        self.commit(next)?;
+        Ok(())
+    }
+
+    /// Clears a remote-work hold once re-reading comments shows the issue is free (#519).
+    pub fn clear_remote_work_hold(&mut self, project: u32, number: u32) -> Result<(), ThreadError> {
+        let item = self
+            .project(project)
+            .ok_or(ThreadError::UnknownProject(project))?;
+        if !item
+            .continuous_dispatch
+            .remote_work_holds
+            .contains_key(&number)
+        {
+            return Ok(());
+        }
+        let mut next = self.state.clone();
+        if let Some(item) = next.projects.iter_mut().find(|item| item.id == project) {
+            item.continuous_dispatch.remote_work_holds.remove(&number);
+        }
+        self.commit(next)?;
+        Ok(())
+    }
+
+    /// Drops remote-work holds for issues that left the open backlog (#519).
+    pub fn prune_remote_work_holds(
+        &mut self,
+        project: u32,
+        repository: &str,
+        keep: impl Fn(u32) -> bool,
+    ) -> Result<(), ThreadError> {
+        let item = self
+            .project(project)
+            .ok_or(ThreadError::UnknownProject(project))?;
+        let retained = |number: &u32, hold: &RemoteWorkHold| {
+            hold.issue.repository.eq_ignore_ascii_case(repository) && keep(*number)
+        };
+        if item
+            .continuous_dispatch
+            .remote_work_holds
+            .iter()
+            .all(|(number, hold)| retained(number, hold))
+        {
+            return Ok(());
+        }
+        let mut next = self.state.clone();
+        if let Some(item) = next.projects.iter_mut().find(|item| item.id == project) {
+            item.continuous_dispatch
+                .remote_work_holds
+                .retain(|number, hold| retained(number, hold));
+        }
         self.commit(next)?;
         Ok(())
     }
@@ -995,6 +1202,50 @@ mod tests {
         let reloaded = StateStore::load_or_default(&directory)?;
         let project = reloaded.project(1).ok_or("missing project")?;
         assert!(project.continuous_dispatch.landed_holds.is_empty());
+        std::fs::remove_dir_all(directory)?;
+        Ok(())
+    }
+
+    // Risk (#519): a restart that forgets an orphaned land's green time or another
+    // machine's active remote-work hold either stalls closing or re-dispatches the issue.
+    #[test]
+    fn remote_work_and_orphaned_land_holds_survive_save_and_load()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let (directory, mut store) = legacy_store()?;
+        let landed_issue = ThreadIssue::new("Owner/Repo".into(), 499);
+        let remote_issue = ThreadIssue::new("Owner/Repo".into(), 508);
+        let commit = "d".repeat(40);
+        store.save_landed_hold(1, landed_issue, commit.clone(), "v1".into(), 200)?;
+        store.confirm_landed_hold_build(1, 499, &commit, 500)?;
+        store.save_remote_work_hold(
+            1,
+            RemoteWorkHold::new(remote_issue.clone(), "v1".into(), 400, 7_600),
+        )?;
+        drop(store);
+        let mut loaded = StateStore::load_or_default(&directory)?;
+        let project = loaded.project(1).ok_or("missing project")?;
+        let orphaned = project.orphaned_landed_holds();
+        assert_eq!(orphaned.len(), 1);
+        assert_eq!(orphaned[0].green_since, Some(500));
+        assert!(!orphaned[0].watcher_due(2_299));
+        assert!(orphaned[0].watcher_due(2_300));
+        assert!(
+            project
+                .remote_work_hold(&remote_issue, Some("v1"), 1_000)
+                .is_some()
+        );
+        assert!(
+            project
+                .remote_work_hold(&remote_issue, Some("v1"), 7_600)
+                .is_none()
+        );
+        loaded.remove_landed_hold(1, 499)?;
+        loaded.clear_remote_work_hold(1, 508)?;
+        drop(loaded);
+        let reloaded = StateStore::load_or_default(&directory)?;
+        let project = reloaded.project(1).ok_or("missing project")?;
+        assert!(project.continuous_dispatch.landed_holds.is_empty());
+        assert!(project.continuous_dispatch.remote_work_holds.is_empty());
         std::fs::remove_dir_all(directory)?;
         Ok(())
     }

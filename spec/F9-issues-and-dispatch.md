@@ -53,6 +53,7 @@ A land that shares code with the issue or may have fixed it parks the issue unde
 When the blocker ends without a land, the waiting issue returns to ordinary dispatch.
 When the land changed none of the issue's predicted code paths and the reports describe different problems, Velocity posts the land's files on the issue as evidence and returns it to dispatch in the same pass without a review (#506).
 The overlap check and its **Check against an overlapping land** review apply only to issues with no landed change of their own (#504).
+Issues skipped because they already landed or are in progress on another machine never act as overlap blockers, and any overlap hold behind one is dropped (#519).
 An open issue is held on overlap once (#525).
 When its hold ends, through a review, a land without evidence or a blocker whose change no longer edits its files, dispatch starts the issue and never holds it on overlap again.
 An issue whose GitHub record shows an overlap review that returned it to dispatch is never held.

@@ -11,8 +11,9 @@ use velocity_core::rosen_checker::{
     verified_line, verify_failed_line, verify_stopped_line, verifying_line,
 };
 use velocity_rosen::ProjectServer;
-use velocity_rosen::post_land::{self, Batch, Bisection, CheckKind};
+use velocity_rosen::post_land::{self, Batch, Bisection, CheckKind, OrphanedBatch};
 use velocity_rosen::{checker, integration};
+use velocity_store::ProjectItem;
 use velocity_store::duty::LandingProject;
 
 use super::LANDER;
@@ -45,6 +46,7 @@ struct Verify<Host> {
     runner: RosenLanding,
     host: Host,
     project: u32,
+    project_item: ProjectItem,
     server: ProjectServer,
     folder: PathBuf,
     kind: CheckKind,
@@ -66,10 +68,9 @@ impl RosenLanding {
         else {
             return;
         };
-        let project = project_state.project.id;
         self.report_test_failures(host, project_state);
         for kind in [CheckKind::Build, CheckKind::Test] {
-            self.start_verification(host, &root, project, kind);
+            self.start_verification(host, &root, &project_state.project, kind);
         }
     }
 
@@ -77,9 +78,10 @@ impl RosenLanding {
         &self,
         host: &Host,
         root: &std::path::Path,
-        project: u32,
+        project_item: &ProjectItem,
         kind: CheckKind,
     ) {
+        let project = project_item.id;
         let key = (project, kind.as_str());
         if !self.lock().verifying_projects.insert(key) {
             return;
@@ -88,6 +90,7 @@ impl RosenLanding {
             runner: self.clone(),
             host: host.clone(),
             project,
+            project_item: project_item.clone(),
             server: ProjectServer::new(&self.app_data, project),
             folder: root.join(if kind == CheckKind::Build {
                 "post-land-builds"
@@ -112,8 +115,15 @@ impl<Host: LandingHost> Verify<Host> {
             };
             let batch = match next {
                 Ok(Some(batch)) => batch,
-                // Every land is covered, or Rosen is not running: the next tick asks again.
-                _ => return,
+                // Every local land is covered: also check orphaned lands from other machines (#519).
+                Ok(None) => {
+                    if self.kind == CheckKind::Test {
+                        self.verify_orphaned_lands().await;
+                    }
+                    return;
+                }
+                // Rosen is not running: the next tick asks again.
+                Err(_) => return,
             };
             // Rosen may offer a merge-mode build here; the independent build worker
             // owns its folder and advances that prefix before tests are offered.
@@ -127,6 +137,130 @@ impl<Host: LandingHost> Verify<Host> {
             if !self.verify(&batch).await {
                 return;
             }
+        }
+    }
+
+    /// Runs post-land verification for issues another machine landed and left open without
+    /// a green `velocity/integration` status (#519).
+    async fn verify_orphaned_lands(&self) {
+        let holds = self.project_item.orphaned_landed_holds();
+        if holds.is_empty() {
+            return;
+        }
+        let mut commits: Vec<String> = holds.into_iter().map(|hold| hold.commit).collect();
+        commits.sort_unstable();
+        commits.dedup();
+        let Ok(covered) = velocity_rosen::issue_build_coverage(&self.server, &commits).await else {
+            return;
+        };
+        let uncovered: Vec<String> = commits
+            .into_iter()
+            .filter(|commit| !covered.contains(commit))
+            .collect();
+        if uncovered.is_empty() {
+            self.host.orphaned_verified(self.project);
+            return;
+        }
+        let Ok(Some(batch)) = post_land::orphaned_batch(&self.server, &uncovered).await else {
+            return;
+        };
+        if self.settled(&batch.commit) {
+            return;
+        }
+        if matches!(integration::passed(&self.server, &batch.commit), Ok(true)) {
+            self.host.orphaned_verified(self.project);
+            return;
+        }
+        match needs_remote_verification(&self.project_item, &batch.covered).await {
+            Ok(false) => {
+                self.host.orphaned_verified(self.project);
+                return;
+            }
+            Err(_) => return,
+            Ok(true) => {}
+        }
+        let _slot = match integration::try_slot() {
+            Ok(Some(slot)) => slot,
+            Ok(None) => return,
+            Err(error) => {
+                self.stopped(&batch.commit, &error.to_string());
+                return;
+            }
+        };
+        self.run_orphaned_batch(&batch).await;
+    }
+
+    async fn run_orphaned_batch(&self, batch: &OrphanedBatch) {
+        let started = Instant::now();
+        let failed = if batch.commands.is_empty() {
+            None
+        } else {
+            let line = verifying_line(&batch.commit);
+            self.say(
+                DutyEventKind::Wait,
+                format!("Integration build · {line} (orphaned land)"),
+            );
+            match self.test_orphaned(batch).await {
+                Ok(failed) => failed,
+                Err(why) => {
+                    self.stopped(&batch.commit, &why);
+                    return;
+                }
+            }
+        };
+        let Some(failed) = failed else {
+            if let Err(error) = integration::result(&self.server, &batch.commit, true) {
+                self.stopped(&batch.commit, &error.to_string());
+                return;
+            }
+            if !batch.commands.is_empty() {
+                self.say(
+                    DutyEventKind::Approve,
+                    verified_line(&batch.commit, started.elapsed()),
+                );
+            }
+            self.runner.wake();
+            self.host.orphaned_verified(self.project);
+            return;
+        };
+        if let Some(stopped) = &failed.stopped {
+            self.host
+                .post_land_stopped(self.project, &batch.commit, &failed.command, stopped);
+        }
+        self.record_failed_commit(&batch.commit, &failed);
+        self.settle(
+            &batch.commit,
+            verify_failed_line(&batch.commit, &failed.command),
+        );
+    }
+
+    async fn test_orphaned(&self, batch: &OrphanedBatch) -> Result<Option<FailedCheck>, String> {
+        post_land::stage_commit(&self.server, &batch.commit, &self.folder)
+            .await
+            .map_err(|error| error.to_string())?;
+        let (folder, commands, after_land) = (
+            self.folder.clone(),
+            batch.commands.clone(),
+            batch.after_land,
+        );
+        let ran = tokio::task::spawn_blocking(move || {
+            checker::apply_staged(&folder)?;
+            if after_land {
+                checker::run_integration_commands(&folder, &commands)
+            } else {
+                checker::run_commands(&folder, &commands, checker::Priority::Background)
+            }
+        })
+        .await;
+        match ran {
+            Ok(Ok(failed)) => Ok(failed.map(|failed| FailedCheck {
+                command: failed.command,
+                exit_code: failed.exit_code,
+                output: failed.output,
+                stopped: failed.stopped,
+            })),
+            Ok(Err(error)) => Err(error.to_string()),
+            Err(error) => Err(error.to_string()),
         }
     }
 
@@ -280,6 +414,10 @@ impl<Host: LandingHost> Verify<Host> {
         if !batch.after_land || batch.kind != CheckKind::Test {
             return;
         }
+        self.record_failed_commit(&batch.commit, failed);
+    }
+
+    fn record_failed_commit(&self, commit: &str, failed: &FailedCheck) {
         let exit = match (failed.exit_code, &failed.stopped) {
             (Some(code), _) => format!("exited {code}"),
             (None, Some(stopped)) => velocity_core::project_health::format_stopped_check_detail(
@@ -295,10 +433,10 @@ impl<Host: LandingHost> Verify<Host> {
         } else {
             format!("`{}` {exit}", failed.command)
         };
-        if let Err(error) = integration::record_failure(&self.server, &batch.commit, &reason)
-            .and_then(|()| integration::result(&self.server, &batch.commit, false))
+        if let Err(error) = integration::record_failure(&self.server, commit, &reason)
+            .and_then(|()| integration::result(&self.server, commit, false))
         {
-            self.stopped(&batch.commit, &error.to_string());
+            self.stopped(commit, &error.to_string());
         }
     }
 
@@ -442,4 +580,37 @@ fn failure_report(batch: &Batch, failed: &FailedCheck) -> String {
     } else {
         report
     }
+}
+
+/// Returns `true` when at least one commit in `commits` has no green `velocity/integration`
+/// status on GitHub yet, so this machine should verify it (#519).
+async fn needs_remote_verification(
+    project: &ProjectItem,
+    commits: &[String],
+) -> Result<bool, String> {
+    let directory = PathBuf::from(&project.repository_path);
+    let remote = project.github_remote.clone();
+    let commits = commits.to_vec();
+    tokio::task::spawn_blocking(move || {
+        let client = match remote.as_deref() {
+            Some(remote) => velocity_github::IssueClient::for_repository(&directory, remote),
+            None if directory.join(".git").exists() => {
+                velocity_github::IssueClient::discover(&directory)
+            }
+            None => return Ok(true),
+        }
+        .map_err(|error| error.to_string())?;
+        for commit in &commits {
+            if client
+                .integration_status_covering(commit)
+                .map_err(|error| error.to_string())?
+                .is_none()
+            {
+                return Ok(true);
+            }
+        }
+        Ok(false)
+    })
+    .await
+    .map_err(|error| error.to_string())?
 }
