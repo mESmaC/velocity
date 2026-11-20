@@ -63,7 +63,21 @@ async fn attempt_resume(
 ) -> Result<Result<(), String>, String> {
     let application = application.clone();
     let result = tauri::async_runtime::spawn_blocking(move || {
-        crate::parking::resume(&application, key, CONTINUE_PROMPT)
+        let queued_runs = lock(
+            application
+                .state::<crate::state::ManagedStateStore>()
+                .inner(),
+            "persisted state",
+        )?
+        .project(key.0)
+        .and_then(|project| project.threads.iter().find(|thread| thread.id == key.1))
+        .map(|thread| thread.queued_runs.clone())
+        .unwrap_or_default();
+        if queued_runs.is_empty() {
+            crate::parking::resume(&application, key, CONTINUE_PROMPT)
+        } else {
+            crate::parking::resume_restored_runs(&application, key, queued_runs)
+        }
     })
     .await
     .map_err(|error| error.to_string())?;

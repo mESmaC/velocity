@@ -9,7 +9,7 @@ use velocity_airc::{Channel, Event};
 use velocity_store::{AgentActivity, ProjectItem};
 use velocity_threads::{
     ThreadKey,
-    agent_activity::{Action, capped, decide},
+    agent_activity::{Action, capped, decide_with_turn, idle_nudge_prompt, last_wait_description},
 };
 
 fn now() -> u64 {
@@ -33,6 +33,10 @@ pub fn observe(
     if !runtimes.observe_supervision(key, batch, timestamp) {
         return Ok(());
     }
+    let worked = batch
+        .iter()
+        .any(|event| matches!(event, AgentEvent::TurnEnded(_)))
+        && runtimes.take_supervision_worked(key);
     let mut store = lock(
         application.state::<ManagedStateStore>().inner(),
         "persisted state",
@@ -46,6 +50,9 @@ pub fn observe(
             let previous = thread.supervision.retry_after;
             for event in batch {
                 velocity_threads::agent_activity::observe(thread, event, timestamp);
+            }
+            if worked {
+                thread.supervision.idle_nudged = false;
             }
             if thread.supervision.retry_after != previous
                 && let Some(until) = thread
@@ -109,7 +116,7 @@ fn step(
     {
         return Ok(());
     }
-    let (live, build, heartbeat) = {
+    let (live, build, turn_in_progress, heartbeat) = {
         let runtimes = lock(
             application.state::<ManagedThreads>().inner(),
             "thread sessions",
@@ -121,6 +128,7 @@ fn step(
                 .view(key)
                 .is_some_and(|view| velocity_threads::agent_activity::in_build_queue(&view.blocks))
                 || runtimes.subagent_in_build_queue(key),
+            runtimes.has_turn_in_progress(key),
             runtimes.heartbeat(key),
         )
     };
@@ -129,7 +137,7 @@ fn step(
     if let Some(heartbeat) = heartbeat {
         current.supervision.last_update = current.supervision.last_update.max(heartbeat);
     }
-    let action = decide(&current, settings, now(), live, build);
+    let action = decide_with_turn(&current, settings, now(), live, build, turn_in_progress);
     if !live
         && current.activity == AgentActivity::AtLimit
         && current.supervision.retry_after.is_some()
@@ -149,7 +157,7 @@ fn step(
     if action == Action::Resume && current.supervision.retry_after.is_some() {
         return Ok(());
     }
-    execute(application, key, channel, action)
+    execute(application, key, channel, action, live)
 }
 
 fn available_account(
@@ -200,6 +208,7 @@ fn execute(
     key: ThreadKey,
     channel: &Channel,
     action: Action,
+    live: bool,
 ) -> Result<(), String> {
     match action {
         Action::Nothing => Ok(()),
@@ -214,6 +223,7 @@ fn execute(
             Ok(())
         }
         Action::Nudge => nudge(application, key, channel),
+        Action::IdleNudge => idle_nudge(application, key, channel, live),
         Action::Restart => restart(application, key, channel),
         Action::Limit => limit(application, key, channel),
         Action::Release => release(application, key, channel),
@@ -282,6 +292,67 @@ fn nudge(application: &AppHandle, key: ThreadKey, channel: &Channel) -> Result<(
     drop(runtimes);
     post(channel, key, "stalled", "No output; sent a recovery prompt")?;
     publish(application, key)
+}
+
+fn idle_nudge(
+    application: &AppHandle,
+    key: ThreadKey,
+    channel: &Channel,
+    live: bool,
+) -> Result<(), String> {
+    let thread = supervised_thread(application, key)?;
+    let blocks = lock(
+        application.state::<ManagedThreads>().inner(),
+        "thread sessions",
+    )?
+    .view(key)
+    .map(|view| view.blocks)
+    .unwrap_or_default();
+    let last_wait = last_wait_description(&thread, &blocks);
+    let prompt = idle_nudge_prompt(last_wait.as_deref());
+    let timestamp = now();
+    if live {
+        lock(
+            application.state::<ManagedThreads>().inner(),
+            "thread sessions",
+        )?
+        .nudge(key, &prompt)
+        .map_err(|error| error.to_string())?;
+        record_idle_nudge(application, key, timestamp)?;
+        publish(application, key)?;
+    } else {
+        crate::parking::resume(application, key, &prompt)?;
+        record_idle_nudge(application, key, timestamp)?;
+    }
+    let note = match last_wait {
+        Some(wait) => format!(
+            "Idle in working with nothing outstanding (last waited on: {wait}); sent a recovery prompt"
+        ),
+        None => "Idle in working with nothing outstanding; sent a recovery prompt".into(),
+    };
+    post(channel, key, "stalled", &note)
+}
+
+fn record_idle_nudge(
+    application: &AppHandle,
+    key: ThreadKey,
+    timestamp: u64,
+) -> Result<(), String> {
+    lock(
+        application.state::<ManagedStateStore>().inner(),
+        "persisted state",
+    )?
+    .update_thread(key.0, key.1, |saved| {
+        saved.supervision.idle_nudged = true;
+        saved.supervision.last_update = timestamp;
+    })
+    .map_err(|error| error.to_string())?;
+    lock(
+        application.state::<ManagedThreads>().inner(),
+        "thread sessions",
+    )?
+    .idle_nudge_supervision(key, timestamp);
+    Ok(())
 }
 
 fn end(application: &AppHandle, key: ThreadKey) -> Result<(), String> {

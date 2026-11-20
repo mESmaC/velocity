@@ -1,12 +1,19 @@
 //! Supervision state machine for SPEC.md §2.2, separate from the native timer.
+use agent_client_protocol::v1::schema::SessionUpdate;
 use velocity_acp::client::AgentEvent;
 use velocity_core::agent_activity::{Availability, StallAction, stall_action};
+use velocity_core::thread_view_model::TranscriptBlock;
 use velocity_store::{AgentActivity, AgentSettings, ProjectItem, ThreadItem, ThreadState};
+
+/// Minutes a thread may sit idle in `working` with nothing outstanding before a nudge (#516).
+pub const IDLE_WORKING_TIMEOUT_MINUTES: u64 = 20;
+pub const IDLE_WORKING_TIMEOUT_SECS: u64 = IDLE_WORKING_TIMEOUT_MINUTES * 60;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Action {
     Nothing,
     Nudge,
+    IdleNudge,
     Restart,
     Limit,
     Release,
@@ -18,6 +25,7 @@ pub enum Action {
 pub struct Heartbeat {
     last_update: Option<u64>,
     nudged: bool,
+    worked: bool,
 }
 
 impl Heartbeat {
@@ -30,10 +38,18 @@ impl Heartbeat {
             || batch
                 .iter()
                 .any(|event| !matches!(event, AgentEvent::Log(_) | AgentEvent::Queued));
+        if batch.iter().any(is_substantive_work) {
+            self.worked = true;
+        }
         let checkpoint = batch.is_empty()
-            || batch
-                .iter()
-                .any(|event| matches!(event, AgentEvent::TurnEnded(_)))
+            || batch.iter().any(|event| {
+                matches!(
+                    event,
+                    AgentEvent::TurnEnded(_)
+                        | AgentEvent::QueuedRunAdded(_)
+                        | AgentEvent::QueuedRunFinished { .. }
+                )
+            })
             || (active && self.nudged);
         if active {
             self.last_update = Some(now);
@@ -46,6 +62,28 @@ impl Heartbeat {
         self.last_update = Some(now);
         self.nudged = true;
     }
+
+    pub fn idle_nudge(&mut self, now: u64) {
+        self.last_update = Some(now);
+        self.worked = false;
+    }
+
+    pub fn take_worked(&mut self) -> bool {
+        std::mem::take(&mut self.worked)
+    }
+}
+
+fn is_substantive_work(event: &AgentEvent) -> bool {
+    matches!(
+        event,
+        AgentEvent::FileWritten { .. }
+            | AgentEvent::QueuedRunAdded(_)
+            | AgentEvent::QueuedRunFinished { .. }
+            | AgentEvent::Transcript {
+                update: SessionUpdate::ToolCall(_),
+                ..
+            }
+    )
 }
 
 pub fn observe(thread: &mut ThreadItem, event: &AgentEvent, now: u64) {
@@ -63,6 +101,25 @@ pub fn observe(thread: &mut ThreadItem, event: &AgentEvent, now: u64) {
     if !matches!(event, AgentEvent::Log(_) | AgentEvent::Queued) {
         checkpoint.last_update = now;
         checkpoint.nudged = false;
+    }
+    match event {
+        AgentEvent::QueuedRunAdded(record) => {
+            checkpoint.last_wait = Some(format!("queued run: {}", record.title()));
+            checkpoint.idle_nudged = false;
+        }
+        AgentEvent::QueuedRunFinished { .. } => {
+            checkpoint.idle_nudged = false;
+        }
+        AgentEvent::Transcript {
+            update: SessionUpdate::ToolCall(call),
+            ..
+        } if call
+            .title
+            .starts_with(velocity_core::workflow_dispatch::RUN_TITLE) =>
+        {
+            checkpoint.last_wait = Some(call.title.clone());
+        }
+        _ => {}
     }
     if let AgentEvent::TurnEnded(Err(error)) = event
         && velocity_acp::client::subscription_limit_error(error)
@@ -97,6 +154,17 @@ pub fn decide(
     live: bool,
     queued_build: bool,
 ) -> Action {
+    decide_with_turn(thread, settings, now, live, queued_build, false)
+}
+
+pub fn decide_with_turn(
+    thread: &ThreadItem,
+    settings: &AgentSettings,
+    now: u64,
+    live: bool,
+    queued_build: bool,
+    turn_in_progress: bool,
+) -> Action {
     let checkpoint = &thread.supervision;
     let unavailable =
         thread.state == ThreadState::Error || thread.activity == AgentActivity::AtLimit;
@@ -118,13 +186,125 @@ pub fn decide(
             return Action::Resume;
         }
     }
-    if !live || thread.provider_queued || thread.activity == AgentActivity::Parked || unavailable {
+    if thread.provider_queued || thread.activity == AgentActivity::Parked || unavailable {
         return Action::Nothing;
     }
     if capped(thread, settings, now) {
-        return Action::Limit;
+        return if live { Action::Limit } else { Action::Nothing };
+    }
+    if idle_working_due(thread, now, queued_build, turn_in_progress) {
+        return Action::IdleNudge;
+    }
+    if !live {
+        return Action::Nothing;
     }
     stalled(thread, settings, now, queued_build)
+}
+
+fn idle_working_due(
+    thread: &ThreadItem,
+    now: u64,
+    queued_build: bool,
+    turn_in_progress: bool,
+) -> bool {
+    let checkpoint = &thread.supervision;
+    let since = checkpoint.last_update.max(checkpoint.started);
+    thread.state == ThreadState::Working
+        && thread.activity == AgentActivity::Idle
+        && thread.interview.is_none()
+        && thread.worktree_path.is_some()
+        && !thread.startup_recovery_pending
+        && !checkpoint.released
+        && !checkpoint.idle_nudged
+        && thread.queued_runs.is_empty()
+        && !queued_build
+        && !turn_in_progress
+        && since > 0
+        && now.saturating_sub(since) >= IDLE_WORKING_TIMEOUT_SECS
+}
+
+/// Identifies what an idle `working` thread last waited on, for its recovery nudge (#516).
+pub fn last_wait_description(thread: &ThreadItem, blocks: &[TranscriptBlock]) -> Option<String> {
+    let blocks = if blocks.is_empty() {
+        thread.transcript.as_slice()
+    } else {
+        blocks
+    };
+    let start = blocks
+        .iter()
+        .rposition(|block| matches!(block, TranscriptBlock::UserMessage { queued: false, .. }))
+        .unwrap_or(0);
+    let mut fallback_step = None;
+    for block in blocks[start..].iter().rev() {
+        let TranscriptBlock::ToolGroup { steps } = block else {
+            continue;
+        };
+        for step in steps.iter().rev() {
+            if step.verb == "Worktree" || step.verb == "Workspace" {
+                continue;
+            }
+            if is_wait_step(&step.verb, &step.argument) {
+                return Some(format_step_wait(&step.verb, &step.argument));
+            }
+            if fallback_step.is_none() {
+                fallback_step = Some(format_step_wait(&step.verb, &step.argument));
+            }
+        }
+    }
+    if let Some(wait) = &thread.supervision.last_wait
+        && !wait.trim().is_empty()
+    {
+        return Some(wait.clone());
+    }
+    if let Some(wait) = &thread.dependency_wait
+        && !wait.trim().is_empty()
+    {
+        return Some(format!("dependency wait: {wait}"));
+    }
+    fallback_step
+}
+
+fn is_wait_step(verb: &str, argument: &str) -> bool {
+    let normalized = argument.replace('\\', "/");
+    normalized.contains("rosen run")
+        || normalized.contains("build-queue.ps1")
+        || normalized.contains("scripts/check.ps1")
+        || argument.starts_with(velocity_core::workflow_dispatch::RUN_TITLE)
+        || verb.contains("queue_run")
+        || argument.contains("queue_run")
+        || verb.contains("workflow_run")
+        || argument.contains("workflow_run")
+        || verb.contains("airc_wait")
+        || argument.contains("airc_wait")
+}
+
+fn format_step_wait(verb: &str, argument: &str) -> String {
+    if argument.starts_with("rosen run")
+        || argument.starts_with(velocity_core::workflow_dispatch::RUN_TITLE)
+        || verb.is_empty()
+    {
+        argument.to_owned()
+    } else if argument.is_empty() {
+        verb.to_owned()
+    } else {
+        format!("{verb} · {argument}")
+    }
+}
+
+/// Prompt delivered when a thread stays idle in `working` with nothing outstanding (#516).
+pub fn idle_nudge_prompt(last_wait: Option<&str>) -> String {
+    match last_wait {
+        Some(wait) => format!(
+            "This thread has been idle in working for {IDLE_WORKING_TIMEOUT_MINUTES} minutes \
+             with no queued run or turn in progress (last waited on: {wait}). Continue your \
+             work, queue any check whose result never arrived, or finish and name your change."
+        ),
+        None => format!(
+            "This thread has been idle in working for {IDLE_WORKING_TIMEOUT_MINUTES} minutes \
+             with no queued run or turn in progress. Continue your work, say what is blocking \
+             you, or finish and name your change."
+        ),
+    }
 }
 
 fn stalled(thread: &ThreadItem, settings: &AgentSettings, now: u64, queued_build: bool) -> Action {
@@ -406,5 +586,86 @@ mod trace_fixtures {
             expected
         );
         Ok(())
+    }
+
+    // Risk (#516): a thread orphaned in working/idle with no queued run and no turn in
+    // progress must get a supervision nudge naming what it last waited on, even after a
+    // restart when its session is no longer live.
+    #[test]
+    fn idle_working_thread_gets_supervision_nudge() {
+        use super::{IDLE_WORKING_TIMEOUT_SECS, decide_with_turn};
+        use velocity_core::queued_runs::{QueuedRunClass, QueuedRunRecord};
+
+        let settings = Settings::default().agents;
+        let mut thread = ThreadItem::new(7, "Review tab".into());
+        thread.state = ThreadState::Working;
+        thread.activity = AgentActivity::Idle;
+        thread.worktree_path = Some(r"W:\workspaces\collapse\issue-103".into());
+        thread.supervision.started = 1000;
+        thread.supervision.last_update = 1000;
+        let due = 1000 + IDLE_WORKING_TIMEOUT_SECS;
+
+        assert_eq!(
+            decide_with_turn(&thread, &settings, due - 1, false, false, false),
+            Action::Nothing
+        );
+        thread.queued_runs.push(QueuedRunRecord::new(
+            "velocity-run-1".into(),
+            "npm".into(),
+            vec!["run".into(), "check".into()],
+            None,
+            QueuedRunClass::Build,
+        ));
+        assert_eq!(
+            decide_with_turn(&thread, &settings, due, false, false, false),
+            Action::Nothing
+        );
+        thread.queued_runs.clear();
+        assert_eq!(
+            decide_with_turn(&thread, &settings, due, true, false, true),
+            Action::Nothing
+        );
+        assert_eq!(
+            decide_with_turn(&thread, &settings, due, false, false, false),
+            Action::IdleNudge
+        );
+        assert_eq!(
+            decide_with_turn(&thread, &settings, due, true, false, false),
+            Action::IdleNudge
+        );
+        thread.supervision.idle_nudged = true;
+        assert_eq!(
+            decide_with_turn(
+                &thread,
+                &settings,
+                due + IDLE_WORKING_TIMEOUT_SECS,
+                false,
+                false,
+                false
+            ),
+            Action::Nothing
+        );
+    }
+
+    // Risk (#516): an idle supervision nudge must name what the thread last waited on.
+    #[test]
+    fn idle_nudge_names_last_wait() {
+        use super::{idle_nudge_prompt, last_wait_description};
+        use velocity_core::thread_view_model::{ToolStepRow, TranscriptBlock};
+
+        let thread = ThreadItem::new(7, "Review tab".into());
+        let blocks = vec![TranscriptBlock::ToolGroup {
+            steps: vec![ToolStepRow {
+                running: false,
+                verb: "Bash".into(),
+                argument: "rosen run -- npm run check".into(),
+                result_text: String::new(),
+                tool_call_id: None,
+            }],
+        }];
+        let wait = last_wait_description(&thread, &blocks);
+        assert_eq!(wait.as_deref(), Some("rosen run -- npm run check"));
+        let prompt = idle_nudge_prompt(wait.as_deref());
+        assert!(prompt.contains("rosen run -- npm run check"), "{prompt}");
     }
 }

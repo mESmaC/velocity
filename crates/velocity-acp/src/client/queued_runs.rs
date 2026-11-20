@@ -16,14 +16,15 @@ use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender, unbounded_channel};
 use tokio::sync::watch;
 use tokio::task::{JoinHandle, JoinSet};
 use tokio_util::sync::CancellationToken;
+use velocity_core::queued_runs::{QueuedRunRecord, lost_runs_prompt};
 
-use super::queued_run_command::{QueuedRun, RunResult};
+use super::queued_run_command::{QueuedRun, RunResult, resolve_directory};
 use super::queued_run_tool::{
     self, Accepted, REQUEST_BYTES, REQUEST_TIMEOUT, Request, RunCommand, Work,
 };
 use super::workflow_run_tool::WorkflowRequest;
 use super::workflow_runs::WorkflowRun;
-use super::{AgentLaunch, SessionSetup, Shared};
+use super::{AgentEvent, AgentLaunch, SessionSetup, Shared};
 
 static EXECUTABLE: OnceLock<PathBuf> = OnceLock::new();
 
@@ -41,6 +42,7 @@ impl RunQueue {
     pub async fn start(
         setup: &mut SessionSetup,
         launch: &AgentLaunch,
+        restored: Vec<QueuedRunRecord>,
     ) -> io::Result<Option<(Self, RunResults)>> {
         let Some(executable) = EXECUTABLE.get() else {
             return Ok(None);
@@ -66,16 +68,16 @@ impl RunQueue {
             outstanding: Arc::clone(&outstanding),
             turn_ended,
         };
-        let worker = tokio::spawn(host.serve(listener));
-        Ok(Some((
-            Self { stop, worker },
-            RunResults {
-                outstanding,
-                receiver: Some(receiver),
-                released: Some(released),
-                ..RunResults::default()
-            },
-        )))
+        let mut initial_runs = JoinSet::new();
+        let mut results = RunResults {
+            outstanding,
+            receiver: Some(receiver),
+            released: Some(released),
+            ..RunResults::default()
+        };
+        host.start_restored(restored, &mut initial_runs, &mut results);
+        let worker = tokio::spawn(host.serve(listener, initial_runs));
+        Ok(Some((Self { stop, worker }, results)))
     }
 
     pub async fn stop(&mut self) -> io::Result<()> {
@@ -122,8 +124,10 @@ impl Drop for RunQueue {
 }
 
 pub(super) enum QueueEvent {
+    Added(QueuedRunRecord),
     Started(Box<SessionUpdate>),
     Finished(RunResult),
+    Cleared(String),
 }
 
 #[derive(Default)]
@@ -132,6 +136,7 @@ pub(super) struct RunResults {
     receiver: Option<UnboundedReceiver<QueueEvent>>,
     released: Option<watch::Sender<()>>,
     pub waiting: bool,
+    pub restored_notice: bool,
     pub ready: Vec<ContentBlock>,
 }
 
@@ -143,10 +148,46 @@ impl RunResults {
         }
     }
 
+    /// Processes already-queued host events before sending an immediate startup prompt.
+    pub fn drain_pending(&mut self, shared: &Shared) {
+        let mut pending_events = Vec::new();
+        if let Some(receiver) = &mut self.receiver {
+            while let Ok(event) = receiver.try_recv() {
+                pending_events.push(event);
+            }
+        }
+        for event in pending_events {
+            self.record(Some(event), shared);
+        }
+    }
+
+    pub fn record_lost_runs(
+        &mut self,
+        runs: &[QueuedRunRecord],
+        reason: &str,
+        events: &UnboundedSender<AgentEvent>,
+    ) {
+        for run in runs {
+            let _ = events.send(AgentEvent::QueuedRunFinished { id: run.id.clone() });
+        }
+        self.ready
+            .push(ContentBlock::from(lost_runs_prompt(runs, Some(reason))));
+        self.waiting = true;
+    }
+
     pub fn record(&mut self, event: Option<QueueEvent>, shared: &Shared) {
         match event {
+            Some(QueueEvent::Added(record)) => {
+                shared.emit(AgentEvent::QueuedRunAdded(record));
+            }
+            Some(QueueEvent::Cleared(id)) => {
+                shared.emit(AgentEvent::QueuedRunFinished { id });
+            }
             Some(QueueEvent::Started(update)) => shared.record(*update),
             Some(QueueEvent::Finished(result)) => {
+                if let Some(id) = result.persisted_id() {
+                    shared.emit(AgentEvent::QueuedRunFinished { id: id.to_owned() });
+                }
                 self.outstanding.fetch_sub(1, Ordering::AcqRel);
                 let (update, message) = result.into_update();
                 shared.record(update);
@@ -186,8 +227,73 @@ struct QueueHost {
 }
 
 impl QueueHost {
-    async fn serve(self, listener: TcpListener) {
-        let mut runs = JoinSet::new();
+    fn start_restored(
+        &self,
+        restored: Vec<QueuedRunRecord>,
+        runs: &mut JoinSet<RunResult>,
+        results: &mut RunResults,
+    ) {
+        if restored.is_empty() {
+            return;
+        }
+        let mut lost = Vec::new();
+        let mut reasons = Vec::new();
+        for record in restored {
+            match self.spawn_restored(&record, runs) {
+                Ok(()) => {}
+                Err(reason) => {
+                    let _ = self.events.send(QueueEvent::Cleared(record.id.clone()));
+                    lost.push(record);
+                    if !reasons.contains(&reason) {
+                        reasons.push(reason);
+                    }
+                }
+            }
+        }
+        if !lost.is_empty() {
+            let joined = reasons.join("; ");
+            results
+                .ready
+                .push(ContentBlock::from(lost_runs_prompt(&lost, Some(&joined))));
+        }
+        if results.outstanding() {
+            results.waiting = true;
+            results.restored_notice = true;
+        } else if !results.ready.is_empty() {
+            results.waiting = true;
+        }
+    }
+
+    fn spawn_restored(
+        &self,
+        record: &QueuedRunRecord,
+        runs: &mut JoinSet<RunResult>,
+    ) -> Result<(), String> {
+        let policy = velocity_rosen::agent_run::policy(&record.program, &record.arguments)?;
+        let directory =
+            resolve_directory(&self.worktree, record.directory.as_deref().map(Path::new));
+        if !directory.is_dir() {
+            return Err(format!(
+                "working directory does not exist: {}",
+                directory.display()
+            ));
+        }
+        let run = QueuedRun::restored(record).map_err(|error| error.to_string())?;
+        self.outstanding.fetch_add(1, Ordering::Release);
+        let _ = self
+            .events
+            .send(QueueEvent::Started(Box::new(run.started())));
+        let (rosen, worktree, launch, stop) = (
+            self.rosen.clone(),
+            self.worktree.clone(),
+            self.launch.clone(),
+            self.stop.clone(),
+        );
+        runs.spawn(async move { run.finish(&rosen, policy, &worktree, &launch, stop).await });
+        Ok(())
+    }
+
+    async fn serve(self, listener: TcpListener, mut runs: JoinSet<RunResult>) {
         loop {
             tokio::select! {
                 () = self.stop.cancelled() => break,
@@ -244,25 +350,20 @@ impl QueueHost {
         runs: &mut JoinSet<RunResult>,
     ) -> Result<PathBuf, String> {
         let policy = velocity_rosen::agent_run::policy(&command.program, &command.arguments)?;
-        // Checks and binding generation take the managed command's light Rust slots.
-        let rosen = if policy != velocity_rosen::agent_run::AgentRun::Ordinary {
-            velocity_rosen::agent_run::cli()
-                .ok_or("The managed Rosen command is unavailable for agent Rust runs")?
-        } else {
-            &self.rosen
-        };
         let run = QueuedRun::new(command).map_err(|error| error.to_string())?;
         let log = run.log.clone();
+        let record = run.record();
         // Subscribe before acknowledging. A fast turn end must release this command
         // without allowing it to run during the agent's final handoff call.
         let mut turn_ended = self.turn_ended.clone();
         turn_ended.mark_unchanged();
         self.outstanding.fetch_add(1, Ordering::Release);
+        let _ = self.events.send(QueueEvent::Added(record));
         let _ = self
             .events
             .send(QueueEvent::Started(Box::new(run.started())));
         let (rosen, worktree, launch, stop) = (
-            rosen.to_owned(),
+            self.rosen.clone(),
             self.worktree.clone(),
             self.launch.clone(),
             self.stop.clone(),
@@ -276,7 +377,7 @@ impl QueueHost {
                 }
                 () = stop.cancelled() => {}
             }
-            run.finish(&rosen, &worktree, &launch, stop).await
+            run.finish(&rosen, policy, &worktree, &launch, stop).await
         });
         Ok(log)
     }

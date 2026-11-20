@@ -485,6 +485,14 @@ pub(crate) fn steer(
     } else {
         AgentActivity::Thinking
     };
+    if let Ok(mut store) = lock(
+        application.state::<ManagedStateStore>().inner(),
+        "persisted state",
+    ) {
+        let _ = store.update_thread(key.0, key.1, |thread| {
+            thread.supervision.idle_nudged = false;
+        });
+    }
     report(save_activity(application, key, activity, None));
     let snapshot = delivered_snapshot(application, key);
     emit_status(application, key);
@@ -1447,6 +1455,7 @@ pub(crate) async fn pump(application: &AppHandle, key: ThreadKey, mut session: R
             continue;
         }
         report(save_agent_session(application, key, &batch));
+        report(save_queued_runs(application, key, &batch));
         report(crate::agent_activity::observe(application, key, &batch));
         report(crate::handoff::observe(
             application,
@@ -1504,6 +1513,9 @@ fn finish_session(
     )
     .map(|mut runtimes| runtimes.session_ended_with_shutdown(key, shutdown_confirmed))
     .unwrap_or(false);
+    if !replacing {
+        report(clear_queued_runs(application, key));
+    }
     if !still_wanted || replacing {
         return still_wanted;
     }
@@ -1592,6 +1604,60 @@ fn save_agent_session(
     .update_thread(key.0, key.1, |thread| thread.agent_session = Some(session))
     .map(|_| ())
     .map_err(|error| error.to_string())
+}
+
+/// Persists outstanding `queue_run` commands so a Velocity restart can replay or report them (#516).
+fn save_queued_runs(
+    application: &AppHandle,
+    key: ThreadKey,
+    batch: &[AgentEvent],
+) -> Result<(), String> {
+    let has_run_event = batch.iter().any(|event| {
+        matches!(
+            event,
+            AgentEvent::QueuedRunAdded(_) | AgentEvent::QueuedRunFinished { .. }
+        )
+    });
+    if !has_run_event {
+        return Ok(());
+    }
+    lock(
+        application.state::<ManagedStateStore>().inner(),
+        "persisted state",
+    )?
+    .update_thread(key.0, key.1, |thread| {
+        for event in batch {
+            match event {
+                AgentEvent::QueuedRunAdded(record) => {
+                    if !thread
+                        .queued_runs
+                        .iter()
+                        .any(|existing| existing.id == record.id)
+                    {
+                        thread.queued_runs.push(record.clone());
+                    }
+                }
+                AgentEvent::QueuedRunFinished { id } => {
+                    thread.queued_runs.retain(|existing| existing.id != *id);
+                }
+                _ => {}
+            }
+        }
+    })
+    .map(|_| ())
+    .map_err(|error| error.to_string())
+}
+
+/// Explicitly stopping or ending a session cancels its queued commands.
+fn clear_queued_runs(application: &AppHandle, key: ThreadKey) -> Result<(), String> {
+    let mut store = lock(
+        application.state::<ManagedStateStore>().inner(),
+        "persisted state",
+    )?;
+    match store.update_thread(key.0, key.1, |thread| thread.queued_runs.clear()) {
+        Ok(_) | Err(velocity_store::threads::ThreadError::UnknownThread { .. }) => Ok(()),
+        Err(error) => Err(error.to_string()),
+    }
 }
 
 /// Saves the thread's activity, and its line counts when given; `true` when anything changed.

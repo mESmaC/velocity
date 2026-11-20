@@ -16,6 +16,9 @@
   `queue_run` takes an executable, separate arguments, an optional working directory and a Rosen class.
   Velocity starts it when the provider ends its turn, keeps the full output outside the workspace, and delivers the result and log path in the next prompt.
   Explicitly stopping the session cancels its queued commands.
+  Outstanding queued runs (command, working folder and class) are persisted on their owning thread in `state.json` (#516).
+  After a Velocity restart, Velocity starts those persisted runs again and delivers their results to the thread; if starting any of them is impossible, Velocity prompts the thread naming the lost runs and asking it to queue them again.
+  A queued run that times out waiting for a run-queue turn (after 20 minutes) is reported to the thread with the wait reason, current queue line and memory readings, and is never silently retried.
   The managed foreground `rosen run` command applies the same Rust policy when the MCP tool is unavailable.
   New turns wait until their memory budget fits above Rosen's machine-wide reserve, which defaults to 4 GiB (#484).
   Velocity also checks headroom before starting each command within a check set (#481).

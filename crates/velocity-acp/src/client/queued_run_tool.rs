@@ -8,6 +8,7 @@ use std::time::Duration;
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
+use velocity_core::queued_runs::{QueuedRunClass, QueuedRunRecord};
 
 use super::workflow_run_tool::WorkflowRequest;
 
@@ -50,7 +51,7 @@ pub(super) enum Accepted {
     Workflow(String),
 }
 
-#[derive(Deserialize, Serialize)]
+#[derive(Clone, Deserialize, Serialize)]
 pub(super) struct RunCommand {
     pub program: String,
     #[serde(default)]
@@ -58,25 +59,37 @@ pub(super) struct RunCommand {
     #[serde(default)]
     pub directory: Option<PathBuf>,
     #[serde(default)]
-    class: RunClass,
-}
-
-#[derive(Default, Deserialize, Serialize)]
-#[serde(rename_all = "lowercase")]
-enum RunClass {
-    #[default]
-    Build,
-    Landing,
-    Verify,
+    class: QueuedRunClass,
 }
 
 impl RunCommand {
     pub fn class(&self) -> &'static str {
-        match self.class {
-            RunClass::Build => "build",
-            RunClass::Landing => "landing",
-            RunClass::Verify => "verify",
+        self.class.as_str()
+    }
+
+    pub fn run_class(&self) -> QueuedRunClass {
+        self.class
+    }
+
+    pub fn from_record(record: &QueuedRunRecord) -> Self {
+        Self {
+            program: record.program.clone(),
+            arguments: record.arguments.clone(),
+            directory: record.directory.as_ref().map(PathBuf::from),
+            class: record.class,
         }
+    }
+
+    pub fn to_record(&self, id: String) -> QueuedRunRecord {
+        QueuedRunRecord::new(
+            id,
+            self.program.clone(),
+            self.arguments.clone(),
+            self.directory
+                .as_ref()
+                .map(|path| path.to_string_lossy().into_owned()),
+            self.class,
+        )
     }
 }
 

@@ -113,6 +113,7 @@ Both timeouts are set in Settings → Agents (F13).
 1. Velocity sends one prompt: "No output for 5 minutes. Continue, or say what is blocking you."
 2. If there is still no update after another 5 minutes, Velocity cancels the turn and restarts the session in the same workspace from its transcript. The agent keeps its claims.
 3. Each step posts a `stalled` event.
+4. A thread idle in `working` for 20 minutes with no queued run outstanding and no turn in progress gets a supervision nudge naming what it last waited on, resuming its session if needed (#516).
 
 **Limits and claim release:**
 - **Per-agent caps:** max turns and max duration, set in Settings → Agents (F13). Off by default.

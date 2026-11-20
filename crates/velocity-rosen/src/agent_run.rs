@@ -27,9 +27,9 @@ const RUST_COMMANDS: &[&str] = &[
 const LAUNCHER: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/agent-launcher.exe"));
 const REFUSAL: &str = "The integration build covers Rust compilation, lint and tests. Agents may run cargo fmt or queue cargo check -p <crate>.";
 /// Light runs going at once on the machine. Each uses two Cargo jobs.
-const LIGHT_SLOTS: usize = 2;
+pub(crate) const LIGHT_SLOTS: usize = 2;
 /// What a light run may use: two Cargo jobs plus the linker of a debug build.
-const LIGHT_MEMORY: u64 = 3 << 30;
+pub(crate) const LIGHT_MEMORY: u64 = 3 << 30;
 /// The shared target folder beside a Rosen project's workspaces.
 const PROJECT_TARGET: &str = ".velocity-agent-target";
 
@@ -356,16 +356,20 @@ fn light_command(
 }
 
 /// Cargo and the binding generator need the real tools for their own subprocesses.
+pub fn toolchain_path_from(path: &OsStr) -> io::Result<OsString> {
+    let folders = std::env::split_paths(path).filter(|folder| !is_command_folder(folder));
+    std::env::join_paths(folders).map_err(io::Error::other)
+}
+
 fn toolchain_path() -> io::Result<OsString> {
     let path = std::env::var_os("PATH").unwrap_or_default();
-    let folders = std::env::split_paths(&path).filter(|folder| !is_command_folder(folder));
-    std::env::join_paths(folders).map_err(io::Error::other)
+    toolchain_path_from(&path)
 }
 
 /// One target folder per Rosen project, beside its workspaces: registry dependencies
 /// build once, and each workspace's own crates keep separate artifacts because their
 /// path is part of the package ID. Elsewhere the workspace keeps its own.
-fn light_target(root: &Path) -> PathBuf {
+pub(crate) fn light_target(root: &Path) -> PathBuf {
     match root.parent() {
         Some(project) if root.join(".rosen").exists() => project_target(project),
         _ => root.join("target").join("agent-check"),
@@ -433,24 +437,38 @@ fn policy_arguments(arguments: &[OsString]) -> Vec<String> {
         .collect()
 }
 
+/// Tries to take the first free machine-wide light slot without blocking.
+pub(crate) fn try_light_slot() -> io::Result<Option<File>> {
+    let folder = std::env::temp_dir();
+    for slot in 0..LIGHT_SLOTS {
+        let name = match slot {
+            0 => "velocity-agent-rust-check.lock".to_owned(),
+            _ => format!("velocity-agent-rust-check-{slot}.lock"),
+        };
+        if let Some(file) = try_lock_file(&folder.join(name))? {
+            return Ok(Some(file));
+        }
+    }
+    Ok(None)
+}
+
 /// Takes the first free machine-wide light slot, waiting while all are taken. Slot 0
 /// keeps the single slot's old name, so older shims still count against it.
 fn light_slot() -> io::Result<File> {
-    let folder = std::env::temp_dir();
     loop {
-        for slot in 0..LIGHT_SLOTS {
-            let name = match slot {
-                0 => "velocity-agent-rust-check.lock".to_owned(),
-                _ => format!("velocity-agent-rust-check-{slot}.lock"),
-            };
-            let file = lock_file(&folder.join(name))?;
-            match file.try_lock() {
-                Ok(()) => return Ok(file),
-                Err(TryLockError::WouldBlock) => {}
-                Err(TryLockError::Error(error)) => return Err(error),
-            }
+        if let Some(file) = try_light_slot()? {
+            return Ok(file);
         }
         std::thread::sleep(POLL);
+    }
+}
+
+pub(crate) fn try_lock_file(path: &Path) -> io::Result<Option<File>> {
+    let file = lock_file(path)?;
+    match file.try_lock() {
+        Ok(()) => Ok(Some(file)),
+        Err(TryLockError::WouldBlock) => Ok(None),
+        Err(TryLockError::Error(error)) => Err(error),
     }
 }
 

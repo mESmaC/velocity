@@ -138,6 +138,18 @@ impl ThreadRuntimes {
         }
     }
 
+    pub fn idle_nudge_supervision(&mut self, key: ThreadKey, now: u64) {
+        if let Some(thread) = self.threads.get_mut(&key) {
+            thread.heartbeat.idle_nudge(now);
+        }
+    }
+
+    pub fn take_supervision_worked(&mut self, key: ThreadKey) -> bool {
+        self.threads
+            .get_mut(&key)
+            .is_some_and(|thread| thread.heartbeat.take_worked())
+    }
+
     /// Rebuilds conversation views without pretending a process survived the restart.
     pub fn restore(&mut self, state: &velocity_store::PersistedState) {
         for project in &state.projects {
@@ -701,6 +713,11 @@ impl ThreadRuntimes {
         })
     }
 
+    /// Whether a turn, setup, workspace update or queued prompt is currently active for `key`.
+    pub fn has_turn_in_progress(&self, key: ThreadKey) -> bool {
+        !self.is_at_step_boundary(key)
+    }
+
     /// Reserve the boundary before asynchronous I/O, so a new prompt cannot start an
     /// editing tool while Rosen is writing files. No running turn is interrupted.
     pub fn begin_workspace_update(&mut self, key: ThreadKey) -> bool {
@@ -913,6 +930,8 @@ impl ThreadRuntimes {
             | AgentEvent::HandoffReady { .. }
             | AgentEvent::ProviderQueued(..)
             | AgentEvent::Queued
+            | AgentEvent::QueuedRunAdded(_)
+            | AgentEvent::QueuedRunFinished { .. }
             | AgentEvent::FileWritten { .. } => return None,
         }
         Some(progress(thread))

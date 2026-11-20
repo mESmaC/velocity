@@ -47,6 +47,7 @@ pub fn turn_interrupted(thread: &ThreadItem) -> bool {
         && thread.agent_session.is_some()
         && thread.worktree_path.is_some()
         && (thread.startup_recovery_pending
+            || !thread.queued_runs.is_empty()
             || velocity_store::handoff::note_for(thread).is_some_and(|note| {
                 note.pending
                     && thread.activity != AgentActivity::Parked
@@ -88,6 +89,50 @@ fn startup_recovery_survives_reset_and_another_restart() -> Result<(), Box<dyn s
             &loaded.project(1).ok_or("missing project")?.threads[0]
         )
     );
+    std::fs::remove_dir_all(directory)?;
+    Ok(())
+}
+
+// Risk (#516): outstanding queued runs persisted on a thread must survive save and load,
+// prevent empty-dispatch cleanup, and schedule startup recovery even when activity is idle.
+#[cfg(test)]
+#[test]
+fn persisted_queued_runs_survive_save_load_and_trigger_recovery()
+-> Result<(), Box<dyn std::error::Error>> {
+    use velocity_core::queued_runs::{QueuedRunClass, QueuedRunRecord};
+
+    let directory =
+        std::env::temp_dir().join(format!("velocity-516-queued-runs-{}", uuid::Uuid::new_v4()));
+    std::fs::create_dir_all(&directory)?;
+    let mut state = PersistedState::default();
+    let mut project = velocity_store::ProjectItem::new(1, "restart".into(), "checkout".into());
+    let mut thread = ThreadItem::new(1, "waiting on checks".into());
+    thread.agent_session = Some("earlier-session".into());
+    thread.worktree_path = Some("checkout".into());
+    thread.activity = AgentActivity::Idle;
+    thread.queued_runs.push(QueuedRunRecord::new(
+        "velocity-run-1".into(),
+        "npm".into(),
+        vec!["run".into(), "check".into()],
+        Some("ui".into()),
+        QueuedRunClass::Build,
+    ));
+    project.threads.push(thread);
+    state.projects.push(project);
+    std::fs::write(directory.join("state.json"), serde_json::to_vec(&state)?)?;
+
+    let mut loaded = velocity_store::StateStore::load_or_default(&directory)?;
+    let before = &loaded.project(1).ok_or("missing project")?.threads[0];
+    assert!(!velocity_store::continuous_dispatch::can_finish_empty_dispatch(before));
+    let interrupted = interrupted_turns(loaded.state());
+    assert_eq!(interrupted, vec![(1, 1)]);
+    loaded.reserve_startup_recovery(&interrupted)?;
+    loaded.reset_disconnected_threads()?;
+    let saved = &loaded.project(1).ok_or("missing project")?.threads[0];
+    assert_eq!(saved.queued_runs.len(), 1);
+    assert_eq!(saved.queued_runs[0].program, "npm");
+    assert_eq!(saved.queued_runs[0].directory.as_deref(), Some("ui"));
+    assert!(!velocity_store::continuous_dispatch::can_finish_empty_dispatch(saved));
     std::fs::remove_dir_all(directory)?;
     Ok(())
 }

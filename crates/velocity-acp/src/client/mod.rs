@@ -170,6 +170,10 @@ pub enum AgentEvent {
     },
     /// The agent wrote a file through `fs/write_text_file` (for the diff view and claims).
     FileWritten { path: PathBuf },
+    /// A `queue_run` command was accepted and is waiting to run or running (#516).
+    QueuedRunAdded(velocity_core::queued_runs::QueuedRunRecord),
+    /// A `queue_run` command finished (completed, failed, timed out, or could not restart) (#516).
+    QueuedRunFinished { id: String },
     /// A session diagnostic from the agent's stderr or the ACP client.
     Log(String),
 }
@@ -393,16 +397,28 @@ async fn run_admitted_session(
     let mut setup = setup;
     // Meter availability must never prevent starting an agent.
     let _ = live_limits::prepare(&mut launch).await;
-    let (mut queue, results) = match RunQueue::start(&mut setup, &launch).await {
+    let restored = std::mem::take(&mut setup.restored_runs);
+    let (mut queue, results) = match RunQueue::start(&mut setup, &launch, restored.clone()).await {
         Ok(Some((queue, results))) => (Some(queue), results),
         unavailable => {
-            if let Err(error) = unavailable {
+            let reason = unavailable.as_ref().err().map(ToString::to_string);
+            if let Some(error) = &reason {
                 let _ = events.send(AgentEvent::Log(format!(
                     "Could not start the queued run tool: {error}"
                 )));
             }
             setup.preface = run_queue::preface(&launch, setup.preface.take());
-            (None, RunResults::default())
+            let mut results = RunResults::default();
+            if !restored.is_empty() {
+                results.record_lost_runs(
+                    &restored,
+                    reason
+                        .as_deref()
+                        .unwrap_or("the queued run tool is unavailable"),
+                    &events,
+                );
+            }
+            (None, results)
         }
     };
     // Velocity's own servers come first in the setup, so a clash keeps them (session_servers).
@@ -723,9 +739,18 @@ impl Turn<'_> {
         mut runs: RunResults,
     ) -> Result<(), agent_client_protocol::Error> {
         let mut steering = Steering::new(());
+        let mut held_inputs: Vec<Vec<ContentBlock>> = Vec::new();
+        runs.drain_pending(self.shared);
+        if runs.waiting && !runs.outstanding() {
+            self.continue_after_runs(&mut steering, &mut runs, &mut held_inputs)?;
+        }
         loop {
             let input = tokio::select! {
                 input = inputs.recv() => match input {
+                    Some(AgentInput::Send(message)) if runs.waiting && !steering.is_busy() => {
+                        held_inputs.push(message);
+                        continue;
+                    }
                     Some(AgentInput::Send(message)) => SteeringInput::Send(message),
                     Some(AgentInput::Coordination(delivery)) => {
                         self.coordination.push(delivery);
@@ -739,11 +764,11 @@ impl Turn<'_> {
                     }
                     Some(AgentInput::Stop) | None => return Ok(()),
                 },
-                () = self.coordination.wait(), if !steering.is_busy() => SteeringInput::Send(Vec::new()),
+                () = self.coordination.wait(), if !steering.is_busy() && !runs.waiting => SteeringInput::Send(Vec::new()),
                 event = runs.receive() => {
                     runs.record(event, self.shared);
                     if runs.waiting && !runs.outstanding() {
-                        self.continue_after_runs(&mut steering, &mut runs)?;
+                        self.continue_after_runs(&mut steering, &mut runs, &mut held_inputs)?;
                     }
                     continue;
                 },
@@ -766,7 +791,7 @@ impl Turn<'_> {
                         runs.waiting = true;
                         runs.release();
                         if !runs.outstanding() {
-                            self.continue_after_runs(&mut steering, &mut runs)?;
+                            self.continue_after_runs(&mut steering, &mut runs, &mut held_inputs)?;
                         }
                         continue;
                     }
@@ -793,16 +818,27 @@ impl Turn<'_> {
         &mut self,
         steering: &mut Steering<Vec<ContentBlock>, ()>,
         runs: &mut RunResults,
+        held_inputs: &mut Vec<Vec<ContentBlock>>,
     ) -> Result<(), agent_client_protocol::Error> {
         runs.waiting = false;
+        if std::mem::take(&mut runs.restored_notice) {
+            runs.ready.push(ContentBlock::from(
+                velocity_core::queued_runs::RESTARTED_RUNS_NOTICE,
+            ));
+        }
         for block in &runs.ready {
             self.shared
                 .record(queued_run_command::completion_notice(block.clone()));
         }
         self.preface.append(&mut runs.ready);
-        let effect = match steering.step(SteeringInput::TurnEnded) {
-            SteeringEffect::Nothing => steering.step(SteeringInput::Send(Vec::new())),
-            effect => effect,
+        let effect = if steering.is_busy() {
+            match steering.step(SteeringInput::TurnEnded) {
+                SteeringEffect::Nothing => steering.step(SteeringInput::Send(Vec::new())),
+                effect => effect,
+            }
+        } else {
+            let combined: Vec<ContentBlock> = held_inputs.drain(..).flatten().collect();
+            steering.step(SteeringInput::Send(combined))
         };
         self.apply(effect)
     }

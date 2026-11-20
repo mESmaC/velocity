@@ -22,6 +22,12 @@ pub struct Supervision {
     #[serde(default)]
     #[specta(type = Option<u32>)]
     pub retry_after: Option<u64>,
+    #[serde(default)]
+    #[specta(skip)]
+    pub idle_nudged: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[specta(skip)]
+    pub last_wait: Option<String>,
 }
 
 impl crate::StateStore {

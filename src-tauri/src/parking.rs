@@ -132,10 +132,11 @@ fn wake(application: &AppHandle, key: ThreadKey, channel: &Channel) -> Result<()
 }
 
 /// What a resumed session opens with.
-#[derive(Clone, Copy)]
 enum Opening<'a> {
     /// A prompt from Velocity, sent ahead of the messages still queued.
     Prompt(&'a str),
+    /// Queued runs saved before a Velocity restart (#516), started before opening a turn.
+    RestoredRuns(Vec<velocity_core::queued_runs::QueuedRunRecord>),
     Handoff,
     AfterLimit(u32),
     /// A message you sent the ended thread. It joins the queue, so it is kept until the
@@ -145,6 +146,14 @@ enum Opening<'a> {
 
 pub(crate) fn resume(application: &AppHandle, key: ThreadKey, prompt: &str) -> Result<(), String> {
     start_session(application, key, Opening::Prompt(prompt))
+}
+
+pub(crate) fn resume_restored_runs(
+    application: &AppHandle,
+    key: ThreadKey,
+    runs: Vec<velocity_core::queued_runs::QueuedRunRecord>,
+) -> Result<(), String> {
+    start_session(application, key, Opening::RestoredRuns(runs))
 }
 
 /// Resumes an ended thread for a message you sent it, queued behind any earlier sends.
@@ -241,6 +250,7 @@ fn reset_supervision(
         .update_thread(key.0, key.1, |saved| {
             saved.activity = AgentActivity::Thinking;
             saved.bind_provider_account(thread.provider_account);
+            saved.supervision.idle_nudged = false;
             saved.supervision.last_update = std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
                 .unwrap_or_default()
@@ -279,6 +289,10 @@ fn resume_inputs(
             }
             Opening::Prompt(prompt) => {
                 runtimes.resume_parked(key, path, Some(prompt), follows_pull_request)
+            }
+            Opening::RestoredRuns(runs) => {
+                setup.restored_runs = runs;
+                runtimes.resume_parked(key, path, None, follows_pull_request)
             }
             Opening::AfterLimit(_) => runtimes.resume_parked(
                 key, path, Some("Continue the interrupted work after the subscription limit. Recheck your claim and worktree, then resume from the transcript."), follows_pull_request,

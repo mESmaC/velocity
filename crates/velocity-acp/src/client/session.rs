@@ -57,6 +57,8 @@ pub struct SessionSetup {
     pub handoff: Option<super::handoff::Experiment>,
     /// A fresh session's saved note and current change state have their own preface budget.
     pub handoff_context: Option<String>,
+    /// Queued commands persisted from before a Velocity restart (#516).
+    pub restored_runs: Vec<velocity_core::queued_runs::QueuedRunRecord>,
 }
 
 /// How a parked thread's agent picks up where it stopped: `session/load` of its earlier
@@ -110,6 +112,7 @@ impl SessionSetup {
             usage_role: None,
             handoff: None,
             handoff_context: None,
+            restored_runs: Vec::new(),
         }
     }
 
