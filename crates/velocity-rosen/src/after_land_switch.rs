@@ -12,7 +12,7 @@ use std::path::Path;
 use rosen_client::protocol::{ApproveRequest, SubmitReceipt};
 use rosen_client::{AgentId, ChangeParent, Client, ObjectId};
 use rosen_core::{ProjectConfig, ReviewMode};
-use toml_edit::{DocumentMut, Item, value};
+use toml_edit::{DocumentMut, Entry, Item, value};
 
 use crate::checker::{self, CHECKER, Priority};
 use crate::connection::requests;
@@ -177,7 +177,22 @@ pub fn edit_after_land(
     if document.get("review").and_then(Item::as_str) == Some("after-land") {
         return Ok(None);
     }
-    document.insert("review", value("after-land"));
+    // `Table::insert` reformats an existing key, which drops comments stored in its
+    // leading decor. Replace the entry value in place so leading and inline comments survive.
+    let mut replacement = value("after-land");
+    match document.entry("review") {
+        Entry::Occupied(mut entry) => {
+            if let (Some(existing), Some(updated)) =
+                (entry.get().as_value(), replacement.as_value_mut())
+            {
+                *updated.decor_mut() = existing.decor().clone();
+            }
+            entry.insert(replacement);
+        }
+        Entry::Vacant(entry) => {
+            entry.insert(replacement);
+        }
+    }
     let updated = document.to_string();
     let parsed = ProjectConfig::parse(&updated).map_err(|error| invalid(error.to_string()))?;
     if parsed.review != ReviewMode::AfterLand || !is_after_land_switch(base_config, &updated) {
