@@ -45,6 +45,53 @@ pub fn regeneration_instructions(paths: &[String]) -> String {
     message
 }
 
+/// The generated IPC bindings of a Tauri project, as `rosen.toml` lists them.
+pub const BINDINGS: &str = "ui/src/lib/bindings.ts";
+/// The program that writes [`BINDINGS`]: a project without it has no bindings to check.
+pub const BINDINGS_EXPORTER: &str = "src-tauri/src/bin/export-bindings.rs";
+/// Where the Tauri commands, events and exported constants are registered.
+const TAURI_REGISTRATION: &str = "src-tauri/src/lib.rs";
+
+/// Whether a change to `path` can change what the Tauri app exports to [`BINDINGS`] (#503).
+/// `source` is the file's text in the change, or `None` when it cannot be read. A Rust file
+/// counts when it names specta: every exported type, command and event does, through
+/// `specta::Type`, `tauri_specta::Event` or `specta::specta`. A file that is gone counts
+/// too, because what it exported is unknown.
+pub fn changes_bindings(path: &str, source: Option<&str>) -> bool {
+    let path = path.replace('\\', "/");
+    if [BINDINGS, BINDINGS_EXPORTER, TAURI_REGISTRATION].contains(&path.as_str()) {
+        return true;
+    }
+    path.ends_with(".rs") && source.is_none_or(|source| source.contains("specta"))
+}
+
+/// Why a land with stale bindings was refused, and what its author does about it.
+pub fn stale_bindings_refusal() -> (String, String) {
+    (
+        format!("`{BINDINGS}` is stale"),
+        format!(
+            "Your change touches Tauri command or event registration, and `{BINDINGS}` in its merge onto the base no longer matches what the Rust code exports. Velocity checked it with `export-bindings --check` before landing. Run `rosen rebase` in your workspace after any ancestors in the stack land.\n\n{}",
+            regeneration_instructions(&[BINDINGS.to_owned()]),
+        ),
+    )
+}
+
+/// The feed line while a named change's bindings are checked before it lands.
+pub fn checking_bindings_line(change: &str) -> String {
+    format!(
+        "Checking IPC bindings of change {} before it lands",
+        short_change(change)
+    )
+}
+
+/// The feed line for a bindings check that gave no verdict: the change lands without it.
+pub fn bindings_unchecked_line(change: &str, reason: &str) -> String {
+    feed_line(&format!(
+        "IPC bindings of change {} could not be checked · {reason} · landing without the check",
+        short_change(change)
+    ))
+}
+
 /// The change and commit recorded in Rosen's land history.
 pub fn landed_line(change: &str, commit: &str, duration: Duration) -> String {
     format!(

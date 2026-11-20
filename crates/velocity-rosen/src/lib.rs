@@ -7,6 +7,7 @@
 
 mod agent;
 pub mod agent_run;
+pub mod bindings_check;
 pub mod build_repairs;
 pub mod bundled;
 pub mod change_details;

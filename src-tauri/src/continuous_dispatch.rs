@@ -17,7 +17,7 @@ use velocity_store::issues::ThreadIssue;
 use velocity_store::{ProjectItem, TaskAttribution, VersionControl};
 use velocity_threads::continuous_dispatch::{
     DispatchView, DispatchWork, dispatchable_issue, dispatchable_task, integration_notice,
-    ordered_work, plan_task, stalled_landed_issues,
+    ordered_work, plan_task, stalled_landed_issues, uncovered_base_notice,
 };
 
 #[derive(Clone, Default)]
@@ -31,6 +31,19 @@ type Backlogs = Mutex<BTreeMap<u32, Backlog>>;
 
 /// Which open issues wait on which across every project's repository (#510).
 type Dependencies = Mutex<DependencyGraph>;
+
+/// What a project's integration record said when it was last read.
+#[derive(Clone, Default)]
+struct IntegrationRecord {
+    uncovered: velocity_rosen::integration::Uncovered,
+    last_build: Option<String>,
+}
+
+type IntegrationRecords = Mutex<BTreeMap<u32, (Instant, IntegrationRecord)>>;
+
+/// How long a read of the integration record serves the Duty view, which asks every two
+/// seconds. A build that passes clears the notice within this.
+const INTEGRATION_RECORD_REFRESH: Duration = Duration::from_secs(60);
 
 /// Issues in a project dispatch does not read can still wait on a ready issue. Their
 /// dependencies change rarely, so these projects are read far less often than a backlog.
@@ -114,21 +127,54 @@ fn view(application: &AppHandle, identifier: u32) -> Result<DispatchView, String
         &backlog.issues,
         unix_seconds(),
     );
+    // Only a project Rosen serves has an integration record to read.
+    let rosen = project.rosen_in_use();
     drop(store);
-    if !stalled.is_empty() {
-        let last_build = last_integration_outcome(application, identifier);
-        view.integration_notice = integration_notice(&stalled, last_build.as_deref());
-    }
+    let record = if rosen {
+        integration_record(application, identifier)
+    } else {
+        IntegrationRecord::default()
+    };
+    // An integration build that stops covering the base is said here, not left silent (#503).
+    let uncovered = uncovered_base_notice(
+        record.uncovered.lands,
+        record.uncovered.since,
+        unix_seconds(),
+    );
+    view.integration_notice =
+        integration_notice(uncovered.as_deref(), &stalled, record.last_build.as_deref());
     Ok(view)
 }
 
-/// A missing or unreadable integration record still shows the wait, without a reason.
-fn last_integration_outcome(application: &AppHandle, identifier: u32) -> Option<String> {
-    let data = application.path().app_data_dir().ok()?;
+/// The project's integration record, read again once the last read is a minute old.
+fn integration_record(application: &AppHandle, identifier: u32) -> IntegrationRecord {
+    let records = application.state::<IntegrationRecords>();
+    if let Ok(known) = lock(records.inner(), "integration records")
+        && let Some((read, record)) = known.get(&identifier)
+        && read.elapsed() < INTEGRATION_RECORD_REFRESH
+    {
+        return record.clone();
+    }
+    let record = read_integration_record(application, identifier);
+    if let Ok(mut known) = lock(records.inner(), "integration records") {
+        known.insert(identifier, (Instant::now(), record.clone()));
+    }
+    record
+}
+
+/// A missing or unreadable integration record still shows a wait, without a reason, and
+/// reports no uncovered lands.
+fn read_integration_record(application: &AppHandle, identifier: u32) -> IntegrationRecord {
+    let Ok(data) = application.path().app_data_dir() else {
+        return IntegrationRecord::default();
+    };
     let server = velocity_rosen::ProjectServer::new(&data, identifier);
-    velocity_rosen::integration::last_outcome(&server)
-        .ok()
-        .flatten()
+    IntegrationRecord {
+        uncovered: velocity_rosen::integration::uncovered(&server).unwrap_or_default(),
+        last_build: velocity_rosen::integration::last_outcome(&server)
+            .ok()
+            .flatten(),
+    }
 }
 
 fn unix_seconds() -> u64 {
@@ -170,6 +216,7 @@ pub(crate) fn integration_idle(application: &AppHandle, identifier: u32) -> Resu
 pub fn initialize(application: &AppHandle) {
     application.manage(Backlogs::default());
     application.manage(Dependencies::default());
+    application.manage(IntegrationRecords::default());
     // Without its executable or data folder Velocity cannot start a bounded review; a
     // parked issue then returns to dispatch when its report passes the limit (#506).
     if let (Ok(executable), Ok(data)) = (std::env::current_exe(), application.path().app_data_dir())

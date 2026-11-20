@@ -60,6 +60,9 @@ An unchanged issue already dispatched stays out of dispatch while its GitHub iss
 An issue whose change has landed is not dispatched again while it waits for a green integration build; its issue row reads **landed · waiting for integration** until that build closes it or a revert reopens it for fix-forward (#504).
 Before starting an issue, dispatch reads Velocity's own land, reopen and close comments on it, so a land survives deleted thread history and is saved as a hold until the issue closes or changes.
 When landed issues have waited six hours without a green integration build, the Duty view shows **N landed issues wait for a green integration build** with the issue numbers and the last integration build's outcome.
+When the base holds lands that no green integration build covers and the oldest landed three hours ago, or there are 20 of them, the Duty view shows **The integration build has not passed on the base for H h M min (N lands)** with the last integration build's outcome (#503).
+The limits are one batch wait of two hours plus an hour for the build, and two batches of ten lands, so a build that is merely due shows nothing.
+Velocity reads the integration record for this notice at most once a minute.
 When continuous dispatch retires an issue thread after an empty turn, it saves **Ended with no change** and the last agent message in the thread view (#469).
 Dispatch holds the issue while the GitHub report is pending and then skips it while the `no-change` label is present (F9).
 Once the bounded review, the two-hour limit, a person or a review agent removes the label, an open, unclaimed issue can be dispatched again (F9, #506).

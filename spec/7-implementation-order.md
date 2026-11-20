@@ -42,6 +42,7 @@ Each milestone ends with a working app.
 - [x] Cut release for any landed commit while the mirror is Collapse: Rosen's last green commit, a workflow dispatch, and the tag created by the release workflow (F1, F6, #431)
 - [x] Return refused Rosen lands to the author with repair instructions and show the refusal on the thread card (F6, #487)
 - [x] Catch Rosen projects up from their mirror on start and from the project menu, never rebuilding the server (F5, #501)
+- [x] Check the IPC bindings before landing a change that touches Tauri registration, returning a stale one to its author, and say on the project when the integration build stops covering the base (F7, F8, #503)
 - [x] Collapse as the default mirror: provision the repository for new projects and Mirror to Collapse for existing ones, push tokens in git's credential helper, and Collapse's forwarder state on the project (F2, F5, F6, #427)
 - [x] Collapse live state: Mirror to Collapse and Create also land `rosen.toml`'s `collapse` root, the push token is stored where Rosen's state feed, ledger push and relay look for it, Send Collapse its live state links projects already mirrored, and the Rosen status pane shows the feed (F2, F5, F6, #517)
 - [x] PR follow-through: track, land history, auto-response to review comments, merge → workspace delete (F6; removed in #426)

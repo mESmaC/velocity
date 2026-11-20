@@ -1,12 +1,13 @@
 //! The agent shell, managed Rosen CLI and MCP queue share this policy. Light Rust runs
-//! (single-crate checks and binding generation) take one of a few machine-wide slots
-//! and start once their own memory fits above Rosen's reserve.
+//! (single-crate checks, binding generation and Velocity's own bindings check before a
+//! land) take one of a few machine-wide slots and start once their own memory fits above
+//! Rosen's reserve.
 
 use std::ffi::{OsStr, OsString};
 use std::fs::{File, OpenOptions, TryLockError};
 use std::io;
 use std::path::{Path, PathBuf};
-use std::process::ExitStatus;
+use std::process::{Command, ExitStatus, Output, Stdio};
 use std::sync::OnceLock;
 
 use rosen_client::run_queue::{HELD_ENV, POLL, RunClass, RunQueue};
@@ -282,21 +283,67 @@ fn run_light(
         .find(|path| path.join(".rosen").exists() || path.join(".git").exists())
         .unwrap_or(&directory);
     let target = light_target(root);
-    std::fs::create_dir_all(&target)?;
+    let _turn = light_turn(&target)?;
+    light_command(rosen, rosen_arguments, program, &target)?
+        .args(arguments)
+        .status()
+}
+
+/// Velocity's own light run (#503): `program` in `directory`, building into `target`, with
+/// what it printed. It waits and runs like an agent's (blocking).
+pub(crate) fn light_output(
+    directory: &Path,
+    target: &Path,
+    program: &str,
+    arguments: &[&str],
+) -> io::Result<Output> {
+    let rosen = crate::server::program_folder("rosen")
+        .map(|folder| folder.join(executable_file("rosen")))
+        .ok_or_else(|| io::Error::other("the rosen program was not found"))?;
+    let _turn = light_turn(target)?;
+    light_command(&rosen, &[], OsStr::new(program), target)?
+        .args(arguments)
+        .current_dir(directory)
+        .stdin(Stdio::null())
+        .output()
+}
+
+/// What a light run holds until it ends: its project's target folder and a machine slot.
+struct LightTurn {
+    _project: File,
+    _slot: File,
+}
+
+/// Waits for the target folder, a slot and memory, in that order.
+fn light_turn(target: &Path) -> io::Result<LightTurn> {
+    std::fs::create_dir_all(target)?;
     // Cargo locks a target folder for a whole build, so runs that share one wait here
     // rather than in a machine slot.
-    let _project = locked(&target.join(".velocity-light-run.lock"))?;
-    let _slot = light_slot()?;
+    let project = locked(&target.join(".velocity-light-run.lock"))?;
+    let slot = light_slot()?;
     wait_for_memory()?;
+    Ok(LightTurn {
+        _project: project,
+        _slot: slot,
+    })
+}
+
+/// `rosen run -- <program>` set up as a light run; the caller adds the arguments.
+fn light_command(
+    rosen: &Path,
+    rosen_arguments: &[OsString],
+    program: &OsStr,
+    target: &Path,
+) -> io::Result<Command> {
     // No Rosen turn: its admission charges every running turn its full cap (6 GiB for
     // an integration build), which kept two-job checks waiting while gigabytes sat free.
     // A light run starts when its own memory fits above Rosen's reserve; the run below
     // still executes in a job capped at a build turn's memory.
-    background_command(rosen)
+    let mut command = background_command(rosen);
+    command
         .args(rosen_arguments)
         .args(["run", "--class", RunClass::Build.name(), "--"])
         .arg(program)
-        .args(arguments)
         .env("PATH", toolchain_path()?)
         .env(HELD_ENV, RunClass::Build.name())
         .env("CARGO_BUILD_JOBS", "2")
@@ -304,8 +351,8 @@ fn run_light(
         // The shared compiler cache rejects incremental compilation.
         .env("RUSTC_WRAPPER", "")
         .env("RUSTC_WORKSPACE_WRAPPER", "")
-        .env("CARGO_TARGET_DIR", target)
-        .status()
+        .env("CARGO_TARGET_DIR", target);
+    Ok(command)
 }
 
 /// Cargo and the binding generator need the real tools for their own subprocesses.
@@ -320,9 +367,15 @@ fn toolchain_path() -> io::Result<OsString> {
 /// path is part of the package ID. Elsewhere the workspace keeps its own.
 fn light_target(root: &Path) -> PathBuf {
     match root.parent() {
-        Some(project) if root.join(".rosen").exists() => project.join(PROJECT_TARGET),
+        Some(project) if root.join(".rosen").exists() => project_target(project),
         _ => root.join("target").join("agent-check"),
     }
+}
+
+/// The light runs' shared target folder for the Rosen project whose workspaces lie in
+/// `project_root`.
+pub fn project_target(project_root: &Path) -> PathBuf {
+    project_root.join(PROJECT_TARGET)
 }
 
 fn wait_for_memory() -> io::Result<()> {

@@ -4,6 +4,7 @@
 - **Build queue** (#480).
   Velocity queues agents' single-crate Rust type checks and Lean checks through Rosen's machine-wide queue.
   Agent light Rust runs (`cargo check -p <crate>` and the UI's `bindings` script) take one of two machine-wide slots, use two Cargo jobs at below-normal priority, and share one incremental target directory per project beside its workspaces (#486).
+  Velocity's own bindings check before a land (F7 "Post-land verification", #503) is a light run too, in the same slots and target directory.
   A light run starts when 3 GiB fits above Rosen's memory reserve, measured rather than charged at other turns' caps, so an integration build no longer holds every agent check.
   Velocity puts shims for `cargo`, `rustc`, `cargo-clippy`, `cargo-tauri` and `clippy-driver` first on every agent's `PATH` (#483).
   Direct `cargo fmt` and `cargo check -p <crate>` take an agent light slot, and the shims refuse other direct invocations with the integration-build message shared by `rosen run` and `queue_run`.

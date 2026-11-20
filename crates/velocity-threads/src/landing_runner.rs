@@ -1,5 +1,6 @@
 //! Lands named Rosen changes and executes the post-land jobs offered by Rosen.
 
+mod bindings_gate;
 mod build_repairs;
 mod check_feed;
 mod post_land;
@@ -17,11 +18,13 @@ use velocity_rosen::{ProjectServer, checker};
 use velocity_store::duty::LandingProject;
 use velocity_store::{ReviewStage, ThreadState};
 
+use bindings_gate::{Gate, GateNote};
 pub use build_repairs::BuildRepairs;
 use post_land::VerifyNote;
 
 const TICK: Duration = Duration::from_secs(30);
 const LANDER: &str = "Rosen";
+const NAME_AGAIN: &str = "Name the repaired change with `rosen commit -m \"<what changed>\"` so Velocity can retry the land.";
 
 pub trait LandingHost: Clone + Send + Sync + 'static {
     fn projects(&self) -> Vec<LandingProject>;
@@ -42,6 +45,10 @@ pub trait LandingHost: Clone + Send + Sync + 'static {
 struct RunnerState {
     landing_projects: HashSet<u32>,
     refusal_retries: HashMap<(u32, u32), u64>,
+    /// Named changes whose bindings are being or were checked, by project and thread.
+    bindings: HashMap<(u32, u32), GateNote>,
+    /// Projects whose bindings check folder is in use.
+    checking_bindings: HashSet<u32>,
     verifying_projects: HashSet<(u32, &'static str)>,
     verifying: HashMap<(u32, &'static str), VerifyNote>,
     reporting_projects: HashSet<u32>,
@@ -104,6 +111,9 @@ impl RosenLanding {
                 .retain(|(project, thread), generation| {
                     *project != id || named_generations.get(thread) == Some(generation)
                 });
+            state.bindings.retain(|(project, thread), note| {
+                *project != id || named_generations.get(thread) == Some(&note.generation)
+            });
             if named_generations.is_empty() {
                 return;
             }
@@ -140,6 +150,18 @@ impl RosenLanding {
         change: &str,
     ) {
         let id = project.project.id;
+        match self
+            .bindings_gate(host, server, project, thread, change)
+            .await
+        {
+            Gate::Clear => {}
+            Gate::Waiting => return,
+            Gate::Stale => {
+                let (reason, repair) = rosen_checker::stale_bindings_refusal();
+                let instructions = format!("{repair}{NAME_AGAIN}");
+                return self.send_refusal(host, project, thread, change, (reason, instructions));
+            }
+        }
         let started = Instant::now();
         match landing::land(server, checker::CHECKER, change).await {
             Ok(LandOutcome::Landed { commit }) => {
@@ -170,14 +192,40 @@ impl RosenLanding {
         let project_id = project.project.id;
         let generation = thread.rosen_progress_generation;
         let key = (project_id, thread.id);
-        // A parent may land later in this pass, so give other refusals one more pass.
-        if matches!(&refusal, LandRefusal::Other { .. })
-            && self.lock().refusal_retries.insert(key, generation) != Some(generation)
-        {
+        if matches!(&refusal, LandRefusal::Other { .. }) && self.retry_later(key, generation) {
             return;
         }
         let branch = crate::launch::base_branch(&project.project);
-        let (reason, instructions) = refusal_instructions(change, &branch, refusal);
+        let refusal = refusal_instructions(change, &branch, refusal);
+        self.send_refusal(host, project, thread, change, refusal);
+    }
+
+    /// Whether a refusal Rosen gave no repair for is tried again before its author hears
+    /// of it. A parent may land later in this pass, so every such refusal gets one more
+    /// pass. A parent may also wait on a bindings check (#503): while one runs in the
+    /// project the refusal is not counted, so that one more pass comes after the check.
+    fn retry_later(&self, key: (u32, u32), generation: u64) -> bool {
+        let checking = self.checking_bindings(key.0);
+        let mut state = self.lock();
+        if checking {
+            state.refusal_retries.remove(&key);
+            return true;
+        }
+        state.refusal_retries.insert(key, generation) != Some(generation)
+    }
+
+    /// Gives the change back to its author with the reason and the repair.
+    fn send_refusal<Host: LandingHost>(
+        &self,
+        host: &Host,
+        project: &LandingProject,
+        thread: &velocity_store::ThreadItem,
+        change: &str,
+        (reason, instructions): (String, String),
+    ) {
+        let project_id = project.project.id;
+        let generation = thread.rosen_progress_generation;
+        let key = (project_id, thread.id);
         let message = format!("Land refused · {reason}\n\n{instructions}");
         match host.land_refused(project_id, change, generation, &message) {
             Ok(recorded) => {
@@ -197,7 +245,7 @@ fn named(thread: &velocity_store::ThreadItem) -> bool {
 }
 
 fn refusal_instructions(change: &str, base_branch: &str, refusal: LandRefusal) -> (String, String) {
-    let name_again = "Name the repaired change with `rosen commit -m \"<what changed>\"` so Velocity can retry the land.";
+    let name_again = NAME_AGAIN;
     match refusal {
         LandRefusal::Regenerate { paths } => (
             format!("regeneration required for {}", paths.join(", ")),

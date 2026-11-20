@@ -1117,7 +1117,10 @@ export type DispatchView_Deserialize = {
 	paused: boolean,
 	next: DispatchPreview_Deserialize[],
 	error?: string | null,
-	/**  Landed issues that have waited too long for a green integration build (#504). */
+	/**
+	 *  A base the integration build has not covered for too long (#503), and landed issues
+	 *  that have waited too long for a green integration build (#504).
+	 */
 	integration_notice?: string | null,
 };
 
@@ -1129,7 +1132,10 @@ export type DispatchView_Serialize = {
 	paused: boolean,
 	next: DispatchPreview_Serialize[],
 	error: string | null,
-	/**  Landed issues that have waited too long for a green integration build (#504). */
+	/**
+	 *  A base the integration build has not covered for too long (#503), and landed issues
+	 *  that have waited too long for a green integration build (#504).
+	 */
 	integration_notice: string | null,
 };
 

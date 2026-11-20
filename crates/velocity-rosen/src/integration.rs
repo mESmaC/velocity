@@ -97,6 +97,38 @@ pub fn last_green(server: &ProjectServer) -> Result<Option<String>, RosenError> 
         .optional()?)
 }
 
+/// The lands on the base that no green build covers yet.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct Uncovered {
+    pub lands: u32,
+    /// When the oldest of them landed, in Unix seconds.
+    pub since: Option<u64>,
+}
+
+/// What the base holds past its last green build, for the uncovered-base notice (#503).
+/// The last green build is the later of the last integration build that passed and
+/// Rosen's own post-land checkpoint, which also advances for a project with no commands.
+pub fn uncovered(server: &ProjectServer) -> Result<Uncovered, RosenError> {
+    let green = last_green(server)?;
+    let (lands, since): (u32, Option<u64>) = ledger(server)?.query_row(
+        "WITH pending AS (
+             SELECT h.commit_id FROM base_history h JOIN base_refs r ON r.name=h.ref_name
+             WHERE h.change_id IS NOT NULL AND h.seq>MAX(
+                 COALESCE((SELECT seq FROM base_history
+                           WHERE ref_name=h.ref_name AND commit_id=?1), 0),
+                 COALESCE((SELECT seq FROM post_land_green WHERE ref_name=h.ref_name), 0)))
+         SELECT (SELECT COUNT(*) FROM pending),
+                (SELECT MIN(created_at) FROM events WHERE kind IN ('landed','reverted')
+                 AND json_extract(detail,'$.commit') IN (SELECT commit_id FROM pending))",
+        params![green],
+        |row| Ok((row.get(0)?, row.get(1)?)),
+    )?;
+    Ok(Uncovered {
+        lands,
+        since: since.map(|milliseconds| milliseconds / 1000),
+    })
+}
+
 /// Saves why an integration build failed, for the stuck-integration notice (#504).
 pub fn record_failure(
     server: &ProjectServer,

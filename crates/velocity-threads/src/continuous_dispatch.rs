@@ -18,7 +18,8 @@ pub struct DispatchView {
     pub paused: bool,
     pub next: Vec<DispatchPreview>,
     pub error: Option<String>,
-    /// Landed issues that have waited too long for a green integration build (#504).
+    /// A base the integration build has not covered for too long (#503), and landed issues
+    /// that have waited too long for a green integration build (#504).
     #[serde(default)]
     pub integration_notice: Option<String>,
 }
@@ -106,8 +107,55 @@ pub fn stalled_landed_issues(
     stalled.into_iter().map(|(_, number)| number).collect()
 }
 
-/// "N landed issues wait for a green integration build", with the last build's outcome.
-pub fn integration_notice(stalled: &[u32], last_build: Option<&str>) -> Option<String> {
+/// How long the base may hold lands no green integration build covers before the project
+/// says so (#503). A batch waits at most two hours for its build, and the build itself
+/// may take another: past three hours the build is failing or not running.
+pub const UNCOVERED_BASE_LIMIT_SECONDS: u64 = 3 * 60 * 60;
+/// The same limit in lands: two full batches of ten.
+pub const UNCOVERED_LAND_LIMIT: u32 = 20;
+
+/// "The integration build has not passed on the base for 3 h 20 min (14 lands)", once the
+/// base is past either limit. `since` is when the oldest uncovered land landed.
+pub fn uncovered_base_notice(lands: u32, since: Option<u64>, now: u64) -> Option<String> {
+    let waited = since.map(|since| now.saturating_sub(since));
+    let overdue = waited.is_some_and(|waited| waited >= UNCOVERED_BASE_LIMIT_SECONDS);
+    if lands == 0 || !(overdue || lands >= UNCOVERED_LAND_LIMIT) {
+        return None;
+    }
+    let count = if lands == 1 {
+        "1 land".to_owned()
+    } else {
+        format!("{lands} lands")
+    };
+    Some(match waited {
+        Some(waited) => {
+            let (hours, minutes) = (waited / 3600, waited % 3600 / 60);
+            format!(
+                "The integration build has not passed on the base for {hours} h {minutes} min ({count})"
+            )
+        }
+        None => format!("The integration build has not passed on the last {count}"),
+    })
+}
+
+/// What the Duty view says about integration: the uncovered base, the landed issues that
+/// wait, and the last build's outcome.
+pub fn integration_notice(
+    uncovered: Option<&str>,
+    stalled: &[u32],
+    last_build: Option<&str>,
+) -> Option<String> {
+    let waiting = stalled_notice(stalled);
+    let said: Vec<&str> = uncovered.into_iter().chain(waiting.as_deref()).collect();
+    if said.is_empty() {
+        return None;
+    }
+    let reason = last_build.unwrap_or("no integration build has finished");
+    Some(format!("{}. Last build: {reason}", said.join(". ")))
+}
+
+/// "N landed issues wait for a green integration build (#1, #2)".
+fn stalled_notice(stalled: &[u32]) -> Option<String> {
     let (first, rest) = stalled.split_first()?;
     let listed = std::iter::once(first)
         .chain(rest.iter().take(4))
@@ -121,9 +169,8 @@ pub fn integration_notice(stalled: &[u32], last_build: Option<&str>) -> Option<S
     } else {
         format!("{count} landed issues wait")
     };
-    let reason = last_build.unwrap_or("no integration build has finished since they landed");
     Some(format!(
-        "{subject} for a green integration build ({listed}{more}). Last build: {reason}"
+        "{subject} for a green integration build ({listed}{more})"
     ))
 }
 
