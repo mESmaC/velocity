@@ -196,23 +196,13 @@ impl RosenPinWatch {
     }
 
     fn ci_state(&self, repository: &str, commit: &str) -> Result<CiState, GitHubCommandError> {
-        #[derive(Deserialize)]
-        struct CheckRunsResponse {
-            #[serde(default)]
-            check_runs: Vec<Run>,
-        }
-        #[derive(Deserialize)]
-        struct CombinedStatus {
-            #[serde(default)]
-            statuses: Vec<CommitStatus>,
-        }
-        #[derive(Deserialize)]
-        struct CommitStatus {
-            state: String,
-        }
         let commit_endpoint = format!("repos/{repository}/commits/{commit}");
         let runs_endpoint = format!("{commit_endpoint}/check-runs?per_page=100");
         let runs: CheckRunsResponse = self.command.read(&["api", &runs_endpoint])?;
+        let workflow_runs_endpoint =
+            format!("repos/{repository}/actions/runs?head_sha={commit}&per_page=100");
+        let workflow_runs: WorkflowRunsResponse =
+            self.command.read(&["api", &workflow_runs_endpoint])?;
         let status_endpoint = format!("{commit_endpoint}/status?per_page=100");
         let combined: CombinedStatus = self.command.read(&["api", &status_endpoint])?;
         let runs: Vec<CheckRun<'_>> = runs
@@ -223,12 +213,20 @@ impl RosenPinWatch {
                 conclusion: run.conclusion.as_deref(),
             })
             .collect();
+        let workflow_runs: Vec<rosen_pin::WorkflowRun<'_>> = workflow_runs
+            .workflow_runs
+            .iter()
+            .map(|run| rosen_pin::WorkflowRun {
+                completed: run.completed(),
+                conclusion: run.conclusion.as_deref(),
+            })
+            .collect();
         let statuses: Vec<&str> = combined
             .statuses
             .iter()
             .map(|status| status.state.as_str())
             .collect();
-        Ok(rosen_pin::ci_state(&runs, &statuses))
+        Ok(rosen_pin::ci_state(&runs, &workflow_runs, &statuses))
     }
 
     /// What the issue says for the green commit at the head of `commits`.
@@ -490,6 +488,29 @@ impl ApiCommit {
             message: self.commit.message,
         }
     }
+}
+
+#[derive(Deserialize)]
+struct CheckRunsResponse {
+    #[serde(default)]
+    check_runs: Vec<Run>,
+}
+
+#[derive(Deserialize)]
+struct WorkflowRunsResponse {
+    #[serde(default)]
+    workflow_runs: Vec<crate::workflow_runs::WorkflowRun>,
+}
+
+#[derive(Deserialize)]
+struct CombinedStatus {
+    #[serde(default)]
+    statuses: Vec<CommitStatus>,
+}
+
+#[derive(Deserialize)]
+struct CommitStatus {
+    state: String,
 }
 
 #[derive(Deserialize)]

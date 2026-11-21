@@ -10,8 +10,8 @@ It reads the newest 100 commits of Rosen's default branch.
 The commits above the pin are ahead of it.
 When the pin is not among the 100, Velocity asks GitHub whether the branch contains it, and a pin the branch does not contain is never bumped.
 The target is the newest of the 8 newest commits ahead whose CI is green.
-A commit is green when it has at least one check run or commit status, every check run completed with `success`, `neutral` or `skipped`, and no status is `pending`, `failure` or `error`.
-A commit whose checks are running, failed or never ran is passed over for the next older one.
+A commit is green when it has at least one check run, workflow run or commit status, every check run and workflow run completed with `success`, `neutral` or `skipped`, and no status is `pending`, `failure` or `error`.
+A commit whose checks or workflow runs are running, failed or never ran is passed over for the next older one.
 
 **The issue.**
 While a target exists, exactly one open issue titled "Bump the Rosen pin to `<7-character commit>`" asks for it.

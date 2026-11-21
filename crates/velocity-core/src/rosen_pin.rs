@@ -137,12 +137,12 @@ pub fn release_tag(version: &str, commit: &str) -> Option<String> {
 /// What Rosen's CI says about one commit.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum CiState {
-    /// Every check ran and none failed.
+    /// Every check and workflow ran and none failed.
     Green,
-    /// A check is queued or running.
+    /// A check or workflow run is queued or running.
     Running,
     Failed,
-    /// No check ran on this commit, as on the commits a push carries below its tip.
+    /// No check or workflow ran on this commit, as on the commits a push carries below its tip.
     NotRun,
 }
 
@@ -153,22 +153,40 @@ pub struct CheckRun<'a> {
     pub conclusion: Option<&'a str>,
 }
 
-/// The CI verdict on a commit from its check runs and its commit statuses' states. A
-/// failure decides before a running check does, because a rerun can't make the commit
-/// green while another check has failed.
-pub fn ci_state(check_runs: &[CheckRun<'_>], statuses: &[&str]) -> CiState {
+/// One GitHub Actions workflow run for a commit: whether it completed, and how.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct WorkflowRun<'a> {
+    pub completed: bool,
+    pub conclusion: Option<&'a str>,
+}
+
+/// The CI verdict on a commit from its check runs, workflow runs and commit statuses' states.
+/// A failure decides before a running check or workflow does, because a rerun can't make the
+/// commit green while another check or workflow has failed.
+pub fn ci_state(
+    check_runs: &[CheckRun<'_>],
+    workflow_runs: &[WorkflowRun<'_>],
+    statuses: &[&str],
+) -> CiState {
     let passed =
-        |run: &CheckRun<'_>| matches!(run.conclusion, Some("success" | "neutral" | "skipped"));
-    let failed = check_runs.iter().any(|run| run.completed && !passed(run))
+        |conclusion: Option<&str>| matches!(conclusion, Some("success" | "neutral" | "skipped"));
+    let failed = check_runs
+        .iter()
+        .any(|run| run.completed && !passed(run.conclusion))
+        || workflow_runs
+            .iter()
+            .any(|run| run.completed && !passed(run.conclusion))
         || statuses
             .iter()
             .any(|state| matches!(*state, "failure" | "error"));
-    let running = check_runs.iter().any(|run| !run.completed) || statuses.contains(&"pending");
+    let running = check_runs.iter().any(|run| !run.completed)
+        || workflow_runs.iter().any(|run| !run.completed)
+        || statuses.contains(&"pending");
     if failed {
         CiState::Failed
     } else if running {
         CiState::Running
-    } else if check_runs.is_empty() && statuses.is_empty() {
+    } else if check_runs.is_empty() && workflow_runs.is_empty() && statuses.is_empty() {
         CiState::NotRun
     } else {
         CiState::Green
@@ -508,4 +526,101 @@ pub fn oldest_and_surplus(open: &[OpenIssue]) -> Option<(u32, Vec<u32>)> {
 /// GitHub may return a body with other line endings than it was sent with.
 fn same_text(left: &str, right: &str) -> bool {
     left.replace("\r\n", "\n").trim() == right.replace("\r\n", "\n").trim()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // Risk (#569): a fast workflow (such as Proofs) can complete its check runs while a
+    // slower workflow (such as CI) is still queued without having created any check runs yet.
+    // Treating the commit as green before every workflow run finishes moves the Rosen pin
+    // onto an untested commit.
+    #[test]
+    fn queued_workflow_run_keeps_commit_running_after_check_run_passes() {
+        let check_runs = [CheckRun {
+            completed: true,
+            conclusion: Some("success"),
+        }];
+        let workflow_runs = [
+            WorkflowRun {
+                completed: true,
+                conclusion: Some("success"),
+            },
+            WorkflowRun {
+                completed: false,
+                conclusion: None,
+            },
+        ];
+        assert_eq!(ci_state(&check_runs, &workflow_runs, &[]), CiState::Running);
+    }
+
+    // Risk (#569): workflow runs that fail, cancel or error without creating check runs
+    // (such as startup failures) must keep a commit from reading as green, and a failure
+    // must still outrank another queued workflow run.
+    #[test]
+    fn workflow_run_outcomes_decide_ci_state() {
+        let passing_check = [CheckRun {
+            completed: true,
+            conclusion: Some("success"),
+        }];
+        assert_eq!(ci_state(&[], &[], &[]), CiState::NotRun);
+        assert_eq!(
+            ci_state(
+                &[],
+                &[WorkflowRun {
+                    completed: false,
+                    conclusion: None,
+                }],
+                &[],
+            ),
+            CiState::Running
+        );
+        assert_eq!(
+            ci_state(
+                &passing_check,
+                &[
+                    WorkflowRun {
+                        completed: true,
+                        conclusion: Some("success"),
+                    },
+                    WorkflowRun {
+                        completed: true,
+                        conclusion: Some("skipped"),
+                    },
+                    WorkflowRun {
+                        completed: true,
+                        conclusion: Some("neutral"),
+                    },
+                ],
+                &[],
+            ),
+            CiState::Green
+        );
+        for conclusion in [
+            Some("failure"),
+            Some("cancelled"),
+            Some("timed_out"),
+            Some("startup_failure"),
+            None,
+        ] {
+            assert_eq!(
+                ci_state(
+                    &passing_check,
+                    &[
+                        WorkflowRun {
+                            completed: true,
+                            conclusion,
+                        },
+                        WorkflowRun {
+                            completed: false,
+                            conclusion: None,
+                        },
+                    ],
+                    &[],
+                ),
+                CiState::Failed
+            );
+        }
+    }
 }
