@@ -213,6 +213,17 @@ impl RosenLanding {
     ) {
         let id = project.project.id;
         host.catch_up_before_land(id).await;
+        match velocity_rosen::preflight::verify_for_land(server, change).await {
+            Ok(velocity_rosen::preflight::LandPreflightGate::Passed)
+            | Ok(velocity_rosen::preflight::LandPreflightGate::Closed) => {}
+            Ok(velocity_rosen::preflight::LandPreflightGate::Refused {
+                reason,
+                instructions,
+            }) => {
+                return self.send_refusal(host, project, thread, change, (reason, instructions));
+            }
+            Err(_) => return,
+        }
         let gate_started = Instant::now();
         match self
             .bindings_gate(host, server, project, thread, change)

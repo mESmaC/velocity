@@ -297,6 +297,11 @@ pub async fn finish_workspace(
         return Ok(false);
     }
     if record.state == ChangeState::Ready {
+        match crate::preflight::verify_for_land(server, change).await? {
+            crate::preflight::LandPreflightGate::Passed
+            | crate::preflight::LandPreflightGate::Closed => {}
+            crate::preflight::LandPreflightGate::Refused { .. } => return Ok(false),
+        }
         return Ok(matches!(
             landing::land(server, "velocity-checker", change).await?,
             landing::LandOutcome::Landed { .. }

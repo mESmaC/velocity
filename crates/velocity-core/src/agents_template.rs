@@ -54,7 +54,7 @@ const DEFAULT_AGENTS_BODY: &str = r#"Use the project instructions already loaded
 The project spec defines what to build. The Task List defines what is left.
 
 ## Commands
-- Run `preflight` from `velocity-run` before naming a change, then end your turn and continue from Velocity's pass/fail report.
+- Run `preflight` from `velocity-run` before naming a change, then end your turn and continue from Velocity's pass/fail report; Velocity refuses to name or land a change whose latest snapshot has no passing preflight.
 - Always queue checks and builds through `queue_run` from `velocity-run` (including `cargo check -p <crate>`, Lean checks, `cargo metadata --format-version 1` and `pnpm -C ui bindings`), then end your turn and continue from Velocity's result. Fall back to `rosen run -- <command>` only when `velocity-run` is listed under `Unavailable tools` in the session card.
 - The `cargo` shim on `PATH` allows only `cargo fmt`, `cargo check -p <crate>` (queue via `queue_run`) and managed `cargo metadata --format-version 1`, and refuses other Cargo or Rust compiler invocations (`build`, `test`, `clippy`, `run`, `rustc`) because the integration build runs full compilation, clippy and tests.
 - Format only changed Rust files rather than `cargo fmt --all`, which can rewrite unclaimed files. The integration build runs Rust compilation, clippy and full tests; the release gate runs the stress suite.

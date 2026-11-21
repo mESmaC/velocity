@@ -342,6 +342,11 @@ pub async fn name(
 ) -> Result<(), RosenError> {
     let client = requests(server.endpoint()).await?;
     verify_workspace(root, change)?;
+    if let Err(refusal) =
+        crate::preflight::verify_workspace_for_commit_with_client(&client, root, change).await?
+    {
+        return Err(RosenError::ThreadChange(refusal));
+    }
     let report = client.snapshot_workspace(root, Some(message)).await?;
     if !report.unreadable.is_empty() {
         return Err(RosenError::ThreadChange(format!(

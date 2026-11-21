@@ -13,7 +13,8 @@ use agent_client_protocol::v1::schema::{
 use serde::Deserialize;
 use tokio_util::sync::CancellationToken;
 use velocity_core::preflight::{
-    ChangedFile, PreflightContext, PreflightPlan, StepOutcome, format_report, plan,
+    ChangedFile, PreflightContext, PreflightPlan, StepOutcome, format_failure_summary,
+    format_report, plan,
 };
 use velocity_core::queued_runs::QueuedRunClass;
 use velocity_core::rosen_checker::{
@@ -21,7 +22,9 @@ use velocity_core::rosen_checker::{
 };
 use velocity_rosen::agent_run::{AgentRun, toolchain_path_from};
 use velocity_rosen::landing::LandRefusal;
-use velocity_rosen::preflight::{PreflightSnapshot, discover_workspace_crates, inspect};
+use velocity_rosen::preflight::{
+    PreflightSnapshot, RecordOutcome, discover_workspace_crates, inspect, record_outcome,
+};
 use velocity_rosen::queued_turn::{
     DEFAULT_WAIT_TIMEOUT, HELD_ENV, QUEUE_ENV, QueuedTurn, QueuedTurnError, QueuedTurnRequest,
     acquire,
@@ -135,12 +138,68 @@ impl PreflightRun {
         match runner.run_all(&snapshot).await {
             Ok(steps) => {
                 let log_display = self.log.display().to_string();
-                let (passed, report) =
+                let (mut passed, mut report) =
                     format_report(&snapshot.change, snapshot.files.len(), &steps, &log_display);
+                let failure_summary = if passed {
+                    String::new()
+                } else {
+                    format_failure_summary(&steps, &log_display)
+                };
+                self.persist_attestation(
+                    &snapshot,
+                    &mut passed,
+                    &mut report,
+                    &failure_summary,
+                    &log_display,
+                )
+                .await;
                 let _ = writeln!(self.output, "\n=== summary ===\n{report}");
                 RunResult::new(self.id, passed, report)
             }
             Err(Cancelled) => cancelled_result(self.id, &self.log),
+        }
+    }
+
+    async fn persist_attestation(
+        &mut self,
+        snapshot: &PreflightSnapshot,
+        passed: &mut bool,
+        report: &mut String,
+        failure_summary: &str,
+        log_display: &str,
+    ) {
+        match record_outcome(snapshot, *passed, failure_summary, log_display).await {
+            Ok(RecordOutcome::Recorded { receipt_submitted }) => {
+                let _ = writeln!(
+                    self.output,
+                    "\n=== preflight record ===\nrecorded for head {} (passed: {}, rosen receipt: {receipt_submitted})",
+                    snapshot.head, *passed
+                );
+            }
+            Ok(RecordOutcome::StaleHead { checked, current }) => {
+                let note = format!(
+                    "Change moved while preflight was running (checked {}, current {}). Run `preflight` again before naming.",
+                    checked.get(..8).unwrap_or(&checked),
+                    current.get(..8).unwrap_or(&current),
+                );
+                let _ = writeln!(self.output, "\n=== preflight record ===\n{note}");
+                if *passed {
+                    *passed = false;
+                    report.push_str(&format!("\n\n[Velocity] {note}"));
+                }
+            }
+            Err(error) => {
+                let head = snapshot.head.to_string();
+                let note = format!(
+                    "Could not record preflight result for snapshot {}: {error}. Run `preflight` again before naming.",
+                    head.get(..8).unwrap_or(&head)
+                );
+                let _ = writeln!(self.output, "\n=== preflight record ===\n{note}");
+                if *passed {
+                    *passed = false;
+                    report.push_str(&format!("\n\n[Velocity] {note}"));
+                }
+            }
         }
     }
 }
@@ -388,24 +447,8 @@ impl StepRunner<'_> {
     ) -> Result<Vec<StepOutcome>, Cancelled> {
         let mut outcomes = Vec::new();
         let mut failed_crates = BTreeSet::new();
-        for package in &check_plan.check_crates {
-            let label = format!("cargo check -p {package}");
-            let args = vec![String::from("check"), String::from("-p"), package.clone()];
-            let outcome = self.light_outcome(&label, target, &args, None).await?;
-            if outcome.status == velocity_core::preflight::StepStatus::Failed {
-                failed_crates.insert(package.clone());
-            }
-            outcomes.push(outcome);
-        }
         for package in &check_plan.clippy_crates {
-            let label = format!("cargo clippy -p {package} (sensitive)");
-            if failed_crates.contains(package) {
-                outcomes.push(StepOutcome::skipped(
-                    label,
-                    "skipped because cargo check failed",
-                ));
-                continue;
-            }
+            let label = format!("cargo clippy -p {package} --all-targets");
             let args = vec![
                 String::from("clippy"),
                 String::from("-p"),
@@ -415,7 +458,11 @@ impl StepRunner<'_> {
                 String::from("-D"),
                 String::from("warnings"),
             ];
-            outcomes.push(self.light_outcome(&label, target, &args, None).await?);
+            let outcome = self.light_outcome(&label, target, &args, None).await?;
+            if outcome.status == velocity_core::preflight::StepStatus::Failed {
+                failed_crates.insert(package.clone());
+            }
+            outcomes.push(outcome);
         }
         if check_plan.check_bindings {
             outcomes.push(
@@ -440,7 +487,7 @@ impl StepRunner<'_> {
         {
             return Ok(StepOutcome::skipped(
                 label,
-                "skipped because the Tauri crate failed cargo check",
+                "skipped because the Tauri crate failed cargo clippy",
             ));
         }
         // `export-bindings --check` overwrites bindings.ts before exiting non-zero; restore
@@ -619,6 +666,19 @@ fn record_snapshot_checks(snapshot: &PreflightSnapshot, steps: &mut Vec<StepOutc
             )),
         ));
     }
+    if snapshot.workspace_tree != snapshot.head {
+        let workspace_tree = snapshot.workspace_tree.to_string();
+        let change_head = snapshot.head.to_string();
+        steps.push(StepOutcome::failed(
+            "workspace rebase",
+            "workspace is behind a server rebase",
+            Some(format!(
+                "Workspace tree {} differs from change head {}. Run `rosen rebase` before running preflight.",
+                workspace_tree.get(..8).unwrap_or(&workspace_tree),
+                change_head.get(..8).unwrap_or(&change_head),
+            )),
+        ));
+    }
     match &snapshot.land_refusal {
         Some(LandRefusal::Regenerate { paths }) => {
             steps.push(StepOutcome::failed(
@@ -753,15 +813,10 @@ fn build_changed_files(worktree: &Path, snapshot: &PreflightSnapshot) -> Vec<Cha
             let source = (exists && file.path.ends_with(".rs"))
                 .then(|| std::fs::read_to_string(&full).ok())
                 .flatten();
-            let sensitive = snapshot
-                .sensitive
-                .iter()
-                .any(|pattern| pattern.matches(&file.path));
             let touches_bindings = changes_bindings(&file.path, source.as_deref());
             ChangedFile {
                 path: file.path.clone(),
                 exists,
-                sensitive,
                 touches_bindings,
             }
         })

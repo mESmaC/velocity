@@ -429,6 +429,9 @@ fn run_rosen(
     passthrough: &[String],
 ) -> io::Result<ExitStatus> {
     let subcommand = subcommand_index(arguments);
+    if arguments.get(subcommand).is_some_and(|arg| arg == "commit") {
+        crate::preflight::verify_cli_commit(arguments, subcommand)?;
+    }
     if !arguments.get(subcommand).is_some_and(|arg| arg == "run") {
         let mut command = hidden_command(program);
         filter_environment(&mut command, passthrough);

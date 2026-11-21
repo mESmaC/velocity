@@ -29,17 +29,21 @@ use velocity_core::tool_policy::{McpToolServer, ThreadRole, tool_access};
 
 pub const SERVER_SWITCH: &str = "--rosen-mcp";
 pub const WAIT_TOOL: &str = "wait";
+pub const COMMIT_TOOL: &str = "commit";
 
 const INSTRUCTIONS_ADDENDUM: &str = " Claim code paths before editing with `claim` \
     (`exclusive: true`, matching `rosen claim --exclusive <paths>`) so the first claim wins; \
     plain notices (`exclusive: false`) are for registration lists and generated files, which \
     `--exclusive` refuses. Use `wait` to park until held paths are free: if it returns status \
     \"waiting\", end your turn without editing those paths and Velocity will park and resume \
-    your thread once they are free.";
+    your thread once they are free. Run `preflight` from `velocity-run` before calling `commit`.";
 
 const CLAIM_ADDENDUM: &str = "\n\nUse `exclusive: true` (`rosen claim --exclusive <paths>`) \
     for code paths so the first claim wins. Use plain notices (`exclusive: false`) for \
     registration lists and generated files.";
+
+const COMMIT_ADDENDUM: &str = "\n\nVelocity requires a passing `preflight` run on the current \
+    workspace snapshot before naming a change.";
 
 const WAIT_DESCRIPTION: &str = "Wait until no other change claims the paths. Records a Rosen \
     path wait on this change and returns immediately without blocking. If any path is held by \
@@ -213,6 +217,9 @@ pub trait ProxyBackend {
         change: Option<&str>,
         paths: Vec<String>,
     ) -> Result<WaitOutcome, String>;
+    fn check_commit_preflight(&mut self, _workspace: Option<&Path>) -> Result<(), String> {
+        Ok(())
+    }
 }
 
 fn handle_request(
@@ -289,6 +296,11 @@ fn handle_tool_call(
             false,
         ));
     }
+    if name == COMMIT_TOOL
+        && let Err(refusal) = check_commit_call(&request["params"]["arguments"], backend)
+    {
+        return Ok((Some(tool_result(id, &refusal, true)), false));
+    }
     Ok((Some(backend.forward_request(id, raw)?), false))
 }
 
@@ -329,6 +341,11 @@ fn handle_loader_call(
             if tool == WAIT_TOOL {
                 return Ok((Some(handle_wait_call(id, &tool_args, backend)), false));
             }
+            if tool == COMMIT_TOOL
+                && let Err(refusal) = check_commit_call(&tool_args, backend)
+            {
+                return Ok((Some(tool_result(id, &refusal, true)), false));
+            }
             let forwarded = json!({
                 "jsonrpc": "2.0",
                 "id": id,
@@ -347,6 +364,16 @@ fn handle_loader_call(
             false,
         )),
     }
+}
+
+fn check_commit_call(arguments: &Value, backend: &mut impl ProxyBackend) -> Result<(), String> {
+    let workspace = arguments
+        .get("workspace")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(PathBuf::from);
+    backend.check_commit_preflight(workspace.as_deref())
 }
 
 #[derive(Deserialize)]
@@ -437,6 +464,12 @@ pub fn augment_tools_list(response: &mut Value) {
             && !description.contains("rosen claim --exclusive")
         {
             tool["description"] = Value::String(format!("{description}{CLAIM_ADDENDUM}"));
+        }
+        if tool.get("name").and_then(Value::as_str) == Some(COMMIT_TOOL)
+            && let Some(description) = tool.get("description").and_then(Value::as_str)
+            && !description.contains("passing `preflight`")
+        {
+            tool["description"] = Value::String(format!("{description}{COMMIT_ADDENDUM}"));
         }
     }
     if !tools
@@ -603,6 +636,28 @@ impl ProxyBackend for ChildBackend {
                 .wait_paths(request)
                 .await
                 .map_err(|error| error.to_string())
+        })
+    }
+
+    fn check_commit_preflight(&mut self, workspace: Option<&Path>) -> Result<(), String> {
+        let endpoint = match std::env::var("ROSEN_ENDPOINT") {
+            Ok(value) if !value.trim().is_empty() => value,
+            _ => return Ok(()),
+        };
+        let root = match workspace
+            .map(Path::to_path_buf)
+            .or_else(|| self.workspace.clone())
+        {
+            Some(path) => path,
+            None => std::env::current_dir().map_err(|error| error.to_string())?,
+        };
+        self.runtime.block_on(async move {
+            match crate::preflight::verify_workspace_for_commit(&endpoint, &root).await {
+                Ok(result) => result,
+                Err(error) => Err(format!(
+                    "Could not verify preflight before naming the change: {error}"
+                )),
+            }
         })
     }
 }
@@ -923,6 +978,74 @@ mod tests {
         assert!(reloaded.contains(&"review_list"));
         assert!(reloaded.contains(&WAIT_TOOL));
         assert!(!reloaded.contains(&"workspace_delete"));
+        Ok(())
+    }
+
+    // Risk (#560): calling the Rosen MCP `commit` tool without a passing preflight must be
+    // refused before reaching `rosen mcp` and report what failed.
+    #[test]
+    fn commit_tool_enforces_preflight_gate() -> Result<(), Box<dyn std::error::Error>> {
+        struct CommitBackend {
+            gate: Result<(), String>,
+            forwarded: Vec<String>,
+        }
+        impl ProxyBackend for CommitBackend {
+            fn forward_notification(&mut self, _raw: &str) -> Result<(), RosenError> {
+                Ok(())
+            }
+            fn forward_request(&mut self, id: &Value, raw: &str) -> Result<Value, RosenError> {
+                let request: Value = serde_json::from_str(raw)
+                    .map_err(|error| RosenError::StatusData(error.to_string()))?;
+                let name = request["params"]["name"]
+                    .as_str()
+                    .unwrap_or_default()
+                    .to_owned();
+                self.forwarded.push(name.clone());
+                Ok(tool_result(id, &name, false))
+            }
+            fn wait_paths(
+                &mut self,
+                _change: Option<&str>,
+                _paths: Vec<String>,
+            ) -> Result<WaitOutcome, String> {
+                Err("unused".into())
+            }
+            fn check_commit_preflight(&mut self, _workspace: Option<&Path>) -> Result<(), String> {
+                self.gate.clone()
+            }
+        }
+        let commit_call = json!({
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "tools/call",
+            "params": { "name": "commit", "arguments": { "message": "Ship it (#560)" } }
+        })
+        .to_string();
+
+        let mut refused_backend = CommitBackend {
+            gate: Err("Cannot name change: clippy failed".into()),
+            forwarded: Vec::new(),
+        };
+        let mut out = Vec::new();
+        serve_streams(Cursor::new(&commit_call), &mut out, &mut refused_backend)?;
+        let reply: Value = serde_json::from_str(String::from_utf8(out)?.trim())?;
+        assert_eq!(reply["result"]["isError"], json!(true));
+        assert!(
+            reply["result"]["content"][0]["text"]
+                .as_str()
+                .is_some_and(|text| text.contains("clippy failed"))
+        );
+        assert!(refused_backend.forwarded.is_empty());
+
+        let mut passed_backend = CommitBackend {
+            gate: Ok(()),
+            forwarded: Vec::new(),
+        };
+        let mut out = Vec::new();
+        serve_streams(Cursor::new(&commit_call), &mut out, &mut passed_backend)?;
+        let reply: Value = serde_json::from_str(String::from_utf8(out)?.trim())?;
+        assert_eq!(reply["result"]["isError"], json!(false));
+        assert_eq!(passed_backend.forwarded, vec!["commit".to_owned()]);
         Ok(())
     }
 }
