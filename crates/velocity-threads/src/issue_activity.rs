@@ -7,8 +7,10 @@ use velocity_airc::{Error, IssueCreate, IssueRead, IssueRequest, IssueUpdate, Is
 use velocity_core::issue_holds::UpstreamTarget;
 use velocity_core::project_health::AircIssueToolFailure;
 use velocity_core::text_budget::{json_text_page, preview};
+use velocity_core::work_pool::WorkKey;
 use velocity_github::{
     AgentIssueDraft, AgentIssueOutcome, GitHubCommandError, IssueClient, IssueDetail,
+    RepositoryName,
 };
 use velocity_rosen::ProjectServer;
 use velocity_store::{ProjectItem, VersionControl};
@@ -81,7 +83,7 @@ fn run_issue_request(
 ) -> Result<Value, IssueActivityFailure> {
     let (project, client) = open_issue_project(app_data, project)?;
     match request {
-        IssueRequest::Read(read) => read_issue(&client, read),
+        IssueRequest::Read(read) => read_issue(app_data, &project, &client, read),
         IssueRequest::Create(create) => create_issue(app_data, &project, &client, create),
         IssueRequest::Update(update) => {
             let url = post_update(project.id, &client, update)?;
@@ -112,11 +114,138 @@ fn open_issue_project(
     Ok((project, client))
 }
 
-fn read_issue(client: &IssueClient, read: IssueRead) -> Result<Value, IssueActivityFailure> {
-    let detail = client
-        .read_issue_detail(read.issue, if read.offset > 0 { 0 } else { read.comments })
-        .map_err(IssueActivityFailure::from_github)?;
+fn read_issue(
+    app_data: &Path,
+    project: &ProjectItem,
+    client: &IssueClient,
+    read: IssueRead,
+) -> Result<Value, IssueActivityFailure> {
+    let target = resolve_read_target(app_data, project, client, &read)?;
+    let comment_limit = if read.offset > 0 { 0 } else { read.comments };
+    let detail = match target {
+        Some(repository) => client.read_issue_detail_in(&repository, read.issue, comment_limit),
+        None => client.read_issue_detail(read.issue, comment_limit),
+    }
+    .map_err(IssueActivityFailure::from_github)?;
     format_issue_read(&detail, read.offset, read.comments).map_err(IssueActivityFailure::External)
+}
+
+/// Resolves an optional cross-repository `issue_read` target (#598). Returns `None` for this
+/// project's own repository, `Some(repo)` for an allowed sibling repository (a configured
+/// Velocity project or a repository referenced in `blocked_by` dependencies), or an external
+/// validation error when the repository is not allowed.
+fn resolve_read_target(
+    app_data: &Path,
+    project: &ProjectItem,
+    client: &IssueClient,
+    read: &IssueRead,
+) -> Result<Option<RepositoryName>, IssueActivityFailure> {
+    let Some(raw_repository) = read.repository.as_deref() else {
+        return Ok(None);
+    };
+    let requested = RepositoryName::parse(raw_repository)
+        .map_err(|error| IssueActivityFailure::External(Error::Invalid(error.to_string())))?;
+    let requested_name = requested.full_name();
+    if requested_name.eq_ignore_ascii_case(client.repository()) {
+        return Ok(None);
+    }
+    if let Some(configured) = find_configured_project_repository(app_data, &requested_name)? {
+        return Ok(Some(configured));
+    }
+    if let Some(blocker) = find_blocker_repository(project, client, read, &requested_name)? {
+        return Ok(Some(blocker));
+    }
+    Err(IssueActivityFailure::External(Error::Invalid(format!(
+        "Repository `{requested_name}` is not allowed for issue_read. Only this project's repository (`{}`), repositories of projects configured in Velocity, and repositories referenced in blocked_by dependencies may be read.",
+        client.repository()
+    ))))
+}
+
+fn find_configured_project_repository(
+    app_data: &Path,
+    requested_name: &str,
+) -> Result<Option<RepositoryName>, IssueActivityFailure> {
+    let projects = velocity_store::read_all_project_snapshots(app_data, false)
+        .map_err(|error| IssueActivityFailure::Local(Error::Invalid(error.to_string())))?;
+    for item in projects {
+        let candidate = item
+            .github_remote
+            .as_deref()
+            .and_then(|remote| RepositoryName::parse(remote).ok())
+            .or_else(|| velocity_github::checkout_repository(Path::new(&item.repository_path)));
+        if let Some(repository) = candidate
+            && repository.full_name().eq_ignore_ascii_case(requested_name)
+        {
+            return Ok(Some(repository));
+        }
+    }
+    Ok(None)
+}
+
+fn find_blocker_repository(
+    project: &ProjectItem,
+    client: &IssueClient,
+    read: &IssueRead,
+    requested_name: &str,
+) -> Result<Option<RepositoryName>, IssueActivityFailure> {
+    for issue_number in caller_issue_numbers(project, client.repository(), read) {
+        let blockers = match client.linked_blocker_repositories(issue_number) {
+            Ok(repositories) => repositories,
+            Err(GitHubCommandError::Missing(_)) => continue,
+            Err(error) => return Err(IssueActivityFailure::from_github(error)),
+        };
+        if let Some(matched) = match_repository(&blockers, requested_name) {
+            return Ok(Some(matched));
+        }
+    }
+    let open_blockers = client
+        .open_issue_blocker_repositories()
+        .map_err(IssueActivityFailure::from_github)?;
+    Ok(match_repository(&open_blockers, requested_name))
+}
+
+fn caller_issue_numbers(
+    project: &ProjectItem,
+    home_repository: &str,
+    read: &IssueRead,
+) -> BTreeSet<u32> {
+    let mut issues: BTreeSet<u32> = read
+        .held_issues
+        .iter()
+        .copied()
+        .filter(|number| *number > 0)
+        .collect();
+    let Some(thread_id) = read
+        .member
+        .as_deref()
+        .and_then(velocity_core::thread_titles::thread_id_from_member)
+    else {
+        return issues;
+    };
+    if let Some(thread) = project.threads.iter().find(|thread| thread.id == thread_id)
+        && let Some(assigned) = &thread.issue
+        && assigned.number > 0
+        && assigned.repository.eq_ignore_ascii_case(home_repository)
+    {
+        issues.insert(assigned.number);
+    }
+    for work in &project.rosen_work_items {
+        if work.thread_identifier == Some(thread_id)
+            && let WorkKey::Issue { repository, number } = &work.key
+            && *number > 0
+            && repository.eq_ignore_ascii_case(home_repository)
+        {
+            issues.insert(*number);
+        }
+    }
+    issues
+}
+
+fn match_repository(candidates: &[String], requested_name: &str) -> Option<RepositoryName> {
+    candidates
+        .iter()
+        .find(|candidate| candidate.eq_ignore_ascii_case(requested_name))
+        .and_then(|candidate| RepositoryName::parse(candidate).ok())
 }
 
 fn format_issue_read(
@@ -359,7 +488,7 @@ fn request_tool_name(request: &IssueRequest<'_>) -> &'static str {
 
 fn request_thread_id(request: &IssueRequest<'_>) -> Option<u32> {
     let member = match request {
-        IssueRequest::Read(_) => return None,
+        IssueRequest::Read(read) => read.member.as_deref()?,
         IssueRequest::Create(create) => create.member,
         IssueRequest::Update(update) => update.claim.member.as_str(),
     };

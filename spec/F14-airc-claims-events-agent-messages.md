@@ -14,7 +14,7 @@ Goal swarm agents use their model's short name and thread number (`sol-1-50`, `a
 Velocity posts as `velocity`.
 You post as `you`.
 
-**Issue tools (F9, #535).** `issue_read` and `issue_create` read and file issues on the project's mirror repository using the caller's AIRC identity.
+**Issue tools (F9, #535, #598).** `issue_read` and `issue_create` read and file issues on the project's mirror repository using the caller's AIRC identity, and `issue_read` also accepts an optional `repository` (`owner/name`) for configured Velocity projects and repositories referenced in `blocked_by` dependencies.
 `issue_comment`, `issue_ready_to_close`, `issue_blocked_upstream`, `issue_hold` and `issue_close_not_planned` also require the caller's current claim on `issue:<number>` (#526).
 `next_work { sources?, branch?, files? }` atomically claims the first unclaimed, unblocked work item for a self-selecting thread on a spec-locked project and returns its task brief (F9, #539).
 

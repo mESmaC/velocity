@@ -178,8 +178,20 @@ impl RepositoryClient {
         self.command.is_current(directory, IDENTITY_LIFETIME)
     }
 
+    pub(crate) fn owner(&self) -> &str {
+        &self.owner
+    }
+
+    pub(crate) fn name(&self) -> &str {
+        &self.name
+    }
+
     pub(crate) fn variables(&self, number: u32) -> Value {
-        json!({"owner":self.owner,"name":self.name,"number":number})
+        self.variables_for(&self.owner, &self.name, number)
+    }
+
+    pub(crate) fn variables_for(&self, owner: &str, name: &str, number: u32) -> Value {
+        json!({"owner": owner, "name": name, "number": number})
     }
 
     pub(crate) fn graphql_at<T: DeserializeOwned>(

@@ -39,6 +39,23 @@ struct LinkedRepository {
     name_with_owner: String,
 }
 
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct OpenIssueBlockerNode {
+    blocked_by: BlockerRepositoryNodes,
+}
+
+#[derive(Deserialize)]
+struct BlockerRepositoryNodes {
+    #[serde(default)]
+    nodes: Vec<Option<BlockerRepositoryEntry>>,
+}
+
+#[derive(Deserialize)]
+struct BlockerRepositoryEntry {
+    repository: LinkedRepository,
+}
+
 /// A blocker GitHub confirmed, ready to link.
 pub(crate) struct ResolvedBlocker {
     /// `#12` in this repository and `owner/name#12` elsewhere.
@@ -97,6 +114,40 @@ impl IssueClient {
             .iter()
             .map(|blocker| blocker.relative_to(home))
             .collect())
+    }
+
+    /// Every repository referenced in `issue`'s GitHub `blockedBy` dependencies,
+    /// including closed blockers (#598).
+    pub fn linked_blocker_repositories(
+        &self,
+        issue: u32,
+    ) -> Result<Vec<String>, GitHubCommandError> {
+        if issue == 0 {
+            return Ok(Vec::new());
+        }
+        let (_, linked) = self.linked_blockers(issue)?;
+        Ok(dedup_repositories(
+            linked.into_iter().map(|(repository, _)| repository),
+        ))
+    }
+
+    /// Every repository referenced in GitHub `blockedBy` dependencies (open or closed)
+    /// of this repository's open issues (#598).
+    pub fn open_issue_blocker_repositories(&self) -> Result<Vec<String>, GitHubCommandError> {
+        let issues: Vec<Option<OpenIssueBlockerNode>> = self.transport.connection(
+            "query($owner:String!,$name:String!,$cursor:String) {
+              repository(owner:$owner,name:$name) { issues(first:100,after:$cursor,states:OPEN) {
+                nodes { blockedBy(first:25) { nodes { repository { nameWithOwner } } } }
+                pageInfo { hasNextPage endCursor } } } }",
+            self.transport.variables(0),
+            "/data/repository/issues",
+        )?;
+        let repositories = issues
+            .into_iter()
+            .flatten()
+            .flat_map(|issue| issue.blocked_by.nodes.into_iter().flatten())
+            .map(|blocker| blocker.repository.name_with_owner);
+        Ok(dedup_repositories(repositories))
     }
 
     /// The issue's GitHub ID and every issue it already waits on, open or closed.
@@ -226,4 +277,17 @@ impl IssueClient {
         crate::issue_cache::invalidate(self.repository());
         Ok(Some(linked))
     }
+}
+
+fn dedup_repositories(repositories: impl IntoIterator<Item = String>) -> Vec<String> {
+    let mut unique: Vec<String> = Vec::new();
+    for repository in repositories {
+        if !unique
+            .iter()
+            .any(|existing| existing.eq_ignore_ascii_case(&repository))
+        {
+            unique.push(repository);
+        }
+    }
+    unique
 }

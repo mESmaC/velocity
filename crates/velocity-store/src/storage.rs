@@ -99,6 +99,41 @@ pub fn read_project_snapshot(
     Ok(Some(project.normalize()))
 }
 
+/// Read-only list of all configured projects from the atomically replaced snapshot files (#598).
+///
+/// Supports both split persistence (`state.json` + `projects/<id>.json`) and legacy
+/// monolithic `state.json` without mutating, migrating, or recovering files on disk.
+/// Safe for concurrent MCP child processes.
+pub fn read_all_project_snapshots(
+    directory: &Path,
+    include_settled: bool,
+) -> Result<Vec<ProjectItem>, StoreError> {
+    let root_path = extended_windows_path(&directory.join(STATE_FILE_NAME));
+    let bytes = fs::read(&root_path).map_err(|source| StoreError::ReadSnapshot {
+        path: root_path.display().to_string(),
+        source,
+    })?;
+    let root: RootProjectIndex = serde_json::from_slice(&bytes)
+        .map_err(|source| StoreError::SerializeSnapshot { source })?;
+    if !root.projects.is_empty() {
+        return Ok(root
+            .projects
+            .into_iter()
+            .map(ProjectItem::normalize)
+            .collect());
+    }
+    let mut projects = Vec::with_capacity(root.project_ids.len());
+    for project_id in root.project_ids {
+        match read_split_project_readonly(directory, project_id, include_settled) {
+            Ok(project) => projects.push(project.normalize()),
+            Err(StoreError::ReadSnapshot { source, .. })
+                if source.kind() == std::io::ErrorKind::NotFound => {}
+            Err(error) => return Err(error),
+        }
+    }
+    Ok(projects)
+}
+
 fn read_split_project_readonly(
     directory: &Path,
     project_id: u32,
@@ -732,6 +767,12 @@ mod tests {
         let ids: Vec<u32> = with_settled.threads.iter().map(|t| t.id).collect();
         assert_eq!(ids, vec![1, 2]);
         assert!(read_project_snapshot(&split_dir, 99, false)?.is_none());
+        let all_split = read_all_project_snapshots(&split_dir, false)?;
+        assert_eq!(all_split.len(), 1);
+        assert_eq!(
+            all_split[0].github_remote.as_deref(),
+            Some("mESmaC/collapse.sh")
+        );
 
         // Legacy monolithic state.json must load without creating a split projects/ folder.
         let legacy_dir = temp_store_dir("legacy")?;
@@ -742,6 +783,9 @@ mod tests {
         let legacy_loaded =
             read_project_snapshot(&legacy_dir, 7, false)?.ok_or("expected legacy project")?;
         assert_eq!(legacy_loaded.id, 7);
+        let all_legacy = read_all_project_snapshots(&legacy_dir, false)?;
+        assert_eq!(all_legacy.len(), 1);
+        assert_eq!(all_legacy[0].id, 7);
         assert!(!legacy_dir.join(PROJECTS_DIR_NAME).exists());
 
         let _ignored = fs::remove_dir_all(&split_dir);

@@ -84,7 +84,7 @@ Closure waits for the GitHub mirror to contain the landed commit and honours **C
 A revert cancels pending closure and reopens the issue with the culprit output or reason.
 Discussion and closure happen asynchronously alongside the Work projection and landing.
 
-**Issue tools (#441, #535).** AIRC's `issue_read { issue, offset?, comments? }` reads any issue in the project's mirror repository and returns its title, body (paged with `next_offset` when long), labels, state, `blocked_by` dependencies and recent comments.
+**Issue tools (#441, #535, #598).** AIRC's `issue_read { issue, repository?, offset?, comments? }` reads any issue in the project's mirror repository—or, when `repository` (`owner/name`) names another project configured in Velocity or a repository referenced in `blocked_by` dependencies, that sibling repository—and returns its title, body (paged with `next_offset` when long), labels, state, `blocked_by` dependencies and recent comments.
 AIRC's `issue_create { title, body, labels?, blocked_by? }` files a new issue on the project's mirror repository with the calling agent's byline and records an `issue` event on the channel.
 Before filing, `issue_create` runs the #471 duplicate check against open issues using the project's code graph when available, returning the matching open issue instead of creating a duplicate.
 It resolves and links `blocked_by` issues as GitHub issue dependencies (#511) and refuses retired skip-only labels (`needs-owner`, `on-hold`, `needs-decision`, `owner-decision`, #526).

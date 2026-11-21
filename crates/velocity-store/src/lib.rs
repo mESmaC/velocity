@@ -26,7 +26,7 @@ use std::sync::{Arc, Mutex};
 use thiserror::Error;
 
 pub use save_behind::save_pending;
-pub use storage::read_project_snapshot;
+pub use storage::{read_all_project_snapshots, read_project_snapshot};
 pub use store_lock::{StoreGuard, StoreLock};
 
 pub mod interview;

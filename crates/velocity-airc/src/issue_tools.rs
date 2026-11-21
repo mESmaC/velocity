@@ -45,11 +45,14 @@ pub struct IssueUpdate<'a> {
     pub blocked_by: &'a [String],
 }
 
-/// Request to read one issue from the project's mirror repository (#535).
+/// Request to read one issue from this project's repository or an allowed sibling repository (#535, #598).
 pub struct IssueRead {
     pub issue: u32,
+    pub repository: Option<String>,
     pub offset: usize,
     pub comments: usize,
+    pub member: Option<String>,
+    pub held_issues: Vec<u32>,
 }
 
 /// Request to file a new issue on the project's mirror repository (#535).
@@ -98,14 +101,20 @@ pub(crate) fn call(
 ) -> Result<Value, Error> {
     let handler = handler.ok_or_else(|| Error::Invalid("No GitHub issue transport".into()))?;
     match name {
-        "issue_read" => call_read(arguments, handler),
+        "issue_read" => call_read(channel, member, arguments, handler),
         "issue_create" => call_create(channel, member, nick, arguments, handler),
         _ => call_update(channel, member, name, arguments, handler),
     }
 }
 
-fn call_read(arguments: &Value, handler: &IssueHandler<'_>) -> Result<Value, Error> {
+fn call_read(
+    channel: &Channel,
+    member: &str,
+    arguments: &Value,
+    handler: &IssueHandler<'_>,
+) -> Result<Value, Error> {
     let issue = positive_issue(arguments)?;
+    let repository = optional_repository(arguments)?;
     let offset = read_tools::counter(arguments, "offset")?;
     let comments = match arguments.get("comments") {
         None | Some(Value::Null) => DEFAULT_RECENT_COMMENTS,
@@ -119,11 +128,58 @@ fn call_read(arguments: &Value, handler: &IssueHandler<'_>) -> Result<Value, Err
             count
         }
     };
+    let held_issues = if repository.is_some() {
+        member_held_issues(channel, member)
+    } else {
+        Vec::new()
+    };
     handler(IssueRequest::Read(IssueRead {
         issue,
+        repository,
         offset,
         comments,
+        member: Some(member.to_owned()),
+        held_issues,
     }))
+}
+
+fn optional_repository(arguments: &Value) -> Result<Option<String>, Error> {
+    let invalid =
+        || Error::Invalid("repository must be a GitHub repository name such as owner/name".into());
+    match arguments.get("repository") {
+        None | Some(Value::Null) => Ok(None),
+        Some(Value::String(value)) => {
+            let trimmed = value.trim();
+            if trimmed.is_empty() {
+                Err(invalid())
+            } else {
+                Ok(Some(trimmed.to_owned()))
+            }
+        }
+        Some(_) => Err(invalid()),
+    }
+}
+
+fn member_held_issues(channel: &Channel, member: &str) -> Vec<u32> {
+    let Ok(claims) = channel.claims() else {
+        return Vec::new();
+    };
+    let mut issues = Vec::new();
+    for claim in claims {
+        if claim.member != member {
+            continue;
+        }
+        if let Some(number) = claim
+            .key()
+            .strip_prefix("issue:")
+            .and_then(|rest| rest.parse::<u32>().ok())
+            .filter(|number| *number > 0)
+            && !issues.contains(&number)
+        {
+            issues.push(number);
+        }
+    }
+    issues
 }
 
 fn call_create(
@@ -274,9 +330,10 @@ pub(crate) fn tools() -> [Value; 7] {
     [
         protocol::tool(
             "issue_read",
-            "Read a GitHub issue from this project's repository: its title, body, labels, state, blocked_by dependencies and recent comments. Pass next_offset as offset to read the rest of a long body.",
+            "Read a GitHub issue from this project's repository or an allowed sibling repository (another project configured in Velocity or a repository referenced in blocked_by dependencies): its title, body, labels, state, blocked_by dependencies and recent comments. Pass next_offset as offset to read the rest of a long body.",
             json!({
-                "issue":{"type":"integer","minimum":1,"description":"GitHub issue number in this project's repository"},
+                "issue":{"type":"integer","minimum":1,"description":"GitHub issue number"},
+                "repository":{"type":"string","minLength":1,"description":"Optional GitHub repository as owner/name to read a cross-repository issue (allowed for projects configured in Velocity or repositories referenced in blocked_by dependencies). Omit for this project's repository."},
                 "offset":{"type":"integer","minimum":0,"description":"Byte offset from next_offset to continue reading a long issue body"},
                 "comments":{"type":"integer","minimum":0,"maximum":MAX_RECENT_COMMENTS,"default":DEFAULT_RECENT_COMMENTS,
                     "description":"How many most recent comments to include (0 to omit comments)"}

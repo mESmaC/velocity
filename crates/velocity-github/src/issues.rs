@@ -368,12 +368,18 @@ impl IssueClient {
         Ok(created)
     }
 
-    pub(crate) fn decode_issue(
+    pub(crate) fn decode_issue(&self, node: IssueNode) -> Result<GitHubIssue, GitHubCommandError> {
+        self.decode_issue_for(self.transport.owner(), self.transport.name(), node)
+    }
+
+    pub(crate) fn decode_issue_for(
         &self,
+        owner: &str,
+        name: &str,
         mut node: IssueNode,
     ) -> Result<GitHubIssue, GitHubCommandError> {
         if node.labels.total_count != node.labels.nodes.len() {
-            let mut variables = self.transport.variables(node.issue.number);
+            let mut variables = self.transport.variables_for(owner, name, node.issue.number);
             variables["cursor"] = serde_json::Value::Null;
             node.labels.nodes = self.transport.connection(
                 "query($owner:String!,$name:String!,$number:Int!,$cursor:String) {

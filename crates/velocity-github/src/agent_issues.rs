@@ -14,7 +14,9 @@ use velocity_core::issue_holds::{
 use crate::issues::{BLOCKER_FIELDS, Blocker, ISSUE_FIELDS, IssueNode, relative_blocker_name};
 use crate::repository_client::Connection;
 use crate::velocity_reports::find_matching_open_issue;
-use crate::{GitHubActor, GitHubCommandError, GitHubIssue, IssueClient, IssueState};
+use crate::{
+    GitHubActor, GitHubCommandError, GitHubIssue, IssueClient, IssueState, RepositoryName,
+};
 
 const SPEC_QUESTION_LABEL: &str = "spec-question";
 const MAX_TITLE_CHARS: usize = 256;
@@ -114,22 +116,59 @@ impl IssueClient {
         number: u32,
         recent_comments: usize,
     ) -> Result<IssueDetail, GitHubCommandError> {
+        self.read_issue_detail_for(
+            self.transport.owner(),
+            self.transport.name(),
+            self.repository(),
+            number,
+            recent_comments,
+        )
+    }
+
+    /// Reads one issue from another allowed GitHub repository through this client's transport (#598).
+    pub fn read_issue_detail_in(
+        &self,
+        repository: &RepositoryName,
+        number: u32,
+        recent_comments: usize,
+    ) -> Result<IssueDetail, GitHubCommandError> {
+        let full_name = repository.full_name();
+        self.read_issue_detail_for(
+            repository.owner(),
+            repository.name(),
+            &full_name,
+            number,
+            recent_comments,
+        )
+    }
+
+    fn read_issue_detail_for(
+        &self,
+        owner: &str,
+        name: &str,
+        repository: &str,
+        number: u32,
+        recent_comments: usize,
+    ) -> Result<IssueDetail, GitHubCommandError> {
         if number == 0 {
             return Err(GitHubCommandError::Invalid(
                 "issue must be a positive issue number".into(),
             ));
         }
         let comment_limit = recent_comments.min(MAX_RECENT_COMMENTS);
-        let (query, mut variables) =
-            issue_detail_query(comment_limit, self.transport.variables(number));
+        let (query, mut variables) = issue_detail_query(
+            comment_limit,
+            self.transport.variables_for(owner, name, number),
+        );
         if comment_limit > 0 {
             variables["comments"] = json!(comment_limit);
         }
         let raw: RawIssueDetail =
             self.transport
                 .graphql_at(&query, variables, "/data/repository/issue")?;
-        let issue = self.decode_issue(raw.node)?;
-        let blockers = self.complete_blockers(issue.number, raw.blocked_by)?;
+        let issue = self.decode_issue_for(owner, name, raw.node)?;
+        let blockers =
+            self.complete_blockers_for(owner, name, repository, issue.number, raw.blocked_by)?;
         let comments = raw
             .comments
             .nodes
@@ -144,7 +183,7 @@ impl IssueClient {
             })
             .collect();
         Ok(IssueDetail {
-            repository: self.repository().to_owned(),
+            repository: repository.to_owned(),
             number: issue.number,
             url: issue.url,
             state: issue.state,
@@ -205,8 +244,11 @@ impl IssueClient {
         })
     }
 
-    fn complete_blockers(
+    fn complete_blockers_for(
         &self,
+        owner: &str,
+        name: &str,
+        repository: &str,
         number: u32,
         first_page: Connection<Option<Blocker>>,
     ) -> Result<Vec<IssueDependency>, GitHubCommandError> {
@@ -217,7 +259,7 @@ impl IssueClient {
                     blockedBy(first:100,after:$cursor) {{ nodes {{ {BLOCKER_FIELDS} }}
                       pageInfo {{ hasNextPage endCursor }} }} }} }} }}"
             ),
-            self.transport.variables(number),
+            self.transport.variables_for(owner, name, number),
             "/data/repository/issue/blockedBy",
             first_page,
         )?;
@@ -226,7 +268,7 @@ impl IssueClient {
             .flatten()
             .map(|blocker| IssueDependency {
                 issue: relative_blocker_name(
-                    self.repository(),
+                    repository,
                     &blocker.repository.name_with_owner,
                     blocker.number,
                 ),

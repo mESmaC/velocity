@@ -21,6 +21,7 @@ use velocity_threads::issue_activity::{handle_issue_request, read_issue_tool_fai
 const CHILD_APP_DATA_ENV: &str = "VELOCITY_TEST_ISSUE_581_APP_DATA";
 const CHILD_EXPECT_FAILURE_ENV: &str = "VELOCITY_TEST_ISSUE_581_EXPECT_FAIL";
 const CHILD_TEST_NAME: &str = "child_executes_airc_issue_read";
+const CHILD_CROSS_REPO_TEST_NAME: &str = "child_executes_cross_repo_issue_read";
 const CHILD_REFUSAL_TEST_NAME: &str = "child_checks_agent_gh_refusal";
 
 struct TempTree(PathBuf);
@@ -62,8 +63,27 @@ fn airc_issue_read_reaches_real_gh_inside_rosen_agent_environment()
     let fixture = setup_fixture(tree.path())?;
     verify_airc_launch_env(&fixture)?;
     verify_issue_read_bypasses_shim(&fixture)?;
+    verify_cross_repo_issue_read(&fixture)?;
     verify_agent_shell_gh_still_refused(&fixture)?;
     verify_project_health_failure_recording(&fixture)?;
+    Ok(())
+}
+
+fn verify_cross_repo_issue_read(fixture: &Fixture) -> Result<(), Box<dyn std::error::Error>> {
+    // Risk (#598): AIRC issue_read must read configured sibling Velocity projects and
+    // repositories referenced in blocked_by dependencies while refusing unrelated repos
+    // without creating a local tool health failure.
+    let cross_repo = run_child(
+        fixture,
+        CHILD_CROSS_REPO_TEST_NAME,
+        Some(&fixture.real_gh),
+        false,
+    )?;
+    assert_child_ok("cross-repo issue_read", &cross_repo)?;
+    assert!(
+        read_issue_tool_failure(&fixture.app_data, 1).is_none(),
+        "refusing an unallowed cross-repo read must not record a local tool health failure"
+    );
     Ok(())
 }
 
@@ -160,8 +180,11 @@ fn child_executes_airc_issue_read() -> Result<(), Box<dyn std::error::Error>> {
         "1",
         IssueRequest::Read(IssueRead {
             issue: 42,
+            repository: None,
             offset: 0,
             comments: 5,
+            member: None,
+            held_issues: Vec::new(),
         }),
     );
     if expect_fail {
@@ -175,6 +198,82 @@ fn child_executes_airc_issue_read() -> Result<(), Box<dyn std::error::Error>> {
     assert_eq!(answer["number"], 42);
     assert_eq!(answer["title"], "Stub issue");
     assert_eq!(answer["body"], "Reached real gh");
+    Ok(())
+}
+
+#[test]
+#[ignore = "invoked as a child process by airc_issue_read_reaches_real_gh_inside_rosen_agent_environment"]
+fn child_executes_cross_repo_issue_read() -> Result<(), Box<dyn std::error::Error>> {
+    let app_data =
+        PathBuf::from(std::env::var_os(CHILD_APP_DATA_ENV).ok_or("missing child app_data env")?);
+
+    // 1. Configured sibling Velocity project (matched case-insensitively).
+    let sibling = handle_issue_request(
+        &app_data,
+        "1",
+        IssueRequest::Read(IssueRead {
+            issue: 42,
+            repository: Some("OWNER/SIBLING".into()),
+            offset: 0,
+            comments: 5,
+            member: None,
+            held_issues: Vec::new(),
+        }),
+    )?;
+    assert_eq!(sibling["repository"], "owner/sibling");
+    assert_eq!(sibling["number"], 42);
+
+    // 2. Repository referenced in a held issue's blocked_by dependency (even when closed).
+    let held_blocker = handle_issue_request(
+        &app_data,
+        "1",
+        IssueRequest::Read(IssueRead {
+            issue: 42,
+            repository: Some("owner/held-blocker".into()),
+            offset: 0,
+            comments: 5,
+            member: Some("issue-589-2-328".into()),
+            held_issues: vec![589],
+        }),
+    )?;
+    assert_eq!(held_blocker["repository"], "owner/held-blocker");
+
+    // 3. Repository referenced in another open project issue's blocked_by dependency.
+    let open_blocker = handle_issue_request(
+        &app_data,
+        "1",
+        IssueRequest::Read(IssueRead {
+            issue: 42,
+            repository: Some("owner/open-blocker".into()),
+            offset: 0,
+            comments: 5,
+            member: None,
+            held_issues: Vec::new(),
+        }),
+    )?;
+    assert_eq!(open_blocker["repository"], "owner/open-blocker");
+
+    // 4. Unconfigured, unreferenced repository must be refused cleanly.
+    let refused = handle_issue_request(
+        &app_data,
+        "1",
+        IssueRequest::Read(IssueRead {
+            issue: 42,
+            repository: Some("owner/unrelated".into()),
+            offset: 0,
+            comments: 5,
+            member: None,
+            held_issues: Vec::new(),
+        }),
+    );
+    let Err(error) = refused else {
+        return Err("expected unrelated repository to be refused".into());
+    };
+    let message = error.to_string();
+    assert!(
+        message.contains("not allowed for issue_read"),
+        "unexpected refusal message: {message}"
+    );
     Ok(())
 }
 
@@ -201,6 +300,7 @@ struct Fixture {
 fn setup_fixture(root: &Path) -> Result<Fixture, Box<dyn std::error::Error>> {
     let app_data = root.join("app-data");
     let repo = root.join("repo");
+    let sibling_repo = root.join("sibling-repo");
     let workspace = root.join("workspace");
     let shim_dir = root.join("velocity-agent-shim");
     let real_dir = root.join("real-gh");
@@ -209,6 +309,7 @@ fn setup_fixture(root: &Path) -> Result<Fixture, Box<dyn std::error::Error>> {
     for dir in [
         &app_data,
         &repo,
+        &sibling_repo,
         &workspace.join(".rosen"),
         &shim_dir,
         &real_dir,
@@ -222,6 +323,10 @@ fn setup_fixture(root: &Path) -> Result<Fixture, Box<dyn std::error::Error>> {
     let mut project = ProjectItem::new(1, "velocity".into(), repo.display().to_string());
     project.github_remote = Some("owner/repo".into());
     legacy.projects.push(project);
+    let mut sibling_project =
+        ProjectItem::new(2, "sibling".into(), sibling_repo.display().to_string());
+    sibling_project.github_remote = Some("owner/sibling".into());
+    legacy.projects.push(sibling_project);
     fs::write(
         app_data.join(velocity_store::STATE_FILE_NAME),
         serde_json::to_vec(&legacy)?,
@@ -232,9 +337,19 @@ fn setup_fixture(root: &Path) -> Result<Fixture, Box<dyn std::error::Error>> {
     let shim_log = root.join("shim-called.log");
     let real_log = root.join("real-called.log");
     let graphql_file = root.join("issue-42.json");
+    let held_blockers_file = root.join("held-blockers.json");
+    let open_blockers_file = root.join("open-blockers.json");
     fs::write(
         &graphql_file,
         r#"{"data":{"repository":{"issue":{"id":"I_42","number":42,"title":"Stub issue","body":"Reached real gh","url":"https://github.com/owner/repo/issues/42","state":"OPEN","author":{"login":"octocat"},"createdAt":"2026-01-01T00:00:00Z","updatedAt":"2026-01-01T00:00:00Z","closedAt":null,"milestone":null,"labels":{"nodes":[],"totalCount":0},"blockedBy":{"nodes":[],"pageInfo":{"hasNextPage":false,"endCursor":null}},"comments":{"totalCount":0,"nodes":[]}}}}}"#,
+    )?;
+    fs::write(
+        &held_blockers_file,
+        r#"{"data":{"repository":{"issue":{"id":"I_589","blockedBy":{"nodes":[{"number":191,"repository":{"nameWithOwner":"owner/held-blocker"}}],"pageInfo":{"hasNextPage":false,"endCursor":null}}}}}}"#,
+    )?;
+    fs::write(
+        &open_blockers_file,
+        r#"{"data":{"repository":{"issues":{"nodes":[{"blockedBy":{"nodes":[{"repository":{"nameWithOwner":"owner/open-blocker"}}]}}],"pageInfo":{"hasNextPage":false,"endCursor":null}}}}}"#,
     )?;
 
     write_refusal_stub(
@@ -242,7 +357,13 @@ fn setup_fixture(root: &Path) -> Result<Fixture, Box<dyn std::error::Error>> {
         Some(&shim_log),
         "gh: Agents do not call gh directly. Use AIRC issue tools (issue_read, issue_create, issue_comment, issue_ready_to_close) or velocity-run's workflow_run instead.",
     )?;
-    let real_gh = write_real_stub(&real_dir, &real_log, &graphql_file)?;
+    let real_gh = write_real_stub(
+        &real_dir,
+        &real_log,
+        &graphql_file,
+        &held_blockers_file,
+        &open_blockers_file,
+    )?;
     let local_fail_gh = write_refusal_stub(
         &local_fail_dir,
         None,
@@ -361,25 +482,41 @@ fn write_real_stub(
     directory: &Path,
     log_file: &Path,
     graphql_file: &Path,
+    held_blockers_file: &Path,
+    open_blockers_file: &Path,
 ) -> std::io::Result<PathBuf> {
     let script = directory.join("gh.cmd");
+    let stdin_file = directory.join("stdin.json");
     let body = format!(
         "@echo off\r\n\
          echo CMD=%1>> \"{log}\"\r\n\
          echo ENV=[%VELOCITY_BLOCK_GIT_GH%,%ROSEN_CHANGE%,%ROSEN_ENDPOINT%]>> \"{log}\"\r\n\
          echo PATH=%PATH%>> \"{log}\"\r\n\
          if \"%1\"==\"auth\" exit /b 1\r\n\
-         if \"%1\"==\"repo\" (\r\n\
+         if \"%1\"==\"repo\" goto do_repo\r\n\
+         if \"%1\"==\"api\" goto do_api\r\n\
+         exit /b 1\r\n\
+         :do_repo\r\n\
          echo {{\"nameWithOwner\":\"owner/repo\",\"defaultBranchRef\":{{\"name\":\"main\"}}}}\r\n\
          exit /b 0\r\n\
-         )\r\n\
-         if \"%1\"==\"api\" (\r\n\
-         findstr \"^\" > nul\r\n\
+         :do_api\r\n\
+         findstr \"^\" > \"{stdin}\"\r\n\
+         findstr /C:\"states:OPEN\" \"{stdin}\" > nul\r\n\
+         if not errorlevel 1 goto do_open_blockers\r\n\
+         findstr /C:\"id blockedBy\" \"{stdin}\" > nul\r\n\
+         if not errorlevel 1 goto do_held_blockers\r\n\
          type \"{graphql}\"\r\n\
          exit /b 0\r\n\
-         )\r\n\
-         exit /b 1\r\n",
+         :do_open_blockers\r\n\
+         type \"{open_blockers}\"\r\n\
+         exit /b 0\r\n\
+         :do_held_blockers\r\n\
+         type \"{held_blockers}\"\r\n\
+         exit /b 0\r\n",
         log = log_file.display(),
+        stdin = stdin_file.display(),
+        open_blockers = open_blockers_file.display(),
+        held_blockers = held_blockers_file.display(),
         graphql = graphql_file.display(),
     );
     fs::write(&script, body)?;
@@ -391,9 +528,12 @@ fn write_real_stub(
     directory: &Path,
     log_file: &Path,
     graphql_file: &Path,
+    held_blockers_file: &Path,
+    open_blockers_file: &Path,
 ) -> std::io::Result<PathBuf> {
     use std::os::unix::fs::PermissionsExt;
     let script = directory.join("gh");
+    let stdin_file = directory.join("stdin.json");
     let body = format!(
         "#!/bin/sh\n\
          echo \"CMD=$1\" >> \"{log}\"\n\
@@ -405,12 +545,23 @@ fn write_real_stub(
            exit 0\n\
          fi\n\
          if [ \"$1\" = \"api\" ]; then\n\
-           cat >/dev/null\n\
+           cat > \"{stdin}\"\n\
+           if grep -q \"states:OPEN\" \"{stdin}\"; then\n\
+             cat \"{open_blockers}\"\n\
+             exit 0\n\
+           fi\n\
+           if grep -q \"id blockedBy\" \"{stdin}\"; then\n\
+             cat \"{held_blockers}\"\n\
+             exit 0\n\
+           fi\n\
            cat \"{graphql}\"\n\
            exit 0\n\
          fi\n\
          exit 1\n",
         log = log_file.display(),
+        stdin = stdin_file.display(),
+        open_blockers = open_blockers_file.display(),
+        held_blockers = held_blockers_file.display(),
         graphql = graphql_file.display(),
     );
     fs::write(&script, body)?;

@@ -136,7 +136,7 @@ fn instructions(
         "Use task_add, task_update and task_delete only when the user explicitly asks you to add, change or remove Task List items. Otherwise file issues."
     };
     let issue_rule = if has_issue_tools {
-        " Use issue_read to inspect any issue in this project's repository and issue_create to file spec questions, contradictions or findings on this project's repository."
+        " Use issue_read to inspect any issue in this project's repository (or pass repository as owner/name for configured Velocity projects and blocked_by dependencies) and issue_create to file spec questions, contradictions or findings on this project's repository."
     } else {
         ""
     };
@@ -1005,6 +1005,113 @@ mod tests {
         }
         assert_eq!(question[2]["result"]["isError"], json!(true));
 
+        let _ = std::fs::remove_dir_all(&root);
+        Ok(())
+    }
+
+    // Risk (#598): AIRC `issue_read` must accept an optional `repository` argument and pass
+    // the caller's member identity and held `issue:<N>` claims so Velocity can authorize
+    // cross-repository reads for configured projects and `blocked_by` dependencies.
+    #[test]
+    fn issue_read_forwards_repository_and_held_issue_claims()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let root = std::env::temp_dir().join(format!(
+            "velocity-airc-issue-read-598-{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)?
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&root)?;
+        let channel = Channel::open(&root, "1")?;
+        channel.join("issue-589-2-328", "issue-589-2-328")?;
+        channel.claim_piece(
+            "issue-589-2-328",
+            "issue:589",
+            "Issue #589",
+            "vel/589",
+            Vec::new(),
+        )?;
+
+        let captured = std::sync::Arc::new(std::sync::Mutex::new(Vec::<(
+            u32,
+            Option<String>,
+            Option<String>,
+            Vec<u32>,
+        )>::new()));
+        let captured_clone = captured.clone();
+        let handler = move |request: crate::IssueRequest<'_>| -> Result<Value, Error> {
+            let crate::IssueRequest::Read(read) = request else {
+                return Err(Error::Invalid("unexpected request".into()));
+            };
+            captured_clone
+                .lock()
+                .map_err(|error| Error::Invalid(error.to_string()))?
+                .push((read.issue, read.repository, read.member, read.held_issues));
+            Ok(json!({"number": read.issue}))
+        };
+        let requests = [
+            json!({"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}),
+            json!({"jsonrpc":"2.0","id":2,"method":"tools/list","params":{}}),
+            json!({"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"issue_read","arguments":{"issue":191,"repository":"mESmaC/collapse.sh"}}}),
+            json!({"jsonrpc":"2.0","id":4,"method":"tools/call","params":{"name":"issue_read","arguments":{"issue":191,"repository":"   "}}}),
+        ];
+        let input = requests
+            .iter()
+            .map(Value::to_string)
+            .collect::<Vec<_>>()
+            .join("\n");
+        let output = std::sync::Arc::new(std::sync::Mutex::new(Vec::<u8>::new()));
+        struct BufWrite(std::sync::Arc<std::sync::Mutex<Vec<u8>>>);
+        impl Write for BufWrite {
+            fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+                let mut guard = self
+                    .0
+                    .lock()
+                    .map_err(|error| std::io::Error::other(error.to_string()))?;
+                guard.extend_from_slice(buf);
+                Ok(buf.len())
+            }
+            fn flush(&mut self) -> std::io::Result<()> {
+                Ok(())
+            }
+        }
+        serve_with_options(
+            &channel,
+            "issue-589-2-328",
+            "issue-589-2-328",
+            Cursor::new(input),
+            BufWrite(output.clone()),
+            ToolOptions::new(false, Some(&handler), None),
+        )?;
+        let bytes = output
+            .lock()
+            .map_err(|error| Error::Invalid(error.to_string()))?
+            .clone();
+        let replies: Vec<Value> = String::from_utf8(bytes)?
+            .lines()
+            .map(serde_json::from_str)
+            .collect::<Result<_, _>>()?;
+        let issue_read_tool = replies[1]["result"]["tools"]
+            .as_array()
+            .ok_or("missing tools")?
+            .iter()
+            .find(|tool| tool["name"] == "issue_read")
+            .ok_or("missing issue_read tool")?;
+        assert!(issue_read_tool["inputSchema"]["properties"]["repository"].is_object());
+        assert_eq!(replies[2]["result"]["isError"], json!(false));
+        assert_eq!(replies[3]["result"]["isError"], json!(true));
+        let calls = captured
+            .lock()
+            .map_err(|error| Error::Invalid(error.to_string()))?;
+        assert_eq!(
+            calls.as_slice(),
+            &[(
+                191,
+                Some("mESmaC/collapse.sh".into()),
+                Some("issue-589-2-328".into()),
+                vec![589],
+            )]
+        );
         let _ = std::fs::remove_dir_all(&root);
         Ok(())
     }
