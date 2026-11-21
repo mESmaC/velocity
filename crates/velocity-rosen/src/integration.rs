@@ -690,11 +690,23 @@ async fn build_test_job(
     };
     let commit = crate::policy::object(&commit)?;
     let config = client.project_config(Some(commit)).await?.config;
+    let mut check_set = config.checks.post_land;
+    let platform = if check_set.platforms.is_empty() {
+        None
+    } else {
+        let host = rosen_core::Platform::host();
+        let Some(target) = check_set.matching_target(&host).cloned() else {
+            return Ok(None);
+        };
+        check_set.commands = check_set.commands_for(Some(&target));
+        Some(target.as_str().to_owned())
+    };
     Ok(Some(PostLandJob {
         commit,
         kind: CheckKind::Test,
         priority: CheckPriority::Verify,
-        check_set: config.checks.post_land,
+        check_set,
+        platform,
         // An offered job carries no submitter; Rosen records it with the result.
         submitter: None,
     }))

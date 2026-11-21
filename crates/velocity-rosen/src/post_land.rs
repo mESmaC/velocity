@@ -352,29 +352,16 @@ async fn batch(client: &Client, work: PostLandWork) -> Result<Option<Batch>, Ros
     let mut commands = job.check_set.commands.clone();
     let mut merge_build = None;
     if after_land && job.kind == CheckKind::Test {
-        let pre_land = policy.config.checks.pre_land;
+        let (pre_land_commands, build_job) = resolve_pre_land_job(job.commit, &policy.config);
         if !commands
             .iter()
             .any(|command| command == integration::FULL_SUITE)
         {
-            commands.splice(..0, pre_land.commands.iter().cloned());
+            commands.splice(..0, pre_land_commands);
         }
         // The integration pass runs the pre-land build/lint suite alongside post-land tests,
         // so advancing both prefixes keeps `post_land_build_green` (`built`) in sync (#567).
-        if !pre_land.commands.is_empty() || policy.config.recheck == RecheckMode::Merge {
-            let priority = if policy.config.recheck == RecheckMode::Merge {
-                CheckPriority::Landing
-            } else {
-                CheckPriority::Verify
-            };
-            merge_build = Some(PostLandJob {
-                commit: job.commit,
-                kind: CheckKind::Build,
-                priority,
-                check_set: pre_land,
-                submitter: None,
-            });
-        }
+        merge_build = build_job;
     }
     Ok(Some(Batch {
         commit: job.commit.to_string(),
@@ -385,6 +372,42 @@ async fn batch(client: &Client, work: PostLandWork) -> Result<Option<Batch>, Ros
         job,
         merge_build,
     }))
+}
+
+fn resolve_pre_land_job(
+    commit: ObjectId,
+    policy: &ProjectConfig,
+) -> (Vec<String>, Option<PostLandJob>) {
+    let mut pre_land = policy.checks.pre_land.clone();
+    let target = if pre_land.platforms.is_empty() {
+        None
+    } else {
+        let Some(target) = pre_land
+            .matching_target(&rosen_core::Platform::host())
+            .cloned()
+        else {
+            return (Vec::new(), None);
+        };
+        Some(target)
+    };
+    let commands = pre_land.commands_for(target.as_ref());
+    let job = (!commands.is_empty() || policy.recheck == RecheckMode::Merge).then(|| {
+        let priority = if policy.recheck == RecheckMode::Merge {
+            CheckPriority::Landing
+        } else {
+            CheckPriority::Verify
+        };
+        pre_land.commands = commands.clone();
+        PostLandJob {
+            commit,
+            kind: CheckKind::Build,
+            priority,
+            check_set: pre_land,
+            platform: target.map(|platform| platform.as_str().to_owned()),
+            submitter: None,
+        }
+    });
+    (commands, job)
 }
 
 async fn bisection(client: &Client, state: BisectState) -> Result<Bisection, RosenError> {

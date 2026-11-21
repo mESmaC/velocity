@@ -30,9 +30,9 @@ rust-version = "1.99"
 [workspace.dependencies]
 anyhow = "1.0"
 # All Rosen consumers inherit these pins so one workspace cannot mix revisions.
-rosen-client = { git = "https://github.com/mESmaC/rosen", rev = "89a66a8f5e0487f1f5759b000481e8addf64cdc2" }
-rosen-core = { git = "https://github.com/mESmaC/rosen", rev = "89a66a8f5e0487f1f5759b000481e8addf64cdc2" }
-rosen-store = { git = "https://github.com/mESmaC/rosen", rev = "89a66a8f5e0487f1f5759b000481e8addf64cdc2" }
+rosen-client = { git = "https://github.com/mESmaC/rosen", rev = "863dc5062c84f243cbfc6b26955c2c7b7b0bc747" }
+rosen-core = { git = "https://github.com/mESmaC/rosen", rev = "863dc5062c84f243cbfc6b26955c2c7b7b0bc747" }
+rosen-store = { git = "https://github.com/mESmaC/rosen", rev = "863dc5062c84f243cbfc6b26955c2c7b7b0bc747" }
 serde = { version = "1.0", features = ["derive", "rc"] }
 serde_json = "1.0"
 specta = { version = "=2.0.0-rc.26", features = ["derive", "function"] }
@@ -69,7 +69,7 @@ velocity-updates = { path = "crates/velocity-updates" }
 # release downloads instead of building Rosen (#433). Move it with the rev. Leave it empty
 # while the rev has no release; the release then builds Rosen from source once.
 [workspace.metadata.rosen]
-release = "v0.1.0-pin.g89a66a8"
+release = "v0.1.0-pin.g863dc50"
 
 [workspace.lints.rust]
 unsafe_code = "forbid"
