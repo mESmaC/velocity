@@ -451,12 +451,15 @@ pub(crate) enum ToolOutcome {
     Other,
 }
 
-const GRAPH_TOOLS: [&str; 5] = [
+const GRAPH_TOOLS: [&str; 8] = [
     "graph_find",
     "graph_read",
+    "graph_spec",
     "graph_impact",
     "graph_run",
     "graph_overlaps",
+    "graph_grep",
+    "graph_glob",
 ];
 
 pub(crate) fn record_tool(

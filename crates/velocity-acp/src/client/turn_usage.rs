@@ -220,7 +220,14 @@ fn code_read(
         name.starts_with("mcp__velocity-graph__")
             || matches!(
                 name,
-                "graph_find" | "graph_read" | "graph_impact" | "graph_run" | "graph_overlaps"
+                "graph_find"
+                    | "graph_read"
+                    | "graph_spec"
+                    | "graph_impact"
+                    | "graph_run"
+                    | "graph_overlaps"
+                    | "graph_grep"
+                    | "graph_glob"
             )
     }) {
         return None;

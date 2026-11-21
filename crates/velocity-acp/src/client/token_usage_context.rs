@@ -78,9 +78,18 @@ pub(super) fn tool_source(name: &str, kind: Option<ToolKind>, input: Option<&Val
         })
         .unwrap_or_default()
         .to_ascii_lowercase();
-    if ["graph_find", "graph_read", "graph_impact", "graph_run"]
-        .iter()
-        .any(|tool| name.ends_with(tool))
+    if [
+        "graph_find",
+        "graph_read",
+        "graph_spec",
+        "graph_impact",
+        "graph_run",
+        "graph_overlaps",
+        "graph_grep",
+        "graph_glob",
+    ]
+    .iter()
+    .any(|tool| name.ends_with(tool))
     {
         return Input::GraphCalls;
     }

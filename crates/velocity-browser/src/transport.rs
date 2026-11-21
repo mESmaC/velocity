@@ -126,10 +126,11 @@ pub fn serve_mcp() -> Result<()> {
 fn reply(port: u16, token: Uuid, request: Value) -> Option<Value> {
     let id = request.get("id")?;
     let result = match request["method"].as_str()? {
+        // Shared browser guidance is published once in the session preface (src-tauri/src/browser.rs)
+        // rather than repeated in MCP initialize instructions (#538).
         "initialize" => json!({
             "protocolVersion": request["params"]["protocolVersion"].as_str().unwrap_or("2024-11-05"),
             "capabilities":{"tools":{}},"serverInfo":{"name":SERVER,"version":"0.1.0"},
-            "instructions":"Use snapshot to read pages and screenshot only for visual checks. Ask the owner to take over for sign-in. Never type passwords, tokens or API keys.",
         }),
         "ping" => json!({}),
         "tools/list" => json!({"tools":tools::definitions()}),

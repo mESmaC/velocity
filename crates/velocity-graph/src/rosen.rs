@@ -118,6 +118,26 @@ impl Source {
         })
     }
 
+    pub fn pieces(&self) -> Result<Vec<crate::spec_outline::LiveClaim>, Error> {
+        let endpoint = &self.endpoint;
+        self.runtime.block_on(async {
+            tokio::time::timeout(Duration::from_secs(2), async {
+                let client = velocity_rosen::connection::requests(endpoint).await?;
+                let pieces = client.pieces().await?;
+                Ok(pieces
+                    .into_iter()
+                    .map(|claim| crate::spec_outline::LiveClaim {
+                        piece: claim.piece,
+                        task: claim.task,
+                        nick: claim.nick,
+                    })
+                    .collect())
+            })
+            .await
+            .map_err(|_| Error::Invalid("Timed out reading Rosen piece claims".into()))?
+        })
+    }
+
     fn request<T>(&self, future: impl Future<Output = Result<T, Error>>) -> Result<T, Error> {
         wait(&self.runtime, future)
     }

@@ -35,10 +35,10 @@ pub fn lookup(graph: &Graph, search: &Search, target: &str) -> Lookup {
     if let Some(found) = graph.by_path.get(&path) {
         return Lookup::Found(*found);
     }
-    let named = graph.named(target);
+    let named = graph.named_or_aliased(target);
     match named.len() {
         1 => return Lookup::Found(named[0]),
-        count if count > 1 => return Lookup::Ambiguous(named.to_vec()),
+        count if count > 1 => return Lookup::Ambiguous(named),
         _ => {}
     }
     let suffix = format!("/{path}");
@@ -117,8 +117,43 @@ pub fn failure(graph: &Graph, target: &str, lookup: &Lookup) -> String {
 
 /// One record on one line: `1.k3f9q method Channel::open  crates/x/src/channel.rs:40-62  pub fn open(…)`.
 pub fn line(graph: &Graph, index: usize) -> String {
+    line_with_claims(graph, index, &[])
+}
+
+/// Like [`line`], annotating §7 checklist items with live claimed/done state.
+pub fn line_with_claims(
+    graph: &Graph,
+    index: usize,
+    claims: &[crate::spec_outline::LiveClaim],
+) -> String {
     let record = &graph.records[index];
     match record.kind {
+        RecordKind::Symbol(SymbolKind::Heading) => {
+            // Print each heading once; its signature repeats the heading text (#538).
+            let alias = crate::spec_outline::primary_alias(record)
+                .filter(|alias| !record.qualified.starts_with(alias))
+                .map(|alias| format!("  [{alias}]"))
+                .unwrap_or_default();
+            format!(
+                "{} {} {}  {}:{}-{}{alias}",
+                record.address,
+                record.kind.label(),
+                record.qualified,
+                record.path,
+                record.start_line,
+                record.end_line
+            )
+        }
+        RecordKind::Symbol(SymbolKind::Item) => format!(
+            "{} {} {}  {}:{}-{}  {}",
+            record.address,
+            record.kind.label(),
+            record.qualified,
+            record.path,
+            record.start_line,
+            record.end_line,
+            crate::spec_outline::item_status(record, claims)
+        ),
         RecordKind::Symbol(_) => format!(
             "{} {} {}  {}:{}-{}  {}",
             record.address,
@@ -150,9 +185,9 @@ pub fn line(graph: &Graph, index: usize) -> String {
 }
 
 /// `graph_read`: one record with its chain up, its children and its links.
-pub fn read(graph: &Graph, index: usize) -> String {
+pub fn read(graph: &Graph, index: usize, claims: &[crate::spec_outline::LiveClaim]) -> String {
     let record = &graph.records[index];
-    let mut out = line(graph, index);
+    let mut out = line_with_claims(graph, index, claims);
     out.push('\n');
     if !record.doc.is_empty() {
         let _ = writeln!(out, "  doc: {}", record.doc);
@@ -172,7 +207,14 @@ pub fn read(graph: &Graph, index: usize) -> String {
         let _ = writeln!(out, "  up: {}", chain.join(" < "));
     }
     if record.kind == RecordKind::File {
-        out.push_str(&outline(graph, record));
+        out.push_str(&outline(graph, record, claims));
+    } else if record.kind == RecordKind::Symbol(SymbolKind::Heading)
+        && record
+            .down
+            .iter()
+            .any(|&child| graph.records[child].kind == RecordKind::Symbol(SymbolKind::Item))
+    {
+        out.push_str(&plan_summary(graph, record, claims));
     } else if !record.down.is_empty() {
         let names: Vec<String> = record
             .down
@@ -203,7 +245,42 @@ pub fn read(graph: &Graph, index: usize) -> String {
     out
 }
 
-fn outline(graph: &Graph, file: &Record) -> String {
+fn plan_summary(
+    graph: &Graph,
+    heading: &Record,
+    claims: &[crate::spec_outline::LiveClaim],
+) -> String {
+    let (total, open, claimed, done) = crate::spec_outline::plan_counts(graph, heading, claims);
+    let mut out = format!(
+        "  items ({total}): {open} open ({claimed} claimed), {done} done. Use graph_spec section:\"§7\" for every item.\n"
+    );
+    let open_items: Vec<usize> = heading
+        .down
+        .iter()
+        .copied()
+        .filter(|&child| {
+            let item = &graph.records[child];
+            item.kind == RecordKind::Symbol(SymbolKind::Item) && !item.done.unwrap_or(false)
+        })
+        .collect();
+    for item_index in open_items.iter().take(40) {
+        let item = &graph.records[*item_index];
+        let _ = writeln!(
+            out,
+            "    {} L{} {}  {}",
+            item.address,
+            item.start_line,
+            crate::spec_outline::item_status(item, claims),
+            item.qualified
+        );
+    }
+    if open_items.len() > 40 {
+        let _ = writeln!(out, "    +{} more open items", open_items.len() - 40);
+    }
+    out
+}
+
+fn outline(graph: &Graph, file: &Record, claims: &[crate::spec_outline::LiveClaim]) -> String {
     if file.down.is_empty() {
         return "  No indexed symbols.\n".to_owned();
     }
@@ -212,9 +289,14 @@ fn outline(graph: &Graph, file: &Record) -> String {
     let mut output = String::from("  Symbols:\n");
     for symbol in symbols {
         let symbol = &graph.records[symbol];
+        let status = if symbol.kind == RecordKind::Symbol(SymbolKind::Item) {
+            format!("  {}", crate::spec_outline::item_status(symbol, claims))
+        } else {
+            String::new()
+        };
         let _ = writeln!(
             output,
-            "    {} {} {}  {}-{}",
+            "    {} {} {}  {}-{}{status}",
             symbol.address,
             symbol.kind.label(),
             symbol.qualified,

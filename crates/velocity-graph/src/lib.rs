@@ -21,6 +21,7 @@ mod query;
 mod resolve;
 mod rosen;
 mod search;
+mod spec_outline;
 pub mod status;
 mod subsystems;
 mod svelte;
@@ -28,14 +29,15 @@ mod text;
 pub mod token_usage;
 mod tools;
 pub mod usage;
+mod workspace_search;
 
 pub use extract::{FileParse, SymbolKind};
 pub use graph::{Graph, Provenance, Record, RecordKind, Relation};
 pub use index::{BuildReport, Index};
 pub use language::Language;
 pub use mcp::{
-    SERVER_NAME, SERVER_SWITCH, WARM_SWITCH, serve, serve_stdio, server_arguments, task_context,
-    warm, warm_stdio,
+    INSTRUCTIONS, SERVER_NAME, SERVER_SWITCH, WARM_SWITCH, serve, serve_stdio, server_arguments,
+    task_context, warm, warm_stdio, workspace_map,
 };
 pub use project_service::{PROJECT_SWITCH, mentioned_paths, serve_project, warm_project};
 pub use tools::Tools;

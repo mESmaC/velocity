@@ -11,7 +11,7 @@ use crate::Error;
 use crate::graph::RecordKind;
 use crate::index::Index;
 use crate::program::run;
-use crate::query::{Lookup, failure, impact, line, lookup, read, within_budget};
+use crate::query::{Lookup, failure, impact, line_with_claims, lookup, read, within_budget};
 use crate::search::Search;
 use crate::usage::ToolOutcome;
 
@@ -72,7 +72,7 @@ impl Tools {
     pub fn map(&self) -> String {
         let graph = &self.index.graph;
         let records = &graph.records;
-        let code = |record: &crate::graph::Record| matches!(record.kind, RecordKind::Symbol(kind) if kind != crate::SymbolKind::Heading);
+        let code = |record: &crate::graph::Record| matches!(record.kind, RecordKind::Symbol(kind) if !kind.is_doc());
         let symbols = records.iter().filter(|record| code(record)).count();
         let mut subsystems: Vec<usize> = (0..records.len())
             .filter(|index| records[*index].kind == RecordKind::Subsystem)
@@ -220,6 +220,20 @@ Most used: {}.",
         name: &str,
         arguments: &Value,
     ) -> Result<(String, ToolOutcome), CallError> {
+        if name == "graph_grep" {
+            if self.index.is_git() {
+                return Err("graph_grep requires a workspace checkout".into());
+            }
+            let text = crate::workspace_search::grep(self.index.root(), arguments)?;
+            return Ok((within_budget(text), ToolOutcome::Other));
+        }
+        if name == "graph_glob" {
+            if self.index.is_git() {
+                return Err("graph_glob requires a workspace checkout".into());
+            }
+            let text = crate::workspace_search::glob_files(self.index.root(), arguments)?;
+            return Ok((within_budget(text), ToolOutcome::Other));
+        }
         if name == "graph_overlaps" {
             let paths = arguments
                 .get("paths")
@@ -265,6 +279,7 @@ Most used: {}.",
         match name {
             "graph_find" => Ok(self.find(arguments)),
             "graph_read" => self.read(arguments),
+            "graph_spec" => self.spec(arguments),
             "graph_impact" => self.impact(arguments),
             "graph_run" => {
                 let program = text(arguments, "program")?;
@@ -280,6 +295,50 @@ Most used: {}.",
         }
     }
 
+    fn spec(&self, arguments: &Value) -> Result<Draft, CallError> {
+        let graph = &self.index.graph;
+        let section = arguments.get("section").and_then(Value::as_str);
+        let depth = arguments
+            .get("depth")
+            .and_then(Value::as_u64)
+            .and_then(|value| u8::try_from(value).ok());
+        let open_only = arguments["open_only"].as_bool().unwrap_or(false);
+        let root_path = graph
+            .by_path
+            .keys()
+            .find(|path| path.eq_ignore_ascii_case("spec.md"))
+            .cloned();
+        let root_spec = root_path
+            .as_deref()
+            .and_then(|path| self.index.source(path).ok());
+        let claims = self.index.live_claims();
+        let options = crate::spec_outline::OutlineOptions {
+            section,
+            depth,
+            open_only,
+        };
+        let text = crate::spec_outline::outline(
+            graph,
+            &self.search,
+            root_spec.as_deref(),
+            &options,
+            &claims,
+        )
+        .map_err(CallError::classified)?;
+        let files: Vec<String> = graph
+            .by_path
+            .keys()
+            .filter(|path| crate::spec_outline::is_spec_path(path))
+            .cloned()
+            .collect();
+        Ok(Draft {
+            text,
+            files,
+            source: Vec::new(),
+            outcome: ToolOutcome::Exact,
+        })
+    }
+
     fn find(&self, arguments: &Value) -> Draft {
         let graph = &self.index.graph;
         let query = arguments["query"].as_str().unwrap_or_default();
@@ -293,6 +352,13 @@ Most used: {}.",
                     .as_deref()
                     .is_none_or(|kind| record.kind.label() == kind)
         });
+        let claims = if hits.iter().any(|hit| {
+            graph.records[hit.record].kind == RecordKind::Symbol(crate::SymbolKind::Item)
+        }) {
+            self.index.live_claims()
+        } else {
+            Vec::new()
+        };
         let mut text = String::new();
         let mut files = Vec::new();
         if hits.is_empty() {
@@ -307,7 +373,11 @@ Most used: {}.",
         };
         for hit in hits {
             let marker = if hit.exact { "  [exact]" } else { "" };
-            let _ = writeln!(text, "{}{marker}", line(graph, hit.record));
+            let _ = writeln!(
+                text,
+                "{}{marker}",
+                line_with_claims(graph, hit.record, &claims)
+            );
             files.push(graph.records[hit.record].path.clone());
         }
         Draft {
@@ -330,9 +400,21 @@ Most used: {}.",
             Lookup::Found(record) => record,
             other => return Err(CallError::classified(failure(graph, target, &other))),
         };
+        let needs_claims = matches!(
+            graph.records[record].kind,
+            RecordKind::Symbol(crate::SymbolKind::Item)
+        ) || graph.records[record]
+            .down
+            .iter()
+            .any(|&child| graph.records[child].kind == RecordKind::Symbol(crate::SymbolKind::Item));
+        let claims = if needs_claims {
+            self.index.live_claims()
+        } else {
+            Vec::new()
+        };
         let with_source = arguments["source"].as_bool().unwrap_or(false);
         Ok(Draft {
-            text: read(graph, record),
+            text: read(graph, record, &claims),
             files: vec![graph.records[record].path.clone()],
             outcome: ToolOutcome::Exact,
             source: if with_source {

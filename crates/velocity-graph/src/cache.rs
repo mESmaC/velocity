@@ -16,7 +16,7 @@ use crate::extract::FileParse;
 use crate::language::Language;
 
 /// Bump when extraction changes, so every cached parse is redone.
-pub const PARSER_VERSION: u32 = 8;
+pub const PARSER_VERSION: u32 = 9;
 const CACHE_LIMIT: u64 = 64 * 1024 * 1024;
 const FRAME_LIMIT: usize = 8 * 1024 * 1024;
 

@@ -35,6 +35,7 @@ pub struct BuildReport {
 
 pub struct Index {
     root: PathBuf,
+    cache_folder: PathBuf,
     cache: Cache,
     files: BTreeMap<String, FileState>,
     manifests: HashMap<String, String>,
@@ -143,6 +144,7 @@ impl Index {
     fn empty(root: &Path, cache_folder: &Path) -> Self {
         Self {
             root: root.to_path_buf(),
+            cache_folder: cache_folder.to_path_buf(),
             cache: Cache::open(cache_folder),
             files: BTreeMap::new(),
             manifests: HashMap::new(),
@@ -227,6 +229,17 @@ impl Index {
             .as_ref()
             .ok_or_else(|| Error::Invalid("graph_overlaps requires a Rosen workspace".into()))?;
         source.overlaps(&self.root, paths)
+    }
+
+    /// Live piece claims from Rosen or the local AIRC channel, for §7 item claimed state.
+    pub fn live_claims(&self) -> Vec<crate::spec_outline::LiveClaim> {
+        if let Some(source) = &self.rosen {
+            return source.pieces().unwrap_or_default();
+        }
+        if self.git.is_some() {
+            return Vec::new();
+        }
+        crate::spec_outline::read_local_airc_claims(&self.cache_folder)
     }
 
     pub fn refresh_snapshot(&mut self) -> Result<bool, Error> {

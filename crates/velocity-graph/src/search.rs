@@ -14,8 +14,19 @@ const STOP_WORDS: [&str; 24] = [
 
 /// Query words that ask for tests or docs. Without one, those records rank lower: an agent
 /// asking where something lives wants the code.
-const TEST_OR_DOC_WORDS: [&str; 9] = [
-    "test", "tests", "spec", "doc", "docs", "readme", "example", "stress", "section",
+const TEST_OR_DOC_WORDS: [&str; 12] = [
+    "test",
+    "tests",
+    "spec",
+    "doc",
+    "docs",
+    "readme",
+    "example",
+    "stress",
+    "section",
+    "item",
+    "milestone",
+    "order",
 ];
 
 type Words = (Arc<HashSet<String>>, Arc<HashSet<String>>);
@@ -80,16 +91,21 @@ impl Search {
             .filter(|word| !word.starts_with("stem:"))
             .collect();
         let lowered = query.trim().to_lowercase();
-        let exact_matches = graph.named(query.trim()).len();
+        let exact_matches = graph.named_or_aliased(query.trim()).len();
         let tests_wanted = terms
             .iter()
-            .any(|term| TEST_OR_DOC_WORDS.contains(&term.as_str()));
+            .any(|term| TEST_OR_DOC_WORDS.contains(&term.as_str()))
+            || crate::spec_outline::looks_like_spec_query(query);
         let mut hits: Vec<Hit> = (0..graph.records.len())
             .filter(|index| keep(*index))
             .filter_map(|index| {
                 let record = &graph.records[index];
                 let exact = record.name.to_lowercase() == lowered
-                    || record.qualified.to_lowercase() == lowered;
+                    || record.qualified.to_lowercase() == lowered
+                    || record
+                        .aliases
+                        .iter()
+                        .any(|alias| alias.to_lowercase() == lowered);
                 let mut score = self.word_score(graph, index, &wanted, &terms)
                     + name_bonus(record, &lowered, exact);
                 if !tests_wanted && (record.test || is_doc(record)) {
@@ -146,7 +162,10 @@ impl Search {
 }
 
 fn record_words(record: &Record) -> Words {
-    let name = words(&format!("{} {}", record.name, record.qualified));
+    let mut name = words(&format!("{} {}", record.name, record.qualified));
+    for alias in &record.aliases {
+        name.insert(alias.to_lowercase());
+    }
     let other = words(&format!(
         "{} {} {}",
         record.path, record.signature, record.doc
@@ -167,7 +186,7 @@ fn name_bonus(record: &Record, lowered: &str, exact: bool) -> f64 {
     } else {
         0.0
     };
-    if matches!(record.kind, RecordKind::Symbol(kind) if kind != crate::SymbolKind::Heading) {
+    if matches!(record.kind, RecordKind::Symbol(kind) if !kind.is_doc()) {
         bonus += 0.5;
     }
     bonus
@@ -189,13 +208,14 @@ pub fn is_test_path(path: &str) -> bool {
 }
 
 fn is_doc(record: &Record) -> bool {
-    matches!(record.kind, RecordKind::Symbol(crate::SymbolKind::Heading))
+    matches!(record.kind, RecordKind::Symbol(kind) if kind.is_doc())
         || (record.kind == RecordKind::File
             && (record.path.ends_with(".md") || record.path.ends_with(".markdown")))
 }
 
 /// Lower-cased words of at least two characters, split at camelCase humps and any
-/// non-alphanumeric character, plus `stem:` + the first four letters of words of five or more.
+/// non-alphanumeric character, plus `stem:` + the first four letters of words of five or more,
+/// and intact spec section references such as `§7`, `§3.1` and `3.1`.
 pub fn words(text: &str) -> HashSet<String> {
     let mut spaced = String::with_capacity(text.len() + 8);
     let mut previous: Option<char> = None;
@@ -222,5 +242,31 @@ pub fn words(text: &str) -> HashSet<String> {
         }
         out.insert(word.to_owned());
     }
+    collect_section_tokens(text, &mut out);
     out
+}
+
+fn collect_section_tokens(text: &str, out: &mut HashSet<String>) {
+    for raw in text.split_whitespace() {
+        let token = raw.trim_matches(|character: char| {
+            !character.is_alphanumeric() && !matches!(character, '§' | '.' | '/')
+        });
+        if token.is_empty() {
+            continue;
+        }
+        let lower = token.to_lowercase();
+        if let Some(rest) = lower.strip_prefix('§') {
+            if !rest.is_empty() {
+                out.insert(lower.clone());
+                out.insert(rest.to_owned());
+            }
+        } else if lower.contains('.')
+            && lower.split('.').all(|part| {
+                !part.is_empty() && part.chars().all(|character| character.is_ascii_digit())
+            })
+        {
+            out.insert(lower.clone());
+            out.insert(format!("§{lower}"));
+        }
+    }
 }

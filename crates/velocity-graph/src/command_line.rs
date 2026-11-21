@@ -16,8 +16,15 @@ use crate::{Error, Index, Tools};
 /// field does not.
 pub const SCHEMA: u32 = 1;
 
-/// The tools a commit answers. `graph_overlaps` needs a live Rosen workspace, so it is not one.
-pub const TOOLS: [&str; 4] = ["graph_find", "graph_read", "graph_impact", "graph_run"];
+/// The tools a commit answers. `graph_overlaps`, `graph_grep` and `graph_glob` need a live
+/// workspace, so they are not included.
+pub const TOOLS: [&str; 5] = [
+    "graph_find",
+    "graph_read",
+    "graph_spec",
+    "graph_impact",
+    "graph_run",
+];
 
 const USAGE: &str = "usage:
   velocity-graph version

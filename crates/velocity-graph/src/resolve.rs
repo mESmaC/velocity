@@ -194,7 +194,8 @@ impl<'graph> Context<'graph> {
         let mut packages = HashMap::new();
         for (index, record) in graph.records.iter().enumerate() {
             match record.kind {
-                RecordKind::Symbol(SymbolKind::Heading) | RecordKind::File => {}
+                RecordKind::Symbol(kind) if kind.is_doc() => {}
+                RecordKind::File => {}
                 RecordKind::Symbol(_) => {
                     symbols.entry(record.name.as_str()).or_default().push(index)
                 }
@@ -281,7 +282,7 @@ fn fits(reference: ReferenceKind, symbol: SymbolKind, precise: bool, qualified: 
         ReferenceKind::Macro => symbol == SymbolKind::Macro,
         ReferenceKind::MacroArgument => symbol.callable(),
         ReferenceKind::Type | ReferenceKind::Implementation => symbol.type_like(),
-        ReferenceKind::Mention => symbol != SymbolKind::Heading,
+        ReferenceKind::Mention => !symbol.is_doc(),
         ReferenceKind::FileMention | ReferenceKind::Command => false,
         ReferenceKind::Component => symbol == SymbolKind::Component,
     }

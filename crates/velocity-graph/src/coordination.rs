@@ -234,7 +234,7 @@ impl SubsystemMap {
             .search
             .find(graph, text, 8, |record| {
                 let record = &graph.records[record];
-                !record.test && record.kind != RecordKind::Symbol(crate::SymbolKind::Heading)
+                !record.test && !matches!(record.kind, RecordKind::Symbol(kind) if kind.is_doc())
             })
             .iter()
             .enumerate()

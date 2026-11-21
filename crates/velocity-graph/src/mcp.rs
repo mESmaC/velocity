@@ -47,9 +47,9 @@ const NOISE: [&str; 10] = [
     ".pnpm-store",
 ];
 
-/// What every agent is told at connection. Stated as facts, not orders: imperative "MUST"
-/// rules read like prompt injection and get ignored (Graphify #2202).
-const INSTRUCTIONS: &str = "The velocity-graph tools map the workspace's code. graph_find locates symbols by name or description. graph_read on a file gives a symbol outline with line ranges; graph_read on a symbol gives its links and, with source: true, its code. graph_impact finds dependents, and graph_run chains lookups. Inferred, ambiguous and unconfirmed links are leads to verify. Grep finds exact text such as literals and config values.";
+/// Shared server guidance published once in the session preface rather than in every MCP
+/// tool description (#538). Stated as facts, not orders (Graphify #2202).
+pub const INSTRUCTIONS: &str = "The velocity-graph tools map the workspace's code and spec. graph_find locates symbols, files, spec sections and §7 items by name, alias or description. graph_read on a file gives a symbol outline with line ranges; graph_read on a symbol or spec alias (§7, §3.1, F16) gives its links and, with source: true, its lines. graph_spec returns the split spec's heading tree with addresses. graph_impact finds dependents, graph_run chains lookups, and graph_grep / graph_glob search text and files respecting gitignore. Inferred, ambiguous and unconfirmed links are leads to verify.";
 
 pub fn server_arguments(app_data: &Path, project: &str, worktree: &Path) -> Vec<String> {
     vec![
@@ -103,6 +103,23 @@ fn project_endpoint(app_data: &Path, project: &str) -> Option<Endpoint> {
         })
 }
 
+/// Session-start workspace map (workspace path, file/symbol counts, biggest subsystems and
+/// most-used symbols), fetched once for the session preface (#538).
+pub fn workspace_map(
+    executable: &Path,
+    app_data: &Path,
+    project: &str,
+    workspace: &Path,
+) -> Option<String> {
+    let cache = crate::usage::folder(app_data, project);
+    let endpoint = project_endpoint(app_data, project);
+    let project = Project::new(cache, executable.into(), endpoint);
+    let reply = project
+        .request(workspace, Vec::new(), Action::Map, MAP_WAIT)
+        .ok()?;
+    (!reply.text.is_empty()).then_some(reply.text)
+}
+
 /// First-prompt context uses the same index, ranking and project cache as graph_find.
 pub fn task_context(
     executable: &Path,
@@ -120,8 +137,7 @@ pub fn task_context(
     (!reply.text.is_empty()).then_some(reply.text)
 }
 
-/// How long `initialize` waits for the index, so the session-start map can go out with the
-/// instructions. With a warm cache a build takes a fraction of this.
+/// How long session startup waits for the workspace map or initial task matches.
 const MAP_WAIT: Duration = Duration::from_millis(1500);
 const MAX_PENDING_PATH_BYTES: usize = 32 * 1024;
 
@@ -134,8 +150,6 @@ struct Connection {
     dirty: Mutex<HashSet<String>>,
     request: Mutex<()>,
     status: WorkspaceStatus,
-    /// Signalled once the background build finished; taken by the first `initialize`.
-    built: Mutex<Option<mpsc::Receiver<()>>>,
 }
 
 enum Backend {
@@ -170,7 +184,6 @@ fn serve_connection(
     input: impl BufRead,
     mut output: impl Write,
 ) -> Result<(), Error> {
-    let (signal, built) = mpsc::channel();
     let status = WorkspaceStatus::track(&cache, &root);
     let connection = Arc::new(Connection {
         backend,
@@ -180,7 +193,6 @@ fn serve_connection(
         dirty: Mutex::default(),
         request: Mutex::default(),
         status,
-        built: Mutex::new(Some(built)),
     });
     let (changes, pending) = mpsc::sync_channel(1);
     let watcher = watch(&connection, changes);
@@ -188,7 +200,6 @@ fn serve_connection(
         let connection = connection.clone();
         std::thread::spawn(move || {
             connection.catch_up();
-            let _ = signal.send(());
         })
     };
     let updater = {
@@ -367,11 +378,13 @@ fn respond(request: &Value, connection: &Connection) -> Option<Value> {
     // Notifications get no response.
     request.get("id")?;
     let result = match method.unwrap_or_default() {
+        // Shared guidance and the workspace map are published once in the session preface
+        // instead of MCP initialize instructions, which some harnesses copy onto every tool
+        // description (#538).
         "initialize" => json!({
             "protocolVersion": "2025-11-25",
             "capabilities": {"tools": {}},
             "serverInfo": {"name": "velocity-graph", "version": env!("CARGO_PKG_VERSION")},
-            "instructions": instructions(connection),
         }),
         "ping" => json!({}),
         "tools/list" => json!({"tools": tool_list()}),
@@ -379,34 +392,6 @@ fn respond(request: &Value, connection: &Connection) -> Option<Value> {
         _ => return Some(failure(id, -32601, "Method not found")),
     };
     Some(json!({"jsonrpc": "2.0", "id": id, "result": result}))
-}
-
-/// The instructions, with the session-start map when the index is ready in time.
-fn instructions(connection: &Connection) -> String {
-    let built = connection
-        .built
-        .lock()
-        .unwrap_or_else(|poison| poison.into_inner())
-        .take();
-    if let Some(built) = built {
-        let _ = built.recv_timeout(MAP_WAIT);
-    }
-    let map = match &connection.backend {
-        Backend::Local { tools, .. } => tools
-            .try_lock()
-            .ok()
-            .and_then(|tools| tools.as_ref().map(Tools::map))
-            .unwrap_or_default(),
-        Backend::Shared(project) => project
-            .request(&connection.root, Vec::new(), Action::Map, MAP_WAIT)
-            .map(|reply| reply.text)
-            .unwrap_or_default(),
-    };
-    if map.is_empty() {
-        INSTRUCTIONS.to_owned()
-    } else {
-        format!("{INSTRUCTIONS}\n\n{map}")
-    }
 }
 
 fn call(parameters: &Value, connection: &Connection) -> Value {
@@ -454,6 +439,14 @@ impl Connection {
         name: &str,
         arguments: &Value,
     ) -> Result<(String, crate::usage::ToolOutcome), CallError> {
+        if name == "graph_grep" {
+            let text = crate::workspace_search::grep(&self.root, arguments)?;
+            return Ok((text, crate::usage::ToolOutcome::Other));
+        }
+        if name == "graph_glob" {
+            let text = crate::workspace_search::glob_files(&self.root, arguments)?;
+            return Ok((text, crate::usage::ToolOutcome::Other));
+        }
         match &self.backend {
             Backend::Local { tools, endpoint } => {
                 let mut tools = tools.lock().unwrap_or_else(|error| error.into_inner());
@@ -545,19 +538,54 @@ fn tool_list() -> Vec<Value> {
                 // A range, not an integer enum: Gemini accepts `enum` only on strings and
                 // rejects the agent's whole request when a tool has one (Antigravity).
                 "plane": {"type": "integer", "minimum": 1, "maximum": 3, "description": "1 symbols, 2 files, 3 subsystems"},
-                "kind": {"type": "string", "description": "fn, method, type, trait, alias, mod, macro, const, section, file or subsystem"},
+                "kind": {"type": "string", "description": "fn, method, type, trait, alias, mod, macro, const, section, item, file or subsystem"},
                 "limit": {"type": "integer", "minimum": 1, "maximum": 30},
             }),
             &["query"],
         ),
         tool(
             "graph_read",
-            "A file path or file address gives its symbol outline with line ranges. A symbol name or address gives its signature, docs, location and links with provenance. Use source: true on a symbol for its source lines. Reports ambiguous, missing and stale lookups.",
+            "A file path or file address gives its symbol outline with line ranges. A symbol name, spec alias (§7, §3.1, F16) or address gives its signature, docs, location and links with provenance. Use source: true for source lines. Reports ambiguous, missing and stale lookups.",
             json!({
-                "target": {"type": "string", "description": "An address like 1.k3f9q, a name like Channel::open, or a path"},
+                "target": {"type": "string", "description": "An address like 1.k3f9q, a name like Channel::open, a spec alias like §7, §3.1 or F16, or a path"},
                 "source": {"type": "boolean", "description": "Add the record's source lines, so no separate file read is needed"},
             }),
             &["target"],
+        ),
+        tool(
+            "graph_spec",
+            "Return the split spec's heading tree with addresses, section aliases and §7 item status in one compact call. Pass section (e.g. §7, §3.1, F5) or depth to expand a subtree.",
+            json!({
+                "section": {"type": "string", "description": "Optional section alias, heading name, address or path to expand (e.g. §7, §3.1, F5)"},
+                "depth": {"type": "integer", "minimum": 1, "maximum": 6, "description": "Maximum heading depth to show (default 3 when large)"},
+                "open_only": {"type": "boolean", "description": "When expanding §7, list only open items"},
+            }),
+            &[],
+        ),
+        tool(
+            "graph_grep",
+            "Search workspace files with ripgrep, respecting gitignore and capping output.",
+            json!({
+                "pattern": {"type": "string", "description": "Regular expression, or literal text when fixed is true"},
+                "path": {"type": "string", "description": "Optional repository-relative file or folder to narrow the search"},
+                "glob": {"type": "string", "description": "Optional ripgrep file glob such as *.rs or !tests/**"},
+                "case_insensitive": {"type": "boolean", "description": "Ignore letter case"},
+                "fixed": {"type": "boolean", "description": "Match pattern as a literal string rather than a regex"},
+                "files_only": {"type": "boolean", "description": "List only matching file paths"},
+                "context": {"type": "integer", "minimum": 0, "maximum": 5, "description": "Lines of context around each match"},
+                "limit": {"type": "integer", "minimum": 1, "maximum": 200, "description": "Maximum output lines (default 50)"},
+            }),
+            &["pattern"],
+        ),
+        tool(
+            "graph_glob",
+            "List workspace files matching a glob pattern, respecting gitignore and capping output.",
+            json!({
+                "pattern": {"type": "string", "description": "Glob pattern such as **/*.rs, crates/velocity-graph/** or *.{ts,svelte}"},
+                "path": {"type": "string", "description": "Optional repository-relative folder to search under"},
+                "limit": {"type": "integer", "minimum": 1, "maximum": 200, "description": "Maximum file paths to return (default 100)"},
+            }),
+            &["pattern"],
         ),
         tool(
             "graph_impact",
@@ -586,7 +614,13 @@ fn tool(name: &str, description: &str, properties: Value, required: &[&str]) -> 
     // Claude Code keeps these discovery tools in context instead of deferring them to search.
     if matches!(
         name,
-        "graph_find" | "graph_read" | "graph_impact" | "graph_run"
+        "graph_find"
+            | "graph_read"
+            | "graph_spec"
+            | "graph_impact"
+            | "graph_run"
+            | "graph_grep"
+            | "graph_glob"
     ) {
         tool["_meta"] = json!({"anthropic/alwaysLoad": true});
     }

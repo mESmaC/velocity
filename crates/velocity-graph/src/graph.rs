@@ -61,6 +61,12 @@ pub struct Record {
     /// A Tauri command the frontend reaches by name.
     pub command: bool,
     pub test: bool,
+    /// Section numbers and feature IDs that resolve to this record (e.g. `§7`, `§3.1`, `F16`).
+    pub aliases: Vec<String>,
+    /// Markdown heading level (1..=6); 0 for non-headings.
+    pub level: u8,
+    /// Completion state for a §7 checklist item (`Some(true)` for `[x]`, `Some(false)` for `[ ]`).
+    pub done: Option<bool>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -157,6 +163,8 @@ pub struct Graph {
     pub(crate) stale_addresses: HashMap<String, usize>,
     /// Lower-cased names and qualified names to records.
     pub by_name: HashMap<String, Vec<usize>>,
+    /// Lower-cased spec aliases (`§7`, `7`, `§3.1`, `f16`) to records.
+    pub by_alias: HashMap<String, Vec<usize>>,
     pub by_path: HashMap<String, usize>,
     pub file_hashes: HashMap<String, String>,
     pub subsystems: Vec<Subsystem>,
@@ -184,6 +192,7 @@ impl Graph {
     fn index(records: Vec<Record>, subsystems: Vec<Subsystem>, files: &[FileInput]) -> Self {
         let mut by_address = HashMap::new();
         let mut by_name: HashMap<String, Vec<usize>> = HashMap::new();
+        let mut by_alias: HashMap<String, Vec<usize>> = HashMap::new();
         let mut by_path = HashMap::new();
         for (index, record) in records.iter().enumerate() {
             by_address.insert(record.address.clone(), index);
@@ -194,6 +203,12 @@ impl Graph {
             if record.qualified != record.name {
                 by_name
                     .entry(record.qualified.to_lowercase())
+                    .or_default()
+                    .push(index);
+            }
+            for alias in &record.aliases {
+                by_alias
+                    .entry(alias.to_lowercase())
                     .or_default()
                     .push(index);
             }
@@ -209,6 +224,7 @@ impl Graph {
             by_address,
             stale_addresses: HashMap::new(),
             by_name,
+            by_alias,
             by_path,
             file_hashes: files
                 .iter()
@@ -283,6 +299,22 @@ impl Graph {
         self.by_name
             .get(&name.to_lowercase())
             .map_or(&[], Vec::as_slice)
+    }
+
+    /// The records matching `name` by name, qualified name, or spec alias, deduplicated.
+    pub fn named_or_aliased(&self, name: &str) -> Vec<usize> {
+        let key = name.to_lowercase();
+        let mut matches: Vec<usize> = self
+            .by_name
+            .get(&key)
+            .into_iter()
+            .flatten()
+            .chain(self.by_alias.get(&key).into_iter().flatten())
+            .copied()
+            .collect();
+        matches.sort_unstable();
+        matches.dedup();
+        matches
     }
 
     /// Resolve file and symbol mentions to repository-relative paths. A short name is

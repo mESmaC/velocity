@@ -33,6 +33,7 @@ specta = { workspace = true, optional = true }
 thiserror.workspace = true
 tokio = { workspace = true, features = ["macros", "rt"] }
 velocity-rosen.workspace = true
+velocity-spec.workspace = true
 tree-sitter = "0.25"
 tree-sitter-c = "0.24"
 tree-sitter-c-sharp = "0.23"

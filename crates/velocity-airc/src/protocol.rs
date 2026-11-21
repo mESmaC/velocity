@@ -100,7 +100,7 @@ fn instructions(nick: &str, continuous_dispatch: bool, has_issue_tools: bool) ->
         ""
     };
     format!(
-        "You joined this project's AIRC channel as {nick}. Check ownership with airc_claims using the candidate task or piece as the task filter. Call airc_claim with the task, branch and every file BEFORE editing, and with piece set to the work item's identity (task:<id>, issue:<number> or spec:<section>) when it has one; on refusal the holder is named, so check the next candidate. Extend your existing task claim to add files. Record airc_share or a dependency wait before editing an overlapping file. Messages require named recipients and an intent. task_list reads the project Task List at any time. {task_rule} Task List changes never edit SPEC.md or start an interview.{issue_rule} Use append_ledger with velocity_issue only to report a problem in the Velocity IDE/tooling running your session (its worktrees, AIRC, duty tools, agent shells, build queue, code graph or desktop app), which Velocity files on mESmaC/velocity regardless of which project you are in; for issues on this project's repository (including when this project is mESmaC/velocity), use issue_create instead. A discovery about Rosen itself (its server, workspaces, durability, claims, rebases or landing) uses rosen_issue instead and is filed on mESmaC/rosen. Use at most one ledger issue field. Search read_ledger with ledger discovery and the problem's terms before reporting it. An issue that waits on other issues names them in blocked_by, which records GitHub issue dependencies; never hold it with a label."
+        "You joined this project's AIRC channel as {nick}. Check ownership with airc_claims using the candidate task or piece as the task filter. Call airc_claim with the task, branch and every file BEFORE editing, and with piece set to the work item's identity (task:<id>, issue:<number> or spec:<section>) when it has one; on refusal the holder is named, so check the next candidate. Extend your existing task claim to add files. Record airc_share or a dependency wait before editing an overlapping file. Messages require named recipients and an intent. Log readers (read_feed, read_events, read_ledger) return newest first (up to 50), filter by query or after/before sequence, return next_before for older matches, and read oversized entries by sequence with offset. task_list reads the project Task List at any time. {task_rule} Task List changes never edit SPEC.md or start an interview.{issue_rule} Use append_ledger with velocity_issue only to report a problem in the Velocity IDE/tooling running your session (its worktrees, AIRC, duty tools, agent shells, build queue, code graph or desktop app), which Velocity files on mESmaC/velocity regardless of which project you are in; for issues on this project's repository (including when this project is mESmaC/velocity), use issue_create instead. A discovery about Rosen itself (its server, workspaces, durability, claims, rebases or landing) uses rosen_issue instead and is filed on mESmaC/rosen. Use at most one ledger issue field. Search read_ledger with ledger discovery and the problem's terms before reporting it. An issue that waits on other issues names them in blocked_by, which records GitHub issue dependencies; never hold it with a label."
     )
 }
 
@@ -281,8 +281,6 @@ fn report_blockers(arguments: &Value, reported: bool) -> Result<Vec<IssueReferen
     Ok(blockers)
 }
 
-const LOG_PAGE: &str = "Newest first, up to 50 by default. Filter by query over text, files or symbols, or by sequence with after/before. The response gives the remaining count and next_before for older matches. To read an oversized entry, pass its sequence, then pass next_offset as offset to continue its JSON.";
-
 fn tool_list(rosen: bool, options: &ToolOptions<'_>) -> Vec<Value> {
     let empty = json!({});
     let cursor = json!({"after":{"type":"integer","minimum":0}});
@@ -302,13 +300,13 @@ fn tool_list(rosen: bool, options: &ToolOptions<'_>) -> Vec<Value> {
         ),
         tool(
             "read_feed",
-            &format!("Read the project feed. {LOG_PAGE}"),
+            "Read the project feed (newest first, filterable by query or sequence).",
             read_tools::log_fields(),
             &[],
         ),
         tool(
             "read_events",
-            &format!("Read project events. {LOG_PAGE}"),
+            "Read project events (newest first, filterable by query or sequence).",
             read_tools::log_fields(),
             &[],
         ),
@@ -341,7 +339,7 @@ fn writing_tools() -> Vec<Value> {
     vec![
         tool(
             "read_ledger",
-            &format!("Read Discoveries or Past work. {LOG_PAGE}"),
+            "Read Discoveries or Past work (newest first, filterable by query or sequence).",
             fields,
             &["ledger"],
         ),

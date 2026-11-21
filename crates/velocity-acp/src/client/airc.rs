@@ -8,31 +8,40 @@ use velocity_airc::{CONTINUOUS_DISPATCH_ARGUMENT, SERVER_NAME, SERVER_SWITCH, se
 
 use super::session::SessionSetup;
 
-/// Keep the initial hint even if indexing cannot return matches within the startup budget.
+/// Publish velocity-graph's shared guidance, workspace map (subsystem counts and popular
+/// symbols) and task matches once per session in the preface, not in every tool description (#538).
 pub(super) async fn graph_preface(setup: &SessionSetup) -> Option<String> {
-    let title = setup.graph_task_title.as_ref()?.trim();
     let (airc, app_data, project) = airc_project(setup.airc.as_ref()?)?;
-    let mut note = String::from(
-        "Use the workspace's velocity-graph tools first for source navigation. \
-         For each code lookup, use graph_read on a match below or on a known file path, \
-         or use graph_find with a short name to locate the symbol. \
-         To inspect code from the file outline, pass the symbol's address to graph_read with \
-         source: true. Use graph_impact or graph_run to trace connections between files. \
-         For gaps in the graph, keep native reads to the relevant line ranges. \
-         Use grep for exact literals and config values.",
-    );
-    if !title.is_empty() {
-        let app_data = PathBuf::from(app_data);
-        let executable = airc.command.clone();
-        let project = project.to_owned();
-        let worktree = setup.worktree.clone();
-        let title: String = title.chars().take(300).collect();
-        let lookup = tokio::task::spawn_blocking(move || {
+    let mut note = String::from(velocity_graph::INSTRUCTIONS);
+    let app_data = PathBuf::from(app_data);
+    let executable = airc.command.clone();
+    let project = project.to_owned();
+    let worktree = setup.worktree.clone();
+    let title: String = setup
+        .graph_task_title
+        .as_deref()
+        .map(str::trim)
+        .unwrap_or_default()
+        .chars()
+        .take(300)
+        .collect();
+    let lookup = tokio::task::spawn_blocking(move || {
+        let map = velocity_graph::workspace_map(&executable, &app_data, &project, &worktree);
+        let matches = if title.is_empty() {
+            None
+        } else {
             velocity_graph::task_context(&executable, &app_data, &project, &worktree, &title)
-        });
-        if let Ok(Ok(Some(matches))) =
-            tokio::time::timeout(std::time::Duration::from_secs(5), lookup).await
-        {
+        };
+        (map, matches)
+    });
+    if let Ok(Ok((map, matches))) =
+        tokio::time::timeout(std::time::Duration::from_secs(5), lookup).await
+    {
+        if let Some(map) = map {
+            note.push_str("\n\n");
+            note.push_str(&map);
+        }
+        if let Some(matches) = matches {
             note.push_str("\n\nTop graph_find matches for the task title:\n");
             note.push_str(&matches);
         }

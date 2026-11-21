@@ -71,6 +71,8 @@ impl Builder {
             };
             let separator = if file.language == Some(crate::Language::Lean) {
                 "."
+            } else if definition.kind == crate::SymbolKind::Item {
+                " / "
             } else {
                 "::"
             };
@@ -78,6 +80,11 @@ impl Builder {
                 || name.to_owned(),
                 |container| format!("{container}{separator}{name}"),
             );
+            let aliases = if definition.kind == crate::SymbolKind::Heading {
+                crate::spec_outline::heading_aliases(&file.path, name)
+            } else {
+                Vec::new()
+            };
             let base = format!("1|{}|{qualified}|{:?}", file.path, definition.kind);
             let ordinal = ordinals.entry(base.clone()).or_insert(0);
             let key = format!("{base}|{ordinal}");
@@ -102,10 +109,46 @@ impl Builder {
                 trait_name: definition.trait_name.clone(),
                 command: definition.command,
                 test: definition.test || crate::search::is_test_path(&file.path),
+                aliases,
+                level: definition.level,
+                done: definition.done,
             };
             let symbol = self.push(record, key);
             // `down` of a file lines up with its parse's definitions; resolution relies on it.
             self.records[file_index].down.push(symbol);
+        }
+        self.attach_plan_items(file_index);
+    }
+
+    fn attach_plan_items(&mut self, file_index: usize) {
+        let symbols = self.records[file_index].down.clone();
+        let headings: Vec<usize> = symbols
+            .iter()
+            .copied()
+            .filter(|&index| {
+                self.records[index].kind == RecordKind::Symbol(crate::SymbolKind::Heading)
+            })
+            .collect();
+        for symbol in symbols {
+            if self.records[symbol].kind != RecordKind::Symbol(crate::SymbolKind::Item) {
+                continue;
+            }
+            let byte = self.records[symbol].start_byte;
+            if let Some(parent) = headings
+                .iter()
+                .copied()
+                .filter(|&heading| {
+                    let heading = &self.records[heading];
+                    heading.start_byte <= byte && byte < heading.end_byte
+                })
+                .min_by_key(|&heading| {
+                    let heading = &self.records[heading];
+                    heading.end_byte.saturating_sub(heading.start_byte)
+                })
+            {
+                self.records[symbol].up = Some(parent);
+                self.records[parent].down.push(symbol);
+            }
         }
     }
 
@@ -168,6 +211,9 @@ fn blank(kind: RecordKind, name: &str, path: &str) -> Record {
         trait_name: None,
         command: false,
         test: crate::search::is_test_path(path),
+        aliases: Vec::new(),
+        level: 0,
+        done: None,
     }
 }
 

@@ -30,8 +30,16 @@ pub fn extract(source: &str) -> FileParse {
         }
         byte += line.len();
     }
+    let mut definitions = sections(source, &headings);
+    definitions.extend(plan_items(source, &headings));
+    definitions.sort_by_key(|definition| {
+        (
+            definition.start_byte,
+            u8::from(definition.kind != SymbolKind::Heading),
+        )
+    });
     FileParse {
-        definitions: sections(source, &headings),
+        definitions,
         references,
         imports: Vec::new(),
     }
@@ -87,9 +95,114 @@ fn sections(source: &str, headings: &[Heading]) -> Vec<Definition> {
                 doc: first_line_summary(&lines, heading.line as usize),
                 span_hash: digest(span),
                 level: heading.level,
+                done: None,
             }
         })
         .collect()
+}
+
+/// Checklist items (`- [ ]` / `- [x]`) under a §7 Implementation order/plan heading become
+/// individual records so agents can find, read and claim items without loading all of §7.
+fn plan_items(source: &str, headings: &[Heading]) -> Vec<Definition> {
+    let mut items = Vec::new();
+    for (index, heading) in headings.iter().enumerate() {
+        if !is_plan_heading(&heading.title) {
+            continue;
+        }
+        let end_byte = headings[index + 1..]
+            .iter()
+            .find(|later| later.level <= heading.level)
+            .map_or(source.len(), |later| later.byte);
+        items.extend(extract_plan_items(source, heading, end_byte));
+    }
+    items
+}
+
+fn is_plan_heading(title: &str) -> bool {
+    let lower = title.to_ascii_lowercase();
+    lower.contains("implementation order") || lower.contains("implementation plan")
+}
+
+fn extract_plan_items(source: &str, heading: &Heading, end_byte: usize) -> Vec<Definition> {
+    let mut items = Vec::new();
+    let mut group = String::new();
+    let mut fenced = false;
+    let mut byte = 0usize;
+    for (index, line) in source.split_inclusive('\n').enumerate() {
+        let line_end = byte + line.len();
+        let in_section = byte > heading.byte && byte < end_byte;
+        let trimmed = line.trim();
+        let number = index as u32 + 1;
+        if trimmed.starts_with("```") || trimmed.starts_with("~~~") {
+            fenced = !fenced;
+        } else if !fenced && in_section {
+            if let Some(next_group) = group_heading(trimmed) {
+                group = next_group;
+            } else if let Some((done, title)) = checklist_item(trimmed) {
+                let raw = line.trim_end_matches(['\r', '\n']);
+                items.push(Definition {
+                    name: title.to_owned(),
+                    kind: SymbolKind::Item,
+                    container: (!group.is_empty()).then(|| group.clone()),
+                    trait_name: None,
+                    command: false,
+                    test: false,
+                    start_line: number,
+                    end_line: number,
+                    start_byte: byte as u32,
+                    end_byte: (byte + raw.len()) as u32,
+                    name_byte: byte as u32,
+                    signature: if done {
+                        "[done]".to_owned()
+                    } else {
+                        "[open]".to_owned()
+                    },
+                    doc: String::new(),
+                    span_hash: digest(raw.as_bytes()),
+                    level: 0,
+                    done: Some(done),
+                });
+            }
+        }
+        byte = line_end;
+        if byte >= end_byte {
+            break;
+        }
+    }
+    items
+}
+
+fn group_heading(trimmed: &str) -> Option<String> {
+    if let Some(rest) = trimmed.strip_prefix("**") {
+        let title = rest.split_once("**").map_or(rest, |(bold, _)| bold).trim();
+        return (!title.is_empty()).then(|| title.to_owned());
+    }
+    let level = trimmed.bytes().take_while(|byte| *byte == b'#').count();
+    if level > 0 && level <= 6 && trimmed.as_bytes().get(level) == Some(&b' ') {
+        let title = trimmed[level..].trim().trim_end_matches('#').trim();
+        return (!title.is_empty()).then(|| title.to_owned());
+    }
+    None
+}
+
+fn checklist_item(trimmed: &str) -> Option<(bool, &str)> {
+    let (done, rest) = if let Some(rest) = trimmed
+        .strip_prefix("- [ ] ")
+        .or_else(|| trimmed.strip_prefix("* [ ] "))
+    {
+        (false, rest)
+    } else if let Some(rest) = trimmed
+        .strip_prefix("- [x] ")
+        .or_else(|| trimmed.strip_prefix("- [X] "))
+        .or_else(|| trimmed.strip_prefix("* [x] "))
+        .or_else(|| trimmed.strip_prefix("* [X] "))
+    {
+        (true, rest)
+    } else {
+        return None;
+    };
+    let title = rest.trim();
+    (!title.is_empty()).then_some((done, title))
 }
 
 /// Code names in backticks on one line. Only names that look like code count (snake_case,

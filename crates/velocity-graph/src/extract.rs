@@ -35,6 +35,7 @@ pub enum SymbolKind {
     Variant,
     Theorem,
     Heading,
+    Item,
 }
 
 impl SymbolKind {
@@ -53,7 +54,13 @@ impl SymbolKind {
             Self::Variant => "variant",
             Self::Theorem => "theorem",
             Self::Heading => "section",
+            Self::Item => "item",
         }
+    }
+
+    /// Whether this symbol is documentation structure rather than executable code.
+    pub fn is_doc(self) -> bool {
+        matches!(self, Self::Heading | Self::Item)
     }
 
     /// Kinds a call can land on.
@@ -97,6 +104,9 @@ pub struct Definition {
     pub span_hash: String,
     /// A Markdown heading's level; 0 for code.
     pub level: u8,
+    /// Completion state for a §7 checklist item (`Some(true)` for `[x]`, `Some(false)` for `[ ]`).
+    #[serde(default)]
+    pub done: Option<bool>,
 }
 
 impl Definition {
@@ -130,6 +140,7 @@ impl Definition {
             doc: String::new(),
             span_hash: digest(trimmed.as_bytes()),
             level: 0,
+            done: None,
         }
     }
 }
@@ -376,6 +387,7 @@ impl<'source> Collector<'source> {
             doc: doc_summary(&self.lines, start_line as usize),
             span_hash: digest(self.source.as_bytes().get(start..end).unwrap_or_default()),
             level: 0,
+            done: None,
         };
         self.definitions.insert(name_byte, definition);
     }
@@ -633,6 +645,6 @@ fn priority(kind: SymbolKind) -> u8 {
         | SymbolKind::Variant
         | SymbolKind::Component
         | SymbolKind::Theorem => 1,
-        SymbolKind::Heading => 0,
+        SymbolKind::Heading | SymbolKind::Item => 0,
     }
 }

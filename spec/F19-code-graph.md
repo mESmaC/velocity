@@ -43,7 +43,7 @@ Its accuracy rules come from the A.TXY address memory in MCL4-COE and `elem`: ro
 
 | Plane | Records | Links |
 |---|---|---|
-| 1 · Symbols | functions, methods, types (struct, enum, trait, class, interface), Rust named fields and enum variants, constants, macros, Svelte components, Lean theorems and Markdown headings | UP to the file; `calls`, `implements`, `references`; `implements` from a trait method's implementation to its declaration; `calls` from frontend code into a Tauri command (`commands.checkForUpdate`, `invoke("check_for_update")`) or an imported Svelte component; `mentions` from a doc heading to the code its section names in backticks |
+| 1 · Symbols | functions, methods, types (struct, enum, trait, class, interface), Rust named fields and enum variants, constants, macros, Svelte components, Lean theorems, Markdown headings and §7 checklist items | UP to the file (or the §7 heading for plan items); `calls`, `implements`, `references`; `implements` from a trait method's implementation to its declaration; `calls` from frontend code into a Tauri command (`commands.checkForUpdate`, `invoke("check_for_update")`) or an imported Svelte component; `mentions` from a doc heading to the code its section names in backticks |
 | 2 · Files | each tracked source and Markdown file | UP to the subsystem, DOWN to its symbols; `imports` to the files and the symbols it imports (through `export * from` barrels) |
 | 3 · Subsystems | workspace members and packages (Cargo members, `package.json` workspaces and packages, Go modules) and otherwise top-level folders | DOWN to their files; `depends` from the manifests |
 
@@ -55,7 +55,8 @@ Its accuracy rules come from the A.TXY address memory in MCL4-COE and `elem`: ro
     Elaborated terms, tactic calls and notation have no edges.
   - Python, Go, C#, Java, C and C++ use grammar tags for definitions, and classify receiver calls as leads when the receiver type is unknown.
     Python also records explicit imports.
-  - Markdown has headings and classified mentions.
+  - Markdown has headings, classified mentions and per-item `item` records for §7 implementation-order checklists with done and live claimed state (#538).
+    Spec headings index their section numbers and feature IDs as aliases (`§7`, `§3.1`, `F16`, `§3.1/F9`), and headings print once per result line without repeating the title as a signature (#538).
     TOML, JSON, YAML, SQL, shell scripts and other unsupported languages have file records only, with supported manifests contributing subsystem dependencies.
   - Receiver calls without type evidence, macro argument calls and non-unique name matches carry their existing classified provenance.
     Dynamic JS and Svelte component expressions and Rust field accesses requiring type inference have no confirmed edges.
@@ -106,7 +107,7 @@ The tools skip the staleness check because a commit never changes.
 |---|---|
 | `velocity-graph version` | Prints the schema version, the indexer's release version, the parser version and the tools it answers. |
 | `velocity-graph index --repository <path> --commit <revision> --cache <folder>` | Indexes the commit and prints its full ID, file, symbol and subsystem counts, parses made and reused, time, and skipped files by reason. |
-| `velocity-graph query --repository <path> --commit <revision> --cache <folder> <tool> [<json-arguments>]` | Answers `graph_find`, `graph_read`, `graph_impact` or `graph_run` with the MCP tool's arguments and text. |
+| `velocity-graph query --repository <path> --commit <revision> --cache <folder> <tool> [<json-arguments>]` | Answers `graph_find`, `graph_read`, `graph_spec`, `graph_impact` or `graph_run` with the MCP tool's arguments and text. |
 | `velocity-graph serve --repository <path> --cache <folder>` | Reads one JSON request per line, `{id?, commit, tool?, arguments?}`, and answers each on one line with one warm index, re-indexing only files whose blobs changed between commits. |
 
 Every answer is one JSON object carrying `schema` (currently 1), which changes only when a field changes meaning or goes away.
@@ -133,26 +134,26 @@ Recheck with `rosen run -- cargo run -p velocity-graph --example graph_stats -- 
 Every session Velocity starts, on every provider and in every role, gets an MCP server named `velocity-graph` in `session/new`, beside `airc` (§3.2, F14).
 The name carries Velocity's reserved prefix, so it never clashes with a server of your own, such as Graphify's.
 It runs Velocity's own executable as `velocity --graph-mcp <app-data> <project-id> <workspace> [thread]`.
-The four discovery tools advertise `anthropic/alwaysLoad` in `tools/list` so compatible Claude Code versions (2.1.325 and later) keep them in context.
+The discovery and search tools advertise `anthropic/alwaysLoad` in `tools/list` so compatible Claude Code versions (2.1.325 and later) keep them in context.
 
 | Tool | Does |
 |---|---|
-| `graph_find { query, plane?, kind?, limit? }` | Ranks candidates for a name or a plain-language description. Matching is by words, with camelCase and snake_case split, word stems and rarer words weighted higher. A record's score scales with the square of the share of the query's words it matches. An exact name ranks first, then names that start with the query. Tests, examples and docs rank lower unless the query asks for them. Returns addresses with kind, name, file:line and signature. A result that is the only exact match for the name is marked `exact`. |
-| `graph_read { target, source? }` | One record by address, exact name or path. A file gives an outline of its symbols in source order with their addresses and line ranges. A symbol gives its signature, doc summary, location and links grouped by relation with their counts. `source: true` adds the record's source lines. Fails as the accuracy rules say. |
+| `graph_find { query, plane?, kind?, limit? }` | Ranks candidates for a name, spec alias or plain-language description. Matching is by words, with camelCase and snake_case split, intact section references (`§7`, `§3.1`), word stems and rarer words weighted higher. A record's score scales with the square of the share of the query's words it matches. An exact name or alias ranks first, then names that start with the query. Tests, examples and docs rank lower unless the query asks for them. Returns addresses with kind, name, file:line and signature (printing Markdown headings once and annotating §7 items with `[done]`, `[open]` or `[open, claimed by <nick>]`). A result that is the only exact match for the name or alias is marked `exact`. |
+| `graph_read { target, source? }` | One record by address, exact name, spec alias (`§7`, `§3.1`, `F16`) or path. A file gives an outline of its symbols in source order with their addresses and line ranges. A §7 heading summarizes its open, claimed and done items with addresses. A symbol gives its signature, doc summary, location and links grouped by relation with their counts. `source: true` adds the record's source lines. Fails as the accuracy rules say. |
+| `graph_spec { section?, depth?, open_only? }` | Returns the split spec's heading tree with addresses, section aliases and folded subsection or §7 item counts in one compact call. Passing `section` (such as `§7`, `§3.1` or `F5`) or `depth` expands that subtree; `open_only` filters §7 to open items. |
 | `graph_impact { targets, depth? }` | What depends on symbols or files, followed transitively through calls, implementations, type uses, imports and doc mentions (2 hops by default, at most 6). A type brings its methods and a file its symbols, and an implementation of a trait method brings the callers of the trait method. A hub (a record with at least the 99th percentile of incoming links, and at least 50) is listed but not followed. `ambiguous` and `unconfirmed` links are listed only as direct leads. The answer is grouped by subsystem with depth, and links found in the source are listed apart from leads to check. It says that no dependents doesn't prove code unused. |
 | `graph_overlaps { paths? }` | Live Rosen overlap paths, edited symbols on each side, and the names both changes edited. Omitting paths checks the workspace's own claims and edits. |
 | `graph_run { program }` | A pointer program of up to 16 steps, run in one call over one register: `FIND`, `AT`, `READ`, `UP`, `DOWN`, `FOLLOW <relation> [in\|out] [all]`, `FILTER <kind\|plane\|path glob\|name>`, `PATH <target>`, `COUNT`, `SOURCE`. Returns the result and a one-line audit for each step (what it did and how many records it held). `PATH` lists each hop with its relation and provenance, and the path's confidence: that of its weakest hop. It never passes through a hub. For example, `FIND "approval record"; FOLLOW calls in; FILTER path crates/velocity-github/**; COUNT` replaces several searches and reads with one call. |
+| `graph_grep { pattern, path?, glob?, case_insensitive?, fixed?, files_only?, context?, limit? }` | Searches workspace files with ripgrep (`--no-require-git`, falling back to an `ignore`-crate walk when `rg` is absent), respecting `.gitignore` and capping output to the budget. |
+| `graph_glob { pattern, path?, limit? }` | Lists workspace files matching a glob pattern (including `{a,b}` brace expansion), respecting `.gitignore` and capping output to the budget. |
 
 - **Budget.**
   Every answer is capped at 8,000 characters.
   A cut answer says so on its first line, with how much was kept and how to narrow it.
-- **Instructions.**
-  The server's MCP instructions state when the graph is the better path (where something lives, what calls it, what a change affects) and when grep is (exact text), that a record's lines are what to read, and that `inferred`, `ambiguous` and `unconfirmed` links are leads to check.
-  They are written as facts, not orders: imperative rules read like prompt injection and get ignored.
-- **Session-start map.**
-  When the index is ready within 1.5 s of the agent connecting, the instructions end with a map of about 250 tokens: the workspace, its file and symbol counts, its biggest subsystems and its most-used symbols with their addresses.
-  A new build thread with the graph enabled starts its first prompt with guidance on finding code and reading symbol outlines.
-  The prompt includes up to five `graph_find` matches for the task title when available within five seconds.
+- **Instructions and session-start map.**
+  Shared server guidance and the session-start map (about 250 tokens: the workspace, its file and symbol counts, its biggest subsystems and its most-used symbols with their addresses) are published once in the session preface rather than in MCP `initialize.instructions` or repeated across tool descriptions (#538).
+  Guidance is written as facts, not orders: imperative rules read like prompt injection and get ignored.
+  A new session with the graph enabled starts its first prompt with that guidance, the workspace map when available within the startup budget, and up to five `graph_find` matches for the task title when one is set.
 
 **Measuring it.**
 The graph exists to save time and tokens without costing accuracy, so Velocity measures it per project and shows reported token counts by thread.

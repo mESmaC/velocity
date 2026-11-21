@@ -6825,6 +6825,7 @@ dependencies = [
  "tree-sitter-rust",
  "tree-sitter-typescript",
  "velocity-rosen",
+ "velocity-spec",
 ]
 
 [[package]]
