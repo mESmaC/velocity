@@ -23,8 +23,8 @@ use velocity_store::issues::ThreadIssue;
 use velocity_store::{ProjectItem, TaskAttribution, VersionControl};
 use velocity_threads::continuous_dispatch::{
     DispatchView, DispatchWork, SkippedIssue, dispatchable_issue, dispatchable_task,
-    integration_notice, issue_skip_reason, ordered_work, plan_task, stalled_landed_issues,
-    uncovered_base_notice,
+    integration_notice, issue_number_from_piece, issue_skip_reason, ordered_work, plan_task,
+    stale_claim_reason, stalled_landed_issues, uncovered_base_notice,
 };
 
 #[derive(Clone, Default)]
@@ -237,6 +237,7 @@ pub(crate) struct DispatchHealthSnapshot {
     pub open_issues: usize,
     pub ready_count: usize,
     pub skipped: Vec<SkippedIssue>,
+    pub stale_released: Vec<(u32, String)>,
     pub stalled_landed: Vec<u32>,
     pub last_dispatched_secs: Option<u64>,
 }
@@ -257,7 +258,19 @@ pub(crate) fn health_snapshot(
         .try_state::<LastDispatched>()
         .and_then(|times| lock(times.inner(), "last dispatched").ok())
         .and_then(|times| times.get(&identifier).copied());
-    let mut claimed = claimed_pieces(application, identifier).unwrap_or_default();
+    let (live_claims, reaped) =
+        crate::airc_claims::live_dispatch_claims(application, identifier).unwrap_or_default();
+    let mut claimed: HashSet<String> = live_claims
+        .iter()
+        .map(|claim| claim.key().to_owned())
+        .collect();
+    let stale_released: Vec<(u32, String)> = reaped
+        .iter()
+        .filter_map(|item| {
+            issue_number_from_piece(&item.piece)
+                .map(|number| (number, stale_claim_reason(&item.nick)))
+        })
+        .collect();
     let unblocks = unblock_counts(application, &backlog.repository).unwrap_or_default();
     let store = lock(
         application.state::<ManagedStateStore>().inner(),
@@ -295,6 +308,7 @@ pub(crate) fn health_snapshot(
         open_issues: backlog.issues.len(),
         ready_count,
         skipped,
+        stale_released,
         stalled_landed,
         last_dispatched_secs,
     })
@@ -1137,8 +1151,7 @@ fn dispatch_claims(
     application: &AppHandle,
     identifier: u32,
 ) -> Result<Vec<velocity_airc::Claim>, String> {
-    let channel = crate::airc_access::open_channel(application, identifier)?;
-    channel.claims().map_err(|error| error.to_string())
+    crate::airc_claims::live_dispatch_claims(application, identifier).map(|(claims, _)| claims)
 }
 
 fn save_error(application: &AppHandle, identifier: u32, error: String) -> Result<(), String> {

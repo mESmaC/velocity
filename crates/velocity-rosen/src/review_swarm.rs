@@ -176,6 +176,21 @@ pub async fn membership(
         .await?)
 }
 
+/// Leaves the Rosen channel for `duty-<nickname>` when a review swarm worker ends (#566).
+pub async fn leave(server: &ProjectServer, nickname: &str) -> Result<(), RosenError> {
+    let client = crate::connection::requests(server.endpoint()).await?;
+    let member = format!("duty-{nickname}");
+    if client
+        .channel_presence()
+        .await?
+        .iter()
+        .any(|known| known.member == member && known.left_at.is_none())
+    {
+        client.channel_leave(&member).await?;
+    }
+    Ok(())
+}
+
 pub async fn claim(
     member: &ChannelMembership,
     piece: &str,

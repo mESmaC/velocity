@@ -291,6 +291,9 @@ async fn update_workspace(
     if matches!(action, RosenThreadAction::Abandon) {
         let root = thread.worktree_path.as_deref().map(Path::new);
         let result = crate::rosen::abandon(application, key.0, thread, change).await;
+        if result.is_ok() {
+            let _ = crate::airc_claims::release(application, key);
+        }
         if result.is_err()
             && let Some(root) = root
             && root.is_dir()

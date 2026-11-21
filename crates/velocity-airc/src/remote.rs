@@ -206,9 +206,12 @@ impl Remote {
     pub(crate) fn join(&self, member: &str, requested: &str) -> Result<String, Error> {
         let scoped = self.member(member);
         let base = crate::channel::nick(requested, crate::channel::NICK_LIMIT);
-        let machine = std::env::var("COMPUTERNAME")
-            .or_else(|_| std::env::var("HOSTNAME"))
-            .unwrap_or_else(|_| "velocity".into());
+        let machine = local_hostname();
+        let machine = if machine.is_empty() {
+            "velocity".into()
+        } else {
+            machine
+        };
         self.run(move |client| async move {
             let members = client.channel_presence().await?;
             if let Some(known) = members
@@ -392,10 +395,47 @@ impl Remote {
     }
 }
 
-pub(crate) fn member_scope(app_data: &Path) -> String {
-    let machine = std::env::var("COMPUTERNAME")
+pub(crate) fn local_hostname() -> String {
+    std::env::var("COMPUTERNAME")
         .or_else(|_| std::env::var("HOSTNAME"))
-        .unwrap_or_default();
+        .unwrap_or_default()
+}
+
+/// Classifies a raw wire member ID on a Rosen server (#566).
+/// Returns `Some(local_member_id)` when the member belongs to this machine and
+/// installation, or `None` for members on other machines and control identities.
+pub(crate) fn classify_local_member(
+    scope: &str,
+    hostname: &str,
+    raw_member: &str,
+    presence_machine: Option<&str>,
+) -> Option<String> {
+    if let Some(local) = raw_member.strip_prefix(scope) {
+        return (!local.is_empty()).then(|| local.to_owned());
+    }
+    if raw_member.contains('/')
+        || raw_member.starts_with("velocity-machine-")
+        || matches!(raw_member, "you" | "velocity")
+    {
+        return None;
+    }
+    // Unscoped local members (e.g. review-swarm `duty-<nick>` joined with machine "velocity"
+    // or legacy pre-#410 local members) belong to this machine unless presence identifies
+    // another host or enrolled machine.
+    match presence_machine {
+        None => Some(raw_member.to_owned()),
+        Some(machine)
+            if machine == "velocity"
+                || (!hostname.is_empty() && machine.eq_ignore_ascii_case(hostname)) =>
+        {
+            Some(raw_member.to_owned())
+        }
+        Some(_) => None,
+    }
+}
+
+pub(crate) fn member_scope(app_data: &Path) -> String {
+    let machine = local_hostname();
     let location = std::fs::canonicalize(app_data).unwrap_or_else(|_| app_data.to_owned());
     let identity = format!("{machine}/{}", location.to_string_lossy())
         .replace('\\', "/")

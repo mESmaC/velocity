@@ -726,6 +726,15 @@ impl ThreadRuntimes {
             .is_some_and(|thread| thread.phase != SessionPhase::Ended)
     }
 
+    /// Thread IDs in `project` whose ACP runtime is still active (#566).
+    pub fn live_threads_for(&self, project: u32) -> std::collections::HashSet<u32> {
+        self.threads
+            .iter()
+            .filter(|((owner, _), thread)| *owner == project && thread.phase != SessionPhase::Ended)
+            .map(|((_, id), _)| *id)
+            .collect()
+    }
+
     /// The thread's current session, or the one [Self::stop] is ending after it removed the
     /// thread's record. A session's pump reports its end only while it is current, and that
     /// report is what wakes merge cleanup and deletion waiting for the agent to stop (#278).

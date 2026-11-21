@@ -30,7 +30,9 @@ use velocity_rosen::landing::LandCheckOutcome;
 use velocity_rosen::{ProjectServer, integration, post_land};
 use velocity_store::continuous_dispatch::busy_count;
 use velocity_store::{ProjectItem, ReviewStage, ThreadState};
-use velocity_threads::continuous_dispatch::summarize_skipped_issues;
+use velocity_threads::continuous_dispatch::{
+    issue_number_from_piece, stale_claim_reason, summarize_skipped_issues,
+};
 use velocity_threads::landing_runner::refusal_instructions;
 
 use crate::continuous_dispatch::DispatchHealthSnapshot;
@@ -320,6 +322,52 @@ pub(crate) fn record_parked_manual(application: &AppHandle, project: u32, issue:
         .parked
         .entry(issue)
         .or_insert(ParkedRecord::Manual { seen_secs: now });
+}
+
+/// Records stale local AIRC claims that Velocity released so project health reports
+/// `"stale AIRC claim by <nick>, released"` rather than `"claimed in AIRC"` (#566).
+pub(crate) fn record_stale_claim_released(
+    application: &AppHandle,
+    project: u32,
+    project_name: &str,
+    reaped: &[velocity_airc::ReapedClaim],
+) {
+    if reaped.is_empty() {
+        return;
+    }
+    let now_ms = unix_millis();
+    let now = now_ms / 1000;
+    let mut items = Vec::new();
+    for claim in reaped {
+        let reason = stale_claim_reason(&claim.nick);
+        let label = match issue_number_from_piece(&claim.piece) {
+            Some(number) => format!("#{number}"),
+            None => claim.piece.clone(),
+        };
+        crate::diagnostics::record(SOURCE, &format!("{project_name}: {label} ({reason})"));
+        let item = ProjectHealthItem::new(
+            format!("stale-claim:{}", claim.piece),
+            HealthSignalKind::DispatchIdle,
+            HealthSeverity::Info,
+            format!("{label} had a stale AIRC claim"),
+            reason,
+            now_ms,
+        );
+        record_recent_action(application, project, item.clone(), now);
+        items.push(item);
+    }
+    let Some(managed) = application.try_state::<ManagedProjectHealth>() else {
+        return;
+    };
+    let updated = {
+        let mut reg = registry(&managed);
+        let list = reg.views.entry(project).or_default();
+        for item in items {
+            upsert_item(list, item);
+        }
+        list.clone()
+    };
+    emit_view(application, project, updated);
 }
 
 /// Queues a release cut that started an integration build so Velocity dispatches
@@ -1195,6 +1243,15 @@ fn dispatch_idle_detail(project: &ProjectItem, dispatch: &DispatchHealthSnapshot
     }
     if velocity_rosen::memory::is_low() {
         parts.push("machine memory is low".into());
+    }
+    if !dispatch.stale_released.is_empty() {
+        let released: Vec<String> = dispatch
+            .stale_released
+            .iter()
+            .take(6)
+            .map(|(number, reason)| format!("#{number} ({reason})"))
+            .collect();
+        parts.push(released.join(", "));
     }
     if !dispatch.skipped.is_empty() {
         parts.push(summarize_skipped_issues(&dispatch.skipped, 6));

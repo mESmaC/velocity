@@ -9,7 +9,9 @@ use velocity_core::issue_holds::{
 use velocity_github::{GitHubIssue, IssueClient, IssueState};
 use velocity_store::continuous_dispatch::{available_task, busy_count};
 use velocity_store::issues::{ThreadIssue, issue_thread};
-use velocity_store::{ProjectItem, StateStore, TaskAttribution, TaskItem, VersionControl};
+use velocity_store::{
+    ProjectItem, StateStore, TaskAttribution, TaskItem, ThreadState, VersionControl,
+};
 
 use crate::{LaunchPlan, dispatch::DispatchError};
 
@@ -574,4 +576,205 @@ pub fn plan_task(
     )?;
     plan.title.request = None;
     Ok(plan)
+}
+
+/// Snapshot of local AIRC members currently alive on this machine for one project (#566).
+#[derive(Clone, Debug, Default)]
+pub struct LiveLocalMembers {
+    /// Duty scout or review-swarm worker nicknames with a running or claiming session.
+    pub running_scouts: HashSet<String>,
+    /// Build thread IDs with a live ACP session in `ThreadRuntimes`.
+    pub live_threads: HashSet<u32>,
+    /// Spec interview thread IDs currently running.
+    pub running_interviews: HashSet<u32>,
+}
+
+/// Result of splitting a project's AIRC claims into live holders vs dead local holders (#566).
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct FilteredClaims {
+    /// Active piece keys (remote claims and live local claims) that hold work out of dispatch.
+    pub active: HashSet<String>,
+    /// Claims held by known-dead local members that dispatch ignores and releases.
+    pub dead_local: Vec<velocity_airc::Claim>,
+}
+
+/// Reports a stale local AIRC claim released for project health and diagnostics (#566).
+pub fn stale_claim_reason(nick: &str) -> String {
+    format!("stale AIRC claim by {nick}, released")
+}
+
+/// Extracts the GitHub issue number from an `issue:<n>` piece key.
+pub fn issue_number_from_piece(piece: &str) -> Option<u32> {
+    piece
+        .strip_prefix("issue:")
+        .and_then(|value| value.parse::<u32>().ok())
+}
+
+/// Whether a local AIRC member identity belongs to a live thread, interview or scout on
+/// this machine (#566). Foreign machine-scoped members and system names return `true`.
+pub fn is_live_local_member(project: &ProjectItem, member: &str, live: &LiveLocalMembers) -> bool {
+    if member.contains('/')
+        || member.starts_with("velocity-machine-")
+        || matches!(member, "you" | "velocity")
+    {
+        return true;
+    }
+    if let Some(nickname) = member.strip_prefix("duty-") {
+        return live.running_scouts.contains(nickname);
+    }
+    if let Some(id) = member
+        .strip_prefix("spec-")
+        .and_then(|value| value.parse::<u32>().ok())
+    {
+        return live.running_interviews.contains(&id)
+            || project
+                .threads
+                .iter()
+                .any(|thread| thread.id == id && thread.state == ThreadState::Spec);
+    }
+    let thread = project
+        .threads
+        .iter()
+        .find(|thread| thread.matches_airc_member(member))
+        .or_else(|| {
+            velocity_core::thread_titles::thread_id_from_member(member)
+                .and_then(|id| project.threads.iter().find(|thread| thread.id == id))
+        });
+    match thread {
+        Some(thread) => {
+            !thread.supervision.released
+                && !matches!(thread.state, ThreadState::Merged | ThreadState::Done)
+        }
+        None => velocity_core::thread_titles::thread_id_from_member(member)
+            .is_some_and(|id| live.live_threads.contains(&id)),
+    }
+}
+
+/// Splits `claims` into active claims that hold work out of dispatch and dead local claims
+/// that dispatch must ignore and release (#566). Claims owned by other machines stay active.
+pub fn filter_live_claims(
+    project: &ProjectItem,
+    claims: &[velocity_airc::ScopedClaim],
+    live: &LiveLocalMembers,
+) -> FilteredClaims {
+    let mut result = FilteredClaims::default();
+    for scoped in claims {
+        if !scoped.local || is_live_local_member(project, &scoped.claim.member, live) {
+            result.active.insert(scoped.claim.key().to_owned());
+        } else {
+            result.dead_local.push(scoped.claim.clone());
+        }
+    }
+    result
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use velocity_airc::{Claim, ScopedClaim};
+    use velocity_store::ThreadItem;
+
+    fn sample_claim(member: &str, nick: &str, piece: &str, local: bool) -> ScopedClaim {
+        ScopedClaim {
+            claim: Claim {
+                member: member.into(),
+                nick: nick.into(),
+                piece: piece.into(),
+                task: format!("Work on {piece}"),
+                branch: String::new(),
+                change: None,
+                files: Vec::new(),
+                since: "2026-11-19T23:12:00.000Z".into(),
+            },
+            local,
+        }
+    }
+
+    fn sample_issue(number: u32) -> GitHubIssue {
+        GitHubIssue {
+            id: format!("I_{number}"),
+            number,
+            title: format!("Issue #{number}"),
+            body: String::new(),
+            state: IssueState::Open,
+            author: None,
+            labels: Vec::new(),
+            scout: None,
+            milestone: None,
+            url: format!("https://github.com/owner/repo/issues/{number}"),
+            created_at: "2026-11-19T23:12:00Z".into(),
+            updated_at: "2026-11-19T23:12:00Z".into(),
+            closed_at: None,
+            open_blocker_count: 0,
+            open_blockers: Vec::new(),
+        }
+    }
+
+    // Risk (#566): a dead local scout or ended/deleted thread holding an AIRC piece must
+    // not keep an issue out of dispatch, while live local and remote claims remain active.
+    #[test]
+    fn dead_local_claims_are_ignored_for_dispatch_while_live_and_remote_hold() {
+        let mut project = ProjectItem::new(1, "collapse".into(), "Z:/repo".into());
+        let mut merged = ThreadItem::new(10, "Finished".into());
+        merged.state = ThreadState::Merged;
+        let mut working = ThreadItem::new(20, "Active".into());
+        working.state = ThreadState::Working;
+        project.threads.push(merged);
+        project.threads.push(working);
+
+        let mut live = LiveLocalMembers::default();
+        live.running_scouts.insert("scout-2".into());
+
+        let claims = vec![
+            sample_claim("duty-scout-1", "scout-1-1", "issue:152", true),
+            sample_claim("thread-10", "finished-10", "issue:153", true),
+            sample_claim("thread-99", "deleted-99", "issue:154", true),
+            sample_claim("thread-20", "active-20", "issue:155", true),
+            sample_claim("duty-scout-2", "scout-2", "issue:156", true),
+            sample_claim("abcdef0123456789/thread-5", "remote-5", "issue:157", false),
+        ];
+        let filtered = filter_live_claims(&project, &claims, &live);
+
+        assert_eq!(filtered.dead_local.len(), 3);
+        assert!(dispatchable_issue(
+            &project,
+            "owner/repo",
+            &sample_issue(152),
+            &filtered.active
+        ));
+        assert!(dispatchable_issue(
+            &project,
+            "owner/repo",
+            &sample_issue(153),
+            &filtered.active
+        ));
+        assert!(dispatchable_issue(
+            &project,
+            "owner/repo",
+            &sample_issue(154),
+            &filtered.active
+        ));
+        assert!(!dispatchable_issue(
+            &project,
+            "owner/repo",
+            &sample_issue(155),
+            &filtered.active
+        ));
+        assert!(!dispatchable_issue(
+            &project,
+            "owner/repo",
+            &sample_issue(156),
+            &filtered.active
+        ));
+        assert!(!dispatchable_issue(
+            &project,
+            "owner/repo",
+            &sample_issue(157),
+            &filtered.active
+        ));
+        assert_eq!(
+            stale_claim_reason("scout-1-1"),
+            "stale AIRC claim by scout-1-1, released"
+        );
+    }
 }

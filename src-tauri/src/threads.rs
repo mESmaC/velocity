@@ -808,8 +808,10 @@ async fn run_thread(
         if let Some(change) = &folder.rosen_change {
             let abandoned =
                 crate::rosen::abandon_unstarted(&application, key.0, &folder.path, change).await;
+            let _ = crate::airc_claims::release(&application, key);
             return report(abandoned);
         }
+        let _ = crate::airc_claims::release(&application, key);
         return remove_deleted_worktree(plan.worktree.repository_root, folder.path).await;
     }
     report(record_names(
@@ -836,6 +838,8 @@ async fn run_thread(
         }
         if closed {
             crate::rosen_events::run_follow_ups(&application, key.0).await;
+        } else {
+            let _ = crate::airc_claims::release(&application, key);
         }
         return;
     }
@@ -978,6 +982,7 @@ async fn run_goal_member(application: AppHandle, key: ThreadKey, mut plan: GoalM
             if folder.rosen_change.is_some() {
                 discard_goal_folder(&application, key, &plan, &folder).await;
             }
+            let _ = crate::airc_claims::release(&application, key);
             finish_goal_left(&application, key, left_entry);
         }
         Ok((ClaimPhaseOutcome::Claimed(claimed), session)) => {

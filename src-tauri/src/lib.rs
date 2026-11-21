@@ -425,6 +425,7 @@ pub fn run() -> anyhow::Result<()> {
             base_ci::initialize(application.handle());
             project_health::initialize(application.handle());
             sweeps::initialize(application.handle())?;
+            airc_claims::initialize(application.handle());
             airc_delivery::initialize(application.handle());
             airc_modal::initialize(application.handle());
             updates::initialize(application.handle());

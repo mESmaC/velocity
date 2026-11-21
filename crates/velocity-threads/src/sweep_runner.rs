@@ -354,6 +354,14 @@ impl Sweep {
         let session = crate::spawn_session(plan.agent.clone(), setup, inputs);
         let (counts, failure) = self.follow(host, session, &report).await;
         let _ = std::fs::remove_file(&report);
+        // Release any AIRC pieces held by this duty scout and leave the channel on end (#566).
+        let _ = crate::review_swarm_session::release_duty_airc(
+            &self.runner.review_swarms.app_data,
+            self.key.0,
+            &self.key.1,
+            self.roster.project.rosen_in_use(),
+        )
+        .await;
         self.finish(host, true, failure.as_deref(), counts);
     }
 

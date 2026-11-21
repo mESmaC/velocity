@@ -66,6 +66,7 @@ impl Job {
         .await
         .map_err(|error| error.to_string())?
         {
+            let _ = review_swarm::leave(&server, &key.1).await;
             return Err("the review is claimed by another agent".into());
         }
         // A crash during a filing must not leave all future findings behind its claim.
@@ -95,14 +96,24 @@ impl Job {
             .await
         }
         .await;
-        member
+        // Release every piece held by this duty scout (both its unscoped review-swarm
+        // membership and its scoped AIRC MCP member) and leave the AIRC channel (#566).
+        let filing_released = member
             .release_piece(Some("review-swarm:issue-filing"))
             .await
-            .map_err(|error| error.to_string())?;
-        member
+            .map_err(|error| error.to_string());
+        let piece_released = member
             .release_piece(Some(&piece))
             .await
-            .map_err(|error| error.to_string())?;
+            .map_err(|error| error.to_string());
+        let left_review = review_swarm::leave(&server, &key.1)
+            .await
+            .map_err(|error| error.to_string());
+        let left_airc = release_duty_airc(&self.runner.app_data, key.0, &key.1, true).await;
+        filing_released?;
+        piece_released?;
+        left_review?;
+        left_airc?;
         result
     }
 
@@ -445,6 +456,29 @@ impl Job {
             let _ = std::fs::remove_file(path);
         }
     }
+}
+
+/// Releases any AIRC pieces held by `duty-<nickname>` (including issues claimed through
+/// the scout's scoped AIRC MCP server) and leaves the channel when the scout ends (#566).
+pub(crate) async fn release_duty_airc(
+    app_data: &std::path::Path,
+    project: u32,
+    nickname: &str,
+    rosen: bool,
+) -> Result<(), String> {
+    let app_data = app_data.to_path_buf();
+    let member = velocity_acp::client::duty_member(nickname);
+    tokio::task::spawn_blocking(move || {
+        let channel =
+            velocity_airc::Channel::open_for_project(&app_data, &project.to_string(), rosen)
+                .map_err(|error| error.to_string())?;
+        channel
+            .release_member_and_leave(&member, None)
+            .map(|_| ())
+            .map_err(|error| error.to_string())
+    })
+    .await
+    .map_err(|error| error.to_string())?
 }
 
 fn rosen_server(

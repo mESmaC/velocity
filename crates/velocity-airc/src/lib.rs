@@ -12,6 +12,7 @@ mod presence;
 mod process;
 mod protocol;
 mod read_tools;
+mod reap;
 mod rebase;
 mod remote;
 mod remote_claims;
@@ -39,6 +40,7 @@ pub use launch::{
 pub use next_work_tools::NextWorkRequest;
 pub use payload::{EventPayload, OverlapDetail, OverlapSymbols, WokenDetail};
 pub use protocol::serve;
+pub use reap::{ReapedClaim, ScopedClaim};
 pub use routing::{MessageMode, mode_for};
 pub use tasks::{TaskChange, TaskListRow, TaskTarget};
 

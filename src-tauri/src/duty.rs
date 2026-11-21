@@ -195,6 +195,14 @@ fn stop_sessions(application: &AppHandle, project: u32, nicknames: &[String]) {
             sweeps.dismiss(project, nickname);
         }
     }
+    // Release any AIRC pieces held by dismissed or stopped scouts and leave the channel (#566).
+    let handle = application.clone();
+    let names = nicknames.to_vec();
+    tauri::async_runtime::spawn_blocking(move || {
+        for nickname in names {
+            let _ = crate::airc_claims::release_duty_member(&handle, project, &nickname);
+        }
+    });
 }
 
 fn apply_start_or_add(

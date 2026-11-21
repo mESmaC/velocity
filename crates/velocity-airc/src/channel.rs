@@ -707,7 +707,7 @@ pub(crate) fn entry(entries: &[Entry], kind: &str, member: &str, nick: &str, tex
     }
 }
 
-fn presence(entries: &[Entry]) -> BTreeMap<String, Presence> {
+pub(crate) fn presence(entries: &[Entry]) -> BTreeMap<String, Presence> {
     let mut members = BTreeMap::new();
     for entry in entries
         .iter()

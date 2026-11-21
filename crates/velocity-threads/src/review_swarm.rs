@@ -28,6 +28,8 @@ struct Running {
 #[derive(Default)]
 struct State {
     running: BTreeMap<WorkerKey, Running>,
+    /// Workers currently claiming a review target before entering `running` (#566).
+    claiming: BTreeSet<WorkerKey>,
     planning: BTreeSet<u32>,
     retry: BTreeMap<WorkerKey, Instant>,
     instructions: BTreeMap<u32, String>,
@@ -99,7 +101,13 @@ impl ReviewSwarms {
     }
 
     pub fn running(&self) -> BTreeSet<WorkerKey> {
-        self.lock().running.keys().cloned().collect()
+        let state = self.lock();
+        state
+            .running
+            .keys()
+            .cloned()
+            .chain(state.claiming.iter().cloned())
+            .collect()
     }
 
     /// Killing sessions for removed rosters also handles a deleted project and a stopped
@@ -195,8 +203,18 @@ impl ReviewSwarms {
                     job.target.clone()
                 }
                 None if self.active_count(key.0) < cap => {
-                    let Some(target) = self.claim_next(server, &key.1, pending).await? else {
-                        continue;
+                    self.lock().claiming.insert(key.clone());
+                    let claimed = self.claim_next(server, &key.1, pending).await;
+                    let target = match claimed {
+                        Ok(Some(target)) => target,
+                        Ok(None) => {
+                            self.lock().claiming.remove(&key);
+                            continue;
+                        }
+                        Err(error) => {
+                            self.lock().claiming.remove(&key);
+                            return Err(error);
+                        }
                     };
                     Some(target)
                 }
@@ -204,6 +222,7 @@ impl ReviewSwarms {
                 None => continue,
             };
             self.start(host, roster, index, target, recovered);
+            self.lock().claiming.remove(&key);
         }
         Ok(())
     }
@@ -226,6 +245,8 @@ impl ReviewSwarms {
                 return Ok(Some(target.clone()));
             }
         }
+        // Leave when no review was claimed so idle workers do not keep channel presence (#566).
+        let _ = review_swarm::leave(server, nickname).await;
         Ok(None)
     }
 

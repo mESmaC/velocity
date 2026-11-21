@@ -485,6 +485,8 @@ fn release(application: &AppHandle, key: ThreadKey, channel: &Channel) -> Result
     let pushed = velocity_threads::agent_activity::pushed_commit(&thread);
     velocity_threads::agent_activity::release_claims(channel, &thread, pushed.as_deref())
         .map_err(|error| error.to_string())?;
+    let _ = channel.leave(&thread.airc_member());
+    let _ = channel.leave(&format!("thread-{}", key.1));
     lock(
         application.state::<ManagedStateStore>().inner(),
         "persisted state",

@@ -192,7 +192,9 @@ In a Rosen workspace, `graph_overlaps` gives the same details for live path over
 Build threads claim their piece before ACP starts (a dispatched issue, SPEC.md section or Task List item by its work-pool identity, a free-form composer thread by `branch:<its branch>`), so a goal swarm agent and a swarm or dispatched thread on the same item collide in one lock, and a refused build thread fails without starting its agent.
 They receive the embedded AIRC MCP server, and extend claims from explicit file writes and Edit/Delete/Move tool locations.
 Partial updates inherit the last known kind and locations; Read/Search/Execute/Other and unclassified tool locations do not extend claims.
-Successful merge cleanup and final deletion release their claims.
+Successful merge cleanup, thread end or archive, duty scout end and final deletion release the member's pieces and leave the channel (#566).
+On startup and on a periodic timer, Velocity reaps pieces and presence whose local member is no longer a live thread or running scout on this machine, while members on other machines keep remote-work rules (#566).
+Continuous dispatch ignores `issue:<n>` claims held by known-dead local members, releases them immediately, and reports them in project health as "stale AIRC claim by <nick>, released" rather than "claimed in AIRC" (#566).
 Build-thread dependency waits use `airc_wait { holder, file }`: the call records the overlap dependency and remains pending until the runner observes that holder merged, closed, failed or was deleted.
 Native filesystem notifications wake the call; it does not poll GitHub.
 On merge, the server verifies the waiting thread's registered checkout, fetches the configured base and merges it without rewriting published history, then posts `unblocked` and returns control.
