@@ -60,6 +60,81 @@ struct ProjectSettledFile {
     pub threads: Vec<ThreadItem>,
 }
 
+#[derive(Deserialize)]
+struct RootProjectIndex {
+    #[serde(default)]
+    projects: Vec<ProjectItem>,
+    #[serde(default)]
+    project_ids: Vec<u32>,
+}
+
+/// Read-only lookup of one project from the atomically replaced snapshot files (#562).
+///
+/// Supports both split persistence (`state.json` + `projects/<id>.json` [+ optional
+/// `projects/<id>.settled.json`]) and legacy monolithic `state.json` without mutating,
+/// migrating, or recovering files on disk. Safe for concurrent MCP child processes.
+pub fn read_project_snapshot(
+    directory: &Path,
+    project_id: u32,
+    include_settled: bool,
+) -> Result<Option<ProjectItem>, StoreError> {
+    let root_path = extended_windows_path(&directory.join(STATE_FILE_NAME));
+    let bytes = fs::read(&root_path).map_err(|source| StoreError::ReadSnapshot {
+        path: root_path.display().to_string(),
+        source,
+    })?;
+    let root: RootProjectIndex = serde_json::from_slice(&bytes)
+        .map_err(|source| StoreError::SerializeSnapshot { source })?;
+    if !root.projects.is_empty() {
+        return Ok(root
+            .projects
+            .into_iter()
+            .find(|project| project.id == project_id)
+            .map(ProjectItem::normalize));
+    }
+    if !root.project_ids.contains(&project_id) {
+        return Ok(None);
+    }
+    let project = read_split_project_readonly(directory, project_id, include_settled)?;
+    Ok(Some(project.normalize()))
+}
+
+fn read_split_project_readonly(
+    directory: &Path,
+    project_id: u32,
+    include_settled: bool,
+) -> Result<ProjectItem, StoreError> {
+    let active_path = project_active_path(directory, project_id);
+    let active_bytes = fs::read(&active_path).map_err(|source| StoreError::ReadSnapshot {
+        path: active_path.display().to_string(),
+        source,
+    })?;
+    let active_file: ProjectActiveFile = serde_json::from_slice(&active_bytes)
+        .map_err(|source| StoreError::SerializeSnapshot { source })?;
+    let mut project = active_file.project;
+    if !include_settled {
+        return Ok(project);
+    }
+    let settled_path = project_settled_path(directory, project_id);
+    let settled_threads = match fs::read(&settled_path) {
+        Ok(bytes) => {
+            let settled_file: ProjectSettledFile = serde_json::from_slice(&bytes)
+                .map_err(|source| StoreError::SerializeSnapshot { source })?;
+            settled_file.threads
+        }
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Vec::new(),
+        Err(source) => {
+            return Err(StoreError::ReadSnapshot {
+                path: settled_path.display().to_string(),
+                source,
+            });
+        }
+    };
+    project.threads =
+        reassemble_threads(project.threads, settled_threads, &active_file.thread_order);
+    Ok(project)
+}
+
 pub(crate) struct LoadedState {
     pub state: PersistedState,
     pub persisted_transcripts: BTreeMap<(u32, u32), SharedBlocks>,
@@ -599,4 +674,78 @@ fn write_changed_project(
         )?;
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::{StateStore, ThreadState};
+
+    fn temp_store_dir(tag: &str) -> Result<PathBuf, Box<dyn std::error::Error>> {
+        let unique = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)?
+            .as_nanos();
+        let directory = std::env::temp_dir().join(format!("velocity-storage-{tag}-{unique}"));
+        let _ignored = fs::remove_dir_all(&directory);
+        fs::create_dir_all(&directory)?;
+        Ok(directory)
+    }
+
+    // Risk (#562): MCP child processes read persisted project state after #552 split
+    // storage omits `projects` from `state.json`; both split and legacy layouts must load
+    // read-only without mutating files on disk.
+    #[test]
+    fn read_project_snapshot_handles_split_and_legacy_layouts()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let split_dir = temp_store_dir("split")?;
+        let mut legacy = PersistedState::default();
+        let mut project = ProjectItem::new(7, "collapse.sh".into(), r"C:\collapse".into());
+        project.github_remote = Some("mESmaC/collapse.sh".into());
+        let mut settled = ThreadItem::new(1, "Settled".into());
+        settled.state = ThreadState::Merged;
+        let mut active = ThreadItem::new(2, "Active".into());
+        active.state = ThreadState::Working;
+        project.threads = vec![settled, active];
+        legacy.projects.push(project);
+        fs::write(
+            split_dir.join(STATE_FILE_NAME),
+            serde_json::to_vec(&legacy)?,
+        )?;
+
+        // Migrate to split layout through StateStore; root state.json omits `projects`.
+        let _store = StateStore::load_or_default(&split_dir)?;
+        let root_json: serde_json::Value =
+            serde_json::from_slice(&fs::read(split_dir.join(STATE_FILE_NAME))?)?;
+        assert!(root_json.get("projects").is_none());
+
+        let active_only = read_project_snapshot(&split_dir, 7, false)?
+            .ok_or("expected split project without settled threads")?;
+        assert_eq!(
+            active_only.github_remote.as_deref(),
+            Some("mESmaC/collapse.sh")
+        );
+        assert_eq!(active_only.threads.len(), 1);
+        assert_eq!(active_only.threads[0].id, 2);
+
+        let with_settled = read_project_snapshot(&split_dir, 7, true)?
+            .ok_or("expected split project with settled threads")?;
+        let ids: Vec<u32> = with_settled.threads.iter().map(|t| t.id).collect();
+        assert_eq!(ids, vec![1, 2]);
+        assert!(read_project_snapshot(&split_dir, 99, false)?.is_none());
+
+        // Legacy monolithic state.json must load without creating a split projects/ folder.
+        let legacy_dir = temp_store_dir("legacy")?;
+        fs::write(
+            legacy_dir.join(STATE_FILE_NAME),
+            serde_json::to_vec(&legacy)?,
+        )?;
+        let legacy_loaded =
+            read_project_snapshot(&legacy_dir, 7, false)?.ok_or("expected legacy project")?;
+        assert_eq!(legacy_loaded.id, 7);
+        assert!(!legacy_dir.join(PROJECTS_DIR_NAME).exists());
+
+        let _ignored = fs::remove_dir_all(&split_dir);
+        let _ignored = fs::remove_dir_all(&legacy_dir);
+        Ok(())
+    }
 }

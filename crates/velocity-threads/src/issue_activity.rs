@@ -1,34 +1,19 @@
 use std::collections::BTreeSet;
 use std::path::Path;
 
-use serde::Deserialize;
 use serde_json::{Value, json};
 use velocity_airc::{Error, IssueCreate, IssueRead, IssueRequest, IssueUpdate, IssueUpdateKind};
 use velocity_core::issue_holds::UpstreamTarget;
 use velocity_core::text_budget::{json_text_page, preview};
 use velocity_github::{AgentIssueDraft, AgentIssueOutcome, IssueClient, IssueDetail};
 use velocity_rosen::ProjectServer;
-use velocity_store::VersionControl;
+use velocity_store::{ProjectItem, VersionControl};
 
 /// Stays below `TOOL_ANSWER_BYTES` (8,000) so `issue_read` always returns unclipped JSON.
 const READ_RESPONSE_BUDGET: usize = 7_500;
 const FULL_BODY_BUDGET: usize = 6_000;
 const BODY_WITH_COMMENTS_BUDGET: usize = 4_200;
 const COMMENT_PREVIEW_BYTES: usize = 1_200;
-
-#[derive(Deserialize)]
-struct IssueProjects {
-    projects: Vec<IssueProject>,
-}
-
-#[derive(Deserialize)]
-struct IssueProject {
-    id: u32,
-    repository_path: String,
-    github_remote: Option<String>,
-    #[serde(default)]
-    version_control: VersionControl,
-}
 
 /// The tool process reads the project's GitHub identity from the app, since a Rosen
 /// workspace has no Git remote and the issue number alone is only repository-local.
@@ -48,24 +33,15 @@ pub fn handle_issue_request(
     }
 }
 
-fn open_issue_project(
-    app_data: &Path,
-    project: &str,
-) -> Result<(IssueProject, IssueClient), Error> {
+fn open_issue_project(app_data: &Path, project: &str) -> Result<(ProjectItem, IssueClient), Error> {
     let invalid = |message: &str| Error::Invalid(message.into());
     let identifier = project
         .parse::<u32>()
         .map_err(|_| invalid("Invalid project identity"))?;
     // Startup recovery belongs to the app that owns the state writer. Read only
-    // the atomically replaced snapshot from this MCP child process.
-    let snapshot =
-        velocity_store::extended_windows_path(&app_data.join(velocity_store::STATE_FILE_NAME));
-    let file = std::fs::File::open(snapshot)?;
-    let state: IssueProjects = serde_json::from_reader(std::io::BufReader::new(file))?;
-    let project = state
-        .projects
-        .into_iter()
-        .find(|project| project.id == identifier)
+    // the atomically replaced snapshot from this MCP child process (#562).
+    let project = velocity_store::read_project_snapshot(app_data, identifier, false)
+        .map_err(|error| Error::Invalid(error.to_string()))?
         .ok_or_else(|| invalid("The project was removed"))?;
     let directory = Path::new(&project.repository_path);
     let client = match &project.github_remote {
@@ -142,7 +118,7 @@ fn format_issue_read(
 
 fn create_issue(
     app_data: &Path,
-    project: &IssueProject,
+    project: &ProjectItem,
     client: &IssueClient,
     create: IssueCreate<'_>,
 ) -> Result<Value, Error> {
@@ -245,7 +221,7 @@ fn post_update(
 
 fn mentioned_issue_paths(
     app_data: &Path,
-    project: &IssueProject,
+    project: &ProjectItem,
     texts: &[(&str, &str)],
 ) -> Vec<BTreeSet<String>> {
     let Ok(executable) = std::env::current_exe() else {
@@ -274,5 +250,43 @@ pub fn issue_byline(project: u32, thread: Option<u32>, nick: Option<&str>) -> St
             format!("{agent} · [Thread {thread}]({link}) · `{link}`")
         }
         None => agent,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::fs;
+    use velocity_store::{PersistedState, StateStore};
+
+    // Risk (#562): AIRC issue_read / issue_* MCP tools must open projects stored in
+    // #552 split format where root `state.json` omits the legacy `projects` array.
+    #[test]
+    fn open_issue_project_reads_split_state_snapshot() -> Result<(), Box<dyn std::error::Error>> {
+        let root = std::env::temp_dir().join(format!(
+            "velocity-issue-activity-562-{}",
+            uuid::Uuid::new_v4()
+        ));
+        let app_data = root.join("app-data");
+        let repo = root.join("repo");
+        fs::create_dir_all(&app_data)?;
+        fs::create_dir_all(&repo)?;
+
+        let mut legacy = PersistedState::default();
+        let mut project = ProjectItem::new(3, "collapse.sh".into(), repo.display().to_string());
+        project.github_remote = Some("mESmaC/collapse.sh".into());
+        legacy.projects.push(project);
+        fs::write(
+            app_data.join(velocity_store::STATE_FILE_NAME),
+            serde_json::to_vec(&legacy)?,
+        )?;
+        let _store = StateStore::load_or_default(&app_data)?;
+
+        let (loaded, client) = open_issue_project(&app_data, "3")?;
+        assert_eq!(loaded.id, 3);
+        assert_eq!(client.repository(), "mESmaC/collapse.sh");
+
+        let _ = fs::remove_dir_all(&root);
+        Ok(())
     }
 }

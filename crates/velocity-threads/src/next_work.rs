@@ -10,7 +10,7 @@ use velocity_core::work_pool::{WorkKey, WorkSources, spec_files_pieces};
 use velocity_github::{GitHubIssue, IssueClient};
 use velocity_spec::ProjectSpec;
 use velocity_store::issues::ThreadIssue;
-use velocity_store::{PersistedState, ProjectItem, TaskAttribution, TaskItem, ThreadState};
+use velocity_store::{ProjectItem, TaskAttribution, TaskItem, ThreadState};
 
 use crate::continuous_dispatch::{dispatchable_task, ordered_issues};
 use crate::task_brief::{BriefInput, build_brief_sync};
@@ -249,14 +249,8 @@ fn load_project(app_data: &Path, project: &str) -> Result<ProjectItem, Error> {
     let identifier = project
         .parse::<u32>()
         .map_err(|_| Error::Invalid("Invalid project identity".into()))?;
-    let snapshot =
-        velocity_store::extended_windows_path(&app_data.join(velocity_store::STATE_FILE_NAME));
-    let file = std::fs::File::open(snapshot)?;
-    let state: PersistedState = serde_json::from_reader(std::io::BufReader::new(file))?;
-    state
-        .projects
-        .into_iter()
-        .find(|item| item.id == identifier)
+    velocity_store::read_project_snapshot(app_data, identifier, true)
+        .map_err(|error| Error::Invalid(error.to_string()))?
         .ok_or_else(|| Error::Invalid("The project was removed".into()))
 }
 
@@ -572,6 +566,38 @@ mod tests {
             |_| Ok(None),
         )?;
         assert_eq!(third["status"], "empty");
+
+        let _ = fs::remove_dir_all(&root);
+        Ok(())
+    }
+
+    // Risk (#562): `next_work` runs in the AIRC MCP child process and must load split-format
+    // projects (including settled threads checked by `landed_awaiting_integration`) when root
+    // `state.json` omits the legacy `projects` array.
+    #[test]
+    fn load_project_reads_split_state_with_settled_threads()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let root =
+            std::env::temp_dir().join(format!("velocity-next-work-562-{}", uuid::Uuid::new_v4()));
+        let app_data = root.join("app-data");
+        fs::create_dir_all(&app_data)?;
+
+        let mut legacy = velocity_store::PersistedState::default();
+        let mut project = ProjectItem::new(4, "velocity".into(), root.display().to_string());
+        let mut merged = velocity_store::ThreadItem::new(10, "Merged".into());
+        merged.state = ThreadState::Merged;
+        project.threads.push(merged);
+        legacy.projects.push(project);
+        fs::write(
+            app_data.join(velocity_store::STATE_FILE_NAME),
+            serde_json::to_vec(&legacy)?,
+        )?;
+        let _store = velocity_store::StateStore::load_or_default(&app_data)?;
+
+        let loaded = load_project(&app_data, "4")?;
+        assert_eq!(loaded.id, 4);
+        assert_eq!(loaded.threads.len(), 1);
+        assert_eq!(loaded.threads[0].id, 10);
 
         let _ = fs::remove_dir_all(&root);
         Ok(())
