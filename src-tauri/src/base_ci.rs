@@ -119,10 +119,10 @@ fn look(
     run_logs: &mut BTreeMap<u64, FailedLog>,
 ) -> Result<(), String> {
     let client = BaseCiWatch::new(&subject.repository).map_err(|error| error.to_string())?;
-    let runs = client
+    let snapshot = client
         .runs(&subject.branch)
         .map_err(|error| error.to_string())?;
-    let verdict = base_ci::verdict(&runs);
+    let verdict = base_ci::verdict(&snapshot.runs);
     let mut failures = verdict
         .failed
         .iter()
@@ -132,7 +132,7 @@ fn look(
                 Vec::new()
             } else {
                 client
-                    .failed_jobs(run.run)
+                    .failed_jobs(&snapshot, run)
                     .map_err(|error| error.to_string())?
             };
             Ok(base_ci::failure(run, jobs))
@@ -366,11 +366,25 @@ fn populate_signatures(
         if !needs_log(open, failure) {
             continue;
         }
-        let log = run_logs
-            .entry(failure.run)
-            .or_insert_with(|| client.failed_log(failure.run).unwrap_or_default());
+        let log = match run_logs.entry(failure.run) {
+            std::collections::btree_map::Entry::Occupied(entry) => entry.into_mut().text.as_str(),
+            std::collections::btree_map::Entry::Vacant(entry) => {
+                match client.failure_log(failure) {
+                    Ok(fetched) => entry.insert(fetched).text.as_str(),
+                    Err(_) => "",
+                }
+            }
+        };
         for job in &mut failure.jobs {
-            job.signature = base_ci::error_signature(&base_ci::job_log(&log.text, &job.job));
+            let job_output = base_ci::job_log(log, &job.job);
+            if job.timed_out {
+                job.hung_test = base_ci::hung_test(&job_output);
+            }
+            job.signature = job
+                .hung_test
+                .as_ref()
+                .map(|test| format!("timed out: {test}"))
+                .or_else(|| base_ci::error_signature(&job_output));
         }
     }
 }
@@ -500,7 +514,7 @@ fn start_repair(
             owned_log = if failure.run == 0 {
                 FailedLog::default()
             } else {
-                client.failed_log(failure.run).unwrap_or_default()
+                client.failure_log(failure).unwrap_or_default()
             };
             &owned_log
         }

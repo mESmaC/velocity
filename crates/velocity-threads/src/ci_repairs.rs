@@ -161,38 +161,100 @@ pub fn ci_repair_prompt(report: &CiFailure<'_>) -> String {
         ));
     }
     let shown = &failure.jobs[..failure.jobs.len().min(EXCERPTED_JOBS)];
-    let headings: Vec<String> = shown.iter().map(job_heading).collect();
+    let job_sections: Vec<(String, String)> = shown
+        .iter()
+        .map(|job| {
+            let log = base_ci::job_log(report.log, &job.job);
+            let hung = job
+                .hung_test
+                .clone()
+                .or_else(|| job.timed_out.then(|| base_ci::hung_test(&log)).flatten());
+            (job_heading(job, hung.as_deref()), log)
+        })
+        .collect();
     let fixed = header.len()
         + footer.len()
         + INSTRUCTIONS.len()
-        + headings
+        + job_sections
             .iter()
-            .map(|heading| heading.len() + 3)
+            .map(|(heading, _)| heading.len() + 3)
             .sum::<usize>()
         + 2;
     let each = SHORT_PROMPT_BYTES.saturating_sub(fixed) / shown.len().max(1);
     let mut prompt = header;
-    for (job, heading) in shown.iter().zip(&headings) {
-        let log = base_ci::job_log(report.log, &job.job);
+    for (heading, log) in &job_sections {
         let excerpt = if log.trim().is_empty() {
             "(GitHub gave no log for this job. Open the run.)".to_owned()
         } else if log.len() <= each {
-            log
+            log.clone()
         } else {
-            failure_excerpt(&log, each)
+            failure_excerpt(log, each)
         };
         prompt.push_str(&format!("\n{heading}\n{excerpt}\n"));
     }
     format!("{prompt}\n{footer}\n{INSTRUCTIONS}")
 }
 
-fn job_heading(job: &FailedJob) -> String {
+fn job_heading(job: &FailedJob, hung_test: Option<&str>) -> String {
     let mut heading = format!("Failed job: {}", preview(&job.job, 120));
+    if job.timed_out {
+        heading.push_str(" (timed out)");
+    }
     if let Some(step) = &job.step {
         heading.push_str(&format!(" · step: {}", preview(step, 120)));
     }
     if let Some(runner) = &job.runner {
         heading.push_str(&format!(" · runs on {}", preview(runner, 80)));
     }
+    if let Some(test) = hung_test {
+        heading.push_str(&format!(
+            "\nTest still running when the job stopped: {}",
+            preview(test, 200)
+        ));
+    }
     heading
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // Risk (#584): a timed-out CI job's repair brief must name the hung test taken from
+    // the last "has been running for over 60 seconds" line of its job log so the fix-forward
+    // thread targets the actual hang rather than a generic cancellation message.
+    #[test]
+    fn timed_out_repair_brief_names_the_hung_test() {
+        let failure = Failure {
+            workflow: "CI".into(),
+            run: 99,
+            commit: "520dcfc000000000000000000000000000000000".into(),
+            url: "https://github.com/mESmaC/rosen/actions/runs/99".into(),
+            detail: String::new(),
+            jobs: vec![FailedJob {
+                id: 555,
+                job: "test (macos-latest)".into(),
+                step: Some("Run tests".into()),
+                runner: Some("macos-latest".into()),
+                signature: None,
+                timed_out: true,
+                hung_test: None,
+            }],
+        };
+        let log = "\
+test (macos-latest)\tRun tests\t2026-11-21T20:10:00.0000000Z test early_slow has been running for over 60 seconds\n\
+test (macos-latest)\tRun tests\t2026-11-21T20:11:00.0000000Z test early_slow ... ok\n\
+test (macos-latest)\tRun tests\t2026-11-21T20:16:00.0000000Z test collapse_link::collapse_link_and_unlink_round_trip_with_live_server has been running for over 60 seconds\n\
+test (macos-latest)\tRun tests\t2026-11-21T20:44:35.0000000Z ##[error]The operation was canceled.";
+        let prompt = ci_repair_prompt(&CiFailure {
+            repository: "mESmaC/rosen",
+            branch: "main",
+            failure: &failure,
+            log,
+            saved_log: None,
+        });
+        assert!(prompt.contains("Failed job: test (macos-latest) (timed out)"));
+        assert!(prompt.contains(
+            "Test still running when the job stopped: collapse_link::collapse_link_and_unlink_round_trip_with_live_server"
+        ));
+    }
 }

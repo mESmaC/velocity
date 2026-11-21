@@ -12,6 +12,15 @@ use serde::{Deserialize, Serialize};
 /// Velocity's own build, which already has its fix-forward path, so it is not CI.
 pub const INTEGRATION_CONTEXT: &str = "velocity/integration";
 
+/// Substring GitHub writes in a check-run annotation when a job exceeds `timeout-minutes` (#584).
+pub const TIMEOUT_ANNOTATION_NEEDLE: &str = "has exceeded the maximum execution time";
+
+/// Marker Rust's test harness writes for a test that has been running for over 60 seconds (#584).
+pub const HUNG_TEST_MARKER: &str = "has been running for over 60 seconds";
+
+/// GitHub Actions' default job `timeout-minutes` when a job omits the setting (#584).
+pub const DEFAULT_JOB_TIMEOUT_MINUTES: u64 = 360;
+
 /// What the project shows for its base's CI.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[cfg_attr(feature = "bindings", derive(specta::Type))]
@@ -56,8 +65,9 @@ pub enum RunState {
     Undecided,
 }
 
-/// A run's state from GitHub's `status` and `conclusion`. A newer push cancels the run
-/// queued behind a running one, so a cancelled run is never a failure.
+/// A run's initial state from GitHub's `status` and `conclusion`. A newer push cancels the
+/// run queued behind a running one, so a cancelled run starts `Undecided` and is promoted
+/// to `Failed` only when its jobs show a timeout (#584).
 pub fn run_state(status: Option<&str>, conclusion: Option<&str>) -> RunState {
     if status != Some("completed") {
         return RunState::Running;
@@ -85,9 +95,124 @@ pub fn counts_for_base(event: &str) -> bool {
     matches!(event, "push" | "schedule")
 }
 
-/// Whether a job with this conclusion failed. A job cancelled because a sibling failed did not.
+/// Whether a job with this conclusion failed directly. A job concluded `cancelled` may still
+/// have timed out and is classified separately via [`cancelled_job_timed_out`] (#584).
 pub fn job_failed(conclusion: Option<&str>) -> bool {
     matches!(conclusion, Some("failure" | "timed_out"))
+}
+
+/// Whether a job concluded `timed_out` directly.
+pub fn job_timed_out_directly(conclusion: Option<&str>) -> bool {
+    conclusion == Some("timed_out")
+}
+
+/// Whether a check-run annotation message reports that a job hit its execution timeout (#584).
+pub fn is_timeout_annotation(message: &str) -> bool {
+    message
+        .to_ascii_lowercase()
+        .contains(TIMEOUT_ANNOTATION_NEEDLE)
+}
+
+/// Evidence used to decide whether a job concluded `cancelled` actually hit its timeout (#584).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct CancelledJobEvidence<'a> {
+    /// Annotation texts read from the job's check run, or `None` when annotations could not
+    /// be read.
+    pub annotations: Option<&'a [&'a str]>,
+    /// Whether any newer run of the same workflow exists on the base branch.
+    pub has_newer_workflow_run: bool,
+    /// How long the job ran in seconds (`completed_at - started_at`).
+    pub elapsed_seconds: Option<u64>,
+    /// The job's `timeout-minutes`, read from the workflow file at the run's commit.
+    pub timeout_minutes: Option<u64>,
+}
+
+/// Whether a job concluded `cancelled` actually failed by hitting `timeout-minutes` (#584).
+///
+/// GitHub reports timed-out jobs as `cancelled`. When annotations are available, a timeout
+/// annotation decides. When annotations cannot be read, the job counts as timed out only
+/// when no newer run of the same workflow exists on the branch and it ran at least as long
+/// as its `timeout-minutes`.
+pub fn cancelled_job_timed_out(evidence: &CancelledJobEvidence<'_>) -> bool {
+    if let Some(annotations) = evidence.annotations {
+        return annotations
+            .iter()
+            .any(|message| is_timeout_annotation(message));
+    }
+    if evidence.has_newer_workflow_run {
+        return false;
+    }
+    let (Some(elapsed), Some(timeout_minutes)) =
+        (evidence.elapsed_seconds, evidence.timeout_minutes)
+    else {
+        return false;
+    };
+    timeout_minutes > 0 && elapsed >= timeout_minutes.saturating_mul(60)
+}
+
+/// Minimal run summary used to select cancelled runs that may have timed out (#584).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct RunCandidateInput<'a> {
+    pub workflow: &'a str,
+    pub run: u64,
+    pub state: RunState,
+    pub cancelled: bool,
+}
+
+/// A cancelled run newer than its workflow's latest decided run (#584).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct CancelledCandidate {
+    pub workflow: String,
+    pub run: u64,
+    pub has_newer_workflow_run: bool,
+}
+
+/// Returns cancelled runs newer than each workflow's latest passed or failed run, ordered
+/// newest-first within each workflow so callers can stop at the first confirmed timeout (#584).
+pub fn cancelled_candidates(runs: &[RunCandidateInput<'_>]) -> Vec<CancelledCandidate> {
+    let mut newest_decided: BTreeMap<&str, u64> = BTreeMap::new();
+    let mut newest_any: BTreeMap<&str, u64> = BTreeMap::new();
+    for entry in runs.iter().filter(|entry| entry.run != 0) {
+        let latest = newest_any.entry(entry.workflow).or_insert(entry.run);
+        if entry.run > *latest {
+            *latest = entry.run;
+        }
+        if matches!(entry.state, RunState::Passed | RunState::Failed) {
+            let decided = newest_decided.entry(entry.workflow).or_insert(entry.run);
+            if entry.run > *decided {
+                *decided = entry.run;
+            }
+        }
+    }
+    let mut by_workflow: BTreeMap<&str, Vec<CancelledCandidate>> = BTreeMap::new();
+    for entry in runs
+        .iter()
+        .filter(|entry| entry.run != 0 && entry.cancelled)
+    {
+        if newest_decided
+            .get(entry.workflow)
+            .is_some_and(|decided| entry.run <= *decided)
+        {
+            continue;
+        }
+        let has_newer = newest_any
+            .get(entry.workflow)
+            .is_some_and(|latest| entry.run < *latest);
+        by_workflow
+            .entry(entry.workflow)
+            .or_default()
+            .push(CancelledCandidate {
+                workflow: entry.workflow.to_owned(),
+                run: entry.run,
+                has_newer_workflow_run: has_newer,
+            });
+    }
+    let mut candidates = Vec::new();
+    for mut workflow_runs in by_workflow.into_values() {
+        workflow_runs.sort_by_key(|candidate| std::cmp::Reverse(candidate.run));
+        candidates.extend(workflow_runs);
+    }
+    candidates
 }
 
 /// One workflow run on the base branch, or one commit status on its tip.
@@ -107,12 +232,20 @@ pub struct BaseRun {
 /// A job that failed, with the first step that failed in it.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct FailedJob {
+    /// GitHub's job (check-run) ID; 0 for commit statuses or whole-run failures (#584).
+    pub id: u64,
     pub job: String,
     pub step: Option<String>,
     /// The runner labels, such as `macos-latest`.
     pub runner: Option<String>,
     /// Normalized signature of the first concrete error in this job's failed log (#558).
     pub signature: Option<String>,
+    /// Whether this job failed by exceeding its timeout (including GitHub reporting a timeout
+    /// as `cancelled`) (#584).
+    pub timed_out: bool,
+    /// The test still running when a timed-out job stopped, from the last
+    /// `has been running for over 60 seconds` line of its log (#584).
+    pub hung_test: Option<String>,
 }
 
 /// A workflow whose newest finished run failed, with the jobs that failed in it.
@@ -637,12 +770,328 @@ fn first_test_failure(lines: &[&str]) -> Option<String> {
 fn first_annotation_error(lines: &[&str]) -> Option<String> {
     lines.iter().find_map(|line| {
         let rest = line.strip_prefix("##[error]")?.trim();
-        if rest.is_empty() || rest.starts_with("Process completed with exit code") {
+        if rest.is_empty()
+            || rest.starts_with("Process completed with exit code")
+            || rest.eq_ignore_ascii_case("The operation was canceled.")
+        {
             None
         } else {
             Some(truncate_signature(rest, 180))
         }
     })
+}
+
+/// Extracts the test name still running when a timed-out job stopped, from the last
+/// `has been running for over 60 seconds` line of the job's stripped log (#584).
+pub fn hung_test(log: &str) -> Option<String> {
+    log.lines().rev().find_map(parse_hung_test_line)
+}
+
+fn parse_hung_test_line(line: &str) -> Option<String> {
+    let trimmed = line.trim();
+    let (prefix, _) = trimmed.split_once(HUNG_TEST_MARKER)?;
+    let candidate = prefix.trim();
+    let name = candidate.strip_prefix("test ").unwrap_or(candidate).trim();
+    (!name.is_empty()).then(|| truncate_signature(name, 200))
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct WorkflowJobDef {
+    id: String,
+    name: Option<String>,
+    timeout_minutes: TimeoutSetting,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum TimeoutSetting {
+    Unspecified,
+    Minutes(u64),
+    Dynamic,
+}
+
+/// Reads the `timeout-minutes` configured for `job_name` in a GitHub Actions workflow YAML
+/// file (#584). Matches literal job names, matrix `${{ ... }}` name templates, and job IDs.
+/// Returns GitHub's 360-minute default when a matched job omits `timeout-minutes`, and `None`
+/// when no job matches or `timeout-minutes` is a dynamic expression.
+pub fn workflow_job_timeout_minutes(workflow_yaml: &str, job_name: &str) -> Option<u64> {
+    let jobs = parse_workflow_jobs(workflow_yaml);
+    let matched = match_workflow_job(&jobs, job_name)?;
+    match matched.timeout_minutes {
+        TimeoutSetting::Minutes(minutes) => Some(minutes),
+        TimeoutSetting::Unspecified => Some(DEFAULT_JOB_TIMEOUT_MINUTES),
+        TimeoutSetting::Dynamic => None,
+    }
+}
+
+fn parse_workflow_jobs(workflow_yaml: &str) -> Vec<WorkflowJobDef> {
+    let mut state = WorkflowYamlState::default();
+    for raw_line in workflow_yaml.trim_start_matches('\u{feff}').lines() {
+        let line = raw_line.trim_end_matches('\r');
+        let indent = line.bytes().take_while(|byte| *byte == b' ').count();
+        let trimmed = line[indent..].trim();
+        if trimmed.is_empty() || trimmed.starts_with('#') {
+            continue;
+        }
+        if !state.step(indent, trimmed) {
+            break;
+        }
+    }
+    state.jobs
+}
+
+#[derive(Default)]
+struct WorkflowYamlState {
+    jobs: Vec<WorkflowJobDef>,
+    jobs_indent: Option<usize>,
+    job_indent: Option<usize>,
+    field_indent: Option<usize>,
+    block_scalar_indent: Option<usize>,
+}
+
+impl WorkflowYamlState {
+    fn step(&mut self, indent: usize, trimmed: &str) -> bool {
+        if let Some(scalar_indent) = self.block_scalar_indent {
+            if indent > scalar_indent {
+                return true;
+            }
+            self.block_scalar_indent = None;
+        }
+        let Some(jobs_indent) = self.jobs_indent else {
+            if let Some((key, value)) = parse_yaml_mapping_line(trimmed) {
+                if unquote_yaml_value(key) == "jobs" && strip_unquoted_comment(value).is_empty() {
+                    self.jobs_indent = Some(indent);
+                } else if is_block_scalar(value) {
+                    self.block_scalar_indent = Some(indent);
+                }
+            }
+            return true;
+        };
+        if indent <= jobs_indent {
+            return false;
+        }
+        let target_job_indent = *self.job_indent.get_or_insert(indent);
+        if indent == target_job_indent {
+            if let Some((key, value)) = parse_yaml_mapping_line(trimmed) {
+                if is_block_scalar(value) {
+                    self.block_scalar_indent = Some(indent);
+                }
+                self.jobs.push(WorkflowJobDef {
+                    id: unquote_yaml_value(key),
+                    name: None,
+                    timeout_minutes: TimeoutSetting::Unspecified,
+                });
+                self.field_indent = None;
+            }
+            return true;
+        }
+        if indent < target_job_indent {
+            return true;
+        }
+        let target_field_indent = *self.field_indent.get_or_insert(indent);
+        if let Some((key, value)) = parse_yaml_mapping_line(trimmed) {
+            if is_block_scalar(value) {
+                self.block_scalar_indent = Some(indent);
+            } else if indent == target_field_indent
+                && let Some(current) = self.jobs.last_mut()
+            {
+                apply_job_field(current, &unquote_yaml_value(key), value);
+            }
+        }
+        true
+    }
+}
+
+fn apply_job_field(job: &mut WorkflowJobDef, key: &str, raw_value: &str) {
+    match key {
+        "name" => {
+            let parsed = unquote_yaml_value(raw_value);
+            if !parsed.is_empty() {
+                job.name = Some(parsed);
+            }
+        }
+        "timeout-minutes" => {
+            let parsed = unquote_yaml_value(raw_value);
+            job.timeout_minutes = match parsed.parse::<u64>() {
+                Ok(minutes) if minutes > 0 => TimeoutSetting::Minutes(minutes),
+                _ => TimeoutSetting::Dynamic,
+            };
+        }
+        _ => {}
+    }
+}
+
+fn parse_yaml_mapping_line(trimmed: &str) -> Option<(&str, &str)> {
+    let bytes = trimmed.as_bytes();
+    let mut quote: Option<u8> = None;
+    let mut index = 0;
+    while index < bytes.len() {
+        let byte = bytes[index];
+        match quote {
+            Some(b'"') if byte == b'\\' => index += 1,
+            Some(q) if byte == q => quote = None,
+            Some(_) => {}
+            None if byte == b'\'' || byte == b'"' => quote = Some(byte),
+            None if byte == b':' => {
+                let next = bytes.get(index + 1);
+                if next.is_none() || matches!(next, Some(b' ' | b'\t')) {
+                    let key = trimmed[..index].trim();
+                    let value = trimmed[index + 1..].trim();
+                    return (!key.is_empty()).then_some((key, value));
+                }
+            }
+            None => {}
+        }
+        index += 1;
+    }
+    None
+}
+
+fn strip_unquoted_comment(raw: &str) -> &str {
+    let bytes = raw.as_bytes();
+    for (index, &byte) in bytes.iter().enumerate() {
+        if byte == b'#' && (index == 0 || matches!(bytes[index - 1], b' ' | b'\t')) {
+            return raw[..index].trim();
+        }
+    }
+    raw.trim()
+}
+
+fn is_block_scalar(raw_value: &str) -> bool {
+    let stripped = strip_unquoted_comment(raw_value);
+    let mut chars = stripped.chars();
+    matches!(chars.next(), Some('|' | '>')) && chars.all(|ch| matches!(ch, '+' | '-' | '0'..='9'))
+}
+
+fn unquote_yaml_value(raw_value: &str) -> String {
+    let trimmed = raw_value.trim();
+    if let Some(rest) = trimmed.strip_prefix('\'') {
+        let mut output = String::new();
+        let mut chars = rest.chars().peekable();
+        while let Some(ch) = chars.next() {
+            if ch == '\'' {
+                if chars.peek() == Some(&'\'') {
+                    chars.next();
+                    output.push('\'');
+                } else {
+                    break;
+                }
+            } else {
+                output.push(ch);
+            }
+        }
+        return output;
+    }
+    if let Some(rest) = trimmed.strip_prefix('"') {
+        let mut output = String::new();
+        let mut chars = rest.chars();
+        while let Some(ch) = chars.next() {
+            if ch == '\\' {
+                if let Some(escaped) = chars.next() {
+                    output.push(escaped);
+                }
+            } else if ch == '"' {
+                break;
+            } else {
+                output.push(ch);
+            }
+        }
+        return output;
+    }
+    strip_unquoted_comment(trimmed).to_owned()
+}
+
+fn match_workflow_job<'a>(
+    jobs: &'a [WorkflowJobDef],
+    job_name: &str,
+) -> Option<&'a WorkflowJobDef> {
+    if let Some(exact) = jobs.iter().find(|job| match job.name.as_deref() {
+        Some(name) => !name.contains("${{") && name == job_name,
+        None => job.id == job_name,
+    }) {
+        return Some(exact);
+    }
+    if let Some(templated) = jobs.iter().find(|job| {
+        job.name
+            .as_deref()
+            .is_some_and(|name| template_matches(name, job_name) == Some(true))
+    }) {
+        return Some(templated);
+    }
+    if let Some(matrix_id) = jobs
+        .iter()
+        .find(|job| job.name.is_none() && matrix_id_matches(&job.id, job_name))
+    {
+        return Some(matrix_id);
+    }
+    if let Some(by_id) = jobs
+        .iter()
+        .find(|job| job.id == job_name || matrix_id_matches(&job.id, job_name))
+    {
+        return Some(by_id);
+    }
+    let wildcards: Vec<&WorkflowJobDef> = jobs
+        .iter()
+        .filter(|job| {
+            job.name
+                .as_deref()
+                .is_some_and(|name| template_matches(name, job_name).is_none())
+        })
+        .collect();
+    match wildcards.as_slice() {
+        [only] => Some(*only),
+        [first, rest @ ..]
+            if rest
+                .iter()
+                .all(|other| other.timeout_minutes == first.timeout_minutes) =>
+        {
+            Some(*first)
+        }
+        _ => None,
+    }
+}
+
+fn matrix_id_matches(job_id: &str, job_name: &str) -> bool {
+    job_name
+        .strip_prefix(job_id)
+        .is_some_and(|rest| rest.starts_with(" (") && rest.ends_with(')'))
+}
+
+fn template_matches(template: &str, value: &str) -> Option<bool> {
+    let mut literals = Vec::new();
+    let mut rest = template;
+    while let Some((before, after_open)) = rest.split_once("${{") {
+        let Some((_, after_close)) = after_open.split_once("}}") else {
+            return Some(template == value);
+        };
+        literals.push(before);
+        rest = after_close;
+    }
+    literals.push(rest);
+    if literals.len() == 1 {
+        return Some(template == value);
+    }
+    if literals.iter().all(|part| part.is_empty()) {
+        return None;
+    }
+    let first = literals[0];
+    let last = literals[literals.len() - 1];
+    let Some(mut middle) = value.strip_prefix(first) else {
+        return Some(false);
+    };
+    let Some(trimmed) = middle.strip_suffix(last) else {
+        return Some(false);
+    };
+    middle = trimmed;
+    for part in &literals[1..literals.len() - 1] {
+        if part.is_empty() {
+            continue;
+        }
+        let Some((_, remaining)) = middle.split_once(part) else {
+            return Some(false);
+        };
+        middle = remaining;
+    }
+    Some(true)
 }
 
 fn truncate_signature(text: &str, max_bytes: usize) -> String {
@@ -721,7 +1170,7 @@ mod tests {
             job: job.into(),
             step: Some("Run tests".into()),
             runner: Some("macos-latest".into()),
-            signature: None,
+            ..FailedJob::default()
         }
     }
 
@@ -958,5 +1407,162 @@ error[E0063]: missing fields `change`, `payload` in initializer of `Entry`
         assert!(stalled_text.contains("410174500000"));
         assert!(stalled_text.contains("52a9f9600000"));
         assert!(stalled_text.contains("newer than its land"));
+    }
+
+    // Risk (#584): GitHub reports timed-out jobs and runs as `cancelled`. The base CI
+    // watcher must classify timed-out cancelled jobs as failed (via check-run annotations,
+    // or via workflow `timeout-minutes` when annotations cannot be read and no newer run
+    // exists), keep push-cancelled runs superseded, and extract the last hung test from logs.
+    #[test]
+    fn cancelled_timeout_detection_fallback_and_hung_test_extraction() {
+        // Primary path: timeout annotation decides even if another run started later.
+        let timeout_notes = ["The job has exceeded the maximum execution time of 30m0s"];
+        assert!(cancelled_job_timed_out(&CancelledJobEvidence {
+            annotations: Some(&timeout_notes),
+            has_newer_workflow_run: true,
+            elapsed_seconds: Some(1_800),
+            timeout_minutes: Some(30),
+        }));
+
+        // Push-cancelled run with readable annotations (no timeout annotation) stays superseded.
+        let cancel_notes = ["The operation was canceled."];
+        assert!(!cancelled_job_timed_out(&CancelledJobEvidence {
+            annotations: Some(&cancel_notes),
+            has_newer_workflow_run: false,
+            elapsed_seconds: Some(1_850),
+            timeout_minutes: Some(30),
+        }));
+
+        // Fallback when annotations cannot be read: requires no newer run AND elapsed >= timeout.
+        assert!(cancelled_job_timed_out(&CancelledJobEvidence {
+            annotations: None,
+            has_newer_workflow_run: false,
+            elapsed_seconds: Some(1_800),
+            timeout_minutes: Some(30),
+        }));
+        assert!(!cancelled_job_timed_out(&CancelledJobEvidence {
+            annotations: None,
+            has_newer_workflow_run: true,
+            elapsed_seconds: Some(1_800),
+            timeout_minutes: Some(30),
+        }));
+        assert!(!cancelled_job_timed_out(&CancelledJobEvidence {
+            annotations: None,
+            has_newer_workflow_run: false,
+            elapsed_seconds: Some(1_799),
+            timeout_minutes: Some(30),
+        }));
+
+        // Candidate selection picks cancelled runs newer than the last decided run, newest first.
+        let candidates = cancelled_candidates(&[
+            RunCandidateInput {
+                workflow: "CI",
+                run: 10,
+                state: RunState::Passed,
+                cancelled: false,
+            },
+            RunCandidateInput {
+                workflow: "CI",
+                run: 11,
+                state: RunState::Undecided,
+                cancelled: true,
+            },
+            RunCandidateInput {
+                workflow: "CI",
+                run: 12,
+                state: RunState::Running,
+                cancelled: false,
+            },
+            RunCandidateInput {
+                workflow: "Mac",
+                run: 20,
+                state: RunState::Failed,
+                cancelled: false,
+            },
+            RunCandidateInput {
+                workflow: "Mac",
+                run: 21,
+                state: RunState::Undecided,
+                cancelled: true,
+            },
+            RunCandidateInput {
+                workflow: "Old",
+                run: 30,
+                state: RunState::Undecided,
+                cancelled: true,
+            },
+            RunCandidateInput {
+                workflow: "Old",
+                run: 31,
+                state: RunState::Passed,
+                cancelled: false,
+            },
+        ]);
+        assert_eq!(
+            candidates,
+            vec![
+                CancelledCandidate {
+                    workflow: "CI".into(),
+                    run: 11,
+                    has_newer_workflow_run: true,
+                },
+                CancelledCandidate {
+                    workflow: "Mac".into(),
+                    run: 21,
+                    has_newer_workflow_run: false,
+                },
+            ]
+        );
+
+        // Workflow YAML timeout-minutes parsing: literal name, matrix template, step timeout ignored.
+        let yaml = "\
+name: CI
+on: [push]
+jobs:
+  test:
+    name: test (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 30 # macOS hang guard
+    steps:
+      - name: Run tests
+        timeout-minutes: 10
+        run: |
+          echo \"jobs:\"
+          cargo test
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - run: cargo clippy
+  dynamic:
+    name: custom
+    timeout-minutes: ${{ matrix.timeout }}
+    steps:
+      - run: echo hi
+";
+        assert_eq!(
+            workflow_job_timeout_minutes(yaml, "test (macos-latest)"),
+            Some(30)
+        );
+        assert_eq!(
+            workflow_job_timeout_minutes(yaml, "lint"),
+            Some(DEFAULT_JOB_TIMEOUT_MINUTES)
+        );
+        assert_eq!(workflow_job_timeout_minutes(yaml, "custom"), None);
+        assert_eq!(workflow_job_timeout_minutes(yaml, "other"), None);
+
+        // Last "has been running for over 60 seconds" line names the hung test.
+        let log = "\
+test slow_setup has been running for over 60 seconds
+test slow_setup ... ok
+test collapse_link::collapse_link_and_unlink_round_trip_with_live_server has been running for over 60 seconds
+##[error]The operation was canceled.";
+        assert_eq!(
+            hung_test(log).as_deref(),
+            Some("collapse_link::collapse_link_and_unlink_round_trip_with_live_server")
+        );
+        assert_eq!(
+            error_signature("##[error]The operation was canceled."),
+            None
+        );
     }
 }

@@ -84,6 +84,8 @@ pub(crate) struct Annotation {
     pub path: Option<String>,
     pub start_line: Option<u64>,
     pub annotation_level: Option<String>,
+    #[serde(default)]
+    pub title: Option<String>,
     pub message: Option<String>,
 }
 
@@ -289,5 +291,40 @@ impl WorkflowClient {
             &self.repository,
             "--log-failed",
         ])
+    }
+
+    /// The full tab-separated log of a single job (`job\tstep\tline`), used when a timed-out
+    /// job concluded `cancelled` and `--log-failed` has no failed step (#584).
+    pub fn job_log(&self, job: u64) -> Result<String, GitHubCommandError> {
+        let job = job.to_string();
+        self.command.text(&[
+            "run",
+            "view",
+            "--job",
+            &job,
+            "--repo",
+            &self.repository,
+            "--log",
+        ])
+    }
+
+    /// Raw job log text from GitHub's job-logs REST endpoint, used as a fallback when
+    /// `gh run view --job --log` returns no output for a cancelled job (#584).
+    pub fn raw_job_log(&self, job: u64) -> Result<String, GitHubCommandError> {
+        let endpoint = format!("repos/{}/actions/jobs/{job}/logs", self.repository);
+        self.command.text(&["api", &endpoint])
+    }
+
+    /// Reads a repository file as raw UTF-8 text at `commit` (for workflow `timeout-minutes`
+    /// lookup when check-run annotations cannot be read, #584).
+    pub fn file_at_commit(&self, path: &str, commit: &str) -> Result<String, GitHubCommandError> {
+        let endpoint = format!(
+            "repos/{}/contents/{}?ref={}",
+            self.repository,
+            crate::base_ci::encoded(path.trim_start_matches('/'), true),
+            crate::base_ci::encoded(commit, false),
+        );
+        self.command
+            .text(&["api", "-H", "Accept: application/vnd.github.raw", &endpoint])
     }
 }

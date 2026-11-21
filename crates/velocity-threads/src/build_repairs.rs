@@ -134,7 +134,14 @@ pub(crate) fn failure_excerpt(output: &str, budget: usize) -> String {
         .filter(|line| {
             let line = line.to_ascii_lowercase();
             [
-                "error:", "error[", "fatal:", "failed", "failure", "panicked",
+                "error:",
+                "error[",
+                "fatal:",
+                "failed",
+                "failure",
+                "panicked",
+                "has been running for over 60 seconds",
+                "exceeded the maximum execution time",
             ]
             .iter()
             .any(|term| line.contains(term))

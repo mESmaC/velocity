@@ -14,14 +14,16 @@ A commit status counts as a workflow named for its context, except `velocity/int
 | Run or status | What it says |
 |---|---|
 | completed with `success` | passed |
-| completed with `failure`, `timed_out` or `startup_failure`; a status of `failure` or `error` | failed |
+| completed with `failure`, `timed_out` or `startup_failure`; a `cancelled` run with a timed-out job; a status of `failure` or `error` | failed |
 | queued or in progress; a status of `pending` | running |
-| anything else, such as `cancelled` or `skipped` | nothing |
+| anything else, such as a push-cancelled or `skipped` run | nothing |
 
 The newest run of each workflow that passed or failed decides that workflow.
-An older failure under a newer pass is fixed, a run still going changes nothing until it finishes, and a cancelled run is never a failure.
+An older failure under a newer pass is fixed, a run still going changes nothing until it finishes, and a run cancelled by a newer push is superseded rather than a failure.
+GitHub reports a job that hits its `timeout-minutes` as `cancelled`, so for cancelled runs newer than a workflow's latest decided run Velocity inspects the run's jobs (#584).
+A job failed when it concluded `failure` or `timed_out`, or when it concluded `cancelled` and timed out; a job cancelled because another failed or because a newer push superseded it did not.
+A cancelled job counts as timed out when its check run has an annotation matching `has exceeded the maximum execution time`, or, if annotations cannot be read, when no newer run of the same workflow exists on the branch and the job ran at least as long as its `timeout-minutes` read from the workflow file at that commit.
 For a workflow whose deciding run failed, Velocity reads that run's jobs.
-A job failed when it concluded `failure` or `timed_out`; a job cancelled because another failed did not.
 A failed run with no failed job, and a failed status, is one failure named for the workflow.
 
 **The fix-forward thread.**
@@ -30,6 +32,7 @@ Velocity keeps one open repair per workflow and job.
 A failed job with no open repair gets a fix-forward thread; the jobs that newly failed in one run share one thread, since one fault often fails every cell of a matrix.
 The thread is an ordinary build thread on the default implementation model, titled "Fix CI: `<workflow>` · `<job>`", and the project's spec must be locked.
 Its prompt names the repository, branch, workflow, commit and run, and for up to three jobs the job, its first failed step, its runner and an excerpt of that job's failed-step log.
+For a timed-out job, Velocity reads the job's log and the prompt names the test still running when the job stopped, taken from the last `has been running for over 60 seconds` line (#584).
 Other failed jobs are listed by name.
 The run's whole failed-step log is saved as `velocity-base-ci-<run>/failed-steps.log` in the temporary folder, and the prompt gives its path.
 The prompt tells the agent to work from the log because the runner may be an operating system this machine cannot run, to check that the base still has the fault, and never to weaken the failing test or lint.
