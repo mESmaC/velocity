@@ -202,14 +202,17 @@ fn lock<'a, Value>(
 #[cfg(test)]
 mod tests {
     use super::project_record;
-    use crate::request::{ProjectLocationRequest, ProjectMirror};
+    use crate::error::NewProjectError;
+    use crate::request::{ProjectLocationRequest, ProjectMirror, projects_directory};
     use crate::resolve::resolve;
     use velocity_store::ProjectLocationKind;
 
     #[test]
     fn collapse_mirror_sets_github_remote_only_when_named() -> Result<(), Box<dyn std::error::Error>>
     {
-        let root = std::env::temp_dir().join("velocity-collapse-github-test");
+        // On Windows `std::env::temp_dir()` lives under AppData, which `validate_project_root` rejects.
+        let home = std::env::home_dir().ok_or(NewProjectError::NoFolder)?;
+        let root = projects_directory(&home).join("velocity-collapse-github-test");
         let with_github = resolve(&ProjectLocationRequest::RosenFolder {
             path: root.display().to_string(),
             mirror: ProjectMirror::Collapse {
