@@ -75,6 +75,7 @@ pub async fn land(
             reason,
             message,
             paths,
+            ..
         } => LandOutcome::Refused(map_refusal(reason, message, paths)),
     })
 }
