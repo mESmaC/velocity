@@ -2,7 +2,7 @@
 use std::path::Path;
 use tauri::{AppHandle, Manager};
 use velocity_acp::client::SessionSetup;
-use velocity_airc::{Channel, ClaimResult};
+use velocity_airc::ClaimResult;
 use velocity_store::claim_piece::thread_claim_piece;
 use velocity_threads::ThreadKey;
 
@@ -44,7 +44,7 @@ pub fn attach_with_prompt(
         .path()
         .app_data_dir()
         .map_err(|error| error.to_string())?;
-    let channel = Channel::open(&data, &key.0.to_string()).map_err(|error| error.to_string())?;
+    let channel = crate::airc_access::open_project_channel(&data, &project)?;
     let base = if project.default_branch.trim().is_empty() {
         "master".into()
     } else {
@@ -143,11 +143,7 @@ pub fn update_title(application: &AppHandle, key: ThreadKey, title: &str) -> Res
         return Ok(());
     }
     let piece = thread_claim_piece(&thread, &thread.branch_name);
-    let data = application
-        .path()
-        .app_data_dir()
-        .map_err(|error| error.to_string())?;
-    let channel = Channel::open(&data, &key.0.to_string()).map_err(|error| error.to_string())?;
+    let channel = crate::airc_access::open_channel(application, key.0)?;
     let Some(claim) = channel
         .claims()
         .map_err(|error| error.to_string())?
@@ -196,11 +192,7 @@ pub fn observe(
     if paths.is_empty() {
         return Ok(());
     }
-    let data = application
-        .path()
-        .app_data_dir()
-        .map_err(|error| error.to_string())?;
-    let channel = Channel::open(&data, &key.0.to_string()).map_err(|error| error.to_string())?;
+    let channel = crate::airc_access::open_channel(application, key.0)?;
     // On Rosen projects, Rosen owns path claims; skip store lookup and path normalization (#531, #545).
     if channel.server_backed() {
         return Ok(());
@@ -220,11 +212,7 @@ pub fn observe(
 }
 
 pub fn release(application: &AppHandle, key: ThreadKey) -> Result<(), String> {
-    let data = application
-        .path()
-        .app_data_dir()
-        .map_err(|error| error.to_string())?;
-    let channel = Channel::open(&data, &key.0.to_string()).map_err(|error| error.to_string())?;
+    let channel = crate::airc_access::open_channel(application, key.0)?;
     let member = thread_member(application, key);
     let legacy = format!("thread-{}", key.1);
     for claim in channel.claims().map_err(|error| error.to_string())? {

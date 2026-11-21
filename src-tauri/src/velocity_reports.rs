@@ -8,7 +8,7 @@ use std::path::Path;
 use std::time::Duration;
 
 use tauri::{AppHandle, Manager};
-use velocity_airc::{Channel, Entry};
+use velocity_airc::Entry;
 use velocity_github::{
     IssueClient,
     velocity_reports::{self, DiscoveryReport, ReportRepository, ReportedDiscoveries},
@@ -94,8 +94,7 @@ fn report_project(
         .projects
         .get(&project.id)
         .map_or(0, |item| item.cursor);
-    let channel =
-        Channel::open(app_data, &project.id.to_string()).map_err(|error| error.to_string())?;
+    let channel = crate::airc_access::open_project_channel(app_data, project)?;
     let entries = channel.read(cursor).map_err(|error| error.to_string())?;
     let Some(last) = entries.last().map(|entry| entry.sequence) else {
         return Ok(());

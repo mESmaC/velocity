@@ -50,11 +50,8 @@ async fn follow_project(application: &AppHandle, project: u32) {
             match open(application, project, &mut position).await {
                 Ok((mut stream, replay, rewound)) => {
                     connection_state(application, project, false);
-                    if rewound {
-                        report(
-                            crate::rosen_thread::refresh(application, project, None, true).await,
-                        );
-                    }
+                    crate::continuous_dispatch::overlap::invalidate_base_commit(project);
+                    report(crate::rosen_thread::refresh(application, project, None, rewound).await);
                     report(restore_work(application, project));
                     // What a crash or a failed step left undone, before anything new.
                     run_follow_ups(application, project).await;
@@ -89,38 +86,53 @@ async fn follow_connected(
     warm: Option<&std::sync::mpsc::SyncSender<()>>,
 ) {
     use velocity_rosen::ProjectEventKind::*;
-    let mut refresh = tokio::time::interval(RECONNECT);
-    refresh.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
-    loop {
-        tokio::select! {
-            _ = refresh.tick() => {
-                report(crate::rosen_thread::refresh(application, project, None, false).await);
+    // Drive thread view refreshes directly from Rosen events instead of polling every 5 s (#555).
+    while let Some(event) = stream.next().await {
+        let superseded = replay.superseded(&event);
+        if let Err(error) =
+            consume_connected(application, project, replay, &event, superseded).await
+        {
+            report::<()>(Err(error));
+            break;
+        }
+        *after = (*after).max(event.seq);
+        if superseded {
+            continue;
+        }
+        if matches!(event.kind, Landed | Reverted) {
+            crate::continuous_dispatch::overlap::invalidate_base_commit(project);
+            if let Some(warm) = warm {
+                let _ = warm.try_send(());
             }
-            event = stream.next() => {
-                let Some(event) = event else { break };
-                let superseded = replay.superseded(&event);
-                if let Err(error) = consume_connected(application, project, replay, &event, superseded).await {
-                    report::<()>(Err(error));
-                    break;
-                }
-                *after = (*after).max(event.seq);
-                if superseded {
-                    continue;
-                }
-                if matches!(event.kind, Landed | Reverted) && let Some(warm) = warm {
-                    let _ = warm.try_send(());
-                }
-                match event.kind {
-                    Built | Green => report(crate::rosen_thread::refresh(application, project, None, false).await),
-                    Landed | Reverted | Updated | Conflict | Rebased | PostLandFailure | Review => {
-                        report(crate::rosen_thread::refresh(application, project, event.change.as_deref(), true).await);
-                    }
-                    Snapshot if velocity_rosen::change_event(&event).is_some() => {
-                        report(crate::rosen_thread::refresh(application, project, event.change.as_deref(), true).await);
-                    }
-                    _ => {}
-                }
+        }
+        match event.kind {
+            Built | Green => {
+                report(crate::rosen_thread::refresh_landed(application, project).await)
             }
+            Landed | Reverted | Updated | Conflict | Rebased | PostLandFailure | RevertRefused
+            | Review => {
+                report(
+                    crate::rosen_thread::refresh(
+                        application,
+                        project,
+                        event.change.as_deref(),
+                        true,
+                    )
+                    .await,
+                );
+            }
+            Snapshot if velocity_rosen::change_event(&event).is_some() => {
+                report(
+                    crate::rosen_thread::refresh(
+                        application,
+                        project,
+                        event.change.as_deref(),
+                        true,
+                    )
+                    .await,
+                );
+            }
+            _ => {}
         }
     }
 }

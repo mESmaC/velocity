@@ -22,6 +22,9 @@ pub(crate) fn deliver(
         .ok_or_else(|| Error::Invalid("Missing Rosen channel".into()))?;
     let native_after = remote.acknowledged_cursor(nick)?;
     let pending = pending(channel, nick, after, native_after, idle)?;
+    if pending.is_empty() {
+        return Ok(after);
+    }
     let history = channel.snapshot()?;
     let acknowledged: BTreeSet<_> = history
         .iter()
@@ -63,7 +66,9 @@ pub(crate) fn deliver(
             targeted.advance(sequence, received);
         }
     }
-    remote.acknowledge_cursor(nick, targeted.sequence)?;
+    if targeted.sequence > native_after {
+        remote.acknowledge_cursor(nick, targeted.sequence)?;
+    }
     Ok(project.sequence)
 }
 

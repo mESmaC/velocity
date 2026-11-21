@@ -6,7 +6,7 @@ use std::path::Path;
 use serde::Deserialize;
 use specta::Type;
 use tauri::{AppHandle, Manager};
-use velocity_core::thread_view_model::RosenChangeStage;
+use velocity_core::thread_view_model::{RosenChangeStage, RosenChangeView};
 use velocity_rosen::thread_change::{self, ThreadChangeQuery};
 use velocity_store::{ReviewStage, ThreadItem, ThreadState};
 use velocity_threads::ThreadKey;
@@ -20,6 +20,21 @@ pub(crate) async fn refresh(
     change: Option<&str>,
     force: bool,
 ) -> Result<(), String> {
+    refresh_matching(application, project, change, force, false).await
+}
+
+/// Refreshes only landed, not-yet-verified threads on `Built` and `Green` events (#555).
+pub(crate) async fn refresh_landed(application: &AppHandle, project: u32) -> Result<(), String> {
+    refresh_matching(application, project, None, false, true).await
+}
+
+async fn refresh_matching(
+    application: &AppHandle,
+    project: u32,
+    change: Option<&str>,
+    force: bool,
+    landed_only: bool,
+) -> Result<(), String> {
     let queries = {
         let store = lock(
             application.state::<ManagedStateStore>().inner(),
@@ -32,7 +47,7 @@ pub(crate) async fn refresh(
             .threads
             .iter()
             .filter_map(|thread| {
-                let (generation, query) = query(thread, change, force)?;
+                let (generation, query) = query(thread, change, force, landed_only)?;
                 let finished = matches!(
                     thread.state,
                     ThreadState::Done | ThreadState::Closed | ThreadState::Merged
@@ -45,19 +60,33 @@ pub(crate) async fn refresh(
         return Ok(());
     }
     let server = crate::rosen::server(application, project).await?;
+    let mut meta = BTreeMap::new();
+    let mut batch_queries = Vec::with_capacity(queries.len());
+    for (generation, query, finished) in queries {
+        meta.insert(query.identifier.clone(), (generation, finished));
+        batch_queries.push(query);
+    }
+    let read = match thread_change::read_batch(&server, batch_queries).await {
+        Ok(results) => results,
+        Err(error) => {
+            report::<()>(Err(error.to_string()));
+            return Ok(());
+        }
+    };
     let mut views = BTreeMap::new();
     let mut missing = BTreeMap::new();
-    for (generation, query, finished) in queries {
-        let change = query.identifier.clone();
-        match thread_change::read(&server, query).await {
-            Ok(Some(view)) => {
+    for (change, view) in read {
+        let Some(&(generation, finished)) = meta.get(&change) else {
+            continue;
+        };
+        match view {
+            Some(view) => {
                 views.insert(view.identifier.clone(), (generation, view));
             }
-            Ok(None) if finished => {
+            None if finished => {
                 missing.insert(change, generation);
             }
-            Ok(None) => eprintln!("Rosen project {project}: no change matches {change}"),
-            Err(error) => report::<()>(Err(error.to_string())),
+            None => eprintln!("Rosen project {project}: no change matches {change}"),
         }
     }
     let mut store = lock(
@@ -76,10 +105,22 @@ pub(crate) async fn refresh(
     Ok(())
 }
 
+fn is_settled(view: &RosenChangeView) -> bool {
+    match view.stage {
+        RosenChangeStage::Green | RosenChangeStage::Abandoned => true,
+        RosenChangeStage::Landed => view.lands.last().is_some_and(|land| {
+            land.revert.is_none()
+                && (land.checks_passed || (land.build_passed && land.receipt.is_some()))
+        }),
+        _ => false,
+    }
+}
+
 fn query(
     thread: &ThreadItem,
     change: Option<&str>,
     force: bool,
+    landed_only: bool,
 ) -> Option<(u64, ThreadChangeQuery)> {
     let identifier = thread.rosen_change.as_ref()?;
     if change.is_some_and(|change| change != identifier) {
@@ -89,15 +130,17 @@ fn query(
         .rosen_change_view
         .as_ref()
         .filter(|view| &view.identifier == identifier);
-    if !force
-        && previous.is_some_and(|view| {
-            matches!(
-                view.stage,
-                RosenChangeStage::Green | RosenChangeStage::Abandoned
-            )
-        })
-    {
+    if !force && previous.is_some_and(is_settled) {
         return None;
+    }
+    if landed_only {
+        let awaiting_verification = match previous {
+            Some(view) => view.stage == RosenChangeStage::Landed,
+            None => matches!(thread.state, ThreadState::Merged | ThreadState::Done),
+        };
+        if !awaiting_verification {
+            return None;
+        }
     }
     Some((
         thread.rosen_progress_generation,

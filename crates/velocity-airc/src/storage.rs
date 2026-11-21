@@ -42,7 +42,7 @@ impl Storage {
 
     pub(crate) fn snapshot(&self) -> Result<Arc<Vec<Entry>>, Error> {
         if let Some(remote) = &self.remote {
-            return remote.read(0).map(Arc::new);
+            return remote.snapshot();
         }
         // The cross-process lock is already held: offsets only observe committed,
         // stable files and mutations still allocate their sequence atomically.

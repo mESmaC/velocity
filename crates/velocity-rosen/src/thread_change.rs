@@ -27,24 +27,61 @@ pub async fn read(
     server: &ProjectServer,
     query: ThreadChangeQuery,
 ) -> Result<Option<RosenChangeView>, RosenError> {
+    let mut results = read_batch(server, vec![query]).await?;
+    Ok(results.pop().and_then(|(_, view)| view))
+}
+
+/// Reads several thread changes in one pass, reusing one shared Rosen connection and
+/// opening `metadata.sqlite` once for the entire batch (#555).
+pub async fn read_batch(
+    server: &ProjectServer,
+    queries: Vec<ThreadChangeQuery>,
+) -> Result<Vec<(String, Option<RosenChangeView>)>, RosenError> {
+    if queries.is_empty() {
+        return Ok(Vec::new());
+    }
     let client = requests(server.endpoint()).await?;
-    let record = match client.change_show(&query.identifier).await {
-        Ok(response) => response.change,
-        Err(rosen_client::Error::Server(error))
-            if error.code == rosen_client::protocol::ErrorCode::NotFound =>
-        {
-            return Ok(None);
+    let mut found = Vec::with_capacity(queries.len());
+    let mut missing = Vec::new();
+    for query in queries {
+        match client.change_show(&query.identifier).await {
+            Ok(response) => found.push((query, response.change)),
+            Err(rosen_client::Error::Server(error))
+                if error.code == rosen_client::protocol::ErrorCode::NotFound =>
+            {
+                missing.push((query.identifier, None));
+            }
+            Err(error) => return Err(error.into()),
         }
-        Err(error) => return Err(error.into()),
-    };
+    }
+    if found.is_empty() {
+        return Ok(missing);
+    }
     let ledger_path = server.data_dir().join("metadata.sqlite");
-    let identifier = query.identifier.clone();
-    let imported_through = query.imported_through;
-    let facts = tokio::task::spawn_blocking(move || {
-        read_ledger(&ledger_path, &identifier, imported_through)
-    })
-    .await
-    .map_err(|error| RosenError::ThreadChange(error.to_string()))??;
+    let specs: Vec<(String, u64)> = found
+        .iter()
+        .map(|(query, _)| (query.identifier.clone(), query.imported_through))
+        .collect();
+    let mut facts_list =
+        tokio::task::spawn_blocking(move || read_ledger_batch(&ledger_path, &specs))
+            .await
+            .map_err(|error| RosenError::ThreadChange(error.to_string()))??;
+    let mut results = Vec::with_capacity(found.len() + missing.len());
+    results.extend(missing);
+    for ((query, record), facts) in found.into_iter().zip(facts_list.drain(..)) {
+        let identifier = query.identifier.clone();
+        let view = build_view(&client, query, record, facts).await?;
+        results.push((identifier, Some(view)));
+    }
+    Ok(results)
+}
+
+async fn build_view(
+    client: &Client,
+    query: ThreadChangeQuery,
+    record: rosen_core::Change,
+    facts: LedgerFacts,
+) -> Result<RosenChangeView, RosenError> {
     let name = facts
         .may_have_named_work
         .then(|| snapshot_name(&record))
@@ -53,7 +90,7 @@ pub async fn read(
     let previous = query.previous.map_or_else(Vec::new, |view| view.lands);
     for land in facts.lands {
         let cached = previous.iter().find(|entry| entry.commit == land.commit);
-        lands.push(land_view(&client, land, cached).await?);
+        lands.push(land_view(client, land, cached).await?);
     }
     let stage = change_stage(
         record.state,
@@ -62,7 +99,7 @@ pub async fn read(
         name.is_some(),
         query.fixing,
     );
-    Ok(Some(RosenChangeView {
+    Ok(RosenChangeView {
         identifier: query.identifier,
         stage,
         name,
@@ -74,7 +111,7 @@ pub async fn read(
         lands,
         resolution: None,
         follow_up_error: None,
-    }))
+    })
 }
 
 fn snapshot_name(record: &rosen_core::Change) -> Option<String> {
@@ -133,29 +170,32 @@ fn ledger(path: &Path) -> Result<Connection, RosenError> {
     Ok(connection)
 }
 
-fn read_ledger(
+fn read_ledger_batch(
     path: &Path,
-    change: &str,
-    imported_through: u64,
-) -> Result<LedgerFacts, RosenError> {
+    queries: &[(String, u64)],
+) -> Result<Vec<LedgerFacts>, RosenError> {
     let mut connection = ledger(path)?;
     let transaction = connection.transaction()?;
-    let conflicts = conflict_paths(&transaction, change)?;
-    // Imported Git commits carry names, but only a later Rosen snapshot means
-    // the owner named this work for Velocity to land.
-    let may_have_named_work = imported_through == 0
-        || transaction.query_row(
-            "SELECT EXISTS(SELECT 1 FROM events WHERE seq>?1 AND change_id=?2
-             AND kind='snapshot' AND json_extract(detail,'$.named')=1)",
-            (imported_through, change),
-            |row| row.get(0),
-        )?;
-    let lands = read_lands(&transaction, change)?;
-    Ok(LedgerFacts {
-        may_have_named_work,
-        conflicts,
-        lands,
-    })
+    let mut results = Vec::with_capacity(queries.len());
+    for (change, imported_through) in queries {
+        let conflicts = conflict_paths(&transaction, change)?;
+        // Imported Git commits carry names, but only a later Rosen snapshot means
+        // the owner named this work for Velocity to land.
+        let may_have_named_work = *imported_through == 0
+            || transaction.query_row(
+                "SELECT EXISTS(SELECT 1 FROM events WHERE seq>?1 AND change_id=?2
+                 AND kind='snapshot' AND json_extract(detail,'$.named')=1)",
+                (imported_through, change),
+                |row| row.get(0),
+            )?;
+        let lands = read_lands(&transaction, change)?;
+        results.push(LedgerFacts {
+            may_have_named_work,
+            conflicts,
+            lands,
+        });
+    }
+    Ok(results)
 }
 
 fn read_lands(connection: &Connection, change: &str) -> rusqlite::Result<Vec<LandFact>> {

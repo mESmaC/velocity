@@ -1,7 +1,7 @@
 //! Native background adapter for F8 continuous dispatch. It never uses the selected
 //! project's issue rail, so changing projects cannot redirect a background launch.
 mod holds;
-mod overlap;
+pub(crate) mod overlap;
 mod parked;
 
 use crate::state::ManagedStateStore;
@@ -1134,12 +1134,7 @@ fn dispatch_claims(
     application: &AppHandle,
     identifier: u32,
 ) -> Result<Vec<velocity_airc::Claim>, String> {
-    let data = application
-        .path()
-        .app_data_dir()
-        .map_err(|error| error.to_string())?;
-    let channel = velocity_airc::Channel::open(&data, &identifier.to_string())
-        .map_err(|error| error.to_string())?;
+    let channel = crate::airc_access::open_channel(application, identifier)?;
     channel.claims().map_err(|error| error.to_string())
 }
 

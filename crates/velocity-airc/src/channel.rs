@@ -256,8 +256,18 @@ impl Channel {
 
     /// Project identity, not display name, partitions channels even for same-name projects.
     pub fn open(app_data: &Path, project: &str) -> Result<Self, Error> {
+        Self::open_with_rosen(app_data, project, None)
+    }
+
+    /// Opens a project's channel using the store's Rosen configuration so non-Rosen projects
+    /// never read `state.json` from disk (#555).
+    pub fn open_for_project(app_data: &Path, project: &str, rosen: bool) -> Result<Self, Error> {
+        Self::open_with_rosen(app_data, project, Some(rosen))
+    }
+
+    fn open_with_rosen(app_data: &Path, project: &str, rosen: Option<bool>) -> Result<Self, Error> {
         require_text(project)?;
-        if let Some(remote) = crate::remote::Remote::for_project(app_data, project)? {
+        if let Some(remote) = crate::remote::Remote::for_project(app_data, project, rosen)? {
             return Ok(Self {
                 directory: PathBuf::new(),
                 remote: Some(remote),
@@ -293,6 +303,9 @@ impl Channel {
 
     /// Immutable routing context, shared with the log tail rather than cloned per agent.
     pub(crate) fn snapshot(&self) -> Result<std::sync::Arc<Vec<Entry>>, Error> {
+        if let Some(remote) = &self.remote {
+            return remote.snapshot();
+        }
         Storage::open(self)?.snapshot()
     }
 

@@ -3,17 +3,16 @@ use crate::{
     Entry, Error, Presence,
     channel::{DiscoveryIssue, entry},
 };
-use rosen_client::protocol::EventKind;
-use rosen_client::protocol::channel::{AppendEntry, ChannelEvent, SendMessage};
-use rosen_client::{Client, Endpoint};
+use rosen_client::Endpoint;
+use rosen_client::protocol::channel::{AppendEntry, SendMessage};
 use serde::de::DeserializeOwned;
 use serde_json::json;
 use std::cell::Cell;
+use std::future::Future;
 use std::path::Path;
-use std::sync::OnceLock;
-use std::time::{Duration, Instant};
-
-static RUNTIME: OnceLock<Result<tokio::runtime::Runtime, String>> = OnceLock::new();
+use std::sync::Arc;
+use std::time::Duration;
+use velocity_rosen::connection::Connection;
 
 thread_local! {
     static CONNECT_DURATION: Cell<Duration> = const { Cell::new(Duration::ZERO) };
@@ -31,39 +30,23 @@ pub(crate) fn record_connect_duration(elapsed: Duration) {
     CONNECT_DURATION.with(|cell| cell.set(cell.get().saturating_add(elapsed)));
 }
 
-fn shared_runtime() -> Result<&'static tokio::runtime::Runtime, Error> {
-    RUNTIME
-        .get_or_init(|| {
-            tokio::runtime::Builder::new_multi_thread()
-                .worker_threads(2)
-                .thread_name("airc-rosen")
-                .enable_all()
-                .build()
-                .map_err(|error| error.to_string())
-        })
-        .as_ref()
-        .map_err(|error| Error::Invalid(error.clone()))
-}
-
-fn run_on_shared_runtime<T: Send, Fut: std::future::Future<Output = Result<T, Error>>>(
-    make: impl FnOnce() -> Fut + Send,
+/// Dispatches an async Rosen operation onto the single shared Rosen runtime without
+/// spawning an OS thread or creating a Tokio runtime (#555).
+/// Callers must never invoke synchronous `Remote` methods from inside `future`.
+pub(crate) fn run_on_shared_runtime<T: Send + 'static>(
+    future: impl Future<Output = Result<T, Error>> + Send + 'static,
 ) -> Result<T, Error> {
-    let runtime = shared_runtime()?;
-    // Channel's existing synchronous callers also run inside ACP's async runtime.
-    // A scoped thread avoids nested block_on while still reusing the shared runtime.
-    if tokio::runtime::Handle::try_current().is_ok() {
-        std::thread::scope(|scope| {
-            scope
-                .spawn(move || runtime.block_on(make()))
-                .join()
-                .map_err(|_| Error::Invalid("Rosen channel worker panicked".into()))?
-        })
-    } else {
-        runtime.block_on(make())
-    }
+    let handle = velocity_rosen::connection::shared_handle()?;
+    let (sender, receiver) = std::sync::mpsc::sync_channel(1);
+    handle.spawn(async move {
+        let _ = sender.send(future.await);
+    });
+    receiver
+        .recv()
+        .map_err(|_| Error::Invalid("Rosen channel worker stopped".into()))?
 }
 
-fn is_transport_error(error: &Error) -> bool {
+pub(crate) fn is_transport_error(error: &Error) -> bool {
     matches!(
         error,
         Error::Rosen(rosen_client::Error::Disconnected | rosen_client::Error::Io(_))
@@ -73,7 +56,7 @@ fn is_transport_error(error: &Error) -> bool {
 #[derive(Clone)]
 pub(crate) struct Remote {
     pub(crate) endpoint: Endpoint,
-    scope: String,
+    pub(crate) scope: String,
 }
 
 pub(crate) const RECORD_PREFIX: &str = "velocity-airc/v1:";
@@ -145,49 +128,40 @@ impl Remote {
         }
     }
 
-    pub(crate) fn for_project(app_data: &Path, project: &str) -> Result<Option<Self>, Error> {
+    /// Routes a project channel to Rosen when the caller's store config marks it Rosen
+    /// or its Rosen data folder already exists on disk. Never parses `state.json` (#555).
+    pub(crate) fn for_project(
+        app_data: &Path,
+        project: &str,
+        rosen: Option<bool>,
+    ) -> Result<Option<Self>, Error> {
         let Ok(identifier) = project.parse::<u32>() else {
             return Ok(None);
         };
         let server = velocity_rosen::ProjectServer::new(app_data, identifier);
-        // Server configuration is the routing authority, never a probe whose failure
-        // could split one Rosen channel into independent machine-local channels.
-        if !server.data_dir().exists() && !configured_rosen(app_data, identifier)? {
+        let use_rosen = rosen.unwrap_or(false) || server.data_dir().exists();
+        if !use_rosen {
             return Ok(None);
         }
         Ok(Some(Self::new(app_data, server.endpoint().as_str().into())))
     }
 
-    pub(crate) fn run<T: Send>(
-        &self,
-        operation: impl AsyncFnOnce(&Client) -> Result<T, Error> + Send,
-    ) -> Result<T, Error> {
-        let endpoint = &self.endpoint;
-        let (result, connect_elapsed) = run_on_shared_runtime(move || async move {
+    pub(crate) fn run<T, F, Fut>(&self, operation: F) -> Result<T, Error>
+    where
+        T: Send + 'static,
+        F: FnOnce(Arc<Connection>) -> Fut + Send + 'static,
+        Fut: Future<Output = Result<T, Error>> + Send + 'static,
+    {
+        let endpoint = self.endpoint.clone();
+        let (result, connect_elapsed) = run_on_shared_runtime(async move {
             let (connection, connect_elapsed) =
-                velocity_rosen::connection::requests_timed(endpoint).await?;
-            let result = operation(&connection).await;
+                velocity_rosen::connection::requests_timed(&endpoint).await?;
+            let result = operation(Arc::clone(&connection)).await;
             if let Err(ref error) = result
                 && is_transport_error(error)
             {
-                velocity_rosen::connection::invalidate(endpoint, &connection).await;
+                velocity_rosen::connection::invalidate(&endpoint, &connection).await;
             }
-            Ok((result, connect_elapsed))
-        })?;
-        record_connect_duration(connect_elapsed);
-        result
-    }
-
-    pub(crate) fn run_dedicated<T: Send>(
-        &self,
-        operation: impl AsyncFnOnce(&Client) -> Result<T, Error> + Send,
-    ) -> Result<T, Error> {
-        let endpoint = &self.endpoint;
-        let (result, connect_elapsed) = run_on_shared_runtime(move || async move {
-            let started = Instant::now();
-            let connection = velocity_rosen::connection::Connection::dedicated(endpoint).await?;
-            let connect_elapsed = started.elapsed();
-            let result = operation(&connection).await;
             Ok((result, connect_elapsed))
         })?;
         record_connect_duration(connect_elapsed);
@@ -195,56 +169,54 @@ impl Remote {
     }
 
     pub(crate) fn tip(&self) -> Result<u64, Error> {
-        let tip = self.run(async |client| Ok(client.status().await?.last_event))?;
+        let tip = self.run(|client| async move { Ok(client.status().await?.last_event) })?;
         if tip != 0 {
             return Ok(tip);
         }
-        self.run_dedicated(async |client| {
-            Ok(crate::remote_events::read_events(client, None, 0)
-                .await?
-                .last()
-                .map_or(0, |record| record.sequence))
-        })
+        Ok(self.snapshot()?.last().map_or(0, |record| record.sequence))
     }
 
     pub(crate) fn event_head(&self) -> Result<velocity_rosen::EventHead, Error> {
-        self.run(async |client| {
-            velocity_rosen::EventHead::read(client)
+        self.run(|client| async move {
+            velocity_rosen::EventHead::read(&client)
                 .await
                 .map_err(|error| Error::Invalid(error.to_string()))
         })
     }
 
     pub(crate) fn presence(&self) -> Result<Vec<Presence>, Error> {
-        self.run(async |client| {
+        let scope = self.scope.clone();
+        self.run(move |client| async move {
             Ok(client
                 .channel_presence()
                 .await?
                 .into_iter()
                 .map(|member| {
-                    Presence::new(
-                        self.local_member(&member.member),
-                        member.nick,
-                        member.left_at.is_none(),
-                    )
+                    let local = member
+                        .member
+                        .strip_prefix(&scope)
+                        .unwrap_or(&member.member)
+                        .to_owned();
+                    Presence::new(local, member.nick, member.left_at.is_none())
                 })
                 .collect())
         })
     }
 
     pub(crate) fn join(&self, member: &str, requested: &str) -> Result<String, Error> {
-        self.run(async |client| {
+        let scoped = self.member(member);
+        let base = crate::channel::nick(requested, crate::channel::NICK_LIMIT);
+        let machine = std::env::var("COMPUTERNAME")
+            .or_else(|_| std::env::var("HOSTNAME"))
+            .unwrap_or_else(|_| "velocity".into());
+        self.run(move |client| async move {
             let members = client.channel_presence().await?;
             if let Some(known) = members
                 .iter()
-                .find(|known| known.member == self.member(member) && known.left_at.is_none())
+                .find(|known| known.member == scoped && known.left_at.is_none())
             {
                 return Ok(known.nick.clone());
             }
-            let base = crate::channel::nick(requested, crate::channel::NICK_LIMIT);
-            let machine = std::env::var("COMPUTERNAME")
-                .or_else(|_| std::env::var("HOSTNAME"))
-                .unwrap_or_else(|_| "velocity".into());
             for suffix in 0..1000 {
                 let ending = if suffix == 0 {
                     String::new()
@@ -262,10 +234,7 @@ impl Remote {
                 if matches!(nick.as_str(), "you" | "velocity") {
                     continue;
                 }
-                match client
-                    .channel_join(&self.member(member), &nick, &machine)
-                    .await
-                {
+                match client.channel_join(&scoped, &nick, &machine).await {
                     Ok(member) => return Ok(member.nick),
                     Err(rosen_client::Error::Server(body))
                         if body.code == rosen_client::protocol::ErrorCode::Refused =>
@@ -280,14 +249,15 @@ impl Remote {
     }
 
     pub(crate) fn leave(&self, member: &str) -> Result<(), Error> {
-        self.run(async |client| {
+        let scoped = self.member(member);
+        self.run(move |client| async move {
             if client
                 .channel_presence()
                 .await?
                 .iter()
-                .any(|known| known.member == self.member(member) && known.left_at.is_none())
+                .any(|known| known.member == scoped && known.left_at.is_none())
             {
-                client.channel_leave(&self.member(member)).await?;
+                client.channel_leave(&scoped).await?;
             }
             Ok(())
         })
@@ -303,36 +273,34 @@ impl Remote {
         let message: SendMessage = wire(
             json!({"from":{"kind":"agent","member":self.member(member)},"to":to,"intent":intent,"text":text}),
         )?;
-        self.run(async |client| {
+        self.run(move |client| async move {
             client.channel_send(message).await?;
             Ok(())
         })
     }
 
     pub(crate) fn comment(&self, text: &str) -> Result<Entry, Error> {
-        self.run(async |client| {
-            let mut recipients = Vec::new();
-            let mut body = text;
-            if let Some((nick, rest)) = text.split_once(':') {
-                let nick = nick.trim();
-                if client
-                    .channel_presence()
-                    .await?
-                    .iter()
-                    .any(|member| member.nick == nick && member.left_at.is_none())
-                {
-                    recipients.push(nick.to_owned());
-                    body = rest.trim();
-                } else if let Some(suggestion) = crate::comment::mistyped_nick(nick, &self.read(0)?)
-                {
-                    return Err(Error::Invalid(format!(
-                        "Unknown nick `{nick}`. Did you mean `{suggestion}`?"
-                    )));
-                }
+        let mut recipients = Vec::new();
+        let mut body = text;
+        if let Some((nick, rest)) = text.split_once(':') {
+            let nick = nick.trim();
+            let active = self
+                .presence()?
+                .into_iter()
+                .any(|member| member.joined && member.nick == nick);
+            if active {
+                recipients.push(nick.to_owned());
+                body = rest.trim();
+            } else if let Some(suggestion) = crate::comment::mistyped_nick(nick, &self.snapshot()?)
+            {
+                return Err(Error::Invalid(format!(
+                    "Unknown nick `{nick}`. Did you mean `{suggestion}`?"
+                )));
             }
-            let message = wire(
-                json!({"from":{"kind":"user"},"to":recipients,"intent":"inform","text":body}),
-            )?;
+        }
+        let message: SendMessage =
+            wire(json!({"from":{"kind":"user"},"to":recipients,"intent":"inform","text":body}))?;
+        self.run(move |client| async move {
             let sent = client.channel_send(message).await?;
             Ok(crate::remote_events::message_entry(&sent))
         })
@@ -354,7 +322,7 @@ impl Remote {
         let request: AppendEntry = wire(
             json!({"ledger":ledger,"author":{"kind":"agent","member":self.member(member)},"text":text,"velocity_issue":velocity_issue}),
         )?;
-        self.run(async |client| {
+        self.run(move |client| async move {
             client.ledger_append(request).await?;
             Ok(())
         })
@@ -375,31 +343,17 @@ impl Remote {
         let text = format!("{RECORD_PREFIX}{}", serde_json::to_string(&stored_record)?);
         let request: AppendEntry =
             wire(json!({"ledger":"past_work","author":{"kind":"user"},"text":text}))?;
-        self.run_dedicated(async |client| {
-            // Ping does not wait for Rosen's subscription task to capture "now".
-            // Replay from before the write so concurrent appends cannot be skipped.
-            let after = client.status().await?.last_event;
-            let stored = client.ledger_append(request).await?;
-            let sequence = tokio::time::timeout(
-                std::time::Duration::from_secs(30),
-                record_sequence(client, after, stored.seq),
-            )
-            .await
-            .map_err(|_| {
-                Error::Invalid(format!(
-                    "Rosen record {} is stored, but its event was not received within 30 seconds; \
-                     read the channel before retrying",
-                    stored.seq
-                ))
-            })??;
-            let mut record = record.clone();
-            record.sequence = sequence;
-            Ok(record)
-        })
+        let stored_seq =
+            self.run(move |client| async move { Ok(client.ledger_append(request).await?.seq) })?;
+        let sequence = self.wait_ledger_sequence(stored_seq)?;
+        let mut record = record.clone();
+        record.sequence = sequence;
+        Ok(record)
     }
 
     pub(crate) fn release_held(&self, nick: &str) -> Result<(), Error> {
-        self.run(async |client| {
+        let nick = nick.to_owned();
+        self.run(move |client| async move {
             if let Some(member) = client
                 .channel_presence()
                 .await?
@@ -418,7 +372,8 @@ impl Remote {
             crate::MessageMode::HeadsDown => "heads_down",
             crate::MessageMode::Quarantined => "quarantined",
         };
-        self.run(async |client| {
+        let nick = nick.to_owned();
+        self.run(move |client| async move {
             let member = client
                 .channel_presence()
                 .await?
@@ -451,47 +406,4 @@ pub(crate) fn member_scope(app_data: &Path) -> String {
             (hash ^ u64::from(byte)).wrapping_mul(0x0100_0000_01b3)
         });
     format!("{hash:016x}/")
-}
-
-async fn record_sequence(client: &Client, after: u64, ledger_sequence: u64) -> Result<u64, Error> {
-    // Subscribe after the append response: a forwarding daemon reports watermark
-    // zero, so replay may fill the event buffer and block that response otherwise.
-    let mut events = client.subscribe(Some(after)).await?;
-    loop {
-        let event = events
-            .recv()
-            .await
-            .ok_or(rosen_client::Error::Disconnected)?;
-        if event.kind != EventKind::Channel {
-            continue;
-        }
-        let line: ChannelEvent = serde_json::from_value(event.detail)?;
-        if matches!(line, ChannelEvent::Ledger { entry } if entry.seq == ledger_sequence) {
-            return Ok(event.seq);
-        }
-    }
-}
-
-// Only needed before a project's server has its configuration directory. This reads
-// project routing, never claims or presence; an unreachable Rosen project stays remote.
-fn configured_rosen(app_data: &Path, identifier: u32) -> Result<bool, Error> {
-    let bytes = match std::fs::read(app_data.join("state.json")) {
-        Ok(bytes) => bytes,
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(false),
-        Err(error) => return Err(error.into()),
-    };
-    let state: serde_json::Value = serde_json::from_slice(&bytes)?;
-    Ok(state
-        .get("projects")
-        .and_then(|projects| projects.as_array())
-        .into_iter()
-        .flatten()
-        .find(|project| project.get("id").and_then(|id| id.as_u64()) == Some(u64::from(identifier)))
-        .is_some_and(|project| {
-            project
-                .get("version_control")
-                .and_then(|value| value.as_str())
-                .unwrap_or("rosen")
-                == "rosen"
-        }))
 }

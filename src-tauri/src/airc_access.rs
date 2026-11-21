@@ -63,3 +63,39 @@ pub fn for_thread(
         )
     })
 }
+
+/// Opens a project's AIRC channel using the store's Rosen configuration so `Channel::open`
+/// never reads or parses `state.json` from disk (#555).
+pub(crate) fn open_project_channel(
+    app_data: &Path,
+    project: &velocity_store::ProjectItem,
+) -> Result<velocity_airc::Channel, String> {
+    velocity_airc::Channel::open_for_project(
+        app_data,
+        &project.id.to_string(),
+        project.rosen_in_use(),
+    )
+    .map_err(|error| error.to_string())
+}
+
+/// Opens `project_identifier`'s AIRC channel using the Rosen setting stored in `ManagedStateStore` (#555).
+pub(crate) fn open_channel(
+    application: &AppHandle,
+    project_identifier: u32,
+) -> Result<velocity_airc::Channel, String> {
+    let rosen = crate::threads::lock(
+        application
+            .state::<crate::state::ManagedStateStore>()
+            .inner(),
+        "persisted state",
+    )?
+    .project(project_identifier)
+    .map(velocity_store::ProjectItem::rosen_in_use)
+    .unwrap_or(false);
+    let app_data = application
+        .path()
+        .app_data_dir()
+        .map_err(|error| error.to_string())?;
+    velocity_airc::Channel::open_for_project(&app_data, &project_identifier.to_string(), rosen)
+        .map_err(|error| error.to_string())
+}

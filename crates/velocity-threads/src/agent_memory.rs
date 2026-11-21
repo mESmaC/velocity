@@ -29,15 +29,24 @@ pub fn project_memory_dir(app_data: &Path, project: u32) -> PathBuf {
 /// Ensures the project's memory folder exists and refreshes its managed AIRC ledger seed
 /// without overwriting any agent-authored notes in `MEMORY.md`.
 pub fn prepare_project_memory(app_data: &Path, project: u32) -> io::Result<PathBuf> {
+    prepare_project_memory_for_project(app_data, project, false)
+}
+
+/// Like [`prepare_project_memory`], passing the store's Rosen configuration explicitly (#555).
+pub fn prepare_project_memory_for_project(
+    app_data: &Path,
+    project: u32,
+    rosen: bool,
+) -> io::Result<PathBuf> {
     let dir = project_memory_dir(app_data, project);
     fs::create_dir_all(&dir)?;
-    let (discoveries, past_work) = read_ledger_entries(app_data, project);
+    let (discoveries, past_work) = read_ledger_entries(app_data, project, rosen);
     sync_memory_files(&dir, &discoveries, &past_work)?;
     Ok(dir)
 }
 
-fn read_ledger_entries(app_data: &Path, project: u32) -> (Vec<Entry>, Vec<Entry>) {
-    let Ok(channel) = Channel::open(app_data, &project.to_string()) else {
+fn read_ledger_entries(app_data: &Path, project: u32, rosen: bool) -> (Vec<Entry>, Vec<Entry>) {
+    let Ok(channel) = Channel::open_for_project(app_data, &project.to_string(), rosen) else {
         return (Vec::new(), Vec::new());
     };
     let discoveries = channel.ledger("discovery", 0).unwrap_or_default();

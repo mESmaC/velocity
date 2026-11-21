@@ -8,7 +8,7 @@ use std::sync::Mutex;
 
 use tauri::{AppHandle, Manager};
 use tauri_specta::Event as SpectaEvent;
-use velocity_airc::{Channel, Event};
+use velocity_airc::Event;
 use velocity_core::goal_swarm::{GoalEventKind, GoalFeedEvent, PoolCounts};
 use velocity_core::goal_swarm_view::GoalClaimsBoard;
 use velocity_core::layout_view::LayoutSnapshot;
@@ -363,12 +363,7 @@ pub(crate) async fn run_keep_going(
 ) -> Result<(), String> {
     let handle = application.clone();
     let outcome = tauri::async_runtime::spawn_blocking(move || {
-        let data = handle
-            .path()
-            .app_data_dir()
-            .map_err(|error| error.to_string())?;
-        let channel =
-            Channel::open(&data, &project_id.to_string()).map_err(|error| error.to_string())?;
+        let channel = crate::airc_access::open_channel(&handle, project_id)?;
         let store = handle.state::<ManagedStateStore>();
         evaluate_keep_going(
             store.inner(),

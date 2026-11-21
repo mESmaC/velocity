@@ -38,8 +38,19 @@ pub(crate) fn add_review_handoff(
 
 /// Read current claims and unresolved dependency waits for a fresh ACP session.
 pub fn airc_work_handoff(app_data: &Path, project: u32, members: &[String]) -> String {
+    airc_work_handoff_for_project(app_data, project, false, members)
+}
+
+/// Like [`airc_work_handoff`], passing the store's Rosen configuration explicitly (#555).
+pub fn airc_work_handoff_for_project(
+    app_data: &Path,
+    project: u32,
+    rosen: bool,
+    members: &[String],
+) -> String {
     let read = || {
-        let channel = velocity_airc::Channel::open(app_data, &project.to_string())?;
+        let channel =
+            velocity_airc::Channel::open_for_project(app_data, &project.to_string(), rosen)?;
         Ok::<_, velocity_airc::Error>((channel.claims()?, channel.dependency_waits()?))
     };
     let Ok((claims, waits)) = read() else {

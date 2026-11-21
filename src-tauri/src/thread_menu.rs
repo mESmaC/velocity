@@ -45,12 +45,8 @@ fn thread_message_mode(
     project: u32,
     thread: &ThreadItem,
 ) -> Result<Option<ThreadMessageMode>, String> {
-    let directory = application
-        .path()
-        .app_data_dir()
-        .map_err(|error| error.to_string())?;
-    let entries = velocity_airc::Channel::open(&directory, &project.to_string())
-        .and_then(|channel| channel.read(0))
+    let entries = crate::airc_access::open_channel(application, project)?
+        .read(0)
         .map_err(|error| error.to_string())?;
     // Match the thread's unified agent name as well as pre-#532 `thread-<id>` logs.
     Ok(entries

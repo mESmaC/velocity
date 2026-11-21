@@ -2,23 +2,39 @@
 use std::collections::{BTreeMap, HashMap};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, OnceLock};
-use std::time::UNIX_EPOCH;
+use std::time::{Duration, Instant, UNIX_EPOCH};
 
 use crate::{
     Entry, Error, EventPayload, OverlapDetail, OverlapSymbols,
     channel::{format_timestamp_millis, parse_timestamp_millis},
     payload::overlap_text,
-    remote::{RECORD_PREFIX, Remote},
+    remote::{
+        RECORD_PREFIX, Remote, is_transport_error, record_connect_duration, run_on_shared_runtime,
+    },
 };
 use rosen_client::protocol::channel::{ChannelEvent, ChannelMessage, Member, PieceClaim};
 use rosen_client::{
-    Client,
+    Client, Endpoint,
     protocol::{Event, EventKind},
 };
+
+struct RoutedSnapshot {
+    scope: String,
+    tip: u64,
+    entries: Arc<Vec<Entry>>,
+}
+
+struct TargetedCheck {
+    identity: String,
+    tip: u64,
+    after: u64,
+    idle: bool,
+}
 
 #[derive(Default)]
 struct RemoteEventCache {
     identity: Option<String>,
+    data_dir: Option<String>,
     tip: u64,
     synced_once: bool,
     entries: Vec<Entry>,
@@ -30,6 +46,12 @@ struct RemoteEventCache {
     member_nicks: BTreeMap<String, String>,
     /// AIRC nick -> latest registered checkout change ID.
     nick_changes: BTreeMap<String, String>,
+    /// Server ledger sequence -> server event sequence for `append_record` (#555).
+    ledger_event_seq: BTreeMap<u64, u64>,
+    /// Cached routed & localized snapshot for the current `(scope, tip)` (#555).
+    routed: Option<RoutedSnapshot>,
+    /// Last targeted-stream check per nick so quiet ticks skip `subscribe_as` (#555).
+    targeted_checks: HashMap<String, TargetedCheck>,
 }
 
 impl RemoteEventCache {
@@ -41,10 +63,18 @@ impl RemoteEventCache {
         self.change_members.clear();
         self.member_nicks.clear();
         self.nick_changes.clear();
+        self.ledger_event_seq.clear();
+        self.routed = None;
+        self.targeted_checks.clear();
     }
 
-    fn push_all(&mut self, delta: Vec<Entry>) {
+    fn push_all(&mut self, delta: Vec<Entry>, ledger_seqs: Vec<(u64, u64)>) {
+        let mut changed = false;
+        for (ledger_seq, event_seq) in ledger_seqs {
+            self.ledger_event_seq.insert(ledger_seq, event_seq);
+        }
         for mut record in delta {
+            changed = true;
             if record.sequence > self.tip {
                 self.tip = record.sequence;
             }
@@ -74,6 +104,9 @@ impl RemoteEventCache {
             }
             self.attach_change(&mut record);
             self.entries.push(record);
+        }
+        if changed {
+            self.routed = None;
         }
     }
 
@@ -142,11 +175,26 @@ fn is_change_related(kind: &str) -> bool {
     )
 }
 
-type EndpointCaches = Mutex<HashMap<String, Arc<Mutex<RemoteEventCache>>>>;
-static REMOTE_CACHES: OnceLock<EndpointCaches> = OnceLock::new();
+struct PersistentProjectStream {
+    _client: Client,
+    events: tokio::sync::mpsc::Receiver<Event>,
+    identity: String,
+}
 
-fn endpoint_cache(endpoint: &str) -> Arc<Mutex<RemoteEventCache>> {
-    let mut map = REMOTE_CACHES
+#[derive(Default)]
+struct EndpointState {
+    cache: Mutex<RemoteEventCache>,
+    /// One long-lived project-wide event subscription per endpoint on the shared runtime (#555).
+    project_stream: tokio::sync::Mutex<Option<PersistentProjectStream>>,
+    /// One long-lived targeted subscription client per endpoint on the shared runtime (#555).
+    targeted_client: tokio::sync::Mutex<Option<Client>>,
+}
+
+type EndpointStates = Mutex<HashMap<String, Arc<EndpointState>>>;
+static REMOTE_STATES: OnceLock<EndpointStates> = OnceLock::new();
+
+fn endpoint_state(endpoint: &str) -> Arc<EndpointState> {
+    let mut map = REMOTE_STATES
         .get_or_init(Mutex::default)
         .lock()
         .unwrap_or_else(|error| error.into_inner());
@@ -335,15 +383,24 @@ fn normalize_envelope(record: &mut Entry) {
 }
 
 pub(crate) fn event_entries(event: &Event) -> Result<Vec<Entry>, Error> {
-    let mut records = if event.kind == EventKind::Channel {
-        channel_entry(serde_json::from_value(event.detail.clone())?)?
+    event_entries_with_ledger(event).map(|(records, _)| records)
+}
+
+fn event_entries_with_ledger(event: &Event) -> Result<(Vec<Entry>, Option<u64>), Error> {
+    let (mut records, ledger_seq) = if event.kind == EventKind::Channel {
+        let channel_event: ChannelEvent = serde_json::from_value(event.detail.clone())?;
+        let ledger_seq = match &channel_event {
+            ChannelEvent::Ledger { entry } => Some(entry.seq),
+            _ => None,
+        };
+        (channel_entry(channel_event)?, ledger_seq)
     } else {
-        project_entry(event).into_iter().collect()
+        (project_entry(event).into_iter().collect(), None)
     };
     for record in &mut records {
         record.sequence = event.seq;
     }
-    Ok(records)
+    Ok((records, ledger_seq))
 }
 
 fn project_entry(event: &Event) -> Option<Entry> {
@@ -415,49 +472,58 @@ fn apply_timestamps(records: &mut [Entry], floor: Option<i64>, server_times: &BT
 }
 
 impl Remote {
-    /// Syncs the per-endpoint incremental event cache up to Rosen's current `last_event` (#541).
-    fn sync_cache(&self) -> Result<Arc<Mutex<RemoteEventCache>>, Error> {
-        let cache_arc = endpoint_cache(self.endpoint.as_str());
-        let (data_dir, identity, tip) = self.run(async |client| {
+    /// Syncs the per-endpoint incremental event cache up to Rosen's current `last_event`
+    /// using one persistent project stream per endpoint on the shared runtime (#541, #555).
+    fn sync_cache(&self) -> Result<Arc<EndpointState>, Error> {
+        let state = endpoint_state(self.endpoint.as_str());
+        let (data_dir, identity, tip) = self.run(|client| async move {
             let status = client.status().await?;
             let identity = database_identity(&status.data_dir);
             Ok((status.data_dir, identity, status.last_event))
         })?;
-        let (start_after, reset) = {
-            let cache = cache_arc.lock().unwrap_or_else(|error| error.into_inner());
-            let changed = cache.identity.as_deref() != Some(identity.as_str()) || tip < cache.tip;
-            if !changed && cache.synced_once && tip != 0 && tip == cache.tip {
+        {
+            let cache = state
+                .cache
+                .lock()
+                .unwrap_or_else(|error| error.into_inner());
+            if cache.identity.as_deref() == Some(identity.as_str())
+                && cache.synced_once
+                && tip != 0
+                && cache.tip >= tip
+            {
                 drop(cache);
-                return Ok(cache_arc);
+                return Ok(state);
             }
-            if changed {
-                (0, true)
-            } else {
-                (cache.tip, false)
-            }
-        };
-        let delta = if tip != 0 && start_after >= tip {
-            Vec::new()
-        } else {
-            self.run_dedicated(async |client| {
-                read_events_with_status(client, None, start_after, tip, &data_dir).await
-            })?
-        };
-        let mut cache = cache_arc.lock().unwrap_or_else(|error| error.into_inner());
-        if reset || cache.identity.as_deref() != Some(identity.as_str()) || tip < cache.tip {
-            cache.reset();
         }
-        cache.identity = Some(identity);
-        // Guard against a concurrent caller advancing past start_after before we re-locked.
-        let filtered: Vec<Entry> = delta
-            .into_iter()
-            .filter(|record| record.sequence > cache.tip)
-            .collect();
-        cache.push_all(filtered);
-        cache.tip = cache.tip.max(tip);
-        cache.synced_once = true;
-        drop(cache);
-        Ok(cache_arc)
+        let endpoint = self.endpoint.clone();
+        let state_for_task = Arc::clone(&state);
+        let connect_elapsed = run_on_shared_runtime(async move {
+            sync_project_stream(&endpoint, &state_for_task, &data_dir, &identity, tip).await
+        })?;
+        record_connect_duration(connect_elapsed);
+        Ok(state)
+    }
+
+    /// Waits on the persistent project stream for the server event corresponding to `ledger_seq`
+    /// without opening a new connection or spawning a thread (#555).
+    pub(crate) fn wait_ledger_sequence(&self, ledger_seq: u64) -> Result<u64, Error> {
+        let state = endpoint_state(self.endpoint.as_str());
+        if let Some(seq) = state
+            .cache
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .ledger_event_seq
+            .get(&ledger_seq)
+            .copied()
+        {
+            return Ok(seq);
+        }
+        let endpoint = self.endpoint.clone();
+        let (sequence, connect_elapsed) = run_on_shared_runtime(async move {
+            wait_for_ledger_event(&endpoint, &state, ledger_seq).await
+        })?;
+        record_connect_duration(connect_elapsed);
+        Ok(sequence)
     }
 
     pub(crate) fn warm(&self) -> Result<(), Error> {
@@ -465,45 +531,74 @@ impl Remote {
     }
 
     pub(crate) fn checkouts(&self) -> Result<BTreeMap<String, String>, Error> {
-        let cache_arc = self.sync_cache()?;
-        let cache = cache_arc.lock().unwrap_or_else(|error| error.into_inner());
+        let state = self.sync_cache()?;
+        let cache = state
+            .cache
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
         Ok(cache.checkouts.clone())
     }
 
-    pub(crate) fn read(&self, after: u64) -> Result<Vec<Entry>, Error> {
-        let cache_arc = self.sync_cache()?;
-        let (mut records, change_members) = {
-            let cache = cache_arc.lock().unwrap_or_else(|error| error.into_inner());
-            let start = cache
-                .entries
-                .partition_point(|record| record.sequence <= after);
-            let slice = cache.entries[start..].to_vec();
+    /// Returns a cached routed and localized snapshot of the channel for the current tip (#555).
+    pub(crate) fn snapshot(&self) -> Result<Arc<Vec<Entry>>, Error> {
+        let state = self.sync_cache()?;
+        let (mut records, change_members, snapshot_tip) = {
+            let cache = state
+                .cache
+                .lock()
+                .unwrap_or_else(|error| error.into_inner());
+            if let Some(routed) = &cache.routed
+                && routed.scope == self.scope
+                && routed.tip == cache.tip
+                && (cache.tip != 0 || cache.entries.is_empty())
+            {
+                return Ok(Arc::clone(&routed.entries));
+            }
+            let slice = cache.entries.clone();
             let needs_routing = slice.iter().any(|record| {
                 record.change_id().is_some()
                     || (record.change.is_none() && is_change_related(&record.kind))
             });
-            let members = if needs_routing {
-                Some(cache.change_members.clone())
-            } else {
-                None
-            };
-            (slice, members)
+            let members = needs_routing.then(|| cache.change_members.clone());
+            (slice, members, cache.tip)
         };
         if let Some(change_members) = change_members {
-            self.run(async |client| {
-                route_project_entries(client, &change_members, &mut records).await
+            records = self.run(move |client| async move {
+                route_project_entries(&client, &change_members, &mut records).await?;
+                Ok(records)
             })?;
         }
         for record in &mut records {
             self.local_record(record);
         }
-        Ok(records)
+        let snapshot = Arc::new(records);
+        let mut cache = state
+            .cache
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        if cache.tip == snapshot_tip {
+            cache.routed = Some(RoutedSnapshot {
+                scope: self.scope.clone(),
+                tip: snapshot_tip,
+                entries: Arc::clone(&snapshot),
+            });
+        }
+        Ok(snapshot)
+    }
+
+    pub(crate) fn read(&self, after: u64) -> Result<Vec<Entry>, Error> {
+        let snapshot = self.snapshot()?;
+        let start = snapshot.partition_point(|record| record.sequence <= after);
+        Ok(snapshot[start..].to_vec())
     }
 
     pub(crate) fn read_ledger(&self, ledger: &str, after: u64) -> Result<Vec<Entry>, Error> {
-        let cache_arc = self.sync_cache()?;
+        let state = self.sync_cache()?;
         let mut records: Vec<Entry> = {
-            let cache = cache_arc.lock().unwrap_or_else(|error| error.into_inner());
+            let cache = state
+                .cache
+                .lock()
+                .unwrap_or_else(|error| error.into_inner());
             let start = cache
                 .entries
                 .partition_point(|record| record.sequence <= after);
@@ -520,8 +615,11 @@ impl Remote {
     }
 
     pub(crate) fn latest_task_list(&self) -> Result<Option<String>, Error> {
-        let cache_arc = self.sync_cache()?;
-        let cache = cache_arc.lock().unwrap_or_else(|error| error.into_inner());
+        let state = self.sync_cache()?;
+        let cache = state
+            .cache
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
         Ok(cache
             .entries
             .iter()
@@ -532,18 +630,22 @@ impl Remote {
 
     pub(crate) fn delivery_cursor(&self, member: &str, saved: u64) -> Result<u64, Error> {
         let scoped = self.member(member);
-        let present = self.run(async |client| {
+        let scoped_for_rpc = scoped.clone();
+        let present = self.run(move |client| async move {
             Ok(client
                 .channel_presence()
                 .await?
                 .iter()
-                .any(|known| known.member == scoped))
+                .any(|known| known.member == scoped_for_rpc))
         })?;
         if !present || saved != 0 {
             return Ok(saved);
         }
-        let cache_arc = self.sync_cache()?;
-        let cache = cache_arc.lock().unwrap_or_else(|error| error.into_inner());
+        let state = self.sync_cache()?;
+        let cache = state
+            .cache
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
         Ok(cache
             .entries
             .iter()
@@ -552,61 +654,432 @@ impl Remote {
     }
 
     pub(crate) fn acknowledged_cursor(&self, nick: &str) -> Result<u64, Error> {
-        self.run(async |client| {
+        let nick = nick.to_owned();
+        self.run(move |client| async move {
             Ok(client
-                .ack_events(rosen_client::identity::parse_agent(nick)?, 0)
+                .ack_events(rosen_client::identity::parse_agent(&nick)?, 0)
                 .await?)
         })
     }
 
     pub(crate) fn acknowledge_cursor(&self, nick: &str, cursor: u64) -> Result<(), Error> {
-        self.run(async |client| {
+        let nick = nick.to_owned();
+        self.run(move |client| async move {
             client
-                .ack_events(rosen_client::identity::parse_agent(nick)?, cursor)
+                .ack_events(rosen_client::identity::parse_agent(&nick)?, cursor)
                 .await?;
             Ok(())
         })
     }
 
     pub(crate) fn targeted(&self, nick: &str, after: u64, idle: bool) -> Result<Vec<Entry>, Error> {
-        if idle {
-            self.run(async |client| {
-                if let Some(member) = client
-                    .channel_presence()
-                    .await?
-                    .iter()
-                    .find(|member| member.nick == nick)
-                {
-                    client.channel_release_held(&member.member).await?;
-                }
-                Ok(())
-            })?;
+        let state = self.sync_cache()?;
+        let (identity, data_dir, tip, needs_release, can_skip) = {
+            let mut cache = state
+                .cache
+                .lock()
+                .unwrap_or_else(|error| error.into_inner());
+            let identity = cache.identity.clone().unwrap_or_default();
+            let data_dir = cache.data_dir.clone().unwrap_or_default();
+            let tip = cache.tip;
+            let (needs_release, can_skip) =
+                evaluate_targeted_skip(&mut cache, nick, &identity, tip, after, idle);
+            (identity, data_dir, tip, needs_release, can_skip)
+        };
+        if needs_release {
+            self.release_held(nick)?;
         }
-        let (data_dir, tip) = self.run(async |client| {
-            let status = client.status().await?;
-            Ok((status.data_dir, status.last_event))
-        })?;
-        if tip != 0 && after >= tip {
+        if can_skip {
             return Ok(Vec::new());
         }
-        self.run_dedicated(async |client| {
-            let mut records =
-                read_events_with_status(client, Some(nick), after, tip, &data_dir).await?;
-            for record in &mut records {
-                self.local_record(record);
-            }
-            Ok(records)
-        })
+        let endpoint = self.endpoint.clone();
+        let nick_owned = nick.to_owned();
+        let state_for_task = Arc::clone(&state);
+        let (mut records, connect_elapsed) = run_on_shared_runtime(async move {
+            read_targeted_persistent(
+                &endpoint,
+                &state_for_task,
+                &nick_owned,
+                after,
+                tip,
+                &data_dir,
+            )
+            .await
+        })?;
+        record_connect_duration(connect_elapsed);
+        for record in &mut records {
+            self.local_record(record);
+        }
+        let mut cache = state
+            .cache
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        if cache.identity.as_deref() == Some(identity.as_str()) {
+            cache.targeted_checks.insert(
+                nick.to_owned(),
+                TargetedCheck {
+                    identity,
+                    tip,
+                    after,
+                    idle,
+                },
+            );
+        }
+        Ok(records)
     }
 }
 
-pub(crate) async fn read_events(
-    client: &Client,
-    nick: Option<&str>,
+fn evaluate_targeted_skip(
+    cache: &mut RemoteEventCache,
+    nick: &str,
+    identity: &str,
+    tip: u64,
     after: u64,
-) -> Result<Vec<Entry>, Error> {
+    idle: bool,
+) -> (bool, bool) {
+    let previous = cache.targeted_checks.get(nick);
+    let needs_release = idle
+        && previous.is_none_or(|prev| prev.identity != identity || !prev.idle || prev.tip < tip);
+    if tip != 0 && after >= tip {
+        return (needs_release, true);
+    }
+    let Some(prev) = previous else {
+        return (needs_release, false);
+    };
+    if prev.identity != identity || prev.after != after || (idle && !prev.idle) {
+        return (needs_release, false);
+    }
+    if prev.tip >= tip {
+        return (needs_release, true);
+    }
+    let prev_tip = prev.tip;
+    if !has_possible_targeted_entry(&cache.entries, prev_tip, tip, nick) {
+        if let Some(entry) = cache.targeted_checks.get_mut(nick) {
+            entry.tip = tip;
+            entry.idle |= idle;
+        }
+        return (needs_release, true);
+    }
+    (needs_release, false)
+}
+
+fn has_possible_targeted_entry(entries: &[Entry], prev_tip: u64, tip: u64, nick: &str) -> bool {
+    let start = entries.partition_point(|entry| entry.sequence <= prev_tip);
+    entries[start..]
+        .iter()
+        .take_while(|entry| entry.sequence <= tip)
+        .any(|entry| entry_may_target_nick(entry, nick))
+}
+
+fn entry_may_target_nick(entry: &Entry, nick: &str) -> bool {
+    match entry.kind.as_str() {
+        "message" => {
+            entry.nick != nick
+                && (entry.to.iter().any(|recipient| recipient == nick)
+                    || (entry.nick == "you" && entry.to.is_empty()))
+        }
+        "message_mode" | "PR" | "pushed" | "updated" => entry.nick == nick,
+        "overlap" | "conflict" | "rebased" | "unblocked" | "reverted" => true,
+        // Rosen path claim events carry no AIRC piece claim and can produce targeted overlaps.
+        "claim" => entry.claim.is_none(),
+        _ => false,
+    }
+}
+
+async fn sync_project_stream(
+    endpoint: &Endpoint,
+    state: &EndpointState,
+    data_dir: &str,
+    identity: &str,
+    tip: u64,
+) -> Result<Duration, Error> {
+    let mut stream_guard = state.project_stream.lock().await;
+    let (start_after, reset) = {
+        let mut cache = state
+            .cache
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        let changed = cache.identity.as_deref() != Some(identity);
+        if !changed && cache.synced_once && tip != 0 && cache.tip >= tip {
+            return Ok(Duration::ZERO);
+        }
+        if changed {
+            cache.reset();
+            cache.identity = Some(identity.to_owned());
+            cache.data_dir = Some(data_dir.to_owned());
+            (0, true)
+        } else {
+            cache.data_dir = Some(data_dir.to_owned());
+            (cache.tip, false)
+        }
+    };
+    if reset {
+        *stream_guard = None;
+    }
+    if tip != 0 && start_after >= tip {
+        let mut cache = state
+            .cache
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        cache.tip = cache.tip.max(tip);
+        cache.synced_once = true;
+        return Ok(Duration::ZERO);
+    }
+    let mut total_connect = Duration::ZERO;
+    for attempt in 0..2 {
+        let current_after = {
+            state
+                .cache
+                .lock()
+                .unwrap_or_else(|error| error.into_inner())
+                .tip
+        };
+        let (elapsed, stream) =
+            ensure_project_stream(endpoint, &mut stream_guard, identity, current_after).await?;
+        total_connect = total_connect.saturating_add(elapsed);
+        match drain_project_stream(stream, current_after, tip, data_dir).await {
+            Ok((records, ledger_seqs, reached)) => {
+                commit_project_delta(state, records, ledger_seqs, reached.max(tip));
+                return Ok(total_connect);
+            }
+            Err(error) if attempt == 0 && is_transport_error(&error) => {
+                *stream_guard = None;
+            }
+            Err(error) => {
+                if is_transport_error(&error) {
+                    *stream_guard = None;
+                }
+                return Err(error);
+            }
+        }
+    }
+    Err(rosen_client::Error::Disconnected.into())
+}
+
+async fn ensure_project_stream<'a>(
+    endpoint: &Endpoint,
+    slot: &'a mut Option<PersistentProjectStream>,
+    identity: &str,
+    after: u64,
+) -> Result<(Duration, &'a mut PersistentProjectStream), Error> {
+    let needs_connect = slot
+        .as_ref()
+        .is_none_or(|stream| stream.identity != identity);
+    let mut elapsed = Duration::ZERO;
+    if needs_connect {
+        let started = Instant::now();
+        let client = Client::connect(endpoint).await?;
+        let events = client.subscribe(Some(after)).await?;
+        elapsed = started.elapsed();
+        *slot = Some(PersistentProjectStream {
+            _client: client,
+            events,
+            identity: identity.to_owned(),
+        });
+    }
+    slot.as_mut()
+        .map(|stream| (elapsed, stream))
+        .ok_or_else(|| Error::Invalid("Missing project event stream".into()))
+}
+
+async fn drain_project_stream(
+    stream: &mut PersistentProjectStream,
+    after: u64,
+    tip: u64,
+    data_dir: &str,
+) -> Result<(Vec<Entry>, Vec<(u64, u64)>, u64), Error> {
+    let mut records = Vec::new();
+    let mut ledger_seqs = Vec::new();
+    let mut reached = after;
+    loop {
+        let timeout = if reached < tip {
+            Duration::from_secs(30)
+        } else {
+            Duration::from_millis(100)
+        };
+        let event = match tokio::time::timeout(timeout, stream.events.recv()).await {
+            Ok(Some(event)) => event,
+            Ok(None) => return Err(rosen_client::Error::Disconnected.into()),
+            Err(_) if reached < tip => {
+                return Err(Error::Invalid(
+                    "Rosen event replay timed out before its watermark".into(),
+                ));
+            }
+            Err(_) => break,
+        };
+        reached = reached.max(event.seq);
+        let (projected, ledger_seq) = event_entries_with_ledger(&event)?;
+        if let Some(seq) = ledger_seq {
+            ledger_seqs.push((seq, event.seq));
+        }
+        records.extend(projected);
+        if tip != 0 && reached >= tip {
+            break;
+        }
+    }
+    if !records.is_empty() {
+        apply_server_timestamps(data_dir, after, &mut records).await;
+    }
+    Ok((records, ledger_seqs, reached))
+}
+
+fn commit_project_delta(
+    state: &EndpointState,
+    records: Vec<Entry>,
+    ledger_seqs: Vec<(u64, u64)>,
+    new_tip: u64,
+) {
+    let mut cache = state
+        .cache
+        .lock()
+        .unwrap_or_else(|error| error.into_inner());
+    let filtered: Vec<Entry> = records
+        .into_iter()
+        .filter(|record| record.sequence > cache.tip)
+        .collect();
+    cache.push_all(filtered, ledger_seqs);
+    cache.tip = cache.tip.max(new_tip);
+    cache.synced_once = true;
+}
+
+async fn resolve_stream_identity(
+    endpoint: &Endpoint,
+    state: &EndpointState,
+) -> Result<(String, String), Error> {
+    {
+        let cache = state
+            .cache
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        if let (Some(dir), Some(id)) = (&cache.data_dir, &cache.identity) {
+            return Ok((dir.clone(), id.clone()));
+        }
+    }
+    let client = velocity_rosen::connection::requests(endpoint).await?;
     let status = client.status().await?;
-    read_events_with_status(client, nick, after, status.last_event, &status.data_dir).await
+    let identity = database_identity(&status.data_dir);
+    let mut cache = state
+        .cache
+        .lock()
+        .unwrap_or_else(|error| error.into_inner());
+    if cache.identity.as_deref() != Some(identity.as_str()) {
+        cache.reset();
+        cache.identity = Some(identity.clone());
+    }
+    cache.data_dir = Some(status.data_dir.clone());
+    Ok((status.data_dir, identity))
+}
+
+async fn wait_for_ledger_event(
+    endpoint: &Endpoint,
+    state: &EndpointState,
+    ledger_seq: u64,
+) -> Result<(u64, Duration), Error> {
+    let mut stream_guard = state.project_stream.lock().await;
+    if let Some(seq) = state
+        .cache
+        .lock()
+        .unwrap_or_else(|error| error.into_inner())
+        .ledger_event_seq
+        .get(&ledger_seq)
+        .copied()
+    {
+        return Ok((seq, Duration::ZERO));
+    }
+    let (data_dir, identity) = resolve_stream_identity(endpoint, state).await?;
+    let deadline = Instant::now() + Duration::from_secs(30);
+    let start_after = state
+        .cache
+        .lock()
+        .unwrap_or_else(|error| error.into_inner())
+        .tip;
+    let (mut total_connect, mut reached, mut reconnected) = (Duration::ZERO, start_after, false);
+    let (mut records, mut ledger_seqs) = (Vec::new(), Vec::new());
+    loop {
+        let remaining = deadline.saturating_duration_since(Instant::now());
+        if remaining.is_zero() {
+            if !records.is_empty() {
+                apply_server_timestamps(&data_dir, start_after, &mut records).await;
+                commit_project_delta(state, records, ledger_seqs, reached);
+            }
+            return Err(Error::Invalid(format!(
+                "Rosen record {ledger_seq} is stored, but its event was not received within 30 seconds; \
+                 read the channel before retrying"
+            )));
+        }
+        let (elapsed, stream) =
+            ensure_project_stream(endpoint, &mut stream_guard, &identity, reached).await?;
+        total_connect = total_connect.saturating_add(elapsed);
+        match tokio::time::timeout(remaining, stream.events.recv()).await {
+            Ok(Some(event)) => {
+                reached = reached.max(event.seq);
+                let (projected, found_ledger) = event_entries_with_ledger(&event)?;
+                if let Some(seq) = found_ledger {
+                    ledger_seqs.push((seq, event.seq));
+                }
+                records.extend(projected);
+                if found_ledger == Some(ledger_seq) {
+                    if !records.is_empty() {
+                        apply_server_timestamps(&data_dir, start_after, &mut records).await;
+                    }
+                    commit_project_delta(state, records, ledger_seqs, reached);
+                    return Ok((event.seq, total_connect));
+                }
+            }
+            Ok(None) if !reconnected => {
+                *stream_guard = None;
+                reconnected = true;
+            }
+            Ok(None) => return Err(rosen_client::Error::Disconnected.into()),
+            Err(_) => {}
+        }
+    }
+}
+
+async fn read_targeted_persistent(
+    endpoint: &Endpoint,
+    state: &EndpointState,
+    nick: &str,
+    after: u64,
+    tip: u64,
+    data_dir: &str,
+) -> Result<(Vec<Entry>, Duration), Error> {
+    let mut guard = state.targeted_client.lock().await;
+    let mut total_connect = Duration::ZERO;
+    for attempt in 0..2 {
+        if guard.is_none() {
+            let started = Instant::now();
+            *guard = Some(Client::connect(endpoint).await?);
+            total_connect = total_connect.saturating_add(started.elapsed());
+        }
+        let client = guard
+            .as_ref()
+            .ok_or_else(|| Error::Invalid("Missing targeted Rosen client".into()))?;
+        match read_events_with_status(client, Some(nick), after, tip, data_dir).await {
+            Ok(records) => return Ok((records, total_connect)),
+            Err(error) if attempt == 0 && is_transport_error(&error) => {
+                *guard = None;
+            }
+            Err(error) => {
+                if is_transport_error(&error) {
+                    *guard = None;
+                }
+                return Err(error);
+            }
+        }
+    }
+    Err(rosen_client::Error::Disconnected.into())
+}
+
+async fn apply_server_timestamps(data_dir: &str, after: u64, records: &mut [Entry]) {
+    let data_dir = PathBuf::from(data_dir);
+    let (floor, server_times) =
+        tokio::task::spawn_blocking(move || velocity_rosen::event_timestamps(&data_dir, after))
+            .await
+            .ok()
+            .and_then(Result::ok)
+            .unwrap_or_default();
+    apply_timestamps(records, floor, &server_times);
 }
 
 async fn read_events_with_status(
@@ -626,9 +1099,9 @@ async fn read_events_with_status(
     // sequences. A quiet stream ends this page; later events are replayed next read.
     loop {
         let timeout = if nick.is_none() && reached < tip {
-            std::time::Duration::from_secs(30)
+            Duration::from_secs(30)
         } else {
-            std::time::Duration::from_millis(100)
+            Duration::from_millis(100)
         };
         let event = match tokio::time::timeout(timeout, events.recv()).await {
             Ok(Some(event)) => event,
@@ -647,14 +1120,9 @@ async fn read_events_with_status(
             break;
         }
     }
-    let data_dir = PathBuf::from(data_dir);
-    let (floor, server_times) =
-        tokio::task::spawn_blocking(move || velocity_rosen::event_timestamps(&data_dir, after))
-            .await
-            .ok()
-            .and_then(Result::ok)
-            .unwrap_or_default();
-    apply_timestamps(&mut records, floor, &server_times);
+    if !records.is_empty() {
+        apply_server_timestamps(data_dir, after, &mut records).await;
+    }
     Ok(records)
 }
 

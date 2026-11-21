@@ -111,6 +111,80 @@ static EDITED_FILES: Mutex<EditedFiles> = Mutex::new(BTreeMap::new());
 /// change only when a `rosen.toml` edit lands, so the edited files' refresh covers them.
 static MERGED_PATHS: Mutex<BTreeMap<u32, (Instant, MergedPaths)>> = Mutex::new(BTreeMap::new());
 
+/// Cached base commit per project, refreshed on `Landed`/`Reverted` events or every 30 s (#555).
+static BASE_COMMITS: Mutex<BTreeMap<u32, (Instant, String)>> = Mutex::new(BTreeMap::new());
+
+struct CachedIssuePaths {
+    base_commit: String,
+    issues: BTreeMap<u32, (u64, BTreeSet<String>)>,
+}
+
+/// Cached graph-resolved paths per `(project, issue, base_commit, content_hash)` (#555).
+static ISSUE_PATHS_CACHE: Mutex<BTreeMap<u32, CachedIssuePaths>> = Mutex::new(BTreeMap::new());
+
+/// Drops the cached base commit for `project` when Rosen's base moves on land or revert (#555).
+pub(crate) fn invalidate_base_commit(project: u32) {
+    if let Ok(mut commits) = BASE_COMMITS.lock() {
+        commits.remove(&project);
+    }
+}
+
+fn issue_content_hash(issue: &GitHubIssue) -> u64 {
+    let mut hash = 0xcbf2_9ce4_8422_2325_u64;
+    for byte in issue
+        .title
+        .bytes()
+        .chain(std::iter::once(0))
+        .chain(issue.body.bytes())
+    {
+        hash = (hash ^ u64::from(byte)).wrapping_mul(0x0100_0000_01b3);
+    }
+    hash
+}
+
+struct IssueCacheUpdate<'a> {
+    project: u32,
+    base_commit: String,
+    issues: &'a [&'a GitHubIssue],
+    hashes: &'a [u64],
+    misses: &'a [usize],
+    prune_to_backlog: bool,
+}
+
+fn store_cached_issue_paths(
+    update: IssueCacheUpdate<'_>,
+    resolved: Vec<BTreeSet<String>>,
+    results: &mut [Option<BTreeSet<String>>],
+) {
+    if let Ok(mut cache) = lock(&ISSUE_PATHS_CACHE, "issue overlap path cache") {
+        let entry = cache
+            .entry(update.project)
+            .or_insert_with(|| CachedIssuePaths {
+                base_commit: update.base_commit.clone(),
+                issues: BTreeMap::new(),
+            });
+        if entry.base_commit != update.base_commit {
+            entry.base_commit = update.base_commit;
+            entry.issues.clear();
+        }
+        for (&index, paths) in update.misses.iter().zip(resolved) {
+            entry.issues.insert(
+                update.issues[index].number,
+                (update.hashes[index], paths.clone()),
+            );
+            results[index] = Some(paths);
+        }
+        if update.prune_to_backlog {
+            let active: BTreeSet<u32> = update.issues.iter().map(|issue| issue.number).collect();
+            entry.issues.retain(|number, _| active.contains(number));
+        }
+    } else {
+        for (&index, paths) in update.misses.iter().zip(resolved) {
+            results[index] = Some(paths);
+        }
+    }
+}
+
 /// The lists in force at the project's base. A failed read keeps the last lists read,
 /// and lists never read exclude nothing: the hold is then what it was without them.
 fn merged_paths(server: &ProjectServer, project: &ProjectItem) -> MergedPaths {
@@ -315,14 +389,105 @@ impl<'a> OverlapContext<'a> {
         if blockers.is_empty() {
             return BTreeMap::new();
         }
-        let descriptions: Vec<_> = backlog.iter().map(|issue| issue_text(issue)).collect();
-        let named = issue_paths(self.data, self.project, &descriptions);
+        let named = self.cached_issue_paths(backlog, true);
         self.shared = widely_shared(&named);
         backlog
             .iter()
             .zip(named)
             .map(|(issue, paths)| (issue.number, self.holding(paths)))
             .collect()
+    }
+
+    /// Resolves `issues` against the graph service, reusing cached results for each
+    /// `(issue, base_commit)` whose title and body are unchanged (#555).
+    fn cached_issue_paths(
+        &self,
+        issues: &[&GitHubIssue],
+        prune_to_backlog: bool,
+    ) -> Vec<BTreeSet<String>> {
+        if issues.is_empty() {
+            return Vec::new();
+        }
+        let Some(base_commit) = self.base_commit() else {
+            let descriptions: Vec<_> = issues.iter().map(|issue| issue_text(issue)).collect();
+            return issue_paths(self.data, self.project, &descriptions);
+        };
+        let hashes: Vec<u64> = issues
+            .iter()
+            .map(|issue| issue_content_hash(issue))
+            .collect();
+        let mut results: Vec<Option<BTreeSet<String>>> = vec![None; issues.len()];
+        let mut misses = Vec::new();
+        if let Ok(cache) = lock(&ISSUE_PATHS_CACHE, "issue overlap path cache")
+            && let Some(project_cache) = cache.get(&self.project.id)
+            && project_cache.base_commit == base_commit
+        {
+            for (index, (issue, &hash)) in issues.iter().zip(&hashes).enumerate() {
+                if let Some((cached_hash, paths)) = project_cache.issues.get(&issue.number)
+                    && *cached_hash == hash
+                {
+                    results[index] = Some(paths.clone());
+                } else {
+                    misses.push(index);
+                }
+            }
+        } else {
+            misses.extend(0..issues.len());
+        }
+        if !misses.is_empty() {
+            let descriptions: Vec<_> = misses
+                .iter()
+                .map(|&index| issue_text(issues[index]))
+                .collect();
+            let resolved = issue_paths(self.data, self.project, &descriptions);
+            store_cached_issue_paths(
+                IssueCacheUpdate {
+                    project: self.project.id,
+                    base_commit,
+                    issues,
+                    hashes: &hashes,
+                    misses: &misses,
+                    prune_to_backlog,
+                },
+                resolved,
+                &mut results,
+            );
+        }
+        results.into_iter().map(Option::unwrap_or_default).collect()
+    }
+
+    fn base_commit(&self) -> Option<String> {
+        let last = if let Ok(commits) = lock(&BASE_COMMITS, "base commit cache") {
+            match commits.get(&self.project.id) {
+                Some((at, commit)) if at.elapsed() < EDITED_FILES_REFRESH => {
+                    return Some(commit.clone());
+                }
+                known => known.map(|(_, commit)| commit.clone()),
+            }
+        } else {
+            None
+        };
+        let resolved = if self.project.version_control == VersionControl::Rosen {
+            tauri::async_runtime::block_on(velocity_rosen::post_land::BaseSnapshot::read(
+                &self.server,
+            ))
+            .ok()
+            .map(|base| base.commit().to_owned())
+        } else {
+            let root = Path::new(&self.project.repository_path);
+            let branch = if self.project.default_branch.trim().is_empty() {
+                "master"
+            } else {
+                self.project.default_branch.as_str()
+            };
+            velocity_git::resolve_commit(root, &format!("refs/remotes/origin/{branch}"))
+                .or_else(|| velocity_git::resolve_commit(root, &format!("refs/heads/{branch}")))
+        };
+        let commit = resolved.or(last)?;
+        if let Ok(mut commits) = lock(&BASE_COMMITS, "base commit cache") {
+            commits.insert(self.project.id, (Instant::now(), commit.clone()));
+        }
+        Some(commit)
     }
 
     /// The working issues that can hold another: each has an open Rosen change that has
@@ -486,11 +651,7 @@ impl<'a> OverlapContext<'a> {
         commit: &str,
     ) -> Result<Option<Vec<String>>, String> {
         let source = self.client.get(source).map_err(|error| error.to_string())?;
-        let named = issue_paths(
-            self.data,
-            self.project,
-            &[issue_text(issue), issue_text(&source)],
-        );
+        let named = self.cached_issue_paths(&[issue, &source], false);
         let mut paths = named.into_iter().map(|paths| self.holding(paths));
         let wanted = problem(issue, paths.next().unwrap_or_default());
         if wanted.matches(&problem(&source, paths.next().unwrap_or_default())) {

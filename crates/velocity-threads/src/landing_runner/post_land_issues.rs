@@ -182,8 +182,8 @@ fn record_failure_discoveries(
     if unseen.is_empty() {
         return Ok(());
     }
-    let channel =
-        Channel::open(app_data, &project.to_string()).map_err(|error| error.to_string())?;
+    let channel = Channel::open_for_project(app_data, &project.to_string(), true)
+        .map_err(|error| error.to_string())?;
     for failure in unseen {
         let kind = match (failure.kind, failure.integration) {
             (CheckKind::Build, _) => "build",

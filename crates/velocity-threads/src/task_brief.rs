@@ -315,7 +315,8 @@ pub async fn build_brief_async(
         } else {
             (Vec::new(), Vec::new(), Vec::new())
         };
-    let channel = Channel::open(app_data, &project.id.to_string()).ok();
+    let channel =
+        Channel::open_for_project(app_data, &project.id.to_string(), project.rosen_in_use()).ok();
     let mut brief = assemble_brief(project, channel.as_ref(), &open_changes, &failures, input);
     brief.signature_warnings = signature_warnings;
     brief

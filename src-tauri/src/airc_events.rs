@@ -33,22 +33,19 @@ pub struct AircMessagePublished {
 }
 
 fn open_channel(application: &AppHandle, project_identifier: u32) -> Result<Channel, String> {
-    let exists = lock(
+    let rosen = lock(
         application.state::<ManagedStateStore>().inner(),
         "persisted state",
     )?
-    .state()
-    .projects
-    .iter()
-    .any(|project| project.id == project_identifier);
-    if !exists {
-        return Err(format!("Project {project_identifier} is not registered"));
-    }
+    .project(project_identifier)
+    .map(velocity_store::ProjectItem::rosen_in_use)
+    .ok_or_else(|| format!("Project {project_identifier} is not registered"))?;
     let app_data = application
         .path()
         .app_data_dir()
         .map_err(|error| error.to_string())?;
-    Channel::open(&app_data, &project_identifier.to_string()).map_err(|error| error.to_string())
+    Channel::open_for_project(&app_data, &project_identifier.to_string(), rosen)
+        .map_err(|error| error.to_string())
 }
 
 fn thread_nick(thread: &ThreadItem) -> String {

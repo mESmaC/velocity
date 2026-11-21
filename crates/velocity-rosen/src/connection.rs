@@ -4,20 +4,57 @@
 use std::collections::HashMap;
 use std::future::Future;
 use std::ops::{Deref, DerefMut};
-use std::sync::{Arc, LazyLock, Mutex};
+use std::sync::{Arc, LazyLock, Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
 use rosen_client::{Client, Endpoint, Error};
 use tokio::sync::{Mutex as AsyncMutex, oneshot};
 
-/// Skip the synchronous `ping()` check when a shared connection was verified recently (#541).
-const VERIFY_INTERVAL: Duration = Duration::from_secs(5);
+/// Skip the synchronous `ping()` check when a shared connection was verified recently (#541, #555).
+/// Transport errors invalidate the cached client immediately via [`invalidate`].
+const VERIFY_INTERVAL: Duration = Duration::from_secs(30);
 
-/// Owns the runtime of a Rosen connection (or an operation that opens its own
-/// connection). Dropping the scope cancels its detached tasks and closes their I/O.
+static SHARED_RUNTIME: OnceLock<Result<tokio::runtime::Handle, String>> = OnceLock::new();
+
+/// The single long-lived Tokio runtime that owns all shared Rosen clients and AIRC channel calls.
+pub fn shared_handle() -> Result<&'static tokio::runtime::Handle, Error> {
+    SHARED_RUNTIME
+        .get_or_init(start_shared_runtime)
+        .as_ref()
+        .map_err(|error| std::io::Error::other(error.clone()).into())
+}
+
+fn start_shared_runtime() -> Result<tokio::runtime::Handle, String> {
+    let (ready, receiver) = std::sync::mpsc::sync_channel(1);
+    std::thread::Builder::new()
+        .name("rosen-shared".into())
+        .spawn(move || {
+            let runtime = match tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+            {
+                Ok(runtime) => runtime,
+                Err(error) => {
+                    let _ = ready.send(Err(error.to_string()));
+                    return;
+                }
+            };
+            if ready.send(Ok(runtime.handle().clone())).is_ok() {
+                runtime.block_on(std::future::pending::<()>());
+            }
+        })
+        .map_err(|error| error.to_string())?;
+    receiver
+        .recv()
+        .map_err(|_| "Shared Rosen runtime stopped before starting".to_owned())?
+}
+
+/// Owns the runtime of a dedicated Rosen connection (or an operation that opens its own
+/// connection). Dropping a dedicated scope cancels its detached tasks and closes their I/O;
+/// long-lived shared connections run on [`shared_handle`] with `stop: None`.
 pub struct Scoped<Value> {
     pub(crate) value: Value,
-    pub(crate) stop: oneshot::Sender<()>,
+    pub(crate) stop: Option<oneshot::Sender<()>>,
 }
 
 impl<Value: Send + 'static> Scoped<Value> {
@@ -54,7 +91,7 @@ impl<Value: Send + 'static> Scoped<Value> {
             })?;
         Ok(Self {
             value: result.await.map_err(|_| Error::Disconnected)??,
-            stop,
+            stop: Some(stop),
         })
     }
 }
@@ -76,6 +113,21 @@ impl<Value> DerefMut for Scoped<Value> {
 pub type Connection = Scoped<Arc<Client>>;
 
 impl Connection {
+    /// Connects a long-lived client on the single shared Rosen runtime without spawning
+    /// a per-endpoint OS thread or runtime (#555).
+    pub(crate) async fn shared(endpoint: &Endpoint) -> Result<Self, Error> {
+        let handle = shared_handle()?;
+        let endpoint = endpoint.clone();
+        let (opened, result) = oneshot::channel();
+        handle.spawn(async move {
+            let _ = opened.send(Client::connect(&endpoint).await.map(Arc::new));
+        });
+        Ok(Self {
+            value: result.await.map_err(|_| Error::Disconnected)??,
+            stop: None,
+        })
+    }
+
     pub async fn dedicated(endpoint: &Endpoint) -> Result<Self, Error> {
         let endpoint = endpoint.clone();
         Self::start(move || async move { Client::connect(&endpoint).await.map(Arc::new) }).await
@@ -154,7 +206,7 @@ pub async fn requests_timed(endpoint: &Endpoint) -> Result<(Arc<Connection>, Dur
         }
     }
     *guard = None;
-    let connection = Arc::new(Connection::dedicated(endpoint).await?);
+    let connection = Arc::new(Connection::shared(endpoint).await?);
     *guard = Some(CachedConnection {
         connection: Arc::clone(&connection),
         verified_at: Instant::now(),

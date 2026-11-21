@@ -64,9 +64,10 @@ fn configure_session(
             airc,
             title,
             thread.role,
+            project.rosen_in_use(),
         ))
     });
-    let Some((settings, airc, title, role)) = configured else {
+    let Some((settings, airc, title, role, rosen)) = configured else {
         return setup;
     };
     let mut setup = setup.with_run_settings(settings);
@@ -75,7 +76,9 @@ fn configure_session(
     setup.airc = airc;
     setup.graph_task_title = title;
     if let Ok(app_data) = application.path().app_data_dir() {
-        match velocity_threads::agent_memory::prepare_project_memory(&app_data, key.0) {
+        match velocity_threads::agent_memory::prepare_project_memory_for_project(
+            &app_data, key.0, rosen,
+        ) {
             Ok(memory_dir) => setup.project_memory_dir = Some(memory_dir),
             Err(error) => eprintln!("Project {} agent memory: {error}", key.0),
         }
@@ -1166,16 +1169,19 @@ async fn run_goal_choice(
     let folder = folder.clone();
     let branch = branch_name.to_owned();
     tauri::async_runtime::spawn_blocking(move || {
-        let data = handle
-            .path()
-            .app_data_dir()
-            .map_err(|error| error.to_string())?;
-        let channel = velocity_airc::Channel::open(&data, &key.0.to_string())
-            .map_err(|error| error.to_string())?;
         let store = handle.state::<ManagedStateStore>();
         let project = lock(store.inner(), "persisted state")?
             .project(key.0)
             .cloned();
+        let rosen = project
+            .as_ref()
+            .is_some_and(velocity_store::ProjectItem::rosen_in_use);
+        let data = handle
+            .path()
+            .app_data_dir()
+            .map_err(|error| error.to_string())?;
+        let channel = velocity_airc::Channel::open_for_project(&data, &key.0.to_string(), rosen)
+            .map_err(|error| error.to_string())?;
         let subsystems = project
             .as_ref()
             .and_then(|project| crate::code_graph::subsystem_map(&handle, project));
@@ -1365,45 +1371,51 @@ fn populate_session_card_handoff(
     card: &mut velocity_acp::client::SessionCard,
 ) {
     use velocity_threads::launch::handoff_line;
+    let mut rosen = false;
     if let Ok(store) = lock(
         application.state::<ManagedStateStore>().inner(),
         "persisted state",
     ) && let Some(project) = store.project(key.0)
-        && let Some(thread) = project.threads.iter().find(|thread| thread.id == key.1)
     {
-        if card.work_item.is_none() && (thread.started_by_dispatch || thread.goal_member.is_some())
-        {
-            card.work_item = Some(handoff_line(&thread.title));
-        }
-        if let Some(previous) = thread
-            .previous_work_thread
-            .and_then(|id| project.threads.iter().find(|item| item.id == id))
-        {
-            let outcome = if previous.state == ThreadState::Merged {
-                "landed"
-            } else {
-                "ended without landing"
-            };
-            let mut summary = format!("{} ({outcome})", handoff_line(&previous.title));
-            if let Some(change) = &previous.rosen_change {
-                summary.push_str(&format!(" · change {change}"));
+        rosen = project.rosen_in_use();
+        if let Some(thread) = project.threads.iter().find(|thread| thread.id == key.1) {
+            if card.work_item.is_none()
+                && (thread.started_by_dispatch || thread.goal_member.is_some())
+            {
+                card.work_item = Some(handoff_line(&thread.title));
             }
-            card.previous_item = Some(summary);
+            if let Some(previous) = thread
+                .previous_work_thread
+                .and_then(|id| project.threads.iter().find(|item| item.id == id))
+            {
+                let outcome = if previous.state == ThreadState::Merged {
+                    "landed"
+                } else {
+                    "ended without landing"
+                };
+                let mut summary = format!("{} ({outcome})", handoff_line(&previous.title));
+                if let Some(change) = &previous.rosen_change {
+                    summary.push_str(&format!(" · change {change}"));
+                }
+                card.previous_item = Some(summary);
+            }
         }
     }
     if let Ok(data) = application.path().app_data_dir() {
-        append_airc_claims_to_card(&data, key.0, members, card);
+        append_airc_claims_to_card(&data, key.0, rosen, members, card);
     }
 }
 
 fn append_airc_claims_to_card(
     data: &std::path::Path,
     project: u32,
+    rosen: bool,
     members: &[String],
     card: &mut velocity_acp::client::SessionCard,
 ) {
     use velocity_threads::launch::handoff_line;
-    let Ok(channel) = velocity_airc::Channel::open(data, &project.to_string()) else {
+    let Ok(channel) = velocity_airc::Channel::open_for_project(data, &project.to_string(), rosen)
+    else {
         return;
     };
     if let Ok(claims) = channel.claims() {
@@ -1480,17 +1492,20 @@ async fn build_thread_task_brief(
 }
 
 fn work_handoff(application: &AppHandle, key: ThreadKey) -> Option<String> {
-    let (mut handoff, members) = saved_work_handoff(application, key)?;
+    let (mut handoff, members, rosen) = saved_work_handoff(application, key)?;
     if let Ok(data) = application.path().app_data_dir() {
         handoff.push('\n');
-        handoff.push_str(&velocity_threads::launch::airc_work_handoff(
-            &data, key.0, &members,
+        handoff.push_str(&velocity_threads::launch::airc_work_handoff_for_project(
+            &data, key.0, rosen, &members,
         ));
     }
     Some(handoff)
 }
 
-fn saved_work_handoff(application: &AppHandle, key: ThreadKey) -> Option<(String, Vec<String>)> {
+fn saved_work_handoff(
+    application: &AppHandle,
+    key: ThreadKey,
+) -> Option<(String, Vec<String>, bool)> {
     use velocity_threads::launch::handoff_line;
     let store = lock(
         application.state::<ManagedStateStore>().inner(),
@@ -1546,7 +1561,7 @@ fn saved_work_handoff(application: &AppHandle, key: ThreadKey) -> Option<(String
             ));
         }
     }
-    Some((summary, members))
+    Some((summary, members, project.rosen_in_use()))
 }
 
 fn mark_worktree_ready(application: &AppHandle, key: ThreadKey, path: &str, failed: bool) -> bool {

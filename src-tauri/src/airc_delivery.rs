@@ -10,12 +10,12 @@ use velocity_threads::DeliveryStatus;
 use crate::state::ManagedStateStore;
 use crate::threads::{ManagedThreads, lock};
 
-fn channel(application: &AppHandle, project: u32) -> Result<Channel, String> {
+fn channel_for_project(application: &AppHandle, project: &ProjectItem) -> Result<Channel, String> {
     let directory = application
         .path()
         .app_data_dir()
         .map_err(|error| error.to_string())?;
-    Channel::open(&directory, &project.to_string()).map_err(|error| error.to_string())
+    crate::airc_access::open_project_channel(&directory, project)
 }
 
 pub fn initialize(application: &AppHandle) {
@@ -83,7 +83,7 @@ fn project_cycle(
     members: &mut Members,
 ) -> Result<(), String> {
     // One handle for the whole pass: opening resolves and creates the folder each time.
-    let channel = channel(application, project.id)?;
+    let channel = channel_for_project(application, project)?;
     let changed = velocity_threads::agent_tasks::ingest_shared(
         application.state::<ManagedStateStore>().inner(),
         project.id,
@@ -303,7 +303,7 @@ pub async fn airc_send(
         if !exists {
             return Err("Unknown project".into());
         }
-        channel(&application, project_identifier)?
+        crate::airc_access::open_channel(&application, project_identifier)?
             .comment(&text)
             .map_err(|error| error.to_string())?;
         crate::airc_modal::refresh(&application)

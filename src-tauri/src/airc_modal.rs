@@ -117,7 +117,7 @@ fn read_active(
     application: &AppHandle,
     unread_only: bool,
 ) -> Result<Option<ActiveChannel>, String> {
-    let (project, name, seen, members, undoable) = {
+    let (project, name, seen, rosen, members, undoable) = {
         let store = lock(
             application.state::<ManagedStateStore>().inner(),
             "persisted state",
@@ -133,6 +133,7 @@ fn read_active(
             project.id,
             project.name.clone(),
             project.airc_seen,
+            project.rosen_in_use(),
             airc_members(project),
             if unread_only {
                 Default::default()
@@ -145,8 +146,8 @@ fn read_active(
         .path()
         .app_data_dir()
         .map_err(|error| error.to_string())?;
-    let channel =
-        Channel::open(&directory, &project.to_string()).map_err(|error| error.to_string())?;
+    let channel = Channel::open_for_project(&directory, &project.to_string(), rosen)
+        .map_err(|error| error.to_string())?;
     let entries = channel
         .read(if unread_only { seen } else { 0 })
         .map_err(|error| error.to_string())?;
@@ -285,12 +286,8 @@ pub async fn set_airc_message_mode(
         read_active(&application, false)?
             .filter(|active| active.project == project_identifier)
             .ok_or("That project is not the active project")?;
-        let directory = application
-            .path()
-            .app_data_dir()
-            .map_err(|error| error.to_string())?;
-        Channel::open(&directory, &project_identifier.to_string())
-            .and_then(|channel| channel.set_message_mode(&nick, mode))
+        crate::airc_access::open_channel(&application, project_identifier)?
+            .set_message_mode(&nick, mode)
             .map_err(|error| error.to_string())?;
         refresh(&application)
     })
