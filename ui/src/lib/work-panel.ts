@@ -112,6 +112,7 @@ export function workGroups(
     ...issues.values(),
   ];
   const questions: WorkIssue[] = [];
+  const holds: WorkIssue[] = [];
   const active: WorkRow[] = [];
   const done = new Map<
     string,
@@ -125,6 +126,7 @@ export function workGroups(
       group.rows.push({ row, time });
       done.set(key, group);
     } else if (row.kind === 'issue' && row.row?.question) questions.push(row);
+    else if (row.kind === 'issue' && row.row?.person_hold) holds.push(row);
     else active.push(row);
   }
   questions.sort(
@@ -132,8 +134,10 @@ export function workGroups(
       (right.row?.question?.blocked_items ?? 0) -
         (left.row?.question?.blocked_items ?? 0) || right.number - left.number,
   );
+  holds.sort((left, right) => left.number - right.number);
   return {
     questions,
+    holds,
     active,
     done: [...done.values()]
       .sort((left, right) =>

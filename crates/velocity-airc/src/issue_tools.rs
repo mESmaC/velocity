@@ -7,21 +7,39 @@ pub(crate) const ISSUE_TOOLS: &[&str] = &[
     "issue_create",
     "issue_comment",
     "issue_ready_to_close",
-    "issue_needs_owner",
+    "issue_blocked_upstream",
+    "issue_hold",
+    "issue_close_not_planned",
 ];
 
 const DEFAULT_RECENT_COMMENTS: usize = 10;
 const MAX_RECENT_COMMENTS: usize = 50;
 const MAX_TITLE_CHARS: usize = 256;
 
+/// Which update operation an AIRC issue tool requested (#526).
+pub enum IssueUpdateKind<'a> {
+    Comment,
+    ReadyToClose,
+    /// Mark the issue `blocked-upstream` waiting for a PR or release checked daily.
+    BlockedUpstream {
+        upstream: &'a str,
+    },
+    /// Record a visible person hold on the Work view with the action that releases it.
+    Hold {
+        release_action: &'a str,
+    },
+    /// Close an orphaned issue as `not_planned` citing the commit that removed its spec section.
+    CloseNotPlanned {
+        spec_section: &'a str,
+        removed_commit: &'a str,
+    },
+}
+
 pub struct IssueUpdate<'a> {
     pub claim: &'a Claim,
     pub issue: u32,
     pub body: &'a str,
-    pub ready: bool,
-    /// The body is the reason the work needs hardware, an upstream release or an owner
-    /// decision; the issue takes `needs-owner` and leaves dispatch (#506).
-    pub needs_owner: bool,
+    pub kind: IssueUpdateKind<'a>,
     /// The issues this one waits on, as `#12` or `owner/name#12`. They become GitHub
     /// issue dependencies, which hold the issue until they close (#511).
     pub blocked_by: &'a [String],
@@ -157,17 +175,19 @@ fn call_update(
     handler: &IssueHandler<'_>,
 ) -> Result<Value, Error> {
     let issue = positive_issue(arguments)?;
-    let body = protocol::text(arguments, "body")?.trim();
+    let body_key = if name == "issue_hold" {
+        "reason"
+    } else {
+        "body"
+    };
+    let body = protocol::text(arguments, body_key)?.trim();
     if body.is_empty() {
-        return Err(Error::Invalid("An issue comment needs a body".into()));
+        return Err(Error::Invalid(format!(
+            "An issue update needs a nonempty {body_key}"
+        )));
     }
-    let ready = name == "issue_ready_to_close";
     let blockers = blocked_by(arguments)?;
-    if ready && !blockers.is_empty() {
-        return Err(Error::Invalid(
-            "An issue that still waits on others is not ready to close".into(),
-        ));
-    }
+    let kind = parse_update_kind(name, arguments, &blockers)?;
     let key = format!("issue:{issue}");
     let claim = channel
         .claims()?
@@ -178,10 +198,44 @@ fn call_update(
         claim: &claim,
         issue,
         body,
-        ready,
-        needs_owner: name == "issue_needs_owner",
+        kind,
         blocked_by: &blockers,
     }))
+}
+
+fn parse_update_kind<'a>(
+    name: &str,
+    arguments: &'a Value,
+    blockers: &[String],
+) -> Result<IssueUpdateKind<'a>, Error> {
+    match name {
+        "issue_ready_to_close" => {
+            if !blockers.is_empty() {
+                return Err(Error::Invalid(
+                    "An issue that still waits on others is not ready to close".into(),
+                ));
+            }
+            Ok(IssueUpdateKind::ReadyToClose)
+        }
+        "issue_blocked_upstream" => Ok(IssueUpdateKind::BlockedUpstream {
+            upstream: protocol::text(arguments, "upstream")?.trim(),
+        }),
+        "issue_hold" => Ok(IssueUpdateKind::Hold {
+            release_action: protocol::text(arguments, "release_action")?.trim(),
+        }),
+        "issue_close_not_planned" => {
+            if !blockers.is_empty() {
+                return Err(Error::Invalid(
+                    "An orphaned spec issue being closed waits on no other issue".into(),
+                ));
+            }
+            Ok(IssueUpdateKind::CloseNotPlanned {
+                spec_section: protocol::text(arguments, "spec_section")?.trim(),
+                removed_commit: protocol::text(arguments, "removed_commit")?.trim(),
+            })
+        }
+        _ => Ok(IssueUpdateKind::Comment),
+    }
 }
 
 fn positive_issue(arguments: &Value) -> Result<u32, Error> {
@@ -210,7 +264,7 @@ fn labels(arguments: &Value) -> Result<Vec<String>, Error> {
     }
 }
 
-pub(crate) fn tools() -> [Value; 5] {
+pub(crate) fn tools() -> [Value; 7] {
     let blockers = json!({"type":"array","items":{"type":"string"},
         "description":"Issues this one waits on, as #12 for this repository or owner/name#12 for another. They are linked as GitHub issue dependencies."});
     let fields =
@@ -231,12 +285,12 @@ pub(crate) fn tools() -> [Value; 5] {
         ),
         protocol::tool(
             "issue_create",
-            "File a new GitHub issue on this project's repository (for spec questions, contradictions, bugs or findings). Runs the duplicate check against open issues before filing and returns the matching issue instead of opening a duplicate. When the new issue waits on other issues, name them in blocked_by so they are linked as GitHub issue dependencies; never use needs-owner for a dependency wait.",
+            "File a new GitHub issue on this project's repository (for spec questions, contradictions, bugs or findings). Runs the duplicate check against open issues before filing and returns the matching issue instead of opening a duplicate. When the new issue waits on other issues, name them in blocked_by so they are linked as GitHub issue dependencies. Retired silent labels (needs-owner, on-hold) are refused; use tracking, blocked-upstream or blocked_by instead.",
             json!({
                 "title":{"type":"string","minLength":1,"maxLength":MAX_TITLE_CHARS,"description":"One-line issue title"},
                 "body":{"type":"string","minLength":1,"description":"Issue description and evidence"},
                 "labels":{"type":"array","items":{"type":"string","minLength":1},
-                    "description":"Labels from this repository, such as spec-question. Optional."},
+                    "description":"Labels from this repository, such as spec-question, tracking or blocked-upstream. Optional."},
                 "blocked_by":blockers
             }),
             &["title", "body"],
@@ -254,10 +308,37 @@ pub(crate) fn tools() -> [Value; 5] {
             &["issue", "body"],
         ),
         protocol::tool(
-            "issue_needs_owner",
-            "Add the needs-owner label on a GitHub issue you hold in AIRC, with the reason as the body. Use it when the work cannot proceed without hardware, an upstream release or an owner decision, then end your turn. The issue leaves dispatch until the owner removes the label. A reason that only waits on other issues is refused: use issue_comment with blocked_by for those.",
-            waiting,
-            &["issue", "body"],
+            "issue_blocked_upstream",
+            "Mark a GitHub issue you hold in AIRC as blocked-upstream, recording the upstream PR or release it waits for (e.g. owner/repo#123, owner/repo@v1.2.3, or owner/repo#123 -> release:owner/repo). Continuous dispatch checks it daily and returns the issue to work automatically when it ships, then end your turn.",
+            json!({
+                "issue":{"type":"integer","minimum":1},
+                "upstream":{"type":"string","minLength":1,"description":"Upstream PR or release target: owner/repo#123, owner/repo@tag, or owner/repo#123 -> release:owner2/repo2"},
+                "body":{"type":"string","minLength":1,"description":"Why this issue waits on the upstream PR or release"},
+                "blocked_by":blockers
+            }),
+            &["issue", "upstream", "body"],
+        ),
+        protocol::tool(
+            "issue_hold",
+            "Place a visible person hold on a GitHub issue you hold in AIRC ONLY when a real person action is required (physical hardware or an explicit scope hold). Never use for other issues (use blocked_by), upstream PRs/releases (use issue_blocked_upstream), or decisions covered by spec defaults (SPEC §1 Rule 1). The hold shows as one line on the project's Work view with its release action.",
+            json!({
+                "issue":{"type":"integer","minimum":1},
+                "reason":{"type":"string","minLength":1,"description":"Concise reason a person is required (e.g. physical hardware or scope hold)"},
+                "release_action":{"type":"string","minLength":1,"description":"The concrete action that releases this hold on the Work view"},
+                "blocked_by":blockers
+            }),
+            &["issue", "reason", "release_action"],
+        ),
+        protocol::tool(
+            "issue_close_not_planned",
+            "Close a GitHub issue you hold in AIRC as not planned when the spec section it refers to has been removed, citing the commit SHA that removed the section. End your turn afterwards.",
+            json!({
+                "issue":{"type":"integer","minimum":1},
+                "spec_section":{"type":"string","minLength":1,"description":"Name of the spec section that was removed"},
+                "removed_commit":{"type":"string","minLength":7,"maxLength":40,"description":"Commit SHA that removed the spec section"},
+                "body":{"type":"string","minLength":1,"description":"Verification showing the section was removed and the issue is orphaned"}
+            }),
+            &["issue", "spec_section", "removed_commit", "body"],
         ),
     ]
 }

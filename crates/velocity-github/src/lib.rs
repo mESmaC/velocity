@@ -10,6 +10,7 @@ mod command;
 mod dependency_graph;
 mod gh_command;
 mod issue_dependencies;
+mod issue_holds;
 mod issue_panel;
 mod issue_types;
 mod issues;
@@ -39,8 +40,10 @@ pub use agent_issues::{
 };
 pub use dependency_graph::DependencyGraph;
 pub use gh_command::GitHubCommandError;
+pub use issue_holds::UpstreamStatus;
 pub use issue_panel::{
     IssueDiscussion, IssueHold, IssuePanelCache, IssuePanelRow, IssuePanelSnapshot, SpecQuestion,
+    TrackingProgress, VisibleHold,
 };
 pub use issue_types::*;
 pub use issues::IssueClient;

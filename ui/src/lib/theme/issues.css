@@ -76,10 +76,51 @@
   color: var(--warn);
 }
 /* Why continuous dispatch takes this issue first (#510). */
-.issue-unblocks {
+.issue-unblocks,
+.issue-tracking {
   margin: 0;
   font-size: var(--fs-xs);
   color: var(--info) !important;
+}
+/* Visible person hold on the Work view: strictly one line with the release action (#526). */
+.work-hold-row {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-3);
+  padding: var(--sp-2) var(--sp-4);
+  min-height: var(--h-md);
+  border-radius: var(--r-sm);
+  background: var(--warn-soft);
+  border: 1px solid var(--line-dim);
+}
+.work-hold-open {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-3);
+  flex: 1;
+  min-width: 0;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: var(--text);
+  font-size: var(--fs-sm);
+  text-align: left;
+  cursor: pointer;
+}
+.work-hold-number {
+  flex: 0 0 auto;
+  color: var(--warn);
+}
+.work-hold-text {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--text-2);
+}
+.work-hold-release {
+  flex: 0 0 auto;
 }
 .issue-row.expanded {
   border-radius: var(--r-md);

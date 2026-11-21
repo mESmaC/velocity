@@ -169,6 +169,7 @@ fn bindings() -> Builder<tauri::Wry> {
         issue_panel::get_issue_discussion,
         issue_panel::open_issue_discussion,
         issue_panel::open_project_issue,
+        issue_panel::release_issue_hold,
         issue_panel::dispatch_issue,
         issue_panel::dispatch_work_issue,
         issue_panel::set_work_issue_expanded,

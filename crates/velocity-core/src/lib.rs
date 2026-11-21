@@ -20,6 +20,7 @@ pub mod interview_view;
 #[cfg(feature = "bindings")]
 pub mod ipc_number;
 pub mod issue_dependencies;
+pub mod issue_holds;
 pub mod landing;
 pub mod layout;
 pub mod layout_catalog;

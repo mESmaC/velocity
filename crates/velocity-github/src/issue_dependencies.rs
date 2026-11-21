@@ -4,14 +4,13 @@
 
 use serde::Deserialize;
 use serde_json::{Value, json};
-use velocity_core::issue_dependencies::{
-    DependencyHold, IssueReference, dependency_hold_refusal, dependency_only_hold,
-};
+use velocity_core::issue_dependencies::{DependencyHold, IssueReference};
 
 use crate::repository_client::Connection;
 use crate::{GitHubCommandError, GitHubIssue, IssueClient, RepositoryName};
 
-pub(crate) const NEEDS_OWNER_LABEL: &str = "needs-owner";
+/// Retired label stripped by `convert_dependency_hold` when migrating legacy hold notes (#511).
+const NEEDS_OWNER_LABEL: &str = "needs-owner";
 
 const LINKED_FIELDS: &str = "nodes { number repository { nameWithOwner } }
     pageInfo { hasNextPage endCursor }";
@@ -45,17 +44,6 @@ pub(crate) struct ResolvedBlocker {
     /// `#12` in this repository and `owner/name#12` elsewhere.
     pub(crate) name: String,
     id: String,
-}
-
-/// Refuses `needs-owner` for a reason that only waits on other issues.
-pub(crate) fn refuse_dependency_hold(reason: &str) -> Result<(), GitHubCommandError> {
-    let blockers = dependency_only_hold(reason);
-    if blockers.is_empty() {
-        return Ok(());
-    }
-    Err(GitHubCommandError::Invalid(dependency_hold_refusal(
-        &blockers,
-    )))
 }
 
 /// `Waits for #12, owner/name#40 …`, the line a comment gains for the links it made.

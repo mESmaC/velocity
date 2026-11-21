@@ -3,8 +3,11 @@ use std::sync::{Arc, LazyLock, Mutex};
 
 use serde::{Deserialize, Serialize};
 use velocity_core::issue_dependencies::{IssueReference, parse_blockers};
+use velocity_core::issue_holds::{
+    BLOCKED_UPSTREAM_LABEL, HOLD_LABEL, parse_explicit_person_hold, parse_upstream_target,
+    refuse_retired_label, validate_person_hold,
+};
 
-use crate::issue_dependencies::{NEEDS_OWNER_LABEL, refuse_dependency_hold};
 use crate::issues::valid_scout_nick;
 use crate::{
     GitHubCommandError, GitHubIssue, IssueClient, IssueInventory, IssueReviewToken, Reproduction,
@@ -174,14 +177,28 @@ impl ScoutFinding {
                 "At least one dispatch label is required".into(),
             ));
         }
-        // A finding that waits on other issues links them; it never holds itself with
-        // the owner's label (#511).
-        if self
-            .labels
-            .iter()
-            .any(|label| label.eq_ignore_ascii_case(NEEDS_OWNER_LABEL))
-        {
-            refuse_dependency_hold(&self.description)?;
+        // Silent skip-only labels are retired (#526); machine-checkable holds require targets.
+        for label in &self.labels {
+            refuse_retired_label(label).map_err(ScoutIssueError::Invalid)?;
+            if label.eq_ignore_ascii_case(BLOCKED_UPSTREAM_LABEL)
+                && parse_upstream_target(&self.description, None).is_none()
+            {
+                return Err(ScoutIssueError::Invalid(
+                    "Label `blocked-upstream` requires an upstream PR or release reference in the description \
+                     (for example `Blocked upstream: owner/repo#123` or `owner/repo@v1.0.0`)."
+                        .into(),
+                ));
+            }
+            if label.eq_ignore_ascii_case(HOLD_LABEL) {
+                let Some(hold) = parse_explicit_person_hold(&self.description) else {
+                    return Err(ScoutIssueError::Invalid(
+                        "Label `hold` requires `Hold: <reason>` and `Release when: <action>` lines."
+                            .into(),
+                    ));
+                };
+                validate_person_hold(&hold.reason, &hold.release_action)
+                    .map_err(ScoutIssueError::Invalid)?;
+            }
         }
         parse_blockers(&self.blocked_by).map_err(ScoutIssueError::Invalid)
     }

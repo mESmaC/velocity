@@ -17,6 +17,7 @@
     issueKey,
     workGroups,
     workState,
+    type WorkIssue,
   } from './work-panel';
   import './theme/issues.css';
 
@@ -33,6 +34,7 @@
   let panel = $state<IssuePanelSnapshot | null>(null);
   let error = $state('');
   let openDays = $state<string[]>([]);
+  let releasing = $state<Record<string, boolean>>({});
   let items: globalThis.HTMLDivElement;
   let lastTask: string | undefined;
   let seenTasks = false;
@@ -70,6 +72,23 @@
       accept(await issueCommands.panel());
     } catch (reason) {
       if (active) error = String(reason);
+    }
+  }
+
+  async function releaseHold(row: WorkIssue) {
+    if (releasing[row.key]) return;
+    releasing = { ...releasing, [row.key]: true };
+    error = '';
+    try {
+      accept(
+        await issueCommands.releaseHold(project, row.repository, row.number),
+      );
+    } catch (reason) {
+      if (active) error = String(reason);
+    } finally {
+      const next = { ...releasing };
+      delete next[row.key];
+      releasing = next;
     }
   }
 
@@ -217,6 +236,38 @@
           {@render workRow(row)}
         {/each}
       {/if}
+      {#if groups.holds.length}
+        <div class="issue-group label">Holds</div>
+        {#each groups.holds as row (row.key)}
+          {@const hold = row.row?.person_hold}
+          {#if hold}
+            <div class="work-hold-row" in:rise>
+              <button
+                class="work-hold-open"
+                type="button"
+                title={`#${row.number} ${row.title} — ${hold.reason} · ${hold.release_action}`}
+                onclick={() =>
+                  void issueCommands
+                    .openDiscussion(row.repository, row.number)
+                    .catch((reason: unknown) => (error = String(reason)))}
+              >
+                <span class="count work-hold-number">#{row.number}</span>
+                <span class="work-hold-text"
+                  >{hold.reason} · {hold.release_action}</span
+                >
+              </button>
+              <button
+                class="mini work-hold-release"
+                type="button"
+                disabled={Boolean(releasing[row.key])}
+                title={hold.release_action}
+                onclick={() => void releaseHold(row)}
+                >{releasing[row.key] ? 'Releasing…' : 'Release'}</button
+              >
+            </div>
+          {/if}
+        {/each}
+      {/if}
       {#each groups.active as row (row.key)}
         {@render workRow(row)}
       {/each}
@@ -260,7 +311,7 @@
         >
       {:else if !panel || panel.loading}
         <p class="empty" role="status">Loading GitHub issues…</p>
-      {:else if !groups.questions.length && !groups.active.length && !groups.done.length}
+      {:else if !groups.questions.length && !groups.holds.length && !groups.active.length && !groups.done.length}
         <p class="empty">No work yet.</p>
       {/if}
     </div>

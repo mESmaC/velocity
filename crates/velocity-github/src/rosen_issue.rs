@@ -2,8 +2,11 @@
 use serde::Deserialize;
 use serde_json::{Value, json};
 use velocity_core::issue_dependencies::IssueReference;
+use velocity_core::issue_holds::{
+    UpstreamTarget, is_blocked_upstream_label, is_person_hold_label, is_tracking_label,
+};
 
-use crate::issue_dependencies::{NEEDS_OWNER_LABEL, refuse_dependency_hold, waits_line};
+use crate::issue_dependencies::waits_line;
 use crate::{GitHubCommandError, GitHubIssue, IssueClient, IssueState};
 
 const READY_LABEL: &str = "ready-to-close";
@@ -55,25 +58,33 @@ pub enum RosenIssueEffect<'a> {
     Reverted { reason: &'a str },
 }
 
-/// How an issue parked under `no-change` leaves review (#506).
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+/// How an issue parked under `no-change` leaves review (#506, #526).
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub enum ParkedOutcome {
     /// The current base already meets the acceptance criteria, so the issue closes.
     AlreadyFixed,
     /// Work remains: the issue goes back to dispatch with instructions or a note.
     Returned,
-    /// The work needs hardware, an upstream release or an owner decision. The issue takes
-    /// `needs-owner` with the reason and loses `no-change`.
-    NeedsOwner,
+    /// The work waits on an upstream PR or release, checked daily by dispatch (#526).
+    BlockedUpstream { target: UpstreamTarget },
+    /// The referenced spec section was removed; close as `not_planned` citing the commit (#526).
+    SpecRemoved {
+        spec_section: String,
+        removed_commit: String,
+    },
+    /// The work needs a person (hardware or explicit scope hold), shown on Work with its release action (#526).
+    Hold { release_action: String },
 }
 
 impl ParkedOutcome {
-    /// The last field of the review marker. `true` and `false` predate `needs-owner`.
-    fn marker(self) -> &'static str {
+    /// The last field of the review marker.
+    fn marker(&self) -> &'static str {
         match self {
             Self::AlreadyFixed => "true",
             Self::Returned => "false",
-            Self::NeedsOwner => "needs-owner",
+            Self::BlockedUpstream { .. } => "blocked-upstream",
+            Self::SpecRemoved { .. } => "not-planned",
+            Self::Hold { .. } => "hold",
         }
     }
 }
@@ -131,30 +142,6 @@ impl IssueClient {
         }
         let heading = if ready { "Ready to close · " } else { "" };
         self.add_issue_comment(&issue.id, &format!("{heading}{byline}\n\n{body}{waits}"))
-    }
-
-    /// An agent found that the work needs hardware, an upstream release or an owner
-    /// decision (#506). The label goes on first: a failed comment leaves the issue out of
-    /// dispatch, and the agent's retry posts the reason. A reason that only waits on other
-    /// issues is refused: those are linked as `blockers`, never held by the label (#511).
-    pub fn post_needs_owner(
-        &self,
-        number: u32,
-        byline: &str,
-        reason: &str,
-        blockers: &[IssueReference],
-    ) -> Result<String, GitHubCommandError> {
-        refuse_dependency_hold(reason)?;
-        let issue = self.read_issue(number)?;
-        let waits = waits_line(&self.link_blockers(number, blockers)?);
-        self.label_issue(number, NEEDS_OWNER_LABEL)?;
-        if issue_has_no_change_label(&issue) {
-            self.remove_issue_label(number, Self::NO_CHANGE_LABEL)?;
-        }
-        self.add_issue_comment(
-            &issue.id,
-            &format!("Needs the owner · {byline}\n\n{reason}{waits}"),
-        )
     }
 
     /// An issue that waits on open blockers gets the comment without the `no-change`
@@ -246,10 +233,10 @@ impl IssueClient {
             return Ok(());
         }
         let issue = self.read_issue(number)?;
-        // An issue that already waits for the owner keeps that label alone (#506).
+        // An issue already held or tracking keeps that state without adding `no-change` (#506, #526).
         if issue.state == IssueState::Open
             && !issue_has_no_change_label(&issue)
-            && !issue_has_label(&issue, NEEDS_OWNER_LABEL)
+            && !issue_has_hold_state(&issue)
             && (park_blocked || !issue.has_open_blockers())
         {
             self.label_issue(number, Self::NO_CHANGE_LABEL)?;
@@ -319,7 +306,7 @@ impl IssueClient {
     /// ``Velocity review swarm · `maple` `` or `Velocity continuous dispatch`.
     /// `blockers` are issues the review found this one waits on (#511): they are linked
     /// as GitHub dependencies, and an issue that only waits on them returns to dispatch
-    /// instead of taking `needs-owner`.
+    /// instead of taking a hold (#526).
     pub fn resolve_no_change(
         &self,
         number: u32,
@@ -332,40 +319,50 @@ impl IssueClient {
         let (_, _, current) = self.no_change_discussion(number)?;
         if current != attempt || evidence.trim().is_empty() {
             return Err(GitHubCommandError::Invalid(
-                "Review the current report and supply verification, retry instructions or the reason the owner is needed".into(),
+                "Review the current report and supply verification, retry instructions or hold evidence".into(),
             ));
         }
-        let (decision, state) = match outcome {
-            ParkedOutcome::AlreadyFixed if !blockers.is_empty() => {
-                return Err(GitHubCommandError::Invalid(
-                    "An already fixed issue waits on no other issue".into(),
-                ));
-            }
-            ParkedOutcome::AlreadyFixed => ("verified already fixed", Some(IssueState::Closed)),
-            ParkedOutcome::Returned => ("returned to dispatch", None),
-            ParkedOutcome::NeedsOwner => {
-                refuse_dependency_hold(evidence)?;
-                ("found that this needs the owner", None)
-            }
-        };
-        let waits = waits_line(&self.link_blockers(number, blockers)?);
         let marker = format!(
             "<!-- velocity-no-change-review:{current}:{} -->",
             outcome.marker()
         );
-        let body = format!("{reviewer} {decision}.\n\n{evidence}{waits}");
-        self.sync_rosen_issue(number, &marker, &body, state)?;
         match outcome {
-            ParkedOutcome::AlreadyFixed => {}
-            ParkedOutcome::Returned => self.remove_issue_label(number, Self::NO_CHANGE_LABEL)?,
-            ParkedOutcome::NeedsOwner => {
-                // The owner label goes on before `no-change` comes off, so a failure
-                // between the two never leaves the issue open to dispatch.
-                self.label_issue(number, NEEDS_OWNER_LABEL)?;
-                self.remove_issue_label(number, Self::NO_CHANGE_LABEL)?;
+            ParkedOutcome::AlreadyFixed if !blockers.is_empty() => {
+                Err(GitHubCommandError::Invalid(
+                    "An already fixed issue waits on no other issue".into(),
+                ))
+            }
+            ParkedOutcome::AlreadyFixed => {
+                let body = format!("{reviewer} verified already fixed.\n\n{evidence}");
+                self.sync_rosen_issue(number, &marker, &body, Some(IssueState::Closed))
+            }
+            ParkedOutcome::Returned => {
+                let waits = waits_line(&self.link_blockers(number, blockers)?);
+                let body = format!("{reviewer} returned to dispatch.\n\n{evidence}{waits}");
+                self.sync_rosen_issue(number, &marker, &body, None)?;
+                self.remove_issue_label(number, Self::NO_CHANGE_LABEL)
+            }
+            ParkedOutcome::BlockedUpstream { target } => {
+                self.post_blocked_upstream(number, reviewer, &target, evidence, blockers)?;
+                Ok(())
+            }
+            ParkedOutcome::SpecRemoved {
+                spec_section,
+                removed_commit,
+            } => {
+                if !blockers.is_empty() {
+                    return Err(GitHubCommandError::Invalid(
+                        "An orphaned spec issue being closed waits on no other issue".into(),
+                    ));
+                }
+                self.close_not_planned(number, reviewer, &spec_section, &removed_commit, evidence)?;
+                Ok(())
+            }
+            ParkedOutcome::Hold { release_action } => {
+                self.post_person_hold(number, reviewer, evidence, &release_action, blockers)?;
+                Ok(())
             }
         }
-        Ok(())
     }
 
     pub(crate) fn label_issue(&self, number: u32, name: &str) -> Result<(), GitHubCommandError> {
@@ -408,7 +405,11 @@ impl IssueClient {
         Ok(())
     }
 
-    fn add_issue_comment(&self, subject: &str, body: &str) -> Result<String, GitHubCommandError> {
+    pub(crate) fn add_issue_comment(
+        &self,
+        subject: &str,
+        body: &str,
+    ) -> Result<String, GitHubCommandError> {
         self.transport.graphql_at(
             "mutation($input:AddCommentInput!) { addComment(input:$input) { commentEdge { node { url } } } }",
             json!({"input":{"subjectId":subject,"body":body}}),
@@ -730,14 +731,21 @@ impl IssueClient {
         }))
     }
 
-    fn has_rosen_comment(&self, number: u32, marker: &str) -> Result<bool, GitHubCommandError> {
+    pub(crate) fn has_rosen_comment(
+        &self,
+        number: u32,
+        marker: &str,
+    ) -> Result<bool, GitHubCommandError> {
         Ok(self
             .issue_comment_bodies(number)?
             .iter()
             .any(|body| body.lines().last() == Some(marker)))
     }
 
-    fn issue_comment_bodies(&self, number: u32) -> Result<Vec<String>, GitHubCommandError> {
+    pub(crate) fn issue_comment_bodies(
+        &self,
+        number: u32,
+    ) -> Result<Vec<String>, GitHubCommandError> {
         Ok(self
             .issue_comments(number)?
             .into_iter()
@@ -892,7 +900,12 @@ fn classify_external_issue_state(
                 continue;
             }
         }
-        if comment.body.trim_start().starts_with("Needs the owner · ") {
+        let trimmed = comment.body.trim_start();
+        if trimmed.starts_with("Needs the owner · ")
+            || trimmed.starts_with("On hold · ")
+            || trimmed.starts_with("Blocked upstream · ")
+            || trimmed.starts_with("Closed as not planned · ")
+        {
             in_progress = None;
             continue;
         }
@@ -949,6 +962,12 @@ fn ends_with_dependency_wait(message: &str) -> bool {
 
 fn issue_has_no_change_label(issue: &GitHubIssue) -> bool {
     issue_has_label(issue, IssueClient::NO_CHANGE_LABEL)
+}
+
+fn issue_has_hold_state(issue: &GitHubIssue) -> bool {
+    issue.labels.iter().any(|label| {
+        is_person_hold_label(label) || is_tracking_label(label) || is_blocked_upstream_label(label)
+    })
 }
 
 fn issue_has_label(issue: &GitHubIssue, name: &str) -> bool {

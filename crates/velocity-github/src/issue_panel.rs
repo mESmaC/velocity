@@ -3,6 +3,10 @@ use std::time::{Duration, Instant};
 
 use serde::{Deserialize, Serialize};
 use specta::Type;
+use velocity_core::issue_holds::{
+    BLOCKED_UPSTREAM_LABEL, TRACKING_LABEL, has_label, parse_checklist, parse_person_hold,
+    parse_upstream_target,
+};
 
 use crate::repository_client::Connection;
 use crate::{GitHubCommandError, GitHubIssue, IssueClient};
@@ -70,6 +74,30 @@ pub struct IssuePanelRow {
     /// Why continuous dispatch holds this issue instead of starting it (#525).
     #[serde(default)]
     pub hold: Option<IssueHold>,
+    /// A visible hold needing a person (hardware, scope hold, or retired hold label), shown
+    /// as one line on the Work view with its release action (#526).
+    #[serde(default)]
+    pub person_hold: Option<VisibleHold>,
+    /// Upstream PR or release waited on for a `blocked-upstream` issue, checked daily (#526).
+    #[serde(default)]
+    pub upstream_wait: Option<String>,
+    /// Checklist progress for a `tracking` issue that closes automatically when complete (#526).
+    #[serde(default)]
+    pub tracking: Option<TrackingProgress>,
+}
+
+/// A visible person hold shown on the project's Work view with the action that releases it (#526).
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, Type)]
+pub struct VisibleHold {
+    pub reason: String,
+    pub release_action: String,
+}
+
+/// Checklist progress on a `tracking` issue (#526).
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, Type)]
+pub struct TrackingProgress {
+    pub checked: u32,
+    pub total: u32,
 }
 
 /// An overlap hold as the Work card shows it: the state, the reason, and the files the
@@ -93,6 +121,10 @@ impl IssueHold {
 
 impl IssuePanelRow {
     pub fn from_issue(issue: GitHubIssue) -> Self {
+        Self::from_issue_for_repository(None, issue)
+    }
+
+    pub fn from_issue_for_repository(repository: Option<&str>, issue: GitHubIssue) -> Self {
         let question = issue
             .labels
             .iter()
@@ -107,6 +139,7 @@ impl IssuePanelRow {
         } else {
             None
         };
+        let (person_hold, upstream_wait, tracking) = classify_holds(repository, &issue);
         Self {
             number: issue.number,
             title: issue.title,
@@ -119,8 +152,48 @@ impl IssuePanelRow {
             thread_identifier: None,
             thread_label: None,
             hold: None,
+            person_hold,
+            upstream_wait,
+            tracking,
         }
     }
+}
+
+fn classify_holds(
+    repository: Option<&str>,
+    issue: &GitHubIssue,
+) -> (
+    Option<VisibleHold>,
+    Option<String>,
+    Option<TrackingProgress>,
+) {
+    let tracking = has_label(&issue.labels, TRACKING_LABEL).then(|| {
+        let progress = parse_checklist(&issue.body);
+        TrackingProgress {
+            checked: progress.checked,
+            total: progress.total(),
+        }
+    });
+    let mut person_hold = parse_person_hold(&issue.body, &issue.labels).map(|hold| VisibleHold {
+        reason: hold.reason,
+        release_action: hold.release_action,
+    });
+    let upstream_wait = if has_label(&issue.labels, BLOCKED_UPSTREAM_LABEL) {
+        match parse_upstream_target(&issue.body, repository) {
+            Some(target) => Some(target.display_summary()),
+            None => {
+                // Never hide a `blocked-upstream` issue whose target is missing (#526).
+                person_hold.get_or_insert_with(|| VisibleHold {
+                    reason: "Blocked upstream with no PR or release reference".into(),
+                    release_action: "Add `Blocked upstream: owner/repo#n` or release hold".into(),
+                });
+                None
+            }
+        }
+    } else {
+        None
+    };
+    (person_hold, upstream_wait, tracking)
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize, Type)]
@@ -351,10 +424,11 @@ impl IssueClient {
     }
 
     pub fn panel(&self) -> Result<(String, Vec<IssuePanelRow>), GitHubCommandError> {
+        let repository = self.transport.repository.clone();
         let mut rows: Vec<_> = self
             .open_issues()?
             .into_iter()
-            .map(IssuePanelRow::from_issue)
+            .map(|issue| IssuePanelRow::from_issue_for_repository(Some(&repository), issue))
             .collect();
         rows.sort_by_key(|row| {
             (

@@ -31,7 +31,7 @@ pub use claims::{Claim, ClaimResult, piece_key};
 pub use delivery::{
     Delivery, DeliveryPriority, deliver_messages, deliver_targeted, message_for, prompt_lines,
 };
-pub use issue_tools::{IssueCreate, IssueRead, IssueRequest, IssueUpdate};
+pub use issue_tools::{IssueCreate, IssueRead, IssueRequest, IssueUpdate, IssueUpdateKind};
 pub use launch::{
     CONTINUOUS_DISPATCH_ARGUMENT, SERVER_NAME, SERVER_SWITCH, serve_stdio,
     serve_stdio_with_handlers, serve_stdio_with_issues, server_arguments,

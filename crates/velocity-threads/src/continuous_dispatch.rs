@@ -2,6 +2,10 @@
 use serde::{Deserialize, Serialize};
 use specta::Type;
 use std::collections::{BTreeMap, HashSet};
+use velocity_core::issue_holds::{
+    BLOCKED_UPSTREAM_LABEL, TRACKING_LABEL, has_label, is_person_hold_label, parse_person_hold,
+    parse_upstream_target,
+};
 use velocity_github::{GitHubIssue, IssueClient, IssueState};
 use velocity_store::continuous_dispatch::{available_task, busy_count};
 use velocity_store::issues::{ThreadIssue, issue_thread};
@@ -193,14 +197,13 @@ pub struct SkippedIssue {
     pub reason: String,
 }
 
+/// Non-hold labels that keep an issue out of automatic dispatch because another dedicated
+/// workflow handles them (`spec-question` Questions + Accept, `release-blocker` release gate,
+/// `no-change` bounded review + 2-hour auto-return). Machine-checkable holds (`tracking`,
+/// `blocked-upstream`, `hold`, plus retired hold labels surfaced on Work) are checked explicitly.
 const SKIP_LABELS: &[&str] = &[
     "spec-question",
-    "needs-decision",
-    "needs-owner",
     "release-blocker",
-    "owner-decision",
-    // An owner hold, e.g. collapse.sh#10 (#505).
-    "on-hold",
     IssueClient::NO_CHANGE_LABEL,
 ];
 
@@ -248,6 +251,31 @@ pub fn issue_skip_reason(
             number: issue.number,
             category: SkipCategory::Blocker,
             reason: blockers,
+        });
+    }
+    if has_label(&issue.labels, TRACKING_LABEL) {
+        return Some(SkippedIssue {
+            number: issue.number,
+            category: SkipCategory::Label,
+            reason: "tracking issue (closes when checklist completes)".into(),
+        });
+    }
+    if has_label(&issue.labels, BLOCKED_UPSTREAM_LABEL) {
+        let detail = parse_upstream_target(&issue.body, Some(repository)).map_or_else(
+            || "blocked upstream (missing target)".into(),
+            |target| format!("blocked upstream: {}", target.display_summary()),
+        );
+        return Some(SkippedIssue {
+            number: issue.number,
+            category: SkipCategory::Blocker,
+            reason: detail,
+        });
+    }
+    if let Some(hold) = parse_person_hold(&issue.body, &issue.labels) {
+        return Some(SkippedIssue {
+            number: issue.number,
+            category: SkipCategory::Label,
+            reason: format!("hold: {} · {}", hold.reason, hold.release_action),
         });
     }
     if let Some(label) = issue.labels.iter().find(|label| {
@@ -340,6 +368,9 @@ pub fn actionable(issue: &GitHubIssue) -> bool {
     if issue.state != IssueState::Open
         || issue.has_open_blockers()
         || issue.is_spec_question()
+        || has_label(&issue.labels, TRACKING_LABEL)
+        || has_label(&issue.labels, BLOCKED_UPSTREAM_LABEL)
+        || issue.labels.iter().any(|label| is_person_hold_label(label))
         || issue.labels.iter().any(|label| {
             SKIP_LABELS
                 .iter()

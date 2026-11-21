@@ -196,6 +196,7 @@ export const commands = {
 	getIssueDiscussion: (projectIdentifier: number, repository: string, number: number) => __TAURI_INVOKE<IssueDiscussion>("get_issue_discussion", { projectIdentifier, repository, number }),
 	openIssueDiscussion: (repository: string, number: number) => __TAURI_INVOKE<null>("open_issue_discussion", { repository, number }),
 	openProjectIssue: (projectIdentifier: number, number: number) => __TAURI_INVOKE<null>("open_project_issue", { projectIdentifier, number }),
+	releaseIssueHold: (projectIdentifier: number, repository: string, number: number) => __TAURI_INVOKE<IssuePanelSnapshot_Serialize>("release_issue_hold", { projectIdentifier, repository, number }),
 	dispatchIssue: (projectIdentifier: number, number: number, acceptRecommendation: boolean) => __TAURI_INVOKE<LayoutSnapshot_Serialize>("dispatch_issue", { projectIdentifier, number, acceptRecommendation }),
 	dispatchWorkIssue: (projectIdentifier: number, repository: string, number: number, acceptRecommendation: boolean) => __TAURI_INVOKE<LayoutSnapshot_Serialize>("dispatch_work_issue", { projectIdentifier, repository, number, acceptRecommendation }),
 	setWorkIssueExpanded: (projectIdentifier: number, repository: string, number: number, expanded: boolean) => __TAURI_INVOKE<null>("set_work_issue_expanded", { projectIdentifier, repository, number, expanded }),
@@ -2182,6 +2183,15 @@ export type IssuePanelRow_Deserialize = {
 	thread_label?: string | null,
 	/**  Why continuous dispatch holds this issue instead of starting it (#525). */
 	hold?: IssueHold | null,
+	/**
+	 *  A visible hold needing a person (hardware, scope hold, or retired hold label), shown
+	 *  as one line on the Work view with its release action (#526).
+	 */
+	person_hold?: VisibleHold | null,
+	/**  Upstream PR or release waited on for a `blocked-upstream` issue, checked daily (#526). */
+	upstream_wait?: string | null,
+	/**  Checklist progress for a `tracking` issue that closes automatically when complete (#526). */
+	tracking?: TrackingProgress | null,
 };
 
 export type IssuePanelRow_Serialize = {
@@ -2202,6 +2212,15 @@ export type IssuePanelRow_Serialize = {
 	thread_label: string | null,
 	/**  Why continuous dispatch holds this issue instead of starting it (#525). */
 	hold: IssueHold | null,
+	/**
+	 *  A visible hold needing a person (hardware, scope hold, or retired hold label), shown
+	 *  as one line on the Work view with its release action (#526).
+	 */
+	person_hold: VisibleHold | null,
+	/**  Upstream PR or release waited on for a `blocked-upstream` issue, checked daily (#526). */
+	upstream_wait: string | null,
+	/**  Checklist progress for a `tracking` issue that closes automatically when complete (#526). */
+	tracking: TrackingProgress | null,
 };
 
 export type IssuePanelSnapshot = IssuePanelSnapshot_Serialize | IssuePanelSnapshot_Deserialize;
@@ -5562,6 +5581,12 @@ export type ToolUsageRow = {
 /**  One dot of a card's editing · named · landed track. */
 export type TrackStep = "todo" | "running" | "done" | "failed";
 
+/**  Checklist progress on a `tracking` issue (#526). */
+export type TrackingProgress = {
+	checked: number,
+	total: number,
+};
+
 export type TranscriptBlock = TranscriptBlock_Serialize | TranscriptBlock_Deserialize;
 
 export type TranscriptBlock_Deserialize = ({ UserMessage: {
@@ -5732,6 +5757,12 @@ export type UsageWindowView = {
  *  worktrees are used only when the project chooses git; Rosen launches never fall back.
  */
 export type VersionControl = "rosen" | "git";
+
+/**  A visible person hold shown on the project's Work view with the action that releases it (#526). */
+export type VisibleHold = {
+	reason: string,
+	release_action: string,
+};
 
 export type WindowStateChanged = {
 	maximized: boolean,

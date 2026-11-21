@@ -59,11 +59,15 @@ pub(crate) fn workspace_note(application: &AppHandle, key: (u32, u32), change: &
              `rosen commit -m \"<one-line summary> (#{})\"`. Use the AIRC issue_comment tool \
              when you start, when a finding changes the plan, and when blocked. Use \
              issue_ready_to_close to post completion evidence and flag the issue for independent \
-             review. Leave the issue open. Velocity announces the land. If the work cannot \
-             proceed without hardware, an upstream release or an owner decision, call \
-             issue_needs_owner with the reason and end your turn. If it waits on other \
-             issues, call issue_comment with blocked_by naming them and end your turn; \
-             never hold an issue with a label for that.",
+             review. Leave the issue open. Velocity announces the land. If the issue waits \
+             on other issues, call issue_comment with blocked_by naming them and end your \
+             turn. If it waits on an upstream PR or release, call issue_blocked_upstream \
+             with upstream (checked daily by Velocity) and end your turn. If its spec \
+             section was removed, call issue_close_not_planned with spec_section and \
+             removed_commit and end your turn. Only when physical hardware or an explicit \
+             scope hold requires a person (never for spec defaults per Rule 1), call \
+             issue_hold with reason and release_action so it shows on Work with its \
+             release action.",
             issue.repository, issue.number, issue.number,
         ));
     }

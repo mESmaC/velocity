@@ -276,6 +276,27 @@ async fn dispatch_selected_issue(
 
 #[tauri::command]
 #[specta::specta]
+pub async fn release_issue_hold(
+    application: AppHandle,
+    project_identifier: u32,
+    repository: String,
+    number: u32,
+) -> Result<IssuePanelSnapshot, String> {
+    let project = require_project(&application, project_identifier)?;
+    tauri::async_runtime::spawn_blocking(move || {
+        IssueClient::for_repository(&project.directory, &repository)
+            .and_then(|client| client.release_person_hold(number))
+            .map_err(|error| error.to_string())?;
+        refresh(&application, Some(project), &mut IssueReader::default())?;
+        let panel = application.state::<IssuePanel>();
+        Ok(lock(panel.inner(), "issues")?.clone())
+    })
+    .await
+    .map_err(|error| error.to_string())?
+}
+
+#[tauri::command]
+#[specta::specta]
 pub async fn open_project_issue(
     application: AppHandle,
     project_identifier: u32,

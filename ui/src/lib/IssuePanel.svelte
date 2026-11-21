@@ -59,6 +59,23 @@
     }
   }
 
+  async function releaseHold(number: number) {
+    const identifier = panel?.project_identifier;
+    const repository = panel?.repository;
+    if (identifier == null || !repository) return;
+    const request = generation;
+    try {
+      const snapshot = await issueCommands.releaseHold(
+        identifier,
+        repository,
+        number,
+      );
+      if (request === generation) accept(snapshot);
+    } catch (reason) {
+      if (active && request === generation) error = String(reason);
+    }
+  }
+
   async function toggle(number: number) {
     const request = generation;
     try {
@@ -175,6 +192,14 @@
             {#if row.blocked_by}
               <span class="issue-blocker">Blocked by {row.blocked_by}</span>
             {/if}
+            {#if row.upstream_wait}
+              <span class="issue-blocker">Upstream · {row.upstream_wait}</span>
+            {/if}
+            {#if row.tracking}
+              <span class="issue-tracking"
+                >Tracking {row.tracking.checked}/{row.tracking.total}</span
+              >
+            {/if}
             <span>{row.labels.join(' · ')}</span>
             {#if row.scout}<span class="issue-scout"
                 ><Icon name="scout" />{row.scout}</span
@@ -197,6 +222,20 @@
               act(row.number, row.question ? 'accept' : 'dispatch')}
             ><Icon name="play" />{row.question ? 'Accept' : 'Dispatch'}</button
           >
+        {/if}
+        {#if row.person_hold}
+          <div class="work-hold-row">
+            <span
+              class="work-hold-text"
+              title={`${row.person_hold.reason} · ${row.person_hold.release_action}`}
+              >{row.person_hold.reason} · {row.person_hold.release_action}</span
+            >
+            <button
+              class="mini work-hold-release"
+              type="button"
+              onclick={() => void releaseHold(row.number)}>Release</button
+            >
+          </div>
         {/if}
         {#if expanded}
           <div class="issue-detail" id="issue-detail-{row.number}" in:rise>

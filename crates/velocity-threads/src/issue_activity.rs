@@ -3,7 +3,8 @@ use std::path::Path;
 
 use serde::Deserialize;
 use serde_json::{Value, json};
-use velocity_airc::{Error, IssueCreate, IssueRead, IssueRequest, IssueUpdate};
+use velocity_airc::{Error, IssueCreate, IssueRead, IssueRequest, IssueUpdate, IssueUpdateKind};
+use velocity_core::issue_holds::UpstreamTarget;
 use velocity_core::text_budget::{json_text_page, preview};
 use velocity_github::{AgentIssueDraft, AgentIssueOutcome, IssueClient, IssueDetail};
 use velocity_rosen::ProjectServer;
@@ -213,10 +214,38 @@ fn post_update(
     // The issues this one waits on become GitHub dependencies, never a hold label (#511).
     let blockers = velocity_core::issue_dependencies::parse_blockers(update.blocked_by)
         .map_err(Error::Invalid)?;
-    if update.needs_owner {
-        client.post_needs_owner(update.issue, &byline, update.body, &blockers)
-    } else {
-        client.post_issue_progress(update.issue, &byline, update.body, update.ready, &blockers)
+    match update.kind {
+        IssueUpdateKind::Comment => {
+            client.post_issue_progress(update.issue, &byline, update.body, false, &blockers)
+        }
+        IssueUpdateKind::ReadyToClose => {
+            client.post_issue_progress(update.issue, &byline, update.body, true, &blockers)
+        }
+        IssueUpdateKind::BlockedUpstream { upstream } => {
+            let target = UpstreamTarget::parse(upstream).ok_or_else(|| {
+                Error::Invalid(format!(
+                    "upstream must be an upstream PR or release such as owner/repo#123, owner/repo@v1.0.0, or owner/repo#123 -> release:owner/repo (got {upstream:?})"
+                ))
+            })?;
+            client.post_blocked_upstream(update.issue, &byline, &target, update.body, &blockers)
+        }
+        IssueUpdateKind::Hold { release_action } => client.post_person_hold(
+            update.issue,
+            &byline,
+            update.body,
+            release_action,
+            &blockers,
+        ),
+        IssueUpdateKind::CloseNotPlanned {
+            spec_section,
+            removed_commit,
+        } => client.close_not_planned(
+            update.issue,
+            &byline,
+            spec_section,
+            removed_commit,
+            update.body,
+        ),
     }
     .map_err(|error| Error::Invalid(error.to_string()))
 }

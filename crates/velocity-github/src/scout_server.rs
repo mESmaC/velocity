@@ -253,7 +253,7 @@ fn tool_list() -> Vec<Value> {
         comparison_tool(),
         json!({
             "name": "scout_add_blocker",
-            "description": "Record that an issue in this project's GitHub repository waits on another issue, as a GitHub issue dependency. Continuous dispatch starts the issue when the blocker closes. Use this, never a hold label such as needs-owner, whenever one issue waits on another.",
+            "description": "Record that an issue in this project's GitHub repository waits on another issue, as a GitHub issue dependency. Continuous dispatch starts the issue when the blocker closes. Use this, never a hold label, whenever one issue waits on another.",
             "inputSchema": {"type": "object", "properties": {
                 "issue": {"type":"integer","minimum":1,"description":"The issue that must wait"},
                 "blocker": {"type":"integer","minimum":1,"description":"The issue that must close first"},
@@ -284,7 +284,7 @@ fn tool_list() -> Vec<Value> {
         }),
         json!({
             "name": "scout_file",
-            "description": "File one finding. Velocity runs the reproduction (it must exit with a failing status), attaches the script and its output, and refuses duplicates of open or closed issues. publish false previews the issue; publish true files it. When the finding waits on other issues, name them in blocked_by: they become GitHub issue dependencies and dispatch starts the issue when they close. The needs-owner label is refused for a finding that only waits on other issues.",
+            "description": "File one finding. Velocity runs the reproduction (it must exit with a failing status), attaches the script and its output, and refuses duplicates of open or closed issues. publish false previews the issue; publish true files it. When the finding waits on other issues, name them in blocked_by: they become GitHub issue dependencies and dispatch starts the issue when they close. Retired skip labels such as needs-owner and on-hold are refused.",
             "inputSchema": {
                 "type": "object",
                 "properties": {

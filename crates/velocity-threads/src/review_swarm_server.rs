@@ -82,8 +82,18 @@ enum NoChangeReview {
         attempt: String,
         evidence: String,
         already_fixed: bool,
+        /// Upstream PR or release target when marking `blocked-upstream` (#526).
         #[serde(default)]
-        needs_owner: bool,
+        blocked_upstream: Option<String>,
+        /// Removed spec section name when closing an orphaned issue as not planned (#526).
+        #[serde(default)]
+        spec_section: Option<String>,
+        /// Commit SHA that removed the spec section when closing as not planned (#526).
+        #[serde(default)]
+        removed_commit: Option<String>,
+        /// Concrete release action when placing a visible Work-view hold (#526).
+        #[serde(default)]
+        hold_release_action: Option<String>,
         /// The issues this one waits on, linked as GitHub dependencies (#511).
         #[serde(default)]
         blocked_by: Vec<String>,
@@ -212,23 +222,29 @@ impl ReviewSwarmServer {
                 attempt,
                 evidence,
                 already_fixed,
-                needs_owner,
+                blocked_upstream,
+                spec_section,
+                removed_commit,
+                hold_release_action,
                 blocked_by,
             } => {
                 let blockers = velocity_core::issue_dependencies::parse_blockers(&blocked_by)?;
-                let outcome = match (already_fixed, needs_owner) {
-                    (true, true) => {
-                        return Err("An already fixed issue does not need the owner".into());
-                    }
-                    (true, false) => ParkedOutcome::AlreadyFixed,
-                    (false, true) => ParkedOutcome::NeedsOwner,
-                    (false, false) => ParkedOutcome::Returned,
-                };
+                let outcome = resolve_no_change_outcome(
+                    already_fixed,
+                    blocked_upstream.as_deref(),
+                    spec_section,
+                    removed_commit,
+                    hold_release_action,
+                )?;
+                let closed = matches!(
+                    outcome,
+                    ParkedOutcome::AlreadyFixed | ParkedOutcome::SpecRemoved { .. }
+                );
                 let reviewer = format!("Velocity review swarm · `{}`", self.launch.nickname);
                 client
                     .resolve_no_change(issue, &attempt, &reviewer, &evidence, outcome, &blockers)
                     .map_err(|error| error.to_string())?;
-                Ok(json!({"issue": issue, "closed": already_fixed, "needs_owner": needs_owner}))
+                Ok(json!({"issue": issue, "closed": closed}))
             }
         }
     }
@@ -467,16 +483,19 @@ impl ToolServer for ReviewSwarmServer {
         if self.launch.repository.is_some() {
             tools.push(json!({
                 "name": "review_swarm_no_change",
-                "description": "List open no-change issues, read an issue with its discussion and attempt, or resolve that attempt after checking the evidence. Resolution closes an independently verified fix, comments with concrete retry instructions and removes the no-change label, or moves work that needs hardware, an upstream release or an owner decision to needs-owner with the reason. An issue that waits on other issues is requeued with blocked_by, which links them as GitHub issue dependencies; needs_owner is refused for a reason that only waits on other issues.",
+                "description": "List open no-change issues, read an issue with its discussion and attempt, or resolve that attempt after checking the evidence. Resolution closes an independently verified fix, closes an orphaned spec issue as not planned (with spec_section and removed_commit), comments with retry instructions and removes no-change (with blocked_by when waiting on other issues), marks blocked_upstream for an upstream PR/release checked daily, or places a visible Work-view hold (with hold_release_action) ONLY for hardware or an explicit scope hold.",
                 "inputSchema": {"type": "object", "properties": {
                     "action": {"type": "string", "enum": ["list", "read", "resolve"]},
                     "offset": {"type": "integer", "minimum": 0, "description": "List offset, ten issues per page"},
                     "issue": {"type": "integer", "description": "Required for read and resolve"},
                     "attempt": {"type": "string", "description": "Required for resolve, returned by read"},
                     "already_fixed": {"type": "boolean", "description": "Required for resolve, true only when the current base satisfies the issue"},
-                    "needs_owner": {"type": "boolean", "description": "Optional for resolve, true when the work needs hardware, an upstream release or an owner decision"},
+                    "blocked_upstream": {"type": "string", "description": "Optional for resolve: upstream PR or release target (owner/repo#123, owner/repo@tag, or owner/repo#123 -> release:owner2/repo2)"},
+                    "spec_section": {"type": "string", "description": "Optional for resolve: removed spec section name when closing an orphaned issue as not planned"},
+                    "removed_commit": {"type": "string", "description": "Optional for resolve: commit SHA that removed spec_section"},
+                    "hold_release_action": {"type": "string", "description": "Optional for resolve: concrete action releasing a visible Work-view hold (hardware or scope hold only)"},
                     "blocked_by": {"type": "array", "items": {"type": "string"}, "description": "Optional for resolve, issues this one waits on, as #12 for this repository or owner/name#12 for another"},
-                    "evidence": {"type": "string", "description": "Required for resolve, verification evidence, instructions for the next agent or the reason the owner is needed"}
+                    "evidence": {"type": "string", "description": "Required for resolve, verification evidence, instructions for the next agent, or hold reason"}
                 }, "required": ["action"], "additionalProperties": false}
             }));
         }
@@ -501,6 +520,53 @@ impl ToolServer for ReviewSwarmServer {
             _ => self.scout.call(name, arguments),
         }
     }
+}
+
+fn resolve_no_change_outcome(
+    already_fixed: bool,
+    blocked_upstream: Option<&str>,
+    spec_section: Option<String>,
+    removed_commit: Option<String>,
+    hold_release_action: Option<String>,
+) -> Result<ParkedOutcome, String> {
+    let spec_removed = spec_section.is_some() || removed_commit.is_some();
+    let modes = usize::from(already_fixed)
+        + usize::from(blocked_upstream.is_some())
+        + usize::from(spec_removed)
+        + usize::from(hold_release_action.is_some());
+    if modes > 1 {
+        return Err(
+            "Choose at most one of already_fixed, blocked_upstream, spec_section/removed_commit, or hold_release_action"
+                .into(),
+        );
+    }
+    if already_fixed {
+        return Ok(ParkedOutcome::AlreadyFixed);
+    }
+    if let Some(raw) = blocked_upstream {
+        let target = velocity_core::issue_holds::UpstreamTarget::parse(raw).ok_or_else(|| {
+            format!("blocked_upstream must be owner/repo#123, owner/repo@tag or owner/repo#123 -> release:owner/repo (got {raw:?})")
+        })?;
+        return Ok(ParkedOutcome::BlockedUpstream { target });
+    }
+    if spec_removed {
+        return Ok(ParkedOutcome::SpecRemoved {
+            spec_section: spec_section
+                .filter(|value| !value.trim().is_empty())
+                .ok_or(
+                    "Closing an orphaned spec issue requires both spec_section and removed_commit",
+                )?,
+            removed_commit: removed_commit
+                .filter(|value| !value.trim().is_empty())
+                .ok_or(
+                    "Closing an orphaned spec issue requires both spec_section and removed_commit",
+                )?,
+        });
+    }
+    if let Some(release_action) = hold_release_action {
+        return Ok(ParkedOutcome::Hold { release_action });
+    }
+    Ok(ParkedOutcome::Returned)
 }
 
 fn issue_excerpt(text: &str, limit: usize) -> String {

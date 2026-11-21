@@ -10,6 +10,8 @@ export type {
   IssuePanelRow_Serialize as IssuePanelRow,
   SpecQuestion,
   IssueDiscussion,
+  TrackingProgress,
+  VisibleHold,
 } from '../bindings';
 
 export const issueCommands = {
@@ -17,6 +19,7 @@ export const issueCommands = {
   open: commands.openProjectIssue,
   dispatch: commands.dispatchIssue,
   dispatchWork: commands.dispatchWorkIssue,
+  releaseHold: commands.releaseIssueHold,
   toggleExpanded: commands.toggleIssueExpanded,
   discussion: commands.getIssueDiscussion,
   openDiscussion: commands.openIssueDiscussion,

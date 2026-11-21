@@ -121,6 +121,16 @@
       {#if row?.blocked_by}<span class="issue-blocker"
           >Blocked by {row.blocked_by}</span
         >{/if}
+      {#if row?.upstream_wait}<span
+          class="issue-blocker"
+          title="Checked daily by continuous dispatch; returns automatically when it ships"
+          >Upstream · {row.upstream_wait}</span
+        >{/if}
+      {#if row?.tracking}<span
+          class="issue-tracking"
+          title="Tracking issue — closes automatically when every checklist item is checked"
+          >Tracking {row.tracking.checked}/{row.tracking.total}</span
+        >{/if}
       {#if hold}<span class="issue-blocker" title={hold.reason}
           >{hold.label}</span
         >{/if}

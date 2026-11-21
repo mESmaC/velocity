@@ -1,5 +1,6 @@
 //! Native background adapter for F8 continuous dispatch. It never uses the selected
 //! project's issue rail, so changing projects cannot redirect a background launch.
+mod holds;
 mod overlap;
 mod parked;
 
@@ -331,6 +332,7 @@ struct Reader {
     hold_retry: BTreeMap<u32, Instant>,
     backlog: Backlog,
     parked: parked::Parked,
+    holds: holds::Holds,
 }
 
 fn monitor(application: AppHandle) {
@@ -413,6 +415,8 @@ fn read_other_dependencies(
     if let Ok(backlog) = read_issues(reader) {
         record_dependencies(application, project.id, &backlog)?;
         convert_dependency_holds(reader, &backlog);
+        reader.backlog = backlog;
+        holds::refresh(reader);
     }
     Ok(())
 }
@@ -518,6 +522,7 @@ fn pass(
         start_ready(application, project.id, None)?;
     }
     refresh_backlog(application, project.id, reader)?;
+    holds::refresh(reader);
     overlap::refresh(application, project.id, reader)?;
     parked::refresh(application, project, reader)?;
     start_ready(application, project.id, Some(reader))
@@ -963,6 +968,7 @@ fn reader<'a>(project: &ProjectItem, readers: &'a mut BTreeMap<u32, Reader>) -> 
         hold_retry: BTreeMap::new(),
         backlog: Backlog::default(),
         parked: parked::Parked::new(),
+        holds: holds::Holds::new(),
     };
     let reader = readers.entry(project.id).or_insert_with(setup);
     if reader.directory != project.repository_path || reader.remote != project.github_remote {

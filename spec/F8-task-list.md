@@ -46,9 +46,9 @@ Issues go critical path first: the issue with the most open issues transitively 
 The count joins the open issues of every project's repository, so an issue that another project's issues wait on counts them too.
 Projects that continuous dispatch does not read have their dependencies read every ten minutes.
 Within each task group, the oldest task number goes first.
-The work inventory excludes claimed items, owner-decision questions, release blockers and issues labelled `no-change`.
+The work inventory excludes claimed items, `spec-question` items, `release-blocker` issues, `no-change` issues, `tracking` issues (closed automatically when their checklist completes), `blocked-upstream` issues (checked daily and unblocked when the upstream PR or release ships), and visible `hold` issues (shown on Work with a Release action, #526).
 Continuous dispatch also skips GitHub issues with an open GitHub blocker and makes them eligible on the first issue refresh after their last blocker closes (#472).
-Issues can carry the labels `spec-question`, `needs-decision`, `needs-owner`, `owner-decision` or `release-blocker`, and dispatch also checks issue and task text for explicit owner-decision wording and task titles for the `release-blocker` marker.
+Legacy issues still carrying retired hold labels (`needs-owner`, `on-hold`, `needs-decision`, `owner-decision`) are also surfaced in the Work view's Holds group with a Release action until released (#526), and dispatch still checks task titles for the `release-blocker` marker.
 Working and awaiting-land build threads count toward N; a land or an ended turn with no named work and an empty Rosen diff frees its slot.
 A dispatch worker takes its next item in a fresh ACP session after cleanup, with a bounded handoff from Velocity and a session boundary in the existing conversation (#456).
 Failed and closed threads free capacity but retain issue ownership.
@@ -60,7 +60,7 @@ An unchanged issue already dispatched stays out of dispatch while its GitHub iss
 An issue whose change has landed is not dispatched again while it waits for a green integration build; its issue row reads **landed · waiting for integration** until that build closes it or a revert reopens it for fix-forward (#504).
 Before starting an issue, dispatch reads Velocity's comments on it for a `velocity-rosen-issue:landed` marker and verifies whether its commit is in the mirror's history (or the local base), so a land from another machine or a deleted thread is saved as a landed hold without opening a Rosen change (#504, #519).
 When an orphaned landed hold has no green `velocity/integration` status posted by any machine, whichever machine is running catches up from the mirror if needed, runs post-land verification, publishes the green status and closes the issue after the 30-minute review window (#519).
-Before starting an issue, dispatch also skips an issue whose comments show a recent `issue-N` starting or progress comment with no later ended, failed, dependency-wait, needs-owner or landed comment, showing **in progress elsewhere** until the issue updates or the two-hour window expires (#519).
+Before starting an issue, dispatch also skips an issue whose comments show a recent `issue-N` starting or progress comment with no later ended, failed, dependency-wait, blocked-upstream, hold, not-planned or landed comment, showing **in progress elsewhere** until the issue updates or the two-hour window expires (#519, #526).
 When landed issues have waited six hours without a green integration build, the Duty view shows **N landed issues wait for a green integration build** with the issue numbers and the last integration build's outcome.
 When the base holds lands that no green integration build covers and the oldest landed three hours ago, or there are 20 of them, the Duty view shows **The integration build has not passed on the base for H h M min (N lands)** with the last integration build's outcome (#503).
 The limits are one batch wait of two hours plus an hour for the build, and two batches of ten lands, so a build that is merely due shows nothing.

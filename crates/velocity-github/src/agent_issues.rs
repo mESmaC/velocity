@@ -6,8 +6,11 @@ use std::sync::{Arc, LazyLock, Mutex};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use velocity_core::issue_dependencies::IssueReference;
+use velocity_core::issue_holds::{
+    BLOCKED_UPSTREAM_LABEL, HOLD_LABEL, TRACKING_LABEL, parse_explicit_person_hold,
+    parse_upstream_target, refuse_retired_label, validate_person_hold,
+};
 
-use crate::issue_dependencies::{NEEDS_OWNER_LABEL, refuse_dependency_hold};
 use crate::issues::{BLOCKER_FIELDS, Blocker, ISSUE_FIELDS, IssueNode, relative_blocker_name};
 use crate::repository_client::Connection;
 use crate::velocity_reports::find_matching_open_issue;
@@ -237,14 +240,24 @@ impl IssueClient {
             return Ok(Vec::new());
         }
         let mut available = self.label_identifiers()?;
-        let missing_spec_question = names
-            .iter()
-            .any(|name| name.eq_ignore_ascii_case(SPEC_QUESTION_LABEL))
-            && !available
-                .keys()
-                .any(|label| label.eq_ignore_ascii_case(SPEC_QUESTION_LABEL));
-        if missing_spec_question {
-            self.ensure_repository_label(SPEC_QUESTION_LABEL)?;
+        let auto_labels = [
+            SPEC_QUESTION_LABEL,
+            TRACKING_LABEL,
+            BLOCKED_UPSTREAM_LABEL,
+            HOLD_LABEL,
+        ];
+        let mut ensured = false;
+        for auto in auto_labels {
+            if names.iter().any(|name| name.eq_ignore_ascii_case(auto))
+                && !available
+                    .keys()
+                    .any(|label| label.eq_ignore_ascii_case(auto))
+            {
+                self.ensure_repository_label(auto)?;
+                ensured = true;
+            }
+        }
+        if ensured {
             available = self.label_identifiers()?;
         }
         let mut identifiers = Vec::new();
@@ -327,8 +340,25 @@ fn validate_draft<'a>(
                 "Labels must be nonempty strings".into(),
             ));
         }
-        if trimmed.eq_ignore_ascii_case(NEEDS_OWNER_LABEL) {
-            refuse_dependency_hold(body)?;
+        refuse_retired_label(trimmed).map_err(GitHubCommandError::Invalid)?;
+        if trimmed.eq_ignore_ascii_case(BLOCKED_UPSTREAM_LABEL)
+            && parse_upstream_target(body, None).is_none()
+        {
+            return Err(GitHubCommandError::Invalid(
+                "Label `blocked-upstream` requires an upstream PR or release reference in the body \
+                 (for example `Blocked upstream: owner/repo#123` or `owner/repo@v1.0.0`)."
+                    .into(),
+            ));
+        }
+        if trimmed.eq_ignore_ascii_case(HOLD_LABEL) {
+            let Some(hold) = parse_explicit_person_hold(body) else {
+                return Err(GitHubCommandError::Invalid(
+                    "Label `hold` requires `Hold: <reason>` and `Release when: <action>` lines in the body."
+                        .into(),
+                ));
+            };
+            validate_person_hold(&hold.reason, &hold.release_action)
+                .map_err(GitHubCommandError::Invalid)?;
         }
         labels.push(trimmed.to_owned());
     }

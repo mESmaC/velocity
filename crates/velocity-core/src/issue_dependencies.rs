@@ -26,8 +26,8 @@ const WAITING_WORDS: [&str; 14] = [
     "held until",
     "hold until",
 ];
-/// What `needs-owner` is for (F9): hardware, an upstream release or an owner decision.
-const OWNER_GROUNDS: [&str; 4] = ["hardware", "upstream", "decision", "decide"];
+/// Grounds that go beyond waiting on other project issues (F9, #526).
+const NON_DEPENDENCY_GROUNDS: [&str; 4] = ["hardware", "physical", "upstream", "scope hold"];
 
 /// An issue named in text or tool arguments: `#12` in the repository at hand, or
 /// `owner/name#12` and issue URLs for any repository.
@@ -175,7 +175,7 @@ fn is_repository_character(character: char) -> bool {
 }
 
 /// `owner/name` in GitHub's characters. GitHub itself decides whether it exists.
-fn is_repository(name: &str) -> bool {
+pub(crate) fn is_repository(name: &str) -> bool {
     name.split_once('/').is_some_and(|(owner, name)| {
         let named = |part: &str, allowed: &str| {
             !part.is_empty()
@@ -254,12 +254,14 @@ impl DependencyHold {
     }
 }
 
-/// The issues a `needs-owner` reason waits on when waiting is all it gives (#511): it
-/// names issues beside waiting words and names no hardware, upstream release or owner
-/// decision. Empty for every reason the label is meant for.
+/// The issues a hold reason waits on when waiting is all it gives (#511, #526): it
+/// names issues beside waiting words and names no hardware, upstream release or scope hold.
 pub fn dependency_only_hold(reason: &str) -> Vec<IssueReference> {
     let lowered = reason.to_lowercase();
-    if OWNER_GROUNDS.iter().any(|ground| lowered.contains(ground)) {
+    if NON_DEPENDENCY_GROUNDS
+        .iter()
+        .any(|ground| lowered.contains(ground))
+    {
         return Vec::new();
     }
     let mut blockers = Vec::new();
@@ -281,12 +283,12 @@ pub fn dependency_only_hold(reason: &str) -> Vec<IssueReference> {
     blockers
 }
 
-/// What a filing tool answers when `needs-owner` is asked for `blockers` alone.
+/// What a filing or hold tool answers when a hold is requested for `blockers` alone.
 pub fn dependency_hold_refusal(blockers: &[IssueReference]) -> String {
     format!(
-        "needs-owner is for hardware, an upstream release or an owner decision, and this reason only waits for other issues ({}). \
-         Record them as GitHub dependencies instead: pass them as blocked_by without the needs-owner label, and dispatch starts the issue when they close. \
-         If the owner is needed as well, name the hardware, upstream release or decision in the reason.",
+        "This reason only waits for other issues ({}). \
+         Record them as GitHub dependencies instead: pass them as blocked_by without a hold label, and dispatch starts the issue when they close. \
+         For an upstream PR or release, use blocked-upstream; for hardware or an explicit scope hold, name it in the reason.",
         blocker_list(blockers)
     )
 }

@@ -1,7 +1,8 @@
-//! The bounded review of an issue parked under `no-change` (#506). It needs no staffed
+//! The bounded review of an issue parked under `no-change` (#506, #526). It needs no staffed
 //! review swarm: continuous dispatch starts one light, read-only session per report, which
-//! closes the issue with evidence, returns it to dispatch with retry instructions or moves
-//! it to `needs-owner`. Whatever the session writes is discarded with its Rosen change.
+//! closes the issue with evidence, closes an orphaned spec issue as not planned, returns it
+//! to dispatch with retry instructions, marks it `blocked-upstream`, or records a visible
+//! person hold with its release action. Whatever the session writes is discarded with its Rosen change.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
@@ -310,10 +311,13 @@ fn prompt(request: &ParkedReviewRequest) -> String {
          Check each acceptance criterion against the code in this folder. Then call \
          parked_review_resolve once: already_fixed with verification evidence when the base \
          meets every criterion, return_to_dispatch with concrete instructions for the next \
-         agent when work remains, or needs_owner with the reason when the work needs \
-         hardware, an upstream release or an owner decision. When the issue waits on other \
-         issues, use return_to_dispatch and name them in blocked_by; never hold it with \
-         needs_owner for that. End your turn after resolving.",
+         agent when work remains, blocked_upstream with upstream (e.g. owner/repo#123 or \
+         owner/repo@tag) when waiting on an upstream PR or release, spec_removed with \
+         spec_section and removed_commit when the spec section no longer exists, or hold \
+         with release_action ONLY when physical hardware or an explicit scope hold requires \
+         a person (never for spec defaults per Rule 1). When the issue waits on other \
+         issues, use return_to_dispatch and name them in blocked_by; never hold it with a \
+         label for that. End your turn after resolving.",
         request.repository,
         request.issue,
         velocity_core::text_budget::preview(&request.title, 300),
@@ -325,7 +329,9 @@ fn prompt(request: &ParkedReviewRequest) -> String {
 enum Decision {
     AlreadyFixed,
     ReturnToDispatch,
-    NeedsOwner,
+    BlockedUpstream,
+    SpecRemoved,
+    Hold,
 }
 
 #[derive(Deserialize)]
@@ -333,6 +339,18 @@ enum Decision {
 struct Resolution {
     outcome: Decision,
     evidence: String,
+    /// Upstream PR or release target when `outcome == blocked_upstream` (#526).
+    #[serde(default)]
+    upstream: Option<String>,
+    /// Removed spec section name when `outcome == spec_removed` (#526).
+    #[serde(default)]
+    spec_section: Option<String>,
+    /// Commit SHA that removed the spec section when `outcome == spec_removed` (#526).
+    #[serde(default)]
+    removed_commit: Option<String>,
+    /// Concrete action that releases the hold on the Work view when `outcome == hold` (#526).
+    #[serde(default)]
+    release_action: Option<String>,
     /// The issues this one waits on, linked as GitHub dependencies (#511).
     #[serde(default)]
     blocked_by: Vec<String>,
@@ -393,7 +411,29 @@ impl ParkedReviewServer {
         let outcome = match resolution.outcome {
             Decision::AlreadyFixed => ParkedOutcome::AlreadyFixed,
             Decision::ReturnToDispatch => ParkedOutcome::Returned,
-            Decision::NeedsOwner => ParkedOutcome::NeedsOwner,
+            Decision::BlockedUpstream => {
+                let raw = resolution.upstream.as_deref().unwrap_or_default();
+                let target = velocity_core::issue_holds::UpstreamTarget::parse(raw).ok_or_else(|| {
+                    format!("blocked_upstream requires upstream as owner/repo#123, owner/repo@tag or owner/repo#123 -> release:owner/repo (got {raw:?})")
+                })?;
+                ParkedOutcome::BlockedUpstream { target }
+            }
+            Decision::SpecRemoved => ParkedOutcome::SpecRemoved {
+                spec_section: resolution
+                    .spec_section
+                    .filter(|value| !value.trim().is_empty())
+                    .ok_or("spec_removed requires spec_section")?,
+                removed_commit: resolution
+                    .removed_commit
+                    .filter(|value| !value.trim().is_empty())
+                    .ok_or("spec_removed requires removed_commit")?,
+            },
+            Decision::Hold => ParkedOutcome::Hold {
+                release_action: resolution
+                    .release_action
+                    .filter(|value| !value.trim().is_empty())
+                    .ok_or("hold requires release_action explaining what releases the hold on the Work view")?,
+            },
         };
         let blockers = velocity_core::issue_dependencies::parse_blockers(&resolution.blocked_by)?;
         self.client()?
@@ -429,10 +469,14 @@ impl ToolServer for ParkedReviewServer {
             }),
             json!({
                 "name": "parked_review_resolve",
-                "description": "End the review. already_fixed closes the issue with your verification evidence. return_to_dispatch removes the no-change label and gives the next agent your instructions. needs_owner moves work that needs hardware, an upstream release or an owner decision to the needs-owner label with your reason. When the issue waits on other issues, use return_to_dispatch with blocked_by: they are linked as GitHub issue dependencies and dispatch starts the issue when they close. needs_owner is refused for a reason that only waits on other issues.",
+                "description": "End the review. already_fixed closes the issue with verification evidence. return_to_dispatch removes no-change and gives the next agent instructions (use with blocked_by when waiting on other issues). blocked_upstream records an upstream PR/release checked daily. spec_removed closes an orphaned issue as not planned citing the commit that removed its spec section. hold records a visible Work-view hold with its release_action ONLY for hardware or an explicit scope hold.",
                 "inputSchema": {"type": "object", "properties": {
-                    "outcome": {"type": "string", "enum": ["already_fixed", "return_to_dispatch", "needs_owner"]},
-                    "evidence": {"type": "string", "minLength": 1, "description": "Verification evidence, instructions for the next agent or the reason the owner is needed"},
+                    "outcome": {"type": "string", "enum": ["already_fixed", "return_to_dispatch", "blocked_upstream", "spec_removed", "hold"]},
+                    "evidence": {"type": "string", "minLength": 1, "description": "Verification evidence, instructions for the next agent, or concise hold reason"},
+                    "upstream": {"type": "string", "description": "Required for blocked_upstream: owner/repo#123, owner/repo@tag, or owner/repo#123 -> release:owner2/repo2"},
+                    "spec_section": {"type": "string", "description": "Required for spec_removed: the removed spec section name"},
+                    "removed_commit": {"type": "string", "description": "Required for spec_removed: the commit SHA that removed the spec section"},
+                    "release_action": {"type": "string", "description": "Required for hold: the concrete action that releases the hold on the Work view"},
                     "blocked_by": {"type": "array", "items": {"type": "string"}, "description": "Issues this one waits on, as #12 for this repository or owner/name#12 for another"}
                 }, "required": ["outcome", "evidence"], "additionalProperties": false}
             }),

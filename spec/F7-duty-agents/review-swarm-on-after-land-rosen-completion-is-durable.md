@@ -10,4 +10,4 @@
   Velocity applies issue closure on behalf of the review swarm after a positive review and once the mirror carries the commit (F9, #441).
   A negative source-issue verdict is recorded as soon as it is submitted, keeping the issue open even if the reviewer's fix needs more time to land.
 - A dispatched issue reported as `no-change` gets a bounded review run from continuous dispatch, with or without a staffed swarm (F9, #469, #506).
-  A review swarm agent that checks such an issue against the current base uses `review_swarm_no_change` to record verification and close it, to post retry instructions and release it back to dispatch, or to move it to `needs-owner` with the reason.
+  A review swarm agent that checks such an issue against the current base uses `review_swarm_no_change` to record verification and close it, to close an orphaned spec issue as `not_planned` citing the removing commit, to post retry instructions and release it back to dispatch, to mark `blocked-upstream` with an upstream PR/release target, or to record a visible `hold` with its release action (#526).

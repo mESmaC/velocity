@@ -23,16 +23,25 @@ The review swarm can record dependencies between project issues with `scout_add_
 
 **Dependencies when filing (#511).** An issue that waits on other issues is held by GitHub `blocked_by` links alone, and never by a hold label.
 Every tool that files or updates an issue takes the blockers as `blocked_by`, a list of `#n` for the same repository or `owner/name#n` for another.
-`scout_file`, `issue_create`, `issue_comment`, `issue_needs_owner`, `parked_review_resolve` and `review_swarm_no_change` link them on the issue they write, and `scout_add_blocker` takes `blocker_repository` for a blocker in another repository.
+`scout_file`, `issue_create`, `issue_comment`, `issue_blocked_upstream`, `issue_hold`, `parked_review_resolve` and `review_swarm_no_change` link them on the issue they write, and `scout_add_blocker` takes `blocker_repository` for a blocker in another repository.
 A reported discovery carries its blockers to the filed issue (F14).
 A link that already exists is kept, a blocker that does not exist is refused before `scout_file` runs the reproduction, and the comment names the linked issues.
-The tools refuse `needs-owner` when its reason only waits on other issues: it names issues beside waiting words and names no hardware, upstream release or owner decision.
-The refusal lists those issues and says to pass them as `blocked_by` instead.
+The tools refuse retired skip-only labels (`needs-owner`, `on-hold`, `needs-decision`, `owner-decision`) and refuse `issue_hold` when its reason only waits on other issues, names an upstream PR or release, or asks for an owner decision covered by spec defaults (Rule 1, #526).
+When a hold only waits on other issues, the refusal lists those issues and says to pass them as `blocked_by` instead.
 Dispatch starts a linked issue when its blockers close, with no label change.
 An empty dispatch turn on an issue with open blockers posts its **Ended with no change** comment without the `no-change` label.
 Each issue read also converts any open issue whose body still carries a `Held for dependencies:` line that names issues.
 The conversion links those issues, removes `needs-owner` and rewrites the line to name the links, in that order, so a failure leaves the issue held and each note is converted once.
 At most five notes are converted per read, and a note that cannot be converted is retried hourly.
+
+**Machine-checkable holds and visible person holds (#526).** `needs-owner` and other silent skip-only labels are retired.
+Issues that cannot be dispatched use machine-checkable states that dispatch understands:
+- `tracking`: never dispatched; continuous dispatch closes the issue automatically once every markdown checklist item is checked and no open blockers remain.
+- `blocked-upstream`: records the upstream GitHub PR or release (`owner/repo#n`, `owner/repo@tag`, or `owner/repo#n -> release:owner2/repo2`) it waits for; continuous dispatch checks it daily and removes the label to return the issue to work when it ships.
+- `blocked-by #n`: recorded through GitHub's dependency links (#511).
+An issue whose referenced spec section was removed is closed as `not_planned`, citing the commit that removed the section.
+A hold that genuinely requires a person, such as physical hardware or an explicit scope hold (`hold`, or any legacy retired hold label still on GitHub), shows as one line in the **Holds** group on the project's Work view with its reason, what releases it, and a **Release** action that removes the hold and returns the issue to dispatch.
+It never shows as a prompt and never hides behind a label.
 
 **Dispatch and Accept.** The hover action, `I` and the palette retain single-issue dispatch.
 Dispatch claims the repository-qualified issue atomically, opens the owning thread if one already exists, retains the issue title and launches in its own Rosen workspace.
@@ -77,28 +86,30 @@ Discussion and closure happen asynchronously alongside the Work projection and l
 **Issue tools (#441, #535).** AIRC's `issue_read { issue, offset?, comments? }` reads any issue in the project's mirror repository and returns its title, body (paged with `next_offset` when long), labels, state, `blocked_by` dependencies and recent comments.
 AIRC's `issue_create { title, body, labels?, blocked_by? }` files a new issue on the project's mirror repository with the calling agent's byline and records an `issue` event on the channel.
 Before filing, `issue_create` runs the #471 duplicate check against open issues using the project's code graph when available, returning the matching open issue instead of creating a duplicate.
-It resolves and links `blocked_by` issues as GitHub issue dependencies (#511) and refuses `needs-owner` when the body only waits on other issues.
+It resolves and links `blocked_by` issues as GitHub issue dependencies (#511) and refuses retired skip-only labels (`needs-owner`, `on-hold`, `needs-decision`, `owner-decision`, #526).
 AIRC's `issue_comment { issue, body }` posts on any project issue the calling agent currently holds.
 The comment includes the agent's nick and a link to its saved Velocity thread when it has one.
 Agents comment when starting, when a finding changes the plan and when blocked.
 On Rosen, Velocity posts the land comment with the change ID and commit.
 The author can call `issue_ready_to_close { issue, body }` to post completion evidence and add the `ready-to-close` label.
 The author leaves the issue open for the review swarm or post-land verification (F7).
-An agent whose issue cannot proceed without hardware, an upstream release or an owner decision calls `issue_needs_owner { issue, body }`, which adds the `needs-owner` label with the reason (#506).
+An agent whose issue waits on an upstream PR or release calls `issue_blocked_upstream { issue, upstream, body }`, which adds `blocked-upstream` and records the target checked daily by dispatch (#526).
+An agent whose issue refers to a removed spec section calls `issue_close_not_planned { issue, spec_section, removed_commit, body }`, which closes the issue as `not_planned` citing that commit (#526).
+Only when physical hardware or an explicit scope hold requires a person (never for spec defaults per Rule 1), the agent calls `issue_hold { issue, reason, release_action }`, which records the hold so it shows as one line on Work with its **Release** action (#526).
 An agent whose issue waits on other issues calls `issue_comment { issue, body, blocked_by }` and ends its turn (#511).
 
 **Empty dispatch turns (#469).** Velocity adds the `no-change` label and posts an **Ended with no change** comment with the agent's last message and thread link when an automatically dispatched issue thread ends with an empty Rosen change (F8).
 Velocity retries an undelivered report across restarts and uses the Rosen change ID to avoid duplicate comments.
-An issue already labelled `needs-owner` gets the comment without the `no-change` label (#506).
+An issue already labelled `tracking`, `blocked-upstream` or `hold` (or a retired hold label) gets the comment without the `no-change` label (#506, #526).
 
 **Parked reviews (#506).** An open issue labelled `no-change` leaves review without a staffed review swarm.
 A parked **Check against an overlapping land** whose land shares no code with the issue returns to dispatch within one dispatch pass, with the land's files as evidence.
 Every other report gets one bounded review run: a light, read-only session in a fresh workspace at the current base, one per project at a time and stopped after 20 minutes.
-The session uses `parked_review_read` and `parked_review_resolve` to close the issue with verification evidence, return it to dispatch with retry instructions, or move it to `needs-owner` with the reason.
+The session uses `parked_review_read` and `parked_review_resolve` to close the issue with verification evidence, close an orphaned spec issue as `not_planned` with the removing commit, return it to dispatch with retry instructions, mark it `blocked-upstream` with its upstream target, or record a visible `hold` with its release action (#526).
 Its Rosen change is abandoned with anything the session wrote and is never landed.
 A report still pending two hours after it was posted returns the issue to dispatch with a note.
-Work that needs hardware, an upstream release or an owner decision takes `needs-owner` with the reason and never stays `no-change`.
-A person or review swarm agent can also close a parked issue after verifying the current base, post retry instructions and remove the label, or move it to `needs-owner`.
+Work waiting on an upstream PR/release, an orphaned spec section, or physical hardware/scope hold takes its machine-checkable state or visible hold and never stays `no-change`.
+A person or review swarm agent can also close a parked issue after verifying the current base, close an orphaned spec issue as `not_planned`, post retry instructions and remove the label, mark `blocked-upstream`, or record a visible `hold`.
 A paused dispatch starts no bounded review; the evidence check and the two-hour limit still apply while the project has dispatch slots.
 
 **Git projects.** The existing Issues panel and dispatch apply while git project mode is supported.

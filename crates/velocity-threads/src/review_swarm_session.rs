@@ -458,7 +458,7 @@ fn prompt(launch: &SwarmLaunch, roster: &ScoutRoster, instruction: Option<&str>)
     let no_change = "Use review_swarm_no_change to list the issues waiting after an empty turn. \
         Read their discussion, following the GitHub link for any clipped evidence, and verify their acceptance criteria against the current base. \
         Resolve an already-fixed issue with verification evidence or requeue it with concrete instructions. \
-        When the work needs hardware, an upstream release or an owner decision, resolve it with needs_owner and the reason.";
+        Resolve an already-fixed issue with verification evidence, close an orphaned spec issue as not planned with spec_section and removed_commit, mark an upstream wait with blocked_upstream, requeue with concrete instructions (and blocked_by for other issues), or place a visible hold with hold_release_action ONLY for hardware or an explicit scope hold.";
     if launch.no_change_only {
         return format!(
             "You are {}, a Review swarm duty agent. {no_change} {dependencies}\n\n\
