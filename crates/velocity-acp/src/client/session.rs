@@ -59,6 +59,8 @@ pub struct SessionSetup {
     pub handoff_context: Option<String>,
     /// Queued commands persisted from before a Velocity restart (#516).
     pub restored_runs: Vec<velocity_core::queued_runs::QueuedRunRecord>,
+    /// Recent finished queued runs persisted on this thread for `run_status` and restart recovery (#536).
+    pub run_history: Vec<velocity_core::queued_runs::QueuedRunRecord>,
 }
 
 /// How a parked thread's agent picks up where it stopped: `session/load` of its earlier
@@ -113,6 +115,7 @@ impl SessionSetup {
             handoff: None,
             handoff_context: None,
             restored_runs: Vec::new(),
+            run_history: Vec::new(),
         }
     }
 

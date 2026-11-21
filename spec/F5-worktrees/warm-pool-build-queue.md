@@ -15,11 +15,12 @@
   Warm pool prepares install UI dependencies and fetch the Lean cache.
   Integration builds use Rosen's `verify` class and wait for a memory-budgeted turn.
   The shared ACP client supplies the same command policy on launch and resume.
-  `queue_run` takes an executable, separate arguments, an optional working directory and a Rosen class.
+  `queue_run` takes an executable, separate arguments, an optional working directory and a Rosen class, and returns a durable run ID, queue position and estimated wait (#536).
   Velocity starts it when the provider ends its turn, keeps the full output outside the workspace, and delivers the result and log path in the next prompt.
+  `velocity-run` also exposes `run_status` (reporting a run's phase, queueing reason, checked Rosen change and head, exit status, log excerpt and log path, or listing recent runs to recover missed results) and `run_cancel` (cancelling a pending or running command by run ID) (#536).
   Explicitly stopping the session cancels its queued commands.
-  Outstanding queued runs (command, working folder and class) are persisted on their owning thread in `state.json` (#516).
-  After a Velocity restart, Velocity starts those persisted runs again and delivers their results to the thread; if starting any of them is impossible, Velocity prompts the thread naming the lost runs and asking it to queue them again.
+  Outstanding queued runs (durable ID, command, working folder, class, last phase, queue reason, log path, and checked change/head) and recent finished run history are persisted on their owning thread in `state.json` (#516, #536).
+  After a Velocity restart, Velocity requeues interrupted runs and delivers a restart notice listing each interrupted run's ID, command, last phase and log path together with any results recorded before shutdown (or stating explicitly when there were none); if starting any interrupted run is impossible, the notice names the lost runs and the reason (#516, #536).
   A queued run that times out waiting for a run-queue turn (after 20 minutes) is reported to the thread with the wait reason, current queue line and memory readings, and is never silently retried.
   The managed foreground `rosen run` command applies the same Rust policy when the MCP tool is unavailable.
   New turns wait until their memory budget fits above Rosen's machine-wide reserve, which defaults to 4 GiB (#484).

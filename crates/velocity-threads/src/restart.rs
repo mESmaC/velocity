@@ -10,8 +10,9 @@ use velocity_store::{AgentActivity, PersistedState, ThreadItem, ThreadState};
 
 use crate::ThreadKey;
 
-/// The first message of a session resumed because Velocity closed during its turn.
-pub const CONTINUE_PROMPT: &str = "Velocity was closed while you were working and has started again. Your worktree, claims and transcript are kept, but any command that was running then was stopped: run it again if you still need its result. Continue where you left off.";
+/// The first message of a session resumed because Velocity closed during its turn
+/// with no interrupted `queue_run` commands or pre-shutdown queued run results.
+pub const CONTINUE_PROMPT: &str = "Velocity was closed while you were working and has started again. Your worktree, claims and transcript are kept.\n\nInterrupted queued runs: none.\nResults recorded before shutdown: none.\n\nAny direct shell command that was running in a terminal was stopped: run it again if you still need its result. Continue where you left off.";
 
 /// The threads whose turn the last exit cut off, in saved order. Read the saved state
 /// before `StateStore::reset_disconnected_threads`, which sets every one of them to idle.
@@ -48,6 +49,7 @@ pub fn turn_interrupted(thread: &ThreadItem) -> bool {
         && thread.worktree_path.is_some()
         && (thread.startup_recovery_pending
             || !thread.queued_runs.is_empty()
+            || thread.queued_run_history.iter().any(|run| !run.delivered)
             || velocity_store::handoff::note_for(thread).is_some_and(|note| {
                 note.pending
                     && thread.activity != AgentActivity::Parked
@@ -93,13 +95,14 @@ fn startup_recovery_survives_reset_and_another_restart() -> Result<(), Box<dyn s
     Ok(())
 }
 
-// Risk (#516): outstanding queued runs persisted on a thread must survive save and load,
-// prevent empty-dispatch cleanup, and schedule startup recovery even when activity is idle.
+// Risk (#516, #536): outstanding queued runs and undelivered finished run history persisted
+// on a thread must survive save and load, prevent empty-dispatch cleanup, and schedule
+// startup recovery even when activity is idle.
 #[cfg(test)]
 #[test]
 fn persisted_queued_runs_survive_save_load_and_trigger_recovery()
 -> Result<(), Box<dyn std::error::Error>> {
-    use velocity_core::queued_runs::{QueuedRunClass, QueuedRunRecord};
+    use velocity_core::queued_runs::{QueuedRunClass, QueuedRunPhase, QueuedRunRecord};
 
     let directory =
         std::env::temp_dir().join(format!("velocity-516-queued-runs-{}", uuid::Uuid::new_v4()));
@@ -110,13 +113,32 @@ fn persisted_queued_runs_survive_save_load_and_trigger_recovery()
     thread.agent_session = Some("earlier-session".into());
     thread.worktree_path = Some("checkout".into());
     thread.activity = AgentActivity::Idle;
-    thread.queued_runs.push(QueuedRunRecord::new(
+    let mut active = QueuedRunRecord::new(
         "velocity-run-1".into(),
         "npm".into(),
         vec!["run".into(), "check".into()],
         Some("ui".into()),
         QueuedRunClass::Build,
-    ));
+    );
+    active.phase = QueuedRunPhase::Running;
+    active.log = Some("C:\\temp\\velocity-run-1.log".into());
+    active.change = Some("wxlxzpzqlpnpnxmnxpxlnqtxmuklrqnx".into());
+    active.head = Some("1ca3b10cd328543acbf63844e282ad14d50dbdbc".into());
+    thread.queued_runs.push(active);
+    let mut finished = QueuedRunRecord::new(
+        "velocity-run-0".into(),
+        "cargo".into(),
+        vec!["check".into(), "-p".into(), "velocity-core".into()],
+        None,
+        QueuedRunClass::Build,
+    );
+    finished.phase = QueuedRunPhase::Completed;
+    finished.exit_code = Some(0);
+    finished.exit_status = Some("exit code 0".into());
+    finished.log = Some("C:\\temp\\velocity-run-0.log".into());
+    finished.result = Some("[Velocity] Passed · rosen run -- cargo check -p velocity-core".into());
+    finished.delivered = false;
+    thread.queued_run_history.push(finished);
     project.threads.push(thread);
     state.projects.push(project);
     std::fs::write(directory.join("state.json"), serde_json::to_vec(&state)?)?;
@@ -132,8 +154,40 @@ fn persisted_queued_runs_survive_save_load_and_trigger_recovery()
     assert_eq!(saved.queued_runs.len(), 1);
     assert_eq!(saved.queued_runs[0].program, "npm");
     assert_eq!(saved.queued_runs[0].directory.as_deref(), Some("ui"));
+    assert_eq!(saved.queued_runs[0].phase, QueuedRunPhase::Running);
+    assert_eq!(
+        saved.queued_runs[0].log.as_deref(),
+        Some("C:\\temp\\velocity-run-1.log")
+    );
+    assert_eq!(
+        saved.queued_runs[0].change.as_deref(),
+        Some("wxlxzpzqlpnpnxmnxpxlnqtxmuklrqnx")
+    );
+    assert_eq!(saved.queued_run_history.len(), 1);
+    assert_eq!(saved.queued_run_history[0].id, "velocity-run-0");
+    assert_eq!(saved.queued_run_history[0].exit_code, Some(0));
+    assert!(!saved.queued_run_history[0].delivered);
     assert!(!velocity_store::continuous_dispatch::can_finish_empty_dispatch(saved));
     std::fs::remove_dir_all(directory)?;
+    Ok(())
+}
+
+// Risk (#536): older state.json files store QueuedRunRecord without phase/log/change/head/result
+// fields and must still deserialize cleanly after upgrade.
+#[cfg(test)]
+#[test]
+fn older_queued_run_record_deserializes_with_defaults() -> Result<(), Box<dyn std::error::Error>> {
+    use velocity_core::queued_runs::{QueuedRunPhase, QueuedRunRecord};
+
+    let raw = r#"{"id":"velocity-run-1","program":"cargo","arguments":["check","-p","demo"],"class":"build"}"#;
+    let record: QueuedRunRecord = serde_json::from_str(raw)?;
+    assert_eq!(record.id, "velocity-run-1");
+    assert_eq!(record.phase, QueuedRunPhase::Queued);
+    assert_eq!(record.log, None);
+    assert_eq!(record.change, None);
+    assert_eq!(record.head, None);
+    assert_eq!(record.exit_status, None);
+    assert!(!record.delivered);
     Ok(())
 }
 

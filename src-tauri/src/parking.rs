@@ -221,6 +221,7 @@ fn start_session(application: &AppHandle, key: ThreadKey, opening: Opening) -> R
     crate::airc_claims::attach(application, key, &setup, &thread.branch_name)?;
     reset_supervision(application, key, &thread)?;
     setup.pause_on_subscription_limit = true;
+    setup.run_history = thread.queued_run_history.clone();
     let inputs = resume_inputs(application, key, path, opening, &thread, &mut setup)?;
     crate::threads::save_activity(application, key, AgentActivity::Thinking, None)?;
     crate::threads::refresh(application, key, false)?;

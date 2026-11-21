@@ -47,7 +47,9 @@ impl Heartbeat {
                     event,
                     AgentEvent::TurnEnded(_)
                         | AgentEvent::QueuedRunAdded(_)
-                        | AgentEvent::QueuedRunFinished { .. }
+                        | AgentEvent::QueuedRunUpdated(_)
+                        | AgentEvent::QueuedRunFinished(_)
+                        | AgentEvent::QueuedRunsDelivered { .. }
                 )
             })
             || (active && self.nudged);
@@ -78,7 +80,8 @@ fn is_substantive_work(event: &AgentEvent) -> bool {
         event,
         AgentEvent::FileWritten { .. }
             | AgentEvent::QueuedRunAdded(_)
-            | AgentEvent::QueuedRunFinished { .. }
+            | AgentEvent::QueuedRunUpdated(_)
+            | AgentEvent::QueuedRunFinished(_)
             | AgentEvent::Transcript {
                 update: SessionUpdate::ToolCall(_),
                 ..
@@ -103,11 +106,11 @@ pub fn observe(thread: &mut ThreadItem, event: &AgentEvent, now: u64) {
         checkpoint.nudged = false;
     }
     match event {
-        AgentEvent::QueuedRunAdded(record) => {
+        AgentEvent::QueuedRunAdded(record) | AgentEvent::QueuedRunUpdated(record) => {
             checkpoint.last_wait = Some(format!("queued run: {}", record.title()));
             checkpoint.idle_nudged = false;
         }
-        AgentEvent::QueuedRunFinished { .. } => {
+        AgentEvent::QueuedRunFinished(_) | AgentEvent::QueuedRunsDelivered { .. } => {
             checkpoint.idle_nudged = false;
         }
         AgentEvent::Transcript {
@@ -217,6 +220,7 @@ fn idle_working_due(
         && !checkpoint.released
         && !checkpoint.idle_nudged
         && thread.queued_runs.is_empty()
+        && !thread.queued_run_history.iter().any(|run| !run.delivered)
         && !queued_build
         && !turn_in_progress
         && since > 0

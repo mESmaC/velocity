@@ -482,15 +482,31 @@ fn policy_arguments(arguments: &[OsString]) -> Vec<String> {
 pub(crate) fn try_light_slot() -> io::Result<Option<File>> {
     let folder = std::env::temp_dir();
     for slot in 0..LIGHT_SLOTS {
-        let name = match slot {
-            0 => "velocity-agent-rust-check.lock".to_owned(),
-            _ => format!("velocity-agent-rust-check-{slot}.lock"),
-        };
+        let name = light_slot_name(slot);
         if let Some(file) = try_lock_file(&folder.join(name))? {
             return Ok(Some(file));
         }
     }
     Ok(None)
+}
+
+/// Counts how many machine-wide light Rust slots are currently held without blocking.
+pub(crate) fn busy_light_slots() -> usize {
+    let folder = std::env::temp_dir();
+    let mut busy = 0;
+    for slot in 0..LIGHT_SLOTS {
+        if matches!(try_lock_file(&folder.join(light_slot_name(slot))), Ok(None)) {
+            busy += 1;
+        }
+    }
+    busy
+}
+
+fn light_slot_name(slot: usize) -> String {
+    match slot {
+        0 => "velocity-agent-rust-check.lock".to_owned(),
+        _ => format!("velocity-agent-rust-check-{slot}.lock"),
+    }
 }
 
 /// Takes the first free machine-wide light slot, waiting while all are taken. Slot 0

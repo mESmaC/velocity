@@ -63,7 +63,7 @@ async fn attempt_resume(
 ) -> Result<Result<(), String>, String> {
     let application = application.clone();
     let result = tauri::async_runtime::spawn_blocking(move || {
-        let queued_runs = lock(
+        let (queued_runs, has_undelivered_results) = lock(
             application
                 .state::<crate::state::ManagedStateStore>()
                 .inner(),
@@ -71,9 +71,14 @@ async fn attempt_resume(
         )?
         .project(key.0)
         .and_then(|project| project.threads.iter().find(|thread| thread.id == key.1))
-        .map(|thread| thread.queued_runs.clone())
+        .map(|thread| {
+            (
+                thread.queued_runs.clone(),
+                thread.queued_run_history.iter().any(|run| !run.delivered),
+            )
+        })
         .unwrap_or_default();
-        if queued_runs.is_empty() {
+        if queued_runs.is_empty() && !has_undelivered_results {
             crate::parking::resume(&application, key, CONTINUE_PROMPT)
         } else {
             crate::parking::resume_restored_runs(&application, key, queued_runs)

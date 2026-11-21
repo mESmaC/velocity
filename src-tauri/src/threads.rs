@@ -1614,7 +1614,8 @@ fn save_agent_session(
     .map_err(|error| error.to_string())
 }
 
-/// Persists outstanding `queue_run` commands so a Velocity restart can replay or report them (#516).
+/// Persists outstanding `queue_run` commands, phase transitions, and finished run history
+/// so a Velocity restart can replay or report them and `run_status` can recover results (#516, #536).
 fn save_queued_runs(
     application: &AppHandle,
     key: ThreadKey,
@@ -1623,7 +1624,10 @@ fn save_queued_runs(
     let has_run_event = batch.iter().any(|event| {
         matches!(
             event,
-            AgentEvent::QueuedRunAdded(_) | AgentEvent::QueuedRunFinished { .. }
+            AgentEvent::QueuedRunAdded(_)
+                | AgentEvent::QueuedRunUpdated(_)
+                | AgentEvent::QueuedRunFinished(_)
+                | AgentEvent::QueuedRunsDelivered { .. }
         )
     });
     if !has_run_event {
@@ -1636,17 +1640,39 @@ fn save_queued_runs(
     .update_thread(key.0, key.1, |thread| {
         for event in batch {
             match event {
-                AgentEvent::QueuedRunAdded(record) => {
-                    if !thread
+                AgentEvent::QueuedRunAdded(record) | AgentEvent::QueuedRunUpdated(record) => {
+                    if let Some(existing) = thread
                         .queued_runs
-                        .iter()
-                        .any(|existing| existing.id == record.id)
+                        .iter_mut()
+                        .find(|existing| existing.id == record.id)
                     {
+                        *existing = record.clone();
+                    } else if matches!(event, AgentEvent::QueuedRunAdded(_)) {
                         thread.queued_runs.push(record.clone());
                     }
                 }
-                AgentEvent::QueuedRunFinished { id } => {
-                    thread.queued_runs.retain(|existing| existing.id != *id);
+                AgentEvent::QueuedRunFinished(record) => {
+                    thread
+                        .queued_runs
+                        .retain(|existing| existing.id != record.id);
+                    thread
+                        .queued_run_history
+                        .retain(|existing| existing.id != record.id);
+                    thread.queued_run_history.push(record.clone());
+                    let excess = thread
+                        .queued_run_history
+                        .len()
+                        .saturating_sub(velocity_core::queued_runs::MAX_RUN_HISTORY);
+                    if excess > 0 {
+                        thread.queued_run_history.drain(..excess);
+                    }
+                }
+                AgentEvent::QueuedRunsDelivered { ids } => {
+                    for record in &mut thread.queued_run_history {
+                        if ids.iter().any(|id| id == &record.id) {
+                            record.delivered = true;
+                        }
+                    }
                 }
                 _ => {}
             }

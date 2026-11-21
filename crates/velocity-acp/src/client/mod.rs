@@ -80,7 +80,8 @@ pub use program_path::program_found;
 pub use queued_run_command::is_queued_run_notice;
 pub use queued_run_tool::{
     QUEUED_RUN_PORT_ENV, QUEUED_RUN_SERVER, QUEUED_RUN_SWITCH, QUEUED_RUN_TOKEN_ENV,
-    QUEUED_RUN_TOOL, queued_run_tool, request_queued_run,
+    QUEUED_RUN_TOOL, RUN_CANCEL_TOOL, RUN_STATUS_TOOL, queued_run_tool, request_queued_run,
+    request_run_cancel, request_run_status, run_cancel_tool, run_status_tool,
 };
 pub use queued_runs::enable_queued_runs;
 pub use session::{
@@ -175,8 +176,12 @@ pub enum AgentEvent {
     FileWritten { path: PathBuf },
     /// A `queue_run` command was accepted and is waiting to run or running (#516).
     QueuedRunAdded(velocity_core::queued_runs::QueuedRunRecord),
-    /// A `queue_run` command finished (completed, failed, timed out, or could not restart) (#516).
-    QueuedRunFinished { id: String },
+    /// A `queue_run` command changed phase, queue reason, log path, or checked head (#536).
+    QueuedRunUpdated(velocity_core::queued_runs::QueuedRunRecord),
+    /// A `queue_run` command finished (completed, failed, timed out, cancelled, or could not restart) (#516, #536).
+    QueuedRunFinished(velocity_core::queued_runs::QueuedRunRecord),
+    /// Finished `queue_run` results were delivered to the agent in a prompt (#536).
+    QueuedRunsDelivered { ids: Vec<String> },
     /// A session diagnostic from the agent's stderr or the ACP client.
     Log(String),
 }
@@ -401,29 +406,36 @@ async fn run_admitted_session(
     // Meter availability must never prevent starting an agent.
     let _ = live_limits::prepare(&mut launch).await;
     let restored = std::mem::take(&mut setup.restored_runs);
-    let (mut queue, results) = match RunQueue::start(&mut setup, &launch, restored.clone()).await {
-        Ok(Some((queue, results))) => (Some(queue), results),
-        unavailable => {
-            let reason = unavailable.as_ref().err().map(ToString::to_string);
-            if let Some(error) = &reason {
-                let _ = events.send(AgentEvent::Log(format!(
-                    "Could not start the queued run tool: {error}"
-                )));
+    let run_history = std::mem::take(&mut setup.run_history);
+    let (mut queue, results) =
+        match RunQueue::start(&mut setup, &launch, restored.clone(), run_history.clone()).await {
+            Ok(Some((queue, results))) => (Some(queue), results),
+            unavailable => {
+                let reason = unavailable.as_ref().err().map(ToString::to_string);
+                if let Some(error) = &reason {
+                    let _ = events.send(AgentEvent::Log(format!(
+                        "Could not start the queued run tool: {error}"
+                    )));
+                }
+                setup.preface = run_queue::preface(&launch, setup.preface.take());
+                let mut results = RunResults::default();
+                let pre_shutdown_results: Vec<_> = run_history
+                    .into_iter()
+                    .filter(|record| !record.delivered)
+                    .collect();
+                if !restored.is_empty() || !pre_shutdown_results.is_empty() {
+                    results.record_lost_runs(
+                        &restored,
+                        &pre_shutdown_results,
+                        reason
+                            .as_deref()
+                            .unwrap_or("the queued run tool is unavailable"),
+                        &events,
+                    );
+                }
+                (None, results)
             }
-            setup.preface = run_queue::preface(&launch, setup.preface.take());
-            let mut results = RunResults::default();
-            if !restored.is_empty() {
-                results.record_lost_runs(
-                    &restored,
-                    reason
-                        .as_deref()
-                        .unwrap_or("the queued run tool is unavailable"),
-                    &events,
-                );
-            }
-            (None, results)
-        }
-    };
+        };
     // Velocity's own servers come first in the setup, so a clash keeps them (session_servers).
     setup
         .shared_servers
@@ -792,6 +804,7 @@ impl Turn<'_> {
                         // Keep the logical turn open so duty runners do not stop or nudge
                         // the session while the provider has no prompt in flight.
                         runs.waiting = true;
+                        runs.deferred_outcome = Some(outcome);
                         runs.release();
                         if !runs.outstanding() {
                             self.continue_after_runs(&mut steering, &mut runs, &mut held_inputs)?;
@@ -824,10 +837,28 @@ impl Turn<'_> {
         held_inputs: &mut Vec<Vec<ContentBlock>>,
     ) -> Result<(), agent_client_protocol::Error> {
         runs.waiting = false;
-        if std::mem::take(&mut runs.restored_notice) {
-            runs.ready.push(ContentBlock::from(
-                velocity_core::queued_runs::RESTARTED_RUNS_NOTICE,
-            ));
+        let deferred_outcome = runs.deferred_outcome.take();
+        if let Some(notice) = runs.take_restart_notice() {
+            runs.ready.push(notice);
+        }
+        let delivered = runs.take_delivered_ids();
+        if !delivered.is_empty() {
+            self.shared
+                .emit(AgentEvent::QueuedRunsDelivered { ids: delivered });
+        }
+        if runs.ready.is_empty() {
+            if let Some(outcome) = deferred_outcome {
+                self.shared.emit(AgentEvent::TurnEnded(outcome));
+                self.coordination.turn_ended();
+                let effect = steering.step(SteeringInput::TurnEnded);
+                self.apply(effect)?;
+            }
+            let combined: Vec<ContentBlock> = held_inputs.drain(..).flatten().collect();
+            if !combined.is_empty() {
+                let effect = steering.step(SteeringInput::Send(combined));
+                self.apply(effect)?;
+            }
+            return Ok(());
         }
         for block in &runs.ready {
             self.shared

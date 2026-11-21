@@ -773,6 +773,10 @@ pub struct ThreadItem {
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     #[specta(skip)]
     pub queued_runs: Vec<velocity_core::queued_runs::QueuedRunRecord>,
+    /// Recent finished `queue_run` commands kept for `run_status` lookup and restart result recovery (#536).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    #[specta(skip)]
+    pub queued_run_history: Vec<velocity_core::queued_runs::QueuedRunRecord>,
     #[serde(default)]
     pub supervision: agent_activity::Supervision,
     pub id: u32,
@@ -934,6 +938,7 @@ impl ThreadItem {
             no_change_reason: None,
             startup_recovery_pending: false,
             queued_runs: Vec::new(),
+            queued_run_history: Vec::new(),
             started_by_dispatch: false,
             previous_work_thread: None,
             supervision: Default::default(),
@@ -994,6 +999,7 @@ impl ThreadItem {
             no_change_reason: None,
             startup_recovery_pending: false,
             queued_runs: Vec::new(),
+            queued_run_history: Vec::new(),
             started_by_dispatch: false,
             previous_work_thread: None,
             supervision: Default::default(),

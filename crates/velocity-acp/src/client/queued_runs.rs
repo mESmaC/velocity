@@ -4,24 +4,31 @@ use std::future::pending;
 use std::io;
 use std::net::Ipv4Addr;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicUsize, Ordering};
-use std::sync::{Arc, OnceLock};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use std::sync::{Arc, Mutex, OnceLock, PoisonError};
 
 use agent_client_protocol::v1::schema::{
-    ContentBlock, EnvVariable, McpServer, McpServerStdio, SessionUpdate,
+    ContentBlock, EnvVariable, McpServer, McpServerStdio, SessionUpdate, StopReason,
 };
+use serde_json::{Value, json};
 use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
 use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender, unbounded_channel};
 use tokio::sync::watch;
 use tokio::task::{JoinHandle, JoinSet};
 use tokio_util::sync::CancellationToken;
-use velocity_core::queued_runs::{QueuedRunRecord, lost_runs_prompt};
+use velocity_core::queued_runs::{
+    MAX_RUN_HISTORY, QueuedRunPhase, QueuedRunRecord, continue_after_restart_prompt,
+    lost_runs_prompt, lost_runs_prompt_with_results, restarted_runs_notice,
+};
+use velocity_rosen::agent_run::AgentRun;
+use velocity_rosen::queued_turn::{QUEUE_ENV, QueueEstimate, estimate};
 
 use super::preflight_run::PreflightRun;
-use super::queued_run_command::{QueuedRun, RunResult, resolve_directory};
+use super::queued_run_command::{QueuedRun, RunResult, read_log_excerpt, resolve_directory};
 use super::queued_run_tool::{
-    self, Accepted, REQUEST_BYTES, REQUEST_TIMEOUT, Request, RunCommand, Work,
+    self, Accepted, QueuedRunAccepted, REQUEST_BYTES, REQUEST_TIMEOUT, Request, RunCancelRequest,
+    RunCommand, RunStatusRequest, Work,
 };
 use super::workflow_run_tool::WorkflowRequest;
 use super::workflow_runs::WorkflowRun;
@@ -44,6 +51,7 @@ impl RunQueue {
         setup: &mut SessionSetup,
         launch: &AgentLaunch,
         restored: Vec<QueuedRunRecord>,
+        history: Vec<QueuedRunRecord>,
     ) -> io::Result<Option<(Self, RunResults)>> {
         let Some(executable) = EXECUTABLE.get() else {
             return Ok(None);
@@ -59,6 +67,7 @@ impl RunQueue {
         let (released, turn_ended) = watch::channel(());
         let stop = CancellationToken::new();
         let outstanding = Arc::new(AtomicUsize::new(0));
+        let registry = Arc::new(Mutex::new(RunRegistry::from_history(&history)));
         let host = QueueHost {
             token,
             rosen: rosen.program,
@@ -68,15 +77,17 @@ impl RunQueue {
             events,
             outstanding: Arc::clone(&outstanding),
             turn_ended,
+            registry: Arc::clone(&registry),
         };
         let mut initial_runs = JoinSet::new();
         let mut results = RunResults {
             outstanding,
             receiver: Some(receiver),
             released: Some(released),
+            registry: Some(registry),
             ..RunResults::default()
         };
-        host.start_restored(restored, &mut initial_runs, &mut results);
+        host.start_restored(restored, history, &mut initial_runs, &mut results);
         let worker = tokio::spawn(host.serve(listener, initial_runs));
         Ok(Some((Self { stop, worker }, results)))
     }
@@ -126,9 +137,15 @@ impl Drop for RunQueue {
 
 pub(super) enum QueueEvent {
     Added(QueuedRunRecord),
+    Updated(QueuedRunRecord),
     Started(Box<SessionUpdate>),
     Finished(RunResult),
-    Cleared(String),
+    Cleared(QueuedRunRecord),
+}
+
+pub(super) struct RestartNotice {
+    pub interrupted: Vec<QueuedRunRecord>,
+    pub pre_shutdown_results: Vec<QueuedRunRecord>,
 }
 
 #[derive(Default)]
@@ -136,8 +153,11 @@ pub(super) struct RunResults {
     outstanding: Arc<AtomicUsize>,
     receiver: Option<UnboundedReceiver<QueueEvent>>,
     released: Option<watch::Sender<()>>,
+    registry: Option<Arc<Mutex<RunRegistry>>>,
     pub waiting: bool,
-    pub restored_notice: bool,
+    pub restart_notice: Option<RestartNotice>,
+    pub deferred_outcome: Option<Result<StopReason, String>>,
+    delivered_ids: Vec<String>,
     pub ready: Vec<ContentBlock>,
 }
 
@@ -165,15 +185,37 @@ impl RunResults {
     pub fn record_lost_runs(
         &mut self,
         runs: &[QueuedRunRecord],
+        pre_shutdown_results: &[QueuedRunRecord],
         reason: &str,
         events: &UnboundedSender<AgentEvent>,
     ) {
         for run in runs {
-            let _ = events.send(AgentEvent::QueuedRunFinished { id: run.id.clone() });
+            let mut failed = run.clone();
+            failed.phase = QueuedRunPhase::Failed;
+            failed.queue_reason = None;
+            failed.exit_status = Some(format!("could not restart: {reason}"));
+            failed.delivered = true;
+            let _ = events.send(AgentEvent::QueuedRunFinished(failed));
         }
-        self.ready
-            .push(ContentBlock::from(lost_runs_prompt(runs, Some(reason))));
-        self.waiting = true;
+        for result in pre_shutdown_results {
+            self.push_delivered_id(&result.id);
+        }
+        if !runs.is_empty() {
+            self.ready
+                .push(ContentBlock::from(lost_runs_prompt_with_results(
+                    runs,
+                    pre_shutdown_results,
+                    Some(reason),
+                )));
+            self.waiting = true;
+        } else if !pre_shutdown_results.is_empty() {
+            self.ready
+                .push(ContentBlock::from(continue_after_restart_prompt(
+                    &[],
+                    pre_shutdown_results,
+                )));
+            self.waiting = true;
+        }
     }
 
     pub fn record(&mut self, event: Option<QueueEvent>, shared: &Shared) {
@@ -181,18 +223,26 @@ impl RunResults {
             Some(QueueEvent::Added(record)) => {
                 shared.emit(AgentEvent::QueuedRunAdded(record));
             }
-            Some(QueueEvent::Cleared(id)) => {
-                shared.emit(AgentEvent::QueuedRunFinished { id });
+            Some(QueueEvent::Updated(record)) => {
+                shared.emit(AgentEvent::QueuedRunUpdated(record));
+            }
+            Some(QueueEvent::Cleared(record)) => {
+                shared.emit(AgentEvent::QueuedRunFinished(record));
             }
             Some(QueueEvent::Started(update)) => shared.record(*update),
             Some(QueueEvent::Finished(result)) => {
-                if let Some(id) = result.persisted_id() {
-                    shared.emit(AgentEvent::QueuedRunFinished { id: id.to_owned() });
+                if let Some(record) = result.record() {
+                    if result.deliver_prompt() {
+                        self.push_delivered_id(&record.id);
+                    }
+                    shared.emit(AgentEvent::QueuedRunFinished(record.clone()));
                 }
                 self.outstanding.fetch_sub(1, Ordering::AcqRel);
-                let (update, message) = result.into_update();
+                let (update, message, deliver_prompt) = result.into_update();
                 shared.record(update);
-                self.ready.push(message);
+                if deliver_prompt {
+                    self.ready.push(message);
+                }
             }
             None => {
                 self.receiver = None;
@@ -205,6 +255,27 @@ impl RunResults {
         }
     }
 
+    pub fn take_restart_notice(&mut self) -> Option<ContentBlock> {
+        let notice = self.restart_notice.take()?;
+        Some(ContentBlock::from(restarted_runs_notice(
+            &notice.interrupted,
+            &notice.pre_shutdown_results,
+        )))
+    }
+
+    pub fn take_delivered_ids(&mut self) -> Vec<String> {
+        let ids = std::mem::take(&mut self.delivered_ids);
+        if !ids.is_empty()
+            && let Some(registry) = &self.registry
+        {
+            registry
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .mark_delivered(&ids);
+        }
+        ids
+    }
+
     pub fn outstanding(&self) -> bool {
         self.outstanding.load(Ordering::Acquire) != 0
     }
@@ -213,6 +284,236 @@ impl RunResults {
         if let Some(released) = &self.released {
             let _ = released.send(());
         }
+    }
+
+    fn push_delivered_id(&mut self, id: &str) {
+        if !self.delivered_ids.iter().any(|existing| existing == id) {
+            self.delivered_ids.push(id.to_owned());
+        }
+    }
+}
+
+struct TrackedRun {
+    record: QueuedRunRecord,
+    policy: Option<AgentRun>,
+    cancel: Option<CancellationToken>,
+    cancelled_by_user: Arc<AtomicBool>,
+}
+
+pub(super) struct RunRegistry {
+    runs: Vec<TrackedRun>,
+}
+
+impl RunRegistry {
+    fn from_history(history: &[QueuedRunRecord]) -> Self {
+        let runs = history
+            .iter()
+            .cloned()
+            .map(|record| TrackedRun {
+                record,
+                policy: None,
+                cancel: None,
+                cancelled_by_user: Arc::new(AtomicBool::new(false)),
+            })
+            .collect();
+        Self { runs }
+    }
+
+    fn register_active(
+        &mut self,
+        record: QueuedRunRecord,
+        policy: AgentRun,
+        cancel: CancellationToken,
+    ) -> Arc<AtomicBool> {
+        let cancelled_by_user = Arc::new(AtomicBool::new(false));
+        if let Some(existing) = self.runs.iter_mut().find(|run| run.record.id == record.id) {
+            existing.record = record;
+            existing.policy = Some(policy);
+            existing.cancel = Some(cancel);
+            existing.cancelled_by_user = Arc::clone(&cancelled_by_user);
+        } else {
+            self.runs.push(TrackedRun {
+                record,
+                policy: Some(policy),
+                cancel: Some(cancel),
+                cancelled_by_user: Arc::clone(&cancelled_by_user),
+            });
+        }
+        cancelled_by_user
+    }
+
+    fn update_record(
+        &mut self,
+        run_id: &str,
+        mutate: impl FnOnce(&mut QueuedRunRecord),
+    ) -> Option<QueuedRunRecord> {
+        let entry = self.runs.iter_mut().find(|run| run.record.id == run_id)?;
+        mutate(&mut entry.record);
+        Some(entry.record.clone())
+    }
+
+    fn finish(&mut self, record: QueuedRunRecord) {
+        if let Some(existing) = self.runs.iter_mut().find(|run| run.record.id == record.id) {
+            existing.record = record;
+            existing.cancel = None;
+        } else {
+            self.runs.push(TrackedRun {
+                record,
+                policy: None,
+                cancel: None,
+                cancelled_by_user: Arc::new(AtomicBool::new(false)),
+            });
+        }
+        self.trim_history();
+    }
+
+    fn mark_delivered(&mut self, ids: &[String]) {
+        for run in &mut self.runs {
+            if ids.iter().any(|id| id == &run.record.id) {
+                run.record.delivered = true;
+            }
+        }
+    }
+
+    fn pending_count_before(&self, run_id: Option<&str>) -> usize {
+        let mut count = 0;
+        for run in &self.runs {
+            if run_id.is_some_and(|id| id == run.record.id) {
+                break;
+            }
+            if matches!(
+                run.record.phase,
+                QueuedRunPhase::WaitingForTurnEnd | QueuedRunPhase::Queued
+            ) {
+                count += 1;
+            }
+        }
+        count
+    }
+
+    fn snapshot(&self, run_id: &str) -> Option<(QueuedRunRecord, Option<AgentRun>, usize)> {
+        let pending_ahead = self.pending_count_before(Some(run_id));
+        self.runs
+            .iter()
+            .find(|run| run.record.id == run_id)
+            .map(|run| (run.record.clone(), run.policy, pending_ahead))
+    }
+
+    fn all_records(&self) -> Vec<QueuedRunRecord> {
+        self.runs.iter().map(|run| run.record.clone()).collect()
+    }
+
+    fn cancel(&mut self, run_id: &str) -> Result<(QueuedRunRecord, bool), String> {
+        let Some(entry) = self.runs.iter_mut().find(|run| run.record.id == run_id) else {
+            return Err(format!("Unknown run ID: {run_id}"));
+        };
+        if entry.record.phase.is_terminal() {
+            return Ok((entry.record.clone(), false));
+        }
+        entry.cancelled_by_user.store(true, Ordering::Release);
+        if let Some(cancel) = entry.cancel.take() {
+            cancel.cancel();
+        }
+        entry.record.phase = QueuedRunPhase::Cancelled;
+        entry.record.queue_reason = None;
+        entry.record.exit_status = Some("cancelled".into());
+        entry.record.delivered = true;
+        Ok((entry.record.clone(), true))
+    }
+
+    fn trim_history(&mut self) {
+        let terminal = self
+            .runs
+            .iter()
+            .filter(|run| run.record.phase.is_terminal())
+            .count();
+        let mut excess = terminal.saturating_sub(MAX_RUN_HISTORY);
+        if excess == 0 {
+            return;
+        }
+        self.runs.retain(|run| {
+            if excess > 0 && run.record.phase.is_terminal() {
+                excess -= 1;
+                false
+            } else {
+                true
+            }
+        });
+    }
+}
+
+#[derive(Clone)]
+pub(super) struct RunStatusSink {
+    run_id: String,
+    registry: Arc<Mutex<RunRegistry>>,
+    events: UnboundedSender<QueueEvent>,
+    cancelled_by_user: Arc<AtomicBool>,
+}
+
+impl RunStatusSink {
+    pub(super) fn set_queued(&self, reason: Option<String>) {
+        let updated = self
+            .registry
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .update_record(&self.run_id, |record| {
+                if !record.phase.is_terminal() {
+                    record.phase = QueuedRunPhase::Queued;
+                    record.queue_reason = reason;
+                }
+            });
+        if let Some(record) = updated {
+            let _ = self.events.send(QueueEvent::Updated(record));
+        }
+    }
+
+    pub(super) fn set_queue_reason(&self, reason: &str) {
+        let updated = self
+            .registry
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .update_record(&self.run_id, |record| {
+                if !record.phase.is_terminal() {
+                    record.phase = QueuedRunPhase::Queued;
+                    record.queue_reason = Some(reason.to_owned());
+                }
+            });
+        if let Some(record) = updated {
+            let _ = self.events.send(QueueEvent::Updated(record));
+        }
+    }
+
+    pub(super) fn set_running(&self, change: Option<String>, head: Option<String>) {
+        let updated = self
+            .registry
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .update_record(&self.run_id, |record| {
+                if !record.phase.is_terminal() {
+                    record.phase = QueuedRunPhase::Running;
+                    record.queue_reason = None;
+                    if change.is_some() {
+                        record.change = change;
+                    }
+                    if head.is_some() {
+                        record.head = head;
+                    }
+                }
+            });
+        if let Some(record) = updated {
+            let _ = self.events.send(QueueEvent::Updated(record));
+        }
+    }
+
+    pub(super) fn is_cancelled_by_user(&self) -> bool {
+        self.cancelled_by_user.load(Ordering::Acquire)
+    }
+
+    pub(super) fn finish(&self, record: QueuedRunRecord) {
+        self.registry
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .finish(record);
     }
 }
 
@@ -225,25 +526,44 @@ struct QueueHost {
     events: UnboundedSender<QueueEvent>,
     outstanding: Arc<AtomicUsize>,
     turn_ended: watch::Receiver<()>,
+    registry: Arc<Mutex<RunRegistry>>,
 }
 
 impl QueueHost {
     fn start_restored(
         &self,
         restored: Vec<QueuedRunRecord>,
+        history: Vec<QueuedRunRecord>,
         runs: &mut JoinSet<RunResult>,
         results: &mut RunResults,
     ) {
+        let pre_shutdown_results: Vec<QueuedRunRecord> = history
+            .into_iter()
+            .filter(|record| !record.delivered)
+            .collect();
+        for result in &pre_shutdown_results {
+            results.push_delivered_id(&result.id);
+        }
         if restored.is_empty() {
+            if !pre_shutdown_results.is_empty() {
+                results
+                    .ready
+                    .push(ContentBlock::from(continue_after_restart_prompt(
+                        &[],
+                        &pre_shutdown_results,
+                    )));
+                results.waiting = true;
+            }
             return;
         }
+        let mut restarted = Vec::new();
         let mut lost = Vec::new();
         let mut reasons = Vec::new();
         for record in restored {
             match self.spawn_restored(&record, runs) {
-                Ok(()) => {}
+                Ok(()) => restarted.push(record),
                 Err(reason) => {
-                    let _ = self.events.send(QueueEvent::Cleared(record.id.clone()));
+                    self.record_lost_restored(&record, &reason);
                     lost.push(record);
                     if !reasons.contains(&reason) {
                         reasons.push(reason);
@@ -251,18 +571,20 @@ impl QueueHost {
                 }
             }
         }
-        if !lost.is_empty() {
-            let joined = reasons.join("; ");
-            results
-                .ready
-                .push(ContentBlock::from(lost_runs_prompt(&lost, Some(&joined))));
-        }
-        if results.outstanding() {
-            results.waiting = true;
-            results.restored_notice = true;
-        } else if !results.ready.is_empty() {
-            results.waiting = true;
-        }
+        apply_restored_notices(results, restarted, lost, &reasons, pre_shutdown_results);
+    }
+
+    fn record_lost_restored(&self, record: &QueuedRunRecord, reason: &str) {
+        let mut failed = record.clone();
+        failed.phase = QueuedRunPhase::Failed;
+        failed.queue_reason = None;
+        failed.exit_status = Some(format!("could not restart: {reason}"));
+        failed.delivered = true;
+        self.registry
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .finish(failed.clone());
+        let _ = self.events.send(QueueEvent::Cleared(failed));
     }
 
     fn spawn_restored(
@@ -279,18 +601,35 @@ impl QueueHost {
                 directory.display()
             ));
         }
-        let run = QueuedRun::restored(record).map_err(|error| error.to_string())?;
+        let run =
+            QueuedRun::restored(record, &self.worktree, &self.launch).map_err(|e| e.to_string())?;
+        let active_record = run.record();
+        let run_stop = self.stop.child_token();
+        let cancelled_by_user = self
+            .registry
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .register_active(active_record.clone(), policy, run_stop.clone());
+        let sink = RunStatusSink {
+            run_id: active_record.id.clone(),
+            registry: Arc::clone(&self.registry),
+            events: self.events.clone(),
+            cancelled_by_user,
+        };
         self.outstanding.fetch_add(1, Ordering::Release);
+        let _ = self.events.send(QueueEvent::Updated(active_record));
         let _ = self
             .events
             .send(QueueEvent::Started(Box::new(run.started())));
-        let (rosen, worktree, launch, stop) = (
+        let (rosen, worktree, launch) = (
             self.rosen.clone(),
             self.worktree.clone(),
             self.launch.clone(),
-            self.stop.clone(),
         );
-        runs.spawn(async move { run.finish(&rosen, policy, &worktree, &launch, stop).await });
+        runs.spawn(async move {
+            run.finish(&rosen, policy, &worktree, &launch, run_stop, sink)
+                .await
+        });
         Ok(())
     }
 
@@ -315,8 +654,10 @@ impl QueueHost {
     async fn accept(&self, mut socket: TcpStream, runs: &mut JoinSet<RunResult>) {
         let reply = match tokio::time::timeout(REQUEST_TIMEOUT, read_request(&mut socket)).await {
             Ok(Ok(request)) if request.token == self.token => match request.work {
-                Work::Command(command) => self.enqueue(command, runs).map(Accepted::Log),
+                Work::Command(command) => self.enqueue(command, runs).map(Accepted::Queued),
                 Work::Workflow(workflow) => self.start_workflow(workflow, runs).await,
+                Work::Status(query) => self.status(query).await.map(Accepted::Json),
+                Work::Cancel(query) => self.cancel(query).map(Accepted::Json),
                 Work::Preflight(_) => self.start_preflight(runs).map(Accepted::Log),
             },
             Ok(Ok(_)) => Err("Invalid session token".into()),
@@ -381,11 +722,19 @@ impl QueueHost {
         &self,
         command: RunCommand,
         runs: &mut JoinSet<RunResult>,
-    ) -> Result<PathBuf, String> {
+    ) -> Result<QueuedRunAccepted, String> {
         let policy = velocity_rosen::agent_run::policy(&command.program, &command.arguments)?;
-        let run = QueuedRun::new(command).map_err(|error| error.to_string())?;
-        let log = run.log.clone();
+        let pending_ahead = self
+            .registry
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .pending_count_before(None);
+        let estimated = self.estimate_queue(policy, command.run_class(), pending_ahead);
+        let run = QueuedRun::new(command, &self.worktree, &self.launch)
+            .map_err(|error| error.to_string())?;
         let record = run.record();
+        let accepted = accepted_reply(&record, run.log.clone(), estimated);
+        let (run_stop, sink) = self.register_run(record.clone(), policy);
         // Subscribe before acknowledging. A fast turn end must release this command
         // without allowing it to run during the agent's final handoff call.
         let mut turn_ended = self.turn_ended.clone();
@@ -395,25 +744,228 @@ impl QueueHost {
         let _ = self
             .events
             .send(QueueEvent::Started(Box::new(run.started())));
-        let (rosen, worktree, launch, stop) = (
+        let (rosen, worktree, launch) = (
             self.rosen.clone(),
             self.worktree.clone(),
             self.launch.clone(),
-            self.stop.clone(),
         );
         runs.spawn(async move {
             tokio::select! {
                 released = turn_ended.changed() => {
                     if released.is_err() {
-                        stop.cancel();
+                        run_stop.cancel();
                     }
                 }
-                () = stop.cancelled() => {}
+                () = run_stop.cancelled() => {}
             }
-            run.finish(&rosen, policy, &worktree, &launch, stop).await
+            run.finish(&rosen, policy, &worktree, &launch, run_stop, sink)
+                .await
         });
-        Ok(log)
+        Ok(accepted)
     }
+
+    fn register_run(
+        &self,
+        record: QueuedRunRecord,
+        policy: AgentRun,
+    ) -> (CancellationToken, RunStatusSink) {
+        let run_stop = self.stop.child_token();
+        let cancelled_by_user = self
+            .registry
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .register_active(record.clone(), policy, run_stop.clone());
+        let sink = RunStatusSink {
+            run_id: record.id,
+            registry: Arc::clone(&self.registry),
+            events: self.events.clone(),
+            cancelled_by_user,
+        };
+        (run_stop, sink)
+    }
+
+    fn estimate_queue(
+        &self,
+        policy: AgentRun,
+        class: velocity_core::queued_runs::QueuedRunClass,
+        pending_ahead: usize,
+    ) -> QueueEstimate {
+        let queue_override = self.launch.env_value(QUEUE_ENV).map(PathBuf::from);
+        estimate(
+            policy,
+            class,
+            &self.worktree,
+            queue_override.as_deref(),
+            pending_ahead,
+        )
+    }
+
+    async fn status(&self, query: RunStatusRequest) -> Result<Value, String> {
+        let Some(run_id) = query.run_id else {
+            return Ok(self.list_runs_json());
+        };
+        let Some((record, policy, pending_ahead)) = self
+            .registry
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .snapshot(&run_id)
+        else {
+            return Err(format!("Unknown run ID: {run_id}"));
+        };
+        let queue_estimate = if matches!(
+            record.phase,
+            QueuedRunPhase::WaitingForTurnEnd | QueuedRunPhase::Queued
+        ) {
+            policy
+                .or_else(|| {
+                    velocity_rosen::agent_run::policy(&record.program, &record.arguments).ok()
+                })
+                .map(|policy| self.estimate_queue(policy, record.class, pending_ahead))
+        } else {
+            None
+        };
+        let log_excerpt = read_excerpt_async(record.log.as_deref()).await;
+        Ok(format_run_status(
+            &record,
+            queue_estimate.as_ref(),
+            log_excerpt,
+        ))
+    }
+
+    fn list_runs_json(&self) -> Value {
+        let records = self
+            .registry
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .all_records();
+        let list: Vec<Value> = records
+            .iter()
+            .rev()
+            .map(|record| {
+                json!({
+                    "run_id": record.id,
+                    "command": record.command_line(),
+                    "class": record.class.as_str(),
+                    "phase": record.phase.as_str(),
+                    "queue_reason": record.queue_reason,
+                    "change": record.change,
+                    "head": record.head,
+                    "exit_code": record.exit_code,
+                    "exit_status": record.exit_status,
+                    "log": record.log,
+                })
+            })
+            .collect();
+        json!({ "runs": list })
+    }
+
+    fn cancel(&self, query: RunCancelRequest) -> Result<Value, String> {
+        let (record, cancelled) = self
+            .registry
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .cancel(&query.run_id)?;
+        Ok(json!({
+            "run_id": record.id,
+            "cancelled": cancelled,
+            "already_finished": !cancelled,
+            "phase": record.phase.as_str(),
+            "exit_code": record.exit_code,
+            "exit_status": record.exit_status,
+            "log": record.log,
+        }))
+    }
+}
+
+fn apply_restored_notices(
+    results: &mut RunResults,
+    restarted: Vec<QueuedRunRecord>,
+    lost: Vec<QueuedRunRecord>,
+    reasons: &[String],
+    pre_shutdown_results: Vec<QueuedRunRecord>,
+) {
+    if !restarted.is_empty() {
+        if !lost.is_empty() {
+            let joined = reasons.join("; ");
+            results
+                .ready
+                .push(ContentBlock::from(lost_runs_prompt(&lost, Some(&joined))));
+        }
+        results.restart_notice = Some(RestartNotice {
+            interrupted: restarted,
+            pre_shutdown_results,
+        });
+        results.waiting = true;
+    } else if !lost.is_empty() {
+        let joined = reasons.join("; ");
+        results
+            .ready
+            .push(ContentBlock::from(lost_runs_prompt_with_results(
+                &lost,
+                &pre_shutdown_results,
+                Some(&joined),
+            )));
+        results.waiting = true;
+    }
+}
+
+fn accepted_reply(
+    record: &QueuedRunRecord,
+    log: PathBuf,
+    estimated: QueueEstimate,
+) -> QueuedRunAccepted {
+    QueuedRunAccepted {
+        run_id: record.id.clone(),
+        log,
+        phase: record.phase.as_str().to_owned(),
+        queue_position: estimated.position,
+        estimated_wait_seconds: estimated.estimated_wait_seconds,
+        estimated_wait: estimated.estimated_wait,
+        queue_reason: estimated
+            .queue_reason
+            .or_else(|| record.queue_reason.clone()),
+        change: record.change.clone(),
+        head: record.head.clone(),
+    }
+}
+
+async fn read_excerpt_async(log: Option<&str>) -> Option<String> {
+    let path = PathBuf::from(log?);
+    tokio::task::spawn_blocking(move || read_log_excerpt(&path))
+        .await
+        .ok()
+        .flatten()
+}
+
+fn format_run_status(
+    record: &QueuedRunRecord,
+    queue_estimate: Option<&QueueEstimate>,
+    log_excerpt: Option<String>,
+) -> Value {
+    let queue_reason = record
+        .queue_reason
+        .clone()
+        .or_else(|| queue_estimate.and_then(|item| item.queue_reason.clone()));
+    json!({
+        "run_id": record.id,
+        "command": record.command_line(),
+        "program": record.program,
+        "arguments": record.arguments,
+        "directory": record.directory,
+        "class": record.class.as_str(),
+        "phase": record.phase.as_str(),
+        "queue_reason": queue_reason,
+        "queue_position": queue_estimate.map(|item| item.position),
+        "estimated_wait_seconds": queue_estimate.map(|item| item.estimated_wait_seconds),
+        "estimated_wait": queue_estimate.map(|item| item.estimated_wait.as_str()),
+        "change": record.change,
+        "head": record.head,
+        "exit_code": record.exit_code,
+        "exit_status": record.exit_status,
+        "log": record.log,
+        "log_excerpt": log_excerpt,
+        "result": record.result,
+    })
 }
 
 async fn read_request(socket: &mut TcpStream) -> io::Result<Request> {
