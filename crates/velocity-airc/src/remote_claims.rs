@@ -12,7 +12,10 @@ use velocity_rosen::policy::MergedPaths;
 
 enum ClaimWorkOutcome {
     Done(ClaimResult),
-    Overlap { record: Entry, result: ClaimResult },
+    Overlap {
+        record: Box<Entry>,
+        result: ClaimResult,
+    },
 }
 
 impl Remote {
@@ -156,7 +159,10 @@ impl Remote {
                 && let Some((record, result)) =
                     claim_files(&client, change_id, &held, extended, &exclusive_files).await?
             {
-                return Ok(ClaimWorkOutcome::Overlap { record, result });
+                return Ok(ClaimWorkOutcome::Overlap {
+                    record: Box::new(record),
+                    result,
+                });
             }
             let mut local = held;
             local.member = local
@@ -330,6 +336,56 @@ fn exclusive_claim_paths(files: &[String], merged: &MergedPaths) -> Vec<String> 
         .collect()
 }
 
+async fn claim_files(
+    client: &rosen_client::Client,
+    change: &str,
+    held: &rosen_client::protocol::channel::PieceClaim,
+    extended: bool,
+    files: &[String],
+) -> Result<Option<(Entry, ClaimResult)>, Error> {
+    let request: ClaimRequest = wire(json!({"change":change,"paths":files,"exclusive":true}))?;
+    let result = client.claim_paths(request).await;
+    if !matches!(result, Ok(ClaimOutcome::Granted { .. })) && !extended {
+        client
+            .release_piece(&held.member, Some(&held.piece))
+            .await?;
+    }
+    let ClaimOutcome::Refused { holders } = result? else {
+        return Ok(None);
+    };
+    let holder = holders
+        .first()
+        .ok_or_else(|| Error::Invalid("Rosen refused paths without a holder".into()))?;
+    let path = std::slice::from_ref(&holder.requested);
+    let ours = velocity_graph::coordination::rosen_changes(client, change, path).await;
+    let theirs =
+        velocity_graph::coordination::rosen_changes(client, &holder.held.change.to_string(), path)
+            .await;
+    let detail = crate::claims::symbol_overlap(
+        ours.get(&holder.requested).map_or(&[], Vec::as_slice),
+        theirs.get(&holder.requested).map_or(&[], Vec::as_slice),
+    );
+    let mut record = crate::channel::entry(
+        &[],
+        "overlap",
+        "velocity",
+        &held.nick,
+        &format!(
+            "{} overlaps {} on {}{detail}; record a share or wait before editing",
+            held.nick, holder.held.owner, holder.requested
+        ),
+    );
+    record.change = Some(change.to_owned());
+    record.to = vec![held.nick.clone(), holder.held.owner.to_string()];
+    Ok(Some((
+        record,
+        ClaimResult::Refused {
+            holder: holder.held.owner.to_string(),
+            since: time(holder.held.since),
+        },
+    )))
+}
+
 #[cfg(test)]
 mod tests {
     use super::exclusive_claim_paths;
@@ -389,54 +445,4 @@ mod tests {
         }
         Ok(())
     }
-}
-
-async fn claim_files(
-    client: &rosen_client::Client,
-    change: &str,
-    held: &rosen_client::protocol::channel::PieceClaim,
-    extended: bool,
-    files: &[String],
-) -> Result<Option<(Entry, ClaimResult)>, Error> {
-    let request: ClaimRequest = wire(json!({"change":change,"paths":files,"exclusive":true}))?;
-    let result = client.claim_paths(request).await;
-    if !matches!(result, Ok(ClaimOutcome::Granted { .. })) && !extended {
-        client
-            .release_piece(&held.member, Some(&held.piece))
-            .await?;
-    }
-    let ClaimOutcome::Refused { holders } = result? else {
-        return Ok(None);
-    };
-    let holder = holders
-        .first()
-        .ok_or_else(|| Error::Invalid("Rosen refused paths without a holder".into()))?;
-    let path = std::slice::from_ref(&holder.requested);
-    let ours = velocity_graph::coordination::rosen_changes(client, change, path).await;
-    let theirs =
-        velocity_graph::coordination::rosen_changes(client, &holder.held.change.to_string(), path)
-            .await;
-    let detail = crate::claims::symbol_overlap(
-        ours.get(&holder.requested).map_or(&[], Vec::as_slice),
-        theirs.get(&holder.requested).map_or(&[], Vec::as_slice),
-    );
-    let mut record = crate::channel::entry(
-        &[],
-        "overlap",
-        "velocity",
-        &held.nick,
-        &format!(
-            "{} overlaps {} on {}{detail}; record a share or wait before editing",
-            held.nick, holder.held.owner, holder.requested
-        ),
-    );
-    record.change = Some(change.to_owned());
-    record.to = vec![held.nick.clone(), holder.held.owner.to_string()];
-    Ok(Some((
-        record,
-        ClaimResult::Refused {
-            holder: holder.held.owner.to_string(),
-            since: time(holder.held.since),
-        },
-    )))
 }
