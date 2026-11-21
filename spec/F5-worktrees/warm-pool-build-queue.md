@@ -3,15 +3,17 @@
 <!-- split-spec: {"order":728,"kind":"markdown","indentation":0} -->
 - **Build queue** (#480).
   Velocity queues agents' single-crate Rust type checks and Lean checks through Rosen's machine-wide queue.
-  Agent light Rust runs (`cargo check -p <crate>` and the UI's `bindings` script) take one of two machine-wide slots, use two Cargo jobs at below-normal priority, and share one incremental target directory per project beside its workspaces (#486).
+  Agent light Rust runs (`cargo check -p <crate>`, the UI's `bindings` script, and registered `[generated.commands]` generators) take one of two machine-wide slots, use two Cargo jobs at below-normal priority, and share one incremental target directory per project beside its workspaces (#486, #582).
   When a light run switches to a different workspace (or a recreated Rosen change at the same path), Velocity invalidates local workspace crate fingerprints and build-script outputs in the shared target directory before Cargo runs while keeping registry and git dependency artifacts warm (#527).
   Velocity's own bindings check before a land (F7 "Post-land verification", #503) is a light run too, in the same slots and target directory.
   A light run starts when 3 GiB fits above Rosen's memory reserve, measured rather than charged at other turns' caps, so an integration build no longer holds every agent check.
   Velocity puts shims for `cargo`, `rustc`, `cargo-clippy`, `cargo-tauri` and `clippy-driver` first on every agent's `PATH` (#483).
-  Direct `cargo fmt` and `cargo check -p <crate>` take an agent light slot, and the shims refuse other direct invocations with the integration-build message shared by `rosen run` and `queue_run`.
+  Direct `cargo fmt` and `cargo check -p <crate>` take an agent light slot, and the shims refuse other direct invocations with the integration-build message shared by `rosen run` and `queue_run` (naming `cargo fmt`, `cargo check -p <crate>`, and registered `[generated.commands]` generators).
   A shim reached inside a turn already held (`ROSEN_RUN_HELD` set, as in a queued light run) runs the real tool at once, found outside the shim folders, and never waits for a turn of its own: that turn's holder is its own ancestor (#548).
   Queued light, utility and `lake` runs keep Velocity's shim folder off the child `PATH` so they invoke the real toolchain directly, and direct shim lock or headroom waits time out after 20 minutes with a clear error instead of blocking forever (#548).
   The managed paths (including a `cargo` shim reached inside a held turn) also accept `cargo metadata --format-version 1`, `pnpm -C ui bindings` and `cargo run ... --bin export-bindings` for generated-file repair (#559).
+  An agent may also queue, through `velocity-run`'s `queue_run` or `rosen run --` from the workspace root, an exact command listed under `[generated.commands]` in the base's `rosen.toml`, classified as `RegisteredGenerator` and run in the light run queue (#582).
+  Velocity snapshots the workspace before and after a `RegisteredGenerator` run and allows only paths covered by that command's `[generated.commands]` pattern(s) to change; any change outside those patterns is reverted and refused, while unregistered commands (such as plain `cargo test` or the same command without its registered environment prefix) remain refused with the shared refusal message (#582).
   Agents use Rust formatting, UI type-check and lint as applicable.
   Warm pool prepares install UI dependencies and fetch the Lean cache.
   Integration builds use Rosen's `verify` class and wait for a memory-budgeted turn.

@@ -1,5 +1,6 @@
 //! The stdio MCP subprocess hands requests to its owning ACP session over loopback.
 
+use std::collections::BTreeMap;
 use std::io::{self, BufRead, BufReader, Write};
 use std::net::{Ipv4Addr, TcpStream};
 use std::path::PathBuf;
@@ -24,12 +25,13 @@ pub(super) const REQUEST_TIMEOUT: Duration = Duration::from_secs(5);
 pub(super) const REQUEST_BYTES: u64 = 128 * 1024;
 
 pub(super) const INSTRUCTIONS: &str = "Queue checks and builds through `velocity-run` \
-    (including `cargo check -p <crate>`, Lean checks, `cargo metadata --format-version 1` \
-    and `pnpm -C ui bindings`). Pass the program and its arguments separately. \
-    `queue_run` returns a durable `run_id`, queue position and estimated wait; inspect with \
-    `run_status` or cancel with `run_cancel`. Run `preflight` before naming a change. \
-    After a command or preflight queues, end your turn; Velocity sends the result and log \
-    path in your next prompt.";
+    (including `cargo check -p <crate>`, Lean checks, `cargo metadata --format-version 1`, \
+    `pnpm -C ui bindings`, and any generator registered under `[generated.commands]` in the \
+    base's `rosen.toml`). Pass the program and its arguments separately (and optional `env` \
+    variables when a registered generator requires them). `queue_run` returns a durable \
+    `run_id`, queue position and estimated wait; inspect with `run_status` or cancel with \
+    `run_cancel`. Run `preflight` before naming a change. After a command or preflight queues, \
+    end your turn; Velocity sends the result and log path in your next prompt.";
 
 #[derive(Deserialize, Serialize)]
 pub(super) struct Request {
@@ -97,6 +99,8 @@ pub(super) struct RunCommand {
     #[serde(default)]
     pub arguments: Vec<String>,
     #[serde(default)]
+    pub env: BTreeMap<String, String>,
+    #[serde(default)]
     pub directory: Option<PathBuf>,
     #[serde(default)]
     class: QueuedRunClass,
@@ -115,6 +119,7 @@ impl RunCommand {
         Self {
             program: record.program.clone(),
             arguments: record.arguments.clone(),
+            env: record.env.clone(),
             directory: record.directory.as_ref().map(PathBuf::from),
             class: record.class,
         }
@@ -130,6 +135,7 @@ impl RunCommand {
                 .map(|path| path.to_string_lossy().into_owned()),
             self.class,
         )
+        .with_env(self.env.clone())
     }
 }
 
@@ -142,6 +148,11 @@ pub fn queued_run_tool() -> Value {
             "properties": {
                 "program": {"type": "string", "description": "Executable, e.g. cargo, lake or pwsh"},
                 "arguments": {"type": "array", "items": {"type": "string"}},
+                "env": {
+                    "type": "object",
+                    "additionalProperties": {"type": "string"},
+                    "description": "Optional environment variables (for example `{\"UPDATE_FIXTURES\": \"1\"}` for a registered `[generated.commands]` generator)"
+                },
                 "directory": {"type": "string", "description": "Working directory, relative to the session folder by default"},
                 "class": {"type": "string", "enum": ["build", "landing", "verify"], "default": "build"}
             },

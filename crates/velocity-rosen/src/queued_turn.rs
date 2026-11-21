@@ -183,7 +183,7 @@ pub fn estimate(
     match policy {
         AgentRun::Ordinary => estimate_ordinary(queue.ok().as_ref(), class, session_pending_ahead),
         AgentRun::RustUtility => estimate_utility(session_pending_ahead),
-        AgentRun::RustCheck | AgentRun::Bindings => {
+        AgentRun::RustCheck | AgentRun::Bindings | AgentRun::RegisteredGenerator => {
             estimate_light(queue.ok().as_ref(), worktree, session_pending_ahead)
         }
     }
@@ -385,7 +385,7 @@ pub fn acquire_with_progress(
             )
         }
         AgentRun::RustUtility => acquire_utility(&queue, request.timeout, &cancelled, &on_wait),
-        AgentRun::RustCheck | AgentRun::Bindings => acquire_light(
+        AgentRun::RustCheck | AgentRun::Bindings | AgentRun::RegisteredGenerator => acquire_light(
             &queue,
             request.worktree,
             request.directory,

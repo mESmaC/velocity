@@ -1,6 +1,7 @@
 //! Persisted queued runs (`queue_run`, #516, #536).
 
 use serde::{Deserialize, Serialize};
+use std::collections::BTreeMap;
 
 /// Maximum number of finished runs retained per thread for `run_status` lookup and recovery.
 pub const MAX_RUN_HISTORY: usize = 50;
@@ -74,6 +75,10 @@ pub struct QueuedRunRecord {
     pub program: String,
     #[serde(default)]
     pub arguments: Vec<String>,
+    /// Explicit environment variables passed to the queued command (for example a registered
+    /// `[generated.commands]` command such as `UPDATE_FIXTURES=1`).
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub env: BTreeMap<String, String>,
     /// Working directory, relative to the thread's workspace or absolute.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub directory: Option<String>,
@@ -120,6 +125,7 @@ impl QueuedRunRecord {
             id,
             program,
             arguments,
+            env: BTreeMap::new(),
             directory,
             class,
             log: None,
@@ -134,18 +140,26 @@ impl QueuedRunRecord {
         }
     }
 
+    pub fn with_env(mut self, env: BTreeMap<String, String>) -> Self {
+        self.env = env;
+        self
+    }
+
     /// The command and its arguments joined for display.
     pub fn command_line(&self) -> String {
-        if self.arguments.is_empty() {
-            self.program.clone()
-        } else {
-            format!("{} {}", self.program, self.arguments.join(" "))
-        }
+        let mut parts: Vec<String> = self
+            .env
+            .iter()
+            .map(|(key, value)| format!("{key}={value}"))
+            .collect();
+        parts.push(self.program.clone());
+        parts.extend(self.arguments.iter().cloned());
+        parts.join(" ")
     }
 
     /// Display title matching `QueuedRun`'s tool step row.
     pub fn title(&self) -> String {
-        let joined = format!("rosen run -- {} {}", self.program, self.arguments.join(" "))
+        let joined = format!("rosen run -- {}", self.command_line())
             .split_whitespace()
             .collect::<Vec<_>>()
             .join(" ");

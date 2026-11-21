@@ -23,6 +23,9 @@ use velocity_core::queued_runs::{
 };
 use velocity_rosen::agent_run::{AgentRun, BLOCK_VCS_ENV};
 use velocity_rosen::queued_turn::{QUEUE_ENV, QueueEstimate, estimate};
+use velocity_rosen::registered_generator::{
+    BASE_CONFIG_TIMEOUT, RegisteredGenerator, is_workspace_root, load_base_commands,
+};
 
 use super::preflight_run::PreflightRun;
 use super::queued_run_command::{QueuedRun, RunResult, read_log_excerpt, resolve_directory};
@@ -97,7 +100,8 @@ impl RunQueue {
             registry: Some(registry),
             ..RunResults::default()
         };
-        host.start_restored(restored, history, &mut initial_runs, &mut results);
+        host.start_restored(restored, history, &mut initial_runs, &mut results)
+            .await;
         let worker = tokio::spawn(host.serve(listener, initial_runs));
         Ok(Some((Self { stop, worker }, results)))
     }
@@ -545,7 +549,7 @@ struct QueueHost {
 }
 
 impl QueueHost {
-    fn start_restored(
+    async fn start_restored(
         &self,
         restored: Vec<QueuedRunRecord>,
         history: Vec<QueuedRunRecord>,
@@ -575,7 +579,7 @@ impl QueueHost {
         let mut lost = Vec::new();
         let mut reasons = Vec::new();
         for record in restored {
-            match self.spawn_restored(&record, runs) {
+            match self.spawn_restored(&record, runs).await {
                 Ok(()) => restarted.push(record),
                 Err(reason) => {
                     self.record_lost_restored(&record, &reason);
@@ -602,12 +606,13 @@ impl QueueHost {
         let _ = self.events.send(QueueEvent::Cleared(failed));
     }
 
-    fn spawn_restored(
+    async fn spawn_restored(
         &self,
         record: &QueuedRunRecord,
         runs: &mut JoinSet<RunResult>,
     ) -> Result<(), String> {
-        let policy = self.command_policy(&record.program, &record.arguments)?;
+        let command = RunCommand::from_record(record);
+        let (policy, registered) = self.command_policy(&command).await?;
         let directory =
             resolve_directory(&self.worktree, record.directory.as_deref().map(Path::new));
         if !directory.is_dir() {
@@ -642,8 +647,10 @@ impl QueueHost {
             self.launch.clone(),
         );
         runs.spawn(async move {
-            run.finish(&rosen, policy, &worktree, &launch, run_stop, sink)
-                .await
+            run.finish(
+                &rosen, policy, registered, &worktree, &launch, run_stop, sink,
+            )
+            .await
         });
         Ok(())
     }
@@ -669,7 +676,7 @@ impl QueueHost {
     async fn accept(&self, mut socket: TcpStream, runs: &mut JoinSet<RunResult>) {
         let reply = match tokio::time::timeout(REQUEST_TIMEOUT, read_request(&mut socket)).await {
             Ok(Ok(request)) if request.token == self.token => match request.work {
-                Work::Command(command) => self.enqueue(command, runs).map(Accepted::Queued),
+                Work::Command(command) => self.enqueue(command, runs).await.map(Accepted::Queued),
                 Work::Workflow(workflow) => self.start_workflow(workflow, runs).await,
                 Work::Status(query) => self.status(query).await.map(Accepted::Json),
                 Work::Cancel(query) => self.cancel(query).map(Accepted::Json),
@@ -733,12 +740,12 @@ impl QueueHost {
         Ok(log)
     }
 
-    fn enqueue(
+    async fn enqueue(
         &self,
         command: RunCommand,
         runs: &mut JoinSet<RunResult>,
     ) -> Result<QueuedRunAccepted, String> {
-        let policy = self.command_policy(&command.program, &command.arguments)?;
+        let (policy, registered) = self.command_policy(&command).await?;
         let pending_ahead = self
             .registry
             .lock()
@@ -773,8 +780,10 @@ impl QueueHost {
                 }
                 () = run_stop.cancelled() => {}
             }
-            run.finish(&rosen, policy, &worktree, &launch, run_stop, sink)
-                .await
+            run.finish(
+                &rosen, policy, registered, &worktree, &launch, run_stop, sink,
+            )
+            .await
         });
         Ok(accepted)
     }
@@ -831,9 +840,17 @@ impl QueueHost {
             record.phase,
             QueuedRunPhase::WaitingForTurnEnd | QueuedRunPhase::Queued
         ) {
-            policy
-                .or_else(|| self.command_policy(&record.program, &record.arguments).ok())
-                .map(|policy| self.estimate_queue(policy, record.class, pending_ahead))
+            let resolved_policy = match policy {
+                Some(policy) => Some(policy),
+                None => {
+                    let command = RunCommand::from_record(&record);
+                    self.command_policy(&command)
+                        .await
+                        .ok()
+                        .map(|(resolved, _)| resolved)
+                }
+            };
+            resolved_policy.map(|policy| self.estimate_queue(policy, record.class, pending_ahead))
         } else {
             None
         };
@@ -872,12 +889,31 @@ impl QueueHost {
         json!({ "runs": list })
     }
 
-    fn command_policy(
+    async fn command_policy(
         &self,
-        program: &str,
-        arguments: &[String],
-    ) -> Result<AgentRun, &'static str> {
-        session_command_policy(&self.launch, &self.worktree, program, arguments)
+        command: &RunCommand,
+    ) -> Result<(AgentRun, Option<RegisteredGenerator>), String> {
+        let directory = resolve_directory(&self.worktree, command.directory.as_deref());
+        let at_root = is_workspace_root(&directory, &self.worktree);
+        let generated_commands =
+            if at_root && let Some(endpoint) = self.launch.env_value("ROSEN_ENDPOINT") {
+                tokio::time::timeout(BASE_CONFIG_TIMEOUT, load_base_commands(endpoint))
+                    .await
+                    .ok()
+                    .and_then(Result::ok)
+                    .unwrap_or_default()
+            } else {
+                Default::default()
+            };
+        velocity_rosen::agent_run::policy_with_registered_generators(
+            &command.program,
+            &command.arguments,
+            session_blocks_vcs(&self.launch, &self.worktree),
+            at_root,
+            &generated_commands,
+            &|key| command.env.get(key).cloned(),
+        )
+        .map_err(str::to_owned)
     }
 
     fn cancel(&self, query: RunCancelRequest) -> Result<Value, String> {
@@ -1012,6 +1048,7 @@ fn session_blocks_vcs(launch: &AgentLaunch, worktree: &Path) -> bool {
             .any(|path| path.join(".rosen").exists())
 }
 
+#[cfg(test)]
 fn session_command_policy(
     launch: &AgentLaunch,
     worktree: &Path,

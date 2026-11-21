@@ -41,6 +41,7 @@ pub mod preflight;
 mod process;
 pub mod project;
 pub mod queued_turn;
+pub mod registered_generator;
 pub mod release;
 mod retry;
 pub mod review_swarm;

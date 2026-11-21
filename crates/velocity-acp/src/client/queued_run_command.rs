@@ -18,6 +18,9 @@ use velocity_rosen::queued_turn::{
     DEFAULT_WAIT_TIMEOUT, HELD_ENV, QUEUE_ENV, QueueTimeoutReport, QueuedTurn, QueuedTurnError,
     QueuedTurnRequest, THREAD_VARIABLES, acquire_with_progress, workspace_head,
 };
+use velocity_rosen::registered_generator::{
+    GeneratorExecution, GeneratorGuard, RegisteredGenerator, begin_guard, finish_guard,
+};
 
 use super::AgentLaunch;
 use super::process::{hidden_command, spawn_owned_toolchain_command, stop_owned_process};
@@ -108,16 +111,20 @@ impl QueuedRun {
         )
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub async fn finish(
         mut self,
         rosen: &Path,
         policy: AgentRun,
+        registered: Option<RegisteredGenerator>,
         worktree: &Path,
         launch: &AgentLaunch,
         stop: CancellationToken,
         sink: RunStatusSink,
     ) -> RunResult {
-        let outcome = self.run(rosen, policy, worktree, launch, stop, &sink).await;
+        let outcome = self
+            .run(rosen, policy, registered, worktree, launch, stop, &sink)
+            .await;
         let cancelled_by_user = sink.is_cancelled_by_user();
         let formatted = format_outcome(&self.record, &self.title, &self.log, outcome);
         let mut result = formatted.message;
@@ -153,10 +160,12 @@ impl QueuedRun {
         }
     }
 
+    #[allow(clippy::too_many_arguments)]
     async fn run(
         &mut self,
         rosen: &Path,
         policy: AgentRun,
+        registered: Option<RegisteredGenerator>,
         worktree: &Path,
         launch: &AgentLaunch,
         stop: CancellationToken,
@@ -205,20 +214,60 @@ impl QueuedRun {
             self.record.head = head;
         }
         sink.set_running(self.record.change.clone(), self.record.head.clone());
-        if let Some(outcome) = self
-            .prepare_lake_cache(rosen, worktree, &directory, launch, &turn, &stop)
+        let outcome = self
+            .execute_under_turn(
+                rosen,
+                registered.as_ref(),
+                worktree,
+                &directory,
+                launch,
+                &turn,
+                &stop,
+            )
+            .await;
+        drop(turn);
+        outcome
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    async fn execute_under_turn(
+        &mut self,
+        rosen: &Path,
+        registered: Option<&RegisteredGenerator>,
+        worktree: &Path,
+        directory: &Path,
+        launch: &AgentLaunch,
+        turn: &QueuedTurn,
+        stop: &CancellationToken,
+    ) -> ExecutionOutcome {
+        let guard = match self
+            .begin_registered_guard(registered, worktree, launch)
             .await
         {
-            drop(turn);
-            return outcome;
-        }
-        let command = match self.build_command(rosen, &directory, launch, &turn) {
-            Ok(command) => command,
+            Ok(guard) => guard,
             Err(error) => return ExecutionOutcome::Failed(error),
+        };
+        if let Some(outcome) = self
+            .prepare_lake_cache(rosen, worktree, directory, launch, turn, stop)
+            .await
+        {
+            return self.finalize_registered_guard(guard, outcome).await;
+        }
+        let command = match self.build_command(rosen, directory, launch, turn, registered) {
+            Ok(command) => command,
+            Err(error) => {
+                return self
+                    .finalize_registered_guard(guard, ExecutionOutcome::Failed(error))
+                    .await;
+            }
         };
         let mut child = match self.spawn_command(command) {
             Ok(child) => child,
-            Err(error) => return ExecutionOutcome::Failed(error),
+            Err(error) => {
+                return self
+                    .finalize_registered_guard(guard, ExecutionOutcome::Failed(error))
+                    .await;
+            }
         };
         let outcome = tokio::select! {
             status = child.wait() => status.map_or_else(ExecutionOutcome::Failed, ExecutionOutcome::Exited),
@@ -227,8 +276,49 @@ impl QueuedRun {
                 ExecutionOutcome::Cancelled
             }
         };
-        drop(turn);
-        outcome
+        self.finalize_registered_guard(guard, outcome).await
+    }
+
+    async fn begin_registered_guard(
+        &mut self,
+        registered: Option<&RegisteredGenerator>,
+        worktree: &Path,
+        launch: &AgentLaunch,
+    ) -> io::Result<Option<GeneratorGuard>> {
+        let Some(generator) = registered else {
+            return Ok(None);
+        };
+        let endpoint = launch.env_value("ROSEN_ENDPOINT").ok_or_else(|| {
+            io::Error::other(format!(
+                "Registered generator `{}` requires a Rosen workspace endpoint.",
+                generator.command
+            ))
+        })?;
+        begin_guard(endpoint, worktree, generator)
+            .await
+            .map(Some)
+            .map_err(|reason| {
+                let _ = writeln!(&self.output, "{reason}");
+                io::Error::other(reason)
+            })
+    }
+
+    async fn finalize_registered_guard(
+        &mut self,
+        guard: Option<GeneratorGuard>,
+        outcome: ExecutionOutcome,
+    ) -> ExecutionOutcome {
+        let Some(guard) = guard else {
+            return outcome;
+        };
+        let succeeded = matches!(&outcome, ExecutionOutcome::Exited(status) if status.success());
+        match finish_guard(guard, succeeded).await {
+            Ok(()) => outcome,
+            Err(refusal) => {
+                let _ = writeln!(&self.output, "\n{refusal}");
+                ExecutionOutcome::Failed(io::Error::other(refusal))
+            }
+        }
     }
 
     async fn acquire_turn(
@@ -273,32 +363,21 @@ impl QueuedRun {
         directory: &Path,
         launch: &AgentLaunch,
         turn: &QueuedTurn,
+        registered: Option<&RegisteredGenerator>,
     ) -> io::Result<tokio::process::Command> {
         let mut command = match turn {
             QueuedTurn::Rosen(rosen_turn) => {
                 self.build_rosen_command(rosen, launch, rosen_turn.budget().jobs)?
             }
             QueuedTurn::Light { target, .. } => {
-                let mut command = hidden_command(rosen);
-                launch.apply_environment(&mut command);
-                command
-                    .args(["run", "--class", "build", "--", &self.command.program])
-                    .args(&self.command.arguments)
-                    .env("PATH", clean_toolchain_path(launch)?)
-                    .env_remove(BLOCK_VCS_ENV)
-                    .env(HELD_ENV, "build")
-                    .env("CARGO_BUILD_JOBS", "2")
-                    .env("CARGO_INCREMENTAL", "1")
-                    .env("RUSTC_WRAPPER", "")
-                    .env("RUSTC_WORKSPACE_WRAPPER", "")
-                    .env("CARGO_TARGET_DIR", target);
-                command
+                self.build_light_command(rosen, launch, target, registered)?
             }
             QueuedTurn::Utility { .. } => {
                 let clean_path = clean_toolchain_path(launch)?;
                 let program = find_program_on_path(OsStr::new(&self.command.program), &clean_path);
                 let mut command = hidden_command(program);
                 launch.apply_environment(&mut command);
+                apply_safe_command_env(&mut command, &self.command.env);
                 command
                     .args(&self.command.arguments)
                     .env("PATH", clean_path)
@@ -315,6 +394,54 @@ impl QueuedRun {
         Ok(command)
     }
 
+    fn build_light_command(
+        &self,
+        rosen: &Path,
+        launch: &AgentLaunch,
+        target: &Path,
+        registered: Option<&RegisteredGenerator>,
+    ) -> io::Result<tokio::process::Command> {
+        let mut command = hidden_command(rosen);
+        launch.apply_environment(&mut command);
+        match registered.map(|item| &item.execution) {
+            Some(GeneratorExecution::Direct {
+                env,
+                program,
+                arguments,
+            }) => {
+                command
+                    .args(["run", "--class", "build", "--", program])
+                    .args(arguments);
+                for (key, value) in env {
+                    command.env(key, value);
+                }
+            }
+            Some(GeneratorExecution::Shell(script)) => {
+                if cfg!(windows) {
+                    command.args(["run", "--class", "build", "--", "cmd", "/D", "/C", script]);
+                } else {
+                    command.args(["run", "--class", "build", "--", "sh", "-c", script]);
+                }
+            }
+            None => {
+                apply_safe_command_env(&mut command, &self.command.env);
+                command
+                    .args(["run", "--class", "build", "--", &self.command.program])
+                    .args(&self.command.arguments);
+            }
+        }
+        command
+            .env("PATH", clean_toolchain_path(launch)?)
+            .env_remove(BLOCK_VCS_ENV)
+            .env(HELD_ENV, "build")
+            .env("CARGO_BUILD_JOBS", "2")
+            .env("CARGO_INCREMENTAL", "1")
+            .env("RUSTC_WRAPPER", "")
+            .env("RUSTC_WORKSPACE_WRAPPER", "")
+            .env("CARGO_TARGET_DIR", target);
+        Ok(command)
+    }
+
     fn build_rosen_command(
         &self,
         rosen: &Path,
@@ -323,6 +450,7 @@ impl QueuedRun {
     ) -> io::Result<tokio::process::Command> {
         let mut command = hidden_command(rosen);
         launch.apply_environment(&mut command);
+        apply_safe_command_env(&mut command, &self.command.env);
         // Drop Velocity's agent shims and VCS block once the top-level command passed policy
         // so test suites and tools (e.g. Go tests invoking `git` in temp dirs or
         // `git check-ref-format`) reach the host tools (#563).
@@ -532,6 +660,23 @@ fn outcome_meta(record: &QueuedRunRecord) -> String {
         }
         (Some(change), None) => format!("\nRun ID: {}\nChange: {change}", record.id),
         _ => format!("\nRun ID: {}", record.id),
+    }
+}
+
+fn apply_safe_command_env(
+    command: &mut tokio::process::Command,
+    env: &std::collections::BTreeMap<String, String>,
+) {
+    for (key, value) in env {
+        let upper = key.to_ascii_uppercase();
+        if upper == "PATH"
+            || upper.starts_with("ROSEN_")
+            || upper.starts_with("VELOCITY_")
+            || velocity_core::agent_env::is_denied_name(key)
+        {
+            continue;
+        }
+        command.env(key, value);
     }
 }
 
@@ -804,7 +949,7 @@ mod tests {
         let rosen = dir.path().join("rosen");
 
         for run in [&fresh, &restored] {
-            let built = run.build_command(&rosen, &env.worktree, &env.launch, &turn)?;
+            let built = run.build_command(&rosen, &env.worktree, &env.launch, &turn, None)?;
             let child_path = command_path_env(&built)
                 .ok_or_else(|| io::Error::other("Light command missing PATH"))?;
             let entries: Vec<PathBuf> = std::env::split_paths(&child_path).collect();
@@ -909,6 +1054,81 @@ mod tests {
             resolve_program_on("git", &observed),
             Some(env.toolchain.join(&env.git)),
             "spawned child PATH did not resolve git to real toolchain: {observed:?}"
+        );
+        Ok(())
+    }
+
+    // Risk (#582): a RegisteredGenerator queued run must pass its registered environment
+    // variables (e.g. `UPDATE_FIXTURES=1`) and exact program/arguments in the light run queue
+    // with Velocity's agent shim folder removed from PATH.
+    #[test]
+    fn registered_generator_light_command_applies_env_and_clean_path() -> io::Result<()> {
+        let dir = TempFolder::new()?;
+        let env = setup_shim_and_toolchain(dir.path())?;
+        let record = QueuedRunRecord::new(
+            "run-gen".into(),
+            "UPDATE_FIXTURES=1".into(),
+            vec![
+                "cargo".into(),
+                "test".into(),
+                "-p".into(),
+                "rosen-server".into(),
+                "--lib".into(),
+                "collapse_fixtures".into(),
+            ],
+            None,
+            QueuedRunClass::Build,
+        );
+        let run = QueuedRun::new(RunCommand::from_record(&record), &env.worktree, &env.launch)?;
+        let turn = make_light_turn(dir.path())?;
+        let rosen = dir.path().join("rosen");
+        let registered = RegisteredGenerator {
+            command: "UPDATE_FIXTURES=1 cargo test -p rosen-server --lib collapse_fixtures".into(),
+            execution: GeneratorExecution::Direct {
+                env: vec![("UPDATE_FIXTURES".into(), "1".into())],
+                program: "cargo".into(),
+                arguments: vec![
+                    "test".into(),
+                    "-p".into(),
+                    "rosen-server".into(),
+                    "--lib".into(),
+                    "collapse_fixtures".into(),
+                ],
+            },
+            patterns: Vec::new(),
+        };
+        let built =
+            run.build_command(&rosen, &env.worktree, &env.launch, &turn, Some(&registered))?;
+        let _ = std::fs::remove_file(&run.log);
+        let args: Vec<&OsStr> = built.as_std().get_args().collect();
+        assert_eq!(
+            args,
+            vec![
+                OsStr::new("run"),
+                OsStr::new("--class"),
+                OsStr::new("build"),
+                OsStr::new("--"),
+                OsStr::new("cargo"),
+                OsStr::new("test"),
+                OsStr::new("-p"),
+                OsStr::new("rosen-server"),
+                OsStr::new("--lib"),
+                OsStr::new("collapse_fixtures"),
+            ]
+        );
+        assert!(
+            built
+                .as_std()
+                .get_envs()
+                .any(|(name, value)| name == "UPDATE_FIXTURES" && value == Some(OsStr::new("1"))),
+            "UPDATE_FIXTURES=1 was not set on the light generator command"
+        );
+        let child_path = command_path_env(&built)
+            .ok_or_else(|| io::Error::other("RegisteredGenerator command missing PATH"))?;
+        let entries: Vec<PathBuf> = std::env::split_paths(&child_path).collect();
+        assert!(
+            !entries.contains(&env.shim),
+            "shim survived on PATH: {entries:?}"
         );
         Ok(())
     }

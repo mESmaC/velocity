@@ -3,6 +3,7 @@
 //! land) take one of a few machine-wide slots and start once their own memory fits above
 //! Rosen's reserve.
 
+use std::collections::BTreeMap;
 use std::ffi::{OsStr, OsString};
 use std::fs::{File, OpenOptions, TryLockError};
 use std::io;
@@ -12,9 +13,14 @@ use std::sync::{OnceLock, PoisonError, RwLock};
 use std::time::{Duration, Instant};
 
 use rosen_client::run_queue::{HELD_ENV, POLL, RunClass, RunQueue};
+use rosen_client::snapshot::WorkspaceMarker;
+use rosen_core::PathPattern;
 
 use crate::process::{background_command, hidden_command};
 use crate::queued_turn::DEFAULT_WAIT_TIMEOUT;
+use crate::registered_generator::{
+    self, GeneratorExecution, RegisteredGenerator, begin_guard_blocking, finish_guard_blocking,
+};
 
 static AGENT_COMMANDS: OnceLock<Option<AgentCommands>> = OnceLock::new();
 static PASSTHROUGH_ENV: RwLock<Vec<String>> = RwLock::new(Vec::new());
@@ -32,7 +38,7 @@ const VCS_COMMANDS: &[&str] = &["git", "gh"];
 /// Set on Rosen agent processes so `git` and `gh` shims refuse immediately (#533).
 pub const BLOCK_VCS_ENV: &str = "VELOCITY_BLOCK_GIT_GH";
 const LAUNCHER: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/agent-launcher.exe"));
-const REFUSAL: &str = "The integration build covers Rust compilation, lint and tests. Agents may run cargo fmt or queue cargo check -p <crate>.";
+const REFUSAL: &str = "The integration build covers Rust compilation, lint and tests. Agents may run cargo fmt, queue cargo check -p <crate>, or queue a generator registered under [generated.commands] in rosen.toml.";
 const GIT_REFUSAL: &str = "Rosen manages this workspace, not git. Use the rosen MCP tools or CLI (rosen status, rosen diff, rosen log, rosen commit -m) instead.";
 const GH_REFUSAL: &str = "Agents do not call gh directly. Use AIRC issue tools (issue_read, issue_create, issue_comment, issue_ready_to_close) or velocity-run's workflow_run instead.";
 /// Light runs going at once on the machine. Each uses two Cargo jobs.
@@ -51,10 +57,46 @@ pub enum AgentRun {
     RustCheck,
     /// The UI's `bindings` script or managed `cargo run ... --bin export-bindings`.
     Bindings,
+    /// A command registered under `[generated.commands]` in the base's `rosen.toml`.
+    RegisteredGenerator,
 }
 
 pub fn policy(program: &str, arguments: &[String]) -> Result<AgentRun, &'static str> {
     policy_with_vcs_blocked(program, arguments, vcs_blocked_in_process())
+}
+
+/// Classifies a queued or managed command against registered `[generated.commands]` in the
+/// base's `rosen.toml` first, then falls back to Velocity's Rust and VCS policy (#582).
+pub fn policy_with_registered_generators(
+    program: &str,
+    arguments: &[String],
+    block_vcs: bool,
+    at_workspace_root: bool,
+    generated_commands: &BTreeMap<PathPattern, String>,
+    ambient_env: &dyn Fn(&str) -> Option<String>,
+) -> Result<(AgentRun, Option<RegisteredGenerator>), &'static str> {
+    if block_vcs && let Some(refusal) = direct_or_wrapped_vcs_refusal(program, arguments) {
+        return Err(refusal);
+    }
+    if at_workspace_root
+        && let Some(matched) = registered_generator::match_registered(
+            generated_commands,
+            program,
+            arguments,
+            ambient_env,
+        )
+    {
+        return Ok((AgentRun::RegisteredGenerator, Some(matched)));
+    }
+    policy_with_vcs_blocked(program, arguments, block_vcs).map(|run| (run, None))
+}
+
+fn direct_or_wrapped_vcs_refusal(program: &str, arguments: &[String]) -> Option<&'static str> {
+    if let Some(refusal) = vcs_refusal_for(&executable_name(program)) {
+        return Some(refusal);
+    }
+    let unwrapped = registered_generator::unwrap_env_prefix(program, arguments)?;
+    vcs_refusal_for(&executable_name(unwrapped.program))
 }
 
 /// Classifies a queued or managed command against Velocity's Rust and VCS policy.
@@ -66,8 +108,19 @@ pub fn policy_with_vcs_blocked(
     block_vcs: bool,
 ) -> Result<AgentRun, &'static str> {
     let name = executable_name(program);
-    if block_vcs && let Some(refusal) = vcs_refusal_for(&name) {
+    if block_vcs && let Some(refusal) = direct_or_wrapped_vcs_refusal(program, arguments) {
         return Err(refusal);
+    }
+    if let Some(unwrapped) = registered_generator::unwrap_env_prefix(program, arguments) {
+        let wrapped_name = executable_name(unwrapped.program);
+        if RUST_COMMANDS.contains(&wrapped_name.as_str())
+            || wrapped_name == "stress"
+            || (wrapped_name == "rustup"
+                && unwrapped.arguments.first().is_some_and(|arg| arg == "run"))
+            || wrapped_name == "rosen"
+        {
+            return Err(REFUSAL);
+        }
     }
     if name == "pnpm" && runs_bindings_script(arguments) {
         return Ok(AgentRun::Bindings);
@@ -197,7 +250,7 @@ fn heavy_script(argument: &str) -> bool {
     .any(|pattern| argument.contains(pattern))
 }
 
-fn executable_name(program: &str) -> String {
+pub(crate) fn executable_name(program: &str) -> String {
     let name = program.rsplit(['/', '\\']).next().unwrap_or_default();
     let name = name.to_ascii_lowercase();
     [".exe", ".cmd", ".bat"]
@@ -449,7 +502,17 @@ fn run_rosen(
         return command.args(arguments).status();
     }
     let run_arguments = &arguments[subcommand + 1..];
-    let (program_at, run) = classify_run(run_arguments).map_err(io::Error::other)?;
+    let classified = classify_run(arguments, run_arguments).map_err(io::Error::other)?;
+    if let Some(generator) = classified.registered {
+        return run_registered_generator(
+            program,
+            &arguments[..subcommand],
+            &generator,
+            passthrough,
+            inside_held_turn(),
+        );
+    }
+    let (program_at, run) = (classified.program_at, classified.run);
     if run != AgentRun::Ordinary && inside_held_turn() {
         // `rosen run` sees the held turn and starts at once (#548).
         let mut command = hidden_command(program);
@@ -477,13 +540,142 @@ fn run_rosen(
             &run_arguments[program_at + 1..],
             passthrough,
         ),
-        AgentRun::RustCheck | AgentRun::Bindings => run_light(
+        AgentRun::RustCheck | AgentRun::Bindings | AgentRun::RegisteredGenerator => run_light(
             program,
             &arguments[..subcommand],
             &run_arguments[program_at],
             &run_arguments[program_at + 1..],
             passthrough,
         ),
+    }
+}
+
+struct ClassifiedGenerator {
+    endpoint: String,
+    workspace_root: PathBuf,
+    generator: RegisteredGenerator,
+}
+
+struct ClassifiedRun {
+    program_at: usize,
+    run: AgentRun,
+    registered: Option<ClassifiedGenerator>,
+}
+
+fn run_registered_generator(
+    rosen: &Path,
+    rosen_arguments: &[OsString],
+    matched: &ClassifiedGenerator,
+    passthrough: &[String],
+    held: bool,
+) -> io::Result<ExitStatus> {
+    let guard = begin_guard_blocking(
+        &matched.endpoint,
+        &matched.workspace_root,
+        &matched.generator,
+    )
+    .map_err(io::Error::other)?;
+    let status = if held {
+        execute_generator_held(&matched.generator.execution, passthrough)
+    } else {
+        execute_generator_light(
+            rosen,
+            rosen_arguments,
+            &matched.workspace_root,
+            &matched.generator.execution,
+            passthrough,
+        )
+    };
+    let succeeded = status.as_ref().is_ok_and(ExitStatus::success);
+    finish_guard_blocking(guard, succeeded).map_err(io::Error::other)?;
+    status
+}
+
+fn execute_generator_light(
+    rosen: &Path,
+    rosen_arguments: &[OsString],
+    workspace_root: &Path,
+    execution: &GeneratorExecution,
+    passthrough: &[String],
+) -> io::Result<ExitStatus> {
+    let target = light_target(workspace_root);
+    let _turn = light_turn(&target, workspace_root, workspace_root)?;
+    match execution {
+        GeneratorExecution::Direct {
+            env,
+            program,
+            arguments,
+        } => {
+            let mut command = light_command(
+                rosen,
+                rosen_arguments,
+                OsStr::new(program),
+                &target,
+                passthrough,
+            )?;
+            for (key, value) in env {
+                command.env(key, value);
+            }
+            command.args(arguments).status()
+        }
+        GeneratorExecution::Shell(script) => {
+            let (shell, flag) = generator_shell();
+            light_command(
+                rosen,
+                rosen_arguments,
+                OsStr::new(shell),
+                &target,
+                passthrough,
+            )?
+            .args(flag)
+            .arg(script)
+            .status()
+        }
+    }
+}
+
+fn execute_generator_held(
+    execution: &GeneratorExecution,
+    passthrough: &[String],
+) -> io::Result<ExitStatus> {
+    let path = toolchain_path()?;
+    match execution {
+        GeneratorExecution::Direct {
+            env,
+            program,
+            arguments,
+        } => {
+            let resolved = resolve_utility_program(OsStr::new(program), &path);
+            let mut command = background_command(resolved);
+            filter_environment(&mut command, passthrough);
+            for (key, value) in env {
+                command.env(key, value);
+            }
+            command
+                .args(arguments)
+                .env("PATH", path)
+                .env_remove(BLOCK_VCS_ENV)
+                .status()
+        }
+        GeneratorExecution::Shell(script) => {
+            let (shell, flag) = generator_shell();
+            let mut command = background_command(shell);
+            filter_environment(&mut command, passthrough);
+            command
+                .args(flag)
+                .arg(script)
+                .env("PATH", path)
+                .env_remove(BLOCK_VCS_ENV)
+                .status()
+        }
+    }
+}
+
+fn generator_shell() -> (&'static str, &'static [&'static str]) {
+    if cfg!(windows) {
+        ("cmd", &["/D", "/C"])
+    } else {
+        ("sh", &["-c"])
     }
 }
 
@@ -742,7 +934,10 @@ fn subcommand_index(arguments: &[OsString]) -> usize {
     index
 }
 
-fn classify_run(arguments: &[OsString]) -> Result<(usize, AgentRun), &'static str> {
+fn classify_run(
+    all_arguments: &[OsString],
+    arguments: &[OsString],
+) -> Result<ClassifiedRun, &'static str> {
     let mut index = 0;
     while let Some(argument) = arguments.get(index) {
         match argument.to_str() {
@@ -759,15 +954,82 @@ fn classify_run(arguments: &[OsString]) -> Result<(usize, AgentRun), &'static st
                 index += 1
             }
             Some("--help" | "-h" | "--version" | "-V" | "--slots" | "--json-schema") => {
-                return Ok((index, AgentRun::Ordinary));
+                return Ok(ClassifiedRun {
+                    program_at: index,
+                    run: AgentRun::Ordinary,
+                    registered: None,
+                });
             }
             _ => break,
         }
     }
     let Some(program) = arguments.get(index).and_then(|value| value.to_str()) else {
-        return Ok((index, AgentRun::Ordinary));
+        return Ok(ClassifiedRun {
+            program_at: index,
+            run: AgentRun::Ordinary,
+            registered: None,
+        });
     };
-    policy(program, &policy_arguments(&arguments[index + 1..])).map(|policy| (index, policy))
+    let policy_args = policy_arguments(&arguments[index + 1..]);
+    let block_vcs = vcs_blocked_in_process();
+    if let Some((endpoint, workspace_root)) = run_workspace_context(all_arguments) {
+        let commands =
+            registered_generator::load_base_commands_blocking(&endpoint).unwrap_or_default();
+        let (run, matched) = policy_with_registered_generators(
+            program,
+            &policy_args,
+            block_vcs,
+            true,
+            &commands,
+            &|key| std::env::var(key).ok(),
+        )?;
+        return Ok(ClassifiedRun {
+            program_at: index,
+            run,
+            registered: matched.map(|generator| ClassifiedGenerator {
+                endpoint,
+                workspace_root,
+                generator,
+            }),
+        });
+    }
+    policy_with_vcs_blocked(program, &policy_args, block_vcs).map(|run| ClassifiedRun {
+        program_at: index,
+        run,
+        registered: None,
+    })
+}
+
+fn run_workspace_context(arguments: &[OsString]) -> Option<(String, PathBuf)> {
+    let endpoint = cli_endpoint_for_run(arguments)?;
+    let cwd = std::env::current_dir().ok()?;
+    let root = WorkspaceMarker::find_root(&cwd)?;
+    registered_generator::is_workspace_root(&cwd, &root).then_some((endpoint, root))
+}
+
+fn cli_endpoint_for_run(arguments: &[OsString]) -> Option<String> {
+    let mut index = 0;
+    while let Some(argument) = arguments.get(index).and_then(|value| value.to_str()) {
+        if argument == "--" {
+            break;
+        }
+        if argument == "--endpoint" {
+            return arguments
+                .get(index + 1)
+                .and_then(|value| value.to_str())
+                .filter(|value| !value.trim().is_empty())
+                .map(str::to_owned);
+        }
+        if let Some(value) = argument.strip_prefix("--endpoint=")
+            && !value.trim().is_empty()
+        {
+            return Some(value.to_owned());
+        }
+        index += 1;
+    }
+    std::env::var("ROSEN_ENDPOINT")
+        .ok()
+        .filter(|value| !value.trim().is_empty())
 }
 
 fn policy_arguments(arguments: &[OsString]) -> Vec<String> {
@@ -1209,5 +1471,122 @@ mod tests {
             "lake run should keep its shim PATH so lean_cache::run_lake prepares Mathlib"
         );
         Ok(())
+    }
+
+    // Risk (#582): agents may queue exact `[generated.commands]` entries as RegisteredGenerator
+    // while unregistered commands (including plain `cargo test` or `env cargo test`) stay refused
+    // with the message mentioning registered generators.
+    #[test]
+    fn registered_generator_policy_admits_exact_command_and_refuses_unregistered() {
+        let mut commands = std::collections::BTreeMap::new();
+        let Ok(pattern) = rosen_core::PathPattern::new("fixtures/collapse/**") else {
+            panic!("valid pattern");
+        };
+        commands.insert(
+            pattern,
+            "UPDATE_FIXTURES=1 cargo test -p rosen-server --lib collapse_fixtures".to_owned(),
+        );
+        let no_env = |_: &str| None;
+        let with_env = |key: &str| (key == "UPDATE_FIXTURES").then(|| "1".to_owned());
+
+        let cargo_args: Vec<String> = ["test", "-p", "rosen-server", "--lib", "collapse_fixtures"]
+            .into_iter()
+            .map(str::to_owned)
+            .collect();
+        let prefixed_args: Vec<String> = [
+            "cargo",
+            "test",
+            "-p",
+            "rosen-server",
+            "--lib",
+            "collapse_fixtures",
+        ]
+        .into_iter()
+        .map(str::to_owned)
+        .collect();
+
+        let matched = super::policy_with_registered_generators(
+            "UPDATE_FIXTURES=1",
+            &prefixed_args,
+            true,
+            true,
+            &commands,
+            &no_env,
+        );
+        assert!(matches!(
+            matched,
+            Ok((AgentRun::RegisteredGenerator, Some(_)))
+        ));
+
+        let matched_via_env = super::policy_with_registered_generators(
+            "cargo",
+            &cargo_args,
+            true,
+            true,
+            &commands,
+            &with_env,
+        );
+        assert!(matches!(
+            matched_via_env,
+            Ok((AgentRun::RegisteredGenerator, Some(_)))
+        ));
+
+        // Plain `cargo test` and `cargo test ...` without `UPDATE_FIXTURES=1` are refused.
+        let refused_plain = super::policy_with_registered_generators(
+            "cargo",
+            &["test".to_owned()],
+            true,
+            true,
+            &commands,
+            &no_env,
+        );
+        assert!(refused_plain.is_err());
+        if let Err(message) = refused_plain {
+            assert!(
+                message.contains("[generated.commands]"),
+                "refusal should mention registered generators: {message}"
+            );
+        }
+
+        let refused_without_env = super::policy_with_registered_generators(
+            "cargo",
+            &cargo_args,
+            true,
+            true,
+            &commands,
+            &no_env,
+        );
+        assert!(refused_without_env.is_err());
+
+        // Unregistered `env cargo test` or `FOO=1 cargo test` cannot bypass the policy.
+        let refused_wrapped = super::policy_with_registered_generators(
+            "env",
+            &["FOO=1".to_owned(), "cargo".to_owned(), "test".to_owned()],
+            true,
+            true,
+            &commands,
+            &no_env,
+        );
+        assert!(refused_wrapped.is_err());
+        let refused_assign = super::policy_with_registered_generators(
+            "FOO=1",
+            &["cargo".to_owned(), "test".to_owned()],
+            true,
+            true,
+            &commands,
+            &no_env,
+        );
+        assert!(refused_assign.is_err());
+
+        // Registered generator is refused when not running at workspace root.
+        let refused_subdir = super::policy_with_registered_generators(
+            "UPDATE_FIXTURES=1",
+            &prefixed_args,
+            true,
+            false,
+            &commands,
+            &no_env,
+        );
+        assert!(refused_subdir.is_err());
     }
 }
