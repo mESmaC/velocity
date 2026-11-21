@@ -33,13 +33,16 @@ Its prompt names the repository, branch, workflow, commit and run, and for up to
 Other failed jobs are listed by name.
 The run's whole failed-step log is saved as `velocity-base-ci-<run>/failed-steps.log` in the temporary folder, and the prompt gives its path.
 The prompt tells the agent to work from the log because the runner may be an operating system this machine cannot run, to check that the base still has the fault, and never to weaken the failing test or lint.
-The same job failing again while its repair is open starts nothing.
+The same job failing again with the same error while its repair is open and unlanded starts nothing.
+Each open repair records the failing commit, the first concrete error and file location from the job log as its signature, and the landed commit once its thread lands (#558).
+A newer failing commit with a different error signature starts a new fix-forward even while an earlier repair is active.
+When a repair's thread lands and a failing run covers a commit at or after its land, Velocity supersedes the old repair and starts a new fix-forward on the next look; while the failing run strictly predates the land, the repair stays open waiting for CI.
+A repair whose thread finishes without landing is superseded by a newer failing commit; one whose thread ends in error or is deleted without landing stays open for the same error so deleting a thread does not immediately respawn it.
 The repair and its thread's opening prompt are saved together before the thread starts, so a restart resumes the same thread and never starts a second one.
-A repair stays open when its thread is deleted.
 
 **Closing.**
-A workflow whose deciding run passed has its repairs closed, so the fix landing closes them with no manual step.
-Only a green run of the same workflow closes a repair.
+A workflow whose deciding run passed has all of its repairs closed, so the fix landing closes them with no manual step.
+A landed repair whose job no longer fails in a run at or after its land is closed as superseded even if another job in that workflow failed.
 A later failure of that job is then a new failure with its own thread.
 
 **What the project shows.**

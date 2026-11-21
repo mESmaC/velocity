@@ -3,7 +3,7 @@
 //! until a green run of that workflow, even when its thread is deleted.
 
 use serde::{Deserialize, Serialize};
-use velocity_core::base_ci::{BaseCi, Failure};
+use velocity_core::base_ci::{BaseCi, Failure, SupersededRepair, signatures_differ};
 
 use crate::threads::{NewThread, ThreadError, insert_thread};
 use crate::{StateStore, StoreError};
@@ -22,12 +22,18 @@ pub struct CiRepair {
     pub run: u64,
     #[serde(default)]
     pub thread: u32,
+    /// Base commit landed by `thread`, once its change lands (#558).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub landed_commit: Option<String>,
+    /// Normalized error signature from the failing job's log, when available (#558).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub signature: Option<String>,
 }
 
 impl StateStore {
     /// Allocates the thread, its opening prompt and a repair for each of the failure's jobs
-    /// that has none, in one save. Retaining them prevents a repeat of the failure, a
-    /// retry or a restart from starting a second thread. `None` when every job is covered.
+    /// that has no matching open repair, in one save. Retaining them prevents a repeat of
+    /// the failure, a retry or a restart from starting a second thread. `None` when covered.
     pub fn add_ci_repair(
         &mut self,
         project: u32,
@@ -38,15 +44,15 @@ impl StateStore {
         let current = self
             .project(project)
             .ok_or(ThreadError::UnknownProject(project))?;
-        let uncovered: Vec<&str> = failure
+        let uncovered: Vec<_> = failure
             .jobs
             .iter()
-            .map(|job| job.job.as_str())
             .filter(|job| {
-                !current
-                    .ci_repairs
-                    .iter()
-                    .any(|repair| repair.workflow == failure.workflow && repair.job == *job)
+                !current.ci_repairs.iter().any(|repair| {
+                    repair.workflow == failure.workflow
+                        && repair.job == job.job
+                        && !signatures_differ(repair.signature.as_deref(), job.signature.as_deref())
+                })
             })
             .collect();
         if uncovered.is_empty() {
@@ -73,13 +79,73 @@ impl StateStore {
             .ci_repairs
             .extend(uncovered.into_iter().map(|job| CiRepair {
                 workflow: failure.workflow.clone(),
-                job: job.into(),
+                job: job.job.clone(),
                 commit: failure.commit.clone(),
                 run: failure.run,
                 thread: identifier,
+                landed_commit: None,
+                signature: job.signature.clone(),
             }));
         self.commit(next)?;
         Ok(Some(identifier))
+    }
+
+    /// Records the base commit landed by `thread` on any open CI repairs it owns (#558).
+    pub fn record_ci_repair_landed(
+        &mut self,
+        project: u32,
+        thread: u32,
+        commit: &str,
+    ) -> Result<bool, StoreError> {
+        let needs_update = self.project(project).is_some_and(|item| {
+            item.ci_repairs.iter().any(|repair| {
+                repair.thread == thread && repair.landed_commit.as_deref() != Some(commit)
+            })
+        });
+        if !needs_update {
+            return Ok(false);
+        }
+        let mut next = self.state.clone();
+        if let Some(current) = next.projects.iter_mut().find(|item| item.id == project) {
+            for repair in &mut current.ci_repairs {
+                if repair.thread == thread {
+                    repair.landed_commit = Some(commit.to_owned());
+                }
+            }
+        }
+        self.store_snapshot(next)?;
+        Ok(true)
+    }
+
+    /// Drops open repairs superseded by a failure at or after their land or after their
+    /// thread finished without landing, and returns the removed records (#558).
+    pub fn close_superseded_ci_repairs(
+        &mut self,
+        project: u32,
+        superseded: &[SupersededRepair],
+    ) -> Result<Vec<CiRepair>, StoreError> {
+        if superseded.is_empty() {
+            return Ok(Vec::new());
+        }
+        let mut next = self.state.clone();
+        let Some(current) = next.projects.iter_mut().find(|item| item.id == project) else {
+            return Ok(Vec::new());
+        };
+        let (closed, open): (Vec<_>, Vec<_>) = std::mem::take(&mut current.ci_repairs)
+            .into_iter()
+            .partition(|repair| {
+                superseded.iter().any(|item| {
+                    item.workflow == repair.workflow
+                        && item.job == repair.job
+                        && item.thread == repair.thread
+                })
+            });
+        if closed.is_empty() {
+            return Ok(closed);
+        }
+        current.ci_repairs = open;
+        self.store_snapshot(next)?;
+        Ok(closed)
     }
 
     /// Drops the repairs of `workflows`, whose newest run on the base passed, and returns
@@ -191,6 +257,87 @@ mod tests {
                 .add_ci_repair(1, &failure, thread("four"), "prompt")?
                 .is_some()
         );
+        std::fs::remove_dir_all(directory)?;
+        Ok(())
+    }
+
+    // Risk (#558): landed commits and error signatures on CI repairs must survive save and
+    // reload so a restart still reopens a landed repair whose fix left the base red.
+    #[test]
+    fn ci_repair_landed_commit_and_signature_survive_reload()
+    -> Result<(), Box<dyn std::error::Error>> {
+        use velocity_core::base_ci::SupersededRepair;
+
+        let unique = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)?
+            .as_nanos();
+        let directory = std::env::temp_dir().join(format!("velocity-ci-repair-reopen-{unique}"));
+        let mut store = StateStore::load_or_default(&directory)?;
+        store.state.projects = vec![ProjectItem::new(1, "One".into(), r"C:\project one".into())];
+        store.store_snapshot(store.state.clone())?;
+        let settings = store.settings();
+        let make_thread = |slug: &str| {
+            NewThread::new(
+                "Fix CI".into(),
+                format!("vel/{slug}"),
+                format!(r"C:\worktrees\{slug}"),
+                &settings,
+            )
+        };
+        let failure = Failure {
+            workflow: "Build and lint".into(),
+            run: 10,
+            commit: "40c32e0".repeat(6)[..40].to_owned(),
+            url: "https://github.com/owner/one/actions/runs/10".into(),
+            detail: String::new(),
+            jobs: vec![FailedJob {
+                job: "clippy".into(),
+                signature: Some(
+                    "error: redundant closure | --> crates/velocity-graph/src/lib.rs".into(),
+                ),
+                ..FailedJob::default()
+            }],
+        };
+        let first = store
+            .add_ci_repair(1, &failure, make_thread("first"), "prompt")?
+            .ok_or("expected repair thread")?;
+        let landed = "4101745".repeat(6)[..40].to_owned();
+        assert!(store.record_ci_repair_landed(1, first, &landed)?);
+        assert!(!store.record_ci_repair_landed(1, first, &landed)?);
+
+        let mut store = StateStore::load_or_default(&directory)?;
+        let saved = &store.state.projects[0].ci_repairs[0];
+        assert_eq!(saved.landed_commit.as_deref(), Some(landed.as_str()));
+        assert_eq!(
+            saved.signature.as_deref(),
+            Some("error: redundant closure | --> crates/velocity-graph/src/lib.rs")
+        );
+
+        let superseded = [SupersededRepair {
+            workflow: saved.workflow.clone(),
+            job: saved.job.clone(),
+            thread: saved.thread,
+            commit: saved.commit.clone(),
+            landed_commit: saved.landed_commit.clone(),
+        }];
+        assert_eq!(store.close_superseded_ci_repairs(1, &superseded)?.len(), 1);
+        assert!(store.state.projects[0].ci_repairs.is_empty());
+
+        let next_failure = Failure {
+            run: 11,
+            commit: landed,
+            jobs: vec![FailedJob {
+                job: "clippy".into(),
+                signature: Some(
+                    "error[E0063]: missing fields | --> crates/velocity-threads/src/agent_memory.rs"
+                        .into(),
+                ),
+                ..FailedJob::default()
+            }],
+            ..failure
+        };
+        let second = store.add_ci_repair(1, &next_failure, make_thread("second"), "prompt")?;
+        assert!(second.is_some() && second != Some(first));
         std::fs::remove_dir_all(directory)?;
         Ok(())
     }

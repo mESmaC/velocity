@@ -667,6 +667,25 @@ impl StateStore {
             return Ok(None);
         };
         let identifier = item.threads[index].id;
+        match progress {
+            RosenProgress::Landed => {
+                if let Some(commit) = evidence.commit {
+                    for repair in &mut item.ci_repairs {
+                        if repair.thread == identifier {
+                            repair.landed_commit = Some(commit.to_owned());
+                        }
+                    }
+                }
+            }
+            RosenProgress::Reverted => {
+                for repair in &mut item.ci_repairs {
+                    if repair.thread == identifier {
+                        repair.landed_commit = None;
+                    }
+                }
+            }
+            _ => {}
+        }
         crate::rosen_work::restore_thread(item, identifier);
         if !matches!(progress, RosenProgress::Named | RosenProgress::Reverted) {
             crate::rosen_work::apply(item, change, progress, evidence);

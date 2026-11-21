@@ -152,6 +152,7 @@ fn failed_job(job: WorkflowJob) -> FailedJob {
         job: job.name,
         step,
         runner: (!job.labels.is_empty()).then(|| job.labels.join(", ")),
+        signature: None,
     }
 }
 

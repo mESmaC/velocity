@@ -12,7 +12,9 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use tauri::{AppHandle, Manager};
 use tauri_specta::Event;
-use velocity_core::base_ci::BaseCiState;
+use velocity_core::base_ci::{
+    BaseCiState, CommitOrder, OpenRepair, RepairThreadState, format_ci_repair_action,
+};
 use velocity_core::project_health::{
     DISPATCH_IDLE_LIMIT_SECONDS, HealthSeverity, HealthSignalKind, INTEGRATION_UNCOVERED_LANDS,
     INTEGRATION_UNCOVERED_SECONDS, MIRROR_BEHIND_LIMIT_SECONDS, ProjectHealthItem,
@@ -700,7 +702,7 @@ async fn start_or_explain_integration(
     )
 }
 
-/// Signal 3: Integration or GitHub CI red on the base (#507, #509).
+/// Signal 3: Integration or GitHub CI red on the base (#507, #509, #558).
 async fn check_base_red(
     application: &AppHandle,
     project: &ProjectItem,
@@ -711,14 +713,13 @@ async fn check_base_red(
     if let Some(ci) = &project.base_ci
         && ci.state == BaseCiState::Failed
     {
-        let repair_thread = project.ci_repairs.first().map(|repair| repair.thread);
-        let action = match repair_thread {
-            Some(thread) => format!("Fix-forward thread #{thread} active"),
-            None if !project.spec_locked => {
-                "Cannot start fix-forward thread: project spec is not locked".into()
-            }
-            None => "Queued fix-forward thread on next GitHub CI check".into(),
-        };
+        let open = selected_ci_repair(application, project, server, ci.commit.as_deref()).await;
+        let repair_thread = open
+            .as_ref()
+            .filter(|repair| repair.thread_state != RepairThreadState::Deleted)
+            .map(|repair| repair.thread);
+        let action =
+            format_ci_repair_action(open.as_ref(), ci.commit.as_deref(), project.spec_locked);
         let commit = ci
             .commit
             .as_deref()
@@ -770,6 +771,64 @@ async fn check_base_red(
         );
     }
     items
+}
+
+async fn selected_ci_repair(
+    application: &AppHandle,
+    project: &ProjectItem,
+    server: &ProjectServer,
+    failing_commit: Option<&str>,
+) -> Option<OpenRepair> {
+    let repair = project
+        .ci_repairs
+        .iter()
+        .rev()
+        .find(|candidate| {
+            candidate.landed_commit.is_none()
+                && project.threads.iter().any(|thread| {
+                    thread.id == candidate.thread
+                        && matches!(
+                            thread.state,
+                            ThreadState::Draft
+                                | ThreadState::Spec
+                                | ThreadState::Working
+                                | ThreadState::Review
+                        )
+                })
+        })
+        .or_else(|| project.ci_repairs.last())?;
+    let thread = project
+        .threads
+        .iter()
+        .find(|candidate| candidate.id == repair.thread);
+    let live = application
+        .try_state::<crate::threads::ManagedThreads>()
+        .is_some_and(|threads| {
+            threads
+                .lock()
+                .is_ok_and(|threads| threads.is_live((project.id, repair.thread)))
+        });
+    let landed_commit =
+        crate::base_ci::resolve_repair_landed_commit(application, Some(server), repair, thread)
+            .await;
+    let thread_state = crate::base_ci::repair_thread_state(thread, landed_commit.as_deref(), live);
+    let commit_order = match (landed_commit.as_deref(), failing_commit) {
+        (Some(landed), Some(failing)) => {
+            crate::base_ci::resolve_commit_order(application, Some(server), landed, failing).await
+        }
+        _ => CommitOrder::Unknown,
+    };
+    Some(OpenRepair {
+        workflow: repair.workflow.clone(),
+        job: repair.job.clone(),
+        commit: repair.commit.clone(),
+        run: repair.run,
+        thread: repair.thread,
+        landed_commit,
+        signature: repair.signature.clone(),
+        thread_state,
+        commit_order,
+    })
 }
 
 /// Signal 4: Landed issue still open > H hours with no green integration (#504, #509).
